@@ -583,9 +583,9 @@ def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout
             _copytree_filtered(s, d)
         else:
             if (
-                s.suffix.lower() == ".exe"
+                s.suffix.lower() in (".ps1", ".cmd", ".exe")
                 and not d.suffix
-                and s.name.lower() == f"{d.name}.exe".lower()
+                and s.stem.lower() == d.name.lower()
             ):
                 d = d.with_name(s.name)
             d.parent.mkdir(parents=True, exist_ok=True)
@@ -1178,8 +1178,6 @@ def generate_nsis_script(
                 hook_rel=post_hook.relative_to(comp_payload).as_posix().replace("/", "\\"),
                 step="postinstall",
             )
-            if comp.key == "buckycli":
-                lines.append('  SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000')
         
         # Save each component's install directory to registry for uninstall
         lines.append(f'  WriteRegStr HKCU "Software\\BuckyOS" "InstDir_{comp.key}" "${var_name}"')

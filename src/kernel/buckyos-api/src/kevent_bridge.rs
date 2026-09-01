@@ -72,7 +72,9 @@ fn now_millis() -> u64 {
 /// Bounded exponential backoff with jitter: 200ms → 5s.
 fn backoff_delay(attempt: u32) -> Duration {
     let shift = attempt.min(5);
-    let capped = BACKOFF_MIN_MS.saturating_mul(1_u64 << shift).min(BACKOFF_MAX_MS);
+    let capped = BACKOFF_MIN_MS
+        .saturating_mul(1_u64 << shift)
+        .min(BACKOFF_MAX_MS);
     let half = capped / 2;
     let jitter = if half > 0 {
         rand::random::<u64>() % half
@@ -758,7 +760,12 @@ mod tests {
     fn backoff_is_bounded_and_jittered() {
         for attempt in 0..10_u32 {
             let delay = backoff_delay(attempt).as_millis() as u64;
-            assert!(delay >= BACKOFF_MIN_MS / 2, "attempt {} → {}ms", attempt, delay);
+            assert!(
+                delay >= BACKOFF_MIN_MS / 2,
+                "attempt {} → {}ms",
+                attempt,
+                delay
+            );
             assert!(delay <= BACKOFF_MAX_MS, "attempt {} → {}ms", attempt, delay);
         }
         // Deep retries must sit at the ceiling band, never grow without bound.
@@ -777,7 +784,9 @@ mod tests {
         assert!(is_transport_error(&KEventError::DaemonUnavailable(
             "x".into()
         )));
-        assert!(!is_transport_error(&KEventError::InvalidEventId("x".into())));
+        assert!(!is_transport_error(&KEventError::InvalidEventId(
+            "x".into()
+        )));
         assert!(!is_transport_error(&KEventError::NotSupported("x".into())));
     }
 

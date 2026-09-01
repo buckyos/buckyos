@@ -66,6 +66,7 @@ fn schedule_task_prompt_text_extracts_source_and_failure() {
         }),
         input_digest: String::new(),
         creator: buckyos_api::ActorRef::new("alice", "buckyos_jarvis"),
+        storage_domain: buckyos_api::StorageDomain::System,
         idempotency_key: "sch-1".to_string(),
         origin_ref: None,
         retry_of: None,
@@ -108,7 +109,6 @@ fn schedule_task_prompt_text_extracts_source_and_failure() {
         "last run failed: smtp timeout"
     );
 }
-
 
 #[test]
 fn self_check_behavior_end_keeps_session_idle() {
@@ -511,6 +511,64 @@ fn compose_turn_message_preserves_structured_blocks() {
     assert_eq!(out.content.len(), 2);
     assert_eq!(out.text_content(), "see this");
     assert!(matches!(out.content[1], AiContent::Image { .. }));
+}
+
+#[test]
+fn compose_turn_message_preserves_message_envelope_boundaries() {
+    let first = AiMessage::new(
+        AiRole::User,
+        vec![
+            AiContent::text("first"),
+            AiContent::Image {
+                source: buckyos_api::ResourceRef::url(
+                    "https://example.test/first.png".to_string(),
+                    Some("image/png".to_string()),
+                ),
+            },
+            AiContent::ProviderState {
+                provider: llm_context::PROVIDER_MSG_METADATA.to_string(),
+                value: serde_json::json!({
+                    "attachments": [{
+                        "index": 0,
+                        "kind": "image",
+                        "role": "input",
+                        "source": {"type": "url", "url": "https://example.test/first.png"},
+                        "label": "first.png",
+                        "text_marker": "[image: first.png]"
+                    }],
+                    "message_references": []
+                }),
+            },
+        ],
+    );
+    let second = AiMessage::new(
+        AiRole::User,
+        vec![
+            AiContent::text("second"),
+            AiContent::ProviderState {
+                provider: llm_context::PROVIDER_MSG_METADATA.to_string(),
+                value: serde_json::json!({
+                    "attachments": [],
+                    "message_references": [{"relation": "reply_to", "obj_id": "cymsg:02"}]
+                }),
+            },
+        ],
+    );
+
+    let out = compose_turn_message(&[first, second]).unwrap();
+    let batch: serde_json::Value = serde_json::from_str(&out.text_content()).unwrap();
+    assert_eq!(batch["schema"], "od.msg/1");
+    assert_eq!(batch["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(batch["messages"][0]["text"], "first");
+    assert_eq!(batch["messages"][0]["attachments"][0]["index"], 0);
+    assert_eq!(
+        batch["messages"][0]["attachments"][0]["src"]["url"],
+        "https://example.test/first.png"
+    );
+    assert!(batch["messages"][0].get("refs").is_none());
+    assert_eq!(batch["messages"][1]["text"], "second");
+    assert_eq!(batch["messages"][1]["refs"][0], "cymsg:02");
+    assert!(batch["messages"][1].get("attachments").is_none());
 }
 
 #[test]

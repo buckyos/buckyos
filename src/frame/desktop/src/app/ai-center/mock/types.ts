@@ -5,7 +5,7 @@ export type ProviderType =
 
 export type ProviderRuntimeType = 'local_inference' | 'cloud_api' | 'proxy_unknown'
 export type ProviderOrigin = 'system_config' | 'user_config' | 'builtin' | 'provider_claimed'
-export type AuthMode = 'api_key' | 'oauth'
+export type AuthMode = 'api_key'
 export type ProtocolType = 'openai_compatible' | 'anthropic_compatible' | 'google_compatible'
 export type AuthStatus = 'ok' | 'expired' | 'invalid' | 'unknown'
 export type ModelSyncStatus = 'ok' | 'syncing' | 'failed'
@@ -64,6 +64,7 @@ export interface ModelMetadata {
     input_token_usd?: number
     output_token_usd?: number
     cache_input_token_usd?: number
+    estimated_cost_usd?: number
   }
   health: {
     status: ModelHealthStatus
@@ -90,6 +91,7 @@ export interface ProviderInventory {
 export interface ProviderConfig {
   id: string
   name: string
+  enabled: boolean
   provider_type: ProviderType
   provider_instance_name: string
   provider_runtime_type: ProviderRuntimeType
@@ -138,7 +140,7 @@ export type AiProviderCard = {
   id: string
   displayName: string
   providerType: string
-  status: 'healthy' | 'needs_setup' | 'degraded' | 'planned'
+  status: 'healthy' | 'needs_setup' | 'degraded' | 'planned' | 'disabled'
   endpoint: string
   authMode: string
   credentialConfigured?: boolean
@@ -147,6 +149,7 @@ export type AiProviderCard = {
   capabilities: string[]
   defaultModel: string
   note: string
+  providerDriver?: string
 }
 
 // ========== Usage ==========

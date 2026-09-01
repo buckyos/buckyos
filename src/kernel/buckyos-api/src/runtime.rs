@@ -10,7 +10,7 @@ use std::time::Duration;
 use ::kRPC::Result;
 use ::kRPC::*;
 use buckyos_kit::*;
-use jsonwebtoken::{decode, DecodingKey, EncodingKey, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
 use ndn_lib::{load_named_object_from_obj_str, ChunkId, ObjId};
 use rand::Rng;
@@ -41,9 +41,11 @@ use crate::task_mgr::*;
 use crate::verify_hub_client::*;
 use crate::workflow_service::{WorkflowServiceClient, WORKFLOW_SERVICE_NAME};
 use crate::{
-    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, load_local_device_config,
-    load_local_device_private_key, load_local_node_identity_config, RbacConfig,
-    OPENDAN_SERVICE_NAME,
+    get_buckyos_api_runtime, get_service_session_token_env_key, load_local_device_config,
+    load_local_device_private_key, load_local_node_identity_config,
+    validate_verify_hub_token_claims, AppId, AppInstanceId, AuthTarget, RbacConfig,
+    SystemServiceId, TokenUse, BUCKYOS_APP_TOKEN_ENV, OPENDAN_SERVICE_NAME,
+    VERIFY_HUB_TOKEN_ISSUER,
 };
 
 const DEFAULT_NODE_GATEWAY_PORT: u16 = 3180;
@@ -332,25 +334,13 @@ impl BuckyOSRuntime {
         let mut session_token_keys = Vec::new();
         match self.runtime_type {
             BuckyOSRuntimeType::KernelService => {
-                session_token_keys.push(get_session_token_env_key(&self.get_full_appid(), false));
+                session_token_keys.push(get_service_session_token_env_key(self.app_id.as_str()));
             }
             BuckyOSRuntimeType::FrameService => {
-                if let Some(owner_id) = self.app_owner_id.as_deref() {
-                    session_token_keys.push(get_session_token_env_key(
-                        &get_full_appid(self.app_id.as_str(), owner_id),
-                        true,
-                    ));
-                }
-                session_token_keys.push(get_session_token_env_key(&self.get_full_appid(), false));
+                session_token_keys.push(get_service_session_token_env_key(self.app_id.as_str()));
             }
             BuckyOSRuntimeType::AppService => {
-                if let Some(owner_id) = self.app_owner_id.as_deref() {
-                    session_token_keys.push(get_session_token_env_key(
-                        &get_full_appid(self.app_id.as_str(), owner_id),
-                        true,
-                    ));
-                }
-                session_token_keys.push(get_session_token_env_key(self.app_id.as_str(), true));
+                session_token_keys.push(BUCKYOS_APP_TOKEN_ENV.to_string());
             }
             BuckyOSRuntimeType::AppClient => match env::var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV) {
                 Ok(session_token) => {
@@ -941,21 +931,34 @@ impl BuckyOSRuntime {
         })?;
         let node_did = device_config.id.clone();
         let node_id = device_config.name.clone();
-        let instance_id = format!("{}-{}", self.app_id, device_config.name);
+        let instance_config = env::var("app_instance_config")
+            .ok()
+            .and_then(|raw| serde_json::from_str::<AppServiceInstanceConfig>(&raw).ok());
         let main_port = *self.main_service_port.read().await;
         let mut service_ports = HashMap::new();
         if main_port > 0 {
             service_ports.insert("www".to_string(), main_port);
         }
+        let deployment = instance_config.map(|config| config.deployment);
+        let instance_epoch = env::var("BUCKYOS_INSTANCE_EPOCH")
+            .unwrap_or_else(|_| format!("process:{}", std::process::id()));
+        let node_session_id = env::var("BUCKYOS_NODE_SESSION_ID")
+            .unwrap_or_else(|_| format!("device:{}", device_config.id.to_string()));
         let service_instance_info = ServiceInstanceReportInfo {
-            instance_id,
             node_id: node_id.clone(),
             node_did,
             state: ServiceInstanceState::Started,
             service_ports: service_ports,
-            last_update_time: buckyos_get_unix_timestamp(),
-            start_time: 0,
+            last_update_time: now,
+            start_time: now,
             pid: std::process::id(),
+            deployment,
+            instance_epoch,
+            node_session_id,
+            observed_at: now,
+            expires_at: now.saturating_add(SERVICE_INSTANCE_INFO_UPDATE_INTERVAL * 3),
+            health: DeploymentHealth::Healthy,
+            deployment_error: None,
         };
 
         let control_panel_client = self.get_control_panel_client().await?;
@@ -978,6 +981,7 @@ impl BuckyOSRuntime {
     }
 
     async fn renew_token_from_verify_hub_once(&self) -> Result<()> {
+        let auth_target = self.get_auth_target()?;
         let session_token = self.session_token.write().await;
         if session_token.is_empty() {
             debug!("session_token is empty,skip refresh token");
@@ -1025,18 +1029,18 @@ impl BuckyOSRuntime {
                 drop(refresh_token);
                 let (fallback_jwt, _) = self.create_local_login_jwt().await?;
                 verify_hub_client
-                    .login_by_jwt(fallback_jwt.as_str(), None)
+                    .login_by_jwt(fallback_jwt.as_str(), auth_target.clone())
                     .await?
             }
         } else {
             // First login / exchange: accept trusted JWT (device/root/etc)
             info!("use session-token to renew session-token from verify-hub...");
             verify_hub_client
-                .login_by_jwt(session_token_str.as_str(), None)
+                .login_by_jwt(session_token_str.as_str(), auth_target)
                 .await?
         };
 
-        info!("renew session-token success, token_pair: {:?}", token_pair);
+        info!("renew session-token success");
         {
             let mut session_token = self.session_token.write().await;
             *session_token = token_pair.session_token.clone();
@@ -1055,10 +1059,9 @@ impl BuckyOSRuntime {
 
         if self.runtime_type == BuckyOSRuntimeType::AppClient {
             if self.user_private_key.is_some() && self.user_id.is_some() {
-                let (jwt, token) = RPCSessionToken::generate_jwt_token(
+                let (jwt, token) = generate_user_login_assertion(
                     self.user_id.as_ref().unwrap(),
                     self.app_id.as_str(),
-                    None,
                     self.user_private_key.as_ref().unwrap(),
                 )?;
                 return Ok((jwt, token));
@@ -1069,7 +1072,7 @@ impl BuckyOSRuntime {
             let device_private_key = self.device_private_key.as_ref().unwrap();
             let device_config = self.device_config.as_ref().unwrap();
             let subject_id = self.device_signed_login_subject(device_config.name.as_str())?;
-            let (jwt, token) = generate_service_login_jwt(
+            let (jwt, token) = generate_service_login_assertion(
                 subject_id,
                 self.app_id.as_str(),
                 device_config.name.as_str(),
@@ -1247,6 +1250,14 @@ impl BuckyOSRuntime {
 
         init_name_lib(&self.web3_bridges).await;
 
+        // AppService processes receive a device-signed LoginAssertion from
+        // node-daemon. Exchange it before the first system-config request;
+        // system-config accepts only Verify Hub sessions (apart from the
+        // narrowly scoped kernel bootstrap assertion).
+        if self.runtime_type == BuckyOSRuntimeType::AppService {
+            self.renew_token_from_verify_hub_once().await?;
+        }
+
         authenticated_session_token = {
             let mut session_token = self.session_token.write().await;
             if session_token.is_empty() {
@@ -1256,10 +1267,9 @@ impl BuckyOSRuntime {
                     if self.user_private_key.is_some() && self.user_config.is_some() {
                         info!("api-runtime: session token is empty,runtime_type:{:?},try to create session token by user_private_key",self.runtime_type);
                         let (session_token_str, real_session_token) =
-                            RPCSessionToken::generate_jwt_token(
+                            generate_user_login_assertion(
                                 self.user_id.as_ref().unwrap(),
                                 self.app_id.as_str(),
-                                None,
                                 self.user_private_key.as_ref().unwrap(),
                             )?;
                         *session_token = session_token_str;
@@ -1276,7 +1286,7 @@ impl BuckyOSRuntime {
                     let device_config = self.device_config.as_ref().unwrap();
                     let subject_id =
                         self.device_signed_login_subject(device_config.name.as_str())?;
-                    let (session_token_str, real_session_token) = generate_service_login_jwt(
+                    let (session_token_str, real_session_token) = generate_service_login_assertion(
                         subject_id,
                         self.app_id.as_str(),
                         device_config.name.as_str(),
@@ -1317,6 +1327,20 @@ impl BuckyOSRuntime {
                     return Err(RPCErrors::ReasonError(
                         "Session token is not valid".to_string(),
                     ));
+                }
+                if authenticated_session_token.iss.as_deref() == Some(VERIFY_HUB_TOKEN_ISSUER) {
+                    let claims = validate_verify_hub_token_claims(
+                        &authenticated_session_token,
+                        TokenUse::Session,
+                    )?;
+                    let expected = self.get_auth_target()?;
+                    if claims.target != expected {
+                        return Err(RPCErrors::InvalidToken(format!(
+                            "session token target {} does not match runtime target {}",
+                            claims.target.canonical_key(),
+                            expected.canonical_key(),
+                        )));
+                    }
                 }
                 authenticated_session_token
             }
@@ -1502,28 +1526,20 @@ impl BuckyOSRuntime {
         let header = jsonwebtoken::decode_header(raw_jwt).map_err(|error| {
             RPCErrors::InvalidToken(format!("JWT decode header error: {}", error))
         })?;
-        let claims = decode_jwt_claim_without_verify(raw_jwt).ok();
-
-        let mut kid = header
-            .kid
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| {
-                claims.as_ref().and_then(|value| {
-                    value
-                        .get("iss")
-                        .and_then(|iss| iss.as_str())
-                        .and_then(|iss| {
-                            let trimmed = iss.trim();
-                            if trimmed.is_empty() {
-                                None
-                            } else {
-                                Some(trimmed.to_string())
-                            }
-                        })
-                })
-            })
-            .unwrap_or_else(|| "root".to_string());
+        let claims = decode_jwt_claim_without_verify(raw_jwt).map_err(|error| {
+            RPCErrors::InvalidToken(format!("JWT claims decode error: {error}"))
+        })?;
+        if claims.get("iss").and_then(Value::as_str) != Some(VERIFY_HUB_TOKEN_ISSUER) {
+            return Err(RPCErrors::InvalidToken(
+                "ordinary session tokens must be issued by verify-hub".to_string(),
+            ));
+        }
+        if header.kid.as_deref() != Some(VERIFY_HUB_TOKEN_ISSUER) {
+            return Err(RPCErrors::InvalidToken(
+                "verify-hub session token has an invalid kid".to_string(),
+            ));
+        }
+        let kid = VERIFY_HUB_TOKEN_ISSUER.to_string();
 
         let mut decoding_key = {
             let key_map = self.trust_keys.read().await;
@@ -1538,20 +1554,13 @@ impl BuckyOSRuntime {
             };
         }
 
-        if decoding_key.is_none() && kid != "root" {
-            kid = "root".to_string();
-            decoding_key = {
-                let key_map = self.trust_keys.read().await;
-                key_map.get(&kid).cloned()
-            };
-        }
-
         let decoding_key =
             decoding_key.ok_or(RPCErrors::NoPermission(format!("kid {} not found", kid)))?;
 
         rpc_token
             .verify_by_key(&decoding_key)
             .map_err(|error| RPCErrors::InvalidToken(format!("JWT decode error: {}", error)))?;
+        validate_verify_hub_token_claims(&rpc_token, TokenUse::Session)?;
 
         Ok(rpc_token)
     }
@@ -1571,55 +1580,14 @@ impl BuckyOSRuntime {
         let token_str = req.token.as_deref().ok_or(RPCErrors::ParseRequestError(
             "Invalid params, session_token is none".to_string(),
         ))?;
-        let token = RPCSessionToken::from_string(token_str).map_err(|error| {
-            RPCErrors::InvalidToken(format!("Invalid session token: {}", error))
-        })?;
-        if !token.is_self_verify() {
-            return Err(RPCErrors::InvalidToken(
-                "Session token is not valid".to_string(),
-            ));
-        }
-        let token_str = token.token.as_deref().ok_or(RPCErrors::InvalidToken(
-            "Session token is missing raw JWT".to_string(),
-        ))?;
-        let header: jsonwebtoken::Header =
-            jsonwebtoken::decode_header(token_str).map_err(|error| {
-                RPCErrors::InvalidToken(format!("JWT decode header error : {}", error))
-            })?;
-
-        let key_map = self.trust_keys.read().await;
-        let kid = header.kid.unwrap_or("root".to_string());
-        let decoding_key = key_map.get(&kid);
-        if decoding_key.is_none() {
-            warn!("kid {} not found,Session token is not valid", kid.as_str());
-            return Err(RPCErrors::NoPermission(format!(
-                "kid {} not found",
-                kid.as_str()
-            )));
-        }
-        let decoding_key = decoding_key.unwrap();
-
-        let validation = Validation::new(header.alg);
-        //exp always checked
-        let decoded_token = decode::<serde_json::Value>(token_str, &decoding_key, &validation)
-            .map_err(|error| RPCErrors::InvalidToken(format!("JWT decode error:{}", error)))?;
-        let decoded_json = decoded_token
-            .claims
-            .as_object()
-            .ok_or(RPCErrors::InvalidToken("Invalid token".to_string()))?;
-
-        let userid = decoded_json
-            .get("userid")
-            .or_else(|| decoded_json.get("sub"))
-            .ok_or(RPCErrors::InvalidToken("Missing userid".to_string()))?;
-        let userid = userid
-            .as_str()
-            .ok_or(RPCErrors::InvalidToken("Invalid userid".to_string()))?;
-        let appid = decoded_json
-            .get("appid")
-            .and_then(|appid| appid.as_str())
-            .or_else(|| decoded_json.get("aud").and_then(|aud| aud.as_str()))
-            .unwrap_or("kernel");
+        let token = self.verify_trusted_session_token(token_str).await?;
+        let userid = token
+            .sub
+            .as_deref()
+            .ok_or_else(|| RPCErrors::InvalidToken("missing session subject".to_string()))?;
+        let claims = validate_verify_hub_token_claims(&token, TokenUse::Session)?;
+        let authorization_key = claims.target.authorization_key();
+        let canonical_target = claims.target.canonical_key();
 
         let system_config_client = self.get_system_config_client().await?;
         let rbac_config = crate::load_current_rbac_config(system_config_client.as_ref()).await?;
@@ -1631,20 +1599,18 @@ impl BuckyOSRuntime {
                 })?;
         }
 
-        let sudo = decoded_json
-            .get("sudo")
-            .and_then(|sudo| sudo.as_bool())
-            .unwrap_or(false)
+        let sudo = token
+            .sudo
             .then(|| rbac::SudoMode::Sudo(RPCSessionToken::get_default_sudo_userid(userid)));
 
-        let result = rbac::enforce(userid, appid, resource_path, action, sudo).await;
+        let result = rbac::enforce(userid, &authorization_key, resource_path, action, sudo).await;
         if !result {
             return Err(RPCErrors::NoPermission(format!(
                 "enforce failed,userid:{},appid:{},resource:{},action:{}",
-                userid, appid, resource_path, action
+                userid, authorization_key, resource_path, action
             )));
         }
-        Ok((userid.to_string(), appid.to_string()))
+        Ok((userid.to_string(), canonical_target))
     }
 
     //     pub async fn enable_zone_provider (_is_gateway: bool) -> Result<()> {
@@ -1693,14 +1659,24 @@ impl BuckyOSRuntime {
         self.zone_config.as_ref()
     }
 
-    //use https://full_appid.zonehost/ to access the app
-    pub fn get_full_appid(&self) -> String {
-        if self.runtime_type == BuckyOSRuntimeType::AppClient {
-            let root_id = "root".to_string();
-            let owner_id = self.app_owner_id.as_ref().unwrap_or(&root_id);
-            return get_full_appid(self.app_id.as_str(), owner_id);
-        } else {
-            return self.app_id.clone();
+    pub fn get_app_instance_id(&self) -> Result<AppInstanceId> {
+        let app_id = AppId::parse(self.app_id.as_str()).map_err(RPCErrors::ReasonError)?;
+        let owner_user_id = self.app_owner_id.clone().ok_or_else(|| {
+            RPCErrors::ReasonError("owner_user_id is required for AppInstanceId".to_string())
+        })?;
+        AppInstanceId::new(app_id, owner_user_id).map_err(RPCErrors::ReasonError)
+    }
+
+    pub fn get_auth_target(&self) -> Result<AuthTarget> {
+        match self.runtime_type {
+            BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::AppClient => {
+                Ok(AuthTarget::app(self.get_app_instance_id()?))
+            }
+            BuckyOSRuntimeType::FrameService
+            | BuckyOSRuntimeType::KernelService
+            | BuckyOSRuntimeType::Kernel => Ok(AuthTarget::system(
+                SystemServiceId::parse(self.app_id.as_str()).map_err(RPCErrors::ReasonError)?,
+            )),
         }
     }
 
@@ -1737,7 +1713,7 @@ impl BuckyOSRuntime {
                                 return "".to_string();
                             }
                         };
-                    let jwt_result = generate_service_login_jwt(
+                    let jwt_result = generate_service_login_assertion(
                         subject_id,
                         self.app_id.as_str(),
                         device_config.name.as_str(),
@@ -2035,6 +2011,15 @@ impl BuckyOSRuntime {
         Ok(client.clone())
     }
 
+    /// Returns whether the Zone-wide BuckyOS developer mode is currently enabled.
+    pub async fn is_buckyos_dev_mode_enabled(&self) -> Result<bool> {
+        self.get_system_config_client()
+            .await?
+            .is_buckyos_dev_mode_enabled()
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))
+    }
+
     /// Returns a short-session client bound to the runtime session token that is
     /// valid at the time this method is called.
     ///
@@ -2230,9 +2215,28 @@ impl BuckyOSRuntime {
     /// Returns a short-session client. Acquire it again from the runtime for
     /// each operation instead of keeping it in long-lived state.
     pub async fn get_verify_hub_client(&self) -> Result<VerifyHubClient> {
-        let krpc_client = self.get_zone_service_krpc_client("verify-hub").await?;
+        let krpc_client = if let Some(url) = self.verify_hub_bootstrap_url() {
+            // AppService authentication must not depend on service discovery:
+            // node-daemon may inject ZoneConfig before the LoginAssertion has
+            // been exchanged for a Verify Hub session. Node Gateway exposes
+            // Verify Hub on this canonical route, and login_by_jwt clears any
+            // client session before sending the signed assertion.
+            kRPC::new_with_timeout_secs(&url, None, DEFAULT_KRPC_TIMEOUT_SECS)
+        } else {
+            self.get_zone_service_krpc_client("verify-hub").await?
+        };
         let client = VerifyHubClient::new(krpc_client);
         Ok(client)
+    }
+
+    fn verify_hub_bootstrap_url(&self) -> Option<String> {
+        (self.runtime_type == BuckyOSRuntimeType::AppService).then(|| {
+            format!(
+                "http://{}:{}/kapi/verify-hub",
+                self.resolve_local_service_host(),
+                DEFAULT_NODE_GATEWAY_PORT
+            )
+        })
     }
 
     /// Returns a short-session client. Acquire it again from the runtime for
@@ -2700,6 +2704,27 @@ mod tests {
             resolve_container_gateway_host(Some("localhost")),
             "127.0.0.1"
         );
+    }
+
+    #[test]
+    fn app_service_uses_node_gateway_for_verify_hub_before_zone_bootstrap() {
+        let app = BuckyOSRuntime::new(
+            "jarvis.buckyos.bns.did",
+            Some("devtest".to_string()),
+            BuckyOSRuntimeType::AppService,
+        );
+        let expected_url = format!(
+            "http://{}:{}/kapi/verify-hub",
+            app.resolve_local_service_host(),
+            DEFAULT_NODE_GATEWAY_PORT
+        );
+        assert_eq!(
+            app.verify_hub_bootstrap_url().as_deref(),
+            Some(expected_url.as_str())
+        );
+
+        let kernel = BuckyOSRuntime::new("node-daemon", None, BuckyOSRuntimeType::Kernel);
+        assert_eq!(kernel.verify_hub_bootstrap_url(), None);
     }
 
     #[test]

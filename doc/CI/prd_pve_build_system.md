@@ -183,8 +183,8 @@ CD 固定流程：
 安装成功判定：
 
 - Windows/macOS 安装后 BuckyOSApp 程序存在。
-- Windows/macOS 安装后 buckycli 可调用。
-- Linux 安装后 buckycli 可调用。
+- Windows/macOS 安装 buckyos service 后 `$BUCKYOS_ROOT/bin/buckyos` 可调用。
+- Linux 安装后 `$BUCKYOS_ROOT/bin/buckyos` 可调用。
 - Linux 不要求 BuckyOSApp 存在。
 - buckyos service 已启动。
 - service 启动后进入待激活状态还是已激活工作状态，由 buckyos service 自身决定。

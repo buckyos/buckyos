@@ -8,23 +8,30 @@ mod app_install_runner;
 mod app_installer;
 mod app_package_namespace;
 mod app_servcie_mgr;
+mod app_staging;
 mod dashboard;
+mod diagnostic_mgr;
 mod ndn_download;
 mod pikg;
+mod pre_install_reconciler;
+mod redaction;
 mod sys_auth_backend;
 mod sys_log_mgr;
+mod task_ops;
 mod ui_session_mgr;
 mod user_mgr;
 mod zone_mgr;
 
+use diagnostic_mgr::DiagnosticBundleEntry;
 use sys_log_mgr::LogDownloadEntry;
 
 use ::kRPC::*;
 use anyhow::Result;
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
-    SystemConfigClient, UserType, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
+    get_buckyos_api_runtime, hide_child_console, init_buckyos_api_runtime, set_buckyos_api_runtime,
+    BuckyOSRuntimeType, SystemConfigClient, UserType, CONTROL_PANEL_SERVICE_NAME,
+    CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_http_server::*;
 use buckyos_kit::*;
@@ -37,7 +44,7 @@ use named_store::{
     NamedDataMgrNodeGateway, NamedDataMgrZoneGateway, NdmNodeGatewayConfig, NdmZoneGatewayConfig,
 };
 use serde_json::*;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -54,29 +61,14 @@ pub(crate) fn bytes_to_gb(bytes: u64) -> f64 {
     (bytes as f64) / 1024.0 / 1024.0 / 1024.0
 }
 
-#[cfg(not(target_os = "windows"))]
-fn external_command(program: impl AsRef<OsStr>) -> Command {
-    Command::new(program)
-}
-
-#[cfg(target_os = "windows")]
 fn external_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
-    use std::os::windows::process::CommandExt;
-    command.creation_flags(windows_hidden_process_creation_flags());
+    hide_child_console(&mut command);
     command
 }
 
 fn docker_command() -> Command {
     external_command("docker")
-}
-
-#[cfg(target_os = "windows")]
-fn windows_hidden_process_creation_flags() -> u32 {
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
 }
 
 const METRICS_DISK_REFRESH_INTERVAL_SECS: u64 = 5;
@@ -108,6 +100,8 @@ pub(crate) fn sn_self_cert_state_path() -> PathBuf {
 #[derive(Clone, Debug)]
 struct RpcAuthPrincipal {
     username: String,
+    owner_user_id: String,
+    authenticated_app_id: String,
     user_type: UserType,
     owner_did: String,
     is_user_session: bool,
@@ -214,6 +208,8 @@ struct DockerOverviewCacheEntry {
 #[derive(Clone)]
 struct ControlPanelServer {
     log_downloads: Arc<Mutex<HashMap<String, LogDownloadEntry>>>,
+    diagnostic_bundles: Arc<Mutex<HashMap<String, DiagnosticBundleEntry>>>,
+    running_diagnostic_tasks: Arc<Mutex<HashSet<String>>>,
     metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>,
     pending_sso_logins: Arc<Mutex<HashMap<u64, sys_auth_backend::PendingSsoLogin>>>,
     docker_overview_cache: Arc<Mutex<Option<DockerOverviewCacheEntry>>>,
@@ -221,21 +217,34 @@ struct ControlPanelServer {
     app_installer: app_installer::AppInstaller,
     install_engine: Arc<app_install_engine::InstallEngine>,
     install_runner: Arc<app_install_runner::InstallRunner>,
+    running_update_batch_tasks: Arc<tokio::sync::Mutex<HashSet<String>>>,
+    staging_store: Arc<app_staging::PikgStagingStore>,
     ndm_gateway: Option<Arc<NamedDataMgrZoneGateway>>,
-    ndm_read_gateway: Option<Arc<NamedDataMgrNodeGateway>>,
+    ndm_node_gateway: Option<Arc<NamedDataMgrNodeGateway>>,
 }
 
 impl ControlPanelServer {
     pub fn new() -> Self {
         let metrics_snapshot = Arc::new(RwLock::new(SystemMetricsSnapshot::default()));
         Self::start_metrics_sampler(metrics_snapshot.clone());
+        let staging_store = Arc::new(app_staging::PikgStagingStore::new());
+        let staging_gc = staging_store.clone();
+        tokio::spawn(async move {
+            if let Err(error) = staging_gc.gc().await {
+                log::warn!("pikg staging startup GC failed: {error}");
+            }
+        });
         let install_engine = Arc::new(app_install_engine::InstallEngine::new(
             Arc::new(app_install_engine::TaskMgrInstallStore),
-            Arc::new(app_install_driver::ProductionInstallDriver::new()),
+            Arc::new(app_install_driver::ProductionInstallDriver::new(
+                staging_store.clone(),
+            )),
         ));
         let install_runner = app_install_runner::InstallRunner::new(install_engine.clone());
         ControlPanelServer {
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
+            diagnostic_bundles: Arc::new(Mutex::new(HashMap::new())),
+            running_diagnostic_tasks: Arc::new(Mutex::new(HashSet::new())),
             metrics_snapshot,
             pending_sso_logins: Arc::new(Mutex::new(HashMap::new())),
             docker_overview_cache: Arc::new(Mutex::new(None)),
@@ -243,8 +252,10 @@ impl ControlPanelServer {
             app_installer: app_installer::AppInstaller::new(),
             install_engine,
             install_runner,
+            running_update_batch_tasks: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
+            staging_store,
             ndm_gateway: None,
-            ndm_read_gateway: None,
+            ndm_node_gateway: None,
         }
     }
 
@@ -832,7 +843,7 @@ impl RPCHandler for ControlPanelServer {
             );
         }
 
-        match req.method.as_str() {
+        let result = match req.method.as_str() {
             // Core / UI bootstrap
             "main" | "ui.main" => self.handle_main(req).await,
 
@@ -896,15 +907,36 @@ impl RPCHandler for ControlPanelServer {
             // System dashboard
             "dashboard" | "ui.dashboard" => self.handle_dashboard(req).await,
             "system.overview" => self.handle_system_overview(req).await,
+            "system.buckyos_info.get" => self.handle_buckyos_info_get(req).await,
+            "system.dev_mode.get" => self.handle_dev_mode_get(req).await,
+            "system.dev_mode.set" => self.handle_dev_mode_set(req, principal.as_ref()).await,
             "system.status" => self.handle_system_status(req).await,
             "system.metrics" => self.handle_system_metrics(req).await,
             "network.overview" | "system.network" => self.handle_network_overview(req).await,
 
             //SystemLogs
-            "system.logs.list" => self.handle_system_logs_list(req).await,
-            "system.logs.query" => self.handle_system_logs_query(req).await,
-            "system.logs.tail" => self.handle_system_logs_tail(req).await,
-            "system.logs.download" => self.handle_system_logs_download(req).await,
+            "system.logs.list" => {
+                Self::require_rpc_principal(principal.as_ref())?;
+                self.handle_system_logs_list(req).await
+            }
+            "system.logs.query" => {
+                Self::require_rpc_principal(principal.as_ref())?;
+                self.handle_system_logs_query(req).await
+            }
+            "system.logs.tail" => {
+                Self::require_rpc_principal(principal.as_ref())?;
+                self.handle_system_logs_tail(req).await
+            }
+            "system.logs.download" => {
+                Self::require_rpc_principal(principal.as_ref())?;
+                self.handle_system_logs_download(req).await
+            }
+            "task.retry" => self.handle_task_retry(req, principal.as_ref()).await,
+            "diagnostic.collect" => {
+                self.handle_diagnostic_collect(req, principal.as_ref())
+                    .await
+            }
+            "diagnostic.export" => self.handle_diagnostic_export(req, principal.as_ref()).await,
             "system.update.check" => self.handle_unimplemented(req, "Check updates").await,
             "system.update.apply" => self.handle_unimplemented(req, "Apply update").await,
 
@@ -931,6 +963,7 @@ impl RPCHandler for ControlPanelServer {
             "apps.details" | "app.details" => {
                 self.handle_app_detials(req, principal.as_ref()).await
             }
+            "apps.status" | "app.status" => self.handle_apps_status(req, principal.as_ref()).await,
             "apps.availability.get" => {
                 self.handle_app_availability_get(req, principal.as_ref())
                     .await
@@ -945,10 +978,25 @@ impl RPCHandler for ControlPanelServer {
             }
             //"apps.version.list" => self.handle_apps_version_list(req).await,
             //AppInstaller
-            "apps.install" => self.handle_apps_install(req, principal.as_ref()).await,
-            "apps.install_package" => {
-                self.handle_apps_install_package(req, principal.as_ref())
+            "apps.staging.finalize" => {
+                self.handle_apps_staging_finalize(req, principal.as_ref())
                     .await
+            }
+            "apps.staging.status" => {
+                self.handle_apps_staging_status(req, principal.as_ref())
+                    .await
+            }
+            "apps.staging.release" => {
+                self.handle_apps_staging_release(req, principal.as_ref())
+                    .await
+            }
+            "apps.inspect" => self.handle_apps_inspect(req, principal.as_ref()).await,
+            "apps.plan.recompute" => {
+                self.handle_apps_plan_recompute(req, principal.as_ref())
+                    .await
+            }
+            "apps.submit" | "apps.install" => {
+                self.handle_apps_submit(req, principal.as_ref()).await
             }
             "apps.install.confirm" => {
                 self.handle_apps_install_confirm(req, principal.as_ref())
@@ -962,10 +1010,22 @@ impl RPCHandler for ControlPanelServer {
                 self.handle_apps_install_cancel(req, principal.as_ref())
                     .await
             }
-            "apps.update" => self.handle_apps_update(req, principal.as_ref()).await,
+            "apps.install.status" => {
+                self.handle_apps_install_status(req, principal.as_ref())
+                    .await
+            }
+            "apps.update.check" | "apps.upgrade.check" => {
+                self.handle_apps_update_availability(req, principal.as_ref())
+                    .await
+            }
+            "apps.upgrade" => {
+                self.handle_apps_upgrade_batch(req, principal.as_ref())
+                    .await
+            }
             "apps.uninstall" => self.handle_apps_uninstall(req, principal.as_ref()).await,
             "apps.start" => self.handle_apps_start(req, principal.as_ref()).await,
             "apps.stop" => self.handle_apps_stop(req, principal.as_ref()).await,
+            "apps.restart" => self.handle_apps_restart(req, principal.as_ref()).await,
             "app.publish" => self.handle_app_publish(req, principal.as_ref()).await,
 
             //ZoneMgr
@@ -980,7 +1040,8 @@ impl RPCHandler for ControlPanelServer {
             }
 
             _ => Err(RPCErrors::UnknownMethod(req.method)),
-        }
+        };
+        result
     }
 }
 
@@ -1017,6 +1078,12 @@ impl HttpServer for ControlPanelServer {
             if let Some(token) = path.strip_prefix("/kapi/control-panel/logs/download/") {
                 if !token.is_empty() {
                     return self.handle_logs_download_http(token).await;
+                }
+            }
+            if let Some(bundle_id) = path.strip_prefix("/kapi/control-panel/diagnostics/download/")
+            {
+                if !bundle_id.is_empty() {
+                    return self.handle_diagnostic_download_http(bundle_id).await;
                 }
             }
         }
@@ -1058,15 +1125,24 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         ));
     }
     runtime
+        .renew_token_from_verify_hub()
+        .await
+        .map_err(|error| {
+            log::error!("exchange control-panel login assertion failed: {:?}", error);
+            anyhow::anyhow!("exchange control-panel login assertion failed: {:?}", error)
+        })?;
+    runtime
         .set_main_service_port(CONTROL_PANEL_SERVICE_PORT)
         .await;
     set_buckyos_api_runtime(runtime)
         .map_err(|err| anyhow::anyhow!("register control-panel runtime failed: {}", err))?;
 
     let mut control_panel_server = ControlPanelServer::new();
-    // 启动安装任务 runner（MsgQueue 持久 dispatch + task-ready KEvent 加速 +
-    // 启动扫描/低频 sweep 兜底），恢复重启前的非终态安装事务。
+    // 启动安装任务恢复循环；正常路径由业务 RPC 直接执行，TaskManager
+    // 启动扫描/低频 sweep 恢复重启前或异常遗漏的非终态安装事务。
     control_panel_server.install_runner.start();
+    control_panel_server.app_installer.start_lifecycle_runner();
+    control_panel_server.start_update_batch_runner();
 
     // 初始化 NDM Zone Gateway（best-effort，named store 不可用时跳过）
     let runtime = get_buckyos_api_runtime()
@@ -1083,12 +1159,12 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
                 ..Default::default()
             };
             let ndm_gw = Arc::new(NamedDataMgrZoneGateway::new(store_mgr.clone(), ndm_config));
-            let ndm_read_gw = Arc::new(NamedDataMgrNodeGateway::new(
+            let ndm_node_gw = Arc::new(NamedDataMgrNodeGateway::new(
                 store_mgr,
                 NdmNodeGatewayConfig::default(),
             ));
             control_panel_server.ndm_gateway = Some(ndm_gw);
-            control_panel_server.ndm_read_gateway = Some(ndm_read_gw);
+            control_panel_server.ndm_node_gateway = Some(ndm_node_gw);
             info!("NDM zone gateway initialized");
         }
         Err(e) => {
@@ -1119,9 +1195,9 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         let _ = runner.add_http_server("/ndm".to_string(), ndm_gw.clone());
         info!("NDM zone gateway registered at /ndm");
     }
-    if let Some(ref ndm_read_gw) = control_panel_server.ndm_read_gateway {
-        let _ = runner.add_http_server("/ndm/proxy/v1/read".to_string(), ndm_read_gw.clone());
-        info!("NDM read proxy gateway registered at /ndm/proxy/v1/read");
+    if let Some(ref ndm_node_gw) = control_panel_server.ndm_node_gateway {
+        let _ = runner.add_http_server("/ndm/proxy/v1".to_string(), ndm_node_gw.clone());
+        info!("NDM node gateway registered at /ndm/proxy/v1");
     }
 
     // 添加 web (best-effort, skip if path cannot be resolved)
@@ -1144,6 +1220,7 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
     }
 
     let _ = runner.start();
+    pre_install_reconciler::PreInstallReconciler::new(control_panel_server.clone()).start();
     info!(
         "control-panel service started at port {}",
         CONTROL_PANEL_SERVICE_PORT

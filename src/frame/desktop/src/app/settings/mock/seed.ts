@@ -16,10 +16,14 @@ const generalInfo: GeneralInfo = {
     version: '1.0.0-rc.3',
     buildVersion: 'build-20260401-a3f8c2d',
     releaseChannel: 'beta',
+    target: 'aarch64-apple-darwin',
+    installedTime: '2026-03-01T09:00:00Z',
     lastUpdateTime: '2026-03-28T14:30:00Z',
     updateAvailable: true,
     latestVersion: '1.0.0-rc.4',
     autoUpdate: false,
+    loading: false,
+    loadError: null,
   },
   device: {
     osType: 'macOS',
@@ -256,7 +260,11 @@ const privacyInfo: PrivacyInfo = {
 
 const developerInfo: DeveloperInfo = {
   modeEnabled: true,
-  readOnly: true,
+  enabledAt: '2026-03-25T10:00:00Z',
+  enabledBy: 'leo',
+  loading: false,
+  saving: false,
+  loadError: null,
   diagnostics: [
     { name: 'System Services', status: 'pass', message: 'All 12 services running', detail: 'gateway, auth, storage, message-hub, ai-router, scheduler, dns-manager, cert-manager, sn-proxy, file-service, app-manager, monitor' },
     { name: 'Network Connectivity', status: 'pass', message: 'SN relay active, latency 42ms' },

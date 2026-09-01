@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMediaQuery } from '@mui/material'
-import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Filter, MoreHorizontal, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Filter, MoreHorizontal, Power, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { LongField } from '../shared/LongField'
-import type { AuthStatus, ModelMetadata, ProviderView } from '../../../../api/aicc_mgr'
+import { isManagedSnProvider, type AuthStatus, type ModelMetadata, type ProviderView } from '../../../../api/aicc_mgr'
 
 type TFn = (k: string, f: string) => string
 type FilterKey = 'apiType' | 'logicalMount' | 'health' | 'costClass' | 'latencyClass' | 'tier'
@@ -89,6 +89,10 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [confirmDisable, setConfirmDisable] = useState(false)
+  const [updatingEnabled, setUpdatingEnabled] = useState(false)
+  const [enabledError, setEnabledError] = useState<string | null>(null)
+  const [enabledFeedback, setEnabledFeedback] = useState<string | null>(null)
   const [showKeyDialog, setShowKeyDialog] = useState(false)
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [updatingKey, setUpdatingKey] = useState(false)
@@ -108,6 +112,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
   const actionsRef = useRef<HTMLDivElement | null>(null)
 
   const { config, status, account, inventory } = provider
+  const managedSn = isManagedSnProvider(provider)
   const models = status.discovered_models
   const degradedCount = models.filter((m) => m.health.status === 'degraded').length
   const quotaWarningCount = models.filter((m) => m.health.quota_state === 'near_limit' || m.health.quota_state === 'exhausted').length
@@ -198,6 +203,24 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
     }
   }
 
+  const handleSetProviderEnabled = async (enabled: boolean) => {
+    setUpdatingEnabled(true)
+    setEnabledError(null)
+    setEnabledFeedback(null)
+    try {
+      await store.setProviderEnabled(provider, enabled)
+      setConfirmDisable(false)
+      setEnabledFeedback(enabled
+        ? t('aiCenter.providers.enabledSuccess', 'Provider enabled and AICC reloaded.')
+        : t('aiCenter.providers.disabledSuccess', 'Provider disabled and removed from routing.'))
+    } catch (error) {
+      console.error('aicc.setProviderEnabled failed', error)
+      setEnabledError(errorMessage(error, t('aiCenter.providers.toggleFailed', 'Could not update Provider status.')))
+    } finally {
+      setUpdatingEnabled(false)
+    }
+  }
+
   const handleDelete = async () => {
     setDeleting(true)
     setDeleteError(null)
@@ -228,7 +251,9 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
 
   const balanceDisplay = account.balance_supported && account.balance_value != null
     ? `${account.balance_unit === 'usd' ? '$' : ''}${account.balance_value}${account.balance_unit === 'credit' ? ' Credit' : ''}`
-    : t('aiCenter.providers.usageOnly', 'Usage only')
+    : account.usage_supported
+      ? t('aiCenter.providers.usageOnly', 'Usage only')
+      : t('aiCenter.providers.balanceUnavailable', 'Not available')
   const routingWeightLabel = routingWeight === 0
     ? t('aiCenter.providers.routingDisabled', 'Disabled for routing')
     : routingWeight < 1
@@ -287,6 +312,27 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                   <div className="mx-auto mb-3 h-1 w-10 rounded-full" style={{ background: 'var(--cp-border)' }} />
                   <div className="flex flex-col gap-1 pb-[env(safe-area-inset-bottom)]">
                     <MenuAction
+                      icon={<RefreshCw size={16} className={refreshingModels ? 'animate-spin' : ''} />}
+                      label={refreshingModels ? t('aiCenter.providers.refreshingModels', 'Refreshing Models') : t('aiCenter.providers.refreshModels', 'Refresh Models')}
+                      onClick={() => {
+                        setActionsOpen(false)
+                        void handleRefreshModels()
+                      }}
+                      disabled={refreshingModels || !config.enabled}
+                    />
+                    <MenuAction
+                      icon={<Power size={16} />}
+                      label={config.enabled
+                        ? t('aiCenter.providers.disable', 'Disable Provider')
+                        : t('aiCenter.providers.enable', 'Enable Provider')}
+                      onClick={() => {
+                        setActionsOpen(false)
+                        if (config.enabled) setConfirmDisable(true)
+                        else void handleSetProviderEnabled(true)
+                      }}
+                      disabled={updatingEnabled}
+                    />
+                    {!managedSn && <MenuAction
                       icon={<ShieldCheck size={16} />}
                       label={t('aiCenter.providers.updateKey', 'Update Key')}
                       onClick={() => {
@@ -295,17 +341,8 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                         setKeyError(null)
                         setKeyFeedback(null)
                       }}
-                    />
-                    <MenuAction
-                      icon={<RefreshCw size={16} className={refreshingModels ? 'animate-spin' : ''} />}
-                      label={refreshingModels ? t('aiCenter.providers.refreshingModels', 'Refreshing Models') : t('aiCenter.providers.refreshModels', 'Refresh Models')}
-                      onClick={() => {
-                        setActionsOpen(false)
-                        void handleRefreshModels()
-                      }}
-                      disabled={refreshingModels}
-                    />
-                    <MenuAction
+                    />}
+                    {!managedSn && <MenuAction
                       icon={<Trash2 size={16} />}
                       label={t('aiCenter.providers.delete', 'Delete')}
                       onClick={() => {
@@ -314,7 +351,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                         setDeleteError(null)
                       }}
                       danger
-                    />
+                    />}
                   </div>
                 </div>
               </div>
@@ -324,6 +361,27 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
               style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
             >
               <MenuAction
+                icon={<RefreshCw size={14} className={refreshingModels ? 'animate-spin' : ''} />}
+                label={refreshingModels ? t('aiCenter.providers.refreshingModels', 'Refreshing Models') : t('aiCenter.providers.refreshModels', 'Refresh Models')}
+                onClick={() => {
+                  setActionsOpen(false)
+                  void handleRefreshModels()
+                }}
+                disabled={refreshingModels || !config.enabled}
+              />
+              <MenuAction
+                icon={<Power size={14} />}
+                label={config.enabled
+                  ? t('aiCenter.providers.disable', 'Disable Provider')
+                  : t('aiCenter.providers.enable', 'Enable Provider')}
+                onClick={() => {
+                  setActionsOpen(false)
+                  if (config.enabled) setConfirmDisable(true)
+                  else void handleSetProviderEnabled(true)
+                }}
+                disabled={updatingEnabled}
+              />
+              {!managedSn && <MenuAction
                 icon={<ShieldCheck size={14} />}
                 label={t('aiCenter.providers.updateKey', 'Update Key')}
                 onClick={() => {
@@ -332,17 +390,8 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                   setKeyError(null)
                   setKeyFeedback(null)
                 }}
-              />
-              <MenuAction
-                icon={<RefreshCw size={14} className={refreshingModels ? 'animate-spin' : ''} />}
-                label={refreshingModels ? t('aiCenter.providers.refreshingModels', 'Refreshing Models') : t('aiCenter.providers.refreshModels', 'Refresh Models')}
-                onClick={() => {
-                  setActionsOpen(false)
-                  void handleRefreshModels()
-                }}
-                disabled={refreshingModels}
-              />
-              <MenuAction
+              />}
+              {!managedSn && <MenuAction
                 icon={<Trash2 size={14} />}
                 label={t('aiCenter.providers.delete', 'Delete')}
                 onClick={() => {
@@ -351,7 +400,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                   setDeleteError(null)
                 }}
                 danger
-              />
+              />}
             </div>
             )
           )}
@@ -388,6 +437,15 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
 
       {activeSection === 'overview' && (
       <>
+      <InlineNotice tone={config.enabled ? 'success' : 'warning'}>
+        <span>
+          {config.enabled
+            ? managedSn
+              ? t('aiCenter.providers.snManaged', 'SN Router is managed automatically from this Zone SN activation and configuration.')
+              : t('aiCenter.providers.enabledNotice', 'This Provider participates in model routing.')
+            : t('aiCenter.providers.disabledNotice', 'This Provider is disabled and does not participate in model routing.')}
+        </span>
+      </InlineNotice>
       <div className="md:hidden">
         <MetricCarousel metrics={providerMetrics} />
       </div>
@@ -402,14 +460,17 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
       >
         <Row label={t('aiCenter.providers.driver', 'Driver')} value={config.provider_driver} copyValue={config.provider_driver} />
+        <Row label={t('aiCenter.providers.enabled', 'Enabled')} value={config.enabled ? t('common.on', 'On') : t('common.off', 'Off')} />
         <Row label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={`${formatWeight(routingWeight)} / ${routingWeightLabel}`} />
         <Row label={t('aiCenter.providers.runtimeType', 'Runtime Type')} value={config.provider_runtime_type} copyValue={config.provider_runtime_type} />
-        <Row label={t('aiCenter.providers.endpoint', 'Endpoint')} value={config.endpoint || t('aiCenter.providers.default', 'Default')} copyValue={config.endpoint} expandable />
+        {!managedSn && <Row label={t('aiCenter.providers.endpoint', 'Endpoint')} value={config.endpoint || t('aiCenter.providers.default', 'Default')} copyValue={config.endpoint} expandable />}
         <Row
           label={t('aiCenter.providers.auth', 'Authentication')}
           value={
             <span className="inline-flex items-center gap-2">
-              {config.auth_mode ?? '-'}
+              {managedSn
+                ? t('aiCenter.providers.snDeviceSessionAuth', 'SN SSO via device login')
+                : config.auth_mode ?? '-'}
               <StatusBadge status={authStatusVariant(status.auth_status)} label={authStatusLabel(status.auth_status, t)} />
             </span>
           }
@@ -484,7 +545,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         </div>
       </div>
 
-      {status.model_sync_status !== 'ok' && (
+      {config.enabled && status.model_sync_status !== 'ok' && (
         <InlineNotice tone="warning">
           <AlertTriangle size={16} style={{ color: 'var(--cp-warning)' }} />
           <span>{t('aiCenter.providers.syncFailed', 'Last inventory sync failed. Existing models remain usable, but refresh is recommended.')}</span>
@@ -497,6 +558,8 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         </InlineNotice>
       )}
       {refreshError && <InlineNotice tone="error">{refreshError}</InlineNotice>}
+      {enabledFeedback && <InlineNotice tone="success">{enabledFeedback}</InlineNotice>}
+      {enabledError && <InlineNotice tone="error">{enabledError}</InlineNotice>}
       </>
       )}
 
@@ -533,7 +596,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         </div>
       )}
 
-      <UpdateKeyDialog
+      {!managedSn && <UpdateKeyDialog
         open={showKeyDialog}
         apiKey={apiKeyDraft}
         error={keyError}
@@ -551,9 +614,9 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
             setKeyError(null)
           }
         }}
-      />
+      />}
 
-      <ConfirmDialog
+      {!managedSn && <ConfirmDialog
         open={confirmDelete}
         title={t('aiCenter.providers.deleteTitle', 'Delete Provider')}
         message={t('aiCenter.providers.deleteConfirm', 'Are you sure you want to delete this provider? This action cannot be undone.')}
@@ -563,6 +626,19 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         onConfirm={() => { void handleDelete() }}
         onCancel={() => {
           if (!deleting) setConfirmDelete(false)
+        }}
+      />}
+      <ConfirmDialog
+        open={confirmDisable}
+        title={t('aiCenter.providers.disableTitle', 'Disable Provider')}
+        message={t('aiCenter.providers.disableConfirm', 'This Provider will be removed from model routing until you enable it again.')}
+        confirmLabel={t('aiCenter.providers.disable', 'Disable Provider')}
+        confirmingLabel={t('aiCenter.providers.disabling', 'Disabling')}
+        confirming={updatingEnabled}
+        error={enabledError}
+        onConfirm={() => { void handleSetProviderEnabled(false) }}
+        onCancel={() => {
+          if (!updatingEnabled) setConfirmDisable(false)
         }}
       />
     </div>
@@ -926,7 +1002,7 @@ function ModelInventoryRow({ model, t, compact = false, groupLabel }: { model: M
         <Chip label={t('aiCenter.providers.quality', 'quality')} value={model.attributes.quality_score?.toString() ?? '-'} />
         <Chip label={t('aiCenter.providers.tier', 'tier')} value={model.attributes.tier ?? '-'} />
         <Chip label={t('aiCenter.providers.latency', 'latency')} value={`${model.attributes.latency_class}${model.health.p95_latency_ms ? ` p95 ${model.health.p95_latency_ms}ms` : ''}`} />
-        <Chip label={t('aiCenter.providers.cost', 'cost')} value={model.attributes.cost_class} />
+        <Chip label={t('aiCenter.providers.cost', 'cost')} value={formatModelPricing(model)} />
         <Chip label={t('aiCenter.providers.quota', 'quota')} value={model.health.quota_state} />
       </div>
     </div>
@@ -1190,6 +1266,18 @@ function variantKind(model: ModelMetadata): 'base' | 'variant' {
 
 function formatWeight(weight: number): string {
   return weight.toFixed(2).replace(/\.?0+$/, '')
+}
+
+function formatModelPricing(model: ModelMetadata): string {
+  if (model.pricing.estimated_cost_usd != null) {
+    return `$${model.pricing.estimated_cost_usd.toFixed(4)} est.`
+  }
+  if (model.pricing.input_token_usd != null || model.pricing.output_token_usd != null) {
+    const input = model.pricing.input_token_usd != null ? `$${model.pricing.input_token_usd}` : '-'
+    const output = model.pricing.output_token_usd != null ? `$${model.pricing.output_token_usd}` : '-'
+    return `${input} / ${output}`
+  }
+  return model.attributes.cost_class
 }
 
 function formatTimestamp(value?: string): string {

@@ -96,7 +96,8 @@ pub fn update_service_info(
     let mut info_map: HashMap<String, ServiceNode> = HashMap::new();
     match service_info {
         &SchedulerServiceInfo::RandomCluster(ref cluster) => {
-            for (node_id, (weight, instance)) in cluster.iter() {
+            for (_, (weight, instance)) in cluster.iter() {
+                let node_id = &instance.node_id;
                 let device_info = device_list.get(node_id.as_str());
                 if device_info.is_some() {
                     let device_info = device_info.unwrap();

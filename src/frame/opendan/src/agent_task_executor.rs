@@ -34,10 +34,13 @@ impl AIAgent {
                     "task executor runner_id is unset and BuckyOS runtime is unavailable: {err}"
                 )
             })?;
-            let runner = runtime.get_full_appid().trim().to_string();
+            let runner = runtime
+                .get_app_instance_id()
+                .map_err(|err| anyhow!("cannot resolve AppInstanceId: {err}"))?
+                .to_string();
             if runner.is_empty() {
                 Err(anyhow!(
-                    "task executor runner_id resolved to empty full_appid"
+                    "task executor runner_id resolved to empty AppInstanceId"
                 ))
             } else {
                 Ok(runner)
@@ -215,7 +218,12 @@ impl AIAgent {
         match pending_control_action(&task) {
             Some(TaskControlAction::Cancel) => {
                 return self
-                    .reflect_task_control_to_session(task, runner, "canceled", InterruptMode::Discard)
+                    .reflect_task_control_to_session(
+                        task,
+                        runner,
+                        "canceled",
+                        InterruptMode::Discard,
+                    )
                     .await;
             }
             Some(TaskControlAction::Pause) => {
@@ -732,6 +740,7 @@ impl AIAgent {
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
+                storage_domain: None,
                 idempotency_key: format!("human-input-{}", parent.task_id),
                 retry_of: None,
                 supersedes: None,
@@ -1078,6 +1087,7 @@ mod tests {
             input: data,
             input_digest: String::new(),
             creator: ActorRef::new("user", "opendan"),
+            storage_domain: buckyos_api::StorageDomain::System,
             idempotency_key: "k".to_string(),
             origin_ref: None,
             retry_of: None,

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "did": "did:bns:pikg-docker.root",
+  "name": "pikg-docker",
+  "version": "0.1.0",
+  "owner": "did:bns:root",
+  "author": "did:bns:root",
+  "show_name": "PIKG Docker Fixture",
+  "categories": [
+    "dapp"
+  ],
+  "permissions": [],
+  "selector_type": "single",
+  "service_config_tips": {
+    "service_endpoints": {
+      "www": {
+        "protocol": "http",
+        "inner_port": 80,
+        "required": true,
+        "expose": {
+          "route": {
+            "type": "web"
+          },
+          "scope": "",
+          "allow_guest": false
+        }
+      }
+    }
+  }
+}

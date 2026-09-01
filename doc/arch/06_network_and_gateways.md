@@ -22,6 +22,10 @@ ZoneGateway 通常由 OOD 承担，但也可以是独立节点。
 - 角色：承载公网访问（HTTP/HTTPS）与子域名路由；是“系统对外暴露策略”的控制点。
 - 职责：证书/TLS 终止、外部请求转发、与 SN 协作等（具体取决于是否启用 SN）。
 
+#### App 页面认证边界（beta 2.2）
+
+Gateway 的 `app_info` entry 是 SSO 路由真相源。System entry 只能含合法 `service_id`；App entry 必须含互相一致的 `app_id`、`app_instance_id={app_id}@{owner}` 和 `app_owner_user_id`，两类字段不得混用。私有 App cookie 只接受 Verify Hub 签发的 `principal_kind=user, token_use=session, target_kind=app, sudo=false` token，并逐项精确比较 AppId、AppInstanceId 和 owner。缺字段、旧 token、refresh/sudo token、System target 或其他 issuer 一律拒绝。
+
 ### 3) SN（Super Node）：可选但重要的公网协助
 SN 提供的能力主要围绕“公网可达性”与“域名/证书”辅助：
 - DDNS

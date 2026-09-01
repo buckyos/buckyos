@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "did": "did:bns:buckyos-systest.buckyos",
+  "name": "buckyos-systest",
+  "version": "0.5.1",
+  "owner": "did:bns:buckyos",
+  "author": "did:bns:buckyos",
+  "show_name": "BuckyOS System Test",
+  "categories": [
+    "dapp"
+  ],
+  "permissions": [],
+  "selector_type": "single",
+  "service_config_tips": {
+    "service_endpoints": {
+      "www": {
+        "protocol": "http",
+        "inner_port": 3000,
+        "required": true,
+        "expose": {
+          "route": {
+            "type": "web"
+          },
+          "scope": "",
+          "allow_guest": true
+        }
+      }
+    }
+  }
+}

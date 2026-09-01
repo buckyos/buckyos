@@ -7,8 +7,7 @@ use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, match_event_patterns, parse_typed_task_data, AiContent, AiMessage,
     AiRole, ListTasksReq, MsgCenterClient, Task, TaskManagerClient, TaskNote, TaskOutcome,
-    TaskPhase,
-    TypedTaskData, UI_SESSION_STATE_STATUS_LINE_KEY, UI_SESSION_STATE_TYPING_KEY,
+    TaskPhase, TypedTaskData, UI_SESSION_STATE_STATUS_LINE_KEY, UI_SESSION_STATE_TYPING_KEY,
 };
 use log::{info, warn};
 use ndn_lib::{MsgContent, MsgObjKind, MsgObject};
@@ -4439,16 +4438,7 @@ impl AgentSession {
                 // pre-inference write would have missed it.
                 self.persist_snapshot(&snapshot).await;
 
-                // Owner key for the dispatched task — fall back to the
-                // session's owner / agent name so multi-tenant deployments
-                // can scope correctly.
-                let owner_for_task = if !self.owner.trim().is_empty() {
-                    self.owner.clone()
-                } else {
-                    self.agent_name.clone()
-                };
-                let dispatcher =
-                    TaskDispatch::from_runtime(self.runtime.task_mgr.clone(), owner_for_task);
+                let dispatcher = TaskDispatch::from_runtime(self.runtime.task_mgr.clone());
                 // §4.7.2 — same runtime-injected `from_user_did` rule
                 // applies to async tools as to sync ones: the tool worker
                 // must see the real user DID, not whatever the LLM stuffed
@@ -4666,9 +4656,7 @@ impl AgentSession {
         }
         let mut merged = crate::task_util::task_payload(&task);
         crate::task_util::merge_json(&mut merged, &patch);
-        if let Err(err) =
-            crate::task_util::commit_task_result(&client, task, merged).await
-        {
+        if let Err(err) = crate::task_util::commit_task_result(&client, task, merged).await {
             warn!(
                 "opendan.session[{}]: feedback task completed failed: {err:#}",
                 self.session_id
@@ -5740,8 +5728,13 @@ impl AgentSession {
             SessionStatus::Running | SessionStatus::WaitingTool => {
                 match crate::task_util::ensure_running(&client, task).await {
                     Ok(task) => {
-                        crate::task_util::report_progress_value(&client, task, Some(merged), message)
-                            .await
+                        crate::task_util::report_progress_value(
+                            &client,
+                            task,
+                            Some(merged),
+                            message,
+                        )
+                        .await
                     }
                     Err(err) => Err(err),
                 }
@@ -5750,8 +5743,9 @@ impl AgentSession {
                 match crate::task_util::report_progress_value(&client, task, Some(merged), message)
                     .await
                 {
-                    Ok(task) if task.phase == TaskPhase::Running
-                        || task.phase == TaskPhase::Accepted =>
+                    Ok(task)
+                        if task.phase == TaskPhase::Running
+                            || task.phase == TaskPhase::Accepted =>
                     {
                         crate::task_util::report_waiting_reason(
                             &client,
@@ -8323,6 +8317,9 @@ fn agent_mention_token(agent_name: &str) -> String {
 fn compose_turn_message(messages: &[AiMessage]) -> Option<AiMessage> {
     if messages.is_empty() {
         return None;
+    }
+    if let Some(batch) = prompt_env::render_ai_message_batch(messages) {
+        return Some(AiMessage::text(AiRole::User, batch));
     }
     let mut blocks = Vec::new();
     for message in messages {

@@ -11,10 +11,10 @@ import make_local_osx_pkg
 
 
 class MakeLocalOsxPkgTests(unittest.TestCase):
-    def test_buckycli_pkg_target_uses_publish_config(self) -> None:
+    def test_pkg_target_uses_publish_config(self) -> None:
         component = make_local_osx_pkg.PublishComponent(
-            key="buckycli",
-            name="BuckyOS CLI",
+            key="command-line-tool",
+            name="Command Line Tool",
             kind="app",
             optional=True,
             default_selected=True,

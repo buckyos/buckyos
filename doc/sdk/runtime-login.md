@@ -8,14 +8,14 @@
 
 1. `init_buckyos_api_runtime()` 只是收集配置，不能把 `user_id` 当成已认证身份。
 2. `runtime.login()` 的目标是让 runtime 拥有一个可用的 `session_token`，并拉取 `zone_config`；它不等价于“总是立刻向 verify-hub 发起密码登录”。
-3. `session_token` 绑定 `appid` 和主体，`refresh_token` 只用于向 verify-hub 换新 token，两者不能混用。
+3. Verify Hub token 同时绑定主体、结构化 `AuthTarget` 和 `token_use`；session、refresh、sudo 与 LoginAssertion 不能混用。
 
 推荐初始化顺序如下：
 
 ```rust
 let mut runtime = init_buckyos_api_runtime(
-    "my-app",
-    Some("alice".to_string()),
+    "",
+    None,
     BuckyOSRuntimeType::AppService,
 ).await?;
 
@@ -40,19 +40,19 @@ let system_config = runtime.get_system_config_client().await?;
 
 当前实现里主要有三种容易混淆的 token。
 
-### 登录 JWT
+### LoginAssertion（登录断言）
 
-登录 JWT 是“用已有身份去换 verify-hub token pair”的启动凭证。它通常由本地私钥签发：
+LoginAssertion 是“用已有身份去换 Verify Hub token pair”的一次性启动凭证，不是 session token。它通常由本地私钥签发：
 
 - AppClient 可以用用户私钥签发。
 - AppService 通常由 node-daemon 在启动服务时用本机 device private key 签发，并通过环境变量注入。
 - Kernel/Frame service 使用设备私钥签名或启动环境传入的 token，token 的主体是所在 DeviceId。
 
-普通 AppService 与系统服务使用不同的主动请求主体。普通 AppService 的设备签名登录 JWT 使用设备名作为 `iss`、OwnerUserId 作为 `sub`；Kernel/Frame 系统服务使用设备名作为 `iss` 和 `sub`。两者都使用 Service 自己的 AppId 作为 `appid`。verify-hub 会在 token pair 中保留用户或设备主体类型，刷新用户会话时检查用户状态，刷新设备会话时检查 Device Document 是否仍存在。
+普通 AppService 与系统服务使用不同的主动请求主体。普通 AppService 的设备签名 LoginAssertion 使用设备名作为 `iss`、OwnerUserId 作为 `sub`；Kernel/Frame 系统服务使用设备名作为 `iss` 和 `sub`。交换请求另带结构化 target：AppService 是精确 `AppInstanceId`，Kernel/Frame 是 `SystemServiceId`。Verify Hub 会在 token pair 中保留主体类型与 target。
 
 当前 runtime 对私钥加载有一个重要约束：`login()` 不会隐式读取设备私钥。AppClient 会在 `fill_by_load_config()` 中尝试加载 `user_private_key.pem`；设备私钥只会在组件显式调用 `load_device_private_key()` 后进入 runtime。普通 AppService 不应该自己读取设备私钥，而是使用 node-daemon 注入的登录 JWT。
 
-verify-hub 的 `login_by_jwt` 会验证该 JWT 的签名、过期时间、`sub`、`appid`、`jti`。同一个登录 JWT 只能用一次，当前实现用 `sub + appid + jti` 作为重放检测 key。
+Verify Hub 的 `login_by_jwt` 会验证断言的签名、过期时间、`sub`、`appid`、`jti`，并拒绝带 Verify Hub session claims 的输入。同一个断言只能用一次，重放 key 由可信 `iss + sub + jti` 构成，不包含 target，因此换 target 重放也会失败。
 
 ### session_token
 
@@ -63,6 +63,10 @@ verify-hub 的 `login_by_jwt` 会验证该 JWT 的签名、过期时间、`sub`�
 | `iss` | 签发者。verify-hub 签发的 token 为 `verify-hub` |
 | `sub` | 当前主体；用户请求使用请求用户，普通 AppService 自身请求使用 OwnerUserId，Kernel/Frame 系统服务自身请求使用 DeviceId |
 | `appid` | token 绑定的应用 |
+| `principal_kind` | `user/device/app/system/agent`，与 target kind 正交 |
+| `target_kind` | `app` 或 `system` |
+| `app_instance_id` / `app_owner_user_id` | App target 必填且必须与 `appid` 一致；System target 禁止携带 |
+| `token_use` | session token 固定为 `session`；sudo 也是 session |
 | `exp` | 过期时间 |
 | `jti` | token id |
 | `session` | 当前会话 id，存在 extra claims 里 |
@@ -72,9 +76,9 @@ verify-hub 的 `login_by_jwt` 会验证该 JWT 的签名、过期时间、`sub`�
 
 ### refresh_token
 
-`refresh_token` 只用于调用 verify-hub 的 `refresh_token`。它当前有效期是 7 天，`aud` 为 `verify-hub`。每次 refresh 都会返回新的 `session_token + refresh_token`，旧 refresh token 立即失效；如果旧 token 被复用，verify-hub 会按重放风险处理并撤销该 session 的缓存。
+`refresh_token` 只用于调用 verify-hub 的 `refresh_token`，固定为 `token_use=refresh, sudo=false`，并与对应 session 携带完全相同的 AuthTarget。它当前有效期是 7 天，`aud` 为 `verify-hub`。每次 refresh 都会返回新的 token pair，旧 refresh token 立即失效。
 
-业务服务不能把 refresh token 当 session token 用。verify-hub 的 `verify_token` 会拒绝 `aud=verify-hub` 的 refresh token。
+业务服务不能把 refresh token 或 LoginAssertion 当 session token 用。共享本地验签入口只信任 `iss/kid=verify-hub` 且通过 `token_use=session + AuthTarget` 集中校验的 token。
 
 ## RuntimeType 决定登录材料从哪来
 
@@ -82,13 +86,13 @@ verify-hub 的 `login_by_jwt` 会验证该 JWT 的签名、过期时间、`sub`�
 
 | RuntimeType | 典型进程 | 登录材料来源 | 使用者要注意 |
 | --- | --- | --- | --- |
-| `AppClient` | buckycli、桌面外部客户端、Deno/TS client | `BUCKYOS_APPCLIENT_SESSION_TOKEN`，或本地 user config + user private key | 客户端通常没有本机 node-gateway，必须能找到 zone host/boot config |
-| `AppService` | 用户安装的 app service | `app_instance_config` 解析 app/owner；node-daemon 注入 `<FULL_APPID>_TOKEN` 或 `<APPID>_TOKEN` | 必须有 owner_user_id；不要用 app-service 自己的 token 冒充页面用户 |
-| `FrameService` | frame 系统服务 | 设备配置、service env token；可从 `app_instance_config` 补 app/owner | `login()` 后会加载 RBAC 和 trust keys |
+| `AppClient` | BuckyOS Tool、桌面外部客户端、Deno/TS client | `BUCKYOS_APPCLIENT_SESSION_TOKEN`，或本地 user config + user private key | 客户端通常没有本机 node-gateway，必须能找到 zone host/boot config |
+| `AppService` | 用户安装的 app service | `BUCKYOS_APP_DID/APP_ID/APP_INSTANCE_ID/OWNER_USER_ID/DATA_DIR/APP_TOKEN` | 固定身份变量必须完整且互相一致；不要用 app-service 自己的 token 冒充页面用户 |
+| `FrameService` | frame 系统服务 | 设备配置和 `<SERVICE>_SESSION_TOKEN` | `login()` 后会加载 RBAC 和 trust keys |
 | `KernelService` | scheduler、task-manager 等 kernel service | `<APP>_SESSION_TOKEN`、`BUCKYOS_THIS_DEVICE` 等启动环境 | 使用所在 DeviceId 作为主体；通常由 node-daemon/boot 流程准备；不会自动读设备私钥 |
 | `Kernel` | node-daemon、cyfs-gateway 等基础进程 | 本地设备配置和特殊启动逻辑 | 属于基础系统自举路径；只有明确需要设备签名时才显式加载设备私钥 |
 
-环境变量名由 `get_session_token_env_key()` 生成：非 app service 使用 `*_SESSION_TOKEN`，app service 使用 `*_TOKEN`。`-` 会转为 `_` 并转成大写。
+只有 Kernel/Frame 系统服务使用由 `get_service_session_token_env_key()` 生成的 `<SERVICE>_SESSION_TOKEN`。普通 AppService 固定读取 `BUCKYOS_APP_TOKEN`，不再从 AppId、Owner 或 RuntimeKey 动态拼接变量名。
 
 ## AppService 的典型启动流程
 
@@ -101,7 +105,7 @@ sequenceDiagram
   participant Svc as system service
 
   ND->>ND: 用 device private key 为 OwnerUserId或DeviceId + AppId 生成登录 JWT
-  ND->>App: 注入 app_instance_config 和 *_TOKEN
+  ND->>App: 注入固定 BUCKYOS_APP_* 身份变量和 app_instance_config
   App->>App: init_buckyos_api_runtime()
   App->>CP: runtime.login() 拉取 zone_config
   App->>App: set_buckyos_api_runtime() 启动 keep-alive
@@ -111,7 +115,7 @@ sequenceDiagram
   App->>VH: session 接近过期时 refresh_token()
 ```
 
-这里最容易误解的是 `*_TOKEN`：node-daemon 注入的初始 token 只是登录 JWT，不应被长期保存，也不代表最终 verify-hub 会话。SDK 会在后台尽快兑换并轮换。
+这里最容易误解的是 `BUCKYOS_APP_TOKEN`：node-daemon 注入的初始 token 只是登录 JWT，不应被长期保存，也不代表最终 verify-hub 会话。它同时携带 `app_instance_id` 和 `app_owner_user_id`；SDK 会先精确校验当前 AppInstanceId，再在后台尽快兑换并轮换。
 
 ## AppClient 的典型登录流程
 
@@ -160,7 +164,7 @@ const account = await buckyos.login();
 
 Web SSO 是面向浏览器页面的封装：
 
-1. 页面跳到 `https://sys.<zone>/login?client_id=<appid>&redirect_url=<url>`。
+1. 页面跳到 `https://sys.<zone>/login?redirect_url=<url>`，control-panel 通过 Gateway 路由解析精确的 AuthTarget。
 2. control-panel 调 `login_by_password`。
 3. 目标 App origin 上的 `/sso_callback` 同时写入 host-only 的短期 `buckyos_session_token` 和 host-only、HttpOnly 的 `buckyos_refresh_token`；前者让 gateway 能在页面加载前放行 App，后者只用于刷新。
 4. 页面调用 `/sso_refresh`，拿到 JS 可读的 `session_token`。
@@ -198,8 +202,8 @@ system-config 的 trust keys 来自 `boot/config` 里的 owner/root key、verify
 
 runtime 没有从环境变量读到 token，也没有足够的本地私钥材料生成登录 JWT。常见原因：
 
-- AppService 缺少 `app_instance_config` 或 owner_user_id。
-- node-daemon 没有注入正确的 `*_TOKEN` 环境变量。
+- AppService 的固定 `BUCKYOS_APP_DID/APP_ID/APP_INSTANCE_ID/OWNER_USER_ID` 不完整或不一致。
+- node-daemon 没有注入 `BUCKYOS_APP_TOKEN`，或 token 绑定了另一个 AppInstanceId。
 - AppClient 没有 `BUCKYOS_APPCLIENT_SESSION_TOKEN`，也找不到 user private key。
 - Kernel/Frame service 缺少 `BUCKYOS_THIS_DEVICE` 或启动环境注入的 `*_SESSION_TOKEN`。
 - 组件确实需要用设备私钥重新生成登录 JWT，但没有在初始化阶段显式调用 `load_device_private_key()`。

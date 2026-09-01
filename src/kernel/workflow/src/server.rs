@@ -18,7 +18,9 @@
 //! 形态调用方使用，后者由直连 HTTP 客户端使用——同 msg_center / aicc 的惯例。
 
 use ::kRPC::*;
-use buckyos_api::{get_buckyos_api_runtime, WorkflowDefinition};
+use buckyos_api::{
+    get_buckyos_api_runtime, validate_verify_hub_token_claims, TokenUse, WorkflowDefinition,
+};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -66,7 +68,12 @@ impl WorkflowCallerVerifier for RuntimeWorkflowCallerVerifier {
         let verified = get_buckyos_api_runtime()?
             .verify_trusted_session_token(token)
             .await?;
-        let (user_id, app_id) = verified.get_subs()?;
+        let claims = validate_verify_hub_token_claims(&verified, TokenUse::Session)?;
+        let user_id = verified
+            .sub
+            .clone()
+            .ok_or_else(|| RPCErrors::InvalidToken("workflow token has no subject".to_string()))?;
+        let app_id = claims.target.canonical_key();
         if user_id.trim().is_empty() || app_id.trim().is_empty() {
             return Err(RPCErrors::InvalidToken(
                 "workflow caller identity is incomplete".to_string(),
@@ -1667,8 +1674,8 @@ mod tests {
     use buckyos_api::{
         ActorRef, BindAppExecutorReq, CommitResultReq, CreatePromisedTaskReq, CreateTaskExecutor,
         CreateTaskReq, FailTaskReq, GetSubtasksReq, GetTaskReq, ListTaskNotesReq, ListTasksReq,
-        ReportProgressReq, ReportRunningReq, ReportStartedReq, ReportWaitingReq, Task,
-        TaskControlProfile, TaskExecutor, TaskManagerClient, TaskManagerHandler, TaskNote,
+        ReportProgressReq, ReportRunningReq, ReportStartedReq, ReportWaitingReq, StorageDomain,
+        Task, TaskControlProfile, TaskExecutor, TaskManagerClient, TaskManagerHandler, TaskNote,
         TaskOutcome, TaskPhase, TaskSummary, TaskSummaryPage, TaskWaitReason, TaskWaitReasonKind,
     };
     use std::collections::HashMap;
@@ -1724,6 +1731,7 @@ mod tests {
                 schema_id: task.schema_id.clone(),
                 schema_version: task.schema_version,
                 creator: task.creator.clone(),
+                storage_domain: task.storage_domain,
                 executor_kind: task.executor.kind(),
                 phase: task.phase,
                 wait_reason: task.wait_reason.clone(),
@@ -1773,6 +1781,7 @@ mod tests {
                 input: req.input.clone(),
                 input_digest: buckyos_api::compute_task_input_digest(&req.input),
                 creator: ActorRef::new("u", "workflow"),
+                storage_domain: req.storage_domain.unwrap_or(StorageDomain::System),
                 idempotency_key: req.idempotency_key.clone(),
                 origin_ref: None,
                 retry_of: None,
@@ -1836,6 +1845,15 @@ mod tests {
                 None => task_id.clone(),
             };
             let input_digest = buckyos_api::compute_task_input_digest(&req.input);
+            let storage_domain = req
+                .storage_domain
+                .or_else(|| {
+                    req.parent_id
+                        .as_deref()
+                        .and_then(|parent| guard.tasks.get(parent))
+                        .map(|parent| parent.storage_domain)
+                })
+                .unwrap_or(StorageDomain::System);
             let task = Task {
                 task_id: task_id.clone(),
                 name: req.name,
@@ -1847,6 +1865,7 @@ mod tests {
                 input: req.input,
                 input_digest,
                 creator: req.creator,
+                storage_domain,
                 idempotency_key: req.idempotency_key,
                 origin_ref: req.origin_ref,
                 retry_of: None,
@@ -2662,6 +2681,8 @@ mod tests {
         assert_eq!(root_task.creator, ActorRef::new("u", "a"));
         assert_eq!(run_task.creator, root_task.creator);
         assert_eq!(run_task.parent_id.as_deref(), Some(root_task_id.as_str()));
+        assert_eq!(root_task.storage_domain, StorageDomain::User);
+        assert_eq!(run_task.storage_domain, StorageDomain::User);
 
         let second = handler
             .handle_rpc_call(

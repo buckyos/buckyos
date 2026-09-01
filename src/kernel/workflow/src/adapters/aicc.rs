@@ -657,6 +657,9 @@ fn usage_to_value(usage: AiUsage) -> Value {
     if let Some(v) = usage.total_tokens {
         map.insert("total_tokens".into(), json!(v));
     }
+    if let Some(v) = usage.request_units {
+        map.insert("request_units".into(), json!(v));
+    }
     Value::Object(map)
 }
 
@@ -1227,6 +1230,7 @@ mod tests {
                         input_tokens: Some(3),
                         output_tokens: Some(5),
                         total_tokens: Some(8),
+                        request_units: Some(1),
                     }),
                     cost: Some(AiCost {
                         amount: 0.0001,
@@ -1264,6 +1268,7 @@ mod tests {
         assert_eq!(output["status"], "succeeded");
         assert_eq!(output["text"], "hello");
         assert_eq!(output["usage"]["total_tokens"], 8);
+        assert_eq!(output["usage"]["request_units"], 1);
         assert_eq!(output["cost"]["currency"], "USD");
         assert_eq!(output["event_ref"], "task://task-1/events");
 

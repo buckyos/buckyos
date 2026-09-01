@@ -88,6 +88,7 @@ impl LLMContextState {
                 input_tokens: None,
                 output_tokens: None,
                 total_tokens: None,
+                request_units: None,
             },
             rounds_left: req.tool_policy.max_rounds,
             started_at_ms,

@@ -24,6 +24,7 @@ use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::*;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Recursive control requests refuse to walk unbounded trees (doc §15.8).
@@ -35,14 +36,16 @@ const MAX_RECURSIVE_CONTROL_NODES: usize = 512;
 
 /// The caller identity resolved from the *verified* session token.
 ///
-/// `zone_trusted` marks callers whose token was signed by the zone owner key
-/// or a device key (kernel/frame services and the owner themselves) — the
-/// zone's trusted computing base. Tokens issued by verify-hub (interactive
-/// sessions) are never zone-trusted.
+/// `zone_trusted` marks Verify Hub sessions that preserve a device/service principal.
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub user_id: String,
+    /// Kind-aware `AuthTarget::canonical_key()` used for ActorRef identity.
     pub app_id: String,
+    /// Bare app/service id used for executor and schema bindings.
+    pub executor_app_id: String,
+    pub app_instance_id: Option<String>,
+    pub authorization_id: String,
     pub zone_trusted: bool,
     pub sudo: bool,
 }
@@ -56,6 +59,8 @@ impl RequestContext {
         Principal {
             user_id: self.user_id.clone(),
             app_id: self.app_id.clone(),
+            executor_app_id: self.executor_app_id.clone(),
+            authorization_id: self.authorization_id.clone(),
             roles,
             sudo: self.sudo,
             view_gate: Default::default(),
@@ -66,7 +71,7 @@ impl RequestContext {
         ActorRef {
             user_id: self.user_id.clone(),
             app_id: self.app_id.clone(),
-            app_instance_id: None,
+            app_instance_id: self.app_instance_id.clone(),
         }
     }
 }
@@ -80,6 +85,14 @@ pub trait SessionTokenVerifier: Send + Sync {
 }
 
 pub struct RuntimeSessionTokenVerifier;
+
+pub(crate) fn token_is_zone_trusted(token: &RPCSessionToken) -> bool {
+    matches!(
+        validate_verify_hub_token_claims(token, TokenUse::Session)
+            .map(|claims| claims.principal_kind),
+        Ok(TokenPrincipalKind::Device | TokenPrincipalKind::System)
+    )
+}
 
 #[async_trait]
 impl SessionTokenVerifier for RuntimeSessionTokenVerifier {
@@ -110,7 +123,8 @@ impl TaskManagerService {
         }
     }
 
-    pub fn store(&self) -> Arc<TaskStore> {
+    #[cfg(test)]
+    pub(crate) fn store(&self) -> Arc<TaskStore> {
         self.store.clone()
     }
 
@@ -145,7 +159,18 @@ impl TaskManagerService {
                 RPCErrors::NoPermission("task-manager requires a session token".to_string())
             })?;
         let verified = self.token_verifier.verify(token).await?;
-        let (user_id, app_id) = verified.get_subs()?;
+        let claims = validate_verify_hub_token_claims(&verified, TokenUse::Session)?;
+        let user_id = verified
+            .sub
+            .clone()
+            .ok_or_else(|| RPCErrors::InvalidToken("session token has no subject".to_string()))?;
+        let app_id = claims.target.canonical_key();
+        let executor_app_id = claims.target.appid_claim().to_string();
+        let authorization_id = claims.target.authorization_key();
+        let app_instance_id = match &claims.target {
+            AuthTarget::App { app_instance_id } => Some(app_instance_id.to_string()),
+            AuthTarget::System { .. } => None,
+        };
         if user_id.trim().is_empty() {
             return Err(RPCErrors::InvalidToken(
                 "session token has an empty subject".to_string(),
@@ -156,10 +181,13 @@ impl TaskManagerService {
                 "session token has an empty app id".to_string(),
             ));
         }
-        let zone_trusted = verified.iss.as_deref() != Some(VERIFY_HUB_UNIQUE_ID);
+        let zone_trusted = token_is_zone_trusted(&verified);
         Ok(RequestContext {
             user_id,
             app_id,
+            executor_app_id,
+            app_instance_id,
+            authorization_id,
             zone_trusted,
             sudo: verified.sudo,
         })
@@ -280,6 +308,41 @@ impl TaskManagerService {
         Ok(schema)
     }
 
+    async fn resolve_storage_domain(
+        &self,
+        requested: Option<StorageDomain>,
+        parent_id: Option<&str>,
+        schema: &TaskSchemaDefinition,
+        creator: &ActorRef,
+    ) -> Result<StorageDomain> {
+        if let Some(parent_id) = parent_id {
+            let parent = self.load_task(parent_id).await?;
+            if let Some(requested) = requested {
+                if requested != parent.storage_domain {
+                    return Err(task_mgr_error(
+                        TASK_ERR_STORAGE_DOMAIN_CONFLICT,
+                        format!(
+                            "parent {} is in {}, requested {}",
+                            parent_id, parent.storage_domain, requested
+                        ),
+                    ));
+                }
+            }
+            return Ok(parent.storage_domain);
+        }
+        if let Some(requested) = requested {
+            return Ok(requested);
+        }
+        if !schema.schema_id.trim().is_empty() {
+            return Ok(schema.default_storage_domain);
+        }
+        Ok(if creator.app_id.starts_with("system:") {
+            StorageDomain::System
+        } else {
+            StorageDomain::User
+        })
+    }
+
     fn verify_app_runner_write(
         request_ctx: &RequestContext,
         task: &Task,
@@ -296,12 +359,12 @@ impl TaskManagerService {
                 "task has no App executor",
             ));
         };
-        if *app_id != request_ctx.app_id {
+        if *app_id != request_ctx.executor_app_id {
             return Err(task_mgr_error(
                 TASK_ERR_PERMISSION_DENIED,
                 format!(
                     "caller app {} is not the bound runner {}",
-                    request_ctx.app_id, app_id
+                    request_ctx.executor_app_id, app_id
                 ),
             ));
         }
@@ -522,6 +585,14 @@ impl TaskManagerService {
                 TaskExecutorKind::Unbound,
             )
             .await?;
+        let storage_domain = self
+            .resolve_storage_domain(
+                req.storage_domain,
+                req.parent_id.as_deref(),
+                &schema,
+                &req.creator,
+            )
+            .await?;
         let wait_reason = req
             .wait_reason
             .clone()
@@ -530,11 +601,13 @@ impl TaskManagerService {
         let outcome = self
             .store
             .create_task(CreateTaskArgs {
+                task_id: None,
                 name: req.name.clone(),
                 schema_id: schema.schema_id.clone(),
                 schema_version: schema.schema_version,
                 input: req.input.clone(),
                 creator: req.creator.clone(),
+                storage_domain,
                 idempotency_key: req.idempotency_key.clone(),
                 origin_ref: req.origin_ref.clone(),
                 parent_id: req.parent_id.clone(),
@@ -831,6 +904,55 @@ impl TaskManagerService {
         self.store.get_schema(schema_id, schema_version).await
     }
 
+    pub(crate) async fn recover_lost_user_tasks_by_origin(
+        &self,
+        origin_kind: &str,
+        live_task_ids: &HashSet<TaskId>,
+    ) -> Result<usize> {
+        let tasks = self
+            .store
+            .list_nonterminal_by_origin(StorageDomain::User, origin_kind)
+            .await?;
+        let actor = ActorRef::new("system", format!("system:{}", TASK_MANAGER_SERVICE_NAME));
+        let mut recovered = 0usize;
+        for task in tasks {
+            if live_task_ids.contains(&task.task_id) {
+                continue;
+            }
+            let completed_by = actor.clone();
+            let outcome = self
+                .store
+                .mutate_task(
+                    &task.task_id,
+                    Some(&actor),
+                    TaskEventType::TaskFailed,
+                    json!({"code": "runner_lost", "path": "storage_domain_recovery"}),
+                    Some(task.revision),
+                    move |current| {
+                        if current.phase.is_terminal() {
+                            return Ok(());
+                        }
+                        let now = now_ms();
+                        current.phase = TaskPhase::Terminal;
+                        current.outcome = Some(TaskOutcome::Failed);
+                        current.error = Some(TaskError::new(
+                            "runner_lost",
+                            "dispatcher state or runner binding was lost during restore",
+                        ));
+                        current.pending_control = None;
+                        current.wait_reason = None;
+                        current.completed_by = Some(completed_by);
+                        current.completed_at = Some(now);
+                        Ok(())
+                    },
+                )
+                .await?;
+            self.publish_outcome(&outcome).await;
+            recovered += 1;
+        }
+        Ok(recovered)
+    }
+
     /// CAS-close a task without runner involvement. Guarantee level is
     /// interrupt: no side-effect rollback promise.
     async fn cancel_direct(
@@ -899,7 +1021,7 @@ impl TaskManagerHandler for TaskManagerService {
             CreateTaskExecutor::SelfApp { app_instance_id } => (
                 TaskExecutor::App {
                     target_id: None,
-                    app_id: request_ctx.app_id.clone(),
+                    app_id: request_ctx.executor_app_id.clone(),
                     app_instance_id: app_instance_id.clone(),
                 },
                 Vec::new(),
@@ -934,6 +1056,15 @@ impl TaskManagerHandler for TaskManagerService {
                 executor.kind(),
             )
             .await?;
+        let creator = request_ctx.actor_ref();
+        let storage_domain = self
+            .resolve_storage_domain(
+                req.storage_domain,
+                req.parent_id.as_deref(),
+                &schema,
+                &creator,
+            )
+            .await?;
 
         if let Some(parent_id) = req.parent_id.as_deref() {
             let (_parent, permission) = self.load_visible(&request_ctx, parent_id).await?;
@@ -948,18 +1079,13 @@ impl TaskManagerHandler for TaskManagerService {
         let outcome = self
             .store
             .create_task(CreateTaskArgs {
+                task_id: None,
                 name: req.name.clone(),
                 schema_id: schema.schema_id.clone(),
                 schema_version: schema.schema_version,
                 input: req.input.clone(),
-                creator: ActorRef {
-                    user_id: request_ctx.user_id.clone(),
-                    app_id: request_ctx.app_id.clone(),
-                    app_instance_id: match &req.executor {
-                        CreateTaskExecutor::SelfApp { app_instance_id } => app_instance_id.clone(),
-                        _ => None,
-                    },
-                },
+                creator,
+                storage_domain,
                 idempotency_key: req.idempotency_key.clone(),
                 origin_ref: None,
                 parent_id: req.parent_id.clone(),
@@ -976,6 +1102,86 @@ impl TaskManagerHandler for TaskManagerService {
                 phase,
                 wait_reason,
                 message: req.message.clone(),
+            })
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    async fn handle_create_delegated_task(
+        &self,
+        req: CreateDelegatedTaskReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        Self::require_zone_trusted(&request_ctx, "create_delegated_task")?;
+        if req.name.trim().is_empty() || req.idempotency_key.trim().is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "name and idempotency_key are required".into(),
+            ));
+        }
+        if req.creator.user_id.trim().is_empty() || req.creator.app_id.trim().is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "delegated creator envelope is incomplete".into(),
+            ));
+        }
+        if let Some(task_id) = req.task_id.as_deref() {
+            let suffix = task_id.strip_prefix("t-").unwrap_or_default();
+            if suffix.len() != 32
+                || !suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(RPCErrors::ParseRequestError(
+                    "delegated task_id must use the canonical t-<32 lowercase hex> form".into(),
+                ));
+            }
+        }
+        let schema = self
+            .resolve_schema(
+                &req.schema_id,
+                req.schema_version,
+                &req.input,
+                TaskExecutorKind::App,
+            )
+            .await?;
+        let storage_domain = self
+            .resolve_storage_domain(
+                req.storage_domain,
+                req.parent_id.as_deref(),
+                &schema,
+                &req.creator,
+            )
+            .await?;
+        let outcome = self
+            .store
+            .create_task(CreateTaskArgs {
+                task_id: req.task_id,
+                name: req.name,
+                schema_id: schema.schema_id,
+                schema_version: schema.schema_version,
+                input: req.input,
+                creator: req.creator,
+                storage_domain,
+                idempotency_key: req.idempotency_key,
+                origin_ref: None,
+                parent_id: req.parent_id,
+                child_control_policy: req.child_control_policy.unwrap_or_default(),
+                policy_preset: req
+                    .policy_preset
+                    .unwrap_or_else(|| TASK_POLICY_PRESET_COLLABORATIVE_TREE_V1.to_string()),
+                permission_boundary: req.permission_boundary,
+                retry_of: req.retry_of,
+                supersedes: req.supersedes,
+                executor: TaskExecutor::App {
+                    target_id: None,
+                    app_id: request_ctx.executor_app_id,
+                    app_instance_id: req.runner_app_instance_id,
+                },
+                assignees: Vec::new(),
+                phase: TaskPhase::Accepted,
+                wait_reason: None,
+                message: req.message,
             })
             .await?;
         self.publish_outcome(&outcome).await;
@@ -1173,6 +1379,54 @@ impl TaskManagerHandler for TaskManagerService {
             }
         }
         Ok(RequestControlResult::Batch { result })
+    }
+
+    async fn handle_request_delegated_control(
+        &self,
+        req: RequestDelegatedControlReq,
+        ctx: RPCContext,
+    ) -> Result<RequestControlResult> {
+        let service_ctx = self.authenticate(&ctx).await?;
+        Self::require_zone_trusted(&service_ctx, "request_delegated_control")?;
+        if req.request_id.trim().is_empty()
+            || req.controller.user_id.trim().is_empty()
+            || req.controller.app_id.trim().is_empty()
+        {
+            return Err(RPCErrors::ParseRequestError(
+                "controller and request_id are required".into(),
+            ));
+        }
+        let target = req.controller.auth_target().map_err(|err| {
+            RPCErrors::ParseRequestError(format!("invalid controller identity: {err}"))
+        })?;
+        let authorization_id = target.authorization_key();
+        let app_instance_id = match &target {
+            AuthTarget::App { app_instance_id } => Some(app_instance_id.to_string()),
+            AuthTarget::System { .. } => None,
+        };
+        let controller_ctx = RequestContext {
+            user_id: req.controller.user_id.clone(),
+            app_id: target.canonical_key(),
+            executor_app_id: target.appid_claim().to_string(),
+            app_instance_id,
+            authorization_id,
+            zone_trusted: false,
+            sudo: false,
+        };
+        let (task, _) = self
+            .require_action(&controller_ctx, &req.task_id, TaskAction::Control)
+            .await?;
+        let outcome = self
+            .request_control_single(
+                &controller_ctx,
+                &task,
+                req.action,
+                &req.request_id,
+                req.expected_revision,
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(RequestControlResult::Task { task: outcome.task })
     }
 
     async fn handle_update_assignees(
@@ -1717,7 +1971,7 @@ impl TaskManagerHandler for TaskManagerService {
         }
         // Apps publish their own schemas; publishing for another app needs a
         // zone-trusted identity.
-        if !request_ctx.zone_trusted && def.publisher_app_id != request_ctx.app_id {
+        if !request_ctx.zone_trusted && def.publisher_app_id != request_ctx.executor_app_id {
             return Err(task_mgr_error(
                 TASK_ERR_PERMISSION_DENIED,
                 "publisher_app_id must match the caller app",
@@ -1775,9 +2029,7 @@ impl TaskManagerHandler for TaskManagerService {
             .task_id
             .as_deref()
             .or(req.root_id.as_deref())
-            .ok_or_else(|| {
-                RPCErrors::ParseRequestError("task_id or root_id is required".into())
-            })?;
+            .ok_or_else(|| RPCErrors::ParseRequestError("task_id or root_id is required".into()))?;
         self.load_visible(&request_ctx, anchor).await?;
         let events = self
             .store
@@ -1906,7 +2158,7 @@ pub async fn start_task_manager_service() -> Result<()> {
     let store = TaskStore::open_from_service_spec()
         .await
         .map_err(RPCErrors::ReasonError)?;
-    info!("task-manager database initialized (schema v7)");
+    info!("task-manager databases initialized (schema v8, User + System)");
 
     let kevent_client = get_buckyos_api_runtime()
         .map_err(|err| RPCErrors::ReasonError(format!("api runtime unavailable: {}", err)))?
@@ -1920,6 +2172,7 @@ pub async fn start_task_manager_service() -> Result<()> {
     );
     handler.ensure_builtin_schemas().await?;
     let service_for_dispatcher = handler.clone();
+    let service_for_dispatcher_failure = handler.clone();
     let server = TaskManagerHttpServer::new(handler);
 
     info!("start task manager 2.0 service...");
@@ -1951,6 +2204,15 @@ pub async fn start_task_manager_service() -> Result<()> {
             }
         }
         Err(err) => {
+            if let Err(recovery_err) = service_for_dispatcher_failure
+                .recover_lost_user_tasks_by_origin(TASK_DISPATCHER_SERVICE_NAME, &HashSet::new())
+                .await
+            {
+                warn!(
+                    "could not converge restored User tasks after dispatcher startup failure: {}",
+                    recovery_err
+                );
+            }
             warn!(
                 "task dispatch center not started (task manager keeps running): {:?}",
                 err
@@ -1997,37 +2259,55 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         EncodingKey::from_ed_pem(TEST_PRIVATE_KEY.as_bytes()).unwrap()
     }
 
-    fn signed_token(issuer: &str, user_id: &str, app_id: &str) -> String {
+    fn signed_token(
+        user_id: &str,
+        target: AuthTarget,
+        principal_kind: TokenPrincipalKind,
+    ) -> String {
         let now = buckyos_kit::buckyos_get_unix_timestamp();
-        let session_token = RPCSessionToken {
+        let mut session_token = RPCSessionToken {
             token_type: RPCSessionTokenType::JWT,
             token: None,
             aud: None,
             exp: Some(now + 3600),
-            iss: Some(issuer.to_string()),
+            iss: Some(VERIFY_HUB_UNIQUE_ID.to_string()),
             jti: None,
             sub: Some(user_id.to_string()),
-            appid: Some(app_id.to_string()),
+            appid: None,
             sudo: false,
             extra: HashMap::new(),
         };
+        bind_token_principal_kind(&mut session_token, principal_kind);
+        bind_token_target(&mut session_token, &target, TokenUse::Session).unwrap();
         session_token
             .generate_jwt(None, &test_encoding_key())
             .unwrap()
     }
 
-    /// Zone-trusted service token (issuer != verify-hub).
-    fn service_ctx(user_id: &str, app_id: &str) -> RPCContext {
+    fn service_ctx(user_id: &str, service_id: &str) -> RPCContext {
         RPCContext {
-            token: Some(signed_token("ood1", user_id, app_id)),
+            token: Some(signed_token(
+                user_id,
+                AuthTarget::system(SystemServiceId::parse(service_id).unwrap()),
+                TokenPrincipalKind::System,
+            )),
             ..Default::default()
         }
     }
 
+    fn refreshed_service_ctx(user_id: &str, service_id: &str) -> RPCContext {
+        service_ctx(user_id, service_id)
+    }
+
     /// Interactive (verify-hub issued) session token: never zone-trusted.
     fn user_ctx(user_id: &str, app_id: &str) -> RPCContext {
+        let target = if app_id == CONTROL_PANEL_SERVICE_NAME {
+            AuthTarget::system(SystemServiceId::parse(app_id).unwrap())
+        } else {
+            AuthTarget::app(format!("{app_id}@{user_id}").parse().unwrap())
+        };
         RPCContext {
-            token: Some(signed_token(VERIFY_HUB_UNIQUE_ID, user_id, app_id)),
+            token: Some(signed_token(user_id, target, TokenPrincipalKind::User)),
             ..Default::default()
         }
     }
@@ -2049,9 +2329,20 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 
     pub(crate) async fn setup_service() -> (TaskManagerService, tempfile::TempDir) {
         let temp_dir = tempdir().unwrap();
-        let db_path = temp_dir.path().join("test.db");
-        let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
-        let store = TaskStore::open(&conn, RdbBackend::Sqlite, None).await.unwrap();
+        let user_db_path = temp_dir.path().join("user.db");
+        let system_db_path = temp_dir.path().join("system.db");
+        let user_conn = format!("sqlite://{}?mode=rwc", user_db_path.to_str().unwrap());
+        let system_conn = format!("sqlite://{}?mode=rwc", system_db_path.to_str().unwrap());
+        let store = TaskStore::open_partitioned(
+            &user_conn,
+            RdbBackend::Sqlite,
+            None,
+            &system_conn,
+            RdbBackend::Sqlite,
+            None,
+        )
+        .await
+        .unwrap();
         let verifier = StaticKeyVerifier {
             key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
         };
@@ -2062,6 +2353,41 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         );
         service.ensure_builtin_schemas().await.unwrap();
         (service, temp_dir)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn authentication_keeps_app_and_system_targets_distinct() {
+        let (service, _tmp) = setup_service().await;
+        let app_ctx = RPCContext {
+            token: Some(signed_token(
+                "alice",
+                AuthTarget::app("control-panel@alice".parse().unwrap()),
+                TokenPrincipalKind::User,
+            )),
+            ..Default::default()
+        };
+        let system_ctx = RPCContext {
+            token: Some(signed_token(
+                "alice",
+                AuthTarget::system(SystemServiceId::parse("control-panel").unwrap()),
+                TokenPrincipalKind::User,
+            )),
+            ..Default::default()
+        };
+
+        let app = service.authenticate(&app_ctx).await.unwrap();
+        let system = service.authenticate(&system_ctx).await.unwrap();
+
+        assert_eq!(app.app_id, "app:control-panel@alice");
+        assert_eq!(system.app_id, "system:control-panel");
+        assert_eq!(app.executor_app_id, "control-panel");
+        assert_eq!(system.executor_app_id, "control-panel");
+        assert_eq!(app.authorization_id, "app:control-panel");
+        assert_eq!(system.authorization_id, "system:control-panel");
+        assert_eq!(app.app_instance_id.as_deref(), Some("control-panel@alice"));
+        assert_eq!(system.app_instance_id, None);
+        assert_ne!(app.authorization_id, system.authorization_id);
+        assert_ne!(app.actor_ref(), system.actor_ref());
     }
 
     fn raw_create_req(name: &str, key: &str) -> CreateTaskReq {
@@ -2077,6 +2403,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             child_control_policy: None,
             policy_preset: None,
             permission_boundary: false,
+            storage_domain: None,
             idempotency_key: key.to_string(),
             retry_of: None,
             supersedes: None,
@@ -2105,10 +2432,16 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                 .get_schema(&definition.schema_id, None)
                 .await
                 .unwrap_or_else(|err| {
-                    panic!("built-in schema {} not seeded: {:?}", definition.schema_id, err)
+                    panic!(
+                        "built-in schema {} not seeded: {:?}",
+                        definition.schema_id, err
+                    )
                 });
             assert!(stored.enabled, "{} seeded disabled", definition.schema_id);
-            assert_eq!(stored.allowed_executor_kinds, definition.allowed_executor_kinds);
+            assert_eq!(
+                stored.allowed_executor_kinds,
+                definition.allowed_executor_kinds
+            );
         }
 
         // Re-running the bootstrap is a no-op, not an idempotency conflict.
@@ -2130,6 +2463,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                     child_control_policy: None,
                     policy_preset: None,
                     permission_boundary: false,
+                    storage_domain: None,
                     idempotency_key: "wf-run-r1".into(),
                     retry_of: None,
                     supersedes: None,
@@ -2140,6 +2474,166 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .await
             .unwrap();
         assert_eq!(task.schema_id, WORKFLOW_RUN_TREE_TASK_SCHEMA_ID);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delegated_task_freezes_business_owner_and_runner_identity() {
+        let (service, _tmp) = setup_service().await;
+        let runner_ctx = refreshed_service_ctx("system", CONTROL_PANEL_SERVICE_NAME);
+        let creator = ActorRef::from_auth_target(
+            "alice",
+            &AuthTarget::app("buckyos-tool@alice".parse().unwrap()),
+        );
+        let request = CreateDelegatedTaskReq {
+            task_id: Some("t-0123456789abcdef0123456789abcdef".to_string()),
+            name: "install demo".to_string(),
+            schema_id: APP_INSTALL_TASK_SCHEMA_ID.to_string(),
+            schema_version: None,
+            input: json!({"request": "immutable"}),
+            creator: creator.clone(),
+            runner_app_instance_id: None,
+            parent_id: None,
+            child_control_policy: None,
+            policy_preset: None,
+            permission_boundary: false,
+            storage_domain: Some(StorageDomain::System),
+            idempotency_key: "alice-install-demo".to_string(),
+            retry_of: None,
+            supersedes: None,
+            message: None,
+        };
+        let task = service
+            .handle_create_delegated_task(request.clone(), runner_ctx.clone())
+            .await
+            .unwrap();
+        assert_eq!(task.task_id, request.task_id.clone().unwrap());
+        assert_eq!(task.creator, creator);
+        assert!(matches!(
+            task.executor,
+            TaskExecutor::App { ref app_id, .. } if app_id == CONTROL_PANEL_SERVICE_NAME
+        ));
+
+        let owned = service
+            .handle_get_task(
+                GetTaskReq {
+                    task_id: task.task_id.clone(),
+                },
+                user_ctx("alice", "buckyos-tool"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(owned.task_id, task.task_id);
+        assert!(service
+            .handle_get_task(
+                GetTaskReq {
+                    task_id: task.task_id.clone(),
+                },
+                user_ctx("mallory", "buckyos-tool"),
+            )
+            .await
+            .is_err());
+
+        let replay = service
+            .handle_create_delegated_task(request.clone(), runner_ctx.clone())
+            .await
+            .unwrap();
+        assert_eq!(replay.task_id, task.task_id);
+        let mut conflicting = request;
+        conflicting.input = json!({"request": "different"});
+        assert!(service
+            .handle_create_delegated_task(conflicting, runner_ctx.clone())
+            .await
+            .is_err());
+
+        let running = service
+            .handle_report_started(
+                ReportStartedReq {
+                    envelope: envelope(&task),
+                },
+                runner_ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(running.phase, TaskPhase::Running);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn canonical_delegated_creator_can_cancel_directly_and_via_service() {
+        let (service, _tmp) = setup_service().await;
+        let runner_ctx = refreshed_service_ctx("system", CONTROL_PANEL_SERVICE_NAME);
+        let creator_target = AuthTarget::system(SystemServiceId::parse("buckycli").unwrap());
+        let creator = ActorRef::from_auth_target("ood1", &creator_target);
+        let request = CreateDelegatedTaskReq {
+            task_id: Some("t-11111111111111111111111111111111".to_string()),
+            name: "install direct cancel".to_string(),
+            schema_id: APP_INSTALL_TASK_SCHEMA_ID.to_string(),
+            schema_version: None,
+            input: json!({"request": "direct"}),
+            creator: creator.clone(),
+            runner_app_instance_id: None,
+            parent_id: None,
+            child_control_policy: None,
+            policy_preset: None,
+            permission_boundary: false,
+            storage_domain: Some(StorageDomain::System),
+            idempotency_key: "direct-cancel".to_string(),
+            retry_of: None,
+            supersedes: None,
+            message: None,
+        };
+        let direct_task = service
+            .handle_create_delegated_task(request.clone(), runner_ctx.clone())
+            .await
+            .unwrap();
+        let direct = service
+            .handle_request_control(
+                RequestControlReq {
+                    task_id: direct_task.task_id,
+                    action: TaskControlAction::Cancel,
+                    request_id: "direct-cancel-request".to_string(),
+                    recursive: false,
+                    expected_revision: None,
+                },
+                service_ctx("ood1", "buckycli"),
+            )
+            .await
+            .unwrap();
+        let RequestControlResult::Task { task } = direct else {
+            panic!("expected direct task control result")
+        };
+        assert_eq!(task.pending_control.unwrap().requested_by, creator);
+
+        let delegated_request = CreateDelegatedTaskReq {
+            task_id: Some("t-22222222222222222222222222222222".to_string()),
+            idempotency_key: "delegated-cancel".to_string(),
+            name: "install delegated cancel".to_string(),
+            input: json!({"request": "delegated"}),
+            ..request
+        };
+        let delegated_task = service
+            .handle_create_delegated_task(delegated_request, runner_ctx.clone())
+            .await
+            .unwrap();
+        let delegated = service
+            .handle_request_delegated_control(
+                RequestDelegatedControlReq {
+                    controller: ActorRef::from_auth_target("ood1", &creator_target),
+                    task_id: delegated_task.task_id,
+                    action: TaskControlAction::Cancel,
+                    request_id: "delegated-cancel-request".to_string(),
+                    expected_revision: None,
+                },
+                runner_ctx,
+            )
+            .await
+            .unwrap();
+        let RequestControlResult::Task { task } = delegated else {
+            panic!("expected delegated task control result")
+        };
+        assert_eq!(
+            task.pending_control.unwrap().requested_by.app_id,
+            "system:buckycli"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2231,7 +2725,10 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .events;
         assert_eq!(events.len(), 4); // created, started, progress, committed
         assert_eq!(events[0].event_type, TaskEventType::TaskCreated);
-        assert_eq!(events.last().unwrap().event_type, TaskEventType::ResultCommitted);
+        assert_eq!(
+            events.last().unwrap().event_type,
+            TaskEventType::ResultCommitted
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2275,7 +2772,12 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let mut bad_epoch = envelope(&task);
         bad_epoch.runner_epoch = 99;
         let err = service
-            .handle_report_started(ReportStartedReq { envelope: bad_epoch }, ctx.clone())
+            .handle_report_started(
+                ReportStartedReq {
+                    envelope: bad_epoch,
+                },
+                ctx.clone(),
+            )
             .await
             .unwrap_err();
         assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_STALE_RUNNER_EPOCH));
@@ -2284,7 +2786,12 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let mut stale_rev = envelope(&task);
         stale_rev.expected_revision = task.revision + 5;
         let err = service
-            .handle_report_started(ReportStartedReq { envelope: stale_rev }, ctx.clone())
+            .handle_report_started(
+                ReportStartedReq {
+                    envelope: stale_rev,
+                },
+                ctx.clone(),
+            )
             .await
             .unwrap_err();
         assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_REVISION_CONFLICT));
@@ -2341,10 +2848,19 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         );
         let (bob_result, carol_result) = tokio::join!(bob, carol);
         let winners = [bob_result.is_ok(), carol_result.is_ok()];
-        assert_eq!(winners.iter().filter(|w| **w).count(), 1, "exactly one commit wins");
+        assert_eq!(
+            winners.iter().filter(|w| **w).count(),
+            1,
+            "exactly one commit wins"
+        );
 
         // A non-assignee cannot commit.
-        let final_task = service.store().get_task(&task.task_id).await.unwrap().unwrap();
+        let final_task = service
+            .store()
+            .get_task(&task.task_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(final_task.outcome, Some(TaskOutcome::Succeeded));
         let err = service
             .handle_commit_result(
@@ -2370,7 +2886,10 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         req.executor = CreateTaskExecutor::HumanSet {
             assignees: vec!["bob".into()],
         };
-        let task = service.handle_create_task(req, creator.clone()).await.unwrap();
+        let task = service
+            .handle_create_task(req, creator.clone())
+            .await
+            .unwrap();
 
         // bob hands the task to carol (bob keeps Reassign as assignee).
         let task = service
@@ -2546,7 +3065,10 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         // Child that follows cancel.
         let mut follow = raw_create_req("follow", "kfollow");
         follow.parent_id = Some(root.task_id.clone());
-        let follow = service.handle_create_task(follow, ctx.clone()).await.unwrap();
+        let follow = service
+            .handle_create_task(follow, ctx.clone())
+            .await
+            .unwrap();
         assert_eq!(follow.root_id, root.task_id);
 
         // Child that opted out of cancel propagation.
@@ -2557,7 +3079,10 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             follow_resume: true,
             follow_cancel: false,
         });
-        let opt_out = service.handle_create_task(opt_out, ctx.clone()).await.unwrap();
+        let opt_out = service
+            .handle_create_task(opt_out, ctx.clone())
+            .await
+            .unwrap();
 
         let result = service
             .handle_request_control(
@@ -2580,7 +3105,12 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         assert!(result.skipped_by_policy.contains(&opt_out.task_id));
 
         // App tasks got a pending request, not a forced state.
-        let follow_now = service.store().get_task(&follow.task_id).await.unwrap().unwrap();
+        let follow_now = service
+            .store()
+            .get_task(&follow.task_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(follow_now.phase, TaskPhase::Accepted);
         assert_eq!(
             follow_now.pending_control.as_ref().unwrap().action,
@@ -2769,6 +3299,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                         presentation_schema: None,
                         allowed_executor_kinds: vec![TaskExecutorKind::App],
                         user_creatable: true,
+                        default_storage_domain: StorageDomain::User,
                         publisher_app_id: "app-a".into(),
                         enabled: true,
                         created_at: 0,
@@ -2796,7 +3327,10 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let mut good = raw_create_req("typed", "kt2");
         good.schema_id = "test.op/v1".into();
         good.input = json!({"url": "http://x"});
-        let task = service.handle_create_task(good, publisher.clone()).await.unwrap();
+        let task = service
+            .handle_create_task(good, publisher.clone())
+            .await
+            .unwrap();
         let err = service
             .handle_commit_result(
                 CommitResultReq {
@@ -2814,7 +3348,12 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             task_mgr_error_code(&err),
             Some(TASK_ERR_RESULT_SCHEMA_MISMATCH)
         );
-        let unchanged = service.store().get_task(&task.task_id).await.unwrap().unwrap();
+        let unchanged = service
+            .store()
+            .get_task(&task.task_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(unchanged.revision, task.revision);
         assert!(unchanged.result.is_none());
 
@@ -2857,6 +3396,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             child_control_policy: None,
             policy_preset: None,
             permission_boundary: false,
+            storage_domain: None,
             idempotency_key: "dsp:dsp-1".into(),
             wait_reason: None,
             message: None,
@@ -2923,7 +3463,10 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                     task_id: task.task_id.clone(),
                     expected_instance_id: "inst-1".into(),
                     expected_runner_epoch: 1,
-                    reason: TaskWaitReason::with_code(TaskWaitReasonKind::Capacity, "instance_lost"),
+                    reason: TaskWaitReason::with_code(
+                        TaskWaitReasonKind::Capacity,
+                        "instance_lost",
+                    ),
                     expected_revision: task.revision,
                 },
                 &actor,
@@ -2934,7 +3477,10 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         assert_eq!(task.runner_epoch, 2);
         assert!(matches!(
             &task.executor,
-            TaskExecutor::App { app_instance_id: None, .. }
+            TaskExecutor::App {
+                app_instance_id: None,
+                ..
+            }
         ));
 
         // Old instance's late write is fenced.
@@ -2975,7 +3521,12 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         assert_eq!(task.phase, TaskPhase::Accepted);
 
         // A different logical target is frozen out.
-        let task_now = service.store().get_task(&task.task_id).await.unwrap().unwrap();
+        let task_now = service
+            .store()
+            .get_task(&task.task_id)
+            .await
+            .unwrap()
+            .unwrap();
         let released = dispatcher
             .trusted_release_app_executor(
                 ReleaseAppExecutorReq {
@@ -3014,7 +3565,10 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         req.executor = CreateTaskExecutor::HumanSet {
             assignees: vec!["bob".into()],
         };
-        let task = service.handle_create_task(req, alice.clone()).await.unwrap();
+        let task = service
+            .handle_create_task(req, alice.clone())
+            .await
+            .unwrap();
 
         let result = service
             .handle_request_control(
@@ -3045,7 +3599,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     /// that creates the tasks left in `agent`.
     async fn install_zone_like_enforcer() {
         let config = build_current_rbac_config(Some(
-            "g, devtest, admin\ng, bob, users\ng, control-panel, kernel\ng, buckyos_jarvis, agent",
+            "g, devtest, admin\ng, bob, users\ng, system:control-panel, kernel\ng, app:buckyos-jarvis, agent",
         ));
         rbac::create_enforcer(&config.model, &config.policy)
             .await
@@ -3057,14 +3611,11 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     /// user's own agent created. RBAC's `obj://task/{user}` is what closes it.
     #[tokio::test(flavor = "current_thread")]
     async fn control_panel_sees_tasks_created_by_the_users_own_agent() {
-        let _guard = ENFORCER_LOCK
-            .get_or_init(Default::default)
-            .lock()
-            .await;
+        let _guard = ENFORCER_LOCK.get_or_init(Default::default).lock().await;
         install_zone_like_enforcer().await;
         let (service, _tmp) = setup_service().await;
 
-        let agent = user_ctx("devtest", "buckyos_jarvis");
+        let agent = user_ctx("devtest", "buckyos-jarvis");
         let task = service
             .handle_create_task(raw_create_req("aicc:job-1", "k-aicc-1"), agent)
             .await
@@ -3072,7 +3623,10 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 
         // The owner, through the control surface.
         let page = service
-            .handle_list_tasks(ListTasksReq::default(), user_ctx("devtest", "control-panel"))
+            .handle_list_tasks(
+                ListTasksReq::default(),
+                user_ctx("devtest", "control-panel"),
+            )
             .await
             .unwrap();
         assert!(
@@ -3108,7 +3662,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let page = service
             .handle_list_tasks(
                 ListTasksReq::default(),
-                user_ctx("devtest", "buckyos_filebrowser"),
+                user_ctx("devtest", "buckyos-filebrowser"),
             )
             .await
             .unwrap();
@@ -3180,5 +3734,276 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .await
             .unwrap();
         assert!(page.tasks.iter().any(|t| t.task_id == task.task_id));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_tasks_filters_by_creator_scoped_idempotency_key() {
+        let (service, _tmp) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
+        let first = service
+            .handle_create_task(raw_create_req("first", "key-first"), ctx.clone())
+            .await
+            .unwrap();
+        let second = service
+            .handle_create_task(raw_create_req("second", "key-second"), ctx.clone())
+            .await
+            .unwrap();
+
+        let page = service
+            .handle_list_tasks(
+                ListTasksReq {
+                    creator_user_id: Some("alice".to_string()),
+                    creator_app_id: Some("app:app-a@alice".to_string()),
+                    idempotency_key: Some("key-second".to_string()),
+                    include_archived: true,
+                    ..Default::default()
+                },
+                ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.tasks.len(), 1);
+        assert_eq!(page.tasks[0].task_id, second.task_id);
+        assert_ne!(page.tasks[0].task_id, first.task_id);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn storage_domain_is_frozen_inherited_and_cross_domain_parent_is_rejected() {
+        let (service, _tmp) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
+
+        let mut root_req = raw_create_req("user-root", "domain-root");
+        root_req.storage_domain = Some(StorageDomain::User);
+        let root = service
+            .handle_create_task(root_req.clone(), ctx.clone())
+            .await
+            .unwrap();
+        assert_eq!(root.storage_domain, StorageDomain::User);
+
+        let mut schema_default_req = raw_create_req("download", "domain-schema-default");
+        schema_default_req.schema_id = DOWNLOAD_TASK_SCHEMA_ID.to_string();
+        let schema_default = service
+            .handle_create_task(schema_default_req, ctx.clone())
+            .await
+            .unwrap();
+        assert_eq!(schema_default.storage_domain, StorageDomain::User);
+
+        let mut child_req = raw_create_req("child", "domain-child");
+        child_req.parent_id = Some(root.task_id.clone());
+        let child = service
+            .handle_create_task(child_req, ctx.clone())
+            .await
+            .unwrap();
+        assert_eq!(child.storage_domain, StorageDomain::User);
+
+        let mut conflict = raw_create_req("bad-child", "domain-bad-child");
+        conflict.parent_id = Some(root.task_id.clone());
+        conflict.storage_domain = Some(StorageDomain::System);
+        let err = service
+            .handle_create_task(conflict, ctx.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            task_mgr_error_code(&err),
+            Some(TASK_ERR_STORAGE_DOMAIN_CONFLICT)
+        );
+
+        root_req.storage_domain = Some(StorageDomain::System);
+        let err = service.handle_create_task(root_req, ctx).await.unwrap_err();
+        assert_eq!(
+            task_mgr_error_code(&err),
+            Some(TASK_ERR_IDEMPOTENCY_CONFLICT)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_tasks_merges_and_filters_storage_domains_with_composite_cursor() {
+        let (service, _tmp) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
+        let mut user_req = raw_create_req("user", "domain-list-user");
+        user_req.storage_domain = Some(StorageDomain::User);
+        let user = service
+            .handle_create_task(user_req, ctx.clone())
+            .await
+            .unwrap();
+        let system = service
+            .handle_create_task(raw_create_req("system", "domain-list-system"), ctx.clone())
+            .await
+            .unwrap();
+        assert_eq!(system.storage_domain, StorageDomain::System);
+
+        let system_page = service
+            .handle_list_tasks(
+                ListTasksReq {
+                    storage_domain: Some(StorageDomain::System),
+                    include_archived: true,
+                    ..Default::default()
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(system_page.tasks.len(), 1);
+        assert_eq!(system_page.tasks[0].task_id, system.task_id);
+
+        let mut cursor = None;
+        let mut task_ids = Vec::new();
+        loop {
+            let page = service
+                .handle_list_tasks(
+                    ListTasksReq {
+                        include_archived: true,
+                        cursor: cursor.clone(),
+                        limit: Some(1),
+                        ..Default::default()
+                    },
+                    ctx.clone(),
+                )
+                .await
+                .unwrap();
+            task_ids.extend(page.tasks.into_iter().map(|task| task.task_id));
+            let Some(next) = page.next_cursor else {
+                break;
+            };
+            assert!(next.starts_with("v1|"));
+            cursor = Some(next);
+        }
+        task_ids.sort();
+        let mut expected = vec![user.task_id, system.task_id];
+        expected.sort();
+        assert_eq!(task_ids, expected);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deleting_local_store_preserves_user_tasks_and_drops_system_tasks() {
+        let (service, temp_dir) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
+        let mut user_req = raw_create_req("durable", "domain-durable");
+        user_req.storage_domain = Some(StorageDomain::User);
+        let user = service
+            .handle_create_task(user_req, ctx.clone())
+            .await
+            .unwrap();
+        let system = service
+            .handle_create_task(raw_create_req("local", "domain-local"), ctx)
+            .await
+            .unwrap();
+        drop(service);
+
+        let user_db_path = temp_dir.path().join("user.db");
+        let system_db_path = temp_dir.path().join("system.db");
+        std::fs::remove_file(&system_db_path).unwrap();
+        let user_conn = format!("sqlite://{}?mode=rwc", user_db_path.to_str().unwrap());
+        let system_conn = format!("sqlite://{}?mode=rwc", system_db_path.to_str().unwrap());
+        let store = TaskStore::open_partitioned(
+            &user_conn,
+            RdbBackend::Sqlite,
+            None,
+            &system_conn,
+            RdbBackend::Sqlite,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(store.get_task(&user.task_id).await.unwrap().is_some());
+        assert!(store.get_task(&system.task_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn partition_schema_version_mismatch_stops_open() {
+        let (service, temp_dir) = setup_service().await;
+        drop(service);
+        let user_db_path = temp_dir.path().join("user.db");
+        let system_db_path = temp_dir.path().join("system.db");
+        let user_conn = format!("sqlite://{}?mode=rwc", user_db_path.to_str().unwrap());
+        let system_conn = format!("sqlite://{}?mode=rwc", system_db_path.to_str().unwrap());
+        let pool = sqlx::any::AnyPoolOptions::new()
+            .connect(&system_conn)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE task RENAME TO task_v8")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE task_store_meta")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE task (task_id TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let err = TaskStore::open_partitioned(
+            &user_conn,
+            RdbBackend::Sqlite,
+            None,
+            &system_conn,
+            RdbBackend::Sqlite,
+            None,
+        )
+        .await
+        .err()
+        .expect("mismatched System store version must fail startup");
+        assert!(err.contains("User=8, System=7"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn restored_user_dispatch_task_without_dispatch_record_fails_runner_lost() {
+        let (service, _tmp) = setup_service().await;
+        let actor = ActorRef::new("task-dispatcher", "system:task-dispatcher");
+        let task = service
+            .trusted_create_promised_task(
+                CreatePromisedTaskReq {
+                    name: "restored".into(),
+                    schema_id: RAW_TASK_SCHEMA_ID.into(),
+                    schema_version: None,
+                    input: json!({"restored": true}),
+                    creator: ActorRef::new("alice", "app:app-a@alice"),
+                    expected_input_digest: None,
+                    origin_ref: Some(TaskOriginRef {
+                        kind: TASK_DISPATCHER_SERVICE_NAME.into(),
+                        id: "lost-dispatch".into(),
+                    }),
+                    parent_id: None,
+                    child_control_policy: None,
+                    policy_preset: None,
+                    permission_boundary: false,
+                    storage_domain: Some(StorageDomain::User),
+                    idempotency_key: "lost-dispatch".into(),
+                    wait_reason: None,
+                    message: None,
+                },
+                &actor,
+            )
+            .await
+            .unwrap();
+
+        let recovered = service
+            .recover_lost_user_tasks_by_origin(TASK_DISPATCHER_SERVICE_NAME, &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(recovered, 1);
+        let failed = service
+            .trusted_get_task(&task.task_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.phase, TaskPhase::Terminal);
+        assert_eq!(failed.outcome, Some(TaskOutcome::Failed));
+        assert_eq!(
+            failed.error.as_ref().map(|error| error.code.as_str()),
+            Some("runner_lost")
+        );
+        let events = service
+            .store()
+            .list_events(Some(&task.task_id), None, None, 100)
+            .await
+            .unwrap();
+        assert_eq!(
+            events.last().map(|event| event.event_type),
+            Some(TaskEventType::TaskFailed)
+        );
     }
 }

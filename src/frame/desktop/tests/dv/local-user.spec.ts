@@ -48,6 +48,7 @@ async function apiLogin(
     username,
     password: hashPassword(username, password, nonce),
     appid: 'control-panel',
+    target: { kind: 'system', service_id: 'control-panel' },
     login_nonce: nonce,
   })
 }
@@ -62,7 +63,7 @@ async function apiSudo(
   const result = await rpc(request, baseURL, 'verify-hub', 'sudo_by_password', {
     username,
     password: hashPassword(username, password, nonce),
-    appid: 'control-panel',
+    target: { kind: 'system', service_id: 'control-panel' },
     aud: 'system-config',
     login_nonce: nonce,
   })
@@ -90,6 +91,55 @@ async function loginThroughUi(page: Page, username: string, password: string): P
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign In' }).click()
   await expect(page.getByRole('button', { name: 'BuckyOS' })).toBeVisible()
+}
+
+function jwtPayload(token: string): JsonRecord {
+  const segments = token.split('.')
+  if (segments.length !== 3) throw new Error('session token is not a JWT')
+  return JSON.parse(Buffer.from(segments[1], 'base64url').toString('utf8')) as JsonRecord
+}
+
+async function refreshBrowserSso(page: Page, expectedUserId: string): Promise<void> {
+  const before = await page.context().cookies()
+  const previousRefresh = before.find((cookie) => cookie.name === 'buckyos_refresh_token')?.value
+  expect(previousRefresh, 'refresh cookie before rotation').toBeTruthy()
+  await page.context().clearCookies({ name: 'buckyos_session_token' })
+  expect(
+    (await page.context().cookies()).some((cookie) => cookie.name === 'buckyos_session_token'),
+    'expired session cookie is absent before refresh',
+  ).toBe(false)
+
+  const result = await page.evaluate(async () => {
+    const response = await fetch('/sso_refresh', {
+      method: 'POST',
+      credentials: 'include',
+      cache: 'no-store',
+    })
+    return {
+      status: response.status,
+      body: await response.json() as Record<string, unknown>,
+    }
+  })
+  expect(result.status).toBe(200)
+  expect(result.body.user_info).toMatchObject({ user_id: expectedUserId })
+  const sessionToken = result.body.session_token
+  expect(typeof sessionToken).toBe('string')
+  const claims = jwtPayload(String(sessionToken))
+  expect(claims).toMatchObject({
+    iss: 'verify-hub',
+    sub: expectedUserId,
+    appid: 'control-panel',
+    principal_kind: 'user',
+    token_use: 'session',
+    target_kind: 'system',
+  })
+  expect(claims.app_instance_id).toBeUndefined()
+  expect(claims.app_owner_user_id).toBeUndefined()
+
+  const after = await page.context().cookies()
+  const rotatedRefresh = after.find((cookie) => cookie.name === 'buckyos_refresh_token')?.value
+  expect(rotatedRefresh, 'refresh cookie after rotation').toBeTruthy()
+  expect(rotatedRefresh).not.toBe(previousRefresh)
 }
 
 async function openUsersAgents(page: Page) {
@@ -126,6 +176,41 @@ async function attachFailureEvidence(
     contentType: 'text/plain',
   })
 }
+
+test('SSO callback rejects an alternate control-panel origin and consumes the nonce', async ({ request, baseURL }) => {
+  test.skip(!adminPassword, 'Set BUCKYOS_TEST_ADMIN_PASSWORD for the real-zone UI DV.')
+  if (!baseURL) throw new Error('Playwright baseURL is required')
+
+  const loginNonce = Date.now()
+  const canonicalRedirect = new URL('/desktop?source=callback-binding', baseURL).toString()
+  const login = await rpc(request, baseURL, 'control-panel', 'auth.login', {
+    username: adminUser,
+    password: hashPassword(adminUser, adminPassword, loginNonce),
+    appid: 'control-panel',
+    redirect_url: canonicalRedirect,
+    login_nonce: loginNonce,
+  })
+  expect(typeof login.sso_nonce).toBe('number')
+
+  const alternateOrigin = new URL(baseURL)
+  alternateOrigin.hostname = `sys.${alternateOrigin.hostname}`
+  alternateOrigin.pathname = '/desktop'
+  const callback = new URL('/sso_callback', baseURL)
+  callback.searchParams.set('nonce', String(login.sso_nonce))
+  callback.searchParams.set('redirect_url', alternateOrigin.toString())
+  const rejected = await request.get(callback.toString(), {
+    ignoreHTTPSErrors: true,
+    maxRedirects: 0,
+  })
+  expect(rejected.status()).toBeGreaterThanOrEqual(400)
+
+  callback.searchParams.set('redirect_url', canonicalRedirect)
+  const replay = await request.get(callback.toString(), {
+    ignoreHTTPSErrors: true,
+    maxRedirects: 0,
+  })
+  expect(replay.status()).toBeGreaterThanOrEqual(400)
+})
 
 test('admin creates a real local user, then that user logs in and sees self', async ({ page, request, baseURL }, testInfo) => {
   test.skip(!adminPassword, 'Set BUCKYOS_TEST_ADMIN_PASSWORD for the real-zone UI DV.')
@@ -168,6 +253,9 @@ test('admin creates a real local user, then that user logs in and sees self', as
 
   try {
     await loginThroughUi(page, adminUser, adminPassword)
+    await refreshBrowserSso(page, adminUser)
+    await page.reload()
+    await expect(page.getByRole('button', { name: 'BuckyOS' })).toBeVisible()
     let appWindow = await openUsersAgents(page)
     await appWindow.getByLabel('Add User').click()
     await appWindow.getByLabel('Local username').fill(userId)
@@ -193,8 +281,18 @@ test('admin creates a real local user, then that user logs in and sees self', as
     await page.getByRole('button', { name: 'BuckyOS' }).click()
     await page.getByRole('button', { name: 'Log out' }).click()
     await expect(page.getByLabel('Username')).toBeVisible()
+    const cookiesAfterLogout = await page.context().cookies()
+    expect(
+      cookiesAfterLogout.filter((cookie) =>
+        cookie.name === 'buckyos_session_token' || cookie.name === 'buckyos_refresh_token'
+      ),
+      'logout clears both SSO cookies',
+    ).toEqual([])
 
     await loginThroughUi(page, userId, localPassword)
+    await refreshBrowserSso(page, userId)
+    await page.reload()
+    await expect(page.getByRole('button', { name: 'BuckyOS' })).toBeVisible()
     appWindow = await openUsersAgents(page)
     await expect(appWindow.getByText('Internal Entities')).toBeVisible()
     await appWindow.getByRole('button', { name: new RegExp(displayName) }).click()

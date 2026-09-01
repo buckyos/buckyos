@@ -7,9 +7,10 @@ import { ArgError, bailArgError, COMMON_OPTIONS_HELP, flagInt, parseArgvOrExit, 
 import { initRuntime } from "../lib/runtime.ts";
 import { callAicc, commonPolicyOptions, describeFailure, requestNamedObjectOutput } from "../lib/aicc.ts";
 import { pickArtifact, resolveInputResource, saveArtifactToPath, suffixPathByMime } from "../lib/io.ts";
+import { aiResponseExtraString } from "../lib/types.ts";
 import {
   bailAiccError, bailAiccFailed, bailIoError, bailNoArtifact, bailRuntimeError,
-  emitAndExit, errorResult, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
+  emitAndExit, errorResult, EXIT_AICC_FAILED, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
 } from "../lib/result.ts";
 
 const TOOL = "extend_video";
@@ -18,7 +19,7 @@ const METHOD = "video.extend";
 export const HELP = `Usage: extend_video <previous_video> <prompt> <output_video> [options]
 
 Options:
-  --continuation-handle <provider_handle>
+  --continuation-handle <provider_handle>  Optional; AICC restores it from the source task when available
   --duration <seconds>
   --resolution <720p|1080p|4k>
 ${COMMON_OPTIONS_HELP}`;
@@ -64,7 +65,25 @@ export async function run(argv: string[]): Promise<never> {
     });
   } catch (err) { bailAiccError(TOOL, METHOD, err); }
   if (call.status === "failed" || !call.summary) {
-    bailAiccFailed(TOOL, METHOD, call.taskId, describeFailure(call));
+    const reason = describeFailure(call);
+    if (reason.toLowerCase().includes("requires continuation_handle")) {
+      emitAndExit(
+        errorResult(
+          TOOL,
+          `${TOOL} => native_continuation_unavailable`,
+          "Native continuation is unavailable; a fallback may generate and join a follow-up clip.",
+          {
+            method: METHOD,
+            task_id: call.taskId,
+            reason_code: "native_continuation_unavailable",
+            fallback_allowed: true,
+            error: reason,
+          },
+        ),
+        EXIT_AICC_FAILED,
+      );
+    }
+    bailAiccFailed(TOOL, METHOD, call.taskId, reason);
   }
 
   const artifact = pickArtifact(call.summary, "video");
@@ -75,9 +94,12 @@ export async function run(argv: string[]): Promise<never> {
   try { saved = await saveArtifactToPath(artifact, suffixPathByMime(outputPath, "video/mp4"), ndmProxy); }
   catch (err) { bailIoError(TOOL, call.taskId, err); }
 
+  const continuationHandle = aiResponseExtraString(call.summary, "continuation_handle");
+
   emitAndExit(
     successResult(TOOL, `${TOOL} => done`, `${TOOL} wrote ${saved.path}`, {
       method: METHOD, capability: "video", task_id: call.taskId,
+      ...(continuationHandle ? { continuation_handle: continuationHandle } : {}),
       files: [{ path: saved.path, mime: saved.mime ?? null, bytes: saved.bytes, source_kind: saved.source_kind }],
     }),
     EXIT_SUCCESS,

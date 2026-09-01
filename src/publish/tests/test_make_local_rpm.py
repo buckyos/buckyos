@@ -107,6 +107,37 @@ class MakeLocalRpmTests(unittest.TestCase):
         self.assertTrue(any("undeclared paths" in failure for failure in failures))
         self.assertTrue(any("BuckyOS.app" in failure for failure in failures))
 
+    def test_verify_payload_contract_allows_modules_below_data_paths(self) -> None:
+        layout = rpm.AppLayout(
+            source_rootfs=Path("/stage/buckyos"),
+            target_rootfs=Path("/opt/buckyos"),
+            module_paths=["data/cache/bootstrap.pikg"],
+            data_paths=["data/"],
+            clean_paths=[],
+            module_source_paths={},
+            data_source_paths={},
+        )
+        failures: list[str] = []
+
+        rpm._verify_linux_payload_contract(
+            payload_paths=[
+                "/opt",
+                "/opt/buckyos",
+                "/opt/buckyos/data",
+                "/opt/buckyos/data/cache",
+                "/opt/buckyos/data/cache/bootstrap.pikg",
+                "/opt/buckyos/.buckyos_installer_defaults",
+                "/opt/buckyos/.buckyos_installer_defaults/data",
+                "/opt/buckyos/.buckyos_installer_defaults/data/readme.md",
+            ],
+            layout=layout,
+            failures=failures,
+            package_kind="rpm",
+            include_systemd_service=False,
+        )
+
+        self.assertEqual(failures, [])
+
 
 if __name__ == "__main__":
     unittest.main()

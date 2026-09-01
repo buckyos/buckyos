@@ -447,6 +447,36 @@ impl AiccLlmClient {
     }
 }
 
+fn build_aicc_llm_options(
+    temperature: Option<f32>,
+    max_completion_tokens: Option<u32>,
+    force_json: bool,
+    json_schema: Option<Value>,
+    provider_options: Option<Value>,
+) -> Value {
+    let mut options = serde_json::Map::new();
+    if let Some(temperature) = temperature {
+        options.insert("temperature".into(), json!(temperature));
+    }
+    if let Some(max_completion_tokens) = max_completion_tokens {
+        options.insert("max_tokens".into(), json!(max_completion_tokens));
+    }
+    if force_json {
+        if let Some(schema) = json_schema {
+            options.insert("response_schema".into(), schema);
+        }
+    }
+    if let Some(extra) = provider_options {
+        match extra {
+            Value::Object(extra) => options.extend(extra),
+            extra => {
+                options.insert("provider_options".into(), extra);
+            }
+        }
+    }
+    Value::Object(options)
+}
+
 #[async_trait]
 impl LlmClient for AiccLlmClient {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
@@ -457,7 +487,7 @@ impl LlmClient for AiccLlmClient {
             temperature,
             max_completion_tokens,
             force_json,
-            json_schema: _,
+            json_schema,
             provider_options,
             disable_capabilities,
             tool_specs,
@@ -486,18 +516,13 @@ impl LlmClient for AiccLlmClient {
         };
 
         // payload.options：把 temperature / max_tokens 透传给底层 provider
-        let mut options = serde_json::Map::new();
-        if let Some(t) = temperature {
-            options.insert("temperature".into(), json!(t));
-        }
-        if let Some(n) = max_completion_tokens {
-            options.insert("max_tokens".into(), json!(n));
-        }
-        let options_value = if options.is_empty() {
-            Some(json!({}))
-        } else {
-            Some(Value::Object(options))
-        };
+        let options_value = Some(build_aicc_llm_options(
+            temperature,
+            max_completion_tokens,
+            force_json,
+            json_schema,
+            provider_options,
+        ));
 
         let payload = AiPayload {
             text: None,
@@ -516,7 +541,7 @@ impl LlmClient for AiccLlmClient {
             must_features.push("json_output".to_string());
         }
 
-        let mut requirements_extra = provider_options;
+        let mut requirements_extra = None;
         if !disable_capabilities.is_empty() {
             let mut obj = match requirements_extra.take() {
                 Some(Value::Object(obj)) => obj,
@@ -616,5 +641,23 @@ impl Compressor for KeepTailCompressor {
         let mut out = sys;
         out.extend(kept_tail);
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aicc_options_preserve_json_schema() {
+        let schema = json!({
+            "type": "object",
+            "required": ["answer"],
+            "properties": { "answer": { "type": "string" } }
+        });
+        let options =
+            build_aicc_llm_options(Some(0.0), Some(2048), true, Some(schema.clone()), None);
+        assert_eq!(options["response_schema"], schema);
+        assert_eq!(options["max_tokens"], json!(2048));
     }
 }

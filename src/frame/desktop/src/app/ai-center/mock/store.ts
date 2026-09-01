@@ -16,8 +16,8 @@ import type {
 import { getEmptySeed, getPopulatedSeed, model } from './seed'
 
 function getScenarioFromURL(): 'empty' | 'populated' {
-  const params = new URLSearchParams(window.location.search)
-  return params.get('scenario') === 'populated' ? 'populated' : 'empty'
+  const params = new URLSearchParams(globalThis.location?.search ?? '')
+  return (params.get('aiccScenario') ?? params.get('scenario')) === 'populated' ? 'populated' : 'empty'
 }
 
 function namespaceFromApiType(apiType: string): ApiNamespace {
@@ -72,8 +72,7 @@ export class MockDataStore {
   private listeners: Set<() => void> = new Set()
   private snapshotVersion = 0
 
-  constructor() {
-    const scenario = getScenarioFromURL()
+  constructor(scenario = getScenarioFromURL()) {
     const seed = scenario === 'populated' ? getPopulatedSeed() : getEmptySeed()
 
     this.providers = new Map(seed.providers.map((p) => [p.config.id, p]))
@@ -118,14 +117,16 @@ export class MockDataStore {
 
   private allModels(): ModelMetadata[] {
     return [
-      ...Array.from(this.providers.values()).flatMap((p) => p.status.discovered_models),
+      ...Array.from(this.providers.values())
+        .filter((provider) => provider.config.enabled)
+        .flatMap((p) => p.status.discovered_models),
       ...this.localModels,
     ]
   }
 
   private computeAIStatus(): AIStatus {
     const providers = Array.from(this.providers.values())
-    const cloudProviderCount = providers.filter((p) => p.config.provider_runtime_type === 'cloud_api' || p.config.provider_runtime_type === 'proxy_unknown').length
+    const cloudProviderCount = providers.filter((p) => p.config.enabled && (p.config.provider_runtime_type === 'cloud_api' || p.config.provider_runtime_type === 'proxy_unknown')).length
     const models = this.allModels()
     const hasProviderOrModel = cloudProviderCount > 0 || models.length > 0
     const healthCounts = {
@@ -168,17 +169,21 @@ export class MockDataStore {
     const instanceName = draft.provider_instance_name ?? `${providerType}-${Date.now().toString(36)}`
     const models = modelsForDraft(draft, instanceName)
     const isSnRouter = providerType === 'sn_router'
+    if (isSnRouter) {
+      throw new Error('sn_router_is_system_managed')
+    }
 
     const view: ProviderView = {
       config: {
         id,
         name: draft.name || providerType,
+        enabled: true,
         provider_type: providerType,
         provider_instance_name: instanceName,
-        provider_runtime_type: isSnRouter ? 'proxy_unknown' : 'cloud_api',
-        provider_driver: isSnRouter ? 'sn' : providerType,
-        provider_origin: isSnRouter ? 'builtin' : 'user_config',
-        auth_mode: draft.api_key ? 'api_key' : 'oauth',
+        provider_runtime_type: 'cloud_api',
+        provider_driver: providerType,
+        provider_origin: 'user_config',
+        auth_mode: draft.api_key ? 'api_key' : undefined,
         endpoint: draft.endpoint || undefined,
         protocol_type: draft.protocol_type ?? undefined,
         auto_sync_models: draft.auto_sync_models,
@@ -186,9 +191,9 @@ export class MockDataStore {
       },
       inventory: {
         provider_instance_name: instanceName,
-        provider_type: isSnRouter ? 'proxy_unknown' : 'cloud_api',
-        provider_driver: isSnRouter ? 'sn' : providerType,
-        provider_origin: isSnRouter ? 'builtin' : 'user_config',
+        provider_type: 'cloud_api',
+        provider_driver: providerType,
+        provider_origin: 'user_config',
         inventory_revision: `${instanceName}-rev-now`,
         version: 'mock',
         models,
@@ -207,11 +212,10 @@ export class MockDataStore {
       account: {
         provider_instance_name: instanceName,
         usage_supported: true,
-        cost_supported: !isSnRouter,
+        cost_supported: true,
         balance_supported: providerType !== 'custom',
-        pricing_mode: isSnRouter ? 'free_quota' : 'per_token',
-        balance_unit: isSnRouter ? 'credit' : 'usd',
-        balance_value: isSnRouter ? 500 : undefined,
+        pricing_mode: 'per_token',
+        balance_unit: 'usd',
       },
     }
 
@@ -221,11 +225,14 @@ export class MockDataStore {
   }
 
   deleteProvider(id: string): void {
+    if (this.providers.get(id)?.config.provider_driver === 'sn-ai-provider') {
+      throw new Error('sn_router_is_system_managed')
+    }
     this.providers.delete(id)
     this.notify()
   }
 
-  refreshProviderModels(_id: string): void {
+  refreshProviderModels(): void {
     this.notify()
   }
 
@@ -245,6 +252,24 @@ export class MockDataStore {
         model_sync_status: 'ok',
         last_verified_at: new Date().toISOString(),
         last_model_sync_at: new Date().toISOString(),
+      },
+    })
+    this.notify()
+  }
+
+  setProviderEnabled(id: string, enabled: boolean): void {
+    const provider = this.providers.get(id)
+    if (!provider) {
+      throw new Error('provider_not_found')
+    }
+    this.providers.set(id, {
+      ...provider,
+      config: { ...provider.config, enabled },
+      status: {
+        ...provider.status,
+        is_connected: enabled,
+        auth_status: enabled ? 'ok' : 'unknown',
+        model_sync_status: enabled ? 'ok' : 'failed',
       },
     })
     this.notify()
@@ -359,7 +384,7 @@ export class MockDataStore {
     }
   }
 
-  getUsageTrend(_granularity: string): UsageTrendPoint[] {
+  getUsageTrend(): UsageTrendPoint[] {
     return this.usageTrend
   }
 

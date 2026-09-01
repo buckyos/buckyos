@@ -18,7 +18,7 @@
 import { buckyos, ndm, ndn } from 'buckyos'
 import { TEST_GROUPS, TestCase, TestContext, TestGroup } from './src/test_groups'
 
-const APP_ID = 'buckyos_systest'
+const APP_ID = 'buckyos-systest.buckyos.bns.did'
 const SELFTEST_BASE_URL = '/sdk/appservice/selftest'
 const NDM_CHUNK_SIZE = 32 * 1024 * 1024
 

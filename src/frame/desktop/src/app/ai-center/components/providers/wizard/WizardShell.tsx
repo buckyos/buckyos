@@ -1,7 +1,7 @@
 import { useEffect, useState, type FocusEvent } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { useI18n } from '../../../../../i18n/provider'
-import { useAICCStore } from '../../../hooks/use-aicc-store'
+import { useAICCStore, useProviders } from '../../../hooks/use-aicc-store'
 import type { ProviderType, ValidationResult, WizardDraft } from '../../../../../api/aicc_mgr'
 import { Stepper } from '../../shared/Stepper'
 import { StepChooseType } from './StepChooseType'
@@ -27,6 +27,8 @@ interface WizardShellProps {
 export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   const { t } = useI18n()
   const store = useAICCStore()
+  const providers = useProviders()
+  const hasManagedSnProvider = providers.some((provider) => provider.config.provider_driver === 'sn-ai-provider')
 
   const [step, setStep] = useState(0)
   const [draft, setDraft] = useState<WizardDraft>(INITIAL_DRAFT)
@@ -99,6 +101,10 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   }
 
   const handleTypeSelect = (type: ProviderType) => {
+    if (type === 'sn_router' && hasManagedSnProvider) {
+      onCreated()
+      return
+    }
     updateDraft({
       provider_type: type,
       name: '',
@@ -179,7 +185,11 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
         onFocusCapture={keepFocusedFieldVisible}
       >
         {step === 0 && (
-          <StepChooseType selected={draft.provider_type} onSelect={handleTypeSelect} />
+          <StepChooseType
+            selected={draft.provider_type}
+            onSelect={handleTypeSelect}
+            hasManagedSnProvider={hasManagedSnProvider}
+          />
         )}
         {step === 1 && (
           <StepConnection draft={draft} onUpdate={updateDraft} />

@@ -1,187 +1,169 @@
-# AICC Driver Metadata 云更新协议
+# AICC Provider Metadata 云更新协议
 
-状态：beta 2.2 v1 基线
+版本：`v2`
+状态：Beta 2.2 目标规范
 
-本文只定义按 provider-driver 拆分的 metadata JSON 的发布、下载和生效协议。OpenRouter 等聚合 Provider 的模型名解析不在范围内。
+本文定义 Model Driver、Provider Rules 和 Known Provider 三类 catalog 的发布结构、客户端版本选择、NDN 文件更新与 AICC 库存收敛边界。Metadata schema 见 [driver_metadata_schema.md](driver_metadata_schema.md) 和 [provider_profile_schema.md](provider_profile_schema.md)，持久化边界见 [driver_metadata_update_storage.md](driver_metadata_update_storage.md)。
 
-## 1. 设计目标
+## 1. 边界
 
-- 只下载新增或变化的 provider JSON。
-- 一次发布以完整 manifest 为原子单位；运行时只能看到完整旧版本或完整新版本。
-- 任意时刻断电、进程退出或网络中断后，旧的 LKGS 仍可用。
-- 小文件始终整文件重下，不恢复下载进度，不持久化 `updating` 阶段。
-- beta 2.2 是 v1 兼容基线；此后的不兼容变化必须提升 major version。
+- Model Driver catalog 保存模型固有能力、家族、variant 和逻辑挂载。
+- Provider Rules catalog 保存渠道模型映射、operation、请求规则、能力收窄及价格规则；价格不再单独发布 Pricing Catalog。
+- Known Provider catalog 保存管理 UI 使用的服务商默认 endpoint、Profile 和 Adapter。
+- Provider Instance 名称、endpoint、凭据、区域、账号和协议选择属于 system-config，catalog 无权修改。
+- Provider discovery 产生的 availability、deprecated、remote methods、实时价格和 health 属于实例级动态事实，不写入静态 catalog。
+- 三类 catalog 使用独立文件和 revision，但通过同一个 manifest 发布为完整版本。
+- 发布结构与文件交付由 NDN 更新链路负责；AICC 不重复实现文件下载、验签、完整性校验或 activation。
 
 ## 2. 发布路径
 
-AICC settings 中显式启用更新源：
-
-```json
-{
-  "driver_metadata_update": {
-    "enabled": true,
-    "source_url": "https://<publisher-zone-host>/aicc/driver-metadata/index.json",
-    "interval_secs": 3600
-  }
-}
-```
-
-`source_url` 的 HTTPS host 是发布者信任锚，path 固定为 `/aicc/driver-metadata/index.json`。每个 canonical `source_url` 使用独立的本地水位和 activation namespace，不跨发布源比较 revision。settings 日志必须掩盖 URL userinfo。未配置、配置无效或 `enabled=false` 时停止轮询。客户端最多保留最近使用的四个 source namespace；重新启用仍在保留窗口内的 canonical source 时继续沿用原有 LKGS 和水位，超出窗口的最旧 namespace 会被整体回收。settings 暂时不可用是独立状态，只退避重试，不能按禁用处理或清理当前 LKGS。`interval_secs` 归一化到 60 秒至 1 天。
-
 ```text
-/aicc/driver-metadata/index.json
-/aicc/driver-metadata/v1/manifest-<revision_seq>.json
-/aicc/driver-metadata/v1/providers/<provider_driver>-<revision_seq>.json
+/aicc/provider-catalog/index.json
+/aicc/provider-catalog/v2/manifest-<revision_seq>.json
+/aicc/provider-catalog/v2/model-drivers/<id>-<revision_seq>.json
+/aicc/provider-catalog/v2/provider-rules/<id>-<revision_seq>.json
+/aicc/provider-catalog/v2/known-providers/<id>-<revision_seq>.json
 ```
 
-发布目录由 `NdnDirServer` 扫描、对象化并签发 PathObject。发布顺序必须是 provider 文件、manifest、index；index 最后更新。
-
-PathObject 的签名、host、path 和 `exp` 由 NDN SDK 验证，AICC 不另设 TTL 上限。业务内容回滚也必须发布更高的 `revision_seq`，不得重新使用旧 revision。
+发布顺序固定为：catalog 内容文件、manifest、index。Index 最后更新，客户端不得扫描目录猜测最新版本。这里没有 `pricing/` 路径；渠道静态价格及条件计价规则直接包含在 Provider Rules 的 `models[].pricing` / `patterns[].pricing` 中。
 
 ## 3. Index
 
-```json
-{
-  "format": "buckyos.aicc.driver-metadata-index",
-  "index_version": 1,
-  "index_revision": 0,
-  "index_revision_seq": 42,
-  "required_features": [],
-  "tracks": [
-    {
-      "protocol_version": 1,
-      "protocol_revision": 0,
-      "revision_seq": 42,
-      "required_features": [],
-      "manifest": {
-        "path": "v1/manifest-42.json",
-        "obj_id": "<FileObject ObjId>"
-      }
-    }
-  ]
-}
-```
+Index 格式为 `buckyos.aicc.provider-catalog-index`，至少包含：
 
-- `index_version` 是稳定 index major；v1 客户端只接受 `1`。
-- `index_revision_seq` 全局严格递增；同 revision 的 index 内容或 ObjId 不同是发布冲突。
-- `tracks` 按 protocol major 唯一。客户端只选择自己支持且 `required_features` 全部已知的 track。
-- track 的 `protocol_revision` 只允许增加具有缺省语义的可选字段；`revision_seq` 与该 track manifest 一致。
-- `manifest.path` 必须是相对 index 目录的 canonical path，禁止 `..`、百分号编码、query、fragment 和绝对 URL；URL join 后仍必须位于 `/aicc/driver-metadata/` 目录内。
+- `index_version: 2`；
+- 严格递增的 `index_revision_seq`；
+- `tracks[]`：可投放版本列表。
 
-未来发布 protocol v2 时在同一 index 并列增加 v2 track，不能替换 v1 track；因此旧客户端仍可获得 v1 安全修复。
+每个 track 至少声明：
+
+- manifest 的 `revision_seq`；
+- manifest 的 path 和对象身份；
+- `match: MatchRule`，字符串简写匹配客户端版本；需要联合版本、更新通道或灰度分组时才使用对象；
+- `required_features`；
+- 可选更新通道和灰度分组条件包含在 `match` 对象中。
+
+`MatchRule` 统一遵循 [match_rule.md](match_rule.md)。单一客户端版本范围保持简写，例如 `"2.2.*"`；多维投放才写成 `{ "client_version": "2.2.*", "update_channel": "stable", "rollout_group": "cn-*" }`，不为普通发布强制填写多层条件对象。
+
+云更新服务可以给不同客户端版本、更新通道或灰度分组配置不同 track。NDN 更新链路只能选择与本机客户端兼容的目标，不兼容或包含未知 required feature 的 track 必须拒绝。
 
 ## 4. Manifest
 
-```json
-{
-  "format": "buckyos.aicc.driver-metadata-manifest",
-  "protocol_version": 1,
-  "protocol_revision": 0,
-  "revision_seq": 42,
-  "required_features": [],
-  "files": [
-    {
-      "provider_driver": "openai",
-      "path": "v1/providers/openai-18.json",
-      "schema_version": 3,
-      "revision_seq": 18,
-      "obj_id": "<FileObject ObjId>"
-    }
-  ],
-  "tombstones": [
-    {
-      "provider_driver": "removed-provider",
-      "revision_seq": 7
-    }
-  ]
-}
+Manifest 格式为 `buckyos.aicc.provider-catalog-manifest`，描述一个完整可用的发布版本，至少包含：
+
+- `protocol_version: 2`；
+- 全局唯一、严格递增且不可复用的 `revision_seq`；
+- 与 index track 一致的客户端兼容范围和 `required_features`；
+- `files[]`：`catalog_kind`、`catalog_id`、path、schema version、对象 revision 和对象身份；
+- `tombstones[]`：从完整发布集合中删除的 catalog kind/id 及其 revision。
+
+`catalog_kind` 只允许 `model_driver`、`provider_rules`、`known_provider`。`catalog_kind + catalog_id` 在 manifest 内唯一；未变化文件可以保持自己的 revision 和对象身份，删除必须使用 tombstone。Manifest 指向的三类文件合起来构成该 `revision_seq` 的完整 metadata 文件集合。
+
+## 5. 发布文件内容
+
+### 5.1 Model Driver
+
+路径：`v2/model-drivers/<model_driver_id>-<revision_seq>.json`。
+
+内容定义原厂模型的静态技术语义，包括 API type、capability、家族、版本规则、variant、逻辑挂载和保守成本估值。不得包含 Provider endpoint、认证、渠道 operation、请求参数或实例动态状态。
+
+### 5.2 Provider Rules
+
+路径：`v2/provider-rules/<provider_profile_id>-<revision_seq>.json`。
+
+内容定义渠道模型到原厂 Model Driver/ModelUID 的映射，以及 operation、provider options、request rules、能力收窄、价格和条件计价规则。价格使用规则内的 `pricing` 字段，不使用独立 `pricing_ref` 或 Pricing Catalog。
+
+### 5.3 Known Provider
+
+路径：`v2/known-providers/<catalog_id>-<revision_seq>.json`。
+
+内容定义管理 UI 使用的已知服务商默认值，包括 `provider_profile_id`、显示名称、默认 endpoint、`protocol_adapter_id`、可选 `provider_rules_id` 和 UI hints。它不能修改已经存在的 Provider Instance 私有配置。
+
+## 6. 版本兼容与防回退
+
+- 每个完整发布版本使用 manifest 中全局唯一且严格递增的 `revision_seq`；允许跳号，不允许复用序列或覆盖同序列内容。
+- 本机已接受的 `metadata_target_seq` 是持久高水位。NDN 只能接受更大的兼容 manifest `revision_seq`；更小序列必须拒绝，相同序列但内容不同视为发布冲突。
+- 云端可以同时保留多个 track：旧客户端取得其兼容轨道上的最新版本，新客户端可以取得使用新 schema/feature 的更高版本。
+- 云端修改某组客户端的目标时，新目标仍必须高于该客户端本机水位。恢复旧内容必须把旧内容重新发布为更高序列的新版本，不能通过普通更新降低序列。
+
+兼容性选择、发布文件校验和防回退由 NDN 更新链路保证。AICC 不重复验证 NDN 已交付文件的签名、ObjId、digest、manifest、兼容范围或版本水位；保证不足时应向 NDN 提交 bug。
+
+## 7. 更新时序
+
+```text
+读取 index，并按客户端版本/通道/灰度分组选择兼容且 revision_seq 更高的 manifest
+  -> 下载并校验 manifest 指定的完整 catalog 文件集合
+  -> 替换当前 metadata 文件并确认新文件已可供 Provider 应用
+  -> 发布 metadata_target_seq = manifest.revision_seq
+  -> 收到下一次 AICC 推理请求，或进入任一 Provider Instance 定时库存刷新
+  -> 统一加载 target_seq 对应的全部 metadata 更新
+  -> 收敛所有 applied_seq != target_seq 的 Provider inventory
+  -> 每个 Provider 真正完成库存刷新后提交 applied_seq = 本次捕获的 target_seq
+  -> 继续原推理或定时库存刷新
 ```
 
-- `files` 是该 revision 的完整 active provider 集合，`provider_driver` 唯一。
-- 未变化文件的 `revision_seq` 和 `obj_id` 必须保持不变。
-- 新增 provider 只增加一项；修改 provider 只提高该项 revision 并更换 ObjId。
-- 删除必须从 `files` 移除并增加更高 revision 的 tombstone；无 tombstone 的缺失视为损坏 manifest。tombstone 集合是累积集合，不能在后续 manifest 中无故消失或降低 revision。
-- track 和 manifest 的 `revision_seq` 必须相同，PathObject target 必须等于 track 中的 manifest ObjId。
+在 manifest 和全部 catalog 文件下载、校验、替换完成并已可供 Provider 应用之前，NDN 不得推进 `metadata_target_seq`。任一步失败时保持原文件和原目标序列；只有新文件就绪后才提交 `metadata_target_seq = manifest.revision_seq`。
 
-## 5. Provider metadata
+`metadata_target_seq` 持续存在且只递增，不在应用完成后清除。是否完成应用由各 Provider 的 `metadata_applied_seq` 与当前目标是否相等判断。
 
-```json
-{
-  "format": "buckyos.aicc.provider-driver-metadata",
-  "schema_version": 3,
-  "schema_revision": 0,
-  "provider_driver": "openai",
-  "revision_seq": 18,
-  "required_features": [],
-  "models": [],
-  "patterns": [],
-  "defaults": {},
-  "variants": [],
-  "version_rules": []
-}
-```
+## 8. NDN 更新链路责任
 
-文件内 `provider_driver`、`schema_version`、`revision_seq` 必须与 manifest 项一致。未知字段以及无效的 model id/pattern、variant、mount、token limit、成本和质量值均 fail-closed。`schema_revision` 可以增加具有明确缺省语义的可选字段；需要新解释能力的变化必须同时加入 `required_features`。不兼容结构变化提升 `schema_version`。
+- 读取并验证 index、所选 track、manifest 和 manifest 指定的完整文件集合；
+- 根据客户端版本、更新通道和灰度分组选择兼容 track；
+- 检查 manifest `revision_seq` 高于本机已接受水位；没有更高兼容版本时保持现状；
+- 保证文件来源可信、内容完整、版本匹配、引用一致且集合可用；
+- 替换当前文件集合并确认新文件可供 Provider 加载；
+- 仅在文件就绪后发布 `metadata_target_seq = manifest.revision_seq`。
 
-协议不限制 `models`、`patterns`、`variants`、`version_rules`、`origin_mappings` 的条目数量，容量边界只由本协议的文件字节上限约束。客户端必须在进程内为 exact model 建立索引、复用已编译的 origin mapping，并避免在每个模型解析时复制完整 variants 或 version rules 集合；这些运行时索引属于可丢弃状态，不进入持久化格式。
+版本不兼容、序列未前进，或下载、校验、替换、就绪确认任一步失败时，都不得推进目标序列。签名、ObjId、digest、断点续传、具体替换方法和失败恢复属于 NDN 实现；本协议只固定发布结构及交付结果。
 
-## 6. 严格下载
+## 9. AICC 触发时机
 
-客户端使用 `CyfsNdnClient` 下载每个完整文件。每个响应都必须：
+以下两个入口在执行自身逻辑前读取 `metadata_target_seq`：
 
-1. 存在且成功验证 `response.meta().path_object`，禁止退回只信任未签名 `cyfs-obj-id` header。
-2. 通过 SDK 对 PathObject signer scope、host、path、exp 的验证。
-3. manifest/provider 的 PathObject target 与上级声明的 FileObject ObjId 相同。
-4. 通过 SDK 完成 FileObject/Chunk 链和内容校验。
+- 推理请求进入路由和 Provider 选择前；
+- 任一具体 Provider Instance 开始定时库存刷新时。
 
-NDN SDK 是下载时文件内容正确性的唯一协议校验层，AICC 不重复实现 ObjId 或 ChunkList 校验。首次验证成功落盘时，AICC 记录裸内容 SHA-256；后续缓存复用重新计算该摘要，以发现落盘后的静默损坏。为在下载前执行容量限制，AICC 只读取 SDK 已验证的 ChunkId 长度，或已验证 parent 中 FileObject/ChunkList 的长度声明；没有可信长度时 fail-closed。PathObject target 比较只用于确认下载对象是上级协议对象指定的 ObjId。
+任一入口发现至少一个 Provider 的 `metadata_applied_seq` 与目标不一致时，都启动同一个全局收敛过程。定时任务只提供触发机会，不能把更新范围缩小为当前 Provider。
 
-`index.json` 最大 256 KiB，manifest 最大 1 MiB，单个 provider metadata
-最大 64 MiB；manifest 引用的全部 provider metadata 实际大小之和最大
-512 MiB。AICC 在 NDN SDK 完成下载和校验后，以落盘文件的实际大小执行这些容量限制。
+Provider Instance 停止、禁用、删除、被 reload 替换或随 AICC 服务退出时，必须向其库存刷新定时任务循环发送 `Stop` 事件并等待优雅退出。循环收到停止事件后不得再发起新的定时探测或 metadata 收敛，也不得在实例停止后提交迟到结果；这只关闭该实例的定时触发源，不改变其它入口触发时“统一处理全部序列落后 Provider 库存”的范围。
 
-## 7. 增量计划与原子提交
+## 10. Provider 库存收敛
 
-客户端把最新有效 activation 与 manifest 比较：
+全局收敛先加载本次捕获的目标序列对应的完整 metadata snapshot，再遍历所有 Provider：
 
-- revision 和 ObjId 相同且本地对象可读：复用，不下载。
-- 新 provider、revision 提高或本地对象丢失：整文件下载。
-- tombstone 提高：新 activation 不再引用该 provider，不下载文件。
-- revision 回退、同 revision 不同 ObjId、无 tombstone 删除：拒绝整个候选。
+1. 读取 Provider 当前 `metadata_applied_seq` 和已保存的 provider model 列表。
+2. 获取本轮可用的 provider model 列表：定时刷新触发的 Provider 使用刚探测的列表，其它 Provider 可以使用已保存列表。
+3. 若 `metadata_applied_seq != metadata_target_seq`，把本次捕获的目标临时记录为 `metadata_updating_seq`。
+4. 使用同一完整 metadata snapshot 重建该 Provider inventory。
+5. 真正完成库存刷新后，原子提交新 inventory 和 `metadata_applied_seq = metadata_updating_seq`，再清除临时值。
+6. 未完成或失败时保持该 Provider 原 inventory 和 `metadata_applied_seq`，不得把目标序列记为已应用；后续触发仍会发现不一致并重试。
 
-严格验证过的 index/manifest 会先推进 observed 水位；即使随后某个 provider body 校验失败，已观察到的 manifest revision、provider revision 和 tombstone revision 也不能回退。发布端可以保留相同 ObjId 修复传输，或发布更高 revision 的修复版本。
+`metadata_updating_seq` 不是已应用状态。若刷新期间 NDN 又推进目标序列，本轮只提交自己开始时捕获的序列；完成后它仍与新目标不一致，下一轮继续收敛，不能把新目标误记为已应用。
 
-所有文件准备完成后写一个新的不可变 activation。activation 是唯一提交标记，引用内容寻址的只读对象，并保存 manifest 的 SHA-256 用于检测本地 wrapper 被部分改写；这不是对 NDN 下载内容的二次校验。activation 通过同目录临时文件 `sync_all` 后，以原子的 create-if-absent 操作提交到一个此前不存在的 revision 文件名，不覆盖旧 activation；Unix 使用 hard link 并同步父目录，Windows 使用 `MOVEFILE_WRITE_THROUGH`。
+新建 Provider 没有旧库存时，首次 discovery 必须捕获当前目标序列，并把首份 inventory 与对应 `metadata_applied_seq` 一起提交。
 
-例如只有 `openai.json` 变化时，请求是 `index.json + manifest.json + openai.json`；其他 provider 对象直接复用。
+## 11. 无事实更新的探测
 
-## 8. 中断、恢复与退避
+Provider 定时库存刷新时，同时比较 provider model 列表和 metadata 序列：
 
-启动和每次尝试前都删除 staging 和 `.part`。最新 observed manifest 是正在更新的
-candidate：已经完整下载并通过 NDN 与 JSON 身份校验的 provider 对象可以跨重试复用，
-但重试仍从 index 和 manifest 开始，不恢复下载中间进度。既不被保留 activation、也不被
-最新 candidate 引用的对象属于垃圾并立即清理，不存在持久化的 `updating` 锁或阶段机。
-settings 发生变化时立即取消当前下载并删除本次 staging，然后按新 settings 重新调度；旧 source 的慢响应不能阻塞切源或禁用。
+| model 列表 | `metadata_applied_seq` 与目标 | 行为 |
+| --- | --- | --- |
+| 未变化 | 相同 | 仅完成连通性/健康探测，不重建或重写 inventory |
+| 已变化 | 相同 | 按新 model 列表更新该 Provider inventory，序列保持不变 |
+| 未变化 | 不同 | 必须按目标 metadata 重建 inventory，并在成功后推进 `metadata_applied_seq` |
+| 已变化 | 不同 | 使用新 model 列表和目标 metadata 重建 inventory，并在成功后推进 `metadata_applied_seq` |
 
-读取端首次按 revision 从高到低验证 activation 及其全部对象，并在进程内缓存已完整验证的最高版本。普通读取复核 activation wrapper 和当前 provider 对象；目标对象损坏时清除缓存，重新执行完整验证并回退到前一份，均不可用时回退内置 metadata。旧 activation 不会被候选就地修改，因此任何断电点都不会产生半生效配置。
+因此，列表未变化不能替代 metadata 序列比较；只有“列表未变化且序列相同”才是真正的 no-op probe。
 
-activation 提交后立即对所有已注册 Provider 执行一次 best-effort inventory refresh，并把
-成功结果直接写入 ModelRegistry；单个 Provider 刷新失败只记录错误，不阻断其它 Provider，
-后续仍可通过周期刷新、`provider.refresh_models`、settings reload 或服务重启恢复。activation
-提交、同 revision 缓存修复、LKGS 降级、全部 activation 失效或更新源切换都会在实际生效
-identity 变化时推进进程内的 `driver_metadata_generation`；identity 包含 source、manifest
-revision、ObjId 和 digest。重新解析 metadata 后生成的 inventory 携带该 generation。
-ModelRegistry 在 generation 提高时必须替换 provider 快照，
-即使 provider 返回的 `inventory_revision` 没有变化；旧 generation 的迟到库存不得覆盖新快照。
-所有内置 Provider 都在注册后启动相同生命周期的库存刷新任务；没有远端模型列表接口的
-Provider 只按现有 settings 模型列表重新应用 metadata，不额外访问网络。
-Claude 和 Gemini 模型列表分页最多读取 10 页，cursor/page token 不能为空且不能重复，并通过 URL query 编码传递；超过边界时本次刷新失败并保留当前 inventory。OpenAI 模型发现当前是单次 `/models` 请求，不存在客户端分页循环。
+## 12. 全局一致性与并发
 
-连续失败采用带 jitter 的指数退避，默认从 60 秒开始，最大不超过配置的正常更新周期；成功后清零。退避只影响调度，不改变安全校验。
+- 一次收敛使用同一个已捕获 `target_seq` 和完整 metadata snapshot。
+- 必须遍历所有序列落后的 Provider，不能先预测本次调用会命中哪个 Provider。
+- 并发触发合并为一个刷新执行者；其它请求等待结果或复用已完成结果。
+- 推理进入路由前，所有参与路由的 Provider 必须已收敛到本次捕获的目标序列。
+- 某个 Provider 失败时保持其原 inventory 和旧 `metadata_applied_seq`，记录可诊断错误，不得把目标序列或部分刷新结果标记为成功。
 
-## 9. 兼容规则
+## 13. 非目标
 
-- v1 冻结字段：format、major version、revision 单调语义、provider identity、ObjId 绑定和 tombstone 语义。
-- 可扩展字段：只有具备明确缺省行为的可选字段可以通过 revision 增加。
-- 未知 major、未知 required feature、未知 metadata schema major 均 fail-closed，并继续使用 LKGS。
-- 至少在一个发布支持窗口内继续维护旧 major 的 manifest；新客户端可另行选择新 major，旧客户端保持旧轨道。
+AICC 不负责 NDN 文件二次验签、下载缓存、candidate/activation、按请求加载部分 metadata，或为 metadata 另建后台定时更新任务。AICC 也不维护独立 Pricing Catalog；静态价格规则属于 Provider Rules。云端 track 配置、客户端兼容匹配和防回退高水位属于 NDN 更新链路。

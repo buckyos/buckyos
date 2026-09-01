@@ -24,7 +24,6 @@ src/rootfs/bin/verify-hub/verify_hub
 src/rootfs/bin/node-daemon/node_daemon
 src/rootfs/bin/repo-service/repo_service
 src/rootfs/bin/smb-service/smb_service
-src/rootfs/bin/buckycli/buckycli
 /src/rootfs/bin/control-panel/control_panel
 /src/rootfs/bin/control-panel/web/
 /src/rootfs/bin/sys-test/dist/
@@ -38,9 +37,8 @@ src/web3_bridge/cyfs_gateway
 
 
 cargo.lock
+# BuckyOS internal consumers follow the latest WebSDK; third-party Apps own dependency locks.
 pnpm-lock.yaml
-!src/kernel/node_active/pnpm-lock.yaml
-!src/apps/sys_test/pnpm-lock.yaml
 src/Cargo.lock
 **/node_modules
 .pnpm-store
@@ -71,8 +69,12 @@ src/publish/win_pkg/scripts/seed_defaults.ps1
 src/publish/win_pkg/scripts/ensure_firewall_rules.ps1
 src/publish/win_pkg/scripts/uninstall_cleanup.ps1
 src/rootfs/bin/opendan/agent_tool
+/src/rootfs/libexec/buckyos-tool/
 
 src/apps/sys_test/dist/
+src/apps/sys_test/dapp_dist/
+src/apps/jarvis_runtime/dapp_dist/
+src/rootfs/data/cache/*.pikg
 old/*
 src/frame/desktop/dist/favicon.svg
 aicc_remote_runner.toml
@@ -94,5 +96,3 @@ test/**/target/
 src/rootfs/bin/workflow/workflow
 *.codex
 src/deno.lock
-src/kernel/node_active/pnpm-lock.yaml
-src/apps/sys_test/pnpm-lock.yaml

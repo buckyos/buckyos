@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DEFAULT_BUCKYOS_ROOT="/opt/buckyos"
 DEFAULT_AIOS_IMAGE_REPO="paios/aios"
+JARVIS_APP_ID="jarvis.buckyos.bns.did"
 OWNER_HINT=""
 BUNDLE_DIR=""
 SINCE_MINUTES="60"
@@ -144,7 +145,7 @@ discover_owners() {
   fi
 
   local jarvis_dirs
-  jarvis_dirs="$(find "$root/data/home" -type d -path '*/.local/share/jarvis' 2>/dev/null || true)"
+  jarvis_dirs="$(find "$root/data/home" -type d -path "*/.local/share/$JARVIS_APP_ID" 2>/dev/null || true)"
   if [[ -n "$jarvis_dirs" ]]; then
     printf '%s\n' "$jarvis_dirs" | while IFS= read -r dir; do
       [[ -z "$dir" ]] && continue
@@ -383,8 +384,10 @@ append_cmd "$DOCKER_FILE" /bin/ps ax -o pid,ppid,user,etime,command | /usr/bin/g
 while IFS= read -r owner; do
   [[ -z "$owner" ]] && continue
   owner_safe="$(printf '%s' "$owner" | tr '/' '_')"
-  app_dir="$BUCKYOS_ROOT_RESOLVED/data/home/$owner/.local/share/jarvis"
-  log_dir="$AGENT_LOG_ROOT/${owner}-jarvis"
+  app_instance_id="$JARVIS_APP_ID@$owner"
+  runtime_key="$(printf '%s' "$app_instance_id" | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
+  app_dir="$BUCKYOS_ROOT_RESOLVED/data/home/$owner/.local/share/$JARVIS_APP_ID"
+  log_dir="$AGENT_LOG_ROOT/$runtime_key"
   {
     echo "===== owner: $owner ====="
     printf '$ %q %q\n' /bin/ls -ld "$app_dir"
@@ -399,17 +402,20 @@ while IFS= read -r owner; do
   } >>"$BUCKYOS_FILE"
 
   owner_container_file="$BUNDLE_DIR/container_${owner_safe}.txt"
-  capture_cmd "$owner_container_file" docker ps -a --no-trunc --filter "name=^${owner}-jarvis$"
-  append_cmd "$owner_container_file" docker container inspect "${owner}-jarvis"
-  append_cmd "$owner_container_file" docker logs --tail 200 "${owner}-jarvis"
+  capture_cmd "$owner_container_file" docker ps -a --no-trunc --filter "label=buckyos.app_instance_id=${app_instance_id}"
+  while IFS= read -r container_id; do
+    [[ -z "$container_id" ]] && continue
+    append_cmd "$owner_container_file" docker container inspect "$container_id"
+    append_cmd "$owner_container_file" docker logs --tail 200 "$container_id"
+  done < <(docker ps -aq --filter "label=buckyos.app_instance_id=${app_instance_id}" 2>/dev/null)
 
   owner_label_file="$BUNDLE_DIR/container_label_${owner_safe}.txt"
-  capture_cmd "$owner_label_file" docker ps -a --no-trunc --filter "label=buckyos.app_id=jarvis"
+  capture_cmd "$owner_label_file" docker ps -a --no-trunc --filter "label=buckyos.app_id=${JARVIS_APP_ID}"
   append_cmd "$owner_label_file" docker ps -a --no-trunc --filter "label=buckyos.owner_user_id=${owner}"
 done <"$OWNERS_FILE"
 
-capture_cmd "$CONTAINERS_FILE" docker ps -a --no-trunc --filter "label=buckyos.app_id=jarvis"
-append_cmd "$CONTAINERS_FILE" docker ps --no-trunc --filter "label=buckyos.app_id=jarvis"
+capture_cmd "$CONTAINERS_FILE" docker ps -a --no-trunc --filter "label=buckyos.app_id=${JARVIS_APP_ID}"
+append_cmd "$CONTAINERS_FILE" docker ps --no-trunc --filter "label=buckyos.app_id=${JARVIS_APP_ID}"
 append_cmd "$CONTAINERS_FILE" docker image inspect "${AIOS_IMAGE_REPO}:latest-aarch64"
 append_cmd "$CONTAINERS_FILE" docker image inspect "${AIOS_IMAGE_REPO}:latest-amd64"
 

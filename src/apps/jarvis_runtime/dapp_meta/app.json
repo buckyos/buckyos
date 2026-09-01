@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "did": "did:bns:jarvis.buckyos",
+  "name": "buckyos-jarvis",
+  "version": "0.7.0",
+  "owner": "did:bns:buckyos",
+  "author": "did:bns:buckyos",
+  "show_name": "Jarvis",
+  "categories": [
+    "agent"
+  ],
+  "permissions": [],
+  "selector_type": "single",
+  "service_config_tips": {
+    "service_endpoints": {
+      "www": {
+        "protocol": "http",
+        "inner_port": 4060,
+        "required": true,
+        "expose": {
+          "route": {
+            "type": "web"
+          },
+          "scope": "",
+          "allow_guest": false
+        }
+      }
+    }
+  }
+}

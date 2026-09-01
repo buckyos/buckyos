@@ -407,7 +407,7 @@ case "$BUCKYOS_APP_TYPE" in
     # guarantee the data root itself exists (already mkdir'd at the top).
     log "agent=${BUCKYOS_APP_ID} port=${BUCKYOS_SERVICE_PORT} data=${BUCKYOS_DATA_DIR}"
     exec "$OPENDAN_BIN" \
-      --agent-id "$BUCKYOS_APP_ID" \
+      --appid "$BUCKYOS_APP_ID" \
       --agent-bin "$BUCKYOS_PKG_DIR" \
       --service-port "$BUCKYOS_SERVICE_PORT" \
       "$@"

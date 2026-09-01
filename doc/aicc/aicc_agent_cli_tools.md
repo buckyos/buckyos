@@ -9,7 +9,7 @@
 gen_image "A precise product photo of a matte black desk lamp." result.png
 ```
 
-本文不包含原始 LLM 推理类命令。`llm.chat`、`llm.completion` 仍由 Agent Runtime / SDK 直接使用，不包装成通用 shell 工具。
+本文不包含原始 LLM 推理类命令。Agent Runtime / SDK 使用 `chat.completions.create` 或对应 Helper，不包装成通用 shell 工具。
 
 相关协议：
 
@@ -38,7 +38,7 @@ CLI 不重新定义 AI 协议。每个命令只负责：
 3. 调用 `/kapi/aicc` 对应 method。
 4. 把 artifacts / 文本结果落到本地文件 / stdout。
 
-> 调用路径：CLI 默认走 helper 层（如文生图走 `helper.text_to_image`），由 helper 内部 `route.resolve` + typed inference（`images.generate`）完成；传入的是逻辑模型名。需要强制指定精确模型或调试两阶段时，可显式 `route.resolve` 再 `images.generate(exact_model=...)`。CLI 不再直接构造 legacy all-in-one `AiMethodRequest`（该形态仅兼容保留）。
+> 调用路径：CLI 默认走 helper 层（如文生图走 `helper.text_to_image`），由 helper 内部 `route.resolve` + typed inference（`images.generate`）完成；传入的是逻辑模型名。需要强制指定精确模型或调试两阶段时，可显式 `route.resolve` 再 `images.generate(exact_model=...)`。CLI 不构造已删除的 all-in-one `AiMethodRequest`。
 
 ---
 
@@ -176,10 +176,9 @@ gen_image <prompt> <output_image>
 AICC mapping：
 
 ```text
-method: image.txt2img
-capability: image
-model.alias default: image.txt2img
-payload.input_json:
+method: helper.text_to_image
+logical_model default: image.txt2img
+params:
   prompt
   negative_prompt
   n
@@ -394,6 +393,8 @@ speech_to_text <input_audio> [output_text]
 
 `--format txt` 写 transcript。`json`、`vtt`、`srt` 对应 AICC `output_formats`。
 
+该命令适用于转写明确的语音；音效、音乐或噪声的描述应使用媒体理解。Provider 将低可信候选保留为诊断信息，CLI 的 transcript 正文保持为空。
+
 ### 5.3 `gen_music`
 
 音乐生成。映射到 `audio.music`。
@@ -499,14 +500,14 @@ video2video <input_video> <prompt> <output_video>
 视频续写。映射到 `video.extend`。
 
 ```bash
-extend_video previous.mp4 "Continue the shot over the rooftops." result.mp4
+extend_video previous.mp4 "Continue the shot over the rooftops." result.mp4 --continuation-handle <provider_handle>
 ```
 
 参数：
 
 ```text
 extend_video <input_video> <prompt> <output_video>
-  --continuation-handle <provider_handle>
+  --continuation-handle <provider_handle>  # required; from a compatible previous generation
   --duration <seconds>
   --resolution <720p|1080p|4k>
 ```
@@ -565,13 +566,13 @@ ai_quota --method image.txt2img
 
 ## 8. 命令到 AICC Method 映射
 
-| CLI | AICC method | capability | 默认 model.alias |
+| CLI | AICC method | capability | 默认 logical_model |
 |---|---|---|---|
-| `gen_image` | `image.txt2img` | `image` | `image.txt2img` |
-| `edit_image` | `image.img2img` | `image` | `image.img2img` |
-| `inpaint_image` | `image.inpaint` | `image` | `image.inpaint` |
-| `upscale_image` | `image.upscale` | `image` | `image.upscale` |
-| `remove_bg` | `image.bg_remove` | `image` | `image.bg_remove` |
+| `gen_image` | `helper.text_to_image` | `image` | `image.txt2img` |
+| `edit_image` | `helper.edit_image` | `image` | `image.img2img` |
+| `inpaint_image` | `helper.edit_image` | `image` | `image.inpaint` |
+| `upscale_image` | `helper.upscale_image` | `image` | `image.upscale` |
+| `remove_bg` | `helper.remove_background` | `image` | `image.bg_remove` |
 | `ocr_image` | `vision.ocr` | `vision` | `vision.ocr` |
 | `caption_image` | `vision.caption` | `vision` | `vision.caption` |
 | `detect_image` | `vision.detect` | `vision` | `vision.detect` |
@@ -594,28 +595,18 @@ ai_quota --method image.txt2img
 
 ```json
 {
-  "method": "image.txt2img",
+  "method": "helper.text_to_image",
   "params": {
-    "capability": "image",
-    "model": {
-      "alias": "image.txt2img"
-    },
+    "logical_model": "image.txt2img",
     "requirements": {
-      "must_features": [],
       "resp_format": "text"
     },
-    "payload": {
-      "input_json": {
-        "prompt": "prompt",
-        "n": 1,
-        "aspect_ratio": "1:1",
-        "quality": "high",
-        "output": {
-          "media_type": "image/png"
-        }
-      },
-      "resources": [],
-      "options": {}
+    "prompt": "prompt",
+    "n": 1,
+    "aspect_ratio": "1:1",
+    "quality": "high",
+    "output": {
+      "media_type": "image/png"
     },
     "policy": {
       "profile": "balanced",

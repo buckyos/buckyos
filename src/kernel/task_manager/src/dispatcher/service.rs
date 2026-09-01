@@ -21,6 +21,7 @@ use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::*;
+use name_lib::DID;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
@@ -101,22 +102,17 @@ impl RunnerCaller for KrpcRunnerCaller {
         // Defense in depth: attach already validates, but endpoints persisted
         // by older builds or other writers must not widen the egress.
         validate_runner_endpoint(endpoint)?;
-        let client = kRPC::new_with_timeout_secs(
-            endpoint,
-            auth_token,
-            (timeout_ms / 1000).max(1),
-        );
+        let client = kRPC::new_with_timeout_secs(endpoint, auth_token, (timeout_ms / 1000).max(1));
         client.call(method, params).await
     }
 }
 
 /// The dispatcher's own actor identity for Task Core writes and audits.
 fn dispatcher_actor() -> ActorRef {
-    ActorRef {
-        user_id: TASK_DISPATCHER_SERVICE_NAME.to_string(),
-        app_id: TASK_DISPATCHER_SERVICE_NAME.to_string(),
-        app_instance_id: None,
-    }
+    ActorRef::from_auth_target(
+        TASK_DISPATCHER_SERVICE_NAME,
+        &AuthTarget::system(SystemServiceId::parse(TASK_DISPATCHER_SERVICE_NAME).unwrap()),
+    )
 }
 
 #[derive(Clone)]
@@ -157,23 +153,16 @@ impl TaskDispatcherService {
         }
     }
 
-    pub fn db(&self) -> Arc<DispatchDb> {
+    #[cfg(test)]
+    pub(crate) fn db(&self) -> Arc<DispatchDb> {
         self.db.clone()
     }
 
-    /// The runner surface (register/attach/renew/detach) authenticates APP
-    /// identities, not the zone-trusted kernel grade: a runner is an app
-    /// service, and an app service's steady-state session token is issued
-    /// by verify-hub (the runtime's keep-alive exchanges the boot-time
-    /// device-signed token within seconds), so a zone-trusted gate here
-    /// only ever passes during that boot window. Protection is ownership
-    /// instead: the first registrant's verified app id is stamped as the
-    /// owner and every later mutation must come from the same app
-    /// (zone-trusted kernel identities keep an admin override). Known v1
-    /// limit: a hostile *installed* app could squat an unregistered
-    /// target id — surfaced loudly to the real owner as a permission
-    /// error on register; per-user app instance identity can tighten this
-    /// later.
+    /// The runner surface (register/attach/renew/detach) authenticates App
+    /// identities, not the zone-trusted kernel grade. Ownership is the full
+    /// AppInstance identity `(owner_user_id, app_id)`, so installations of
+    /// the same App product for different users cannot mutate each other's
+    /// targets. Zone-trusted kernel identities retain an admin override.
     async fn require_target_owner(
         &self,
         request_ctx: &RequestContext,
@@ -185,13 +174,56 @@ impl TaskDispatcherService {
             .get_registration(target_id)
             .await?
             .ok_or_else(|| dispatch_err(DISPATCH_ERR_TARGET_NOT_REGISTERED, target_id))?;
-        if !request_ctx.zone_trusted && registration.owner_app_id != request_ctx.app_id {
+        if !request_ctx.zone_trusted
+            && (registration.owner_user_id != request_ctx.user_id
+                || registration.owner_app_id != request_ctx.app_id)
+        {
             return Err(RPCErrors::NoPermission(format!(
-                "{} must come from the registered owner app {}",
-                what, registration.owner_app_id
+                "{} must come from registered owner {}@{}",
+                what, registration.owner_app_id, registration.owner_user_id
             )));
         }
         Ok(registration)
+    }
+
+    /// A stable Agent DID is implemented by the AppInstance named in its
+    /// AgentServiceBinding. This check lets the currently bound runtime
+    /// recover a registration left by an obsolete AppId without allowing an
+    /// unrelated App to take it over.
+    async fn request_matches_agent_binding(
+        &self,
+        request_ctx: &RequestContext,
+        target_id: &str,
+    ) -> Result<bool> {
+        let Some(raw_app_instance_id) = request_ctx.app_instance_id.as_deref() else {
+            return Ok(false);
+        };
+        let app_instance_id = match raw_app_instance_id.parse::<AppInstanceId>() {
+            Ok(value) => value,
+            Err(_) => return Ok(false),
+        };
+        let agent_did = match DID::from_str(target_id) {
+            Ok(value) => value,
+            Err(_) => return Ok(false),
+        };
+        let agent_id = match AgentId::from_agent_did(&agent_did) {
+            Ok(value) => value,
+            Err(_) => return Ok(false),
+        };
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        let key = agent_spec_key(&request_ctx.user_id, &agent_id);
+        let value = client.get(&key).await.map_err(|error| {
+            RPCErrors::ReasonError(format!("load AgentSpec {key} failed: {error}"))
+        })?;
+        let spec: AgentSpec = serde_json::from_str(&value.value).map_err(|error| {
+            RPCErrors::ReasonError(format!("decode AgentSpec {key} failed: {error}"))
+        })?;
+        spec.validate()
+            .map_err(|error| RPCErrors::ReasonError(format!("invalid AgentSpec {key}: {error}")))?;
+        Ok(spec.agent_did == agent_did
+            && spec.agent_id == agent_id
+            && spec.binding.references_runtime(&app_instance_id))
     }
 
     /// Deterministic per-lease push credential. Scoped to
@@ -219,16 +251,30 @@ impl TaskDispatcherService {
                 RPCErrors::NoPermission("task-dispatcher requires a session token".to_string())
             })?;
         let verified = self.token_verifier.verify(token).await?;
-        let (user_id, app_id) = verified.get_subs()?;
+        let claims = validate_verify_hub_token_claims(&verified, TokenUse::Session)?;
+        let user_id = verified
+            .sub
+            .clone()
+            .ok_or_else(|| RPCErrors::InvalidToken("session token has no subject".to_string()))?;
+        let app_id = claims.target.canonical_key();
+        let executor_app_id = claims.target.appid_claim().to_string();
+        let authorization_id = claims.target.authorization_key();
+        let app_instance_id = match &claims.target {
+            AuthTarget::App { app_instance_id } => Some(app_instance_id.to_string()),
+            AuthTarget::System { .. } => None,
+        };
         if user_id.trim().is_empty() || app_id.trim().is_empty() {
             return Err(RPCErrors::InvalidToken(
                 "session token has an empty subject or app id".to_string(),
             ));
         }
-        let zone_trusted = verified.iss.as_deref() != Some(VERIFY_HUB_UNIQUE_ID);
+        let zone_trusted = crate::server::token_is_zone_trusted(&verified);
         Ok(RequestContext {
             user_id,
             app_id,
+            executor_app_id,
+            app_instance_id,
+            authorization_id,
             zone_trusted,
             sudo: verified.sudo,
         })
@@ -308,10 +354,11 @@ impl TaskDispatcherService {
                         kind: TASK_DISPATCHER_SERVICE_NAME.to_string(),
                         id: record.dispatch_id.clone(),
                     }),
-                    parent_id: None,
+                    parent_id: record.auth.parent_task_id.clone(),
                     child_control_policy: None,
                     policy_preset: None,
                     permission_boundary: false,
+                    storage_domain: record.auth.storage_domain,
                     // Deterministically derived from the dispatch id so
                     // replays after a crash find the same task.
                     idempotency_key: format!("dsp:{}", record.dispatch_id),
@@ -367,9 +414,7 @@ impl TaskDispatcherService {
             .db
             .get_registration(&record.target_id)
             .await?
-            .ok_or_else(|| {
-                dispatch_err(DISPATCH_ERR_TARGET_NOT_REGISTERED, &record.target_id)
-            })?;
+            .ok_or_else(|| dispatch_err(DISPATCH_ERR_TARGET_NOT_REGISTERED, &record.target_id))?;
         Ok(match registration.approval_policy {
             DispatchApprovalPolicy::Never => false,
             DispatchApprovalPolicy::InteractiveCallers => !record.auth.zone_trusted_caller,
@@ -418,7 +463,34 @@ impl TaskDispatcherService {
 
     pub async fn startup_recovery(&self) {
         info!("dispatcher.startup_recovery");
+        // First finish any CreatingTask saga whose Task Core insert committed
+        // before the dispatcher record captured its task_id. Otherwise that
+        // live task would look orphaned during StorageDomain recovery.
         self.evaluate_once(true).await;
+        let live_task_ids = match self.db.list_task_ids().await {
+            Ok(task_ids) => task_ids,
+            Err(err) => {
+                warn!(
+                    "dispatcher: durable state is unreadable; treating restored User task bindings as lost: {}",
+                    err
+                );
+                Default::default()
+            }
+        };
+        match self
+            .task_core
+            .recover_lost_user_tasks_by_origin(TASK_DISPATCHER_SERVICE_NAME, &live_task_ids)
+            .await
+        {
+            Ok(count) if count > 0 => {
+                warn!(
+                    "dispatcher: failed {} restored User tasks with runner_lost",
+                    count
+                )
+            }
+            Ok(_) => {}
+            Err(err) => warn!("dispatcher: User task restore recovery failed: {}", err),
+        }
     }
 
     async fn resume_creating_tasks(&self) -> Result<()> {
@@ -765,13 +837,22 @@ impl TaskDispatcherService {
                 ..
             } if bound.as_deref() == Some(app_instance_id) => task.runner_epoch,
             _ => {
+                let runner_app_id = AuthTarget::from_canonical_key(&registration.owner_app_id)
+                    .map_err(|error| {
+                        RPCErrors::ReasonError(format!(
+                            "invalid target owner identity {}: {error}",
+                            registration.owner_app_id
+                        ))
+                    })?
+                    .appid_claim()
+                    .to_string();
                 let bound_task = self
                     .task_core
                     .trusted_bind_app_executor(
                         BindAppExecutorReq {
                             task_id: task_id.clone(),
                             target_id: Some(record.target_id.clone()),
-                            app_id: registration.owner_app_id.clone(),
+                            app_id: runner_app_id,
                             app_instance_id: app_instance_id.to_string(),
                             delivery_id: Some(attempt.delivery_id.clone()),
                             expected_revision: task.revision,
@@ -800,8 +881,14 @@ impl TaskDispatcherService {
                 RecordStateUpdate::to_status(DispatchStatus::Activating),
             )
             .await?;
-        self.run_activate(record, attempt, registration, runner_epoch, reservation_token)
-            .await
+        self.run_activate(
+            record,
+            attempt,
+            registration,
+            runner_epoch,
+            reservation_token,
+        )
+        .await
     }
 
     async fn run_activate(
@@ -813,7 +900,9 @@ impl TaskDispatcherService {
         reservation_token: &str,
     ) -> Result<()> {
         let Some(task_id) = record.task_id.clone() else {
-            return Err(RPCErrors::ReasonError("activating without a task id".into()));
+            return Err(RPCErrors::ReasonError(
+                "activating without a task id".into(),
+            ));
         };
         let function = registration
             .function_for(&record.schema_id, record.schema_version)
@@ -979,7 +1068,13 @@ impl TaskDispatcherService {
                         }
                     } else if let Some(runner_epoch) = attempt.runner_epoch {
                         if let Err(err) = self
-                            .run_activate(&record, &attempt, &registration, runner_epoch, &reservation)
+                            .run_activate(
+                                &record,
+                                &attempt,
+                                &registration,
+                                runner_epoch,
+                                &reservation,
+                            )
                             .await
                         {
                             warn!("dispatcher: activate replay failed: {}", err);
@@ -1182,6 +1277,8 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             let existing_digest = compute_input_digest(&req.input);
             if existing.auth.input_digest != existing_digest
                 || existing.schema_id != req.schema_id
+                || existing.auth.parent_task_id != req.parent_task_id
+                || existing.auth.storage_domain != req.storage_domain
             {
                 return Err(dispatch_err(
                     DISPATCH_ERR_IDEMPOTENCY_CONFLICT,
@@ -1193,9 +1290,10 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             } else {
                 existing
             };
-            let task_id = existing.task_id.clone().ok_or_else(|| {
-                RPCErrors::ReasonError("dispatch record has no task yet".into())
-            })?;
+            let task_id = existing
+                .task_id
+                .clone()
+                .ok_or_else(|| RPCErrors::ReasonError("dispatch record has no task yet".into()))?;
             let task = self
                 .task_core
                 .trusted_get_task(&task_id)
@@ -1291,6 +1389,8 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                 on_behalf_of,
                 zone_trusted_caller: request_ctx.zone_trusted,
                 workflow_ref: req.workflow_ref.clone(),
+                parent_task_id: req.parent_task_id.clone(),
+                storage_domain: req.storage_domain,
                 input_digest: compute_input_digest(&req.input),
                 created_at: now,
                 expires_at: req.expires_at,
@@ -1343,9 +1443,8 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                 ))
             }
         };
-        let record = record.ok_or_else(|| {
-            RPCErrors::ReasonError("dispatch record not found".to_string())
-        })?;
+        let record = record
+            .ok_or_else(|| RPCErrors::ReasonError("dispatch record not found".to_string()))?;
         if !request_ctx.zone_trusted
             && !(record.auth.requested_by_user == request_ctx.user_id
                 && record.auth.requested_by_app == request_ctx.app_id)
@@ -1578,15 +1677,31 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                 "a registration needs at least one runner function".into(),
             ));
         }
-        // First-writer-wins ownership: an existing registration may only be
-        // updated by its owner app (or a zone-trusted admin identity).
+        // Existing registrations are AppInstance-owned. A new AppInstance
+        // may replace stale ownership only when the AgentSpec explicitly
+        // binds this stable Agent DID to it.
         let existing = self.db.get_registration(&registration.target_id).await?;
+        let mut binding_authorized_takeover = false;
         if let Some(existing) = existing.as_ref() {
-            if !request_ctx.zone_trusted && existing.owner_app_id != request_ctx.app_id {
-                return Err(RPCErrors::NoPermission(format!(
-                    "target {} is owned by app {}",
-                    registration.target_id, existing.owner_app_id
-                )));
+            let same_owner = existing.owner_user_id == request_ctx.user_id
+                && existing.owner_app_id == request_ctx.app_id;
+            if !request_ctx.zone_trusted && !same_owner {
+                binding_authorized_takeover = self
+                    .request_matches_agent_binding(&request_ctx, &registration.target_id)
+                    .await
+                    .unwrap_or_else(|error| {
+                        warn!(
+                            "cannot authorize AgentServiceBinding takeover for {}: {}",
+                            registration.target_id, error
+                        );
+                        false
+                    });
+                if !binding_authorized_takeover {
+                    return Err(RPCErrors::NoPermission(format!(
+                        "target {} is owned by app instance {}@{}",
+                        registration.target_id, existing.owner_app_id, existing.owner_user_id
+                    )));
+                }
             }
         }
         // Owner identity comes from the verified token, never the payload.
@@ -1594,7 +1709,11 @@ impl TaskDispatcherHandler for TaskDispatcherService {
         // keeps the original owner — admin edits must not hijack the
         // target away from its runner.
         match existing {
-            Some(existing) if existing.owner_app_id != request_ctx.app_id => {
+            Some(existing)
+                if request_ctx.zone_trusted
+                    && (existing.owner_user_id != request_ctx.user_id
+                        || existing.owner_app_id != request_ctx.app_id) =>
+            {
                 registration.owner_user_id = existing.owner_user_id;
                 registration.owner_app_id = existing.owner_app_id;
             }
@@ -1602,6 +1721,12 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                 registration.owner_user_id = request_ctx.user_id.clone();
                 registration.owner_app_id = request_ctx.app_id.clone();
             }
+        }
+        if binding_authorized_takeover {
+            info!(
+                "AgentServiceBinding transferred target {} to app instance {}@{}",
+                registration.target_id, registration.owner_app_id, registration.owner_user_id
+            );
         }
         let stored = self.db.upsert_registration(registration).await?;
         self.notify_evaluate();
@@ -1611,9 +1736,15 @@ impl TaskDispatcherHandler for TaskDispatcherService {
     async fn handle_disable_target(&self, req: DisableTargetReq, ctx: RPCContext) -> Result<()> {
         let request_ctx = self.authenticate(&ctx).await?;
         Self::require_zone_trusted(&request_ctx, "disable_target")?;
-        let changed = self.db.set_registration_enabled(&req.target_id, false).await?;
+        let changed = self
+            .db
+            .set_registration_enabled(&req.target_id, false)
+            .await?;
         if !changed {
-            return Err(dispatch_err(DISPATCH_ERR_TARGET_NOT_REGISTERED, &req.target_id));
+            return Err(dispatch_err(
+                DISPATCH_ERR_TARGET_NOT_REGISTERED,
+                &req.target_id,
+            ));
         }
         Ok(())
     }
@@ -1653,11 +1784,7 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             lease_epoch,
             lease_expires_at: instance.lease_expires_at,
             target_key: task_dispatcher_target_key(&req.target_id),
-            delivery_token: self.delivery_token_for(
-                &req.target_id,
-                &req.instance_id,
-                lease_epoch,
-            ),
+            delivery_token: self.delivery_token_for(&req.target_id, &req.instance_id, lease_epoch),
         })
     }
 
@@ -1706,7 +1833,10 @@ impl TaskDispatcherHandler for TaskDispatcherService {
         let request_ctx = self.authenticate(&ctx).await?;
         self.require_target_owner(&request_ctx, &req.target_id, "detach_instance")
             .await?;
-        let instance = self.db.get_instance(&req.target_id, &req.instance_id).await?;
+        let instance = self
+            .db
+            .get_instance(&req.target_id, &req.instance_id)
+            .await?;
         if let Some(instance) = instance {
             if instance.lease_epoch != req.lease_epoch {
                 return Err(dispatch_err(
@@ -1714,12 +1844,18 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                     format!("{}/{}", req.target_id, req.instance_id),
                 ));
             }
-            self.db.remove_instance(&req.target_id, &req.instance_id).await?;
+            self.db
+                .remove_instance(&req.target_id, &req.instance_id)
+                .await?;
         }
         Ok(())
     }
 
-    async fn handle_get_target(&self, req: GetTargetReq, ctx: RPCContext) -> Result<GetTargetResult> {
+    async fn handle_get_target(
+        &self,
+        req: GetTargetReq,
+        ctx: RPCContext,
+    ) -> Result<GetTargetResult> {
         let request_ctx = self.authenticate(&ctx).await?;
         Self::require_zone_trusted(&request_ctx, "get_target")?;
         let registration = self
@@ -1759,7 +1895,10 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                 dispatch_err(DISPATCH_ERR_TARGET_NOT_REGISTERED, &req.default_target_id)
             })?;
         if !registration.supports_schema(&req.schema_id) {
-            return Err(dispatch_err(DISPATCH_ERR_UNSUPPORTED_SCHEMA, &req.schema_id));
+            return Err(dispatch_err(
+                DISPATCH_ERR_UNSUPPORTED_SCHEMA,
+                &req.schema_id,
+            ));
         }
         self.db
             .set_operation_route(&req.schema_id, &req.default_target_id)

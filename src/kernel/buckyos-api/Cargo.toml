@@ -32,6 +32,7 @@ uuid = { workspace = true }
 memmap2 = "0.9.5"
 libc = "0.2.177"
 rusqlite = { workspace = true }
+sysinfo = { workspace = true }
 
 buckyos-kit = { workspace = true }
 package-lib = { workspace = true }

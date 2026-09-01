@@ -1,98 +1,86 @@
-# AICC Driver Metadata Update 持久化数据格式
+# AICC Metadata 更新持久化边界
 
 ## 1. Overview
 
-服务：AICC。协议见 [driver_metadata_update_protocol.md](driver_metadata_update_protocol.md)。
+服务：AICC。流程见 [driver_metadata_update_protocol.md](driver_metadata_update_protocol.md)。
 
-AICC 持久保存已验证的发布水位、provider metadata 对象和已提交 activation，用于防回滚、断电恢复和 LKGS 回退。
+Metadata 文件、兼容版本选择和全局目标序列由 NDN 更新链路管理。NDN 持久维护本机已接受的发布高水位，保证普通云更新只前进不回退。AICC 不维护对象缓存、activation、更新专用 LKGS、manifest 副本或 staging 目录；AICC 只读取目标序列，并保存每个 Provider inventory 已应用的序列。
 
 ## 2. Data Classification
 
-| 数据项 | 分类 | 生命周期 |
-|---|---|---|
-| observed index/manifest 水位 | Durable | 跨重启、安装覆盖和升级保留 |
-| provider metadata objects | Durable | 被保留 activation 或最新 candidate 引用时保留 |
-| activation | Durable | 当前 LKGS 及一个并发读取/回退版本保留 |
-| staging、`.part` | Disposable | 启动及失败时整体删除 |
-| 未引用对象 | Disposable | mark-and-sweep 删除 |
-| 退避计数 | Disposable | 进程重启后可重新开始 |
+| 数据项 | 所有者 | 生命周期 |
+| --- | --- | --- |
+| 当前 metadata 文件集合 | NDN | Durable；下载、校验、替换完成且新文件就绪后，才能推进目标序列 |
+| 云端客户端版本投放配置 | 云更新服务 | Durable，按客户端版本、通道或灰度分组选择兼容发布版本 |
+| metadata 发布元信息 | NDN 更新链路 | Durable，包含严格递增的 manifest `revision_seq`、客户端兼容范围、required features 和文件集合身份 |
+| `metadata_target_seq` | NDN | Durable，本机只递增的已接受高水位，等于当前 manifest 的 `revision_seq` |
+| `metadata_applied_seq` | AICC Provider inventory | Durable，该 Provider 已正式应用的目标序列 |
+| `metadata_updating_seq` | AICC 刷新过程 | Transient，单次刷新开始时捕获的目标序列 |
+| metadata resolver/catalog snapshot | AICC | Memory，可由当前文件重建 |
+| provider model 列表及其 inventory | AICC 既有库存机制 | 定时探测或 metadata 序列变化时更新 |
+| Provider 库存刷新定时任务、控制通道 | AICC | Memory，实例启动时创建，停止时发送 `Stop` 并等待循环退出 |
 
-## 3. Storage Strategy
+不新增 AICC 专用 remote cache、candidate、activation、observed revision、回滚版本或对象 digest 文件。NDN 为兼容版本选择与防回退保存的数据不属于 AICC 持久化。
 
-位置：`$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/`。
-`source-key` 是 canonical `source_url` 的 SHA-256，不同发布源的防回滚水位和对象严格隔离。
+## 3. 序列字段语义
+
+### `metadata_target_seq`
+
+类型为非负 `u64`，等于当前发布 manifest 的 `revision_seq`。NDN 仅在完整且兼容的 metadata 文件替换成功后推进，跨重启保留且不得降低；相同序列对应不同内容必须拒绝。AICC 只做相等性比较，不自行推导、递增或校验文件版本。
+
+### `metadata_applied_seq`
+
+类型为非负 `u64`，每个 Provider inventory 独立保存。它只能与使用对应 metadata snapshot 构造的新 inventory 一起成功提交，不能在刷新开始时提前修改。
+
+### `metadata_updating_seq`
+
+刷新开始时从目标序列复制得到，只表示本轮准备应用哪个版本，不表示已经成功。它优先作为进程内临时状态；进程崩溃后不需要恢复，因为持久的 `metadata_applied_seq` 仍保持旧值，下一次触发会重新收敛。
+
+## 4. Provider Inventory Schema
+
+Provider inventory 至少记录：
 
 ```text
-<source-key>/objects/<FileObject-ObjId>.json
-<source-key>/objects/<FileObject-ObjId>.sha256
-<source-key>/activations/<manifest-revision>.json
-<source-key>/observed/index/<index-revision>.json
-<source-key>/observed/manifest/<manifest-revision>.json
-<source-key>/staging/<attempt>/...
-<source-key>/last_used
+provider_instance_name
+provider_model_list
+provider_model_list_fingerprint
+metadata_applied_seq
+inventory payload
+updated_at
 ```
 
-这是文件系统直接作为核心数据模型的显式例外，风险为目录损坏和跨文件提交。选择该方式的原因是数据都是小型、不可变、内容寻址的 NDN 文件，没有结构化查询；activation 单文件是唯一提交点，避免 RDB head 与运行时文件之间的双提交。所有 durable 文件都先写同目录临时文件、`sync_all`，再用原子的 create-if-absent 操作提交到此前不存在的最终路径：Unix 使用 hard link 并同步父目录，Windows 使用 `MOVEFILE_WRITE_THROUGH`。文件系统布局不进入用户配置或 API，未来可迁移到对象存储。
+`provider_model_list_fingerprint` 只用于判断本次 discovery 列表是否发生变化，不承担 metadata 文件完整性校验。
 
-## 4. Schema Definitions
+提交规则：
 
-### Object: observed index
+1. 开始重建前设置临时 `metadata_updating_seq = metadata_target_seq`。
+2. 使用该序列对应的完整 metadata snapshot 构造 inventory。
+3. Provider 真正完成库存刷新后，原子写入 inventory、model list/fingerprint 和 `metadata_applied_seq = metadata_updating_seq`。
+4. 刷新未完成或失败时保持原 inventory 和 `metadata_applied_seq`，丢弃临时值。
 
-- 文件名：`<index_revision_seq>.json`
-- 内容：经 NDN SDK 下载并验证、且通过协议解析的完整 index，加 `path_obj_id`。
-- 约束：revision 单调；同名文件内容冲突时 fail-closed。
+新建 Provider 的首份 inventory 直接捕获并应用当前 `metadata_target_seq`，不得以空值表示已经同步。
 
-### Object: observed manifest
+## 5. 触发与 no-op
 
-- 文件名：`<revision_seq>.json`
-- 内容：经 NDN SDK 下载并验证、且通过协议解析的完整 manifest，加 index 声明的 manifest ObjId。
-- 约束：revision 单调；同 revision 不同 ObjId fail-closed。
+推理请求前或任一 Provider Instance 定时库存刷新时，发现任何 Provider 的 `metadata_applied_seq != metadata_target_seq`，都执行全局收敛。
 
-### Object: provider metadata
+定时探测某个 Provider 时：
 
-- 文件名：FileObject ObjId 加 `.json`。
-- 内容：协议定义的 UTF-8 JSON。
-- 约束：ObjId 已由 NDN SDK 校验；首次落盘同时保存内容 SHA-256，缓存复用时重新计算并匹配，用于发现落盘后的静默损坏；内部 provider、schema、revision 与 manifest 一致。
-- 大小：单对象不超过 64 MiB；单 manifest 的对象总大小不超过 512 MiB。
+- model 列表未变化且序列相同：仅探测，不重写 inventory；
+- model 列表变化或序列不同：必须更新该 Provider inventory；
+- 序列不同的其它 Provider 也必须在同一全局过程内收敛，不能只更新当前 Provider。
 
-### Object: activation
+定时任务和控制通道不持久化。Provider 停止、禁用、删除、被配置 reload 替换或服务退出时，先禁止新刷新，再通过控制通道发送幂等 `Stop` 事件并等待任务循环优雅退出；退出后的任务不得提交 inventory、fingerprint、applied seq 或 health。Provider 再次启用后创建新循环，并根据持久 inventory 的 model fingerprint 和 `metadata_applied_seq` 继续收敛。
 
-- 文件名：`<manifest revision_seq>.json`。
-- 内容：已接受 manifest、manifest ObjId 及 manifest SHA-256。
-- 约束：文件名必须等于 manifest `revision_seq`；首次选择该 activation 时验证 wrapper、manifest SHA-256、协议字段及全部 provider object，命中进程内验证缓存后只复核 wrapper 和当前 provider object。只有引用对象全部落盘且可解析后才能创建；文件创建即提交。
+## 6. 并发与故障
 
-## 5. Schema Version
+- 一轮刷新捕获一个目标序列；目标在刷新中再次变化时，不修改本轮捕获值。
+- NDN 只能推进目标序列；AICC 不处理 `metadata_target_seq` 下降。发现下降表示 NDN 更新契约被破坏，应拒绝使用新文件并提交 NDN bug。
+- Provider 成功提交旧捕获值后若仍落后于最新目标，下一轮继续刷新。
+- AICC 无法加载 NDN 文件或重建某个 Provider inventory 时，不推进该 Provider 的 `metadata_applied_seq`。
+- Provider 库存刷新未真正完成时不得推进 `metadata_applied_seq`；失败诊断应暴露 applied/target seq 和最近失败原因。
+- 如果故障来自 NDN 未能保证文件契约，应向 NDN 提交 bug，而不是在 AICC 中增加校验、activation、LKGS 或回滚流程。
 
-目录和本地 wrapper 的初始版本为 `v1`。provider metadata 的 `schema_version`、分发协议的 `protocol_version` 与本地目录版本相互独立。
+## 7. Beta 2.2 兼容策略
 
-## 6. Upgrade Compatibility Strategy
-
-| 数据项 | 策略 |
-|---|---|
-| v1 observed 水位 | Additive-only；冻结 revision/ObjId 语义 |
-| v1 provider object | Rebuild；可按相同 ObjId 从发布端重新获取 |
-| v1 activation | Rebuild；缺少必需 manifest 摘要的旧 activation 视为无效并重新下载 |
-| staging | Rebuild；任何升级都可删除 |
-
-不兼容本地布局使用新目录版本并从旧 activation 一次性导入；导入失败继续读旧目录，不原地改写旧状态。
-
-## 7. Extensibility Rules
-
-冻结：revision 比较、ObjId、provider_driver、activation 提交语义。可扩展：wrapper 中具有缺省行为的诊断字段。核心对象不提供任意 `extra`，避免未知字段被误认为安全语义。
-
-## 8. Query Patterns
-
-| 查询 | 支持方式 |
-|---|---|
-| 最新 observed revision | 枚举小型目录并取最大 revision |
-| 最新可用 activation | revision 降序验证文件及引用对象；进程内缓存已完整验证的最高版本，普通读取只复核 activation wrapper 和目标 provider 对象，目标损坏时清除缓存并重新执行完整 LKGS 选择 |
-| 按 ObjId 读取 provider metadata | 文件名直接定位 |
-| 按 exact model 匹配规则 | metadata 载入后构造进程内索引；重启可重建，不持久化 |
-| 清理孤儿 | activation 引用集合与 objects 目录做差 |
-
-单个 source namespace 的目录规模由保留策略限制，不存在大规模扫描或复杂索引。
-
-每个 source namespace 最多保留两个有效 activation、两个 index 水位和两个 manifest
-水位；对象保留集合是这些 activation 与最新 observed manifest 的引用并集。它覆盖当前
-生效版本、一次必要回退/并发读取版本和正在更新的 candidate。其它对象、旧水位、旧
-activation 和 staging 均清理。全局最多保留四个最近使用的 source namespace，当前 source 每次更新前刷新 `last_used`；超过上限时整体删除最旧 namespace。仍在保留窗口内的 source 可以继续使用原有 LKGS 和 observed 水位，超出窗口后再次启用则按新 source 首次同步处理。由此单个 source 和 source 总数都有确定上界。
+Beta 2.2 是 breaking change。旧布尔 `metadata_update_pending`、`remote_cache/v1`、`provider_catalog/remote_cache/v2`、activation、observed water mark 和 staging 数据不读取、不导入，也不提供兼容迁移。

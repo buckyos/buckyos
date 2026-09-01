@@ -422,7 +422,11 @@ pub(crate) fn merge_options(
     };
 
     let mut ignored = vec![];
+    let provider_options = options_map.get("provider_options").cloned();
     for (key, value) in options_map.iter() {
+        if key == "provider_options" {
+            continue;
+        }
         if key == "model" || key == "messages" || key == "input" {
             continue;
         }
@@ -468,6 +472,12 @@ pub(crate) fn merge_options(
             continue;
         }
         target.insert(key.clone(), value.clone());
+    }
+    if let Some(provider_options) = provider_options {
+        if !provider_options.is_object() {
+            return Err(ProviderError::fatal("provider_options must be an object"));
+        }
+        ignored.extend(merge_options(target, &provider_options)?);
     }
     Ok(ignored)
 }
@@ -702,6 +712,25 @@ mod tests {
                 .pointer("/reasoning/effort")
                 .and_then(|value| value.as_str()),
             Some("low")
+        );
+    }
+
+    #[test]
+    fn merge_options_flattens_metadata_provider_options() {
+        let mut target = Map::new();
+        merge_options(
+            &mut target,
+            &json!({
+                "provider_options": {
+                    "reasoning": { "effort": "high" }
+                }
+            }),
+        )
+        .expect("provider options should merge");
+
+        assert_eq!(
+            Value::Object(target).pointer("/reasoning/effort"),
+            Some(&json!("high"))
         );
     }
 

@@ -149,30 +149,36 @@ export const TEST_GROUPS: TestGroup[] = [
           const name = `test-websdk-${Date.now()}`
           const created = await client.createTask({
             name,
-            taskType: 'test',
-            data: { createdBy: 'sys-test-panel' },
-            userId,
-            appId,
+            schema_id: 'raw/v1',
+            input: { createdBy: 'sys-test-panel', userId, appId },
+            executor: { kind: 'SelfApp' },
+            idempotency_key: `sys-test-${crypto.randomUUID()}`,
           })
+          const taskId = created.task_id
           try {
-            await client.updateTaskProgress(created.id, 1, 2)
-            await client.completeTask(created.id)
-            const fetched = await client.getTask(created.id)
-            if (fetched.status !== 'Completed') {
+            await client.runnerStart(taskId)
+            await client.runnerProgress(taskId, { completed: 1, total: 2 })
+            await client.runnerComplete(taskId, { ok: true })
+            const fetched = await client.getTask(taskId)
+            if (fetched.phase !== 'Terminal' || fetched.outcome !== 'Succeeded') {
               throw new Error(
-                `expected task ${created.id} to be Completed, got ${fetched.status}`,
+                `expected task ${taskId} to succeed, got ${fetched.phase}/${fetched.outcome}`,
               )
             }
-            const filtered = await client.listTasks({
-              filter: { root_id: String(created.id) },
-            })
-            if (!filtered.some((task) => task.id === created.id)) {
-              throw new Error(`task ${created.id} missing from filtered list`)
+            const page = await client.listTasks({ root_id: created.root_id })
+            if (!page.tasks.some((task) => task.task_id === taskId)) {
+              throw new Error(`task ${taskId} missing from filtered list`)
             }
-            return { taskId: created.id }
+            return { taskId }
           } finally {
             try {
-              await client.deleteTask(created.id)
+              const latest = await client.getTask(taskId)
+              if (latest.phase === 'Terminal' && latest.archived_at === undefined) {
+                await client.archiveTask({
+                  task_id: taskId,
+                  expected_revision: latest.revision,
+                })
+              }
             } catch {
               // best-effort cleanup, ignore
             }

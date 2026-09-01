@@ -1,4 +1,6 @@
-# AICC Provider 修改需求整理
+# AICC Provider 修改需求整理（历史方案）
+
+> 本文中的 `provider_driver` 等结构已被 Beta 2.2 目标方案取代。后续实现以 `provider_profile_schema.md`、`aicc_provider_plan.md` 和 `provider_architecture_durable_data_schema.md` 为准。
 
 > 本文是 provider 迁移阶段的设计记录，不是公开 kRPC 调用说明。公开接口没有 `complete` method；调用方式以 `aicc_api设计.md` 和 `maintenance/krpc_aicc_calling_guide.md` 为准。
 
@@ -277,7 +279,7 @@ pub struct CostEstimateOutput {
 各 provider 不应该各自随意决定 `logical_mounts` 和 `capabilities`。建议先定一组基础映射规则：
 
 - LLM 模型：
-  - `api_types`: `llm.chat`，需要时补 `llm.completion`。
+  - `api_types`: `llm.chat`；不定义 `llm.completion`。
   - `logical_mounts`: 至少挂到模型家族目录，例如 `llm.gpt5`、`llm.claude`、`llm.gemini`、`llm.minimax`。
   - 不建议直接挂到 `llm.plan`、`llm.code`、`llm.chat`，这些由 global session config 通过 items 配。
 - Text2Image 模型：

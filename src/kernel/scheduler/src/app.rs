@@ -11,14 +11,7 @@ use anyhow::Result;
 use buckyos_api::{BASE_APP_PORT, MAX_APP_INDEX};
 
 fn app_service_spec_key_candidates(user_id: &str, app_id: &str) -> Vec<String> {
-    let mut keys = vec![
-        format!("users/{}/apps/{}/spec", user_id, app_id),
-        format!("users/{}/agents/{}/spec", user_id, app_id),
-    ];
-    if user_id == SYSTEM_APP_OWNER_ID {
-        keys.insert(0, zone_app_spec_key(app_id));
-    }
-    keys
+    vec![format!("users/{user_id}/apps/{app_id}/spec")]
 }
 
 fn load_app_service_spec(
@@ -31,14 +24,12 @@ fn load_app_service_spec(
             let spec: AppServiceSpec = serde_json::from_str(raw.as_str()).map_err(|err| {
                 anyhow::anyhow!("app_config {} is not a valid json: {}", key, err)
             })?;
-            let expected_class = if user_id == SYSTEM_APP_OWNER_ID {
-                AppClass::ZoneInstalled
-            } else {
-                AppClass::UserInstalled
-            };
-            if spec.app_class != expected_class || spec.user_id != user_id {
+            if spec.owner_user_id != user_id
+                || spec.app_id().as_str() != app_id
+                || spec.app_instance_id.owner_user_id() != user_id
+            {
                 return Err(anyhow::anyhow!(
-                    "app_config {} has mismatched class or owner",
+                    "app_config {} has mismatched app or owner",
                     key
                 ));
             }
@@ -59,7 +50,8 @@ fn build_app_service_config(
     node_info: &DeviceInfo,
     instance_service_ports: HashMap<String, u16>,
 ) -> Result<AppServiceInstanceConfig> {
-    let mut result_config = AppServiceInstanceConfig::new(node_id, app_config);
+    let mut result_config = AppServiceInstanceConfig::new(node_id, app_config)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let has_script_pkg = app_config.app_doc.pkg_list.script.is_some();
     if node_info.support_container {
         let docker_pkg_name = format!("{}_docker_image", node_info.arch.as_str());
@@ -115,7 +107,12 @@ pub fn instance_app_service(
 ) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
 
-    let (app_id, user_id, node_id) = parse_instance_id(new_instance.instance_id.as_str())?;
+    let app_instance_id = new_instance
+        .replica_key
+        .app_instance_id()
+        .ok_or_else(|| anyhow::anyhow!("app replica must use an AppInstanceId key"))?;
+    let user_id = app_instance_id.owner_user_id().to_string();
+    let app_id = app_instance_id.app_id().to_string();
     let (app_config_path, app_config) = load_app_service_spec(&user_id, &app_id, input_config)?;
     info!("instance_app_service app_config_path: {}", app_config_path);
     if app_config.app_index > MAX_APP_INDEX {
@@ -138,7 +135,7 @@ pub fn instance_app_service(
     //write to node_config
     info!(
         "will instance_app_service app_config: {},service_ports: {:?}",
-        app_id, new_instance.service_ports
+        app_instance_id, new_instance.service_ports
     );
     let app_service_config = build_app_service_config(
         new_instance.node_id.as_str(),
@@ -154,7 +151,7 @@ pub fn instance_app_service(
         instance_config_str
     );
     set_action.insert(
-        format!("/apps/{}", new_instance.instance_id.as_str()),
+        format!("/apps/{app_instance_id}"),
         Some(serde_json::to_value(&app_service_config).unwrap()),
     );
     let app_service_config_set_action = KVAction::SetByJsonPath(set_action);
@@ -240,14 +237,13 @@ pub fn uninstance_app_service(instance: &ReplicaInstance) -> Result<HashMap<Stri
 
     let key_path = format!("nodes/{}/config", instance.node_id.as_str());
     let mut set_action = HashMap::new();
-    let node_instance_id = format!("{}@{}", instance.spec_id, instance.node_id);
+    let node_instance_id = instance
+        .replica_key
+        .app_instance_id()
+        .ok_or_else(|| anyhow::anyhow!("app replica must use an AppInstanceId key"))?;
     set_action.insert(
         format!("/apps/{}/target_state", node_instance_id),
         Some(json!(ServiceInstanceState::Stopped)),
-    );
-    set_action.insert(
-        format!("/apps/{}/app_spec/state", node_instance_id),
-        Some(json!(ServiceState::Deleted)),
     );
     result.insert(key_path, KVAction::SetByJsonPath(set_action));
 
@@ -269,19 +265,14 @@ pub fn update_app_service_instance(
 ) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
     let key_path = format!("nodes/{}/config", instance.node_id.as_str());
-    let node_instance_id = format!("{}@{}", instance.spec_id, instance.node_id);
+    let node_instance_id = instance
+        .replica_key
+        .app_instance_id()
+        .ok_or_else(|| anyhow::anyhow!("app replica must use an AppInstanceId key"))?;
     let mut set_action = HashMap::new();
-    let app_state = match instance.state {
-        InstanceState::Deleted => ServiceState::Deleted,
-        _ => ServiceState::Stopped,
-    };
     set_action.insert(
         format!("/apps/{}/target_state", node_instance_id),
         Some(json!(ServiceInstanceState::Stopped)),
-    );
-    set_action.insert(
-        format!("/apps/{}/app_spec/state", node_instance_id),
-        Some(json!(app_state)),
     );
     result.insert(key_path, KVAction::SetByJsonPath(set_action));
     Ok(result)

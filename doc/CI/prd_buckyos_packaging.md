@@ -57,13 +57,12 @@ macOS 产物规则：
 | 组件 | 用户可见名称 | 功能定位 | 是否必选 | 默认是否安装 | 适用平台 |
 | --- | --- | --- | --- | --- | --- |
 | BuckyOSApp | BuckyOS Desktop | 用户操作 buckyos service 的 GUI | Windows/macOS 可选；Linux 不包含 | Windows/macOS 是 | Windows、macOS |
-| buckyos service | Buckyos Service | BuckyOS 节点核心服务 | Windows/macOS 可选；Linux 固定包含 | 是 | 全平台 |
-| buckycli | buckycli | 用户操作 buckyos service 的 CLI | Windows/macOS 可选；Linux 固定包含 | 是 | 全平台 |
+| buckyos service | Buckyos Service | BuckyOS 节点核心服务，包含 `$BUCKYOS_ROOT/bin/buckyos` 系统 Tool | Windows/macOS 可选；Linux 固定包含 | 是 | 全平台 |
 | cyfs-gateway | 无 | buckyos service 的对外通信组件 | 包含在 buckyos service 中 | N/A | N/A |
 
-Linux 安装包只包含 service 和 cli，不包含 BuckyOSApp。
+Linux 安装包只包含 service（内含系统 Tool），不包含 BuckyOSApp。
 
-Windows/macOS 图形安装器中，BuckyOSApp、buckyos service、buckycli 是彼此独立的组件，用户可以任意组合安装。静默安装不支持选择组件，默认安装当前平台适用的全部组件。
+Windows/macOS 图形安装器中，BuckyOSApp 和 buckyos service 是彼此独立的组件，用户可以任意组合安装。静默安装不支持选择组件，默认安装当前平台适用的全部组件。
 
 组件级安装行为要求：
 
@@ -104,7 +103,7 @@ Windows：
 
 - 用户双击安装包。
 - 安装器展示组件清单供用户选择。
-- BuckyOSApp、buckyos service、buckycli 可以任意组合安装。
+- BuckyOSApp 和 buckyos service 可以任意组合安装。
 - 用户可以选择安装路径。
 - 安装后可以选择是否打开 BuckyOSApp。
 
@@ -112,14 +111,14 @@ macOS：
 
 - 用户双击安装包。
 - 安装器展示组件清单供用户选择。
-- BuckyOSApp、buckyos service、buckycli 可以任意组合安装。
+- BuckyOSApp 和 buckyos service 可以任意组合安装。
 - 安装路径固定。
 - 安装后可以选择是否打开 BuckyOSApp。
 
 Linux：
 
 - 用户使用包管理器安装 Linux 安装包。
-- Linux 只安装 service 和 cli。
+- Linux 只安装 service，系统 Tool 随 service 分发。
 - Linux 不包含 BuckyOSApp。
 
 通用验收标准：

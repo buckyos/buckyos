@@ -132,9 +132,8 @@ impl DispatchBindingStore {
             })?,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => BindingFile::default(),
             Err(err) => {
-                return Err(err).with_context(|| {
-                    format!("read dispatch bindings journal {}", path.display())
-                })
+                return Err(err)
+                    .with_context(|| format!("read dispatch bindings journal {}", path.display()))
             }
         };
         Ok(Self {
@@ -887,6 +886,8 @@ mod tests {
                 on_behalf_of: "alice".to_string(),
                 zone_trusted_caller: false,
                 workflow_ref: None,
+                parent_task_id: None,
+                storage_domain: Some(buckyos_api::StorageDomain::System),
                 input_digest: "digest".to_string(),
                 created_at: 1,
                 expires_at: None,
@@ -896,7 +897,11 @@ mod tests {
         }
     }
 
-    async fn accept_offer(handler: &AgentRunnerHandler, delivery_id: &str, task_id: &str) -> String {
+    async fn accept_offer(
+        handler: &AgentRunnerHandler,
+        delivery_id: &str,
+        task_id: &str,
+    ) -> String {
         match handler
             .handle_offer_task(offer_req(delivery_id, task_id), ctx_with_token(Some(TOKEN)))
             .await

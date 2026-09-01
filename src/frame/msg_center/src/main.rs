@@ -13,9 +13,8 @@ use anyhow::{Context, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AccountBinding,
     BuckyOSRuntimeType, DeliveryRecordWithObject, DeliveryReportResult, DeliveryState,
-    MsgCenterClient, MsgCenterServerHandler,
-    SystemConfigClient, UserContactSettings, UserPrivateProfile, UserSettings, UserState,
-    MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
+    MsgCenterClient, MsgCenterServerHandler, SystemConfigClient, UserContactSettings,
+    UserPrivateProfile, UserSettings, UserState, MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
 };
 use buckyos_http_server::Runner;
 use buckyos_http_server::{
@@ -441,10 +440,8 @@ fn build_delivery_failure_notice(record: &DeliveryRecordWithObject) -> Option<Ms
         content: text,
         ..Default::default()
     };
-    msg.meta.insert(
-        "delivery_failure_fallback".to_string(),
-        Value::Bool(true),
-    );
+    msg.meta
+        .insert("delivery_failure_fallback".to_string(), Value::Bool(true));
     Some(msg)
 }
 
@@ -1129,10 +1126,12 @@ mod delivery_failure_tests {
     #[test]
     fn does_not_recurse_for_failure_notice() {
         let mut record = record_with_notice();
-        record.msg.as_mut().unwrap().meta.insert(
-            "delivery_failure_fallback".to_string(),
-            Value::Bool(true),
-        );
+        record
+            .msg
+            .as_mut()
+            .unwrap()
+            .meta
+            .insert("delivery_failure_fallback".to_string(), Value::Bool(true));
         assert!(build_delivery_failure_notice(&record).is_none());
     }
 }

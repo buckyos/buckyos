@@ -102,7 +102,8 @@ export async function resolveInputResource(
   // Local path → base64. Caller is responsible for choosing this path only for
   // files small enough to fit in the request envelope.
   const bytes = await Deno.readFile(value);
-  const mime = mimeHint ?? mimeFromPath(value);
+  const inferredMime = mimeFromPath(value);
+  const mime = mimeHint?.endsWith("/*") ? inferredMime : mimeHint ?? inferredMime;
   return { kind: "base64", mime, data_base64: base64FromBytes(bytes) };
 }
 

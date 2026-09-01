@@ -53,12 +53,12 @@ use crate::msg_center_pump::{self, PumpConfig};
 use crate::paths;
 use crate::round_history::SessionHistoryReader;
 use crate::session_event_pump::SessionEventPump;
-use crate::task_event_pump::TaskEventPump;
 use crate::session_model::{
     AgentTaskBinding, PendingInput, SessionKind, SessionMeta, SessionStatus, SessionSummary,
     TimerEventKind, TimerReason, TimerTargetType, TimerTriggerType, UI_CLOCK_TIMER_EVENT_ID,
     UI_CLOCK_TIMER_INTERVAL_MS,
 };
+use crate::task_event_pump::TaskEventPump;
 use crate::tool_plan::{self, ResolvedToolPlan, SessionBinRenderer, ToolPlanToml};
 
 /// Reason string we tag msg-center ack updates with so audit logs can tell
@@ -353,9 +353,10 @@ impl AIAgent {
                 pump_shutdown.clone(),
             )
         });
-        let task_event_pump = runtime.kevent_client.as_ref().map(|kc| {
-            TaskEventPump::new(agent_name.clone(), kc.clone(), pump_shutdown.clone())
-        });
+        let task_event_pump = runtime
+            .kevent_client
+            .as_ref()
+            .map(|kc| TaskEventPump::new(agent_name.clone(), kc.clone(), pump_shutdown.clone()));
         let workspaces = LocalWorkspaceManager::new(config.layout.workspaces_dir.clone());
         let dispatcher: Arc<dyn DispatchEvaluator> =
             Arc::new(FixedRulesDispatch::new(&config.toml.dispatch));
@@ -1849,47 +1850,49 @@ impl AIAgent {
         let appclient_session_token = resolve_appclient_session_token().await?;
         let progress_sink = self.runtime.msg_center.as_ref().map(|msg_center| {
             let msg_center = msg_center.clone();
-            let progress_session_id =
-                progress_status_session_id(kind, &session_id, &owner);
+            let progress_session_id = progress_status_session_id(kind, &session_id, &owner);
             let i18n = self.config.i18n.clone();
-            Arc::new(move |ctx: &agent_tool::SessionRuntimeContext, progress: &crate::agent_bash::BashProgressUpdate| {
-                let line = if progress.stage == "finalizing" {
-                    i18n.render(
-                        "status.aicc_finalizing",
-                        &[("method", progress.method.clone())],
-                    )
-                } else {
-                    i18n.render(
-                        "status.aicc_running",
-                        &[
-                            ("method", progress.method.clone()),
-                            ("seconds", progress.elapsed_ms.div_ceil(1000).to_string()),
-                        ],
-                    )
-                };
-                let msg_center = msg_center.clone();
-                let session_id = progress_session_id.clone();
-                let turn_nonce = ui_status_nonce(&ctx.trace_id);
-                tokio::spawn(async move {
-                    let value = serde_json::json!({
-                        "value": line,
-                        "turn_nonce": turn_nonce,
-                    });
-                    if let Err(err) = msg_center
-                        .update_ui_session_state(
-                            session_id.clone(),
-                            UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
-                            value,
+            Arc::new(
+                move |ctx: &agent_tool::SessionRuntimeContext,
+                      progress: &crate::agent_bash::BashProgressUpdate| {
+                    let line = if progress.stage == "finalizing" {
+                        i18n.render(
+                            "status.aicc_finalizing",
+                            &[("method", progress.method.clone())],
                         )
-                        .await
-                    {
-                        warn!(
-                            "opendan.agent: update AICC progress for session {} failed: {err}",
-                            session_id
-                        );
-                    }
-                });
-            }) as BashProgressSink
+                    } else {
+                        i18n.render(
+                            "status.aicc_running",
+                            &[
+                                ("method", progress.method.clone()),
+                                ("seconds", progress.elapsed_ms.div_ceil(1000).to_string()),
+                            ],
+                        )
+                    };
+                    let msg_center = msg_center.clone();
+                    let session_id = progress_session_id.clone();
+                    let turn_nonce = ui_status_nonce(&ctx.trace_id);
+                    tokio::spawn(async move {
+                        let value = serde_json::json!({
+                            "value": line,
+                            "turn_nonce": turn_nonce,
+                        });
+                        if let Err(err) = msg_center
+                            .update_ui_session_state(
+                                session_id.clone(),
+                                UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
+                                value,
+                            )
+                            .await
+                        {
+                            warn!(
+                                "opendan.agent: update AICC progress for session {} failed: {err}",
+                                session_id
+                            );
+                        }
+                    });
+                },
+            ) as BashProgressSink
         });
 
         let tools = build_session_tools(SessionToolsBuild {
@@ -2283,6 +2286,7 @@ impl AIAgent {
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
+                storage_domain: Some(buckyos_api::StorageDomain::System),
                 idempotency_key: format!("ws-task-{}", session_id),
                 retry_of: None,
                 supersedes: None,
@@ -2485,6 +2489,39 @@ impl AIAgent {
             map.get(target_session_id).cloned()
         };
         let Some(target) = target else {
+            let meta_path = self
+                .config
+                .layout
+                .session_dir(target_session_id)
+                .join(".meta")
+                .join("session.json");
+            if meta_path.exists() {
+                let bytes = std::fs::read(&meta_path).map_err(|err| {
+                    anyhow!(
+                        "forward_message: read {} failed: {err}",
+                        meta_path.display()
+                    )
+                })?;
+                let meta: SessionMeta = serde_json::from_slice(&bytes).map_err(|err| {
+                    anyhow!(
+                        "forward_message: parse {} failed: {err}",
+                        meta_path.display()
+                    )
+                })?;
+                if matches!(meta.status, SessionStatus::Ended) {
+                    let summary = SessionSummary {
+                        session_id: meta.session_id,
+                        kind: meta.kind,
+                        title: meta.title,
+                        objective: meta.objective,
+                        status: meta.status,
+                        one_line_status: meta.one_line_status,
+                        workspace_id: meta.workspace_id,
+                        current_behavior: meta.current_behavior,
+                    };
+                    return Err(anyhow!("{}", ended_forward_message_guidance(&summary)));
+                }
+            }
             return Err(anyhow!(
                 "forward_message: target session `{target_session_id}` not found"
             ));
@@ -3106,7 +3143,6 @@ mod tests {
         TaskManagerHandler, TaskNote, TaskOutcome, TaskPhase, TaskSummary, TaskSummaryPage,
     };
     use kRPC::{RPCContext, RPCErrors};
-    use std::ops::Range;
     use std::sync::atomic::{AtomicI64, Ordering};
 
     #[test]
@@ -3409,6 +3445,7 @@ runner_id = "agent"
                 schema_id: task.schema_id.clone(),
                 schema_version: task.schema_version,
                 creator: task.creator.clone(),
+                storage_domain: task.storage_domain,
                 executor_kind: task.executor.kind(),
                 phase: task.phase,
                 wait_reason: task.wait_reason.clone(),
@@ -3454,6 +3491,9 @@ runner_id = "agent"
                 input: req.input.clone(),
                 input_digest: buckyos_api::compute_task_input_digest(&req.input),
                 creator: ActorRef::new("user", "opendan"),
+                storage_domain: req
+                    .storage_domain
+                    .unwrap_or(buckyos_api::StorageDomain::System),
                 idempotency_key: req.idempotency_key.clone(),
                 origin_ref: None,
                 retry_of: None,
@@ -3694,20 +3734,6 @@ runner_id = "agent"
         }
     }
 
-    fn merge_json_test(dst: &mut serde_json::Value, patch: &serde_json::Value) {
-        match (dst, patch) {
-            (serde_json::Value::Object(dst), serde_json::Value::Object(patch)) => {
-                for (key, value) in patch {
-                    merge_json_test(
-                        dst.entry(key.clone()).or_insert(serde_json::Value::Null),
-                        value,
-                    );
-                }
-            }
-            (dst, patch) => *dst = patch.clone(),
-        }
-    }
-
     #[test]
     fn worksession_progress_targets_owner_ui_session() {
         assert_eq!(
@@ -3732,6 +3758,7 @@ runner_id = "agent"
             input: data,
             input_digest: String::new(),
             creator: ActorRef::new("user", "opendan"),
+            storage_domain: buckyos_api::StorageDomain::System,
             idempotency_key: id.to_string(),
             origin_ref: None,
             retry_of: None,
@@ -3842,6 +3869,31 @@ runner_id = "agent"
         assert!(msg.contains("try_create_worksession"));
         assert!(msg.contains("followup_routing.target_worksession_id"));
         assert!(msg.contains("title `Old task`"));
+        assert!(msg.contains("workspace `old-workspace`"));
+    }
+
+    #[tokio::test]
+    async fn forward_message_retired_ended_session_guides_new_worksession() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+        let mut meta = SessionMeta::new(
+            "work-ended".to_string(),
+            SessionKind::Work,
+            "work_default".to_string(),
+            "ui-1".to_string(),
+        );
+        meta.status = SessionStatus::Ended;
+        meta.title = "Old task".to_string();
+        meta.workspace_id = Some("old-workspace".to_string());
+        write_session_meta(&agent, meta);
+
+        let err = agent
+            .forward_message("work-ended", "ui-1", "follow-up")
+            .await
+            .expect_err("retired ended session should reject with routing guidance");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("target session `work-ended` has ended"));
+        assert!(msg.contains("try_create_worksession"));
         assert!(msg.contains("workspace `old-workspace`"));
     }
 

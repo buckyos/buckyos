@@ -12,7 +12,7 @@ use crate::model_types::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    ai_methods, AiArtifact, AiCost, AiMethodRequest, AiResponse, Capability, ResourceRef,
+    ai_methods, AiArtifact, AiCost, AiMethodRequest, AiResponse, AiUsage, ResourceRef,
 };
 use log::{error, info, warn};
 use reqwest::header::CONTENT_TYPE;
@@ -84,8 +84,6 @@ impl FalProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::Image, Capability::Audio, Capability::Video],
-            features: vec![],
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
@@ -375,19 +373,10 @@ impl FalProvider {
             }
         }
 
-        let (input_key, has_input) = match method {
-            ai_methods::IMAGE_UPSCALE | ai_methods::IMAGE_BG_REMOVE => {
-                let exists = body.contains_key("image_url");
-                ("image_url", exists)
-            }
-            ai_methods::AUDIO_ENHANCE => {
-                let exists = body.contains_key("audio_url");
-                ("audio_url", exists)
-            }
-            ai_methods::VIDEO_UPSCALE => {
-                let exists = body.contains_key("video_url");
-                ("video_url", exists)
-            }
+        let (input_key, canonical_key) = match method {
+            ai_methods::IMAGE_UPSCALE | ai_methods::IMAGE_BG_REMOVE => ("image_url", "image"),
+            ai_methods::AUDIO_ENHANCE => ("audio_url", "audio"),
+            ai_methods::VIDEO_UPSCALE => ("video_url", "video"),
             other => {
                 return Err(ProviderError::fatal(format!(
                     "fal provider does not support method '{}'",
@@ -396,14 +385,26 @@ impl FalProvider {
             }
         };
 
-        if !has_input {
-            let resource = req.payload.resources.first().ok_or_else(|| {
-                ProviderError::fatal(format!(
-                    "fal {} requires an input resource (resources[0] or payload.input_json.{}).",
-                    method, input_key
-                ))
-            })?;
-            let url = resource_to_url(resource).ok_or_else(|| {
+        if !body.contains_key(input_key) {
+            let canonical_resource = body.remove(canonical_key).and_then(|value| {
+                serde_json::from_value::<ResourceRef>(value.clone())
+                    .ok()
+                    .or_else(|| {
+                        value
+                            .as_array()
+                            .and_then(|items| items.first())
+                            .and_then(|value| serde_json::from_value(value.clone()).ok())
+                    })
+            });
+            let resource = canonical_resource
+                .or_else(|| req.payload.resources.first().cloned())
+                .ok_or_else(|| {
+                    ProviderError::fatal(format!(
+                        "fal {} requires canonical payload.input_json.{} or resources[0]",
+                        method, canonical_key
+                    ))
+                })?;
+            let url = resource_to_url(&resource).ok_or_else(|| {
                 ProviderError::fatal(
                     "fal provider only accepts resources of kind 'url' or 'base64'".to_string(),
                 )
@@ -514,7 +515,7 @@ impl FalProvider {
 
         let summary = AiResponse {
             message: AiResponse::message_from_parts(None, vec![], artifacts),
-            usage: None,
+            usage: Some(AiUsage::request_units(1)),
             cost,
             finish_reason: Some("stop".to_string()),
             provider_task_ref: response_body
@@ -632,7 +633,9 @@ impl Provider for FalProvider {
         _ctx: crate::aicc::InvokeCtx,
         _task_id: &str,
     ) -> std::result::Result<(), ProviderError> {
-        Ok(())
+        Err(ProviderError::fatal(
+            "fal provider cancellation is unsupported",
+        ))
     }
 }
 
@@ -907,6 +910,7 @@ pub fn register_fal_providers(center: &AIComputeCenter, settings: &Value) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buckyos_api::Capability;
     use serde_json::json;
 
     #[test]

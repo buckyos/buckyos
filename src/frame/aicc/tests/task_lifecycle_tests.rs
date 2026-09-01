@@ -49,7 +49,7 @@ async fn task_01_immediate_persists_completed() {
     let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
-        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(response.task_id.as_str()))
+        .find(|task| aicc_task_matches_response_id(task, response.task_id.as_str()))
         .expect("task should exist");
     assert_eq!(
         (task.phase, task.outcome),
@@ -85,7 +85,10 @@ async fn task_02_started_persists_running_and_binding() {
     let center = center_with_taskmgr(registry, catalog);
 
     let response = center
-        .complete(base_request(), rpc_ctx_with_tenant(Some("tenant-a")))
+        .complete(
+            base_request(),
+            verified_rpc_ctx_with_tenant("tenant-a").await,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -93,10 +96,16 @@ async fn task_02_started_persists_running_and_binding() {
         AiMethodStatus::Running,
         "assert_eq failed in task_02_started_persists_running_and_binding: expected left == right; check this scenario's routing/status/error-code branch."
     );
+    let task = all_tasks(&center.task_manager_client().unwrap())
+        .await
+        .into_iter()
+        .find(|task| aicc_task_matches_response_id(task, response.task_id.as_str()))
+        .expect("task should exist");
+    let external_task_id = typed_aicc_external_task_id(&task).expect("external task id");
     let cancel = center
         .cancel(
             response.task_id.as_str(),
-            rpc_ctx_with_tenant(Some("tenant-a")),
+            verified_rpc_ctx_with_tenant("tenant-a").await,
         )
         .await
         .unwrap();
@@ -106,7 +115,7 @@ async fn task_02_started_persists_running_and_binding() {
     );
     assert_eq!(
         provider.canceled_tasks(),
-        vec![response.task_id],
+        vec![external_task_id],
         "assert_eq failed in task_02_started_persists_running_and_binding: expected left == right; check this scenario's routing/status/error-code branch."
     );
 }
@@ -144,7 +153,7 @@ async fn task_03_queued_persists_pending_and_position() {
     let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
-        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(response.task_id.as_str()))
+        .find(|task| aicc_task_matches_response_id(task, response.task_id.as_str()))
         .expect("task should exist");
     assert_eq!(
         (task.phase, task.outcome),

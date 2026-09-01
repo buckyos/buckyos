@@ -456,10 +456,7 @@ impl KEventService {
             KEventDaemonRequest::RegisterReader {
                 reader_id,
                 patterns,
-            } => match self
-                .register_reader_in(session, &reader_id, patterns)
-                .await
-            {
+            } => match self.register_reader_in(session, &reader_id, patterns).await {
                 Ok(_) => KEventDaemonResponse::Ok { event: None },
                 Err(err) => err_to_response(err),
             },
@@ -471,7 +468,10 @@ impl KEventService {
                 reader_id,
                 add,
                 remove,
-            } => match self.update_reader_in(session, &reader_id, add, remove).await {
+            } => match self
+                .update_reader_in(session, &reader_id, add, remove)
+                .await
+            {
                 Ok(_) => KEventDaemonResponse::Ok { event: None },
                 Err(err) => err_to_response(err),
             },

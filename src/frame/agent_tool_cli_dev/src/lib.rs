@@ -7,9 +7,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, load_app_identity_from_env,
-    parse_typed_task_data, BuckyOSRuntimeType, CommitResultReq, FailTaskReq,
-    RunnerWriteEnvelope, Task, TaskDataType, TaskError, TaskManagerClient, TaskOutcome, TaskPhase,
-    ToolExecBashTaskData, TypedTaskData,
+    parse_typed_task_data, BuckyOSRuntimeType, CommitResultReq, FailTaskReq, RunnerWriteEnvelope,
+    Task, TaskDataType, TaskError, TaskManagerClient, TaskOutcome, TaskPhase, ToolExecBashTaskData,
+    TypedTaskData,
 };
 use kRPC::kRPC;
 use serde::{Deserialize, Serialize};
@@ -7042,7 +7042,10 @@ fn build_finish_task_result(
     AgentToolResult::from_details(detail)
         .with_status(AgentToolStatus::Success)
         .with_result(format!("{outcome_text} task {}", task.task_id))
-        .with_title(format!("{tool_name} {} {outcome_text} => success", task.task_id))
+        .with_title(format!(
+            "{tool_name} {} {outcome_text} => success",
+            task.task_id
+        ))
         .with_tool(tool_name)
         .with_cmd_line(match outcome {
             FinishTaskOutcome::Completed => format!("{tool_name} {}", task.task_id),
@@ -7145,10 +7148,9 @@ fn task_pending_reason(task: &Task) -> Option<AgentToolPendingReason> {
         })
         .or_else(|| match task.phase {
             TaskPhase::Waiting => Some(AgentToolPendingReason::UserApproval),
-            TaskPhase::Promised
-            | TaskPhase::Accepted
-            | TaskPhase::Running
-            | TaskPhase::Paused => Some(AgentToolPendingReason::LongRunning),
+            TaskPhase::Promised | TaskPhase::Accepted | TaskPhase::Running | TaskPhase::Paused => {
+                Some(AgentToolPendingReason::LongRunning)
+            }
             TaskPhase::Terminal => None,
         })
 }
@@ -7181,7 +7183,9 @@ async fn interrupt_task_if_supported(task: &Task) -> Option<String> {
 }
 
 fn tool_exec_bash_task_data(task: &Task) -> Option<ToolExecBashTaskData> {
-    match parse_typed_task_data(TaskDataType::ToolExecBash.as_str(), task_data_payload(task)).ok()? {
+    match parse_typed_task_data(TaskDataType::ToolExecBash.as_str(), task_data_payload(task))
+        .ok()?
+    {
         TypedTaskData::ToolExecBash(data) if data.kind == TaskDataType::ToolExecBash.as_str() => {
             Some(data)
         }

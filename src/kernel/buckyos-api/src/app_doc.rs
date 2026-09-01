@@ -1,12 +1,24 @@
 use crate::{PermissionItem, RdbInstanceConfig};
 use ::kRPC::*;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use name_lib::DID;
-use ndn_lib::{NamedObject, ObjId};
-use package_lib::{PackageId, PackageMeta};
+use ndn_lib::{BaseContentObject, Curator, NamedObject, ObjId, Reference};
+use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt, ops::Deref, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fmt,
+    ops::{Deref, DerefMut},
+    path::PathBuf,
+};
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    value == &T::default()
+}
 
 pub const APP_DOC_TYPE: &str = "app";
+pub const APP_DOC_SCHEMA_VERSION: u32 = 1;
 /// App Document Object ID 的 obj type（v0.5 D2 冻结）。
 /// ObjId = `appdoc:hex(sha256(JCS(body)))`，与 Package Meta 的 `pkg` 类型区分。
 pub const OBJ_TYPE_APP_DOC: &str = "appdoc";
@@ -20,12 +32,14 @@ pub const APP_CAPABILITY_PUBLIC_INTERNET: &str = "internet";
 pub const APP_CAPABILITY_AI_LLM: &str = "ai.llm";
 
 //buckyos 支持的应用类型,to_string后填写在app_doc.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AppType {
-    Service,    // 系统服务
+    Service, // 系统服务
+    #[serde(rename = "dapp")]
     AppService, // 应用服务
-    Web,        //静态网页
-    Agent,      // AI Agent
+    Web,     //静态网页
+    Agent,   // AI Agent
 }
 
 impl TryFrom<&str> for AppType {
@@ -61,6 +75,7 @@ impl fmt::Display for AppType {
 //    为了减少多次获取信息的一致性问题，AppInstanceConfig中包含了所有信息（包含AppDoc,InstallConfig)
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct DataMountRecommend {
     pub mount_point: String,
     pub reason: HashMap<String, String>, //key: language_id, value: reason
@@ -76,7 +91,7 @@ pub enum ServiceProtocol {
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServiceExposeRouteTips {
     Web,
     Port {
@@ -86,6 +101,7 @@ pub enum ServiceExposeRouteTips {
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceExposeTips {
     pub route: ServiceExposeRouteTips,
     #[serde(default)]
@@ -95,18 +111,20 @@ pub struct ServiceExposeTips {
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceEndpointInfo {
     pub protocol: ServiceProtocol,
     pub inner_port: u16,
     #[serde(default)]
     pub required: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub description: HashMap<String, String>, //key: language_id, value: description
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose: Option<ServiceExposeTips>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct MountPointInfo {
     //说明挂载点的名称
     pub mount_point_name: String,
@@ -115,6 +133,7 @@ pub struct MountPointInfo {
     pub reason: HashMap<String, String>, //key: language_id, value: reason
 }
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct BashEnvInfo {
     pub required: bool,
     #[serde(default)]
@@ -146,6 +165,7 @@ impl Default for InstanceVolumeMode {
 
 /// Developer declaration of instance-volume semantics (§11 of the spec).
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct InstanceVolumeConfig {
     #[serde(default)]
     pub mode: InstanceVolumeMode,
@@ -160,19 +180,19 @@ pub struct InstanceVolumeConfig {
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 pub struct ServiceConfigTips {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub service_endpoints: HashMap<String, ServiceEndpointInfo>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub data_mount_points: HashMap<PathBuf, Option<MountPointInfo>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     //local_cache mount默认需要读写权限
     pub local_cache_mount_points: HashMap<PathBuf, Option<MountPointInfo>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub external_mount_points: HashMap<PathBuf, Option<MountPointInfo>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub rdb_instances: HashMap<String, RdbInstanceConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub instance_volume: InstanceVolumeConfig,
     //bash_envs: key:env_name, value: description<language_id, description>
     #[serde(default)]
@@ -194,6 +214,7 @@ pub struct ServiceConfigTips {
 /// 平台选择条件（v0.5 D2）。字段全部可选，省略的维度表示不限制。
 /// os/arch 匹配前会做别名归一（amd64=x86_64、arm64=aarch64、darwin=macos 等）。
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PackageSelector {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os: Option<String>,
@@ -246,6 +267,7 @@ impl PackageSelector {
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct SubPkgDesc {
     pub pkg_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -539,6 +561,7 @@ impl fmt::Display for AppDocType {
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AppPresentation {
     //language_id -> title, summary, description
     pub title: HashMap<String, String>,
@@ -549,17 +572,65 @@ pub struct AppPresentation {
     pub license: String,
 }
 
-//App doc is store at Index-db, publish to bucky store
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-pub struct AppDoc {
-    /// DID doc_type，固定 `"app"`（必填，v0.5）。
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppDocWire {
+    pub schema_version: u32,
     pub doc_type: AppDocType,
+    pub did: DID,
+    #[serde(default)]
+    pub name: String,
+    pub author: DID,
+    pub owner: DID,
+    pub create_time: u64,
+    pub last_update_time: u64,
+    #[serde(default)]
+    pub copyright: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub base_on: Option<ObjId>,
+    #[serde(default)]
+    pub directory: HashMap<String, Curator>,
+    #[serde(default)]
+    pub references: HashMap<String, Reference>,
+    pub exp: u64,
+    pub version: String,
+    #[serde(default)]
+    pub version_tag: Option<String>,
+    pub app_type: AppType,
+    pub controller: DID,
+    pub pkg_list: SubPkgList,
+    pub show_name: String,
+    #[serde(default)]
+    pub presentation: Option<AppPresentation>,
+    #[serde(default)]
+    pub sdk_version: Option<String>,
+    #[serde(default)]
+    pub req_capbilities: HashMap<String, i64>,
+    #[serde(default)]
+    pub permissions: Vec<PermissionItem>,
+    pub selector_type: SelectorType,
+    pub service_config_tips: ServiceConfigTips,
+}
 
-    #[serde(flatten, deserialize_with = "deserialize_app_package_meta")]
-    pub _base: PackageMeta,
+//App doc is store at Index-db, publish to bucky store
+#[derive(Serialize, Clone, PartialEq, Debug)]
+pub struct AppDoc {
+    #[serde(flatten)]
+    pub _base: BaseContentObject,
+    pub schema_version: u32,
+    pub doc_type: AppDocType,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_tag: Option<String>,
+    pub app_type: AppType,
+    pub controller: DID,
     pub pkg_list: SubPkgList,
 
-    pub show_name: String, // just for display, app_id is meta.pkg_name (like "buckyos-filebrowser")
+    pub show_name: String,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presentation: Option<AppPresentation>,
@@ -576,21 +647,61 @@ pub struct AppDoc {
 
     //UI 应该根据service_config_tips的提示，来构造UI，得到最终的ServiceConfig
     pub selector_type: SelectorType,
-    #[serde(default)]
     pub service_config_tips: ServiceConfigTips,
 }
 
-fn deserialize_app_package_meta<'de, D>(
-    deserializer: D,
-) -> std::result::Result<PackageMeta, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let meta = PackageMeta::deserialize(deserializer)?;
-    if meta.did.is_none() {
-        return Err(serde::de::Error::missing_field("did"));
+impl<'de> Deserialize<'de> for AppDoc {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = AppDocWire::deserialize(deserializer)?;
+        Ok(Self {
+            _base: BaseContentObject {
+                did: Some(wire.did),
+                name: wire.name,
+                author: wire.author.to_string(),
+                owner: wire.owner,
+                create_time: wire.create_time,
+                last_update_time: wire.last_update_time,
+                copyright: wire.copyright,
+                tags: wire.tags,
+                categories: wire.categories,
+                base_on: wire.base_on,
+                directory: wire.directory,
+                references: wire.references,
+                exp: wire.exp,
+            },
+            schema_version: wire.schema_version,
+            doc_type: wire.doc_type,
+            version: wire.version,
+            version_tag: wire.version_tag,
+            app_type: wire.app_type,
+            controller: wire.controller,
+            pkg_list: wire.pkg_list,
+            show_name: wire.show_name,
+            presentation: wire.presentation,
+            sdk_version: wire.sdk_version,
+            req_capbilities: wire.req_capbilities,
+            permissions: wire.permissions,
+            selector_type: wire.selector_type,
+            service_config_tips: wire.service_config_tips,
+        })
     }
-    Ok(meta)
+}
+
+impl Deref for AppDoc {
+    type Target = BaseContentObject;
+
+    fn deref(&self) -> &Self::Target {
+        &self._base
+    }
+}
+
+impl DerefMut for AppDoc {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self._base
+    }
 }
 
 impl NamedObject for AppDoc {
@@ -599,9 +710,67 @@ impl NamedObject for AppDoc {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct AppDocSignatureEnvelope {
+    pub schema_version: u32,
+    pub app_doc_object_id: ObjId,
+    pub signer: DID,
+    pub controller: DID,
+    pub verification_method: String,
+    pub algorithm: String,
+    pub signature: String,
+}
+
+impl AppDocSignatureEnvelope {
+    pub fn validate_for(&self, app_doc: &AppDoc) -> Result<()> {
+        app_doc.validate()?;
+        let (object_id, _) = app_doc.gen_obj_id();
+        let author = app_doc.author_did()?;
+        if self.schema_version != APP_DOC_SCHEMA_VERSION
+            || self.app_doc_object_id != object_id
+            || self.signer != author
+            || self.controller != app_doc.controller
+            || !self
+                .verification_method
+                .starts_with(&format!("{}#", self.controller.to_string()))
+            || self.algorithm != "EdDSA"
+            || self.signature.is_empty()
+        {
+            return Err(RPCErrors::ReasonError(
+                "AppDoc signature envelope does not match the AppDoc authority".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn verify_for(&self, app_doc: &AppDoc, verifying_key: &[u8; 32]) -> Result<()> {
+        self.validate_for(app_doc)?;
+        let verifying_key = VerifyingKey::from_bytes(verifying_key).map_err(|error| {
+            RPCErrors::ReasonError(format!("invalid AppDoc Ed25519 verifying key: {error}"))
+        })?;
+        let signature_bytes = URL_SAFE_NO_PAD.decode(&self.signature).map_err(|error| {
+            RPCErrors::ReasonError(format!("invalid AppDoc base64url signature: {error}"))
+        })?;
+        let signature = Signature::from_slice(&signature_bytes).map_err(|error| {
+            RPCErrors::ReasonError(format!("invalid AppDoc Ed25519 signature: {error}"))
+        })?;
+        let (_, canonical_body) = app_doc.gen_obj_id();
+        verifying_key
+            .verify(canonical_body.as_bytes(), &signature)
+            .map_err(|_| RPCErrors::ReasonError("AppDoc signature verification failed".to_string()))
+    }
+}
+
 impl AppDoc {
     pub fn app_did(&self) -> &DID {
         self.did.as_ref().expect("AppDoc.did must be present")
+    }
+
+    pub fn author_did(&self) -> Result<DID> {
+        DID::from_str(&self.author).map_err(|error| {
+            RPCErrors::ReasonError(format!("AppDoc author must be a valid DID: {error}"))
+        })
     }
 
     /// 按 v0.5 冻结的确定性命名规则构造 App DID：`did:bns:{app_name}.{owner_id}`。
@@ -626,15 +795,7 @@ impl AppDoc {
     }
 
     pub fn get_app_type(&self) -> AppType {
-        if !self.categories.is_empty() {
-            let mut result = AppType::Service;
-            if let Ok(app_type) = AppType::try_from(self.categories[0].as_str()) {
-                result = app_type;
-            }
-            result
-        } else {
-            AppType::Service
-        }
+        self.app_type
     }
 
     pub fn app_icon_url(&self) -> Option<&str> {
@@ -644,26 +805,87 @@ impl AppDoc {
             .map(String::as_str)
     }
 
-    pub fn from_pkg_meta(pkg_meta: &PackageMeta) -> Result<Self> {
-        let pkg_json = serde_json::to_value(pkg_meta).unwrap();
-        let result_self =
-            serde_json::from_value(pkg_json).map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        Ok(result_self)
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != APP_DOC_SCHEMA_VERSION {
+            return Err(RPCErrors::ReasonError(format!(
+                "unsupported AppDoc schema_version {}",
+                self.schema_version
+            )));
+        }
+        let app_did = self.did.as_ref().ok_or_else(|| {
+            RPCErrors::ReasonError("AppDoc BaseContentObject.did is required".to_string())
+        })?;
+        let app_id = crate::AppId::from_app_did(app_did).map_err(RPCErrors::ReasonError)?;
+        let author = self.author_did()?;
+        if self.version.trim().is_empty()
+            || self.show_name.trim().is_empty()
+            || author.is_undefined()
+            || self.owner.is_undefined()
+            || self.controller.is_undefined()
+            || self.exp == 0
+            || self.exp < self.create_time
+            || self.last_update_time < self.create_time
+        {
+            return Err(RPCErrors::ReasonError(
+                "AppDoc contains invalid required envelope/body fields".to_string(),
+            ));
+        }
+        if self.app_type != AppType::Service && self.pkg_list.iter().is_empty() {
+            return Err(RPCErrors::ReasonError(
+                "non-system AppDoc pkg_list must contain at least one package".to_string(),
+            ));
+        }
+        let namespace_suffix = format!(".{app_id}");
+        for (sub_pkg_name, package) in self.pkg_list.iter() {
+            let parsed = PackageId::parse(&package.pkg_id).map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "AppDoc package `{sub_pkg_name}` has invalid PackageId: {error}"
+                ))
+            })?;
+            let unique_name = parsed.get_unique_name().map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "AppDoc package `{sub_pkg_name}` has invalid package name: {error}"
+                ))
+            })?;
+            let unique_name = unique_name.strip_prefix("all.").unwrap_or(&unique_name);
+            let is_root_package = unique_name == app_id.as_str();
+            let is_sub_package = unique_name
+                .strip_suffix(&namespace_suffix)
+                .is_some_and(|prefix| !prefix.is_empty() && !prefix.contains('.'));
+            if !is_root_package && !is_sub_package {
+                return Err(RPCErrors::ReasonError(format!(
+                    "AppDoc package `{sub_pkg_name}` is outside AppId namespace `{app_id}`"
+                )));
+            }
+            if parsed
+                .version_exp
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref()
+                != Some(self.version.as_str())
+                || package.pkg_objid.is_none()
+            {
+                return Err(RPCErrors::ReasonError(format!(
+                    "AppDoc package `{sub_pkg_name}` must pin App version and Package Meta ObjectId"
+                )));
+            }
+        }
+        Ok(())
     }
 
-    pub fn to_pkg_meta(&self) -> Result<PackageMeta> {
-        let pkg_json = serde_json::to_value(self).unwrap();
-        let result_pkg_meta =
-            serde_json::from_value(pkg_json).map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        Ok(result_pkg_meta)
-    }
-}
-
-impl Deref for AppDoc {
-    type Target = PackageMeta;
-
-    fn deref(&self) -> &Self::Target {
-        &self._base
+    pub fn validate_resolved_identity(
+        &self,
+        expected_did: &DID,
+        expected_object_id: &ObjId,
+    ) -> Result<()> {
+        self.validate()?;
+        let (actual_object_id, _) = self.gen_obj_id();
+        if self.app_did() != expected_did || &actual_object_id != expected_object_id {
+            return Err(RPCErrors::ReasonError(
+                "resolved AppDID/AppDoc ObjectId does not match the AppDoc snapshot".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -695,6 +917,11 @@ impl SubPkgDesc {
         self
     }
 
+    pub fn package_meta_object_id(mut self, object_id: ObjId) -> Self {
+        self.pkg_objid = Some(object_id);
+        self
+    }
+
     pub fn required(mut self, required: bool) -> Self {
         self.required = Some(required);
         self
@@ -718,9 +945,16 @@ impl SubPkgDesc {
 
 pub struct AppDocBuilder {
     app_type: AppType,
+    app_name: String,
     app_did: Option<DID>,
     owner: DID,
-    meta: PackageMeta,
+    controller: DID,
+    author: DID,
+    version: String,
+    version_tag: Option<String>,
+    create_time: u64,
+    last_update_time: u64,
+    exp: u64,
     show_name: Option<String>,
     presentation: Option<AppPresentation>,
     sdk_version: Option<String>,
@@ -749,30 +983,24 @@ impl AppDocBuilder {
         let name = name.into();
         let version = version.into();
         let author = author.into();
-
-        // IMPORTANT: must construct PackageMeta via its constructor so that
-        // FileObject-related fields are initialized correctly.
-        let mut meta = PackageMeta::new(
-            name.as_str(),
-            version.as_str(),
-            author.as_str(),
-            owner,
-            None,
-        );
-
-        // Best-effort fill optional fields commonly expected by AppDoc JSON.
-        meta.size = 0;
-        meta.exp = 0;
-        meta.create_time = now;
-        meta.last_update_time = now;
-        meta.deps = HashMap::new();
-        meta.categories = vec![app_type.to_string()];
+        let author = if author.starts_with("did:") {
+            DID::from_str(&author).unwrap_or_else(|_| DID::undefined())
+        } else {
+            DID::new("bns", &author)
+        };
 
         Self {
             app_type,
+            app_name: name,
             app_did: None,
             owner: owner.clone(),
-            meta,
+            controller: owner.clone(),
+            author,
+            version,
+            version_tag: None,
+            create_time: now,
+            last_update_time: now,
+            exp: now + 3600 * 24 * 365,
             show_name: None,
             presentation: None,
             sdk_version: None,
@@ -816,12 +1044,17 @@ impl AppDocBuilder {
     }
 
     pub fn tag(mut self, tag: impl Into<String>) -> Self {
-        self.meta.version_tag = Some(tag.into());
+        self.version_tag = Some(tag.into());
         self
     }
 
     pub fn exp(mut self, exp: u64) -> Self {
-        self.meta.exp = exp;
+        self.exp = exp;
+        self
+    }
+
+    pub fn controller(mut self, controller: DID) -> Self {
+        self.controller = controller;
         self
     }
 
@@ -833,46 +1066,29 @@ impl AppDocBuilder {
         let language_id = language_id.into();
         let text = text.into();
 
-        let desc = self
-            .meta
-            .meta
-            .entry("description".to_string())
-            .or_insert_with(|| serde_json::json!({ "detail": {} }));
-
-        match desc {
-            serde_json::Value::Object(desc_obj) => {
-                let detail = desc_obj
-                    .entry("detail".to_string())
-                    .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-                match detail {
-                    serde_json::Value::Object(detail_obj) => {
-                        detail_obj.insert(language_id, serde_json::Value::String(text));
-                    }
-                    _ => {
-                        // If existing "detail" is not an object, override it into an i18n map.
-                        let mut detail_obj = serde_json::Map::new();
-                        detail_obj.insert(language_id, serde_json::Value::String(text));
-                        desc_obj
-                            .insert("detail".to_string(), serde_json::Value::Object(detail_obj));
-                    }
-                }
-            }
-            _ => {
-                // If existing "description" is not an object, override it into an i18n structure.
-                self.meta.meta.insert(
-                    "description".to_string(),
-                    serde_json::json!({ "detail": { language_id: text } }),
-                );
-            }
-        }
+        self.presentation
+            .get_or_insert_with(AppPresentation::default)
+            .description
+            .insert(language_id, text);
         self
     }
 
     /// Advanced: set raw `PackageMeta.meta["description"]` value directly.
     pub fn description_raw(mut self, description: serde_json::Value) -> Self {
-        self.meta
-            .meta
-            .insert("description".to_string(), description);
+        if let Some(values) = description
+            .get("detail")
+            .and_then(serde_json::Value::as_object)
+        {
+            let target = &mut self
+                .presentation
+                .get_or_insert_with(AppPresentation::default)
+                .description;
+            for (language, value) in values {
+                if let Some(text) = value.as_str() {
+                    target.insert(language.clone(), text.to_string());
+                }
+            }
+        }
         self
     }
 
@@ -880,11 +1096,6 @@ impl AppDocBuilder {
         let detail = detail.into();
         // Backward-compatible helper: write a single-language "en" description.
         self.description("en", detail)
-    }
-
-    pub fn add_dep(mut self, pkg_name: impl Into<String>, version_req: impl Into<String>) -> Self {
-        self.meta.deps.insert(pkg_name.into(), version_req.into());
-        self
     }
 
     pub fn selector_type(mut self, selector_type: SelectorType) -> Self {
@@ -1158,38 +1369,49 @@ impl AppDocBuilder {
 
         let app_did = match self.app_did.clone() {
             Some(did) => did,
-            None => AppDoc::derive_bns_app_did(self.meta.name.as_str(), &self.owner)?,
+            None => AppDoc::derive_bns_app_did(self.app_name.as_str(), &self.owner)?,
         };
 
-        // Provide sane defaults for human-readable fields.
         let show_name = self
             .show_name
             .clone()
-            .or_else(|| Some(self.meta.name.clone()))
+            .or_else(|| Some(self.app_name.clone()))
             .unwrap_or_else(|| "Unnamed App".to_string());
+        let presentation = self.presentation.or_else(|| {
+            Some(AppPresentation {
+                description: HashMap::from([("en".to_string(), show_name.clone())]),
+                ..Default::default()
+            })
+        });
 
-        if !self.meta.meta.contains_key("description") {
-            // Default i18n description.
-            self.meta.meta.insert(
-                "description".to_string(),
-                serde_json::json!({ "detail": { "en": show_name.clone() } }),
-            );
-        }
+        let mut base = BaseContentObject::new(self.app_name);
+        base.did = Some(app_did);
+        base.author = self.author.to_string();
+        base.owner = self.owner;
+        base.create_time = self.create_time;
+        base.last_update_time = self.last_update_time;
+        base.categories.push(self.app_type.to_string());
+        base.exp = self.exp;
 
-        self.meta.did = Some(app_did);
-
-        Ok(AppDoc {
+        let app_doc = AppDoc {
+            _base: base,
+            schema_version: APP_DOC_SCHEMA_VERSION,
             doc_type: AppDocType,
-            _base: self.meta,
+            version: self.version,
+            version_tag: self.version_tag,
+            app_type: self.app_type,
+            controller: self.controller,
             show_name,
-            presentation: self.presentation,
+            presentation,
             sdk_version: self.sdk_version,
             req_capbilities: self.req_capbilities,
             permissions: self.permissions,
             selector_type: self.selector_type.unwrap_or_default(),
             service_config_tips: self.service_config_tips,
             pkg_list: self.pkg_list,
-        })
+        };
+        app_doc.validate()?;
+        Ok(app_doc)
     }
 }
 
@@ -1210,6 +1432,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn pinned_package(pkg_id: &str) -> SubPkgDesc {
+        SubPkgDesc::new(pkg_id)
+            .package_meta_object_id(ObjId::new_by_raw("pkg".to_string(), vec![1; 32]))
+    }
+
     #[test]
     fn required_endpoint_does_not_imply_exposure() {
         let endpoint = ServiceEndpointInfo {
@@ -1221,89 +1448,103 @@ mod tests {
         };
 
         let value = serde_json::to_value(&endpoint).unwrap();
+        assert!(value.get("description").is_none());
         let decoded: ServiceEndpointInfo = serde_json::from_value(value).unwrap();
         assert!(decoded.required);
         assert!(decoded.expose.is_none());
     }
 
-    #[tokio::test]
-    async fn test_get_parse_app_doc() {
-        let app_doc = json!({
-            "did": "did:bns:buckyos_filebrowser.buckyos.ai",
-            "doc_type": "app",
-            "name": "buckyos_filebrowser",
-            "version": "0.4.1",
-            "tag": "latest",
-            "size":0,
-            "show_name": "BuckyOS File Browser",
-            "description": {
-                "detail": "BuckyOS File Browser"
-            },
-            "author": "did:web:buckyos.ai",
-            "owner": "did:web:buckyos.ai",
-            "create_time": 1743008063u64,
-            "last_update_time": 1743008063u64,
-            "exp": 1837616063u64,
-            "selector_type": "single",
-            "service_config_tips": {
-                "data_mount_points": {
-                    "/srv/": null,
-                    "/database/": null,
-                    "/config/": null
-                },
-                "local_cache_mount_points": {},
-                "service_endpoints": {
-                    "www": {
-                        "protocol": "http",
-                        "inner_port": 80,
-                        "required": true,
-                        "expose": {
-                            "route": { "type": "web" }
-                        }
-                    }
-                }
-            },
-            "pkg_list": {
-                "amd64_docker_image": {
-                    "pkg_id": "nightly-linux-amd64.buckyos_filebrowser-img#0.4.1",
-                    "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.1-amd64"
-                },
-                "aarch64_docker_image": {
-                    "pkg_id": "nightly-linux-aarch64.buckyos_filebrowser-img#0.4.1",
-                    "docker_image_name": "buckyos/nightly-buckyos-filebrowser:0.4.1-aarch64"
-                },
-                "amd64_win_app": {
-                    "pkg_id": "nightly-windows-amd64.buckyos_filebrowser-bin#0.4.1"
-                },
-                "aarch64_apple_app": {
-                    "pkg_id": "nightly-apple-aarch64.buckyos_filebrowser-bin#0.4.1"
-                },
-                "amd64_apple_app": {
-                    "pkg_id": "nightly-apple-amd64.buckyos_filebrowser-bin#0.4.1"
-                }
-            },
-            "deps": {
-                "nightly-linux-amd64.buckyos_filebrowser-img": "0.4.1",
-                "nightly-linux-aarch64.buckyos_filebrowser-img": "0.4.1",
-                "nightly-windows-amd64.buckyos_filebrowser-bin": "0.4.1",
-                "nightly-apple-amd64.buckyos_filebrowser-bin": "0.4.1",
-                "nightly-apple-aarch64.buckyos_filebrowser-bin": "0.4.1"
-            }
-        });
-        let app_doc: AppDoc = serde_json::from_value(app_doc).unwrap();
-        println!("{}#{}", app_doc.name, app_doc.version);
-        let app_doc_str = serde_json::to_string_pretty(&app_doc).unwrap();
-        println!("{}", app_doc_str);
+    #[test]
+    fn appdoc_v1_golden_fixture_and_signature_are_stable() {
+        let source = include_str!("../../../../doc/fixtures/appdoc-v1.json");
+        let expected_jcs = include_str!("../../../../doc/fixtures/appdoc-v1.jcs").trim_end();
+        let expected_id = include_str!("../../../../doc/fixtures/appdoc-v1.object-id").trim();
+        let envelope_source =
+            include_str!("../../../../doc/fixtures/appdoc-v1.signature-envelope.json");
+        let verifying_key = URL_SAFE_NO_PAD
+            .decode(include_str!("../../../../doc/fixtures/appdoc-v1.verifying-key").trim())
+            .unwrap();
+        let verifying_key: [u8; 32] = verifying_key.try_into().unwrap();
 
-        let pkg_meta = app_doc.to_pkg_meta().unwrap();
-        println!("{}", serde_json::to_string_pretty(&pkg_meta).unwrap());
-        let app_doc_from_pkg_meta = AppDoc::from_pkg_meta(&pkg_meta).unwrap();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&app_doc_from_pkg_meta).unwrap()
-        );
+        let app_doc: AppDoc = serde_json::from_str(source).unwrap();
+        let envelope: AppDocSignatureEnvelope = serde_json::from_str(envelope_source).unwrap();
+        let (object_id, canonical) = app_doc.gen_obj_id();
+        assert_eq!(canonical, expected_jcs);
+        assert_eq!(object_id.to_string(), expected_id);
+        envelope.verify_for(&app_doc, &verifying_key).unwrap();
 
-        assert_eq!(app_doc, app_doc_from_pkg_meta);
+        let mut wrong_controller = envelope.clone();
+        wrong_controller.controller = DID::from_str("did:web:other.example").unwrap();
+        assert!(wrong_controller
+            .verify_for(&app_doc, &verifying_key)
+            .is_err());
+        let mut wrong_signer = envelope.clone();
+        wrong_signer.signer = DID::from_str("did:web:other.example").unwrap();
+        assert!(wrong_signer.verify_for(&app_doc, &verifying_key).is_err());
+        let mut wrong_signature = envelope;
+        wrong_signature.signature.replace_range(..1, "A");
+        assert!(wrong_signature
+            .verify_for(&app_doc, &verifying_key)
+            .is_err());
+    }
+
+    #[test]
+    fn rootfs_appdoc_fixture_follows_v1_schema() {
+        let source =
+            include_str!("../../../rootfs/local/did_docs/filebrowser.buckyos.bns.did.doc.json");
+        let app_doc: AppDoc = serde_json::from_str(source).unwrap();
+        app_doc.validate().unwrap();
+    }
+
+    #[test]
+    fn appdoc_v1_accepts_base_content_metadata_and_rejects_package_meta_fields() {
+        let source = include_str!("../../../../doc/fixtures/appdoc-v1.json");
+        let value: serde_json::Value = serde_json::from_str(source).unwrap();
+
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove("controller");
+        assert!(serde_json::from_value::<AppDoc>(missing).is_err());
+
+        let mut unknown = value.clone();
+        unknown["unexpected"] = json!(true);
+        assert!(serde_json::from_value::<AppDoc>(unknown).is_err());
+
+        let mut content = value.clone();
+        content["name"] = json!("portable-app-release");
+        content["copyright"] = json!("Copyright 2026 Example");
+        content["tags"] = json!(["productivity", "web"]);
+        content["categories"] = json!(["web"]);
+        content["base_on"] = json!(ObjId::new_by_raw("appdoc".to_string(), vec![7; 32]));
+        content["directory"] = json!({"catalog": {}});
+        content["references"] = json!({"homepage": {}});
+        let content_doc: AppDoc = serde_json::from_value(content.clone()).unwrap();
+        content_doc.validate().unwrap();
+        assert_eq!(content_doc.name, "portable-app-release");
+        assert_eq!(content_doc.tags, vec!["productivity", "web"]);
+        assert_eq!(serde_json::to_value(&content_doc).unwrap(), content);
+        let plain_doc: AppDoc = serde_json::from_value(value.clone()).unwrap();
+        assert_ne!(content_doc.gen_obj_id().0, plain_doc.gen_obj_id().0);
+
+        let mut package_meta = value.clone();
+        package_meta["deps"] = json!({});
+        package_meta["size"] = json!(0);
+        package_meta["content"] = json!("");
+        assert!(serde_json::from_value::<AppDoc>(package_meta).is_err());
+
+        let app_doc: AppDoc = serde_json::from_value(value).unwrap();
+        let (object_id, _) = app_doc.gen_obj_id();
+        assert!(app_doc
+            .validate_resolved_identity(
+                &DID::from_str("did:web:other.example").unwrap(),
+                &object_id,
+            )
+            .is_err());
+        assert!(app_doc
+            .validate_resolved_identity(
+                app_doc.app_did(),
+                &ObjId::new_by_raw("appdoc".to_string(), vec![9; 32]),
+            )
+            .is_err());
     }
 
     #[test]
@@ -1311,7 +1552,7 @@ mod tests {
         let owner = DID::from_str("did:web:example.com").unwrap();
         let doc = AppDoc::builder(
             AppType::Web,
-            "demo_web",
+            "demo-web",
             "0.1.0",
             "did:web:example.com",
             &owner,
@@ -1319,7 +1560,7 @@ mod tests {
         .show_name("Demo Web")
         .description("en", "Demo Web Description")
         .description("zh", "演示网页应用描述")
-        .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
+        .web_pkg(pinned_package("all.web.demo-web.example.com.bns.did#0.1.0"))
         .add_permission(PermissionItem {
             scope_path: "fs.data".to_string(),
             required: true,
@@ -1336,6 +1577,8 @@ mod tests {
 
         assert_eq!(doc.selector_type, SelectorType::Static);
         assert!(doc.permissions.is_empty());
+        assert_eq!(doc.name, "demo-web");
+        assert_eq!(doc.categories, vec!["web"]);
 
         let sys_testdoc = r#"
 {
@@ -1363,24 +1606,26 @@ mod tests {
     }
   }     
 "#;
-        let parsed_doc: AppDoc = serde_json::from_str(sys_testdoc).unwrap();
-        assert_eq!(parsed_doc.selector_type, SelectorType::Static);
+        assert!(serde_json::from_str::<AppDoc>(sys_testdoc).is_err());
     }
 
     #[test]
     fn test_app_doc_builder_service_minimal_ok_and_rejects_docker_web() {
         let owner = DID::from_str("did:web:example.com").unwrap();
 
-        // Minimal service should build successfully (no docker, no web).
+        // A service must carry executable content, but no docker or web package.
         let doc = AppDoc::builder(
             AppType::Service,
-            "demo_service",
+            "demo-service",
             "0.1.0",
             "did:web:example.com",
             &owner,
         )
         .show_name("Demo Service")
         .sdk_version("0.5.1")
+        .script_pkg(pinned_package(
+            "all.script.demo-service.example.com.bns.did#0.1.0",
+        ))
         .build()
         .unwrap();
         println!(
@@ -1393,7 +1638,7 @@ mod tests {
         // Service must reject docker image.
         let err = AppDoc::builder(
             AppType::Service,
-            "demo_service_bad",
+            "demo-service-bad",
             "0.1.0",
             "did:web:example.com",
             &owner,
@@ -1411,7 +1656,7 @@ mod tests {
         // Service must reject web package.
         let err = AppDoc::builder(
             AppType::Service,
-            "demo_service_bad2",
+            "demo-service-bad2",
             "0.1.0",
             "did:web:example.com",
             &owner,
@@ -1434,7 +1679,7 @@ mod tests {
         // AppService must require a runnable package.
         let err = AppDoc::builder(
             AppType::AppService,
-            "demo_dapp_bad",
+            "demo-dapp-bad",
             "0.1.0",
             "did:web:example.com",
             &owner,
@@ -1451,13 +1696,14 @@ mod tests {
         // AppService should build with docker and auto-fill default permissions when not provided.
         let doc = AppDoc::builder(
             AppType::AppService,
-            "demo_dapp",
+            "demo-dapp",
             "0.1.0",
             "did:web:example.com",
             &owner,
         )
         .amd64_docker_image(
-            SubPkgDesc::new("demo_dapp-img#0.1.0").docker_image_name("buckyos/demo_dapp:0.1.0"),
+            pinned_package("nightly-linux-amd64.image.demo-dapp.example.com.bns.did#0.1.0")
+                .docker_image_name("buckyos/demo_dapp:0.1.0"),
         )
         .build()
         .unwrap();
@@ -1491,12 +1737,14 @@ mod tests {
 
         let script_doc = AppDoc::builder(
             AppType::AppService,
-            "demo_script_dapp",
+            "demo-script-dapp",
             "0.1.0",
             "did:web:example.com",
             &owner,
         )
-        .script_pkg(SubPkgDesc::new("demo_script_dapp-script#0.1.0"))
+        .script_pkg(pinned_package(
+            "all.script.demo-script-dapp.example.com.bns.did#0.1.0",
+        ))
         .build()
         .unwrap();
         assert!(script_doc.pkg_list.script.is_some());
@@ -1513,7 +1761,7 @@ mod tests {
         let owner = DID::from_str("did:web:example.com").unwrap();
         let err = AppDoc::builder(
             AppType::Web,
-            "demo_web_bad",
+            "demo-web-bad",
             "0.1.0",
             "did:web:example.com",
             &owner,
@@ -1640,28 +1888,28 @@ mod tests {
     #[test]
     fn test_app_doc_builder_derives_frozen_bns_app_did() {
         let owner = DID::from_str("did:bns:tester").unwrap();
-        let doc = AppDoc::builder(AppType::Web, "demo_web", "0.1.0", "tester", &owner)
-            .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
+        let doc = AppDoc::builder(AppType::Web, "demo-web", "0.1.0", "tester", &owner)
+            .web_pkg(pinned_package("all.web.demo-web.tester.bns.did#0.1.0"))
             .build()
             .unwrap();
-        assert_eq!(doc.did, Some(DID::new("bns", "demo_web.tester")));
+        assert_eq!(doc.app_did(), &DID::new("bns", "demo-web.tester"));
         assert_eq!(doc.doc_type.to_string(), "app");
 
         // 显式 app_did 覆盖派生规则。
-        let explicit = DID::from_str("did:bns:custom_app_name").unwrap();
-        let doc = AppDoc::builder(AppType::Web, "demo_web", "0.1.0", "tester", &owner)
+        let explicit = DID::from_str("did:bns:custom-app-name").unwrap();
+        let doc = AppDoc::builder(AppType::Web, "demo-web", "0.1.0", "tester", &owner)
             .app_did(explicit.clone())
-            .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
+            .web_pkg(pinned_package("all.web.custom-app-name.bns.did#0.1.0"))
             .build()
             .unwrap();
-        assert_eq!(doc.did, Some(explicit));
+        assert_eq!(doc.app_did(), &explicit);
     }
 
     #[test]
     fn test_app_doc_obj_id_uses_appdoc_type_and_version_fields_stay_separate() {
         let owner = DID::from_str("did:bns:tester").unwrap();
-        let doc = AppDoc::builder(AppType::Web, "demo_web", "0.1.0", "tester", &owner)
-            .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
+        let doc = AppDoc::builder(AppType::Web, "demo-web", "0.1.0", "tester", &owner)
+            .web_pkg(pinned_package("all.web.demo-web.tester.bns.did#0.1.0"))
             .build()
             .unwrap();
 
@@ -1675,7 +1923,7 @@ mod tests {
         assert_eq!(value.get("doc_type").and_then(|v| v.as_str()), Some("app"));
         assert_eq!(
             value.get("did").and_then(|v| v.as_str()),
-            Some("did:bns:demo_web.tester")
+            Some("did:bns:demo-web.tester")
         );
         assert!(value.get("id").is_none());
     }
@@ -1714,7 +1962,7 @@ mod tests {
         let owner = DID::from_str("did:web:example.com").unwrap();
         let err = AppDoc::builder(
             AppType::Agent,
-            "demo_agent_bad",
+            "demo-agent-bad",
             "0.1.0",
             "did:web:example.com",
             &owner,
@@ -1734,27 +1982,31 @@ mod tests {
         let owner = DID::from_str("did:web:example.com").unwrap();
         let doc = AppDoc::builder(
             AppType::Agent,
-            "demo_agent",
+            "demo-agent",
             "0.1.0",
             "did:web:example.com",
             &owner,
         )
-        .agent_pkg(SubPkgDesc::new("demo_agent-agent#0.1.0"))
-        .agent_skills_pkg(SubPkgDesc::new("demo_agent-skills#0.1.0"))
+        .agent_pkg(pinned_package(
+            "all.agent.demo-agent.example.com.bns.did#0.1.0",
+        ))
+        .agent_skills_pkg(pinned_package(
+            "all.skills.demo-agent.example.com.bns.did#0.1.0",
+        ))
         .build()
         .unwrap();
 
         assert_eq!(doc.get_app_type(), AppType::Agent);
         assert_eq!(
             doc.pkg_list.agent.as_ref().map(|pkg| pkg.pkg_id.as_str()),
-            Some("demo_agent-agent#0.1.0")
+            Some("all.agent.demo-agent.example.com.bns.did#0.1.0")
         );
         assert_eq!(
             doc.pkg_list
                 .agent_skills
                 .as_ref()
                 .map(|pkg| pkg.pkg_id.as_str()),
-            Some("demo_agent-skills#0.1.0")
+            Some("all.skills.demo-agent.example.com.bns.did#0.1.0")
         );
     }
 }

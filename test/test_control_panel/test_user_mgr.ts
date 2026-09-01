@@ -133,6 +133,10 @@ const DV_ADMIN_PASSWORD = getEnv("BUCKYOS_TEST_ADMIN_PASSWORD", "bucky2025");
 // appid must match the token appid the gateway accepts for the AppClient — the
 // test runtime logs in as "buckycli" (see buckyos_client.ts).
 const TEST_APP_ID = getEnv("BUCKYOS_TEST_APP_ID", "buckycli");
+const CONTROL_PANEL_AUTH_TARGET = {
+  kind: "system",
+  service_id: "control-panel",
+};
 
 // ---------------------------------------------------------------------------
 // Sudo / local-account auth helpers
@@ -192,7 +196,6 @@ function serviceUrl(service: string): string {
 async function obtainSudoToken(
   username: string,
   password: string,
-  appId: string,
 ): Promise<string> {
   const nonce = Date.now();
   const passwordHash = hashPassword(username, password, nonce);
@@ -201,7 +204,7 @@ async function obtainSudoToken(
   const res = (await rpc.call("sudo_by_password", {
     username,
     password: passwordHash,
-    appid: appId,
+    target: CONTROL_PANEL_AUTH_TARGET,
     login_nonce: nonce,
   })) as { session_token?: unknown };
   const token = typeof res?.session_token === "string" ? res.session_token : "";
@@ -215,7 +218,6 @@ async function obtainSudoToken(
 async function loginByPassword(
   username: string,
   password: string,
-  appId: string,
 ): Promise<{
   session_token?: string;
   user_id?: string;
@@ -228,7 +230,7 @@ async function loginByPassword(
     type: "password",
     username,
     password: passwordHash,
-    appid: appId,
+    target: CONTROL_PANEL_AUTH_TARGET,
     login_nonce: nonce,
   })) as Awaited<ReturnType<typeof loginByPassword>>;
 }
@@ -670,7 +672,6 @@ async function main() {
       sudoToken = await obtainSudoToken(
         DV_ADMIN_USER,
         DV_ADMIN_PASSWORD,
-        TEST_APP_ID,
       );
       assert(
         typeof sudoToken === "string" && sudoToken.length > 0,
@@ -723,7 +724,6 @@ async function main() {
         const res = await loginByPassword(
           testUserId,
           NEW_USER_PASSWORD,
-          TEST_APP_ID,
         );
         const sessionToken = res.session_token;
         if (typeof sessionToken !== "string" || sessionToken.length === 0) {
@@ -744,7 +744,6 @@ async function main() {
       newUserSudoToken = await obtainSudoToken(
         testUserId,
         NEW_USER_PASSWORD,
-        TEST_APP_ID,
       );
       assert(
         typeof newUserSudoToken === "string" && newUserSudoToken.length > 0,

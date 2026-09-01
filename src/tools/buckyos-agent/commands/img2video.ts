@@ -7,6 +7,7 @@ import { ArgError, bailArgError, COMMON_OPTIONS_HELP, flagInt, parseArgvOrExit, 
 import { initRuntime } from "../lib/runtime.ts";
 import { callAicc, commonPolicyOptions, describeFailure, requestNamedObjectOutput } from "../lib/aicc.ts";
 import { pickArtifact, resolveInputResource, saveArtifactToPath, suffixPathByMime } from "../lib/io.ts";
+import { aiResponseExtraString } from "../lib/types.ts";
 import {
   bailAiccError, bailAiccFailed, bailIoError, bailNoArtifact, bailRuntimeError,
   emitAndExit, errorResult, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
@@ -79,9 +80,12 @@ export async function run(argv: string[]): Promise<never> {
   try { saved = await saveArtifactToPath(artifact, suffixPathByMime(outputPath, "video/mp4"), ndmProxy); }
   catch (err) { bailIoError(TOOL, call.taskId, err); }
 
+  const continuationHandle = aiResponseExtraString(call.summary, "continuation_handle");
+
   emitAndExit(
     successResult(TOOL, `${TOOL} => done`, `${TOOL} wrote ${saved.path}`, {
       method: METHOD, capability: "video", task_id: call.taskId,
+      ...(continuationHandle ? { continuation_handle: continuationHandle } : {}),
       files: [{ path: saved.path, mime: saved.mime ?? null, bytes: saved.bytes, source_kind: saved.source_kind }],
     }),
     EXIT_SUCCESS,

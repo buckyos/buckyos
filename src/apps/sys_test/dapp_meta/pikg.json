@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "output_dir": "../dapp_dist",
+  "pikg_file": "buckyos-systest.buckyos.bns.did-0.5.1.pikg",
+  "sub_pkgs": {
+    "script": {
+      "required": true,
+      "source": {
+        "type": "path",
+        "path": "../dist"
+      }
+    }
+  }
+}

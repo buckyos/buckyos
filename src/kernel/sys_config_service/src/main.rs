@@ -6,6 +6,7 @@ mod zone_did_resolver;
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use jsonwebtoken::{Algorithm, DecodingKey};
@@ -17,7 +18,10 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use ::kRPC::*;
-use buckyos_api::{build_current_rbac_config, ZoneConfig};
+use buckyos_api::{
+    build_current_rbac_config, validate_verify_hub_token_claims, SystemServiceId, TokenUse,
+    ZoneConfig, BUCKYOS_DEV_CONFIG_KEY, SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE,
+};
 use buckyos_http_server::*;
 use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
@@ -35,6 +39,12 @@ use sled_provider::SledStore;
 use crate::zone_did_resolver::ZoneDidResolver;
 
 const SYS_CONFIG_URI_PERFIX: &str = "obj://config/";
+const NODE_DAEMON_SERVICE_ID: &str = "node-daemon";
+
+// A brand-new zone needs the boot scheduler to populate System Config before
+// Verify Hub can start. The mode closes permanently when bootstrap explicitly
+// refreshes trust keys or the first valid Verify Hub session arrives.
+static BOOTSTRAP_CONFIG_MODE: AtomicBool = AtomicBool::new(false);
 
 lazy_static! {
     static ref TRUST_KEYS: Arc<Mutex<HashMap<String, DecodingKey>>> = {
@@ -124,18 +134,160 @@ fn get_sudo_mode(session_token: &RPCSessionToken, userid: &str) -> Option<SudoMo
     }
 }
 
-fn require_session_identity(session_token: &RPCSessionToken) -> Result<(&str, &str)> {
+fn require_session_identity(session_token: &RPCSessionToken) -> Result<(&str, String)> {
     let userid = session_token
         .sub
         .as_deref()
         .filter(|userid| !userid.trim().is_empty())
         .ok_or_else(|| RPCErrors::ParseRequestError("Missing userid".to_string()))?;
-    let appid = session_token
+    match validate_verify_hub_token_claims(session_token, TokenUse::Session) {
+        Ok(claims) => Ok((userid, claims.target.authorization_key())),
+        Err(session_error) => {
+            let device_name = current_bootstrap_device_name()?;
+            validate_system_config_bootstrap_assertion(session_token, device_name.as_str())
+                .map_err(|_| session_error)?;
+            let service_id =
+                SystemServiceId::parse(session_token.appid.as_deref().unwrap_or_default())
+                    .map_err(RPCErrors::InvalidToken)?;
+            Ok((userid, format!("system:{service_id}")))
+        }
+    }
+}
+
+fn current_bootstrap_device_name() -> Result<String> {
+    let raw = std::env::var("BUCKYOS_THIS_DEVICE").map_err(|_| {
+        RPCErrors::InvalidToken("system config bootstrap device is unavailable".to_string())
+    })?;
+    let device: DeviceDocument = serde_json::from_str(raw.as_str()).map_err(|error| {
+        RPCErrors::InvalidToken(format!(
+            "invalid system config bootstrap device document: {error}"
+        ))
+    })?;
+    Ok(device.name)
+}
+
+fn validate_system_config_bootstrap_assertion(
+    token: &RPCSessionToken,
+    expected_device_name: &str,
+) -> Result<()> {
+    let service_id_is_valid = token
         .appid
         .as_deref()
-        .filter(|appid| !appid.trim().is_empty())
-        .ok_or_else(|| RPCErrors::ParseRequestError("Missing appid".to_string()))?;
-    Ok((userid, appid))
+        .is_some_and(|appid| SystemServiceId::parse(appid).is_ok());
+    let valid = token.iss.as_deref() == Some(expected_device_name)
+        && token
+            .sub
+            .as_deref()
+            .is_some_and(|subject| subject == "kernel" || subject == expected_device_name)
+        && service_id_is_valid
+        && token.aud.as_deref() == Some(SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE)
+        && token.exp.is_some()
+        && token
+            .jti
+            .as_deref()
+            .is_some_and(|jti| !jti.trim().is_empty())
+        && !token.sudo
+        && token.extra.is_empty();
+    if !valid {
+        return Err(RPCErrors::InvalidToken(
+            "invalid system config bootstrap assertion".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn request_key(params: &Value) -> Option<&str> {
+    params.get("key").and_then(Value::as_str)
+}
+
+fn request_writes_buckyos_dev_config(method: &str, params: &Value) -> bool {
+    match method {
+        "sys_config_create"
+        | "sys_config_set"
+        | "sys_config_set_by_json_path"
+        | "sys_config_delete"
+        | "sys_config_append" => request_key(params)
+            .map(strip_config_key_prefix)
+            .is_some_and(|key| key == BUCKYOS_DEV_CONFIG_KEY),
+        "sys_config_exec_tx" => params
+            .get("actions")
+            .and_then(Value::as_object)
+            .is_some_and(|actions| {
+                actions
+                    .keys()
+                    .any(|key| strip_config_key_prefix(key) == BUCKYOS_DEV_CONFIG_KEY)
+            }),
+        _ => false,
+    }
+}
+
+fn require_sudo_for_protected_write(
+    method: &str,
+    params: &Value,
+    token: &RPCSessionToken,
+) -> Result<()> {
+    if request_writes_buckyos_dev_config(method, params) && !token.sudo {
+        return Err(RPCErrors::NoPermission(
+            "sudo permission is required to write system/buckyos_dev_config".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn bootstrap_request_allowed_after_boot(
+    method: &str,
+    params: &Value,
+    device_name: &str,
+    service_id: &str,
+) -> bool {
+    let key = request_key(params).map(strip_config_key_prefix);
+    let own_device_doc = format!("devices/{device_name}/doc");
+    let own_device_info = format!("devices/{device_name}/info");
+    match method {
+        "sys_config_get" | "sys_config_list" => true,
+        "sys_config_set" if service_id == NODE_DAEMON_SERVICE_ID => {
+            key.is_some_and(|key| key == own_device_doc || key == own_device_info)
+        }
+        _ => false,
+    }
+}
+
+fn bootstrap_request_allowed_during_boot(method: &str, service_id: &str) -> bool {
+    service_id == NODE_DAEMON_SERVICE_ID
+        && matches!(
+            method,
+            "sys_config_create"
+                | "sys_config_get"
+                | "sys_config_set"
+                | "sys_config_set_by_json_path"
+                | "sys_config_exec_tx"
+                | "sys_config_delete"
+                | "sys_config_append"
+                | "sys_config_list"
+                | "dump_configs_for_scheduler"
+                | "sys_refresh_trust_keys"
+        )
+}
+
+async fn authorize_bootstrap_request(
+    method: &str,
+    params: &Value,
+    token: &RPCSessionToken,
+) -> Result<()> {
+    let device_name = current_bootstrap_device_name()?;
+    validate_system_config_bootstrap_assertion(token, device_name.as_str())?;
+    let service_id = token.appid.as_deref().unwrap_or_default();
+
+    let allowed = (BOOTSTRAP_CONFIG_MODE.load(Ordering::Acquire)
+        && bootstrap_request_allowed_during_boot(method, service_id))
+        || bootstrap_request_allowed_after_boot(method, params, device_name.as_str(), service_id);
+    if allowed {
+        return Ok(());
+    }
+
+    Err(RPCErrors::NoPermission(
+        "system config bootstrap assertion is not authorized for this request".to_string(),
+    ))
 }
 
 async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
@@ -166,7 +318,7 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
     );
     let is_allowed = enforce(
         userid,
-        appid,
+        appid.as_str(),
         full_res_path.as_str(),
         "read",
         get_sudo_mode(session_token, userid),
@@ -217,7 +369,7 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
     let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        appid,
+        appid.as_str(),
         full_res_path.as_str(),
         "write",
         get_sudo_mode(session_token, userid),
@@ -240,7 +392,7 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
         real_key_path.as_str(),
         Some(new_value),
         userid,
-        appid,
+        appid.as_str(),
     );
     let store = SYS_STORE.lock().await;
     info!("Set key:[{}], value_len={}", key, new_value.len());
@@ -286,7 +438,7 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
     let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        appid,
+        appid.as_str(),
         full_res_path.as_str(),
         "write",
         get_sudo_mode(session_token, userid),
@@ -309,7 +461,7 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
         real_key_path.as_str(),
         Some(new_value),
         userid,
-        appid,
+        appid.as_str(),
     );
     let store = SYS_STORE.lock().await;
     info!("Create key:[{}], value_len={}", key, new_value.len());
@@ -350,7 +502,7 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
     let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        appid,
+        appid.as_str(),
         full_res_path.as_str(),
         "write",
         get_sudo_mode(session_token, userid),
@@ -368,7 +520,13 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
     }
 
     //do business logic
-    audit_resolver_cache_write("delete", real_key_path.as_str(), None, userid, appid);
+    audit_resolver_cache_write(
+        "delete",
+        real_key_path.as_str(),
+        None,
+        userid,
+        appid.as_str(),
+    );
     let store = SYS_STORE.lock().await;
     info!("Delete key:[{}]", key);
     store
@@ -412,7 +570,7 @@ async fn handle_append(params: Value, session_token: &RPCSessionToken) -> Result
     let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        appid,
+        appid.as_str(),
         full_res_path.as_str(),
         "write",
         get_sudo_mode(session_token, userid),
@@ -435,7 +593,7 @@ async fn handle_append(params: Value, session_token: &RPCSessionToken) -> Result
         real_key_path.as_str(),
         Some(append_value),
         userid,
-        appid,
+        appid.as_str(),
     );
     let store = SYS_STORE.lock().await;
     let result = store
@@ -491,7 +649,7 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
     let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        appid,
+        appid.as_str(),
         full_res_path.as_str(),
         "write",
         get_sudo_mode(session_token, userid),
@@ -514,7 +672,7 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
         real_key_path.as_str(),
         None,
         userid,
-        appid,
+        appid.as_str(),
     );
     let store = SYS_STORE.lock().await;
     store
@@ -570,7 +728,7 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
         let (full_res_path, real_key_path) = get_full_res_path(key)?;
         if !enforce(
             userid,
-            appid,
+            appid.as_str(),
             full_res_path.as_str(),
             "write",
             get_sudo_mode(session_token, userid),
@@ -655,19 +813,11 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
             real_key_path.as_str(),
             action.get("value").and_then(|v| v.as_str()),
             userid,
-            appid,
+            appid.as_str(),
         );
         tx_actions.insert(real_key_path.clone(), kv_action);
     }
-    let mut real_main_key = None;
-    let main_key = params.get("main_key");
-    if main_key.is_some() {
-        let main_key = main_key.unwrap();
-        let main_key = main_key.as_str().unwrap();
-        let main_key = main_key.split(":").collect::<Vec<&str>>();
-        let main_key = (main_key[0].to_string(), main_key[1].parse::<u64>().unwrap());
-        real_main_key = Some(main_key);
-    }
+    let real_main_key = parse_tx_main_key(&params)?;
 
     let store = SYS_STORE.lock().await;
     store
@@ -682,6 +832,28 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
     }
 
     Ok(Value::Null)
+}
+
+fn parse_tx_main_key(params: &Value) -> Result<Option<(String, u64)>> {
+    let Some(main_key) = params.get("main_key") else {
+        return Ok(None);
+    };
+    let main_key = main_key
+        .as_object()
+        .ok_or_else(|| RPCErrors::ParseRequestError("main_key must be an object".to_string()))?;
+    let key = main_key
+        .get("key")
+        .and_then(Value::as_str)
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| RPCErrors::ParseRequestError("main_key.key is required".to_string()))?;
+    let revision = main_key
+        .get("revision")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            RPCErrors::ParseRequestError("main_key.revision must be a u64".to_string())
+        })?;
+    let (_, real_key_path) = get_full_res_path(key)?;
+    Ok(Some((real_key_path, revision)))
 }
 
 async fn handle_list(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
@@ -707,7 +879,7 @@ async fn handle_list(params: Value, session_token: &RPCSessionToken) -> Result<V
     );
     if !enforce(
         userid,
-        appid,
+        appid.as_str(),
         full_res_path.as_str(),
         "read",
         get_sudo_mode(session_token, userid),
@@ -838,7 +1010,7 @@ async fn dump_configs_for_scheduler(
     session_token: &RPCSessionToken,
 ) -> Result<Value> {
     let (_userid, appid) = require_session_identity(session_token)?;
-    if appid != "scheduler" && appid != "node-daemon" {
+    if appid != "system:scheduler" && appid != "system:node-daemon" {
         return Err(RPCErrors::NoPermission("No permission".to_string()));
     }
 
@@ -898,6 +1070,12 @@ impl SystemConfigServer {
         if session_token.is_some() {
             let session_token = session_token.unwrap();
             let rpc_session_token = verify_trusted_jwt(session_token.as_str()).await?;
+            if validate_verify_hub_token_claims(&rpc_session_token, TokenUse::Session).is_ok() {
+                BOOTSTRAP_CONFIG_MODE.store(false, Ordering::Release);
+                require_sudo_for_protected_write(method.as_str(), &param, &rpc_session_token)?;
+            } else {
+                authorize_bootstrap_request(method.as_str(), &param, &rpc_session_token).await?;
+            }
             //let mut rpc_session_token = RPCSessionToken::from_string(session_token.as_str())?;
             //veruft session token (need access trust did_list)
             //verify_session_token(&mut rpc_session_token).await?;
@@ -932,7 +1110,14 @@ impl SystemConfigServer {
                 }
                 "sys_refresh_trust_keys" => {
                     let _ = require_session_identity(&rpc_session_token)?;
-                    return handle_refresh_trust_keys().await;
+                    let result = handle_refresh_trust_keys().await;
+                    if result.is_ok()
+                        && rpc_session_token.aud.as_deref()
+                            == Some(SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE)
+                    {
+                        BOOTSTRAP_CONFIG_MODE.store(false, Ordering::Release);
+                    }
+                    return result;
                 }
                 // Add more methods here
                 _ => Err(RPCErrors::UnknownMethod(String::from(method))),
@@ -1258,6 +1443,17 @@ async fn service_main() {
     //std::env::set_var("BUCKY_LOG","debug");
     init_logging("system_config_service", true);
     info!("Starting system config service............................");
+    let boot_config_exists = {
+        let store = SYS_STORE.lock().await;
+        store
+            .get("boot/config".to_string())
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+    };
+    BOOTSTRAP_CONFIG_MODE.store(!boot_config_exists, Ordering::Release);
+    info!("system config bootstrap mode: {}", !boot_config_exists);
     init_by_boot_document().await.unwrap();
 
     let server = SystemConfigServer::new();
@@ -1288,20 +1484,34 @@ mod test {
     use tokio::{task, time::sleep};
 
     use super::*;
+    use buckyos_api::{
+        bind_token_principal_kind, bind_token_target, AuthTarget, SystemServiceId,
+        TokenPrincipalKind, VERIFY_HUB_TOKEN_ISSUER,
+    };
 
     fn test_session_token(sub: Option<&str>, appid: Option<&str>) -> RPCSessionToken {
-        RPCSessionToken {
+        let mut token = RPCSessionToken {
             sub: sub.map(|value| value.to_string()),
             appid: appid.map(|value| value.to_string()),
             exp: None,
             token_type: RPCSessionTokenType::Normal,
             token: None,
-            iss: None,
+            iss: Some(VERIFY_HUB_TOKEN_ISSUER.to_string()),
             jti: None,
             aud: None,
             sudo: false,
             extra: HashMap::new(),
+        };
+        if let Some(appid) = appid.filter(|value| !value.is_empty()) {
+            bind_token_principal_kind(&mut token, TokenPrincipalKind::User);
+            bind_token_target(
+                &mut token,
+                &AuthTarget::system(SystemServiceId::parse(appid).unwrap()),
+                TokenUse::Session,
+            )
+            .unwrap();
         }
+        token
     }
 
     #[test]
@@ -1319,22 +1529,150 @@ mod test {
         ));
 
         let missing_appid = test_session_token(Some("alice"), None);
-        assert!(matches!(
-            require_session_identity(&missing_appid),
-            Err(RPCErrors::ParseRequestError(message)) if message == "Missing appid"
-        ));
+        assert!(require_session_identity(&missing_appid).is_err());
 
         let blank_appid = test_session_token(Some("alice"), Some(""));
-        assert!(matches!(
-            require_session_identity(&blank_appid),
-            Err(RPCErrors::ParseRequestError(message)) if message == "Missing appid"
-        ));
+        assert!(require_session_identity(&blank_appid).is_err());
 
         let valid = test_session_token(Some("alice"), Some("control-panel"));
         assert_eq!(
             require_session_identity(&valid).unwrap(),
-            ("alice", "control-panel")
+            ("alice", "system:control-panel".to_string())
         );
+    }
+
+    #[test]
+    fn buckyos_dev_config_runtime_writes_require_sudo() {
+        let mut token = test_session_token(Some("alice"), Some("control-panel"));
+        let direct_write = json!({
+            "key": BUCKYOS_DEV_CONFIG_KEY,
+            "value": "{}",
+        });
+        assert!(require_sudo_for_protected_write("sys_config_get", &direct_write, &token).is_ok());
+        assert!(require_sudo_for_protected_write("sys_config_set", &direct_write, &token).is_err());
+        assert!(require_sudo_for_protected_write(
+            "sys_config_set",
+            &json!({"key": "system/other", "value": "{}"}),
+            &token,
+        )
+        .is_ok());
+
+        let tx_write = json!({
+            "actions": {
+                "obj://config/system/buckyos_dev_config": {
+                    "action": "update",
+                    "value": "{}",
+                }
+            }
+        });
+        assert!(require_sudo_for_protected_write("sys_config_exec_tx", &tx_write, &token).is_err());
+
+        token.sudo = true;
+        assert!(require_sudo_for_protected_write("sys_config_set", &direct_write, &token).is_ok());
+        assert!(require_sudo_for_protected_write("sys_config_exec_tx", &tx_write, &token).is_ok());
+    }
+
+    #[test]
+    fn bootstrap_assertion_is_explicit_and_read_only_except_for_own_device() {
+        let mut assertion = RPCSessionToken {
+            sub: Some("kernel".to_string()),
+            appid: Some(NODE_DAEMON_SERVICE_ID.to_string()),
+            exp: Some(buckyos_get_unix_timestamp() + 900),
+            token_type: RPCSessionTokenType::Normal,
+            token: None,
+            iss: Some("ood1".to_string()),
+            jti: Some("boot-1".to_string()),
+            aud: Some(SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE.to_string()),
+            sudo: false,
+            extra: HashMap::new(),
+        };
+        assert!(validate_system_config_bootstrap_assertion(&assertion, "ood1").is_ok());
+
+        for method in [
+            "sys_config_create",
+            "sys_config_get",
+            "sys_config_set",
+            "sys_config_set_by_json_path",
+            "sys_config_exec_tx",
+            "sys_config_delete",
+            "sys_config_append",
+            "sys_config_list",
+            "dump_configs_for_scheduler",
+            "sys_refresh_trust_keys",
+        ] {
+            assert!(bootstrap_request_allowed_during_boot(
+                method,
+                NODE_DAEMON_SERVICE_ID,
+            ));
+        }
+        assert!(!bootstrap_request_allowed_during_boot(
+            "dump_configs_for_scheduler",
+            "scheduler",
+        ));
+
+        for params in [
+            json!({"key": "boot/config"}),
+            json!({"key": "devices"}),
+            json!({"key": "devices/ood2/info"}),
+        ] {
+            assert!(bootstrap_request_allowed_after_boot(
+                "sys_config_get",
+                &params,
+                "ood1",
+                NODE_DAEMON_SERVICE_ID,
+            ));
+        }
+        assert!(bootstrap_request_allowed_after_boot(
+            "sys_config_set",
+            &json!({"key": "devices/ood1/doc"}),
+            "ood1",
+            NODE_DAEMON_SERVICE_ID,
+        ));
+        assert!(!bootstrap_request_allowed_after_boot(
+            "sys_config_set",
+            &json!({"key": "devices/ood2/doc"}),
+            "ood1",
+            NODE_DAEMON_SERVICE_ID,
+        ));
+        assert!(bootstrap_request_allowed_after_boot(
+            "sys_config_get",
+            &json!({"key": "users/alice/settings"}),
+            "ood1",
+            "verify-hub",
+        ));
+        assert!(!bootstrap_request_allowed_after_boot(
+            "sys_config_exec_tx",
+            &json!({"actions": {}}),
+            "ood1",
+            NODE_DAEMON_SERVICE_ID,
+        ));
+        assert!(!bootstrap_request_allowed_after_boot(
+            "dump_configs_for_scheduler",
+            &json!({}),
+            "ood1",
+            NODE_DAEMON_SERVICE_ID,
+        ));
+        assert!(!bootstrap_request_allowed_after_boot(
+            "sys_config_set",
+            &json!({"key": "devices/ood1/info"}),
+            "ood1",
+            "verify-hub",
+        ));
+
+        assertion.aud = None;
+        assert!(validate_system_config_bootstrap_assertion(&assertion, "ood1").is_err());
+        assertion.aud = Some(SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE.to_string());
+        assertion.sub = Some("ood1".to_string());
+        assert!(validate_system_config_bootstrap_assertion(&assertion, "ood1").is_ok());
+        assertion.appid = Some("verify-hub".to_string());
+        assert!(validate_system_config_bootstrap_assertion(&assertion, "ood1").is_ok());
+        assertion.extra.insert(
+            "target_kind".to_string(),
+            Value::String("system".to_string()),
+        );
+        assert!(validate_system_config_bootstrap_assertion(&assertion, "ood1").is_err());
+        assertion.extra.clear();
+        assert!(validate_system_config_bootstrap_assertion(&assertion, "ood2").is_err());
     }
 
     #[test]
@@ -1360,6 +1698,24 @@ mod test {
                 "boot/config".to_string()
             )
         );
+    }
+
+    #[test]
+    fn transaction_main_key_preserves_colons_in_key() {
+        let params = json!({
+            "main_key": {
+                "key": "users/devtest/apps/did:bns:demo.root/mutation",
+                "revision": 7,
+            }
+        });
+        assert_eq!(
+            parse_tx_main_key(&params).unwrap(),
+            Some((
+                "users/devtest/apps/did:bns:demo.root/mutation".to_string(),
+                7,
+            ))
+        );
+        assert!(parse_tx_main_key(&json!({ "main_key": "legacy:7" })).is_err());
     }
 
     #[test]

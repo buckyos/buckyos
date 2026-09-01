@@ -612,8 +612,15 @@ mod tests {
 
     #[test]
     fn jarvis_work_behaviors_define_runtime_prompt_hooks() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../rootfs/bin/buckyos_jarvis/behaviors");
+        let jarvis_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../rootfs/bin/buckyos_jarvis");
+        let root = jarvis_root.join("behaviors");
+        let role_prompt = std::fs::read_to_string(jarvis_root.join("role.md")).unwrap();
+        assert!(
+            role_prompt.contains("originating message's language")
+                && role_prompt.contains("after background work resumes"),
+            "Jarvis role prompt must preserve the originating task language after background work"
+        );
         let media_cli_prompt = std::fs::read_to_string(root.join("aicc_image_cli.inc")).unwrap();
         for required in [
             "gen_image",
@@ -638,6 +645,13 @@ mod tests {
             "ai_quota",
             "named_object:<obj_id>",
             "<attachment path=",
+            "timeout_ms=\"300000\"",
+            "timeout_ms=\"600000\"",
+            "--timeout 240",
+            "--timeout 540",
+            "use `llm_understand_media` for a general description or classification of audio",
+            "reserve `speech_to_text` for established speech or explicit transcription requests",
+            "present its diagnostic `candidate_text` only as an uncertain candidate",
         ] {
             assert!(
                 media_cli_prompt.contains(required),

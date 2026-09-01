@@ -205,11 +205,10 @@ fn resolve_static_dir_pkg_id(app_info: &serde_json::Map<String, Value>) -> Resul
             })?
         }
         None => {
-            warn!(
-                "static web app dir package {} missing dir_pkg_objid, fallback to pkg id only",
+            return Err(NodeDaemonErrors::ReasonError(format!(
+                "static web app dir package {} is missing its Package Meta ObjectId",
                 dir_pkg_id
-            );
-            dir_pkg_id.to_string()
+            )))
         }
     };
 
@@ -260,21 +259,14 @@ async fn index_static_dir_pkg_meta_from_named_store(
         })
     })?;
 
-    let expected_pkg_name = if package_id.name.contains('.') {
-        package_id.name.clone()
-    } else {
-        format!(
-            "{}.{}",
-            new_package_env(pkg_env_path.to_path_buf()).get_prefix(),
-            package_id.name
-        )
-    };
-    let meta_obj_id_string = meta_obj_id.to_string();
-    let mut indexed_pkg_meta = pkg_meta.clone();
-    if indexed_pkg_meta.name != expected_pkg_name {
-        indexed_pkg_meta.name = expected_pkg_name;
+    if pkg_meta.name != package_id.name {
+        return Err(NodeDaemonErrors::ReasonError(format!(
+            "static dir PackageMeta name {} does not match exact PackageId name {}",
+            pkg_meta.name, package_id.name
+        )));
     }
-    let indexed_pkg_meta_str = serde_json::to_string(&indexed_pkg_meta).map_err(|err| {
+    let meta_obj_id_string = meta_obj_id.to_string();
+    let indexed_pkg_meta_str = serde_json::to_string(&pkg_meta).map_err(|err| {
         NodeDaemonErrors::ReasonError(format!(
             "serialize indexed static dir pkg meta {} failed: {}",
             meta_obj_id, err
@@ -290,7 +282,7 @@ async fn index_static_dir_pkg_meta_from_named_store(
     })?;
 
     let meta_db =
-        MetaIndexDb::new(pkg_env_path.join("pkgs/meta_index.db"), false).map_err(|err| {
+        MetaIndexDb::create_or_open(pkg_env_path.join("pkgs/meta_index.db")).map_err(|err| {
             NodeDaemonErrors::ReasonError(format!(
                 "open pkg env meta db for {} failed: {}",
                 resolved_pkg_id, err
@@ -300,7 +292,7 @@ async fn index_static_dir_pkg_meta_from_named_store(
         .add_pkg_meta(
             meta_obj_id_string.as_str(),
             indexed_pkg_meta_str.as_str(),
-            indexed_pkg_meta.author.as_str(),
+            pkg_meta.author.as_str(),
             None,
         )
         .map_err(|err| {
@@ -311,11 +303,11 @@ async fn index_static_dir_pkg_meta_from_named_store(
         })?;
     meta_db
         .set_pkg_version(
-            indexed_pkg_meta.name.as_str(),
-            indexed_pkg_meta.author.as_str(),
-            indexed_pkg_meta.version.as_str(),
+            pkg_meta.name.as_str(),
+            pkg_meta.author.as_str(),
+            pkg_meta.version.as_str(),
             meta_obj_id_string.as_str(),
-            indexed_pkg_meta.version_tag.as_deref(),
+            pkg_meta.version_tag.as_deref(),
         )
         .map_err(|err| {
             NodeDaemonErrors::ReasonError(format!(
@@ -469,6 +461,62 @@ async fn ensure_node_gateway_dir_pkgs_installed_in_env(
         Ok(())
     } else {
         Err(NodeDaemonErrors::ReasonError(failures.join("; ")))
+    }
+}
+
+async fn publish_static_web_deployment_evidence(
+    node_gateway_info: &Value,
+    client: &SystemConfigClient,
+    node_id: &str,
+    gateway_config_generation: Option<&str>,
+    failure: Option<&str>,
+) {
+    let Some(app_info) = node_gateway_info.get("app_info").and_then(Value::as_object) else {
+        return;
+    };
+    let now = buckyos_get_unix_timestamp();
+    for entry in app_info.values().filter_map(Value::as_object) {
+        let Some(dir_pkg_id) = entry.get("dir_pkg_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(app_instance_id) = entry.get("app_instance_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(deployment_value) = entry.get("deployment") else {
+            continue;
+        };
+        let Ok(deployment) = serde_json::from_value::<DeploymentIdentity>(deployment_value.clone())
+        else {
+            continue;
+        };
+        let content_id = entry
+            .get("dir_pkg_objid")
+            .and_then(Value::as_str)
+            .unwrap_or(dir_pkg_id)
+            .to_string();
+        let evidence = StaticWebDeploymentEvidence {
+            deployment,
+            node_id: node_id.to_string(),
+            content_id,
+            gateway_config_generation: gateway_config_generation.unwrap_or_default().to_string(),
+            materialized_at: failure.is_none().then_some(now).unwrap_or(0),
+            gateway_ready_at: (failure.is_none() && gateway_config_generation.is_some())
+                .then_some(now)
+                .unwrap_or(0),
+            observed_at: now,
+            expires_at: now.saturating_add(90),
+            deployment_error: failure.map(|message| DeploymentError {
+                code: "static_web_materialization_failed".to_string(),
+                message: message.to_string(),
+                detail: None,
+            }),
+        };
+        if let Ok(raw) = serde_json::to_string(&evidence) {
+            let key = format!("services/{app_instance_id}/static_evidence/{node_id}");
+            if let Err(error) = client.set(&key, &raw).await {
+                warn!("publish static web deployment evidence `{key}` failed: {error}");
+            }
+        }
     }
 }
 
@@ -669,6 +717,47 @@ fn get_kevent_service(source_node: &str) -> Arc<kevent::KEventService> {
         .clone()
 }
 
+/// Body of the `/devices/{name}/info` event.
+///
+/// The full `DeviceInfo` is written to system_config immediately before this is
+/// published, and every consumer reads the record from there, so the event only
+/// has to say which device changed. Carrying the whole record instead overflows
+/// the kevent slot (`SLOT_DATA_SIZE`), and the flattened DID document would put
+/// key material on a bus any local process can drain.
+#[derive(Serialize)]
+struct DeviceInfoChangedEvent<'a> {
+    name: &'a str,
+    id: &'a DID,
+    device_type: &'a str,
+    owner: &'a DID,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    zone_did: Option<&'a DID>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    net_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version_seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<&'a str>,
+    update_time: u64,
+}
+
+impl<'a> DeviceInfoChangedEvent<'a> {
+    fn from_device_info(device_info: &'a DeviceInfo) -> Self {
+        let doc = &device_info.device_doc;
+        Self {
+            name: doc.name.as_str(),
+            id: &doc.id,
+            device_type: doc.device_type.as_str(),
+            owner: &doc.owner,
+            zone_did: doc.zone_did.as_ref(),
+            net_id: doc.net_id.as_deref(),
+            version_seq: doc.version_seq,
+            state: device_info.state.as_deref(),
+            update_time: device_info.update_time,
+        }
+    }
+}
+
 async fn publish_device_info_kevent(device_info: &DeviceInfo) {
     let Some(service) = KEVENT_SERVICE.get() else {
         warn!(
@@ -678,7 +767,8 @@ async fn publish_device_info_kevent(device_info: &DeviceInfo) {
         return;
     };
     let eventid = format!("/devices/{}/info", device_info.name.as_str());
-    let event_data = serde_json::to_value(device_info).unwrap();
+    let event_data =
+        serde_json::to_value(DeviceInfoChangedEvent::from_device_info(device_info)).unwrap();
 
     if let Err(err) = service
         .publish_local_global(eventid.as_str(), event_data)
@@ -1179,7 +1269,11 @@ async fn node_main(
     //     .await;
 
     //app services is "userA-appB-service", run in docker container
-    let app_ids = node_config.apps.keys().cloned().collect::<Vec<String>>();
+    let app_ids = node_config
+        .apps
+        .keys()
+        .map(ToString::to_string)
+        .collect::<Vec<String>>();
 
     let app_stream = stream::iter(node_config.apps);
     let app_task = app_stream.for_each_concurrent(4, |(app_id_with_name, app_cfg)| async move {
@@ -1194,7 +1288,7 @@ async fn node_main(
                     app_id_with_name.clone(),
                     err
                 );
-                return NodeDaemonErrors::SystemConfigError(app_id_with_name.clone());
+                return NodeDaemonErrors::SystemConfigError(app_id_with_name.to_string());
             });
     });
 
@@ -1413,6 +1507,7 @@ async fn node_daemon_main_loop(
                 break;
             }
             let mut gateway_info_keep_tunnels: Vec<String> = Vec::new();
+            let mut pending_static_gateway_info: Option<(Value, String)> = None;
             let gateway_info_path =
                 buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway_info.json");
             let new_node_gateway_info =
@@ -1430,11 +1525,26 @@ async fn node_daemon_main_loop(
                     ensure_node_gateway_dir_pkgs_installed(&new_node_gateway_info).await;
                 if let Err(err) = ensure_result {
                     error!("ensure static web dir pkg installed failed! {}", err);
-                } else if need_write {
-                    node_gateway_info_id = Some(new_node_gateway_info_id_value);
-                    info!("node gateway_info changed, will write to node_gateway_info.json");
-                    std::fs::write(gateway_info_path, new_node_gateway_info_str.as_bytes())
-                        .unwrap();
+                    let err_message = err.to_string();
+                    publish_static_web_deployment_evidence(
+                        &new_node_gateway_info,
+                        &system_config_client,
+                        node_id,
+                        None,
+                        Some(err_message.as_str()),
+                    )
+                    .await;
+                } else {
+                    if need_write {
+                        node_gateway_info_id = Some(new_node_gateway_info_id_value.clone());
+                        info!("node gateway_info changed, will write to node_gateway_info.json");
+                        std::fs::write(gateway_info_path, new_node_gateway_info_str.as_bytes())
+                            .unwrap();
+                    }
+                    pending_static_gateway_info = Some((
+                        new_node_gateway_info,
+                        new_node_gateway_info_id_value.to_string(),
+                    ));
                 }
             } else {
                 error!("load node gateway_info from system_config failed!");
@@ -1524,10 +1634,36 @@ async fn node_daemon_main_loop(
                     need_reload,
                     need_restart,
                 )
-                .await
-                .map_err(|err| {
+                .await;
+
+                if let Some((gateway_info, generation)) = pending_static_gateway_info.as_ref() {
+                    match keep_result.as_ref() {
+                        Ok(_) => {
+                            publish_static_web_deployment_evidence(
+                                gateway_info,
+                                &system_config_client,
+                                node_id,
+                                Some(generation.as_str()),
+                                None,
+                            )
+                            .await;
+                        }
+                        Err(err) => {
+                            let message = format!("cyfs-gateway reload failed: {err}");
+                            publish_static_web_deployment_evidence(
+                                gateway_info,
+                                &system_config_client,
+                                node_id,
+                                None,
+                                Some(message.as_str()),
+                            )
+                            .await;
+                        }
+                    }
+                }
+                if let Err(err) = keep_result.as_ref() {
                     error!("keep cyfs_gateway service failed! {}", err);
-                });
+                }
 
                 if need_restart {
                     name_provider_registered = false;
@@ -1539,6 +1675,16 @@ async fn node_daemon_main_loop(
                 }
             } else {
                 error!("load node gateway_cconfig from system_config failed!");
+                if let Some((gateway_info, _)) = pending_static_gateway_info.as_ref() {
+                    publish_static_web_deployment_evidence(
+                        gateway_info,
+                        &system_config_client,
+                        node_id,
+                        None,
+                        Some("load node gateway config failed"),
+                    )
+                    .await;
+                }
             }
         }
     }
@@ -1558,7 +1704,10 @@ async fn generate_boot_session_token(
         appid: Some("node-daemon".to_string()),
         jti: Some(login_jti),
         sub: Some("kernel".to_string()),
-        aud: None,
+        // This assertion exists only to break the System Config/Verify Hub
+        // bootstrap cycle. System Config validates this exact audience and
+        // restricts it to boot-time operations; it is never a session token.
+        aud: Some(SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE.to_string()),
         exp: Some(timestamp + 60 * 15),
         iss: Some(device_doc.name.clone()),
         token: None,
@@ -1580,14 +1729,18 @@ fn generate_node_daemon_login_token(
     device_doc: &DeviceDocument,
     device_private_key: &EncodingKey,
 ) -> std::result::Result<String, String> {
-    generate_service_login_jwt(
+    let (_, mut assertion) = generate_service_login_assertion(
         device_doc.name.as_str(),
         "node-daemon",
         device_doc.name.as_str(),
         device_private_key,
     )
-    .map(|(jwt, _)| jwt)
-    .map_err(|err| err.to_string())
+    .map_err(|err| err.to_string())?;
+    assertion.aud = Some(SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE.to_string());
+    assertion.token = None;
+    assertion
+        .generate_jwt(Some(device_doc.name.clone()), device_private_key)
+        .map_err(|err| err.to_string())
 }
 
 async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
@@ -2152,6 +2305,14 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         );
     }
 
+    fn same_zone_device_ip_options(target_did: &DID) -> ResolveIpOptions {
+        ResolveIpOptions::verified_same_zone_device(VerifiedSameZoneDevice::from_verified_relation(
+            target_did.clone(),
+            DID::new("bns", "alice"),
+            SameZoneEvidenceSource::VerifiedOwnerZoneDeviceRelation,
+        ))
+    }
+
     fn unique_test_id(prefix: &str) -> String {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2275,7 +2436,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let pkg_meta_str = serde_json::to_string(&pkg_meta).unwrap();
         let (meta_obj_id, _) = pkg_meta.gen_obj_id();
         let meta_obj_id_str = meta_obj_id.to_string();
-        let meta_db = MetaIndexDb::new(pkg_env_path.join("pkgs/meta_index.db"), false).unwrap();
+        let meta_db = MetaIndexDb::create_or_open(pkg_env_path.join("pkgs/meta_index.db")).unwrap();
         let package_id = pkg_meta.get_package_id();
 
         meta_db
@@ -2309,6 +2470,13 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                 }
             }
         })
+    }
+
+    #[test]
+    fn static_web_directory_package_requires_exact_object_id() {
+        let app_info = json!({ "dir_pkg_id": "portal-web#1.0.0" });
+        let error = resolve_static_dir_pkg_id(app_info.as_object().unwrap()).unwrap_err();
+        assert!(error.to_string().contains("Package Meta ObjectId"));
     }
 
     async fn create_test_store_mgr(base_dir: &Path) -> NamedDataMgr {
@@ -2356,10 +2524,16 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 
         add_discovered_device_cache(&discovered);
 
+        assert!(name_client::resolve_ips(peer_did.to_string().as_str())
+            .await
+            .is_err());
         assert_eq!(
-            name_client::resolve_ips(peer_did.to_string().as_str())
-                .await
-                .unwrap(),
+            name_client::resolve_ips_with_options(
+                peer_did.to_string().as_str(),
+                same_zone_device_ip_options(&peer_did),
+            )
+            .await
+            .unwrap(),
             vec![endpoint_ip]
         );
         let resolved_doc = name_client::resolve_did(&peer_did, Some(DidDocType::Device))
@@ -2395,7 +2569,8 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .await
             .unwrap();
 
-        let resolved_pkg_id = format!("portal-web#{}", meta_obj_id);
+        let resolved_pkg_id =
+            PackageId::get_pkgid_with_objid("portal-web#1.0.0", Some(meta_obj_id.clone())).unwrap();
         index_static_dir_pkg_meta_from_named_store(
             pkg_env_path.as_path(),
             resolved_pkg_id.as_str(),
@@ -2412,14 +2587,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 
         cleanup_temp_pkg_env_path(&pkg_env_path);
         assert_eq!(indexed_meta_obj_id, meta_obj_id.to_string());
-        assert_eq!(
-            indexed_meta.name,
-            format!(
-                "{}.{}",
-                PackageEnvConfig::get_default_prefix(),
-                "portal-web"
-            )
-        );
+        assert_eq!(indexed_meta.name, "portal-web");
         assert_eq!(indexed_meta.version, pkg_meta.version);
     }
 

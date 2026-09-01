@@ -22,13 +22,15 @@ pub const SCHEDULER_SERVICE_MAIN_PORT: u16 = 3400;
 
 #[derive(Clone)]
 pub struct SchedulerServer {
-    thunk_runner: Arc<DefaultThunkRunner>,
+    pub(crate) thunk_runner: Arc<DefaultThunkRunner>,
+    pub(crate) system_config_client: Arc<SystemConfigClient>,
 }
 
 impl SchedulerServer {
-    pub fn new() -> Self {
+    pub fn new(system_config_client: Arc<SystemConfigClient>) -> Self {
         Self {
             thunk_runner: Arc::new(DefaultThunkRunner::default()),
+            system_config_client,
         }
     }
 }
@@ -38,8 +40,9 @@ impl RPCHandler for SchedulerServer {
     async fn handle_rpc_call(
         &self,
         req: RPCRequest,
-        _ip_from: IpAddr,
+        ip_from: IpAddr,
     ) -> Result<RPCResponse, RPCErrors> {
+        let ctx = RPCContext::from_request(&req, ip_from);
         let result = match req.method.as_str() {
             "run_thunk" => {
                 let run_req: SchedulerRunThunkRequest = serde_json::from_value(req.params)
@@ -61,6 +64,35 @@ impl RPCHandler for SchedulerServer {
                     .await
                     .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
                 RPCResult::Success(json!(response))
+            }
+            "submit_install_plan" => {
+                let request = SchedulerSubmitInstallPlanReq::from_json(req.params)?;
+                RPCResult::Success(json!(
+                    self.handle_submit_install_plan(request.plan, ctx).await?
+                ))
+            }
+            "get_install_plan_status" => {
+                let request = SchedulerInstallPlanKeyReq::from_json(req.params)?;
+                RPCResult::Success(json!(
+                    self.handle_get_install_plan_status(request.key, ctx)
+                        .await?
+                ))
+            }
+            "cancel_install_plan" => {
+                let request = SchedulerInstallPlanKeyReq::from_json(req.params)?;
+                RPCResult::Success(json!(
+                    self.handle_cancel_install_plan(request.key, ctx).await?
+                ))
+            }
+            "retry_install_plan" => {
+                let request = SchedulerInstallPlanKeyReq::from_json(req.params)?;
+                RPCResult::Success(json!(
+                    self.handle_retry_install_plan(request.key, ctx).await?
+                ))
+            }
+            "mutate_shortcut" => {
+                let request = SchedulerMutateShortcutReq::from_json(req.params)?;
+                RPCResult::Success(json!(self.handle_mutate_shortcut(request.plan, ctx).await?))
             }
             _ => {
                 return Err(RPCErrors::ReasonError(format!(

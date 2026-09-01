@@ -23,6 +23,21 @@ import type {
 
 const fallbackCreatedAt = '1970-01-01T00:00:00Z'
 
+export function appListTargetUserIds(
+  selfUserId: string | undefined,
+  callerUserType: string | undefined,
+  users: readonly Pick<UserInfo, 'user_id'>[],
+): string[] {
+  const targetUserIds = new Set<string>()
+  if (selfUserId) targetUserIds.add(selfUserId)
+  if (callerUserType === 'root' || callerUserType === 'admin') {
+    for (const user of users) {
+      if (user.user_id) targetUserIds.add(user.user_id)
+    }
+  }
+  return [...targetUserIds]
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -339,7 +354,6 @@ export function toAgentEntity(
   const raw = asRecord(agentInfo)
   const settings = asRecord(raw.settings)
   const spec = asRecord(raw.spec)
-  const appDoc = asRecord(raw.app_doc ?? spec.app_doc)
   const profile = asRecord(settings.profile ?? raw.profile)
   const capabilities = [
     ...stringArray(settings.capabilities),
@@ -351,9 +365,6 @@ export function toAgentEntity(
   const agentId = firstString(
     raw.agent_id,
     raw.agentId,
-    raw.app_id,
-    raw.appId,
-    appDoc.name,
     agentDid,
     fallback.id,
   ) ?? fallback.id
@@ -363,8 +374,6 @@ export function toAgentEntity(
     settings.display_name,
     raw.display_name,
     raw.name,
-    appDoc.show_name,
-    appDoc.showName,
     agentId,
     fallback.displayName,
   ) ?? fallback.displayName
@@ -376,7 +385,7 @@ export function toAgentEntity(
     avatarUrl: firstString(profile.avatar, profile.avatar_url, profile.avatarUrl, fallback.avatarUrl),
     did: agentDid,
     agentType: firstString(profile.agent_type, settings.agent_type, fallback.agentType) ?? fallback.agentType,
-    version: firstString(raw.version, settings.version, appDoc.version, fallback.version) ?? fallback.version,
+    version: firstString(raw.version, settings.version, fallback.version) ?? fallback.version,
     status,
     capabilities: dedupedCapabilities.length > 0 ? dedupedCapabilities : fallback.capabilities,
     socialAccounts: socialAccountsFromUnknown(settings.bindings),
@@ -387,7 +396,7 @@ export function toAgentEntity(
       appType: 'agent',
     },
     settings: {
-      owner: firstString(settings.owner, settings.owner_user_id, raw.owner_user_id, spec.user_id, fallback.settings.owner) ?? '',
+      owner: firstString(settings.owner, settings.owner_user_id, raw.owner_user_id, fallback.settings.owner) ?? '',
       permissions: firstString(settings.permissions, fallback.settings.permissions) ?? 'Not configured',
       workspaceRoot: firstString(settings.workspace_root, settings.workspaceRoot, fallback.settings.workspaceRoot) ?? '',
       serviceState: String(settings.state ?? raw.state ?? spec.state ?? 'unknown'),

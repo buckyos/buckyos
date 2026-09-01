@@ -139,7 +139,6 @@ export interface AppDefinition {
   logicalAppId?: string
   appInstanceId?: string
   ownerUserId?: string
-  appClass?: 'system_builtin' | 'user_installed' | 'zone_installed'
   /** Gateway Web hosts from the authoritative AppSpec, in launch preference order. */
   webHosts?: string[]
   iconKey: string

@@ -57,7 +57,8 @@ async fn stream_01_started_then_poll_receives_incremental_chunks() {
         .await
         .unwrap();
     assert_eq!(resp.status, AiMethodStatus::Running);
-    assert!(!s.events_for(&resp.task_id).is_empty());
+    let external_task_id = external_task_id_for_response(&center, &resp.task_id).await;
+    assert!(!s.events_for(&external_task_id).is_empty());
 }
 
 #[tokio::test]
@@ -86,11 +87,12 @@ async fn stream_02_incremental_chunks_are_append_only() {
         .await
         .unwrap();
     assert_eq!(resp.status, AiMethodStatus::Running);
-    let e1 = s.events_for(&resp.task_id);
+    let external_task_id = external_task_id_for_response(&center, &resp.task_id).await;
+    let e1 = s.events_for(&external_task_id);
     assert_eq!(e1.len(), 1, "started response should emit one event");
     assert!(matches!(e1[0].kind, TaskEventKind::Started));
-    assert_eq!(e1[0].task_id, resp.task_id);
-    let e2 = s.events_for(&resp.task_id);
+    assert_eq!(e1[0].task_id, external_task_id);
+    let e2 = s.events_for(&external_task_id);
     assert_eq!(
         e2.len(),
         e1.len(),
@@ -131,8 +133,9 @@ async fn stream_03_event_sequence_order_is_stable() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
+    let external_task_id = external_task_id_for_response(&center, &resp.task_id).await;
     assert!(matches!(
-        s.events_for(&resp.task_id).first().map(|e| &e.kind),
+        s.events_for(&external_task_id).first().map(|e| &e.kind),
         Some(aicc::TaskEventKind::Queued)
     ));
 }
@@ -194,12 +197,15 @@ async fn stream_05_cancel_stops_incremental_output() {
     );
     let center = center_with_taskmgr(r, c);
     let resp = center
-        .complete(base_request(), rpc_ctx_with_tenant(Some("ta")))
+        .complete(base_request(), verified_rpc_ctx_with_tenant("ta").await)
         .await
         .unwrap();
     assert!(
         center
-            .cancel(resp.task_id.as_str(), rpc_ctx_with_tenant(Some("ta")))
+            .cancel(
+                resp.task_id.as_str(),
+                verified_rpc_ctx_with_tenant("ta").await,
+            )
             .await
             .unwrap()
             .accepted
@@ -226,11 +232,14 @@ async fn stream_06_cross_tenant_poll_rejected() {
     );
     let center = center_with_taskmgr(r, c);
     let resp = center
-        .complete(base_request(), rpc_ctx_with_tenant(Some("ta")))
+        .complete(base_request(), verified_rpc_ctx_with_tenant("ta").await)
         .await
         .unwrap();
     assert!(center
-        .cancel(resp.task_id.as_str(), rpc_ctx_with_tenant(Some("tb")))
+        .cancel(
+            resp.task_id.as_str(),
+            verified_rpc_ctx_with_tenant("tb").await,
+        )
         .await
         .is_err());
 }

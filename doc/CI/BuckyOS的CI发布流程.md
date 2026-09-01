@@ -28,9 +28,8 @@ git checkout到正确的版本，然后编译运行
 ### 测试
 
 1. 注意更新app_name.app_doc.json 的版本
-2. 使用buckycli pub_app 将app发布到zone内
-3. 使用buckycli pub_index 使发布在zone内生效
-   4.1 使用buckycli 在zone内安装应用（如已安装可逃过）
+2. 通过 repository service 发布 app 并使新索引在 Zone 内生效
+3. 使用 `buckyos app install` 安装应用（如已安装可跳过）
    4.2 zone内已经运行的app会变成新版本
 
 ### 发布

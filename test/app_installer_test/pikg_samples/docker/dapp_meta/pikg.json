@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "output_dir": "../dapp_dist",
+  "pikg_file": "pikg-docker-0.1.0.pikg",
+  "sub_pkgs": {
+    "amd64_docker_image": {
+      "selector": {
+        "os": "linux",
+        "arch": "x86_64"
+      },
+      "required": true,
+      "source": {
+        "type": "docker-image",
+        "image": "local/pikg-docker:0.1.0-amd64"
+      }
+    }
+  }
+}

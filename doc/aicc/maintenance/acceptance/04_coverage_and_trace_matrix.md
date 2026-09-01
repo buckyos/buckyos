@@ -8,13 +8,13 @@
 
 | 功能域 | 必测点 | 主要层级 |
 |---|---|---|
-| API 分层 | `route.resolve`（拒绝 exact model、返回 selected_exact_model/provider_options/fallback_attempts/enabled+disabled_capabilities/trace）、typed inference（`chat.completions.create`/`images.generate` 只接受 exact model、拒绝逻辑模型、不 fallback）、`helper.llm_chat`/`helper.text_to_image` 等价于 route+typed inference、legacy all-in-one 兼容 | L1/L2/L3 |
+| API 分层 | `route.resolve` 拒绝 exact model并返回完整渠道/模型身份、operation、fallback 和 trace；全部 typed inference 只接受 exact model且不 fallback；`helper.*` 等价于 route+typed inference；legacy all-in-one 不存在 | L1/L2/L3 |
 | 逻辑模型定义 | `min_line` admission 过滤、`disable_line` 禁用能力、`mount_mode` auto-mount、manual override | L1/L3 |
-| Metadata resolver | exact→pattern→default→conservative 匹配优先级、unknown model 不默认高风险能力、metadata 缺失/损坏退回 builtin 可启动、variant 展开 + provider_options lowering | L1/L3 |
+| Catalog resolver | Provider mapping 优先、跨 Model Driver 唯一匹配、exact→ordered pattern→default、unknown conservative fallback、variant + Provider Rules lowering | L1/L3 |
 | Session overlay | `SessionLogicalProfile` inherit（可 fallback）/ replace（quota exhausted 失败）、overlay trace | L1/L3 |
-| Method schema | `llm.chat`、`llm.completion`、`embedding.text`、`embedding.multimodal`、`rerank`、`image.*`、`vision.*`、`audio.*`、`video.*`、`agent.computer_use` 占位语义 | L1/L3/L4 |
-| Provider inventory | `provider_instance_name`、`provider_type`、`provider_driver`、`exact_model`、`api_types`、`logical_mounts`、capabilities、pricing、health | L1/L3 |
-| 路由解析 | 逻辑模型、精确模型、旧 alias 兼容、非法模型名、目录不存在 | L1/L2/L3 |
+| Method schema | `chat.completions.create`、`embeddings.create`、`rerank.create`、`images.*`、`vision.*`、`audio.*`、`videos.*`、`agent.computer_use` 占位语义 | L1/L3/L4 |
+| Provider inventory | `provider_instance_name`、`provider_profile_id`、`protocol_adapter_id`、`model_uid`、`model_driver_id`、`origin_model_id`、原始 `provider_model_id`、operation、capabilities、pricing source、health | L1/L3 |
+| 路由解析 | 逻辑模型、精确模型、非法模型名、目录不存在、完整身份链 | L1/L2/L3 |
 | Fallback | `strict`、`parent`、`target_exact`、`target_logical`、`disabled`、环路检测、最大深度 | L1/L3 |
 | 调度 | `cost_first`、`latency_first`、`quality_first`、`balanced`、`local_first`、`strict_local`、权重优先、同权重 profile 评分 | L1 |
 | Request Overlay | `session_overlay` 合并、逻辑目录覆盖、policy locked | L1/L3 |
@@ -22,9 +22,9 @@
 | 资源 | `ResourceRef::Url`、`Base64`、`NamedObject`、FileObject meta、artifact 输出、大批量 embedding artifact | L1/L3/L4 |
 | Streaming | Provider-native streaming 转最终 summary；中间态写 task data；AICC response 只返回 `succeeded` 或 `running` | L1/L3/L4 |
 | Usage log | 成功调用写一条 durable event；幂等不重复写；缺 usage 视为 provider protocol error；按 1d/7d/provider/model 查询 | L1/L3 |
-| 控制与管理 method | `cancel`、`reload_settings` / `service.reload_settings`、`models.list` / `service.models.list`、`usage.query`、`quota.query`、`provider.list`、`provider.health`、`provider.validate`、`provider.add`、`provider.delete`、`provider.refresh_models` | L1/L2/L3/L4 |
-| 配置 | system_config 写入、全量/局部更新、Provider validate/add/delete/refresh、`reload_settings`、`models.list` 生效验证 | L3/L4 |
-| 维护更新 | 模型事实基线、运营策略、`remote_cache` / 本地 override、随版本内置缓存、provider settings、routing_config、相关用例筛选、发布后复验、事实配置回滚、策略配置回滚 | L3/L4 |
+| 控制与管理 method | `cancel`、`service.reload_settings`、`models.list`、`usage.query`、`quota.query`、`provider.list`、`provider.health`、`provider.validate`、`provider.add`、`provider.delete`、`provider.refresh_models`、`provider.catalog`、`protocol_adapter.list` | L1/L2/L3/L4 |
+| 配置 | system_config 写入、全量/局部更新、Provider validate/add/delete/refresh、`service.reload_settings`、`models.list` 生效，以及 Provider 库存定时循环停止事件与优雅退出验证 | L3/L4 |
+| 维护更新 | 模型事实基线、运营策略、NDN target seq、Provider applied/updating seq、model 列表变化矩阵、本地 override、双触发点全局收敛和发布后复验 | L3/L4 |
 | 安全 | `local_only` 硬过滤、`proxy_unknown` 非本地、trace 脱敏、密钥不入日志、跨租户隔离 | L1/L3/L4 |
 
 ## 2. 需求追踪矩阵

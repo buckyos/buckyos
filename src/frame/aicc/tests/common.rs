@@ -12,20 +12,26 @@ use aicc::{
 use async_trait::async_trait;
 use base64::Engine as _;
 use buckyos_api::{
-    AckControlReq, AddTaskNoteReq, AiMethodRequest, AiPayload, Capability, CommitResultReq,
-    CreateTaskExecutor, CreateTaskReq, FailTaskReq, GetTaskReq, ListTaskNotesReq, ListTasksReq,
-    ModelSpec, ReportProgressReq, ReportStartedReq, RequestControlReq, RequestControlResult,
-    Requirements, ResourceRef, Task, TaskControlProfile, TaskControlRequest, TaskExecutor,
-    TaskManagerClient, TaskManagerHandler, TaskNote, TaskOutcome, TaskPhase, TaskSummaryPage,
-    TypedTaskData,
+    bind_token_principal_kind, bind_token_target, get_buckyos_api_runtime, set_buckyos_api_runtime,
+    AckControlReq, AddTaskNoteReq, AiMethodRequest, AiPayload, AuthTarget, BuckyOSRuntime,
+    BuckyOSRuntimeType, Capability, CommitResultReq, CreateTaskExecutor, CreateTaskReq,
+    FailTaskReq, GetTaskReq, ListTaskNotesReq, ListTasksReq, ModelSpec, ReportProgressReq,
+    ReportStartedReq, RequestControlReq, RequestControlResult, Requirements, ResourceRef,
+    StorageDomain, Task, TaskControlProfile, TaskControlRequest, TaskExecutor, TaskManagerClient,
+    TaskManagerHandler, TaskNote, TaskOutcome, TaskPhase, TaskSummaryPage, TokenPrincipalKind,
+    TokenUse, TypedTaskData, VERIFY_HUB_TOKEN_ISSUER,
 };
-use kRPC::{RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse};
+use kRPC::{
+    RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse, RPCSessionToken,
+    RPCSessionTokenType,
+};
+use name_lib::{generate_ed25519_key_pair, load_private_key, DID};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -73,11 +79,35 @@ pub fn typed_aicc_task_data(task: &Task) -> Option<buckyos_api::AiccComputeTaskD
 }
 
 pub fn typed_aicc_request(task: &Task) -> Option<Value> {
-    typed_aicc_task_data(task).and_then(|data| data.request.request)
+    match buckyos_api::parse_typed_task_data("aicc.compute", task.input.clone()).ok()? {
+        TypedTaskData::AiccCompute(data) => data.request.request,
+        _ => None,
+    }
 }
 
 pub fn typed_aicc_external_task_id(task: &Task) -> Option<String> {
-    typed_aicc_task_data(task).and_then(|data| data.request.external_task_id)
+    match buckyos_api::parse_typed_task_data("aicc.compute", task.input.clone()).ok()? {
+        TypedTaskData::AiccCompute(data) => data.request.external_task_id,
+        _ => None,
+    }
+}
+
+pub fn aicc_task_matches_response_id(task: &Task, response_task_id: &str) -> bool {
+    task.task_id == response_task_id
+        || typed_aicc_external_task_id(task).as_deref() == Some(response_task_id)
+}
+
+pub async fn external_task_id_for_response(
+    center: &AIComputeCenter,
+    response_task_id: &str,
+) -> String {
+    let taskmgr = center.task_manager_client().expect("task manager");
+    all_tasks(&taskmgr)
+        .await
+        .into_iter()
+        .find(|task| aicc_task_matches_response_id(task, response_task_id))
+        .and_then(|task| typed_aicc_external_task_id(&task))
+        .expect("external task id")
 }
 
 #[allow(dead_code)]
@@ -111,13 +141,88 @@ pub fn rpc_ctx_with_tenant(tenant: Option<&str>) -> RPCContext {
     }
 }
 
+pub async fn verified_rpc_ctx_with_tenant(tenant: &str) -> RPCContext {
+    static KEY_PAIR: OnceLock<(String, String)> = OnceLock::new();
+    static RUNTIME_READY: OnceCell<()> = OnceCell::const_new();
+
+    let (private_key_pem, public_key_x) = KEY_PAIR.get_or_init(|| {
+        let (private_key_pem, public_jwk) = generate_ed25519_key_pair();
+        let public_key_x = public_jwk
+            .get("x")
+            .and_then(Value::as_str)
+            .expect("generated Ed25519 JWK x")
+            .to_string();
+        (private_key_pem, public_key_x)
+    });
+    RUNTIME_READY
+        .get_or_init(|| async {
+            let public_key = DID::new("dev", public_key_x)
+                .get_auth_key()
+                .expect("generated Ed25519 public key")
+                .0;
+            if let Ok(runtime) = get_buckyos_api_runtime() {
+                runtime
+                    .set_trust_key(VERIFY_HUB_TOKEN_ISSUER, &public_key)
+                    .await
+                    .expect("set test verify-hub key");
+            } else {
+                let runtime = BuckyOSRuntime::new("aicc", None, BuckyOSRuntimeType::FrameService);
+                runtime
+                    .set_trust_key(VERIFY_HUB_TOKEN_ISSUER, &public_key)
+                    .await
+                    .expect("set test verify-hub key");
+                set_buckyos_api_runtime(runtime).expect("set test BuckyOS runtime");
+            }
+        })
+        .await;
+
+    let key_file = tempfile::NamedTempFile::new().expect("create private key file");
+    std::fs::write(key_file.path(), private_key_pem).expect("write private key file");
+    let private_key = load_private_key(key_file.path()).expect("load private key");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut token = RPCSessionToken {
+        token_type: RPCSessionTokenType::JWT,
+        token: None,
+        aud: None,
+        exp: Some(now.saturating_add(3600)),
+        iss: Some(VERIFY_HUB_TOKEN_ISSUER.to_string()),
+        jti: Some(format!("aicc-test-{tenant}-{now}")),
+        sub: Some(tenant.to_string()),
+        appid: None,
+        sudo: false,
+        extra: HashMap::new(),
+    };
+    bind_token_principal_kind(&mut token, TokenPrincipalKind::User);
+    bind_token_target(
+        &mut token,
+        &AuthTarget::app(
+            format!("aicc-tests@{tenant}")
+                .parse()
+                .expect("app instance"),
+        ),
+        TokenUse::Session,
+    )
+    .expect("bind token target");
+    RPCContext {
+        token: Some(
+            token
+                .generate_jwt(Some(VERIFY_HUB_TOKEN_ISSUER.to_string()), &private_key)
+                .expect("sign test session token"),
+        ),
+        ..Default::default()
+    }
+}
+
 #[allow(dead_code)]
 pub fn mock_instance(
     instance_id: &str,
     provider_type: &str,
     capabilities: Vec<Capability>,
     mut features: Vec<String>,
-) -> ProviderInstance {
+) -> MockInstanceConfig {
     if capabilities.iter().any(|item| item == &Capability::Llm)
         && !features
             .iter()
@@ -126,18 +231,39 @@ pub fn mock_instance(
         features.push(buckyos_api::features::WEB_SEARCH.to_string());
     }
 
-    ProviderInstance {
-        provider_instance_name: instance_id.to_string(),
-        provider_type: ProviderType::CloudApi,
-        provider_driver: provider_type.to_string(),
-        provider_origin: ProviderOrigin::SystemConfig,
-        provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
-        provider_type_revision: None,
-        capabilities,
-        features,
-        endpoint: Some("http://127.0.0.1:8080".to_string()),
-        plugin_key: None,
+    MockInstanceConfig {
+        instance: ProviderInstance {
+            provider_instance_name: instance_id.to_string(),
+            provider_type: ProviderType::CloudApi,
+            provider_driver: provider_type.to_string(),
+            provider_origin: ProviderOrigin::SystemConfig,
+            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
+            provider_type_revision: None,
+            endpoint: Some("http://127.0.0.1:8080".to_string()),
+            plugin_key: None,
+        },
+        api_capabilities: capabilities,
+        model_features: features,
     }
+}
+
+pub fn mock_local_instance(
+    instance_id: &str,
+    provider_driver: &str,
+    capabilities: Vec<Capability>,
+    features: Vec<String>,
+) -> MockInstanceConfig {
+    let mut config = mock_instance(instance_id, provider_driver, capabilities, features);
+    config.instance.provider_type = ProviderType::LocalInference;
+    config
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct MockInstanceConfig {
+    instance: ProviderInstance,
+    api_capabilities: Vec<Capability>,
+    model_features: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -156,23 +282,28 @@ pub struct MockProvider {
 impl MockProvider {
     #[allow(dead_code)]
     pub fn new(
-        instance: ProviderInstance,
+        config: MockInstanceConfig,
         cost: CostEstimate,
         start_results: Vec<std::result::Result<ProviderStartResult, ProviderError>>,
     ) -> Self {
-        let inventory = mock_inventory(&instance, &cost);
-        Self::with_inventory(instance, inventory, cost, start_results)
+        let inventory = mock_inventory(
+            &config.instance,
+            &config.api_capabilities,
+            &config.model_features,
+            &cost,
+        );
+        Self::with_inventory(config, inventory, cost, start_results)
     }
 
     #[allow(dead_code)]
     pub fn with_inventory(
-        instance: ProviderInstance,
+        config: MockInstanceConfig,
         inventory: ProviderInventory,
         cost: CostEstimate,
         start_results: Vec<std::result::Result<ProviderStartResult, ProviderError>>,
     ) -> Self {
         Self {
-            instance,
+            instance: config.instance,
             inventory,
             cost,
             start_results: Mutex::new(start_results.into_iter().collect()),
@@ -265,9 +396,14 @@ impl Provider for MockProvider {
     }
 }
 
-fn mock_inventory(instance: &ProviderInstance, cost: &CostEstimate) -> ProviderInventory {
+fn mock_inventory(
+    instance: &ProviderInstance,
+    api_capabilities: &[Capability],
+    model_features: &[String],
+    cost: &CostEstimate,
+) -> ProviderInventory {
     let mut models = Vec::new();
-    for capability in instance.capabilities.iter() {
+    for capability in api_capabilities {
         let (api_type, mounts, provider_model_id) = match capability {
             Capability::Llm => (ApiType::Llm, vec!["llm.plan.default"], "m"),
             Capability::Image => (
@@ -305,7 +441,7 @@ fn mock_inventory(instance: &ProviderInstance, cost: &CostEstimate) -> ProviderI
             provider_model_id,
             api_type,
             mounts.into_iter().map(str::to_string).collect(),
-            &instance.features,
+            model_features,
             cost.estimated_cost_usd,
             cost.estimated_latency_ms,
         ));
@@ -450,6 +586,7 @@ impl TaskManagerHandler for MockTaskMgrHandler {
             input: req.input.clone(),
             input_digest: buckyos_api::compute_task_input_digest(&req.input),
             creator: buckyos_api::ActorRef::new("tester", "aicc"),
+            storage_domain: req.storage_domain.unwrap_or(StorageDomain::System),
             idempotency_key: req.idempotency_key.clone(),
             origin_ref: None,
             retry_of: None,
@@ -514,6 +651,7 @@ impl TaskManagerHandler for MockTaskMgrHandler {
                 schema_id: task.schema_id.clone(),
                 schema_version: task.schema_version,
                 creator: task.creator.clone(),
+                storage_domain: task.storage_domain,
                 executor_kind: task.executor.kind(),
                 phase: task.phase,
                 wait_reason: task.wait_reason.clone(),
@@ -775,6 +913,79 @@ pub async fn spawn_fake_http_server(replies: Vec<MockHttpReply>) -> String {
         }
     });
     format!("http://{}", addr)
+}
+
+pub async fn spawn_fake_http_server_with_requests(
+    replies: Vec<MockHttpReply>,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test server");
+    let addr = listener.local_addr().expect("local addr");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    tokio::spawn(async move {
+        for reply in replies {
+            let (mut socket, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(_) => break,
+            };
+            let mut buf = vec![0u8; 8192];
+            let mut total = 0usize;
+            let mut body_range = None;
+            loop {
+                if total == buf.len() {
+                    buf.resize(buf.len() * 2, 0);
+                }
+                let read = match socket.read(&mut buf[total..]).await {
+                    Ok(read) => read,
+                    Err(_) => break,
+                };
+                if read == 0 {
+                    break;
+                }
+                total += read;
+                if let Some(header_end) = find_header_end(&buf[..total]) {
+                    let headers = String::from_utf8_lossy(&buf[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    let body_start = header_end + 4;
+                    let body_end = body_start + content_length;
+                    if total >= body_end {
+                        body_range = Some(body_start..body_end);
+                        break;
+                    }
+                }
+            }
+            if let Some(range) = body_range {
+                if let Ok(request) = serde_json::from_slice::<Value>(&buf[range]) {
+                    captured
+                        .lock()
+                        .expect("captured requests lock")
+                        .push(request);
+                }
+            }
+            if reply.delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(reply.delay_ms)).await;
+            }
+            let response = format!(
+                "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                reply.status_code,
+                reply.content_type,
+                reply.body.len(),
+                reply.body
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        }
+    });
+    (format!("http://{}", addr), requests)
 }
 
 pub fn openai_b64(data: &[u8]) -> String {
@@ -1391,6 +1602,8 @@ async fn login_remote_token_once(
     };
 
     let appid = first_non_empty_env(&["AICC_LOGIN_APPID"]).unwrap_or_else(|| "aicc-tests".into());
+    let app_instance_id = first_non_empty_env(&["AICC_LOGIN_APP_INSTANCE_ID"])
+        .unwrap_or_else(|| format!("{}@{}", appid, username));
     let login_endpoint = resolve_login_endpoint(endpoint_hint)?;
     let seq = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1407,7 +1620,10 @@ async fn login_remote_token_once(
                 "type": "password",
                 "username": username,
                 "password": password_hash,
-                "appid": appid,
+                "target": {
+                    "kind": "app",
+                    "app_instance_id": app_instance_id,
+                },
                 "login_nonce": login_nonce,
             }),
             seq,

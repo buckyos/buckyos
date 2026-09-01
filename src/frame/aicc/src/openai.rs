@@ -18,10 +18,11 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
+#[cfg(test)]
+use buckyos_api::Capability;
 use buckyos_api::{
-    ai_methods, features, get_buckyos_api_runtime, value_to_object_map, AiArtifact, AiContent,
-    AiCost, AiMessage, AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent,
-    AiUsage, Capability, ResourceRef,
+    ai_methods, features, value_to_object_map, AiArtifact, AiContent, AiCost, AiMessage,
+    AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiUsage, ResourceRef,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use image::imageops::FilterType;
@@ -42,20 +43,16 @@ use tokio::time;
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_TIMEOUT_MS: u64 = 300_000;
-const DEFAULT_OPENAI_MODELS: &str = "gpt-5,gpt-5-mini,gpt-5-nano,gpt-5-pro";
-const DEFAULT_OPENAI_IMAGE_MODELS: &str = "gpt-image-1,dall-e-3,dall-e-2";
-const DEFAULT_OPENAI_EMBEDDING_MODELS: &str = "text-embedding-3-large,text-embedding-3-small";
-const DEFAULT_OPENAI_ASR_MODELS: &str = "gpt-4o-mini-transcribe,whisper-1";
-const DEFAULT_OPENAI_TTS_MODELS: &str = "gpt-4o-mini-tts,tts-1";
-const DEFAULT_OPENAI_VIDEO_MODELS: &str = "sora-2,sora-2-pro";
-const DEFAULT_SN_AI_PROVIDER_MODELS: &str = "gpt-5.4,gpt-5.4-mini,gpt-5.4-nano,gpt-5.4-pro";
-const DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS: &str = "gpt-image-1,dall-e-3,dall-e-2";
+const DEFAULT_OPENAI_MODELS: &str = "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna";
+const DEFAULT_OPENAI_IMAGE_MODELS: &str = "gpt-image-2";
+const DEFAULT_OPENAI_EMBEDDING_MODELS: &str =
+    "text-embedding-3-large,text-embedding-3-small,text-embedding-ada-002";
+const DEFAULT_OPENAI_ASR_MODELS: &str =
+    "gpt-transcribe,gpt-4o-transcribe,gpt-4o-mini-transcribe,whisper-1";
+const DEFAULT_OPENAI_TTS_MODELS: &str = "gpt-4o-mini-tts,tts-1,tts-1-hd";
+const DEFAULT_OPENAI_VIDEO_MODELS: &str = "";
 const DEFAULT_OPENAI_PROVIDER_DRIVER: &str = "openai";
-const SN_AI_PROVIDER_DRIVER: &str = "sn-ai-provider";
 const DEFAULT_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
-const DEFAULT_AUTH_MODE: &str = "bearer";
-const RUNTIME_SESSION_AUTH_MODE: &str = "runtime_session";
-const DEVICE_JWT_AUTH_MODE: &str = "device_jwt";
 const OPENAI_TOOL_TYPE_WEB_SEARCH: &str = "web_search_preview";
 const OPENAI_IMAGE_OPTION_ALLOWLIST: &[&str] = &[
     "background",
@@ -82,6 +79,7 @@ const OPENAI_IMAGE_INPUT_ALLOWLIST: &[&str] = &[
 ];
 const OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST: &[&str] = &[
     "background",
+    "input_fidelity",
     "n",
     "output_compression",
     "output_format",
@@ -89,8 +87,19 @@ const OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST: &[&str] = &[
     "size",
     "user",
 ];
+const OPENAI_RESPONSES_IMAGE_TOOL_OPTION_ALLOWLIST: &[&str] = &[
+    "background",
+    "input_fidelity",
+    "moderation",
+    "output_compression",
+    "output_format",
+    "partial_images",
+    "quality",
+    "size",
+];
 const OPENAI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const OPENAI_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
+const RESOURCE_FETCH_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone)]
 pub struct OpenAIInstanceConfig {
@@ -99,7 +108,6 @@ pub struct OpenAIInstanceConfig {
     pub provider_driver: String,
     pub api_token: String,
     pub base_url: String,
-    pub auth_mode: String,
     pub timeout_ms: u64,
 }
 
@@ -108,17 +116,11 @@ pub struct OpenAIProvider {
     instance: ProviderInstance,
     inventory: Arc<RwLock<ProviderInventory>>,
     client: Client,
-    auth_mode: OpenAIAuthMode,
+    api_token: String,
     base_url: String,
     provider_type: crate::model_types::ProviderType,
     provider_driver: String,
     refresh_task: Arc<Mutex<Option<Arc<ProviderRefreshTask>>>>,
-}
-
-#[derive(Debug, Clone)]
-enum OpenAIAuthMode {
-    Bearer(String),
-    RuntimeSession,
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,8 +174,6 @@ impl OpenAIProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::Llm, Capability::Image],
-            features: default_features(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
@@ -183,13 +183,16 @@ impl OpenAIProvider {
             provider_driver.as_str(),
         );
 
-        let auth_mode = Self::parse_auth_mode(cfg.auth_mode.as_str(), openai_api_token)?;
+        let api_token = openai_api_token.trim().to_string();
+        if api_token.is_empty() {
+            return Err(anyhow!("openai requires non-empty api_token"));
+        }
 
         Ok(Self {
             instance,
             inventory: Arc::new(RwLock::new(inventory)),
             client,
-            auth_mode,
+            api_token,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             provider_type,
             provider_driver,
@@ -386,14 +389,6 @@ impl OpenAIProvider {
         let (mut models, image_models, embedding_models, asr_models, tts_models) =
             if provider_driver == "openrouter" {
                 (vec![], vec![], vec![], vec![], vec![])
-            } else if provider_driver == SN_AI_PROVIDER_DRIVER {
-                (
-                    normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_MODELS)),
-                    normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS)),
-                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS)),
-                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS)),
-                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS)),
-                )
             } else {
                 (
                     normalize_model_list(parse_csv_list(DEFAULT_OPENAI_MODELS)),
@@ -425,31 +420,20 @@ impl OpenAIProvider {
         &self,
         models: &[String],
         image_models: &[String],
+        embedding_models: &[String],
+        asr_models: &[String],
+        tts_models: &[String],
         revision: Option<String>,
     ) -> ProviderInventory {
-        let mut models = models.to_vec();
-        if self.provider_driver == DEFAULT_OPENAI_PROVIDER_DRIVER {
-            models.extend(parse_csv_list(DEFAULT_OPENAI_VIDEO_MODELS));
-            models = normalize_model_list(models);
-        }
-        let (embedding_models, asr_models, tts_models) = if self.provider_driver == "openrouter" {
-            (vec![], vec![], vec![])
-        } else {
-            (
-                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS)),
-                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS)),
-                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS)),
-            )
-        };
         Self::build_inventory(
             self.instance.provider_instance_name.as_str(),
             self.provider_type.clone(),
             self.provider_driver.as_str(),
-            models.as_slice(),
+            models,
             image_models,
-            embedding_models.as_slice(),
-            asr_models.as_slice(),
-            tts_models.as_slice(),
+            embedding_models,
+            asr_models,
+            tts_models,
             revision,
         )
     }
@@ -473,9 +457,14 @@ impl OpenAIProvider {
 
         let response = serde_json::from_value::<OpenAIModelsResponse>(body)
             .context("failed to parse openai models response")?;
-        let (llm_models, image_models) =
+        let (llm_models, image_models, embedding_models, asr_models, tts_models) =
             normalize_remote_model_ids(response.data, self.provider_driver.as_str());
-        if llm_models.is_empty() && image_models.is_empty() {
+        if llm_models.is_empty()
+            && image_models.is_empty()
+            && embedding_models.is_empty()
+            && asr_models.is_empty()
+            && tts_models.is_empty()
+        {
             return Err(anyhow!(
                 "openai inventory refresh returned no supported models"
             ));
@@ -484,9 +473,15 @@ impl OpenAIProvider {
         Ok(self.build_inventory_from_models(
             llm_models.as_slice(),
             image_models.as_slice(),
+            embedding_models.as_slice(),
+            asr_models.as_slice(),
+            tts_models.as_slice(),
             Some(inventory_revision(
                 llm_models.as_slice(),
                 image_models.as_slice(),
+                embedding_models.as_slice(),
+                asr_models.as_slice(),
+                tts_models.as_slice(),
             )),
         ))
     }
@@ -572,90 +567,25 @@ impl OpenAIProvider {
         )
     }
 
-    fn parse_auth_mode(auth_mode: &str, openai_api_token: &str) -> Result<OpenAIAuthMode> {
-        let mode = auth_mode.trim().to_ascii_lowercase();
-        if mode.is_empty() || mode == DEFAULT_AUTH_MODE {
-            let token = Some(openai_api_token)
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| anyhow!("openai bearer auth requires non-empty api_token"))?;
-            return Ok(OpenAIAuthMode::Bearer(token));
-        }
-
-        if mode == RUNTIME_SESSION_AUTH_MODE || mode == DEVICE_JWT_AUTH_MODE {
-            if mode == DEVICE_JWT_AUTH_MODE {
-                warn!(
-                    "openai auth_mode '{}' is deprecated for aicc; using '{}' without loading device private key",
-                    DEVICE_JWT_AUTH_MODE, RUNTIME_SESSION_AUTH_MODE
-                );
-            }
-            return Ok(OpenAIAuthMode::RuntimeSession);
-        }
-
-        Err(anyhow!(
-            "unsupported openai auth_mode '{}', expected '{}' or '{}'",
-            auth_mode,
-            DEFAULT_AUTH_MODE,
-            RUNTIME_SESSION_AUTH_MODE
-        ))
-    }
-
     async fn build_inventory_auth_token(&self) -> Result<String> {
-        match &self.auth_mode {
-            OpenAIAuthMode::Bearer(token) => Ok(token.clone()),
-            OpenAIAuthMode::RuntimeSession => {
-                let runtime = get_buckyos_api_runtime().map_err(|err| {
-                    anyhow!(
-                        "openai runtime_session inventory auth requires runtime: {}",
-                        err
-                    )
-                })?;
-                let token = runtime.get_session_token().await;
-                if token.trim().is_empty() {
-                    return Err(anyhow!(
-                        "openai runtime_session inventory auth requires non-empty runtime session token"
-                    ));
-                }
-                Ok(token)
-            }
-        }
+        Ok(self.api_token.clone())
     }
 
     async fn build_auth_token(
         &self,
-        ctx: &crate::aicc::InvokeCtx,
+        _ctx: &crate::aicc::InvokeCtx,
     ) -> Result<String, ProviderError> {
-        match &self.auth_mode {
-            OpenAIAuthMode::Bearer(token) => Ok(token.clone()),
-            OpenAIAuthMode::RuntimeSession => {
-                if let Some(token) = ctx
-                    .session_token
-                    .as_ref()
-                    .map(|value| value.trim())
-                    .filter(|value| !value.is_empty())
-                {
-                    return Ok(token.to_string());
-                }
-
-                let runtime = get_buckyos_api_runtime().map_err(|err| {
-                    ProviderError::fatal(format!(
-                        "openai runtime_session auth requires runtime: {}",
-                        err
-                    ))
-                })?;
-                let token = runtime.get_session_token().await;
-                if token.trim().is_empty() {
-                    return Err(ProviderError::fatal(
-                        "openai runtime_session auth requires non-empty session token".to_string(),
-                    ));
-                }
-                Ok(token)
-            }
-        }
+        Ok(self.api_token.clone())
     }
 
     fn price_per_1m_tokens(model: &str) -> (f64, f64) {
-        if model.starts_with("gpt-5.4-pro") {
+        if model.starts_with("gpt-5.6-terra") {
+            (2.0, 12.0)
+        } else if model.starts_with("gpt-5.6-luna") {
+            (0.20, 1.20)
+        } else if model.starts_with("gpt-5.6-sol") || model == "gpt-5.6" {
+            (4.0, 20.0)
+        } else if model.starts_with("gpt-5.4-pro") {
             (30.0, 180.0)
         } else if model.starts_with("gpt-5.4-mini") {
             (0.75, 4.50)
@@ -982,6 +912,16 @@ impl OpenAIProvider {
         Some(AiCost { amount, currency })
     }
 
+    fn model_supports_responses_image_generation(&self, provider_model: &str) -> bool {
+        self.inventory.read().ok().is_some_and(|inventory| {
+            inventory.models.iter().any(|metadata| {
+                (metadata.provider_model_id == provider_model
+                    || metadata.provider_actual_model_id.as_deref() == Some(provider_model))
+                    && metadata.capabilities.image_generation
+            })
+        })
+    }
+
     /// 把 `AiRole` 映射成 OpenAI Responses API 接受的 role 字符串。
     /// `Tool` 不会出现在 message-role 上 —— ToolResult 走的是 `function_call_output`
     /// 顶层 item,不再当作 role 消息;但兜底仍降级到 `user` 防止野生数据。
@@ -1032,19 +972,16 @@ impl OpenAIProvider {
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                if provider_items.is_empty() {
-                    if msg.text_content().trim().is_empty() && msg.tool_calls().is_empty() {
-                        continue;
-                    }
-                    return Err(ProviderError::fatal(format!(
-                        "assistant history is missing Responses output items for provider `{}`",
-                        self.provider_driver
-                    )));
+                if !provider_items.is_empty() {
+                    items.extend(provider_items);
+                    continue;
                 }
-                items.extend(provider_items);
-                continue;
             }
-            let content_type = "input_text";
+            let content_type = if role_str == "assistant" {
+                "output_text"
+            } else {
+                "input_text"
+            };
             let mut pending_text_parts: Vec<Value> = Vec::new();
 
             for block in &msg.content {
@@ -1142,19 +1079,6 @@ impl OpenAIProvider {
                 content.push_str(text);
             }
 
-            let mut resource_lines = vec![];
-            for resource in req.payload.resources.iter() {
-                resource_lines.push(Self::resource_text(resource)?);
-            }
-
-            if !resource_lines.is_empty() {
-                if !content.is_empty() {
-                    content.push('\n');
-                    content.push('\n');
-                }
-                content.push_str(resource_lines.join("\n").as_str());
-            }
-
             if !content.trim().is_empty() {
                 items.push(json!({
                     "role": "user",
@@ -1163,6 +1087,19 @@ impl OpenAIProvider {
                     ],
                 }));
             }
+        }
+
+        if !req.payload.resources.is_empty() {
+            let content = req
+                .payload
+                .resources
+                .iter()
+                .map(Self::responses_resource_part)
+                .collect::<Result<Vec<_>, _>>()?;
+            items.push(json!({
+                "role": "user",
+                "content": content,
+            }));
         }
 
         if items.is_empty() {
@@ -1188,6 +1125,55 @@ impl OpenAIProvider {
                 "type": "input_text",
                 "text": format!("named_object: {}", obj_id),
             })),
+        }
+    }
+
+    fn responses_resource_part(source: &ResourceRef) -> Result<Value, ProviderError> {
+        let mime = match source {
+            ResourceRef::Url { mime_hint, .. } => mime_hint.as_deref(),
+            ResourceRef::Base64 { mime, .. } => Some(mime.as_str()),
+            ResourceRef::NamedObject { .. } => None,
+        };
+        if mime.is_some_and(|value| value.starts_with("image/")) {
+            return Self::responses_image_part(source);
+        }
+        match source {
+            ResourceRef::Url { url, .. } => Ok(json!({
+                "type": "input_file",
+                "file_url": url,
+            })),
+            ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
+                "type": "input_file",
+                "filename": format!("input.{}", Self::document_extension(mime)),
+                "file_data": format!("data:{};base64,{}", mime, data_base64),
+            })),
+            ResourceRef::NamedObject { obj_id } => Ok(json!({
+                "type": "input_text",
+                "text": format!("named_object: {}", obj_id),
+            })),
+        }
+    }
+
+    fn document_extension(mime: &str) -> &'static str {
+        match mime.split(';').next().unwrap_or(mime).trim() {
+            "text/plain" => "txt",
+            "text/markdown" => "md",
+            "application/pdf" => "pdf",
+            "application/msword" => "doc",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+            "application/vnd.ms-excel" => "xls",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+            "text/csv" => "csv",
+            "text/tab-separated-values" => "tsv",
+            "application/vnd.ms-powerpoint" => "ppt",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation" => "pptx",
+            "text/html" => "html",
+            "application/xml" | "text/xml" => "xml",
+            "application/json" => "json",
+            "application/yaml" | "text/yaml" => "yaml",
+            "application/rtf" | "text/rtf" => "rtf",
+            "text/x-python" => "py",
+            _ => "bin",
         }
     }
 
@@ -1587,8 +1573,9 @@ impl OpenAIProvider {
         body: &Value,
         text: Option<String>,
         tool_calls: Vec<AiToolCall>,
+        artifacts: Vec<AiArtifact>,
     ) -> AiMessage {
-        let mut message = AiResponse::message_from_parts(text, tool_calls, vec![]);
+        let mut message = AiResponse::message_from_parts(text, tool_calls, artifacts);
         if let Some(output_items) = body.get("output").and_then(Value::as_array) {
             message
                 .content
@@ -2122,6 +2109,217 @@ impl OpenAIProvider {
         Ok(ignored)
     }
 
+    fn responses_image_input_part(source: &ResourceRef) -> Result<Value, ProviderError> {
+        match source {
+            ResourceRef::Url { url, .. } => Ok(json!({
+                "type": "input_image",
+                "image_url": url,
+            })),
+            ResourceRef::Base64 { mime, data_base64 } => {
+                if !mime.starts_with("image/") {
+                    return Err(ProviderError::fatal(format!(
+                        "OpenAI Responses image input requires image MIME type, got '{}'",
+                        mime
+                    )));
+                }
+                general_purpose::STANDARD
+                    .decode(data_base64)
+                    .map_err(|err| {
+                        ProviderError::fatal(format!(
+                            "OpenAI Responses image input contains invalid base64: {}",
+                            err
+                        ))
+                    })?;
+                Ok(json!({
+                    "type": "input_image",
+                    "image_url": format!("data:{};base64,{}", mime, data_base64),
+                }))
+            }
+            ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
+                "named image object '{}' must be materialized before OpenAI dispatch",
+                obj_id
+            ))),
+        }
+    }
+
+    fn image_resources_from_request(req: &AiMethodRequest) -> Vec<ResourceRef> {
+        if !req.payload.resources.is_empty() {
+            return req.payload.resources.clone();
+        }
+        let Some(input) = req.payload.input_json.as_ref() else {
+            return vec![];
+        };
+        for key in ["images", "image"] {
+            let Some(value) = input.get(key) else {
+                continue;
+            };
+            let values = value
+                .as_array()
+                .cloned()
+                .unwrap_or_else(|| vec![value.clone()]);
+            let resources = values
+                .into_iter()
+                .filter_map(|value| serde_json::from_value::<ResourceRef>(value).ok())
+                .collect::<Vec<_>>();
+            if !resources.is_empty() {
+                return resources;
+            }
+        }
+        vec![]
+    }
+
+    fn build_responses_image_request(
+        provider_model: &str,
+        req: &AiMethodRequest,
+        action: &str,
+    ) -> Result<(Map<String, Value>, Vec<String>), ProviderError> {
+        let prompt = Self::extract_text2image_prompt(req).ok_or_else(|| {
+            ProviderError::fatal(
+                "Responses image generation requires prompt in payload.text/messages/input_json/options",
+            )
+        })?;
+        let mut tool = Map::new();
+        tool.insert(
+            "type".to_string(),
+            Value::String("image_generation".to_string()),
+        );
+        tool.insert("action".to_string(), Value::String(action.to_string()));
+        let mut ignored = vec![];
+        for source in [
+            req.payload.input_json.as_ref(),
+            req.payload.options.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let Some(options) = source.as_object() else {
+                continue;
+            };
+            for (key, value) in options {
+                if key == "model"
+                    || key == "messages"
+                    || key == "prompt"
+                    || key == "image"
+                    || key == "images"
+                {
+                    continue;
+                }
+                if OPENAI_RESPONSES_IMAGE_TOOL_OPTION_ALLOWLIST.contains(&key.as_str()) {
+                    tool.insert(key.clone(), value.clone());
+                } else if !ignored.contains(key) {
+                    ignored.push(key.clone());
+                }
+            }
+        }
+
+        let input = if action == "edit" {
+            let resources = Self::image_resources_from_request(req);
+            if resources.is_empty() {
+                return Err(ProviderError::fatal(
+                    "Responses image edit requires at least one canonical image input",
+                ));
+            }
+            let mut content = vec![json!({ "type": "input_text", "text": prompt })];
+            for resource in &resources {
+                content.push(Self::responses_image_input_part(resource)?);
+            }
+            json!([{ "role": "user", "content": content }])
+        } else {
+            Value::String(prompt)
+        };
+
+        let stream =
+            req.requirements.requires_feature("streaming") || tool.contains_key("partial_images");
+        let mut request_obj = Map::new();
+        request_obj.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
+        request_obj.insert("input".to_string(), input);
+        request_obj.insert("tools".to_string(), Value::Array(vec![Value::Object(tool)]));
+        if stream {
+            request_obj.insert("stream".to_string(), Value::Bool(true));
+        }
+        Ok((request_obj, ignored))
+    }
+
+    fn image_mime_from_bytes(bytes: &[u8]) -> Result<&'static str, ProviderError> {
+        match image::guess_format(bytes) {
+            Ok(ImageFormat::Png) => Ok("image/png"),
+            Ok(ImageFormat::Jpeg) => Ok("image/jpeg"),
+            Ok(ImageFormat::WebP) => Ok("image/webp"),
+            Ok(format) => Err(ProviderError::fatal(format!(
+                "OpenAI Responses returned unsupported image format {:?}",
+                format
+            ))),
+            Err(err) => Err(ProviderError::fatal(format!(
+                "OpenAI Responses returned invalid image bytes: {}",
+                err
+            ))),
+        }
+    }
+
+    fn parse_responses_image_artifacts(body: &Value) -> Result<Vec<AiArtifact>, ProviderError> {
+        let output = body
+            .get("output")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                ProviderError::fatal("OpenAI Responses image result is missing output")
+            })?;
+        let mut artifacts = vec![];
+        for item in output {
+            if item.get("type").and_then(Value::as_str) != Some("image_generation_call") {
+                continue;
+            }
+            let status = item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if status != "completed" {
+                return Err(ProviderError::fatal(format!(
+                    "OpenAI Responses image generation call did not complete (status='{}')",
+                    status
+                )));
+            }
+            let encoded = item
+                .get("result")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    ProviderError::fatal(
+                        "OpenAI Responses image generation call is missing base64 result",
+                    )
+                })?;
+            let bytes = general_purpose::STANDARD.decode(encoded).map_err(|err| {
+                ProviderError::fatal(format!(
+                    "OpenAI Responses image generation returned invalid base64: {}",
+                    err
+                ))
+            })?;
+            let mime = Self::image_mime_from_bytes(bytes.as_slice())?.to_string();
+            let index = artifacts.len() + 1;
+            artifacts.push(AiArtifact {
+                name: format!("image_{}", index),
+                resource: ResourceRef::Base64 {
+                    mime: mime.clone(),
+                    data_base64: encoded.to_string(),
+                },
+                mime: Some(mime),
+                metadata: Some(json!({
+                    "provider_call_id": item.get("id").cloned(),
+                    "action": item.get("action").cloned(),
+                })),
+            });
+        }
+        if artifacts.is_empty() {
+            return Err(ProviderError::fatal(
+                "OpenAI Responses result has no image_generation_call outputs",
+            ));
+        }
+        Ok(artifacts)
+    }
+
     fn parse_text2image_artifacts(body: &Value) -> Result<Vec<AiArtifact>, ProviderError> {
         let Some(items) = body.get("data").and_then(|value| value.as_array()) else {
             return Err(ProviderError::fatal(
@@ -2428,31 +2626,65 @@ impl OpenAIProvider {
                 Ok((fallback_name.to_string(), mime.clone(), bytes))
             }
             ResourceRef::Url { url, mime_hint } => {
-                let response = self.client.get(url).send().await.map_err(|err| {
-                    if err.is_timeout() || err.is_connect() {
-                        ProviderError::retryable(format!("failed to fetch resource url: {}", err))
-                    } else {
-                        ProviderError::fatal(format!("failed to fetch resource url: {}", err))
+                for attempt in 1..=RESOURCE_FETCH_ATTEMPTS {
+                    let response = match self.client.get(url).send().await {
+                        Ok(response) => response,
+                        Err(_) if attempt < RESOURCE_FETCH_ATTEMPTS => {
+                            time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                            continue;
+                        }
+                        Err(err) => {
+                            return Err(if err.is_timeout() || err.is_connect() {
+                                ProviderError::retryable(format!(
+                                    "failed to fetch resource url after {} attempts: {}",
+                                    attempt, err
+                                ))
+                            } else {
+                                ProviderError::fatal(format!(
+                                    "failed to fetch resource url after {} attempts: {}",
+                                    attempt, err
+                                ))
+                            });
+                        }
+                    };
+                    let status = response.status();
+                    if !status.is_success() {
+                        let error = Self::classify_api_error(
+                            status,
+                            format!("resource url returned status {}", status.as_u16()),
+                        );
+                        if error.is_retryable() && attempt < RESOURCE_FETCH_ATTEMPTS {
+                            time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                            continue;
+                        }
+                        return Err(error);
                     }
-                })?;
-                let status = response.status();
-                if !status.is_success() {
-                    return Err(Self::classify_api_error(
-                        status,
-                        format!("resource url returned status {}", status.as_u16()),
-                    ));
+                    let content_type = mime_hint
+                        .clone()
+                        .or_else(|| {
+                            response
+                                .headers()
+                                .get(CONTENT_TYPE)
+                                .and_then(|value| value.to_str().ok())
+                                .map(|value| value.to_string())
+                        })
+                        .unwrap_or_else(|| "application/octet-stream".to_string());
+                    match response.bytes().await {
+                        Ok(bytes) => {
+                            return Ok((fallback_name.to_string(), content_type, bytes.to_vec()));
+                        }
+                        Err(_) if attempt < RESOURCE_FETCH_ATTEMPTS => {
+                            time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                        }
+                        Err(err) => {
+                            return Err(ProviderError::retryable(format!(
+                                "failed to read resource bytes after {} attempts: {}",
+                                attempt, err
+                            )));
+                        }
+                    }
                 }
-                let content_type = response
-                    .headers()
-                    .get(CONTENT_TYPE)
-                    .and_then(|value| value.to_str().ok())
-                    .map(|value| value.to_string())
-                    .or_else(|| mime_hint.clone())
-                    .unwrap_or_else(|| "application/octet-stream".to_string());
-                let bytes = response.bytes().await.map_err(|err| {
-                    ProviderError::fatal(format!("failed to read resource bytes: {}", err))
-                })?;
-                Ok((fallback_name.to_string(), content_type, bytes.to_vec()))
+                unreachable!()
             }
             ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
                 "openai provider cannot resolve named object resource {} without resolver bytes",
@@ -2737,6 +2969,7 @@ impl OpenAIProvider {
                         .and_then(|value| value.as_u64())
                 }),
             total_tokens: usage.get("total_tokens").and_then(|value| value.as_u64()),
+            request_units: None,
         });
 
         let cost = usage
@@ -2759,7 +2992,7 @@ impl OpenAIProvider {
         );
 
         let summary = AiResponse {
-            message: self.message_from_response_body(&body, content, tool_choices),
+            message: self.message_from_response_body(&body, content, tool_choices, vec![]),
             usage,
             cost,
             finish_reason: body
@@ -2791,6 +3024,13 @@ impl OpenAIProvider {
         for key in keys {
             if let Some(value) = input.get(*key) {
                 if let Ok(resource) = serde_json::from_value::<ResourceRef>(value.clone()) {
+                    return Some(resource);
+                }
+                if let Some(resource) = value
+                    .as_array()
+                    .and_then(|items| items.first())
+                    .and_then(|value| serde_json::from_value::<ResourceRef>(value.clone()).ok())
+                {
                     return Some(resource);
                 }
             }
@@ -2883,6 +3123,11 @@ impl OpenAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
+        if self.model_supports_responses_image_generation(provider_model) {
+            return self
+                .start_responses_image_generation(ctx, provider_model, req, "generate")
+                .await;
+        }
         let mut request_obj = Map::new();
         request_obj.insert(
             "model".to_string(),
@@ -2993,7 +3238,7 @@ impl OpenAIProvider {
 
         let summary = AiResponse {
             message: AiResponse::message_from_parts(revised_prompt, vec![], artifacts),
-            usage: None,
+            usage: Some(AiUsage::request_units(1)),
             cost: estimated_cost,
             finish_reason: Some("stop".to_string()),
             provider_task_ref: body
@@ -3005,7 +3250,106 @@ impl OpenAIProvider {
         Ok(ProviderStartResult::Immediate(summary))
     }
 
-    fn embedding_inputs(req: &AiMethodRequest) -> Result<Value, ProviderError> {
+    async fn start_responses_image_generation(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        req: &AiMethodRequest,
+        action: &str,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let (request_obj, ignored_options) =
+            Self::build_responses_image_request(provider_model, req, action)?;
+        if !ignored_options.is_empty() {
+            warn!(
+                "aicc.openai.responses_image ignored unsupported options: provider_instance_name={} model={} trace_id={:?} ignored={:?}",
+                self.instance.provider_instance_name,
+                provider_model,
+                ctx.trace_id,
+                ignored_options
+            );
+        }
+        let request_log = redacted_json_log(&Value::Object(request_obj.clone()));
+        info!(
+            "aicc.openai.responses_image.input provider_instance_name={} model={} action={} trace_id={:?} request={}",
+            self.instance.provider_instance_name,
+            provider_model,
+            action,
+            ctx.trace_id,
+            request_log
+        );
+        let url = format!("{}/responses", self.base_url);
+        let (status, body, latency_ms) = self.post_json(ctx, url.as_str(), &request_obj).await?;
+        let response_log = redacted_json_log(&body);
+        if !status.is_success() {
+            warn!(
+                "aicc.openai.responses_image.output provider_instance_name={} model={} action={} trace_id={:?} status={} response={}",
+                self.instance.provider_instance_name,
+                provider_model,
+                action,
+                ctx.trace_id,
+                status.as_u16(),
+                response_log
+            );
+            let message = body
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("OpenAI Responses image generation returned non-success status");
+            return Err(Self::classify_api_error(status, message.to_string()));
+        }
+        info!(
+            "aicc.openai.responses_image.output provider_instance_name={} model={} action={} trace_id={:?} status={} response={}",
+            self.instance.provider_instance_name,
+            provider_model,
+            action,
+            ctx.trace_id,
+            status.as_u16(),
+            response_log
+        );
+
+        let artifacts = Self::parse_responses_image_artifacts(&body)?;
+        let usage = body.get("usage").map(|usage| AiUsage {
+            input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
+            output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
+            total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+            request_units: Some(1),
+        });
+        let cost = Self::estimate_text2image_cost(req, provider_model).map(|amount| AiCost {
+            amount,
+            currency: "USD".to_string(),
+        });
+        let mut extra = Map::new();
+        extra.insert("provider".to_string(), Value::String("openai".to_string()));
+        extra.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
+        extra.insert("latency_ms".to_string(), Value::from(latency_ms));
+        extra.insert(
+            "provider_io".to_string(),
+            json!({
+                "input": Value::Object(request_obj),
+                "output": body.clone()
+            }),
+        );
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: self.message_from_response_body(&body, None, vec![], artifacts),
+            usage,
+            cost,
+            finish_reason: body
+                .get("status")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            provider_task_ref: body
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            extra: Some(Value::Object(extra)),
+        }))
+    }
+
+    fn embedding_inputs(
+        req: &AiMethodRequest,
+    ) -> Result<(Value, Vec<Option<String>>), ProviderError> {
         if let Some(items) = req
             .payload
             .input_json
@@ -3014,22 +3358,33 @@ impl OpenAIProvider {
             .cloned()
         {
             if let Some(array) = items.as_array() {
-                let texts = array
-                    .iter()
-                    .filter_map(|item| {
-                        item.get("text")
-                            .and_then(|value| value.as_str())
-                            .map(|value| value.to_string())
-                            .or_else(|| item.as_str().map(|value| value.to_string()))
-                    })
-                    .collect::<Vec<_>>();
+                let mut texts = Vec::with_capacity(array.len());
+                let mut ids = Vec::with_capacity(array.len());
+                for (index, item) in array.iter().enumerate() {
+                    let text = item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .or_else(|| item.as_str())
+                        .ok_or_else(|| {
+                            ProviderError::fatal(format!(
+                                "embedding.text item {} must contain text; resource items are unsupported by OpenAI text embeddings",
+                                index
+                            ))
+                        })?;
+                    texts.push(Value::String(text.to_string()));
+                    ids.push(
+                        item.get("id")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string),
+                    );
+                }
                 if !texts.is_empty() {
-                    return Ok(Value::Array(texts.into_iter().map(Value::String).collect()));
+                    return Ok((Value::Array(texts), ids));
                 }
             }
         }
         if let Some(text) = req.payload.text.as_ref().map(String::as_str) {
-            return Ok(Value::String(text.to_string()));
+            return Ok((Value::String(text.to_string()), vec![None]));
         }
         let texts = req
             .payload
@@ -3040,7 +3395,8 @@ impl OpenAIProvider {
             .map(Value::String)
             .collect::<Vec<_>>();
         if !texts.is_empty() {
-            return Ok(Value::Array(texts));
+            let ids = vec![None; texts.len()];
+            return Ok((Value::Array(texts), ids));
         }
         Err(ProviderError::fatal(
             "embedding.text requires payload.input_json.items or payload.text",
@@ -3053,12 +3409,28 @@ impl OpenAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
+        let input_json = req.payload.input_json.as_ref();
+        if input_json.and_then(|value| value.get("chunking")).is_some() {
+            return Err(ProviderError::fatal(
+                "OpenAI embedding endpoint does not support canonical chunking",
+            ));
+        }
+        if input_json
+            .and_then(|value| value.get("normalize"))
+            .and_then(Value::as_bool)
+            == Some(false)
+        {
+            return Err(ProviderError::fatal(
+                "OpenAI embeddings are normalized and cannot satisfy normalize=false",
+            ));
+        }
+        let (embedding_input, input_ids) = Self::embedding_inputs(req)?;
         let mut request_obj = Map::new();
         request_obj.insert(
             "model".to_string(),
             Value::String(provider_model.to_string()),
         );
-        request_obj.insert("input".to_string(), Self::embedding_inputs(req)?);
+        request_obj.insert("input".to_string(), embedding_input);
         if let Some(dimensions) = req
             .payload
             .input_json
@@ -3081,19 +3453,82 @@ impl OpenAIProvider {
             .pointer("/data/0/embedding")
             .and_then(|value| value.as_array())
             .map(|items| items.len());
-        let embedding_space_id = format!(
+        let computed_embedding_space_id = format!(
             "openai:{}:{}",
             provider_model,
             dimensions
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         );
+        let embedding_space_id = input_json
+            .and_then(|value| value.get("embedding_space_id"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .unwrap_or(computed_embedding_space_id);
+        let mut data = body
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for (index, item) in data.iter_mut().enumerate() {
+            if let (Some(id), Some(object)) = (
+                input_ids.get(index).and_then(|value| value.as_ref()),
+                item.as_object_mut(),
+            ) {
+                object.insert("id".to_string(), Value::String(id.clone()));
+            }
+        }
+        let prefer_artifact = input_json
+            .and_then(|value| value.get("prefer_artifact"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || data.len() > 100
+            || input_json
+                .and_then(|value| value.get("output"))
+                .and_then(|value| value.get("resource_format"))
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == "named_object")
+            || input_json
+                .and_then(|value| value.get("response_format"))
+                .and_then(Value::as_str)
+                .is_some_and(|value| matches!(value, "object_id" | "named_object"));
+        let artifact = if prefer_artifact {
+            let artifact_body = json!({
+                "embedding_space_id": embedding_space_id.clone(),
+                "data": data.clone(),
+            });
+            let bytes = serde_json::to_vec(&artifact_body).map_err(|error| {
+                ProviderError::fatal(format!("serialize embedding artifact failed: {}", error))
+            })?;
+            Some(AiArtifact {
+                name: "embeddings.json".to_string(),
+                resource: ResourceRef::Base64 {
+                    mime: "application/json".to_string(),
+                    data_base64: general_purpose::STANDARD.encode(bytes),
+                },
+                mime: Some("application/json".to_string()),
+                metadata: Some(json!({
+                    "rows": data.len(),
+                    "dimensions": dimensions,
+                    "embedding_space_id": embedding_space_id.clone(),
+                })),
+            })
+        } else {
+            None
+        };
         let mut extra = Map::new();
         extra.insert(
             "embedding".to_string(),
             json!({
-                "data": body.get("data").cloned().unwrap_or_else(|| Value::Array(vec![])),
+                "data": if prefer_artifact { Value::Array(vec![]) } else { Value::Array(data.clone()) },
                 "embedding_space_id": embedding_space_id,
+                "artifact": artifact.as_ref().map(|value| json!({
+                    "name": value.name.clone(),
+                    "mime": value.mime.clone(),
+                    "rows": data.len(),
+                    "dimensions": dimensions,
+                    "embedding_space_id": embedding_space_id.clone(),
+                })),
                 "provider_io": {
                     "input": Value::Object(request_obj.clone()),
                     "output": body.clone()
@@ -3102,6 +3537,7 @@ impl OpenAIProvider {
             }),
         );
         Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(None, vec![], artifact.into_iter().collect()),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
@@ -3179,6 +3615,24 @@ impl OpenAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
+        let input_json = req.payload.input_json.as_ref();
+        for (pointer, name) in [
+            ("/language", "language"),
+            ("/voice/gender", "voice.gender"),
+            ("/voice/style", "voice.style"),
+            ("/voice/speaker_similarity", "voice.speaker_similarity"),
+            ("/output/sample_rate", "output.sample_rate"),
+        ] {
+            if input_json
+                .and_then(|value| value.pointer(pointer))
+                .is_some()
+            {
+                return Err(ProviderError::fatal(format!(
+                    "OpenAI TTS does not support canonical hard constraint {}",
+                    name
+                )));
+            }
+        }
         let text = req
             .payload
             .input_json
@@ -3207,7 +3661,14 @@ impl OpenAIProvider {
             .as_ref()
             .and_then(|value| value.pointer("/output/media_type"))
             .and_then(|value| value.as_str())
-            .map(|mime| if mime.contains("wav") { "wav" } else { "mp3" })
+            .map(|mime| match mime {
+                "audio/wav" => "wav",
+                "audio/opus" => "opus",
+                "audio/aac" => "aac",
+                "audio/flac" => "flac",
+                "audio/L16" | "audio/pcm" => "pcm",
+                _ => "mp3",
+            })
             .unwrap_or("mp3");
         let mut request_obj = Map::new();
         request_obj.insert(
@@ -3220,6 +3681,17 @@ impl OpenAIProvider {
             "response_format".to_string(),
             Value::String(response_format.to_string()),
         );
+        if let Some(speed) = input_json
+            .and_then(|value| value.get("speed"))
+            .and_then(Value::as_f64)
+        {
+            if !(0.25..=4.0).contains(&speed) {
+                return Err(ProviderError::fatal(
+                    "OpenAI TTS speed must be between 0.25 and 4.0",
+                ));
+            }
+            request_obj.insert("speed".to_string(), json!(speed));
+        }
         let url = format!("{}/audio/speech", self.base_url);
         let (status, bytes, content_type, latency_ms) = self
             .post_binary_json(ctx, url.as_str(), &request_obj)
@@ -3230,10 +3702,16 @@ impl OpenAIProvider {
         }
         let mime = if content_type.contains("audio") {
             content_type
-        } else if response_format == "wav" {
-            "audio/wav".to_string()
         } else {
-            "audio/mpeg".to_string()
+            match response_format {
+                "wav" => "audio/wav",
+                "opus" => "audio/opus",
+                "aac" => "audio/aac",
+                "flac" => "audio/flac",
+                "pcm" => "audio/pcm",
+                _ => "audio/mpeg",
+            }
+            .to_string()
         };
         let artifact = AiArtifact {
             name: "audio".to_string(),
@@ -3265,11 +3743,14 @@ impl OpenAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
-        let resource =
-            req.payload.resources.first().ok_or_else(|| {
-                ProviderError::fatal("audio.asr requires resources[0] audio input")
-            })?;
-        let (filename, mime, bytes) = self.resource_to_file_bytes(resource, "audio").await?;
+        let resource = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["audio"]))
+            .ok_or_else(|| ProviderError::fatal("audio.asr requires canonical audio input"))?;
+        let (filename, mime, bytes) = self.resource_to_file_bytes(&resource, "audio").await?;
         let mut fields = vec![
             ("model".to_string(), provider_model.to_string()),
             ("response_format".to_string(), "json".to_string()),
@@ -3423,11 +3904,17 @@ impl OpenAIProvider {
 
         let mut files = vec![];
         if method == ai_methods::VIDEO_IMG2VIDEO {
-            let resource = req.payload.resources.first().ok_or_else(|| {
-                ProviderError::fatal("video.img2video requires resources[0] image input")
-            })?;
+            let resource = req
+                .payload
+                .resources
+                .first()
+                .cloned()
+                .or_else(|| Self::resource_from_input_json(req, &["image", "images"]))
+                .ok_or_else(|| {
+                    ProviderError::fatal("video.img2video requires canonical image input")
+                })?;
             let (name, mime, bytes) = self
-                .resource_to_file_bytes(resource, "input_reference.png")
+                .resource_to_file_bytes(&resource, "input_reference.png")
                 .await?;
             let normalize_size = requested_size.clone();
             let (size, normalized_bytes) = tokio::task::spawn_blocking(move || {
@@ -3576,6 +4063,15 @@ impl OpenAIProvider {
         };
         Ok(AiResponse {
             message: AiResponse::message_from_parts(None, vec![], vec![artifact]),
+            usage: Some(AiUsage::request_units(1)),
+            cost: Some(AiCost {
+                amount: if provider_model.contains("pro") {
+                    1.2
+                } else {
+                    0.4
+                },
+                currency: "USD".to_string(),
+            }),
             finish_reason: Some("stop".to_string()),
             provider_task_ref: Some(video_id.to_string()),
             extra: Some(json!({
@@ -3596,19 +4092,34 @@ impl OpenAIProvider {
         req: &AiMethodRequest,
         with_mask: bool,
     ) -> Result<ProviderStartResult, ProviderError> {
-        let image_resource = req.payload.resources.first().ok_or_else(|| {
-            ProviderError::fatal("image edit requires resources[0] source image input")
-        })?;
+        if !with_mask && self.model_supports_responses_image_generation(provider_model) {
+            return self
+                .start_responses_image_generation(ctx, provider_model, req, "edit")
+                .await;
+        }
+        let image_resource = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["image", "images"]))
+            .ok_or_else(|| ProviderError::fatal("image edit requires canonical image input"))?;
         let (image_name, image_mime, image_bytes) = self
-            .resource_to_file_bytes(image_resource, "image.png")
+            .resource_to_file_bytes(&image_resource, "image.png")
             .await?;
         let mut files = vec![("image".to_string(), image_name, image_mime, image_bytes)];
         if with_mask {
-            let mask_resource = req.payload.resources.get(1).ok_or_else(|| {
-                ProviderError::fatal("image.inpaint requires resources[1] mask input")
-            })?;
+            let mask_resource = req
+                .payload
+                .resources
+                .get(1)
+                .cloned()
+                .or_else(|| Self::resource_from_input_json(req, &["mask"]))
+                .ok_or_else(|| {
+                    ProviderError::fatal("image.inpaint requires canonical mask input")
+                })?;
             let (mask_name, mask_mime, mask_bytes) = self
-                .resource_to_file_bytes(mask_resource, "mask.png")
+                .resource_to_file_bytes(&mask_resource, "mask.png")
                 .await?;
             files.push(("mask".to_string(), mask_name, mask_mime, mask_bytes));
         }
@@ -3630,6 +4141,12 @@ impl OpenAIProvider {
             if let Some(map) = source.as_object() {
                 for (key, value) in map {
                     if key == "prompt" || key == "model" {
+                        continue;
+                    }
+                    if key == "input_fidelity"
+                        && (provider_model.starts_with("gpt-image-2")
+                            || provider_model.starts_with("gpt-image-1-mini"))
+                    {
                         continue;
                     }
                     if OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST.contains(&key.as_str()) {
@@ -3723,6 +4240,7 @@ impl Provider for OpenAIProvider {
             input_tokens: Some(input_tokens),
             output_tokens: Some(output_tokens),
             total_tokens: Some(input_tokens.saturating_add(output_tokens)),
+            request_units: None,
         };
 
         let estimated_cost_usd = self
@@ -3816,7 +4334,9 @@ impl Provider for OpenAIProvider {
         _ctx: crate::aicc::InvokeCtx,
         _task_id: &str,
     ) -> std::result::Result<(), ProviderError> {
-        Ok(())
+        Err(ProviderError::fatal(
+            "openai provider cancellation is unsupported",
+        ))
     }
 }
 
@@ -3961,8 +4481,6 @@ struct SettingsOpenAIInstanceConfig {
     api_token: String,
     #[serde(default = "default_base_url")]
     base_url: String,
-    #[serde(default = "default_auth_mode")]
-    auth_mode: String,
     #[serde(default = "default_timeout_ms")]
     timeout_ms: u64,
 }
@@ -3987,27 +4505,8 @@ fn default_timeout_ms() -> u64 {
     DEFAULT_OPENAI_TIMEOUT_MS
 }
 
-fn default_auth_mode() -> String {
-    DEFAULT_AUTH_MODE.to_string()
-}
-
-fn default_provider_driver_for_instance(provider_instance_name: &str, base_url: &str) -> String {
-    let instance = provider_instance_name.to_ascii_lowercase();
-    let endpoint = base_url.to_ascii_lowercase();
-    if instance.contains(SN_AI_PROVIDER_DRIVER) || endpoint.contains("sn.buckyos.ai") {
-        SN_AI_PROVIDER_DRIVER.to_string()
-    } else {
-        DEFAULT_OPENAI_PROVIDER_DRIVER.to_string()
-    }
-}
-
-fn default_features() -> Vec<String> {
-    vec![
-        features::PLAN.to_string(),
-        features::JSON_OUTPUT.to_string(),
-        features::TOOL_CALLING.to_string(),
-        features::WEB_SEARCH.to_string(),
-    ]
+fn default_provider_driver_for_instance(_provider_instance_name: &str, _base_url: &str) -> String {
+    DEFAULT_OPENAI_PROVIDER_DRIVER.to_string()
 }
 
 fn is_text2image_model_name(model: &str) -> bool {
@@ -4045,11 +4544,23 @@ fn is_supported_llm_model_name(model: &str) -> bool {
 fn normalize_remote_model_ids(
     entries: Vec<OpenAIModelEntry>,
     provider_driver: &str,
-) -> (Vec<String>, Vec<String>) {
+) -> (
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+) {
     let mut llm_seen = HashSet::<String>::new();
     let mut image_seen = HashSet::<String>::new();
+    let mut embedding_seen = HashSet::<String>::new();
+    let mut asr_seen = HashSet::<String>::new();
+    let mut tts_seen = HashSet::<String>::new();
     let mut llm_models = Vec::new();
     let mut image_models = Vec::new();
+    let mut embedding_models = Vec::new();
+    let mut asr_models = Vec::new();
+    let mut tts_models = Vec::new();
 
     for entry in entries.into_iter() {
         let model = entry.id.trim();
@@ -4063,7 +4574,23 @@ fn normalize_remote_model_ids(
             }
             continue;
         }
-        if is_text2image_model_name(model) {
+        if key.starts_with("gpt-live-") || key.starts_with("gpt-realtime-") {
+            continue;
+        } else if key.contains("embedding") {
+            if embedding_seen.insert(key) {
+                embedding_models.push(model.to_string());
+            }
+        } else if key.contains("transcribe") || key == "whisper-1" {
+            if asr_seen.insert(key) {
+                asr_models.push(model.to_string());
+            }
+        } else if key.starts_with("tts-") || key.contains("-tts") {
+            if tts_seen.insert(key) {
+                tts_models.push(model.to_string());
+            }
+        } else if key.contains("realtime") || key.contains("audio") {
+            continue;
+        } else if is_text2image_model_name(model) {
             if image_seen.insert(key) {
                 image_models.push(model.to_string());
             }
@@ -4072,17 +4599,35 @@ fn normalize_remote_model_ids(
         }
     }
 
-    (llm_models, image_models)
+    (
+        llm_models,
+        image_models,
+        embedding_models,
+        asr_models,
+        tts_models,
+    )
 }
 
-fn inventory_revision(models: &[String], image_models: &[String]) -> String {
+fn inventory_revision(
+    models: &[String],
+    image_models: &[String],
+    embedding_models: &[String],
+    asr_models: &[String],
+    tts_models: &[String],
+) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     models.hash(&mut hasher);
     image_models.hash(&mut hasher);
+    embedding_models.hash(&mut hasher);
+    asr_models.hash(&mut hasher);
+    tts_models.hash(&mut hasher);
     format!(
-        "models-{}-{}-{:x}",
+        "models-{}-{}-{}-{}-{}-{:x}",
         models.len(),
         image_models.len(),
+        embedding_models.len(),
+        asr_models.len(),
+        tts_models.len(),
         hasher.finish()
     )
 }
@@ -4149,7 +4694,6 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
             provider_driver: String::new(),
             api_token: settings.api_token.clone(),
             base_url: default_base_url(),
-            auth_mode: default_auth_mode(),
             timeout_ms: default_timeout_ms(),
         }]
     } else {
@@ -4168,7 +4712,6 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
                 raw_instance.api_token
             },
             base_url: raw_instance.base_url,
-            auth_mode: raw_instance.auth_mode,
             timeout_ms: raw_instance.timeout_ms,
         });
     }
@@ -4319,6 +4862,8 @@ mod tests {
     use crate::aicc::ModelCatalog;
     use buckyos_api::{AiPayload, ModelSpec, Requirements};
     use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     fn build_llm_request(options: Option<Value>) -> AiMethodRequest {
         AiMethodRequest::new(
@@ -4337,6 +4882,50 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn resource_url_retries_incomplete_response_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            for response in [
+                b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: 10\r\nConnection: close\r\n\r\nbad".as_slice(),
+                b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: 4\r\nConnection: close\r\n\r\ngood".as_slice(),
+            ] {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request).await.expect("read request");
+                stream.write_all(response).await.expect("write response");
+            }
+        });
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-resource-retry".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: default_base_url(),
+                timeout_ms: 1_000,
+            },
+            "token",
+        )
+        .expect("provider");
+
+        let (_, mime, bytes) = provider
+            .resource_to_file_bytes(
+                &ResourceRef::Url {
+                    url: format!("http://{address}/audio.wav"),
+                    mime_hint: None,
+                },
+                "audio.wav",
+            )
+            .await
+            .expect("retry should recover");
+
+        assert_eq!(mime, "audio/wav");
+        assert_eq!(bytes, b"good");
+        server.await.expect("server task");
+    }
+
     fn build_text2image_request(options: Option<Value>) -> AiMethodRequest {
         AiMethodRequest::new(
             Capability::Image,
@@ -4347,6 +4936,26 @@ mod tests {
                 vec![],
                 vec![],
                 vec![],
+                None,
+                options,
+            ),
+            None,
+        )
+    }
+
+    fn build_image_edit_request(
+        resources: Vec<ResourceRef>,
+        options: Option<Value>,
+    ) -> AiMethodRequest {
+        AiMethodRequest::new(
+            Capability::Image,
+            ModelSpec::new("image.img2img.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                Some("edit the test image".to_string()),
+                vec![],
+                vec![],
+                resources,
                 None,
                 options,
             ),
@@ -4466,6 +5075,19 @@ mod tests {
         assert_eq!(
             OpenAIProvider::price_per_1m_tokens("gpt-5.4-pro"),
             (30.0, 180.0)
+        );
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5.6-sol"),
+            (4.0, 20.0)
+        );
+        assert_eq!(OpenAIProvider::price_per_1m_tokens("gpt-5.6"), (4.0, 20.0));
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5.6-terra"),
+            (2.0, 12.0)
+        );
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5.6-luna"),
+            (0.20, 1.20)
         );
     }
 
@@ -4885,17 +5507,6 @@ data: [DONE]
     }
 
     #[test]
-    fn default_features_include_web_search() {
-        let all_features = default_features();
-        assert!(
-            all_features
-                .iter()
-                .any(|feature| feature == features::WEB_SEARCH),
-            "openai default features should include web_search"
-        );
-    }
-
-    #[test]
     fn build_openai_instances_uses_simplified_runtime_inventory_config() {
         let settings = OpenAISettings {
             enabled: true,
@@ -4906,7 +5517,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: String::new(),
                 base_url: default_base_url(),
-                auth_mode: default_auth_mode(),
                 timeout_ms: default_timeout_ms(),
             }],
         };
@@ -4915,27 +5525,6 @@ data: [DONE]
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].provider_instance_name, "openai-1");
         assert_eq!(instances[0].base_url, DEFAULT_OPENAI_BASE_URL);
-    }
-
-    #[test]
-    fn build_openai_instances_allows_runtime_session_without_static_auth_fields() {
-        let settings = OpenAISettings {
-            enabled: true,
-            api_token: String::new(),
-            instances: vec![SettingsOpenAIInstanceConfig {
-                provider_instance_name: "sn-ai-provider-1".to_string(),
-                provider_type: "cloud_api".to_string(),
-                provider_driver: "sn-ai-provider".to_string(),
-                api_token: String::new(),
-                base_url: "https://sn.buckyos.ai/v1".to_string(),
-                auth_mode: RUNTIME_SESSION_AUTH_MODE.to_string(),
-                timeout_ms: default_timeout_ms(),
-            }],
-        };
-
-        let instances = build_openai_instances(&settings).expect("instances should be built");
-        assert_eq!(instances.len(), 1);
-        assert_eq!(instances[0].auth_mode, RUNTIME_SESSION_AUTH_MODE);
     }
 
     #[test]
@@ -4949,7 +5538,6 @@ data: [DONE]
                 provider_driver: "openrouter".to_string(),
                 api_token: String::new(),
                 base_url: "https://openrouter.ai/api/v1".to_string(),
-                auth_mode: default_auth_mode(),
                 timeout_ms: default_timeout_ms(),
             }],
         };
@@ -4962,6 +5550,31 @@ data: [DONE]
     }
 
     #[tokio::test]
+    async fn auth_always_uses_configured_api_token() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-auth".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "configured-token".to_string(),
+                base_url: default_base_url(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "configured-token",
+        )
+        .expect("provider");
+        let ctx = crate::aicc::InvokeCtx {
+            session_token: Some("runtime-session-token".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            provider.build_auth_token(&ctx).await.expect("token"),
+            "configured-token"
+        );
+    }
+
+    #[tokio::test]
     async fn stopped_refresh_does_not_send_initial_request() {
         let provider = Arc::new(
             OpenAIProvider::new(
@@ -4971,7 +5584,6 @@ data: [DONE]
                     provider_driver: "openai".to_string(),
                     api_token: "token".to_string(),
                     base_url: "http://127.0.0.1:1".to_string(),
-                    auth_mode: "bearer".to_string(),
                     timeout_ms: 100,
                 },
                 "token",
@@ -5002,7 +5614,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: "http://127.0.0.1:1".to_string(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: 100,
             },
             "token",
@@ -5027,12 +5638,10 @@ data: [DONE]
                         "provider_instance_name": "openai-valid",
                         "api_token": "token",
                         "base_url": "http://127.0.0.1:1",
-                        "auth_mode": "bearer",
                         "timeout_ms": 100
                     },
                     {
-                        "provider_instance_name": "openai-invalid",
-                        "auth_mode": "bearer"
+                        "provider_instance_name": "openai-invalid"
                     }
                 ]
             }
@@ -5045,15 +5654,14 @@ data: [DONE]
     }
 
     #[test]
-    fn use_chat_completions_endpoint_detects_custom_sn_path() {
+    fn use_chat_completions_endpoint_detects_custom_compatible_path() {
         let provider = OpenAIProvider::new(
             OpenAIInstanceConfig {
-                provider_instance_name: "sn-ai-provider-1".to_string(),
+                provider_instance_name: "custom-compatible-1".to_string(),
                 provider_type: "cloud_api".to_string(),
-                provider_driver: "sn-ai-provider".to_string(),
+                provider_driver: "custom-compatible".to_string(),
                 api_token: "token".to_string(),
-                base_url: "https://sn.buckyos.ai/api/v1/ai/chat/completions".to_string(),
-                auth_mode: "bearer".to_string(),
+                base_url: "https://example.com/api/v1/chat/completions".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5071,7 +5679,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5083,51 +5690,64 @@ data: [DONE]
         let gpt = inventory
             .models
             .iter()
-            .find(|model| model.exact_model == "gpt-5@openai-primary")
-            .expect("default inventory should include gpt-5");
+            .find(|model| model.exact_model == "gpt-5.6-sol@openai-primary")
+            .expect("default inventory should include gpt-5.6-sol");
         assert!(gpt.api_types.contains(&ApiType::VisionOcr));
         assert!(gpt.api_types.contains(&ApiType::VisionCaption));
+        assert!(gpt.api_types.contains(&ApiType::ImageTextToImage));
+        assert!(gpt.api_types.contains(&ApiType::ImageToImage));
+        assert!(gpt.capabilities.image_generation);
         assert!(gpt.logical_mounts.iter().any(|mount| mount == "vision.ocr"));
         assert!(gpt
             .logical_mounts
             .iter()
             .any(|mount| mount == "vision.caption"));
-        assert!(inventory
-            .models
-            .iter()
-            .any(|model| model.exact_model == "gpt-image-1@openai-primary"));
-        let sora = inventory
-            .models
-            .iter()
-            .find(|model| model.provider_model_id == "sora-2")
-            .expect("default inventory should include sora-2");
-        assert!(sora.api_types.contains(&ApiType::VideoTextToVideo));
-        assert!(sora.api_types.contains(&ApiType::VideoImageToVideo));
-        assert!(sora
+        assert!(gpt
             .logical_mounts
             .iter()
-            .any(|mount| mount == "video.img2video"));
+            .any(|mount| mount == "image.txt2img.gpt-5-6-sol"));
+        assert!(gpt
+            .logical_mounts
+            .iter()
+            .any(|mount| mount == "image.img2img.gpt-5-6-sol"));
+        let gpt_image = inventory
+            .models
+            .iter()
+            .find(|model| model.exact_model == "gpt-image-2@openai-primary")
+            .expect("default inventory should include gpt-image-2");
+        assert!(!gpt_image.capabilities.image_generation);
+        assert!(!inventory
+            .models
+            .iter()
+            .any(|model| model.api_types.iter().any(|api_type| matches!(
+                api_type,
+                ApiType::VideoTextToVideo | ApiType::VideoImageToVideo
+            ))));
     }
 
     #[test]
     fn remote_inventory_keeps_sora_video_models() {
-        let (models, image_models) = normalize_remote_model_ids(
-            vec![
-                OpenAIModelEntry {
-                    id: "sora-2".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "sora-2-pro".to_string(),
-                },
-            ],
-            "openai",
-        );
+        let (models, image_models, embedding_models, asr_models, tts_models) =
+            normalize_remote_model_ids(
+                vec![
+                    OpenAIModelEntry {
+                        id: "sora-2".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "sora-2-pro".to_string(),
+                    },
+                ],
+                "openai",
+            );
         assert_eq!(models, vec!["sora-2", "sora-2-pro"]);
         assert!(image_models.is_empty());
+        assert!(embedding_models.is_empty());
+        assert!(asr_models.is_empty());
+        assert!(tts_models.is_empty());
     }
 
     #[test]
-    fn official_inventory_refresh_keeps_sora_fallback() {
+    fn official_inventory_refresh_does_not_invent_absent_sora_models() {
         let provider = OpenAIProvider::new(
             OpenAIInstanceConfig {
                 provider_instance_name: "openai-primary".to_string(),
@@ -5135,7 +5755,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5146,10 +5765,10 @@ data: [DONE]
                 "data": [{ "id": "gpt-5" }]
             }))
             .expect("inventory should resolve");
-        assert!(inventory.models.iter().any(|model| {
-            model.provider_model_id == "sora-2"
-                && model.api_types.contains(&ApiType::VideoImageToVideo)
-        }));
+        assert!(!inventory
+            .models
+            .iter()
+            .any(|model| model.provider_model_id == "sora-2"));
     }
 
     #[test]
@@ -5161,7 +5780,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5184,6 +5802,10 @@ data: [DONE]
         let models = vec![
             "gpt-5.4".to_string(),
             "gpt-5.5".to_string(),
+            "gpt-5.6".to_string(),
+            "gpt-5.6-sol".to_string(),
+            "gpt-5.6-terra".to_string(),
+            "gpt-5.6-luna".to_string(),
             "gpt-5.4-pro".to_string(),
             "gpt-5.5-pro".to_string(),
             "gpt-5-mini".to_string(),
@@ -5220,6 +5842,76 @@ data: [DONE]
                 .vision
         );
         assert_model_mount(&inventory, "gpt-5.5", "llm.gpt", false);
+        assert_model_mount(&inventory, "gpt-5.6", "llm.gpt-pro", false);
+        assert_model_mount(&inventory, "gpt-5.6", "llm.gpt-standard", false);
+        assert_model_mount(&inventory, "gpt-5.6-sol", "llm.gpt-pro", true);
+        assert_model_mount(&inventory, "gpt-5.6-sol", "llm.gpt-standard", false);
+        assert_model_mount(&inventory, "gpt-5.6-terra", "llm.gpt-mini", true);
+        assert_model_mount(&inventory, "gpt-5.6-terra", "llm.gpt-standard", false);
+        assert_model_mount(&inventory, "gpt-5.6-luna", "llm.gpt-nano", true);
+        assert_model_mount(&inventory, "gpt-5.6-luna", "llm.gpt-standard", false);
+        let sol = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-5.6-sol")
+            .expect("GPT-5.6 Sol should exist");
+        assert_eq!(sol.capabilities.max_context_tokens, Some(1_050_000));
+        assert_eq!(sol.capabilities.max_output_tokens, Some(128_000));
+        assert_eq!(sol.pricing.input_token, Some(0.000004));
+        let terra = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-5.6-terra")
+            .expect("GPT-5.6 Terra should exist");
+        assert_eq!(terra.pricing.input_token, Some(0.000002));
+        let luna = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-5.6-luna")
+            .expect("GPT-5.6 Luna should exist");
+        assert_eq!(luna.pricing.input_token, Some(0.0000002));
+        assert!(sol.attributes.quality_score > terra.attributes.quality_score);
+        assert!(terra.attributes.quality_score > luna.attributes.quality_score);
+        let sol_high = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-5.6-sol:reasoning-high")
+            .expect("GPT-5.6 Sol reasoning-high variant should exist");
+        assert_eq!(
+            sol_high.provider_actual_model_id.as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            sol_high.provider_options,
+            Some(json!({ "reasoning": { "effort": "high" } }))
+        );
+        assert_model_mount(
+            &inventory,
+            "gpt-5.6-sol:reasoning-high",
+            "llm.gpt-pro.reasoning-high",
+            true,
+        );
+        let terra_low = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-5.6-terra:reasoning-low")
+            .expect("GPT-5.6 Terra reasoning-low variant should exist");
+        assert_eq!(
+            terra_low.provider_options,
+            Some(json!({ "reasoning": { "effort": "low" } }))
+        );
+        assert_model_mount(
+            &inventory,
+            "gpt-5.6-terra:reasoning-low",
+            "llm.gpt-mini.reasoning-low",
+            true,
+        );
+        assert_model_mount(
+            &inventory,
+            "gpt-5.6-luna:reasoning-high",
+            "llm.gpt-nano.reasoning-high",
+            true,
+        );
         assert_model_mount(&inventory, "gpt-5.4", "llm", false);
         assert_model_mount(&inventory, "gpt-5.4", "llm.code", false);
         assert_model_mount(&inventory, "gpt-5.4", "llm.gpt-standard", false);
@@ -5228,14 +5920,14 @@ data: [DONE]
         assert_model_mount(&inventory, "gpt-5.5-pro", "llm.reason", false);
         assert_model_mount(&inventory, "gpt-5.5-pro", "llm", false);
         assert_model_mount(&inventory, "gpt-5.5-pro", "llm.code", false);
-        assert_model_mount(&inventory, "gpt-5.5-pro", "llm.gpt-pro", true);
+        assert_model_mount(&inventory, "gpt-5.5-pro", "llm.gpt-pro", false);
         assert_model_mount(&inventory, "gpt-5.5-pro", "llm.openai.gpt-5-5-pro", true);
         assert_model_mount(&inventory, "gpt-5.4-pro", "llm.plan", false);
         assert_model_mount(&inventory, "gpt-5.4-pro", "llm.reason", false);
         assert_model_mount(&inventory, "gpt-5.4-mini", "llm", false);
         assert_model_mount(&inventory, "gpt-5.4-mini", "llm.code", false);
         assert_model_mount(&inventory, "gpt-5.4-mini", "llm.summarize", false);
-        assert_model_mount(&inventory, "gpt-5.4-mini", "llm.gpt-mini", true);
+        assert_model_mount(&inventory, "gpt-5.4-mini", "llm.gpt-mini", false);
         assert_model_mount(&inventory, "gpt-5-mini", "llm", false);
         assert_model_mount(&inventory, "gpt-5-mini", "llm.summarize", false);
         assert_model_mount(&inventory, "gpt-5.4-mini-2026-03-17", "llm", false);
@@ -5254,16 +5946,12 @@ data: [DONE]
         assert_model_mount(&inventory, "gpt-5.4-mini-2026-03-17", "llm.gpt", false);
         assert_model_mount(&inventory, "gpt-5.4-nano", "llm.swift", false);
         assert_model_mount(&inventory, "gpt-5.4-nano", "llm", false);
-        assert_model_mount(&inventory, "gpt-5.4-nano", "llm.gpt-nano", true);
+        assert_model_mount(&inventory, "gpt-5.4-nano", "llm.gpt-nano", false);
         assert_model_mount(&inventory, "gpt-5-nano", "llm.swift", false);
-        assert_model_mount(&inventory, "o1-2024-12-17", "llm.gpt", true);
-        assert_model_mount(&inventory, "o1-2024-12-17", "llm", false);
-        assert_model_mount(
-            &inventory,
-            "o1-2024-12-17",
-            "llm.openai.o1-2024-12-17",
-            true,
-        );
+        assert!(!inventory
+            .models
+            .iter()
+            .any(|model| model.provider_model_id == "o1-2024-12-17"));
     }
 
     #[test]
@@ -5275,7 +5963,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5389,88 +6076,112 @@ data: [DONE]
         assert_model_mount(&inventory, "gpt-5.4-mini-2026-03-17", "llm.gpt", false);
         assert_model_mount(&inventory, "gpt-5-mini", "llm.summarize", false);
         assert_model_mount(&inventory, "gpt-5-mini", "llm.remote-mini-old", false);
-        assert_model_mount(&inventory, "o1-2024-12-17", "llm.gpt", true);
-        assert_model_mount(&inventory, "o1-2024-12-17", "llm", false);
-        assert_model_mount(&inventory, "o1-2024-12-17", "llm.remote-o1", false);
+        assert!(!inventory
+            .models
+            .iter()
+            .any(|model| model.provider_model_id == "o1-2024-12-17"));
     }
 
     #[test]
     fn remote_model_inventory_filters_supported_model_types() {
-        let (llm_models, image_models) = normalize_remote_model_ids(
-            vec![
-                OpenAIModelEntry {
-                    id: "gpt-5.2".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "text-embedding-3-large".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-image-1".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-image-2".to_string(),
-                },
-            ],
-            "openai",
-        );
+        let (llm_models, image_models, embedding_models, asr_models, tts_models) =
+            normalize_remote_model_ids(
+                vec![
+                    OpenAIModelEntry {
+                        id: "gpt-5.2".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "text-embedding-3-large".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-image-1".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-image-2".to_string(),
+                    },
+                ],
+                "openai",
+            );
 
         assert_eq!(llm_models, vec!["gpt-5.2".to_string()]);
         assert_eq!(
             image_models,
             vec!["gpt-image-1".to_string(), "gpt-image-2".to_string()]
         );
+        assert_eq!(embedding_models, vec!["text-embedding-3-large".to_string()]);
+        assert!(asr_models.is_empty());
+        assert!(tts_models.is_empty());
     }
 
     #[test]
-    fn remote_model_inventory_excludes_audio_realtime_modalities() {
-        // 这些都是 ASR / TTS / 实时音频 modality 的 gpt-* 命名族；它们已经在
-        // DEFAULT_OPENAI_{ASR,TTS}_MODELS 里登记，再当 LLM 收一遍会让
-        // build_inventory 产生重复 exact_model，触发 model_registry
-        // SessionConfigInvalid 把整个 refresh 卡死。
-        let (llm_models, image_models) = normalize_remote_model_ids(
-            vec![
-                OpenAIModelEntry {
-                    id: "gpt-4o-mini-transcribe".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-4o-transcribe".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-4o-mini-tts".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-4o-audio-preview".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-4o-realtime-preview".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-5".to_string(),
-                },
-            ],
-            "openai",
-        );
+    fn remote_model_inventory_classifies_audio_modalities() {
+        let (llm_models, image_models, embedding_models, asr_models, tts_models) =
+            normalize_remote_model_ids(
+                vec![
+                    OpenAIModelEntry {
+                        id: "gpt-4o-mini-transcribe".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-4o-transcribe".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-4o-mini-tts".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "tts-1-hd".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-4o-audio-preview".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-4o-realtime-preview".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-live-transcribe".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-realtime-mini".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-5".to_string(),
+                    },
+                ],
+                "openai",
+            );
 
         assert_eq!(llm_models, vec!["gpt-5".to_string()]);
         assert!(image_models.is_empty());
+        assert!(embedding_models.is_empty());
+        assert_eq!(
+            asr_models,
+            vec![
+                "gpt-4o-mini-transcribe".to_string(),
+                "gpt-4o-transcribe".to_string(),
+            ]
+        );
+        assert_eq!(
+            tts_models,
+            vec!["gpt-4o-mini-tts".to_string(), "tts-1-hd".to_string()]
+        );
     }
 
     #[test]
     fn openrouter_inventory_preserves_provider_native_model_ids() {
-        let (llm_models, image_models) = normalize_remote_model_ids(
-            vec![
-                OpenAIModelEntry {
-                    id: "openai/gpt-5.5".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "anthropic/claude-sonnet-4".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "tencent/hy3:free".to_string(),
-                },
-            ],
-            "openrouter",
-        );
+        let (llm_models, image_models, embedding_models, asr_models, tts_models) =
+            normalize_remote_model_ids(
+                vec![
+                    OpenAIModelEntry {
+                        id: "openai/gpt-5.5".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "anthropic/claude-sonnet-4".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "tencent/hy3:free".to_string(),
+                    },
+                ],
+                "openrouter",
+            );
 
         assert_eq!(
             llm_models,
@@ -5481,6 +6192,9 @@ data: [DONE]
             ]
         );
         assert!(image_models.is_empty());
+        assert!(embedding_models.is_empty());
+        assert!(asr_models.is_empty());
+        assert!(tts_models.is_empty());
     }
 
     #[test]
@@ -5492,7 +6206,6 @@ data: [DONE]
                 provider_driver: "openrouter".to_string(),
                 api_token: "token".to_string(),
                 base_url: "https://openrouter.ai/api/v1".to_string(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5536,6 +6249,7 @@ data: [DONE]
                     input_tokens: Some(1_000_000),
                     output_tokens: Some(1_000_000),
                     total_tokens: Some(2_000_000),
+                    request_units: None,
                 },
             )
             .expect("OpenRouter usage cost should resolve");
@@ -5555,7 +6269,6 @@ data: [DONE]
                 provider_driver: "openrouter".to_string(),
                 api_token: "token".to_string(),
                 base_url: "https://openrouter.ai/api/v1".to_string(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5584,6 +6297,7 @@ data: [DONE]
                     input_tokens: Some(1_000_000),
                     output_tokens: Some(1_000_000),
                     total_tokens: Some(2_000_000),
+                    request_units: None,
                 },
             )
             .expect("OpenRouter fallback cost should resolve");
@@ -5625,7 +6339,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5654,6 +6367,55 @@ data: [DONE]
     }
 
     #[test]
+    fn responses_build_messages_appends_canonical_document_resources() {
+        let request = AiMethodRequest::new(
+            Capability::Llm,
+            ModelSpec::new("llm.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                None,
+                vec![AiMessage::text(AiRole::User, "read the document")],
+                vec![],
+                vec![ResourceRef::Base64 {
+                    mime: "application/pdf".to_string(),
+                    data_base64: "aGVsbG8=".to_string(),
+                }],
+                None,
+                None,
+            ),
+            None,
+        );
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-primary".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: default_base_url(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+
+        let messages = provider.build_messages(&request).expect("messages");
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            messages[1].pointer("/content/0/type"),
+            Some(&json!("input_file"))
+        );
+        assert_eq!(
+            messages[1].pointer("/content/0/filename"),
+            Some(&json!("input.pdf"))
+        );
+        assert_eq!(
+            messages[1].pointer("/content/0/file_data"),
+            Some(&json!("data:application/pdf;base64,aGVsbG8="))
+        );
+    }
+
+    #[test]
     fn responses_history_preserves_and_replays_provider_output_items() {
         let provider = OpenAIProvider::new(
             OpenAIInstanceConfig {
@@ -5662,7 +6424,6 @@ data: [DONE]
                 provider_driver: "openrouter".to_string(),
                 api_token: "token".to_string(),
                 base_url: "https://openrouter.ai/api/v1".to_string(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5688,6 +6449,7 @@ data: [DONE]
         let assistant = provider.message_from_response_body(
             &json!({"output": [reasoning_item.clone(), message_item.clone()]}),
             Some("hi".to_string()),
+            vec![],
             vec![],
         );
         assert!(assistant.content.iter().all(|content| match content {
@@ -5757,21 +6519,22 @@ data: [DONE]
                 provider_driver: "openrouter".to_string(),
                 api_token: "token".to_string(),
                 base_url: "https://openrouter.ai/api/v1".to_string(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
         )
         .expect("provider should be built");
 
-        let err = provider
+        let messages = provider
             .build_messages(&request)
-            .expect_err("foreign provider state must not be replayed");
-        assert!(err.to_string().contains("provider `openrouter`"));
+            .expect("canonical assistant content should lower without foreign state");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["content"][0]["text"], "hi");
+        assert_ne!(messages[0].get("id"), Some(&json!("msg_123")));
     }
 
     #[test]
-    fn responses_history_rejects_assistant_without_provider_output_items() {
+    fn responses_history_lowers_assistant_without_provider_output_items() {
         let request = AiMethodRequest::new(
             Capability::Llm,
             ModelSpec::new("llm.default".to_string(), None),
@@ -5794,18 +6557,18 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
         )
         .expect("provider should be built");
-        let err = provider
+        let messages = provider
             .build_messages(&request)
-            .expect_err("assistant history without provider items must fail");
-        assert!(err
-            .to_string()
-            .contains("missing Responses output items for provider `openai`"));
+            .expect("provider-neutral assistant history should lower");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "assistant");
+        assert_eq!(messages[0]["content"][0]["type"], "output_text");
+        assert_eq!(messages[0]["content"][0]["text"], "hi");
     }
 
     #[test]
@@ -5963,5 +6726,236 @@ data: [DONE]
             ResourceRef::Base64 { data_base64, .. } => assert_eq!(data_base64, "aGVsbG8="),
             other => panic!("unexpected second artifact resource: {:?}", other),
         }
+    }
+
+    #[test]
+    fn responses_image_request_nests_supported_options_in_tool() {
+        let request = build_text2image_request(Some(json!({
+            "size": "1024x1536",
+            "quality": "high",
+            "output_format": "png",
+            "n": 2
+        })));
+        let (body, ignored) =
+            OpenAIProvider::build_responses_image_request("gpt-5.6-sol", &request, "generate")
+                .expect("request");
+        let body = Value::Object(body);
+
+        assert_eq!(body.get("input"), Some(&json!("draw a test image")));
+        assert_eq!(
+            body.pointer("/tools/0/type"),
+            Some(&json!("image_generation"))
+        );
+        assert_eq!(body.pointer("/tools/0/action"), Some(&json!("generate")));
+        assert_eq!(body.pointer("/tools/0/size"), Some(&json!("1024x1536")));
+        assert_eq!(body.pointer("/tools/0/quality"), Some(&json!("high")));
+        assert!(body.get("size").is_none());
+        assert_eq!(ignored, vec!["n".to_string()]);
+    }
+
+    #[test]
+    fn responses_image_edit_supports_multiple_materialized_images() {
+        let resources = vec![
+            ResourceRef::Url {
+                url: "https://example.com/one.png".to_string(),
+                mime_hint: Some("image/png".to_string()),
+            },
+            ResourceRef::Base64 {
+                mime: "image/png".to_string(),
+                data_base64: "iVBORw0KGgo=".to_string(),
+            },
+        ];
+        let request = build_image_edit_request(
+            resources,
+            Some(json!({
+                "input_fidelity": "high"
+            })),
+        );
+        let (body, ignored) =
+            OpenAIProvider::build_responses_image_request("gpt-5.6-terra", &request, "edit")
+                .expect("request");
+        let body = Value::Object(body);
+
+        assert!(ignored.is_empty());
+        assert_eq!(body.pointer("/tools/0/action"), Some(&json!("edit")));
+        assert_eq!(
+            body.pointer("/tools/0/input_fidelity"),
+            Some(&json!("high"))
+        );
+        assert_eq!(
+            body.pointer("/input/0/content/0/type"),
+            Some(&json!("input_text"))
+        );
+        assert_eq!(
+            body.pointer("/input/0/content/1/type"),
+            Some(&json!("input_image"))
+        );
+        assert_eq!(
+            body.pointer("/input/0/content/2/type"),
+            Some(&json!("input_image"))
+        );
+    }
+
+    #[test]
+    fn responses_image_parser_preserves_multiple_outputs_and_provider_state() {
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        let body = json!({
+            "status": "completed",
+            "output": [
+                {"type": "image_generation_call", "id": "ig_1", "status": "completed", "action": "generate", "result": png},
+                {"type": "image_generation_call", "id": "ig_2", "status": "completed", "action": "generate", "result": png}
+            ]
+        });
+        let artifacts = OpenAIProvider::parse_responses_image_artifacts(&body).expect("artifacts");
+        assert_eq!(artifacts.len(), 2);
+        assert!(artifacts
+            .iter()
+            .all(|artifact| artifact.mime.as_deref() == Some("image/png")));
+
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-history".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: default_base_url(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider");
+        let message = provider.message_from_response_body(&body, None, vec![], artifacts);
+        assert_eq!(
+            message
+                .content
+                .iter()
+                .filter(|content| matches!(content, AiContent::Image { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            message
+                .content
+                .iter()
+                .filter(|content| matches!(content, AiContent::ProviderState { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn responses_image_parser_rejects_invalid_or_incomplete_results() {
+        for body in [
+            json!({"output": [{"type": "image_generation_call", "status": "completed", "result": "not-base64"}]}),
+            json!({"output": [{"type": "image_generation_call", "status": "in_progress", "result": "iVBORw0KGgo="}]}),
+            json!({"output": [{"type": "image_generation_call", "status": "failed", "error": {"message": "generation failed"}}]}),
+            json!({"output": [{"type": "message", "status": "completed", "content": [{"type": "refusal", "refusal": "request refused"}]}]}),
+            json!({"output": [{"type": "message", "status": "completed"}]}),
+        ] {
+            assert!(OpenAIProvider::parse_responses_image_artifacts(&body).is_err());
+        }
+    }
+
+    #[test]
+    fn responses_image_stream_parser_uses_completed_response_payload() {
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        let sse = format!(
+            "event: response.completed\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_stream",
+                    "status": "completed",
+                    "output": [{
+                        "type": "image_generation_call",
+                        "id": "ig_stream",
+                        "status": "completed",
+                        "result": png
+                    }]
+                }
+            })
+        );
+        let response = OpenAIProvider::parse_sse_response_body(sse.as_str()).expect("SSE");
+        let artifacts =
+            OpenAIProvider::parse_responses_image_artifacts(&response).expect("artifacts");
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].mime.as_deref(), Some("image/png"));
+    }
+
+    #[test]
+    fn image_protocol_selection_uses_resolved_metadata_capability() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-capability".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: default_base_url(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider");
+        assert!(provider.model_supports_responses_image_generation("gpt-5.6-sol"));
+        assert!(!provider.model_supports_responses_image_generation("gpt-image-2"));
+    }
+
+    #[tokio::test]
+    async fn gpt5_text2image_posts_to_responses_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        let response_body = json!({
+            "id": "resp_1",
+            "status": "completed",
+            "output": [{
+                "type": "image_generation_call",
+                "id": "ig_1",
+                "status": "completed",
+                "action": "generate",
+                "result": png
+            }],
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+        })
+        .to_string();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut request = [0u8; 8192];
+            let size = stream.read(&mut request).await.expect("read request");
+            let request = String::from_utf8_lossy(&request[..size]).to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            request
+        });
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-responses-image".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: format!("http://{}", address),
+                timeout_ms: 1_000,
+            },
+            "token",
+        )
+        .expect("provider");
+        let result = provider
+            .start_text2image(
+                &crate::aicc::InvokeCtx::default(),
+                "gpt-5.6-sol",
+                &build_text2image_request(None),
+            )
+            .await
+            .expect("response");
+        assert!(matches!(result, ProviderStartResult::Immediate(_)));
+        let request = server.await.expect("server task");
+        assert!(request.starts_with("POST /responses HTTP/1.1"), "{request}");
     }
 }

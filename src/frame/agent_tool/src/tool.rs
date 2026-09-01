@@ -661,10 +661,7 @@ mod tests {
         // normalized schema must expose the integer form (strict `==` on
         // `json!(1)` distinguishes the two) so `as_i64`-style consumers
         // don't silently read the bound as None.
-        assert_eq!(
-            schema.pointer("/properties/limit/minimum"),
-            Some(&json!(1))
-        );
+        assert_eq!(schema.pointer("/properties/limit/minimum"), Some(&json!(1)));
     }
 
     #[tokio::test]

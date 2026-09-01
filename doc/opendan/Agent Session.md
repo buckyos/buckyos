@@ -245,7 +245,7 @@ pub struct SessionMeta {
 
 `PendingInput` 当前有三类:
 
-- `Msg { record_id, from, from_did, from_name, tunnel_did, text }`
+- `Msg { record_id, from, from_did, from_name, tunnel_did, text, ai_message }`
 - `Event { event_id, data }`
 - `Interrupt { mode, id }`
 
@@ -264,7 +264,7 @@ Coalesce / Override 语义)。
 TODO:
 
 - 旧设计里的 `new_msg/history_msg`、`new_event/history_event` 双缓冲没有作为独立字段实现。
-  当前实现是 `pending_inputs` 持久队列 + `round_history` / snapshot 累积历史。
+  当前实现是 `pending_inputs` 持久队列 + `round_history` / snapshot 累积历史。`ai_message` 保留正文、附件 block 和 MessageHub 结构化元数据；beta 2.2 不读取旧的扁平附件文本作为结构化输入。
 - 旧设计里的 MsgTunnle link 模型尚未完全替代正文存储;当前 `PendingInput::Msg` 仍直接保存文本,
   以保证 crash 后可重放。
 

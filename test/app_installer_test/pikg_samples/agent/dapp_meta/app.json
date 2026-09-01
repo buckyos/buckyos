@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "did": "did:bns:pikg-agent.root",
+  "name": "pikg-agent",
+  "version": "0.1.0",
+  "owner": "did:bns:root",
+  "author": "did:bns:root",
+  "show_name": "PIKG Agent Fixture",
+  "categories": [
+    "agent"
+  ],
+  "permissions": [],
+  "selector_type": "single",
+  "service_config_tips": {
+    "service_endpoints": {
+      "http": {
+        "protocol": "http",
+        "inner_port": 4060,
+        "required": true,
+        "expose": {
+          "route": {
+            "type": "web"
+          },
+          "scope": "",
+          "allow_guest": false
+        }
+      }
+    }
+  }
+}

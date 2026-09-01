@@ -81,16 +81,6 @@ jobs:
     - name: Tar Rootfs
       run:
         cd ./src/rootfs && tar -cvf ../../rootfs.tar .
-    - name: Prepare tools
-      run: |
-        mkdir -p tools
-        cp ./src/rootfs/bin/buckycli/buckycli ./tools/
-    - name: Upload tools
-      uses: actions/upload-artifact@v6
-      with:
-        name: buckyos-tools-linux-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{steps.get_version.outputs.short_version}}
-        path: tools
-        if-no-files-found: error
     - name: Upload
       uses: actions/upload-artifact@v6
       id: upload

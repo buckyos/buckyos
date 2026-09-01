@@ -3,3 +3,7 @@ packages:
 
 allowBuilds:
   esbuild: true
+  less: false
+
+minimumReleaseAgeExclude:
+  - buckyos@0.7.116

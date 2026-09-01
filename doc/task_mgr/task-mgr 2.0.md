@@ -10,6 +10,7 @@
     TaskMgr 2.0 的并列规范，2.0 语义以本文为准
   - `doc/task_mgr/task data schema.md`：当前 TaskData 类型资产；2.0 实施时迁移为 Task Schema
   - `doc/arch/scheduler/scheduler.md`：Scheduler 的纯决策、原子写回和无自有队列边界
+  - `doc/arch/rdb_mgr 数据分区改进需求.md`：§15.2 Storage Domain 依赖的 rdb_mgr 分区能力
 
 ## 1. 设计目标
 
@@ -110,6 +111,7 @@ TaskMgr 不保存或解释“为什么选择这个 Runner”“为什么下一�
 - `schema_id`、`schema_version`。
 - `input`、`input_digest`。
 - `idempotency_key`。
+- `storage_domain`；决定数据落在用户数据区还是本机系统数据区（§15.2）。
 - 可选 `origin_ref`；仅作为不透明的创建来源引用，TaskMgr 不解释来源系统的状态。
 - `parent_id`、`root_id`、`child_control_policy`。
 - `policy_preset`、`permission_boundary`；后续授权变化通过显式 Grant 表达。
@@ -151,6 +153,17 @@ TaskMgr 不把 Terminal Task 重新变成 Running，也不自动创建重试。
 - 重新执行使用新的 idempotency key 创建新 Task，并可记录 `retry_of`。
 - 修改 Input 等价于取消或 supersede 原 Task 后创建新 Task。
 - Runner 进程崩溃后的投递重放、delivery lease 恢复不是业务重试，可以继续使用同一 Task。
+
+### 2.6 持久数据按存储域分类
+
+TaskMgr 的持久数据不是一类。它至少按 RootFS 的结构分成两类：跟随用户数据备份/恢复迁移的
+**用户数据**（`$buckyos_root/data/**`），和只对当前 host-node 有意义、在备份恢复过程中通常
+整体丢失的**系统数据**（`$buckyos_root/local/**`）。一个 Task 属于哪一类由创建者决定，创建后
+不可变，规则见 §15.2。
+
+这不是 TaskMgr 特有的要求：任何替别人保存状态的系统服务都应该先回答“这份数据要不要跟着用户
+走”，再决定落到 `data/` 还是 `local/`，而不是把所有状态一律写进用户数据区，或者一律写进本机
+目录。
 
 ## 3. Task 身份、URL 与资源路径
 
@@ -198,6 +211,7 @@ pub struct Task {
 
     // Immutable creation facts
     pub creator: ActorRef,
+    pub storage_domain: StorageDomain,
     pub idempotency_key: String,
     pub origin_ref: Option<TaskOriginRef>,
     pub retry_of: Option<TaskId>,
@@ -235,6 +249,9 @@ pub struct Task {
 }
 ```
 
+`storage_domain` 决定这条 Task 的持久数据落在用户数据区还是本机系统数据区，是创建时冻结的
+不可变事实，语义见 §15.2。
+
 ### 4.1 ActorRef
 
 ```rust
@@ -249,6 +266,10 @@ pub struct TaskOriginRef {
     pub id: String,
 }
 ```
+
+`ActorRef.app_id` 保存 kind-aware 的 `AuthTarget::canonical_key()`：System target 为
+`system:<service_id>`，App target 为 `app:<app_instance_id>`。它用于 creator、ACL 和审计身份；
+`TaskExecutor::App.app_id` 仍保存裸 app/service id，用于 runner 绑定。两者不能混用。
 
 `creator.user_id/app_id` 必须来自通过验证的调用上下文，不能相信 payload。`app_instance_id`
 主要用于执行和审计；它的字符串格式可以包含 app_id，但权限判断必须以注册信息和验签上下文
@@ -673,6 +694,7 @@ pub struct TaskSchemaDefinition {
     pub presentation_schema: Option<serde_json::Value>,
     pub allowed_executor_kinds: Vec<TaskExecutorKind>,
     pub user_creatable: bool,
+    pub default_storage_domain: StorageDomain,
     pub publisher_app_id: String,
     pub enabled: bool,
 }
@@ -686,6 +708,10 @@ pub struct TaskSchemaDefinition {
 4. output schema 必须明确；Input 确实自由时可以使用允许任意 JSON 的 schema。
 5. `presentation_schema` 只负责生成表单和结果展示，不承载权限或执行语义。
 6. Task Center 只展示 `user_creatable=true` 且当前用户有 Create 权限的 schema。
+7. `default_storage_domain` 是这类 Task 在调用者不指定时的默认存储域（§15.2）。它同样在发布后
+   不可修改：改变一类 Task 该不该跟着用户数据走，必须发布新的 `schema_version`。一方 schema 的
+   默认值是 `app.*`、`workflow.*` 等系统内部类型用 `System`，用户自己发起的下载、导入导出和
+   媒体处理类用 `User`。
 
 `schema_id` 同时作为 Dispatcher 的 operation route key，主版本直接包含在字符串中，例如
 `agent.command/v1`；Dispatcher 不再维护另一套 Task 类型名。`schema_version` 是该主版本下
@@ -1147,16 +1173,26 @@ TaskMgr 仍通过 `/kapi/task-manager` 暴露 kRPC。2.0 删除通用 status/dat
 
 ### 13.1 创建与查询
 
+普通 `create_task` 的 Task ID 始终由 TaskMgr 生成。zone-trusted 服务通过
+`create_delegated_task` 创建自执行 Task 时，可以携带预先冻结到业务计划中的
+`task_id`；该值必须是 canonical `t-<32 lowercase hex>`，TaskMgr 在创建事务中保留该
+ID。此能力只用于让不可变业务计划与 Task 身份在创建前精确绑定，非受信调用者不得自行生成
+Task ID。
+
 | Method | 关键参数 | 返回 | 说明 |
 | --- | --- | --- | --- |
-| `create_task` | schema、input、executor、parent、policy、idempotency_key | Task | 创建直接绑定或 HumanSet Task |
+| `create_task` | schema、input、executor、parent、policy、storage_domain、idempotency_key | Task | 创建直接绑定或 HumanSet Task |
 | `get_task` | task_id | Task | 按 ACL 返回允许读取的字段 |
-| `list_tasks` | creator/schema/phase/root/executor/time/cursor | TaskSummary[] | 分页查询 |
+| `list_tasks` | creator/idempotency_key/schema/phase/root/executor/storage_domain/time/cursor | TaskSummary[] | 分页查询；creator + idempotency_key 可直接命中唯一幂等任务，调用方不得为重放逐项 `get_task` 扫描历史列表 |
 | `get_task_tree` | root_id、depth、cursor | TaskSummary[] | 查询树结构和状态摘要 |
 | `get_subtasks` | task_id、cursor | TaskSummary[] | 查询直接子任务 |
 | `archive_task` | task_id、expected_revision | Task | 从默认列表隐藏，不物理删除 |
 
 `dispatch_task` 属于 `/kapi/task-dispatcher`，但返回同一个标准 Task。
+
+`storage_domain` 可选：有 parent 时必须省略或与 root 一致（§15.2.3），无 parent 时省略即按
+§15.2.1 的顺序推导。它属于不可变创建事实，必须进入幂等摘要：相同 idempotency key 携带不同
+`storage_domain` 返回 `idempotency_conflict`。
 
 普通 `create_task` 只能把 App executor 直接绑定为经过认证的调用实例自身；绑定其它
 AppInstance 必须经过 Dispatcher 或显式系统级 Reassign 权限，防止 Task 创建接口变成任意
@@ -1198,7 +1234,7 @@ Center 是当前主要调用者；未来其它内核组件若获显式授权，�
 
 | Method | 关键参数 | 作用 |
 | --- | --- | --- |
-| `create_promised_task` | schema/input、delegated creator envelope、policy、origin_ref、幂等键 | 以原直接调用者为 Creator 创建 Promised Task |
+| `create_promised_task` | schema/input、delegated creator envelope、policy、storage_domain、origin_ref、幂等键 | 以原直接调用者为 Creator 创建 Promised Task |
 | `set_promise_wait` | task_id、通用 wait reason、expected_revision | 更新未绑定 Task 的展示投影 |
 | `bind_app_executor` | task_id、target/app/instance、delivery_id、expected_revision | 原子绑定 App executor、epoch++、进入 Accepted，并返回 runner_epoch |
 | `release_app_executor` | task_id、expected instance/runner_epoch、reason、expected_revision | fencing 旧实例，保留 Target、清除 instance、epoch++ |
@@ -1248,6 +1284,7 @@ Dispatcher 必须按同一 delivery_id 重放。协议版本不兼容、schema �
 | `input_schema_mismatch` | 创建 Input 不符合 schema |
 | `result_schema_mismatch` | Commit Result 不符合 schema |
 | `idempotency_conflict` | 相同 key 对应的不可变请求摘要不同 |
+| `storage_domain_conflict` | 请求的 storage_domain 与 parent/root 所在 domain 不一致 |
 
 ## 14. 事件、订阅与 UI
 
@@ -1335,42 +1372,136 @@ Task Center 侧的落地约束（`desktop/src/api/task_mgr.ts`）：
 
 Service：TaskMgr 2.0 subsystem。Task Core 使用平台 RDB 持久化 Task snapshot、执行绑定、
 Assignees、ACL、Task Schema、事件和 Notes。结构化数据不得绑定具体 SQLite/PostgreSQL 特性。
+Task Core 的持久数据按 §15.2 的 Storage Domain 分成两个 schema 相同、位置和寿命不同的 RDB
+instance：用户数据落在 `data/`，系统数据落在 `local/`。
+
 内部 Dispatcher 使用独立 RDB 保存 DispatchRecord、稳定队列顺序、DeliveryAttempt、delivery
 lease、重试时间和策略 revision，并通过可恢复 Saga 幂等调用 Task Core/Runner；Task Core store
 不保存 Dispatcher outbox 或队列状态。
 
-### 15.2 Data Classification
+### 15.2 Storage Domain：用户数据与系统数据
 
-| 数据 | 分类 | 原因 |
+BuckyOS RootFS 本身已经把持久化目录分成语义完全不同的两块，服务的状态保存能力必须沿用这个
+划分：
+
+| 区域 | host 路径 | 生命周期 |
 | --- | --- | --- |
-| Task snapshot、Input、Result | Durable | 用户可见真相源，必须跨重启和升级保留 |
-| Task Assignees | Durable | 决定 Human Commit 权限 |
-| Task ACL Grants | Durable | 决定访问和控制权限 |
-| Task Events | Durable | 审计、恢复和状态变更历史 |
-| Task Schema Definitions | Durable | Input/Result 的长期解释契约 |
-| Task Notes | Durable | 用户/Agent 的旁路参考信息 |
-| KEvent notification | Disposable | 只用于加速，丢失后可回读 Task |
-| Tree/ACL query cache | Disposable | 可由 durable data 重建 |
-| Runner endpoint、heartbeat、即时容量 cache | Disposable，Dispatcher 所有 | 由服务发现和 Runner 重新 attach/renew |
-| RunnerFunctionRegistration/OperationRoute revision | Durable，Dispatcher/系统配置所有 | 决定 frozen DispatchPlan 的长期解释 |
-| Dispatcher queue/DeliveryAttempt/delivery lease/retry cursor | Durable，Dispatcher 所有 | 决定投递顺序、幂等重放和崩溃恢复，不属于 Task Core schema |
+| 用户/Zone 数据 | `$buckyos_root/data/**`（`$buckyos_service_data`、`$buckyos_service_home`、用户 home） | 跟随用户数据备份/恢复迁移，换机、重装后仍然存在 |
+| 本机系统数据 | `$buckyos_root/local/**`（`$buckyos_service_local_data`） | 只对当前 host-node 有意义，卸载即删除；备份恢复、换机和软重置后通常整体丢失 |
 
-### 15.3 Storage Strategy
+`system_config` 的 sled store 落在 `local/system_config`，kmsg 队列和 node_daemon finder cache
+同理：它们保存的是“这台机器现在怎么运行”，换一台机器重新生成一次比迁移一次更正确。
 
-- 所有结构化 durable data 使用平台提供的 `task-mgr-main` RDB instance。
+TaskMgr 因此把自己的持久数据也切成两个 **Storage Domain**：
+
+```rust
+pub enum StorageDomain {
+    /// 落在 data/ 下，属于用户数据，跟随用户数据备份/恢复走
+    User,
+    /// 落在 local/ 下，属于本机系统数据，备份恢复后允许整体丢失
+    System,
+}
+```
+
+#### 15.2.1 谁决定一个 Task 的 domain
+
+`storage_domain` 是创建时确定、之后不可变的事实，原则上由调用者决定：调用者最清楚这个 Task
+是不是用户自己的一次工作。`create_task`、`create_delegated_task`、`create_promised_task` 和
+`dispatch_task` 都接受可选的 `storage_domain`，缺省值按下面的顺序推导：
+
+1. 有 parent 时强制继承 root Task 的 domain，调用者不能覆盖（见 §15.2.3）。
+2. 调用者显式给出的值。
+3. Task Schema 的 `default_storage_domain`（§9.1）。
+4. 都没有时看 creator：creator 是 System AuthTarget（`creator.app_id` 形如
+   `system:<service_id>`，`creator.user_id` 只是 node/OOD 身份而不是 Zone 用户）默认
+   `System`；由真实用户会话发起的默认 `User`。
+
+判据只有一句话：**这条 Task 记录跟着用户数据恢复到另一台机器后，对用户还有没有意义。**
+
+| 例子 | domain | 原因 |
+| --- | --- | --- |
+| 系统启动后 pre-install 产生的安装 Task、系统自检、Scheduler 内部动作 | System | 跟踪的是系统内部运行状态，新机器上会由新一轮 pre-install 重新产生，没必要保存 |
+| 用户在 Control Panel 点“安装某个 App” | System | 装的是本机运行环境；恢复后 App 由安装流程重装，旧的安装过程记录没有价值 |
+| 用户手工下载一份数据、导入/导出、长耗时媒体处理 | User | 是用户自己的一次工作，用户会回来找它的结果和历史 |
+| Dispatcher 的投递、lease、重试等分发过程状态 | System | 纯运行期调度状态，不是用户可见事实（§15.3） |
+
+一般没有真实用户归属的 Task 都属于系统数据：它们跟踪的是系统内部运行状态，不值得占用用户的
+备份空间，也不应该在恢复之后以“很久以前的一次系统动作”的形式出现在用户的任务列表里。反过来，
+“用户点了一下”并不自动等于用户数据——安装 App 是用户发起的，但它的 Task 描述的仍然是本机
+运行环境的变化，通常仍归 System。
+
+#### 15.2.2 System domain 允许丢失
+
+- System domain 的数据不进用户数据备份，卸载、软重置和换机时随 `local/` 一起被删除。
+- 调用者不得把 System domain Task 当作长期业务真相（授权凭证、账本、审计结论）。需要长期可
+  追溯的记录必须放进 User domain，或写入专门的审计存储。
+- 恢复/换机后 System store 可能是空的。这不是错误：读不到就等价于“该 Task 从未存在”，由调用
+  方按各自的幂等创建规则重新产生（例如 pre-install 重新跑一遍）。
+- 反过来，用户数据恢复回来的 User domain Task 会失去自己的分发过程状态（DispatchRecord、
+  delivery lease、DeliveryAttempt 都在 System domain，§11.4）。Task Core 启动 recovery 必须把恢复
+  后仍非 Terminal、且 runner 绑定已不可达的 Task 收敛为 `Failed(runner_lost)` 并写 Task Event，
+  不能让它们永远停在 Running/Accepted。
+
+#### 15.2.3 不变量
+
+- `storage_domain` 创建后不可变，不提供迁移接口；需要换 domain 等价于用新 idempotency key 创建
+  新 Task，并可用 `supersedes` 关联。
+- 一棵 Task Tree 只能属于一个 domain：child 强制继承 root 的 domain，`create_task` 收到与 parent
+  不同的 domain 必须直接拒绝（`storage_domain_conflict`）。这条约束保证树查询、树级控制传播和
+  ACL 祖先计算永远只在一个 store 内完成，不需要跨 store 事务。
+- Task ID 在两个 domain 之间仍然全局唯一，`/tasks/{task_id}` 不因 domain 变化，调用方也不得从 ID
+  反推 domain。
+- domain 只决定数据保存在哪里和会不会跟着用户走，不改变 Task 的状态机、控制协议和 ACL 语义。
+
+### 15.3 Data Classification
+
+| 数据 | 分类 | 存储域 | 原因 |
+| --- | --- | --- | --- |
+| Task snapshot、Input、Result | Durable | 随该 Task 的 `storage_domain` | 用户可见真相源，必须跨重启和升级保留 |
+| Task Assignees | Durable | 同该 Task | 决定 Human Commit 权限 |
+| Task ACL Grants | Durable | 同该 Task | 决定访问和控制权限 |
+| Task Events | Durable | 同该 Task | 审计、恢复和状态变更历史 |
+| Task Notes | Durable | 同该 Task | 用户/Agent 的旁路参考信息 |
+| Task Schema Definitions | Durable | User | Input/Result 的长期解释契约；必须跟着用户数据走，否则恢复回来的 User Task 无法再校验和展示 |
+| KEvent notification | Disposable | — | 只用于加速，丢失后可回读 Task |
+| Tree/ACL query cache | Disposable | — | 可由 durable data 重建 |
+| Runner endpoint、heartbeat、即时容量 cache | Disposable，Dispatcher 所有 | System | 由服务发现和 Runner 重新 attach/renew |
+| RunnerFunctionRegistration/OperationRoute revision | Durable，Dispatcher/系统配置所有 | System | 决定 frozen DispatchPlan 的长期解释；本身就是本机/Zone 运行配置 |
+| Dispatcher queue/DeliveryAttempt/delivery lease/retry cursor | Durable，Dispatcher 所有 | System | 决定投递顺序、幂等重放和崩溃恢复，不属于 Task Core schema |
+
+Task Schema catalog 是唯一一份两个 domain 共用的 durable 数据：它只保存在 User domain store，
+System domain 的 Task 也读它做校验。已发布的 schema 行不可变（§9.1 规则 1），所以这是服务层的
+一次只读点查，不构成跨 store 的 SQL join 或跨 store 事务。
+
+### 15.4 Storage Strategy
+
+- Task Core 只声明一个 RDB instance `task-mgr-main`，但它同时落在两个数据分区，DDL 和 schema
+  version 完全相同，只是位置和寿命不同：
+  - `user_data` 分区：User domain，`$buckyos_root/data/task-manager/task-mgr-main.db`。
+  - `local` 分区：System domain，`$buckyos_root/local/task-manager/task-mgr-main.db`。
+  一份声明覆盖两个分区，从配置上就杜绝了两边 DDL 或版本漂移。
+- `rdb_mgr` 当前只解析 `$appdata` 和 `$instance` 两个占位符，且一个 instance 只能落在 `data/`。
+  本设计依赖 `doc/arch/rdb_mgr 数据分区改进需求.md`：instance 声明 `partitions`，按分区解析出
+  `$partdata`（`local` 分区等价于 `get_buckyos_service_local_data_dir(service_name)`），
+  `task-mgr-main` 一份声明同时覆盖 `user_data` 和 `local`。不能用写死的绝对路径代替，那会破坏
+  `BUCKYOS_ROOT` 的可配置性和单元测试隔离。
+- 两个 Task Core store 之间不做 SQL join，也不做跨 store 事务；这一点由“同一棵树同 domain”
+  （§15.2.3）保证，不需要分布式事务。
 - 不使用文件路径作为 Task、Result 或事件的核心存储模型。
 - 过大的 Input/Result 可以由后续版本使用 object ID 间接引用；Task 中仍保存 digest 和引用。
 - KEvent、endpoint cache 和 Runner liveness 不进入 Task Core durable schema，也不能成为 Dispatcher
   队列的唯一真相源。
-- Dispatcher 继续使用独立 RDB instance，两个 store 不做 SQL join。
+- Dispatcher 继续使用独立 RDB instance `task-dispatcher-main`；它整体是 System domain 数据，同样
+  落在 `local/`，也不为 User domain Task 保存第二份用户可见事实。
 
-### 15.4 Schema Definitions
+### 15.5 Schema Definitions
 
 #### Table: `task`
 
 | Column | Type | Nullable | Default | Description |
 | --- | --- | --- | --- | --- |
 | `task_id` | TEXT PK | NO | | URL-safe opaque Task ID |
+| `storage_domain` | TEXT | NO | | `User`/`System`；创建后不可变，必须与所在 store 一致 |
 | `schema_id` | TEXT | NO | | 版本化 Task 类型 |
 | `schema_version` | BIGINT | NO | | 冻结的 schema revision |
 | `name` | TEXT | NO | | UI 展示名称 |
@@ -1428,6 +1559,8 @@ Constraints：
 - Input、Result、Terminal、epoch/revision 等不变量由 Task Core transaction command 层保证。
 - `root_id` 必须等于根 Task 自身 ID，或等于 parent 的 root_id。
 - `origin_kind/origin_id` 必须同时为空或同时非空；TaskMgr 只做唯一性和不可变性检查。
+- `storage_domain` 冗余保存在行内，只为让快照自描述并直接投影给 API；写入时必须等于所在 store
+  的 domain，也必须等于 root Task 的 domain，且不出现在任何 UPDATE 的可写列集合中。
 - Dispatcher Task 的 `runner_target_id` 一旦首次绑定不可修改；`runner_instance_id` 每次变化都必须
   同事务增加 runner_epoch 并写 Task Event。
 
@@ -1506,28 +1639,34 @@ Indexes：
 | `presentation_schema_json` | TEXT/JSON | YES | 通用 UI 描述 |
 | `executor_kinds_json` | TEXT/JSON | NO | 允许的 executor kinds |
 | `user_creatable` | BOOLEAN | NO | Task Center 是否展示 |
+| `default_storage_domain` | TEXT | NO | 未显式指定时该类 Task 的默认 domain |
 | `publisher_app_id` | TEXT | NO | 发布并维护该 Schema 的 App |
 | `enabled` | BOOLEAN | NO | 是否允许新建 |
 | `created_at` | BIGINT | NO | 创建时间 |
 
-Primary key：`(schema_id, schema_version)`。已发布行的 schema、publisher 和 executor kinds 不可原地
-修改；`enabled` 是独立的可变 catalog 开关，变化需要系统权限和配置审计，禁用只影响新 Task。
+Primary key：`(schema_id, schema_version)`。已发布行的 schema、publisher、executor kinds 和
+`default_storage_domain` 不可原地修改；`enabled` 是独立的可变 catalog 开关，变化需要系统权限和
+配置审计，禁用只影响新 Task。catalog 只保存在 User domain store，两个 domain 共用（§15.3）。
 
 #### Table: `task_note`
 
 沿用现有 Task Note 的旁路语义。Note 不修改 Task revision、phase、Input 或 Result；它有独立作者、
 时间和 ACL 检查。Task 不级联删除 Note，因为普通 hard delete 已取消。
 
-### 15.5 Schema Version
+### 15.6 Schema Version
 
 TaskMgr 2.0 durable schema 使用 `schema_version = 7`，延续当前代码中的 TaskMgr schema 版本序列。
 版本由平台 RDB schema/meta 机制保存。Dispatcher 的独立 store 在实施本设计时升级到自己的下一
 版本，不与 Task Core 共用 schema version。
 
+引入 Storage Domain（新增 `task.storage_domain` 和 `task_schema.default_storage_domain`）把 Task
+Core schema 升到 `schema_version = 8`；两个分区的物理库使用同一份 DDL 和同一个版本号，实际版本
+不一致时必须启动失败，不允许只升级其中一个。
+
 未来任何字段语义、索引或表结构变化都增加 schema version。Task Schema 自身的
 `schema_id/schema_version` 与数据库 schema version 是两个不同概念。
 
-### 15.6 Upgrade Compatibility Strategy
+### 15.7 Upgrade Compatibility Strategy
 
 beta 2.2 当前处于 breaking-change 开发阶段，TaskMgr 1.x 到 2.0 使用 No-compat 策略：
 
@@ -1539,11 +1678,13 @@ beta 2.2 当前处于 breaking-change 开发阶段，TaskMgr 1.x 到 2.0 使用 
 2.0 正式发布后改用显式 migration：启动时按版本顺序迁移；迁移失败必须停止服务并保留原数据，
 不得静默重建。
 
-### 15.7 Extensibility Rules
+### 15.8 Extensibility Rules
 
 Frozen semantics：
 
 - Task ID、Creator、Input、schema binding、parent/root、Result 一次性提交和 Terminal 吸收态。
+- `storage_domain` 创建后不可变，以及“一棵树只属于一个 domain”。新增 domain 取值等价于新增
+  存储位置，必须作为独立设计变更处理，不能靠扩展字段绕过。
 - HumanSet 任意一人成功 Commit 的语义。
 - runner epoch fencing 和 revision CAS。
 - Dispatcher Task 首次 bind 后的 logical Target stickiness。
@@ -1558,7 +1699,7 @@ Extensible fields：
 核心 `task` 表不提供可随意修改的通用 `extra` 以绕过不可变性。业务扩展必须进入版本化 Input、
 Result、Progress 或 Event payload。
 
-### 15.8 Query Patterns
+### 15.9 Query Patterns
 
 | 查询 | 支持索引/策略 |
 | --- | --- |
@@ -1577,6 +1718,14 @@ Result、Progress 或 Event payload。
 所有 list API 必须分页。树级批量控制允许遍历 subtree，但必须设置最大节点数和 continuation，
 禁止无界单事务更新超大 Task Tree。
 
+每个查询都在单个 store 内执行：
+
+- 按 `task_id` 打开稳定 URL 时先查 User store，未命中再查 System store；ID 全局唯一，最多多一次
+  主键点查，调用方不需要、也不允许自己指定 domain 来定位 Task。
+- `list_tasks` 支持可选的 `storage_domain` 过滤；不给时服务层分别查两个 store 再按排序键归并，
+  并返回携带两个 store 游标的复合 cursor，禁止用跨 store SQL 实现。
+- 树查询、树级控制和 ACL 祖先计算天然只落在一个 store（§15.2.3）。
+
 Dispatcher 的 CreatingTask、PendingApproval、Queued、DeliveryAttempt、delivery lease 和 retry
 查询使用 `task-dispatcher-main` 自己的 schema/index，不进入 TaskMgr Query Patterns。其实现至少
 需要等价于以下稳定索引：队列
@@ -1584,13 +1733,17 @@ Dispatcher 的 CreatingTask、PendingApproval、Queued、DeliveryAttempt、deliv
 `(dispatch_id, attempt_no)`、registration `(target_id, schema_id, registration_revision)`；任何查询
 都必须显式排序，不能依赖底层数据库的偶然顺序。
 
-### 15.9 Retention、Archive 与 Redaction
+### 15.10 Retention、Archive 与 Redaction
 
 - 普通 API 不提供 hard delete。
 - Archive 只影响默认列表，不改变 Task ID、Result 和事件。
 - 系统 retention policy 可以在到期后清除敏感 Input/Result 正文，但必须保留 task_id、digest、
   schema、Creator、Outcome、时间和 `PayloadRedacted` 事件。
 - Redaction 是受系统权限控制的保留策略操作，不是修改 Input/Result 的业务接口。
+- 用户数据备份/恢复只覆盖 User domain；System domain 随 `local/` 一起被卸载、软重置和换机删除，
+  整体丢弃不需要逐条 redaction，也不写 `PayloadRedacted` 事件。
+- 恢复回来的 User domain Task 已经失去分发过程状态，按 §15.2.2 在启动 recovery 时收敛，不能停留
+  在非终态。
 - Zone 重置、开发环境 schema 重建等管理操作不属于普通 Task 生命周期。
 
 ## 16. 典型场景
@@ -1754,6 +1907,13 @@ Task 行不是账本真相源，也不负责配额扣减。父 Task 聚合子 Ta
   type 点号化加 `/v1` 得到，唯一例外是 `workflow/run`：它点号化后与 dispatch target 契约
   `workflow.run` 撞名，run tree 因此保留 `workflow.run_tree/v1`。`TaskDataType::ALL` 与
   `builtin_task_schemas()` 的覆盖关系有测试守护，新增 TaskDataType 忘记登记会直接失败。
+- Storage Domain（§15.2）：`buckyos-api/src/rdb_mgr.rs` 按
+  `doc/arch/rdb_mgr 数据分区改进需求.md` 支持数据分区；
+  `buckyos-api/src/task_mgr.rs` 增加 `StorageDomain`、instance 的 `partitions` 声明和
+  `default_storage_domain`；`task_manager/src/task_store.rs` 同时打开两个同 schema 的 pool 并按
+  domain 路由；`server.rs` 推导并冻结 domain、拒绝跨 domain 的 parent、按 domain 归并 list 查询；
+  `task-dispatcher-main` 改声明为 `local` 分区。调用方（Control Panel 的 App 安装、pre-install、
+  Scheduler 内部动作）显式声明自己是 System，用户手工发起的下载/导入导出声明 User。
 - Task Center、Workflow、OpenDAN、Scheduler、Control Panel：同步共享类型、API、状态投影和
   深链接。
 - Scheduler 不新增 store、队列或恢复协议；如接入异步 thunk 或批量动作，仅输出 frozen
@@ -1789,3 +1949,7 @@ Task 行不是账本真相源，也不负责配额扣减。父 Task 聚合子 Ta
 16. 干净 Zone（空 Task DB、其它服务尚未启动）能直接创建全部一方 schema 的 Task；重跑
     bootstrap 是 no-op 而不是 `idempotency_conflict`；每个内置 schedule target kind 触发出来的
     子任务 schema 都已注册。
+17. Storage Domain：domain 按 §15.2.1 正确推导并在创建后不可变；跨 domain 的 parent 被拒绝；
+    只删除 `local/` 后 User domain Task 仍可读、System domain Task 视为从未存在、pre-install 能
+    重新产生；恢复出来的非终态 User Task 在启动 recovery 后收敛为 `Failed(runner_lost)` 且写了
+    Task Event；两个 store 的 schema version 不一致时服务启动失败。

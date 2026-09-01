@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "app_doc_object_id": "appdoc:39e65ed735f588cd1193d349a072f21fecde6df519402bbeb7967a61fe5d9685",
+  "signer": "did:web:publisher.example",
+  "controller": "did:web:publisher.example",
+  "verification_method": "did:web:publisher.example#appdoc-signing-key-1",
+  "algorithm": "EdDSA",
+  "signature": "46AEFZn0RWkDYoM760uRxi3imsCfMYGoy41qK2aztKMB5PGwljPiLW_lQsXVvJupECdx9k5fwhHrbFl68LbGCw"
+}

@@ -1,655 +1,529 @@
-# BuckyOS App 基础设施职责边界
+# BuckyOS App 全生命周期与基础设施职责边界
 
-> 状态：Draft  
-> 日期：2026-08-07  
-> 适用版本：BuckyOS beta 2.2 及以后，不考虑向前兼容。
+> 状态：Draft · 日期：2026-08-21 · 适用版本：BuckyOS beta 2.2 及以后，不考虑向前兼容。
 
 ## 1. 文档目的
 
-BuckyOS App 目前涉及 PKG、PIKG、AppDoc、NamedStore、Repo Service、BNS、Installer、TaskManager、Scheduler、Node Daemon 等多组基础设施。它们已经覆盖了 App 从源码到运行实例的大部分过程，但部分模块的职责边界不清晰，出现了“一个功能多个实现”、开发工具依赖运行中系统、发行与打包混在同一个接口、安装计划与实际运行包选择不一致等问题。
+本文定义 BuckyOS App 从开发、测试、签名、发布、下载、安装、升级到运行收敛的完整生命周期，以及各基础设施在该生命周期中的职责边界。
 
-本文把 App 基础设施划分为四个边界清晰的领域：
+本文首先表达产品和架构意图，不冻结具体命令名称、命令行参数、RPC schema 或 UI 交互。后续工具和实现设计必须从这些意图出发，不得重新把底层对象关系暴露成普通 App 开发者需要手工编排的流程。
 
-1. **开发用工具**：从源码构造 App PKG、PackageMeta、AppDoc candidate 和 PIKG，并完成不依赖正式发行密钥的本地安装测试闭环。
-2. **运维用工具**：持有发行权限和相关密钥，完成内容部署、AppDoc 签名与权威发布。
-3. **安装协议**：把外部获得的 App 转换为可信、可执行的 InstallPlan，在一切准备完成后写入 AppSpec。
-4. **调度与运行收敛**：消费 AppSpec，分配 Instance，并由目标 Node 将 Instance 运行起来。
+本文的核心决策是：
 
-本文使用 **AppSpec** 表示写入 system-config 的 `AppServiceSpec`。AppSpec 是安装协议与调度系统之间唯一的提交边界。
+> **PIKG 是普通 App 生态唯一公开的构建、测试、签名、发布、分发、安装和升级单元。**
 
-本文不替代 [App 安装协议](../App%20安装协议.md)。AppDoc、PIKG、InstallPlan、安装事务及安全规则以该协议的 v0.5 冻结项为准；本文重点定义模块职责、输入输出和写入权限。
+AppDoc、PackageMeta、Chunk、NamedStore、Repo、BNS、InstallPlan、AppSpec 等仍然是重要的内部协议对象或系统边界，但不是普通 App 开发者需要分别操作的发行物。
 
-## 2. 总体分层
+本文不替代 [App 安装协议](../App%20安装协议.md)。PIKG 格式、AppDoc schema、Object ID、安装事务和安全校验的协议细节以安装协议为准。两份文档发生冲突时，应先判断冲突属于“产品意图”还是“当前协议细节”，再推动协议和实现向本文确定的意图收敛。
+
+## 2. 适用范围与基本约束
+
+### 2.1 普通 App
+
+本文主要面向第三方开发者构建的普通 App。为了降低学习成本和出错概率，普通 App 当前采用以下约束：
+
+- 开发者只选择 `docker`、`script` 或 `static-web` 等运行形态；
+- 普通 App 的交付模型对开发者表现为平台无关，不要求开发者构造 OS/Arch package matrix；
+- 普通 App 不允许声明需要 Installer 独立解析和下载的第三方 package 依赖；
+- 应用运行所需代码、静态资源和依赖必须已经进入 Docker image、script bundle 或 static-web bundle，并最终被当前 PIKG 的内容图绑定；
+- 每个对外发布的 App 版本都有一个完整、自包含、可离线验证的 PIKG。
+
+这些限制不是底层系统能力的上限，而是普通 App 生态的产品边界。优先保证开发者能够正确完成完整生命周期，再考虑开放更复杂的组合能力。
+
+### 2.2 系统组件与系统 App
+
+BuckyOS 系统组件和系统 App 仍可能存在多平台构建、平台 selector、独立 PKG、系统级依赖和对象级更新需求。这些能力属于 BuckyOS CI、ROM、系统升级或内部 provisioning 流程，不应因此进入普通 App 的公开开发模型。
+
+系统内部可以复用 PackageMeta、PackageEnv、Repo 和内容寻址能力，但必须与普通 App 的 PIKG-first 流程保持清晰边界。
+
+### 2.3 本文不决定的事项
+
+本文不决定：
+
+- CLI 的最终命令名称和参数；
+- PIKG 上传服务的具体网络协议和存储产品；
+- Owner key 的具体钱包、HSM 或托管签名器实现；
+- Repo、NamedStore 和 CDN 的具体部署形态；
+- 对象级增量下载和差分更新的具体算法；
+- 系统组件多平台发布流程的完整细节。
+
+## 3. 为什么以 PIKG 为首要概念
+
+旧的 AppDoc + SubPkgMeta 工作流把内部对象图直接暴露给开发者和发布者。使用者必须理解并决定：
+
+- 先构造 AppDoc 还是先构造 SubPkgMeta；
+- 哪些对象需要签名、由谁签名；
+- payload、SubPkgMeta 和 AppDoc 按什么顺序上传；
+- 本地测试使用 candidate、Object ID 还是权威 AppDoc；
+- 修改一个 subpackage 后需要重新生成和发布哪些对象；
+- AppDoc 已发布而部分内容尚未部署时系统处于什么状态；
+- 安装入口应该是 AppDoc、PackageMeta、URL、Object ID 还是本地文件。
+
+这些问题分别可以被文档解释，但其组合会产生大量中间状态和错误路径。问题不只是文档不够完整，而是内部实现细节成为了用户工作流。
+
+PIKG 用少量空间和带宽换取更低的认知成本、更少的状态组合和更稳定的验证边界。其产品模型接近 Android APK：开发者、发布者和用户围绕一个应用包完成生命周期，包管理器负责理解并验证内部结构。
+
+PIKG-first 不否定对象级能力。BuckyOS 仍可在内部使用内容寻址、缓存、去重、按对象下载和 subpackage 部分更新，只是这些优化不得改变普通 App 的公开操作模型。
+
+## 4. 一条贯穿全生命周期的主线
+
+普通 App 的主流程必须保持线性：
+
+```text
+开发者：build → test
+发布者：sign → upload → publish
+普通用户：download → install / update
+运行系统：schedule → deploy → converge
+```
+
+对应的唯一公开交付物始终是 PIKG：
 
 ```mermaid
 flowchart LR
-    Source["App 源码与构建产物"]
-    Dev["开发工具\n构造 PKG / AppDoc candidate / PIKG"]
-    Artifact["可验证的发行候选\nBuild Output"]
-    Ops["运维发布工具\n授权、签名、部署、BNS 发布"]
-    Published["已部署内容 + 权威 AppDoc"]
-    LocalStage["本地 staging"]
-    DevAuthority["scoped dev authority\n不使用正式发布密钥"]
-    Installer["安装协议\nResolve / Inspect / Acquire / Verify / Prepare"]
-    Plan["InstallPlan + PreparedDeployment"]
-    Spec["AppSpec\n唯一调度提交点"]
-    Scheduler["Scheduler\n分配 Instance"]
-    NodeConfig["NodeConfig / InstanceReplica"]
-    Node["Node Daemon\n部署、启动、健康上报"]
-    Running["Running Instance"]
+    Source["App source / local artifact"]
+    Unsigned["app.pikg\nunsigned candidate"]
+    Tested["same logical PIKG\nlocally tested"]
+    Signed["app.pikg\ncontains APPDOC.jwt"]
+    Available["uploaded PIKG\ndownloadable"]
+    Published["BNS AppDoc\nauthoritative"]
+    Downloaded["downloaded app.pikg"]
+    Plan["verified InstallPlan"]
+    Spec["AppSpec"]
+    Running["running instance"]
 
-    Source --> Dev --> Artifact --> Ops --> Published
-    Published --> Installer --> Plan --> Spec
-    Spec --> Scheduler --> NodeConfig --> Node --> Running
-    Artifact -. "本地开发" .-> LocalStage --> DevAuthority --> Installer
-    Artifact -. "带外分享" .-> Installer
+    Source -->|build| Unsigned
+    Unsigned -->|local install and test| Tested
+    Tested -->|sign exact candidate| Signed
+    Signed -->|upload| Available
+    Available -->|publish embedded AppDoc| Published
+    Published -->|discover and download| Downloaded
+    Downloaded -->|inspect and verify| Plan
+    Plan -->|commit| Spec
+    Spec -->|schedule and converge| Running
 ```
 
-四个领域的核心约束如下：
+从产品视角看，一个 `app pikg` 贯穿头尾。签名会在容器内增加签名证明，因此文件字节和文件 digest 会变化，但 AppDoc Object ID、PackageMeta Object ID 和 payload digest 不得变化；它仍然是开发阶段验证过的同一个逻辑应用版本。
 
-| 领域 | 是否持有发行密钥 | 是否可以访问外部网络 | 是否可以写 system-config | 核心输出 |
-|---|---:|---:|---:|---|
-| 开发工具 | 否 | 纯构建不需要；集成测试只访问本地开发 Zone | 不直接写；通过受控开发/安装 API | Build Output、DevTestReport |
-| 运维发布工具 | 是 | 是 | 原则上否 | 已部署内容、已签名并权威发布的 AppDoc、PublicationReceipt |
-| 安装协议 | 否 | 按策略允许 | 仅能写安装记录和 AppSpec | InstallPlan、PreparedDeployment、AppSpec |
-| 调度与运行收敛 | 否 | 不访问 App 的外部发行源 | 写派生调度结果和运行信息 | InstanceReplica、NodeConfig、ServiceInfo、InstanceReport |
+## 5. PIKG 的产品语义与信任语义
 
-## 3. 开发用工具
+### 5.1 PIKG 是交付容器
 
-### 3.1 工具集范围
+PIKG 把一个 App 版本需要的可验证对象和 payload 收纳到一个文件中，提供统一的构建、上传、下载和安装体验。
 
-开发工具集不只包含“打出一个 PIKG”，还必须覆盖从源码到本地运行验证的完整开发闭环。它由两类工具组成：
+PIKG 容器本身不是新的身份对象，也不是最终信任根。ZIP entry 顺序、压缩参数或重新封装造成的整文件 digest 变化，不应改变 App 内容身份和发布身份。
 
-1. **纯构建工具**：不依赖运行中的 BuckyOS，把开发者控制的输入转换为内容寻址、可独立验证的构建产物。
-2. **本地开发测试工具**：显式连接本地开发 Zone，通过受控 API 完成 staging、开发信任、InstallPlan、安装、观察、更新和清理。
+`pikg_digest` 可以用于 staging 固定、防止 TOCTOU、缓存、安装记录和运维审计，但不能代替内部 Object ID、内容 digest、AppDoc 签名或 BNS 权威状态。
 
-纯构建工具负责：
+### 5.2 “签名 PIKG”的准确含义
 
-1. 将一个目录或已有制品构造成最小粒度的 App subpackage。
-2. 生成与 subpackage 内容对应的 `PackageMeta` 和 Object ID。
-3. 根据模板和实际构建结果生成 AppDoc candidate。
-4. 将 AppDoc、PackageMeta 和目标平台 payload 组装成 `.pikg`。
-5. 对产物执行与 Installer 相同的结构、Object ID、Digest、AppName 和 Package Namespace 验证。
-6. 输出机器可读的构建清单，供后续发布或本地安装使用。
+“签名 PIKG”是面向使用者的产品操作，其准确语义是：
 
-本地开发测试工具负责：
+1. 打开并重新验证未签名 PIKG；
+2. 读取其中的 `APPDOC.json` canonical body；
+3. 使用 App Owner 授权的 key 对完全相同的 AppDoc claims 签名；
+4. 生成 `APPDOC.jwt`；
+5. 将 `APPDOC.jwt` 与原有 AppDoc、PackageMeta 和 payload 重新封装为正式 PIKG。
 
-1. 启动或连接本地开发 Zone，并确认 Installer、TaskManager、Scheduler 和 Node Daemon 可用。
-2. 把本地 PIKG 上传到受控 staging area，而不是向服务端传递本地路径。
-3. 为当前 candidate 建立带 scope 和过期时间的开发信任证据。
-4. 构造并展示 InstallPlan，供开发者检查目标包、权限、挂载、端口和 readiness。
-5. 调用标准 Installer 创建和确认安装 Task。
-6. 等待 Scheduler/Node Daemon 把 AppSpec 收敛为运行中的 Instance。
-7. 查询 Task、install record、AppSpec、InstanceReport、日志和健康检查结果。
-8. 支持重新构建、更新、覆盖安装、卸载和开发环境清理。
-9. 输出可用于本地调试和 CI 判定的 `DevTestReport`。
+它不是对整个 ZIP 文件字节做签名。普通 App 模型不需要：
 
-开发工具的输出仍是 **candidate**。即使 AppDoc 带有开发者签名，或者 PIKG 完整通过校验，也不代表 AppDoc 已经在 BNS 上权威发布。
+- `app.pikg.sig`；
+- Packager Signature；
+- 以整包签名证明 PIKG 由谁组装；
+- 把 PIKG 文件 digest 当作 App 身份或发布信任锚。
 
-### 3.2 开发测试不得依赖正式发布密钥
+签名工具不得在签名过程中修改 AppDoc claims，不得向 claims 注入签名时间、发布环境、BNS revision 或其它导致 AppDoc Object ID 改变的字段。签名 key、算法和签名证明应位于签名封装中；发布 revision 和时间属于 BNS/Resolver metadata 或 PublicationReceipt。
 
-开发测试和正式发布使用不同的信任边界：
+### 5.3 签名前后的不变量
 
-| 凭证或信任能力 | 开发测试是否需要 | 用途与限制 |
-|---|---:|---|
-| 生产 Owner/BNS 发布私钥 | **禁止依赖** | 只允许运维发布工具使用；不得复制到开发机或 CI |
-| 本地 BuckyOS 登录会话 | 需要 | 只用于认证当前开发用户并调用本地 Control Panel/Installer API，不代表 App 发布权 |
-| 本地开发环境管理员/RBAC | 按需 | 允许创建和清理受限的开发信任、staging 和测试 App，不允许发布到 BNS |
-| `LocalAuthorityOverride` / Zone dev evidence | 需要执行未发布 candidate 时使用 | 只对指定 Zone、机器、测试环境或 CI job 有效，必须带 warning、scope 和过期时间 |
-| 临时测试签名 key | 可选 | 只用于测试 JWT/签名编码和错误分支；不能映射到生产 Owner，也不能成为正式发布凭证 |
-
-本地开发模式允许在没有生产 Owner 私钥、没有 BNS AppDoc、没有公共 Repo 收录的情况下安装 candidate。它不能简单地“跳过信任”，而应由开发环境建立明确的本地信任证据：
+正式 PIKG 必须满足：
 
 ```text
-candidate App DID + AppDoc Object ID
-        ↓ local dev authority
-LocalAuthorityOverride / Zone dev evidence
-        ↓ LOCAL_DEVELOPER policy
-Inspect / InstallPlan / local install
+signed AppDoc Object ID == tested AppDoc Object ID
+signed PackageMeta Object IDs == tested PackageMeta Object IDs
+signed payload digests == tested payload digests
 ```
 
-开发信任必须满足：
+当 PIKG 同时包含 `APPDOC.json` 和 `APPDOC.jwt` 时，两者必须表达相同的 canonical AppDoc。任何不一致都必须拒绝，不能由签名工具自动“修复”。
 
-- 只能由本地认证会话和受控开发权限创建；
-- 与准确的 App DID、AppDoc Object ID 和作用域绑定；
-- 默认短期有效，测试结束后可自动撤销；
-- 不写入或合并到普通权威 cache，不向其它 Zone 同步；
-- Resolver 结果必须标记 `LocalAuthorityOverride` warning；
-- 不得被 `STRICT_PUBLIC`、`NORMAL` 或运维发布流程接受；
-- 不调用 `repo.announce`、SN/BNS publish 或任何公开发布接口。
+### 5.4 Sub PackageMeta 不独立签名
 
-如果本地开发信任尚未建立，Installer 应返回 `TRUST_RESOLUTION_REQUIRED`，而不是偷偷使用 AppDoc 自声明的 owner 或读取生产发布密钥。
-
-需要特别区分：**本地 API 登录凭证不是 App 发布密钥**。开发测试可以要求开发者登录自己的本地 Zone，但不能要求其持有某个正式 App Owner 的私钥。
-
-### 3.3 非职责
-
-开发工具不得：
-
-- 读取 Owner/BNS 或运维环境的正式发行密钥；
-- 为了构建产物而依赖运行中的 Control Panel、Repo Service 或 system-config；
-- 把构建产物直接标记为公开发布；
-- 调用 Repo/BNS 正式发布接口；
-- 绕过 Installer 直接写 AppSpec、安装记录、Gateway 或 RBAC；
-- 根据当前开发机的编译架构替目标 Node 选择运行包。
-
-本地开发测试工具可以调用 Installer、TaskManager、日志和运行状态 API，但这些副作用仍由各自的正式模块执行。开发工具只负责编排，不能另写一套安装或调度逻辑。
-
-### 3.4 建议构建输出
-
-建议一次 App 构建输出一个独立目录：
+普通 App 的 Sub PackageMeta 是 PIKG 内部对象，不要求独立签名。其信任链是：
 
 ```text
-dist/
-├── APPDOC.json
-├── packages/
-│   ├── web.tar.gz
-│   ├── web.package-meta.json
-│   └── web.package-meta.objid
-├── app.pikg
-└── BUILD_OUTPUT.json
+Owner signature on APPDOC.jwt
+  └─ AppDoc.pkg_list[].pkg_objid
+       └─ PackageMeta Object ID = hash(canonical PackageMeta)
+            └─ PackageMeta.content
+                 └─ payload digest
 ```
 
-`BUILD_OUTPUT.json` 至少应包含：
+Owner 签名的 AppDoc 授权了确切的 PackageMeta Object ID；PackageMeta Object ID 保证 meta 内容不可篡改；PackageMeta 中的内容引用保证 payload 不可篡改。因此再次签名每个 Sub PackageMeta 不增加普通 App 安装所需的信任语义，反而会引入额外签名顺序、密钥和状态组合。
 
-- App DID、AppDoc Object ID 和应用语义版本；
-- 每个 subpackage 的逻辑名、PackageMeta Object ID、内容 ID、大小和目标 selector；
-- PIKG 整包 digest 及其实际携带的 subpackage；
-- 构建工具版本和 PIKG schema；
-- 验证结果摘要；
-- 不包含任何私钥、登录凭证或服务端本地路径。
+PackageMeta 中的 `owner` 和 `author` 字段只是被 AppDoc 绑定的内容，不应被单独解释成所有权证明。
 
-### 3.5 完整本地开发测试流程
+独立于 AppDoc 发布并被多个系统组件直接解析的系统 PackageMeta，可以有自己的权威发布和签名策略，但不属于普通 App 生命周期。
 
-本地开发流程不经过正式发布。它从 Build Output 直接进入本地开发 Zone：
+## 6. 开发与本地测试
 
-```mermaid
-flowchart LR
-    Edit["编辑源码 / AppDoc 模板"]
-    Build["本地 build\nPKG + PIKG"]
-    Verify["离线 verify"]
-    Stage["上传本地 staging"]
-    Trust["创建 scoped dev authority\n不使用发布密钥"]
-    Inspect["Inspect / InstallPlan"]
-    Install["标准 Installer Task"]
-    Run["Scheduler + Node Daemon"]
-    Observe["状态 / 日志 / 健康测试"]
-    Clean["卸载并清理 dev authority"]
+### 6.1 开发者看到的输入与输出
 
-    Edit --> Build --> Verify --> Stage --> Trust --> Inspect --> Install --> Run --> Observe
-    Observe -->|继续迭代| Edit
-    Observe -->|结束测试| Clean
-```
+普通 App 开发者提供：
 
-推荐步骤如下：
+- App 的基本描述和运行配置；
+- Docker image、script bundle 或 static-web bundle；
+- 权限、服务入口、数据目录和其它 App 级声明。
 
-| 步骤 | 动作 | 关键输出 | 是否需要正式发布密钥 |
-|---|---|---|---:|
-| 0 | 启动/检查本地开发 Zone | Installer、TaskManager、Scheduler、Node Daemon ready | 否 |
-| 1 | lint AppDoc、AppName、Package Namespace 和输入目录 | ValidationReport | 否 |
-| 2 | 构造 subpackage、PackageMeta、AppDoc candidate 和 PIKG | Build Output | 否 |
-| 3 | 离线重开 PIKG 并验证全部 Object ID/Digest | VerificationReport | 否 |
-| 4 | 通过上传接口把 PIKG 放入受控 staging area | staging handle | 否，只需本地登录会话 |
-| 5 | 为准确的 candidate 建立 scoped dev authority | dev evidence/override handle | 否，只需本地开发权限 |
-| 6 | 调用 Preflight/Inspect 构造 InstallPlan | plan fingerprint、权限、readiness | 否 |
-| 7 | 开发者确认计划并创建标准安装 Task | task id | 否 |
-| 8 | 等待 Prepare、AppSpec commit、调度和运行收敛 | install record、InstanceReport | 否 |
-| 9 | 执行 HTTP/Service/Agent 行为测试并收集日志 | DevTestReport | 否 |
-| 10 | 修改源码后重新 build，通过 update/reinstall 验证升级 | 新 plan、升级结果、回滚结果 | 否 |
-| 11 | 卸载测试 App，撤销 dev authority，清理 staging/临时文件 | CleanupReport | 否 |
+开发工具负责在内部：
 
-开发流程不得调用当前语义混合的 `app.publish` 来替代 build、stage 和 dev trust。正式 Publisher 是否可用，不应影响本地 App 的开发和测试。
+- 规范化输入；
+- 生成必要的 PackageMeta 和内容 ID；
+- 生成未签名 AppDoc candidate；
+- 组装完整 PIKG；
+- 使用与 Installer 一致的规则重新打开并验证 PIKG。
 
-CI 使用相同流程，但 dev authority 的 scope 必须绑定当前 CI job，默认在 job 结束时失效。CI 不应注入生产 Owner key，也不应拥有 BNS 发布权限。
-
-### 3.6 本地开发测试所需工具清单
-
-| 工具能力 | 作用 | 应复用的系统边界 |
-|---|---|---|
-| Dev environment control | 启动、停止、重装和检查本地 BuckyOS/DV 环境 | `start.py`、`check.py`、`stop.py` 等开发脚本 |
-| App initializer/template | 创建 AppDoc 模板、标准目录和示例入口 | 共享 App schema |
-| App lint | 在打包前检查 AppDoc、AppName、Package Namespace、selector、权限和输入布局 | 共享 validation core |
-| PKG packer | 构造单个 subpackage、PackageMeta 和内容 ID | 共享 packaging core |
-| PIKG packer | 构造完整或目标平台部分 PIKG | 共享 PIKG core |
-| Offline verifier | 重开产物并校验结构、Object ID、Digest 和内容索引 | 与 Installer 共用 verifier |
-| Local staging client | 上传本地 PIKG，获得不可猜测、不可越界的 staging handle | Control Panel staging API |
-| Dev authority manager | 创建、查询、续期和撤销 scoped dev evidence | Zone Resolver/local authority 管理 API |
-| Preflight client | 从 staging handle/identifier 构造并展示 InstallPlan | Installer Resolve/Inspect |
-| Install client | 创建、confirm、retry、cancel、update、uninstall 安装 Task | 标准 `apps.*` RPC |
-| Task watcher | 展示 stage、readiness、下载进度、错误和用户动作 | TaskManager + 安装 status snapshot |
-| Runtime observer | 查询 AppSpec、NodeConfig、InstanceReport、ServiceInfo 和 URL | Control Panel/system-config 只读 API |
-| Log and probe tool | tail 日志，执行 HTTP、端口、健康检查和 Agent 行为测试 | Control Panel logs + App 测试入口 |
-| Cleanup tool | 卸载 App、撤销 dev authority、清理 staging 和临时构建产物 | Installer、dev authority、staging API |
-| Test orchestrator | 按 Web、Script、Docker、Agent 和多架构矩阵执行完整流程 | 只编排以上工具，不复制业务逻辑 |
-
-“完整本地开发工具”是上述能力的统一入口，不要求每项都成为独立二进制。它们可以由一个 CLI 的多个子命令组合，但底层必须调用共享库和正式服务接口。
-
-### 3.7 建议命令边界
-
-命令名称可以后续确定，但能力上至少需要：
+开发者的主要构建产物是：
 
 ```text
-app init                # 创建 AppDoc 模板和标准源码目录
-app lint                # 无副作用验证 AppDoc、名字、权限和输入布局
-app pkg pack            # 构造一个最小 subpackage 和 PackageMeta
-app pikg pack           # 从 candidate 和若干 subpackage 构造 PIKG
-app verify              # 离线验证 AppDoc、PackageMeta、PIKG 和内容
-app build               # 编排纯本地构建步骤，生成完整 dist 目录
-
-app dev env up          # 启动/连接本地开发 Zone
-app dev stage           # 上传 PIKG，换取 staging handle
-app dev trust           # 创建 scoped dev authority；不读取发布密钥
-app inspect             # 构造并展示 InstallPlan
-app install             # 通过标准 Installer 创建安装 Task
-app task watch          # 查看 stage、进度、错误和待确认动作
-app status              # 查看 AppSpec、Instance 和健康状态
-app logs                # tail App/Instance 日志
-app test                # 执行声明式 smoke/integration tests
-app dev update          # 重新 build 并测试升级/回滚
-app dev clean           # 卸载并撤销 dev authority、staging 和临时数据
+app.pikg
 ```
 
-`init/lint/pkg pack/pikg pack/verify/build` 应能在未启动 BuckyOS 的开发机或 CI 中运行。`dev stage` 之后的命令显式连接本地开发 Zone，只要求本地会话和开发权限，不要求生产发行密钥。相同输入和相同构建参数应尽量得到可复现的内容身份。
+工具可以输出日志、诊断报告和机器可读测试结果，但不应要求开发者把 `APPDOC.json`、Sub PackageMeta、Object ID 清单或 payload 目录分别交给下一阶段。
 
-### 3.8 当前实现与缺口
+### 6.2 未签名 PIKG 可以完成开发测试
 
-当前可复用能力包括：
+开发阶段构建的 PIKG 可以只包含未正式签名的 `APPDOC.json`。开发者使用该 PIKG 完成本地安装、运行、更新、健康检查和行为测试，不需要生产 Owner key，也不需要先把 App 发布到 BNS。
 
-- `buckycli pack_pkg` 可以构造最小 PKG，但属于旧 CLI 流程；
-- Control Panel 中的 `PikgBuilder` / `PikgReader` 已实现 PIKG 构造和严格验证；
-- `test/app_installer_test` 已覆盖 build candidate、种入 Resolver 证据、`apps.install_package`、confirm、等待运行证据和可选卸载的主要闭环；
-- `start.py`、`check.py` 和 `stop.py` 已能管理本地开发环境；
-- Control Panel 已有安装 Task、系统日志和应用生命周期 RPC。
+未签名不等于跳过验证。开发安装仍必须验证：
 
-主要缺口是：
+- PIKG 结构；
+- AppDoc 和 PackageMeta schema；
+- 所有 Object ID 和 payload digest；
+- App namespace、运行配置、权限和路径安全；
+- PIKG 是否自包含且不存在普通 App 禁止的第三方 package 依赖。
 
-- `PikgBuilder` / `PikgReader` 位于 Control Panel 内部，不是开发工具可直接复用的库；
-- 样例生成器依赖运行中的 Control Panel、Repo Service 和认证环境；
-- 当前测试通过 `app.publish` 构建 PIKG，并尝试读取 zone owner 或 device 私钥换取登录 token；即使这些密钥没有用于发布 AppDoc，这仍让开发流程依赖敏感凭证和复合 Publisher；
-- Resolver 开发证据目前由测试以 root 权限直接写 `resolver/cache/*`，缺少带 scope、过期和自动清理的 dev authority 管理接口；
-- 协议要求的本地 PIKG 上传通道尚不完整，测试主要复用 `app.publish` 返回的内部 staging handle；
-- `buckycli` 与 Control Panel 各自实现了一套 tar.gz 打包；
-- AppDoc、AppName 和 Package Namespace 验证没有统一的无副作用入口；
-- Task、日志、运行状态、升级、卸载和清理能力分散，没有形成一个完整的 `app dev` 工作流；
-- 当前 `app.publish` 接收服务端 `local_dir` 并同时打包、写 NamedStore 和生成 PIKG，跨越了开发与运维两个边界。
+开发环境通过显式、受限、可撤销的 local developer authority 接受该 candidate。该权限只能用于指定的本地 Zone、测试任务或 CI job，并且不能被普通公开安装策略接受。
 
-## 4. 运维用工具
+### 6.3 开发阶段禁止依赖正式发布能力
 
-### 4.1 职责
+开发与 CI 不应：
 
-运维发布工具负责所有需要授权、密钥和外部副作用的动作。典型场景是：某个 App 已有一个新版本，运维人员拿到经过验证的 Build Output，使用该 App 对应 Owner 的权限将新版本正式发行。
+- 持有或读取生产 Owner/BNS 私钥；
+- 为了 build 而依赖运行中的 Control Panel、Repo Service 或 system-config；
+- 调用公开 BNS 发布接口；
+- 把本地验证成功解释为已经正式发布；
+- 绕过 Installer 直接写 AppSpec、Gateway 或 RBAC；
+- 要求开发者分别发布 AppDoc、PackageMeta 或 payload。
 
-一次完整发布应包含：
+开发工具可以连接本地开发 Zone 完成 staging、安装和运行测试，但所有系统副作用仍通过标准 Installer、Scheduler 和 Node Daemon 完成。
 
-1. 读取并重新验证 Build Output，不能信任开发工具只给出的“验证成功”标志。
-2. 明确选择目标 App DID、发布环境和签名身份。
-3. 验证当前 principal/密钥有权代表 App DID 的 Owner 发布该 App。
-4. 将 PIKG 或其下载描述部署到可获取的内容网络。
-5. 将 AppDoc、PackageMeta 和 payload 对象图部署到 Named Data / Repo 基础设施。
-6. 使用 Owner 授权的密钥签名 AppDoc，生成 `APPDOC.wt` 或等价权威文档。
-7. 将 AppDoc 作为 `doc_type=app` 发布到 App DID 对应的 BNS 权威渠道。
-8. 从 BNS/Indexer 回读，确认 App DID、AppDoc Object ID、revision 和签名结果与本次发布一致。
-9. 输出可审计的 `PublicationReceipt`。
+## 7. 正式签名与发布
 
-AppDoc 的 `version` 表示应用语义版本；BNS 发布 revision/`iat` 表示权威文档版本。两者不能混用。
+### 7.1 发布者的唯一输入
 
-### 4.2 内容部署与身份发布必须分开
+普通 App Publisher 的核心输入应是开发和测试完成的 PIKG，而不是一组松散的 AppDoc、PackageMeta 和 payload 参数。
 
-“发布”至少包含两个不同动作：
+Publisher 必须把开发 PIKG 当作不可信输入重新验证，不能只信任开发工具给出的“测试通过”标志。验证成功后才能使用正式 Owner key 签名。
 
-| 动作 | 输入 | 输出 | 失败后的影响 |
-|---|---|---|---|
-| 内容部署 | PIKG、PackageMeta、payload、AppDoc body | 可下载的内容 ID/URL、Repo pin 结果 | 内容可能已经存在，但还不是当前权威版本 |
-| 身份发布 | 已部署内容引用、已签名 AppDoc、Owner 授权 | BNS AppDoc revision、回读证据 | 成功后外部 Resolver 才能把该版本识别为权威发布 |
+AppDoc 签名权和 BNS 权威发布权是两个独立授权。一次发布工作流可以编排两者，但不能因为某个 principal 能签 AppDoc 就推断其有权更新 BNS，也不能因为某个服务有 BNS 发布权限就允许它替 Owner 构造或修改 AppDoc。
 
-内容部署应先完成；只有内容已经可获取且全部验证通过，才发布指向这些内容的权威 AppDoc。这样可以避免 BNS 已指向新版本但实际内容尚不可用。
+### 7.2 发布顺序
 
-接口和状态不应继续使用含义模糊的 `publish=true`。建议使用明确状态：
+正式发布应严格遵循：
 
 ```text
-built_candidate
-content_deployed
-appdoc_signed
-bns_published
-publication_verified
+verify candidate PIKG
+    ↓
+sign embedded AppDoc and produce signed PIKG
+    ↓
+upload signed PIKG and verify it is downloadable
+    ↓
+extract the exact APPDOC.jwt from that signed PIKG
+    ↓
+publish that AppDoc to BNS as doc_type=app
+    ↓
+read back BNS/Indexer and verify the result
 ```
 
-### 4.3 安全与运维要求
+上传必须早于 BNS 发布。这样发布失败最多留下一个已签名、已上传但尚未生效的 PIKG，不会让普通用户发现一个内容尚不可用的新版本。
 
-运维工具必须：
-
-- 显式指定或安全选择签名 key，禁止从 AppDoc 自声明 owner 推导授权；
-- 验证 principal、Owner DID、App DID 和 Package Namespace 的绑定；
-- 不接受任意普通用户提供的服务端本地路径；
-- 对每个有副作用步骤记录输入 Object ID、输出 ID、操作者和时间；
-- 支持幂等重试和从部分完成状态恢复；
-- 在 BNS 发布后执行权威回读，而不是把 RPC 成功当作最终发布成功；
-- 新版本发布失败时保留旧的权威 AppDoc，不让 Installer 看到不可用的新版本。
-
-### 4.4 当前实现与缺口
-
-当前 `app.publish` 已能：
-
-- 扫描有限的 Web、Agent、Script 和 Docker 输入；
-- 构造 subpackage、PackageMeta 和最终 AppDoc candidate；
-- 把 payload、PackageMeta 和 AppDoc 写入本机 NamedStore/Repo；
-- 构造 PIKG 并使用同一个 `PikgReader` 自检。
-
-但它还不是运维发布工具：
-
-- 任何已认证 principal 都能调用，未验证 principal 是否有权代表 `AppDoc.owner`；
-- 接受并读取 Control Panel 所在机器的 `local_dir`；
-- 没有使用 AppDoc 签名能力，生成的 PIKG 通常只有 `APPDOC.json`；
-- 没有把 PIKG 本身部署为可下载内容；
-- 没有调用 BNS 发布 AppDoc；
-- `repo.announce` 目前仅把请求写入本地 `pending_announces`，未连接外部 BNS；
-- 打包、内容写入、Repo pin 和 PIKG 生成不是一个可恢复事务，中途失败会留下部分对象。
-
-Node 激活流程中已经存在 `SnClient.publish_document`、自有域名绑定以及 BNS Indexer 回读逻辑。正式 App Publisher 应复用同样的“发布后回读确认”模式，而不是再创建一套 BNS 发布语义。
-
-## 5. 安装协议
-
-### 5.1 职责
-
-Installer 的职责是把一个来自外部、默认不可信的 App 输入，转化为当前 Zone 可以信任和执行的 AppSpec。
-
-支持的外部输入可以包括：
-
-- App DID 或 BNS 名称；
-- AppDoc Object ID；
-- AppDoc/PIKG URL；
-- 已上传到受控 staging area 的 PIKG handle；
-- 通过文件、好友或其它渠道获得的本地 PIKG。
-
-输入渠道只决定如何取得 candidate，不决定 candidate 是否可信。Installer 必须独立完成 DID 权威解析、Owner 绑定、AppDoc/Object ID、Package Namespace、PackageMeta、内容 Digest 和目标约束校验。
-
-### 5.2 安装分为计划、准备和提交
-
-安装协议应明确分为三个阶段组：
-
-#### A. 构造计划
+Publisher 必须发布签名 PIKG 中的原始 `APPDOC.jwt`，不能根据外部参数重新构造另一份 AppDoc。发布完成后必须满足：
 
 ```text
-Resolve → Inspect → InstallPlan
+BNS current AppDoc Object ID
+    == signed PIKG embedded AppDoc Object ID
 ```
 
-该阶段：
+发布和发现基础设施还必须建立“当前 AppDoc Object ID → 正式 PIKG 下载位置”的确定映射，使通过 App DID 安装最终可以取得完整 PIKG。该映射放在 AppDoc、BNS publication metadata 还是索引服务中，由后续协议决定，但必须满足：
 
-- 识别 App DID 和 candidate；
-- 获取或读取 AppDoc 所需的最小信息；
-- 验证 AppName、Owner 和全部 `pkg_list` 的 Package Namespace；
-- 根据目标 Node，而不是 Installer 编译平台，选择需要的 subpackage；
-- 生成权限、配置、目标约束、缺失内容和 readiness；
-- 计算绑定全部决策输入的 plan fingerprint。
+- 不要求普通开发者分别公布内部 PackageMeta 和 payload 地址；
+- 不允许下载位置在签名后反向修改 AppDoc canonical body；
+- 如果下载位置属于 AppDoc claims，就必须在本地测试前已经确定；
+- 如果下载位置属于发布 metadata，就必须被权威发布记录绑定到准确的 AppDoc Object ID；
+- Installer 从任何下载位置取得 PIKG 后都执行相同的本地验证，不能信任索引或传输来源代替内容校验。
 
-该阶段不得产生安装副作用：不得写 AppSpec、创建 PackageEnv 目录、更新 Gateway/RBAC、启动 Instance 或改变已安装应用。允许的缓存行为必须是通用 Resolver/Object Cache 行为，并且不能被解释为安装已经开始。
+### 7.3 发布状态
 
-应提供独立 Preflight 能力，让调用方在创建长期安装事务前获得 InstallPlan 或明确的阻塞原因。
-
-#### B. 准备安装
+发布系统内部可以记录以下状态：
 
 ```text
-用户确认 → Acquire → Verify → Prepare → PreparedDeployment
+UnsignedLocal
+    ↓ sign
+SignedUnpublished
+    ↓ upload
+SignedAvailable
+    ↓ publish AppDoc
+Published
 ```
 
-该阶段可以创建可恢复 Task，并负责：
+这些状态用于恢复、重试和审计，不应要求 App 开发者手工管理其中的 AppDoc、PackageMeta 或 payload 状态。
 
-- 下载当前 InstallPlan 真正需要的内容；
-- 逐对象重新验证 AppDoc、PackageMeta 和 payload；
-- 将 PIKG 中的必要内容物化到 Zone 内受控存储；
-- 检查安装冲突；
-- 分配 `app_index`；
-- 构造最终 AppSpec 和回滚材料；
-- 写入 `install_record(state=prepared)`。
+- `UnsignedLocal` 只能在明确的开发信任策略下安装；
+- `SignedUnpublished` 只证明 Owner 授权了内容，不代表该版本已经公开生效；
+- `SignedAvailable` 表示内容已可下载，但 BNS 当前版本尚未改变；
+- `Published` 必须同时具有有效 Owner 签名、可获取的 PIKG 和 BNS 权威发布状态。
 
-准备完成的判断标准是：即使外部网络立即断开，写入 AppSpec 后 Scheduler 和 Node Daemon 仍能只依赖 Zone 内基础设施完成部署。
+### 7.4 发布失败和重试
 
-#### C. 提交 AppSpec
+发布过程必须支持幂等恢复：
+
+- 签名失败不得产生部分修改的 PIKG；
+- 上传失败不得更新 BNS；
+- BNS 发布失败时，已上传的 PIKG 保持未发布状态，旧版本继续有效；
+- BNS RPC 成功但回读不一致时，不得报告发布完成；
+- 重试不得重新构造不同的 AppDoc claims 或 payload；
+- PublicationReceipt 应记录 App DID、AppDoc Object ID、签名 key、PIKG 获取位置、BNS revision 和回读证据。
+
+## 8. 下载、安装与升级
+
+### 8.1 普通用户只安装 PIKG
+
+普通用户的产品体验应是“获得并安装一个 PIKG”。用户可以：
+
+- 通过 App DID、应用商店或索引发现当前版本，再由系统下载 PIKG；
+- 直接打开通过文件、好友或其它渠道获得的 PIKG。
+
+无论入口是什么，Installer 最终都处理一个 PIKG。BNS 解析、AppDoc、PackageMeta、Object ID 和内容 digest 校验由系统在后台完成，不要求用户选择或理解这些对象。
+
+公开安装不能只因为 PIKG 内存在签名 AppDoc 就信任它。Installer 仍需验证 BNS 当前权威 AppDoc、Owner 绑定、发布状态和 PIKG 内 AppDoc 的一致性。带外获得的旧版本或已撤销版本不能通过重新打包恢复成当前有效版本。
+
+### 8.2 Installer 的职责
+
+Installer 把来自外部、默认不可信的 PIKG 转换为当前 Zone 可以执行的 AppSpec。其内部仍可使用：
 
 ```text
-PreparedDeployment → 写 AppSpec → 调度开始
+Resolve → Inspect → Acquire → Verify → Prepare → Deploy → Activate
 ```
 
-写 AppSpec 是不可跨越的提交边界：
+但对普通用户应呈现为一个可观察、可确认、可取消和可恢复的安装任务。
 
-- 写入前，Installer 可以失败、暂停或要求用户确认，但 Scheduler 不应看到这个 App；
-- 写入成功后，Installer 不再直接选择 Node、创建 Instance 或启动应用；
-- Scheduler 只根据 AppSpec 推导部署结果；
-- Activate 根据 InstanceReport 和健康证据确认安装完成，并更新 `install_record(state=installed)`；
-- 失败或升级回滚恢复旧 AppSpec 或移除新 AppSpec。
+Installer 必须：
 
-除系统镜像构建等显式内部路径外，Installer 应是 AppSpec 的唯一创建者。
+- 验证 PIKG 及其完整对象闭包；
+- 解析并验证 App DID、Owner 和 BNS 权威状态；
+- 检查普通 App 没有第三方 package 依赖和公开的平台矩阵；
+- 生成权限、存储、网络入口和资源使用摘要；
+- 在提交 AppSpec 前把运行所需内容准备到 Zone 内；
+- 记录安装来源、AppDoc Object ID、PIKG staging digest 和验证结果；
+- 在用户确认的计划与最终 AppSpec 之间保持确定性。
 
-### 5.3 AppSpec 必须是确定的部署合同
+### 8.3 AppSpec 是安装与运行的提交边界
 
-AppSpec 必须包含 Scheduler 和 Node Daemon 执行所需的最终批准结果，但不复制 DID 解析历史和安装 Task 历史。
+AppSpec 表示用户已经批准且 Installer 已准备完成的目标状态，是安装协议与 Scheduler 之间唯一的提交边界。
 
-至少要确保下面内容已经确定：
+- 写入 AppSpec 前，Installer 可以失败、暂停或要求用户确认，Scheduler 不应看到该 App；
+- 写入 AppSpec 后，Scheduler 负责分配 Instance，Node Daemon 负责部署和启动；
+- Scheduler 和 Node Daemon 不得重新解释外部 PIKG、BNS 或用户安装决策；
+- 普通 AppSpec 只能由 Installer 创建或更新，系统镜像构建走明确的 internal provisioning 路径。
 
-- AppDoc 的确定版本或不可变引用；
-- 用户批准的权限和最终 `ServiceSpecConfig`；
-- 目标平台实际选中的 subpackage；
-- 对应的 PackageMeta Object ID 和 payload 内容 ID；
-- Docker 场景的镜像名称和不可变 image digest；
-- 自动启动、资源、挂载和服务暴露配置。
+### 8.4 升级仍然是安装一个新 PIKG
 
-Scheduler 和 Node Daemon 不得从完整 `pkg_list` 中重新选择另一套包。可以在 AppSpec 中增加明确的 resolved package set，也可以写入只包含最终选择结果的部署描述；无论采用哪种结构，必须保证实际执行内容被 InstallPlan fingerprint 和用户确认覆盖。
+对开发者和用户而言，App 升级是发布和安装一个新版本 PIKG：
 
-### 5.4 非职责
+```text
+old app.pikg → new app.pikg
+```
 
-Installer 不负责：
+系统内部可以比较新旧 Object ID，只下载、复制或部署发生变化的内容，也可以复用本地 NamedStore 中已经存在的对象。即使未来实现 subpackage 级部分更新、delta、Range 下载或跨版本去重，公开模型仍然是“一个新版本 PIKG”，不能要求普通开发者单独发布或更新 Sub PackageMeta。
 
-- 构造开发源代码的 PKG 或 PIKG；
-- 使用 Owner 私钥发布 AppDoc；
-- 决定哪个新版本应该成为 BNS 权威版本；
-- 在 Scheduler 之外选择实际运行 Node；
-- 在 Node Daemon 之外直接启动容器或进程；
-- 让 TaskManager 根据 AppDoc 语义自行决定下载全部 subpackage。
+优化必须保持：
 
-### 5.5 当前实现与缺口
+- 新版本 PIKG 可独立验证；
+- 从全新 Zone 安装不依赖历史版本；
+- 增量路径与完整安装路径得到相同 AppSpec 和运行内容；
+- 失败时可以恢复旧 AppSpec 和旧版本内容。
 
-当前 v0.5 Installer 已实现：
+### 8.5 rootfs 预装仍然是标准 Installer 输入
 
-- `Resolve → Inspect → Acquire → Verify → Prepare → Deploy → Activate` 七阶段状态机；
-- TaskManager `Task.data` 作为可恢复安装事务真相源；
-- DID 解析、candidate 绑定、Package Namespace 双重校验；
-- 强类型 InstallPlan、readiness、权限选择和 plan fingerprint；
-- Prepare/Deploy/Activate、安装记录和升级回滚；
-- `apps.install`、`apps.install_package`、confirm、retry 和 cancel RPC；
-- 外部 RPC 不直接接受安装文件的服务端路径。
+系统镜像可以在 `system/install_settings` 保存 `pikg_path + PreInstallPlanSeed`，但该 seed 不是 InstallPlan，也不授权 Scheduler 在 boot 阶段安装 App。Control Panel 登录并启动 InstallRunner 后，由内部 `PreInstallReconciler` 校验 rootfs cache 路径，把 PIKG 复制到 immutable staging，并以 `LocalPikg + SystemInternal + auto_confirm` 创建标准、持久、可恢复的 install/update Task。
 
-主要缺口和边界问题是：
+`SystemInternal` 只省略用户交互，不省略 PIKG digest、AppDID structural owner、AppDoc ObjectId、PackageMeta、required contents、target、permission/mount/config tips 或 final fingerprint 校验。只有 rootfs reconciler 的内部提交方法能把通过上述校验的 AppDoc 注册为进程内 `LocalAuthorityOverride`；公共 RPC 不能借 `SYSTEM_INTERNAL` 注入 authority。PIKG 内容变化产生新的安装意图；同一内容重放复用同一 Task 或得到 `Satisfied`。Scheduler 只接收 Prepare 阶段提交的完整 immutable InstallPlan，继续负责 Registry/AppSpec CAS 和目标状态推导，不读取 rootfs 路径或 PIKG。
 
-- 当前 RPC 先创建 Task，再在 Task 内构造 InstallPlan，没有独立 Preflight 接口；
-- 协议要求的 PIKG 上传通道尚未形成完整外部入口；
-- URL 入口只支持能够推导 Object ID 的 URL，普通 HTTPS PIKG/AppDoc URL 尚未完整支持；
-- TaskManager 下载 AppDoc 时会递归解释 `pkg_list` 并下载全部 subpackage，与 Installer Planner 的目标包选择重复；
-- AppDoc 业务验证分散在 Builder、Publisher、Resolver、Planner 多处；
-- `buckycli app create` 仍可直接写旧 `/config`、Gateway 和 RBAC，绕过当前安装协议。
+## 9. 调度与运行收敛
 
-## 6. 调度与运行收敛
-
-### 6.1 职责
-
-调度与运行收敛领域从 AppSpec 开始，不处理 App 的外部发现、发行身份和用户安装决策。
+调度与运行领域从 AppSpec 开始，不处理 App 的外部发现、签名、发布身份和用户安装决策。
 
 Scheduler 负责：
 
-1. 读取 AppSpec、Node 信息、现有实例和资源状态。
-2. 为 AppSpec 分配满足约束的目标 Node 和 InstanceReplica。
-3. 生成确定的 NodeConfig、ServiceInfo、Gateway 派生配置和调度快照。
-4. 在 AppSpec 修改、删除、扩缩容或 Node 状态变化时重新计算目标状态。
+- 读取 AppSpec、Node 状态和资源约束；
+- 分配目标 Node 和 InstanceReplica；
+- 生成 NodeConfig、ServiceInfo、Gateway 派生配置和调度状态；
+- 在 AppSpec 或 Zone 状态变化时重新计算目标状态。
 
 Node Daemon 负责：
 
-1. 读取本机 NodeConfig。
-2. 确保所需的准确 PackageMeta 和 payload 在本机 PackageEnv 中可用。
-3. 部署 Docker image、Host Script、Web 或 Agent 内容。
-4. 启动、停止、升级或移除 Instance。
-5. 上报 InstanceReport、运行状态和健康信息。
-6. 持续重试，直到本机实际状态收敛到 NodeConfig 描述的目标状态。
-
-### 6.2 非职责
+- 读取本机 NodeConfig；
+- 从 Zone 内已准备内容部署 Docker、Script 或 Static Web App；
+- 启动、停止、升级或移除 Instance；
+- 上报 InstanceReport、健康状态和错误；
+- 持续重试，直到实际状态收敛到 NodeConfig。
 
 Scheduler 和 Node Daemon 不得：
 
-- 解析 BNS App DID 或判断 AppDoc 的 Owner 信任；
-- 接受用户权限选择或重新解释安装策略；
-- 从 registry tag、latest 或外部 Repo 动态选择应用版本；
-- 从完整 AppDoc 中重新选择一个未被 InstallPlan 批准的平台包；
-- 直接访问 App 的外部发行源补齐安装准备阶段遗漏的内容；
-- 修改 AppDoc、InstallPlan 或安装批准结果。
+- 解析 BNS 或判断 App Owner 信任；
+- 从外部 Repo 临时选择另一个 App 版本；
+- 重新执行普通 App 的平台 package 选择；
+- 修改 AppDoc、InstallPlan 或用户批准结果；
+- 访问 App 的外部发行源补齐 Installer 未准备的内容。
 
-它们可以依赖 Zone 内 Repo/NamedStore 获取已经由 Installer 准备好的内容。
+## 10. 基础设施职责边界
 
-### 6.3 当前完成度
+| 领域 | 面向使用者的输入 | 核心职责 | 核心输出 |
+|---|---|---|---|
+| 开发工具 | App source、Docker/Script/Static Web artifact | build、离线验证、本地测试编排 | 未签名且测试通过的 PIKG |
+| 发布工具 | 测试通过的 PIKG、Owner 授权 | 重验、签名、上传、发布内嵌 AppDoc、回读 | 已发布 PIKG、PublicationReceipt |
+| BNS/Resolver | App DID、已签名 AppDoc | 维护当前权威 AppDoc 和 revision | ResolvedAppDocument |
+| PIKG/Object Provider | PIKG 或内部 Object ID | 提供字节，不决定身份和发布状态 | 可验证内容 |
+| Installer | PIKG 或可解析到 PIKG 的 App 标识 | 解析信任、验证、准备、用户确认、提交 | InstallPlan、AppSpec、install record |
+| Scheduler | AppSpec、Zone 状态 | 分配 Instance 并推导目标状态 | NodeConfig、InstanceReplica |
+| Node Daemon | NodeConfig、Zone 内已准备内容 | 部署、启动、停止和运行收敛 | InstanceReport、运行状态 |
 
-这一领域是当前四个领域中完成度最高的：
+职责边界的核心规则是：
 
-- Scheduler 已能从 `users/*/apps|agents/*/spec` 推导 InstanceReplica 和 NodeConfig；
-- Node Daemon 已能通过 PackageEnv 安装包、加载 Docker/Script/Web/Agent 内容并启动实例；
-- 实例状态通过 system-config 上报，Control Panel 的 Activate 阶段可以等待运行证据；
-- AppSpec、NodeConfig 和 InstanceReport 已形成期望状态到实际状态的闭环。
+- Builder 不发布；
+- Publisher 不重新构建 App 内容；
+- BNS 不承载 PIKG payload；
+- PIKG Provider 不决定 App 是否可信或当前有效；
+- Installer 不签名和发布；
+- Scheduler 不安装和重新选择版本；
+- Node Daemon 不访问外部发行源或重新解释 AppDoc。
 
-当前最需要修正的问题不是重新设计调度器，而是消除平台包选择的重复实现：
-
-- Installer Planner 使用 target selector 选择包；
-- Scheduler 根据 Node OS/Arch 手工拼接 package key；
-- Node Daemon 再次手写平台匹配，并存在跨架构 fallback；
-- `SubPkgList` 还保留基于编译期 `cfg!` 的旧选择 helper。
-
-最终只能保留 Installer Planner 这一处语义选择。Scheduler 和 Node Daemon 应执行 AppSpec 中已经解析好的准确包引用。
-
-## 7. 真相源与写入权
+## 11. 真相源与写入权
 
 | 数据 | 含义 | 唯一写入者 | 主要读取者 |
 |---|---|---|---|
-| Build Output | 本地可验证发行候选 | 开发工具 | 运维发布工具、Installer |
-| BNS AppDoc | 当前权威发布身份和 revision | 运维发布工具/权威发布服务 | Resolver、Installer |
-| Repo/NamedStore 内容 | 内容寻址对象和 payload | 运维发布工具、通用下载器 | Installer、Node Daemon |
+| 未签名 PIKG | 本地可验证发行候选 | 开发工具 | 本地 Installer、Publisher |
+| 正式 PIKG | 已加入 Owner AppDoc 签名的交付物 | Publisher | PIKG Provider、Installer |
+| BNS AppDoc | 当前权威发布版本和 revision | Publisher/权威发布服务 | Resolver、Installer |
 | `Task.data` | 进行中的安装事务 | Installer | Control Panel、Task UI |
 | InstallPlan | 当前安装决策快照 | Installer Planner | 用户确认、Verify、Prepare |
-| install_record | 长期安装审计状态 | Installer | Control Panel、升级/恢复流程 |
-| AppSpec | 用户级期望运行状态 | Installer | Scheduler |
-| Scheduler snapshot | Zone 调度推导状态 | Scheduler | Scheduler、运维诊断 |
+| install record | 长期安装审计状态 | Installer | Control Panel、升级和恢复流程 |
+| AppSpec | 用户批准的期望运行状态 | Installer | Scheduler |
 | NodeConfig | 某 Node 的目标实例状态 | Scheduler | Node Daemon |
-| InstanceReport | 某 Instance 的实际运行状态 | Node Daemon/运行时 | Scheduler、Installer Activate、Control Panel |
+| InstanceReport | 某 Instance 的实际运行状态 | Node Daemon/运行时 | Scheduler、Installer、Control Panel |
 
-派生数据不得反向覆盖它的输入真相源。例如，Node Daemon 的运行结果不能修改 InstallPlan；Repo 中存在某个 AppDoc body 也不能自动把它升级为 BNS 权威发布。
+AppDoc body、Sub PackageMeta 和 payload 是 PIKG 内部内容图的一部分，不再作为普通 App 开发者需要独立维护的工作流真相源。
 
-## 8. “一个功能多个实现”的收敛表
+派生数据不得反向覆盖输入真相源。例如：
 
-| 功能 | 当前重复或冲突实现 | 应保留的唯一归属 |
-|---|---|---|
-| tar.gz / subpackage 构造 | `buckycli package_cmd`、Control Panel Publisher | 开发侧共享 packaging core |
-| PIKG 构造与验证 | Control Panel 私有模块、测试生成脚本编排 | 开发与 Installer 共用的 PIKG core |
-| AppDoc 业务验证 | AppDoc Builder、Publisher scan、Resolver、Planner | 无副作用的 App schema/validation core |
-| AppName/Package Namespace | App DID 构造、Publisher 的 PackageId parse、Installer namespace validator | 共享 validator；Installer 和 Publisher 必须强制调用 |
-| 目标平台包选择 | Planner、Scheduler、Node Daemon、编译期 helper | Installer Planner |
-| AppDoc 依赖展开 | TaskManager 下载器、Installer Planner | Installer Planner；TaskManager 只做传输 |
-| 内容发布 | `app.publish`、`repo.store`、`repo.announce` | 运维发布工作流编排；Repo 只提供内容原语 |
-| BNS 文档发布 | `repo.announce` 语义、Node 激活 `SnClient.publish_document` | 统一的授权发布组件，复用发布后回读模式 |
-| App 安装提交 | v0.5 Installer、`buckycli app create`、系统预装直接写 spec | Installer；系统镜像构建走显式 internal provisioning 入口 |
-| 版本选择 | DID 权威 AppDoc、旧 Repo latest-semver 逻辑 | BNS/DID 权威 AppDoc；安装只消费确定版本 |
+- 运行结果不能修改已批准的 AppSpec；
+- Repo 中存在某个 AppDoc body 不能自动使其成为 BNS 当前版本；
+- PIKG 已上传不能自动解释为已经发布；
+- PIKG 文件 digest 相同或不同都不能代替内部对象和 BNS 校验。
 
-## 9. 建议实施顺序
+## 12. 对工具与 API 设计的约束
 
-### P0：先固定安装与调度的合同
+后续 CLI、RPC 和 UI 设计应遵守以下约束：
 
-1. 在 AppSpec 或其部署描述中固化 Planner 选出的准确 package set。
-2. 删除 Scheduler 和 Node Daemon 的平台包重选及跨架构 fallback。
-3. 让 TaskManager 回到通用 `Object ID → bytes` 传输职责，移除 AppDoc 语义递归下载。
-4. 禁止 `buckycli app create` 等普通入口绕过 Installer 写 AppSpec。
+1. 普通 App 的 build 主要输出一个 PIKG，不要求用户管理松散的 AppDoc、PackageMeta 和 payload 发布清单。
+2. 本地 test/install 直接消费 PIKG，不要求先把内部对象发布到 Repo/BNS。
+3. sign 只接受经过验证的 PIKG，签名其内嵌 AppDoc，并原子地产生签名后 PIKG。
+4. publish 以签名 PIKG 为核心输入，自动编排上传、发布同一份 AppDoc 和权威回读。
+5. 普通 App 不提供必须由开发者使用的 `pack-subpkg`、`sign-package-meta`、`publish-package-meta` 或依赖解析工作流。
+6. install 面向 PIKG 或可解析到 PIKG 的 App 标识；对象级入口只作为内部、诊断或系统组件能力。
+7. Builder、Publisher 和 Installer 必须复用同一套 PIKG parser、canonicalization、Object ID 和 verifier。
+8. UI 只展示 App、PIKG、版本、签名/发布状态和安装任务，不把内部对象状态矩阵变成用户必须处理的步骤。
+9. 内部存储、下载和更新优化不得改变上述公开模型。
 
-这是最高优先级，因为它直接决定“用户批准的内容”是否等于“最终运行的内容”。
+一个重要的可用性验收标准是：
 
-### P1：抽取纯本地构建与验证核心
+> 使用者即使没有阅读 AppDoc、SubPkgMeta 和 Named Object 协议，也能根据当前 PIKG 的状态自然判断下一步是测试、签名、发布还是安装。
 
-1. 将 PKG 打包、PIKG Builder/Reader、AppDoc/AppName/Namespace 验证抽成共享库。
-2. 建立不依赖运行中 BuckyOS 的开发 CLI。
-3. 让 Publisher 和 Installer 使用同一套验证函数。
-4. 清理 `buckycli pub_pkg/pub_app`、旧 Repo release 选择和重复 tar 打包代码。
+## 13. 当前实现的收敛方向
 
-### P1：建立完整本地开发测试闭环
+当前实现已经具备可以复用的基础：
 
-1. 建立正式的 PIKG 本地上传/staging API，不再通过 `app.publish` 取得内部 handle。
-2. 建立 scoped dev authority 管理 API，支持创建、查询、续期、撤销和自动过期。
-3. 提供统一的 `app dev` CLI，编排 build、stage、trust、inspect、install、watch、logs、test、update 和 clean。
-4. 改造 `app_installer_test`，使用本地测试会话和 dev authority，不再读取生产 Owner 私钥或依赖正式 Publisher。
-5. 让本地开发和 CI 使用同一流程；CI job 结束时自动撤销 dev authority 并清理测试 App。
+- Control Panel 的 `PikgBuilder` / `PikgReader` 可以构造和严格验证 PIKG；
+- PIKG 已支持 `APPDOC.json` 与 `APPDOC.jwt` 共存并检查 canonical 一致性；
+- AppDoc 可以直接引用 PackageMeta Object ID，PackageMeta 可以绑定 payload digest；
+- v0.5 Installer 已有 Resolve、Inspect、Acquire、Verify、Prepare、Deploy、Activate 状态机；
+- AppSpec、Scheduler、NodeConfig 和 Node Daemon 已形成运行收敛主链路。
 
-### P1：建立真正的运维发布工作流
+后续实现应优先完成以下收敛：
 
-1. 把当前 `app.publish` 拆为本地 build、内容 deploy、AppDoc sign、BNS publish 四个显式步骤。
-2. 建立 PIKG 上传/部署接口，返回可远程获取的内容 ID，而不是服务端路径。
-3. 校验发布 principal 与 Owner/App DID 的授权关系。
-4. 复用 SN/BNS 发布及 Indexer 回读模式，输出 PublicationReceipt。
-5. 让部分失败可以安全重试，不重复产生不一致发布。
+1. 把 PIKG build/reader/verifier 抽成开发工具、Publisher 和 Installer 可共享的核心库。
+2. 让本地 build 不依赖运行中的 Control Panel、Repo Service、system-config 或正式密钥。
+3. 建立明确的 PIKG staging/upload 能力，不再让普通调用者传服务端本地路径。
+4. 建立 scoped local developer authority，使未签名 PIKG 可以通过标准 Installer 测试而不进入公开信任域。
+5. 将当前复合 `app.publish` 收敛为以 PIKG 为输入的签名和发布工作流，不再负责读取源码目录并重新打包。
+6. 实现 Owner AppDoc 签名、PIKG 上传、BNS 发布和发布后回读闭环。
+7. 普通 App admission 拒绝第三方 package 依赖和开发者可见的平台矩阵。
+8. Scheduler 和 Node Daemon 只执行 AppSpec 中的确定结果，不重新解释完整 AppDoc 或平台包选择。
+9. 保留对象级存储和部分更新能力，但从普通 App 开发与发布界面中移除相关操作。
 
-### P2：完善 Preflight 和 UI 合同
+## 14. 验收标准
 
-1. 提供独立的 `inspect/preflight` 接口，在创建安装 Task 前返回 InstallPlan。
-2. 暴露稳定的安装状态 snapshot，而不是让 UI 解释内部 Task.data。
-3. 将 Desktop 当前 mock-first Installer 替换为真实 RPC adapter。
+### 14.1 开发体验
 
-## 10. 验收标准
+- 未启动 BuckyOS、没有正式发行密钥时，可以 build 和离线验证 PIKG；
+- 开发者只需要操作一个 PIKG 即可完成本地安装和测试；
+- 开发者不需要理解或独立发布 AppDoc、Sub PackageMeta 和 payload；
+- Docker、Script 和 Static Web 使用同一条 build/test 主流程；
+- 普通 App 中出现第三方 package 依赖或平台 package matrix 时明确拒绝，而不是进入隐式复杂流程。
 
-### 开发工具
+### 14.2 签名与发布
 
-- 在未启动 BuckyOS、没有发行密钥的机器上可以构造和验证 PIKG；
-- 构建过程不写 NamedStore、Repo、BNS 或 system-config；
-- Builder 与 Installer 对同一个产物给出一致的验证结果；
-- 输出不包含服务端本地路径和凭证；
-- 在没有生产 Owner/BNS 私钥的情况下，可以完成 staging、dev trust、InstallPlan、安装、运行测试、更新和清理；
-- 开发工具只使用本地登录会话和有 scope 的 dev authority，不能把 candidate 标记为公开 `Active`；
-- 测试结束后能够撤销 dev authority，并清理安装 Task、测试 App 和 staging 临时文件；
-- 相同的工具链可以在开发机和 CI 中运行，CI 不持有正式发布权限。
+- Publisher 以测试通过的 PIKG 为唯一主要输入；
+- 签名后 AppDoc Object ID、PackageMeta Object ID 和 payload digest 全部保持不变；
+- Sub PackageMeta 不需要独立签名；
+- PIKG 不需要整包签名或 `app.pikg.sig`；
+- PIKG 可下载前不会更新 BNS；
+- BNS 发布的是签名 PIKG 内完全相同的 `APPDOC.jwt`；
+- 发布后可以回读相同的 App DID、AppDoc Object ID 和 revision；
+- 发布失败不影响旧版本继续安装和运行。
 
-### 运维发布工具
+### 14.3 安装与升级
 
-- 可以使用明确的 Owner 授权发布一个 App 新版本；
-- 内容部署完成前不会更新权威 AppDoc；
-- 发布完成后能从权威 Resolver/Indexer 回读相同 AppDoc Object ID；
-- 重复执行不会生成冲突 revision 或破坏当前可用版本；
-- 每次发布都有可审计的 PublicationReceipt。
+- 普通用户只需要下载并安装 PIKG；
+- 公开安装同时验证 Owner 签名、BNS 当前状态、内部 Object ID 和 payload digest；
+- AppSpec 写入前目标内容已经在 Zone 内 ready；
+- 安装计划、用户确认、AppSpec 和最终运行内容保持一致；
+- 全新安装与内部增量优化得到相同结果；
+- 升级对用户仍表现为安装一个新版本 PIKG。
 
-### 安装协议
+### 14.4 架构边界
 
-- 任意外部输入都先被当作不可信 candidate；
-- 可以在不写 AppSpec 的情况下得到 InstallPlan；
-- AppName、Owner、Package Namespace 和所有内容都在提交前验证；
-- AppSpec 写入前，目标安装所需内容已经在 Zone 内 ready；
-- AppSpec 中实际执行的 package set 与 plan fingerprint、用户确认完全一致；
-- Installer 是普通 AppSpec 的唯一写入者。
+- Builder、Publisher、Installer、Scheduler 和 Node Daemon 没有重复实现彼此的核心职责；
+- 普通 App 与系统组件的高级 PKG/多平台流程边界清晰；
+- 底层可以继续优化对象级下载、缓存和更新，而无需改变 App 开发者工作流。
 
-### 调度与运行收敛
-
-- Scheduler 只根据 AppSpec 和 Zone 当前状态分配 Instance；
-- Scheduler 和 Node Daemon 不重新解释 AppDoc 或选择另一版本/架构包；
-- Node Daemon 只依赖 Zone 内已准备内容即可完成部署；
-- 相同 AppSpec 在相同 Zone 状态下产生一致的调度目标；
-- InstanceReport 能让 Installer 明确区分 running、activation failed 和 deploy failed。
-
-## 11. 当前实现入口
+## 15. 当前实现入口
 
 | 领域 | 主要入口 |
 |---|---|
-| PKG 开发工具 | `src/tools/buckycli/src/package_cmd.rs` |
 | PIKG 格式与 Builder/Reader | `src/frame/control_panel/src/pikg.rs` |
 | 当前复合 Publisher | `src/frame/control_panel/src/app_installer.rs` 中的 `app.publish` |
 | AppDoc/InstallPlan 共享类型 | `src/kernel/buckyos-api/src/app_doc.rs`、`app_install.rs` |
-| AppName/Namespace 验证 | `src/frame/control_panel/src/app_package_namespace.rs` |
+| App namespace 验证 | `src/frame/control_panel/src/app_package_namespace.rs` |
 | Installer Planner | `src/frame/control_panel/src/app_install_planner.rs` |
 | Installer 状态机 | `src/frame/control_panel/src/app_install_engine.rs` |
 | Prepare/Deploy/Activate | `src/frame/control_panel/src/app_install_deployer.rs` |
-| 通用下载任务 | `src/kernel/task_manager/src/download_executor.rs` |
-| Repo 内容原语 | `src/frame/repo_service/src/service.rs` |
+| Repo/NamedStore 内容原语 | `src/frame/repo_service/src/service.rs` |
 | Scheduler | `src/kernel/scheduler/src/app.rs`、`system_config_agent.rs` |
 | Node 运行收敛 | `src/kernel/node_daemon/src/app_loader.rs`、`app_mgr.rs` |
 
-## 12. 相关文档
+## 16. 相关文档
 
-- [App 安装协议](../App%20安装协议.md)：AppDoc、PIKG、InstallPlan、七阶段事务和安全规则的当前真相源。
-- [BuckyOS App 安装流程](BuckyOS%20App安装流程.md)：Repo 内容原语、证明和 App 生命周期背景；其中旧安装接口描述应以 v0.5 协议为准。
-- [App PKG System](app-pkg-system.md)：PackageEnv、Repo、Node Daemon 和升级模型的历史设计背景。
-- [publish_app_to_repo local_dir 格式](../repo_service/publish_app_to_repo_local_dir格式说明.md)：当前复合 Publisher 的输入布局。
+- [App 安装协议](../App%20安装协议.md)：PIKG、AppDoc、InstallPlan、安装事务和安全规则的当前协议基础。
+- [BuckyOS App 安装流程](BuckyOS%20App安装流程.md)：Repo 内容原语、证明和 App 生命周期背景。
+- [App PKG System](app-pkg-system.md)：PackageEnv、Repo、Node Daemon 和对象级升级能力的历史设计背景；普通 App 公开流程以本文为准。
+- [publish_app_to_repo local_dir 格式](../repo_service/publish_app_to_repo_local_dir格式说明.md)：当前复合 Publisher 的历史输入布局，不代表目标开发者工作流。

@@ -14,24 +14,27 @@ use crate::model_types::{
     LatencyClass, LogicalModelDefinition, ModelAttributes, ModelCandidate, ModelCapabilities,
     ModelHealth, ModelMetadata, ModelPricing, PolicyConfig, PricingMode, PrivacyClass,
     ProviderInventory, ProviderOrigin, ProviderType, ProviderTypeTrustedSource, QuotaState,
-    RequestedModelType, RequiredModelFeatures, RouteError, RouteErrorCode, RoutePolicy,
-    RoutePricingSnapshot, RouteTrace, UserFacingProviderOrigin, UserFacingRouteSummary,
+    RequiredModelFeatures, RouteError, RouteErrorCode, RoutePolicy, RoutePricingSnapshot,
+    RouteTrace, UserFacingProviderOrigin, UserFacingRouteSummary,
 };
 use ::kRPC::*;
 use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    ai_methods, get_buckyos_api_runtime, AiContent, AiMethodRequest, AiMethodResponse,
-    AiMethodStatus, AiPayload, AiResponse, AiccComputeProgress, AiccComputeTaskData,
-    AiccComputeTaskRequest, AiccHandler, AiccRouteOverlay, AiccRouteTraceEvent, AiccUsageEvent,
-    task_mgr_error_code, AckControlReq, CancelResponse, Capability, CommitResultReq,
-    CreateTaskExecutor, CreateTaskReq, FailTaskReq, Feature, LlmChatInvokeRequest,
-    LlmChatInvokeResponse, ModelSpec, ReportProgressReq, ReportStartedReq,
-    Requirements, ResourceRef, RouteFallbackAttempt, RouteResolveRequest, RouteResolveResponse,
-    RunnerWriteEnvelope, TaskControlAction, TaskError, TaskManagerClient, TaskPhase,
-    TextToImageInvokeRequest, TextToImageInvokeResponse, TypedTaskData, AICC_SERVICE_SERVICE_NAME,
+    ai_methods, get_buckyos_api_runtime, task_mgr_error_code, validate_verify_hub_token_claims,
+    AckControlReq, AiContent, AiMethodRequest, AiMethodResponse, AiMethodStatus, AiPayload,
+    AiResponse, AiccComputeProgress, AiccComputeTaskData, AiccComputeTaskRequest, AiccHandler,
+    AiccRouteOverlay, AiccRouteTraceEvent, AiccUsageEvent, AiccVideoContinuationSource,
+    CancelResponse, Capability, CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq,
+    Feature, LlmChatInvokeRequest, LlmChatInvokeResponse, LlmResponseFormat, ModelSpec,
+    ReportProgressReq, ReportStartedReq, Requirements, ResourceRef, RouteFallbackAttempt,
+    RouteResolveRequest, RouteResolveResponse, RunnerWriteEnvelope, TaskControlAction, TaskError,
+    TaskManagerClient, TaskPhase, TextToImageInvokeRequest, TextToImageInvokeResponse, TokenUse,
+    TypedTaskData,
 };
+#[cfg(test)]
+use buckyos_api::{bind_token_principal_kind, bind_token_target, AuthTarget, TokenPrincipalKind};
 use log::{debug, error, info, warn};
 use ndn_lib::{
     load_named_object_from_obj_str, ChunkHasher, ChunkId, FileObject, NamedObject, ObjId,
@@ -55,6 +58,7 @@ const AICC_TASK_EVENT_RETENTION: usize = 64;
 const REDACTED_BASE64_PLACEHOLDER: &str = "[redacted_base64]";
 const REDACTED_DATA_URL_BASE64_PREFIX: &str = "[redacted_data_url_base64";
 const REDACTED_LONG_BASE64_LIKE_PLACEHOLDER: &str = "[redacted_base64_like_string]";
+const REDACTED_LOG_TEXT_PLACEHOLDER: &str = "[redacted_text]";
 const LOG_BASE64_LIKE_MIN_CHARS: usize = 512;
 const SN_AI_PROVIDER_FREE_CREDIT_USD: f64 = 15.0;
 const REFRESH_IDLE: u8 = 0;
@@ -134,33 +138,42 @@ pub struct InvokeCtx {
 }
 
 impl InvokeCtx {
-    pub fn from_rpc(ctx: &RPCContext) -> Self {
-        let session_token = ctx.token.clone();
-        let mut tenant_id = "anonymous".to_string();
-        let mut caller_app_id: Option<String> = None;
-
-        if let Some(token) = session_token.as_ref() {
-            if !token.trim().is_empty() {
-                if let Ok(parsed) = RPCSessionToken::from_string(token.as_str()) {
-                    if let Ok((sub, appid)) = parsed.get_subs() {
-                        tenant_id = sub;
-                        caller_app_id = Some(appid);
-                    } else {
-                        tenant_id = token.clone();
-                    }
-                } else {
-                    tenant_id = token.clone();
-                }
-            }
-        }
-
+    fn from_unverified_rpc(ctx: &RPCContext) -> Self {
         Self {
-            tenant_id,
-            caller_app_id,
-            session_token,
+            tenant_id: "anonymous".to_string(),
+            caller_app_id: None,
+            session_token: ctx.token.clone(),
             trace_id: ctx.trace_id.clone(),
             task_id: None,
         }
+    }
+
+    fn apply_verified_session(&mut self, parsed: &RPCSessionToken) -> Result<()> {
+        let claims = validate_verify_hub_token_claims(parsed, TokenUse::Session)?;
+        let sub = parsed
+            .sub
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| RPCErrors::InvalidToken("session token has no subject".to_string()))?;
+        self.tenant_id = sub.to_string();
+        self.caller_app_id = Some(claims.target.canonical_key());
+        Ok(())
+    }
+
+    pub async fn from_rpc(ctx: &RPCContext) -> Self {
+        let mut invoke_ctx = Self::from_unverified_rpc(ctx);
+        if let Some(token) = ctx
+            .token
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            if let Ok(runtime) = get_buckyos_api_runtime() {
+                if let Ok(parsed) = runtime.verify_trusted_session_token(token).await {
+                    let _ = invoke_ctx.apply_verified_session(&parsed);
+                }
+            }
+        }
+        invoke_ctx
     }
 }
 
@@ -288,6 +301,69 @@ fn redact_base64_fields(value: &mut Value) {
     }
 }
 
+fn redact_all_log_strings(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                redact_all_log_strings(item);
+            }
+        }
+        Value::Object(map) => {
+            for nested in map.values_mut() {
+                redact_all_log_strings(nested);
+            }
+        }
+        Value::String(text) => {
+            *text = format!("{} len={}", REDACTED_LOG_TEXT_PLACEHOLDER, text.len());
+        }
+        _ => {}
+    }
+}
+
+fn redact_sensitive_log_fields(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                redact_sensitive_log_fields(item);
+            }
+        }
+        Value::Object(map) => {
+            for (key, nested) in map.iter_mut() {
+                let normalized = key.to_ascii_lowercase().replace('_', "").replace('-', "");
+                if matches!(normalized.as_str(), "args" | "arguments" | "queries") {
+                    redact_all_log_strings(nested);
+                    continue;
+                }
+                if matches!(
+                    normalized.as_str(),
+                    "text"
+                        | "prompt"
+                        | "command"
+                        | "instructions"
+                        | "system"
+                        | "content"
+                        | "input"
+                        | "output"
+                        | "caption"
+                        | "transcript"
+                        | "query"
+                        | "searchsuggestions"
+                        | "url"
+                        | "fileuri"
+                        | "gcsuri"
+                ) {
+                    if nested.is_string() {
+                        redact_all_log_strings(nested);
+                        continue;
+                    }
+                }
+                redact_sensitive_log_fields(nested);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn redacted_summary_value(summary: &AiResponse) -> Value {
     let mut value = serde_json::to_value(summary).unwrap_or_else(|_| json!({}));
     redact_base64_fields(&mut value);
@@ -297,6 +373,7 @@ fn redacted_summary_value(summary: &AiResponse) -> Value {
 pub(crate) fn redacted_json_log(value: &Value) -> String {
     let mut value = value.clone();
     redact_base64_fields(&mut value);
+    redact_sensitive_log_fields(&mut value);
     value.to_string()
 }
 
@@ -308,22 +385,8 @@ pub struct ProviderInstance {
     pub provider_origin: ProviderOrigin,
     pub provider_type_trusted_source: ProviderTypeTrustedSource,
     pub provider_type_revision: Option<String>,
-    pub capabilities: Vec<Capability>,
-    pub features: Vec<Feature>,
     pub endpoint: Option<String>,
     pub plugin_key: Option<String>,
-}
-
-impl ProviderInstance {
-    pub fn supports_capability(&self, capability: &Capability) -> bool {
-        self.capabilities.iter().any(|item| item == capability)
-    }
-
-    pub fn supports_features(&self, required_features: &[Feature]) -> bool {
-        required_features
-            .iter()
-            .all(|feature| self.features.iter().any(|item| item == feature))
-    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -576,6 +639,8 @@ struct TaskAuditSink {
     taskmgr_override: Option<Arc<TaskManagerClient>>,
     taskmgr_context: RPCContext,
     task_mgr_id: String,
+    tenant_id: String,
+    continuation_db: Option<Arc<AiccUsageLogDb>>,
     lock: AsyncMutex<()>,
 }
 
@@ -584,12 +649,75 @@ impl TaskAuditSink {
         taskmgr_override: Option<Arc<TaskManagerClient>>,
         taskmgr_context: RPCContext,
         task_mgr_id: String,
+        tenant_id: String,
+        continuation_db: Option<Arc<AiccUsageLogDb>>,
     ) -> Self {
         Self {
             taskmgr_override,
             taskmgr_context,
             task_mgr_id,
+            tenant_id,
+            continuation_db,
             lock: AsyncMutex::new(()),
+        }
+    }
+
+    async fn record_video_continuation_source(&self, event: &TaskEvent) {
+        let Some(db) = self.continuation_db.as_ref() else {
+            return;
+        };
+        let Some(extra) = event
+            .data
+            .as_ref()
+            .and_then(|data| data.get("summary"))
+            .and_then(|summary| summary.get("extra"))
+        else {
+            return;
+        };
+        let has_continuation = extra
+            .get("continuation_handle")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty());
+        if !has_continuation {
+            return;
+        }
+        let Some(artifacts) = extra
+            .get("materialized_artifacts")
+            .and_then(Value::as_array)
+        else {
+            return;
+        };
+        for artifact in artifacts {
+            let is_video = artifact
+                .get("mime")
+                .and_then(Value::as_str)
+                .is_some_and(|mime| mime.starts_with("video/"));
+            let Some(content_id) = artifact
+                .get("content_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+            else {
+                continue;
+            };
+            if !is_video {
+                continue;
+            }
+            let record = AiccVideoContinuationSource {
+                tenant_id: self.tenant_id.clone(),
+                content_id: content_id.to_string(),
+                source_task_id: self.task_mgr_id.clone(),
+                created_at_ms: now_ms_i64(),
+            };
+            match db.upsert_video_continuation_source(&record).await {
+                Ok(()) => info!(
+                    "aicc.video_continuation source persisted: tenant={} content_id={} source_task_id={}",
+                    record.tenant_id, record.content_id, record.source_task_id
+                ),
+                Err(error) => warn!(
+                    "aicc.video_continuation source persist_failed: tenant={} source_task_id={} err={}",
+                    record.tenant_id, record.source_task_id, error
+                ),
+            }
         }
     }
 }
@@ -667,7 +795,7 @@ struct UsageLogContext {
     caller_app_id: Option<String>,
     capability: String,
     request_model: String,
-    provider_model: String,
+    provider_model: Arc<std::sync::RwLock<String>>,
     idempotency_key: Option<String>,
 }
 
@@ -729,7 +857,12 @@ impl UsageLoggingSink {
             idempotency_key: self.context.idempotency_key.clone(),
             capability: self.context.capability.clone(),
             request_model: self.context.request_model.clone(),
-            provider_model: self.context.provider_model.clone(),
+            provider_model: self
+                .context
+                .provider_model
+                .read()
+                .map(|model| model.clone())
+                .unwrap_or_else(|_| "unknown".to_string()),
             input_tokens,
             output_tokens,
             total_tokens,
@@ -889,6 +1022,7 @@ impl AIComputeCenter {
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
+                storage_domain: None,
                 idempotency_key: format!("aicc:{external_task_id}"),
                 retry_of: None,
                 supersedes: None,
@@ -1057,8 +1191,7 @@ impl TaskEventSink for TaskAuditSink {
                 } else {
                     task
                 };
-                let message =
-                    event_message.unwrap_or_else(|| "aicc provider started".to_string());
+                let message = event_message.unwrap_or_else(|| "aicc provider started".to_string());
                 taskmgr
                     .report_progress(ReportProgressReq {
                         envelope: RunnerWriteEnvelope {
@@ -1082,6 +1215,7 @@ impl TaskEventSink for TaskAuditSink {
                         expected_revision: task.revision,
                     })
                     .await?;
+                self.record_video_continuation_source(&event).await;
             }
             TaskEventKind::Error => {
                 let message = event_message.unwrap_or_else(|| "aicc task failed".to_string());
@@ -1330,6 +1464,111 @@ fn file_object_mime(file: &FileObject) -> Option<String> {
     infer_mime_from_name(file.name.as_str())
 }
 
+fn video_content_id_from_resolved_request(
+    request: &AiMethodRequest,
+) -> std::result::Result<Option<String>, RPCErrors> {
+    for resource in &request.payload.resources {
+        let ResourceRef::Base64 { mime, data_base64 } = resource else {
+            continue;
+        };
+        if !mime.starts_with("video/") {
+            continue;
+        }
+        let encoded = data_base64
+            .split_once(',')
+            .filter(|(prefix, _)| prefix.trim_start().starts_with("data:"))
+            .map(|(_, data)| data)
+            .unwrap_or(data_base64);
+        let bytes = general_purpose::STANDARD.decode(encoded).map_err(|error| {
+            reason_error(
+                "resource_invalid",
+                format!("decode video resource failed: {}", error),
+            )
+        })?;
+        let content_id = ChunkHasher::new(None)
+            .map_err(|error| {
+                reason_error(
+                    "resource_invalid",
+                    format!("create video content hasher failed: {}", error),
+                )
+            })?
+            .calc_mix_chunk_id_from_bytes(&bytes)
+            .map_err(|error| {
+                reason_error(
+                    "resource_invalid",
+                    format!("calculate video content id failed: {}", error),
+                )
+            })?;
+        return Ok(Some(content_id.to_string()));
+    }
+    Ok(None)
+}
+
+fn request_has_continuation_handle(request: &AiMethodRequest) -> bool {
+    request
+        .payload
+        .input_json
+        .as_ref()
+        .and_then(|input| input.get("continuation_handle"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn insert_continuation_handle(request: &mut AiMethodRequest, handle: String) {
+    let input = request
+        .payload
+        .input_json
+        .get_or_insert_with(|| Value::Object(Map::new()));
+    if !input.is_object() {
+        *input = json!({ "value": input.clone() });
+    }
+    input
+        .as_object_mut()
+        .expect("video extension input should be an object")
+        .insert("continuation_handle".to_string(), Value::String(handle));
+}
+
+fn continuation_from_source_task(
+    task: &buckyos_api::Task,
+    tenant_id: &str,
+) -> Option<(String, String)> {
+    let task_data = parse_aicc_task_data(task.result.as_ref()?);
+    continuation_from_task_data(&task_data, tenant_id)
+}
+
+fn continuation_from_task_data(
+    task_data: &AiccComputeTaskData,
+    tenant_id: &str,
+) -> Option<(String, String)> {
+    if task_data.request.tenant_id.as_deref() != Some(tenant_id) {
+        return None;
+    }
+    let output = task_data.result.as_ref()?.output.as_ref()?;
+    let handle = output
+        .pointer("/extra/continuation_handle")?
+        .as_str()?
+        .trim();
+    if handle.is_empty() {
+        return None;
+    }
+    let exact_model = output
+        .pointer("/extra/provider_audit/aicc_exact_model")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            task_data
+                .request
+                .route
+                .as_ref()
+                .and_then(|route| route.get("selected_exact_model"))
+                .and_then(Value::as_str)
+        })?
+        .trim();
+    if exact_model.is_empty() {
+        return None;
+    }
+    Some((handle.to_string(), exact_model.to_string()))
+}
+
 fn infer_mime_from_name(name: &str) -> Option<String> {
     let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
     match ext.as_str() {
@@ -1342,6 +1581,7 @@ fn infer_mime_from_name(name: &str) -> Option<String> {
         "ogg" => Some("audio/ogg".to_string()),
         "mp4" => Some("video/mp4".to_string()),
         "json" => Some("application/json".to_string()),
+        "xml" => Some("text/xml".to_string()),
         "txt" => Some("text/plain".to_string()),
         _ => None,
     }
@@ -1368,6 +1608,53 @@ fn infer_mime_from_bytes(bytes: &[u8]) -> String {
     }
     if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
         return "video/mp4".to_string();
+    }
+    if bytes.starts_with(b"%PDF-") {
+        return "application/pdf".to_string();
+    }
+    if bytes.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") {
+        return "application/vnd.ms-excel".to_string();
+    }
+    if bytes.starts_with(b"PK\x03\x04") {
+        if bytes.windows(5).any(|value| value == b"word/") {
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                .to_string();
+        }
+        if bytes.windows(3).any(|value| value == b"xl/") {
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string();
+        }
+        if bytes.windows(4).any(|value| value == b"ppt/") {
+            return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                .to_string();
+        }
+        if bytes.windows(20).any(|value| value == b"application/epub+zip") {
+            return "application/epub+zip".to_string();
+        }
+    }
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        let trimmed = text.trim_start();
+        let lowercase = trimmed
+            .get(..trimmed.len().min(256))
+            .unwrap_or(trimmed)
+            .to_ascii_lowercase();
+        if trimmed.starts_with("{\\rtf") {
+            return "application/rtf".to_string();
+        }
+        if (trimmed.starts_with('{') || trimmed.starts_with('['))
+            && serde_json::from_str::<Value>(trimmed).is_ok()
+        {
+            return "application/json".to_string();
+        }
+        if lowercase.starts_with("<!doctype html")
+            || lowercase.starts_with("<html")
+            || lowercase.contains("<html")
+        {
+            return "text/html".to_string();
+        }
+        if trimmed.starts_with("<?xml") || trimmed.starts_with('<') {
+            return "text/xml".to_string();
+        }
+        return "text/plain".to_string();
     }
     "application/octet-stream".to_string()
 }
@@ -1836,8 +2123,6 @@ impl Router {
         let mut scored = vec![];
         let (input_tokens, output_tokens) = estimate_request_tokens(req);
         let request_policy = route_policy_from_request(req);
-        let required_features = req.requirements.effective_feature_names();
-
         for candidate in snapshot.candidates.iter() {
             let instance_id = candidate.inventory.provider_instance_name.as_str();
             let Some(provider) = registry.get_provider(instance_id) else {
@@ -1858,12 +2143,6 @@ impl Router {
                 alias_mapped = true;
             }
 
-            if let Some(instance) = legacy_instance {
-                if !instance.supports_features(&required_features) {
-                    continue;
-                }
-            }
-
             if let Some(allow) = allow_set.as_ref() {
                 if !allow.contains(provider_type) {
                     continue;
@@ -1878,7 +2157,11 @@ impl Router {
             let Some(provider_model) = provider_model else {
                 continue;
             };
-
+            if request_policy.local_only
+                && candidate.inventory.provider_type != ProviderType::LocalInference
+            {
+                continue;
+            }
             let estimate = provider.estimate_cost(&CostEstimateInput {
                 api_type: api_type_for_capability(&req.capability).unwrap_or(ApiType::Llm),
                 exact_model: exact_model_name(provider_model.as_str(), instance_id),
@@ -2451,6 +2734,22 @@ fn append_provider_audit_to_summary(summary: &mut AiResponse, attempt: &RouteAtt
     }
 }
 
+fn ensure_summary_accounting(summary: &mut AiResponse, attempt: &RouteAttempt) {
+    if summary.usage.is_none() {
+        summary.usage = Some(buckyos_api::AiUsage::request_units(1));
+    }
+    if summary.cost.is_none() {
+        if let Some(pricing) = attempt.pricing_snapshot.as_ref() {
+            if let Some(amount) = pricing.estimated_cost {
+                summary.cost = Some(buckyos_api::AiCost {
+                    amount,
+                    currency: pricing.currency.clone(),
+                });
+            }
+        }
+    }
+}
+
 fn llm_chat_invoke_to_method_request(
     request: LlmChatInvokeRequest,
 ) -> std::result::Result<AiMethodRequest, RPCErrors> {
@@ -2471,23 +2770,20 @@ fn llm_chat_invoke_to_method_request(
     if payload.tool_specs.is_empty() {
         payload.tool_specs = request.tools;
     }
-    if let Some(input_json) = payload.input_json.as_mut() {
-        if !input_json.is_object() {
-            *input_json = json!({ "value": input_json.clone() });
+    let input_json = payload.input_json.get_or_insert_with(|| json!({}));
+    if !input_json.is_object() {
+        *input_json = json!({ "value": input_json.clone() });
+    }
+    if let Some(object) = input_json.as_object_mut() {
+        if let Some(resp_format) = request.response_format {
+            object.insert("response_format".to_string(), json!(resp_format));
         }
-        if let Some(object) = input_json.as_object_mut() {
-            if let Some(resp_format) = request.response_format {
-                object.insert("response_format".to_string(), json!(resp_format));
-            }
-            if let Some(temperature) = request.temperature {
-                object.insert("temperature".to_string(), json!(temperature));
-            }
-            if let Some(max_output_tokens) = request.max_output_tokens {
-                object.insert("max_output_tokens".to_string(), json!(max_output_tokens));
-            }
+        if let Some(temperature) = request.temperature {
+            object.insert("temperature".to_string(), json!(temperature));
         }
-    } else {
-        payload.input_json = Some(json!({}));
+        if let Some(max_output_tokens) = request.max_output_tokens {
+            object.insert("max_output_tokens".to_string(), json!(max_output_tokens));
+        }
     }
     merge_provider_options(&mut payload, request.provider_options);
     let mut policy = buckyos_api::RoutePolicy::default();
@@ -2728,6 +3024,7 @@ fn required_model_features(requirements: &Requirements) -> RequiredModelFeatures
     required.json_schema = requirements.required.json_schema;
     required.web_search = requirements.required.web_search;
     required.vision = requirements.required.vision;
+    required.image_generation = requirements.required.image_generation;
     required.min_context_tokens = requirements.required.min_context_tokens;
     for feature in &requirements.must_features {
         match feature.as_str() {
@@ -2735,6 +3032,7 @@ fn required_model_features(requirements: &Requirements) -> RequiredModelFeatures
             buckyos_api::features::JSON_OUTPUT => required.json_schema = true,
             buckyos_api::features::WEB_SEARCH => required.web_search = true,
             buckyos_api::features::VISION => required.vision = true,
+            buckyos_api::features::IMAGE_GENERATION => required.image_generation = true,
             "streaming" => required.streaming = true,
             _ => {}
         }
@@ -2972,6 +3270,9 @@ pub fn provider_model_metadata(
             vision: features
                 .iter()
                 .any(|item| item == buckyos_api::features::VISION),
+            image_generation: features
+                .iter()
+                .any(|item| item == buckyos_api::features::IMAGE_GENERATION),
             max_context_tokens: None,
             max_output_tokens: None,
         },
@@ -3045,7 +3346,25 @@ impl AIComputeCenter {
             "audio/ogg",
             "video/mp4",
             "application/json",
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/xml",
+            "application/yaml",
+            "application/rtf",
             "text/plain",
+            "text/csv",
+            "text/tab-separated-values",
+            "text/markdown",
+            "text/html",
+            "text/xml",
+            "text/yaml",
+            "text/rtf",
+            "text/x-python",
         ]
         .into_iter()
         .map(|item| item.to_string())
@@ -3163,9 +3482,6 @@ impl AIComputeCenter {
         let Ok(trace) = decision.route_trace.lock() else {
             return;
         };
-        if trace.requested_model_type != RequestedModelType::Logical {
-            return;
-        }
         let Ok(trace) = serde_json::to_value(&*trace) else {
             return;
         };
@@ -3315,6 +3631,8 @@ impl AIComputeCenter {
                         json!({
                             "exact_model": model.exact_model,
                             "provider_model_id": model.provider_model_id,
+                            "provider_actual_model_id": model.provider_actual_model_id,
+                            "provider_options": model.provider_options,
                             "model_driver": model.model_driver,
                             "api_types": model.api_types,
                             "logical_mounts": model.logical_mounts,
@@ -3945,10 +4263,10 @@ impl AIComputeCenter {
         .await
     }
 
-    pub fn resolve_route(
+    fn resolve_route_with_invoke_ctx(
         &self,
         request: RouteResolveRequest,
-        rpc_ctx: RPCContext,
+        invoke_ctx: InvokeCtx,
     ) -> std::result::Result<RouteResolveResponse, RPCErrors> {
         if crate::model_types::is_exact_model_name(request.logical_model.as_str()) {
             return Err(reason_error(
@@ -3956,7 +4274,6 @@ impl AIComputeCenter {
                 "route.resolve logical_model must be a logical model name; exact model names are only valid for typed inference APIs",
             ));
         }
-        let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
         let request_id = request
             .request_id
             .clone()
@@ -4033,6 +4350,23 @@ impl AIComputeCenter {
         Ok(response)
     }
 
+    pub fn resolve_route(
+        &self,
+        request: RouteResolveRequest,
+        rpc_ctx: RPCContext,
+    ) -> std::result::Result<RouteResolveResponse, RPCErrors> {
+        self.resolve_route_with_invoke_ctx(request, InvokeCtx::from_unverified_rpc(&rpc_ctx))
+    }
+
+    async fn resolve_route_authenticated(
+        &self,
+        request: RouteResolveRequest,
+        rpc_ctx: RPCContext,
+    ) -> std::result::Result<RouteResolveResponse, RPCErrors> {
+        let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx).await;
+        self.resolve_route_with_invoke_ctx(request, invoke_ctx)
+    }
+
     pub async fn create_chat_completion(
         &self,
         request: LlmChatInvokeRequest,
@@ -4062,10 +4396,28 @@ impl AIComputeCenter {
         request: AiMethodRequest,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-        let route = self.resolve_route(
-            route_request_from_method_request(ai_methods::LLM_CHAT, &request)?,
-            rpc_ctx.clone(),
-        )?;
+        let response_format = request
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|input| input.get("response_format"))
+            .cloned()
+            .map(|value| {
+                serde_json::from_value::<LlmResponseFormat>(value).map_err(|error| {
+                    RPCErrors::ParseRequestError(format!("invalid llm response_format: {}", error))
+                })
+            })
+            .transpose()?
+            .or_else(|| match request.requirements.resp_format {
+                buckyos_api::RespFormat::Json => Some(LlmResponseFormat::json_object()),
+                buckyos_api::RespFormat::Text => None,
+            });
+        let route = self
+            .resolve_route_authenticated(
+                route_request_from_method_request(ai_methods::LLM_CHAT, &request)?,
+                rpc_ctx.clone(),
+            )
+            .await?;
         let provider_options = helper_provider_options(route.provider_options, &request.payload);
         let typed_response = self
             .create_chat_completion(
@@ -4073,7 +4425,7 @@ impl AIComputeCenter {
                     exact_model: route.selected_exact_model,
                     messages: request.payload.messages.clone(),
                     tools: request.payload.tool_specs.clone(),
-                    response_format: Some(request.requirements.resp_format.clone()),
+                    response_format,
                     temperature: request
                         .payload
                         .options
@@ -4102,10 +4454,12 @@ impl AIComputeCenter {
         request: AiMethodRequest,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-        let route = self.resolve_route(
-            route_request_from_method_request(ai_methods::IMAGE_TXT2IMG, &request)?,
-            rpc_ctx.clone(),
-        )?;
+        let route = self
+            .resolve_route_authenticated(
+                route_request_from_method_request(ai_methods::IMAGE_TXT2IMG, &request)?,
+                rpc_ctx.clone(),
+            )
+            .await?;
         let provider_options = helper_provider_options(route.provider_options, &request.payload);
         let prompt = request.payload.text.clone().unwrap_or_else(|| {
             request
@@ -4179,7 +4533,7 @@ impl AIComputeCenter {
         mut request: AiMethodRequest,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-        let mut invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
+        let mut invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx).await;
         apply_default_features_for_method(method, &mut request);
         info!(
             "aicc.complete received: tenant={} caller_app={:?} method={} capability={:?} model_alias={} idempotency_key={:?}",
@@ -4210,10 +4564,10 @@ impl AIComputeCenter {
                 error.to_string(),
             )
             .await;
-            return Ok(AiMethodResponse::new(
+            return Ok(failed_method_response(
                 external_task_id,
-                AiMethodStatus::Failed,
-                None,
+                code.as_str(),
+                error.to_string(),
                 event_ref,
             ));
         }
@@ -4228,15 +4582,81 @@ impl AIComputeCenter {
                     error.to_string(),
                 )
                 .await;
-                return Ok(AiMethodResponse::new(
+                return Ok(failed_method_response(
                     external_task_id,
-                    AiMethodStatus::Failed,
-                    None,
+                    "resource_invalid",
+                    error.to_string(),
                     event_ref,
                 ));
             }
         };
         resolved.method = method.to_string();
+
+        if method == ai_methods::VIDEO_EXTEND && !request_has_continuation_handle(&request) {
+            if let (Some(db), Some(content_id)) = (
+                self.usage_log_db.as_ref(),
+                video_content_id_from_resolved_request(&resolved.request)?,
+            ) {
+                match db
+                    .get_video_continuation_source(
+                        invoke_ctx.tenant_id.as_str(),
+                        content_id.as_str(),
+                    )
+                    .await
+                {
+                    Ok(Some(source)) => match self.acquire_task_manager_client(&invoke_ctx).await {
+                        Ok(taskmgr) => match taskmgr.get_task(source.source_task_id.as_str()).await {
+                            Ok(task) => {
+                                if let Some((handle, exact_model)) =
+                                    continuation_from_source_task(&task, invoke_ctx.tenant_id.as_str())
+                                {
+                                    request.model.alias = exact_model.clone();
+                                    resolved.request.model.alias = exact_model.clone();
+                                    insert_continuation_handle(&mut request, handle.clone());
+                                    insert_continuation_handle(&mut resolved.request, handle);
+                                    info!(
+                                        "aicc.video_continuation restored: task_id={} tenant={} content_id={} source_task_id={} exact_model={}",
+                                        external_task_id,
+                                        invoke_ctx.tenant_id,
+                                        content_id,
+                                        source.source_task_id,
+                                        exact_model
+                                    );
+                                } else {
+                                    info!(
+                                        "aicc.video_continuation source unusable: task_id={} tenant={} content_id={} source_task_id={}",
+                                        external_task_id,
+                                        invoke_ctx.tenant_id,
+                                        content_id,
+                                        source.source_task_id
+                                    );
+                                }
+                            }
+                            Err(error) => warn!(
+                                "aicc.video_continuation source_task_failed: task_id={} tenant={} content_id={} source_task_id={} err={}",
+                                external_task_id,
+                                invoke_ctx.tenant_id,
+                                content_id,
+                                source.source_task_id,
+                                error
+                            ),
+                        },
+                        Err(error) => warn!(
+                            "aicc.video_continuation task_manager_failed: task_id={} tenant={} content_id={} err={}",
+                            external_task_id, invoke_ctx.tenant_id, content_id, error
+                        ),
+                    },
+                    Ok(None) => info!(
+                        "aicc.video_continuation source unavailable: task_id={} tenant={} content_id={}",
+                        external_task_id, invoke_ctx.tenant_id, content_id
+                    ),
+                    Err(error) => warn!(
+                        "aicc.video_continuation source_lookup_failed: task_id={} tenant={} content_id={} err={}",
+                        external_task_id, invoke_ctx.tenant_id, content_id, error
+                    ),
+                }
+            }
+        }
 
         let route_cfg = self
             .route_cfg
@@ -4282,10 +4702,10 @@ impl AIComputeCenter {
                     error.to_string(),
                 )
                 .await;
-                return Ok(AiMethodResponse::new(
+                return Ok(failed_method_response(
                     external_task_id,
-                    AiMethodStatus::Failed,
-                    None,
+                    code.as_str(),
+                    error.to_string(),
                     event_ref,
                 ));
             }
@@ -4310,6 +4730,13 @@ impl AIComputeCenter {
         // Once we know the final provider model we can wrap the sink with a
         // usage-log layer: any Final event flowing through it (immediate call
         // or long-task completion) writes one durable row.
+        let selected_provider_model = Arc::new(std::sync::RwLock::new(
+            decision
+                .attempts()
+                .first()
+                .map(|attempt| attempt.exact_model.clone())
+                .unwrap_or_else(|| decision.provider_model.clone()),
+        ));
         let event_sink: Arc<dyn TaskEventSink> = if let Some(db) = self.usage_log_db.clone() {
             let context = UsageLogContext {
                 external_task_id: external_task_id.clone(),
@@ -4317,11 +4744,7 @@ impl AIComputeCenter {
                 caller_app_id: invoke_ctx.caller_app_id.clone(),
                 capability: capability_name(&request.capability).to_string(),
                 request_model: request.model.alias.clone(),
-                provider_model: decision
-                    .attempts()
-                    .first()
-                    .map(|attempt| attempt.exact_model.clone())
-                    .unwrap_or_else(|| decision.provider_model.clone()),
+                provider_model: selected_provider_model.clone(),
                 idempotency_key: request.idempotency_key.clone(),
             };
             Arc::new(UsageLoggingSink::new(event_sink, db, context))
@@ -4336,6 +4759,7 @@ impl AIComputeCenter {
                 resolved,
                 &decision,
                 event_sink.clone(),
+                selected_provider_model,
             )
             .await;
         self.record_route_trace(
@@ -4359,6 +4783,8 @@ impl AIComputeCenter {
                     prepared_task.taskmgr_override.clone(),
                     prepared_task.taskmgr_context.clone(),
                     prepared_task.id(),
+                    invoke_ctx.tenant_id.clone(),
+                    self.usage_log_db.clone(),
                 ));
                 deferred_sink.promote(task_audit_sink).await?;
                 self.emit_task_started(
@@ -4395,16 +4821,13 @@ impl AIComputeCenter {
                             error.to_string(),
                         )
                         .await;
-                        return Ok(AiMethodResponse::new(
+                        return Ok(failed_method_response(
                             external_task_id,
-                            AiMethodStatus::Failed,
-                            None,
+                            code.as_str(),
+                            error.to_string(),
                             event_ref,
                         ));
                     }
-                }
-                if let Some(extra) = summary.extra.as_mut() {
-                    redact_base64_fields(extra);
                 }
                 self.emit_task_final(event_sink, external_task_id.as_str(), &summary)
                     .await;
@@ -4431,6 +4854,8 @@ impl AIComputeCenter {
                     prepared_task.taskmgr_override.clone(),
                     prepared_task.taskmgr_context.clone(),
                     task_mgr_id.clone(),
+                    invoke_ctx.tenant_id.clone(),
+                    self.usage_log_db.clone(),
                 ));
                 deferred_sink.promote(task_audit_sink).await?;
                 self.bind_task(
@@ -4464,6 +4889,8 @@ impl AIComputeCenter {
                     prepared_task.taskmgr_override.clone(),
                     prepared_task.taskmgr_context.clone(),
                     task_mgr_id.clone(),
+                    invoke_ctx.tenant_id.clone(),
+                    self.usage_log_db.clone(),
                 ));
                 deferred_sink.promote(task_audit_sink).await?;
                 self.bind_task(
@@ -4490,10 +4917,10 @@ impl AIComputeCenter {
                     error.to_string(),
                 )
                 .await;
-                Ok(AiMethodResponse::new(
+                Ok(failed_method_response(
                     external_task_id,
-                    AiMethodStatus::Failed,
-                    None,
+                    code.as_str(),
+                    error.to_string(),
                     event_ref,
                 ))
             }
@@ -4505,7 +4932,7 @@ impl AIComputeCenter {
         task_id: &str,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<CancelResponse, RPCErrors> {
-        let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
+        let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx).await;
         info!(
             "aicc.cancel received: tenant={} caller_app={:?} task_id={}",
             invoke_ctx.tenant_id, invoke_ctx.caller_app_id, task_id
@@ -4553,8 +4980,7 @@ impl AIComputeCenter {
                 };
                 if let Ok(task) = taskmgr.get_task(&binding.task_mgr_id).await {
                     if !task.phase.is_terminal() {
-                        let mut task_data =
-                            task.progress.clone().unwrap_or_else(|| json!({}));
+                        let mut task_data = task.progress.clone().unwrap_or_else(|| json!({}));
                         merge_task_data_with_event(&mut task_data, &event);
                         let _ = taskmgr
                             .report_progress(ReportProgressReq {
@@ -4586,6 +5012,7 @@ impl AIComputeCenter {
         req: ResolvedRequest,
         decision: &RouteDecision,
         sink: Arc<dyn TaskEventSink>,
+        selected_provider_model: Arc<std::sync::RwLock<String>>,
     ) -> std::result::Result<(ProviderStartResult, String), RPCErrors> {
         let mut last_err: Option<ProviderError> = None;
         let _request_log = serde_json::to_string(&req.request)
@@ -4625,6 +5052,10 @@ impl AIComputeCenter {
                 task_id, ctx.tenant_id, ctx.trace_id, attempt.instance_id, attempt.provider_model
             );
 
+            if let Ok(mut selected) = selected_provider_model.write() {
+                *selected = attempt.exact_model.clone();
+            }
+
             self.registry.mark_start_begin(attempt.instance_id.as_str());
             let started_at = Instant::now();
             let mut provider_req = req.clone();
@@ -4645,6 +5076,7 @@ impl AIComputeCenter {
             match result {
                 Ok(mut start_result) => {
                     if let ProviderStartResult::Immediate(summary) = &mut start_result {
+                        ensure_summary_accounting(summary, attempt);
                         self.apply_billing_to_summary(
                             ctx,
                             self.registry
@@ -4767,6 +5199,40 @@ impl AIComputeCenter {
         for resource in req.payload.resources.iter() {
             self.validate_resource(resource)?;
         }
+        if let Some(input_json) = req.payload.input_json.as_ref() {
+            self.validate_resources_in_value(input_json)?;
+        }
+        Ok(())
+    }
+
+    fn validate_resources_in_value(&self, value: &Value) -> std::result::Result<(), RPCErrors> {
+        match value {
+            Value::Object(object) => {
+                if object
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| matches!(kind, "url" | "base64" | "named_object"))
+                {
+                    let resource =
+                        serde_json::from_value::<ResourceRef>(value.clone()).map_err(|error| {
+                            reason_error(
+                                "resource_invalid",
+                                format!("canonical resource is invalid: {}", error),
+                            )
+                        })?;
+                    return self.validate_resource(&resource);
+                }
+                for child in object.values() {
+                    self.validate_resources_in_value(child)?;
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    self.validate_resources_in_value(child)?;
+                }
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -4887,7 +5353,7 @@ impl AIComputeCenter {
         task_id: &str,
         summary: &AiResponse,
     ) {
-        let summary_value = redacted_summary_value(summary);
+        let summary_value = serde_json::to_value(summary).unwrap_or_else(|_| json!({}));
         let event = TaskEvent {
             task_id: task_id.to_string(),
             kind: TaskEventKind::Final,
@@ -4946,7 +5412,7 @@ impl AiccHandler for AIComputeCenter {
         request: RouteResolveRequest,
         ctx: RPCContext,
     ) -> std::result::Result<RouteResolveResponse, RPCErrors> {
-        self.resolve_route(request, ctx)
+        self.resolve_route_authenticated(request, ctx).await
     }
 
     async fn handle_chat_completions_create(
@@ -5094,29 +5560,6 @@ fn user_summary_for_route(
         was_fallback: trace.fallback_applied,
         was_failover: trace.runtime_failover_count > 0,
     }
-}
-
-fn extract_rootid_from_complete_request(request: &AiMethodRequest) -> Option<String> {
-    request.payload.options.as_ref().and_then(|options| {
-        json_non_empty_string(options.get("rootid"))
-            .or_else(|| json_non_empty_string(options.get("root_id")))
-    })
-}
-
-fn resolve_task_root_id(request: &AiMethodRequest, invoke_ctx: &InvokeCtx) -> Option<String> {
-    extract_rootid_from_complete_request(request)
-        .or_else(|| extract_session_id_from_complete_request(request))
-        .or_else(|| Some(resolve_default_rootid(invoke_ctx)))
-}
-
-fn resolve_default_rootid(invoke_ctx: &InvokeCtx) -> String {
-    let app_seed = invoke_ctx
-        .caller_app_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .unwrap_or(AICC_SERVICE_SERVICE_NAME);
-    format!("{app_seed}-default")
 }
 
 fn build_initial_aicc_task_data(
@@ -5371,6 +5814,7 @@ fn response_has_base64_artifacts(summary: &AiResponse) -> bool {
 #[derive(Clone, Debug)]
 struct StoredNamedArtifact {
     obj_id: ObjId,
+    content_id: String,
     width: Option<u32>,
     height: Option<u32>,
 }
@@ -5483,7 +5927,7 @@ pub(crate) async fn emit_background_provider_result(
                     kind: TaskEventKind::Final,
                     timestamp_ms: now_ms(),
                     data: Some(json!({
-                        "summary": redacted_summary_value(&summary),
+                        "summary": serde_json::to_value(&summary).unwrap_or_else(|_| json!({})),
                         "finish_reason": finish_reason,
                         "has_text": has_text,
                         "artifact_count": artifact_count
@@ -5582,6 +6026,7 @@ async fn store_base64_artifact(
         })?;
     Ok(StoredNamedArtifact {
         obj_id: file_obj_id,
+        content_id: chunk_id.to_string(),
         width: dimensions.map(|item| item.0),
         height: dimensions.map(|item| item.1),
     })
@@ -5592,6 +6037,7 @@ fn materialized_artifact_value(idx: usize, mime: &str, stored: &StoredNamedArtif
         "content_index": idx,
         "resource_kind": "named_object",
         "obj_id": stored.obj_id.to_string(),
+        "content_id": stored.content_id,
         "mime": mime,
     });
     if let Some(object) = value.as_object_mut() {
@@ -5735,6 +6181,28 @@ fn reason_error(code: &str, detail: impl Into<String>) -> RPCErrors {
     RPCErrors::ReasonError(format!("{}: {}", code, detail.into()))
 }
 
+fn failed_method_response(
+    task_id: String,
+    code: &str,
+    message: String,
+    event_ref: Option<String>,
+) -> AiMethodResponse {
+    AiMethodResponse::new(
+        task_id,
+        AiMethodStatus::Failed,
+        Some(AiResponse {
+            extra: Some(json!({
+                "error": {
+                    "code": code,
+                    "message": message,
+                }
+            })),
+            ..AiResponse::default()
+        }),
+        event_ref,
+    )
+}
+
 fn extract_error_code(error: &RPCErrors) -> String {
     match error {
         RPCErrors::ReasonError(message) => message
@@ -5754,8 +6222,8 @@ mod tests {
     use super::*;
     use buckyos_api::{
         AckControlReq, AddTaskNoteReq, AiPayload, AiTaskOptions, CommitResultReq, CreateTaskReq,
-        GetTaskReq, ListTaskNotesReq, ListTasksReq, ModelSpec, ReportProgressReq,
-        ReportStartedReq, RequestControlReq, RequestControlResult, Requirements, Task,
+        GetTaskReq, ListTaskNotesReq, ListTasksReq, ModelSpec, ReportProgressReq, ReportStartedReq,
+        RequestControlReq, RequestControlResult, Requirements, StorageDomain, Task,
         TaskControlRequest, TaskExecutor, TaskManagerClient, TaskManagerHandler, TaskNote,
         TaskOutcome, TaskSummaryPage, TypedTaskData,
     };
@@ -5764,6 +6232,30 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn named_resource_mime_inference_covers_text_and_office_documents() {
+        assert_eq!(
+            infer_mime_from_bytes(br"{\rtf1\ansi marker}"),
+            "application/rtf"
+        );
+        assert_eq!(
+            infer_mime_from_bytes(b"<?xml version=\"1.0\"?><Workbook/>"),
+            "text/xml"
+        );
+        assert_eq!(
+            infer_mime_from_bytes(b"<!doctype html><html><body>marker</body></html>"),
+            "text/html"
+        );
+        assert_eq!(
+            infer_mime_from_bytes(b"PK\x03\x04word/document.xml"),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        assert_eq!(
+            infer_mime_from_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1Workbook"),
+            "application/vnd.ms-excel"
+        );
+    }
 
     fn aicc_task_data(task: &Task) -> Option<AiccComputeTaskData> {
         let data = task
@@ -5853,13 +6345,11 @@ mod tests {
             let now = Self::now();
             let task_id = format!("t-mock-{}", *guard);
             let executor = match &req.executor {
-                buckyos_api::CreateTaskExecutor::SelfApp { app_instance_id } => {
-                    TaskExecutor::App {
-                        target_id: None,
-                        app_id: "aicc".to_string(),
-                        app_instance_id: app_instance_id.clone(),
-                    }
-                }
+                buckyos_api::CreateTaskExecutor::SelfApp { app_instance_id } => TaskExecutor::App {
+                    target_id: None,
+                    app_id: "aicc".to_string(),
+                    app_instance_id: app_instance_id.clone(),
+                },
                 buckyos_api::CreateTaskExecutor::HumanSet { .. } => TaskExecutor::HumanSet,
             };
             let task = Task {
@@ -5873,6 +6363,7 @@ mod tests {
                 input: req.input.clone(),
                 input_digest: buckyos_api::compute_task_input_digest(&req.input),
                 creator: buckyos_api::ActorRef::new("tester", "aicc"),
+                storage_domain: req.storage_domain.unwrap_or(StorageDomain::System),
                 idempotency_key: req.idempotency_key.clone(),
                 origin_ref: None,
                 retry_of: None,
@@ -5939,6 +6430,7 @@ mod tests {
                     schema_id: task.schema_id.clone(),
                     schema_version: task.schema_version,
                     creator: task.creator.clone(),
+                    storage_domain: task.storage_domain,
                     executor_kind: task.executor.kind(),
                     phase: task.phase,
                     wait_reason: task.wait_reason.clone(),
@@ -6361,6 +6853,41 @@ mod tests {
     }
 
     #[test]
+    fn continuation_uses_existing_task_result_as_truth_source() {
+        let task_data = AiccComputeTaskData {
+            request: AiccComputeTaskRequest {
+                tenant_id: Some("alice".to_string()),
+                route: Some(json!({
+                    "selected_exact_model": "veo-route@google-main"
+                })),
+                ..Default::default()
+            },
+            progress: None,
+            result: Some(buckyos_api::AiccComputeTaskResult {
+                output: Some(json!({
+                    "extra": {
+                        "continuation_handle": "provider://continue",
+                        "provider_audit": {
+                            "aicc_exact_model": "veo-final@google-main"
+                        }
+                    }
+                })),
+                provider_output: None,
+            }),
+            error: None,
+        };
+
+        assert_eq!(
+            continuation_from_task_data(&task_data, "alice"),
+            Some((
+                "provider://continue".to_string(),
+                "veo-final@google-main".to_string()
+            ))
+        );
+        assert_eq!(continuation_from_task_data(&task_data, "bob"), None);
+    }
+
+    #[test]
     fn artifact_output_storage_uses_named_object_for_object_id_request() {
         let mut request = base_request();
         request.payload.input_json = Some(json!({
@@ -6466,7 +6993,7 @@ mod tests {
     }
 
     #[test]
-    fn redacted_json_log_keeps_plain_multiline_tool_output() {
+    fn redacted_json_log_hides_plain_multiline_tool_output() {
         let output = [
             "PROJECTS_DIR=/Users/liuzhicong/project",
             "COUNT=39",
@@ -6520,9 +7047,27 @@ mod tests {
             "output": output
         }));
 
-        assert!(!logged.contains(REDACTED_LONG_BASE64_LIKE_PLACEHOLDER));
-        assert!(logged.contains("PROJECTS_DIR=/Users/liuzhicong/project"));
-        assert!(logged.contains("buckyos-websdk"));
+        assert!(logged.contains(REDACTED_LOG_TEXT_PLACEHOLDER));
+        assert!(!logged.contains("PROJECTS_DIR=/Users/liuzhicong/project"));
+        assert!(!logged.contains("buckyos-websdk"));
+    }
+
+    #[test]
+    fn redacted_json_log_hides_prompts_and_tool_arguments() {
+        let logged = redacted_json_log(&json!({
+            "contents": [{ "parts": [{ "text": "private conversation" }] }],
+            "functionCall": {
+                "name": "exec_bash",
+                "args": { "command": "print secret", "goal": "private goal" }
+            },
+            "usageMetadata": { "totalTokenCount": 42 }
+        }));
+
+        assert!(!logged.contains("private conversation"));
+        assert!(!logged.contains("print secret"));
+        assert!(!logged.contains("private goal"));
+        assert!(logged.contains("exec_bash"));
+        assert!(logged.contains("totalTokenCount"));
     }
 
     fn mock_instance(instance_id: &str, provider_type: &str) -> ProviderInstance {
@@ -6533,11 +7078,6 @@ mod tests {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::Llm],
-            features: vec![
-                "plan".to_string(),
-                buckyos_api::features::WEB_SEARCH.to_string(),
-            ],
             endpoint: Some("http://127.0.0.1:8080".to_string()),
             plugin_key: None,
         }
@@ -6561,7 +7101,10 @@ mod tests {
                 "gpt-4o-mini",
                 ApiType::Llm,
                 vec!["llm.plan.default".to_string()],
-                &instance.features,
+                &[
+                    "plan".to_string(),
+                    buckyos_api::features::WEB_SEARCH.to_string(),
+                ],
                 Some(0.001),
                 Some(100),
             )],
@@ -6711,7 +7254,7 @@ mod tests {
 
     #[test]
     fn task_manager_context_forwards_upstream_token_and_trace() {
-        let session_token = RPCSessionToken {
+        let mut session_token = RPCSessionToken {
             token_type: RPCSessionTokenType::Normal,
             token: Some("test-user-session".to_string()),
             aud: None,
@@ -6719,21 +7262,38 @@ mod tests {
             iss: Some("verify-hub".to_string()),
             jti: None,
             sub: Some("alice".to_string()),
-            appid: Some("third-party-app".to_string()),
+            appid: None,
             sudo: false,
             extra: HashMap::new(),
         };
+        bind_token_principal_kind(&mut session_token, TokenPrincipalKind::User);
+        bind_token_target(
+            &mut session_token,
+            &AuthTarget::app("third-party-app@alice".parse().unwrap()),
+            TokenUse::Session,
+        )
+        .unwrap();
         let raw_token = serde_json::to_string(&session_token).unwrap();
         let upstream = RPCContext {
             token: Some(raw_token),
             trace_id: Some("trace-aicc-task".to_string()),
             ..Default::default()
         };
-        let invoke_ctx = InvokeCtx::from_rpc(&upstream);
+        let mut invoke_ctx = InvokeCtx {
+            tenant_id: "anonymous".to_string(),
+            caller_app_id: None,
+            session_token: upstream.token.clone(),
+            trace_id: upstream.trace_id.clone(),
+            task_id: None,
+        };
+        invoke_ctx.apply_verified_session(&session_token).unwrap();
         let downstream = task_manager_rpc_context(&invoke_ctx);
 
         assert_eq!(invoke_ctx.tenant_id, "alice");
-        assert_eq!(invoke_ctx.caller_app_id.as_deref(), Some("third-party-app"));
+        assert_eq!(
+            invoke_ctx.caller_app_id.as_deref(),
+            Some("app:third-party-app@alice")
+        );
         assert_eq!(downstream.token, upstream.token);
         assert_eq!(downstream.trace_id, upstream.trace_id);
     }
@@ -6793,6 +7353,26 @@ mod tests {
         assert!(definitions
             .iter()
             .any(|definition| definition["path"] == json!("audio.asr")));
+    }
+
+    #[test]
+    fn models_list_preserves_provider_variant_routing_metadata() {
+        let registry = Registry::default();
+        let instance = mock_instance("openai-main", "openai");
+        let mut provider = MockProvider::new(instance, cost(0.001, 100), vec![]);
+        provider.inventory.models[0].provider_actual_model_id = Some("gpt-5.6-sol".to_string());
+        provider.inventory.models[0].provider_options =
+            Some(json!({"reasoning": {"effort": "high"}}));
+        registry.add_provider(Arc::new(provider));
+        let center = AIComputeCenter::new(registry, ModelCatalog::default());
+
+        let directory = center.dump_model_directory().unwrap();
+        let model = &directory["providers"][0]["models"][0];
+        assert_eq!(model["provider_actual_model_id"], json!("gpt-5.6-sol"));
+        assert_eq!(
+            model["provider_options"]["reasoning"]["effort"],
+            json!("high")
+        );
     }
 
     #[test]
@@ -7003,6 +7583,7 @@ mod tests {
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
+                storage_domain: Some(StorageDomain::System),
                 idempotency_key: "behavior-parent".to_string(),
                 retry_of: None,
                 supersedes: None,
@@ -7216,6 +7797,15 @@ mod tests {
             .await
             .expect("complete should return failed response");
         assert_eq!(response.status, AiMethodStatus::Failed);
+        assert_eq!(
+            response
+                .result
+                .as_ref()
+                .and_then(|result| result.extra.as_ref())
+                .and_then(|extra| extra.pointer("/error/code"))
+                .and_then(Value::as_str),
+            Some("no_provider_available")
+        );
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
         let tasks = all_tasks(&taskmgr).await;
@@ -7242,19 +7832,22 @@ mod tests {
 
         let center = center_with_taskmgr(registry, catalog);
 
-        let alice_ctx = RPCContext {
-            token: Some("tenant-alice".to_string()),
-            ..Default::default()
-        };
-        let start_response = center.complete(base_request(), alice_ctx).await.unwrap();
+        let start_response = center
+            .complete(base_request(), RPCContext::default())
+            .await
+            .unwrap();
         assert_eq!(start_response.status, AiMethodStatus::Running);
+        center
+            .task_bindings
+            .write()
+            .unwrap()
+            .values_mut()
+            .find(|binding| binding.task_mgr_id == start_response.task_id)
+            .expect("task binding")
+            .tenant_id = "tenant-alice".to_string();
 
-        let bob_ctx = RPCContext {
-            token: Some("tenant-bob".to_string()),
-            ..Default::default()
-        };
         let cancel_result = center
-            .handle_cancel(start_response.task_id.as_str(), bob_ctx)
+            .handle_cancel(start_response.task_id.as_str(), RPCContext::default())
             .await;
         assert!(cancel_result.is_err());
         assert!(matches!(

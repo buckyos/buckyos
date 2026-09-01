@@ -22,7 +22,7 @@
 > * AICC **不重新设计**系统已有的：RPC 框架（krpc）、任务生命周期管理（TaskMgr）、事件/日志队列（MsgQueue）。
 > * AICC 只需要：在长任务场景下**生成/关联 task_id**，并将进度与输出写入系统既有的任务事件通道（具体格式/存储/订阅语义以系统组件为准）。
 
-> **breaking change 基线（2026-05-30）**：AICC 对外接口已拆成控制面 / 数据面 / Helper 三层 —— `route.resolve`（逻辑模型名 → 确定精确模型 + provider options + trace）、typed inference（`chat.completions.create` / `images.generate`，只接受 `exact_model`、不隐式 fallback）、`helper.llm_chat` / `helper.text_to_image`（组合层）。公开 kRPC **没有 `complete` method**；源码中的 `AIComputeCenter::complete()` / `complete_with_method()` 只是内部执行函数，不可作为 RPC method 调用。最新协议以 `doc/aicc/aicc_api设计.md` 和 `doc/aicc/aicc_router.md` 为准。
+> **Beta 2.2 breaking-change 基线**：AICC 对外接口拆成控制面、typed inference 数据面和 Helper 三层，不保留 legacy all-in-one method、旧字段或兼容别名。Provider 渠道、线上协议和模型语义分别由 Provider Profile、Protocol Adapter 和 Model Driver 表达。最新协议以 `doc/aicc/aicc_api设计.md`、`doc/aicc/provider_profile_schema.md` 和 `doc/aicc/driver_metadata_schema.md` 为准。
 
 ---
 
@@ -30,35 +30,51 @@
 
 ### 2.1 关键组件（AICC 关注点）
 
-AICC 内部逻辑可以抽象为 6 个核心子系统（这里按“职责”描述，而非目录/模块拆分）：
+AICC 内部逻辑可以抽象为 8 个核心子系统（这里按职责描述，而非目录/模块拆分）：
 
 1. **API 层（入口）**
 
    * 接收调用请求，抽取租户上下文（user/app/tenant）
    * 做轻量校验与规范化（字段存在性、资源引用大小限制等）
 
-2. **ModelCatalog（模型别名与映射）**
+2. **Catalog（静态真相源）**
 
-   * 将 `(capability, alias)` 映射到不同 provider_type/instance 可用的真实模型名
-   * 支持租户覆盖策略（例如租户 A 强制用某个 vendor 的模型）
+   * Model Driver catalog 定义模型固有技术语义
+   * Provider Rules catalog 定义渠道模型映射、operation、请求规则和渠道价格
+   * Known Provider catalog 为管理界面提供默认服务商信息
 
 3. **Registry（实例池与能力声明）**
 
    * 保存当前可用 ProviderInstance（多 provider、多实例池化）
    * 暴露快照给 Router 使用，并维护必要的运行指标（in-flight、EWMA 延迟、错误率等）
 
-4. **Router（选择策略）**
+4. **Model Resolver 与 Router（解析和选择策略）**
 
-   * 硬过滤：capability、must_features、租户 allow/deny、alias 是否可映射
+   * 将渠道原始 `provider_model_id` 唯一解析为 Model Driver 和 origin model
+   * 硬过滤：结构化 capability、租户 allow/deny、逻辑目录是否可映射
    * 打分：成本/延迟/负载/错误率（权重可配置，支持租户 override）
-   * 输出：primary + fallback 列表 + 映射后的 provider_model
+   * 输出：primary + fallback 列表 + 完整模型和渠道身份
 
-5. **Provider Adapter（执行适配层）**
+5. **Provider Profile（渠道策略）**
 
-   * 统一 Provider 抽象：inproc / outproc / vendor API
-   * Provider 负责执行与（必要时）判定长任务（见 5.2）
+   * 定义 discovery、origin mapping、operation、请求限制和渠道价格
+   * 内置主流 Provider 使用专用策略；小型兼容 Provider 使用受限配置
 
-6. **Security & Observability（安全与可观测）**
+6. **Protocol Adapter（协议执行层）**
+
+   * 只实现已注册 operation 的认证、endpoint、wire 编解码、stream 和异步状态机
+   * 多个 Provider Profile 和 Model Driver 可以复用同一 Protocol Adapter
+   * OpenAI、Claude、Gemini 是三个分别实现和测试的协议族；Responses、Chat Completions、Interactions、`generateContent` 等 API 形态使用不同的可执行 Adapter
+   * 内置厂商可以声明为某个基础 Adapter 的语义子类：实现可使用继承、组合或委托，但依赖只能从派生 Adapter 指向基础 Adapter
+   * 基础 Adapter 不得识别派生 Provider 的 ID、配置字段或认证流程；删除派生 Adapter 不应修改基础 Adapter
+   * 官方 Profile 优先选择新接口；旧兼容接口由独立 Adapter 承担，不能在新接口 Adapter 内增加 legacy 分支或运行时 fallback
+
+7. **Provider Call Resolver（调用解析）**
+
+   * 合并模型语义、Provider rules、用户参数和价格，产生 `ResolvedProviderCall`
+   * 执行层不得再根据模型名或 URL 猜测 operation
+
+8. **Security & Observability（安全与可观测）**
 
    * 多租户隔离：路由、限流/预算（若启用）、资源权限、任务可见性
    * 观测：指标、追踪、错误码；严格限制敏感字段进入日志/metrics
@@ -112,7 +128,7 @@ pub mod features {
 }
 ```
 
-Router 会用结构化能力门限（逻辑模型定义的 `min_line`，见 `aicc_router.md` §6.7）做硬过滤。能力真相源是 `ProviderInventory.models[].capabilities`（由 driver metadata resolver 产出）；`Feature` / `must_features` 只是旧请求的兼容表达，不再是 inventory 真相源，新逻辑不再依赖 `ProviderInstance.features` 判定能力。
+Router 使用结构化能力门限（逻辑模型定义的 `min_line`，见 `aicc_router.md` §6.7）做硬过滤。能力真相源是 Model Driver 静态能力、Protocol Adapter operation 能力和 Provider discovery 动态能力的交集。请求只使用结构化 `ModelRequirement` / `ModelDisable`；不保留 `Feature`、`must_features` 或 `ProviderInstance.features` 兼容判断。
 
 > 注意：早期实现里 `llm.chat` 默认补 `web_search`、unknown model 乐观声明能力的做法已废弃。现在 unknown model 走 conservative fallback，不默认声明 `tool_call` / `web_search` / `vision` / `json_schema`，只能由 driver metadata 显式声明。
 
@@ -128,8 +144,11 @@ pub enum ResourceRef {
     /// 推荐：cyfs://...（权限/校验由系统资源机制负责）
     Url { url: String, mime_hint: Option<String> },
 
-    /// 兼容：base64（AICC 仅做强限制 + 严禁日志落地）
+    /// 小资源可内联；AICC 做大小和 MIME 强校验
     Base64 { mime: String, data_base64: String },
+
+    /// 稳定资源引用，解析和读取必须携带租户上下文
+    NamedObject { obj_id: ObjId },
 }
 ```
 
@@ -137,32 +156,21 @@ AICC 侧的硬性原则：
 
 * base64 必须强限制大小、mime 白名单
 * 任何日志/metrics/tracing 不记录原始 base64 或资源原文
+* 业务结果、Task Final event 和 ProviderState 必须精确保存，不得复用日志脱敏函数
+* singular/array 数量、URL、Base64、MIME 和 NamedObject 必须经过公共 ResourceRef 校验层
 
 ---
 
-### 3.3 模型抽象名（Model Alias）与 ModelCatalog
+### 3.3 模型与渠道身份
 
-> legacy / helper 层概念。新分层中，逻辑模型名只出现在 `route.resolve` 的 `logical_model`，确定的精确模型名（`<provider_model_id>[:variant]@<provider_instance_name>`）只出现在数据面 `exact_model`。下面的 `ModelSpec.alias`（含 `@` 视为 exact、否则视为 logical path）保留给 legacy all-in-one 调用。
+- `logical_model`：只用于 `route.resolve` 的逻辑目录名。
+- `ModelUID`：模型可执行身份；同一基础模型通过不同协议访问时允许使用不同 ModelUID。
+- `model_driver_id` / `origin_model_id`：模型固有语义和原厂身份。
+- `provider_instance_name` / `provider_profile_id`：用户实例和渠道规则身份。
+- `protocol_adapter_id`：实际使用的线上协议适配器。
+- `provider_model_id`：Provider discovery 返回的原始模型名，实际调用必须原样保留。
 
-```rust
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ModelSpec {
-    /// 稳定抽象名，例如:
-    /// - "llm.plan.default"
-    /// - "video2text.general"
-    /// - "t2i.fast"
-    pub alias: String,
-
-    /// 可选：调用方指定真实模型名（一般不建议对普通调用方开放）
-    pub provider_model_hint: Option<String>,
-}
-```
-
-**ModelCatalog 的职责**：把 alias 落到不同 provider 的“真实模型名”，并支持租户覆盖。
-
-典型映射键：
-
-* `(capability, alias, provider_type)` → `provider_model_name`
+Provider mapping 可以确定 ModelUID，但不能修改实际调用使用的 `provider_model_id`。Model Driver 的 `defaults` 只在 Driver 已经唯一确定后应用，不能参与 Driver 所有权判定。
 
 ---
 
@@ -176,7 +184,6 @@ AICC 对外最核心的方法是控制面 `route.resolve` 与数据面 typed inf
 
 * 普通 LLM / 图片调用：`helper.llm_chat` / `helper.text_to_image`
 * 显式两阶段调用：`route.resolve` → `chat.completions.create` / `images.generate`
-* legacy all-in-one：`llm.chat` / `image.txt2img` 等具体能力 method
 * 取消任务：`cancel`
 
 ### 4.1 请求/响应
@@ -210,21 +217,27 @@ pub struct CancelResponse {
 
 ## 5. Provider 抽象与执行边界
 
-### 5.1 ProviderInstance 声明（供路由过滤）
+Protocol Adapter registry 中每个可执行 Adapter 使用独立 `protocol_adapter_id`，并声明 `protocol_family_id`。基础协议优先实现官方推荐的新接口；某个派生 Provider 首次产生真实需求时，才为对应历史 API 代际实现并注册一份协议族级共享 Adapter，例如 `openai-chat-completions`。按需约束的是首次引入时机，不是 Adapter 的归属范围；第二、第三个使用同一历史接口的 Provider 必须复用已经注册的共享 Adapter，不能各自复制 endpoint、wire schema、事件解析和错误映射。历史 Adapter 与新接口 Adapter 平级、互不 fallback，只复用 HTTP/SSE/JSON/normalized IR 等协议中立组件。
+
+Known Provider 的 Profile/Rules 固定 Adapter 和 operation。添加自定义 Provider 时，用户只需提供协议族、endpoint 和凭据；接入验证先测试官方新接口，再按优先级测试该协议族中已注册的历史接口，并把成功结果保存为 Provider Instance 的 `protocol_adapter_id`。如果渠道没有协议差异，多个 Provider Instance/Profile 可以直接引用同一个历史 Adapter；只有认证、endpoint 规则或其它渠道行为确有差异时，才增加派生 Adapter，并通过 `base_adapter_id` 复用该共享历史 Adapter。该字段表达架构关系，不要求编程语言层面的继承。这属于创建/更新阶段的协议解析，不是推理运行时 fallback；AICC 不在调用时重新探测接口版本，也不因新接口调用失败而静默切换旧接口。
+
+SN Provider 的目标形态是独立 `sn-openai` Adapter，属于 `openai` 协议族，当前语义上派生自 `openai-responses`。SN 层只实现自身差异，当前主要是认证：既可配置 API Key，也可在运行时登录获取动态 token，然后委托 Responses Adapter 完成请求和响应处理。`openai-responses` 不包含任何 SN 登录、token 缓存、SN endpoint 或 Provider 判断。未来 SN 改为完全独立协议时，只替换或删除 `sn-openai` Adapter 及其 Profile/Rules，不修改 OpenAI 官方 Adapter。
+
+### 5.1 ProviderInstance 声明
 
 ```rust
 #[derive(Clone, Debug)]
 pub struct ProviderInstance {
-    pub instance_id: String,
-    pub provider_type: String, // e.g. "vendor-a", "local", "inproc-x"
-    pub capabilities: Vec<Capability>,
-    pub features: Vec<Feature>,
-
-    /// outproc: endpoint；inproc: plugin_key（具体语义由实现决定）
-    pub endpoint: Option<String>,
-    pub plugin_key: Option<String>,
+    pub provider_instance_name: String,
+    pub provider_type: ProviderType,
+    pub provider_profile_id: String,
+    pub protocol_adapter_id: String,
+    pub endpoint: String,
+    pub credential_ref: CredentialRef,
 }
 ```
+
+Provider Instance 属于 system-config 管理的实例私有配置。Catalog 更新不能修改实例名称、endpoint、凭据、区域或协议选择。
 
 ### 5.2 Provider Trait（AICC 的“统一执行面”）
 
@@ -247,17 +260,16 @@ pub trait Provider: Send + Sync {
     /// 估算成本（供 Router 打分 / 预算/限额策略）
     fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput;
 
-    /// 核心：启动执行，由 provider 自行判定长/短任务并返回 Started/Immediate
+    /// 核心：执行已经解析好的 operation，不重新解释模型家族
     async fn start(
         &self,
         ctx: InvokeCtx,
-        provider_model: String,
-        req: ResolvedRequest,
+        call: ResolvedProviderCall,
         sink: TaskEventSink, // 事件写入接口（对接系统既有任务事件通道）
     ) -> Result<ProviderStartResult, ProviderError>;
 
-    /// best-effort 取消
-    async fn cancel(&self, ctx: InvokeCtx, task_id: &str) -> Result<(), ProviderError>;
+    /// 只有真实发起上游取消或成功中止本地执行时才能返回 accepted
+    async fn cancel(&self, ctx: InvokeCtx, task_id: &str) -> Result<CancelDisposition, ProviderError>;
 }
 ```
 
@@ -328,9 +340,15 @@ pub struct RouteConfig {
 
 ```rust
 pub struct RouteDecision {
-    pub primary_instance_id: String,
-    pub fallback_instance_ids: Vec<String>,
-    pub provider_model: String, // alias 映射后的真实模型名
+    pub selected_model_uid: String,
+    pub provider_instance_name: String,
+    pub provider_profile_id: String,
+    pub protocol_adapter_id: String,
+    pub model_driver_id: String,
+    pub origin_model_id: String,
+    pub provider_model_id: String,
+    pub operation: String,
+    pub fallback_attempts: Vec<RouteFallbackAttempt>,
 }
 ```
 
@@ -339,12 +357,12 @@ pub struct RouteDecision {
 1. **候选集**：从 RegistrySnapshot 中取支持 `capability` 的实例
 2. **硬过滤**（必须满足才进入打分）：
 
-   * `must_features ⊆ instance.features`
+   * 结构化 ModelRequirement 满足最终能力交集
    * tenant allow/deny provider_type
-   * ModelCatalog 能映射 `(capability, alias, provider_type)` → `provider_model`
+   * logical model 能映射到唯一的可执行 ModelUID
 3. **打分**：
 
-   * `cost_est = provider.estimate_cost(req, provider_model)`
+   * `cost_est` 由统一 Pricing Resolver 计算
    * `latency/load/error` 来自 Registry 指标
    * 归一化后按权重线性组合
 4. **选择**：
@@ -383,7 +401,8 @@ AICC 的隔离点应覆盖：
 3. **任务可见性与取消**
 
    * cancel 必须校验 task 所属 tenant，防跨租户操作
-   * cancel 是 best-effort：AICC 只负责触发与传播，不承诺立即终止
+   * Provider 不支持取消时返回 `accepted=false`
+   * 支持取消时调用上游 API或中止本地 polling，并屏蔽竞态产生的 late Final event
 
 4. **敏感信息最小暴露**
 

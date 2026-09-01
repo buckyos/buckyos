@@ -10,7 +10,7 @@
 
 ## 一句话套路
 
-> 把每个用户自己的 **Zone（的 verify-hub）当成 IdP**，App 通过 **DID 解析**发现该 IdP，登录后拿到一个**绑定到自己 appid 的 session_token**，之后所有请求都只认这个 token + RBAC。
+> 把每个用户自己的 **Zone（的 verify-hub）当成 IdP**，App 通过 **DID 解析**发现该 IdP，登录后拿到一个**绑定到明确 AuthTarget 的 session_token**，之后所有请求都只认这个 token + RBAC。
 
 和主流 SSO 一样的部分：有登录页、有回调、有 access/refresh token、有 scope；接入方最终只关心"拿到一个可信 token"。
 不一样的部分见下一节——这是本文的重点。
@@ -22,13 +22,13 @@
 | IdP 是谁 | 固定的中心化大平台 | **用户自己的 Zone**。每个 Zone 的 verify-hub 就是一个 IdP，没有中心 |
 | 怎么找到 IdP | 写死的 endpoint / 配置 | **DID 解析**：`user_did -> owner -> default_zone -> ZoneConfig.verify_hub_info.public_key` |
 | 信任根 | CA / 平台公钥 | Owner / Zone 的 DID 公钥（可不依赖 CA，见 BNS 文档场景 5） |
-| token 绑定 | client_id | **appid**（= App 的 DID 或 gateway 注册的 app_id），token 是 audience-scoped 的 |
+| token 绑定 | client_id | **AuthTarget**：普通 App 精确到 `AppInstanceId`，系统服务精确到 `SystemServiceId` |
 | 没有账号的用户 | 必须先在平台注册 | 可以**用浏览器钱包**对登录 challenge 签名，证明"我控制这个 DID"，无需任何 Zone |
 | 跨身份提供方 | 换一个大平台 | **跨 Zone**：current-zone 证明"你是谁"，target-zone 重新签发自己的 token |
 
 实务上要记住三句话：
 
-1. **token 是 appid 绑定的**。页面 token 代表"当前操作者 + 这个 app"，不要跨 app 复用，也不要拿 app-service 自己的 token 冒充页面 token（见后文「不要混用 token」）。
+1. **token 是 target 绑定的**。页面 token 代表“当前操作者 + 这个精确 AppInstance/系统服务”，不要跨 target 复用，也不要拿 app-service 自己的 token 冒充页面 token（见后文「不要混用 token」）。
 2. **登录方式对鉴权方透明**。业务服务只验证 session_token + 跑 RBAC，不关心用户是用密码、钱包还是 Passkey 登录的。新增登录方式不影响下游。
 3. **强权限要 sudo**。高危操作需要二次输入密码换一个短时 sudo token，且仍受 appid 限制。
 
@@ -45,7 +45,7 @@
 ```ts
 import { AuthClient } from "buckyos";
 
-const auth = new AuthClient(zoneHostname /* 如 "alice.buckyos.io" */, appId /* 你的 appid */);
+const auth = new AuthClient(zoneHostname /* 如 "alice.buckyos.io" */);
 
 // 跳到 Zone 的登录页，登录完成后回到 redirectUri（默认当前页）
 auth.login(/* redirectUri? */);
@@ -54,16 +54,17 @@ auth.login(/* redirectUri? */);
 `buildLoginURL()` 生成的目标就是 Zone 的 control panel 登录页：
 
 ```text
-https://sys.<zoneHostname>/login?client_id=<appId>&redirect_url=<encoded redirect>
+https://sys.<zoneHostname>/login?redirect_url=<encoded redirect>
 ```
 
-> `/login` 是 control panel 自身的登录页；当带上 `client_id` + `redirect_url` 时，它同时充当 SSO 授权页。（历史上也规划过独立的 `/sso/login` 授权弹窗页。）
+> `/login` 是 control panel 自身的登录页；当带上 `redirect_url` 时，它同时充当 SSO 授权页。登录目标由 redirect URL 对应的 Gateway 路由确定。（历史上也规划过独立的 `/sso/login` 授权弹窗页。）
 
 ### 2. 登录完成 → 回调写 Cookie
 
 用户在登录页完成认证后，control panel 走 `/sso_callback?nonce=...&redirect_url=...`：
 
-- 校验 `redirect_url` **必须是本 Zone 内的目标**（host 等于 zone host，或形如 `<app>.<zonehost>`），并据此解析出真正的 appid——防止把 token 发给 Zone 外的站点。
+- 校验 `redirect_url` **必须是本 Zone 内由 Gateway 实际路由的目标**，并从 `app_info` 得到结构化 target：根域 `_` 是 `System(control-panel)`，普通 App entry 必须同时给出且互相匹配 `app_id + app_instance_id + app_owner_user_id`。
+- 正式环境只接受 HTTPS；DV 的 HTTP 必须由显式配置开启。URL 禁止 credentials 和任意端口。pending login 会保存 canonical origin、完整 redirect 和 target；callback 的参数、实际 request origin 和当时 Gateway route 必须全部完全一致。
 - 回调由目标 App origin 承载，同时写入两枚 host-only Cookie：短期 `buckyos_session_token` 供 gateway 在 App 页面加载前完成鉴权，长期 `buckyos_refresh_token` 使用 `HttpOnly`、只供刷新。随后 302 回 `redirect_url`。两枚 cookie 都不设置 `Domain`，因此不会与父域或其它 App 子域共享。
 
 ### 3. 用 refresh cookie 换 session_token
@@ -104,7 +105,11 @@ POST `/sso_logout`：吊销 refresh token，并清掉当前 App host 下的 `buc
 
 ```text
 sub / userid   当前用户（username 或 DID）
-appid / aud    绑定的 App（audience）
+principal_kind 登录主体类型；用户页面会话固定为 user
+target_kind    app | system
+appid          AppId 或 SystemServiceId 的兼容 claim
+app_instance_id / app_owner_user_id  App target 必填且互相匹配；System target 禁止出现
+token_use      session | refresh；sudo 仍是 session 的提权子类型
 exp / jti      过期时间、nonce
 iss            签发方（Zone 的 verify-hub）
 ```
@@ -183,7 +188,7 @@ sudo 由 verify-hub 提供：弹出提权对话框，要求管理员**再次输�
 
 接入要点：
 
-- sudo token 仍受 **appid 限制**——非系统类 app 申请 sudo 意义不大，因为还是被 appid 框住。
+- sudo token 仍受 **AuthTarget 限制**，必须是 `token_use=session, sudo=true`；它不能写进普通页面 session cookie。
 - 所以 sudo 一般只在 Control Panel 这类**本身就有大权限的系统 UI**里才有意义。
 
 ---
@@ -212,8 +217,8 @@ sudo 由 verify-hub 提供：弹出提权对话框，要求管理员**再次输�
 **当前已经能用（本仓库已落地）：**
 
 - verify-hub `auth.login`（用户名/DID + 密码）签发 session_token + refresh_token。
-- websdk `AuthClient.login()` -> `sys.<zone>/login?client_id=&redirect_url=`。
-- control panel `/sso_callback`（写 HttpOnly refresh cookie，校验 redirect 在 Zone 内并解析 appid）、`/sso_refresh`（换 session_token + 轮换 refresh）、`/sso_logout`。
+- websdk `AuthClient.login()` -> `sys.<zone>/login?redirect_url=`。
+- control panel `/sso_callback`（把 nonce、canonical origin/route 与 AuthTarget 一起校验后才写 cookie）、`/sso_refresh`（只接受同 origin/route 的 refresh target并轮换 token）、`/sso_logout`。
 - session_token 多通道传递（X-Auth / Bearer / query / kRPC token）+ trust keys 验签 + RBAC。
 - sudo 机制（提权对话框 + 短时 sudo token，受 appid 限制）。
 

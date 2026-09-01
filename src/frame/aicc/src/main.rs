@@ -21,11 +21,12 @@ mod sn_ai_provider;
 use ::kRPC::*;
 use anyhow::Result;
 use buckyos_api::{
-    ai_methods, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime,
-    AiccServerHandler, BuckyOSRuntimeType, DriverMetadataRuntimeApply, DriverMetadataUpdateGetReq,
-    DriverMetadataUpdateSetReq, DriverMetadataUpdateSetResponse, DriverMetadataUpdateStatus,
-    DriverMetadataUpdateView, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
-    QueryUsageResponse, SystemConfigClient, SystemConfigError, AICC_SERVICE_SERVICE_NAME,
+    ai_methods, generate_sn_user_device_token, get_buckyos_api_runtime, init_buckyos_api_runtime,
+    login_sn_user_by_device_token, set_buckyos_api_runtime, AiccServerHandler, BuckyOSRuntimeType,
+    DriverMetadataRuntimeApply, DriverMetadataUpdateGetReq, DriverMetadataUpdateSetReq,
+    DriverMetadataUpdateSetResponse, DriverMetadataUpdateStatus, DriverMetadataUpdateView,
+    QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
+    SystemConfigClient, SystemConfigError, AICC_SERVICE_SERVICE_NAME,
 };
 use buckyos_http_server::Runner;
 use buckyos_http_server::{
@@ -168,6 +169,8 @@ fn apply_provider_settings(
     }
     center.registry().clear();
     center.reset_model_routes();
+    let active_settings = settings_with_disabled_provider_instances_removed(settings);
+    let settings = &active_settings;
 
     let mut registered_total = 0usize;
     let mut errors = vec![];
@@ -254,6 +257,33 @@ fn apply_provider_settings(
     }
 
     Ok(registered_total)
+}
+
+fn settings_with_disabled_provider_instances_removed(settings: &Value) -> Value {
+    let mut active = settings.clone();
+    let Some(root) = active.as_object_mut() else {
+        return active;
+    };
+    for section_name in PROVIDER_SECTIONS {
+        let Some(section) = root.get_mut(*section_name).and_then(Value::as_object_mut) else {
+            continue;
+        };
+        let section_enabled = section
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let Some(instances) = section.get_mut("instances").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        instances
+            .retain(|instance| instance.get("enabled").and_then(Value::as_bool) != Some(false));
+        let has_active_instances = !instances.is_empty();
+        section.insert(
+            "enabled".to_string(),
+            Value::Bool(section_enabled && has_active_instances),
+        );
+    }
+    active
 }
 
 fn apply_logical_directory_settings(
@@ -592,6 +622,72 @@ fn collect_provider_instance_names(settings: &Value) -> HashSet<String> {
     names
 }
 
+fn provider_instance_in_section(settings: &Value, section: &str, instance_name: &str) -> bool {
+    settings
+        .get(section)
+        .and_then(Value::as_object)
+        .and_then(|section| section.get("instances"))
+        .and_then(Value::as_array)
+        .map(|instances| {
+            instances.iter().any(|instance| {
+                instance
+                    .get("provider_instance_name")
+                    .or_else(|| instance.get("instance_id"))
+                    .and_then(Value::as_str)
+                    == Some(instance_name)
+            })
+        })
+        .unwrap_or(false)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ManagedSnProviderConfig {
+    endpoint: String,
+    login_url: String,
+    user_name: String,
+}
+
+fn managed_sn_provider_config(
+    settings: Option<&Value>,
+    requested_instance_name: Option<&str>,
+) -> std::result::Result<ManagedSnProviderConfig, RPCErrors> {
+    let section = settings
+        .and_then(|settings| settings.get("sn-ai-provider"))
+        .and_then(Value::as_object)
+        .filter(|section| section.get("enabled").and_then(Value::as_bool) == Some(true))
+        .ok_or_else(|| RPCErrors::ReasonError("sn_router_not_activated".to_string()))?;
+    let instances = section
+        .get("instances")
+        .and_then(Value::as_array)
+        .ok_or_else(|| RPCErrors::ReasonError("sn_router_not_activated".to_string()))?;
+    let instance = instances
+        .iter()
+        .find(|instance| {
+            requested_instance_name.map_or(true, |requested| {
+                instance
+                    .get("provider_instance_name")
+                    .or_else(|| instance.get("instance_id"))
+                    .and_then(Value::as_str)
+                    == Some(requested)
+            })
+        })
+        .ok_or_else(|| RPCErrors::ReasonError("sn_router_not_activated".to_string()))?;
+    let required = |field: &str, error: &str| {
+        instance
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| RPCErrors::ReasonError(error.to_string()))
+    };
+    Ok(ManagedSnProviderConfig {
+        endpoint: required("base_url", "sn_router_endpoint_missing")?,
+        login_url: required("login_url", "sn_router_login_url_missing")?,
+        user_name: required("user_name", "sn_router_user_name_missing")?,
+    })
+}
+
 fn collect_provider_display_names(settings: &Value) -> HashMap<String, String> {
     let mut names = HashMap::new();
     let Some(root) = settings.as_object() else {
@@ -694,17 +790,6 @@ fn build_provider_instance_settings(params: &Value) -> std::result::Result<Value
     if !endpoint.trim().is_empty() {
         instance.insert("base_url".to_string(), Value::String(endpoint));
     }
-    instance.insert(
-        "auth_mode".to_string(),
-        Value::String(
-            if provider_type == "sn_router" {
-                "runtime_session"
-            } else {
-                "bearer"
-            }
-            .to_string(),
-        ),
-    );
     instance.insert("timeout_ms".to_string(), json!(300_000u64));
     if let Some(name) = param_string(params, "name") {
         instance.insert("name".to_string(), Value::String(name));
@@ -715,7 +800,6 @@ fn build_provider_instance_settings(params: &Value) -> std::result::Result<Value
     if let Some(auto_sync) = param_bool(params, "auto_sync_models") {
         instance.insert("auto_sync_models".to_string(), Value::Bool(auto_sync));
     }
-
     let mut wrapped = Map::new();
     wrapped.insert("section".to_string(), Value::String(section.to_string()));
     wrapped.insert("instance".to_string(), Value::Object(instance));
@@ -842,6 +926,7 @@ fn collect_model_id_from_entry(entry: &Value) -> Option<String> {
         entry
             .get("id")
             .or_else(|| entry.get("name"))
+            .or_else(|| entry.get("model"))
             .or_else(|| entry.get("provider_model_id"))
             .or_else(|| entry.get("provider_actual_model_id"))
             .and_then(Value::as_str)
@@ -861,7 +946,7 @@ fn collect_model_id_from_entry(entry: &Value) -> Option<String> {
 fn collect_model_ids(body: &Value) -> Vec<String> {
     let mut ids = Vec::<String>::new();
     let mut seen = HashSet::<String>::new();
-    for key in ["data", "models"] {
+    for key in ["data", "models", "items"] {
         let Some(items) = body.get(key).and_then(Value::as_array) else {
             continue;
         };
@@ -910,6 +995,44 @@ async fn discover_openai_compatible_models(
         Err(validation_issue(
             "models",
             format!("{} model discovery returned no models", provider),
+        ))
+    } else {
+        Ok(ids)
+    }
+}
+
+async fn discover_sn_ai_provider_models(
+    client: &reqwest::Client,
+    endpoint: &str,
+    login_url: &str,
+    user_name: &str,
+) -> std::result::Result<Vec<String>, Value> {
+    let device_token = generate_sn_user_device_token(user_name)
+        .map_err(|err| validation_issue("auth", err.to_string()))?;
+    let session = login_sn_user_by_device_token(client, login_url, device_token.as_str())
+        .await
+        .map_err(|err| {
+            validation_issue(
+                if err.is_retryable() {
+                    "endpoint"
+                } else {
+                    "auth"
+                },
+                err.to_string(),
+            )
+        })?;
+    let body = send_discovery_request(
+        "sn-ai-provider",
+        client
+            .get(openai_models_endpoint(endpoint).as_str())
+            .bearer_auth(session.session_token),
+    )
+    .await?;
+    let ids = collect_model_ids(&body);
+    if ids.is_empty() {
+        Err(validation_issue(
+            "models",
+            "sn-ai-provider model discovery returned no models",
         ))
     } else {
         Ok(ids)
@@ -1040,9 +1163,17 @@ impl AiccHttpServer {
     async fn handle_reload_settings(&self) -> std::result::Result<serde_json::Value, RPCErrors> {
         let runtime = get_buckyos_api_runtime()
             .map_err(|err| RPCErrors::ReasonError(format!("get runtime failed: {}", err)))?;
-        let settings = runtime.get_my_settings().await.map_err(|err| {
-            RPCErrors::ReasonError(format!("load aicc settings during reload failed: {}", err))
-        })?;
+        let service_url = runtime.get_system_config_url();
+        let session_token = runtime.get_session_token().await;
+        let client =
+            SystemConfigClient::new(Some(service_url.as_str()), Some(session_token.as_str()));
+        let settings = match client.get(AICC_SETTINGS_KEY).await {
+            Ok(value) => serde_json::from_str(value.value.as_str()).map_err(|err| {
+                RPCErrors::ReasonError(format!("parse aicc settings during reload failed: {}", err))
+            })?,
+            Err(SystemConfigError::KeyNotFound(_)) => json!({}),
+            Err(err) => return Err(system_config_error_to_rpc(err)),
+        };
         self.apply_settings_value(&settings)
     }
 
@@ -1169,21 +1300,33 @@ impl AiccHttpServer {
 
     async fn handle_provider_validate(
         &self,
-        params: &Value,
+        req: &RPCRequest,
     ) -> std::result::Result<Value, RPCErrors> {
-        let validation_cache_key = provider_validation_cache_key(params);
+        let mut params = req.params.clone();
+        let provider_type =
+            param_string(&params, "provider_type").unwrap_or_else(|| "custom".into());
+        if provider_type == "sn_router" {
+            let settings = self.metadata_settings_tx.borrow().clone();
+            let config = managed_sn_provider_config(
+                settings.as_ref(),
+                param_string(&params, "provider_instance_name").as_deref(),
+            )?;
+            let params = settings_object(&mut params);
+            params.insert("endpoint".to_string(), Value::String(config.endpoint));
+            params.insert("sn_login_url".to_string(), Value::String(config.login_url));
+            params.insert("sn_user_name".to_string(), Value::String(config.user_name));
+        }
+        let validation_cache_key = provider_validation_cache_key(&params);
         let validation_fingerprint = provider_validation_fingerprint(validation_cache_key.as_str());
         let mut issues = Vec::<Value>::new();
-        let provider_type =
-            param_string(params, "provider_type").unwrap_or_else(|| "custom".into());
 
-        if let Some(name) = param_string(params, "provider_instance_name") {
+        if let Some(name) = param_string(&params, "provider_instance_name") {
             if let Err(err) = validate_provider_instance_name(name.as_str()) {
                 issues.push(validation_issue("models", err.to_string()));
             }
         }
 
-        let endpoint = param_string(params, "endpoint")
+        let endpoint = param_string(&params, "endpoint")
             .unwrap_or_else(|| default_endpoint(provider_type.as_str()).to_string());
         if provider_type == "custom" && endpoint.is_empty() {
             issues.push(validation_issue(
@@ -1195,12 +1338,12 @@ impl AiccHttpServer {
             issues.push(validation_issue("endpoint", "endpoint is not a valid URL"));
         }
 
-        let api_key = param_string(params, "api_key").unwrap_or_default();
+        let api_key = param_string(&params, "api_key").unwrap_or_default();
         if provider_type != "sn_router" && api_key.is_empty() {
             issues.push(validation_issue("auth", "api_key is required"));
         }
 
-        let protocol_type = param_string(params, "protocol_type");
+        let protocol_type = param_string(&params, "protocol_type");
         if provider_type == "custom" && protocol_type.is_none() {
             issues.push(validation_issue(
                 "models",
@@ -1209,7 +1352,7 @@ impl AiccHttpServer {
         }
 
         let mut models_discovered = Vec::<String>::new();
-        if issues.is_empty() && provider_type != "sn_router" {
+        if issues.is_empty() {
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(20))
                 .build()
@@ -1217,6 +1360,17 @@ impl AiccHttpServer {
                     RPCErrors::ReasonError(format!("build discovery client failed: {}", err))
                 })?;
             let discovery = match provider_type.as_str() {
+                "sn_router" => {
+                    let login_url = param_string(&params, "sn_login_url").unwrap_or_default();
+                    let user_name = param_string(&params, "sn_user_name").unwrap_or_default();
+                    discover_sn_ai_provider_models(
+                        &client,
+                        endpoint.as_str(),
+                        login_url.as_str(),
+                        user_name.as_str(),
+                    )
+                    .await
+                }
                 "openai" => {
                     discover_openai_compatible_models(
                         &client,
@@ -1302,7 +1456,9 @@ impl AiccHttpServer {
             "endpoint_reachable": endpoint_reachable,
             "auth_valid": auth_valid,
             "models_discovered": models_discovered,
-            "balance_available": provider_type != "custom" && auth_valid,
+            "balance_available": provider_type != "custom"
+                && provider_type != "sn_router"
+                && auth_valid,
             "errors": errors,
             "error_details": issues,
             "validation_fingerprint": validation_fingerprint,
@@ -1315,6 +1471,11 @@ impl AiccHttpServer {
         req: &RPCRequest,
         ip_from: IpAddr,
     ) -> std::result::Result<Value, RPCErrors> {
+        if param_string(&req.params, "provider_type").as_deref() == Some("sn_router") {
+            return Err(RPCErrors::ReasonError(
+                "sn_router_is_system_managed".to_string(),
+            ));
+        }
         let (client, mut doc) = self.load_settings_for_request(req, ip_from).await?;
         let built = build_provider_instance_settings(&req.params)?;
         let validation_fingerprint = self.require_recent_provider_validation(&req.params)?;
@@ -1374,6 +1535,15 @@ impl AiccHttpServer {
                 RPCErrors::ReasonError("provider_instance_name is required".to_string())
             })?;
         let (client, mut doc) = self.load_settings_for_request(req, ip_from).await?;
+        if provider_instance_in_section(
+            &doc.value,
+            "sn-ai-provider",
+            provider_instance_name.as_str(),
+        ) {
+            return Err(RPCErrors::ReasonError(
+                "sn_router_is_system_managed".to_string(),
+            ));
+        }
         let mut removed = false;
         if let Some(root) = doc.value.as_object_mut() {
             for section_name in PROVIDER_SECTIONS {
@@ -1911,7 +2081,7 @@ impl RPCHandler for AiccHttpServer {
             return Ok(rpc_success(&req, result));
         }
         if req.method == METHOD_PROVIDER_VALIDATE {
-            let result = self.handle_provider_validate(&req.params).await?;
+            let result = self.handle_provider_validate(&req).await?;
             return Ok(rpc_success(&req, result));
         }
         if req.method == METHOD_PROVIDER_ADD {
@@ -2086,6 +2256,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn disabled_provider_instances_are_removed_without_disabling_siblings() {
+        let settings = serde_json::json!({
+            "openai": {
+                "enabled": true,
+                "instances": [
+                    { "provider_instance_name": "openai-primary", "enabled": false },
+                    { "provider_instance_name": "openai-backup", "enabled": true }
+                ]
+            }
+        });
+
+        let active = settings_with_disabled_provider_instances_removed(&settings);
+        assert_eq!(active["openai"]["enabled"], true);
+        assert_eq!(active["openai"]["instances"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            active["openai"]["instances"][0]["provider_instance_name"],
+            "openai-backup"
+        );
+    }
+
+    #[test]
+    fn disabling_last_provider_instance_disables_section() {
+        let settings = serde_json::json!({
+            "fal": {
+                "enabled": true,
+                "instances": [
+                    { "provider_instance_name": "fal-main", "enabled": false }
+                ]
+            }
+        });
+
+        let active = settings_with_disabled_provider_instances_removed(&settings);
+        assert_eq!(active["fal"]["enabled"], false);
+        assert!(active["fal"]["instances"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn settings_log_redacts_source_url_userinfo() {
         let settings = serde_json::json!({
             "driver_metadata_update": {
@@ -2243,5 +2450,52 @@ mod tests {
             "session_token": "test-token",
         }));
         assert!(DriverMetadataUpdateSetReq::from_json(params).is_err());
+    }
+
+    #[test]
+    fn collect_model_ids_supports_sn_models_response() {
+        assert_eq!(
+            collect_model_ids(&json!({
+                "items": [
+                    {"model": "gpt-5.4"},
+                    {"model": "gemini-3-flash"}
+                ],
+                "default_model": "gpt-5.4"
+            })),
+            vec!["gpt-5.4".to_string(), "gemini-3-flash".to_string()]
+        );
+    }
+
+    #[test]
+    fn managed_sn_provider_config_comes_from_settings() {
+        let settings = json!({
+            "sn-ai-provider": {
+                "enabled": true,
+                "instances": [{
+                    "provider_instance_name": "sn-ai-provider-default",
+                    "base_url": "https://sn.example/api/v1/ai/",
+                    "login_url": "https://sn.example/api/user/login_by_device_token",
+                    "user_name": "alice"
+                }]
+            }
+        });
+        assert_eq!(
+            managed_sn_provider_config(Some(&settings), Some("sn-ai-provider-default")).unwrap(),
+            ManagedSnProviderConfig {
+                endpoint: "https://sn.example/api/v1/ai/".to_string(),
+                login_url: "https://sn.example/api/user/login_by_device_token".to_string(),
+                user_name: "alice".to_string(),
+            }
+        );
+        assert!(provider_instance_in_section(
+            &settings,
+            "sn-ai-provider",
+            "sn-ai-provider-default"
+        ));
+    }
+
+    #[test]
+    fn managed_sn_provider_config_requires_activated_instance() {
+        assert!(managed_sn_provider_config(Some(&json!({})), None).is_err());
     }
 }

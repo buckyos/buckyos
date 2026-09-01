@@ -1,5 +1,8 @@
 import type { UserInfo } from '../../src/api/user_mgr.ts'
-import { toVisibleLocalUserEntities } from '../../src/app/users-agents/datamodel/transforms.ts'
+import {
+  appListTargetUserIds,
+  toVisibleLocalUserEntities,
+} from '../../src/app/users-agents/datamodel/transforms.ts'
 
 function assertEquals<T>(actual: T, expected: T, message: string) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -48,11 +51,30 @@ Deno.test('visible local users exclude the root tier, self, and duplicate ids', 
 
   const entities = toVisibleLocalUserEntities(
     users,
-    [],
+    new Map(),
     'lucy',
     '2026-08-11T00:00:00Z',
   )
 
   assertEquals(entities.map((entity) => entity.id), ['devtest', 'localdemo'], 'visible ids')
   assertEquals(entities.map((entity) => entity.displayName), ['Liu Zhicong', 'Local Demo User'], 'visible names')
+})
+
+Deno.test('ordinary users only query their own app list', () => {
+  const users = [
+    { user_id: 'devtest' },
+    { user_id: 'alice' },
+    { user_id: 'bob' },
+  ]
+
+  assertEquals(
+    appListTargetUserIds('alice', 'user', users),
+    ['alice'],
+    'ordinary app-list scope',
+  )
+  assertEquals(
+    appListTargetUserIds('alice', 'admin', users),
+    ['alice', 'devtest', 'bob'],
+    'admin app-list scope',
+  )
 })

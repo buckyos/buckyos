@@ -40,23 +40,47 @@ export function GeneralPage() {
               <span
                 className="inline-block px-2 py-0.5 rounded-full text-xs font-medium"
                 style={{
-                  color: software.releaseChannel === 'stable' ? 'var(--cp-success)' : 'var(--cp-warning)',
+                  color: software.releaseChannel === 'stable'
+                    ? 'var(--cp-success)'
+                    : software.releaseChannel === 'unknown'
+                      ? 'var(--cp-muted)'
+                      : 'var(--cp-warning)',
                   background: software.releaseChannel === 'stable'
                     ? 'color-mix(in srgb, var(--cp-success) 14%, transparent)'
-                    : 'color-mix(in srgb, var(--cp-warning) 14%, transparent)',
+                    : software.releaseChannel === 'unknown'
+                      ? 'color-mix(in srgb, var(--cp-muted) 14%, transparent)'
+                      : 'color-mix(in srgb, var(--cp-warning) 14%, transparent)',
                 }}
               >
-                {software.releaseChannel.charAt(0).toUpperCase() + software.releaseChannel.slice(1)}
+                {software.releaseChannel === 'unknown'
+                  ? '—'
+                  : software.releaseChannel.charAt(0).toUpperCase() + software.releaseChannel.slice(1)}
               </span>
             }
           />
+          {software.installedTime && (
+            <InfoRow
+              label={t('settings.general.installedAt', 'Installed')}
+              value={new Date(software.installedTime).toLocaleString()}
+            />
+          )}
           {software.lastUpdateTime && (
             <InfoRow
               label={t('settings.general.lastUpdate', 'Last Update')}
-              value={new Date(software.lastUpdateTime).toLocaleDateString()}
+              value={new Date(software.lastUpdateTime).toLocaleString()}
             />
           )}
         </div>
+        {software.loading && (
+          <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>
+            {t('settings.general.loadingSoftwareInfo', 'Loading system information…')}
+          </p>
+        )}
+        {software.loadError && (
+          <p className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>
+            {t('settings.general.softwareInfoUnavailable', 'System information is unavailable.')}
+          </p>
+        )}
         {software.updateAvailable && (
           <div
             className="mt-3 flex items-center justify-between rounded-lg px-3 py-2"

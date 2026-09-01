@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "output_dir": "../dapp_dist",
+  "pikg_file": "pikg-script-host-0.1.0.pikg",
+  "sub_pkgs": {
+    "script": {
+      "required": true,
+      "source": {
+        "type": "path",
+        "path": "../script/dist"
+      }
+    }
+  }
+}

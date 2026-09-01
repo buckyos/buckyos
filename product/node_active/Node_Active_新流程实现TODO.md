@@ -10,9 +10,9 @@
 |---|---|---|
 | `buckyos-base/name-lib` | 已完成 | `a3451b1`：新增安全的 12 词助记词生成 helper，复用既有 owner/EVM 派生实现与测试向量 |
 | `cyfs-gateway` | 已完成实现，待真实环境 E2E | `7f972ee`：SN/BNS publish document 支持 ZoneDocument JWT 原文，补齐 canonical ZoneDocument resolver，并更新 SN API 文档 |
-| `buckyos-websdk` | 已完成 | `e870ae8`（0.7.104）：同步 publish document object/JWT union、原样序列化测试和客户端校验；Node Active 已锁定该 commit |
+| `buckyos-websdk` | 已完成 | `e870ae8`（0.7.104）引入 publish document object/JWT union、原样序列化测试和客户端校验；Node Active 持续跟随 `main` |
 | Node Active Web/Rust | 核心流程已完成 | 完整 OwnerDocument、Web 快速注册、自有域名 PKX challenge、四文档签名与互验、BNS 投影确认、设备登记和本地持久化均已接入；非 retryable domain 错误分类展示、整组身份文件事务性提交仍待补 |
-| 本地验证 | 已通过 | `node_active` frozen lockfile 构建、`node_active`/`node_daemon` 封装构建、`node_daemon active_server::tests` 6 项单测通过；构建不依赖机器本地仓库 patch |
+| 本地验证 | 已通过 | `node_active` 使用 WebSDK `main` 构建、`node_active`/`node_daemon` 封装构建、`node_daemon active_server::tests` 6 项单测通过；构建不依赖机器本地仓库 patch |
 | 外部验收 | 待完成 | 真实 SN/BNS DV 服务级测试、BuckyOS App 钱包两阶段签名/取消联调、外部 DNS TXT/NS 全流程联调、全 workspace `cargo test` |
 
 当前结论：代码实现和本地编译验证完成，但在上述外部验收完成前，不将钱包路径、自有域名 DNS 路径或整套新激活流程标记为产品验收通过。
@@ -225,7 +225,7 @@ interface SnBnsPublishDocumentReq {
 - [x] 增加请求序列化测试，确认字符串没有被包成对象、没有二次 JSON 编码。
 - [x] 保持 `SnClientError.domainProofInfo()` 的结构化解析，Node Active 不解析错误 message 文本。
 - [x] 确认并测试以下导出可用：`sn.SnClient`、`bns.BnsClient`、`namelib.newOwnerDocument`、Zone/Device/Boot/Mini 构造和 JWT 编解码函数。
-- [x] 发布/锁定包含上述变更的明确 commit；Node Active 的 `pnpm-lock.yaml` 必须更新到该 commit，不能只依赖浮动 `#beta2.2`。
+- [x] 确认 WebSDK `main` 已包含上述变更；Node Active 使用浮动 `#main`，不提交 `pnpm-lock.yaml`。
 
 ### 4.3 buckyos-base/name-lib：公开助记词生成 helper
 

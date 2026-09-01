@@ -196,6 +196,45 @@ fn build_grammers_input_message(text: String, parse_mode: Option<&str>) -> Input
     }
 }
 
+fn is_tg_entity_parse_error(error: &(impl std::fmt::Display + ?Sized)) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("can't parse entities")
+        || message.contains("can't find end of the entity")
+        || message.contains("unsupported start tag")
+}
+
+fn should_fallback_tg_plain(
+    parse_mode: Option<&str>,
+    error: &(impl std::fmt::Display + ?Sized),
+) -> bool {
+    parse_mode.is_some() && is_tg_entity_parse_error(error)
+}
+
+fn apply_tg_parse_mode(body: &mut Value, parse_mode: Option<&str>) {
+    if let Some(mode) = parse_mode {
+        body["parse_mode"] = Value::String(mode.to_string());
+    }
+}
+
+async fn with_tg_plain_fallback<T, E, F, Fut>(parse_mode: Option<&str>, mut send: F) -> Result<T, E>
+where
+    E: std::fmt::Display,
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    match send(parse_mode.map(str::to_string)).await {
+        Ok(value) => Ok(value),
+        Err(error) if should_fallback_tg_plain(parse_mode, &error) => {
+            warn!(
+                "telegram entity parse failed, retrying the same content as plain text: {}",
+                error
+            );
+            send(None).await
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TgAttachmentRef {
     pub obj_id: ObjId,
@@ -1961,7 +2000,8 @@ impl TgGateway for GrammersTgGateway {
             envelope.attachments.len()
         );
 
-        let parse_mode = envelope.parse_mode.as_deref();
+        let parse_mode = resolve_tg_parse_mode(envelope.parse_mode.as_deref());
+        let mut fallback_to_plain = false;
 
         if envelope.attachments.is_empty() {
             if let Some(message_id) = envelope.replace_message_id.as_deref() {
@@ -1976,34 +2016,71 @@ impl TgGateway for GrammersTgGateway {
                                 ..Default::default()
                             });
                         }
-                        Err(error) => warn!(
-                            "telegram final message edit failed, will send a new message: chat_id={}, message_id={}, record_id={}, error={}",
-                            chat_id, message_id, envelope.record_id, error
-                        ),
+                        Err(error) => {
+                            fallback_to_plain = should_fallback_tg_plain(parse_mode, &error);
+                            warn!(
+                                "telegram final message edit failed, will send a new message: chat_id={}, message_id={}, record_id={}, plain_text_fallback={}, error={}",
+                                chat_id,
+                                message_id,
+                                envelope.record_id,
+                                fallback_to_plain,
+                                error
+                            );
+                        }
                     }
                 }
             }
         }
 
         let sent = if let Some(attachment) = envelope.attachments.first() {
-            let attachment_bytes = TgMessageConverter::load_attachment_bytes(attachment).await?;
-            let file_name = TgMessageConverter::resolve_attachment_file_name(attachment).await;
-            let mut reader = Cursor::new(attachment_bytes);
-            let attachment_size = reader.get_ref().len();
-            let uploaded = client
-                .upload_stream(&mut reader, attachment_size, file_name)
-                .await
-                .with_context(|| {
-                    format!(
-                        "upload telegram attachment {} failed",
-                        attachment.obj_id.to_string()
-                    )
-                })?;
-            let input = build_grammers_input_message(text, parse_mode).document(uploaded);
-            client.send_message(chat, input).await?
+            with_tg_plain_fallback(
+                parse_mode.filter(|_| !fallback_to_plain),
+                |attempt_parse_mode| {
+                    let text = text.clone();
+                    let chat = chat.clone();
+                    let client = client.clone();
+                    async move {
+                        let attachment_bytes =
+                            TgMessageConverter::load_attachment_bytes(attachment).await?;
+                        let file_name =
+                            TgMessageConverter::resolve_attachment_file_name(attachment).await;
+                        let mut reader = Cursor::new(attachment_bytes);
+                        let attachment_size = reader.get_ref().len();
+                        let uploaded = client
+                            .upload_stream(&mut reader, attachment_size, file_name)
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "upload telegram attachment {} failed",
+                                    attachment.obj_id.to_string()
+                                )
+                            })?;
+                        let input = match attempt_parse_mode.as_deref() {
+                            Some(mode) => {
+                                build_grammers_input_message(text, Some(mode)).document(uploaded)
+                            }
+                            None => InputMessage::new().text(text).document(uploaded),
+                        };
+                        client
+                            .send_message(chat, input)
+                            .await
+                            .map_err(anyhow::Error::from)
+                    }
+                },
+            )
+            .await?
         } else {
-            let input = build_grammers_input_message(text, parse_mode);
-            client.send_message(chat, input).await?
+            with_tg_plain_fallback(
+                parse_mode.filter(|_| !fallback_to_plain),
+                |attempt_parse_mode| {
+                    let input = match attempt_parse_mode.as_deref() {
+                        Some(mode) => build_grammers_input_message(text.clone(), Some(mode)),
+                        None => InputMessage::new().text(text.clone()),
+                    };
+                    client.send_message(chat.clone(), input)
+                },
+            )
+            .await?
         };
         Ok(DeliveryReportResult {
             ok: true,
@@ -3423,6 +3500,7 @@ impl TgGateway for BotApiTgGateway {
         );
 
         let parse_mode = resolve_tg_parse_mode(envelope.parse_mode.as_deref());
+        let mut fallback_to_plain = false;
 
         if envelope.attachments.is_empty() {
             if let Some(message_id) = envelope.replace_message_id.as_deref() {
@@ -3432,9 +3510,7 @@ impl TgGateway for BotApiTgGateway {
                         "message_id": id,
                         "text": text.clone(),
                     });
-                    if let Some(mode) = parse_mode {
-                        body["parse_mode"] = Value::String(mode.to_string());
-                    }
+                    apply_tg_parse_mode(&mut body, parse_mode);
                     match Self::call_api_with_client::<Value>(
                         &self.http,
                         runtime.token.as_str(),
@@ -3451,10 +3527,17 @@ impl TgGateway for BotApiTgGateway {
                                 ..Default::default()
                             });
                         }
-                        Err(error) => warn!(
-                            "telegram bot api final message edit failed, will send a new message: chat_id={}, message_id={}, record_id={}, error={}",
-                            chat_id, message_id, envelope.record_id, error
-                        ),
+                        Err(error) => {
+                            fallback_to_plain = should_fallback_tg_plain(parse_mode, &error);
+                            warn!(
+                                "telegram bot api final message edit failed, will send a new message: chat_id={}, message_id={}, record_id={}, plain_text_fallback={}, error={}",
+                                chat_id,
+                                message_id,
+                                envelope.record_id,
+                                fallback_to_plain,
+                                error
+                            );
+                        }
                     }
                 }
             }
@@ -3469,31 +3552,63 @@ impl TgGateway for BotApiTgGateway {
                 .text("chat_id", chat_id_text)
                 .part("document", document_part);
             if !text.trim().is_empty() {
-                form = form.text("caption", text);
-                if let Some(mode) = parse_mode {
+                form = form.text("caption", text.clone());
+                if let Some(mode) = parse_mode.filter(|_| !fallback_to_plain) {
                     form = form.text("parse_mode", mode.to_string());
                 }
             }
-            Self::call_api_with_multipart::<TgBotApiSentMessage>(
+            match Self::call_api_with_multipart::<TgBotApiSentMessage>(
                 &self.http,
                 runtime.token.as_str(),
                 "sendDocument",
                 form,
             )
-            .await?
-        } else {
-            let mut body = json!({
-                "chat_id": Self::normalize_chat_id_for_send(chat_id),
-                "text": text,
-            });
-            if let Some(mode) = parse_mode {
-                body["parse_mode"] = Value::String(mode.to_string());
+            .await
+            {
+                Ok(sent) => sent,
+                Err(error)
+                    if !fallback_to_plain && should_fallback_tg_plain(parse_mode, &error) =>
+                {
+                    warn!(
+                        "telegram bot api sendDocument caption parse failed, retrying as plain text: chat_id={}, record_id={}, error={}",
+                        chat_id, envelope.record_id, error
+                    );
+                    let document_part = HttpPart::bytes(
+                        TgMessageConverter::load_attachment_bytes(attachment).await?,
+                    )
+                    .file_name(TgMessageConverter::resolve_attachment_file_name(attachment).await);
+                    let mut plain_form = HttpForm::new()
+                        .text("chat_id", Self::normalize_chat_id_for_send_text(chat_id))
+                        .part("document", document_part);
+                    if !text.trim().is_empty() {
+                        plain_form = plain_form.text("caption", text.clone());
+                    }
+                    Self::call_api_with_multipart::<TgBotApiSentMessage>(
+                        &self.http,
+                        runtime.token.as_str(),
+                        "sendDocument",
+                        plain_form,
+                    )
+                    .await?
+                }
+                Err(error) => return Err(error),
             }
-            Self::call_api_with_client::<TgBotApiSentMessage>(
-                &self.http,
-                runtime.token.as_str(),
-                "sendMessage",
-                Some(body),
+        } else {
+            with_tg_plain_fallback(
+                parse_mode.filter(|_| !fallback_to_plain),
+                |attempt_parse_mode| {
+                    let mut body = json!({
+                        "chat_id": Self::normalize_chat_id_for_send(chat_id),
+                        "text": text.clone(),
+                    });
+                    apply_tg_parse_mode(&mut body, attempt_parse_mode.as_deref());
+                    Self::call_api_with_client::<TgBotApiSentMessage>(
+                        &self.http,
+                        runtime.token.as_str(),
+                        "sendMessage",
+                        Some(body),
+                    )
+                },
             )
             .await?
         };
@@ -4377,6 +4492,44 @@ mod tests {
     };
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn telegram_entity_parse_error_downgrades_markdown_to_plain_text() {
+        let text = "*   **整体氛围**：整张图片给人一种险峻而宏大的感觉。";
+        let attempts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let result = with_tg_plain_fallback(resolve_tg_parse_mode(None), {
+            let attempts = attempts.clone();
+            move |parse_mode| {
+                attempts.lock().unwrap().push(parse_mode.clone());
+                let result = if parse_mode.is_some() {
+                    Err(anyhow::anyhow!(
+                        "telegram bot api sendMessage failed: Bad Request: can't parse entities: Can't find end of the entity starting at byte offset 930"
+                    ))
+                } else {
+                    Ok(text.to_string())
+                };
+                std::future::ready(result)
+            }
+        })
+        .await
+        .expect("plain text fallback should succeed");
+
+        assert_eq!(result, text);
+        assert_eq!(
+            attempts.lock().unwrap().as_slice(),
+            &[Some("Markdown".to_string()), None]
+        );
+    }
+
+    #[test]
+    fn telegram_non_format_error_keeps_normal_delivery_failure() {
+        let error = anyhow::anyhow!("telegram bot api sendMessage failed: Unauthorized");
+        assert!(!should_fallback_tg_plain(Some("Markdown"), &error));
+        assert!(!should_fallback_tg_plain(
+            None,
+            &anyhow::anyhow!("can't parse entities")
+        ));
+    }
 
     #[derive(Default)]
     struct CountingTgGateway {

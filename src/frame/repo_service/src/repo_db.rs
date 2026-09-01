@@ -1,6 +1,6 @@
 use buckyos_api::{
-    get_rdb_instance, RdbBackend, REPO_SERVICE_RDB_INSTANCE_ID, REPO_SERVICE_RDB_SCHEMA_POSTGRES,
-    REPO_SERVICE_RDB_SCHEMA_SQLITE, REPO_SERVICE_SERVICE_NAME,
+    get_rdb_instance_in, RdbBackend, RdbPartition, REPO_SERVICE_RDB_INSTANCE_ID,
+    REPO_SERVICE_RDB_SCHEMA_POSTGRES, REPO_SERVICE_RDB_SCHEMA_SQLITE, REPO_SERVICE_SERVICE_NAME,
 };
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -104,10 +104,11 @@ impl RepoDb {
     /// Resolve the repo-service rdb instance from the service spec and open a
     /// pool against it. This is the production entry point.
     pub async fn open_from_service_spec() -> Result<Self, String> {
-        let instance = get_rdb_instance(
+        let instance = get_rdb_instance_in(
             REPO_SERVICE_SERVICE_NAME,
             None,
             REPO_SERVICE_RDB_INSTANCE_ID,
+            RdbPartition::UserData,
         )
         .await
         .map_err(|err| format!("resolve repo-service rdb instance failed: {}", err))?;

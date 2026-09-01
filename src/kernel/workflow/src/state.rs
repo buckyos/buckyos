@@ -12,7 +12,9 @@
 //! 后续提交的工作。
 
 use async_trait::async_trait;
-use buckyos_api::{TaskManagerClient, WorkflowDefinition};
+#[cfg(test)]
+use buckyos_api::TaskManagerClient;
+use buckyos_api::WorkflowDefinition;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,9 +24,11 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
+#[cfg(test)]
+use crate::NoopTaskTracker;
 use crate::{
-    AnalysisReport, CompiledWorkflow, EventEnvelope, NoopTaskTracker, TaskManagerTaskTracker,
-    WorkflowError, WorkflowResult, WorkflowRun, WorkflowTaskTracker,
+    AnalysisReport, CompiledWorkflow, EventEnvelope, TaskManagerTaskTracker, WorkflowError,
+    WorkflowResult, WorkflowRun, WorkflowTaskTracker,
 };
 
 /// Workflow Definition / Run 的所有者三元组。映射到 task_manager / ACL 上的
@@ -385,17 +389,20 @@ pub struct ServiceTracker {
 }
 
 enum TrackerKind {
+    #[cfg(test)]
     Noop(NoopTaskTracker),
     TaskManager(TaskManagerTaskTracker),
 }
 
 impl ServiceTracker {
+    #[cfg(test)]
     pub fn noop() -> Self {
         Self {
             inner: TrackerKind::Noop(NoopTaskTracker::default()),
         }
     }
 
+    #[cfg(test)]
     pub fn from_task_manager(client: Arc<TaskManagerClient>, app_id: impl Into<String>) -> Self {
         Self {
             inner: TrackerKind::TaskManager(TaskManagerTaskTracker::new(client, app_id)),
@@ -407,17 +414,13 @@ impl ServiceTracker {
             inner: TrackerKind::TaskManager(TaskManagerTaskTracker::from_runtime(app_id)),
         }
     }
-
-    #[allow(dead_code)]
-    pub fn is_task_manager_backed(&self) -> bool {
-        matches!(self.inner, TrackerKind::TaskManager(_))
-    }
 }
 
 #[async_trait]
 impl WorkflowTaskTracker for ServiceTracker {
     async fn sync_run(&self, run: &WorkflowRun) -> WorkflowResult<()> {
         match &self.inner {
+            #[cfg(test)]
             TrackerKind::Noop(t) => t.sync_run(run).await,
             TrackerKind::TaskManager(t) => t.sync_run(run).await,
         }
@@ -425,6 +428,7 @@ impl WorkflowTaskTracker for ServiceTracker {
 
     async fn sync_step(&self, run: &WorkflowRun, step: &crate::StepTaskView) -> WorkflowResult<()> {
         match &self.inner {
+            #[cfg(test)]
             TrackerKind::Noop(t) => t.sync_step(run, step).await,
             TrackerKind::TaskManager(t) => t.sync_step(run, step).await,
         }
@@ -436,6 +440,7 @@ impl WorkflowTaskTracker for ServiceTracker {
         shard: &crate::MapShardTaskView,
     ) -> WorkflowResult<()> {
         match &self.inner {
+            #[cfg(test)]
             TrackerKind::Noop(t) => t.sync_map_shard(run, shard).await,
             TrackerKind::TaskManager(t) => t.sync_map_shard(run, shard).await,
         }
@@ -447,6 +452,7 @@ impl WorkflowTaskTracker for ServiceTracker {
         thunk: &crate::ThunkTaskView,
     ) -> WorkflowResult<()> {
         match &self.inner {
+            #[cfg(test)]
             TrackerKind::Noop(t) => t.sync_thunk(run, thunk).await,
             TrackerKind::TaskManager(t) => t.sync_thunk(run, thunk).await,
         }
@@ -459,6 +465,7 @@ impl WorkflowTaskTracker for ServiceTracker {
         message: &str,
     ) -> WorkflowResult<()> {
         match &self.inner {
+            #[cfg(test)]
             TrackerKind::Noop(t) => t.report_step_validation_error(run, node_id, message).await,
             TrackerKind::TaskManager(t) => {
                 t.report_step_validation_error(run, node_id, message).await

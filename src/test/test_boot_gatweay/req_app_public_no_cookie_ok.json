@@ -1,0 +1,15 @@
+{
+  "input": {
+    "REQ": {
+      "path": "/",
+      "host": "publicview.test.buckyos.io",
+      "uri": "/",
+      "url": "https://publicview.test.buckyos.io/"
+    }
+  },
+  "id": "server:node_gateway:main",
+  "output": [
+    "REQ",
+    "RESP"
+  ]
+}

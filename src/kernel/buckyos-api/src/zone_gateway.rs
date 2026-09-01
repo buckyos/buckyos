@@ -1,12 +1,12 @@
+use crate::AppInstanceId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize)]
-pub struct GatewayShortcut {
-    #[serde(rename = "type")]
-    pub target_type: String,
-    pub user_id: Option<String>,
-    pub app_id: String,
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum GatewayShortcut {
+    App { app_instance_id: AppInstanceId },
+    System { service_id: String },
 }
 
 #[derive(Serialize, Deserialize)]

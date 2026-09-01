@@ -142,34 +142,31 @@ def source_path_for(
     source_root_override: Path | None = None,
     windows: bool = False,
 ) -> Path:
-    def with_windows_exe(path: Path) -> Path | None:
-        if not windows or path.suffix:
-            return None
-        return path.with_name(path.name + ".exe")
-
-    def existing_or_windows_exe(path: Path) -> Path | None:
+    def existing_or_windows_launcher(path: Path) -> Path | None:
         if path.exists():
             return path
-        exe_path = with_windows_exe(path)
-        if exe_path is not None and exe_path.exists():
-            return exe_path
+        if windows and not path.suffix:
+            for suffix in (".ps1", ".cmd", ".exe"):
+                launcher_path = path.with_name(path.name + suffix)
+                if launcher_path.exists():
+                    return launcher_path
         return None
 
     override_rel = normalize_item_relpath(rel, windows=windows)
     if source_root_override is not None:
         candidate = source_root_override / override_rel
-        existing = existing_or_windows_exe(candidate)
+        existing = existing_or_windows_launcher(candidate)
         if existing is not None:
             return existing
     configured = item_source_paths.get(rel)
     if configured:
         configured_path = Path(configured).resolve()
-        existing = existing_or_windows_exe(configured_path)
+        existing = existing_or_windows_launcher(configured_path)
         if existing is not None:
             return existing
         return configured_path
     fallback = source_rootfs / override_rel
-    existing = existing_or_windows_exe(fallback)
+    existing = existing_or_windows_launcher(fallback)
     if existing is not None:
         return existing
     return fallback
@@ -203,6 +200,50 @@ def unexpected_payload_paths(
         if not normalized or normalized in exact:
             continue
         if any(payload_path_matches_prefix(normalized, prefix) for prefix in prefixes):
+            continue
+        unexpected.append(normalized)
+    return sorted(set(unexpected))
+
+
+def unexpected_data_payload_paths(
+    payload_paths: Iterable[str],
+    *,
+    target_root: str,
+    data_path: str,
+    module_paths: Iterable[str],
+) -> list[str]:
+    """Return real data-path payload entries not covered by explicit modules.
+
+    A module may intentionally live below a broader persistent ``data_path``.
+    Its payload file (or directory tree) and the directory entries leading to it
+    are valid overwrite payload. Other entries below the data path must remain
+    in the installer defaults area.
+    """
+    normalized_root = normalize_payload_path(target_root)
+    normalized_data_path = normalize_item_relpath(data_path, windows=True)
+    data_prefix = normalize_payload_path(f"{normalized_root}/{normalized_data_path}")
+    if not data_prefix:
+        return []
+
+    module_prefixes: list[str] = []
+    for module_path in module_paths:
+        normalized_module_path = normalize_item_relpath(module_path, windows=True)
+        if not normalized_module_path:
+            continue
+        module_prefix = normalize_payload_path(f"{normalized_root}/{normalized_module_path}")
+        if payload_path_matches_prefix(module_prefix, data_prefix):
+            module_prefixes.append(module_prefix)
+
+    unexpected: list[str] = []
+    for payload_path in payload_paths:
+        normalized = normalize_payload_path(payload_path)
+        if not normalized or not payload_path_matches_prefix(normalized, data_prefix):
+            continue
+        if any(
+            payload_path_matches_prefix(normalized, module_prefix)
+            or payload_path_matches_prefix(module_prefix, normalized)
+            for module_prefix in module_prefixes
+        ):
             continue
         unexpected.append(normalized)
     return sorted(set(unexpected))

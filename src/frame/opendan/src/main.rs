@@ -11,12 +11,11 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, load_app_identity_from_env,
-    set_buckyos_api_runtime, BuckyOSRuntimeType,
+    agent_spec_key, get_buckyos_api_runtime, init_buckyos_api_runtime, load_app_identity_from_env,
+    set_buckyos_api_runtime, AgentId, AgentSpec, AppInstanceId, BuckyOSRuntimeType,
 };
 use buckyos_kit::{get_buckyos_app_data_dir, init_logging};
 use log::{error, info, warn};
-use name_lib::{AgentDocument, DIDDocumentTrait, EncodedDocument};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs as sync_fs;
@@ -34,6 +33,8 @@ const BUCKYOS_APPID_ENV: [&str; 1] = ["BUCKYOS_APP_ID"];
 const PACKAGE_ROOT_ENVS: [&str; 2] = ["BUCKYOS_PKG_DIR", "BUCKYOS_PKG_SOURCE_DIR"];
 const ROOTFS_SYNC_MANIFEST: &str = ".meta/rootfs_sync.json";
 const ROOTFS_SYNC_VERSION: u32 = 1;
+const AGENT_BINDING_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+const AGENT_BINDING_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Default)]
 struct StartupArgs {
@@ -111,7 +112,7 @@ where
     while let Some(arg) = args.next() {
         let arg = arg.as_ref();
         match arg {
-            "--appid" | "--app-id" | "--agent-id" => {
+            "--appid" | "--app-id" => {
                 parsed.appid = Some(
                     args.next()
                         .map(|value| value.as_ref().to_string())
@@ -124,6 +125,11 @@ where
                         .map(|value| value.as_ref().to_string())
                         .ok_or_else(|| anyhow!("missing value for {arg}"))?,
                 );
+            }
+            "--agent-id" => {
+                return Err(anyhow!(
+                    "{arg} was removed; OpenDAN resolves AgentId and AgentDID from the AgentSpec bound to the runtime AppInstanceId"
+                ));
             }
             "--agent-root" | "--agent-env" => {
                 return Err(anyhow!(
@@ -158,14 +164,16 @@ where
             other if other.starts_with("--app-id=") => {
                 parsed.appid = Some(other["--app-id=".len()..].to_string());
             }
-            other if other.starts_with("--agent-id=") => {
-                parsed.appid = Some(other["--agent-id=".len()..].to_string());
-            }
             other if other.starts_with("--owner-id=") => {
                 parsed.owner_id = Some(other["--owner-id=".len()..].to_string());
             }
             other if other.starts_with("--owner-user-id=") => {
                 parsed.owner_id = Some(other["--owner-user-id=".len()..].to_string());
+            }
+            other if other.starts_with("--agent-id=") => {
+                return Err(anyhow!(
+                    "{other} was removed; OpenDAN resolves AgentId and AgentDID from the AgentSpec bound to the runtime AppInstanceId"
+                ));
             }
             other if other.starts_with("--agent-root=") || other.starts_with("--agent-env=") => {
                 return Err(anyhow!(
@@ -251,14 +259,21 @@ fn resolve_owner_id(startup: &StartupArgs) -> Result<Option<String>> {
     Ok(None)
 }
 
-fn resolve_agent_root() -> Result<PathBuf> {
+fn resolve_agent_root(agent_id: &AgentId) -> Result<PathBuf> {
     let runtime =
         get_buckyos_api_runtime().map_err(|err| anyhow!("load buckyos runtime failed: {err}"))?;
     let appid = runtime.get_app_id();
     let owner_id = runtime
         .get_owner_user_id()
         .ok_or_else(|| anyhow!("resolve opendan app data folder failed: owner_user_id missing"))?;
-    Ok(get_buckyos_app_data_dir(&appid, &owner_id))
+    Ok(agent_data_root(
+        &get_buckyos_app_data_dir(&appid, &owner_id),
+        agent_id,
+    ))
+}
+
+fn agent_data_root(app_data_root: &Path, agent_id: &AgentId) -> PathBuf {
+    app_data_root.join("agents").join(agent_id.as_str())
 }
 
 fn resolve_agent_package_root(startup: &StartupArgs, appid: &str) -> Option<PathBuf> {
@@ -491,25 +506,79 @@ fn rootfs_rel_key(path: &Path) -> String {
         .join("/")
 }
 
-async fn load_agent_document(appid: &str) -> Result<AgentDocument> {
-    let runtime = get_buckyos_api_runtime().context("load runtime failed before agent doc")?;
+async fn load_bound_agent_specs(app_instance_id: &AppInstanceId) -> Result<Vec<AgentSpec>> {
+    let runtime =
+        get_buckyos_api_runtime().context("load runtime failed before AgentSpec lookup")?;
     let client = runtime
         .get_system_config_client()
         .await
         .context("init system_config client for opendan failed")?;
-    let key = format!("agents/{appid}/doc");
-    let value = client
-        .get(&key)
+    let owner_user_id = app_instance_id.owner_user_id();
+    let root = format!("users/{owner_user_id}/agents");
+    let agent_ids = client
+        .list(&root)
         .await
-        .with_context(|| format!("load agent document failed: key={key}"))?
-        .value;
-    let encoded = EncodedDocument::from_str(value)
-        .map_err(|err| anyhow!("decode agent document failed: key={key} err={err}"))?;
-    AgentDocument::decode(&encoded, None)
-        .map_err(|err| anyhow!("decode AgentDocument failed: key={key} err={err}"))
+        .with_context(|| format!("list AgentSpecs failed: key={root}"))?;
+    let mut specs = Vec::new();
+    for raw_agent_id in agent_ids {
+        let agent_id = AgentId::parse(&raw_agent_id)
+            .map_err(|error| anyhow!("invalid AgentId child at {root}/{raw_agent_id}: {error}"))?;
+        let key = agent_spec_key(owner_user_id, &agent_id);
+        let value = client
+            .get(&key)
+            .await
+            .with_context(|| format!("load AgentSpec failed: key={key}"))?;
+        let spec: AgentSpec = serde_json::from_str(&value.value)
+            .with_context(|| format!("decode AgentSpec failed: key={key}"))?;
+        spec.validate()
+            .map_err(|error| anyhow!("invalid AgentSpec at {key}: {error}"))?;
+        if spec.agent_id != agent_id {
+            return Err(anyhow!(
+                "AgentSpec path identity mismatch: key={key} spec={}",
+                spec.agent_id
+            ));
+        }
+        if spec.binding.references_runtime(app_instance_id) {
+            specs.push(spec);
+        }
+    }
+    specs.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+    Ok(specs)
 }
 
-async fn write_agent_did_to_toml(agent_root: &PathBuf, appid: &str, agent_did: &str) -> Result<()> {
+async fn wait_for_bound_agent_spec(app_instance_id: &AppInstanceId) -> Result<AgentSpec> {
+    let deadline = tokio::time::Instant::now() + AGENT_BINDING_WAIT_TIMEOUT;
+    loop {
+        let mut specs = load_bound_agent_specs(app_instance_id).await?;
+        match specs.len() {
+            1 => return Ok(specs.remove(0)),
+            count if count > 1 => {
+                return Err(anyhow!(
+                    "runtime {app_instance_id} has {count} Agent bindings; this OpenDAN process supports exactly one"
+                ));
+            }
+            _ if tokio::time::Instant::now() >= deadline => {
+                return Err(anyhow!(
+                    "no AgentSpec is bound to runtime {app_instance_id} after {} seconds",
+                    AGENT_BINDING_WAIT_TIMEOUT.as_secs()
+                ));
+            }
+            _ => {
+                info!(
+                    "opendan.bootstrap: waiting for AgentSpec binding to runtime {}",
+                    app_instance_id
+                );
+                tokio::time::sleep(AGENT_BINDING_RETRY_INTERVAL).await;
+            }
+        }
+    }
+}
+
+async fn write_agent_did_to_toml(
+    agent_root: &PathBuf,
+    agent_id: &str,
+    agent_did: &str,
+) -> Result<()> {
     fs::create_dir_all(agent_root)
         .await
         .with_context(|| format!("create agent root at {}", agent_root.display()))?;
@@ -522,7 +591,7 @@ async fn write_agent_did_to_toml(agent_root: &PathBuf, appid: &str, agent_did: &
     };
     toml.identity.agent_did = agent_did.to_string();
     if toml.identity.display_name.trim().is_empty() {
-        toml.identity.display_name = appid.to_string();
+        toml.identity.display_name = agent_id.to_string();
     }
     let raw = toml::to_string_pretty(&toml).context("serialize agent.toml")?;
     fs::write(&path, raw)
@@ -650,15 +719,20 @@ async fn run() -> Result<()> {
         owner_id.as_deref().unwrap_or("<runtime-env>")
     );
     let runtime = bootstrap(&appid, owner_id).await?;
-    let agent_root = resolve_agent_root()?;
-
-    let agent_doc = load_agent_document(&appid).await?;
-    let agent_did = agent_doc.get_id().to_string();
+    let app_instance_id = get_buckyos_api_runtime()
+        .map_err(|err| anyhow!("load buckyos runtime failed: {err}"))?
+        .get_app_instance_id()
+        .map_err(|err| anyhow!("resolve runtime AppInstanceId failed: {err}"))?;
+    let agent_spec = wait_for_bound_agent_spec(&app_instance_id).await?;
+    let agent_root = resolve_agent_root(&agent_spec.agent_id)?;
+    let agent_did = agent_spec.agent_did.to_string();
     let package_root = resolve_agent_package_root(&startup, &appid);
     init_agent_rootfs(&agent_root, package_root.as_deref()).await?;
-    write_agent_did_to_toml(&agent_root, &appid, &agent_did).await?;
+    write_agent_did_to_toml(&agent_root, agent_spec.agent_id.as_str(), &agent_did).await?;
     info!(
-        "opendan.bootstrap: agent_root={} package_root={} agent_did={}",
+        "opendan.bootstrap: runtime={} agent_id={} agent_root={} package_root={} agent_did={}",
+        app_instance_id,
+        agent_spec.agent_id,
         agent_root.display(),
         package_root
             .as_ref()
@@ -710,35 +784,29 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_startup_args_from_iter, sync_agent_rootfs_from_package, ROOTFS_SYNC_MANIFEST,
+        agent_data_root, parse_startup_args_from_iter, sync_agent_rootfs_from_package,
+        ROOTFS_SYNC_MANIFEST,
     };
     use std::fs;
     use tempfile::tempdir;
 
     #[test]
     fn parses_positional_appid() {
-        let parsed = parse_startup_args_from_iter(["buckyos_jarvis"]).expect("parse args");
-        assert_eq!(parsed.appid.as_deref(), Some("buckyos_jarvis"));
+        let parsed = parse_startup_args_from_iter(["jarvis.buckyos.bns.did"]).expect("parse args");
+        assert_eq!(parsed.appid.as_deref(), Some("jarvis.buckyos.bns.did"));
     }
 
     #[test]
     fn parses_appid_flag() {
-        let parsed =
-            parse_startup_args_from_iter(["--appid", "buckyos_jarvis"]).expect("parse args");
-        assert_eq!(parsed.appid.as_deref(), Some("buckyos_jarvis"));
-    }
-
-    #[test]
-    fn keeps_agent_id_as_loader_alias() {
-        let parsed =
-            parse_startup_args_from_iter(["--agent-id=buckyos_jarvis"]).expect("parse args");
-        assert_eq!(parsed.appid.as_deref(), Some("buckyos_jarvis"));
+        let parsed = parse_startup_args_from_iter(["--appid", "jarvis.buckyos.bns.did"])
+            .expect("parse args");
+        assert_eq!(parsed.appid.as_deref(), Some("jarvis.buckyos.bns.did"));
     }
 
     #[test]
     fn parses_agent_bin_flag() {
         let parsed = parse_startup_args_from_iter([
-            "--appid=buckyos_jarvis",
+            "--appid=jarvis.buckyos.bns.did",
             "--agent-bin",
             "/pkg/buckyos_jarvis",
         ])
@@ -750,9 +818,20 @@ mod tests {
     }
 
     #[test]
+    fn agent_id_flag_is_removed() {
+        for args in [
+            vec!["--agent-id", "jarvis.test.buckyos.io"],
+            vec!["--agent-id=jarvis.test.buckyos.io"],
+        ] {
+            let err = parse_startup_args_from_iter(args).expect_err("flag must be refused");
+            assert!(err.to_string().contains("AgentSpec"), "{}", err);
+        }
+    }
+
+    #[test]
     fn parses_worksession_test_flag() {
         let parsed = parse_startup_args_from_iter([
-            "--appid=buckyos_jarvis",
+            "--appid=jarvis.buckyos.bns.did",
             "--worksession-test",
             "/tmp/ws.json",
         ])
@@ -769,12 +848,12 @@ mod tests {
         // external delegation must go through the Task Dispatch Center.
         for args in [
             vec![
-                "--appid=buckyos_jarvis",
+                "--appid=jarvis.buckyos.bns.did",
                 "--worksession-task-test",
                 "/tmp/ws-task.json",
             ],
             vec![
-                "--appid=buckyos_jarvis",
+                "--appid=jarvis.buckyos.bns.did",
                 "--worksession-task-test=/tmp/ws-task.json",
             ],
         ] {
@@ -801,6 +880,15 @@ mod tests {
         assert_eq!(spec.behavior.as_deref(), Some("work_default"));
         assert_eq!(spec.created_by_session_id, "ui-source");
         assert_eq!(spec.reason_messages, vec!["requested by cli"]);
+    }
+
+    #[test]
+    fn agent_data_is_isolated_below_runtime_app_root() {
+        let agent_id = buckyos_api::AgentId::parse("jarvis.example.com").unwrap();
+        assert_eq!(
+            agent_data_root(std::path::Path::new("/data/apps/runtime"), &agent_id),
+            std::path::PathBuf::from("/data/apps/runtime/agents/jarvis.example.com")
+        );
     }
 
     #[tokio::test]

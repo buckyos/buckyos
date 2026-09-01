@@ -5,9 +5,9 @@
   "scripts": {
     "demo": "node app_client_demo.mjs",
     "generate:pikg-samples": "node generate_pikg_samples.mjs",
-    "test": "node --test app_installer_flow.test.mjs"
+    "test": "node --test --test-force-exit app_installer_flow.test.mjs"
   },
   "dependencies": {
-    "buckyos": "git+https://github.com/buckyos/buckyos-websdk#main"
+    "buckyos": "latest"
   }
 }

@@ -15,8 +15,8 @@ use crate::runtime::{NodeRunState, RunStatus, WorkflowRun};
 use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, BindAppExecutorReq, CreatePromisedTaskReq, CreateTaskExecutor,
-    CreateTaskReq, Task, TaskDataErrorInfo, TaskDataProgress, TaskError, TaskExecutor,
-    TaskManagerClient, TaskPhase, TaskWaitReason, TaskWaitReasonKind, ThunkTaskData,
+    CreateTaskReq, StorageDomain, Task, TaskDataErrorInfo, TaskDataProgress, TaskError,
+    TaskExecutor, TaskManagerClient, TaskPhase, TaskWaitReason, TaskWaitReasonKind, ThunkTaskData,
     ThunkTaskRequest, WorkflowMapShardTaskData, WorkflowMapShardTaskRequest, WorkflowRunTaskData,
     WorkflowRunTaskRequest, WorkflowRunTaskResult, WorkflowStepTaskData, WorkflowStepTaskRequest,
 };
@@ -326,6 +326,7 @@ impl TaskManagerTaskTracker {
                     child_control_policy: None,
                     policy_preset: None,
                     permission_boundary: false,
+                    storage_domain: Some(StorageDomain::System),
                     idempotency_key,
                     retry_of: None,
                     supersedes: None,
@@ -352,6 +353,7 @@ impl TaskManagerTaskTracker {
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
+                storage_domain: None,
                 idempotency_key: idempotency_key.clone(),
                 wait_reason: None,
                 message: None,

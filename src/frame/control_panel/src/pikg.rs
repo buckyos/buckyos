@@ -19,22 +19,19 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // 常量（v0.5 D1 冻结）
 // ---------------------------------------------------------------------------
 
 pub const PIKG_PACKAGE_META_SCHEMA: &str = "buckyos.pikg.package-meta.v1";
-pub const PIKG_MIME_TYPE: &str = "application/vnd.buckyos.pikg+zip";
 pub const PIKG_FILE_EXT: &str = "pikg";
 
-pub const APPDOC_WT_ENTRY: &str = "APPDOC.wt";
+pub const APPDOC_JWT_ENTRY: &str = "APPDOC.jwt";
 pub const APPDOC_JSON_ENTRY: &str = "APPDOC.json";
 pub const PACKAGE_META_ENTRY: &str = "PACKAGE_META.json";
 pub const OBJECTS_PREFIX: &str = "objects/";
-pub const CHUNKS_PREFIX: &str = "chunks/";
-pub const ASSETS_PREFIX: &str = "assets/";
 
 pub const PIKG_MAX_ENTRIES: usize = 4096;
 pub const PIKG_MAX_APPDOC_BYTES: u64 = 1024 * 1024; // 1 MiB
@@ -43,6 +40,7 @@ pub const PIKG_MAX_METADATA_TOTAL_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB
 
 const ZIP_LOCAL_MAGIC: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
 const HASH_BUF_SIZE: usize = 256 * 1024;
+const LEGACY_APPDOC_WT_ENTRY: &str = "APPDOC.wt";
 
 // ---------------------------------------------------------------------------
 // 错误
@@ -102,12 +100,6 @@ pub struct PikgPackageMetaFile {
 // 检查结果视图
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-pub struct PikgEntryInfo {
-    pub path: String,
-    pub size: u64,
-}
-
 /// 打开并通过结构校验后的 pikg 视图。
 /// 注意：`app_doc` 只是 candidate body；发布状态与 owner 信任由 Resolve 决定。
 #[derive(Debug, Clone)]
@@ -116,19 +108,36 @@ pub struct PikgInspection {
     pub pikg_digest: String,
     pub app_doc: AppDoc,
     pub app_doc_object_id: ObjId,
-    /// 包内是否带 `APPDOC.wt`（签名封装）。签名验证属于 Resolve/Verify。
+    /// 包内是否带 `APPDOC.jwt`（签名封装）。签名验证属于 Resolve/Verify。
+    #[cfg(test)]
     pub has_signed_app_doc: bool,
+    #[cfg(test)]
     pub signed_app_doc_jwt: Option<String>,
     pub package_meta: PikgPackageMetaFile,
-    pub entries: Vec<PikgEntryInfo>,
 }
 
 impl PikgInspection {
-    pub fn content_entry(&self, digest: &str) -> Option<&PikgContentIndexEntry> {
-        self.package_meta.content_index.get(digest)
+    pub fn content_entry(&self, content_id: &str) -> Option<&PikgContentIndexEntry> {
+        self.package_meta.content_index.get(content_id).or_else(|| {
+            self.package_meta.content_index.values().find(|entry| {
+                let Some(desc) = self.app_doc.pkg_list.get(&entry.sub_pkg_name) else {
+                    return false;
+                };
+                let Some(pkg_objid) = desc.pkg_objid.as_ref() else {
+                    return false;
+                };
+                self.package_meta
+                    .package_objects
+                    .get(&pkg_objid.to_string())
+                    .and_then(|value| value.get("content"))
+                    .and_then(Value::as_str)
+                    == Some(content_id)
+            })
+        })
     }
 
     /// 当前 pikg 内实际携带的内容 digest 集合。
+    #[cfg(test)]
     pub fn bundled_content_digests(&self) -> impl Iterator<Item = &str> {
         self.package_meta.content_index.keys().map(|s| s.as_str())
     }
@@ -238,14 +247,14 @@ fn chunk_id_matches_content(
 }
 
 fn is_metadata_entry(name: &str) -> bool {
-    name == APPDOC_WT_ENTRY
+    name == APPDOC_JWT_ENTRY
         || name == APPDOC_JSON_ENTRY
         || name == PACKAGE_META_ENTRY
         || (name.starts_with(OBJECTS_PREFIX) && name.ends_with(".json"))
 }
 
 fn metadata_entry_limit(name: &str) -> u64 {
-    if name == APPDOC_WT_ENTRY || name == APPDOC_JSON_ENTRY {
+    if name == APPDOC_JWT_ENTRY || name == APPDOC_JSON_ENTRY {
         PIKG_MAX_APPDOC_BYTES
     } else {
         PIKG_MAX_METADATA_ENTRY_BYTES
@@ -294,15 +303,8 @@ impl PikgReader {
         &self.inspection.pikg_digest
     }
 
-    pub fn staged_path(&self) -> &Path {
-        &self.path
-    }
-
     pub fn has_content(&self, digest: &str) -> bool {
-        self.inspection
-            .package_meta
-            .content_index
-            .contains_key(digest)
+        self.inspection.content_entry(digest).is_some()
     }
 
     /// Verify 级校验：流式解压 entry，重算 sha256 与字节数，
@@ -396,6 +398,25 @@ impl PikgReader {
             .map_err(|err| io_err("join copy_content_to_file", err))?
     }
 
+    pub async fn verify_package_archive(&self, digest: &str) -> PikgResult<()> {
+        let entry = self
+            .inspection
+            .content_entry(digest)
+            .cloned()
+            .ok_or_else(|| PikgError::ContentMissing(digest.to_string()))?;
+        let index = self.entry_index_of(&entry.path)?;
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut archive = open_archive(&path)?;
+            let zentry = archive
+                .by_index(index)
+                .map_err(|err| io_err("open package archive content", err))?;
+            validate_package_archive(zentry)
+        })
+        .await
+        .map_err(|err| io_err("join verify_package_archive", err))?
+    }
+
     fn entry_index_of(&self, entry_path: &str) -> PikgResult<usize> {
         self.entry_index
             .get(entry_path)
@@ -465,7 +486,6 @@ impl PikgReader {
 
         // 4. entry 名安全 + symlink + 目录/文件冲突 + metadata 总量。
         let mut entry_index: HashMap<String, usize> = HashMap::new();
-        let mut entries: Vec<PikgEntryInfo> = Vec::new();
         let mut file_paths: HashSet<String> = HashSet::new();
         let mut dir_paths: HashSet<String> = HashSet::new();
         let mut metadata_total: u64 = 0;
@@ -493,10 +513,6 @@ impl PikgReader {
                     return Err(invalid(format!("duplicate entry: {name:?}")));
                 }
                 entry_index.insert(name.clone(), index);
-                entries.push(PikgEntryInfo {
-                    path: name.clone(),
-                    size: entry.size(),
-                });
                 // 隐式目录前缀。
                 let mut prefix = String::new();
                 let segments: Vec<&str> = name.split('/').collect();
@@ -520,6 +536,11 @@ impl PikgReader {
             }
         }
 
+        if entry_index.contains_key(LEGACY_APPDOC_WT_ENTRY) {
+            return Err(invalid(
+                "legacy APPDOC.wt entry is not supported; use APPDOC.jwt",
+            ));
+        }
         if metadata_total > PIKG_MAX_METADATA_TOTAL_BYTES {
             return Err(invalid(format!(
                 "metadata total size {metadata_total} exceeds limit {PIKG_MAX_METADATA_TOTAL_BYTES}"
@@ -545,42 +566,43 @@ impl PikgReader {
             }
             None => None,
         };
-        let jwt_doc = match entry_index.get(APPDOC_WT_ENTRY).copied() {
+        let jwt_doc = match entry_index.get(APPDOC_JWT_ENTRY).copied() {
             Some(index) => {
                 let mut entry = archive
                     .by_index(index)
-                    .map_err(|err| io_err("open APPDOC.wt", err))?;
-                let bytes = read_entry_limited(&mut entry, PIKG_MAX_APPDOC_BYTES, APPDOC_WT_ENTRY)?;
+                    .map_err(|err| io_err("open APPDOC.jwt", err))?;
+                let bytes =
+                    read_entry_limited(&mut entry, PIKG_MAX_APPDOC_BYTES, APPDOC_JWT_ENTRY)?;
                 let jwt = String::from_utf8(bytes)
-                    .map_err(|_| invalid("APPDOC.wt is not utf-8"))?
+                    .map_err(|_| invalid("APPDOC.jwt is not utf-8"))?
                     .trim()
                     .to_string();
                 let claims = name_lib::decode_jwt_claim_without_verify(jwt.as_str())
-                    .map_err(|err| invalid(format!("APPDOC.wt is not a decodable jwt: {err}")))?;
+                    .map_err(|err| invalid(format!("APPDOC.jwt is not a decodable jwt: {err}")))?;
                 Some((jwt, claims))
             }
             None => None,
         };
 
-        let (app_doc_value, has_signed, signed_jwt) = match (&json_doc, &jwt_doc) {
+        let app_doc_value = match (&json_doc, &jwt_doc) {
             (None, None) => {
                 return Err(invalid(
-                    "pikg must contain APPDOC.wt or APPDOC.json (none found)",
+                    "pikg must contain APPDOC.jwt or APPDOC.json (none found)",
                 ))
             }
-            (Some(json_value), Some((jwt, claims))) => {
+            (Some(json_value), Some((_jwt, claims))) => {
                 let (json_id, _) = build_named_object_by_json(OBJ_TYPE_APP_DOC, json_value);
                 let (jwt_id, _) = build_named_object_by_json(OBJ_TYPE_APP_DOC, claims);
                 if json_id != jwt_id {
                     return Err(invalid(
-                        "APPDOC.wt and APPDOC.json express different canonical documents",
+                        "APPDOC.jwt and APPDOC.json express different canonical documents",
                     ));
                 }
                 // 默认优先采用签名版本的 claims（内容与 json 等价）。
-                (claims.clone(), true, Some(jwt.clone()))
+                claims.clone()
             }
-            (Some(json_value), None) => (json_value.clone(), false, None),
-            (None, Some((jwt, claims))) => (claims.clone(), true, Some(jwt.clone())),
+            (Some(json_value), None) => json_value.clone(),
+            (None, Some((_jwt, claims))) => claims.clone(),
         };
 
         let app_doc: AppDoc = serde_json::from_value(app_doc_value.clone())
@@ -704,10 +726,11 @@ impl PikgReader {
             pikg_digest,
             app_doc,
             app_doc_object_id,
-            has_signed_app_doc: has_signed,
-            signed_app_doc_jwt: signed_jwt,
+            #[cfg(test)]
+            has_signed_app_doc: jwt_doc.is_some(),
+            #[cfg(test)]
+            signed_app_doc_jwt: jwt_doc.as_ref().map(|(jwt, _)| jwt.clone()),
             package_meta,
-            entries,
         };
 
         Ok(Self {
@@ -1051,6 +1074,49 @@ fn copy_content_blocking(
     result
 }
 
+fn validate_package_archive(reader: impl Read) -> PikgResult<()> {
+    let decoder = flate2::read::GzDecoder::new(reader);
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive
+        .entries()
+        .map_err(|error| invalid(format!("invalid package archive: {error}")))?
+    {
+        let entry = entry.map_err(|error| invalid(format!("invalid package archive: {error}")))?;
+        let path = entry
+            .path()
+            .map_err(|error| invalid(format!("invalid package archive path: {error}")))?;
+        let path_text = path.to_string_lossy();
+        let windows_absolute = path_text.as_bytes().get(1) == Some(&b':');
+        if path.is_absolute()
+            || path_text.starts_with(['/', '\\'])
+            || path_text.contains('\\')
+            || windows_absolute
+            || path.components().any(|part| {
+                matches!(
+                    part,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(invalid(format!(
+                "package archive entry `{path_text}` escapes its install root"
+            )));
+        }
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            return Err(invalid(format!(
+                "package archive entry `{path_text}` uses a link"
+            )));
+        }
+        if !entry_type.is_file() && !entry_type.is_dir() {
+            return Err(invalid(format!(
+                "package archive entry `{path_text}` has an unsupported type"
+            )));
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // PikgBuilder（发布与测试共用的 packer）
 // ---------------------------------------------------------------------------
@@ -1060,12 +1126,6 @@ struct BuilderPayload {
     file_path: PathBuf,
 }
 
-pub struct PikgBuildOutput {
-    pub pikg_digest: String,
-    pub app_doc_object_id: ObjId,
-    pub package_meta: PikgPackageMetaFile,
-}
-
 /// pikg 打包器。生成的包必须能通过同一模块的 `PikgReader` 校验；
 /// 发布侧写完文件后应立即用 Reader 自校验。
 pub struct PikgBuilder {
@@ -1073,7 +1133,6 @@ pub struct PikgBuilder {
     app_doc_jwt: Option<String>,
     package_metas: BTreeMap<String, Value>,
     payloads: Vec<BuilderPayload>,
-    extra_objects: Vec<(ObjId, Value)>,
 }
 
 impl PikgBuilder {
@@ -1083,7 +1142,6 @@ impl PikgBuilder {
             app_doc_jwt: None,
             package_metas: BTreeMap::new(),
             payloads: Vec::new(),
-            extra_objects: Vec::new(),
         }
     }
 
@@ -1096,6 +1154,7 @@ impl PikgBuilder {
 
     /// 直接提供签名封装的 App Document（JWT）。claims 必须与 app_doc 一致
     /// （由 write 后的 Reader 自校验兜底）。
+    #[cfg(test)]
     pub fn app_doc_jwt(mut self, jwt: impl Into<String>) -> Self {
         self.app_doc_jwt = Some(jwt.into());
         self
@@ -1124,20 +1183,14 @@ impl PikgBuilder {
         Ok(self)
     }
 
-    /// 附带其它结构化对象（写入 objects/<objid>.json）。
-    pub fn add_object(mut self, obj_id: ObjId, value: Value) -> Self {
-        self.extra_objects.push((obj_id, value));
-        self
-    }
-
-    pub async fn write_to(self, dest: &Path) -> PikgResult<PikgBuildOutput> {
+    pub async fn write_to(self, dest: &Path) -> PikgResult<()> {
         let dest = dest.to_path_buf();
         tokio::task::spawn_blocking(move || self.write_blocking(&dest))
             .await
             .map_err(|err| io_err("join pikg write", err))?
     }
 
-    fn write_blocking(self, dest: &Path) -> PikgResult<PikgBuildOutput> {
+    fn write_blocking(self, dest: &Path) -> PikgResult<()> {
         use zip::write::SimpleFileOptions;
 
         let app_doc_value = self
@@ -1192,11 +1245,11 @@ impl PikgBuilder {
 
         if let Some(jwt) = self.app_doc_jwt.as_ref() {
             writer
-                .start_file(APPDOC_WT_ENTRY, meta_options)
-                .map_err(|err| io_err("start APPDOC.wt", err))?;
+                .start_file(APPDOC_JWT_ENTRY, meta_options)
+                .map_err(|err| io_err("start APPDOC.jwt", err))?;
             writer
                 .write_all(jwt.as_bytes())
-                .map_err(|err| io_err("write APPDOC.wt", err))?;
+                .map_err(|err| io_err("write APPDOC.jwt", err))?;
         }
         if self.app_doc_value.is_some() {
             let body = serde_json::to_string_pretty(&app_doc_value)
@@ -1218,21 +1271,6 @@ impl PikgBuilder {
             .write_all(meta_body.as_bytes())
             .map_err(|err| io_err("write PACKAGE_META.json", err))?;
 
-        for (obj_id, value) in &self.extra_objects {
-            let (recomputed, canonical) = build_named_object_by_json(&obj_id.obj_type, value);
-            if recomputed != *obj_id {
-                return Err(invalid(format!(
-                    "extra object `{obj_id}` does not match recomputed id `{recomputed}`"
-                )));
-            }
-            writer
-                .start_file(format!("{OBJECTS_PREFIX}{obj_id}.json"), meta_options)
-                .map_err(|err| io_err("start object entry", err))?;
-            writer
-                .write_all(canonical.as_bytes())
-                .map_err(|err| io_err("write object entry", err))?;
-        }
-
         for payload in &self.payloads {
             let entry_name = preferred_archive_name(&payload.sub_pkg_name);
             writer
@@ -1246,13 +1284,7 @@ impl PikgBuilder {
         writer
             .finish()
             .map_err(|err| io_err("finalize pikg", err))?;
-
-        let pikg_digest = sha256_file_hex(dest)?;
-        Ok(PikgBuildOutput {
-            pikg_digest,
-            app_doc_object_id,
-            package_meta,
-        })
+        Ok(())
     }
 }
 
@@ -1310,7 +1342,7 @@ mod tests {
 
         let owner = DID::from_str("did:bns:tester").unwrap();
         let mut meta = PackageMeta::new(
-            "tester_demo-web-web",
+            "all.web.demo-web.tester.bns.did",
             "0.1.0",
             "tester",
             &owner,
@@ -1322,7 +1354,7 @@ mod tests {
         let meta_value = serde_json::to_value(&meta).unwrap();
         let (meta_obj_id, _) = build_named_object_by_json(ndn_lib::OBJ_TYPE_PKG, &meta_value);
 
-        let mut web_desc = SubPkgDesc::new("tester_demo-web-web#0.1.0");
+        let mut web_desc = SubPkgDesc::new("all.web.demo-web.tester.bns.did#0.1.0");
         web_desc.pkg_objid = Some(meta_obj_id);
         let app_doc = AppDoc::builder(AppType::Web, "demo-web", "0.1.0", "tester", &owner)
             .web_pkg(web_desc)
@@ -1405,7 +1437,10 @@ mod tests {
 
         let reader = PikgReader::open(&pikg_path, None).await.unwrap();
         let inspection = reader.inspection();
-        assert_eq!(inspection.app_doc.name, "demo-web");
+        assert_eq!(
+            inspection.app_doc.app_did().to_string(),
+            "did:bns:demo-web.tester"
+        );
         assert_eq!(inspection.app_doc_object_id.obj_type, OBJ_TYPE_APP_DOC);
         assert!(!inspection.has_signed_app_doc);
         assert_eq!(inspection.package_meta.content_index.len(), 1);
@@ -1426,10 +1461,76 @@ mod tests {
         let body = reader.read_object(&meta_id).await.unwrap().unwrap();
         let parsed: PackageMeta = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed.version, "0.1.0");
+        reader.verify_content(&parsed.content).await.unwrap();
+        reader
+            .verify_package_archive(&parsed.content)
+            .await
+            .unwrap();
 
         // 未知对象返回 None（不报错）。
         let missing = ObjId::new_by_raw("pkg".to_string(), vec![9u8; 32]);
         assert!(reader.read_object(&missing).await.unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&fixture.dir);
+    }
+
+    #[tokio::test]
+    async fn signed_appdoc_uses_jwt_entry_name() {
+        let fixture = build_fixture();
+        let app_doc_value = serde_json::to_value(&fixture.app_doc).unwrap();
+        let header = base64_url_encode(br#"{"alg":"EdDSA"}"#);
+        let payload = base64_url_encode(serde_json::to_string(&app_doc_value).unwrap().as_bytes());
+        let fake_jwt = format!("{header}.{payload}.c2ln");
+        let pikg_path = fixture.dir.join("signed.pikg");
+
+        let builder = PikgBuilder::new()
+            .app_doc(&fixture.app_doc)
+            .unwrap()
+            .app_doc_jwt(fake_jwt.clone());
+        let (builder, _meta_id) = builder
+            .add_package_meta_value(fixture.meta_value.clone())
+            .unwrap();
+        builder
+            .add_payload_file("web", fixture.payload_path.clone())
+            .unwrap()
+            .write_to(&pikg_path)
+            .await
+            .unwrap();
+
+        let mut archive = open_archive(&pikg_path).unwrap();
+        let entry_names = (0..archive.len())
+            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .collect::<Vec<_>>();
+        assert!(entry_names.iter().any(|name| name == APPDOC_JWT_ENTRY));
+        assert!(!entry_names
+            .iter()
+            .any(|name| name == LEGACY_APPDOC_WT_ENTRY));
+
+        let reader = PikgReader::open(&pikg_path, None).await.unwrap();
+        assert!(reader.inspection().has_signed_app_doc);
+        assert_eq!(
+            reader.inspection().signed_app_doc_jwt.as_deref(),
+            Some(fake_jwt.as_str())
+        );
+
+        // 旧 entry 名不再兼容，也不能在 APPDOC.json 存在时静默降级。
+        let legacy_path = fixture.dir.join("legacy-wt.pikg");
+        rewrite_zip(
+            &pikg_path,
+            &legacy_path,
+            |name, bytes| {
+                if name == APPDOC_JWT_ENTRY {
+                    None
+                } else {
+                    Some(bytes)
+                }
+            },
+            vec![(LEGACY_APPDOC_WT_ENTRY.to_string(), fake_jwt.into_bytes())],
+        );
+        expect_invalid(
+            PikgReader::open(&legacy_path, None).await,
+            "legacy APPDOC.wt entry is not supported",
+        );
 
         let _ = std::fs::remove_dir_all(&fixture.dir);
     }
@@ -1591,10 +1692,13 @@ mod tests {
         let fixture = build_fixture();
         let pikg_path = build_valid_pikg(&fixture).await;
 
-        // 双 APPDOC 不一致：.wt claims 是另一个文档。
+        // 双 APPDOC 不一致：.jwt claims 是另一个文档。
         let other_owner = DID::from_str("did:bns:other").unwrap();
         let other_doc = AppDoc::builder(AppType::Web, "other-app", "9.9.9", "other", &other_owner)
-            .web_pkg(SubPkgDesc::new("other_other-app-web#9.9.9"))
+            .web_pkg(
+                SubPkgDesc::new("all.web.other-app.other.bns.did#9.9.9")
+                    .package_meta_object_id(ObjId::new_by_raw("pkg".to_string(), vec![9; 32])),
+            )
             .build()
             .unwrap();
         let other_value = serde_json::to_value(&other_doc).unwrap();
@@ -1607,7 +1711,7 @@ mod tests {
             &pikg_path,
             &bad,
             |_, bytes| Some(bytes),
-            vec![(APPDOC_WT_ENTRY.to_string(), fake_jwt.into_bytes())],
+            vec![(APPDOC_JWT_ENTRY.to_string(), fake_jwt.into_bytes())],
         );
         expect_invalid(
             PikgReader::open(&bad, None).await,
@@ -1793,6 +1897,41 @@ mod tests {
         assert_eq!(format!("sha256:{copied_digest}"), digest);
 
         let _ = std::fs::remove_dir_all(&fixture.dir);
+    }
+
+    #[test]
+    fn package_archive_rejects_absolute_parent_and_link_entries() {
+        fn archive_with_raw_entry(name: &str) -> Vec<u8> {
+            let encoder = GzEncoder::new(Vec::new(), Compression::default());
+            let mut builder = tar::Builder::new(encoder);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(1);
+            header.set_mode(0o644);
+            header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+            header.set_cksum();
+            builder.append(&header, Cursor::new([1u8])).unwrap();
+            let encoder = builder.into_inner().unwrap();
+            encoder.finish().unwrap()
+        }
+
+        for name in ["/escape", "../escape", "C:/escape", "dir\\escape"] {
+            let archive = archive_with_raw_entry(name);
+            assert!(validate_package_archive(Cursor::new(archive)).is_err());
+        }
+
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_cksum();
+        builder
+            .append_link(&mut header, "escape", "../../outside")
+            .unwrap();
+        let encoder = builder.into_inner().unwrap();
+        let archive = encoder.finish().unwrap();
+        assert!(validate_package_archive(Cursor::new(archive)).is_err());
     }
 
     #[test]

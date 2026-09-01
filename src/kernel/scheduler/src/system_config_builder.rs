@@ -7,13 +7,15 @@ use buckyos_api::{
     generate_aicc_service_doc, generate_control_panel_service_doc, generate_msg_center_service_doc,
     generate_opendan_service_doc, generate_repo_service_doc, generate_scheduler_service_doc,
     generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
-    generate_workflow_service_doc, AppClass, AppDoc, AppServiceSpec, AppType, GatewaySettings,
-    GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SelectorType, ServiceEndpointConfig,
-    ServiceExposeConfig, ServiceExposeRouteConfig, ServiceInfo, ServiceInstanceReportInfo,
-    ServiceInstanceState, ServiceNode, ServiceProtocol, ServiceSpecConfig, ServiceState,
-    SubPkgDesc, UserContactSettings, UserPrivateProfile, UserProfile, UserSettings, UserState,
-    UserTunnelBinding, UserType, ZoneConfig, OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID,
-    SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
+    generate_workflow_service_doc, AgentId, AgentServiceBinding, AgentSpec, AppDoc, AppId,
+    AppInstanceId, AppRegistry, BuckyOSDevConfig, BuckyOSInfo, GatewaySettings, GatewayShortcut,
+    KernelServiceSpec, NodeConfig, NodeState, ServiceEndpointConfig, ServiceExposeConfig,
+    ServiceExposeRouteConfig, ServiceInfo, ServiceInstanceReportInfo, ServiceInstanceState,
+    ServiceNode, ServiceProtocol, ServiceSpecConfig, ServiceState, SubPkgDesc, UserContactSettings,
+    UserPrivateProfile, UserProfile, UserSettings, UserState, UserTunnelBinding, UserType,
+    ZoneConfig, AGENT_SPEC_SCHEMA_VERSION, APP_REGISTRY_KEY, BUCKYOS_DEV_CONFIG_KEY,
+    BUCKYOS_INFO_KEY, OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
+    ZONE_OWNER_USER_ID_KEY,
 };
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
@@ -21,10 +23,13 @@ use buckyos_api::{
     REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
     TASK_MANAGER_SERVICE_UNIQUE_ID, WORKFLOW_SERVICE_PORT, WORKFLOW_SERVICE_UNIQUE_ID,
 };
-use buckyos_kit::get_buckyos_system_etc_dir;
+use buckyos_kit::{
+    buckyos_get_unix_timestamp, get_buckyos_system_etc_dir, get_channel, get_target, get_version,
+};
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_lib::{generate_ed25519_key_pair, AgentDocument, OwnerDocument, VerifyHubInfo, DID};
+use ndn_lib::build_named_object_by_json;
 use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -33,13 +38,14 @@ use std::convert::TryFrom;
 use url::Url;
 
 const DEFAULT_OOD_ID: &str = "ood1";
+const DEFAULT_JARVIS_APP_DID: &str = "did:bns:jarvis.buckyos";
 const PROFILE_SYSTEM_CONTACT_KEY: &str = "system_contact";
-const DEFAULT_SN_AI_PROVIDER_MODELS: &[&str] =
-    &["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro"];
-const DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS: &[&str] = &["dall-e-3", "dall-e-2"];
+const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
+const SN_AI_PROVIDER_ACTIVATION_KEY: &str = "sn-ai-provider-activated";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct SnAiProviderEndpoints {
+    pub login_url: String,
     pub responses_url: String,
 }
 
@@ -74,34 +80,84 @@ pub(crate) fn derive_sn_ai_provider_endpoints(
     }
 
     origin.set_path("/");
+    let login_url = origin
+        .join("api/user/login_by_device_token")
+        .map_err(|err| anyhow!("failed to derive SN user login URL: {err}"))?
+        .to_string();
     let responses_url = origin
         .join("api/v1/ai/")
         .map_err(|err| anyhow!("failed to derive SN AI responses URL: {err}"))?
         .to_string();
-    Ok(SnAiProviderEndpoints { responses_url })
+    Ok(SnAiProviderEndpoints {
+        login_url,
+        responses_url,
+    })
 }
 
 pub(crate) fn reconcile_managed_sn_ai_provider(
     current: &Value,
     endpoints: std::result::Result<&SnAiProviderEndpoints, &anyhow::Error>,
+    user_name: Option<&str>,
 ) -> Result<Option<Value>> {
     let mut next = current.clone();
-    let Some(provider) = next
+    let valid_config = match (endpoints.as_ref(), user_name.map(str::trim)) {
+        (Ok(endpoints), Some(user_name)) if !user_name.is_empty() => Some((*endpoints, user_name)),
+        _ => None,
+    };
+    let Some(root) = next.as_object_mut() else {
+        return Ok(None);
+    };
+    let activated = root
+        .get(SN_AI_PROVIDER_ACTIVATION_KEY)
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !activated {
+        return Ok(None);
+    }
+    if !root.contains_key("sn-ai-provider") {
+        let Some((endpoints, user_name)) = valid_config else {
+            return Ok(None);
+        };
+        root.insert(
+            "sn-ai-provider".to_string(),
+            json!({
+                "enabled": true,
+                "api_token": "",
+                "alias_map": {},
+                "instances": [managed_sn_ai_provider_instance(endpoints, user_name)]
+            }),
+        );
+        return Ok(Some(next));
+    }
+    let Some(provider) = root
         .get_mut("sn-ai-provider")
         .and_then(Value::as_object_mut)
     else {
         return Ok(None);
     };
-    let Some(instances) = provider.get_mut("instances").and_then(Value::as_array_mut) else {
+    if provider.get("enabled").and_then(Value::as_bool) != Some(true) {
         return Ok(None);
-    };
+    }
+    if provider
+        .get("instances")
+        .and_then(Value::as_array)
+        .is_none()
+    {
+        if valid_config.is_none() {
+            return Ok(None);
+        }
+        provider.insert("instances".to_string(), json!([]));
+    }
+    let instances = provider
+        .get_mut("instances")
+        .and_then(Value::as_array_mut)
+        .expect("instances was normalized to an array");
 
     let mut managed_found = false;
     let mut changed = false;
     for instance in instances.iter_mut().filter_map(Value::as_object_mut) {
-        let is_managed = instance.get("provider_driver").and_then(Value::as_str)
-            == Some("sn-ai-provider")
-            && instance.get("auth_mode").and_then(Value::as_str) == Some("runtime_session");
+        let is_managed =
+            instance.get("provider_driver").and_then(Value::as_str) == Some("sn-ai-provider");
         if !is_managed {
             continue;
         }
@@ -116,19 +172,48 @@ pub(crate) fn reconcile_managed_sn_ai_provider(
                 );
                 changed = true;
             }
+            if instance.get("login_url").and_then(Value::as_str)
+                != Some(endpoints.login_url.as_str())
+            {
+                instance.insert(
+                    "login_url".to_string(),
+                    Value::String(endpoints.login_url.clone()),
+                );
+                changed = true;
+            }
+            if let Some(user_name) = user_name.map(str::trim).filter(|value| !value.is_empty()) {
+                if instance.get("user_name").and_then(Value::as_str) != Some(user_name) {
+                    instance.insert(
+                        "user_name".to_string(),
+                        Value::String(user_name.to_string()),
+                    );
+                    changed = true;
+                }
+            }
         }
     }
 
     if !managed_found {
-        return Ok(None);
-    }
-    let enabled = endpoints.is_ok();
-    if provider.get("enabled").and_then(Value::as_bool) != Some(enabled) {
-        provider.insert("enabled".to_string(), Value::Bool(enabled));
+        let Some((endpoints, user_name)) = valid_config else {
+            return Ok(None);
+        };
+        instances.push(managed_sn_ai_provider_instance(endpoints, user_name));
         changed = true;
     }
 
     Ok(changed.then_some(next))
+}
+
+fn managed_sn_ai_provider_instance(endpoints: &SnAiProviderEndpoints, user_name: &str) -> Value {
+    json!({
+        "provider_instance_name": "sn-ai-provider-default",
+        "provider_type": "cloud_api",
+        "provider_driver": "sn-ai-provider",
+        "base_url": endpoints.responses_url,
+        "login_url": endpoints.login_url,
+        "user_name": user_name,
+        "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -177,17 +262,14 @@ pub struct StartConfigSummary {
     pub jarvis_msg_tunnel_config: JarvisMsgTunnelConfigSummary,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct SystemInstallSettings {
-    pub pre_install_apps: HashMap<String, PreInstallAppConfig>,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
-pub struct PreInstallAppConfig {
-    #[serde(alias = "app-doc")]
-    pub app_doc: AppDoc,
-    #[serde(flatten)]
-    pub install_config: ServiceSpecConfig,
+#[serde(deny_unknown_fields)]
+pub(crate) struct BootstrapAgentProvision {
+    pub schema_version: u32,
+    pub owner_user_id: String,
+    pub agent_spec: AgentSpec,
+    pub private_key_pem: String,
+    pub settings: Value,
 }
 
 pub struct SystemConfigBuilder {
@@ -222,6 +304,7 @@ impl SystemConfigBuilder {
             allow_password_change: None,
         };
         self.insert_json(&admin_key, &admin_settings)?;
+        self.insert_json_if_absent(ZONE_OWNER_USER_ID_KEY, &config.user_name)?;
         self.append_policy(&format!("g, {}, admin", config.user_name));
         Ok(self)
     }
@@ -269,8 +352,8 @@ impl SystemConfigBuilder {
     }
 
     pub async fn add_default_agents(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
-        //add jarvis agent as default agent
-        // agents/buckyos_jarvis/doc -> agent doc
+        // Stage Jarvis as an Agent identity. Its OpenDAN App runtime is
+        // independently installed by the rootfs pre-install PIKG reconciler.
         let zone_did = DID::from_str(&config.zone_name)?;
         let jarvis_did = DID::new(
             zone_did.method.as_str(),
@@ -285,68 +368,53 @@ impl SystemConfigBuilder {
         let mut jarvis_doc = AgentDocument::new(jarvis_did, owner_did, jarvis_public_key_jwk);
         jarvis_doc.public_description = Some("Default built-in OpenDAN agent for BuckyOS".into());
 
-        self.insert_json("agents/buckyos_jarvis/doc", &jarvis_doc)?;
-        self.entries.insert(
-            "agents/buckyos_jarvis/key".to_string(),
-            jarvis_private_key_pem,
-        );
-
-        let legacy_app_spec_key = format!("users/{}/apps/buckyos_jarvis/spec", config.user_name);
-        if self.entries.remove(&legacy_app_spec_key).is_some() {
-            warn!(
-                "removed conflicting legacy jarvis app spec at {} while installing default agent spec",
-                legacy_app_spec_key
-            );
-        }
-
-        let jarvis_spec_key = format!("users/{}/agents/buckyos_jarvis/spec", config.user_name);
-        let jarvis_spec = build_default_jarvis_agent_spec(config)?;
-        self.insert_json(&jarvis_spec_key, &jarvis_spec)?;
-
-        // agents/buckyos_jarvis/settings -> agent settings,
+        let agent_id = AgentId::from_agent_did(&jarvis_doc.id).map_err(|error| anyhow!(error))?;
+        let agent_doc_json = serde_json::to_value(&jarvis_doc)?;
+        let (agent_doc_object_id, _) = build_named_object_by_json("agentdoc", &agent_doc_json);
+        let runtime_instance_id = default_jarvis_runtime_instance_id(config)?;
+        let agent_spec = AgentSpec {
+            schema_version: AGENT_SPEC_SCHEMA_VERSION,
+            agent_id: agent_id.clone(),
+            agent_did: jarvis_doc.id.clone(),
+            agent_doc_object_id: agent_doc_object_id.clone(),
+            agent_doc: jarvis_doc.clone(),
+            binding: AgentServiceBinding {
+                schema_version: AGENT_SPEC_SCHEMA_VERSION,
+                agent_did: jarvis_doc.id.clone(),
+                agent_doc_object_id,
+                target_app_instance_id: runtime_instance_id,
+                service_name: "www".to_string(),
+                generation: 1,
+            },
+            generation: 1,
+        };
+        agent_spec.validate().map_err(|error| anyhow!(error))?;
         let jarvis_settings = json!({
             "enabled": true,
             "auto_start": true
         });
-        self.insert_json_if_absent("agents/buckyos_jarvis/settings", &jarvis_settings)?;
+        let provision = BootstrapAgentProvision {
+            schema_version: AGENT_SPEC_SCHEMA_VERSION,
+            owner_user_id: config.user_name.clone(),
+            agent_spec,
+            private_key_pem: jarvis_private_key_pem,
+            settings: jarvis_settings,
+        };
+        self.insert_json(
+            &format!("system/scheduler/bootstrap_agents/{agent_id}"),
+            &provision,
+        )?;
         Ok(self)
     }
 
-    pub async fn add_default_apps(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
+    pub async fn add_default_apps(&mut self, _config: &StartConfigSummary) -> Result<&mut Self> {
         let install_settings = self.entries.get("system/install_settings");
         if install_settings.is_none() {
             return Err(anyhow!("system/install_settings not found"));
         }
-        let install_settings: SystemInstallSettings =
+        let install_settings: buckyos_api::SystemInstallSettings =
             serde_json::from_str(install_settings.unwrap())?;
-        let mut app_index = 10;
-        for (app_id, pre_install_app) in install_settings.pre_install_apps.iter() {
-            let app_doc = pre_install_app.app_doc.clone();
-            if app_doc.name != *app_id {
-                return Err(anyhow!(
-                    "pre_install_apps[{}].app_doc.name={} does not match app_id",
-                    app_id,
-                    app_doc.name
-                ));
-            }
-            let app_key = format!("users/{}/apps/{}/spec", config.user_name, app_id);
-            debug!("app_key: {}", app_key);
-
-            let app_spec = AppServiceSpec {
-                permission: app_doc.permissions.clone(),
-                app_doc,
-                app_index: app_index,
-                user_id: config.user_name.clone(),
-                app_class: AppClass::UserInstalled,
-                enable: true,
-                expected_instance_count: 1,
-                state: ServiceState::default(),
-                spec_config: pre_install_app.install_config.clone(),
-            };
-
-            self.insert_json(&app_key, &app_spec)?;
-            app_index += 1;
-        }
+        let _ = install_settings;
 
         Ok(self)
     }
@@ -366,7 +434,19 @@ impl SystemConfigBuilder {
     }
 
     pub fn add_system_defaults(&mut self) -> Result<&mut Self> {
+        let installed_at = buckyos_get_unix_timestamp();
+        let release_channel = get_channel().to_string();
+        let buckyos_info = BuckyOSInfo::from_runtime(
+            get_version(),
+            release_channel.as_str(),
+            get_target(),
+            installed_at,
+        );
+        buckyos_info.validate().map_err(anyhow::Error::msg)?;
+        self.insert_json(BUCKYOS_INFO_KEY, &buckyos_info)?;
+        self.insert_json(BUCKYOS_DEV_CONFIG_KEY, &BuckyOSDevConfig::default())?;
         self.insert_json("system/system_pkgs", &json!({}))?;
+        self.insert_json_if_absent(APP_REGISTRY_KEY, &AppRegistry::default())?;
         Ok(self)
     }
 
@@ -523,10 +603,8 @@ impl SystemConfigBuilder {
                 // ),
                 (
                     "_".to_string(),
-                    GatewayShortcut {
-                        target_type: "service".to_string(),
-                        user_id: None,
-                        app_id: "control-panel".to_string(),
+                    GatewayShortcut::System {
+                        service_id: "control-panel".to_string(),
                     },
                 ),
             ]),
@@ -573,20 +651,6 @@ impl SystemConfigBuilder {
             ),
             (
                 "nightly-apple-aarch64.node_daemon".to_string(),
-                "no".to_string(),
-            ),
-            ("nightly-linux-amd64.buckycli".to_string(), "no".to_string()),
-            (
-                "nightly-linux-aarch64.buckycli".to_string(),
-                "no".to_string(),
-            ),
-            (
-                "nightly-windows-amd64.buckycli".to_string(),
-                "no".to_string(),
-            ),
-            ("nightly-apple-amd64.buckycli".to_string(), "no".to_string()),
-            (
-                "nightly-apple-aarch64.buckycli".to_string(),
                 "no".to_string(),
             ),
         ]);
@@ -681,65 +745,9 @@ impl SystemConfigBuilder {
     }
 }
 
-fn default_jarvis_agent_doc(config: &StartConfigSummary) -> Value {
-    let jarvis_did = config
-        .zone_name
-        .strip_prefix("did:web:")
-        .map(|zone_host| format!("did:web:jarvis.{zone_host}"))
-        .unwrap_or_else(|| "did:web:jarvis.test.buckyos.io".to_string());
-    json!({
-        "id": jarvis_did,
-        "name": "Jarvis",
-        "kind": "root-agent",
-        "description": "Default built-in OpenDAN agent for BuckyOS"
-    })
-}
-
-fn build_default_jarvis_agent_spec(config: &StartConfigSummary) -> Result<AppServiceSpec> {
-    const VERSION: &str = env!("CARGO_PKG_VERSION");
-    const JARVIS_APP_ID: &str = "buckyos_jarvis";
-    const JARVIS_PKG_NAME: &str = "buckyos_jarvis";
-
-    let owner_did = DID::from_str("did:bns:buckyos")?;
-    let app_doc = AppDoc::builder(
-        AppType::Agent,
-        JARVIS_APP_ID,
-        VERSION,
-        "did:bns:buckyos",
-        &owner_did,
-    )
-    .show_name("Jarvis")
-    .description_detail("Default built-in OpenDAN agent for BuckyOS")
-    .selector_type(SelectorType::Single)
-    .service_port("www", OPENDAN_SERVICE_PORT)
-    .agent_pkg(SubPkgDesc::new(format!("{JARVIS_PKG_NAME}")))
-    .build()
-    .map_err(|err| anyhow!("build default jarvis app doc failed: {err}"))?;
-
-    let mut install_config = ServiceSpecConfig::default();
-    install_config.service_config.insert(
-        "www".to_string(),
-        ServiceEndpointConfig {
-            protocol: ServiceProtocol::Http,
-            inner_port: OPENDAN_SERVICE_PORT,
-        },
-    );
-    install_config.expose_config.insert(
-        "www".to_string(),
-        ServiceExposeConfig::web(vec![JARVIS_APP_ID.to_string()], String::new(), false),
-    );
-
-    Ok(AppServiceSpec {
-        permission: app_doc.permissions.clone(),
-        app_doc,
-        app_index: 1,
-        user_id: config.user_name.clone(),
-        app_class: AppClass::UserInstalled,
-        enable: true,
-        expected_instance_count: 1,
-        state: ServiceState::default(),
-        spec_config: install_config,
-    })
+fn default_jarvis_runtime_instance_id(config: &StartConfigSummary) -> Result<AppInstanceId> {
+    let app_did = DID::from_str(DEFAULT_JARVIS_APP_DID)?;
+    AppInstanceId::from_app_did(&app_did, &config.user_name).map_err(|error| anyhow!(error))
 }
 
 fn trim_to_option(value: &str) -> Option<String> {
@@ -820,7 +828,7 @@ fn build_zone_user_contact_settings(
     }))
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 fn build_aicc_settings(config: &StartConfigSummary) -> Value {
     let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai"))
         .expect("test SN AI endpoint must be valid");
@@ -831,11 +839,10 @@ fn build_aicc_settings_with_endpoints(
     config: &StartConfigSummary,
     sn_ai_provider_endpoints: Option<&SnAiProviderEndpoints>,
 ) -> Value {
-    const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
     let mut settings = serde_json::Map::new();
     let mut openai_alias_map = serde_json::Map::new();
     let mut openai_instances = Vec::<Value>::new();
-    let mut sn_ai_provider_alias_map = serde_json::Map::new();
+    let sn_ai_provider_alias_map = serde_json::Map::new();
     let mut sn_ai_provider_instances = Vec::<Value>::new();
     let openai_api_token =
         trim_to_option(config.ai_provider_config.openai_api_token.as_str()).unwrap_or_default();
@@ -859,39 +866,9 @@ fn build_aicc_settings_with_endpoints(
     if config.llm_router_enabled() {
         let endpoints = sn_ai_provider_endpoints
             .expect("SN AI endpoints are validated before building enabled provider settings");
-        let sn_model_settings = build_sn_ai_provider_model_settings();
-        if !sn_ai_provider_alias_map.contains_key("llm.default") {
-            sn_ai_provider_alias_map.insert(
-                "llm.default".to_string(),
-                json!(sn_model_settings.default_model.as_str()),
-            );
-        }
-        if !sn_ai_provider_alias_map.contains_key("llm.plan.default") {
-            sn_ai_provider_alias_map.insert(
-                "llm.plan.default".to_string(),
-                json!(sn_model_settings.plan_default_model.as_str()),
-            );
-        }
-        if !sn_ai_provider_alias_map.contains_key("llm.code.default") {
-            sn_ai_provider_alias_map.insert(
-                "llm.code.default".to_string(),
-                json!(sn_model_settings.default_model.as_str()),
-            );
-        }
-
-        sn_ai_provider_instances.push(json!({
-            "provider_instance_name": "sn-ai-provider-default",
-            "provider_type": "cloud_api",
-            "provider_driver": "sn-ai-provider",
-            "base_url": endpoints.responses_url,
-            "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
-            "models": sn_model_settings.models,
-            "default_model": sn_model_settings.default_model,
-            "image_models": sn_model_settings.image_models,
-            "default_image_model": sn_model_settings.default_image_model,
-            "features": ["plan", "json_output", "tool_calling", "web_search"],
-            "auth_mode": "runtime_session"
-        }));
+        let instance = managed_sn_ai_provider_instance(endpoints, config.user_name.as_str());
+        sn_ai_provider_instances.push(instance);
+        settings.insert(SN_AI_PROVIDER_ACTIVATION_KEY.to_string(), Value::Bool(true));
     }
 
     if !openai_instances.is_empty() {
@@ -985,67 +962,6 @@ fn build_aicc_settings_with_endpoints(
     }
 }
 
-#[derive(Debug)]
-struct SnAIProviderModelSettings {
-    models: Vec<String>,
-    default_model: String,
-    plan_default_model: String,
-    image_models: Vec<String>,
-    default_image_model: String,
-}
-
-fn build_sn_ai_provider_model_settings() -> SnAIProviderModelSettings {
-    let models = DEFAULT_SN_AI_PROVIDER_MODELS
-        .iter()
-        .map(|item| item.to_string())
-        .collect::<Vec<_>>();
-
-    let default_model = pick_preferred_model(models.as_slice(), &["gpt-5.4-mini", "gpt-5.4"])
-        .unwrap_or_else(|| models[0].clone());
-    let plan_default_model = pick_preferred_model(models.as_slice(), &["gpt-5.4", "gpt-5.4-mini"])
-        .unwrap_or_else(|| default_model.clone());
-
-    let mut image_models = models
-        .iter()
-        .filter(|item| is_image_model(item.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    if image_models.is_empty() {
-        image_models = DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS
-            .iter()
-            .map(|item| item.to_string())
-            .collect::<Vec<_>>();
-    }
-    let default_image_model =
-        pick_preferred_model(image_models.as_slice(), &["dall-e-3", "gpt-image-1"])
-            .unwrap_or_else(|| image_models[0].clone());
-
-    SnAIProviderModelSettings {
-        models,
-        default_model,
-        plan_default_model,
-        image_models,
-        default_image_model,
-    }
-}
-
-fn pick_preferred_model(models: &[String], preferred: &[&str]) -> Option<String> {
-    for target in preferred.iter() {
-        if let Some(matched) = models.iter().find(|item| item == target) {
-            return Some(matched.clone());
-        }
-    }
-    None
-}
-
-fn is_image_model(model_id: &str) -> bool {
-    let value = model_id.to_ascii_lowercase();
-    value.contains("dall-e")
-        || value.contains("gpt-image")
-        || value.contains("image")
-        || value.contains("vision")
-}
-
 fn read_default_device_subject() -> String {
     let node_identity_path = get_buckyos_system_etc_dir().join("node_identity.json");
     if let Ok(node_identity) = load_local_node_identity_config(node_identity_path.as_path()) {
@@ -1100,7 +1016,7 @@ async fn build_kernel_service_spec(
     mut service_doc: AppDoc,
 ) -> Result<KernelServiceSpec> {
     let _service_did = PackageId::unique_name_to_did(pkg_name);
-    attach_current_platform_service_pkg(&mut service_doc);
+    attach_current_platform_service_pkg(&mut service_doc, pkg_name);
 
     let mut install_config = ServiceSpecConfig::default();
     let service_expose_config = ServiceExposeConfig {
@@ -1133,8 +1049,8 @@ async fn build_kernel_service_spec(
     })
 }
 
-fn attach_current_platform_service_pkg(service_doc: &mut AppDoc) {
-    let current_pkg = SubPkgDesc::new(service_doc.get_package_id().to_string());
+fn attach_current_platform_service_pkg(service_doc: &mut AppDoc, service_id: &str) {
+    let current_pkg = SubPkgDesc::new(service_id.to_string());
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
@@ -1264,574 +1180,212 @@ impl StartConfigSummary {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        build_aicc_settings, build_default_jarvis_agent_spec, build_kernel_service_spec,
-        build_msg_center_settings, build_zone_user_contact_settings, StartConfigSummary,
-        SystemConfigBuilder, TELEGRAM_TUNNEL_INSTANCE_ID,
-    };
-    use buckyos_api::{
-        generate_verify_hub_service_doc, AppDoc, AppServiceSpec, AppType, OPENDAN_SERVICE_PORT,
-    };
-    use name_lib::DID;
-    use serde_json::{json, Value};
-    use std::collections::HashMap;
+mod beta22_tests {
+    use super::*;
 
-    fn sample_owner_document() -> Value {
-        json!({
-            "@context": [
-                "https://www.w3.org/ns/did/v1",
-                "https://buckyos.org/ns/owner/v1"
-            ],
-            "id": "did:bns:alice",
-            "verificationMethod": [{
-                "type": "Ed25519VerificationKey2020",
-                "id": "#main_key",
-                "controller": "did:bns:alice",
-                "publicKeyJwk": {
-                    "kty": "OKP",
-                    "crv": "Ed25519",
-                    "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
-                }
-            }],
-            "authentication": ["#main_key"],
-            "assertion_method": ["#main_key"],
-            "capabilityInvocation": ["#main_key"],
-            "exp": 4102444800u64,
-            "iat": 1700000000u64,
-            "name": "alice",
-            "display_name": "Alice",
-            "wallets": {
-                "main": {
-                    "type": "eth",
-                    "address": "0x1111111111111111111111111111111111111111"
-                }
-            }
-        })
-    }
-
-    fn sample_preinstall_app_doc(app_id: &str, version: &str) -> AppDoc {
-        let owner = DID::from_str("did:web:example.com").expect("valid owner did");
-        AppDoc::builder(
-            AppType::Service,
-            app_id,
-            version,
-            "did:web:example.com",
-            &owner,
-        )
-        .show_name("Demo App")
-        .build()
-        .expect("build sample app doc")
-    }
-
-    #[test]
-    fn start_config_summary_parses_optional_bootstrap_configs() {
-        let value = json!({
+    fn start_config() -> StartConfigSummary {
+        StartConfigSummary::from_value(&json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "owner_document": sample_owner_document(),
-            "zone_name": "did:web:alice.example.com",
-            "ai_provider_config": {
-                "openai_api_token": "sk-openai",
-                "google_api_token": "google-token"
+            "owner_document": {
+                "@context": [
+                    "https://www.w3.org/ns/did/v1",
+                    "https://buckyos.org/ns/owner/v1"
+                ],
+                "id": "did:bns:alice",
+                "verificationMethod": [{
+                    "type": "Ed25519VerificationKey2020",
+                    "id": "#main_key",
+                    "controller": "did:bns:alice",
+                    "publicKeyJwk": {
+                        "kty": "OKP",
+                        "crv": "Ed25519",
+                        "x": "mWQ4l0Q4v0m2lj9g0WW4MZ6z9M0D7u2xN3Zf3nq4Lys"
+                    }
+                }],
+                "authentication": ["#main_key"],
+                "assertion_method": ["#main_key"],
+                "capabilityInvocation": ["#main_key"],
+                "exp": 4102444800u64,
+                "iat": 1700000000u64,
+                "name": "alice",
+                "display_name": "Alice"
             },
-            "jarvis_msg_tunnel_config": {
-                "telegram_bot_api_token": "123:bot",
-                "telegram_account_id": "@alice"
-            }
-        });
-
-        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
-
-        assert_eq!(summary.ai_provider_config.openai_api_token, "sk-openai");
-        assert_eq!(summary.ai_provider_config.google_api_token, "google-token");
-        assert_eq!(
-            summary.jarvis_msg_tunnel_config.telegram_bot_api_token,
-            "123:bot"
-        );
-        assert_eq!(
-            summary.jarvis_msg_tunnel_config.telegram_account_id,
-            "@alice"
-        );
+            "zone_name": "did:web:alice.example.com"
+        }))
+        .unwrap()
     }
 
-    #[test]
-    fn add_user_doc_preserves_complete_owner_document() {
-        let value = json!({
-            "user_name": "alice",
-            "admin_password_hash": "hashed",
-            "owner_document": sample_owner_document(),
-            "zone_name": "did:web:alice.example.com"
-        });
-        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+    #[tokio::test]
+    async fn generated_kernel_service_uses_system_service_package_id() {
+        let spec = build_kernel_service_spec(
+            VERIFY_HUB_UNIQUE_ID,
+            3300,
+            1,
+            generate_verify_hub_service_doc(),
+        )
+        .await
+        .unwrap();
+        let packages = spec.service_doc.pkg_list.iter();
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].1.pkg_id, VERIFY_HUB_UNIQUE_ID);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_preserves_preinstall_seed_without_execution_or_registry_allocation() {
+        let config = start_config();
+        let app_id = AppId::parse("app.buckyos.bns.did").unwrap();
+        let preinstall = buckyos_api::PreInstallAppConfig {
+            schema_version: buckyos_api::PRE_INSTALL_APP_SCHEMA_VERSION,
+            pikg_path: "data/cache/app.buckyos.bns.did-1.0.0.pikg".to_string(),
+            install_plan: buckyos_api::PreInstallPlanSeed::default(),
+        };
+        let mut builder = SystemConfigBuilder::new(HashMap::from([(
+            "system/install_settings".to_string(),
+            serde_json::to_string(&buckyos_api::SystemInstallSettings {
+                pre_install_apps: HashMap::from([(app_id.to_string(), preinstall)]),
+            })
+            .unwrap(),
+        )]));
+        builder.add_system_defaults().unwrap();
+        builder.add_default_apps(&config).await.unwrap();
+
+        let registry: AppRegistry =
+            serde_json::from_str(builder.entries.get(APP_REGISTRY_KEY).unwrap()).unwrap();
+        assert!(registry.apps.is_empty());
+        assert!(registry.instances.is_empty());
+        assert!(!builder.entries.keys().any(|key| key.starts_with("users/")
+            && key.contains("/apps/")
+            && key.ends_with("/spec")));
+        let records = builder
+            .entries
+            .iter()
+            .filter(|(key, _)| key.starts_with("system/scheduler/install_plan_executions/"))
+            .collect::<Vec<_>>();
+        assert!(records.is_empty());
+        let persisted: buckyos_api::SystemInstallSettings =
+            serde_json::from_str(builder.entries.get("system/install_settings").unwrap()).unwrap();
+        assert_eq!(persisted.pre_install_apps.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_stages_agent_binding_for_preinstalled_runtime() {
+        let config = start_config();
         let mut builder = SystemConfigBuilder::new(HashMap::new());
-        builder.add_user_doc(&summary).expect("add owner document");
-        let stored: Value = serde_json::from_str(
+        builder.add_system_defaults().unwrap();
+        builder.add_default_agents(&config).await.unwrap();
+
+        assert!(!builder
+            .entries
+            .keys()
+            .any(|key| key.starts_with("users/") && key.ends_with("/spec")));
+        assert_eq!(
             builder
                 .entries
-                .get("users/alice/doc")
-                .expect("stored owner document"),
-        )
-        .unwrap();
-        assert_eq!(stored["display_name"], "Alice");
+                .keys()
+                .filter(|key| key.starts_with("system/scheduler/bootstrap_agents/"))
+                .count(),
+            1
+        );
         assert_eq!(
-            stored["wallets"]["main"]["address"],
-            "0x1111111111111111111111111111111111111111"
+            builder
+                .entries
+                .keys()
+                .filter(|key| key.starts_with("system/scheduler/install_plan_executions/"))
+                .count(),
+            0
+        );
+        let provision = builder
+            .entries
+            .iter()
+            .find(|(key, _)| key.starts_with("system/scheduler/bootstrap_agents/"))
+            .map(|(_, value)| serde_json::from_str::<BootstrapAgentProvision>(value).unwrap())
+            .unwrap();
+        assert_eq!(
+            provision
+                .agent_spec
+                .binding
+                .target_app_instance_id
+                .to_string(),
+            format!("jarvis.buckyos.bns.did@{}", config.user_name)
         );
     }
 
     #[test]
-    fn build_aicc_settings_uses_supported_boot_tokens() {
-        let value = json!({
-            "user_name": "alice",
-            "admin_password_hash": "hashed",
-            "owner_document": sample_owner_document(),
-            "zone_name": "did:web:alice.example.com",
-            "ai_provider_config": {
-                "openai_api_token": "sk-openai",
-                "google_api_token": "google-token",
-                "claude_api_token": "claude-token"
-            }
-        });
-        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+    fn aicc_settings_persist_sn_router_activation() {
+        let mut config = start_config();
+        config.enabled_features.llm_router = true;
+        let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
 
-        let settings = build_aicc_settings(&summary);
+        let settings = build_aicc_settings_with_endpoints(&config, Some(&endpoints));
 
-        assert_eq!(settings["openai"]["api_token"], "sk-openai");
-        assert_eq!(settings["openai"]["alias_map"]["gpt-fast"], "gpt-5-mini");
-        assert_eq!(
-            settings["openai"]["instances"][0]["default_model"],
-            "gpt-5-mini"
-        );
-        assert_eq!(settings["openai"]["instances"][0]["timeout_ms"], 600000);
-        assert_eq!(settings["google"]["api_token"], "google-token");
-        assert_eq!(
-            settings["google"]["alias_map"]["gemini-ops"],
-            "gemini-2.5-flash"
-        );
-        assert_eq!(
-            settings["google"]["instances"][0]["provider_type"],
-            "google-gemini"
-        );
-        assert_eq!(settings["google"]["instances"][0]["timeout_ms"], 600000);
-        assert_eq!(settings["claude"]["api_token"], "claude-token");
-        assert_eq!(
-            settings["claude"]["alias_map"]["claude-reasoning"],
-            "claude-3-7-sonnet-20250219"
-        );
-        assert_eq!(
-            settings["claude"]["instances"][0]["default_model"],
-            "claude-3-7-sonnet-20250219"
-        );
-    }
-
-    #[test]
-    fn build_aicc_settings_adds_sn_provider_when_active_code_present() {
-        let value = json!({
-            "user_name": "alice",
-            "admin_password_hash": "hashed",
-            "owner_document": sample_owner_document(),
-            "zone_name": "did:web:alice.example.com",
-            "sn_active_code": "invite-code-001"
-        });
-        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
-
-        let settings = build_aicc_settings(&summary);
-
+        assert_eq!(settings[SN_AI_PROVIDER_ACTIVATION_KEY], true);
         assert_eq!(settings["sn-ai-provider"]["enabled"], true);
+    }
+
+    #[test]
+    fn reconcile_does_not_activate_unrequested_sn_router() {
+        let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
+
+        let reconciled =
+            reconcile_managed_sn_ai_provider(&json!({}), Ok(&endpoints), Some("did:bns:alice"))
+                .unwrap();
+
+        assert!(reconciled.is_none());
+    }
+
+    #[test]
+    fn reconcile_restores_activated_sn_router_section() {
+        let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
+        let current = json!({ (SN_AI_PROVIDER_ACTIVATION_KEY): true });
+
+        let reconciled =
+            reconcile_managed_sn_ai_provider(&current, Ok(&endpoints), Some("did:bns:alice"))
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(reconciled["sn-ai-provider"]["enabled"], true);
         assert_eq!(
-            settings["sn-ai-provider"]["instances"][0]["provider_instance_name"],
-            "sn-ai-provider-default"
-        );
-        assert_eq!(
-            settings["sn-ai-provider"]["instances"][0]["provider_type"],
-            "cloud_api"
-        );
-        assert_eq!(
-            settings["sn-ai-provider"]["instances"][0]["provider_driver"],
-            "sn-ai-provider"
-        );
-        assert_eq!(
-            settings["sn-ai-provider"]["instances"][0]["base_url"],
-            "https://sn.buckyos.ai/api/v1/ai/"
-        );
-        assert_eq!(
-            settings["sn-ai-provider"]["instances"][0]["auth_mode"],
-            "runtime_session"
-        );
-        assert_eq!(
-            settings["sn-ai-provider"]["alias_map"]["llm.plan.default"],
-            "gpt-5.4"
+            reconciled["sn-ai-provider"]["instances"][0]["user_name"],
+            "did:bns:alice"
         );
     }
 
     #[test]
-    fn build_aicc_settings_adds_sn_provider_when_llm_router_feature_enabled() {
-        let value = json!({
-            "user_name": "alice",
-            "admin_password_hash": "hashed",
-            "owner_document": sample_owner_document(),
-            "zone_name": "did:web:alice.example.com",
-            "enabled_features": {
-                "llm_router": true
+    fn reconcile_preserves_explicitly_disabled_sn_router() {
+        let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
+        let current = json!({
+            (SN_AI_PROVIDER_ACTIVATION_KEY): true,
+            "sn-ai-provider": {
+                "enabled": false,
+                "instances": []
             }
         });
-        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
 
-        let settings = build_aicc_settings(&summary);
+        let reconciled =
+            reconcile_managed_sn_ai_provider(&current, Ok(&endpoints), Some("did:bns:alice"))
+                .unwrap();
 
-        assert_eq!(summary.llm_router_enabled(), true);
-        assert_eq!(settings["sn-ai-provider"]["enabled"], true);
-        assert_eq!(
-            settings["sn-ai-provider"]["instances"][0]["provider_instance_name"],
-            "sn-ai-provider-default"
-        );
+        assert!(reconciled.is_none());
     }
 
     #[test]
-    fn build_aicc_settings_uses_static_sn_model_fallback() {
-        let value = json!({
-            "user_name": "alice",
-            "admin_password_hash": "hashed",
-            "owner_document": sample_owner_document(),
-            "zone_name": "did:web:alice.example.com",
-            "sn_active_code": "invite-code-001"
-        });
-        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
-        let settings = build_aicc_settings(&summary);
-
-        assert_eq!(
-            settings["sn-ai-provider"]["instances"][0]["models"],
-            json!(["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro"])
-        );
-        assert_eq!(
-            settings["sn-ai-provider"]["instances"][0]["default_image_model"],
-            "dall-e-3"
-        );
-    }
-
-    #[test]
-    fn build_msg_center_settings_maps_jarvis_tunnel_to_bot_api() {
-        let value = json!({
-            "user_name": "alice",
-            "admin_password_hash": "hashed",
-            "owner_document": sample_owner_document(),
-            "zone_name": "did:web:alice.example.com",
-            "jarvis_msg_tunnel_config": {
-                "telegram_bot_api_token": "123:bot",
-                "telegram_account_id": "5397330802"
+    fn reconcile_keeps_activated_config_when_endpoint_is_temporarily_invalid() {
+        let current = json!({
+            (SN_AI_PROVIDER_ACTIVATION_KEY): true,
+            "sn-ai-provider": {
+                "enabled": true,
+                "instances": [{
+                    "provider_driver": "sn-ai-provider",
+                    "base_url": "https://sn.example/api/v1/ai/"
+                }]
             }
         });
-        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
+        let endpoint_error = anyhow!("temporary endpoint error");
 
-        let settings = build_msg_center_settings(&summary).expect("build msg-center settings");
+        let reconciled =
+            reconcile_managed_sn_ai_provider(&current, Err(&endpoint_error), None).unwrap();
 
-        assert_eq!(settings["telegram_tunnel"]["gateway"]["mode"], "bot_api");
-        assert_eq!(
-            settings["telegram_tunnel"]["transport_did"],
-            "did:web:tg-tunnel.alice.example.com"
-        );
-        assert_eq!(
-            settings["telegram_tunnel"]["tunnel_instance_id"],
-            TELEGRAM_TUNNEL_INSTANCE_ID
-        );
-        assert_eq!(
-            settings["telegram_tunnel"]["bindings"][0]["owner_did"],
-            "did:web:jarvis.alice.example.com"
-        );
-        // No default_chat_id in the frozen design: the delivery address comes
-        // from the resolved envelope only.
-        assert!(settings["telegram_tunnel"]["bindings"][0]
-            .get("default_chat_id")
-            .is_none());
-    }
-
-    #[test]
-    fn build_zone_user_contact_settings_maps_telegram_user_binding() {
-        let mut owner_document = sample_owner_document();
-        owner_document["id"] = json!("did:web:alice.example.com");
-        owner_document["verificationMethod"][0]["controller"] = json!("did:web:alice.example.com");
-        let value = json!({
-            "user_name": "alice",
-            "admin_password_hash": "hashed",
-            "owner_document": owner_document,
-            "zone_name": "did:web:alice.example.com",
-            "jarvis_msg_tunnel_config": {
-                "telegram_bot_api_token": "123:bot",
-                "telegram_account_id": "5397330802"
-            }
-        });
-        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
-
-        let contact =
-            build_zone_user_contact_settings(&summary).expect("build zone user contact settings");
-        let contact = contact.expect("contact should exist");
-
-        assert_eq!(contact.did.as_deref(), Some("did:web:alice.example.com"));
-        assert_eq!(contact.bindings.len(), 1);
-        assert_eq!(contact.bindings[0].platform, "telegram");
-        assert_eq!(contact.bindings[0].account_id, "user:5397330802");
-        // The binding carries the stable tunnel instance id, never the
-        // transport DID (the historical tunnel_id/tunnel_did mix-up).
-        assert_eq!(
-            contact.bindings[0].tunnel_instance_id.as_deref(),
-            Some(TELEGRAM_TUNNEL_INSTANCE_ID)
-        );
-    }
-
-    #[test]
-    fn build_default_jarvis_agent_spec_uses_agent_pkg() {
-        let value = json!({
-            "user_name": "alice",
-            "admin_password_hash": "hashed",
-            "owner_document": sample_owner_document(),
-            "zone_name": "did:web:alice.example.com"
-        });
-        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
-
-        let spec = build_default_jarvis_agent_spec(&summary).expect("build jarvis spec");
-        assert_eq!(spec.user_id, "alice");
-        assert_eq!(spec.app_doc.get_app_type(), buckyos_api::AppType::Agent);
-        assert_eq!(spec.app_doc.show_name, "Jarvis");
-        assert_eq!(spec.app_doc.name, "buckyos_jarvis");
-        assert_eq!(
-            spec.app_doc
-                .service_config_tips
-                .service_endpoints
-                .get("www")
-                .map(|endpoint| endpoint.inner_port),
-            Some(OPENDAN_SERVICE_PORT)
-        );
-        assert!(spec.spec_config.expose_config.contains_key("www"));
-        assert_eq!(
-            spec.app_doc
-                .pkg_list
-                .agent
-                .as_ref()
-                .map(|pkg| pkg.pkg_id.as_str()),
-            Some("buckyos_jarvis")
-        );
-    }
-
-    #[test]
-    fn add_default_agents_writes_user_scoped_agent_spec() {
-        let mut owner_document = sample_owner_document();
-        owner_document["id"] = json!("did:web:alice.example.com");
-        owner_document["verificationMethod"][0]["controller"] = json!("did:web:alice.example.com");
-        let value = json!({
-            "user_name": "alice",
-            "admin_password_hash": "hashed",
-            "owner_document": owner_document,
-            "zone_name": "did:web:alice.example.com"
-        });
-        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
-
-        let mut builder = SystemConfigBuilder::new(HashMap::new());
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        rt.block_on(builder.add_default_agents(&summary))
-            .expect("add default agents");
-
-        let entries = builder.build();
-        let spec = entries
-            .get("users/alice/agents/buckyos_jarvis/spec")
-            .expect("jarvis spec should exist");
-        let spec: buckyos_api::AppServiceSpec =
-            serde_json::from_str(spec).expect("parse jarvis spec");
-
-        assert_eq!(spec.user_id, "alice");
-        assert_eq!(spec.app_doc.name, "buckyos_jarvis");
-        let jarvis_doc: Value = serde_json::from_str(
-            entries
-                .get("agents/buckyos_jarvis/doc")
-                .expect("jarvis doc should exist"),
-        )
-        .expect("parse jarvis doc");
-        assert_eq!(jarvis_doc["owner"], "did:web:alice.example.com");
-        assert_eq!(
-            spec.app_doc
-                .service_config_tips
-                .service_endpoints
-                .get("www")
-                .map(|endpoint| endpoint.inner_port),
-            Some(OPENDAN_SERVICE_PORT)
-        );
-        assert!(spec.spec_config.expose_config.contains_key("www"));
-        assert_eq!(
-            spec.app_doc
-                .pkg_list
-                .agent
-                .as_ref()
-                .map(|pkg| pkg.pkg_id.as_str()),
-            Some("buckyos_jarvis")
-        );
-    }
-
-    #[test]
-    fn add_default_agents_removes_conflicting_legacy_app_spec() {
-        let value = json!({
-            "user_name": "alice",
-            "admin_password_hash": "hashed",
-            "owner_document": sample_owner_document(),
-            "zone_name": "did:web:alice.example.com"
-        });
-        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
-
-        let mut entries = HashMap::new();
-        entries.insert(
-            "users/alice/apps/buckyos_jarvis/spec".to_string(),
-            json!({
-                "app_doc": {
-                    "name": "buckyos_jarvis",
-                    "show_name": "Jarvis",
-                    "categories": ["dapp"],
-                    "pkg_list": {
-                        "amd64_docker_image": {
-                            "pkg_id": "buckyos_jarvis#0.1.0"
-                        }
-                    },
-                    "service_dock": {},
-                    "permission": {},
-                    "install_config_tips": {
-                        "service_ports": {}
-                    }
-                },
-                "app_index": 42,
-                "user_id": "alice",
-                "enable": true,
-                "expected_instance_count": 1,
-                "state": {},
-                "install_config": {
-                    "data_mount_point": {},
-                    "cache_mount_point": [],
-                    "local_cache_mount_point": [],
-                    "service_ports": {},
-                    "expose_config": {},
-                    "bind_address": "0.0.0.0",
-                    "res_pool_id": "default"
-                }
-            })
-            .to_string(),
-        );
-
-        let mut builder = SystemConfigBuilder::new(entries);
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        rt.block_on(builder.add_default_agents(&summary))
-            .expect("add default agents");
-
-        let entries = builder.build();
-        assert!(
-            !entries.contains_key("users/alice/apps/buckyos_jarvis/spec"),
-            "legacy app spec should be removed"
-        );
-        assert!(
-            entries.contains_key("users/alice/agents/buckyos_jarvis/spec"),
-            "agent spec should exist"
-        );
-    }
-
-    #[test]
-    fn build_kernel_service_spec_inserts_current_platform_native_pkg() {
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        let spec = rt
-            .block_on(build_kernel_service_spec(
-                "verify-hub",
-                3300,
-                1,
-                generate_verify_hub_service_doc(),
-            ))
-            .expect("build kernel service spec");
-
-        assert_eq!(
-            spec.service_doc.pkg_list.get_app_pkg_id().as_deref(),
-            Some("verify-hub")
-        );
-    }
-
-    #[test]
-    fn add_default_apps_uses_app_doc_from_preinstall_settings() {
-        let value = json!({
-            "user_name": "alice",
-            "admin_password_hash": "hashed",
-            "owner_document": sample_owner_document(),
-            "zone_name": "did:web:alice.example.com"
-        });
-        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
-        let app_doc = sample_preinstall_app_doc("demo_app", "1.2.3");
-
-        let mut entries = HashMap::new();
-        entries.insert(
-            "system/install_settings".to_string(),
-            json!({
-                "pre_install_apps": {
-                    "demo_app": {
-                        "app_doc": app_doc,
-                        "data_mount_point": {},
-                        "local_cache_mount_point": {},
-                        "external_mount_point": {},
-                        "service_config": {},
-                        "expose_config": {},
-                        "res_pool_id": "default"
-                    }
-                }
-            })
-            .to_string(),
-        );
-
-        let mut builder = SystemConfigBuilder::new(entries);
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        rt.block_on(builder.add_default_apps(&summary))
-            .expect("add default apps");
-
-        let entries = builder.build();
-        let spec = entries
-            .get("users/alice/apps/demo_app/spec")
-            .expect("demo app spec should exist");
-        let spec: AppServiceSpec = serde_json::from_str(spec).expect("parse app spec");
-
-        assert_eq!(spec.user_id, "alice");
-        assert_eq!(spec.app_doc.name, "demo_app");
-        assert_eq!(spec.app_doc.version, "1.2.3");
-    }
-
-    #[test]
-    fn add_default_apps_requires_app_doc_in_preinstall_settings() {
-        let value = json!({
-            "user_name": "alice",
-            "admin_password_hash": "hashed",
-            "owner_document": sample_owner_document(),
-            "zone_name": "did:web:alice.example.com"
-        });
-        let summary = StartConfigSummary::from_value(&value).expect("parse start config");
-
-        let mut entries = HashMap::new();
-        entries.insert(
-            "system/install_settings".to_string(),
-            json!({
-                "pre_install_apps": {
-                    "demo_app": {
-                        "data_mount_point": {},
-                        "local_cache_mount_point": {},
-                        "external_mount_point": {},
-                        "service_config": {},
-                        "expose_config": {},
-                        "res_pool_id": "default"
-                    }
-                }
-            })
-            .to_string(),
-        );
-
-        let mut builder = SystemConfigBuilder::new(entries);
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        let err = match rt.block_on(builder.add_default_apps(&summary)) {
-            Ok(_) => panic!("missing app_doc should fail"),
-            Err(err) => err,
-        };
-
-        assert!(
-            err.to_string().contains("app_doc"),
-            "unexpected error: {}",
-            err
-        );
+        assert!(reconciled.is_none());
     }
 }

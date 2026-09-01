@@ -24,6 +24,7 @@ const restartEnabled = ["1", "true", "yes"].includes(
   (Deno.env.get("BUCKYOS_TEST_RESTART") || "").toLowerCase(),
 );
 const appId = "control-panel";
+const authTarget = { kind: "system", service_id: appId };
 let lastNonce = Date.now();
 
 function nextNonce(): number {
@@ -71,6 +72,7 @@ async function login(username: string, password: string): Promise<JsonRecord> {
       username,
       password: hashPassword(username, password, nonce),
       appid: appId,
+      target: authTarget,
       login_nonce: nonce,
     }),
     "auth.login response",
@@ -83,7 +85,7 @@ async function sudo(username: string, password: string): Promise<string> {
     await call("verify-hub", "sudo_by_password", {
       username,
       password: hashPassword(username, password, nonce),
-      appid: appId,
+      target: authTarget,
       aud: "system-config",
       login_nonce: nonce,
     }),
@@ -244,6 +246,8 @@ async function main(): Promise<void> {
     const self = await controlPanel(localToken, "user.get");
     assert(self.user_id === userId, "user.get did not default to self");
     assert(self.state === "active" && self.is_local === true, "self detail is not active/local");
+    await controlPanel(localToken, "apps.list");
+    console.log("  ✓ ordinary local user can query its authorized apps");
     await expectReject("local user cannot read another user", () =>
       controlPanel(localToken, "user.get", { user_id: adminUser })
     );

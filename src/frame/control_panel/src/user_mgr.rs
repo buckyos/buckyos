@@ -2,9 +2,9 @@ use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{kRPC, RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use buckyos_api::{
-    get_buckyos_api_runtime, ProfileLink, SchedulerClient, SystemConfigClient, SystemConfigError,
-    UserContactSettings, UserPrivateProfile, UserProfile, UserSettings, UserState,
-    UserTunnelBinding, UserType, SCHEDULER_SERVICE_SERVICE_PORT,
+    get_buckyos_api_runtime, AgentSpec, ProfileLink, SchedulerClient, SystemConfigClient,
+    SystemConfigError, UserContactSettings, UserPrivateProfile, UserProfile, UserSettings,
+    UserState, UserTunnelBinding, UserType, SCHEDULER_SERVICE_SERVICE_PORT,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use jsonwebtoken::jwk::Jwk;
@@ -499,17 +499,18 @@ async fn load_agent_runtime_info(agent_id: &str) -> Value {
     }
 }
 
-async fn load_agent_service_spec(
+async fn load_agent_spec(
     client: &SystemConfigClient,
     user_ids: &[String],
     agent_id: &str,
-) -> Option<Value> {
+) -> Option<(String, AgentSpec)> {
     for user_id in user_ids {
         let spec_path = format!("users/{}/agents/{}/spec", user_id, agent_id);
         match client.get(&spec_path).await {
-            Ok(spec_val) => match serde_json::from_str::<Value>(&spec_val.value) {
-                Ok(spec) => return Some(spec),
+            Ok(spec_val) => match serde_json::from_str::<AgentSpec>(&spec_val.value) {
+                Ok(spec) if spec.validate().is_ok() => return Some((user_id.clone(), spec)),
                 Err(error) => warn!("Failed to parse agent spec `{}`: {}", spec_path, error),
+                Ok(_) => warn!("Invalid agent spec at `{}`", spec_path),
             },
             Err(_) => continue,
         }
@@ -517,46 +518,13 @@ async fn load_agent_service_spec(
     None
 }
 
-fn has_non_empty_string(value: &Value, key: &str) -> bool {
-    value
-        .get(key)
-        .and_then(|item| item.as_str())
-        .map(|item| !item.trim().is_empty())
-        .unwrap_or(false)
-}
-
-fn merge_agent_service_spec(agent_info: &mut Value, spec: &Value) {
-    agent_info["spec"] = spec.clone();
-
-    if let Some(app_doc) = spec.get("app_doc") {
-        agent_info["app_doc"] = app_doc.clone();
-        if !has_non_empty_string(agent_info, "display_name") {
-            if let Some(show_name) = app_doc.get("show_name") {
-                agent_info["display_name"] = show_name.clone();
-            }
-        }
-        if agent_info.get("app_id").is_none() {
-            if let Some(app_id) = app_doc.get("name") {
-                agent_info["app_id"] = app_id.clone();
-            }
-        }
-        if agent_info.get("version").is_none() {
-            if let Some(version) = app_doc.get("version") {
-                agent_info["version"] = version.clone();
-            }
-        }
-    }
-
-    if agent_info.get("state").is_none() {
-        if let Some(state) = spec.get("state") {
-            agent_info["state"] = state.clone();
-        }
-    }
-    if agent_info.get("owner_user_id").is_none() {
-        if let Some(user_id) = spec.get("user_id") {
-            agent_info["owner_user_id"] = user_id.clone();
-        }
-    }
+fn merge_agent_spec(agent_info: &mut Value, owner_user_id: &str, spec: &AgentSpec) {
+    agent_info["spec"] = serde_json::to_value(spec).unwrap_or(Value::Null);
+    agent_info["agent_did"] = Value::String(spec.agent_did.to_string());
+    agent_info["agent_doc_object_id"] = Value::String(spec.agent_doc_object_id.to_string());
+    agent_info["binding"] = serde_json::to_value(&spec.binding).unwrap_or(Value::Null);
+    agent_info["owner_user_id"] = Value::String(owner_user_id.to_string());
+    agent_info["generation"] = Value::Number(spec.generation.into());
 }
 
 // ─── User management handlers ──────────────────────────────────────────────
@@ -1741,8 +1709,9 @@ impl ControlPanelServer {
                     agent_info["settings"] = settings;
                 }
             }
-            if let Some(spec) = load_agent_service_spec(&client, &user_ids, agent_id).await {
-                merge_agent_service_spec(&mut agent_info, &spec);
+            if let Some((owner_user_id, spec)) = load_agent_spec(&client, &user_ids, agent_id).await
+            {
+                merge_agent_spec(&mut agent_info, &owner_user_id, &spec);
             }
             if include_runtime {
                 agent_info["runtime"] = load_agent_runtime_info(agent_id).await;

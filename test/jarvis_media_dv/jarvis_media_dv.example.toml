@@ -1,0 +1,98 @@
+[common]
+transports = ["msg-center"]
+suite = "all"
+cases = []
+report_dir = "reports/jarvis_media_dv"
+settle_ms = 10000
+scenario_concurrency = 2
+interactive_review = false
+allow_review = false
+yes = false
+
+[environment]
+providers = ["openai", "claude", "google-gemini", "fal", "minimax", "openrouter", "sn-ai-provider"]
+
+[finance]
+caller_app_ids = ["jarvis"]
+max_cost_usd = 100
+estimated_cost_per_aicc_call_usd = 0.05
+max_aicc_calls_per_step = 4
+
+[judge]
+enabled = true
+model = "llm.plan.default"
+
+[provider_credentials]
+apply_to_aicc_settings = false
+
+[provider_credentials.openai]
+api_token = ""
+instance_name = ""
+
+[provider_credentials.claude]
+api_token = ""
+instance_name = ""
+
+[provider_credentials.google-gemini]
+api_token = ""
+instance_name = ""
+
+[provider_credentials.fal]
+api_token = ""
+instance_name = ""
+
+[provider_credentials.minimax]
+api_token = ""
+instance_name = ""
+
+[provider_credentials.openrouter]
+api_token = ""
+instance_name = ""
+
+[msg_center]
+# Required. Set the externally reachable Zone Gateway base URL, including scheme.
+# Example: gateway_url = "https://your-zone.example.com"
+gateway_url = ""
+username = "devtest"
+password = ""
+session_token = ""
+user_id = ""
+user_did = ""
+zone_did = ""
+jarvis_did = ""
+# Optional. Group-message semantics are skipped when this is blank.
+group_did = ""
+
+[msg_center.assets]
+# Optional Named Object ID overrides. Blank values use the committed assets/ files.
+image_primary_id = ""
+image_secondary_id = ""
+image_ocr_id = ""
+audio_sfx_id = ""
+audio_speech_id = ""
+video_fresh_id = ""
+video_subtitle_id = ""
+document_facts_id = ""
+archive_mixed_id = ""
+
+[telegram]
+# api_id = 123456
+api_hash = ""
+phone = ""
+code = ""
+password = ""
+bot_username = ""
+session = ""
+session_file = ".jarvis_media_dv.telegram.session"
+connection_retries = 5
+
+[telegram.assets]
+image_primary_file = "assets/image_primary.png"
+image_secondary_file = "assets/image_secondary.png"
+image_ocr_file = "assets/image_ocr.png"
+audio_sfx_file = "assets/audio_sfx.wav"
+audio_speech_file = "assets/audio_speech.wav"
+video_fresh_file = "assets/video_fresh.mp4"
+video_subtitle_file = "assets/video_subtitle.vtt"
+document_facts_file = "assets/document_facts.md"
+archive_mixed_file = "assets/archive_mixed.zip"

@@ -232,6 +232,7 @@ pub const TASK_DATA_TYPE_APP_INSTALL: &str = "app.install";
 pub const TASK_DATA_TYPE_APP_UNINSTALL: &str = "app.uninstall";
 pub const TASK_DATA_TYPE_APP_START: &str = "app.start";
 pub const TASK_DATA_TYPE_APP_UPDATE: &str = "app.update";
+pub const TASK_DATA_TYPE_APP_UPDATE_BATCH: &str = "app.update_batch";
 pub const TASK_DATA_TYPE_SERVICE_RPC: &str = "workflow.execute_rpc";
 pub const TASK_DATA_TYPE_WORKFLOW_RUN_TARGET: &str = "workflow.run";
 pub const TASK_DATA_TYPE_TOOL_EXEC_BASH: &str = "tool.exec_bash";
@@ -254,6 +255,7 @@ pub enum TaskDataType {
     AppUninstall,
     AppStart,
     AppUpdate,
+    AppUpdateBatch,
     ServiceRpc,
     WorkflowRunTarget,
     ToolExecBash,
@@ -279,6 +281,7 @@ impl TaskDataType {
         Self::AppUninstall,
         Self::AppStart,
         Self::AppUpdate,
+        Self::AppUpdateBatch,
         Self::ServiceRpc,
         Self::WorkflowRunTarget,
         Self::ToolExecBash,
@@ -302,6 +305,7 @@ impl TaskDataType {
             Self::AppUninstall => TASK_DATA_TYPE_APP_UNINSTALL,
             Self::AppStart => TASK_DATA_TYPE_APP_START,
             Self::AppUpdate => TASK_DATA_TYPE_APP_UPDATE,
+            Self::AppUpdateBatch => TASK_DATA_TYPE_APP_UPDATE_BATCH,
             Self::ServiceRpc => TASK_DATA_TYPE_SERVICE_RPC,
             Self::WorkflowRunTarget => TASK_DATA_TYPE_WORKFLOW_RUN_TARGET,
             Self::ToolExecBash => TASK_DATA_TYPE_TOOL_EXEC_BASH,
@@ -336,6 +340,7 @@ impl FromStr for TaskDataType {
             TASK_DATA_TYPE_APP_UNINSTALL => Ok(Self::AppUninstall),
             TASK_DATA_TYPE_APP_START => Ok(Self::AppStart),
             TASK_DATA_TYPE_APP_UPDATE => Ok(Self::AppUpdate),
+            TASK_DATA_TYPE_APP_UPDATE_BATCH => Ok(Self::AppUpdateBatch),
             TASK_DATA_TYPE_SERVICE_RPC => Ok(Self::ServiceRpc),
             TASK_DATA_TYPE_WORKFLOW_RUN_TARGET => Ok(Self::WorkflowRunTarget),
             TASK_DATA_TYPE_TOOL_EXEC_BASH => Ok(Self::ToolExecBash),
@@ -441,6 +446,8 @@ pub enum TypedTaskData {
     AppStart(AppStartTaskData),
     #[serde(rename = "app.update")]
     AppUpdate(AppUpdateTaskData),
+    #[serde(rename = "app.update_batch")]
+    AppUpdateBatch(AppUpdateBatchTaskData),
     #[serde(rename = "service.rpc")]
     ServiceRpc(ServiceRpcTaskData),
     #[serde(rename = "workflow.run")]
@@ -497,13 +504,14 @@ impl TypedTaskData {
                 .or_else(|_| parse_aicc_compute_legacy(data).map(Self::AiccCompute)),
             // beta 2.2 schema v3：app.install/app.update 不做旧 schema legacy parser。
             TaskDataType::AppInstall => parse_data(task_data_type, data).map(Self::AppInstall),
-            TaskDataType::AppUninstall => parse_data(task_data_type, data.clone())
-                .map(Self::AppUninstall)
-                .or_else(|_| parse_app_uninstall_legacy(data).map(Self::AppUninstall)),
-            TaskDataType::AppStart => parse_data(task_data_type, data.clone())
-                .map(Self::AppStart)
-                .or_else(|_| parse_app_start_legacy(data).map(Self::AppStart)),
+            TaskDataType::AppUninstall => {
+                parse_data(task_data_type, data.clone()).map(Self::AppUninstall)
+            }
+            TaskDataType::AppStart => parse_data(task_data_type, data.clone()).map(Self::AppStart),
             TaskDataType::AppUpdate => parse_data(task_data_type, data).map(Self::AppUpdate),
+            TaskDataType::AppUpdateBatch => {
+                parse_data(task_data_type, data).map(Self::AppUpdateBatch)
+            }
             TaskDataType::ServiceRpc => parse_data(task_data_type, data.clone())
                 .map(Self::ServiceRpc)
                 .or_else(|_| parse_service_rpc_legacy(data).map(Self::ServiceRpc)),
@@ -532,6 +540,7 @@ impl TypedTaskData {
             Self::AppUninstall(_) => TaskDataType::AppUninstall,
             Self::AppStart(_) => TaskDataType::AppStart,
             Self::AppUpdate(_) => TaskDataType::AppUpdate,
+            Self::AppUpdateBatch(_) => TaskDataType::AppUpdateBatch,
             Self::ServiceRpc(_) => TaskDataType::ServiceRpc,
             Self::WorkflowRunTarget(_) => TaskDataType::WorkflowRunTarget,
             Self::ToolExecBash(_) => TaskDataType::ToolExecBash,
@@ -1180,9 +1189,9 @@ pub struct AiccComputeTaskResult {
     pub provider_output: Option<Value>,
 }
 
-/// App 安装任务的可恢复 transaction 数据（beta 2.2 schema v3）。
+/// App 安装任务的可恢复 transaction 数据（beta 2.2 schema v4）。
 /// request 保存原始 source/options/policy；中间态全部在 `state` 中，
-/// 每个 Stage 成功后先完整写入 Task.data 再进入下一 Stage。
+/// 每个 Stage 成功后先完整写入 `Task.progress.transaction` 再进入下一 Stage。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppInstallTaskData {
     pub schema_version: u32,
@@ -1194,16 +1203,52 @@ pub struct AppInstallTaskData {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppInstallTaskRequest {
     pub source: crate::app_install::InstallSource,
-    pub user_id: String,
-    pub app_class: crate::AppClass,
+    pub creator_user_id: String,
+    pub creator_app_id: String,
+    /// Installation owner; may differ from creator for audited admin on-behalf-of installs.
+    pub owner_user_id: String,
+    pub idempotency_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted_plan: Option<crate::app_install::InstallPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_plan_fingerprint: Option<String>,
     #[serde(default)]
     pub policy: crate::app_install::InstallPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<Value>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppInstallDisplayProgress {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<crate::app_install::InstallStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub updated_at: u64,
+}
+
+/// Task.progress is always this envelope. Updating display progress therefore
+/// cannot overwrite the durable transaction snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppInstallProgressEnvelope {
+    pub schema_version: u32,
+    pub transaction_revision: u64,
+    pub transaction: AppInstallTaskData,
+    pub display: AppInstallDisplayProgress,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppInstallTerminalOutput {
+    pub schema_version: u32,
+    pub transaction_revision: u64,
+    pub result: crate::app_install::InstallTaskResult,
+    pub status: crate::app_install::AppInstallStatusSnapshot,
+}
+
 impl AppInstallTaskData {
-    /// 全量镜像 patch：deep merge 后 Task.data 与本结构严格一致
+    /// 全量镜像 patch：deep merge 后 transaction 与本结构严格一致
     /// （被清空的可选字段以 null 写入触发删除）。
     pub fn to_full_patch(&self) -> Value {
         let mut patch = self.state.to_full_patch();
@@ -1223,35 +1268,102 @@ impl AppInstallTaskData {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppUninstallTaskData {
+    pub schema_version: u32,
     pub request: AppUninstallTaskRequest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result: Option<String>,
+    pub progress: Option<TaskDataProgress>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<AppUninstallTaskResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppUninstallTaskRequest {
-    pub app_id: String,
-    pub user_id: String,
-    #[serde(default)]
-    pub remove_data: bool,
+    pub selector: String,
+    pub app_instance_id: crate::AppInstanceId,
+    pub creator_user_id: String,
+    pub creator_app_id: String,
+    pub idempotency_key: String,
+    pub data_disposition: AppDataDisposition,
+    pub deletion_manifest: AppDeletionManifest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppDataDisposition {
+    Retain,
+    Delete,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppDeletionManifest {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppUninstallTaskResult {
+    pub app_instance_id: crate::AppInstanceId,
+    pub data_disposition: AppDataDisposition,
+    pub deleted_paths: Vec<String>,
+    pub completed_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppStartTaskData {
+    pub schema_version: u32,
     pub request: AppStartTaskRequest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result: Option<String>,
+    pub progress: Option<TaskDataProgress>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<AppLifecycleTaskResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppStartTaskRequest {
-    pub app_id: String,
-    pub user_id: String,
+    pub selector: String,
+    pub app_instance_id: crate::AppInstanceId,
+    pub creator_user_id: String,
+    pub creator_app_id: String,
+    pub idempotency_key: String,
+    pub action: AppLifecycleAction,
+    pub restart_strategy: RestartStrategy,
 }
 
-/// App 升级任务的可恢复 transaction 数据（beta 2.2 schema v3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppLifecycleAction {
+    Start,
+    Stop,
+    Restart,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartStrategy {
+    #[default]
+    Recreate,
+    Rolling,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppLifecycleTaskResult {
+    pub app_instance_id: crate::AppInstanceId,
+    pub action: AppLifecycleAction,
+    pub desired_state: crate::ServiceState,
+    pub ready_instance_count: u32,
+    pub completed_at: u64,
+}
+
+/// App 升级任务的可恢复 transaction 数据（beta 2.2 schema v4）。
 /// 与安装共用同一 Stage 流水线与中间态；旧 spec 回滚材料保存在
-/// `state.prepared.previous_spec`。
+/// `state.prepared` 中的 scheduler 执行句柄。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppUpdateTaskData {
     pub schema_version: u32,
@@ -1263,14 +1375,94 @@ pub struct AppUpdateTaskData {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppUpdateTaskRequest {
     pub source: crate::app_install::InstallSource,
-    pub user_id: String,
-    pub app_class: crate::AppClass,
-    /// 已安装应用的 app_id（app_doc.name）。
-    pub app_id: String,
+    pub creator_user_id: String,
+    pub creator_app_id: String,
+    pub owner_user_id: String,
+    pub idempotency_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted_plan: Option<crate::app_install::InstallPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_plan_fingerprint: Option<String>,
     #[serde(default)]
     pub policy: crate::app_install::InstallPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<Value>,
+}
+
+/// Catalog 批量升级 root task。输入冻结权威检查结果；runner 只为
+/// `UpdateAvailable` 项创建 `app.update/v1` child task。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppUpdateBatchTaskData {
+    pub schema_version: u32,
+    pub request: AppUpdateBatchTaskRequest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<AppUpdateBatchProgress>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<AppUpdateBatchTaskResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppUpdateBatchTaskRequest {
+    pub creator_user_id: String,
+    pub creator_app_id: String,
+    pub owner_user_id: String,
+    pub idempotency_key: String,
+    pub items: Vec<AppUpdateBatchRequestItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppUpdateBatchRequestItem {
+    pub app_instance_id: crate::AppInstanceId,
+    pub app_id: crate::AppId,
+    pub source: crate::app_install::InstallSource,
+    pub availability: crate::app_install::AppUpdateAvailability,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted_plan: Option<crate::app_install::InstallPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_plan_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppUpdateBatchProgress {
+    pub completed_items: u32,
+    pub total_items: u32,
+    pub items: Vec<AppUpdateBatchItemResult>,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppUpdateBatchTaskResult {
+    pub items: Vec<AppUpdateBatchItemResult>,
+    pub succeeded: u32,
+    pub failed: u32,
+    pub satisfied: u32,
+    pub blocked: u32,
+    pub completed_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppUpdateBatchItemOutcome {
+    Pending,
+    Satisfied,
+    Succeeded,
+    Failed,
+    Canceled,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppUpdateBatchItemResult {
+    pub app_instance_id: crate::AppInstanceId,
+    pub outcome: AppUpdateBatchItemOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl AppUpdateTaskData {
@@ -1897,20 +2089,6 @@ fn parse_aicc_compute_legacy(data: Value) -> Result<AiccComputeTaskData, TaskDat
     })
 }
 
-fn parse_app_uninstall_legacy(data: Value) -> Result<AppUninstallTaskData, TaskDataParseError> {
-    Ok(AppUninstallTaskData {
-        request: parse_data(TaskDataType::AppUninstall, data)?,
-        result: None,
-    })
-}
-
-fn parse_app_start_legacy(data: Value) -> Result<AppStartTaskData, TaskDataParseError> {
-    Ok(AppStartTaskData {
-        request: parse_data(TaskDataType::AppStart, data)?,
-        result: None,
-    })
-}
-
 #[derive(Debug, Clone, Deserialize)]
 struct LegacyServiceRpcTaskData {
     service_rpc: ServiceRpcTaskRequest,
@@ -2083,8 +2261,10 @@ mod tests {
                 "schema_version": crate::app_install::APP_INSTALL_SCHEMA_VERSION,
                 "request": {
                     "source": { "kind": "identifier", "identifier": "did:bns:demo.tester" },
-                    "user_id": "user",
-                    "app_class": "user_installed",
+                    "creator_user_id": "user",
+                    "creator_app_id": "buckyos-tool",
+                    "owner_user_id": "user",
+                    "idempotency_key": "install-demo-1",
                     "policy": "NORMAL"
                 },
                 "stage": "resolve",
@@ -2097,7 +2277,7 @@ mod tests {
             panic!("expected app install task data");
         };
 
-        assert_eq!(data.request.user_id, "user");
+        assert_eq!(data.request.owner_user_id, "user");
         assert_eq!(
             data.schema_version,
             crate::app_install::APP_INSTALL_SCHEMA_VERSION

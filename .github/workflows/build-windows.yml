@@ -34,7 +34,7 @@ jobs:
       uses: ilammy/msvc-dev-cmd@v1
     - uses: actions/setup-python@v6
       with:
-        python-version: '3.11' 
+        python-version: '3.11'
     - name: cargo test
       working-directory: ./src
       if: ${{inputs.enable_tests == true}}
@@ -62,16 +62,6 @@ jobs:
             $short_version = $matches[0]
             Add-Content -Path $env:GITHUB_OUTPUT -Value "short_version=$short_version"
         }
-    - name: Prepare tools
-      run: |
-        mkdir tools
-        copy src\rootfs\bin\buckycli\buckycli.exe tools
-    - name: Upload tools
-      uses: actions/upload-artifact@v6
-      with:
-        name: buckyos-tools-windows-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{steps.get_version.outputs.short_version}}
-        path: tools
-        if-no-files-found: error
     - name: Upload
       id: upload
       uses: actions/upload-artifact@v6

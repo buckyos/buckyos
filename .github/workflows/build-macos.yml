@@ -42,9 +42,6 @@ jobs:
     - name: Tar Rootfs
       run: 
         cd ./src/rootfs && tar -cvf ../../rootfs.tar .
-    - name: Prepare tools
-      run: 
-        sudo mkdir -p tools && sudo chmod 777 tools && sudo cp ./src/rootfs/bin/buckycli/buckycli ./tools/ 
     - name: Get Version
       id: get_version
       run: |
@@ -55,12 +52,6 @@ jobs:
 
         short_version=$(printf '%s\n' "$version" | sed -En 's/^[^0-9]*([0-9]+(\.[0-9]+)*\+build[0-9]+).*/\1/p')
         echo "short_version=$short_version" >> "$GITHUB_OUTPUT"
-    - name: Upload tools
-      uses: actions/upload-artifact@v6
-      with:
-        name: buckyos-tools-apple-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{steps.get_version.outputs.short_version}}
-        path: tools
-        if-no-files-found: error
     - name: Upload
       id: upload
       uses: actions/upload-artifact@v6

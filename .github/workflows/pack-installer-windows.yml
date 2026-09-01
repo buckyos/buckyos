@@ -42,21 +42,9 @@ jobs:
                   path: ./src/rootfs
                   github-token: ${{ secrets.GITHUB_TOKEN }}
                   run-id: ${{inputs.run_id}}
-            - name: Download Tools
-              uses: actions/download-artifact@v4
-              with:
-                name: buckyos-tools-windows-x86_64-${{inputs.version}}-${{ inputs.build_time }}
-                github-token: ${{ secrets.GITHUB_TOKEN }}
-                run-id: ${{inputs.run_id}}
-                path: tools
-            - name: list tools
-              run: dir tools
-              shell: cmd
             - name: Prepare Installer
               working-directory: ./src
               run: python3 scripts/make_win_installer.py --version=${{inputs.version}} --builddate=${{inputs.build_time}} --no-build
-              env:
-                BUCKYCLI_PATH: ${{github.workspace}}\\tools\\buckycli.exe
             - name: Build Installer
               uses: ImagineBoom/Inno-Setup-Action@v1.0.0
               with:

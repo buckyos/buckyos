@@ -16,6 +16,17 @@ DEFAULT_BUCKYOS_ROOT = Path("/opt/buckyos")
 REMOTE_APP_CASES = {
     "req_app_remote_ok",
 }
+AUTH_REJECTION_TOKENS = {
+    "missing_target_kind": "eyJhbGciOiJFZERTQSIsImtpZCI6InZlcmlmeS1odWIifQ.eyJpc3MiOiJ2ZXJpZnktaHViIiwiYXBwaWQiOiJmaWxlYnJvd3NlciIsInN1YiI6ImRlYnVnLXVzZXIiLCJleHAiOjIwNTg4Mzg5MzksInByaW5jaXBhbF9raW5kIjoidXNlciIsInRva2VuX3VzZSI6InNlc3Npb24iLCJhcHBfaW5zdGFuY2VfaWQiOiJmaWxlYnJvd3NlckBhbGljZSIsImFwcF9vd25lcl91c2VyX2lkIjoiYWxpY2UifQ.j5UQoweW-PEkj_rejBXsZ8qBBErooWTk97ANgJm4s4z1P3s8zG8LfRoya7rijxKkQOJeGNSC42G7v0ycLEvpBQ",
+    "system_target": "eyJhbGciOiJFZERTQSIsImtpZCI6InZlcmlmeS1odWIifQ.eyJpc3MiOiJ2ZXJpZnktaHViIiwiYXBwaWQiOiJmaWxlYnJvd3NlciIsInN1YiI6ImRlYnVnLXVzZXIiLCJleHAiOjIwNTg4Mzg5MzksInByaW5jaXBhbF9raW5kIjoidXNlciIsInRva2VuX3VzZSI6InNlc3Npb24iLCJ0YXJnZXRfa2luZCI6InN5c3RlbSJ9.mTbmmVGtoXc3POhI7hlXAOosMvqCJhsIrxxG7KKs8UZNPPX6UZaAejbuZqvAVQJxSXWZmFs6T27F4j2yiTKqDw",
+    "wrong_owner": "eyJhbGciOiJFZERTQSIsImtpZCI6InZlcmlmeS1odWIifQ.eyJpc3MiOiJ2ZXJpZnktaHViIiwiYXBwaWQiOiJmaWxlYnJvd3NlciIsInN1YiI6ImRlYnVnLXVzZXIiLCJleHAiOjIwNTg4Mzg5MzksInByaW5jaXBhbF9raW5kIjoidXNlciIsInRva2VuX3VzZSI6InNlc3Npb24iLCJ0YXJnZXRfa2luZCI6ImFwcCIsImFwcF9pbnN0YW5jZV9pZCI6ImZpbGVicm93c2VyQGJvYiIsImFwcF9vd25lcl91c2VyX2lkIjoiYm9iIn0.0npUXmr3E46hxl9ubHUvAdLAazDkkVh9i8S7sXaEu7dSxAF7XkWsM4c9lMzhM6JOvbGYxRH_FiTguQN0x_y1Bg",
+    "refresh": "eyJhbGciOiJFZERTQSIsImtpZCI6InZlcmlmeS1odWIifQ.eyJpc3MiOiJ2ZXJpZnktaHViIiwiYXBwaWQiOiJmaWxlYnJvd3NlciIsInN1YiI6ImRlYnVnLXVzZXIiLCJleHAiOjIwNTg4Mzg5MzksInByaW5jaXBhbF9raW5kIjoidXNlciIsInRva2VuX3VzZSI6InJlZnJlc2giLCJ0YXJnZXRfa2luZCI6ImFwcCIsImFwcF9pbnN0YW5jZV9pZCI6ImZpbGVicm93c2VyQGFsaWNlIiwiYXBwX293bmVyX3VzZXJfaWQiOiJhbGljZSJ9.89Gw518ApNzWH16rkDCqi0axJAIDBLuoqIUN86ToAhntWN5E-LLzQuy3t37LUWXyJIhZ9jJnzLJD3NCoO-8pCA",
+    "sudo": "eyJhbGciOiJFZERTQSIsImtpZCI6InZlcmlmeS1odWIifQ.eyJpc3MiOiJ2ZXJpZnktaHViIiwiYXBwaWQiOiJmaWxlYnJvd3NlciIsInN1YiI6ImRlYnVnLXVzZXIiLCJleHAiOjIwNTg4Mzg5MzksInByaW5jaXBhbF9raW5kIjoidXNlciIsInRva2VuX3VzZSI6InNlc3Npb24iLCJ0YXJnZXRfa2luZCI6ImFwcCIsImFwcF9pbnN0YW5jZV9pZCI6ImZpbGVicm93c2VyQGFsaWNlIiwiYXBwX293bmVyX3VzZXJfaWQiOiJhbGljZSIsInN1ZG8iOnRydWV9.jfdptnTl-7boo8oHqnZRgID6TXPXrcvyMJaSbGqa1B-ivIJqKexRS4QF36lf3_I6uztprnX0UbzwC5eIvUJDCg",
+    "non_verify_hub": "eyJhbGciOiJFZERTQSIsImtpZCI6InZlcmlmeS1odWIifQ.eyJpc3MiOiJvb2QxIiwiYXBwaWQiOiJmaWxlYnJvd3NlciIsInN1YiI6ImRlYnVnLXVzZXIiLCJleHAiOjIwNTg4Mzg5MzksInByaW5jaXBhbF9raW5kIjoidXNlciIsInRva2VuX3VzZSI6InNlc3Npb24iLCJ0YXJnZXRfa2luZCI6ImFwcCIsImFwcF9pbnN0YW5jZV9pZCI6ImZpbGVicm93c2VyQGFsaWNlIiwiYXBwX293bmVyX3VzZXJfaWQiOiJhbGljZSJ9.JvCE0v6ZyWC7wCO8uMNwbrU4sw4EyzreC485kNbW-JK18DQBZY4s9sJfV59Fa0TKi6kxw5lSygR-vjdCfVC2DA",
+    "missing_owner": "eyJhbGciOiJFZERTQSIsImtpZCI6InZlcmlmeS1odWIifQ.eyJpc3MiOiJ2ZXJpZnktaHViIiwiYXBwaWQiOiJmaWxlYnJvd3NlciIsInN1YiI6ImRlYnVnLXVzZXIiLCJleHAiOjIwNTg4Mzg5MzksInByaW5jaXBhbF9raW5kIjoidXNlciIsInRva2VuX3VzZSI6InNlc3Npb24iLCJ0YXJnZXRfa2luZCI6ImFwcCIsImFwcF9pbnN0YW5jZV9pZCI6ImZpbGVicm93c2VyQGFsaWNlIn0.TNLxnk9X4A9LqXek_uVhBJmi6PR92P-KH88PKwL8M-RLtPlgcvBAS55NcrNi2XpMXoCgba7Vnvha8UFM0kcPBg",
+}
+ROUTE_REJECTION_CASES = ("mixed_fields", "missing_owner", "mismatched_instance")
+SSO_SERVICE_PATHS = ("/sso_refresh", "/sso_logout")
 
 
 def resolve_buckyos_root() -> Path:
@@ -63,13 +74,17 @@ def build_typical_node_gateway_info(*, remote_app: bool) -> dict:
         "app_info": {
             "publicview": {
                 "app_id": "publicview",
+                "app_instance_id": "publicview@alice",
+                "app_owner_user_id": "alice",
                 "sdk_version": 10,
-                "access_mode": "private",
+                "access_mode": "public",
                 "node_id": "ood1",
                 "port": 10161,
             },
             "filebrowser": {
                 "app_id": "filebrowser",
+                "app_instance_id": "filebrowser@alice",
+                "app_owner_user_id": "alice",
                 "sdk_version": 10,
                 "access_mode": "private",
                 "node_id": filebrowser_node_id,
@@ -108,7 +123,7 @@ def build_typical_node_gateway_info(*, remote_app: bool) -> dict:
         },
         "routes": {},
         "trust_key": {
-            "issuer-main": "Wo0udCICmiQtnLwzpfulTbFEDvtT5UHNP-MZvnQ3dns",
+            "verify-hub": "gubVIszw-u_d5PVTh-oc8CKAhM9C-ne5G_yUK5BDaXc",
             "issuer-backup": "s9j6X2zwk1DPjFt60z65LeBJN1DCTsqgeh15iF6Zmd4",
         },
     }
@@ -188,6 +203,82 @@ def run_debug(binary: Path, config: Path, node_gateway_info: dict, req_file: Pat
         raise RuntimeError(f"{error}\nOutput: {result.stdout}") from error
 
 
+def run_auth_rejection_case(binary: Path, config: Path, name: str, token: str) -> bool:
+    request = {
+        "input": {
+            "REQ": {
+                "path": "/index.html",
+                "host": "filebrowser.test.buckyos.io",
+                "uri": "/index.html",
+                "url": "https://filebrowser.test.buckyos.io/index.html",
+                "Cookie": f"buckyos_session_token={token}",
+            }
+        },
+        "id": "server:node_gateway:main",
+        "output": ["REQ", "RESP"],
+    }
+    with tempfile.TemporaryDirectory(prefix="boot-gateway-auth-req-") as request_dir:
+        req_file = Path(request_dir) / f"req_auth_{name}.json"
+        req_file.write_text(json.dumps(request), encoding="utf-8")
+        result = run_debug(binary, config, build_typical_node_gateway_info(remote_app=False), req_file)
+    passed, message = control_matches({"return"}, expected_substring="/login?redirect_url=")(
+        result
+    )
+    if not passed:
+        print(f"  FAIL req_auth_{name}_reject: {message}")
+        return False
+    print(f"  PASS req_auth_{name}_reject")
+    return True
+
+
+def run_route_rejection_case(binary: Path, config: Path, name: str) -> bool:
+    info = build_typical_node_gateway_info(remote_app=False)
+    entry = info["app_info"]["filebrowser"]
+    if name == "mixed_fields":
+        entry["service_id"] = "control-panel"
+    elif name == "missing_owner":
+        del entry["app_owner_user_id"]
+    elif name == "mismatched_instance":
+        entry["app_instance_id"] = "filebrowser@bob"
+    request = {
+        "input": {"REQ": {"path": "/", "host": "filebrowser.test.buckyos.io", "uri": "/"}},
+        "id": "server:node_gateway:main",
+        "output": ["REQ", "RESP"],
+    }
+    with tempfile.TemporaryDirectory(prefix="boot-gateway-route-req-") as request_dir:
+        req_file = Path(request_dir) / f"req_route_{name}.json"
+        req_file.write_text(json.dumps(request), encoding="utf-8")
+        result = run_debug(binary, config, info, req_file)
+    passed, message = control_matches({"exit"}, exact_value="reject")(result)
+    if not passed:
+        print(f"  FAIL req_route_{name}_reject: {message}")
+        return False
+    print(f"  PASS req_route_{name}_reject")
+    return True
+
+
+def run_sso_service_route_case(binary: Path, config: Path, path: str) -> bool:
+    request = {
+        "input": {"REQ": {"path": path, "host": "filebrowser.test.buckyos.io", "uri": path}},
+        "id": "server:node_gateway:main",
+        "output": ["REQ", "RESP"],
+    }
+    with tempfile.TemporaryDirectory(prefix="boot-gateway-sso-req-") as request_dir:
+        req_file = Path(request_dir) / f"req_{path.removeprefix('/')}.json"
+        req_file.write_text(json.dumps(request), encoding="utf-8")
+        result = run_debug(
+            binary, config, build_typical_node_gateway_info(remote_app=False), req_file
+        )
+    passed, message = control_matches(
+        {"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262"
+    )(result)
+    if not passed:
+        print(f"  FAIL req_{path.removeprefix('/')}_no_cookie: {message}")
+        return False
+    print(f"  PASS req_{path.removeprefix('/')}_no_cookie")
+    return True
+
+
 def build_node_gateway_info_for_case(case_name: str) -> dict:
     if case_name == "req_app_remote_via_routes_ok":
         info = build_typical_node_gateway_info(remote_app=True)
@@ -235,7 +326,27 @@ def control_matches(action_set, expected_substring=None, exact_value=None):
     return _check
 
 
+def request_header_equals(name, expected_value):
+    def _check(result):
+        request = result.get("output", {}).get("REQ", {})
+        actual = request.get(name)
+        if actual != expected_value:
+            return False, f"expected request header {name}={expected_value!r}, got {actual!r}"
+        return True, ""
+
+    return _check
+
+
 def assertions_for_case(case_name: str):
+    if case_name == "req_app_public_no_cookie_ok":
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10161")]
+    if case_name == "req_app_root_no_cookie_redirect_ok":
+        return [
+            control_matches(
+                {"return"},
+                exact_value='redirect "https://sys.test.buckyos.io/login?redirect_url=https%3A%2F%2Ffilebrowser.test.buckyos.io%2F"',
+            )
+        ]
     if case_name == "req_app_local_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10160")]
     if case_name == "req_app_remote_ok":
@@ -255,7 +366,10 @@ def assertions_for_case(case_name: str):
     if case_name == "req_service_by_kapi_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262")]
     if case_name == "req_sso_callback_ok":
-        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262")]
+        return [
+            control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262"),
+            request_header_equals("X-Forwarded-Proto", "https"),
+        ]
     if case_name == "req_ndm_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10262")]
     if case_name == "req_service_system_config_identifiers_ok":
@@ -324,7 +438,8 @@ def main():
 
     print(f"Binary: {args.binary}")
     print(f"Config: {args.config}")
-    print(f"Test cases: {len(req_files)}")
+    extra_cases = len(AUTH_REJECTION_TOKENS) + len(ROUTE_REJECTION_CASES) + len(SSO_SERVICE_PATHS)
+    print(f"Test cases: {len(req_files) + extra_cases}")
     print()
 
     passed = 0
@@ -332,6 +447,24 @@ def main():
 
     for req_file in req_files:
         if test_case(args.binary, args.config, req_file, req_file.stem):
+            passed += 1
+        else:
+            failed += 1
+
+    for name, token in AUTH_REJECTION_TOKENS.items():
+        if run_auth_rejection_case(args.binary, args.config, name, token):
+            passed += 1
+        else:
+            failed += 1
+
+    for name in ROUTE_REJECTION_CASES:
+        if run_route_rejection_case(args.binary, args.config, name):
+            passed += 1
+        else:
+            failed += 1
+
+    for path in SSO_SERVICE_PATHS:
+        if run_sso_service_route_case(args.binary, args.config, path):
             passed += 1
         else:
             failed += 1

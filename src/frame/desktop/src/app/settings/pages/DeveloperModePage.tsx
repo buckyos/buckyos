@@ -1,9 +1,11 @@
 import { Download, Terminal, FolderTree, AlertTriangle, CheckCircle, XCircle, ChevronRight } from 'lucide-react'
-import { Button } from '@mui/material'
+import { Button, Switch } from '@mui/material'
 import { useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
+import { useSudoByPassword } from '../../../components/sudo'
+import { isMockRuntime } from '../../../runtime'
 import { useSettingsSnapshot, useSettingsStore } from '../hooks/use-settings-store'
-import { Section, CollapsibleSection, StatusBadge } from '../components/shared/Section'
+import { Section, CollapsibleSection, InfoRow, StatusBadge } from '../components/shared/Section'
 import { SettingsPageIntro } from '../components/shared/SettingsPageIntro'
 import type { ConfigNode, DiagnosticStatus } from '../mock/types'
 
@@ -17,12 +19,47 @@ export function DeveloperModePage() {
   const { t } = useI18n()
   const { developer } = useSettingsSnapshot()
   const store = useSettingsStore()
+  const requestSudo = useSudoByPassword()
   const [selectedConfig, setSelectedConfig] = useState<ConfigNode | null>(null)
   const [exporting, setExporting] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const handleExportLogs = () => {
     setExporting(true)
     setTimeout(() => setExporting(false), 2000)
+  }
+
+  const handleDeveloperModeChange = async () => {
+    const enabled = !developer.modeEnabled
+    setActionError(null)
+    if (isMockRuntime()) {
+      store.toggleDeveloperMode()
+      return
+    }
+
+    try {
+      const grant = await requestSudo({
+        aud: 'system-config',
+        title: enabled
+          ? t('settings.developer.enableDialogTitle', 'Enable Developer Mode')
+          : t('settings.developer.disableDialogTitle', 'Disable Developer Mode'),
+        description: t(
+          'settings.developer.sudoDescription',
+          'Confirm your administrator password to change the system developer mode.',
+        ),
+        reason: enabled
+          ? t('settings.developer.enableReason', 'Enable system developer capabilities.')
+          : t('settings.developer.disableReason', 'Disable system developer capabilities.'),
+        confirmLabel: enabled
+          ? t('settings.developer.enableConfirm', 'Enable')
+          : t('settings.developer.disableConfirm', 'Disable'),
+      })
+      if (grant) {
+        await store.setDeveloperMode(enabled, grant.sessionToken)
+      }
+    } catch {
+      setActionError(t('settings.developer.sudoFailed', 'Unable to request administrator permission.'))
+    }
   }
 
   return (
@@ -43,34 +80,48 @@ export function DeveloperModePage() {
               {t('settings.developer.developerMode', 'Developer Mode')}
             </p>
             <p className="text-xs mt-0.5" style={{ color: 'var(--cp-muted)' }}>
-              {developer.readOnly
-                ? t('settings.developer.readOnlyMode', 'Read-only mode. Write access is not available in this version.')
-                : t('settings.developer.writeEnabled', 'Write access enabled.')}
+              {t(
+                'settings.developer.requiresSudo',
+                'Changing this system setting requires administrator permission.',
+              )}
             </p>
           </div>
-          <div
-            className="shrink-0 w-10 h-6 rounded-full relative cursor-pointer"
-            style={{
-              background: developer.modeEnabled ? 'var(--cp-accent)' : 'var(--cp-muted)',
-            }}
-            onClick={() => store.toggleDeveloperMode()}
-          >
-            <div
-              className="absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all"
-              style={{ left: developer.modeEnabled ? '18px' : '2px' }}
-            />
-          </div>
+          <Switch
+            checked={developer.modeEnabled}
+            disabled={developer.loading || developer.saving}
+            inputProps={{ 'aria-label': t('settings.developer.developerMode', 'Developer Mode') }}
+            onChange={() => void handleDeveloperModeChange()}
+          />
         </div>
-        {developer.readOnly && developer.modeEnabled && (
-          <div
-            className="mt-2 px-3 py-2 rounded-lg text-xs flex items-center gap-2"
-            style={{
-              color: 'var(--cp-warning)',
-              background: 'color-mix(in srgb, var(--cp-warning) 10%, transparent)',
-            }}
-          >
-            <AlertTriangle size={14} />
-            {t('settings.developer.readOnlyWarning', 'Current version: read-only. Configuration changes are not supported.')}
+        {developer.loading && (
+          <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>
+            {t('settings.developer.loading', 'Loading developer mode configuration…')}
+          </p>
+        )}
+        {developer.saving && (
+          <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>
+            {t('settings.developer.saving', 'Saving developer mode configuration…')}
+          </p>
+        )}
+        {(developer.loadError || actionError) && (
+          <p className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>
+            {actionError ?? t('settings.developer.unavailable', 'Developer mode configuration is unavailable.')}
+          </p>
+        )}
+        {(developer.enabledAt || developer.enabledBy) && (
+          <div className="mt-2 space-y-0.5">
+            {developer.enabledAt && (
+              <InfoRow
+                label={t('settings.developer.lastEnabledAt', 'Last Enabled')}
+                value={new Date(developer.enabledAt).toLocaleString()}
+              />
+            )}
+            {developer.enabledBy && (
+              <InfoRow
+                label={t('settings.developer.enabledBy', 'Enabled By')}
+                value={developer.enabledBy}
+              />
+            )}
           </div>
         )}
       </Section>

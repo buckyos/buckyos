@@ -1,17 +1,44 @@
 {
-  "did": "did:bns:filebrowser.buckyos",
+  "schema_version": 1,
   "doc_type": "app",
-  "name": "buckyos_filebrowser",
+  "did": "did:bns:filebrowser.buckyos",
+  "name": "filebrowser",
+  "categories": ["dapp"],
   "version": "0.5.1",
-  "meta": {
-    "detail": "BuckyOS File Browser"
-  },
+  "version_tag": "latest",
+  "app_type": "dapp",
+  "owner": "did:web:buckyos.ai",
+  "controller": "did:web:buckyos.ai",
+  "author": "did:web:buckyos.ai",
   "create_time": 1743008063,
   "last_update_time": 1743008063,
   "exp": 1837616063,
-  "tag": "latest",
-  "author": "did:web:buckyos.ai",
-  "owner": "did:web:buckyos.ai",
+  "pkg_list": {
+    "amd64_docker_image": {
+      "pkg_id": "nightly-linux-amd64.image.filebrowser.buckyos.bns.did#0.5.1",
+      "pkg_objid": "pkg:1111111111111111111111111111111111111111111111111111111111111111",
+      "docker_image_digest": "sha256:a3da360c99a263e8397aeb719d4bfb8756f557710333f7e8d497eea8290782c9",
+      "docker_image_name": "buckyos/nightly-buckyos_filebrowser:0.5.1-amd64"
+    },
+    "aarch64_docker_image": {
+      "pkg_id": "nightly-linux-aarch64.image.filebrowser.buckyos.bns.did#0.5.1",
+      "pkg_objid": "pkg:2222222222222222222222222222222222222222222222222222222222222222",
+      "docker_image_digest": "sha256:7d32ad05234ba78e72b3daf128c1e2204c8e6f53b0b16b5b83dabe4fc8963297",
+      "docker_image_name": "buckyos/nightly-buckyos_filebrowser:0.5.1-aarch64"
+    },
+    "amd64_win_app": {
+      "pkg_id": "nightly-windows-amd64.bin.filebrowser.buckyos.bns.did#0.5.1",
+      "pkg_objid": "pkg:3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "aarch64_apple_app": {
+      "pkg_id": "nightly-apple-aarch64.bin.filebrowser.buckyos.bns.did#0.5.1",
+      "pkg_objid": "pkg:4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    "amd64_apple_app": {
+      "pkg_id": "nightly-apple-amd64.bin.filebrowser.buckyos.bns.did#0.5.1",
+      "pkg_objid": "pkg:5555555555555555555555555555555555555555555555555555555555555555"
+    }
+  },
   "show_name": "BuckyOS File Browser",
   "selector_type": "single",
   "service_config_tips": {
@@ -20,41 +47,17 @@
       "/database/": null,
       "/config/": null
     },
-    "local_cache_mount_points": {},
     "service_endpoints": {
       "www": {
         "protocol": "http",
         "inner_port": 80,
         "required": true,
         "expose": {
-          "route": {
-            "type": "web"
-          },
+          "route": { "type": "web" },
           "scope": "",
           "allow_guest": false
         }
       }
-    }
-  },
-  "pkg_list": {
-    "amd64_docker_image": {
-      "pkg_id": "nightly-linux-amd64.buckyos_filebrowser-img#0.5.1",
-      "docker_image_digest": "sha256:a3da360c99a263e8397aeb719d4bfb8756f557710333f7e8d497eea8290782c9",
-      "docker_image_name": "buckyos/nightly-buckyos_filebrowser:0.5.1-amd64"
-    },
-    "aarch64_docker_image": {
-      "pkg_id": "nightly-linux-aarch64.buckyos_filebrowser-img#0.5.1",
-      "docker_image_digest": "sha256:7d32ad05234ba78e72b3daf128c1e2204c8e6f53b0b16b5b83dabe4fc8963297",
-      "docker_image_name": "buckyos/nightly-buckyos_filebrowser:0.5.1-aarch64"
-    },
-    "amd64_win_app": {
-      "pkg_id": "nightly-windows-amd64.buckyos_filebrowser-bin#0.5.1"
-    },
-    "aarch64_apple_app": {
-      "pkg_id": "nightly-apple-aarch64.buckyos_filebrowser-bin#0.5.1"
-    },
-    "amd64_apple_app": {
-      "pkg_id": "nightly-apple-amd64.buckyos_filebrowser-bin#0.5.1"
     }
   }
 }

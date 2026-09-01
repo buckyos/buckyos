@@ -17,7 +17,7 @@
 5. AICC 的异步任务与进度观察语义，以及 Provider-native streaming 到 task data / final summary 的适配。
 6. 路由、Provider、协议、任务、权限、预算、资源、配置等异常路径。
 7. 低成本、确定性 Mock 模型前期测试，以及真实模型的 gateway 验收。
-8. gateway 发布强覆盖验收必须覆盖 `openai`、`fal`、`google-gemini`、`claude`、`openrouter`、`sn-ai-provider` 六类 Provider；其中 `sn-ai-provider` 不需要普通 API key。普通开发验收可按缺失 key 将真实 Provider 用例标记为 skipped。
+8. gateway 发布强覆盖验收必须覆盖 `openai`、`fal`、`google-gemini`、`claude`、`openrouter`、`sn-ai-provider` 六类 Provider；SN 必须覆盖 `api_key` 和 `dynamic_login` 两种认证模式。普通开发验收可按所选模式缺少的凭据将真实 Provider 用例标记为 skipped。
 9. gateway 真实模型验收必须按 `api_type × method × 标准逻辑目录路径 × Provider × model` 的笛卡尔积生成用例；`api_type` 以代码中 canonical `ApiType` 枚举为准，标准逻辑目录路径以当前生效 `LocalLogicalTreeConfig.logical_definitions`、`SessionConfig.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准，Provider 与 model 以实际 inventory 中可观察到的可用模型为准。
 10. 每个矩阵用例必须同时覆盖逻辑模型和实际物理模型两种调用方式：先用逻辑目录路径执行 `route.resolve` 并断言选中的 `selected_exact_model`，再用该精确模型名执行 typed inference 或 legacy method，报告中必须保留 requested logical path 与 exact model 的对应关系。
 11. 新模型、新 Provider、新逻辑目录挂载、metadata / 运营策略 / routing 更新的维护验收闭环，覆盖测试环境相关用例、测试环境全量用例、发布环境相关用例、发布环境全量用例，以及必要的回滚验证。
@@ -47,7 +47,7 @@
 - `ResourceRef` JSON tag 使用 `url`、`base64`、`named_object`。
 - AICC 不暴露独立 streaming 协议；长任务、进度、Provider streaming 中间态统一通过 task-manager event / task data 观察。
 - AI method response 只有 `succeeded`、`running`、`failed` 三类状态；失败细节写入 task event / task data。
-- 精确模型名格式为 `<provider_model_id>[:variant]@<provider_instance_name>`；variant 由 driver metadata 展开并 lower 为 provider base model + `provider_options`。
+- 精确模型名格式为 `<provider_model_id>[:variant]@<provider_instance_name>`；variant 由 Model Driver 定义语义身份，Provider Rules lower 为原始 provider model、operation 和 resolved options。
 - 精确模型默认不 fallback，除非显式开启。
 - fallback 不得跨 API namespace。
 - `local_only`、隐私、预算、能力、上下文长度、Provider health 是硬过滤条件。
@@ -101,7 +101,7 @@ Mock 阶段必须保证执行环境确定：
 5. 不实现复杂账单、发票、余额或对账逻辑。
 6. 不把 Provider 原始完整响应写入报告。
 7. 不把原始 prompt、原始文件内容、API key、session token 写入报告或普通日志。
-8. 不要求所有需要 API key 的真实模型 Provider 在无 key 环境下通过；`sn-ai-provider` 例外，它本身不需要普通 API key。
+8. 不要求真实模型 Provider 在缺少所选认证模式凭据的环境下通过；`sn-ai-provider` 的 API Key 和动态登录模式分别判断前置条件。
 9. 不要求 `agent.computer_use` 在第一阶段接入真实桌面或浏览器环境。
 10. 不要求所有视频、音乐等高成本能力在 Mock 阶段之外真实执行。
 11. 不引入新的通用测试框架或依赖，除非先单独确认。

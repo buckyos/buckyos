@@ -168,7 +168,7 @@ expect_trace = true
 | `logical_path` | 标准逻辑目录路径，例如 `llm.plan`、`image.ocr`；不得用 `vision.ocr` 代替 `image.ocr` |
 | `model_alias` | 请求模型名，可为逻辑模型或精确模型 |
 | `provider` | 期望命中的 Provider；路由类用例可为空 |
-| `provider_driver` | Provider driver 名，例如 `openai`、`google-gemini`、`claude` |
+| `provider_profile_id` / `protocol_adapter_id` / `model_driver_id` | 渠道、协议与模型语义的独立身份 |
 | `scenario` | Mock 行为场景 |
 | `update_type` | 维护更新类型，例如 `metadata`、`policy`、`routing`、`provider_settings`、`adapter_release`、`rollback` |
 | `api_types` | 本用例覆盖的 AICC method / API type 列表；L4 矩阵用例必须同时填写单值 `api_type` |
@@ -194,7 +194,7 @@ Runner 要求：
 - 报告中的 case 顺序应与 manifest 顺序一致，便于人工阅读。
 - L4 动态矩阵用例可以由模板 case 展开；展开后的 `case_id` 必须唯一，并保留 `api_type`、`method`、`logical_path`、`provider`、`model`、`matrix_source`。
 - L4 attempt 明细必须挂在同一个 case 下，不能展开成多个独立 case 影响通过率统计。
-- 维护更新类用例必须支持按 `update_type`、`provider_driver`、`provider`、`model`、`api_types`、`logical_catalogs` 和 `tags` 筛选；报告中应能单独汇总本次更新相关用例与全量回归用例。
+- 维护更新类用例必须支持按 `update_type`、`provider_profile_id`、`protocol_adapter_id`、`model_driver_id`、`provider`、`model`、`api_types`、`logical_catalogs` 和 `tags` 筛选；报告中应能单独汇总本次更新相关用例与全量回归用例。
 
 ## 3. 失败分类与诊断信息
 

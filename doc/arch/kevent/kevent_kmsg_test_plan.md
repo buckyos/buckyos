@@ -177,9 +177,9 @@ uv run test/run.py -p kevent_kmsg/peer_container
 uv run test/run.py -p kevent_kmsg/peer_vm
 ```
 
-`test/run.py --list` 通过 `test/kevent_kmsg/main.py` 发现分组入口。分组入口默认只打印子项说明，不直接运行重启、Docker 或 VM 测试。`dv/` 和 `restart/` 的 `package.json` 必须包含 `scripts.test`，runner 会在对应目录执行 `bash -lc "pnpm install && pnpm test"`。
+`test/run.py --list` 通过 `test/kevent_kmsg/main.py` 发现分组入口。分组入口默认只打印子项说明，不直接运行重启、Docker 或 VM 测试。`dv/` 和 `restart/` 的 `package.json` 必须包含 `scripts.test`，runner 会在对应目录安装依赖、更新 `buckyos` 到最新版本后执行测试。
 
-真实环境测试使用 Deno runner，并固定 WebSDK 依赖：
+真实环境测试使用 Deno runner，并始终跟随 npm 上的 `buckyos@latest`：
 
 ```json
 {
@@ -190,7 +190,7 @@ uv run test/run.py -p kevent_kmsg/peer_vm
     "test": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors kevent_kmsg_dv.ts"
   },
   "dependencies": {
-    "buckyos": "git+https://github.com/buckyos/buckyos-websdk#main"
+    "buckyos": "latest"
   }
 }
 ```

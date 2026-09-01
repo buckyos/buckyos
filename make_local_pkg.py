@@ -1077,28 +1077,20 @@ def _prepare_common_build_root(
     timings_dir: str | None = None,
 ) -> None:
     buckyos_root = target.build_root / "buckyos"
-    buckycli_root = target.build_root / "buckycli"
-
     print(f"[prepare] platform={target.platform_key} arch={target.architecture} build_root={target.build_root}")
     if target.platform_key in ("macos", "windows"):
         print(f"[prepare] RUST_BUILD={_rust_build_root()}")
 
     _remove_tree(buckyos_root, dry_run=dry_run)
-    _remove_tree(buckycli_root, dry_run=dry_run)
 
     if not skip_cargo_update:
         _run_checked(["cargo", "update"], cwd=SRC_DIR, dry_run=dry_run)
     buckyos_build_cmd = _buckyos_build_command(
-        app_keys=["buckycli", "buckyos"],
+        app_keys=["buckyos"],
         rust_target=rust_target,
         timings_dir=_timings_subdir(timings_dir, target, "buckyos"),
     )
     _run_checked(buckyos_build_cmd, cwd=SRC_DIR, dry_run=dry_run)
-    _run_checked(
-        ["buckyos-install", "--all", f"--target-rootfs={buckycli_root}", "--app=buckycli"],
-        cwd=SRC_DIR,
-        dry_run=dry_run,
-    )
     _run_checked(
         ["buckyos-install", "--all", f"--target-rootfs={buckyos_root}", "--app=buckyos"],
         cwd=SRC_DIR,

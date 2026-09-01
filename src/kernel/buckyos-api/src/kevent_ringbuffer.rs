@@ -21,7 +21,7 @@ const ENTRY_INIT: u8 = 1;
 const ENTRY_READY: u8 = 2;
 
 pub const DEFAULT_RINGBUFFER_PATH_ENV: &str = "BUCKYOS_KEVENT_RINGBUFFER_PATH";
-const DEFAULT_RINGBUFFER_PATH: &str = "/tmp/buckyos_kevent_ringbuffer_v2.shm";
+const RINGBUFFER_FILE_NAME: &str = "buckyos_kevent_ringbuffer_v2.shm";
 
 const MAX_RINGS: usize = 16;
 const RING_CAPACITY: usize = 512; // must be power of 2
@@ -774,7 +774,26 @@ fn activate_ring(region: &mut SharedRegion, ring_id: usize, pid: u32) {
 fn ringbuffer_path() -> PathBuf {
     std::env::var(DEFAULT_RINGBUFFER_PATH_ENV)
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_RINGBUFFER_PATH))
+        .unwrap_or_else(|_| default_ringbuffer_path())
+}
+
+/// Every process on the node must land on the exact same file, otherwise the
+/// bus silently splits into disjoint halves.
+///
+/// `/tmp/...` is drive-relative on Windows, so the file it names depends on the
+/// drive of the launcher's working directory — a daemon started from `D:\repo`
+/// and the services it spawns from `C:\...\bin` end up on two different rings.
+/// `$BUCKYOS_ROOT` is absolute and is already propagated to every child.
+#[cfg(windows)]
+fn default_ringbuffer_path() -> PathBuf {
+    buckyos_kit::get_buckyos_root_dir()
+        .join("tmp")
+        .join(RINGBUFFER_FILE_NAME)
+}
+
+#[cfg(not(windows))]
+fn default_ringbuffer_path() -> PathBuf {
+    PathBuf::from("/tmp").join(RINGBUFFER_FILE_NAME)
 }
 
 fn initial_read_seq(head_seq: u64, primed_existing_rings: bool) -> u64 {
@@ -808,9 +827,20 @@ fn is_process_alive(pid: u32) -> bool {
     err == libc::EPERM
 }
 
+// A ring entry is only ever released by reclaiming it from a dead owner, so a
+// stub that always reports "alive" leaks one of the MAX_RINGS slots on every
+// crash or restart until no process can attach at all.
 #[cfg(not(unix))]
-fn is_process_alive(_pid: u32) -> bool {
-    true
+fn is_process_alive(pid: u32) -> bool {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+
+    if pid == 0 {
+        return false;
+    }
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]));
+    system.process(pid).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -881,6 +911,76 @@ mod tests {
             assert!(!ptr.is_null());
             Box::from_raw(ptr)
         }
+    }
+
+    fn spawn_sleeper() -> std::process::Child {
+        let mut command = if cfg!(windows) {
+            let mut command = std::process::Command::new("cmd");
+            command.args(["/c", "ping -n 30 127.0.0.1 > nul"]);
+            command
+        } else {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "sleep 30"]);
+            command
+        };
+        command.spawn().expect("spawn sleeper")
+    }
+
+    fn fill_directory_with_owner(region: &mut SharedRegion, owner_pid: u32) {
+        for ring_id in 0..MAX_RINGS {
+            let entry = &region.directory[ring_id];
+            entry.owner_pid.store(owner_pid, Ordering::Relaxed);
+            entry.state.store(ENTRY_READY, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn is_process_alive_distinguishes_live_and_reaped_processes() {
+        let mut child = spawn_sleeper();
+        let child_pid = child.id();
+        assert!(is_process_alive(std::process::id()));
+        assert!(is_process_alive(child_pid));
+
+        child.kill().expect("kill sleeper");
+        child.wait().expect("reap sleeper");
+        assert!(!is_process_alive(child_pid));
+        assert!(!is_process_alive(0));
+    }
+
+    /// A full directory owned by a dead process must not lock everyone out:
+    /// entries are only ever returned to the pool by this reclaim path.
+    #[test]
+    fn allocate_ring_reclaims_directory_full_of_dead_owners() {
+        let mut child = spawn_sleeper();
+        let dead_pid = child.id();
+        child.kill().expect("kill sleeper");
+        child.wait().expect("reap sleeper");
+
+        let mut region = heap_region();
+        reset_region(&mut region);
+        fill_directory_with_owner(&mut region, dead_pid);
+
+        assert!(allocate_ring(&mut region, std::process::id()).is_some());
+    }
+
+    #[test]
+    fn allocate_ring_does_not_steal_entries_from_live_owners() {
+        let mut child = spawn_sleeper();
+        let live_pid = child.id();
+
+        let mut region = heap_region();
+        reset_region(&mut region);
+        fill_directory_with_owner(&mut region, live_pid);
+
+        let taken = allocate_ring(&mut region, std::process::id());
+        child.kill().expect("kill sleeper");
+        child.wait().expect("reap sleeper");
+        assert_eq!(taken, None);
+    }
+
+    #[test]
+    fn default_ringbuffer_path_is_absolute() {
+        assert!(default_ringbuffer_path().is_absolute());
     }
 
     #[test]

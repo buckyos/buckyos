@@ -308,10 +308,11 @@ async fn workflow_08_end_to_end_orchestration_smoke() {
         .unwrap();
     assert_eq!(resp.status, AiMethodStatus::Running);
     assert!(!resp.task_id.is_empty());
+    let external_task_id = external_task_id_for_response(&center, &resp.task_id).await;
     assert!(
         resp.event_ref
             .as_deref()
-            .map(|event_ref| event_ref.contains(resp.task_id.as_str()))
+            .map(|event_ref| event_ref.contains(external_task_id.as_str()))
             .unwrap_or(false),
         "queued response should carry event_ref bound to task_id: {:?}",
         resp
@@ -530,18 +531,19 @@ async fn workflow_07_each_step_routes_to_correct_capability() {
     assert_eq!(resp.status, AiMethodStatus::Running);
     assert_eq!(p1.start_calls(), 1);
     assert!(resp.result.is_none());
+    let external_task_id = external_task_id_for_response(&center, &resp.task_id).await;
     assert!(
         resp.event_ref
             .as_deref()
-            .map(|event_ref| event_ref.contains(resp.task_id.as_str()))
+            .map(|event_ref| event_ref.contains(external_task_id.as_str()))
             .unwrap_or(false),
         "running response should carry event_ref bound to task_id: {:?}",
         resp
     );
-    let events = sink.events_for(&resp.task_id);
+    let events = sink.events_for(&external_task_id);
     assert_eq!(events.len(), 1, "queued task should emit exactly one event");
     let first = &events[0];
-    assert_eq!(first.task_id, resp.task_id);
+    assert_eq!(first.task_id, external_task_id);
     assert!(matches!(first.kind, TaskEventKind::Queued));
     assert_eq!(
         first
@@ -575,10 +577,11 @@ async fn workflow_08_event_sequence_reflects_dag_structure() {
         .unwrap();
     assert_eq!(resp.status, AiMethodStatus::Running);
     assert_eq!(p1.start_calls(), 1);
-    let events = sink.events_for(&resp.task_id);
+    let external_task_id = external_task_id_for_response(&center, &resp.task_id).await;
+    let events = sink.events_for(&external_task_id);
     assert_eq!(events.len(), 1, "started task should emit a started event");
     let first = &events[0];
-    assert_eq!(first.task_id, resp.task_id);
+    assert_eq!(first.task_id, external_task_id);
     assert!(matches!(first.kind, TaskEventKind::Started));
     assert_eq!(
         first

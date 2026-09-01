@@ -375,10 +375,20 @@ def _verify_linux_payload_contract(
             continue
         real_prefix = f"{root}/{rel_s}"
         defaults_prefix = f"{defaults_root}/{rel_s}"
-        real_present = any(common.payload_path_matches_prefix(path, real_prefix) for path in normalized_paths)
+        unexpected_real_paths = common.unexpected_data_payload_paths(
+            normalized_paths,
+            target_root=root,
+            data_path=rel,
+            module_paths=layout.module_paths,
+        )
         defaults_present = any(common.payload_path_matches_prefix(path, defaults_prefix) for path in normalized_paths)
-        if real_present:
-            failures.append(f"data_paths '{rel}' should NOT be in {package_kind} payload at '{real_prefix}'")
+        if unexpected_real_paths:
+            shown = ", ".join(unexpected_real_paths[:20])
+            suffix = f" ... and {len(unexpected_real_paths) - 20} more" if len(unexpected_real_paths) > 20 else ""
+            failures.append(
+                f"data_paths '{rel}' contains non-module paths in {package_kind} payload "
+                f"at '{real_prefix}': {shown}{suffix}"
+            )
         if not defaults_present:
             failures.append(f"data_paths '{rel}' missing from {package_kind} defaults payload at '{defaults_prefix}'")
 

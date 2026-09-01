@@ -15,7 +15,8 @@ export type AppState =
   | 'unknown'
 
 export type AppRuntimeType = 'service' | 'dapp' | 'web' | 'agent'
-export type AppClass = 'system_builtin' | 'user_installed' | 'zone_installed'
+export type AppId = string & { readonly __appId: unique symbol }
+export type AppInstanceId = string & { readonly __appInstanceId: unique symbol }
 export type AvailabilityMatchType =
   | 'system_builtin'
   | 'owner'
@@ -33,10 +34,10 @@ export interface AvailabilityMatch {
  * `apps.details.summary`. Built from the backend's `AppServiceSpec`.
  */
 export interface AppSummary {
-  app_id: string
+  app_id: AppId
   /** Stable Zone-wide identity used by routing, authorization, and UI actions. */
-  app_instance_id: string
-  app_class: AppClass
+  app_instance_id: AppInstanceId
+  app_did: string
   runtime_type: AppRuntimeType
   owner_user_id: string
   availability_match: AvailabilityMatch | null
@@ -47,8 +48,6 @@ export interface AppSummary {
   /** Convention-based fallback: `res/<app_id>/appicon.png`. */
   icon_res_url: string
   author: string
-  tags: string[]
-  categories: string[]
   app_index: number
   enable: boolean
   state: AppState | string
@@ -65,9 +64,8 @@ export interface AppsListResponse {
 }
 
 export interface AppDetailsResponse {
-  app_id: string
-  app_instance_id: string
-  app_class: AppClass
+  app_id: AppId
+  app_instance_id: AppInstanceId
   owner_user_id: string
   spec_path: string
   summary: AppSummary
@@ -89,7 +87,7 @@ export interface AvailabilityUserRule {
 
 export interface AppAvailabilityPolicy {
   schema_version: number
-  app_instance_id: string
+  app_instance_id: AppInstanceId
   default_effect: 'deny'
   group_rules: AvailabilityGroupRule[]
   user_rules: AvailabilityUserRule[]
@@ -100,9 +98,8 @@ export interface AppAvailabilityPolicy {
 
 export interface AppAvailabilityDecision {
   allowed: boolean
-  app_id: string
-  app_instance_id: string
-  app_class: AppClass
+  app_id: AppId
+  app_instance_id: AppInstanceId
   owner_user_id: string
   availability_match?: AvailabilityMatch
   reason: string

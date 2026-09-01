@@ -493,7 +493,7 @@ URL 智能解析的含义是判断 URL 属于上述哪一类，并转换为相�
 Stage 1 提供一个文本输入区域，允许用户直接粘贴：
 
 1. **App DID**：最简单的输入，直接作为 `identifier` 提交，并执行 `(App DID, "app")` 可信解析。
-2. **签名 App Meta JWT**：推荐方式，对应协议中的 `APPDOC.wt` 文本。系统解析 JWT，提取 App DID、文档内容、签名和签发者信息，并将其作为带签名的 App Document 候选。
+2. **签名 App Meta JWT**：推荐方式，对应协议中的 `APPDOC.jwt` 文本。系统解析 JWT，提取 App DID、文档内容、签名和签发者信息，并将其作为带签名的 App Document 候选。
 3. **App Meta JSON**：对应协议中的 `APPDOC.json` 内容。允许粘贴完整 JSON，但它是未签名候选内容，不能仅凭 JSON 自身证明真实性。
 
 界面应优先引导用户复制和粘贴 JWT；文本识别成功后，在进入 Stage 2 前展示识别结果：“App DID”“签名 App Meta JWT”或“未签名 App Meta JSON”。

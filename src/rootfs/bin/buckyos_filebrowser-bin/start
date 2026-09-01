@@ -13,11 +13,10 @@ import util
 # filebrowser -r /path/to/your/files -d /var/lib/filebrowser/filebrowser.db -c /etc/filebrowser/config.json -p 8080 -a 0.0.0.0
 
 appid = None
-full_appid = None
+app_instance_id = None
 owner_userid = None
 app_token = None
 app_instance_config = None
-zone_config = None
 
 def get_app_bin_path(appid):
     bin_path = os.path.join(current_dir, appid)
@@ -26,62 +25,56 @@ def get_app_bin_path(appid):
     return bin_path
 
 def load_app_instance_cfg():
-    global appid, full_appid,owner_userid, app_token, app_instance_config
-    global zone_config
-
-
-    app_token_env_key = util.get_session_token_env_key(full_appid, True)
-    app_token = os.getenv(app_token_env_key)
+    global appid, app_instance_id, owner_userid, app_token, app_instance_config
+    appid = os.getenv("BUCKYOS_APP_ID")
+    app_instance_id = os.getenv("BUCKYOS_APP_INSTANCE_ID")
+    owner_userid = os.getenv("BUCKYOS_OWNER_USER_ID")
+    app_token = os.getenv("BUCKYOS_APP_TOKEN")
     app_instance_config_str = os.getenv("app_instance_config")
-    zone_config_str = os.getenv(f"BUCKYOS_ZONE_CONFIG")
-    zone_config = None
-
-    if zone_config_str:
-        zone_config = json.loads(zone_config_str)
-        docker_repo_base_url = zone_config.get("docker_repo_base_url")
-        if docker_repo_base_url:
-            zone_docker_repo_base_url = docker_repo_base_url
-
-    if app_token is None:
-        print(f"No session token found for appid: {full_appid}")
+    if not appid or not app_instance_id or not owner_userid:
+        print("Incomplete BuckyOS app identity environment")
         exit(1)
-        
-    if app_instance_config_str is None:
-        print(f"No configuration found for appid: {full_appid}")
+    if app_instance_id != f"{appid}@{owner_userid}":
+        print("Inconsistent BuckyOS app identity environment")
+        exit(1)
+    if not app_token:
+        print(f"No session token found for app: {app_instance_id}")
+        exit(1)
+    if not app_instance_config_str:
+        print(f"No configuration found for app: {app_instance_id}")
         exit(1)
     app_instance_config = json.loads(app_instance_config_str)
     return app_instance_config
 
 def start_app(instance_cfg):
-    tcp_ports = instance_cfg.get("tcp_ports")
-    if tcp_ports is None:
-        print(f"No tcp_ports found for appid: {full_appid}")
+    service_ports = instance_cfg.get("service_ports_config", {})
+    will_use_port = service_ports.get("www")
+    if will_use_port is None and service_ports:
+        will_use_port = next(iter(service_ports.values()))
+    if will_use_port is None:
+        print(f"No service port found for app: {app_instance_id}")
         exit(1)
-        
-    will_use_port = 0
-    for real_port, docker_port in tcp_ports.items():
-        if docker_port == 80:
-            will_use_port = real_port
-            break
 
-    if will_use_port == 0:  
-        print(f"No tcp_ports found for appid: {full_appid}")
-        exit(1)
-    
     base_dir = util.get_user_data_dir(owner_userid)
-    data_mount_point = instance_cfg.get("data_mount_point",{})
-    data_dir = os.path.join(util.get_app_data_dir(appid,owner_userid),"srv")
-    if data_mount_point.get("/srv/"):
-        data_dir = os.path.join(base_dir,data_mount_point.get("/srv/"))
+    execution_spec = instance_cfg.get("node_execution_spec", {})
+    service_spec = execution_spec.get("service_spec_config", {})
+    data_mount_point = service_spec.get("data_mount_point", {})
+
+    def mount_dir(container_path, default_dir):
+        mount = data_mount_point.get(container_path) or data_mount_point.get(f"{container_path}/")
+        if not mount:
+            return default_dir
+        target_path = mount.get("target_path") if isinstance(mount, dict) else mount
+        return os.path.join(base_dir, str(target_path).lstrip("/"))
+
+    app_data_dir = os.getenv("BUCKYOS_DATA_DIR") or util.get_app_data_dir(appid, owner_userid)
+    data_dir = mount_dir("/srv", os.path.join(app_data_dir, "srv"))
     util.ensure_directory_accessible(data_dir)
 
-    if data_mount_point.get("/config/"):
-        config_dir = os.path.join(base_dir,data_mount_point.get("/config/"))
+    config_dir = mount_dir("/config", os.path.join(app_data_dir, "config"))
     util.ensure_directory_accessible(config_dir)
 
-    db_dir = os.path.join(util.get_app_data_dir(appid,owner_userid),"database")
-    if data_mount_point.get("/database/"):
-        db_dir = os.path.join(base_dir,data_mount_point.get("/database/"))
+    db_dir = mount_dir("/database", os.path.join(app_data_dir, "database"))
     util.ensure_directory_accessible(db_dir)
 
     bin_path = get_app_bin_path("filebrowser")
@@ -93,9 +86,6 @@ def try_stop_app(cfg):
     util.kill_process("filebrowser")
 
 if __name__ == "__main__":
-    appid = sys.argv[1]
-    owner_userid = sys.argv[2]
-    full_appid = util.get_full_appid(appid, owner_userid)
     bin_path = get_app_bin_path("filebrowser")
     instance_cfg = load_app_instance_cfg()
     try_stop_app(instance_cfg)

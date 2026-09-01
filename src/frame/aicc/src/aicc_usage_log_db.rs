@@ -15,12 +15,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Once};
 
 use buckyos_api::{
-    aicc_usage_log_default_rdb_instance_config, get_rdb_instance, AiccRouteTraceEvent,
-    AiccUsageEvent, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
-    QueryUsageResponse, RdbBackend, UsageAggregate, UsageBucketedRow, UsageGroupedRow,
-    UsageQueryBucket, UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange,
-    AICC_SERVICE_SERVICE_NAME, AICC_USAGE_LOG_RDB_INSTANCE_ID, AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES,
-    AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
+    aicc_usage_log_default_rdb_instance_config, get_rdb_instance_in, AiccRouteTraceEvent,
+    AiccUsageEvent, AiccVideoContinuationSource, QueryRouteTraceRequest, QueryRouteTraceResponse,
+    QueryUsageRequest, QueryUsageResponse, RdbBackend, RdbPartition, UsageAggregate,
+    UsageBucketedRow, UsageGroupedRow, UsageQueryBucket, UsageQueryGroup, UsageQueryOutputMode,
+    UsageQueryTimeRange, AICC_SERVICE_SERVICE_NAME, AICC_USAGE_LOG_RDB_INSTANCE_ID,
+    AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES, AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
 };
 use kRPC::RPCErrors;
 use log::info;
@@ -79,10 +79,11 @@ impl AiccUsageLogDb {
     /// Resolve the usage-log rdb instance from the aicc service spec and open
     /// a pool against it. This is the production entry point.
     pub async fn open_from_service_spec() -> Result<Self, RPCErrors> {
-        let instance = get_rdb_instance(
+        let instance = get_rdb_instance_in(
             AICC_SERVICE_SERVICE_NAME,
             None,
             AICC_USAGE_LOG_RDB_INSTANCE_ID,
+            RdbPartition::UserData,
         )
         .await
         .map_err(|error| {
@@ -268,6 +269,77 @@ ON CONFLICT DO NOTHING
             })?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn upsert_video_continuation_source(
+        &self,
+        record: &AiccVideoContinuationSource,
+    ) -> Result<(), RPCErrors> {
+        let sql = self.render_sql(
+            r#"
+INSERT INTO aicc_video_continuation_source (
+    tenant_id, content_id, source_task_id, created_at_ms
+) VALUES (?, ?, ?, ?)
+ON CONFLICT (tenant_id, content_id)
+DO UPDATE SET
+    source_task_id = excluded.source_task_id,
+    created_at_ms = excluded.created_at_ms
+"#,
+        );
+        sqlx::query(&sql)
+            .bind(record.tenant_id.clone())
+            .bind(record.content_id.clone())
+            .bind(record.source_task_id.clone())
+            .bind(record.created_at_ms)
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to persist video continuation source task {}: {}",
+                    record.source_task_id, error
+                ))
+            })?;
+        Ok(())
+    }
+
+    pub async fn get_video_continuation_source(
+        &self,
+        tenant_id: &str,
+        content_id: &str,
+    ) -> Result<Option<AiccVideoContinuationSource>, RPCErrors> {
+        let sql = self.render_sql(
+            r#"
+SELECT tenant_id, content_id, source_task_id, created_at_ms
+FROM aicc_video_continuation_source
+WHERE tenant_id = ? AND content_id = ?
+"#,
+        );
+        let row = sqlx::query(&sql)
+            .bind(tenant_id.to_string())
+            .bind(content_id.to_string())
+            .fetch_optional(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to load video continuation source for content {}: {}",
+                    content_id, error
+                ))
+            })?;
+        row.map(|row| {
+            Ok(AiccVideoContinuationSource {
+                tenant_id: row.try_get("tenant_id")?,
+                content_id: row.try_get("content_id")?,
+                source_task_id: row.try_get("source_task_id")?,
+                created_at_ms: row.try_get("created_at_ms")?,
+            })
+        })
+        .transpose()
+        .map_err(|error: sqlx::Error| {
+            RPCErrors::ReasonError(format!(
+                "failed to decode video continuation source for content {}: {}",
+                content_id, error
+            ))
+        })
     }
 
     /// Flexible query entry — pulls rows matching the filter window, then
@@ -476,7 +548,17 @@ FROM aicc_route_trace
 
         let mut sql = format!(
             r#"
-SELECT route_trace_json, created_at_ms
+SELECT
+    trace_id,
+    tenant_id,
+    caller_app_id,
+    task_id,
+    request_model,
+    selected_exact_model,
+    provider_instance_name,
+    api_type,
+    route_trace_json,
+    created_at_ms
 FROM aicc_route_trace
 {}
 "#,
@@ -822,9 +904,27 @@ fn decode_route_trace_row(row: &AnyRow) -> Result<Value, RPCErrors> {
         RPCErrors::ReasonError(format!("failed to parse route_trace_json: {}", err))
     })?;
     if let Some(object) = value.as_object_mut() {
-        object
-            .entry("created_at_ms")
-            .or_insert_with(|| Value::from(created_at_ms));
+        for field in [
+            "trace_id",
+            "tenant_id",
+            "caller_app_id",
+            "task_id",
+            "request_model",
+            "selected_exact_model",
+            "provider_instance_name",
+            "api_type",
+        ] {
+            let field_value: Option<String> = row.try_get(field).map_err(|err| {
+                RPCErrors::ReasonError(format!(
+                    "failed to decode aicc_route_trace.{}: {}",
+                    field, err
+                ))
+            })?;
+            if let Some(field_value) = field_value {
+                object.insert(field.to_string(), Value::from(field_value));
+            }
+        }
+        object.insert("created_at_ms".to_string(), Value::from(created_at_ms));
     }
     Ok(value)
 }
@@ -1098,6 +1198,40 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn video_continuation_source_is_content_and_tenant_scoped() {
+        let (db, _tmp) = setup().await;
+        let mut record = AiccVideoContinuationSource {
+            tenant_id: "alice".to_string(),
+            content_id: "mix256:video-content".to_string(),
+            source_task_id: "task-first".to_string(),
+            created_at_ms: 10,
+        };
+        db.upsert_video_continuation_source(&record).await.unwrap();
+
+        let loaded = db
+            .get_video_continuation_source("alice", "mix256:video-content")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, record);
+        assert!(db
+            .get_video_continuation_source("bob", "mix256:video-content")
+            .await
+            .unwrap()
+            .is_none());
+
+        record.source_task_id = "task-second".to_string();
+        record.created_at_ms = 20;
+        db.upsert_video_continuation_source(&record).await.unwrap();
+        let updated = db
+            .get_video_continuation_source("alice", "mix256:video-content")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated, record);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn group_by_provider_model() {
         let (db, _tmp) = setup().await;
         let now = current_time_ms();
@@ -1272,6 +1406,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.traces.len(), 2);
+        assert_eq!(
+            resp.traces[0].get("trace_id").and_then(Value::as_str),
+            Some("trace-two")
+        );
+        assert_eq!(
+            resp.traces[0].get("task_id").and_then(Value::as_str),
+            Some("trace-one")
+        );
+        assert_eq!(
+            resp.traces[0]
+                .get("provider_instance_name")
+                .and_then(Value::as_str),
+            Some("test")
+        );
         assert_eq!(
             resp.traces[0].get("request_id").and_then(Value::as_str),
             Some("trace-two")

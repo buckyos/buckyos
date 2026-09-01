@@ -202,6 +202,7 @@ async fn done_without_tool_calls() {
             input_tokens: Some(5),
             output_tokens: Some(3),
             total_tokens: Some(8),
+            request_units: None,
         }),
         ..Default::default()
     }]));

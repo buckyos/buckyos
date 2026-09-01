@@ -19,8 +19,8 @@ use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
 
-use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
-use crate::task_mgr::{Task, TaskId};
+use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
+use crate::task_mgr::{StorageDomain, Task, TaskId};
 
 pub const TASK_DISPATCHER_SERVICE_NAME: &str = "task-dispatcher";
 /// The dispatcher shares the task-manager process and port; it is mounted at
@@ -29,10 +29,11 @@ pub const TASK_DISPATCHER_SERVICE_PORT: u16 = 3380;
 
 pub const TASK_DISPATCHER_RDB_INSTANCE_ID: &str = "task-dispatcher-main";
 
-/// Dispatcher durable schema version. v3 is the TaskMgr 2.0 delivery model:
+/// Dispatcher durable schema version. v4 freezes StorageDomain and parent
+/// selection in the TaskMgr 2.0 delivery envelope:
 /// records reference a pre-created public task, queue state is explicit and
 /// stably ordered, and every RPC is journaled as a DeliveryAttempt.
-pub const TASK_DISPATCHER_RDB_SCHEMA_VERSION: u64 = 3;
+pub const TASK_DISPATCHER_RDB_SCHEMA_VERSION: u64 = 4;
 
 pub const TASK_DISPATCHER_RDB_SCHEMA_SQLITE: &str = r#"
 CREATE TABLE IF NOT EXISTS dispatch_record (
@@ -231,6 +232,7 @@ pub fn task_dispatcher_default_rdb_instance_config() -> RdbInstanceConfig {
         version: TASK_DISPATCHER_RDB_SCHEMA_VERSION,
         schema,
         connection: String::new(),
+        partitions: vec![RdbPartition::Local],
     }
 }
 
@@ -734,6 +736,10 @@ pub struct DispatchAuthEnvelope {
     pub zone_trusted_caller: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_ref: Option<WorkflowStepRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<TaskId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_domain: Option<StorageDomain>,
     pub input_digest: String,
     pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1061,6 +1067,8 @@ pub struct DispatchTaskReq {
     /// Optional parent task for tree-structured work.
     #[serde(default)]
     pub parent_task_id: Option<TaskId>,
+    #[serde(default)]
+    pub storage_domain: Option<StorageDomain>,
 }
 impl_from_json!(DispatchTaskReq);
 
@@ -1302,7 +1310,11 @@ pub trait TaskDispatcherHandler: Send + Sync {
     ) -> Result<RenewInstanceResult>;
     async fn handle_detach_instance(&self, req: DetachInstanceReq, ctx: RPCContext) -> Result<()>;
 
-    async fn handle_get_target(&self, req: GetTargetReq, ctx: RPCContext) -> Result<GetTargetResult>;
+    async fn handle_get_target(
+        &self,
+        req: GetTargetReq,
+        ctx: RPCContext,
+    ) -> Result<GetTargetResult>;
     async fn handle_list_targets(&self, ctx: RPCContext) -> Result<ListTargetsResult>;
     async fn handle_set_operation_route(
         &self,
@@ -1371,12 +1383,24 @@ impl TaskDispatcherClient {
     }
 
     pub async fn dispatch_task(&self, req: DispatchTaskReq) -> Result<DispatchTaskResult> {
-        client_call!(self, "dispatch_task", req, DispatchTaskResult, handle_dispatch_task)
+        client_call!(
+            self,
+            "dispatch_task",
+            req,
+            DispatchTaskResult,
+            handle_dispatch_task
+        )
     }
 
     pub async fn get_dispatch(&self, req: GetDispatchReq) -> Result<DispatchRecord> {
-        client_call!(self, "get_dispatch", req, GetDispatchResult, handle_get_dispatch)
-            .map(|r| r.record)
+        client_call!(
+            self,
+            "get_dispatch",
+            req,
+            GetDispatchResult,
+            handle_get_dispatch
+        )
+        .map(|r| r.record)
     }
 
     pub async fn list_dispatches(&self, req: ListDispatchesReq) -> Result<ListDispatchesResult> {
@@ -1414,7 +1438,10 @@ impl TaskDispatcherClient {
         .map(|r| r.record)
     }
 
-    pub async fn register_target(&self, registration: TargetRegistration) -> Result<TargetRegistration> {
+    pub async fn register_target(
+        &self,
+        registration: TargetRegistration,
+    ) -> Result<TargetRegistration> {
         let req = RegisterTargetReq { registration };
         client_call!(
             self,
@@ -1430,7 +1457,11 @@ impl TaskDispatcherClient {
             target_id: target_id.to_string(),
         };
         match self {
-            Self::InProcess(handler) => handler.handle_disable_target(req, RPCContext::default()).await,
+            Self::InProcess(handler) => {
+                handler
+                    .handle_disable_target(req, RPCContext::default())
+                    .await
+            }
             Self::KRPC(client) => {
                 let params = serde_json::to_value(&req).map_err(|e| {
                     RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
@@ -1464,7 +1495,9 @@ impl TaskDispatcherClient {
     pub async fn detach_instance(&self, req: DetachInstanceReq) -> Result<()> {
         match self {
             Self::InProcess(handler) => {
-                handler.handle_detach_instance(req, RPCContext::default()).await
+                handler
+                    .handle_detach_instance(req, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let params = serde_json::to_value(&req).map_err(|e| {
@@ -1658,7 +1691,9 @@ impl<T: TaskDispatcherHandler> RPCHandler for TaskDispatcherServerHandler<T> {
             }
             "disable_operation_route" => {
                 let route_req = DisableOperationRouteReq::from_json(req.params)?;
-                self.0.handle_disable_operation_route(route_req, ctx).await?;
+                self.0
+                    .handle_disable_operation_route(route_req, ctx)
+                    .await?;
                 RPCResult::Success(json!({}))
             }
             "get_operation_route" => {
@@ -1718,7 +1753,12 @@ mod tests {
         assert_eq!(back, accepted);
 
         let busy: OfferTaskResp = serde_json::from_value(json!({"kind": "Busy"})).unwrap();
-        assert_eq!(busy, OfferTaskResp::Busy { retry_after_ms: None });
+        assert_eq!(
+            busy,
+            OfferTaskResp::Busy {
+                retry_after_ms: None
+            }
+        );
     }
 
     #[test]

@@ -1,10 +1,10 @@
 use buckyos_api::{
     get_buckyos_api_runtime, parse_typed_task_data, ActorRef, BindAppExecutorReq,
     CreatePromisedTaskReq, GetSubtasksReq, ListTasksReq, ReportProgressReq, ReportRunningReq,
-    ReportStartedReq, ReportWaitingReq, RunnerWriteEnvelope, Task, TaskExecutor, TaskManagerClient,
-    TaskPhase, TaskWaitReason, TaskWaitReasonKind, TypedTaskData, WorkflowScheduleOwner,
-    WorkflowSchedulePolicy, WorkflowScheduleTaskData, WorkflowScheduleTaskRequest,
-    WorkflowScheduleTaskResult, WORKFLOW_EXECUTE_RPC_TASK_SCHEMA_ID,
+    ReportStartedReq, ReportWaitingReq, RunnerWriteEnvelope, StorageDomain, Task, TaskExecutor,
+    TaskManagerClient, TaskPhase, TaskWaitReason, TaskWaitReasonKind, TypedTaskData,
+    WorkflowScheduleOwner, WorkflowSchedulePolicy, WorkflowScheduleTaskData,
+    WorkflowScheduleTaskRequest, WorkflowScheduleTaskResult, WORKFLOW_EXECUTE_RPC_TASK_SCHEMA_ID,
 };
 use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -29,10 +29,6 @@ pub enum ScheduleStatus {
 }
 
 impl ScheduleStatus {
-    pub fn is_terminal(&self) -> bool {
-        matches!(self, ScheduleStatus::Canceled)
-    }
-
     pub fn from_str_loose(value: &str) -> Option<Self> {
         match value {
             "Running" => Some(Self::Running),
@@ -415,6 +411,7 @@ pub struct ScheduleTaskMirrorClient {
 }
 
 impl ScheduleTaskMirrorClient {
+    #[cfg(test)]
     pub fn new(client: Arc<TaskManagerClient>, app_id: impl Into<String>) -> Self {
         Self {
             client: Some(client),
@@ -589,6 +586,12 @@ impl ScheduleTaskMirrorClient {
         idempotency_key: String,
     ) -> Result<Task, String> {
         let client = self.client().await?;
+        // A schedule root is the durable, user-authored schedule definition,
+        // not a disposable runtime projection.  Its fire tasks must omit an
+        // explicit domain and inherit that User domain from the root.
+        let storage_domain = parent_id
+            .is_none()
+            .then_some(StorageDomain::User);
         let task = client
             .create_promised_task(CreatePromisedTaskReq {
                 name,
@@ -602,6 +605,7 @@ impl ScheduleTaskMirrorClient {
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
+                storage_domain,
                 idempotency_key: idempotency_key.clone(),
                 wait_reason: None,
                 message: None,

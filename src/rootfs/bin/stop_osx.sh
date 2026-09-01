@@ -19,7 +19,7 @@ remove_buckyos_containers() {
     return
   fi
 
-  container_ids="$(docker ps -aq --filter "label=buckyos.full_appid" 2>/dev/null || true)"
+  container_ids="$(docker ps -aq --filter "label=buckyos.app_instance_id" 2>/dev/null || true)"
   if [ -z "$container_ids" ]; then
     echo "No buckyos docker containers found"
     return

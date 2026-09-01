@@ -26,9 +26,10 @@ impl LocalAppRunItem {
 #[async_trait]
 impl RunItemControl for LocalAppRunItem {
     fn get_item_name(&self) -> Result<String> {
-        //appid#userid
-        let full_appid = format!("{}#{}", self.app_instance_config.user_id, self.app_id);
-        Ok(full_appid)
+        Ok(get_local_app_runtime_key(
+            &self.app_id,
+            &self.app_instance_config.user_id,
+        ))
     }
 
     fn get_item_kind(&self) -> &'static str {

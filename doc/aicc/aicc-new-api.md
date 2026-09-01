@@ -57,7 +57,7 @@ Helper 的行为：
 ```text
 logical model request
 -> route.resolve
--> exact physical model + provider lowering options
+-> exact physical model + complete channel/model identity
 -> typed inference API
 -> response
 ```
@@ -80,7 +80,7 @@ client.llm_chat({
 
 ```text
 route.resolve(api_type="llm.chat", logical_model="llm.chat", requirements, disable, policy)
-chat.completions.create(exact_model=route.selected_exact_model, provider_options=route.provider_options, messages)
+chat.completions.create(exact_model=route.selected_exact_model, messages)
 ```
 
 Helper 可以存在于：
@@ -133,9 +133,12 @@ RouteResolveRequest
 RouteResolveResponse
   selected_exact_model
   provider_instance_name
-  provider_driver
+  provider_profile_id
+  protocol_adapter_id
+  model_driver_id
+  origin_model_id
   provider_model_id
-  provider_options
+  operation
   enabled_capabilities
   disabled_capabilities
   fallback_attempts
@@ -148,7 +151,8 @@ RouteResolveResponse
 
 - `selected_exact_model` 是 AICC 语义下的确定物理模型名，例如 `gpt-5.1@openai-primary`。
 - `provider_model_id` 是 provider wire protocol 中真正使用的模型名。
-- `provider_options` 是 route / metadata / variant lowering 后得到的 provider 调用参数建议，例如 reasoning effort。
+- `model_driver_id` / `origin_model_id` 表达模型固有语义；`provider_profile_id` / `protocol_adapter_id` / `operation` 表达实际交付渠道。
+- `provider_model_id` 始终保存 Provider discovery 返回并用于真实调用的原始模型名。
 - `fallback_attempts` 是路由器建议的候选顺序，供 helper 或调用方在失败后自行决定是否重试。
 - `route_trace` 用于解释候选过滤、policy 命中、session overlay、成本/延迟/health 选择原因。
 
@@ -164,21 +168,23 @@ RouteResolveResponse
 - 重新调用 `route.resolve`，拿到新的 `selected_exact_model` 后再推理。
 - 使用 `fallback_attempts` 中的候选，自行尝试下一个物理模型。
 
-#### provider options 处理原则
+#### Provider call 解析原则
 
-两段式 API 下，路由层和推理层之间不做隐藏状态传递。
+`route.resolve` 不向调用方暴露可任意修改的 Provider options。语义 variant 已编码在 `selected_exact_model` 中；数据面根据 exact model、canonical request、Provider Rules 和当前 catalog revision 生成内部 `ResolvedProviderCall`：
 
-逻辑模型名里可以包含一些 option 控制。`route.resolve` 会把这些控制展开成 `provider_options`，作为“路由结果的一部分”返回给调用方。
+```text
+provider_model_id
+provider_profile_id
+protocol_adapter_id
+model_driver_id
+origin_model_id
+operation
+resolved_options
+pricing + source
+rule/catalog revision
+```
 
-调用方拿到路由结果后有两种选择：
-
-- 原样把 `provider_options` 透传给第二层推理接口。
-- 修改 `provider_options` 或与自己的 request options 合并后，再调用第二层推理接口。
-
-第二层推理接口不关心这些 options 来自哪里。它只按 per request 语义执行：这个 request 给了什么 `exact_model` 和 options，它就用什么 `exact_model` 和 options。第二层接口不感知逻辑模型名，也不感知路由层存在。
-
-因此不存在“provider options patch 与用户 options 冲突时谁优先”的 AICC 本体规则。优先级属于调用方/helper 的合并策略，而不是推理接口协议的一部分。
-
+operation 按 `method > api_type > adapter default` 解析，并必须存在于 adapter 注册表。请求规则按 Provider defaults、用户 canonical 参数、条件 set/remove 执行。该对象只存在于一次请求生命周期，不是公开配置、inventory 真相源或 route lease。
 ### 5.2 推理接口
 
 推理接口属于数据面。
@@ -187,7 +193,7 @@ RouteResolveResponse
 
 新的推理接口不再追求 all-in-one，而是按 API 形态拆分，让类型更强。
 
-接口命名尽量贴近行业开创者已经建立的资源语义。AICC 不必完全复制某一家 provider 的 wire protocol，但命名上应优先采用开发者熟悉的形态，例如 `chat.completions.create`、`images.generate`、`embeddings.create`、`audio.transcriptions.create`。
+接口命名尽量贴近行业开创者已经建立的资源语义。AICC 不复制某一家 Provider 的 wire protocol；`chat.completions.create` 是稳定的 provider-neutral method，可以映射到 Responses、Messages、Interactions 或旧兼容 Adapter。实际接口由 `protocol_adapter_id + operation` 决定。
 
 #### LLM 推理接口
 
@@ -195,7 +201,12 @@ RouteResolveResponse
 
 ```text
 chat.completions.create
-completions.create
+embeddings.create
+rerank.create
+images.generate / images.edit / images.upscale / images.remove_background
+vision.ocr / vision.caption / vision.detect / vision.segment
+audio.speech.create / audio.transcriptions.create / audio.music.create / audio.enhance
+videos.generate / videos.transform / videos.extend / videos.upscale
 ```
 
 输入示例：
@@ -208,7 +219,6 @@ LlmChatInvokeRequest
   response_format
   temperature
   max_output_tokens
-  provider_options
   idempotency_key
   task_options
 ```
@@ -248,7 +258,6 @@ TextToImageInvokeRequest
   style
   seed
   output
-  provider_options
   idempotency_key
   task_options
 ```
@@ -306,69 +315,37 @@ gpt-5.1@openai-primary
 claude-sonnet-4-5@anthropic-main
 ```
 
-## 7. Provider Options Lowering
+## 7. Exact Model Variant Lowering
 
-模型路由不仅选物理模型，也可以生成 provider options。
-
-例如 reasoning variant：
+Model Driver 定义 variant 的语义身份，Provider Rules 定义该身份在当前渠道和 adapter 下的参数 lowering。例如：
 
 ```text
 AICC exact model: gpt-5.1:reasoning-high@openai-primary
 provider_model_id: gpt-5.1
-provider_options:
-  reasoning:
-    effort: high
+provider_profile_id: openai
+protocol_adapter_id: openai-responses
+operation: responses.create
+resolved_options.reasoning.effort: high
 ```
 
-这样 usage / audit 可以按 AICC exact model 聚合，而 provider wire request 仍然使用 provider 原生参数。
+调用方只传 exact model 和 canonical request。Provider-specific options 不属于公开数据面协议；usage、audit 和 trace 按含 variant 的 exact model 聚合，并记录规则来源和 revision。
+## 8. Beta 2.2 切换策略
 
-`provider_options` 不是 lease，也不是第二层推理接口必须保护的约束。它是 route output 的一部分，调用方可以选择原样使用，也可以修改后再调用物理模型推理接口。
+Beta 2.2 采用一次性切换，不保留向前兼容：
 
-## 8. 迁移策略
+1. 为全部公开 `api_type` 建立 typed inference request/response。
+2. Helper 改为 `logical_model + typed business fields`，内部严格组合 route 和 typed inference。
+3. SDK、workflow、Agent tools、UI 和 DV tests 同步迁移。
+4. 删除 AICC service 中的 all-in-one methods、`AiMethodRequest`、`model.alias`、`must_features`、`requirements.extra.disable_capabilities` 和 `provider_options` 公共输入。
+5. 管理面只保留 `service.reload_settings`，删除所有兼容别名和错误拼写。
+6. Provider Profile、Protocol Adapter、Model Driver、Provider Rules、Pricing 和 Known Provider catalog 同时切换到新身份与 schema。
 
-Breaking change 版本可以采用以下迁移顺序：
+## 9. 验收约束
 
-1. 新增 `route.resolve`。
-2. 新增按 API 形态拆分的 typed inference interfaces。
-3. 将现有 all-in-one API 移到 SDK / CLI helper 层。
-4. workflow、Agent tools、UI 逐步改为使用 helper 或显式两阶段调用。
-5. AICC service 内部逐步移除推理接口对逻辑模型名的直接支持。
-
-## 9. 第一版最小实现
-
-第一版不需要一次性覆盖所有 modality。
-
-建议先实现：
-
-- `route.resolve`
-- `chat.completions.create`
-- `images.generate`
-- SDK helper:
-  - `helper.llm_chat`
-  - `helper.text_to_image`
-
-第一版 route response 至少包含：
-
-```text
-selected_exact_model
-provider_instance_name
-provider_model_id
-provider_options
-fallback_attempts
-route_trace
-```
-
-第一版推理接口至少支持：
-
-```text
-exact_model
-payload
-provider_options
-```
-
-## 10. 待确认问题
-
-- exact model 调用是否完全禁止 fallback。是
-- helper 是否保留在 AICC service 内作为 `service.helper.*`，还是完全移到 SDK。
-- helper 层是否需要提供一个标准 options merge 策略。
-- route.resolve 是否需要支持 dry-run cost estimate 的输入 token 明细。
+- route response 和 trace 同时包含 Provider Instance/Profile、Protocol Adapter、Model Driver、origin model、原始 provider model、operation、规则及价格来源。
+- exact model 数据面不做逻辑 fallback；TOCTOU 失败由调用方重新 route。
+- OpenAI-compatible Provider 调用 Claude 模型时使用 Claude Model Driver 语义，但不得应用 GPT 特判或切换 Anthropic endpoint。
+- 同一 origin model 在不同 Provider 可以解析出不同 operation 和价格。
+- Adapter 执行层不按模型家族字符串或 base URL 猜测 operation。
+- 业务结果精确保存；日志与 provider I/O 摘要独立脱敏。
+- 所有 hard constraints 要么正确映射，要么在发起 Provider HTTP 请求前明确失败。

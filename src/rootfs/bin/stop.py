@@ -60,7 +60,7 @@ def kill_buckyos_containers():
         return
 
     result_list = subprocess.run(
-        ["docker", "ps", "-aq", "--filter", "label=buckyos.full_appid"],
+        ["docker", "ps", "-aq", "--filter", "label=buckyos.app_instance_id"],
         capture_output=True,
         text=True,
     )

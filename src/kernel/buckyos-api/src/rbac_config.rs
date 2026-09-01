@@ -16,7 +16,7 @@ g = _, _
 e = priority(p.eft) || deny
 
 [matchers]
-m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.sub) || keyGet3(r.obj, p.obj, p.sub) =="") && keyMatch3(r.obj,p.obj)) && (p.act == "all" || regexMatch(r.act, p.act))
+m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.sub) || r.sub == "app:" + keyGet3(r.obj, p.obj, p.sub) || r.sub == "system:" + keyGet3(r.obj, p.obj, p.sub) || keyGet3(r.obj, p.obj, p.sub) =="") && keyMatch3(r.obj,p.obj)) && (p.act == "all" || regexMatch(r.act, p.act))
 "#;
 
 /*
@@ -107,6 +107,13 @@ p, app, obj://config/users/{user}/apps/{app}/settings,read|write,allow
 p, app, obj://config/users/{user}/apps/{app}/spec,read,allow
 p, app, obj://config/users/{user}/apps/{app}/info,read|write,allow
 p, app, obj://config/services/{service}/info,read,allow
+p, app, obj://config/services/{app}/instances/{node},write,allow
+
+# An App runtime is promoted to this role only when an AgentSpec binds to it.
+# AgentSpec is public runtime identity/configuration; the sibling private key
+# deliberately remains inaccessible to the runtime App principal.
+p, agent_runtime, obj://config/users/{user}/agents,read|list|query,allow
+p, agent_runtime, obj://config/users/{user}/agents/{agent}/spec,read,allow
 
 p, agent, obj://config/boot/*, read,allow
 p, agent, obj://config/agents/{agent}/*,read,allow
@@ -123,6 +130,7 @@ p, admin,obj://config/agents/{agent}/settings,read|write,allow
 p, admin,obj://config/users/{admin}/*,read,allow
 p, admin,obj://config/users/{admin}/profile,read|write,allow
 p, admin,obj://config/users/{admin}/apps/{app}/{key},read|write,allow
+p, admin,obj://config/users/{admin}/agents,list|query,allow
 p, admin,obj://config/users/{admin}/agents/{agent}/{key},read|write,allow
 p, admin,obj://config/services/aicc/settings,read|write,allow
 p, admin,obj://config/services/msg-center/settings,read|write,allow
@@ -136,28 +144,29 @@ p, users,obj://config/agents/{agent}/doc,read,allow
 p, users,obj://config/users/{users}/*,read,allow
 p, users,obj://config/users/{users}/profile,read|write,allow
 p, users,obj://config/users/{users}/apps/{app}/{key},read|write,allow
+p, users,obj://config/users/{users}/agents,list|query,allow
 p, users,obj://config/users/{users}/agents/{agent}/{key},read|write,allow
 p, users,obj://config/services/{service}/info,read,allow
 p, users,obj://config/services/{service}/instances/{node},write,allow
 p, users,obj://task/{users},read,allow
 
-g, node-daemon, kernel
-g, scheduler, kernel
-g, system-config, kernel
-g, verify-hub, kernel
-g, cyfs-gateway, kernel
-g, buckycli, kernel
+g, system:node-daemon, kernel
+g, system:scheduler, kernel
+g, system:system-config, kernel
+g, system:verify-hub, kernel
+g, system:cyfs-gateway, kernel
+g, system:buckycli, kernel
 
-g, task-manager, system
-g, kmsg, system
-g, control-panel, system
+g, system:task-manager, system
+g, system:kmsg, system
+g, system:control-panel, system
 
-g, repo-service, frame
-g, aicc, frame
-g, msg-center, frame
-g, opendan, frame
-g, slog_server, frame
-g, smb_service, frame
+g, system:repo-service, frame
+g, system:aicc, frame
+g, system:msg-center, frame
+g, system:opendan, frame
+g, system:slog-server, frame
+g, system:smb-service, frame
 
 "#;
 
@@ -242,7 +251,7 @@ mod tests {
         assert!(
             rbac::enforce(
                 "ood1",
-                "node-daemon",
+                "system:node-daemon",
                 "obj://config/nodes/ood1/config",
                 "read",
                 None,
@@ -252,10 +261,47 @@ mod tests {
         assert!(
             rbac::enforce(
                 "ood1",
-                "node-daemon",
+                "system:node-daemon",
                 "obj://config/devices/ood1/info",
                 "write",
                 None,
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn buckyos_info_is_read_only_for_admin_and_writable_by_scheduler() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some("g, alice, admin\ng, ood1, ood"));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+
+        let resource = "obj://config/system/buckyos_info";
+        assert!(rbac::enforce("alice", "system:control-panel", resource, "read", None).await);
+        assert!(!rbac::enforce("alice", "system:control-panel", resource, "write", None).await);
+        assert!(rbac::enforce("ood1", "system:scheduler", resource, "write", None).await);
+    }
+
+    #[tokio::test]
+    async fn buckyos_dev_config_write_requires_admin_sudo() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some("g, alice, admin\ng, su_alice, su_admin"));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+
+        let resource = "obj://config/system/buckyos_dev_config";
+        assert!(rbac::enforce("alice", "system:control-panel", resource, "read", None).await);
+        assert!(!rbac::enforce("alice", "system:control-panel", resource, "write", None).await);
+        assert!(
+            rbac::enforce(
+                "alice",
+                "system:control-panel",
+                resource,
+                "write",
+                Some(rbac::SudoMode::Sudo("su_alice".to_string())),
             )
             .await
         );
@@ -348,7 +394,7 @@ g, su_alice, su_admin
         assert!(
             rbac::enforce(
                 "alice",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/agents/jarvis/doc",
                 "read",
                 None,
@@ -358,7 +404,7 @@ g, su_alice, su_admin
         assert!(
             rbac::enforce(
                 "bob",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/agents/jarvis/doc",
                 "read",
                 None,
@@ -368,7 +414,7 @@ g, su_alice, su_admin
         assert!(
             rbac::enforce(
                 "alice",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/agents/jarvis/settings",
                 "write",
                 None,
@@ -378,7 +424,7 @@ g, su_alice, su_admin
         assert!(
             rbac::enforce(
                 "su_alice",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/users/dvtest1782201008431/doc",
                 "write",
                 None,
@@ -395,21 +441,21 @@ g, su_alice, su_admin
         let over_match_cases: &[(&str, &str, &str, &str, &str)] = &[
             (
                 "alice",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/agents/foo/bar/doc",
                 "read",
                 "BUG: admin 的 agents/*/doc 不应匹配多层路径 (foo/bar/doc)",
             ),
             (
                 "bob",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/agents/foo/bar/doc",
                 "read",
                 "BUG: users 的 agents/*/doc 不应匹配多层路径 (foo/bar/doc)",
             ),
             (
                 "alice",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/agents/foo/bar/settings",
                 "write",
                 "BUG: admin 的 agents/*/settings 不应匹配多层路径 (foo/bar/settings)",
@@ -419,7 +465,7 @@ g, su_alice, su_admin
             // (g, repo-service, frame), 把 BUG 隔离到 frame 这条规则.
             (
                 "root",
-                "repo-service",
+                "system:repo-service",
                 "obj://config/agents/a/b/c/d",
                 "read",
                 "BUG: frame 的 agents/*/* 不应匹配 4 层路径 (a/b/c/d)",
@@ -428,7 +474,7 @@ g, su_alice, su_admin
             // 期望 apps 下面正好是 "{app_id}/{key}" 两段.
             (
                 "alice",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/users/alice/apps/some_app/extra/key",
                 "write",
                 "BUG: admin 的 users/{admin}/apps/*/* 不应匹配 apps 下 3 层以上路径",
@@ -462,7 +508,7 @@ g, su_alice, su_admin
         assert!(
             rbac::enforce(
                 "bob",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/users/bob/settings",
                 "read",
                 None,
@@ -472,7 +518,7 @@ g, su_alice, su_admin
         assert!(
             rbac::enforce(
                 "bob",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/users/bob/profile",
                 "write",
                 None,
@@ -482,7 +528,7 @@ g, su_alice, su_admin
         assert!(
             !rbac::enforce(
                 "bob",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/users/bob/settings",
                 "write",
                 None,
@@ -492,7 +538,7 @@ g, su_alice, su_admin
         assert!(
             !rbac::enforce(
                 "bob",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/users/alice/settings",
                 "read",
                 None,
@@ -502,7 +548,7 @@ g, su_alice, su_admin
         assert!(
             !rbac::enforce(
                 "bob",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/users/alice/profile",
                 "write",
                 None,
@@ -527,7 +573,7 @@ g, bob, users
         assert!(
             rbac::enforce(
                 "alice",
-                "control-panel",
+                "system:control-panel",
                 "obj://config/services/aicc/settings",
                 "write",
                 None,
@@ -537,7 +583,7 @@ g, bob, users
         assert!(
             !rbac::enforce(
                 "bob",
-                "control-panel",
+                "system:control-panel",
                 "obj://config/services/aicc/settings",
                 "write",
                 None,
@@ -547,7 +593,7 @@ g, bob, users
         assert!(
             rbac::enforce(
                 "alice",
-                "control-panel",
+                "system:control-panel",
                 "obj://config/services/msg-center/settings",
                 "write",
                 None,
@@ -557,11 +603,11 @@ g, bob, users
     }
 
     #[tokio::test]
-    async fn agent_can_report_own_service_instance() {
+    async fn app_can_report_own_service_instance() {
         let _guard = TEST_LOCK.lock().await;
 
         let config = build_current_rbac_config(Some(
-            "g, alice, admin\ng, bob, users\ng, buckyos_jarvis, agent",
+            "g, alice, admin\ng, bob, users\ng, app:jarvis.buckyos.bns.did, app",
         ));
         rbac::create_enforcer(&config.model, &config.policy)
             .await
@@ -570,8 +616,8 @@ g, bob, users
         assert!(
             rbac::enforce(
                 "alice",
-                "buckyos_jarvis",
-                "obj://config/services/buckyos_jarvis/instances/ood1",
+                "app:jarvis.buckyos.bns.did",
+                "obj://config/services/jarvis.buckyos.bns.did/instances/ood1",
                 "write",
                 None,
             )
@@ -580,8 +626,8 @@ g, bob, users
         assert!(
             rbac::enforce(
                 "bob",
-                "buckyos_jarvis",
-                "obj://config/services/buckyos_jarvis/instances/ood1",
+                "app:jarvis.buckyos.bns.did",
+                "obj://config/services/jarvis.buckyos.bns.did/instances/ood1",
                 "write",
                 None,
             )
@@ -590,7 +636,7 @@ g, bob, users
         assert!(
             !rbac::enforce(
                 "alice",
-                "buckyos_jarvis",
+                "app:jarvis.buckyos.bns.did",
                 "obj://config/services/other-agent/instances/ood1",
                 "write",
                 None,
@@ -600,9 +646,63 @@ g, bob, users
         assert!(
             !rbac::enforce(
                 "alice",
-                "buckyos_jarvis",
-                "obj://config/services/buckyos_jarvis/settings",
+                "app:jarvis.buckyos.bns.did",
+                "obj://config/services/jarvis.buckyos.bns.did/settings",
                 "write",
+                None,
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn bound_agent_runtime_can_discover_specs_but_not_private_keys() {
+        let _guard = TEST_LOCK.lock().await;
+
+        let config = build_current_rbac_config(Some(
+            "g, alice, admin\ng, app:jarvis.buckyos.bns.did, app\ng, app:jarvis.buckyos.bns.did, agent_runtime\ng, app:gallery.buckyos.bns.did, app",
+        ));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+
+        let runtime = "app:jarvis.buckyos.bns.did";
+        assert!(
+            rbac::enforce(
+                "alice",
+                runtime,
+                "obj://config/users/alice/agents",
+                "read",
+                None,
+            )
+            .await
+        );
+        assert!(
+            rbac::enforce(
+                "alice",
+                runtime,
+                "obj://config/users/alice/agents/jarvis.example.com/spec",
+                "read",
+                None,
+            )
+            .await
+        );
+        assert!(
+            !rbac::enforce(
+                "alice",
+                runtime,
+                "obj://config/users/alice/agents/jarvis.example.com/key",
+                "read",
+                None,
+            )
+            .await
+        );
+        assert!(
+            !rbac::enforce(
+                "alice",
+                "app:gallery.buckyos.bns.did",
+                "obj://config/users/alice/agents/jarvis.example.com/spec",
+                "read",
                 None,
             )
             .await
@@ -621,10 +721,10 @@ g, bob, users
 g, devtest, admin
 g, su_devtest, su_admin
 g, bob, users
-g, control-panel, kernel
-g, task-manager, kernel
-g, buckyos_jarvis, agent
-g, buckyos_filebrowser, app
+g, system:control-panel, kernel
+g, system:task-manager, kernel
+g, app:buckyos_jarvis, agent
+g, app:buckyos_filebrowser, app
 "#;
         let config = build_current_rbac_config(Some(policy_tail));
         rbac::create_enforcer(&config.model, &config.policy)
@@ -636,25 +736,52 @@ g, buckyos_filebrowser, app
         assert!(
             rbac::enforce(
                 "devtest",
-                "control-panel",
+                "system:control-panel",
                 "obj://task/devtest",
                 "read",
                 None
             )
             .await
         );
-        assert!(rbac::enforce("bob", "control-panel", "obj://task/bob", "read", None).await);
+        assert!(
+            rbac::enforce(
+                "bob",
+                "system:control-panel",
+                "obj://task/bob",
+                "read",
+                None
+            )
+            .await
+        );
 
         // ...but not another user's, even from the control surface.
-        assert!(!rbac::enforce("devtest", "control-panel", "obj://task/bob", "read", None).await);
-        assert!(!rbac::enforce("bob", "control-panel", "obj://task/devtest", "read", None).await);
+        assert!(
+            !rbac::enforce(
+                "devtest",
+                "system:control-panel",
+                "obj://task/bob",
+                "read",
+                None
+            )
+            .await
+        );
+        assert!(
+            !rbac::enforce(
+                "bob",
+                "system:control-panel",
+                "obj://task/devtest",
+                "read",
+                None
+            )
+            .await
+        );
 
         // Ordinary apps and agents keep the doc §8.5 isolation: no cross-app
         // view even of their own user's tasks.
         assert!(
             !rbac::enforce(
                 "devtest",
-                "buckyos_jarvis",
+                "app:buckyos_jarvis",
                 "obj://task/devtest",
                 "read",
                 None
@@ -664,7 +791,7 @@ g, buckyos_filebrowser, app
         assert!(
             !rbac::enforce(
                 "devtest",
-                "buckyos_filebrowser",
+                "app:buckyos_filebrowser",
                 "obj://task/devtest",
                 "read",
                 None
@@ -676,7 +803,7 @@ g, buckyos_filebrowser, app
         assert!(
             rbac::enforce(
                 "devtest",
-                "control-panel",
+                "system:control-panel",
                 "obj://task/bob",
                 "read",
                 Some(rbac::SudoMode::Sudo("su_devtest".to_string())),
@@ -688,7 +815,7 @@ g, buckyos_filebrowser, app
         assert!(
             !rbac::enforce(
                 "devtest",
-                "control-panel",
+                "system:control-panel",
                 "obj://task/devtest",
                 "write",
                 None
@@ -715,7 +842,7 @@ p, su_bob, obj://config/users/bob/doc, read|write, allow
         assert!(
             rbac::enforce(
                 "bob",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/users/bob/settings",
                 "write",
                 Some(rbac::SudoMode::Sudo("su_bob".to_string())),
@@ -725,7 +852,7 @@ p, su_bob, obj://config/users/bob/doc, read|write, allow
         assert!(
             rbac::enforce(
                 "bob",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/users/bob/doc",
                 "write",
                 Some(rbac::SudoMode::Sudo("su_bob".to_string())),
@@ -735,7 +862,7 @@ p, su_bob, obj://config/users/bob/doc, read|write, allow
         assert!(
             !rbac::enforce(
                 "bob",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/users/alice/settings",
                 "write",
                 Some(rbac::SudoMode::Sudo("su_bob".to_string())),
@@ -760,7 +887,7 @@ g, su_alice, su_admin
         assert!(
             rbac::enforce(
                 "alice",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/users/alice/settings",
                 "read",
                 Some(rbac::SudoMode::Sudo("su_alice".to_string())),
@@ -770,7 +897,7 @@ g, su_alice, su_admin
         assert!(
             rbac::enforce(
                 "alice",
-                "buckycli",
+                "system:buckycli",
                 "obj://config/users/bob/settings",
                 "read",
                 Some(rbac::SudoMode::Sudo("su_alice".to_string())),
@@ -787,7 +914,7 @@ g, su_alice, su_admin
 g, alice, admin
 g, bob, users
 g, su_alice, su_admin
-g, gallery, app
+g, app:gallery, app
 "#;
         let config = build_current_rbac_config(Some(policy_tail));
         rbac::create_enforcer(&config.model, &config.policy)
@@ -796,17 +923,17 @@ g, gallery, app
         let resource = "obj://config/security/dvlocal/key";
 
         for action in ["read", "write"] {
-            assert!(!rbac::enforce("bob", "buckycli", resource, action, None).await);
-            assert!(!rbac::enforce("alice", "buckycli", resource, action, None).await);
-            assert!(!rbac::enforce("root", "repo-service", resource, action, None).await);
-            assert!(!rbac::enforce("root", "gallery", resource, action, None).await);
-            assert!(!rbac::enforce("root", "control-panel", resource, action, None).await);
+            assert!(!rbac::enforce("bob", "system:buckycli", resource, action, None).await);
+            assert!(!rbac::enforce("alice", "system:buckycli", resource, action, None).await);
+            assert!(!rbac::enforce("root", "system:repo-service", resource, action, None).await);
+            assert!(!rbac::enforce("root", "app:gallery", resource, action, None).await);
+            assert!(!rbac::enforce("root", "system:control-panel", resource, action, None).await);
 
-            assert!(rbac::enforce("root", "scheduler", resource, action, None).await);
+            assert!(rbac::enforce("root", "system:scheduler", resource, action, None).await);
             assert!(
                 rbac::enforce(
                     "alice",
-                    "buckycli",
+                    "system:buckycli",
                     resource,
                     action,
                     Some(rbac::SudoMode::Sudo("su_alice".to_string())),
@@ -814,5 +941,35 @@ g, gallery, app
                 .await
             );
         }
+    }
+
+    #[tokio::test]
+    async fn app_and_system_authorization_names_cannot_collide() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some("g, app:control-panel, app"));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+
+        assert!(
+            rbac::enforce(
+                "root",
+                "system:control-panel",
+                "obj://config/system/rbac",
+                "read",
+                None,
+            )
+            .await
+        );
+        assert!(
+            !rbac::enforce(
+                "root",
+                "app:control-panel",
+                "obj://config/system/rbac",
+                "read",
+                None,
+            )
+            .await
+        );
     }
 }

@@ -7,11 +7,15 @@
 export interface SoftwareInfo {
   version: string
   buildVersion: string
-  releaseChannel: 'stable' | 'beta' | 'dev'
+  releaseChannel: 'stable' | 'beta' | 'dev' | 'unknown'
+  target: string
+  installedTime: string | null
   lastUpdateTime: string | null
   updateAvailable: boolean
   latestVersion: string | null
   autoUpdate: boolean
+  loading: boolean
+  loadError: string | null
 }
 
 export interface DeviceInfo {
@@ -210,7 +214,11 @@ export interface CLICommand {
 
 export interface DeveloperInfo {
   modeEnabled: boolean
-  readOnly: boolean
+  enabledAt: string | null
+  enabledBy: string | null
+  loading: boolean
+  saving: boolean
+  loadError: string | null
   diagnostics: DiagnosticItem[]
   configTree: ConfigNode[]
   cliHelpers: CLICommand[]

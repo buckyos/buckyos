@@ -30,7 +30,7 @@
 // - BuckyOS Desktop / App 的故障中心
 // - control-panel 的系统诊断与恢复页面
 // - Agent 自动修复框架
-// - buckycli system check/restart/recover/reset
+// - `buckyos system` 命令
 // - 官方支持 / ticket / 第二诊断链路
 //
 // 推荐 kRPC 路径：
@@ -608,15 +608,15 @@
 // - Escalate
 //
 // =============================================================================
-// 13. buckycli 映射
+// 13. BuckyOS Tool 映射
 // =============================================================================
 //
 // 推荐命令：
-// - buckycli system check --scope full --json
-// - buckycli system check --scope reachability --json
-// - buckycli system fault list --json
-// - buckycli system restart-plan --target zone --json
-// - buckycli system recover list-points --json
-// - buckycli system recover plan --mode user-data-only --point <id> --json
-// - buckycli system app repair --app <app_id> --action reinstall-keep-user-data --json
-// - buckycli system ticket create --from-report <report_id> --json
+// - buckyos system check --scope full --json
+// - buckyos system check --scope reachability --json
+// - buckyos system fault list --json
+// - buckyos system restart-plan --target zone --json
+// - buckyos system recover list-points --json
+// - buckyos system recover plan --mode user-data-only --point <id> --json
+// - buckyos system app repair --app <app_id> --action reinstall-keep-user-data --json
+// - buckyos system ticket create --from-report <report_id> --json

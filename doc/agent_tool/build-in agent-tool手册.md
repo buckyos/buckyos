@@ -99,12 +99,13 @@ CLI 伪工具不走 `AgentTool` trait 注册，只在 `agent_tool` 二进制内�
     "type": "object",
     "properties": {
       "command": { "type": "string", "description": "shell command to execute" },
-      "target":  { "type": "string", "description": "MUST select known node. Blank = current environment." }
+      "target":  { "type": "string", "description": "MUST select known node. Blank = current environment." },
+      "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 600000, "description": "Execution timeout in milliseconds." }
     },
     "required": ["command"]
   }
   ```
-- `usage`: `exec_bash command='<shell>' [target=local]`
+- `usage`: `exec_bash command='<shell>' [target=local] [timeout_ms=60000]`
 
 可选字段（顶层 args）：`cwd`（必须落在 workspace 内）、`timeout_ms`、`env`（受 `allow_env` 约束）。
 

@@ -2,13 +2,14 @@
 //!
 //! 本模块只定义跨进程共享的语义状态：安装来源/策略/Stage、DID 解析快照、
 //! InstallPlan/readiness、VerificationReport、结构化错误、安装记录与面向
-//! SDK/WebUI 的只读 snapshot。所有类型都会持久化进 TaskManager `Task.data`
-//! 或 system-config `install_record`，字段演进属于协议变更。
+//! SDK/WebUI 的只读 snapshot。事务类型会持久化进 TaskManager
+//! `input/progress/result`，长期类型进入 system-config `install_record`；字段演进属于协议变更。
 
 use crate::taskdata::TaskDataProgress;
 use crate::{
-    AppClass, AppDocType, AppServiceSpec, MountPointConfig, PermissionItem, ServiceSettings,
-    ServiceSpecConfig, TaskId, TaskOutcome, TaskPhase, TaskWaitReason, TaskWaitReasonKind,
+    AgentId, AppDoc, AppDocType, AppId, AppInstanceId, AppServiceSpec, MountPointConfig,
+    PermissionItem, ServiceSettings, ServiceSpecConfig, TaskId, TaskOutcome, TaskPhase,
+    TaskWaitReason, TaskWaitReasonKind,
 };
 use name_lib::DID;
 use ndn_lib::{build_named_object_by_json, ObjId};
@@ -16,14 +17,107 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
-/// Task.data、InstallPlan 与 install_record 的当前持久格式版本。
-pub const APP_INSTALL_SCHEMA_VERSION: u32 = 3;
+/// Task input/progress/result、InstallPlan 与 install_record 的当前持久格式版本。
+pub const APP_INSTALL_SCHEMA_VERSION: u32 = 4;
 
-/// `apps.install_package` staging handle 的 digest 形式前缀。
-/// 完整形式：`pikg:sha256:<hex>`，解析到 staging root 下的 immutable 文件。
-pub const PIKG_STAGING_HANDLE_PREFIX: &str = "pikg:sha256:";
+/// `system/install_settings.pre_install_apps` 的当前配置版本。
+pub const PRE_INSTALL_APP_SCHEMA_VERSION: u32 = 1;
+
+/// Opaque, unguessable staging handle prefix. The handle never embeds a path
+/// or digest and is resolved only through the Control Panel staging store.
+pub const PIKG_STAGING_HANDLE_PREFIX: &str = "pikg-stage-";
+
+/// SystemConfig 中的预装 App 配置。这里只保存 rootfs seed，不保存运行时
+/// inspection 产生的 ObjectId、digest、target snapshot 或 plan fingerprint。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemInstallSettings {
+    pub pre_install_apps: HashMap<String, PreInstallAppConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreInstallAppConfig {
+    pub schema_version: u32,
+    pub pikg_path: String,
+    pub install_plan: PreInstallPlanSeed,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreInstallPlanSeed {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<InstallTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_params: Option<InstallParams>,
+}
+
+impl PreInstallAppConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != PRE_INSTALL_APP_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported pre-install app schema version {}",
+                self.schema_version
+            ));
+        }
+        validate_preinstall_pikg_path(&self.pikg_path)
+    }
+}
+
+/// Validate the portable, `$BUCKYOS_ROOT`-relative representation before any
+/// host filesystem lookup. Canonical containment is enforced by Control Panel.
+pub fn validate_preinstall_pikg_path(raw: &str) -> Result<(), String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("pre-install pikg_path is empty".to_string());
+    }
+    if raw.contains('\\') || raw.contains('\0') {
+        return Err("pre-install pikg_path must use portable `/` separators".to_string());
+    }
+    let path = Path::new(raw);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err("pre-install pikg_path must be a safe relative path".to_string());
+    }
+    if !raw.starts_with("data/cache/") || !raw.ends_with(".pikg") {
+        return Err("pre-install pikg_path must name a .pikg below data/cache".to_string());
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InstallSourceIdentity {
+    Catalog {
+        app_doc_object_id: ObjId,
+    },
+    Pikg {
+        app_doc_object_id: ObjId,
+        pikg_digest: String,
+    },
+}
+
+impl InstallSourceIdentity {
+    pub fn uses_local_developer_authority(&self, policy: InstallPolicy) -> bool {
+        matches!(self, Self::Pikg { .. }) && matches!(policy, InstallPolicy::LocalDeveloper)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum InstallPlanUse {
+    FreshInstall,
+    Upgrade,
+    Satisfied,
+}
 
 // ---------------------------------------------------------------------------
 // 安装来源与策略
@@ -33,13 +127,13 @@ pub const PIKG_STAGING_HANDLE_PREFIX: &str = "pikg:sha256:";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InstallSource {
-    /// `install_app(identifier, referrer?)`：DID / 名称 / Object ID / URL / 分享对象。
+    /// Catalog / DID 标识符来源；由 `apps.inspect` 解析，不接受客户端 URL 下载。
     Identifier {
         identifier: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         referrer: Option<String>,
     },
-    /// `install_package(staging_handle)`：本地 `.pikg`，只接受 staging handle（D5）。
+    /// 本地 `.pikg` 来源；先完成 staging，再以 opaque handle Inspect/Submit（D5）。
     LocalPikg { staging_handle: String },
 }
 
@@ -162,6 +256,7 @@ pub enum DidEvidenceLevel {
     Anchored,
     NeedProof,
     UnproofInfo,
+    LocalDeveloperAuthority,
 }
 
 /// 验证结果（对齐 name-client `VerificationStatus`）。
@@ -194,6 +289,8 @@ pub struct DidResolutionSnapshot {
     pub doc_type: AppDocType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_doc_object_id: Option<ObjId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_authority_app_doc_object_id: Option<ObjId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolver_id: Option<String>,
     pub document_status: DocumentStatus,
@@ -233,6 +330,26 @@ impl DidResolutionSnapshot {
             .any(|warning| warning.contains("LocalAuthorityOverride"))
     }
 
+    pub fn has_local_developer_authority_for(&self, source: &InstallSourceIdentity) -> bool {
+        let InstallSourceIdentity::Pikg {
+            app_doc_object_id, ..
+        } = source
+        else {
+            return false;
+        };
+        matches!(
+            self.evidence,
+            Some(DidEvidenceLevel::LocalDeveloperAuthority)
+        ) && self.local_authority_app_doc_object_id.as_ref() == Some(app_doc_object_id)
+            && matches!(
+                self.document_status,
+                DocumentStatus::Active
+                    | DocumentStatus::Missing
+                    | DocumentStatus::Expired
+                    | DocumentStatus::Unknown
+            )
+    }
+
     /// 快照是否构成当前策略下可接受的 Trust Ready 证据。
     pub fn is_trust_ready(&self, policy: InstallPolicy) -> bool {
         if self.document_status.is_terminal() {
@@ -266,6 +383,17 @@ impl DidResolutionSnapshot {
             DocumentStatus::Unknown => false,
             DocumentStatus::Revoked | DocumentStatus::Tombstoned => false,
         }
+    }
+
+    pub fn is_trust_ready_for_source(
+        &self,
+        policy: InstallPolicy,
+        source: &InstallSourceIdentity,
+    ) -> bool {
+        if !source.uses_local_developer_authority(policy) {
+            return self.is_trust_ready(policy);
+        }
+        self.has_local_developer_authority_for(source)
     }
 }
 
@@ -317,10 +445,16 @@ pub struct InstallParams {
     pub res_pool_id: Option<String>,
     #[serde(default = "default_auto_start")]
     pub auto_start: bool,
+    #[serde(default = "default_expected_instance_count")]
+    pub expected_instance_count: u32,
 }
 
 fn default_auto_start() -> bool {
     true
+}
+
+fn default_expected_instance_count() -> u32 {
+    1
 }
 
 impl Default for InstallParams {
@@ -335,6 +469,7 @@ impl Default for InstallParams {
             bash_envs: HashMap::new(),
             res_pool_id: None,
             auto_start: true,
+            expected_instance_count: 1,
         }
     }
 }
@@ -450,6 +585,7 @@ pub enum ContentLocation {
 
 /// InstallPlan 选中的 package。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SelectedPackage {
     /// pkg_list key，即 sub_pkg_name。
     pub sub_pkg_name: String,
@@ -463,8 +599,9 @@ pub struct SelectedPackage {
     pub required: bool,
 }
 
-/// plan 内单个必需内容的位置与来源。
+/// Plan 内单个必需内容的不可变 identity。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlannedContent {
     /// 内容身份：ObjId 字符串或 `sha256:<hex>` digest。
     pub content_id: String,
@@ -479,46 +616,80 @@ pub struct PlannedContent {
     pub format: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InspectedContent {
+    pub content_id: String,
     pub location: ContentLocation,
-    /// 候选获取 Source（URL 等）；offline 模式不得使用。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
 }
 
-/// Inspect Stage 的输出（协议 §11.4）。
+/// Portable immutable plan file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InstallPlan {
     pub schema_version: u32,
+    pub plan_use: InstallPlanUse,
+    pub task_id: TaskId,
+    pub app_instance_id: AppInstanceId,
+    pub owner_user_id: String,
+    pub source_identity: InstallSourceIdentity,
     pub app: AppDocumentRef,
+    /// Immutable AppDoc snapshot whose canonical ObjectId must equal `app.object_id`.
+    pub app_doc: AppDoc,
     pub resolution: DidResolutionSnapshot,
     pub target: InstallTarget,
     pub selected_packages: Vec<SelectedPackage>,
     pub required_contents: Vec<PlannedContent>,
-    pub readiness: PlanReadiness,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub target_issues: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub config_issues: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub permission_options: Vec<PermissionItem>,
     pub install_params: InstallParams,
     /// Inspect 阶段确定并由用户批准的最终运行配置；Prepare 必须原样使用。
     pub service_spec_config: ServiceSpecConfig,
-    #[serde(default)]
-    pub estimated_download_bytes: u64,
     /// 绑定 schema、App Document、resolver 信任状态、target、强类型参数、
     /// 最终运行配置与 selected packages；任一变化必须重新 Inspect。
     pub plan_fingerprint: String,
     pub created_at: u64,
 }
 
-/// InstallPlan 对 App Document 的不可变引用。文档 body 仍由事务状态单独保存，
-/// Plan 不复制 AppDoc 的展示与发布字段。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallPlanStatus {
+    pub plan_fingerprint: String,
+    pub target_snapshot: InstallTarget,
+    pub readiness: PlanReadiness,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contents: Vec<InspectedContent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_issues: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_issues: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permission_options: Vec<PermissionItem>,
+    #[serde(default)]
+    pub estimated_download_bytes: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    pub inspected_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallInspection {
+    pub schema_version: u32,
+    pub plan: InstallPlan,
+    pub resolution_status: DidResolutionSnapshot,
+    pub status: InstallPlanStatus,
+}
+
+/// InstallPlan 对其内嵌 immutable AppDoc snapshot 的精确引用。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppDocumentRef {
     pub did: DID,
     pub object_id: ObjId,
-    pub name: String,
+    pub show_name: String,
     /// App Document.version，仅表示应用语义版本。
     pub version: String,
 }
@@ -526,16 +697,29 @@ pub struct AppDocumentRef {
 impl InstallPlan {
     /// 计算 plan fingerprint（JCS + sha256，复用 named-object 规范化路径）。
     pub fn compute_fingerprint(
+        plan_use: InstallPlanUse,
+        task_id: &TaskId,
+        app_instance_id: &AppInstanceId,
+        owner_user_id: &str,
+        source_identity: &InstallSourceIdentity,
         app: &AppDocumentRef,
+        app_doc: &AppDoc,
         resolution: &DidResolutionSnapshot,
         target: &InstallTarget,
         install_params: &InstallParams,
         service_spec_config: &ServiceSpecConfig,
         selected_packages: &[SelectedPackage],
+        required_contents: &[PlannedContent],
     ) -> String {
         let material = json!({
             "schema_version": APP_INSTALL_SCHEMA_VERSION,
+            "plan_use": plan_use,
+            "task_id": task_id,
+            "app_instance_id": app_instance_id,
+            "owner_user_id": owner_user_id,
+            "source_identity": source_identity,
             "app": app,
+            "app_doc": app_doc,
             "resolution": {
                 "app_did": resolution.app_did,
                 "doc_type": resolution.doc_type,
@@ -548,15 +732,14 @@ impl InstallPlan {
                 "expected_owner": resolution.expected_owner,
                 "evidence": resolution.evidence,
                 "verification_status": resolution.verification_status,
-                "cache_status": resolution.cache_status,
                 "doc_hash": resolution.doc_hash,
-                "warnings": resolution.warnings,
                 "migration_target": resolution.migration_target,
             },
             "target": target,
             "install_params": install_params,
             "service_spec_config": service_spec_config,
             "selected_packages": selected_packages,
+            "required_contents": required_contents,
         });
         let (obj_id, _) = build_named_object_by_json("planfp", &material);
         obj_id.to_string()
@@ -564,6 +747,28 @@ impl InstallPlan {
 
     pub fn matches_fingerprint(&self, fingerprint: &str) -> bool {
         self.plan_fingerprint == fingerprint
+    }
+
+    pub fn expected_fingerprint(&self) -> String {
+        Self::compute_fingerprint(
+            self.plan_use,
+            &self.task_id,
+            &self.app_instance_id,
+            &self.owner_user_id,
+            &self.source_identity,
+            &self.app,
+            &self.app_doc,
+            &self.resolution,
+            &self.target,
+            &self.install_params,
+            &self.service_spec_config,
+            &self.selected_packages,
+            &self.required_contents,
+        )
+    }
+
+    pub fn fingerprint_is_valid(&self) -> bool {
+        self.plan_fingerprint == self.expected_fingerprint()
     }
 }
 
@@ -643,6 +848,15 @@ impl VerificationReport {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum InstallErrorCode {
     InvalidRequest,
+    PlanRequired,
+    PlanInputRequired,
+    PlanNotApplicable,
+    PlanStale,
+    DowngradeNotAllowed,
+    AmbiguousAppTarget,
+    IdempotencyConflict,
+    AppMutationInProgress,
+    UnsupportedSchemaVersion,
     ContentDownloadRequired,
     /// 权威源没有回答（Unknown）且无可接受 cache。
     TrustResolutionRequired,
@@ -788,7 +1002,7 @@ impl fmt::Display for InstallError {
 }
 
 // ---------------------------------------------------------------------------
-// 事务中间态（进 Task.data）
+// 事务中间态（进 Task.progress envelope）
 // ---------------------------------------------------------------------------
 
 /// candidate body / 包位置句柄（Resolve/Acquisition 的中间产物）。
@@ -801,6 +1015,8 @@ pub struct CandidateHandle {
     /// staging root 下 immutable 文件路径（服务端内部，不对外暴露）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staging_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staging_handle: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_doc_object_id: Option<ObjId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -819,20 +1035,14 @@ pub struct InstallApproval {
     pub auto_confirmed: bool,
 }
 
-/// Prepare Stage 输出：写 spec 前保存的全部部署与回滚材料。
+/// Control Panel 提交给 scheduler 后保存的不可变执行句柄。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PreparedDeployment {
-    pub spec_path: String,
-    pub service_spec_id: String,
-    pub app_index: u16,
-    /// 升级场景保留旧 spec 供回滚；全新安装为 None。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_spec: Option<AppServiceSpec>,
-    pub new_spec: AppServiceSpec,
-    /// 为部署 materialize 进 NamedStore 的对象（审计/清理用）。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub materialized_objects: Vec<String>,
-    pub prepared_at: u64,
+    pub app_instance_id: AppInstanceId,
+    pub task_id: TaskId,
+    pub plan_fingerprint: String,
+    pub submitted_at: u64,
 }
 
 /// 事务最终结果。
@@ -848,7 +1058,7 @@ pub struct InstallTaskResult {
     pub completed_at: Option<u64>,
 }
 
-/// 可恢复安装事务的持久状态（进 Task.data；P0.3）。
+/// 可恢复安装事务的持久状态（进 Task.progress envelope；P0.3）。
 /// 每个 Stage 成功后必须先完整写入本结构，再进入下一 Stage；
 /// 重启恢复只相信这里的持久数据。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -867,6 +1077,8 @@ pub struct InstallTransactionState {
     pub resolved_app_doc: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<InstallPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_status: Option<InstallPlanStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<InstallApproval>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -907,6 +1119,7 @@ impl InstallTransactionState {
         self.completed_stages.retain(|done| *done < stage);
         if stage <= InstallStage::Inspect {
             self.plan = None;
+            self.plan_status = None;
             self.approval = None;
         }
         if stage <= InstallStage::Resolve {
@@ -919,6 +1132,9 @@ impl InstallTransactionState {
         if stage <= InstallStage::Prepare {
             self.prepared = None;
         }
+        if stage <= InstallStage::Activate {
+            self.result = None;
+        }
         self.stage = Some(stage);
         self.stage_revision += 1;
     }
@@ -926,14 +1142,15 @@ impl InstallTransactionState {
     /// 顶层可选状态 key（与字段一一对应）。
     /// 生成全量 patch 时缺席字段写 null：TaskManager 的 deep merge 用
     /// null 删除 key，否则被清空的字段（如 retry 前的 last_error、失效的
-    /// plan/approval）会在 Task.data 里残留。
-    pub const STATE_KEYS: [&'static str; 14] = [
+    /// plan/approval）会在 progress envelope 里残留。
+    pub const STATE_KEYS: [&'static str; 15] = [
         "stage",
         "completed_stages",
         "candidate",
         "resolution",
         "resolved_app_doc",
         "plan",
+        "plan_status",
         "approval",
         "verification",
         "prepared",
@@ -945,7 +1162,7 @@ impl InstallTransactionState {
     ];
 
     /// 序列化为"全量镜像 patch"：所有状态 key 都出现，缺席的写 null。
-    /// deep merge 之后 Task.data 与本结构严格一致。
+    /// deep merge 之后 progress envelope 中的 transaction 与本结构严格一致。
     pub fn to_full_patch(&self) -> Value {
         let mut value = serde_json::to_value(self).unwrap_or_else(|_| json!({}));
         if let Some(map) = value.as_object_mut() {
@@ -973,20 +1190,26 @@ pub enum InstallRecordState {
     Failed,
 }
 
-/// 长期安装记录，存 `users/{uid}/apps|agents/{app_name}/install_record`（D3）。
+/// App 长期安装记录，存 `users/{uid}/apps/{app_id}/install`。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InstallRecord {
     pub schema_version: u32,
     pub app: AppDocumentRef,
-    pub user_id: String,
-    pub app_instance_id: String,
-    pub app_class: AppClass,
+    pub owner_user_id: String,
+    pub app_instance_id: AppInstanceId,
     pub resolution: DidResolutionSnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub package_meta_ids: Vec<ObjId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pikg_digest: Option<String>,
     pub target: InstallTarget,
+    pub install_params: InstallParams,
+    pub service_spec_config: ServiceSpecConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_deployment: Option<crate::DeploymentIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_deployment: Option<crate::DeploymentIdentity>,
     pub state: InstallRecordState,
     pub task_id: TaskId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -999,19 +1222,12 @@ pub struct InstallRecord {
 }
 
 /// install_record 的 system-config key（app 与 agent 分树）。
-pub fn install_record_key(
-    app_class: AppClass,
-    user_id: &str,
-    app_name: &str,
-    is_agent: bool,
-) -> String {
-    if is_agent {
-        format!("users/{}/agents/{}/install_record", user_id, app_name)
-    } else if app_class == AppClass::ZoneInstalled {
-        format!("zone/apps/{}/install_record", app_name)
-    } else {
-        format!("users/{}/apps/{}/install_record", user_id, app_name)
-    }
+pub fn install_record_key(owner_user_id: &str, app_id: &AppId) -> String {
+    format!("users/{owner_user_id}/apps/{app_id}/install_record")
+}
+
+pub fn agent_install_record_key(owner_user_id: &str, agent_id: &AgentId) -> String {
+    format!("users/{owner_user_id}/agents/{agent_id}/install_record")
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,17 +1246,11 @@ pub struct VerificationSummary {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApprovalRequest {
     pub plan_fingerprint: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub permission_options: Vec<PermissionItem>,
-    pub target: InstallTarget,
-    pub install_params: InstallParams,
-    pub service_spec_config: ServiceSpecConfig,
-    pub estimated_download_bytes: u64,
-    pub readiness: PlanReadiness,
+    pub inspection: InstallPlanStatus,
 }
 
 /// 面向 SDK/WebUI 的只读 typed snapshot（P0.2）。
-/// 消费方不得解析 TaskManager 自由文本 message 或依赖内部 Task.data 布局。
+/// 消费方不得解析 TaskManager 自由文本 message 或依赖内部 Task 数据布局。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppInstallStatusSnapshot {
     pub schema_version: u32,
@@ -1053,6 +1263,8 @@ pub struct AppInstallStatusSnapshot {
     pub policy: InstallPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_did: Option<DID>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_instance_id: Option<AppInstanceId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1079,6 +1291,56 @@ pub struct AppInstallStatusSnapshot {
     pub updated_at: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppManagementOrigin {
+    InstallerManaged,
+    BootstrapManaged,
+    SystemBuiltin,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppScheduledInstanceStatus {
+    pub node_id: String,
+    pub target_state: crate::ServiceInstanceState,
+    pub deployment: crate::DeploymentIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppInstallationStatusSnapshot {
+    pub schema_version: u32,
+    pub app_instance_id: AppInstanceId,
+    pub app_did: DID,
+    pub app_name: String,
+    pub app_version: String,
+    pub management_origin: AppManagementOrigin,
+    pub desired_spec: AppServiceSpec,
+    pub desired_deployment: crate::DeploymentIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_successful_deployment: Option<crate::DeploymentIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_from_deployment: Option<crate::DeploymentIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_record: Option<InstallRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_tasks: Vec<AppInstallStatusSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scheduled_instances: Vec<AppScheduledInstanceStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_instances: Vec<crate::ServiceInstanceReportInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub static_web_evidence: Vec<crate::StaticWebDeploymentEvidence>,
+    pub desired_instance_count: u32,
+    pub scheduled_instance_count: u32,
+    pub ready_instance_count: u32,
+    pub readiness: ReadinessState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_actions: Vec<String>,
+    pub observed_at: u64,
+}
+
 // ---------------------------------------------------------------------------
 // 升级可用性
 // ---------------------------------------------------------------------------
@@ -1101,6 +1363,7 @@ pub enum AppUpdateState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppUpdateAvailability {
     pub app_did: DID,
+    pub app_instance_id: AppInstanceId,
     pub state: AppUpdateState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installed_app_doc_id: Option<ObjId>,
@@ -1129,15 +1392,9 @@ pub struct AppUpdateAvailability {
 // staging handle
 // ---------------------------------------------------------------------------
 
-/// 解析 `apps.install_package` 的 staging handle。
-/// 允许两种形式（D5）：
-/// - `pikg:sha256:<hex>`：staging root 下按 digest 命名的 immutable 文件；
-/// - NamedStore ObjId 字符串（chunk/fileobj，经 NDM 上传通道进入本机）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StagingHandle {
-    PikgDigest(String),
-    NamedObject(ObjId),
-}
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct StagingHandle(String);
 
 impl StagingHandle {
     pub fn parse(raw: &str) -> std::result::Result<Self, String> {
@@ -1145,30 +1402,52 @@ impl StagingHandle {
         if raw.is_empty() {
             return Err("staging handle is empty".to_string());
         }
-        if raw.contains('/') || raw.contains('\\') || raw.contains("..") {
-            return Err("staging handle must not contain path segments".to_string());
+        let Some(id) = raw.strip_prefix(PIKG_STAGING_HANDLE_PREFIX) else {
+            return Err("staging handle has an invalid prefix".to_string());
+        };
+        if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("staging handle must contain a 128-bit opaque id".to_string());
         }
-        if let Some(hex) = raw.strip_prefix(PIKG_STAGING_HANDLE_PREFIX) {
-            if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Err("staging handle digest must be 64 hex chars".to_string());
-            }
-            return Ok(StagingHandle::PikgDigest(hex.to_ascii_lowercase()));
-        }
-        let obj_id = ObjId::new(raw)
-            .map_err(|err| format!("staging handle is not a valid obj id: {err}"))?;
-        Ok(StagingHandle::NamedObject(obj_id))
+        Ok(Self(raw.to_ascii_lowercase()))
+    }
+
+    pub fn new_opaque(id: &str) -> std::result::Result<Self, String> {
+        Self::parse(format!("{PIKG_STAGING_HANDLE_PREFIX}{id}").as_str())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
 impl fmt::Display for StagingHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            StagingHandle::PikgDigest(hex) => {
-                write!(f, "{}{}", PIKG_STAGING_HANDLE_PREFIX, hex)
-            }
-            StagingHandle::NamedObject(obj_id) => write!(f, "{}", obj_id),
-        }
+        f.write_str(&self.0)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PikgStagingPurpose {
+    Inspect,
+    Install,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PikgStagingMetadata {
+    pub schema_version: u32,
+    pub handle: StagingHandle,
+    pub owner_user_id: String,
+    pub owner_app_id: String,
+    pub zone_did: DID,
+    pub pikg_digest: String,
+    pub size: u64,
+    pub purpose: PikgStagingPurpose,
+    pub created_at: u64,
+    pub expires_at: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub leases: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1194,15 +1473,11 @@ pub fn build_install_status_snapshot(
             .map(|reason| reason.kind == TaskWaitReasonKind::Authorization)
             .unwrap_or(false);
     let approval_request = if waiting_for_approval {
-        plan.map(|plan| ApprovalRequest {
-            plan_fingerprint: plan.plan_fingerprint.clone(),
-            permission_options: plan.permission_options.clone(),
-            target: plan.target.clone(),
-            install_params: plan.install_params.clone(),
-            service_spec_config: plan.service_spec_config.clone(),
-            estimated_download_bytes: plan.estimated_download_bytes,
-            readiness: plan.readiness.clone(),
-        })
+        plan.zip(state.plan_status.as_ref())
+            .map(|(plan, status)| ApprovalRequest {
+                plan_fingerprint: plan.plan_fingerprint.clone(),
+                inspection: status.clone(),
+            })
     } else {
         None
     };
@@ -1241,11 +1516,15 @@ pub fn build_install_status_snapshot(
         app_did: plan
             .map(|plan| plan.app.did.clone())
             .or_else(|| state.resolution.as_ref().map(|r| r.app_did.clone())),
-        app_name: plan.map(|plan| plan.app.name.clone()),
+        app_instance_id: plan.map(|plan| plan.app_instance_id.clone()),
+        app_name: plan.map(|plan| plan.app.show_name.clone()),
         app_version: plan.map(|plan| plan.app.version.clone()),
         stage: state.stage,
         completed_stages: state.completed_stages.clone(),
-        readiness: plan.map(|plan| plan.readiness.clone()),
+        readiness: state
+            .plan_status
+            .as_ref()
+            .map(|status| status.readiness.clone()),
         verification: state
             .verification
             .as_ref()
@@ -1269,6 +1548,8 @@ pub type InstallOptions = BTreeMap<String, Value>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ndn_lib::NamedObject;
+    use std::str::FromStr;
 
     fn sample_target() -> InstallTarget {
         InstallTarget {
@@ -1432,18 +1713,20 @@ mod tests {
 
     #[test]
     fn plan_fingerprint_is_stable_and_sensitive() {
-        let obj_id = ObjId::new_by_raw("appdoc".to_string(), vec![1u8; 32]);
+        let app_doc = crate::generate_scheduler_service_doc();
+        let (obj_id, _) = app_doc.gen_obj_id();
         let target = sample_target();
         let app = AppDocumentRef {
             did: DID::new("bns", "demo.tester"),
             object_id: obj_id.clone(),
-            name: "demo".to_string(),
+            show_name: "Demo".to_string(),
             version: "1.0.0".to_string(),
         };
         let mut resolution = DidResolutionSnapshot {
             app_did: app.did.clone(),
             doc_type: AppDocType,
             app_doc_object_id: Some(obj_id),
+            local_authority_app_doc_object_id: None,
             resolver_id: Some("test".to_string()),
             document_status: DocumentStatus::Active,
             document_version: Some(3),
@@ -1471,22 +1754,42 @@ mod tests {
             docker_image_digest: None,
             required: true,
         }];
+        let app_instance_id = AppInstanceId::from_app_did(&app.did, "tester").unwrap();
+        let task_id = "install:demo".to_string();
+        let source_identity = InstallSourceIdentity::Catalog {
+            app_doc_object_id: app.object_id.clone(),
+        };
+        let contents = Vec::new();
 
         let fp1 = InstallPlan::compute_fingerprint(
+            InstallPlanUse::FreshInstall,
+            &task_id,
+            &app_instance_id,
+            "tester",
+            &source_identity,
             &app,
+            &app_doc,
             &resolution,
             &target,
             &params,
             &config,
             &packages,
+            &contents,
         );
         let fp2 = InstallPlan::compute_fingerprint(
+            InstallPlanUse::FreshInstall,
+            &task_id,
+            &app_instance_id,
+            "tester",
+            &source_identity,
             &app,
+            &app_doc,
             &resolution,
             &target,
             &params,
             &config,
             &packages,
+            &contents,
         );
         assert_eq!(fp1, fp2, "同输入 fingerprint 必须稳定");
 
@@ -1498,24 +1801,38 @@ mod tests {
             exp: None,
         });
         let permission_fp = InstallPlan::compute_fingerprint(
+            InstallPlanUse::FreshInstall,
+            &task_id,
+            &app_instance_id,
+            "tester",
+            &source_identity,
             &app,
+            &app_doc,
             &resolution,
             &target,
             &permission_params,
             &config,
             &packages,
+            &contents,
         );
         assert_ne!(fp1, permission_fp, "权限选择必须进入 fingerprint");
 
         // document_version 变化 => fingerprint 变化。
         resolution.document_version = Some(4);
         let fp3 = InstallPlan::compute_fingerprint(
+            InstallPlanUse::FreshInstall,
+            &task_id,
+            &app_instance_id,
+            "tester",
+            &source_identity,
             &app,
+            &app_doc,
             &resolution,
             &target,
             &params,
             &config,
             &packages,
+            &contents,
         );
         assert_ne!(fp1, fp3);
         resolution.document_version = Some(3);
@@ -1524,25 +1841,48 @@ mod tests {
         let mut other_target = sample_target();
         other_target.arch = "aarch64".to_string();
         let fp4 = InstallPlan::compute_fingerprint(
+            InstallPlanUse::FreshInstall,
+            &task_id,
+            &app_instance_id,
+            "tester",
+            &source_identity,
             &app,
+            &app_doc,
             &resolution,
             &other_target,
             &params,
             &config,
             &packages,
+            &contents,
         );
         assert_ne!(fp1, fp4);
 
         resolution.verification_status = Some(DidVerificationStatus::Failed);
         let fp5 = InstallPlan::compute_fingerprint(
+            InstallPlanUse::FreshInstall,
+            &task_id,
+            &app_instance_id,
+            "tester",
+            &source_identity,
             &app,
+            &app_doc,
             &resolution,
             &target,
             &params,
             &config,
             &packages,
+            &contents,
         );
         assert_ne!(fp1, fp5, "trust evidence changes must invalidate approval");
+    }
+
+    #[test]
+    fn app_instance_id_is_owner_scoped() {
+        let did = DID::new("bns", "demo.tester");
+        let alice = AppInstanceId::from_app_did(&did, "alice").unwrap();
+        let bob = AppInstanceId::from_app_did(&did, "bob").unwrap();
+        assert_ne!(alice, bob);
+        assert_eq!(AppInstanceId::from_str(&alice.to_string()).unwrap(), alice);
     }
 
     #[test]
@@ -1564,23 +1904,76 @@ mod tests {
     }
 
     #[test]
+    fn preinstall_config_accepts_seed_and_rejects_legacy_or_unknown_fields() {
+        let value = json!({
+            "pre_install_apps": {
+                "demo.example.web.did": {
+                    "schema_version": 1,
+                    "pikg_path": "data/cache/demo.example.web.did-1.0.0.pikg",
+                    "install_plan": {}
+                }
+            }
+        });
+        let settings: SystemInstallSettings = serde_json::from_value(value).unwrap();
+        settings
+            .pre_install_apps
+            .get("demo.example.web.did")
+            .unwrap()
+            .validate()
+            .unwrap();
+
+        for invalid in [
+            json!({
+                "pre_install_apps": {
+                    "demo.example.web.did": {
+                        "schema_version": 1,
+                        "pikg_path": "data/cache/demo.pikg",
+                        "install_plan": {},
+                        "app_doc": {}
+                    }
+                }
+            }),
+            json!({
+                "pre_install_apps": {
+                    "demo.example.web.did": {
+                        "app_doc": {},
+                        "service_config": {}
+                    }
+                }
+            }),
+        ] {
+            assert!(serde_json::from_value::<SystemInstallSettings>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn preinstall_path_rejects_absolute_traversal_and_non_cache_paths() {
+        for invalid in [
+            "",
+            "/data/cache/demo.pikg",
+            "data/cache/../demo.pikg",
+            "data\\cache\\demo.pikg",
+            "etc/demo.pikg",
+            "data/cache/demo.zip",
+        ] {
+            assert!(validate_preinstall_pikg_path(invalid).is_err(), "{invalid}");
+        }
+        assert!(validate_preinstall_pikg_path("data/cache/demo.pikg").is_ok());
+    }
+
+    #[test]
     fn staging_handle_parse_rejects_paths() {
         assert!(StagingHandle::parse("/tmp/x.pikg").is_err());
         assert!(StagingHandle::parse("../x.pikg").is_err());
         assert!(StagingHandle::parse("").is_err());
         assert!(StagingHandle::parse("pikg:sha256:zz").is_err());
 
-        let digest_handle =
-            StagingHandle::parse(&format!("pikg:sha256:{}", "ab".repeat(32))).unwrap();
-        assert!(matches!(digest_handle, StagingHandle::PikgDigest(_)));
-
-        let obj_handle = StagingHandle::parse(
-            ObjId::new_by_raw("chunk".to_string(), vec![3u8; 32])
-                .to_string()
-                .as_str(),
-        )
-        .unwrap();
-        assert!(matches!(obj_handle, StagingHandle::NamedObject(_)));
+        let handle = StagingHandle::parse("pikg-stage-0123456789abcdef0123456789abcdef").unwrap();
+        assert_eq!(
+            handle.as_str(),
+            "pikg-stage-0123456789abcdef0123456789abcdef"
+        );
+        assert!(StagingHandle::parse("pikg-stage-0123456789abcdef").is_err());
     }
 
     #[test]
@@ -1590,6 +1983,7 @@ mod tests {
             app_did: did,
             doc_type: AppDocType,
             app_doc_object_id: Some(ObjId::new_by_raw("appdoc".to_string(), vec![1u8; 32])),
+            local_authority_app_doc_object_id: None,
             resolver_id: None,
             document_status: DocumentStatus::Active,
             document_version: Some(1),
@@ -1623,5 +2017,58 @@ mod tests {
         snapshot.cache_status = Some(DidCacheStatus::ZoneHit);
         snapshot.document_status = DocumentStatus::Revoked;
         assert!(!snapshot.is_trust_ready(InstallPolicy::LocalDeveloper));
+    }
+
+    #[test]
+    fn local_developer_authority_is_scoped_to_pikg_sources() {
+        let mut snapshot = DidResolutionSnapshot {
+            app_did: DID::new("bns", "demo.tester"),
+            doc_type: AppDocType,
+            app_doc_object_id: None,
+            local_authority_app_doc_object_id: None,
+            resolver_id: None,
+            document_status: DocumentStatus::Missing,
+            document_version: None,
+            authority_seq: None,
+            effective_owner: None,
+            expected_owner: Some(DID::new("bns", "tester")),
+            evidence: None,
+            verification_status: None,
+            cache_status: None,
+            doc_hash: None,
+            warnings: vec![],
+            migration_target: None,
+            resolved_at: None,
+        };
+        let pikg = InstallSourceIdentity::Pikg {
+            app_doc_object_id: ObjId::new_by_raw("appdoc".to_string(), vec![1u8; 32]),
+            pikg_digest: "sha256:test".to_string(),
+        };
+        let catalog = InstallSourceIdentity::Catalog {
+            app_doc_object_id: ObjId::new_by_raw("appdoc".to_string(), vec![1u8; 32]),
+        };
+
+        snapshot.evidence = Some(DidEvidenceLevel::LocalDeveloperAuthority);
+        snapshot.local_authority_app_doc_object_id = match &pikg {
+            InstallSourceIdentity::Pikg {
+                app_doc_object_id, ..
+            } => Some(app_doc_object_id.clone()),
+            InstallSourceIdentity::Catalog { .. } => None,
+        };
+        assert!(snapshot.is_trust_ready_for_source(InstallPolicy::LocalDeveloper, &pikg));
+        assert!(!snapshot.is_trust_ready_for_source(InstallPolicy::Normal, &pikg));
+        assert!(!snapshot.is_trust_ready_for_source(InstallPolicy::LocalDeveloper, &catalog));
+        let mismatched_pikg = InstallSourceIdentity::Pikg {
+            app_doc_object_id: ObjId::new_by_raw("appdoc".to_string(), vec![2u8; 32]),
+            pikg_digest: "sha256:other".to_string(),
+        };
+        assert!(
+            !snapshot.is_trust_ready_for_source(InstallPolicy::LocalDeveloper, &mismatched_pikg)
+        );
+
+        snapshot.document_status = DocumentStatus::Revoked;
+        assert!(!snapshot.is_trust_ready_for_source(InstallPolicy::LocalDeveloper, &pikg));
+        snapshot.document_status = DocumentStatus::Migrated;
+        assert!(!snapshot.is_trust_ready_for_source(InstallPolicy::LocalDeveloper, &pikg));
     }
 }

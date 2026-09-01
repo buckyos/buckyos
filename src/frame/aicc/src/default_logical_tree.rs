@@ -50,6 +50,7 @@ struct ModelRequirementTemplate {
     json_schema: bool,
     web_search: bool,
     vision: bool,
+    image_generation: bool,
     min_context_tokens: Option<u64>,
 }
 
@@ -61,6 +62,7 @@ impl ModelRequirementTemplate {
             json_schema: false,
             web_search: false,
             vision: false,
+            image_generation: false,
             min_context_tokens: None,
         }
     }
@@ -72,6 +74,7 @@ impl ModelRequirementTemplate {
             json_schema: true,
             web_search: false,
             vision: false,
+            image_generation: false,
             min_context_tokens: Some(min_context_tokens),
         }
     }
@@ -83,6 +86,7 @@ impl ModelRequirementTemplate {
             json_schema: false,
             web_search: false,
             vision: true,
+            image_generation: false,
             min_context_tokens: Some(min_context_tokens),
         }
     }
@@ -94,6 +98,7 @@ impl ModelRequirementTemplate {
             json_schema: self.json_schema,
             web_search: self.web_search,
             vision: self.vision,
+            image_generation: self.image_generation,
             min_context_tokens: self.min_context_tokens,
         }
     }
@@ -106,6 +111,7 @@ struct ModelDisableTemplate {
     json_schema: bool,
     web_search: bool,
     vision: bool,
+    image_generation: bool,
     min_context_tokens: Option<u64>,
 }
 
@@ -117,6 +123,7 @@ impl ModelDisableTemplate {
             json_schema: false,
             web_search: false,
             vision: false,
+            image_generation: false,
             min_context_tokens: None,
         }
     }
@@ -128,6 +135,7 @@ impl ModelDisableTemplate {
             json_schema: self.json_schema,
             web_search: self.web_search,
             vision: self.vision,
+            image_generation: self.image_generation,
             min_context_tokens: self.min_context_tokens,
         }
     }

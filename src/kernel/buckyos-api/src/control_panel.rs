@@ -1,6 +1,6 @@
 use crate::app_mgr::*;
 use crate::system_config::*;
-use crate::{AppDoc, AppType, SelectorType};
+use crate::{AppDoc, AppInstanceId, AppType, SelectorType};
 use ::kRPC::*;
 use name_lib::{DIDDocumentTrait, DeviceDocument, DeviceInfo, EncodedDocument, OwnerDocument, DID};
 pub use name_lib::{
@@ -155,7 +155,7 @@ pub struct NodeConfig {
     pub node_id: String,
     pub node_did: String,
     pub kernel: HashMap<String, KernelServiceInstanceConfig>,
-    pub apps: HashMap<String, AppServiceInstanceConfig>,
+    pub apps: HashMap<AppInstanceId, AppServiceInstanceConfig>,
     pub frame_services: HashMap<String, FrameServiceInstanceConfig>,
     pub state: NodeState,
 }

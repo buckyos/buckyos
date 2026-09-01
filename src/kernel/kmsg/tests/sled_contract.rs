@@ -1,9 +1,6 @@
-#[path = "../src/sled_msg_queue.rs"]
-mod sled_msg_queue;
-
 use buckyos_api::msg_queue::*;
 use kRPC::RPCContext;
-use sled_msg_queue::SledMsgQueue;
+use kmsg::sled_msg_queue::SledMsgQueue;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
