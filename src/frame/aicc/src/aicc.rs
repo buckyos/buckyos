@@ -27,12 +27,15 @@ use buckyos_api::{
     AiResponse, AiccComputeProgress, AiccComputeTaskData, AiccComputeTaskRequest, AiccHandler,
     AiccRouteOverlay, AiccRouteTraceEvent, AiccUsageEvent, AiccVideoContinuationSource,
     CancelResponse, Capability, CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq,
-<<<<<<< HEAD
     Feature, LlmChatInvokeRequest, LlmChatInvokeResponse, LlmResponseFormat, ModelSpec,
     ReportProgressReq, ReportStartedReq, Requirements, ResourceRef, RouteFallbackAttempt,
     RouteResolveRequest, RouteResolveResponse, RunnerWriteEnvelope, TaskControlAction, TaskError,
     TaskManagerClient, TaskPhase, TextToImageInvokeRequest, TextToImageInvokeResponse, TokenUse,
-    TypedTaskData, AICC_SERVICE_SERVICE_NAME,
+    TypedTaskData,
+};
+#[cfg(test)]
+use buckyos_api::{bind_token_principal_kind, bind_token_target, AuthTarget, TokenPrincipalKind};
+use log::{debug, error, info, warn};
 use ndn_lib::{
     load_named_object_from_obj_str, ChunkHasher, ChunkId, FileObject, NamedObject, ObjId,
 };
