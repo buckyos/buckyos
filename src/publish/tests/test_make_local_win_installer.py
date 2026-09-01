@@ -93,6 +93,57 @@ class WindowsPackagerTests(unittest.TestCase):
             self.assertNotIn('schtasks /Create /TN "BuckyOSNodeDaemonKeepAlive"', script)
             self.assertNotIn('WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon"', script)
 
+    def test_service_prerequisites_are_silent_and_non_listening(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            payload = root / "payload"
+            service_bin = payload / "buckyos" / "bin"
+            service_bin.mkdir(parents=True)
+            (service_bin / "stop.ps1").write_text("exit 0\n", encoding="utf-8")
+            bundled_vcredist = root / "vcredist_x64.exe"
+            bundled_vcredist.write_bytes(b"fake vcredist")
+            out_path = root / "installer.nsi"
+
+            winpkg.generate_nsis_script(
+                title="BuckyOS",
+                version="0.7.0+test",
+                architecture="amd64",
+                components=[
+                    winpkg.PublishComponent(
+                        key="buckyos",
+                        name="BuckyOS Service",
+                        kind="app",
+                        optional=True,
+                        default_selected=True,
+                        src=None,
+                        default_target="C:\\BuckyOS\\",
+                        system_service=True,
+                    )
+                ],
+                payload_dir=payload,
+                out_path=out_path,
+                bundled_vcredist=bundled_vcredist,
+            )
+
+            script = out_path.read_text(encoding="utf-8-sig")
+            self.assertIn("SetCompressor lzma", script)
+            self.assertNotIn("SetCompressor /SOLID", script)
+            self.assertIn('/install /quiet /norestart', script)
+            self.assertIn('StrCmp $VCRedistInstallCode 1641 vcredist_install_reboot', script)
+            self.assertIn('StrCmp $VCRedistInstallCode 3010 vcredist_install_reboot', script)
+            self.assertIn('Call InstallBundledVCRedist', script)
+            self.assertNotIn('Install or repair it now?', script)
+            self.assertNotIn('Please re-run setup.', script)
+            self.assertIn("File /oname=stop.ps1", script)
+            self.assertIn("$PLUGINSDIR\\stop.ps1", script)
+            self.assertNotIn("buckyos_stop.ps1", script)
+            self.assertIn("schtasks /Query /TN BuckyOSNodeDaemonKeepAlive", script)
+            self.assertIn('&& schtasks /Delete', script)
+            self.assertNotIn("nsExec::ExecToLog 'schtasks /Delete", script)
+            self.assertIn("GetActiveTcpListeners()", script)
+            self.assertNotIn("TcpListener]::new", script)
+            self.assertNotIn("IPAddress]::Any", script)
+
     def test_buckyos_postinstall_does_not_delete_missing_task(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             payload = Path(td) / "buckyos"
