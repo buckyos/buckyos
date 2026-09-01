@@ -338,20 +338,22 @@ Node/Entry/list 报文也不得退回 Folder-only 形态。
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| M1 | 只读:hello/resolve/stat/list/batch + 数据面 GET(Range)+ 无状态游标 | WebUI 能浏览、下载,首屏 1 次 batch 往返(NFSP §9.1) |
-| M2 | 写入:mkdir/move/delete/open_write/commit_file + 内存 rev/lease + watch | 多标签页写入互斥、变更互见 |
-| M3 | filedb:anchors + 惰性锚定 + Reconciler(watcher+扫描+重绑启发式) | 旁路 rename/编辑后 Ref 与 meta 不丢;失联标 stale |
+| M1 | 只读:hello/resolve/stat/通用 list/batch + 数据面 GET(Range)+ 无状态游标 | Dir 返回 Node/Entry 信封;WebUI 能浏览、下载,首屏 1 次 batch |
+| M2 | 写入:mkdir/move/delete/open_write/commit_file + Container revision/lease + watch | 多标签页写入互斥;统一 `container_changed` 变更互见 |
+| M3 | filedb:entities/anchors + 惰性锚定 + Reconciler(watcher+扫描+重绑启发式) | 旁路 rename/编辑后 LiveRef 与 meta 不丢;失联标 stale |
 | M4 | NamedStore:probe/秒传/link 模式 commit/repr 缩略图 | 重复上传秒传;缩略图可被浏览器缓存 |
-| M5 | meta/search(name)/open_view(只读)/grant 分享 | PRD MVP 功能闭环 |
-| M6 | 阶段二准备:NamespacePlane trait 冻结,fs_meta 实现开工;anchors → inode 迁移工具 | 迁移演练:bucky_id 保留,客户端不改 |
+| M5 | View/Collection Node + 通用 list + collection_patch + meta/search(name)/grant | Topic 只读、Collection 引用管理/Shares、搜索分享闭环 |
+| M6 | namespace_bindings sidecar merge + bind_ref/unlink + conflict/cycle/权限约束 | 实体 Dir 可引用 View/Collection;解除引用不删除目标;无 N+1 |
+| M7 | 阶段二准备:NativeTree trait 冻结,fs_meta 实现开工;anchors → inode 迁移工具 | 迁移演练:LiveRef node_id 保留,客户端不改 |
 
 ## 8. 阶段二切换脚本(现在就约束设计)
 
 1. 停写(维护窗口)→ Reconciler 最后一轮对账;
-2. anchors 灌入 fs_meta(**bucky_id 保留为 inode_id**),未 hash 文件补算,
-   字节按需 Link→Store;view/meta/grants 原样跟随;
-3. NamespacePlane 换实现,`hello` feature 集合扩大;
-4. 内存态(handle/rev/lease/seq)全部作废:客户端经 `STALE`/`resync` 重新 resolve
+2. 实体 file/dir anchors 灌入 fs_meta,保留对外 LiveRef node_id(可直接保留为 inode_id,
+   或持久化一一映射);未 hash 文件补算,字节按需 Link→Store;
+3. View/Collection/Group/entities/namespace_bindings/meta/grants 留在 VirtualPlane,无需迁移协议身份;
+4. NativeTree 从 PassthroughFs 切换为 fs_meta,`hello` feature 集合扩大;
+5. 内存态(未锚定 handle/Dir revision/lease/seq)全部作废:客户端经 `STALE`/`resync` 重新 resolve
    ——这正是它们 v1 起就必须实现的路径,切换日无新代码。
 
 ## 9. 待决策清单
@@ -361,6 +363,7 @@ Node/Entry/list 报文也不得退回 Folder-only 形态。
 | N1 | tus endpoint 内嵌 vs 依赖 ndm gateway | 内嵌最小实现,报文对齐 NDM 协议 |
 | N2 | export roots 配置格式与热更新 | 静态配置起步,热更新延后 |
 | N3 | 原地写文件目录(数据库等)的导出策略 | 提供目录级 `no_link` 配置,默认导出但禁 link |
-| N4 | `STALE` 错误码进 NFSP 协议 | 需要,提交上游【上游】 |
+| N4 | native 与 virtual binding 被旁路写成同名时的修复 UI | 协议已定 `conflicts[]` + `NAMESPACE_CONFLICT`;自动重命名/覆盖都禁止,交互待产品定案 |
 | N5 | search 索引落 filedb 缓存表 vs 独立引擎 | v1 落 filedb(名字索引),语义检索阶段二再议 |
 | N6 | Windows 服务器支持是否进 v1 | 【待决策】影响 Reconciler 的 watcher 选型(USN vs inotify) |
+| N7 | `reference-binding` 写能力是否随首版开放 | 报文、schema、list 消费能力必须首版固定;若排期不足可不在 hello 广告,后续只开 feature |
