@@ -18,10 +18,19 @@ rule must constrain multiple dimensions.
 
 The resolver loads metadata in this override order:
 
-1. builtin metadata under `src/frame/aicc/driver_metadata/`
+1. builtin metadata under `src/frame/aicc/driver_metadata/models/<origin-vendor-lowercase>.model.json`
 2. current cloud metadata files delivered and replaced by NDN
-3. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<model-driver-id>.json`
-4. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/system-config/<model-driver-id>.json`
+3. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/models/<origin-vendor-lowercase>.model.json`
+4. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/system-config/models/<origin-vendor-lowercase>.model.json`
+
+All model parameters belonging to one origin vendor must be collected in that
+vendor's single standalone file. The lowercase vendor slug is stable and must
+not be split by model, API generation, or Provider Instance. Provider-vendor
+parameters, including both origin vendors and aggregators, use one
+`<provider-vendor-lowercase>.provider.json` file per vendor under a separate
+`providers/` directory as specified by `provider_profile_schema.md`. Runtime
+code must not compensate for missing metadata by branching on model names,
+model-name prefixes, or Provider-vendor names.
 
 For one origin model, match priority is exact `models[].id`, ordered
 `patterns[].match`, `defaults`, then conservative fallback. Exact rules win

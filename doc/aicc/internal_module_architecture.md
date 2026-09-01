@@ -70,6 +70,8 @@ HTTP/SSE/JSON/异步轮询基础设施
 
 禁止建立一个按 Provider ID、URL 或模型名分支的“万能 OpenAI-compatible Adapter”。基础 codec 不知道哪些厂商在复用它。
 
+这一约束适用于整个实现，不只适用于基础 codec：不得把模型名、模型名前缀或 Provider 厂商名作为特征硬编码到条件分支、路由表或默认参数选择逻辑中。模型和厂商差异应优先由 Model Driver metadata、Provider Profile 和 Provider Rules 配置表达；运行时只根据解析后的能力、规则、`protocol_adapter_id` 和 operation 执行。只有配置 schema 无法表达的真实协议差异才允许进入独立 Adapter 或 dialect 代码，其注册和选择也必须基于显式配置身份，不能重新通过模型名或厂商名猜测。
+
 ### 2.2 operation 是最小协议复用单位
 
 一个 Adapter 由若干 operation 组合，而不是一个文件包揽厂商全部 API。例如 OpenAI Provider 可以同时绑定：

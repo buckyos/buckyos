@@ -48,6 +48,13 @@ AICC 不应把所有 Provider 都实现成同一种声明式配置。
 
 Provider 参数配置是配置型 Provider 内置默认行为的**可选覆盖层**，不是完整 Provider manifest。
 
+模型参数和 Provider 参数必须按厂商拆分并分目录保存：
+
+- 同一原厂商的全部模型参数集中在一个独立文件中，文件名为 `<原厂商名（小写）>.model.json`，存放在 `models/` 目录，例如 `models/openai.model.json`、`models/anthropic.model.json`；
+- Provider 厂商包括原厂和聚合中间商。每个 Provider 厂商的参数集中在一个独立文件中，文件名为 `<厂商名（小写）>.provider.json`，存放在 `providers/` 目录，例如 `providers/openai.provider.json`、`providers/openrouter.provider.json`；
+- 厂商名使用稳定的小写 slug。同一厂商不得按模型、API 代际或 Provider Instance 拆成多个同类参数文件；`models/` 与 `providers/` 必须分目录，不能仅依赖 `.model.json` / `.provider.json` 后缀避免命名冲突；
+- 以上名称是 AICC 加载后的规范配置文件名。NDN 发布制品可以按发布协议在对象路径或父目录中携带 revision，但不能改变文件内部的厂商归属，也不能把多个厂商合并为一个配置文件。
+
 - 程序已经确定的参数不写入配置；
 - 所有字段均可省略；
 - 空对象 `{}` 必须合法，表示全部使用对应 adapter 的默认方案；
