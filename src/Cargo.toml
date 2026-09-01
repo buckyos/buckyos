@@ -16,9 +16,10 @@ members = [
     "./kernel/slog", 
     "./kernel/slog_daemon",
 
-    "./frame/slog_server", 
+    "./frame/slog_server",
     "./frame/repo_service",
     "./frame/smb_service",
+    "./frame/nfs_server",
     "./frame/aicc",
     "./frame/msg_center",
     "./frame/control_panel",
