@@ -14,7 +14,7 @@
 - 任意 attempt 成功则该用例成功，所有 attempt 摘要都写入报告。
 - 不断言自然语言全文，只断言协议事实。
 - 未配置 API key 或 Provider 未启用时用例标记为 `skipped`，不算失败。
-- `sn-ai-provider` 不需要普通 API key，缺 key 不得作为 skip 原因。
+- `sn-ai-provider` 支持 `api_key` 和 `dynamic_login`；只按所选认证模式检查对应凭据，不能假定它永远无 API Key。
 - 真实模型返回可理解错误时，报告记录为 `failed` 或 `partial`，保留错误码、Provider 摘要、trace id。
 
 每条真实模型 workflow 至少断言：
@@ -38,7 +38,7 @@
 | Google Gemini | 每个模型执行多模态 `llm.chat` + embedding/multimodal 或 image/video operation |
 | fal | 每个模型执行 `image.upscale` / `image.bg_remove` / `audio.enhance` / `video.upscale` 中匹配能力的异步任务 + artifact 读取 |
 | OpenRouter | 每个模型执行 `llm.chat` 复杂 JSON 输出 + OpenAI-compatible 兼容字段检查 |
-| SN AI Provider | 每个模型执行无普通 API key 的 gateway 转发 workflow，验证 provider 归因、usage、trace 和 free credit 归因 |
+| SN AI Provider | 每个模型分别执行 API Key 和动态登录 workflow，验证 token 刷新、Provider 归因、usage、trace 和 free credit 归因 |
 
 ## 2. 执行命令约定
 
@@ -71,7 +71,7 @@ pnpm run test:fal
 当前命令含义：
 
 1. `pnpm test` 执行 `aicc_smoke.ts`，输出 `reports/aicc_smoke/<run_id>`。
-2. `pnpm run test:models` 调用 `models.list`，打印 Provider inventory、legacy aliases 和逻辑目录树。
+2. `pnpm run test:models` 调用 `models.list`，打印 Provider inventory、完整身份链和逻辑目录树。
 3. `pnpm run test:fal` 执行 fal provider 的 `image.upscale` / `image.bg_remove` / `video.upscale` 用例；未配置 fal 时按 skipped 处理。
 4. 这些命令当前连接已启动的 BuckyOS / AICC，不负责自动启动 TS Mock Provider 或写入 Mock settings；统一 L3 runner 需要补齐该管理闭环。
 
@@ -127,14 +127,14 @@ pnpm run acceptance:all -- \
 2. 执行 L1/L2 Rust 单测。
 3. 执行 L3 本地 Mock 验收。
 4. 使用 `buckyos-devkit` 创建并启动 L4 临时 group，通过 gateway 访问该 group。
-5. 将传入的 4 个 key 写入临时 group 的 AICC settings；`sn-ai-provider` 不需要普通 API key。
+5. 将传入的 Provider key 写入临时 group 的 AICC settings；SN 按测试矩阵分别配置 `api_key` 或 `dynamic_login`。
 6. 对 `openrouter`，runner 优先读取配置文件或临时 group settings 中的 `openrouter` key；如果发布验收要求强覆盖但缺 key，应在 preflight 阶段失败。普通开发验收可将 openrouter 矩阵标记为 `skipped`。
 7. 动态读取 `models.list` 和最终生效逻辑目录，生成 `api_type × method × logical_path × Provider × model` 矩阵。
 8. 每个 planned 矩阵用例执行逻辑模型段与精确物理模型段验证，失败后最多额外执行 2 次。
 9. 输出 `summary.md`、`summary.json` 和脱敏后的 attempt 明细。
 10. 清理 runner 新建的临时 group。
 
-为了让参数尽可能少，`sn-ai-provider` 不设置普通 API key；OpenRouter key 不作为默认必填命令行参数，但发布验收若要求 OpenRouter 强覆盖，必须通过 `--openrouter-key` 或配置文件提供。
+SN 动态登录用例不要求 API Key，但 SN API Key 用例必须显式提供 key；OpenRouter key 不作为默认必填命令行参数，但发布验收若要求 OpenRouter 强覆盖，必须通过 `--openrouter-key` 或配置文件提供。
 
 ## 3. Gateway TOML 配置约定
 
@@ -204,8 +204,8 @@ requires_api_key = false
 - 兼容旧配置 `matrix_mode=provider_model_cartesian` 时，runner 必须在报告中标记为降级模式，并明确列出未覆盖的 `api_type`、`method`、`logical_path` 维度；发布强覆盖不得使用该降级模式。
 - `max_attempts_per_case` 默认为 `3`；只有首轮失败的用例才继续执行第 2 / 第 3 次 attempt。
 - Provider `enabled=true` 但缺 key 时，用例标记 `skipped`；发布强覆盖模式下，缺 key 可在 preflight 直接失败。
-- `google-gemini` 对应 AICC 配置中的 `settings.gemini` / `settings.google_gemini` 兼容入口，生效的 `provider_driver` 应归一为 `google-gemini`。
-- `sn-ai-provider` 对应 AICC 配置中的 `settings.sn-ai-provider`，`requires_api_key=false`，缺普通 API key 不应导致 skipped。
+- Gemini Provider Instance 必须引用明确的 `provider_profile_id`、`protocol_adapter_id` 和对应 `model_driver_id`，不读取 family section 别名。
+- `sn-ai-provider` 使用统一 Provider Instance 和 `sn-openai` Adapter；`requires_api_key` 由 `auth.mode` 决定，动态登录则检查登录凭据和链路。
 - Provider key 不写入报告和日志。
 - runner 应把最终生效配置的脱敏摘要写入报告。
 - `managed_by_devkit=true` 时，runner 负责创建、启动、探测和清理 group；`keep_on_failure=true` 只用于人工排查，报告必须明确标注遗留环境名。

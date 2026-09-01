@@ -17,7 +17,7 @@
 本文覆盖：
 
 - AICC route control plane、模型目录、metadata、调度和 fallback。
-- AICC typed inference、legacy/helper 调用和 Provider adapter。
+- AICC typed inference、Helper 调用和 Protocol Adapter。
 - Provider inventory、Provider instance、模型和能力声明。
 - Provider 同步、异步、streaming、资源和错误协议。
 - AICC task、usage、quota、配置、安全和可观测性。
@@ -431,7 +431,7 @@ T2 按模型官方能力覆盖：
 
 当前 canonical API type 的行为组合必须逐项覆盖：
 
-`llm.chat` 是唯一的 AICC LLM 数据面接口。当前 breaking-change 版本不保留或测试旧式 `llm.completion` 兼容接口；Provider adapter 是否使用 Responses、Chat Completions 或其他厂商协议属于内部传输实现。
+`chat.completions.create` 是 AICC 的 provider-neutral LLM typed inference 接口。Beta 2.2 不保留或测试 `llm.chat`、`llm.completion` 等旧式 all-in-one 接口；底层 Responses、Chat Completions、Messages、Interactions 等 wire API 由 Provider Instance 已解析的 Adapter 决定。自定义 Provider 接入测试必须验证“新接口优先、已注册历史接口其次”，用户不提供版本；解析后的新旧 Adapter 分别测试，推理调用失败后不能隐式切换。
 
 - `llm.chat`：单轮或多轮文本、代码、文档、图片、音频或视频输入到文本、JSON schema 和 tool call；具体输入模态按官方模型能力生成矩阵。
 - `embedding.text`：单文本、批量文本、代码、文档 chunk 和 resource 文档到向量。
@@ -707,13 +707,17 @@ Telegram Bot API 不能模拟 owner 用户向 bot 发消息。初始方案可以
 
 ### 10.4 配置和维护
 
-- `reload_settings` 成功和失败。
+- `service.reload_settings` 成功和失败。
 - 非法新配置失败后继续使用旧配置。
 - Provider validate/add/delete/refresh models。
 - 多 instance 独立更新与删除。
-- metadata、variants、version rules 和 routing config 更新。
+- Provider 停止、禁用、删除、reload 替换和 AICC 服务退出都必须向对应库存刷新定时任务循环发送幂等 `Stop` 事件并等待优雅退出；验证停止后没有新探测、孤儿定时器或迟到的 inventory/health 写入，重新启用后创建新循环并从持久 seq 继续收敛。
+- metadata 云端发布使用严格递增且不可复用的 manifest `revision_seq`，按客户端版本/通道/灰度分组配置兼容目标；验证新旧客户端各自获得兼容版本，低序列回退、同序列不同内容和不兼容版本均被 NDN 更新链路拒绝。
+- NDN 替换文件后令 `metadata_target_seq = manifest.revision_seq`；分别验证推理前和 Provider 定时库存刷新触发同一全局收敛，所有落后 Provider 成功后才推进各自 `metadata_applied_seq`。
+- 在 NDN 下载、校验、替换和文件就绪确认各阶段注入失败，确认 `metadata_target_seq` 不提前推进；在 Provider inventory 刷新进行中和失败时，确认该 Provider 的 `metadata_applied_seq` 不提前推进且原 inventory 不变，并在 health/trace 中暴露 applied/target seq 落后及失败原因。
+- variants、version rules 和 routing config 更新。
 - inventory 与发布基线同步。
-- 更新失败回滚和服务重启后配置一致。
+- metadata 文件更新失败恢复由 NDN 验证；AICC 刷新失败不得推进对应 Provider 的 applied seq。服务重启后 target/applied seq 和配置保持一致。
 
 Gateway、消息入口、登录信息、Provider API token 和选定 instance 必须通过 `aicc_acceptance.toml`、`jarvis_media_dv.toml` 或等价的显式参数配置。测试在授权范围内可以临时新增 Provider instance 或修改 AICC settings，但必须：
 

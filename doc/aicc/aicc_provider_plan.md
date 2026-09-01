@@ -1,258 +1,152 @@
+# AICC 第一版内置 Provider 计划
 
+版本：`v0.3-first-party-and-mainstream`
+状态：Beta 2.2 目标规范
 
-# AICC 最小 Provider 实现集合
-
-版本：`v0.2-cloud-direct-minimal`
-基线：不使用本地模型；不把 OpenRouter 作为 P0 必需 provider。
-目标：用最小 provider 集合覆盖主流模型提供方，并覆盖 `agent.computer_use` 之外的全部 AICC ApiType。
-
-## 1. 背景与边界
-
-当前原 Plan 的目标是让 `agent` 之外的 capability namespace 至少有一个可用 provider；现有实现中，Claude、OpenAI、Google Gemini、MiniMax 主要只声明了 `llm.chat`，OpenAI / Gemini 额外声明了 `image.txt2img`，其余 embedding、rerank、vision、audio、video 等 method 仍未接通。原 Plan 中大量最小落地路径依赖本地模型，但本版方案明确不使用本地模型。
-
-本版最小集合采用：
+第一版直接支持以下 Provider，不再区分原文档中的四家 P0 和其它 P1：
 
 ```text
-P0 required:
-  openai.rs
-  claude.rs
-  google.rs
-  fal.rs
-
-P1 optional:
-  openrouter.rs
+OpenAI / Claude / Gemini / fal / OpenRouter / MiniMax
+Kimi / GLM / DeepSeek / 豆包（火山方舟）/ Qwen（阿里云百炼）
 ```
 
-`openrouter.rs` 不进入 P0，因为它与 OpenAI、Claude、Google 的直连能力高度重叠；它只作为长尾模型、成本 fallback、临时 rerank 或模型试用入口。
+模块复用和实现入口以 [internal_module_architecture.md](internal_module_architecture.md) 为准。本文只定义首版覆盖范围和验收边界，不重复协议内部结构。
 
-`agent.computer_use` 不纳入本版 provider coverage。该能力涉及浏览器/桌面 runtime、沙箱、权限和审计，应单独规划。
+## 1. 范围原则
 
-`llm.completion` 作为 legacy ApiType，不要求 provider-native 实现；系统层统一转换为 `llm.chat` 请求。
+1. OpenAI、Claude、Gemini 是三个独立基础协议族，分别优先实现 Responses、Messages、Interactions；
+2. OpenRouter、Kimi、GLM 的首版官方主入口形成 `openai-chat-completions` 的真实需求，三者共享一份基础实现；
+3. MiniMax 文本接口优先复用 `claude-messages`，只在派生层处理兼容差异；
+4. DeepSeek、豆包、Qwen 优先复用 `openai-responses`，各自隔离扩展和限制；
+5. fal Queue 及各家媒体/异步接口保留原生 codec，只复用任务生命周期基础设施；
+6. 同一历史接口只在首个真实需求出现时实现一次，后续 Provider 复用；
+7. “首版支持 Provider”不等于无条件开放该厂商所有 API。只有已经映射到 AICC ApiType、进入 metadata 且通过协议合同的 operation 才进入库存；
+8. 不使用本地模型，不纳入 `agent.computer_use`。
 
----
+SN Provider 的既有 `sn-openai -> openai-responses` 设计保持不变，但它是扩展 Provider，不计入本次 11 个首版内置 Provider。SN 的 API key/动态登录双鉴权继续与 OpenAI 基础实现隔离。
 
-## 2. P0 最小 Provider 集合
+## 2. Provider 接入矩阵
 
-| Provider Adapter | Credential                    | 定位                                             | 必须支持的 ApiType                                                                                                                                                                                                                                      |
-| ---------------- | ----------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `openai.rs`      | `OPENAI_API_KEY`              | 文本、视觉理解、embedding、图像编辑、ASR/TTS、rerank MVP     | `llm.chat`、`llm.completion` wrapper、`vision.caption`、`vision.ocr`、`embedding.text`、`rerank`、`image.txt2img`、`image.img2img`、`image.inpaint`、`audio.asr`、`audio.tts`                                                                                  |
-| `claude.rs`      | `ANTHROPIC_API_KEY`           | 主流 LLM 与视觉理解 fallback                          | `llm.chat`、`vision.caption`、`vision.ocr`                                                                                                                                                                                                           |
-| `google.rs`      | `GOOGLE_API_KEY` / Gemini key | 多模态主力 provider，覆盖 embedding、vision、audio、video | `llm.chat`、`embedding.text`、`embedding.multimodal`、`image.txt2img`、`image.img2img`、`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment`、`audio.asr`、`audio.tts`、`audio.music`、`video.txt2video`、`video.img2video`、`video.video2video`、`video.extend` |
-| `fal.rs`         | `FAL_KEY`                     | 专用媒体处理工具 provider                              | `image.upscale`、`image.bg_remove`、`audio.enhance`、`video.upscale`                                                                                                                                                                                  |
+| Provider ID | 首版主 Adapter | 首版定位 | Credential |
+| --- | --- | --- | --- |
+| `openai` | `openai-responses` + 专用 operation | 通用 LLM、embedding、image、audio、video | Bearer API key |
+| `claude` | `claude-messages` | LLM、视觉理解 | `x-api-key` |
+| `gemini` | `gemini-interactions` + Gen Media | 多模态、embedding、image/audio/video | `x-goog-api-key` |
+| `fal` | `fal-queue` | 图像、音频、视频生成或处理的长尾模型 | `Authorization: Key` |
+| `openrouter` | `openrouter-openai -> openai-chat-completions` | 聚合 LLM、长尾模型、成本/可用性路由 | Bearer API key |
+| `minimax` | `minimax-messages -> claude-messages` + 原生媒体 | LLM、speech、image、video、music | named-header API key / 原生 Bearer（按 operation） |
+| `kimi` | `kimi-chat -> openai-chat-completions` | LLM、视觉/视频理解 | Bearer API key |
+| `glm` | `glm-chat -> openai-chat-completions` + 原生异步 | LLM、多模态、embedding | Bearer API key；可选短期 JWT |
+| `deepseek` | `deepseek-responses -> openai-responses` | LLM、推理、工具调用 | Bearer API key |
+| `doubao` | `doubao-responses -> openai-responses` + 原生媒体 | LLM、多模态、embedding、image/video | Bearer API key |
+| `qwen` | `qwen-responses -> openai-responses` + 原生媒体 | LLM、多模态、embedding、image/video/audio | Bearer API key |
 
-OpenAI 负责 `vision.caption`、`vision.ocr`、`embedding.text`、图像生成/编辑、mask inpaint、ASR、TTS 等通用能力；支持图片输入的 GPT 模型通过现有多模态 LLM 请求完成 caption 和 OCR。OpenAI 文档中已有 `text-embedding-3-*` embedding 示例，GPT Image 支持生成和编辑图片，image edit 也支持 mask，Audio API 支持 speech-to-text 和 text-to-speech。([OpenAI开发者][1])
+Adapter 箭头表示语义上的子类/派生关系，不强制使用语言继承。没有真实 wire 差异时应直接引用基础 Adapter，删除空派生层。
 
-Google 是本方案的多模态主力：Gemini Embedding 2 支持 text、image、video、audio、document 映射到同一 embedding space；Gemini 图像能力支持 text-to-image 和 text+image-to-image 编辑；Gemini image understanding 支持 bounding boxes 和 segmentation 示例；明确支持音频输入的标准 Gemini 型号可用于音频理解与转写，此外 Gemini API 还支持 TTS、Lyria 3 音乐生成、Veo 3.1 视频生成、图生视频、video-to-video 和 extend。([Google AI for Developers][2])
+## 3. 首版最低验收
 
-Claude 在 P0 中主要用于 `llm.chat` 和视觉理解 fallback。Anthropic 文档说明 Claude vision 可以理解和分析图像，并可通过 API 请求使用。([Claude平台][3])
+每个 Provider 至少完成：
 
-fal.ai 只用于通用大模型不擅长的专用媒体处理：ESRGAN 负责 image upscale，rembg 负责 background removal，DeepFilterNet3 负责音频降噪/增强，video-upscaler 负责已有视频超分。([Fal.ai][4])
+- Known Provider/Profile 注册；
+- credential schema 与脱敏；
+- endpoint/region/workspace 参数解析；
+- 至少一项官方主 operation 的非流式调用；
+- 主 operation 支持时的流式调用；
+- 模型 discovery 或 catalog-only 库存构建；
+- Provider Rules、Model Driver 和 operation 能力交集；
+- 官方错误到 AICC 稳定错误的映射；
+- health probe、inventory LKGS、metadata applied seq；
+- 禁用/删除/替换时停止刷新循环；
+- 基础合同、厂商差异合同和 builtin 装配测试。
 
----
+对异步媒体 Provider/operation 还必须完成 submit、poll/status、result、cancel、终态映射、超时和 TaskMgr bridge。仅有同步 LLM 能力的 Provider 不为形式完整而实现空任务接口。
 
-## 3. ApiType 覆盖矩阵
+## 4. 接口代际选择
 
-| Capability  | ApiType                | 主 Provider               | Fallback / 备注                                              |
-| ----------- | ---------------------- | ------------------------ | ---------------------------------------------------------- |
-| `llm`       | `llm.chat`             | OpenAI / Claude / Google | 三家都必须声明                                                    |
-| `llm`       | `llm.completion`       | System wrapper           | 不做 provider-native；转换为 `llm.chat`                          |
-| `embedding` | `embedding.text`       | Google / OpenAI          | Google 可作为主路由，OpenAI fallback                              |
-| `embedding` | `embedding.multimodal` | Google                   | 使用 Gemini Embedding 2                                      |
-| `rerank`    | `rerank`               | OpenAI 或 Google          | MVP 用 LLM structured rerank；生产可选 Cohere / OpenRouter       |
-| `image`     | `image.txt2img`        | Google / OpenAI          | 两家都可声明                                                     |
-| `image`     | `image.img2img`        | Google / OpenAI          | Google image edit 或 OpenAI image edit                      |
-| `image`     | `image.inpaint`        | OpenAI                   | 使用 image edit + mask；Google 可做 prompt-guided edit fallback |
-| `image`     | `image.upscale`        | fal.ai                   | `fal-ai/esrgan`                                            |
-| `image`     | `image.bg_remove`      | fal.ai                   | `fal-ai/imageutils/rembg`                                  |
-| `vision`    | `vision.ocr`           | Google                   | Claude / OpenAI vision 可 fallback                          |
-| `vision`    | `vision.caption`       | Google / Claude          | Claude / OpenAI 适合通用视觉理解 fallback                          |
-| `vision`    | `vision.detect`        | Google                   | 使用 bounding box / spatial understanding                    |
-| `vision`    | `vision.segment`       | Google                   | 使用 segmentation masks 能力                                   |
-| `audio`     | `audio.asr`            | OpenAI / Google          | OpenAI transcription API 或明确支持音频输入的 Gemini 型号      |
-| `audio`     | `audio.tts`            | OpenAI / Google          | OpenAI speech 或 Gemini TTS                                 |
-| `audio`     | `audio.music`          | Google                   | Lyria 3                                                    |
-| `audio`     | `audio.enhance`        | fal.ai                   | `fal-ai/deepfilternet3`                                    |
-| `video`     | `video.txt2video`      | Google / OpenAI          | Veo 3.1；OpenAI Sora 2 fallback                            |
-| `video`     | `video.img2video`      | Google / OpenAI          | Veo 3.1 / Sora 2 image-to-video                            |
-| `video`     | `video.video2video`    | Google                   | Veo 3.1 支持 video-to-video 输入模式                             |
-| `video`     | `video.extend`         | Google                   | Veo 3.1 extend；需要保留 `continuation_handle`                  |
-| `video`     | `video.upscale`        | fal.ai                   | `fal-ai/video-upscaler`                                    |
+| 协议族 | 首版主动实现 | 首版不预实现 |
+| --- | --- | --- |
+| OpenAI | Responses；因三家真实需求加入 Chat Completions | legacy Completions、Assistants 等无真实需求接口 |
+| Claude | Messages | legacy Completions |
+| Gemini | Interactions | `generateContent`，除非某个已选 operation 确认只能使用它 |
 
----
+内置 Provider 的 Adapter 选择由 Known Provider 固定，不在运行时协商。自定义 Provider 接入时只要求用户识别协议族；系统先测试该协议族官方新接口，再测试已经注册的历史接口。用户不选择 API 版本，成功结果固化到 Provider Instance。
 
-## 4. Provider 必须实现的最小方法清单
+认证、网络、限流和服务端故障不能被误判为“不支持新接口”并触发历史接口 fallback。
 
-### 4.1 `openai.rs`
+## 5. 模型发现与价格
 
-必须实现：
+价格事实的来源优先级遵循现有设计：
 
 ```text
-llm.chat
-llm.completion        # system-level wrapper to chat
-vision.caption
-vision.ocr
-embedding.text
-rerank                # MVP: LLM structured rerank
-image.txt2img
-image.img2img
-image.inpaint
-audio.asr
-audio.tts
-video.txt2video
-video.img2video
+Provider 实时 discovery
+  > Provider Rules 的渠道静态价格
+  > Model Driver 的保守成本估值
 ```
 
-说明：
+- OpenRouter Models API 的模型、能力和实时价格应进入动态 discovery；
+- OpenAI、Claude、Gemini、MiniMax、Kimi 等存在官方模型机器接口时，复用相应 discovery parser；
+- 其它 Provider 如果没有稳定的官方机器接口，使用 Known Provider/Provider Rules/Model Driver 构建 catalog-only inventory；
+- 禁止抓取官方文档网页、控制台页面或读取 SDK 私有列表模拟 discovery；
+- Provider 实时价格属于实例动态事实，不写回静态 catalog；静态价格直接位于 Provider Rules，不单独建立 Pricing Catalog。
 
-* `llm.completion` 不接旧 Completion API，统一转成 chat message。
-* `rerank` 是 MVP 实现，使用 LLM 对候选文档输出 structured scores；不是 native rerank model。
-* `image.inpaint` 使用 OpenAI image edit + mask。
-* OpenAI 视频使用 Sora 2 / Sora 2 Pro 的 `/v1/videos` 异步任务 API，仅作为 Veo 之外的候选。
-* Sora 2 和 Videos API 已由 OpenAI 标记废弃，计划于 2026-09-24 下线；后续替代模型必须通过 driver metadata 和 adapter 协议同步更新。
+## 6. 能力开放规则
 
----
-
-### 4.2 `claude.rs`
-
-必须实现：
+厂商文档声明的能力只有满足以下条件才可由 AICC 对外暴露：
 
 ```text
-llm.chat
-vision.caption
-vision.ocr
+存在 typed AICC ApiType
++ 已实现对应 operation codec
++ Model Driver 声明稳定模型能力
++ Provider Rules 完成渠道映射
++ discovery/实例确认当前可用
++ contract test 通过
 ```
 
-说明：
+因此首版可以先让 11 家 Provider 都具备可用的主接口，再逐项增加媒体和专用 operation，而不需要在一个 Provider 文件中一次性实现厂商全部产品线。
 
-* `vision.ocr` 是“视觉文本提取”语义，不要求传统 OCR engine 的逐字坐标级输出。
-* Claude 不作为 `vision.detect` / `vision.segment` 主路由。
-* Claude 不承担 embedding、image generation、audio、video。
+## 7. 建议落地批次
 
----
-
-### 4.3 `google.rs`
-
-必须实现：
+### 批次 A：基础协议与直连 Provider
 
 ```text
-llm.chat
-
-embedding.text
-embedding.multimodal
-
-image.txt2img
-image.img2img
-
-vision.ocr
-vision.caption
-vision.detect
-vision.segment
-
-audio.asr
-audio.tts
-audio.music
-
-video.txt2video
-video.img2video
-video.video2video
-video.extend
+openai-responses  -> OpenAI
+claude-messages   -> Claude
+gemini-interactions -> Gemini
 ```
 
-说明：
-
-* Google 是本版的多模态主 provider。
-* `embedding.multimodal` 必须记录 `embedding_space_id`，并禁止与 OpenAI embedding 混用。
-* `video.extend` 必须保存 `continuation_handle`，并遵守“视频任务 Started 后不跨 provider 重试”的规则。
-* `video.video2video` 使用 Veo 3.1 的 video input / extension / video-to-video 能力；如果后续需要更复杂的视频风格迁移，可作为 P1 再接专门 video provider。
-
----
-
-### 4.4 `fal.rs`
-
-必须实现：
+### 批次 B：共享历史协议与派生 Provider
 
 ```text
-image.upscale
-image.bg_remove
-audio.enhance
-video.upscale
+openai-chat-completions
+  -> OpenRouter
+  -> Kimi
+  -> GLM
+
+claude-messages
+  -> MiniMax
+
+openai-responses
+  -> DeepSeek
+  -> 豆包
+  -> Qwen
 ```
 
-说明：
-
-* fal.ai 不作为 LLM provider。
-* fal.ai 不承担主流 LLM、embedding、rerank、ASR、TTS、music、video generation 的主路由。
-* fal.ai 只补工具型媒体处理能力。
-* 所有 fal 视频类任务必须走 task-manager 异步路径。
-
-推荐 exact model：
+### 批次 C：异步与媒体
 
 ```text
-image.upscale   -> fal-ai/esrgan@fal
-image.bg_remove -> fal-ai/imageutils/rembg@fal
-audio.enhance   -> fal-ai/deepfilternet3@fal
-video.upscale   -> fal-ai/video-upscaler@fal
+fal Queue
+OpenAI/Gemini 专用媒体 operation
+MiniMax/GLM/豆包/Qwen 原生 operation
 ```
 
----
+批次只表示实现依赖，不改变所有 11 家都属于第一版验收范围。
 
-## 5. OpenRouter 的位置
+## 8. 非目标
 
-`openrouter.rs` 不进入最小 P0 集合。
-
-它可以作为 P1 optional provider，用于：
-
-```text
-openrouter.rs
-  + long-tail llm.chat       # DeepSeek / Qwen / Mistral / Llama / xAI 等
-  + rerank                   # 若不想直连 Cohere
-  + cost fallback
-  + model discovery
-```
-
-不建议用 OpenRouter 覆盖：
-
-```text
-embedding.text              # OpenAI / Google 已覆盖
-embedding.multimodal        # Google 更直接
-image.*                     # OpenAI / Google / fal 更直接
-vision.*                    # Google / Claude 更直接
-audio.*                     # OpenAI / Google / fal 更直接
-video.*                     # Google / fal 更直接
-```
-
----
-
-## 6. 最小实现结论
-
-最终 P0 provider 集合为：
-
-```text
-openai.rs
-claude.rs
-google.rs
-fal.rs
-```
-
-其中真正新增 key 只有：
-
-```text
-FAL_KEY
-```
-
-已有的：
-
-```text
-OPENAI_API_KEY
-ANTHROPIC_API_KEY
-GOOGLE_API_KEY
-```
-
-继续作为直连主 provider 使用。
-
-该集合覆盖 `agent.computer_use` 之外的全部 AICC ApiType；`OpenRouter`、`Cohere`、`MiniMax`、`Kling`、`Runway`、`ByteDance` 等均不作为 P0 必需 provider。
-
-[1]: https://developers.openai.com/api/docs/guides/embeddings "Vector embeddings | OpenAI API"
-[2]: https://ai.google.dev/gemini-api/docs/embeddings "Embeddings  |  Gemini API  |  Google AI for Developers"
-[3]: https://platform.claude.com/docs/en/build-with-claude/vision "Vision - Claude API Docs"
-[4]: https://fal.ai/models/fal-ai/esrgan/api "Upscale Images | Image to Image | fal.ai"
+- 不为未被具体 Provider 使用的历史 API 做预防性兼容；
+- 不保证任意 OpenAI-compatible endpoint 自动可用；
+- 不在基础 OpenAI/Claude/Gemini Adapter 中加入派生厂商分支；
+- 不让用户配置 API 代际；
+- 不把 Provider 专属任意 JSON 暴露到 AICC 公共请求；
+- 不为每家 Provider 复制 HTTP、SSE、任务轮询、匹配器和 contract harness；
+- 不在第一版实现本地模型或 `agent.computer_use`。

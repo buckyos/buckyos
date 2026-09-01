@@ -1,8 +1,7 @@
 # AICC Models Manager 与模型路由概念说明
 
-状态：Draft  
-基线：结合当前 `src/frame/aicc` 新版模型路由实现整理  
-目标：明确模型路由里“逻辑目录、模型家族、Provider、模型驱动、权重、用户配置”的边界，以及一次路由结果如何被多个因素共同影响。
+状态：Beta 2.2 目标规范
+目标：明确逻辑目录、模型家族、Provider Profile、Protocol Adapter、Model Driver、Provider Rules、Pricing、权重和用户配置的边界。
 
 ## 1. 问题背景
 
@@ -21,46 +20,28 @@ AICC 不是简单的 `model_name -> provider` 映射。一个调用方传入的 
 本文的核心边界是：
 
 ```text
-Provider 只负责发现“我有什么物理模型”
-Driver 负责解释“这些模型有什么能力、属于哪个家族、默认挂到哪里”
+Provider discovery 只负责发现“当前实例有哪些渠道模型和动态事实”
+Provider Rules 负责把渠道模型映射到 origin identity，并选择 operation、请求规则和渠道价格
+Model Driver 负责解释“原厂模型有什么固有能力、属于哪个家族、默认挂到哪里”
+Protocol Adapter 只执行已经解析好的 operation
 逻辑目录负责表达“调用方想要什么用途/能力”
 权重和 policy 负责表达“多个可选结果里更偏好谁”
 用户/session 配置只做 overlay，不改系统基础语义
 ```
 
-## 2. 当前实现基线
+## 2. 目标架构基线
 
-当前实现已经具备新版模型路由的主要骨架：
+- Model Driver catalog：模型固有 API type、capability、家族、版本、variant 和逻辑挂载的唯一真相源。
+- Provider Rules catalog：渠道模型 ID 到 origin/ModelUID 的映射，以及 operation、request rules、能力收窄和渠道价格规则。
+- Known Provider catalog：管理 UI 使用的服务商默认 endpoint/Profile/adapter。
+- Provider Instance：system-config 中的实例私有配置。
+- Provider inventory：实例级 discovery 动态事实与静态能力交集，并保存 LKGS。
+- ModelRegistry：建立 exact model 和逻辑目录索引。
+- ModelRouter/ModelScheduler：执行 hard filter、权重、policy、fallback 和排序。
+- Provider Call Resolver：产生内部 `ResolvedProviderCall`。
+- Protocol Adapter registry：注册可执行 operation，执行层不解释模型家族。
 
-- `model_types.rs`
-  - 定义 `ProviderInventory`、`ModelMetadata`、`LogicalModelDefinition`、`ModelItem`、`RoutePolicy`、`SchedulerProfile`、`ModelCandidate`。
-- `metadata_resolver.rs`
-  - 根据 provider driver 的 metadata，把 provider 返回的模型 id 解析成 `ModelMetadata`。
-  - 支持 exact rule、wildcard pattern、defaults、variants。
-  - 内置 driver metadata 位于 `src/frame/aicc/driver_metadata/`。
-  - 云更新缓存位于 `$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/`；人工 override 只使用 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/{local,system-config}/`。
-- `model_registry.rs`
-  - 接收每个 provider 的 `ProviderInventory`。
-  - 建立 exact model 索引。
-  - 根据 `ModelMetadata.logical_mounts` 和 `LogicalModelDefinition.min_line` 自动生成逻辑目录的默认 items。
-  - 支持同一逻辑目录下保留多个 provider 的候选。
-- `default_logical_tree.rs`
-  - 定义系统内置的 LLM 用途目录，如 `llm.plan`、`llm.code`、`llm.swift`、`llm.reason`、`llm.vision`、`llm.long`、`llm.fallback`。
-  - 每个目录带有默认 family item 权重、`min_line`、fallback 和 scheduler profile。
-- `model_session.rs`
-  - 定义 `SessionConfig`、`LogicalNode`、`LogicalTreeOverlay`。
-  - 支持 `inherit` / `replace` overlay、`item_overrides`、`exact_model_weights`、全局 policy 和 profile。
-- `model_router.rs`
-  - 展开逻辑目录。
-  - 执行 hard filter。
-  - 处理 fallback。
-  - 根据目录 item weight 和 exact model weight 先筛出最高优先级候选集合。
-- `model_scheduler.rs`
-  - 在候选集合中按 profile 对 cost、latency、reliability、quality、preference、cache、local 打分。
-  - 支持 session sticky binding。
-
-需要特别注意：当前实现里 provider inventory 里的 `logical_mounts` 已经可以直接挂到用途目录或家族目录，但系统边界上更推荐“provider 只产出模型，driver 决定挂载语义”。也就是说，provider 对逻辑目录不应有存在性假设。
-
+三类 metadata/catalog 保持独立 schema 和 revision。每个完整发布使用严格递增、不可复用的 manifest `revision_seq` 并声明兼容客户端范围；云端可以按客户端版本、更新通道或灰度分组投放不同兼容版本。版本选择、下载、校验、防回退与文件替换由 NDN 更新链路保证，AICC 不实现 manifest activation。文件替换后 NDN 令 `metadata_target_seq = manifest.revision_seq`；下一次推理前或任一 Provider Instance 定时库存刷新时，AICC 统一收敛所有 `metadata_applied_seq` 落后的 Provider 库存。
 ## 3. 核心概念
 
 ### 3.1 物理模型与精确模型名
@@ -96,7 +77,7 @@ gpt-5.2:reasoning-high@openai-default
 gpt-5.2:reasoning-low@openai-default
 ```
 
-这类 variant exact model 在 AICC 内部是独立模型身份，用于路由、权重、trace、usage 聚合和审计。真正调用 provider 时，再由 data plane lower 成 base model 加 provider options，例如 `provider_model_id=gpt-5.2` 和 `provider_options.reasoning.effort=high`。
+这类 variant exact model 在 AICC 内部是独立模型身份，用于路由、权重、trace、usage 聚合和审计。真正调用 Provider 时，由 Provider Rules lower 成原始 `provider_model_id`、operation 和 adapter options，例如 `provider_model_id=gpt-5.2`、`operation=responses.create`、`resolved_options.reasoning.effort=high`。
 
 ### 3.2 Provider
 
@@ -117,16 +98,19 @@ Provider 的核心职责是：
 
 Provider 不应该负责定义 `llm.plan`、`llm.chat` 这类逻辑目录，也不应该假设某个逻辑目录一定存在。Provider 刷新出来的内容应该先是物理模型列表。
 
+每个处于运行状态的 Provider Instance 拥有一个库存刷新定时任务循环。该循环必须同时等待定时间隔和控制事件；Provider 停止、禁用、删除、因配置变化被替换，或 AICC 服务退出时，都必须向循环发送幂等的 `Stop` 事件并等待其优雅退出，不能只丢弃任务句柄或依赖进程回收。进入 stopping 状态后不得再启动新一轮刷新；正在进行的刷新应响应停止信号，并且不得在 Provider 已退出运行状态后提交库存或健康状态。Provider 再次启用时创建新的定时任务循环，并按当前 model 列表与 metadata 目标序列重新判断是否需要刷新。
+
 当前代码里 `ProviderInventory` 已经表达了这个边界：
 
 ```text
 provider_instance_name
 provider_type
-provider_driver
+provider_profile_id
+protocol_adapter_id
 models: Vec<ModelMetadata>
 ```
 
-其中 `provider_driver` 表示这个 provider 使用哪个 driver metadata 来解释模型名，例如 `openai`、`claude`、`google-gemini`、`fal`、`minimax`。
+其中 `provider_profile_id` 表示渠道规则，`protocol_adapter_id` 表示线上协议适配器。模型语义由 Provider Rules 选择的 `model_driver` 解释，三者不能复用同一字段。
 
 ### 3.3 模型驱动
 
@@ -143,11 +127,11 @@ Driver metadata 负责回答：
 
 Variant 的边界是：如果一个 provider option 会影响路由选择、价格、质量、审计或用户可见模型选择，它就应该进入模型身份。例如 reasoning effort 应展开为 `:reasoning-high`、`:reasoning-low` 这样的 exact model suffix；如果只是一次请求里的普通采样参数，则仍留在 request options 中。
 
-当前 driver metadata 的匹配顺序是：
+当前 driver metadata 的匹配顺序如下。所有布尔匹配统一使用 [match_rule.md](match_rule.md) 的 `MatchRule`；常见模型规则保持为一个 wildcard 字符串，多维条件才展开为对象。
 
 ```text
 exact models[].id
--> wildcard patterns[].pattern
+-> wildcard patterns[].match (`MatchRule`，通常为字符串)
 -> defaults
 -> conservative fallback
 ```
@@ -156,7 +140,7 @@ exact models[].id
 
 ```text
 builtin
--> latest complete cloud activation
+-> current cloud metadata files delivered by NDN
 -> local override
 -> system-config override
 ```
@@ -425,6 +409,8 @@ Provider discovery
   -> Route resolve
 ```
 
+库存刷新任务属于 Provider Instance 的运行时资源，不属于持久 inventory。停止顺序固定为：先把 Provider 标记为 stopping 并阻止新刷新，再向定时任务循环发送 `Stop` 事件，等待循环退出，最后从 registry 删除或替换实例。`Stop` 必须可重复发送；已经退出或尚未启动的循环视为停止成功。该顺序用于避免禁用、删除、reload 或服务退出后出现孤儿定时器和迟到的 inventory 写入。
+
 ### 5.1 Provider 自发现返回什么
 
 Provider 自发现的最小输出应是 provider model id 列表，以及必要时的 provider 原始 metadata。
@@ -432,10 +418,10 @@ Provider 自发现的最小输出应是 provider model id 列表，以及必要�
 从 AICC 视角，可以理解为：
 
 ```text
-provider_model_id + provider_driver + provider_instance_name
+provider_model_id + provider_profile_id + protocol_adapter_id + provider_instance_name
 ```
 
-其中 provider model id 先不是 AICC 的完整语义。AICC 会通过 driver metadata 生成：
+其中 provider model id 先不是 AICC 的完整语义。AICC 会先通过 Provider Rules 解析 origin、operation 和候选 Model Driver，再通过 Model Driver Metadata 生成：
 
 ```text
 ModelMetadata {
@@ -448,7 +434,7 @@ ModelMetadata {
   attributes,
   pricing,
   health,
-  provider_options
+  resolved_provider_call_ref
 }
 ```
 
@@ -473,15 +459,13 @@ ModelMetadata {
 - 使用保守的成本、延迟、质量估计；
 - 生成泛化挂载，例如 `llm.chat`、`llm.<driver>`、`llm.<driver>.<model>`。
 
-系统可以通过 HTTPS/NDN 可信通道从远程 URL 更新 driver metadata。更新器按发布源隔离水位和 activation，缓存到：
-
-```text
-$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/{objects,activations,observed}/
-```
+系统通过 NDN 更新 driver metadata。云端按客户端版本配置兼容发布，每个 manifest 有严格递增的 `revision_seq`；NDN 负责版本选择、下载、校验、防回退并替换当前文件。AICC 不维护按发布源隔离的水位、activation 或对象缓存。替换完成后 NDN 发布只递增的 `metadata_target_seq = manifest.revision_seq`，由下一次推理或任一 Provider Instance 的定时库存刷新触发全局收敛。
 
 如果仍没有，则使用 conservative fallback。这样系统可用性优先，但不会把未知模型误判成具备高级能力。
 
-这里的信任边界是配置的 HTTPS host 和 NDN PathObject 验证链。远程 driver metadata 不是任意 provider 自称的 metadata，也不能通过手工写入旧的 `etc/.../remote_cache/<driver>.json` 生效。Provider 自发现仍只提供模型名和必要 hints，最终能力和挂载语义以 driver metadata resolver 为准。
+Metadata 文件的信任、完整性和版本替换边界完全属于 NDN；如果这些保证不足，应向 NDN 提交 bug，不能在 AICC 中补第二套验证。每个 Provider inventory 记录 `metadata_applied_seq`；与目标不同即按目标 metadata 重建，成功后才推进已应用序列。定时探测发现 model 列表未变化且序列相同时只探测、不重写库存；触发点即使是某个具体 Provider，也必须同时收敛其它序列落后的 Provider。
+
+NDN 只有在新 metadata 文件下载、校验、替换完成并就绪后才推进 `metadata_target_seq`。Provider 也只有在真正完成库存刷新后才把自己的 `metadata_applied_seq` 推进到本次捕获的目标；任一步未完成或失败时，对应序列和原有状态保持不变。
 
 ### 5.3 Driver 如何挂载到模型家族目录
 
@@ -494,7 +478,7 @@ Driver metadata 中的 `logical_mounts` 是默认挂载语义。推荐它优先�
 ```text
 family: gpt
 tier: standard | pro | mini | nano
-model_pattern: gpt-*
+match: gpt-*
 tier_tokens / exclude_tier_tokens
 version_rank.prefix: gpt
 stability.unstable_tokens: [preview, experimental, beta]
@@ -523,7 +507,7 @@ reasoning effort 这类 variant 在这个流程中应挂在 base model 之后处
 gpt-5.3
   -> base exact model: gpt-5.3@openai-default
   -> variant exact model: gpt-5.3:reasoning-high@openai-default
-  -> provider call lowering: model=gpt-5.3, provider_options.reasoning.effort=high
+  -> provider call lowering: model=gpt-5.3, operation=responses.create, resolved_options.reasoning.effort=high
 ```
 
 如果 driver 希望把 reasoning variant 暴露成逻辑目录，也应通过 variant mount 表达，例如：
@@ -571,7 +555,7 @@ llm.swift -> llm.haiku / llm.gemini-flash-lite / llm.qwen-small
 7. 对每个逻辑目录，Registry 根据模型的 `logical_mounts` 和目录 `min_line` 生成默认 items。
 8. 用户/session overlay 在 route 时叠加到默认 items 上。
 
-如果某个 provider inventory 校验失败，当前实现会跳过该 provider，并保留其它 provider 的刷新结果，不让一个坏 provider 阻塞整体刷新。
+如果某个 provider inventory 刷新或校验失败，保持该 provider 的原 inventory 和 `metadata_applied_seq`；其它 provider 只在各自真正完成刷新后推进自己的 applied seq。
 
 ### 5.5 空逻辑目录与 mini line 强制挂载
 
@@ -904,7 +888,7 @@ gpt-5.2@openai-backup  cost=0.008 latency=1500 quality=0.9
 selected_exact_model
 selected_provider_instance_name
 selected_provider_model_id
-provider_options
+operation / resolved options / pricing source
 fallback_attempts
 enabled/disabled capability trace
 route_trace
@@ -922,7 +906,7 @@ route_trace
 
 Provider 只发现物理模型并执行调用。它不应该硬编码 `llm.plan`、`llm.chat` 是否存在。
 
-### 9.3 Driver 是 provider 模型名到 AICC 语义的桥
+### 9.3 Provider Rules 与 Model Driver 共同连接渠道模型和 AICC 语义
 
 Driver metadata 负责把模型 id 解释成能力、家族、默认挂载、成本和 variant。
 
@@ -938,7 +922,7 @@ Driver 通常把物理模型挂到家族目录；用途目录引用家族目录�
 
 用户不改系统基础逻辑，不改 driver 语义，只通过 overlay、exact model weight、provider allow/block、scheduler profile 和成本配置影响结果。
 
-## 10. 与当前实现的差距和建议
+## 10. 重构实现约束
 
 ### 10.1 Provider 侧应进一步弱化逻辑目录假设
 

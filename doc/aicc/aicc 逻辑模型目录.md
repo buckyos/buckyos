@@ -19,7 +19,6 @@ API Type 决定 request/response schema。**Provider 不能自定义 api_type**,
 | api_type | 输入 | 输出 | 说明 |
 |---|---|---|---|
 | `llm.chat` | `messages[]`(可含 image/audio block) | `message` + 可选 `tool_calls` | 主流 chat completion,事实标准 |
-| `llm.completion` | `prompt: string` | `text: string` | 兼容老接口,新模型不必声明 |
 | `embedding.text` | `string \| string[]` | `number[][]` | 文本/代码 embedding |
 | `embedding.multimodal` | `text \| image \| (text+image)` | `number[][]` | CLIP 类跨模态 embedding |
 | `rerank` | `query, docs[]` | `score[]` | Cross-encoder 重排序 |
@@ -74,7 +73,7 @@ API Type 决定 request/response schema。**Provider 不能自定义 api_type**,
 
 | 一级目录 | 默认 api_type | fallback 策略 | 默认调度 profile |
 |---|---|---|---|
-| `llm` | `llm.chat`(主)、`llm.completion` | parent | balanced |
+| `llm` | `llm.chat` | parent | balanced |
 | `embedding` | `embedding.text`、`embedding.multimodal` | **strict**(向量空间不通用) | latency_first |
 | `rerank` | `rerank` | strict | latency_first |
 | `image` | `image.*`、`vision.*` | parent within same api_type | quality_first |
@@ -100,7 +99,7 @@ llm
 └── fallback   # 兜底兜底
 ```
 
-支持的 api_type:`llm.chat`(主)。`llm.completion` 只在历史模型上保留。
+支持的 api_type：`llm.chat`。纯文本 completion 由调用方转换为单条 message，不定义独立 api_type。
 
 ### 2.2 `embedding` 子目录
 

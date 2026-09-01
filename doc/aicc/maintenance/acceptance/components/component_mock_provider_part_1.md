@@ -67,7 +67,8 @@ port = 18080
 [[providers]]
 provider_instance_name = "openai-mock-1"
 provider_type = "cloud_api"
-provider_driver = "openai"
+provider_profile_id = "openai"
+protocol_adapter_id = "openai-responses"
 base_path = "/v1"
 health = "available"
 quota_state = "normal"
@@ -83,6 +84,15 @@ quality_score = 0.90
 latency_ms = 20
 cost_per_1k_input_tokens = 0.0
 cost_per_1k_output_tokens = 0.0
+
+[[providers]]
+provider_instance_name = "openai-chat-compat-mock"
+provider_type = "cloud_api"
+provider_profile_id = "custom"
+protocol_adapter_id = "openai-chat-completions"
+base_path = "/v1"
+health = "available"
+quota_state = "normal"
 
 [[scenarios]]
 name = "success"
@@ -106,10 +116,13 @@ usage_output_tokens = 3
 
 配置要求：
 
-- Provider settings 中的 `base_url` 指向 Mock Provider。
+- Provider Instance 的 `endpoint` 指向 Mock Provider。
 - Mock Provider 返回的 inventory、health、usage 和错误码必须可由配置控制。
 - 同一个 scenario 在 Rust Mock 和 TS Mock 中语义一致。
 - scenario 触发方式必须稳定，推荐通过 `payload.options.mock_behavior.scenario` 指定。
+- 每个协议代际使用独立 Provider Instance 和 `protocol_adapter_id`。Mock 可以监听同一端口，但 request 记录、scenario 和断言必须按 Adapter 隔离。
+- 同一历史 `protocol_adapter_id` 必须增加至少两个 Provider Instance/Profile 复用用例，证明协议实现和 contract suite 没有按派生 Provider 复制；派生 Adapter 只增加差异层断言。
+- 必须能分别配置“新接口失败、旧接口成功”和“旧接口失败、新接口成功”，验证任一 Adapter 都不会自动 fallback 到另一个。
 
 ## 3. Mock Provider HTTP 接口约定
 
@@ -130,14 +143,15 @@ Mock Provider 需要提供测试管理接口：
 
 管理接口不应暴露真实 key、session token 和原始敏感资源内容。
 
-### 3.2 OpenAI-like 接口
+### 3.2 OpenAI 协议族接口
 
 建议支持：
 
 | Method | Path | 覆盖能力 |
 |---|---|---|
-| `POST` | `/v1/responses` | `llm.chat`、tool call、JSON schema、stream |
-| `POST` | `/v1/chat/completions` | OpenAI-compatible / legacy 兼容 |
+| `POST` | `/v1/responses` | `openai-responses` contract |
+| `POST` | `/v1/chat/completions` | `openai-chat-completions` contract |
+| `POST` | `/v1/completions` | 可选 `openai-completions` contract |
 | `POST` | `/v1/embeddings` | `embedding.text` |
 | `POST` | `/v1/images/generations` | `image.txt2img` |
 | `POST` | `/v1/images/edits` | `image.img2img`、`image.inpaint` |
@@ -152,6 +166,7 @@ Mock Provider 需要提供测试管理接口：
 |---|---|---|
 | `POST` | `/v1/messages` | `llm.chat`、content block、tool use、vision |
 | `POST` | `/v1/messages?stream=true` | SSE streaming |
+| `POST` | `/v1/complete` | 可选 `claude-completions` contract |
 
 ### 3.4 Gemini-like 接口
 
@@ -159,6 +174,7 @@ Mock Provider 需要提供测试管理接口：
 
 | Method | Path | 覆盖能力 |
 |---|---|---|
+| `POST` | `<interactions-endpoint>` | `gemini-interactions` contract；实际路径由 Adapter contract 固定 |
 | `POST` | `/v1beta/models/{model}:generateContent` | `llm.chat`、multimodal parts、function call |
 | `POST` | `/v1beta/models/{model}:streamGenerateContent` | streaming |
 | `POST` | `/v1beta/models/{model}:embedContent` | `embedding.text`、`embedding.multimodal` |

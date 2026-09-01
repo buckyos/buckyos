@@ -113,8 +113,8 @@ flowchart LR
 
 | 层 | kRPC method | 职责 |
 |---|---|---|
-| 控制面 | `route.resolve` | 输入逻辑模型名 + routing constraints，输出确定的精确模型、`provider_options`、`fallback_attempts`、`enabled/disabled_capabilities`、`route_trace`。拒绝 exact model 输入。 |
-| 数据面 | `chat.completions.create` / `images.generate` | 只接受 `exact_model`，不做逻辑路由、不隐式 fallback；本节描述的目录展开 / 调度 / request overlay 均属于控制面。 |
+| 控制面 | `route.resolve` | 输入逻辑模型名 + routing constraints，输出确定的 ModelUID/exact model、Provider/Profile/adapter、Model Driver/origin、原始 provider model、operation、fallback 和 trace。拒绝 exact model 输入。 |
+| 数据面 | typed inference methods | 只接受 `exact_model`，不做逻辑路由、不隐式 fallback；调用阶段生成内部 `ResolvedProviderCall`。 |
 | Helper | `helper.llm_chat` / `helper.text_to_image` | 客户端组合层，先 `route.resolve` 再调数据面，不拥有独立路由逻辑。 |
 
 本文（路由体系）描述的展开、过滤、调度、fallback、session overlay 均发生在 `route.resolve` 控制面；数据面只消费控制面给出的精确模型。
@@ -153,7 +153,7 @@ qwen3@local
 - 表示调用方希望准确无误地选择该 Provider；
 - 默认绕过逻辑模型路由；
 - 默认不做逻辑 fallback；
-- 当 Provider 不可用时，是否允许运行时 fallback 由 request policy 明确控制；
+- Provider 不可用时直接失败；调用方重新 route 或显式选择 route 返回的 fallback candidate；
 - 对调试、测试、Provider 对比、强制指定供应商场景非常重要。
 
 #### 5.1.1 Variant 后缀（reasoning effort 等）
@@ -166,10 +166,10 @@ qwen3@local
 
 例如 `gpt-5.1:reasoning-high@openai_primary`。
 
-- variant 字典由 driver metadata 的 `variants` 定义（见 `doc/aicc/driver_metadata_schema.md`），不同 driver 可有不同 variant。
-- metadata resolver 把带 variant 的模型展开成独立 `ModelMetadata`，记录 `provider_actual_model_id`（指回 base model）并预置 `provider_options`。
-- `route.resolve` 输出 `selected_exact_model`（含 variant）、base `provider_model_id` 还原值，以及 lowering 后的 `provider_options`，例如 `{ "reasoning": { "effort": "high" } }`。
-- 数据面收到带 variant 的 `exact_model` 时按 metadata 自动 lower 成 provider base model + provider options，不要求调用方手动补 `provider_options`。
+- variant 字典由 Model Driver Metadata 定义语义身份，不包含 Provider 参数。
+- Provider Rules 把带 variant 的 exact model lower 成原始 `provider_model_id`、operation 和 resolved options。
+- `route.resolve` 输出含 variant 的 `selected_exact_model` 和不带 variant 的原始 `provider_model_id`，不向调用方暴露 `provider_options`。
+- 数据面根据 exact model、canonical request 和当前规则生成内部 `ResolvedProviderCall`。
 - usage / trace / audit 以含 variant 的 AICC 精确模型聚合，避免不同 reasoning 档位混在一起。
 
 ### 5.2 逻辑模型名
@@ -381,7 +381,7 @@ LogicalModelDefinition
 4. admission check 与 auto-mount 都在 Registry 层完成，Router 只看最终候选。
 5. route trace 会记录每个候选 item 的来源（builtin definition / driver metadata mount / auto admission / manual override / session overlay），并解释模型为何不满足 `min_line`、哪些能力被 `disable_line` 禁用。
 
-> 能力判断的真相源是 `ProviderInventory.models[].capabilities`（由 driver metadata resolver 产出），不再依赖 legacy `ProviderInstance.features`；`must_features` / `Feature` 只是旧请求的兼容表达。
+> 能力判断的真相源是 Model Driver 静态能力、Protocol Adapter operation 能力和 Provider discovery 动态能力的交集。请求只使用结构化 `ModelRequirement` / `ModelDisable`。
 
 ---
 
@@ -402,7 +402,7 @@ Provider 需要通过声明式接口返回自身当前可提供的模型及其�
 
 这份模型列表是 Provider 的运行时能力声明，不是 AICC 的静态配置。AICC Registry 应周期性或按需调用 Provider 的 inventory/metadata 接口刷新能力清单，避免出现“厂商新增或下线模型后必须修改 AICC 配置才能生效”的情况。Provider 可以自行决定自己的能力清单何时更新，例如启动时加载、本地模型安装完成后更新、云端 inventory 变化后更新，或凭据/套餐变化后更新。
 
-> **Provider 自发现只负责发现 provider model id；能力 metadata 由 driver metadata resolver 产出。** Provider（如 OpenAI）可以只通过 `/models` 报告模型 id，AICC 的 metadata resolver 再按 driver metadata（builtin → 已提交 cloud activation → local override → system-config override；匹配优先级 exact → pattern → default → conservative fallback）把它转成最终 `ModelMetadata.capabilities` / `logical_mounts` / `variants`。unknown model 走保守 fallback，不默认声明 `tool_call` / `web_search` / `vision` / `json_schema`。schema 与 driver 文件见 `doc/aicc/driver_metadata_schema.md`；NDN 增量更新、revision 回滚防护和 LKGS 见 `doc/aicc/driver_metadata_update_protocol.md`。更新失败或缓存损坏时退回上一份完整 activation，再不行使用 builtin，启动不依赖云端可用性。
+> **Provider 自发现只负责发现 provider model id；能力 metadata 由 driver metadata resolver 产出。** Provider（如 OpenAI）可以只通过 `/models` 报告模型 id，AICC 的 metadata resolver 再按 driver metadata（builtin → NDN 当前云端文件 → local override → system-config override；匹配优先级 exact → pattern → default → conservative fallback）把它转成最终 `ModelMetadata.capabilities` / `logical_mounts` / `variants`。unknown model 走保守 fallback。云端按客户端版本投放兼容且 manifest `revision_seq` 更高的版本，NDN 保证防回退并在文件替换后令 `metadata_target_seq = manifest.revision_seq`；每个 Provider inventory 保存 `metadata_applied_seq`，推理前或 Provider 定时库存刷新触发所有落后 Provider 的全局收敛。model 列表未变化且 seq 相同时只探测、不重写库存。详见 `driver_metadata_update_protocol.md`。
 
 建议接口返回 schema：
 
@@ -414,7 +414,6 @@ models:
     exact_model: gpt-5.2@openai_primary
     parameter_scale: unknown
     api_types:
-      - llm.completion
       - llm.chat
     logical_mounts:
       - llm.gpt5
@@ -1077,7 +1076,7 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
 - `items`：目录下的软链接入口，每个 item 只需要 `target` 和 `weight`；`target` 可以是另一个逻辑目录或精确模型。
 - `weight`：item 在当前目录下的权重，默认 `1.0`；用户调整优先级时通常只需要改这个字段。
 - `global_exact_model_weights`：调整精确模型在本次 request overlay 中的全局权重；只影响已经由当前逻辑目录展开得到的候选，且不会覆盖目录 item 的分支优先级。
-- Provider 级别的允许/禁止列表仍可作为安全或组织策略存在，但不应作为用户选择模型的主要表达方式。
+- Provider 级别的允许/禁止列表仍可作为安全或组织策略存在，但不应作为用户选择模型的主要表达方式。列表项使用 [match_rule.md](match_rule.md) 的统一 `MatchRule`；通常直接写 Provider instance 的精确名称或 wildcard 字符串，只有同时约束 `api_type`、`logical_path` 等维度时才展开为对象。
 
 配置合并优先级建议：
 
@@ -1241,10 +1240,15 @@ interface RouteTrace {
     merge_mode: "inherit" | "replace";
     selected_from_overlay: boolean;
   }>;
-  // variant lowering：含 variant 的精确模型还原成 base + provider_options（见 §5.1.1）
-  provider_options_lowering?: {
-    provider_actual_model_id?: string;
-    provider_options?: Record<string, unknown>;
+  resolved_provider_call?: {
+    provider_profile_id: string;
+    protocol_adapter_id: string;
+    model_driver_id: string;
+    origin_model_id: string;
+    provider_model_id: string;
+    operation: string;
+    rule_revision: string;
+    pricing_source: string;
   };
   enabled_capabilities?: string[];
   disabled_capabilities?: string[];
@@ -1389,7 +1393,7 @@ providers:
       - provider_model_id: gpt-5.2
         exact_model: gpt-5.2@openai_primary
         parameter_scale: unknown
-        api_types: [llm.chat, llm.completion]
+        api_types: [llm.chat]
         logical_mounts: [llm.gpt5]
         capabilities:
           tool_call: true
@@ -1410,7 +1414,7 @@ providers:
       - provider_model_id: gpt-5.2
         exact_model: gpt-5.2@openai_backup
         parameter_scale: unknown
-        api_types: [llm.chat, llm.completion]
+        api_types: [llm.chat]
         logical_mounts: [llm.gpt5]
         capabilities:
           tool_call: true
@@ -1431,7 +1435,7 @@ providers:
       - provider_model_id: claude-sonnet
         exact_model: claude-sonnet@anthropic
         parameter_scale: unknown
-        api_types: [llm.chat, llm.completion]
+        api_types: [llm.chat]
         logical_mounts: [llm.claude]
         capabilities:
           tool_call: true
@@ -1451,7 +1455,7 @@ providers:
       - provider_model_id: qwen3
         exact_model: qwen3@local
         parameter_scale: 32B
-        api_types: [llm.chat, llm.completion]
+        api_types: [llm.chat]
         logical_mounts: [llm.local]
         capabilities:
           tool_call: false

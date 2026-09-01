@@ -43,16 +43,16 @@ system_config 写入 settings
 
 用例：
 
-1. 写入 Mock OpenAI settings，`base_url` 指向本地 Mock，reload 后 `models.list` 出现 `openai-mock-1`。
-2. 禁用 Provider，reload 后候选消失，调用返回无候选或策略拒绝。
-3. 修改 Provider capabilities，reload 后 `must_features` 硬过滤结果变化。
+1. 写入 Mock OpenAI Provider Instance，`endpoint` 指向本地 Mock，reload 后 `models.list` 出现 `openai-mock-1`。
+2. 禁用 Provider，确认向库存刷新定时任务循环发送 `Stop` 并等待优雅退出；reload 后候选消失，调用返回无候选或策略拒绝，且没有新探测或迟到的 inventory/health 写入。
+3. 修改 Model Driver 的结构化能力，reload 后 `ModelRequirement` 硬过滤结果变化。
 4. 修改 `provider_type` 为 `local_inference` / `cloud_api` / `proxy_unknown`，验证 `local_only` 过滤。
 5. 全量覆盖 settings 和局部更新 settings 都能生效。
 6. settings 非法时 reload 失败，不破坏上一版可用配置。
 7. `provider.validate` 只做校验和脱敏诊断，不写入 system_config。
 8. `provider.add` 写入后 reload，`models.list` / `provider.list` / `provider.health` 可见，且路由可命中新增 Provider。
-9. `provider.refresh_models` 更新 inventory revision 后，`models.list` 中 exact model、`api_types`、`logical_mounts` 和 metadata resolver 结果同步变化。
-10. `provider.delete` 后 reload，候选和 provider list 中删除目标消失；若仍被 locked policy 引用，必须返回明确错误或诊断。
+9. `provider.refresh_models` 在 model 列表变化或 target/applied seq 不同时更新 inventory；列表未变且 seq 相同时只探测。seq 不一致时必须收敛所有落后 Provider，成功后 `models.list` 和 applied seq 同步变化。
+10. `provider.delete`、配置替换实例和 AICC 服务停止都向对应库存刷新定时任务循环发送幂等 `Stop` 并等待退出，不遗留孤儿定时器；删除后 reload，候选和 provider list 中目标消失，若仍被 locked policy 引用则返回明确错误或诊断。
 
 ## 3. Usage Log 验收
 
@@ -102,9 +102,9 @@ system_config 写入 settings
 | `l1_scheduler_weight_*` | P0 | item weight、exact model weight、weight 0 硬过滤、同权重 profile 评分 |
 | `l1_scheduler_profile_*` | P0 | `cost_first`、`latency_first`、`quality_first`、`balanced`、`local_first`、`strict_local` |
 | `l1_request_overlay_*` | P0 | overlay 合并、逻辑目录覆盖、policy locked、互不污染 |
-| `l1_provider_protocol_openai_*` | P0 | OpenAI request/response 转换、tool call、JSON schema、SSE 聚合 |
-| `l1_provider_protocol_claude_*` | P0 | Claude content block、tool use、vision block、stop reason、usage |
-| `l1_provider_protocol_gemini_*` | P0 | Gemini parts、function call、safety block、operation 状态 |
+| `l1_provider_protocol_openai_*` | P0 | Responses 与 Chat Completions 分 Adapter contract、无隐式 fallback |
+| `l1_provider_protocol_claude_*` | P0 | Messages 与兼容 Completions 分 Adapter contract |
+| `l1_provider_protocol_gemini_*` | P0 | Interactions 与 `generateContent` 分 Adapter contract、无隐式 fallback |
 | `l1_provider_protocol_fal_*` | P1 | fal submit/poll、artifact URL、operation timeout |
 | `l1_resource_ref_*` | P0 | `url`、`base64`、`named_object`、FileObject meta 推导 |
 | `l1_task_lifecycle_*` | P0 | immediate、async running、final succeeded、failed、cancel |
@@ -132,8 +132,8 @@ system_config 写入 settings
 | 用例族 | 优先级 | 覆盖点 |
 |---|---|---|
 | `l3_settings_reload_mock_*` | P0 | system_config 写入 Mock settings、reload、models.list |
-| `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload 和回滚语义 |
-| `l3_models_list_*` | P0 | `models.list` / `service.models.list` inventory、逻辑目录、health、legacy aliases 脱敏诊断 |
+| `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload、回滚，以及停止/禁用/删除/替换时库存定时循环的 `Stop` 与优雅退出语义 |
+| `l3_models_list_*` | P0 | `models.list` inventory、完整身份链、逻辑目录、operations、health 脱敏诊断 |
 | `l3_quota_query_*` | P1 | `quota.query` 按 tenant、capability、method 返回预算状态和拒绝路径 |
 | `l3_krpc_llm_chat_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
 | `l3_krpc_resource_*` | P0 | `url`、`base64`、`named_object` 输入和 artifact 输出 |
@@ -142,7 +142,7 @@ system_config 写入 settings
 | `l3_krpc_usage_*` | P0 | usage event 写入和查询 |
 | `l3_krpc_failover_*` | P0 | Provider timeout / 5xx / quota exhausted 后 failover |
 | `l3_krpc_security_*` | P0 | local_only、跨用户访问拒绝、脱敏扫描 |
-| `l3_krpc_legacy_*` | P1 | legacy alias、旧字段兼容或迁移提示 |
+| `l3_krpc_removed_api_*` | P1 | 已删除 method、旧字段和别名必须被稳定拒绝 |
 
 ### 5.4 L4 Gateway 真实模型验收
 
@@ -153,7 +153,7 @@ system_config 写入 settings
 | `l4_gateway_gemini_<model>_complex_workflow` | P2 | Google Gemini 每个支持模型的多模态、safety / function call / operation 语义 |
 | `l4_gateway_openrouter_<model>_complex_workflow` | P2 | OpenRouter 每个支持模型的 OpenAI-compatible 协议兼容、usage、trace |
 | `l4_gateway_fal_<model>_media_workflow` | P2 | fal 每个支持模型的 image/video/audio 工具型异步任务和 artifact |
-| `l4_gateway_sn_ai_provider_<model>_complex_workflow` | P2 | SN AI Provider 每个支持模型的无普通 API key 链路、usage、trace、provider 归因 |
+| `l4_gateway_sn_ai_provider_<model>_complex_workflow` | P2 | SN AI Provider 每个支持模型的 API Key/动态登录双链路、token 刷新、usage、trace、provider 归因 |
 | `l4_gateway_models_list` | P2 | 真实环境 inventory、逻辑目录和 Provider health 可诊断 |
 
 L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型名归一化得到；报告中必须保留原始精确模型名。
