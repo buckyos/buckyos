@@ -119,6 +119,19 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
       (!Number.isInteger(rawProvider.official_catalog.page_size) || Number(rawProvider.official_catalog.page_size) < 1)) {
       throw new Error(`${driver}.official_catalog.page_size must be a positive integer`);
     }
+    if (rawProvider.official_catalog.endpoint_ids !== undefined) {
+      const endpointIds = requireStringArray(
+        rawProvider.official_catalog.endpoint_ids,
+        `${driver}.official_catalog.endpoint_ids`,
+      );
+      if (rawProvider.official_catalog.format !== "fal") {
+        throw new Error(`${driver}.official_catalog.endpoint_ids is only valid for fal catalogs`);
+      }
+      if (endpointIds.length === 0 || endpointIds.length > 50 ||
+        new Set(endpointIds).size !== endpointIds.length) {
+        throw new Error(`${driver}.official_catalog.endpoint_ids must contain 1-50 unique ids`);
+      }
+    }
     requireStringArray(rawProvider.source_urls, `${driver}.source_urls`);
     if (!isObject(rawProvider.protocol_evidence)) {
       throw new Error(`${driver}.protocol_evidence must be an object`);
@@ -148,7 +161,7 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
         if (!["exclude", "alias"].includes(String(rule.action))) {
           throw new Error(`${driver}.coverage_rule.action is invalid`);
         }
-        if (!["deprecated_or_retiring", "logical_alias", "not_physical_model"].includes(String(rule.reason))) {
+        if (!["deprecated_or_retiring", "logical_alias", "not_physical_model", "unsupported_canonical_protocol"].includes(String(rule.reason))) {
           throw new Error(`${driver}.coverage_rule.reason is invalid`);
         }
         if (rule.action === "alias") requireString(rule.physical_model_id, `${driver}.coverage_rule.physical_model_id`);

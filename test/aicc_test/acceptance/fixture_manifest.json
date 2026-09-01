@@ -116,7 +116,7 @@
     {
       "id": "facts-xml",
       "path": "../fixtures/facts.xml",
-      "mime": "application/xml",
+      "mime": "text/xml",
       "size": 91,
       "sha256": "720613d46790f949573d9b7fdc065597eb637b07aedc35e49402ca99582e540a",
       "facts": [
@@ -194,11 +194,44 @@
       "source": "deterministic:generate_fixtures.py"
     },
     {
+      "id": "facts-doc",
+      "path": "../fixtures/facts.doc",
+      "mime": "application/msword",
+      "size": 27136,
+      "sha256": "717585c0a88f20862c86220163dd03da87cd743970354c6b29add32725f2e833",
+      "facts": [
+        "I am a test document",
+        "This is page 1"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "Apache POI SampleDoc.doc test fixture"
+    },
+    {
       "id": "facts-docx",
       "path": "../fixtures/facts.docx",
       "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "size": 859,
       "sha256": "27a3927beb614706b7d8722dfb86984d9aae73d6d50a7060b4cfe3f31304f8ee",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-xls",
+      "path": "../fixtures/facts.xls",
+      "mime": "application/vnd.ms-excel",
+      "size": 5632,
+      "sha256": "9778ca90865fd17b03adfa42eeae9df12c13d807a2f51e272245b35ffc54080d",
       "facts": [
         "AICC-FIXTURE-7319"
       ],
@@ -224,6 +257,22 @@
         "T3.attachment"
       ],
       "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-ppt",
+      "path": "../fixtures/facts.ppt",
+      "mime": "application/vnd.ms-powerpoint",
+      "size": 85504,
+      "sha256": "2ae3c48fe828d9534cbdd052e0982d92ee3901d6f486974a2533fd38158576e3",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "prebuilt:Microsoft PowerPoint 97 binary fixture"
     },
     {
       "id": "facts-pptx",
@@ -281,6 +330,54 @@
       "sha256": "6f8f6a523797389e5890789f740e9c6e0f46b43290cf7b0dc9e903b25d8b36d6",
       "facts": [
         "mask"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "inpaint-image-png",
+      "path": "../fixtures/inpaint_image.png",
+      "mime": "image/png",
+      "size": 6882,
+      "sha256": "667b0888cee6c55487923c22e1b1b00602355966b5f91be8504147fbfe32a019",
+      "facts": [
+        "inpaint_image"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "inpaint-mask-png",
+      "path": "../fixtures/inpaint_mask.png",
+      "mime": "image/png",
+      "size": 7301,
+      "sha256": "2228745f694f664a94b048044a4ad71716989b5ac6be594d0d2db52ba8788859",
+      "facts": [
+        "inpaint_mask"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "background-remove-png",
+      "path": "../fixtures/background_remove.png",
+      "mime": "image/png",
+      "size": 3281,
+      "sha256": "6ba8605364b472ba1c26138ce39c3ac79b8c3f4dff60acfb68a741ee945c9d3a",
+      "facts": [
+        "background_remove"
       ],
       "cases": [
         "T1.resource",

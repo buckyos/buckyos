@@ -10,7 +10,11 @@ export type ResourceFixture = ResourceRef | Partial<Record<ResourceRepresentatio
 
 export type FixtureRefs = {
   image?: ResourceFixture;
+  bgRemoveImage?: ResourceFixture;
+  ocrImage?: ResourceFixture;
   mask?: ResourceFixture;
+  inpaintImage?: ResourceFixture;
+  inpaintMask?: ResourceFixture;
   audio?: ResourceFixture;
   video?: ResourceFixture;
   document?: ResourceFixture;
@@ -19,9 +23,11 @@ export type FixtureRefs = {
 type SingularFixtureKind = Exclude<keyof FixtureRefs, "documents">;
 
 export function requiredFixtureKinds(apiType: string): string[] {
+  if (apiType === "vision.ocr") return ["ocrImage"];
   if (apiType === "image.img2img" || apiType.startsWith("vision.")) return ["image"];
-  if (apiType === "image.inpaint") return ["image", "mask"];
-  if (apiType === "image.upscale" || apiType === "image.bg_remove") return ["image"];
+  if (apiType === "image.inpaint") return ["inpaintImage", "inpaintMask"];
+  if (apiType === "image.upscale") return ["image"];
+  if (apiType === "image.bg_remove") return ["bgRemoveImage"];
   if (apiType === "embedding.multimodal") return ["image"];
   if (apiType === "audio.asr" || apiType === "audio.enhance") return ["audio"];
   if (apiType === "video.img2video") return ["image"];
@@ -112,10 +118,14 @@ function io(
       };
     case "image.inpaint":
       return {
-        input_json: { prompt: "Fill the masked region with green leaves" },
+        input_json: {
+          prompt: "A solid medium-blue square canvas with a compact cluster of realistic green leaves strictly inside the central rectangular masked region. Preserve the uniform medium-blue area outside the mask unchanged, with no glow, gradient, shadow, or extra objects.",
+          input_fidelity: "high",
+          quality: "high",
+        },
         resources: [
-          requireFixture(fixtures, "image", apiType, representation),
-          requireFixture(fixtures, "mask", apiType, representation),
+          requireFixture(fixtures, "inpaintImage", apiType, representation),
+          requireFixture(fixtures, "inpaintMask", apiType, representation),
         ],
       };
     case "image.upscale":
@@ -126,18 +136,28 @@ function io(
     case "image.bg_remove":
       return {
         input_json: {},
-        resources: [requireFixture(fixtures, "image", apiType, representation)],
+        resources: [requireFixture(fixtures, "bgRemoveImage", apiType, representation)],
       };
     case "vision.ocr":
       return {
-        input_json: { prompt: "Return the visible marker." },
-        resources: [requireFixture(fixtures, "image", apiType, representation)],
+        input_json: {
+          prompt: "Read the full BuckyOS marker exactly. It ends in four digits; distinguish the digit 8 from the letter B.",
+        },
+        resources: [requireFixture(fixtures, "ocrImage", apiType, representation)],
       };
     case "vision.caption":
+      return {
+        input_json: { prompt: "Accurately describe all prominent text and graphic elements in the supplied marker image." },
+        resources: [requireFixture(fixtures, "image", apiType, representation)],
+      };
     case "vision.detect":
+      return {
+        input_json: { prompt: "Return structured detections for visible objects and text regions, with descriptive labels and bounding boxes." },
+        resources: [requireFixture(fixtures, "image", apiType, representation)],
+      };
     case "vision.segment":
       return {
-        input_json: { prompt: `Execute ${apiType} on the supplied image.` },
+        input_json: { prompt: "Segment the prominent pink flower, yellow flower center, green stem, and green leaves. Return a non-empty JSON array with one labeled region per visible subject and normalized polygon or bounding-box coordinates." },
         resources: [requireFixture(fixtures, "image", apiType, representation)],
       };
     case "audio.tts":
@@ -149,7 +169,12 @@ function io(
         resources: [requireFixture(fixtures, "audio", apiType, representation)],
       };
     case "audio.music":
-      return { input_json: { prompt: "A four-second calm instrumental test tone" }, resources: [] };
+      return {
+        input_json: {
+          prompt: "A four-second calm ambient instrumental test tone, very slow and quiet, with no vocals, no speech, no samples, no percussion, and no dance beat",
+        },
+        resources: [],
+      };
     case "video.txt2video":
       return { input_json: { prompt: "A paper plane moving across a desk", duration_seconds: 4 }, resources: [] };
     case "video.img2video":
@@ -161,7 +186,7 @@ function io(
     case "video.extend":
     case "video.upscale":
       return {
-        input_json: apiType === "video.extend" ? { duration_seconds: 4 } : {},
+        input_json: apiType === "video.extend" ? { duration_seconds: 7 } : {},
         resources: [requireFixture(fixtures, "video", apiType, representation)],
       };
     case "agent.computer_use":
@@ -279,6 +304,7 @@ export function buildExactRequest(args: {
     inputJson.response_format = "object_id";
     inputJson.output = { resource_format: "named_object" };
   }
+  if (toolSpecs.length > 0) inputJson.tool_specs = toolSpecs;
   return {
     capability: args.cell.api_type.split(".")[0],
     model: { alias: args.cell.exact_model },
@@ -287,7 +313,6 @@ export function buildExactRequest(args: {
     payload: {
       input_json: inputJson,
       resources,
-      tool_specs: toolSpecs,
       options: {
         session_id: `${args.runId}:${args.cell.case_id}`,
         rootid: args.runId,
@@ -423,11 +448,16 @@ export function assertResponseShape(
     const artifacts = content.filter((item) => item && typeof item === "object" &&
       ["image", "document"].includes(String((item as Record<string, unknown>).type)));
     if (artifacts.length === 0) throw new Error(`expected ${expectedPrefix} artifact output`);
-    const hasMime = artifacts.some((item) => {
+    const materialized = Array.isArray(extra.materialized_artifacts)
+      ? extra.materialized_artifacts.filter((item): item is Record<string, unknown> =>
+        Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      : [];
+    const hasMime = artifacts.some((item, index) => {
       const source = (item as Record<string, unknown>).source;
       if (!source || typeof source !== "object") return false;
       const resource = source as Record<string, unknown>;
-      const mime = resource.mime_hint ?? resource.mime;
+      const materializedMime = materialized.find((entry) => entry.content_index === index)?.mime;
+      const mime = resource.mime_hint ?? resource.mime ?? materializedMime;
       const addressable = typeof resource.url === "string" || typeof resource.obj_id === "string" ||
         typeof resource.data_base64 === "string";
       return addressable && typeof mime === "string" && mime.startsWith(expectedPrefix);

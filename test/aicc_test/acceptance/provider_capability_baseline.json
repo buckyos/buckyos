@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "baseline_revision": "2026-08-27.3",
-  "checked_at": "2026-08-27",
+  "baseline_revision": "2026-08-30.7",
+  "checked_at": "2026-08-30",
   "canonical_api_types": [
     "llm",
     "embedding.text",
@@ -55,6 +55,13 @@
       },
       "coverage_rules": [
         {
+          "model_pattern": "*-latest:*",
+          "action": "exclude",
+          "reason": "logical_alias",
+          "source_urls": ["https://platform.openai.com/docs/api-reference/models"],
+          "evidence_summary": "Variants of hot-swapped latest aliases are not physical model identifiers."
+        },
+        {
           "model_pattern": "*-latest",
           "action": "exclude",
           "reason": "logical_alias",
@@ -69,11 +76,193 @@
           "evidence_summary": "Excluded from new acceptance calls because the catalog marks Sora 2 as deprecated. Existing recorded results remain valid evidence."
         },
         {
-          "model_pattern": "gpt-image-1",
+          "model_pattern": "gpt-image-1*",
           "action": "exclude",
           "reason": "deprecated_or_retiring",
           "source_urls": ["https://developers.openai.com/api/docs/guides/image-generation"],
-          "evidence_summary": "Explicit acceptance scope decision: do not start new calls for gpt-image-1 because it is expired or approaching retirement. Existing recorded results remain valid evidence."
+          "evidence_summary": "The official catalog marks GPT Image 1, GPT Image 1 Mini, and GPT Image 1.5 as deprecated; use gpt-image-2. Existing recorded results remain valid evidence."
+        },
+        {
+          "model_pattern": "gpt-audio*",
+          "action": "exclude",
+          "reason": "not_physical_model",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "Realtime and native audio sessions are outside the current AICC request protocol."
+        },
+        {
+          "model_pattern": "gpt-realtime*",
+          "action": "exclude",
+          "reason": "not_physical_model",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "Realtime sessions are outside the current AICC request protocol."
+        },
+        {
+          "model_pattern": "gpt-live-*",
+          "action": "exclude",
+          "reason": "not_physical_model",
+          "source_urls": ["https://developers.openai.com/api/docs/models/gpt-live-transcribe"],
+          "evidence_summary": "Live streaming transcription uses the Realtime transcription protocol, which is outside the current AICC request protocol."
+        },
+        {
+          "model_pattern": "omni-moderation*",
+          "action": "exclude",
+          "reason": "not_physical_model",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "Moderation is not a canonical AICC API type."
+        },
+        {
+          "model_pattern": "gpt-3.5-turbo*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks the GPT-3.5 Turbo family as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-4 as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4-0314",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/gpt-4"],
+          "evidence_summary": "The GPT-4 model page no longer lists this retired snapshot as an active model."
+        },
+        {
+          "model_pattern": "gpt-4-0613",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/gpt-4"],
+          "evidence_summary": "The official GPT-4 model page marks this snapshot as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4-turbo*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-4 Turbo and GPT-4 Turbo Preview as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4.5-preview*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-4.5 Preview as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4.1-nano*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-4.1 nano as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4o-2024-05-13",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/gpt-4o"],
+          "evidence_summary": "The official GPT-4o model page marks this snapshot as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4o-search-preview*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-4o Search Preview as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4o-mini-search-preview*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-4o Mini Search Preview as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5-codex",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-5-Codex as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5.1-codex*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks all GPT-5.1-Codex tiers as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5.2-codex*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-5.2-Codex as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5-chat*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-5 Chat as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5.1-chat*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-5.1 Chat as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5.2-chat*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-5.2 Chat as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5.3-chat*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-5.3 Chat as deprecated."
+        },
+        {
+          "model_pattern": "o1*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks the o1 family as deprecated."
+        },
+        {
+          "model_pattern": "o3-mini*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks o3-mini as deprecated."
+        },
+        {
+          "model_pattern": "o3-deep-research*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks o3-deep-research as deprecated."
+        },
+        {
+          "model_pattern": "o4-mini*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks o4-mini and o4-mini-deep-research as deprecated."
+        },
+        {
+          "model_pattern": "chatgpt-*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "Deprecated ChatGPT aliases are not accepted as current physical API models."
         }
       ],
       "rules": [
@@ -168,6 +357,42 @@
           "evidence_summary": "OpenAI TTS models convert text to audio."
         },
         {
+          "model_pattern": "gpt-5.2-pro*",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+          "methods": ["llm.chat", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+          "input_kinds": ["text", "image", "document"],
+          "output_kinds": ["text", "tool_call", "image"],
+          "document_formats": ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx", "html", "xml", "json", "yaml", "rtf", "source"],
+          "source_urls": ["https://developers.openai.com/api/docs/models/gpt-5.2-pro", "https://developers.openai.com/api/docs/guides/file-inputs"],
+          "evidence_summary": "GPT-5.2 Pro supports text, image, files, tools, and the Responses image generation tool, but its official model page marks Structured Outputs unsupported."
+        },
+        {
+          "model_pattern": "gpt-5.4-pro*",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+          "methods": ["llm.chat", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+          "input_kinds": ["text", "image", "document"],
+          "output_kinds": ["text", "tool_call", "image"],
+          "document_formats": ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx", "html", "xml", "json", "yaml", "rtf", "source"],
+          "source_urls": ["https://developers.openai.com/api/docs/models/gpt-5.4-pro", "https://developers.openai.com/api/docs/guides/file-inputs"],
+          "evidence_summary": "GPT-5.4 Pro supports text, image, files, tools, and the Responses image generation tool, but its official model page marks Structured Outputs unsupported."
+        },
+        {
+          "model_pattern": "gpt-5*",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+          "methods": ["llm.chat", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+          "input_kinds": ["text", "image", "document"],
+          "output_kinds": ["text", "json", "tool_call", "image"],
+          "document_formats": ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx", "html", "xml", "json", "yaml", "rtf", "source"],
+          "source_urls": ["https://developers.openai.com/api/docs/guides/image-generation", "https://developers.openai.com/api/docs/models"],
+          "evidence_summary": "GPT-5 and newer models that list the Responses image generation tool support generation and editing through image_generation calls; masked inpaint remains unsupported on this surface."
+        },
+        {
           "model_pattern": "gpt-*",
           "status": "active",
           "source_status": "official_catalog_runtime_membership",
@@ -183,12 +408,42 @@
           "model_pattern": "o*",
           "status": "active",
           "source_status": "official_catalog_runtime_membership",
-          "api_types": ["llm", "vision.ocr", "vision.caption"],
-          "methods": ["llm.chat", "vision.ocr", "vision.caption"],
-          "input_kinds": ["text", "image"],
+          "api_types": ["llm"],
+          "methods": ["llm.chat"],
+          "input_kinds": ["text"],
           "output_kinds": ["text", "json", "tool_call"],
           "source_urls": ["https://developers.openai.com/api/docs/models/all"],
           "evidence_summary": "Reasoning models support text generation; current model pages determine image and tool availability."
+        },
+        {
+          "model_pattern": "babbage-*",
+          "status": "removed",
+          "api_types": [],
+          "methods": [],
+          "input_kinds": [],
+          "output_kinds": [],
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "Legacy base models are not part of the AICC inference protocol surface."
+        },
+        {
+          "model_pattern": "davinci-*",
+          "status": "removed",
+          "api_types": [],
+          "methods": [],
+          "input_kinds": [],
+          "output_kinds": [],
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "Legacy base models are not part of the AICC inference protocol surface."
+        },
+        {
+          "model_pattern": "computer-use-preview*",
+          "status": "removed",
+          "api_types": [],
+          "methods": [],
+          "input_kinds": [],
+          "output_kinds": [],
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The preview computer-use endpoint is outside the current AICC adapter surface."
         }
       ]
     },
@@ -216,6 +471,27 @@
         "preview_allowlist": "Beta features require documented beta headers or account access and are not promoted to active capability without evidence."
       },
       "coverage_rules": [
+        {
+          "model_pattern": "claude-opus-4-20250514*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://platform.claude.com/docs/en/about-claude/model-deprecations"],
+          "evidence_summary": "Claude Opus 4 was retired from the Claude API on June 15, 2026."
+        },
+        {
+          "model_pattern": "claude-opus-4-1-20250805*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://platform.claude.com/docs/en/about-claude/model-deprecations"],
+          "evidence_summary": "Claude Opus 4.1 was retired from the Claude API on August 5, 2026."
+        },
+        {
+          "model_pattern": "claude-sonnet-4-20250514*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://platform.claude.com/docs/en/about-claude/model-deprecations"],
+          "evidence_summary": "Claude Sonnet 4 was retired from the Claude API on June 15, 2026."
+        },
         {
           "model_pattern": "claude-3-5-haiku-20241022*",
           "action": "exclude",
@@ -271,6 +547,69 @@
       },
       "coverage_rules": [
         {
+          "model_pattern": "gemini-2.5-flash-native-audio-preview-09-2025",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/live"],
+          "evidence_summary": "This active physical model uses the bidirectional Live API, which no current canonical AICC request type represents."
+        },
+        {
+          "model_pattern": "gemini-2.5-flash-native-audio-preview-12-2025",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/live"],
+          "evidence_summary": "This active physical model uses the bidirectional Live API, which no current canonical AICC request type represents."
+        },
+        {
+          "model_pattern": "gemini-3.1-flash-live-preview",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/live"],
+          "evidence_summary": "This active physical model uses the bidirectional Live API, which no current canonical AICC request type represents."
+        },
+        {
+          "model_pattern": "gemini-3.5-live-translate-preview",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/live"],
+          "evidence_summary": "This active physical translation model uses the bidirectional Live API, which no current canonical AICC request type represents."
+        },
+        {
+          "model_pattern": "gemini-3.5-transcribe-live",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/transcribe"],
+          "evidence_summary": "This active physical transcription model uses the Live API; AICC currently represents file transcription, not realtime transcription sessions."
+        },
+        {
+          "model_pattern": "deep-research-*",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/deep-research"],
+          "evidence_summary": "These are active managed agents with asynchronous Interactions lifecycle and collaborative planning, not ordinary model inference requests."
+        },
+        {
+          "model_pattern": "antigravity-preview-05-2026",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/antigravity-agent"],
+          "evidence_summary": "Antigravity is a managed remote computer-use agent whose Interactions lifecycle is not represented by the current AICC computer-use request contract."
+        },
+        {
+          "model_pattern": "aqa",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": ["https://ai.google.dev/api/generate-content"],
+          "evidence_summary": "AQA only exposes the specialized generateAnswer semantic-retrieval protocol, whose required grounding source and attribution contract are not represented by canonical AICC LLM requests."
+        },
+        {
+          "model_pattern": "gemini-robotics-er-2-streaming-preview",
+          "action": "exclude",
+          "reason": "not_physical_model",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
+          "evidence_summary": "The streaming robotics surface is outside the current AICC request protocol."
+        },
+        {
           "model_pattern": "gemini-3.1-flash-image-preview",
           "action": "exclude",
           "reason": "deprecated_or_retiring",
@@ -314,6 +653,26 @@
         }
       ],
       "rules": [
+        {
+          "model_pattern": "gemini-2.5-computer-use-preview-10-2025",
+          "status": "preview",
+          "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment"],
+          "methods": ["llm.chat", "vision.ocr", "vision.caption", "vision.detect", "vision.segment"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/computer-use"],
+          "evidence_summary": "The Gemini 2.5 Computer Use model accepts text and screen images and returns text or tool actions; it is not a speech transcription model."
+        },
+        {
+          "model_pattern": "gemma-4-*",
+          "status": "active",
+          "api_types": ["llm", "vision.ocr", "vision.caption"],
+          "methods": ["llm.chat", "vision.ocr", "vision.caption"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["text", "tool_call"],
+          "source_urls": ["https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api"],
+          "evidence_summary": "Hosted Gemma 4 supports text and image input, multi-turn text generation, and function calling through Gemini generateContent."
+        },
         {
           "model_pattern": "gemini-embedding-2*",
           "status": "active",
@@ -437,6 +796,27 @@
           "evidence_summary": "Nano Banana models support image generation and editing."
         },
         {
+          "model_pattern": "gemini-3.5-transcribe",
+          "status": "active",
+          "api_types": ["audio.asr"],
+          "methods": ["audio.asr"],
+          "input_kinds": ["audio"],
+          "output_kinds": ["text"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/transcribe"],
+          "evidence_summary": "Gemini 3.5 Transcribe uses the Interactions API for file-based speech transcription."
+        },
+        {
+          "model_pattern": "gemini-robotics-*",
+          "status": "preview",
+          "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment"],
+          "methods": ["llm.chat", "vision.ocr", "vision.caption", "vision.detect", "vision.segment"],
+          "input_kinds": ["text", "image", "video", "document"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "document_formats": ["txt", "md", "pdf", "csv", "html", "xml", "json", "rtf", "source"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
+          "evidence_summary": "Gemini Robotics ER accepts multimodal context but is not exposed as a general audio transcription model."
+        },
+        {
           "model_pattern": "gemini-*",
           "status": "active",
           "source_status": "official_catalog_runtime_membership",
@@ -457,9 +837,18 @@
         "endpoint": "https://api.fal.ai/v1/models",
         "format": "fal",
         "authentication": "fal-key",
-        "page_size": 100
+        "page_size": 100,
+        "endpoint_ids": [
+          "fal-ai/esrgan",
+          "fal-ai/imageutils/rembg",
+          "fal-ai/deepfilternet3",
+          "fal-ai/video-upscaler"
+        ]
       },
-      "source_urls": ["https://fal.ai/docs/model-api-reference"],
+      "source_urls": [
+        "https://fal.ai/docs/platform-apis/v1/models",
+        "https://fal.ai/docs/model-api-reference"
+      ],
       "protocol_evidence": {
         "documentation_version": "official documentation checked 2026-08-27",
         "streaming_semantics": "fal model APIs use synchronous, queue, webhook, or streaming patterns as declared by the selected endpoint.",
@@ -535,7 +924,7 @@
         "image_audio_video_limits": "The model catalog publishes media-specific resolution, duration, FPS, language, and format limits where applicable.",
         "context_output_limits": "Physical language models publish context/output limits; for example the catalog records model-specific 200K/1M context and output limits.",
         "region_restrictions": "Availability follows the MiniMax platform account region and endpoint documentation.",
-        "account_tier_restrictions": "Paid API and token-plan access can restrict models; missing credentials or entitlement is retained as a skipped matrix result.",
+        "account_tier_restrictions": "Paid API and token-plan access can restrict models; missing configured credentials are handled by preflight, while runtime entitlement errors are reported as provider_restricted matrix results.",
         "preview_allowlist": "Preview and newly released models require explicit catalog/account availability."
       },
       "rules": [

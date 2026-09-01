@@ -1163,9 +1163,17 @@ impl AiccHttpServer {
     async fn handle_reload_settings(&self) -> std::result::Result<serde_json::Value, RPCErrors> {
         let runtime = get_buckyos_api_runtime()
             .map_err(|err| RPCErrors::ReasonError(format!("get runtime failed: {}", err)))?;
-        let settings = runtime.get_my_settings().await.map_err(|err| {
-            RPCErrors::ReasonError(format!("load aicc settings during reload failed: {}", err))
-        })?;
+        let service_url = runtime.get_system_config_url();
+        let session_token = runtime.get_session_token().await;
+        let client =
+            SystemConfigClient::new(Some(service_url.as_str()), Some(session_token.as_str()));
+        let settings = match client.get(AICC_SETTINGS_KEY).await {
+            Ok(value) => serde_json::from_str(value.value.as_str()).map_err(|err| {
+                RPCErrors::ReasonError(format!("parse aicc settings during reload failed: {}", err))
+            })?,
+            Err(SystemConfigError::KeyNotFound(_)) => json!({}),
+            Err(err) => return Err(system_config_error_to_rpc(err)),
+        };
         self.apply_settings_value(&settings)
     }
 

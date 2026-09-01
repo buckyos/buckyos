@@ -37,10 +37,15 @@ export function assertNoSecrets(value: unknown): void {
   if (findings.length > 0) throw new Error("report contains sensitive data");
 }
 
+export function isProviderRestricted(error: unknown): boolean {
+  return String(error).toLowerCase().includes("request not allowed");
+}
+
 export function caseTotals(cases: CaseReport[]): Record<ResultStatus, number> {
   const totals: Record<ResultStatus, number> = {
     passed: 0,
     failed: 0,
+    provider_restricted: 0,
     skipped: 0,
     not_applicable: 0,
     review: 0,
@@ -83,7 +88,7 @@ function markdown(report: AcceptanceReport): string {
     `- Known actual / unknown estimated exposure: $${report.finance.actual_cost_usd.toFixed(6)} / $${report.finance.estimated_exposure_usd.toFixed(6)}`,
     `- Total exposure / budget: $${report.finance.total_exposure_usd.toFixed(6)} / $${report.finance.budget_usd.toFixed(6)}`,
     `- Unknown-cost calls: ${report.finance.unknown_cost_calls}; budget exceeded: ${report.finance.budget_exceeded}`,
-    `- Results: passed=${totals.passed}, failed=${totals.failed}, skipped=${totals.skipped}, not_applicable=${totals.not_applicable}, review=${totals.review}`,
+    `- Results: passed=${totals.passed}, failed=${totals.failed}, provider_restricted=${totals.provider_restricted}, skipped=${totals.skipped}, not_applicable=${totals.not_applicable}, review=${totals.review}`,
     ...(report.manifest_coverage
       ? [`- Manifest coverage: ${report.manifest_coverage.executed}/${report.manifest_coverage.total} (${(report.manifest_coverage.coverage_rate * 100).toFixed(2)}%); passed=${report.manifest_coverage.passed}, failed=${report.manifest_coverage.failed}`]
       : []),

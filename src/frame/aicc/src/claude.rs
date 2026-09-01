@@ -2,7 +2,7 @@ use crate::aicc::{
     provider_type_from_settings, redacted_json_log, AIComputeCenter, Provider, ProviderError,
     ProviderInstance, ProviderRefreshTask, ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
-use crate::claude_protocol::convert_complete_request;
+use crate::claude_protocol::{convert_complete_request, parse_response_content};
 use crate::metadata_resolver::{resolve_driver_inventory, DriverModelResolveRequest};
 use crate::model_types::{
     ApiType, CostEstimateInput, CostEstimateOutput, HealthStatus, ModelMetadata, PricingMode,
@@ -10,12 +10,12 @@ use crate::model_types::{
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use buckyos_api::{
-    ai_methods, features, AiCost, AiMethodRequest, AiResponse, AiToolCall, AiUsage, Feature,
-    ResourceRef,
-};
 #[cfg(test)]
 use buckyos_api::Capability;
+use buckyos_api::{
+    ai_methods, features, AiCost, AiMessage, AiMethodRequest, AiResponse, AiRole, AiUsage, Feature,
+    ResourceRef,
+};
 use log::{info, warn};
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
@@ -29,7 +29,8 @@ use tokio::time;
 
 const DEFAULT_CLAUDE_BASE_URL: &str = "https://api.anthropic.com/v1";
 const DEFAULT_CLAUDE_TIMEOUT_MS: u64 = 60_000;
-const DEFAULT_CLAUDE_MODELS: &str = "claude-3-7-sonnet-20250219,claude-3-5-haiku-20241022";
+const DEFAULT_CLAUDE_MODELS: &str =
+    "claude-sonnet-5,claude-opus-5,claude-haiku-4-5-20251001,claude-fable-5";
 const DEFAULT_CLAUDE_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const CLAUDE_MODELS_PAGE_LIMIT: u32 = 1000;
@@ -321,6 +322,21 @@ impl ClaudeProvider {
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
+                if status == reqwest::StatusCode::FORBIDDEN {
+                    let current = self
+                        .inventory
+                        .read()
+                        .map_err(|_| anyhow!("claude inventory lock poisoned"))?
+                        .clone();
+                    if !current.models.is_empty() {
+                        warn!(
+                            "aicc.claude.inventory.refresh_forbidden_keep_current provider_instance_name={} models={}",
+                            self.provider_instance_name,
+                            current.models.len()
+                        );
+                        return Ok(current);
+                    }
+                }
                 return Err(anyhow!(
                     "claude inventory refresh failed status={} body={}",
                     status,
@@ -597,32 +613,6 @@ impl ClaudeProvider {
         }
     }
 
-    fn extract_tool_calls(body: &Value) -> Vec<AiToolCall> {
-        body.get("content")
-            .and_then(|value| value.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter(|item| {
-                        item.get("type").and_then(|value| value.as_str()) == Some("tool_use")
-                    })
-                    .filter_map(|item| {
-                        Some(AiToolCall {
-                            name: item.get("name")?.as_str()?.to_string(),
-                            call_id: item.get("id")?.as_str()?.to_string(),
-                            args: item
-                                .get("input")?
-                                .as_object()?
-                                .clone()
-                                .into_iter()
-                                .collect(),
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    }
-
     fn max_output_tokens_from_inventory(&self, provider_model: &str) -> Option<u64> {
         self.inventory
             .read()
@@ -736,8 +726,7 @@ impl ClaudeProvider {
             response_log
         );
 
-        let content = Self::extract_text_content(&body);
-        let tool_calls = Self::extract_tool_calls(&body);
+        let content = parse_response_content(&body, "anthropic");
         let usage = body.get("usage").map(|usage| AiUsage {
             input_tokens: usage.get("input_tokens").and_then(|value| value.as_u64()),
             output_tokens: usage.get("output_tokens").and_then(|value| value.as_u64()),
@@ -767,7 +756,7 @@ impl ClaudeProvider {
         );
 
         Ok(ProviderStartResult::Immediate(AiResponse {
-            message: AiResponse::message_from_parts(content, tool_calls, vec![]),
+            message: AiMessage::new(AiRole::Assistant, content),
             usage,
             cost,
             finish_reason: body
@@ -1039,7 +1028,9 @@ impl Provider for ClaudeProvider {
         _ctx: crate::aicc::InvokeCtx,
         _task_id: &str,
     ) -> std::result::Result<(), ProviderError> {
-        Ok(())
+        Err(ProviderError::fatal(
+            "claude provider cancellation is unsupported",
+        ))
     }
 }
 
@@ -1642,7 +1633,7 @@ mod tests {
         assert_eq!(instances[0].provider_driver, "claude");
         assert_eq!(
             instances[0].default_model.as_deref(),
-            Some("claude-3-7-sonnet-20250219")
+            Some("claude-sonnet-5")
         );
     }
 

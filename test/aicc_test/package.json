@@ -5,7 +5,7 @@
   "scripts": {
     "acceptance:preflight": "node --experimental-strip-types acceptance/preflight.ts",
     "acceptance:self-test": "node --experimental-strip-types --test acceptance/acceptance.test.ts",
-    "acceptance:gateway": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run --unsafely-ignore-certificate-errors acceptance/run_gateway.ts",
+    "acceptance:gateway": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run acceptance/run_gateway.ts",
     "acceptance:t1": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run --unsafely-ignore-certificate-errors acceptance/run_t1_gateway.ts",
     "acceptance:mock-provider": "node --experimental-strip-types acceptance/mock_provider.ts",
     "smoke": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc_smoke.ts",

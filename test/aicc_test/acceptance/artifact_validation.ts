@@ -87,11 +87,101 @@ async function validateZip(bytes: Uint8Array): Promise<string[]> {
   return names;
 }
 
-function artifactMetadata(bytes: Uint8Array, label = ""): Record<string, number | string> | undefined {
+async function pngMetadata(bytes: Uint8Array, view: DataView): Promise<Record<string, number | string>> {
+  const width = view.getUint32(16);
+  const height = view.getUint32(20);
+  const bitDepth = bytes[24];
+  const colorType = bytes[25];
+  const metadata: Record<string, number | string> = { width, height, format: "png" };
+  if (bitDepth !== 8 || (colorType !== 4 && colorType !== 6)) return metadata;
+  const chunks: Uint8Array[] = [];
+  let offset = 8;
+  while (offset + 12 <= bytes.length) {
+    const length = view.getUint32(offset);
+    const kind = new TextDecoder().decode(bytes.subarray(offset + 4, offset + 8));
+    if (kind === "IDAT") chunks.push(bytes.subarray(offset + 8, offset + 8 + length));
+    offset += 12 + length;
+    if (kind === "IEND") break;
+  }
+  const compressed = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
+  let position = 0;
+  for (const chunk of chunks) {
+    compressed.set(chunk, position);
+    position += chunk.length;
+  }
+  const stream = new Blob([compressed.buffer as ArrayBuffer]).stream()
+    .pipeThrough(new DecompressionStream("deflate"));
+  const raw = new Uint8Array(await new Response(stream).arrayBuffer());
+  const bytesPerPixel = colorType === 6 ? 4 : 2;
+  const stride = width * bytesPerPixel;
+  let source = 0;
+  let alphaMin = 255;
+  let alphaMax = 0;
+  let transparentPixels = 0;
+  let opaquePixels = 0;
+  let previous = new Uint8Array(stride);
+  const paeth = (left: number, up: number, upperLeft: number): number => {
+    const estimate = left + up - upperLeft;
+    const leftDistance = Math.abs(estimate - left);
+    const upDistance = Math.abs(estimate - up);
+    const upperLeftDistance = Math.abs(estimate - upperLeft);
+    return leftDistance <= upDistance && leftDistance <= upperLeftDistance
+      ? left
+      : upDistance <= upperLeftDistance ? up : upperLeft;
+  };
+  for (let y = 0; y < height; y += 1) {
+    const filter = raw[source++];
+    if (filter > 4) throw new Error(`PNG artifact uses invalid filter ${filter}`);
+    const current = new Uint8Array(stride);
+    for (let x = 0; x < stride; x += 1) {
+      const left = x >= bytesPerPixel ? current[x - bytesPerPixel] : 0;
+      const up = previous[x];
+      const upperLeft = x >= bytesPerPixel ? previous[x - bytesPerPixel] : 0;
+      const predictor = filter === 1 ? left
+        : filter === 2 ? up
+        : filter === 3 ? Math.floor((left + up) / 2)
+        : filter === 4 ? paeth(left, up, upperLeft)
+        : 0;
+      current[x] = (raw[source++] + predictor) & 0xff;
+    }
+    for (let alpha = bytesPerPixel - 1; alpha < stride; alpha += bytesPerPixel) {
+      alphaMin = Math.min(alphaMin, current[alpha]);
+      alphaMax = Math.max(alphaMax, current[alpha]);
+      if (current[alpha] < 255) transparentPixels += 1;
+      if (current[alpha] === 255) opaquePixels += 1;
+    }
+    previous = current;
+  }
+  const pixelCount = width * height;
+  return {
+    ...metadata,
+    alpha_min: alphaMin,
+    alpha_max: alphaMax,
+    transparent_pixels: transparentPixels,
+    opaque_pixels: opaquePixels,
+    transparent_ratio: transparentPixels / pixelCount,
+    opaque_ratio: opaquePixels / pixelCount,
+  };
+}
+
+export function assertBackgroundRemovalTransparency(audits: ArtifactAudit[]): void {
+  const metadata = audits.find((audit) => audit.metadata?.format === "png")?.metadata;
+  const transparentRatio = Number(metadata?.transparent_ratio);
+  const opaqueRatio = Number(metadata?.opaque_ratio);
+  if (!Number.isFinite(transparentRatio) || !Number.isFinite(opaqueRatio) ||
+    transparentRatio < 0.1 || opaqueRatio < 0.01) {
+    throw new Error(
+      `background removal requires meaningful transparent and retained foreground regions; ` +
+      `transparent_ratio=${String(metadata?.transparent_ratio)} opaque_ratio=${String(metadata?.opaque_ratio)}`,
+    );
+  }
+}
+
+async function artifactMetadata(bytes: Uint8Array, label = ""): Promise<Record<string, number | string> | undefined> {
   const lower = label.toLowerCase();
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if ((lower.endsWith(".png") || lower.includes("image/png")) && bytes.length >= 24) {
-    return { width: view.getUint32(16), height: view.getUint32(20), format: "png" };
+    return await pngMetadata(bytes, view);
   }
   if ((lower.endsWith(".wav") || lower.includes("audio/wav")) && bytes.length >= 44) {
     let offset = 12;
@@ -185,7 +275,7 @@ export async function validateArtifactBytes(
     ? await validateZip(bytes)
     : undefined;
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes).buffer));
-  const metadata = artifactMetadata(bytes, input.label);
+  const metadata = await artifactMetadata(bytes, input.label);
   return {
     obj_id: input.id,
     label: input.label,

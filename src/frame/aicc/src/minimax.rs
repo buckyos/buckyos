@@ -2,7 +2,9 @@ use crate::aicc::{
     provider_type_from_settings, AIComputeCenter, Provider, ProviderError, ProviderInstance,
     ProviderRefreshTask, ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
-use crate::claude_protocol::{convert_complete_request_with_dialect, ProtocolDialect};
+use crate::claude_protocol::{
+    convert_complete_request_with_dialect, parse_response_content, ProtocolDialect,
+};
 use crate::metadata_resolver::{resolve_driver_inventory, DriverModelResolveRequest};
 use crate::model_registry::DEFAULT_INVENTORY_REFRESH_INTERVAL;
 use crate::model_types::{
@@ -11,16 +13,15 @@ use crate::model_types::{
 };
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use buckyos_api::{
-    ai_methods, AiCost, AiMethodRequest, AiResponse, AiToolCall, AiUsage,
-};
 #[cfg(test)]
 use buckyos_api::Capability;
+use buckyos_api::{ai_methods, AiCost, AiMessage, AiMethodRequest, AiResponse, AiRole, AiUsage};
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -29,7 +30,7 @@ use tokio::time;
 const DEFAULT_MINIMAX_BASE_URL: &str = "https://api.minimaxi.com/anthropic/v1";
 const DEFAULT_MINIMAX_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_MINIMAX_MODELS: &str =
-    "MiniMax-M2.5,MiniMax-M2.5-highspeed,MiniMax-M2.1,MiniMax-M2.1-highspeed,MiniMax-M2";
+    "MiniMax-M2.7,MiniMax-M2.7-highspeed,MiniMax-M2.5,MiniMax-M2.5-highspeed,M2-her";
 
 #[derive(Debug, Clone)]
 pub struct MiniMaxInstanceConfig {
@@ -211,12 +212,56 @@ impl MiniMaxProvider {
     }
 
     async fn refresh_inventory_once(&self) -> Result<ProviderInventory> {
+        let response = self
+            .client
+            .get(format!("{}/models", self.base_url))
+            .header("x-api-key", self.api_token.as_str())
+            .send()
+            .await
+            .context("minimax model inventory request failed")?;
+        let status = response.status();
+        let body = response
+            .json::<Value>()
+            .await
+            .context("minimax model inventory response decode failed")?;
+        if !status.is_success() {
+            return Err(anyhow!(
+                "minimax model inventory returned HTTP {}",
+                status.as_u16()
+            ));
+        }
+        let models = body
+            .get("data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("id").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|model| model.starts_with("MiniMax-M2"))
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let models = normalize_model_list(models);
+        if models.is_empty() {
+            return Err(anyhow!(
+                "minimax model inventory returned no Anthropic-compatible models"
+            ));
+        }
+        let requests = models
+            .iter()
+            .map(|model| {
+                DriverModelResolveRequest::new(model.clone(), vec![ApiType::Llm])
+                    .with_cost(Some(0.01))
+                    .with_latency(Some(1400))
+            })
+            .collect::<Vec<_>>();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        models.hash(&mut hasher);
         let inventory = resolve_driver_inventory(
             self.instance.provider_instance_name.as_str(),
             self.instance.provider_type.clone(),
             self.instance.provider_driver.as_str(),
-            self.inventory_requests.as_slice(),
-            Some("settings-v1".to_string()),
+            requests.as_slice(),
+            Some(format!("models-{}-{:x}", models.len(), hasher.finish())),
         );
         *self
             .inventory
@@ -227,12 +272,10 @@ impl MiniMaxProvider {
 
     fn price_per_1m_tokens(model: &str) -> (f64, f64) {
         let lowered = model.to_ascii_lowercase();
-        if lowered.contains("m1") {
-            (1.20, 4.80)
-        } else if lowered.contains("coding") || lowered.contains("plan") {
-            (0.90, 3.60)
+        if lowered.contains("highspeed") {
+            (0.60, 2.40)
         } else {
-            (0.80, 3.20)
+            (0.30, 1.20)
         }
     }
 
@@ -285,47 +328,6 @@ impl MiniMaxProvider {
             amount,
             currency: "USD".to_string(),
         })
-    }
-
-    fn extract_text_content(body: &Value) -> Option<String> {
-        let content = body.get("content")?.as_array()?;
-        let joined = content
-            .iter()
-            .filter(|item| item.get("type").and_then(|value| value.as_str()) == Some("text"))
-            .filter_map(|item| item.get("text").and_then(|value| value.as_str()))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if joined.trim().is_empty() {
-            None
-        } else {
-            Some(joined)
-        }
-    }
-
-    fn extract_tool_calls(body: &Value) -> Vec<AiToolCall> {
-        body.get("content")
-            .and_then(|value| value.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter(|item| {
-                        item.get("type").and_then(|value| value.as_str()) == Some("tool_use")
-                    })
-                    .filter_map(|item| {
-                        Some(AiToolCall {
-                            name: item.get("name")?.as_str()?.to_string(),
-                            call_id: item.get("id")?.as_str()?.to_string(),
-                            args: item
-                                .get("input")?
-                                .as_object()?
-                                .clone()
-                                .into_iter()
-                                .collect(),
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
     }
 
     fn classify_api_error(status: StatusCode, message: String) -> ProviderError {
@@ -387,8 +389,7 @@ impl MiniMaxProvider {
             return Err(Self::classify_api_error(status, message));
         }
 
-        let content = Self::extract_text_content(&body);
-        let tool_calls = Self::extract_tool_calls(&body);
+        let content = parse_response_content(&body, "minimax");
         let usage = body.get("usage").map(|usage| AiUsage {
             input_tokens: usage.get("input_tokens").and_then(|value| value.as_u64()),
             output_tokens: usage.get("output_tokens").and_then(|value| value.as_u64()),
@@ -418,7 +419,7 @@ impl MiniMaxProvider {
         );
 
         Ok(ProviderStartResult::Immediate(AiResponse {
-            message: AiResponse::message_from_parts(content, tool_calls, vec![]),
+            message: AiMessage::new(AiRole::Assistant, content),
             usage,
             cost,
             finish_reason: body
@@ -505,7 +506,9 @@ impl Provider for MiniMaxProvider {
         _ctx: crate::aicc::InvokeCtx,
         _task_id: &str,
     ) -> std::result::Result<(), ProviderError> {
-        Ok(())
+        Err(ProviderError::fatal(
+            "minimax provider cancellation is unsupported",
+        ))
     }
 }
 
@@ -793,6 +796,30 @@ pub fn register_minimax_providers(center: &AIComputeCenter, settings: &Value) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    fn spawn_models_server(expected_requests: usize) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind models server");
+        let address = listener.local_addr().expect("models server address");
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(expected_requests) {
+                let mut stream = stream.expect("accept models request");
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer);
+                let body = r#"{"data":[{"id":"MiniMax-M2.7"},{"id":"MiniMax-M2.7-highspeed"},{"id":"MiniMax-Hailuo-2.3"}]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write models response");
+            }
+        });
+        format!("http://{}/anthropic/v1", address)
+    }
 
     #[test]
     fn build_minimax_instances_uses_defaults() {
@@ -807,7 +834,7 @@ mod tests {
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].provider_type, "cloud_api");
         assert_eq!(instances[0].provider_driver, "minimax");
-        assert_eq!(instances[0].default_model.as_deref(), Some("MiniMax-M2.5"));
+        assert_eq!(instances[0].default_model.as_deref(), Some("MiniMax-M2.7"));
     }
 
     #[test]
@@ -844,6 +871,7 @@ mod tests {
 
     #[tokio::test]
     async fn minimax_inventory_refresh_lifecycle_matches_dynamic_providers() {
+        let base_url = spawn_models_server(2);
         let provider = Arc::new(
             MiniMaxProvider::new(
                 MiniMaxInstanceConfig {
@@ -851,7 +879,7 @@ mod tests {
                     provider_type: "cloud_api".to_string(),
                     provider_driver: "minimax".to_string(),
                     api_token: "test-token".to_string(),
-                    base_url: DEFAULT_MINIMAX_BASE_URL.to_string(),
+                    base_url,
                     timeout_ms: DEFAULT_MINIMAX_TIMEOUT_MS,
                     models: vec!["MiniMax-M2.5".to_string()],
                     default_model: Some("MiniMax-M2.5".to_string()),
@@ -865,12 +893,18 @@ mod tests {
         provider.clone().start_inventory_refresh();
         tokio::task::yield_now().await;
         assert!(provider.refresh_task.lock().unwrap().is_some());
-        assert!(!provider
+        let inventory = provider
             .refresh_inventory()
             .await
-            .unwrap()
+            .expect("remote inventory refresh");
+        assert!(inventory
             .models
-            .is_empty());
+            .iter()
+            .any(|model| model.provider_model_id == "MiniMax-M2.7"));
+        assert!(!inventory
+            .models
+            .iter()
+            .any(|model| model.provider_model_id.contains("Hailuo")));
         provider.shutdown();
         assert!(provider.refresh_task.lock().unwrap().is_none());
     }

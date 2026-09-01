@@ -43,6 +43,7 @@ const DEFAULT_SN_AI_PROVIDER_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_INVENTORY_REFRESH_INTERVAL_SECS: u64 = 300;
 const SN_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const SN_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
+const RESOURCE_FETCH_ATTEMPTS: usize = 3;
 const SN_LLM_OPTION_ALLOWLIST: &[&str] = &[
     "audio",
     "background",
@@ -116,6 +117,16 @@ const SN_IMAGE_EDIT_OPTION_ALLOWLIST: &[&str] = &[
     "quality",
     "size",
     "user",
+];
+const SN_RESPONSES_IMAGE_TOOL_OPTION_ALLOWLIST: &[&str] = &[
+    "background",
+    "input_fidelity",
+    "moderation",
+    "output_compression",
+    "output_format",
+    "partial_images",
+    "quality",
+    "size",
 ];
 
 fn valid_sn_function_name(value: &str) -> bool {
@@ -938,6 +949,16 @@ impl SnAIProvider {
         inventory
     }
 
+    fn model_supports_responses_image_generation(&self, provider_model: &str) -> bool {
+        self.inventory.read().ok().is_some_and(|inventory| {
+            inventory.models.iter().any(|metadata| {
+                (metadata.provider_model_id == provider_model
+                    || metadata.provider_actual_model_id.as_deref() == Some(provider_model))
+                    && metadata.capabilities.image_generation
+            })
+        })
+    }
+
     fn normalize_remote_provider_inventory(
         &self,
         inventory: ProviderInventory,
@@ -1352,31 +1373,62 @@ impl SnAIProvider {
                 Ok((fallback_name.to_string(), mime.clone(), bytes))
             }
             ResourceRef::Url { url, mime_hint } => {
-                let response = self.client.get(url).send().await.map_err(|err| {
-                    if err.is_timeout() || err.is_connect() {
-                        ProviderError::retryable(format!("failed to fetch resource url: {err}"))
-                    } else {
-                        ProviderError::fatal(format!("failed to fetch resource url: {err}"))
+                for attempt in 1..=RESOURCE_FETCH_ATTEMPTS {
+                    let response = match self.client.get(url).send().await {
+                        Ok(response) => response,
+                        Err(_) if attempt < RESOURCE_FETCH_ATTEMPTS => {
+                            time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                            continue;
+                        }
+                        Err(err) => {
+                            return Err(if err.is_timeout() || err.is_connect() {
+                                ProviderError::retryable(format!(
+                                    "failed to fetch resource url after {attempt} attempts: {err}"
+                                ))
+                            } else {
+                                ProviderError::fatal(format!(
+                                    "failed to fetch resource url after {attempt} attempts: {err}"
+                                ))
+                            });
+                        }
+                    };
+                    let status = response.status();
+                    if !status.is_success() {
+                        let error = Self::classify_api_error(
+                            status,
+                            format!("resource url returned status {}", status.as_u16()),
+                        );
+                        if error.is_retryable() && attempt < RESOURCE_FETCH_ATTEMPTS {
+                            time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                            continue;
+                        }
+                        return Err(error);
                     }
-                })?;
-                let status = response.status();
-                if !status.is_success() {
-                    return Err(Self::classify_api_error(
-                        status,
-                        format!("resource url returned status {}", status.as_u16()),
-                    ));
+                    let content_type = mime_hint
+                        .clone()
+                        .or_else(|| {
+                            response
+                                .headers()
+                                .get(CONTENT_TYPE)
+                                .and_then(|value| value.to_str().ok())
+                                .map(str::to_string)
+                        })
+                        .unwrap_or_else(|| "application/octet-stream".to_string());
+                    match response.bytes().await {
+                        Ok(bytes) => {
+                            return Ok((fallback_name.to_string(), content_type, bytes.to_vec()));
+                        }
+                        Err(_) if attempt < RESOURCE_FETCH_ATTEMPTS => {
+                            time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                        }
+                        Err(err) => {
+                            return Err(ProviderError::retryable(format!(
+                                "failed to read resource bytes after {attempt} attempts: {err}"
+                            )));
+                        }
+                    }
                 }
-                let content_type = response
-                    .headers()
-                    .get(CONTENT_TYPE)
-                    .and_then(|value| value.to_str().ok())
-                    .map(str::to_string)
-                    .or_else(|| mime_hint.clone())
-                    .unwrap_or_else(|| "application/octet-stream".to_string());
-                let bytes = response.bytes().await.map_err(|err| {
-                    ProviderError::fatal(format!("failed to read resource bytes: {err}"))
-                })?;
-                Ok((fallback_name.to_string(), content_type, bytes.to_vec()))
+                unreachable!()
             }
             ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
                 "SN provider cannot resolve named object resource {obj_id} without resolver bytes"
@@ -1590,16 +1642,10 @@ impl SnAIProvider {
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                if provider_items.is_empty() {
-                    if msg.text_content().trim().is_empty() && msg.tool_calls().is_empty() {
-                        continue;
-                    }
-                    return Err(ProviderError::fatal(
-                        "assistant history is missing Responses output items for provider `sn-ai-provider`",
-                    ));
+                if !provider_items.is_empty() {
+                    items.extend(provider_items);
+                    continue;
                 }
-                items.extend(provider_items);
-                continue;
             }
             let content_type = if role_str == "assistant" {
                 "output_text"
@@ -1933,6 +1979,27 @@ impl SnAIProvider {
         message
     }
 
+    fn message_from_response_body_with_artifacts(
+        body: &Value,
+        artifacts: Vec<AiArtifact>,
+    ) -> AiMessage {
+        let mut message = AiResponse::message_from_parts(None, vec![], artifacts);
+        if let Some(output_items) = body.get("output").and_then(Value::as_array) {
+            message
+                .content
+                .extend(
+                    output_items
+                        .iter()
+                        .cloned()
+                        .map(|value| AiContent::ProviderState {
+                            provider: SN_AI_PROVIDER_DRIVER.to_string(),
+                            value,
+                        }),
+                );
+        }
+        message
+    }
+
     fn incomplete_output_error(
         body: &Value,
         content: Option<&str>,
@@ -2227,6 +2294,208 @@ impl SnAIProvider {
         Ok((target, ignored))
     }
 
+    fn responses_image_input_part(source: &ResourceRef) -> Result<Value, ProviderError> {
+        match source {
+            ResourceRef::Url { url, .. } => Ok(json!({
+                "type": "input_image",
+                "image_url": url,
+            })),
+            ResourceRef::Base64 { mime, data_base64 } => {
+                if !mime.starts_with("image/") {
+                    return Err(ProviderError::fatal(format!(
+                        "SN Responses image input requires image MIME type, got '{}'",
+                        mime
+                    )));
+                }
+                general_purpose::STANDARD
+                    .decode(data_base64)
+                    .map_err(|err| {
+                        ProviderError::fatal(format!(
+                            "SN Responses image input contains invalid base64: {}",
+                            err
+                        ))
+                    })?;
+                Ok(json!({
+                    "type": "input_image",
+                    "image_url": format!("data:{};base64,{}", mime, data_base64),
+                }))
+            }
+            ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
+                "named image object '{}' must be materialized before SN dispatch",
+                obj_id
+            ))),
+        }
+    }
+
+    fn image_resources_from_request(req: &AiMethodRequest) -> Vec<ResourceRef> {
+        if !req.payload.resources.is_empty() {
+            return req.payload.resources.clone();
+        }
+        let Some(input) = req.payload.input_json.as_ref() else {
+            return vec![];
+        };
+        for key in ["images", "image"] {
+            let Some(value) = input.get(key) else {
+                continue;
+            };
+            let values = value
+                .as_array()
+                .cloned()
+                .unwrap_or_else(|| vec![value.clone()]);
+            let resources = values
+                .into_iter()
+                .filter_map(|value| serde_json::from_value::<ResourceRef>(value).ok())
+                .collect::<Vec<_>>();
+            if !resources.is_empty() {
+                return resources;
+            }
+        }
+        vec![]
+    }
+
+    fn build_responses_image_request(
+        provider_model: &str,
+        req: &AiMethodRequest,
+        action: &str,
+    ) -> Result<(Map<String, Value>, Vec<String>), ProviderError> {
+        let prompt = Self::extract_text2image_prompt(req).ok_or_else(|| {
+            ProviderError::fatal(
+                "SN Responses image generation requires prompt in payload.text/messages/input_json/options",
+            )
+        })?;
+        let mut tool = Map::new();
+        tool.insert(
+            "type".to_string(),
+            Value::String("image_generation".to_string()),
+        );
+        tool.insert("action".to_string(), Value::String(action.to_string()));
+        let mut ignored = vec![];
+        for source in [
+            req.payload.input_json.as_ref(),
+            req.payload.options.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let Some(options) = source.as_object() else {
+                continue;
+            };
+            for (key, value) in options {
+                if ["model", "messages", "prompt", "image", "images"].contains(&key.as_str()) {
+                    continue;
+                }
+                if SN_RESPONSES_IMAGE_TOOL_OPTION_ALLOWLIST.contains(&key.as_str()) {
+                    tool.insert(key.clone(), value.clone());
+                } else if !ignored.contains(key) {
+                    ignored.push(key.clone());
+                }
+            }
+        }
+        let input = if action == "edit" {
+            let resources = Self::image_resources_from_request(req);
+            if resources.is_empty() {
+                return Err(ProviderError::fatal(
+                    "SN Responses image edit requires at least one canonical image input",
+                ));
+            }
+            let mut content = vec![json!({ "type": "input_text", "text": prompt })];
+            for resource in &resources {
+                content.push(Self::responses_image_input_part(resource)?);
+            }
+            json!([{ "role": "user", "content": content }])
+        } else {
+            Value::String(prompt)
+        };
+        let stream =
+            req.requirements.requires_feature("streaming") || tool.contains_key("partial_images");
+        let mut target = Map::new();
+        target.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
+        target.insert("input".to_string(), input);
+        target.insert("tools".to_string(), Value::Array(vec![Value::Object(tool)]));
+        if stream {
+            target.insert("stream".to_string(), Value::Bool(true));
+        }
+        Ok((target, ignored))
+    }
+
+    fn parse_responses_image_artifacts(body: &Value) -> Result<Vec<AiArtifact>, ProviderError> {
+        let output = body
+            .get("output")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ProviderError::fatal("SN Responses image result is missing output"))?;
+        let mut artifacts = vec![];
+        for item in output {
+            if item.get("type").and_then(Value::as_str) != Some("image_generation_call") {
+                continue;
+            }
+            let status = item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if status != "completed" {
+                return Err(ProviderError::fatal(format!(
+                    "SN Responses image generation call did not complete (status='{}')",
+                    status
+                )));
+            }
+            let encoded = item
+                .get("result")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    ProviderError::fatal(
+                        "SN Responses image generation call is missing base64 result",
+                    )
+                })?;
+            let bytes = general_purpose::STANDARD.decode(encoded).map_err(|err| {
+                ProviderError::fatal(format!(
+                    "SN Responses image generation returned invalid base64: {}",
+                    err
+                ))
+            })?;
+            let mime = match image::guess_format(bytes.as_slice()) {
+                Ok(ImageFormat::Png) => "image/png",
+                Ok(ImageFormat::Jpeg) => "image/jpeg",
+                Ok(ImageFormat::WebP) => "image/webp",
+                Ok(format) => {
+                    return Err(ProviderError::fatal(format!(
+                        "SN Responses returned unsupported image format {:?}",
+                        format
+                    )))
+                }
+                Err(err) => {
+                    return Err(ProviderError::fatal(format!(
+                        "SN Responses returned invalid image bytes: {}",
+                        err
+                    )))
+                }
+            }
+            .to_string();
+            artifacts.push(AiArtifact {
+                name: format!("image_{}", artifacts.len() + 1),
+                resource: ResourceRef::Base64 {
+                    mime: mime.clone(),
+                    data_base64: encoded.to_string(),
+                },
+                mime: Some(mime),
+                metadata: Some(json!({
+                    "provider_call_id": item.get("id").cloned(),
+                    "action": item.get("action").cloned(),
+                })),
+            });
+        }
+        if artifacts.is_empty() {
+            return Err(ProviderError::fatal(
+                "SN Responses result has no image_generation_call outputs",
+            ));
+        }
+        Ok(artifacts)
+    }
+
     fn parse_text2image_artifacts(body: &Value) -> Result<Vec<AiArtifact>, ProviderError> {
         let Some(items) = body.get("data").and_then(Value::as_array) else {
             return Err(ProviderError::fatal(
@@ -2288,7 +2557,9 @@ impl SnAIProvider {
         Ok(artifacts)
     }
 
-    fn embedding_inputs(req: &AiMethodRequest) -> Result<Value, ProviderError> {
+    fn embedding_inputs(
+        req: &AiMethodRequest,
+    ) -> Result<(Value, Vec<Option<String>>), ProviderError> {
         if let Some(items) = req
             .payload
             .input_json
@@ -2296,22 +2567,32 @@ impl SnAIProvider {
             .and_then(|value| value.get("items"))
             .and_then(Value::as_array)
         {
-            let texts = items
-                .iter()
-                .filter_map(|item| {
-                    item.get("text")
+            let mut texts = Vec::with_capacity(items.len());
+            let mut ids = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                let text = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| item.as_str())
+                    .ok_or_else(|| {
+                        ProviderError::fatal(format!(
+                            "embedding.text item {} must contain text; resource items are unsupported by SN text embeddings",
+                            index
+                        ))
+                    })?;
+                texts.push(Value::String(text.to_string()));
+                ids.push(
+                    item.get("id")
                         .and_then(Value::as_str)
-                        .or_else(|| item.as_str())
-                        .map(str::to_string)
-                })
-                .map(Value::String)
-                .collect::<Vec<_>>();
+                        .map(ToString::to_string),
+                );
+            }
             if !texts.is_empty() {
-                return Ok(Value::Array(texts));
+                return Ok((Value::Array(texts), ids));
             }
         }
         if let Some(text) = req.payload.text.as_ref() {
-            return Ok(Value::String(text.clone()));
+            return Ok((Value::String(text.clone()), vec![None]));
         }
         let texts = req
             .payload
@@ -2322,7 +2603,8 @@ impl SnAIProvider {
             .map(Value::String)
             .collect::<Vec<_>>();
         if !texts.is_empty() {
-            return Ok(Value::Array(texts));
+            let ids = vec![None; texts.len()];
+            return Ok((Value::Array(texts), ids));
         }
         Err(ProviderError::fatal(
             "embedding.text requires payload.input_json.items or payload.text",
@@ -2335,12 +2617,28 @@ impl SnAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
+        let input_json = req.payload.input_json.as_ref();
+        if input_json.and_then(|value| value.get("chunking")).is_some() {
+            return Err(ProviderError::fatal(
+                "SN embedding endpoint does not support canonical chunking",
+            ));
+        }
+        if input_json
+            .and_then(|value| value.get("normalize"))
+            .and_then(Value::as_bool)
+            == Some(false)
+        {
+            return Err(ProviderError::fatal(
+                "SN OpenAI-compatible embeddings cannot satisfy normalize=false",
+            ));
+        }
+        let (embedding_input, input_ids) = Self::embedding_inputs(req)?;
         let mut request_obj = Map::new();
         request_obj.insert(
             "model".to_string(),
             Value::String(provider_model.to_string()),
         );
-        request_obj.insert("input".to_string(), Self::embedding_inputs(req)?);
+        request_obj.insert("input".to_string(), embedding_input);
         if let Some(dimensions) = req
             .payload
             .input_json
@@ -2364,16 +2662,84 @@ impl SnAIProvider {
             .pointer("/data/0/embedding")
             .and_then(Value::as_array)
             .map(Vec::len);
+        let embedding_space_id = input_json
+            .and_then(|value| value.get("embedding_space_id"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| {
+                format!(
+                    "sn:{}:{}",
+                    provider_model,
+                    dimensions
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
+                )
+            });
+        let mut data = body
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for (index, item) in data.iter_mut().enumerate() {
+            if let (Some(id), Some(object)) = (
+                input_ids.get(index).and_then(|value| value.as_ref()),
+                item.as_object_mut(),
+            ) {
+                object.insert("id".to_string(), Value::String(id.clone()));
+            }
+        }
+        let prefer_artifact = data.len() > 100
+            || input_json
+                .and_then(|value| value.get("prefer_artifact"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            || input_json
+                .and_then(|value| value.get("output"))
+                .and_then(|value| value.get("resource_format"))
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == "named_object");
+        let artifact = if prefer_artifact {
+            let bytes = serde_json::to_vec(&json!({
+                "embedding_space_id": embedding_space_id.clone(),
+                "data": data.clone(),
+            }))
+            .map_err(|error| {
+                ProviderError::fatal(format!("serialize embedding artifact failed: {}", error))
+            })?;
+            Some(AiArtifact {
+                name: "embeddings.json".to_string(),
+                resource: ResourceRef::Base64 {
+                    mime: "application/json".to_string(),
+                    data_base64: general_purpose::STANDARD.encode(bytes),
+                },
+                mime: Some("application/json".to_string()),
+                metadata: Some(json!({
+                    "rows": data.len(),
+                    "dimensions": dimensions,
+                    "embedding_space_id": embedding_space_id.clone(),
+                })),
+            })
+        } else {
+            None
+        };
         Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(
+                None,
+                vec![],
+                artifact.clone().into_iter().collect(),
+            ),
             finish_reason: Some("stop".to_string()),
             extra: Some(json!({
                 "embedding": {
-                    "data": body.get("data").cloned().unwrap_or_else(|| Value::Array(vec![])),
-                    "embedding_space_id": format!(
-                        "sn:{}:{}",
-                        provider_model,
-                        dimensions.map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string())
-                    ),
+                    "data": if prefer_artifact { Value::Array(vec![]) } else { Value::Array(data.clone()) },
+                    "embedding_space_id": embedding_space_id.clone(),
+                    "artifact": artifact.as_ref().map(|value| json!({
+                        "name": value.name.clone(),
+                        "mime": value.mime.clone(),
+                        "rows": data.len(),
+                        "dimensions": dimensions,
+                        "embedding_space_id": embedding_space_id.clone(),
+                    })),
                     "provider_io": {
                         "input": Value::Object(request_obj),
                         "output": body
@@ -2541,11 +2907,14 @@ impl SnAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
-        let resource =
-            req.payload.resources.first().ok_or_else(|| {
-                ProviderError::fatal("audio.asr requires resources[0] audio input")
-            })?;
-        let (filename, mime, bytes) = self.resource_to_file_bytes(resource, "audio").await?;
+        let resource = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["audio"]))
+            .ok_or_else(|| ProviderError::fatal("audio.asr requires canonical audio input"))?;
+        let (filename, mime, bytes) = self.resource_to_file_bytes(&resource, "audio").await?;
         let mut fields = vec![
             ("model".to_string(), provider_model.to_string()),
             ("response_format".to_string(), "json".to_string()),
@@ -2593,9 +2962,13 @@ impl SnAIProvider {
     fn resource_from_input_json(req: &AiMethodRequest, keys: &[&str]) -> Option<ResourceRef> {
         let input = req.payload.input_json.as_ref()?;
         keys.iter().find_map(|key| {
-            input
-                .get(*key)
-                .and_then(|value| serde_json::from_value(value.clone()).ok())
+            let value = input.get(*key)?;
+            serde_json::from_value(value.clone()).ok().or_else(|| {
+                value
+                    .as_array()
+                    .and_then(|items| items.first())
+                    .and_then(|value| serde_json::from_value(value.clone()).ok())
+            })
         })
     }
 
@@ -2772,11 +3145,17 @@ impl SnAIProvider {
         let requested_size = Self::video_size(req);
         let mut files = vec![];
         if method == ai_methods::VIDEO_IMG2VIDEO {
-            let resource = req.payload.resources.first().ok_or_else(|| {
-                ProviderError::fatal("video.img2video requires resources[0] image input")
-            })?;
+            let resource = req
+                .payload
+                .resources
+                .first()
+                .cloned()
+                .or_else(|| Self::resource_from_input_json(req, &["image", "images"]))
+                .ok_or_else(|| {
+                    ProviderError::fatal("video.img2video requires canonical image input")
+                })?;
             let (name, mime, bytes) = self
-                .resource_to_file_bytes(resource, "input_reference.png")
+                .resource_to_file_bytes(&resource, "input_reference.png")
                 .await?;
             let normalize_size = requested_size.clone();
             let (size, normalized_bytes) = tokio::task::spawn_blocking(move || {
@@ -2913,6 +3292,15 @@ impl SnAIProvider {
         };
         Ok(AiResponse {
             message: AiResponse::message_from_parts(None, vec![], vec![artifact]),
+            usage: Some(AiUsage::request_units(1)),
+            cost: Some(buckyos_api::AiCost {
+                amount: if provider_model.contains("pro") {
+                    1.2
+                } else {
+                    0.4
+                },
+                currency: "USD".to_string(),
+            }),
             finish_reason: Some("stop".to_string()),
             provider_task_ref: Some(video_id.to_string()),
             extra: Some(json!({
@@ -2933,16 +3321,31 @@ impl SnAIProvider {
         req: &AiMethodRequest,
         with_mask: bool,
     ) -> Result<ProviderStartResult, ProviderError> {
-        let image = req.payload.resources.first().ok_or_else(|| {
-            ProviderError::fatal("image edit requires resources[0] source image input")
-        })?;
-        let (name, mime, bytes) = self.resource_to_file_bytes(image, "image.png").await?;
+        if !with_mask && self.model_supports_responses_image_generation(provider_model) {
+            return self
+                .start_responses_image_generation(ctx, provider_model, req, "edit")
+                .await;
+        }
+        let image = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["image", "images"]))
+            .ok_or_else(|| ProviderError::fatal("image edit requires canonical image input"))?;
+        let (name, mime, bytes) = self.resource_to_file_bytes(&image, "image.png").await?;
         let mut files = vec![("image".to_string(), name, mime, bytes)];
         if with_mask {
-            let mask = req.payload.resources.get(1).ok_or_else(|| {
-                ProviderError::fatal("image.inpaint requires resources[1] mask input")
-            })?;
-            let (name, mime, bytes) = self.resource_to_file_bytes(mask, "mask.png").await?;
+            let mask = req
+                .payload
+                .resources
+                .get(1)
+                .cloned()
+                .or_else(|| Self::resource_from_input_json(req, &["mask"]))
+                .ok_or_else(|| {
+                    ProviderError::fatal("image.inpaint requires canonical mask input")
+                })?;
+            let (name, mime, bytes) = self.resource_to_file_bytes(&mask, "mask.png").await?;
             files.push(("mask".to_string(), name, mime, bytes));
         }
         let prompt = Self::extract_text2image_prompt(req).ok_or_else(|| {
@@ -3001,6 +3404,11 @@ impl SnAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
+        if self.model_supports_responses_image_generation(provider_model) {
+            return self
+                .start_responses_image_generation(ctx, provider_model, req, "generate")
+                .await;
+        }
         let (request_obj, ignored_options) = Self::build_text2image_request(provider_model, req)?;
         if !ignored_options.is_empty() {
             warn!(
@@ -3080,6 +3488,73 @@ impl SnAIProvider {
             })),
         };
         Ok(ProviderStartResult::Immediate(summary))
+    }
+
+    async fn start_responses_image_generation(
+        &self,
+        ctx: &InvokeCtx,
+        provider_model: &str,
+        req: &AiMethodRequest,
+        action: &str,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let (request_obj, ignored_options) =
+            Self::build_responses_image_request(provider_model, req, action)?;
+        if !ignored_options.is_empty() {
+            warn!(
+                "aicc.sn_ai_provider.responses_image ignored unsupported options: provider_instance_name={} model={} trace_id={:?} ignored={:?}",
+                self.instance.provider_instance_name,
+                provider_model,
+                ctx.trace_id,
+                ignored_options
+            );
+        }
+        let endpoint = self.responses_endpoint();
+        let (status, body, latency_ms) =
+            self.post_json(ctx, endpoint.as_str(), &request_obj).await?;
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("SN Responses image generation returned non-success status");
+            return Err(Self::classify_api_error(status, message.to_string()));
+        }
+        let artifacts = Self::parse_responses_image_artifacts(&body)?;
+        let usage = body.get("usage").map(|usage| AiUsage {
+            input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
+            output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
+            total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+            request_units: Some(1),
+        });
+        let cost = self.inventory.read().ok().and_then(|inventory| {
+            inventory.models.iter().find_map(|metadata| {
+                (metadata.provider_model_id == provider_model)
+                    .then_some(metadata.pricing.estimated_cost)
+                    .flatten()
+                    .map(|amount| AiCost {
+                        amount,
+                        currency: metadata.pricing.currency.clone(),
+                    })
+            })
+        });
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: Self::message_from_response_body_with_artifacts(&body, artifacts),
+            usage,
+            cost,
+            finish_reason: body
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            provider_task_ref: body.get("id").and_then(Value::as_str).map(str::to_string),
+            extra: Some(json!({
+                "provider": SN_AI_PROVIDER_DRIVER,
+                "model": provider_model,
+                "latency_ms": latency_ms,
+                "provider_io": {
+                    "input": Value::Object(request_obj),
+                    "output": body
+                }
+            })),
+        }))
     }
 }
 
@@ -3237,7 +3712,9 @@ impl Provider for SnAIProvider {
         _ctx: InvokeCtx,
         _task_id: &str,
     ) -> std::result::Result<(), ProviderError> {
-        Ok(())
+        Err(ProviderError::fatal(
+            "sn-ai-provider cancellation is unsupported",
+        ))
     }
 }
 
@@ -3346,21 +3823,21 @@ mod tests {
             .inventory()
             .models
             .iter()
-            .find(|model| model.provider_model_id == "gpt-image-1")
+            .find(|model| model.provider_model_id == "gpt-image-2")
             .expect("metadata image model")
             .clone();
         assert!(image.supports_api_type(&ApiType::ImageTextToImage));
         assert!(image.supports_api_type(&ApiType::ImageToImage));
         assert!(image.supports_api_type(&ApiType::ImageInpaint));
         assert!(!image.supports_api_type(&ApiType::Llm));
-        let video = provider
+        assert!(!provider
             .inventory()
             .models
             .into_iter()
-            .find(|model| model.provider_model_id == "sora-2")
-            .expect("metadata video model");
-        assert!(video.supports_api_type(&ApiType::VideoTextToVideo));
-        assert!(video.supports_api_type(&ApiType::VideoImageToVideo));
+            .any(|model| model.api_types.iter().any(|api_type| matches!(
+                api_type,
+                ApiType::VideoTextToVideo | ApiType::VideoImageToVideo
+            ))));
     }
 
     #[test]
@@ -3576,6 +4053,71 @@ mod tests {
         assert!(matches!(artifacts[0].resource, ResourceRef::Base64 { .. }));
     }
 
+    #[test]
+    fn gpt5_responses_image_request_and_result_follow_openai_shape() {
+        let request = AiMethodRequest::new(
+            Capability::Image,
+            ModelSpec::new("image.txt2img".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                Some("draw a tiger".to_string()),
+                vec![],
+                vec![],
+                vec![],
+                None,
+                Some(json!({ "quality": "high", "n": 2 })),
+            ),
+            None,
+        );
+        let (body, ignored) =
+            SnAIProvider::build_responses_image_request("gpt-5.6-sol", &request, "generate")
+                .expect("request");
+        let body = Value::Object(body);
+        assert_eq!(body.get("input"), Some(&json!("draw a tiger")));
+        assert_eq!(
+            body.pointer("/tools/0/type"),
+            Some(&json!("image_generation"))
+        );
+        assert_eq!(body.pointer("/tools/0/action"), Some(&json!("generate")));
+        assert_eq!(body.pointer("/tools/0/quality"), Some(&json!("high")));
+        assert_eq!(ignored, vec!["n".to_string()]);
+
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        let response = json!({
+            "output": [{
+                "type": "image_generation_call",
+                "id": "ig_1",
+                "status": "completed",
+                "result": png
+            }]
+        });
+        let artifacts =
+            SnAIProvider::parse_responses_image_artifacts(&response).expect("artifacts");
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].mime.as_deref(), Some("image/png"));
+        let message = SnAIProvider::message_from_response_body_with_artifacts(&response, artifacts);
+        assert!(message
+            .content
+            .iter()
+            .any(|content| matches!(content, AiContent::ProviderState { .. })));
+    }
+
+    #[test]
+    fn gpt5_image_protocol_selection_uses_sn_inventory_metadata() {
+        let provider = SnAIProvider::new(test_instance_config()).expect("provider");
+        let inventory = provider
+            .build_inventory_from_remote_value(json!({
+                "items": [
+                    {"model": "gpt-5.6-sol"},
+                    {"model": "gpt-image-2"}
+                ]
+            }))
+            .expect("inventory");
+        *provider.inventory.write().expect("inventory lock") = inventory;
+        assert!(provider.model_supports_responses_image_generation("gpt-5.6-sol"));
+        assert!(!provider.model_supports_responses_image_generation("gpt-image-2"));
+    }
+
     #[tokio::test]
     async fn text2image_posts_to_sn_litellm_endpoint() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -3697,7 +4239,7 @@ mod tests {
         });
 
         assert_eq!(known.estimated_cost_usd, 3.0);
-        assert_eq!(unknown.estimated_cost_usd, 0.01);
+        assert_eq!(unknown.estimated_cost_usd, 0.024);
         assert!(provider
             .estimate_cost_for_usage(
                 "unknown",

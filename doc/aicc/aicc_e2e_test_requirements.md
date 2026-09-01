@@ -150,6 +150,8 @@ T2 不得使用 AICC `models.list` 作为模型库存基准；`models.list` 是�
 
 `provider_capability_baseline.json` 必须为每个 Provider 配置官方目录 endpoint、认证方式、响应格式和分页方式，并通过 `coverage_rules` 排除已退役模型、`latest`/默认/最便宜等逻辑别名，以及把版本名或别名映射到同一物理模型后去重。官方目录抓取失败、返回空列表、分页异常或缺少必要凭据时，T2 preflight 必须失败，不能回退到 AICC inventory 或硬编码默认模型。
 
+Fal 这类异构端点市场不把市场中的全部端点视为同一个 Provider adapter 的协议兼容模型。Fal driver 的官方库存范围是其参数化配置正面声明支持的端点集合；Runner 必须用 Fal Model Search 的 Find Mode 按 `endpoint_id` 向官方目录逐项确认端点仍为 active，返回缺项或范围外端点都必须失败。不得先读取 AICC `models.list` 再反向缩小范围，也不得把未实现其独立 OpenAPI Schema 的市场端点登记成已支持模型。
+
 矩阵生成顺序固定为：官方目录抓取与过滤 -> 确定本轮每个 Provider 的参数化 instance -> 对每个选中 instance 调用 `provider.refresh_models` 直到首次成功 -> 读取刷新后的 AICC `models.list` -> 官方物理模型与 AICC 声明双向 diff -> 对双方一致的基础物理模型及其 AICC metadata variants 展开能力用例。刷新必须发生在任何测试 case 执行前；不同 Provider 可以并行，单个 Provider 的失败重试必须串行、有限并采用退避间隔，同时不小于该 Provider 配置的最小请求间隔；首次成功后本轮不得再次主动刷新。达到最大尝试次数仍未成功时 preflight 失败，不得以周期缓存代替。官方存在但 AICC 缺失、AICC 声明但官方目录不存在，均属于 inventory baseline mismatch，必须进入报告；不能因交集为空而将 Provider 整组静默跳过。
 
 ## 5. 总体分层
@@ -207,6 +209,7 @@ Manifest 解析失败、case id 重复或必要字段缺失时，runner 必须�
 
 - `passed`：全部强制断言通过。
 - `failed`：协议、路由、结构、语义或清理要求失败。
+- `provider_restricted`：请求已到达 Provider，但因账号等级、区域、模型白名单、preview allowlist 或 Provider 服务策略而被拒绝；必须保留脱敏证据，且不能计为通过。
 - `skipped`：环境或凭据缺失；发布强覆盖模式下是否允许由门禁决定。
 - `not_applicable`：官方明确不支持该组合。
 - `review`：结构通过，但仍需人工确认非确定性内容。
@@ -778,7 +781,7 @@ run_id
 
 - 总体、分层、Provider、instance、model、api_type、入口和消息种类统计。
 - baseline revision 和当前版本/commit。
-- planned、passed、failed、skipped、not_applicable、review 数量。
+- planned、passed、failed、provider_restricted、skipped、not_applicable、review 数量。
 - 每次 attempt、耗时、错误码、failure class 和脱敏诊断。
 - T1 路由分支/组合覆盖率。
 - T2 官方能力与 AICC 能力差异。

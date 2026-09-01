@@ -23,6 +23,15 @@ export type PreflightResult = {
   provider_drivers: string[];
 };
 
+function canonicalCheckoutBytes(bytes: Buffer): Buffer {
+  const normalized: number[] = [];
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] === 0x0d && bytes[index + 1] === 0x0a) continue;
+    normalized.push(bytes[index]);
+  }
+  return Buffer.from(normalized);
+}
+
 export async function runPreflight(): Promise<PreflightResult> {
   const baselineRaw = JSON.parse(
     await readFile(join(here, "provider_capability_baseline.json"), "utf8"),
@@ -61,13 +70,27 @@ export async function runPreflight(): Promise<PreflightResult> {
       throw new Error(`fixture MIME is invalid: ${id}`);
     }
     const bytes = await readFile(resolve(here, String(fixture.path)));
-    const digest = createHash("sha256").update(bytes).digest("hex");
-    if (bytes.byteLength !== fixture.size || digest !== fixture.sha256) {
+    const rawDigest = createHash("sha256").update(bytes).digest("hex");
+    const rawMatches = bytes.byteLength === fixture.size && rawDigest === fixture.sha256;
+    const canonicalBytes = rawMatches ? bytes : canonicalCheckoutBytes(bytes);
+    const digest = createHash("sha256").update(canonicalBytes).digest("hex");
+    if (!rawMatches && (canonicalBytes.byteLength !== fixture.size || digest !== fixture.sha256)) {
       throw new Error(`fixture integrity mismatch: ${id}`);
+    }
+    const legacyOfficeStream = new Map([
+      ["application/msword", "WordDocument"],
+      ["application/vnd.ms-excel", "Workbook"],
+      ["application/vnd.ms-powerpoint", "PowerPoint Document"],
+    ]).get(String(fixture.mime));
+    if (legacyOfficeStream &&
+      (!bytes.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])) ||
+        !bytes.includes(Buffer.from(legacyOfficeStream, "utf16le")))) {
+      throw new Error(`fixture is not a genuine legacy Office ${legacyOfficeStream} container: ${id}`);
     }
   }
   const requiredFixtures = [
-    "facts-txt", "facts-md", "facts-pdf", "facts-docx", "facts-xlsx", "facts-pptx",
+    "facts-txt", "facts-md", "facts-pdf", "facts-doc", "facts-docx", "facts-xls",
+    "facts-xlsx", "facts-ppt", "facts-pptx",
     "facts-html", "facts-csv", "transparent-png", "mask-png", "marker-jpg",
     "speech-8khz-stereo-wav", "audio-sfx-wav", "audio-speech-wav", "video-fresh-mp4",
     "zip-single-document-zip", "zip-multiple-documents-zip", "archive-mixed-zip",

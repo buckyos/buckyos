@@ -14,8 +14,8 @@ use crate::model_types::{
     LatencyClass, LogicalModelDefinition, ModelAttributes, ModelCandidate, ModelCapabilities,
     ModelHealth, ModelMetadata, ModelPricing, PolicyConfig, PricingMode, PrivacyClass,
     ProviderInventory, ProviderOrigin, ProviderType, ProviderTypeTrustedSource, QuotaState,
-    RequestedModelType, RequiredModelFeatures, RouteError, RouteErrorCode, RoutePolicy,
-    RoutePricingSnapshot, RouteTrace, UserFacingProviderOrigin, UserFacingRouteSummary,
+    RequiredModelFeatures, RouteError, RouteErrorCode, RoutePolicy, RoutePricingSnapshot,
+    RouteTrace, UserFacingProviderOrigin, UserFacingRouteSummary,
 };
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -27,14 +27,12 @@ use buckyos_api::{
     AiResponse, AiccComputeProgress, AiccComputeTaskData, AiccComputeTaskRequest, AiccHandler,
     AiccRouteOverlay, AiccRouteTraceEvent, AiccUsageEvent, AiccVideoContinuationSource,
     CancelResponse, Capability, CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq,
-    Feature, LlmChatInvokeRequest, LlmChatInvokeResponse, ModelSpec, ReportProgressReq,
-    ReportStartedReq, Requirements, ResourceRef, RouteFallbackAttempt, RouteResolveRequest,
-    RouteResolveResponse, RunnerWriteEnvelope, TaskControlAction, TaskError, TaskManagerClient,
-    TaskPhase, TextToImageInvokeRequest, TextToImageInvokeResponse, TokenUse, TypedTaskData,
-};
-#[cfg(test)]
-use buckyos_api::{bind_token_principal_kind, bind_token_target, AuthTarget, TokenPrincipalKind};
-use log::{debug, error, info, warn};
+<<<<<<< HEAD
+    Feature, LlmChatInvokeRequest, LlmChatInvokeResponse, LlmResponseFormat, ModelSpec,
+    ReportProgressReq, ReportStartedReq, Requirements, ResourceRef, RouteFallbackAttempt,
+    RouteResolveRequest, RouteResolveResponse, RunnerWriteEnvelope, TaskControlAction, TaskError,
+    TaskManagerClient, TaskPhase, TextToImageInvokeRequest, TextToImageInvokeResponse, TokenUse,
+    TypedTaskData, AICC_SERVICE_SERVICE_NAME,
 use ndn_lib::{
     load_named_object_from_obj_str, ChunkHasher, ChunkId, FileObject, NamedObject, ObjId,
 };
@@ -1580,6 +1578,7 @@ fn infer_mime_from_name(name: &str) -> Option<String> {
         "ogg" => Some("audio/ogg".to_string()),
         "mp4" => Some("video/mp4".to_string()),
         "json" => Some("application/json".to_string()),
+        "xml" => Some("text/xml".to_string()),
         "txt" => Some("text/plain".to_string()),
         _ => None,
     }
@@ -1606,6 +1605,53 @@ fn infer_mime_from_bytes(bytes: &[u8]) -> String {
     }
     if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
         return "video/mp4".to_string();
+    }
+    if bytes.starts_with(b"%PDF-") {
+        return "application/pdf".to_string();
+    }
+    if bytes.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") {
+        return "application/vnd.ms-excel".to_string();
+    }
+    if bytes.starts_with(b"PK\x03\x04") {
+        if bytes.windows(5).any(|value| value == b"word/") {
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                .to_string();
+        }
+        if bytes.windows(3).any(|value| value == b"xl/") {
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string();
+        }
+        if bytes.windows(4).any(|value| value == b"ppt/") {
+            return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                .to_string();
+        }
+        if bytes.windows(20).any(|value| value == b"application/epub+zip") {
+            return "application/epub+zip".to_string();
+        }
+    }
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        let trimmed = text.trim_start();
+        let lowercase = trimmed
+            .get(..trimmed.len().min(256))
+            .unwrap_or(trimmed)
+            .to_ascii_lowercase();
+        if trimmed.starts_with("{\\rtf") {
+            return "application/rtf".to_string();
+        }
+        if (trimmed.starts_with('{') || trimmed.starts_with('['))
+            && serde_json::from_str::<Value>(trimmed).is_ok()
+        {
+            return "application/json".to_string();
+        }
+        if lowercase.starts_with("<!doctype html")
+            || lowercase.starts_with("<html")
+            || lowercase.contains("<html")
+        {
+            return "text/html".to_string();
+        }
+        if trimmed.starts_with("<?xml") || trimmed.starts_with('<') {
+            return "text/xml".to_string();
+        }
+        return "text/plain".to_string();
     }
     "application/octet-stream".to_string()
 }
@@ -2685,6 +2731,22 @@ fn append_provider_audit_to_summary(summary: &mut AiResponse, attempt: &RouteAtt
     }
 }
 
+fn ensure_summary_accounting(summary: &mut AiResponse, attempt: &RouteAttempt) {
+    if summary.usage.is_none() {
+        summary.usage = Some(buckyos_api::AiUsage::request_units(1));
+    }
+    if summary.cost.is_none() {
+        if let Some(pricing) = attempt.pricing_snapshot.as_ref() {
+            if let Some(amount) = pricing.estimated_cost {
+                summary.cost = Some(buckyos_api::AiCost {
+                    amount,
+                    currency: pricing.currency.clone(),
+                });
+            }
+        }
+    }
+}
+
 fn llm_chat_invoke_to_method_request(
     request: LlmChatInvokeRequest,
 ) -> std::result::Result<AiMethodRequest, RPCErrors> {
@@ -2705,23 +2767,20 @@ fn llm_chat_invoke_to_method_request(
     if payload.tool_specs.is_empty() {
         payload.tool_specs = request.tools;
     }
-    if let Some(input_json) = payload.input_json.as_mut() {
-        if !input_json.is_object() {
-            *input_json = json!({ "value": input_json.clone() });
+    let input_json = payload.input_json.get_or_insert_with(|| json!({}));
+    if !input_json.is_object() {
+        *input_json = json!({ "value": input_json.clone() });
+    }
+    if let Some(object) = input_json.as_object_mut() {
+        if let Some(resp_format) = request.response_format {
+            object.insert("response_format".to_string(), json!(resp_format));
         }
-        if let Some(object) = input_json.as_object_mut() {
-            if let Some(resp_format) = request.response_format {
-                object.insert("response_format".to_string(), json!(resp_format));
-            }
-            if let Some(temperature) = request.temperature {
-                object.insert("temperature".to_string(), json!(temperature));
-            }
-            if let Some(max_output_tokens) = request.max_output_tokens {
-                object.insert("max_output_tokens".to_string(), json!(max_output_tokens));
-            }
+        if let Some(temperature) = request.temperature {
+            object.insert("temperature".to_string(), json!(temperature));
         }
-    } else {
-        payload.input_json = Some(json!({}));
+        if let Some(max_output_tokens) = request.max_output_tokens {
+            object.insert("max_output_tokens".to_string(), json!(max_output_tokens));
+        }
     }
     merge_provider_options(&mut payload, request.provider_options);
     let mut policy = buckyos_api::RoutePolicy::default();
@@ -2962,6 +3021,7 @@ fn required_model_features(requirements: &Requirements) -> RequiredModelFeatures
     required.json_schema = requirements.required.json_schema;
     required.web_search = requirements.required.web_search;
     required.vision = requirements.required.vision;
+    required.image_generation = requirements.required.image_generation;
     required.min_context_tokens = requirements.required.min_context_tokens;
     for feature in &requirements.must_features {
         match feature.as_str() {
@@ -2969,6 +3029,7 @@ fn required_model_features(requirements: &Requirements) -> RequiredModelFeatures
             buckyos_api::features::JSON_OUTPUT => required.json_schema = true,
             buckyos_api::features::WEB_SEARCH => required.web_search = true,
             buckyos_api::features::VISION => required.vision = true,
+            buckyos_api::features::IMAGE_GENERATION => required.image_generation = true,
             "streaming" => required.streaming = true,
             _ => {}
         }
@@ -3206,6 +3267,9 @@ pub fn provider_model_metadata(
             vision: features
                 .iter()
                 .any(|item| item == buckyos_api::features::VISION),
+            image_generation: features
+                .iter()
+                .any(|item| item == buckyos_api::features::IMAGE_GENERATION),
             max_context_tokens: None,
             max_output_tokens: None,
         },
@@ -3279,7 +3343,25 @@ impl AIComputeCenter {
             "audio/ogg",
             "video/mp4",
             "application/json",
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/xml",
+            "application/yaml",
+            "application/rtf",
             "text/plain",
+            "text/csv",
+            "text/tab-separated-values",
+            "text/markdown",
+            "text/html",
+            "text/xml",
+            "text/yaml",
+            "text/rtf",
+            "text/x-python",
         ]
         .into_iter()
         .map(|item| item.to_string())
@@ -3397,9 +3479,6 @@ impl AIComputeCenter {
         let Ok(trace) = decision.route_trace.lock() else {
             return;
         };
-        if trace.requested_model_type != RequestedModelType::Logical {
-            return;
-        }
         let Ok(trace) = serde_json::to_value(&*trace) else {
             return;
         };
@@ -3549,6 +3628,8 @@ impl AIComputeCenter {
                         json!({
                             "exact_model": model.exact_model,
                             "provider_model_id": model.provider_model_id,
+                            "provider_actual_model_id": model.provider_actual_model_id,
+                            "provider_options": model.provider_options,
                             "model_driver": model.model_driver,
                             "api_types": model.api_types,
                             "logical_mounts": model.logical_mounts,
@@ -4312,6 +4393,22 @@ impl AIComputeCenter {
         request: AiMethodRequest,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+        let response_format = request
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|input| input.get("response_format"))
+            .cloned()
+            .map(|value| {
+                serde_json::from_value::<LlmResponseFormat>(value).map_err(|error| {
+                    RPCErrors::ParseRequestError(format!("invalid llm response_format: {}", error))
+                })
+            })
+            .transpose()?
+            .or_else(|| match request.requirements.resp_format {
+                buckyos_api::RespFormat::Json => Some(LlmResponseFormat::json_object()),
+                buckyos_api::RespFormat::Text => None,
+            });
         let route = self
             .resolve_route_authenticated(
                 route_request_from_method_request(ai_methods::LLM_CHAT, &request)?,
@@ -4325,7 +4422,7 @@ impl AIComputeCenter {
                     exact_model: route.selected_exact_model,
                     messages: request.payload.messages.clone(),
                     tools: request.payload.tool_specs.clone(),
-                    response_format: Some(request.requirements.resp_format.clone()),
+                    response_format,
                     temperature: request
                         .payload
                         .options
@@ -4464,10 +4561,10 @@ impl AIComputeCenter {
                 error.to_string(),
             )
             .await;
-            return Ok(AiMethodResponse::new(
+            return Ok(failed_method_response(
                 external_task_id,
-                AiMethodStatus::Failed,
-                None,
+                code.as_str(),
+                error.to_string(),
                 event_ref,
             ));
         }
@@ -4482,10 +4579,10 @@ impl AIComputeCenter {
                     error.to_string(),
                 )
                 .await;
-                return Ok(AiMethodResponse::new(
+                return Ok(failed_method_response(
                     external_task_id,
-                    AiMethodStatus::Failed,
-                    None,
+                    "resource_invalid",
+                    error.to_string(),
                     event_ref,
                 ));
             }
@@ -4602,10 +4699,10 @@ impl AIComputeCenter {
                     error.to_string(),
                 )
                 .await;
-                return Ok(AiMethodResponse::new(
+                return Ok(failed_method_response(
                     external_task_id,
-                    AiMethodStatus::Failed,
-                    None,
+                    code.as_str(),
+                    error.to_string(),
                     event_ref,
                 ));
             }
@@ -4721,16 +4818,13 @@ impl AIComputeCenter {
                             error.to_string(),
                         )
                         .await;
-                        return Ok(AiMethodResponse::new(
+                        return Ok(failed_method_response(
                             external_task_id,
-                            AiMethodStatus::Failed,
-                            None,
+                            code.as_str(),
+                            error.to_string(),
                             event_ref,
                         ));
                     }
-                }
-                if let Some(extra) = summary.extra.as_mut() {
-                    redact_base64_fields(extra);
                 }
                 self.emit_task_final(event_sink, external_task_id.as_str(), &summary)
                     .await;
@@ -4820,10 +4914,10 @@ impl AIComputeCenter {
                     error.to_string(),
                 )
                 .await;
-                Ok(AiMethodResponse::new(
+                Ok(failed_method_response(
                     external_task_id,
-                    AiMethodStatus::Failed,
-                    None,
+                    code.as_str(),
+                    error.to_string(),
                     event_ref,
                 ))
             }
@@ -4979,6 +5073,7 @@ impl AIComputeCenter {
             match result {
                 Ok(mut start_result) => {
                     if let ProviderStartResult::Immediate(summary) = &mut start_result {
+                        ensure_summary_accounting(summary, attempt);
                         self.apply_billing_to_summary(
                             ctx,
                             self.registry
@@ -5101,6 +5196,40 @@ impl AIComputeCenter {
         for resource in req.payload.resources.iter() {
             self.validate_resource(resource)?;
         }
+        if let Some(input_json) = req.payload.input_json.as_ref() {
+            self.validate_resources_in_value(input_json)?;
+        }
+        Ok(())
+    }
+
+    fn validate_resources_in_value(&self, value: &Value) -> std::result::Result<(), RPCErrors> {
+        match value {
+            Value::Object(object) => {
+                if object
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| matches!(kind, "url" | "base64" | "named_object"))
+                {
+                    let resource =
+                        serde_json::from_value::<ResourceRef>(value.clone()).map_err(|error| {
+                            reason_error(
+                                "resource_invalid",
+                                format!("canonical resource is invalid: {}", error),
+                            )
+                        })?;
+                    return self.validate_resource(&resource);
+                }
+                for child in object.values() {
+                    self.validate_resources_in_value(child)?;
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    self.validate_resources_in_value(child)?;
+                }
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -5221,7 +5350,7 @@ impl AIComputeCenter {
         task_id: &str,
         summary: &AiResponse,
     ) {
-        let summary_value = redacted_summary_value(summary);
+        let summary_value = serde_json::to_value(summary).unwrap_or_else(|_| json!({}));
         let event = TaskEvent {
             task_id: task_id.to_string(),
             kind: TaskEventKind::Final,
@@ -5795,7 +5924,7 @@ pub(crate) async fn emit_background_provider_result(
                     kind: TaskEventKind::Final,
                     timestamp_ms: now_ms(),
                     data: Some(json!({
-                        "summary": redacted_summary_value(&summary),
+                        "summary": serde_json::to_value(&summary).unwrap_or_else(|_| json!({})),
                         "finish_reason": finish_reason,
                         "has_text": has_text,
                         "artifact_count": artifact_count
@@ -6049,6 +6178,28 @@ fn reason_error(code: &str, detail: impl Into<String>) -> RPCErrors {
     RPCErrors::ReasonError(format!("{}: {}", code, detail.into()))
 }
 
+fn failed_method_response(
+    task_id: String,
+    code: &str,
+    message: String,
+    event_ref: Option<String>,
+) -> AiMethodResponse {
+    AiMethodResponse::new(
+        task_id,
+        AiMethodStatus::Failed,
+        Some(AiResponse {
+            extra: Some(json!({
+                "error": {
+                    "code": code,
+                    "message": message,
+                }
+            })),
+            ..AiResponse::default()
+        }),
+        event_ref,
+    )
+}
+
 fn extract_error_code(error: &RPCErrors) -> String {
     match error {
         RPCErrors::ReasonError(message) => message
@@ -6078,6 +6229,30 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn named_resource_mime_inference_covers_text_and_office_documents() {
+        assert_eq!(
+            infer_mime_from_bytes(br"{\rtf1\ansi marker}"),
+            "application/rtf"
+        );
+        assert_eq!(
+            infer_mime_from_bytes(b"<?xml version=\"1.0\"?><Workbook/>"),
+            "text/xml"
+        );
+        assert_eq!(
+            infer_mime_from_bytes(b"<!doctype html><html><body>marker</body></html>"),
+            "text/html"
+        );
+        assert_eq!(
+            infer_mime_from_bytes(b"PK\x03\x04word/document.xml"),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        assert_eq!(
+            infer_mime_from_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1Workbook"),
+            "application/vnd.ms-excel"
+        );
+    }
 
     fn aicc_task_data(task: &Task) -> Option<AiccComputeTaskData> {
         let data = task
@@ -7178,6 +7353,26 @@ mod tests {
     }
 
     #[test]
+    fn models_list_preserves_provider_variant_routing_metadata() {
+        let registry = Registry::default();
+        let instance = mock_instance("openai-main", "openai");
+        let mut provider = MockProvider::new(instance, cost(0.001, 100), vec![]);
+        provider.inventory.models[0].provider_actual_model_id = Some("gpt-5.6-sol".to_string());
+        provider.inventory.models[0].provider_options =
+            Some(json!({"reasoning": {"effort": "high"}}));
+        registry.add_provider(Arc::new(provider));
+        let center = AIComputeCenter::new(registry, ModelCatalog::default());
+
+        let directory = center.dump_model_directory().unwrap();
+        let model = &directory["providers"][0]["models"][0];
+        assert_eq!(model["provider_actual_model_id"], json!("gpt-5.6-sol"));
+        assert_eq!(
+            model["provider_options"]["reasoning"]["effort"],
+            json!("high")
+        );
+    }
+
+    #[test]
     fn builtin_logical_tree_is_visible_in_models_list_without_system_config() {
         let center = AIComputeCenter::new(Registry::default(), ModelCatalog::default());
         center.apply_system_routing_config(&json!({})).unwrap();
@@ -7599,6 +7794,15 @@ mod tests {
             .await
             .expect("complete should return failed response");
         assert_eq!(response.status, AiMethodStatus::Failed);
+        assert_eq!(
+            response
+                .result
+                .as_ref()
+                .and_then(|result| result.extra.as_ref())
+                .and_then(|extra| extra.pointer("/error/code"))
+                .and_then(Value::as_str),
+            Some("no_provider_available")
+        );
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
         let tasks = all_tasks(&taskmgr).await;

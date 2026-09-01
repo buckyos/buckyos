@@ -115,6 +115,7 @@ pub mod features {
     pub const JSON_OUTPUT: &str = "json_output";
     pub const WEB_SEARCH: &str = "web_search";
     pub const VISION: &str = "vision";
+    pub const IMAGE_GENERATION: &str = "image_generation";
     pub const ASR: &str = "asr";
     pub const VIDEO_UNDERSTAND: &str = "video_understand";
 }
@@ -127,6 +128,74 @@ pub enum RespFormat {
     Text,
     #[serde(alias = "Json", alias = "JSON")]
     Json,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmResponseFormatType {
+    Text,
+    Json,
+    JsonObject,
+    JsonSchema,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LlmJsonSchema {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub schema: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LlmResponseFormat {
+    #[serde(rename = "type")]
+    pub format_type: LlmResponseFormatType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json_schema: Option<LlmJsonSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
+}
+
+impl LlmResponseFormat {
+    pub fn text() -> Self {
+        Self {
+            format_type: LlmResponseFormatType::Text,
+            json_schema: None,
+            name: None,
+            schema: None,
+            strict: None,
+        }
+    }
+
+    pub fn json_object() -> Self {
+        Self {
+            format_type: LlmResponseFormatType::JsonObject,
+            json_schema: None,
+            name: None,
+            schema: None,
+            strict: None,
+        }
+    }
+
+    pub fn json_schema(name: Option<String>, schema: Value, strict: Option<bool>) -> Self {
+        Self {
+            format_type: LlmResponseFormatType::JsonSchema,
+            json_schema: Some(LlmJsonSchema {
+                name,
+                schema,
+                strict,
+            }),
+            name: None,
+            schema: None,
+            strict: None,
+        }
+    }
 }
 
 fn is_default_resp_format(resp_format: &RespFormat) -> bool {
@@ -192,6 +261,8 @@ pub struct ModelRequirement {
     pub web_search: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub vision: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub image_generation: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_context_tokens: Option<u64>,
 }
@@ -203,6 +274,7 @@ impl ModelRequirement {
             features::JSON_OUTPUT => self.json_schema = true,
             features::WEB_SEARCH => self.web_search = true,
             features::VISION => self.vision = true,
+            features::IMAGE_GENERATION => self.image_generation = true,
             "streaming" => self.streaming = true,
             _ => {}
         }
@@ -214,6 +286,7 @@ impl ModelRequirement {
             features::JSON_OUTPUT => self.json_schema,
             features::WEB_SEARCH => self.web_search,
             features::VISION => self.vision,
+            features::IMAGE_GENERATION => self.image_generation,
             "streaming" => self.streaming,
             _ => false,
         }
@@ -235,6 +308,9 @@ impl ModelRequirement {
         }
         if self.vision {
             features.push(features::VISION.to_string());
+        }
+        if self.image_generation {
+            features.push(features::IMAGE_GENERATION.to_string());
         }
         features
     }
@@ -252,6 +328,8 @@ pub struct ModelDisable {
     pub web_search: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub vision: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub image_generation: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_context_tokens: Option<u64>,
 }
@@ -263,6 +341,7 @@ impl ModelDisable {
             features::JSON_OUTPUT => self.json_schema = true,
             features::WEB_SEARCH => self.web_search = true,
             features::VISION => self.vision = true,
+            features::IMAGE_GENERATION => self.image_generation = true,
             "streaming" => self.streaming = true,
             _ => {}
         }
@@ -274,6 +353,7 @@ impl ModelDisable {
             features::JSON_OUTPUT => self.json_schema,
             features::WEB_SEARCH => self.web_search,
             features::VISION => self.vision,
+            features::IMAGE_GENERATION => self.image_generation,
             "streaming" => self.streaming,
             _ => false,
         }
@@ -295,6 +375,9 @@ impl ModelDisable {
         }
         if self.vision {
             features.push(features::VISION.to_string());
+        }
+        if self.image_generation {
+            features.push(features::IMAGE_GENERATION.to_string());
         }
         if let Some(tokens) = self.min_context_tokens {
             features.push(format!("min_context_tokens:{}", tokens));
@@ -1649,7 +1732,7 @@ pub struct LlmChatInvokeRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<AiToolSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub response_format: Option<RespFormat>,
+    pub response_format: Option<LlmResponseFormat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

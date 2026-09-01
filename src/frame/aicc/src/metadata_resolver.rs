@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-const DRIVER_METADATA_SCHEMA_VERSION: u32 = 3;
+const DRIVER_METADATA_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Default)]
 pub struct DriverModelResolveRequest {
@@ -64,8 +64,6 @@ pub struct DriverMetadataDocument {
     pub models: Vec<DriverModelRule>,
     #[serde(default)]
     pub patterns: Vec<DriverModelRule>,
-    #[serde(default)]
-    pub capability_overrides: Vec<DriverCapabilityOverride>,
     #[serde(default)]
     pub defaults: DriverModelRule,
     #[serde(default)]
@@ -159,24 +157,6 @@ pub struct DriverModelRule {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DriverCapabilityOverride {
-    pub pattern: String,
-    #[serde(default)]
-    pub api_types: Vec<ApiType>,
-    #[serde(default)]
-    pub add_api_types: Vec<ApiType>,
-    #[serde(default)]
-    pub add_logical_mounts: Vec<String>,
-    #[serde(default)]
-    pub remove_api_types: Vec<ApiType>,
-    #[serde(default)]
-    pub remove_logical_mounts: Vec<String>,
-    #[serde(default)]
-    pub capabilities: DriverCapabilitiesPatch,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct DriverVersionRule {
     #[serde(default)]
     pub family: String,
@@ -187,7 +167,11 @@ pub struct DriverVersionRule {
     #[serde(default)]
     pub tier_tokens: Vec<String>,
     #[serde(default)]
+    pub tier_patterns: Vec<String>,
+    #[serde(default)]
     pub exclude_tier_tokens: Vec<String>,
+    #[serde(default)]
+    pub exclude_patterns: Vec<String>,
     #[serde(default)]
     pub version_rank: DriverVersionRankRule,
     #[serde(default)]
@@ -235,6 +219,8 @@ pub struct DriverCapabilitiesPatch {
     pub unsupported_feature_combinations: Option<Vec<Vec<String>>>,
     #[serde(default)]
     pub vision: Option<bool>,
+    #[serde(default)]
+    pub image_generation: Option<bool>,
     #[serde(default)]
     pub max_context_tokens: Option<u64>,
     #[serde(default)]
@@ -511,15 +497,6 @@ fn resolve_driver_model(
             cost_class = next;
         }
     }
-    apply_capability_overrides(
-        provider_model_id,
-        provider_driver,
-        &origin,
-        &mut api_types,
-        &mut logical_mounts,
-        &mut capabilities,
-        sources,
-    );
     if logical_mounts.is_empty() && !driver_rule_found {
         logical_mounts = provider_fallback_mounts(request.fallback_logical_mounts.as_slice());
     }
@@ -701,59 +678,13 @@ pub(crate) fn validate_driver_metadata_document(
         validate_driver_model_rule(rule, format!("patterns[{}]", index).as_str())?;
     }
 
-    for (index, rule) in document.capability_overrides.iter().enumerate() {
-        let location = format!("capability_overrides[{}]", index);
-        validate_trimmed_value(rule.pattern.as_str(), &format!("{}.pattern", location))?;
-        if !rule.capabilities.has_any()
-            && rule.add_api_types.is_empty()
-            && rule.add_logical_mounts.is_empty()
-            && rule.remove_api_types.is_empty()
-            && rule.remove_logical_mounts.is_empty()
-        {
-            return Err(format!("{} must add or patch metadata", location));
-        }
-        let mut api_types = HashSet::new();
-        for api_type in &rule.api_types {
-            if !api_types.insert(api_type) {
-                return Err(format!("{}.api_types contains duplicate value", location));
-            }
-        }
-        let mut added_api_types = HashSet::new();
-        for api_type in &rule.add_api_types {
-            if !added_api_types.insert(api_type) {
-                return Err(format!(
-                    "{}.add_api_types contains duplicate value",
-                    location
-                ));
-            }
-        }
-        let mut removed_api_types = HashSet::new();
-        for api_type in &rule.remove_api_types {
-            if !removed_api_types.insert(api_type) {
-                return Err(format!(
-                    "{}.remove_api_types contains duplicate value",
-                    location
-                ));
-            }
-        }
-        validate_string_list(
-            rule.add_logical_mounts.as_slice(),
-            format!("{}.add_logical_mounts", location).as_str(),
-        )?;
-        validate_string_list(
-            rule.remove_logical_mounts.as_slice(),
-            format!("{}.remove_logical_mounts", location).as_str(),
-        )?;
-        validate_capabilities_patch(&rule.capabilities, location.as_str())?;
-    }
-
     if document.defaults.id.is_some() || document.defaults.pattern.is_some() {
         return Err("defaults cannot declare id or pattern".to_string());
     }
     validate_driver_model_rule(&document.defaults, "defaults")?;
 
     let mut variant_names = HashSet::new();
-    let mut variant_suffixes = HashSet::new();
+    let mut variant_scopes = HashSet::new();
     for (index, variant) in document.variants.iter().enumerate() {
         validate_trimmed_value(
             variant.name.as_str(),
@@ -769,8 +700,19 @@ pub(crate) fn validate_driver_metadata_document(
         if !is_valid_variant_suffix(suffix) || suffix.trim() != suffix || suffix.is_empty() {
             return Err(format!("variants[{}].mount_suffix is invalid", index));
         }
-        if !variant_suffixes.insert(suffix.to_ascii_lowercase()) {
-            return Err(format!("duplicate variant mount_suffix '{}'", suffix));
+        let scope = (
+            suffix.to_ascii_lowercase(),
+            variant
+                .model_pattern
+                .as_deref()
+                .unwrap_or("*")
+                .to_ascii_lowercase(),
+        );
+        if !variant_scopes.insert(scope) {
+            return Err(format!(
+                "duplicate variant mount_suffix '{}' for the same model pattern",
+                suffix
+            ));
         }
         if !variant.provider_options.is_null() && !variant.provider_options.is_object() {
             return Err(format!(
@@ -806,8 +748,16 @@ pub(crate) fn validate_driver_metadata_document(
             format!("version_rules[{}].tier_tokens", index).as_str(),
         )?;
         validate_string_list(
+            rule.tier_patterns.as_slice(),
+            format!("version_rules[{}].tier_patterns", index).as_str(),
+        )?;
+        validate_string_list(
             rule.exclude_tier_tokens.as_slice(),
             format!("version_rules[{}].exclude_tier_tokens", index).as_str(),
+        )?;
+        validate_string_list(
+            rule.exclude_patterns.as_slice(),
+            format!("version_rules[{}].exclude_patterns", index).as_str(),
         )?;
         validate_string_list(
             rule.auto_mounts.as_slice(),
@@ -1178,56 +1128,6 @@ fn find_pattern_rule<'a>(
     None
 }
 
-fn apply_capability_overrides(
-    provider_model_id: &str,
-    provider_driver: &str,
-    origin: &DriverOriginIdentity,
-    api_types: &mut Vec<ApiType>,
-    logical_mounts: &mut Vec<String>,
-    capabilities: &mut ModelCapabilities,
-    sources: &[DriverMetadataSource],
-) {
-    for source in sources {
-        if source.document.schema_version != DRIVER_METADATA_SCHEMA_VERSION {
-            continue;
-        }
-        for rule in &source.document.capability_overrides {
-            if !wildcard_matches(rule.pattern.as_str(), provider_model_id) {
-                continue;
-            }
-            if !rule.api_types.is_empty()
-                && !rule
-                    .api_types
-                    .iter()
-                    .any(|required| api_types.contains(required))
-            {
-                continue;
-            }
-            for api_type in &rule.remove_api_types {
-                api_types.retain(|current| current != api_type);
-            }
-            for mount in &rule.remove_logical_mounts {
-                let mount =
-                    expand_mount_template(mount, provider_driver, provider_model_id, origin);
-                logical_mounts.retain(|current| current != &mount);
-            }
-            for api_type in &rule.add_api_types {
-                if !api_types.contains(api_type) {
-                    api_types.push(api_type.clone());
-                }
-            }
-            for mount in &rule.add_logical_mounts {
-                let mount =
-                    expand_mount_template(mount, provider_driver, provider_model_id, origin);
-                if !logical_mounts.contains(&mount) {
-                    logical_mounts.push(mount);
-                }
-            }
-            apply_capabilities_patch(capabilities, &rule.capabilities);
-        }
-    }
-}
-
 fn find_default_rule(sources: &[DriverMetadataSource]) -> Option<&DriverModelRule> {
     for source in sources.iter().rev() {
         if source.document.schema_version != DRIVER_METADATA_SCHEMA_VERSION {
@@ -1370,6 +1270,7 @@ fn conservative_capabilities() -> ModelCapabilities {
         web_search: false,
         unsupported_feature_combinations: vec![],
         vision: false,
+        image_generation: false,
         max_context_tokens: None,
         max_output_tokens: None,
     }
@@ -1383,6 +1284,7 @@ impl DriverCapabilitiesPatch {
             || self.web_search.is_some()
             || self.unsupported_feature_combinations.is_some()
             || self.vision.is_some()
+            || self.image_generation.is_some()
             || self.max_context_tokens.is_some()
             || self.max_output_tokens.is_some()
     }
@@ -1406,6 +1308,9 @@ fn apply_capabilities_patch(capabilities: &mut ModelCapabilities, patch: &Driver
     }
     if let Some(value) = patch.vision {
         capabilities.vision = value;
+    }
+    if let Some(value) = patch.image_generation {
+        capabilities.image_generation = value;
     }
     if patch.max_context_tokens.is_some() {
         capabilities.max_context_tokens = patch.max_context_tokens;
@@ -1748,12 +1653,18 @@ fn rank_model_for_version_rule(
         .filter(|token| !token.is_empty())
         .map(|token| token.to_string())
         .collect::<HashSet<_>>();
-    if !rule.tier_tokens.is_empty()
-        && !rule
-            .tier_tokens
-            .iter()
-            .map(|token| token.to_ascii_lowercase())
-            .any(|token| tokens.contains(token.as_str()))
+    let tier_token_matches = rule
+        .tier_tokens
+        .iter()
+        .map(|token| token.to_ascii_lowercase())
+        .any(|token| tokens.contains(token.as_str()));
+    let tier_pattern_matches = rule
+        .tier_patterns
+        .iter()
+        .any(|pattern| wildcard_matches(pattern, normalized.as_str()));
+    if (!rule.tier_tokens.is_empty() || !rule.tier_patterns.is_empty())
+        && !tier_token_matches
+        && !tier_pattern_matches
     {
         return None;
     }
@@ -1762,6 +1673,13 @@ fn rank_model_for_version_rule(
         .iter()
         .map(|token| token.to_ascii_lowercase())
         .any(|token| tokens.contains(token.as_str()))
+    {
+        return None;
+    }
+    if rule
+        .exclude_patterns
+        .iter()
+        .any(|pattern| wildcard_matches(pattern, normalized.as_str()))
     {
         return None;
     }
@@ -1856,12 +1774,10 @@ fn compare_gpt_rank(left: &DriverModelRank, right: &DriverModelRank) -> std::cmp
 
 fn remove_driver_auto_mounts(mounts: &mut Vec<String>, rule: &DriverVersionRule) {
     mounts.retain(|mount| {
-        !rule.auto_mounts.iter().any(|auto_mount| {
-            mount == auto_mount
-                || mount
-                    .strip_prefix(auto_mount.as_str())
-                    .is_some_and(|tail| tail.starts_with('.'))
-        })
+        !rule
+            .auto_mounts
+            .iter()
+            .any(|auto_mount| mount == auto_mount)
     });
 }
 
@@ -1945,99 +1861,6 @@ mod tests {
     }
 
     #[test]
-    fn capability_overrides_apply_by_model_pattern_and_api_type() {
-        let source = DriverMetadataSource::new(
-            "test".to_string(),
-            DriverMetadataDocument {
-                schema_version: DRIVER_METADATA_SCHEMA_VERSION,
-                capability_overrides: vec![DriverCapabilityOverride {
-                    pattern: "gemini-2.*".to_string(),
-                    api_types: vec![ApiType::Llm],
-                    add_api_types: vec![ApiType::AudioAsr],
-                    add_logical_mounts: vec![
-                        "audio.asr".to_string(),
-                        "audio.asr.{model}".to_string(),
-                    ],
-                    remove_api_types: Vec::new(),
-                    remove_logical_mounts: Vec::new(),
-                    capabilities: DriverCapabilitiesPatch {
-                        unsupported_feature_combinations: Some(vec![vec![
-                            "tool_calling".to_string(),
-                            "web_search".to_string(),
-                        ]]),
-                        ..Default::default()
-                    },
-                }],
-                ..Default::default()
-            },
-        );
-        let mut llm = ModelCapabilities::default();
-        let origin = DriverOriginIdentity {
-            driver: "google-gemini".to_string(),
-            model: "gemini-2.5-flash".to_string(),
-        };
-        let mut llm_api_types = vec![ApiType::Llm];
-        let mut llm_mounts = Vec::new();
-        apply_capability_overrides(
-            "gemini-2.5-flash",
-            "google-gemini",
-            &origin,
-            &mut llm_api_types,
-            &mut llm_mounts,
-            &mut llm,
-            &[source.clone()],
-        );
-        assert!(!llm.supports_feature_combination(&["tool_calling", "web_search"]));
-        assert!(llm_api_types.contains(&ApiType::AudioAsr));
-        assert_eq!(llm_mounts, vec!["audio.asr", "audio.asr.gemini-2-5-flash"]);
-
-        let mut image = ModelCapabilities::default();
-        let mut image_api_types = vec![ApiType::ImageTextToImage];
-        let mut image_mounts = Vec::new();
-        apply_capability_overrides(
-            "gemini-2.5-flash-image-preview",
-            "google-gemini",
-            &origin,
-            &mut image_api_types,
-            &mut image_mounts,
-            &mut image,
-            &[source],
-        );
-        assert!(image.supports_feature_combination(&["tool_calling", "web_search"]));
-        assert!(!image_api_types.contains(&ApiType::AudioAsr));
-        assert!(image_mounts.is_empty());
-
-        let removal_source = DriverMetadataSource::new(
-            "cloud".to_string(),
-            DriverMetadataDocument {
-                schema_version: DRIVER_METADATA_SCHEMA_VERSION,
-                capability_overrides: vec![DriverCapabilityOverride {
-                    pattern: "gemini-2.5-flash".to_string(),
-                    api_types: vec![ApiType::AudioAsr],
-                    remove_api_types: vec![ApiType::AudioAsr],
-                    remove_logical_mounts: vec![
-                        "audio.asr".to_string(),
-                        "audio.asr.{model}".to_string(),
-                    ],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-        );
-        apply_capability_overrides(
-            "gemini-2.5-flash",
-            "google-gemini",
-            &origin,
-            &mut llm_api_types,
-            &mut llm_mounts,
-            &mut llm,
-            &[removal_source],
-        );
-        assert!(!llm_api_types.contains(&ApiType::AudioAsr));
-        assert!(llm_mounts.is_empty());
-    }
-
-    #[test]
     fn override_metadata_rejects_schema_and_provider_identity_mismatch() {
         let valid = serde_json::json!({
             "format": "buckyos.aicc.provider-driver-metadata",
@@ -2053,6 +1876,14 @@ mod tests {
             "version_rules": []
         });
         assert!(parse_and_validate_driver_metadata(&valid.to_string(), Some("openai")).is_ok());
+
+        let mut removed_capability_overrides = valid.clone();
+        removed_capability_overrides["capability_overrides"] = serde_json::json!([]);
+        assert!(parse_and_validate_driver_metadata(
+            &removed_capability_overrides.to_string(),
+            Some("openai")
+        )
+        .is_err());
 
         let mut wrong_schema = valid.clone();
         wrong_schema["schema_version"] = serde_json::json!(1);
@@ -2517,13 +2348,53 @@ mod tests {
     }
 
     #[test]
-    fn openai_variants_expand_after_current_mount_selection() {
-        let request = DriverModelResolveRequest::new("gpt-5.5", vec![ApiType::Llm]);
+    fn openai_gpt5_image_generation_is_metadata_driven() {
         let inventory = resolve_driver_inventory(
             "openai-test",
             ProviderType::CloudApi,
             "openai",
-            &[request],
+            &[
+                DriverModelResolveRequest::new("gpt-5.6-sol", vec![ApiType::Llm]),
+                DriverModelResolveRequest::new("gpt-5.4", vec![ApiType::Llm]),
+                DriverModelResolveRequest::new(
+                    "gpt-image-2",
+                    vec![ApiType::ImageTextToImage, ApiType::ImageToImage],
+                ),
+            ],
+            None,
+        );
+        for id in ["gpt-5.6-sol", "gpt-5.4"] {
+            let model = inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == id)
+                .expect("GPT-5 model");
+            assert!(model.capabilities.image_generation);
+            assert!(model.api_types.contains(&ApiType::ImageTextToImage));
+            assert!(model.api_types.contains(&ApiType::ImageToImage));
+            assert!(!model.api_types.contains(&ApiType::ImageInpaint));
+        }
+        let image_model = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-image-2")
+            .expect("GPT Image model");
+        assert!(!image_model.capabilities.image_generation);
+    }
+
+    #[test]
+    fn openai_variants_expand_after_current_mount_selection() {
+        let requests = [
+            DriverModelResolveRequest::new("gpt-5.5", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("gpt-5.2-pro", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("gpt-5.4-pro", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("gpt-5.5-pro", vec![ApiType::Llm]),
+        ];
+        let inventory = resolve_driver_inventory(
+            "openai-test",
+            ProviderType::CloudApi,
+            "openai",
+            &requests,
             None,
         );
         let variant = inventory
@@ -2537,6 +2408,31 @@ mod tests {
             .logical_mounts
             .iter()
             .any(|mount| mount == "llm.gpt-standard.reasoning-high"));
+        for id in ["gpt-5.2-pro", "gpt-5.4-pro", "gpt-5.5-pro"] {
+            assert!(inventory
+                .models
+                .iter()
+                .any(|model| model.provider_model_id == format!("{id}:reasoning-high")));
+            assert!(!inventory
+                .models
+                .iter()
+                .any(|model| model.provider_model_id == format!("{id}:reasoning-low")));
+        }
+        for id in ["gpt-5.2-pro", "gpt-5.4-pro"] {
+            let model = inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == id)
+                .expect("pro model");
+            assert!(!model.capabilities.json_schema);
+        }
+        let gpt_55_pro = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-5.5-pro")
+            .expect("GPT-5.5 Pro model");
+        assert!(!gpt_55_pro.capabilities.streaming);
+        assert!(gpt_55_pro.capabilities.json_schema);
     }
 
     #[test]
@@ -2635,6 +2531,7 @@ mod tests {
             DriverModelResolveRequest::new("gemini-2.5-flash", vec![]),
             DriverModelResolveRequest::new("gemini-2.5-flash-lite", vec![]),
             DriverModelResolveRequest::new("gemini-2.5-deepthink", vec![]),
+            DriverModelResolveRequest::new("gemini-3.7-flash", vec![]),
         ];
         let inventory = resolve_driver_inventory(
             "gemini-test",
@@ -2669,6 +2566,28 @@ mod tests {
         for model in inventory.models.iter() {
             assert!(!model.logical_mounts.iter().any(|mount| mount == "llm"));
         }
+        let gemini_25_flash = by_id("gemini-2.5-flash");
+        assert!(gemini_25_flash.api_types.contains(&ApiType::AudioAsr));
+        assert!(gemini_25_flash
+            .logical_mounts
+            .iter()
+            .any(|mount| mount == "audio.asr"));
+        assert_eq!(gemini_25_flash.capabilities.max_output_tokens, Some(65_536));
+        assert!(!gemini_25_flash
+            .capabilities
+            .supports_feature_combination(&["tool_calling", "web_search"]));
+        let gemini_25_deepthink = by_id("gemini-2.5-deepthink");
+        assert!(!gemini_25_deepthink.api_types.contains(&ApiType::AudioAsr));
+        assert_eq!(
+            gemini_25_deepthink.capabilities.max_output_tokens,
+            Some(65_536)
+        );
+        let gemini_37_flash = by_id("gemini-3.7-flash");
+        assert!(gemini_37_flash.api_types.contains(&ApiType::AudioAsr));
+        assert_eq!(gemini_37_flash.capabilities.max_output_tokens, Some(8_192));
+        assert!(gemini_37_flash
+            .capabilities
+            .supports_feature_combination(&["tool_calling", "web_search"]));
     }
 
     #[test]
@@ -2709,5 +2628,39 @@ mod tests {
             None,
         );
         assert!(inventory.models.is_empty());
+    }
+
+    #[test]
+    fn pattern_exclude_drops_deprecated_openai_model_families() {
+        for model in [
+            "gpt-3.5-turbo",
+            "gpt-4",
+            "gpt-4-turbo",
+            "gpt-4.1-nano",
+            "gpt-4o-search-preview",
+            "gpt-5.1-codex-mini",
+            "o1-pro",
+            "o3-mini",
+            "o3-deep-research",
+            "o4-mini",
+        ] {
+            let inventory = resolve_driver_inventory(
+                "openai-test",
+                ProviderType::CloudApi,
+                "openai",
+                &[DriverModelResolveRequest::new(model, vec![])],
+                None,
+            );
+            assert!(inventory.models.is_empty(), "{model} should be excluded");
+        }
+
+        let inventory = resolve_driver_inventory(
+            "openai-test",
+            ProviderType::CloudApi,
+            "openai",
+            &[DriverModelResolveRequest::new("gpt-4.1", vec![])],
+            None,
+        );
+        assert_eq!(inventory.models.len(), 1);
     }
 }

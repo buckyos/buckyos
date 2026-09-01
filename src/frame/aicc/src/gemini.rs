@@ -1,28 +1,28 @@
 use crate::aicc::{
-    emit_background_provider_result, provider_type_from_settings, redacted_json_log,
     AIComputeCenter, Provider, ProviderError, ProviderInstance, ProviderRefreshTask,
-    ProviderStartResult, ResolvedRequest, TaskEventSink,
+    ProviderStartResult, ResolvedRequest, TaskEventSink, emit_background_provider_result,
+    provider_type_from_settings, redacted_json_log,
 };
-use crate::metadata_resolver::{resolve_driver_inventory, DriverModelResolveRequest};
+use crate::metadata_resolver::{DriverModelResolveRequest, resolve_driver_inventory};
 use crate::model_types::{
     ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory, ProviderOrigin,
     ProviderType, ProviderTypeTrustedSource, QuotaState,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use base64::engine::general_purpose;
 use base64::Engine as _;
-use buckyos_api::{
-    ai_methods, features, value_to_object_map, AiArtifact, AiContent, AiCost, AiMessage,
-    AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiToolSpec, AiUsage,
-    Feature, ResourceRef,
-};
+use base64::engine::general_purpose;
 #[cfg(test)]
 use buckyos_api::Capability;
+use buckyos_api::{
+    AiArtifact, AiContent, AiCost, AiMessage, AiMethodRequest, AiResponse, AiRole, AiToolCall,
+    AiToolResultContent, AiToolSpec, AiUsage, Feature, ResourceRef, ai_methods, features,
+    value_to_object_map,
+};
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -32,19 +32,21 @@ use tokio::time;
 
 const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_GEMINI_TIMEOUT_MS: u64 = 300_000;
-const DEFAULT_GEMINI_MODELS: &str = "gemini-2.5-flash,gemini-2.5-pro";
+const DEFAULT_GEMINI_MODELS: &str = "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.1-pro-preview,gemini-3-flash-preview,gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.5-pro,gemini-2.5-computer-use-preview-10-2025,gemini-3.5-transcribe,gemini-robotics-er-2-preview";
 const DEFAULT_GEMINI_IMAGE_MODELS: &str =
-    "gemini-2.0-flash-exp-image-generation,gemini-2.5-flash-image-preview";
-const DEFAULT_GEMINI_EMBEDDING_MODELS: &str = "gemini-embedding-001";
-const DEFAULT_GEMINI_TTS_MODELS: &str = "gemini-2.5-flash-preview-tts";
+    "gemini-3.1-flash-image,gemini-3.1-flash-lite-image,gemini-3-pro-image,gemini-2.5-flash-image";
+const DEFAULT_GEMINI_EMBEDDING_MODELS: &str = "gemini-embedding-001,gemini-embedding-2";
+const DEFAULT_GEMINI_TTS_MODELS: &str =
+    "gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts,gemini-2.5-pro-preview-tts";
 const DEFAULT_GEMINI_MUSIC_MODELS: &str = "lyria-3-clip-preview,lyria-3-pro-preview";
-const DEFAULT_GEMINI_VIDEO_MODELS: &str = "gemini-omni-flash-preview,veo-3.1-generate-preview";
+const DEFAULT_GEMINI_VIDEO_MODELS: &str = "gemini-omni-1.1-flash,gemini-omni-flash-preview,veo-3.1-fast-generate-preview,veo-3.1-generate-preview,veo-3.1-lite-generate-preview";
 
 const DEFAULT_GEMINI_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const GEMINI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const GEMINI_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
 const GEMINI_MODELS_PAGE_SIZE: u32 = 1000;
 const GEMINI_MODELS_MAX_PAGES: usize = 10;
+const GEMINI_INTERACTIONS_API_REVISION: &str = "2026-05-20";
 const MIN_RELIABLE_ASR_CONFIDENCE: f64 = 0.75;
 
 #[derive(Debug, PartialEq)]
@@ -748,19 +750,6 @@ impl GoogleGeminiProvider {
         prefer_alias_over_versioned(&mut buckets.music);
         prefer_alias_over_versioned(&mut buckets.video);
 
-        // Google 弃用模型时是按整个主版本族下架（例如 2.0 family 整体对新用户停服，
-        // 但 `gemini-2.0-flash` / `gemini-2.0-flash-lite` 这些 alias 仍然出现在
-        // `/v1beta/models` 列表里）。aicc 的设计也鼓励调用方用 family alias 而非
-        // 完整模型名，所以这里再加一道：每个 bucket 内识别 `gemini-X.Y-...` 的版本
-        // 前缀，只保留全局最大 (X,Y) 的那一族。无版本前缀的条目
-        // `gemini-embedding-001`）当成"独立模型"原样保留。
-        keep_only_max_gemini_version(&mut buckets.llm);
-        keep_only_max_gemini_version(&mut buckets.image);
-        keep_only_max_gemini_version(&mut buckets.embedding);
-        keep_only_max_gemini_version(&mut buckets.tts);
-        keep_only_max_gemini_version(&mut buckets.music);
-        keep_only_max_gemini_version(&mut buckets.video);
-
         // Categories that the API never returns (lyria/veo are typically not
         // listed) fall back to defaults so we don't drop them on refresh.
         if buckets.embedding.is_empty() {
@@ -1059,7 +1048,7 @@ impl GoogleGeminiProvider {
             .collect())
     }
 
-    fn build_contents(&self, req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
+    fn build_contents(req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
         let mut contents: Vec<Value> = vec![];
         let mut tool_calls = HashMap::new();
 
@@ -1092,19 +1081,6 @@ impl GoogleGeminiProvider {
                 content.push_str(text);
             }
 
-            let mut resource_lines = vec![];
-            for resource in req.payload.resources.iter() {
-                resource_lines.push(Self::resource_text(resource)?);
-            }
-
-            if !resource_lines.is_empty() {
-                if !content.is_empty() {
-                    content.push('\n');
-                    content.push('\n');
-                }
-                content.push_str(resource_lines.join("\n").as_str());
-            }
-
             if !content.trim().is_empty() {
                 contents.push(json!({
                     "role": "user",
@@ -1114,6 +1090,26 @@ impl GoogleGeminiProvider {
                         }
                     ]
                 }));
+            }
+        }
+
+        if !req.payload.resources.is_empty() {
+            let resource_parts = req
+                .payload
+                .resources
+                .iter()
+                .map(Self::content_resource_part)
+                .collect::<Result<Vec<_>, _>>()?;
+            if let Some(parts) = contents.iter_mut().rev().find_map(|content| {
+                let content = content.as_object_mut()?;
+                if content.get("role").and_then(Value::as_str) != Some("user") {
+                    return None;
+                }
+                content.get_mut("parts")?.as_array_mut()
+            }) {
+                parts.extend(resource_parts);
+            } else {
+                contents.push(json!({ "role": "user", "parts": resource_parts }));
             }
         }
 
@@ -1507,6 +1503,54 @@ impl GoogleGeminiProvider {
         }
     }
 
+    fn api_error_message(body: &Value, fallback: &str) -> String {
+        let status = body
+            .pointer("/error/status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let message = body
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or(fallback);
+        let mut diagnostics = Vec::new();
+        for detail in body
+            .pointer("/error/details")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(delay) = detail.get("retryDelay").and_then(Value::as_str) {
+                diagnostics.push(format!("retry_after={delay}"));
+            }
+            for violation in detail
+                .get("violations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(quota_id) = violation.get("quotaId").and_then(Value::as_str) {
+                    diagnostics.push(format!("quota_id={quota_id}"));
+                }
+                if let Some(metric) = violation.get("quotaMetric").and_then(Value::as_str) {
+                    diagnostics.push(format!("quota_metric={metric}"));
+                }
+                if let Some(value) = violation.get("quotaValue") {
+                    diagnostics.push(format!("quota_value={value}"));
+                }
+            }
+        }
+        diagnostics.sort();
+        diagnostics.dedup();
+        if diagnostics.is_empty() {
+            format!("google gemini api error [{status}]: {message}")
+        } else {
+            format!(
+                "google gemini api error [{status}]: {message} ({})",
+                diagnostics.join(", ")
+            )
+        }
+    }
+
     fn extract_text2image_prompt(req: &AiMethodRequest) -> Option<String> {
         if let Some(prompt) = req
             .payload
@@ -1585,6 +1629,51 @@ impl GoogleGeminiProvider {
             .get_mut("generationConfig")
             .and_then(|value| value.as_object_mut())
             .expect("generationConfig should be an object")
+    }
+
+    fn merge_tool_choice(
+        target: &mut Map<String, Value>,
+        value: &Value,
+    ) -> Result<(), ProviderError> {
+        let (mode, allowed_name) = if let Some(choice) = value.as_str() {
+            let mode = match choice {
+                "auto" => "AUTO",
+                "required" | "any" => "ANY",
+                "none" => "NONE",
+                _ => {
+                    return Err(ProviderError::fatal(format!(
+                        "tool_choice '{}' is unsupported",
+                        choice
+                    )));
+                }
+            };
+            (mode, None)
+        } else {
+            let choice = value
+                .as_object()
+                .ok_or_else(|| ProviderError::fatal("tool_choice must be a string or object"))?;
+            let name = choice
+                .get("function")
+                .and_then(Value::as_object)
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                .or_else(|| choice.get("name").and_then(Value::as_str))
+                .filter(|name| !name.trim().is_empty())
+                .ok_or_else(|| ProviderError::fatal("tool_choice function name is required"))?;
+            ("ANY", Some(name.trim().to_string()))
+        };
+        let mut config = json!({ "mode": mode });
+        if let Some(name) = allowed_name {
+            config
+                .as_object_mut()
+                .expect("function calling config should be an object")
+                .insert("allowedFunctionNames".to_string(), json!([name]));
+        }
+        target.insert(
+            "toolConfig".to_string(),
+            json!({ "functionCallingConfig": config }),
+        );
+        Ok(())
     }
 
     fn merge_llm_options(
@@ -1674,6 +1763,7 @@ impl GoogleGeminiProvider {
                         );
                     }
                 }
+                "tool_choice" => Self::merge_tool_choice(target, value)?,
                 _ => {
                     ignored.push(key.clone());
                 }
@@ -1806,32 +1896,33 @@ impl GoogleGeminiProvider {
         let raw = value
             .as_str()
             .ok_or_else(|| ProviderError::fatal("google gemini image size must be a string"))?;
-        let normalized =
-            match raw.trim().to_ascii_uppercase().as_str() {
-                "512" => "512",
-                "1K" => "1K",
-                "2K" => "2K",
-                "4K" => "4K",
-                _ => {
-                    let dimensions = raw.trim().to_ascii_lowercase().split_once('x').and_then(
-                        |(width, height)| {
+        let normalized = match raw.trim().to_ascii_uppercase().as_str() {
+            "512" => "512",
+            "1K" => "1K",
+            "2K" => "2K",
+            "4K" => "4K",
+            _ => {
+                let dimensions =
+                    raw.trim()
+                        .to_ascii_lowercase()
+                        .split_once('x')
+                        .and_then(|(width, height)| {
                             Some((width.parse::<u32>().ok()?, height.parse::<u32>().ok()?))
-                        },
-                    );
-                    match dimensions.map(|(width, height)| width.max(height)) {
-                        Some(512) => "512",
-                        Some(1024) => "1K",
-                        Some(2048) => "2K",
-                        Some(4096) => "4K",
-                        _ => {
-                            return Err(ProviderError::fatal(format!(
+                        });
+                match dimensions.map(|(width, height)| width.max(height)) {
+                    Some(512) => "512",
+                    Some(1024) => "1K",
+                    Some(2048) => "2K",
+                    Some(4096) => "4K",
+                    _ => {
+                        return Err(ProviderError::fatal(format!(
                             "google gemini image size must use a 512, 1K, 2K or 4K edge, got {}",
                             raw
-                        )))
-                        }
+                        )));
                     }
                 }
-            };
+            }
+        };
         Ok(Value::String(normalized.to_string()))
     }
 
@@ -2179,6 +2270,7 @@ impl GoogleGeminiProvider {
             .client
             .post(url.as_str())
             .header("x-goog-api-key", self.api_token.as_str())
+            .header("Api-Revision", GEMINI_INTERACTIONS_API_REVISION)
             .json(request_obj)
             .send()
             .await
@@ -2424,7 +2516,8 @@ impl GoogleGeminiProvider {
         }
     }
 
-    fn interactions_resource_part(
+    async fn interactions_resource_part(
+        &self,
         resource: &ResourceRef,
         media_type: &str,
     ) -> Result<Value, ProviderError> {
@@ -2434,8 +2527,56 @@ impl GoogleGeminiProvider {
                 "mime_type": mime,
                 "data": data_base64
             })),
-            ResourceRef::Url { url, .. } => Ok(json!({
-                "type": "document",
+            ResourceRef::Url { url, mime_hint }
+                if url.starts_with("http://") || url.starts_with("https://") =>
+            {
+                let response = self.client.get(url).send().await.map_err(|err| {
+                    if err.is_timeout() || err.is_connect() {
+                        ProviderError::retryable(format!(
+                            "failed to fetch interactions input resource: {err}"
+                        ))
+                    } else {
+                        ProviderError::fatal(format!(
+                            "failed to fetch interactions input resource: {err}"
+                        ))
+                    }
+                })?;
+                let status = response.status();
+                if !status.is_success() {
+                    let message = format!(
+                        "interactions input resource returned HTTP {}",
+                        status.as_u16()
+                    );
+                    return Err(if status.is_server_error() {
+                        ProviderError::retryable(message)
+                    } else {
+                        ProviderError::fatal(message)
+                    });
+                }
+                let mime = mime_hint
+                    .clone()
+                    .or_else(|| {
+                        response
+                            .headers()
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| "application/octet-stream".to_string());
+                let bytes = response.bytes().await.map_err(|err| {
+                    ProviderError::retryable(format!(
+                        "failed to read interactions input resource: {err}"
+                    ))
+                })?;
+                Ok(json!({
+                    "type": media_type,
+                    "mime_type": mime,
+                    "data": general_purpose::STANDARD.encode(bytes)
+                }))
+            }
+            ResourceRef::Url { url, mime_hint } => Ok(json!({
+                "type": media_type,
+                "mime_type": mime_hint.as_deref().unwrap_or("application/octet-stream"),
                 "uri": url
             })),
             ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
@@ -2452,6 +2593,193 @@ impl GoogleGeminiProvider {
             .and_then(|options| options.get("provider_options"))
             .and_then(|options| options.get("protocol"))
             .and_then(Value::as_str)
+    }
+
+    fn interactions_output_text(body: &Value) -> String {
+        body.get("steps")
+            .and_then(Value::as_array)
+            .and_then(|steps| {
+                steps
+                    .iter()
+                    .rev()
+                    .find(|step| step.get("type").and_then(Value::as_str) == Some("model_output"))
+            })
+            .and_then(|step| step.get("content"))
+            .and_then(Value::as_array)
+            .map(|content| {
+                content
+                    .iter()
+                    .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|item| item.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .unwrap_or_default()
+    }
+
+    fn interactions_word_segments(body: &Value) -> Vec<Value> {
+        body.get("steps")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|step| step.get("content").and_then(Value::as_array))
+            .flatten()
+            .filter_map(|content| content.get("annotations").and_then(Value::as_array))
+            .flatten()
+            .filter(|annotation| {
+                annotation.get("type").and_then(Value::as_str) == Some("word_info")
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn interactions_usage(body: &Value) -> Option<AiUsage> {
+        let usage = body.get("usage")?;
+        Some(AiUsage {
+            input_tokens: usage.get("total_input_tokens").and_then(Value::as_u64),
+            output_tokens: usage.get("total_output_tokens").and_then(Value::as_u64),
+            total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+            request_units: None,
+        })
+    }
+
+    fn build_interactions_asr_request(
+        provider_model: &str,
+        req: &AiMethodRequest,
+        resource: Value,
+    ) -> Result<Map<String, Value>, ProviderError> {
+        let input = req.payload.input_json.as_ref();
+        let timestamps = input
+            .and_then(|value| value.get("timestamps"))
+            .and_then(Value::as_str)
+            .unwrap_or("none");
+        let diarization = input
+            .and_then(|value| value.get("diarization"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mode = input
+            .and_then(|value| value.get("mode"))
+            .and_then(Value::as_str)
+            .unwrap_or("verbatim");
+        if mode == "smart" && (diarization || timestamps != "none") {
+            return Err(ProviderError::fatal(
+                "google gemini smart transcription is incompatible with timestamps and diarization",
+            ));
+        }
+        if !matches!(mode, "verbatim" | "smart") {
+            return Err(ProviderError::fatal(format!(
+                "unsupported google gemini transcription mode {}",
+                mode
+            )));
+        }
+
+        let mut transcription_config = Map::new();
+        if let Some(language) = input
+            .and_then(|value| value.get("language"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            transcription_config.insert("language_codes".to_string(), json!([language]));
+        }
+        if let Some(vocabulary) = input
+            .and_then(|value| value.get("custom_vocabulary"))
+            .and_then(Value::as_array)
+        {
+            transcription_config.insert(
+                "custom_vocabulary".to_string(),
+                Value::Array(vocabulary.clone()),
+            );
+        }
+        if mode == "smart" {
+            transcription_config.insert("mode".to_string(), Value::String("smart".to_string()));
+        } else {
+            let mut mode_config =
+                Map::from_iter([("type".to_string(), Value::String("verbatim".to_string()))]);
+            if diarization {
+                mode_config.insert(
+                    "diarization_mode".to_string(),
+                    Value::String("speaker".to_string()),
+                );
+            }
+            if timestamps != "none" {
+                mode_config.insert("timestamp_granularities".to_string(), json!(["word"]));
+            }
+            transcription_config.insert("mode".to_string(), Value::Object(mode_config));
+        }
+
+        Ok(Map::from_iter([
+            (
+                "model".to_string(),
+                Value::String(provider_model.to_string()),
+            ),
+            ("input".to_string(), Value::Array(vec![resource])),
+            (
+                "generation_config".to_string(),
+                json!({ "transcription_config": transcription_config }),
+            ),
+        ]))
+    }
+
+    async fn start_interactions_asr(
+        &self,
+        provider_model: &str,
+        req: &AiMethodRequest,
+        resource: ResourceRef,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let resource = self.interactions_resource_part(&resource, "audio").await?;
+        let request_obj = Self::build_interactions_asr_request(provider_model, req, resource)?;
+        let (status, body, latency_ms) = self.post_interaction(&request_obj).await?;
+        if !status.is_success() {
+            return Err(Self::classify_api_error(
+                status,
+                Self::api_error_message(
+                    &body,
+                    "google gemini interactions transcription returned non-success status",
+                ),
+            ));
+        }
+        match body.get("status").and_then(Value::as_str) {
+            Some("completed") => {}
+            Some("in_progress") => {
+                return Err(ProviderError::retryable(
+                    "google gemini interactions transcription remained in progress",
+                ));
+            }
+            Some(other) => {
+                return Err(ProviderError::fatal(format!(
+                    "google gemini interactions transcription finished with status {}",
+                    other
+                )));
+            }
+            None => {
+                return Err(ProviderError::fatal(
+                    "google gemini interactions transcription response is missing status",
+                ));
+            }
+        }
+        let text = Self::interactions_output_text(&body);
+        let segments = Self::interactions_word_segments(&body);
+        let usage = Self::interactions_usage(&body);
+        let cost = usage
+            .as_ref()
+            .and_then(|usage| self.estimate_cost_for_usage(provider_model, usage));
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(Some(text.clone()), vec![], vec![]),
+            usage,
+            cost,
+            finish_reason: Some("stop".to_string()),
+            extra: Some(json!({
+                "asr": {
+                    "status": if text.trim().is_empty() { "no_speech" } else { "reliable" },
+                    "speech_detected": !text.trim().is_empty(),
+                    "text": text,
+                    "segments": segments
+                },
+                "latency_ms": latency_ms,
+                "provider_io": { "input": request_obj, "output": body }
+            })),
+            ..Default::default()
+        }))
     }
 
     fn interactions_video_artifact(body: &Value) -> Result<AiArtifact, ProviderError> {
@@ -2571,7 +2899,7 @@ impl GoogleGeminiProvider {
                     return Err(ProviderError::fatal(format!(
                         "google gemini audio output does not support {}",
                         media_type
-                    )))
+                    )));
                 }
             };
             audio.insert("mimeType".to_string(), Value::String(mime_type.to_string()));
@@ -2648,7 +2976,7 @@ impl GoogleGeminiProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
-        let contents = self.build_contents(req)?;
+        let contents = Self::build_contents(req)?;
         let mut request_obj = Map::new();
         request_obj.insert("contents".to_string(), Value::Array(contents));
 
@@ -3157,26 +3485,32 @@ impl GoogleGeminiProvider {
                 .as_ref()
                 .map(|value| json!({ "outputDimensionality": value }))
         };
-        let mut request_obj = Map::new();
+        let mut request_objects = Vec::new();
         let action;
         if texts.len() > 1 {
             let model = format!("models/{}", provider_model.trim_start_matches("models/"));
-            let requests = texts
-                .iter()
-                .map(|text| {
-                    let mut request = json!({
-                        "model": model,
-                        "content": { "parts": [{ "text": text }] }
-                    });
-                    if let Some(config) = build_config() {
-                        request["embedContentConfig"] = config;
-                    }
-                    request
-                })
-                .collect::<Vec<_>>();
-            request_obj.insert("requests".to_string(), Value::Array(requests));
+            for batch in texts.chunks(100) {
+                let requests = batch
+                    .iter()
+                    .map(|text| {
+                        let mut request = json!({
+                            "model": model,
+                            "content": { "parts": [{ "text": text }] }
+                        });
+                        if let Some(config) = build_config() {
+                            request["embedContentConfig"] = config;
+                        }
+                        request
+                    })
+                    .collect::<Vec<_>>();
+                request_objects.push(Map::from_iter([(
+                    "requests".to_string(),
+                    Value::Array(requests),
+                )]));
+            }
             action = "batchEmbedContents";
         } else {
+            let mut request_obj = Map::new();
             let mut parts = Vec::new();
             if let Some(text) = texts.first() {
                 parts.push(json!({ "text": text }));
@@ -3188,29 +3522,42 @@ impl GoogleGeminiProvider {
             if let Some(config) = build_config() {
                 request_obj.insert("embedContentConfig".to_string(), config);
             }
+            request_objects.push(request_obj);
             action = "embedContent";
         }
-        let (status, body, latency_ms) = self
-            .post_model_action(provider_model, action, &request_obj)
-            .await?;
-        if !status.is_success() {
-            let message = body
-                .pointer("/error/message")
-                .and_then(|value| value.as_str())
-                .unwrap_or("google gemini embedding returned non-success status");
-            return Err(Self::classify_api_error(status, message.to_string()));
+        let mut embeddings = Vec::new();
+        let mut response_bodies = Vec::new();
+        let mut latency_ms = 0u64;
+        let mut prompt_tokens = 0u64;
+        for request_obj in request_objects.iter() {
+            let (status, body, request_latency_ms) = self
+                .post_model_action(provider_model, action, request_obj)
+                .await?;
+            if !status.is_success() {
+                let message = body
+                    .pointer("/error/message")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("google gemini embedding returned non-success status");
+                return Err(Self::classify_api_error(status, message.to_string()));
+            }
+            latency_ms = latency_ms.saturating_add(request_latency_ms);
+            prompt_tokens = prompt_tokens.saturating_add(
+                body.pointer("/usageMetadata/promptTokenCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            );
+            if action == "batchEmbedContents" {
+                embeddings.extend(
+                    body.get("embeddings")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+            } else if let Some(embedding) = body.get("embedding") {
+                embeddings.push(embedding.clone());
+            }
+            response_bodies.push(body);
         }
-        let embeddings = if action == "batchEmbedContents" {
-            body.get("embeddings")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
-        } else {
-            body.get("embedding")
-                .cloned()
-                .into_iter()
-                .collect::<Vec<_>>()
-        };
         if embeddings.is_empty() {
             return Err(ProviderError::fatal(
                 "google gemini embedding response is missing embedding values",
@@ -3234,28 +3581,83 @@ impl GoogleGeminiProvider {
                 })
             })
             .collect::<Vec<_>>();
-        let usage = body
-            .pointer("/usageMetadata/promptTokenCount")
-            .and_then(Value::as_u64)
-            .map(|input_tokens| AiUsage {
-                input_tokens: Some(input_tokens),
+        let input_json = req.payload.input_json.as_ref();
+        let prefer_artifact = input_json
+            .and_then(|value| value.get("prefer_artifact"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || data.len() > 100
+            || input_json
+                .and_then(|value| value.get("output"))
+                .and_then(|value| value.get("resource_format"))
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == "named_object")
+            || input_json
+                .and_then(|value| value.get("response_format"))
+                .and_then(Value::as_str)
+                .is_some_and(|value| matches!(value, "object_id" | "named_object"));
+        let artifact = if prefer_artifact {
+            let artifact_body = json!({
+                "embedding_space_id": embedding_space_id.clone(),
+                "data": data.clone(),
+            });
+            let bytes = serde_json::to_vec(&artifact_body).map_err(|error| {
+                ProviderError::fatal(format!("serialize embedding artifact failed: {}", error))
+            })?;
+            Some(AiArtifact {
+                name: "embeddings.json".to_string(),
+                resource: ResourceRef::Base64 {
+                    mime: "application/json".to_string(),
+                    data_base64: general_purpose::STANDARD.encode(bytes),
+                },
+                mime: Some("application/json".to_string()),
+                metadata: Some(json!({
+                    "rows": data.len(),
+                    "dimensions": output_dimensions,
+                    "embedding_space_id": embedding_space_id.clone(),
+                })),
+            })
+        } else {
+            None
+        };
+        let usage = (prompt_tokens > 0)
+            .then(|| AiUsage {
+                input_tokens: Some(prompt_tokens),
                 output_tokens: Some(0),
-                total_tokens: Some(input_tokens),
+                total_tokens: Some(prompt_tokens),
                 request_units: None,
             })
-            .unwrap_or_else(|| AiUsage::request_units(1));
+            .unwrap_or_else(|| AiUsage::request_units(request_objects.len() as u64));
         let cost = self.estimate_cost_for_usage(provider_model, &usage);
+        let provider_input = if request_objects.len() == 1 {
+            Value::Object(request_objects[0].clone())
+        } else {
+            Value::Array(request_objects.into_iter().map(Value::Object).collect())
+        };
+        let provider_output = if response_bodies.len() == 1 {
+            response_bodies.remove(0)
+        } else {
+            Value::Array(response_bodies)
+        };
         let mut extra = Map::new();
         extra.insert(
             "embedding".to_string(),
             json!({
-                "data": data,
-                "embedding_space_id": embedding_space_id,
-                "provider_io": { "input": request_obj, "output": body },
+                "data": if prefer_artifact { Value::Array(vec![]) } else { Value::Array(data.clone()) },
+                "embedding_space_id": embedding_space_id.clone(),
+                "artifact": artifact.as_ref().map(|value| json!({
+                    "name": value.name.clone(),
+                    "mime": value.mime.clone(),
+                    "rows": data.len(),
+                    "dimensions": output_dimensions,
+                    "embedding_space_id": embedding_space_id.clone(),
+                })),
+                "provider_io": { "input": provider_input, "output": provider_output },
                 "latency_ms": latency_ms
             }),
         );
         Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(None, vec![], artifact.into_iter().collect()),
             usage: Some(usage),
             cost,
             finish_reason: Some("stop".to_string()),
@@ -3304,11 +3706,10 @@ impl GoogleGeminiProvider {
             .post_generate_content(provider_model, &request_obj)
             .await?;
         if !status.is_success() {
-            let message = body
-                .pointer("/error/message")
-                .and_then(|value| value.as_str())
-                .unwrap_or("google gemini vision returned non-success status");
-            return Err(Self::classify_api_error(status, message.to_string()));
+            return Err(Self::classify_api_error(
+                status,
+                Self::api_error_message(&body, "google gemini vision returned non-success status"),
+            ));
         }
         let text = Self::extract_text_content(&body);
         let parsed = text
@@ -3370,6 +3771,11 @@ impl GoogleGeminiProvider {
             .cloned()
             .or_else(|| Self::resource_from_input_json(req, &["audio"]))
             .ok_or_else(|| ProviderError::fatal("audio.asr requires an audio resource"))?;
+        if Self::provider_protocol(req) == Some("interactions") {
+            return self
+                .start_interactions_asr(provider_model, req, resource)
+                .await;
+        }
         let input = req.payload.input_json.as_ref();
         let language = input
             .and_then(|value| value.get("language"))
@@ -3584,7 +3990,8 @@ impl GoogleGeminiProvider {
                 "image"
             };
             let content = vec![
-                Self::interactions_resource_part(&resource, media_type)?,
+                self.interactions_resource_part(&resource, media_type)
+                    .await?,
                 json!({ "type": "text", "text": prompt }),
             ];
             if method == ai_methods::VIDEO_VIDEO2VIDEO {
@@ -3604,7 +4011,7 @@ impl GoogleGeminiProvider {
                 return Err(ProviderError::fatal(format!(
                     "google gemini interactions protocol does not support {}",
                     method
-                )))
+                )));
             }
         };
         let mut response_format = json!({ "type": "video" });
@@ -3938,6 +4345,10 @@ impl GoogleGeminiProvider {
         Ok(AiResponse {
             message: AiResponse::message_from_parts(None, vec![], vec![artifact]),
             usage: Some(AiUsage::request_units(1)),
+            cost: Some(AiCost {
+                amount: 0.5,
+                currency: "USD".to_string(),
+            }),
             provider_task_ref: Some(operation_name),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
@@ -4105,7 +4516,9 @@ impl Provider for GoogleGeminiProvider {
         _ctx: crate::aicc::InvokeCtx,
         _task_id: &str,
     ) -> std::result::Result<(), ProviderError> {
-        Ok(())
+        Err(ProviderError::fatal(
+            "google gemini provider cancellation is unsupported",
+        ))
     }
 }
 
@@ -4226,49 +4639,6 @@ fn strip_gemini_model_prefix(name: &str) -> &str {
         .unwrap_or(name)
 }
 
-/// 在一份模型列表里识别 `gemini-X.Y-...` 形态的版本前缀，找到全局最大 (X,Y)，
-/// 把所有更老主版本族的条目都丢掉。无版本前缀的条目
-/// `gemini-embedding-001` / 不以 `gemini-` 开头的命名）原样保留——它们没有
-/// 跟谁竞争。
-///
-/// 设计目的：Google 弃用模型时是整个主版本族（2.0 family）一起对新用户停服，
-/// 但 alias（`gemini-2.0-flash` / `gemini-2.0-flash-lite`）仍然出现在
-/// `/v1beta/models` 列表里给老用户兼容；只看名字看不出 deprecation。
-/// 这里直接相信 Google 的命名约定：同时给出 N.M 和 N.M+1 时，N.M 已经是过气
-/// 的版本族，不应再被路由选中。
-fn keep_only_max_gemini_version(models: &mut Vec<String>) {
-    let mut max_version: Option<(u32, u32)> = None;
-    for name in models.iter() {
-        if let Some(v) = parse_gemini_major_minor(name) {
-            max_version = Some(match max_version {
-                Some(prev) if prev >= v => prev,
-                _ => v,
-            });
-        }
-    }
-    let Some(max) = max_version else { return };
-    models.retain(|name| match parse_gemini_major_minor(name) {
-        Some(v) => v >= max,
-        None => true,
-    });
-}
-
-/// 解析 `gemini-X.Y-...` 形态的主.次版本号。识别要求：
-/// - 必须以 `gemini-` 开头（其它命名族——`lyria-*` / `veo-*` / `text-embedding-*`
-///   ——不参与版本竞争，函数返回 None 让 caller 原样保留）。
-/// - 紧跟的 token 必须能解析成 `<u32>.<u32>` 形式（`2.5` / `1.5` / `3.0`）。
-fn parse_gemini_major_minor(name: &str) -> Option<(u32, u32)> {
-    let rest = name.strip_prefix("gemini-")?;
-    let version_token = rest.split('-').next()?;
-    let mut nums = version_token.splitn(2, '.');
-    let major: u32 = nums.next()?.parse().ok()?;
-    let minor: u32 = nums.next()?.parse().ok()?;
-    if nums.next().is_some() {
-        return None;
-    }
-    Some((major, minor))
-}
-
 /// 若同一 bucket 里既有 alias `X` 又有它的数字后缀版本 `X-NNN`（NNN 是 2~4 位
 /// 数字），就只保留 alias、把版本快照剔除。Google `/v1beta/models` 同时返回这两
 /// 种命名，alias 通常生命周期更长，先停的是版本快照（`gemini-2.0-flash-001` /
@@ -4377,7 +4747,10 @@ fn classify_gemini_model(id: &str, methods: &HashSet<String>) -> Option<GeminiMo
     if is_text2image_model_name(id) {
         return Some(GeminiModelKind::Image);
     }
-    if lowered.starts_with("gemini") && (methods.contains("generatecontent") || methods.is_empty())
+    if methods.contains("generatecontent")
+        || (methods.is_empty()
+            && (lowered.starts_with("gemini")
+                || lowered.starts_with("gemma-")))
     {
         return Some(GeminiModelKind::Llm);
     }
@@ -4736,6 +5109,113 @@ mod tests {
     }
 
     #[test]
+    fn llm_contents_append_payload_resources_to_user_message() {
+        let mut request = build_llm_request(vec![], vec![]);
+        request.payload.resources.push(ResourceRef::Base64 {
+            mime: "audio/mpeg".to_string(),
+            data_base64: "YXVkaW8=".to_string(),
+        });
+
+        let contents = GoogleGeminiProvider::build_contents(&request)
+            .expect("LLM resources should lower to Gemini parts");
+
+        assert_eq!(
+            contents[0].pointer("/parts/1/inlineData/mimeType"),
+            Some(&json!("audio/mpeg"))
+        );
+        assert_eq!(
+            contents[0].pointer("/parts/1/inlineData/data"),
+            Some(&json!("YXVkaW8="))
+        );
+    }
+
+    #[test]
+    fn interactions_asr_request_uses_official_transcription_config() {
+        let mut request = build_llm_request(vec![], vec![]);
+        request.payload.input_json = Some(json!({
+            "language": "zh",
+            "timestamps": "word",
+            "diarization": true,
+            "custom_vocabulary": ["BuckyOS"]
+        }));
+        let body = GoogleGeminiProvider::build_interactions_asr_request(
+            "gemini-3.5-transcribe",
+            &request,
+            json!({ "type": "audio", "mime_type": "audio/wav", "data": "YXVkaW8=" }),
+        )
+        .expect("interactions transcription request");
+        let body = Value::Object(body);
+
+        assert_eq!(
+            body.pointer("/model"),
+            Some(&json!("gemini-3.5-transcribe"))
+        );
+        assert_eq!(body.pointer("/input/0/type"), Some(&json!("audio")));
+        assert_eq!(
+            body.pointer("/generation_config/transcription_config/language_codes/0"),
+            Some(&json!("zh"))
+        );
+        assert_eq!(
+            body.pointer("/generation_config/transcription_config/mode/diarization_mode"),
+            Some(&json!("speaker"))
+        );
+        assert_eq!(
+            body.pointer("/generation_config/transcription_config/mode/timestamp_granularities/0"),
+            Some(&json!("word"))
+        );
+    }
+
+    #[test]
+    fn interactions_asr_response_extracts_text_annotations_and_usage() {
+        let response = json!({
+            "status": "completed",
+            "steps": [{
+                "type": "model_output",
+                "content": [{
+                    "type": "text",
+                    "text": "hello world",
+                    "annotations": [{
+                        "type": "word_info",
+                        "text": "hello",
+                        "speaker": "spk_1",
+                        "start_offset": "0.100s",
+                        "end_offset": "0.450s"
+                    }]
+                }]
+            }],
+            "usage": {
+                "total_input_tokens": 10,
+                "total_output_tokens": 2,
+                "total_tokens": 12
+            }
+        });
+
+        assert_eq!(
+            GoogleGeminiProvider::interactions_output_text(&response),
+            "hello world"
+        );
+        assert_eq!(
+            GoogleGeminiProvider::interactions_word_segments(&response),
+            vec![json!({
+                "type": "word_info",
+                "text": "hello",
+                "speaker": "spk_1",
+                "start_offset": "0.100s",
+                "end_offset": "0.450s"
+            })]
+        );
+        assert_eq!(
+            GoogleGeminiProvider::interactions_usage(&response),
+            Some(AiUsage {
+                input_tokens: Some(10),
+                output_tokens: Some(2),
+                total_tokens: Some(12),
+                request_units: None,
+            })
+        );
+    }
+
+    #[test]
     fn llm_tools_include_function_declarations_and_google_search() {
         let request = build_llm_request(
             vec![
@@ -4879,9 +5359,11 @@ mod tests {
             request.pointer("/generationConfig/responseJsonSchema"),
             Some(&schema)
         );
-        assert!(request
-            .pointer("/generationConfig/responseSchema")
-            .is_none());
+        assert!(
+            request
+                .pointer("/generationConfig/responseSchema")
+                .is_none()
+        );
         assert_eq!(
             request.pointer("/generationConfig/responseMimeType"),
             Some(&json!("application/json"))
@@ -5033,16 +5515,20 @@ mod tests {
 
         assert_eq!(&contents[0], body.pointer("/candidates/0/content").unwrap());
         assert!(contents[0].pointer("/parts/0/functionCall/id").is_none());
-        assert!(contents[1]
-            .pointer("/parts/0/functionResponse/id")
-            .is_none());
+        assert!(
+            contents[1]
+                .pointer("/parts/0/functionResponse/id")
+                .is_none()
+        );
         assert_eq!(
             contents[1].pointer("/parts/0/functionResponse/name"),
             Some(&json!("get_weather"))
         );
-        assert!(!serde_json::to_string(&contents)
-            .unwrap()
-            .contains("gemini-no-id"));
+        assert!(
+            !serde_json::to_string(&contents)
+                .unwrap()
+                .contains("gemini-no-id")
+        );
     }
 
     #[test]
@@ -5117,36 +5603,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_gemini_major_minor_recognizes_canonical_shape() {
-        assert_eq!(parse_gemini_major_minor("gemini-2.5-flash"), Some((2, 5)));
-        assert_eq!(
-            parse_gemini_major_minor("gemini-2.5-flash-image-preview"),
-            Some((2, 5))
-        );
-        assert_eq!(
-            parse_gemini_major_minor("gemini-2.5-computer-use-preview-10-2025"),
-            Some((2, 5))
-        );
-        assert_eq!(
-            parse_gemini_major_minor("gemini-2.0-flash-lite"),
-            Some((2, 0))
-        );
-        assert_eq!(parse_gemini_major_minor("gemini-1.5-pro"), Some((1, 5)));
-        // 不带 family 的纯版本号也认（比较少见但合理）
-        assert_eq!(parse_gemini_major_minor("gemini-3.0"), Some((3, 0)));
-        // 没 X.Y 形式 → None（让 caller 原样保留）
-        assert_eq!(parse_gemini_major_minor("gemini-embedding-001"), None);
-        assert_eq!(parse_gemini_major_minor("gemini-pro-vision"), None);
-        assert_eq!(parse_gemini_major_minor("gemini-2-flash"), None);
-        // 不是 gemini- 开头的
-        assert_eq!(parse_gemini_major_minor("custom-model"), None);
-        assert_eq!(parse_gemini_major_minor("veo-3.1-generate-preview"), None);
-        assert_eq!(parse_gemini_major_minor("text-embedding-004"), None);
-        // 三段版本 (2.5.1) 不识别——Google 没有这种命名，避免误判
-        assert_eq!(parse_gemini_major_minor("gemini-2.5.1-flash"), None);
-    }
-
-    #[test]
     fn gemini_video_inventory_uses_configured_protocols() {
         let inventory = GoogleGeminiProvider::build_inventory_from_buckets(
             "gemini-primary",
@@ -5178,14 +5634,16 @@ mod tests {
                 .and_then(Value::as_str),
             Some("predict_long_running")
         );
-        assert!(veo
-            .logical_mounts
-            .iter()
-            .any(|mount| mount == "video.img2video"));
-        assert!(veo
-            .logical_mounts
-            .iter()
-            .any(|mount| mount == "video.extend"));
+        assert!(
+            veo.logical_mounts
+                .iter()
+                .any(|mount| mount == "video.img2video")
+        );
+        assert!(
+            veo.logical_mounts
+                .iter()
+                .any(|mount| mount == "video.extend")
+        );
 
         let omni = inventory
             .models
@@ -5236,18 +5694,45 @@ mod tests {
         assert!(!lite.api_types.contains(&ApiType::VideoExtend));
     }
 
-    #[test]
-    fn interactions_video_input_uses_video_content_part() {
+    #[tokio::test]
+    async fn interactions_video_input_uses_video_content_part() {
+        let config = build_gemini_instances(&GeminiSettings {
+            enabled: true,
+            api_token: "token".to_string(),
+            alias_map: HashMap::new(),
+            instances: vec![],
+        })
+        .expect("instances")
+        .remove(0);
+        let provider = GoogleGeminiProvider::new(config, "token".to_string()).expect("provider");
         let resource = ResourceRef::Base64 {
             mime: "video/mp4".to_string(),
             data_base64: "dmlkZW8=".to_string(),
         };
         assert_eq!(
-            GoogleGeminiProvider::interactions_resource_part(&resource, "video").unwrap(),
+            provider
+                .interactions_resource_part(&resource, "video")
+                .await
+                .unwrap(),
             json!({
                 "type": "video",
                 "mime_type": "video/mp4",
                 "data": "dmlkZW8="
+            })
+        );
+        let resource = ResourceRef::Url {
+            url: "gs://example/input.mp4".to_string(),
+            mime_hint: Some("video/mp4".to_string()),
+        };
+        assert_eq!(
+            provider
+                .interactions_resource_part(&resource, "video")
+                .await
+                .unwrap(),
+            json!({
+                "type": "video",
+                "mime_type": "video/mp4",
+                "uri": "gs://example/input.mp4"
             })
         );
     }
@@ -5273,6 +5758,50 @@ mod tests {
             Some(&json!(0))
         );
         assert_eq!(ignored, vec!["protocol".to_string()]);
+    }
+
+    #[test]
+    fn quota_error_message_preserves_retry_and_metric_diagnostics() {
+        let body = json!({
+            "error": {
+                "status": "RESOURCE_EXHAUSTED",
+                "message": "quota exhausted",
+                "details": [
+                    { "retryDelay": "37s" },
+                    {
+                        "violations": [{
+                            "quotaId": "GenerateRequestsPerDayPerProjectPerModel",
+                            "quotaMetric": "generativelanguage.googleapis.com/generate_requests_per_model_per_day",
+                            "quotaValue": "100"
+                        }]
+                    }
+                ]
+            }
+        });
+
+        let message = GoogleGeminiProvider::api_error_message(&body, "fallback");
+        assert!(message.contains("RESOURCE_EXHAUSTED"));
+        assert!(message.contains("retry_after=37s"));
+        assert!(message.contains("GenerateRequestsPerDayPerProjectPerModel"));
+        assert!(message.contains("generate_requests_per_model_per_day"));
+        assert!(message.contains("quota_value=\"100\""));
+    }
+
+    #[test]
+    fn required_tool_choice_forces_gemini_function_calling() {
+        let mut target = Map::new();
+        let ignored = GoogleGeminiProvider::merge_llm_options(
+            &mut target,
+            &json!({ "tool_choice": "required" }),
+            false,
+        )
+        .expect("required tool choice should merge");
+
+        assert!(ignored.is_empty());
+        assert_eq!(
+            Value::Object(target).pointer("/toolConfig/functionCallingConfig/mode"),
+            Some(&json!("ANY"))
+        );
     }
 
     #[test]
@@ -5318,10 +5847,12 @@ mod tests {
             .unwrap();
         assert_eq!(model.capabilities.max_output_tokens, Some(65_536));
         assert!(model.api_types.contains(&ApiType::AudioAsr));
-        assert!(model
-            .logical_mounts
-            .iter()
-            .any(|mount| mount == "audio.asr"));
+        assert!(
+            model
+                .logical_mounts
+                .iter()
+                .any(|mount| mount == "audio.asr")
+        );
     }
 
     #[test]
@@ -5337,6 +5868,7 @@ mod tests {
                     "gemini-3.1-pro-preview".to_string(),
                     "gemini-3.1-pro-preview-001".to_string(),
                     "gemini-3.5-flash-lite".to_string(),
+                    "gemini-3.5-transcribe".to_string(),
                     "gemini-deepthink-preview".to_string(),
                     "gemini-future-model".to_string(),
                 ],
@@ -5357,6 +5889,7 @@ mod tests {
             "gemini-3.1-pro-preview",
             "gemini-3.1-pro-preview-001",
             "gemini-3.5-flash-lite",
+            "gemini-3.5-transcribe",
         ] {
             let model = inventory
                 .models
@@ -5364,6 +5897,17 @@ mod tests {
                 .find(|model| model.provider_model_id == id)
                 .unwrap();
             assert!(model.api_types.contains(&ApiType::AudioAsr), "{id}");
+            if id == "gemini-3.5-transcribe" {
+                assert_eq!(
+                    model
+                        .provider_options
+                        .as_ref()
+                        .and_then(|options| options.get("protocol"))
+                        .and_then(Value::as_str),
+                    Some("interactions")
+                );
+                assert_eq!(model.api_types, vec![ApiType::AudioAsr]);
+            }
         }
         for id in [
             "gemini-deepthink-preview",
@@ -5439,22 +5983,30 @@ mod tests {
             &[],
             Some("test".to_string()),
         );
-        assert!(inventory
-            .models
-            .iter()
-            .any(|model| model.provider_model_id == "gemini-2.5-flash-image"));
-        assert!(inventory
-            .models
-            .iter()
-            .any(|model| model.provider_model_id == "lyria-3-clip-preview"));
-        assert!(inventory
-            .models
-            .iter()
-            .any(|model| model.provider_model_id == "lyria-3-pro-preview"));
-        assert!(!inventory
-            .models
-            .iter()
-            .any(|model| model.provider_model_id.starts_with("imagen-")));
+        assert!(
+            inventory
+                .models
+                .iter()
+                .any(|model| model.provider_model_id == "gemini-2.5-flash-image")
+        );
+        assert!(
+            inventory
+                .models
+                .iter()
+                .any(|model| model.provider_model_id == "lyria-3-clip-preview")
+        );
+        assert!(
+            inventory
+                .models
+                .iter()
+                .any(|model| model.provider_model_id == "lyria-3-pro-preview")
+        );
+        assert!(
+            !inventory
+                .models
+                .iter()
+                .any(|model| model.provider_model_id.starts_with("imagen-"))
+        );
     }
 
     #[test]
@@ -5574,69 +6126,6 @@ mod tests {
     }
 
     #[test]
-    fn keep_only_max_gemini_version_drops_older_families() {
-        let mut models = vec![
-            "gemini-1.5-flash".to_string(),
-            "gemini-1.5-pro".to_string(),
-            "gemini-2.0-flash".to_string(),
-            "gemini-2.0-flash-lite".to_string(),
-            "gemini-2.5-flash".to_string(),
-            "gemini-2.5-flash-lite".to_string(),
-            "gemini-2.5-pro".to_string(),
-            "gemini-2.5-computer-use-preview-10-2025".to_string(),
-            // 没 X.Y 版本号的非 gemini 命名 → 原样保留
-            "gemini-embedding-001".to_string(),
-            "lyria-3-clip-preview".to_string(),
-            "veo-3.1-generate-preview".to_string(),
-        ];
-        keep_only_max_gemini_version(&mut models);
-        assert_eq!(
-            models,
-            vec![
-                "gemini-2.5-flash".to_string(),
-                "gemini-2.5-flash-lite".to_string(),
-                "gemini-2.5-pro".to_string(),
-                "gemini-2.5-computer-use-preview-10-2025".to_string(),
-                "gemini-embedding-001".to_string(),
-                "lyria-3-clip-preview".to_string(),
-                "veo-3.1-generate-preview".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn keep_only_max_gemini_version_no_op_without_versioned_models() {
-        // 全部都没 gemini-X.Y 版本号 → 不动
-        let mut models = vec![
-            "lyria-3-clip-preview".to_string(),
-            "veo-3.1-generate-preview".to_string(),
-            "gemini-embedding-001".to_string(),
-        ];
-        keep_only_max_gemini_version(&mut models);
-        assert_eq!(
-            models,
-            vec![
-                "lyria-3-clip-preview".to_string(),
-                "veo-3.1-generate-preview".to_string(),
-                "gemini-embedding-001".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn keep_only_max_gemini_version_picks_higher_minor() {
-        // 同主版本不同次版本 → 留次版本最高的
-        let mut models = vec![
-            "gemini-2.0-flash".to_string(),
-            "gemini-2.5-flash".to_string(),
-            "gemini-2.5-pro".to_string(),
-            "gemini-2.10-flash".to_string(), // 假设未来真出现
-        ];
-        keep_only_max_gemini_version(&mut models);
-        assert_eq!(models, vec!["gemini-2.10-flash".to_string()]);
-    }
-
-    #[test]
     fn strip_numeric_version_suffix_matches_only_short_digit_tails() {
         assert_eq!(
             strip_numeric_version_suffix("gemini-2.0-flash-001"),
@@ -5708,6 +6197,15 @@ mod tests {
                 "veo-3.1-generate-preview".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn classify_generate_content_models_without_gemini_prefix() {
+        let methods = HashSet::from(["generatecontent".to_string()]);
+        assert!(matches!(
+            classify_gemini_model("gemma-4-31b-it", &methods),
+            Some(GeminiModelKind::Llm)
+        ));
     }
 
     #[test]
@@ -5798,6 +6296,21 @@ mod tests {
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].provider_instance_name, "google-gemini-default");
         assert_eq!(instances[0].provider_driver, "google-gemini");
+        for model in [
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-3.5-transcribe",
+        ] {
+            assert!(instances[0].models.iter().any(|item| item == model), "{model}");
+        }
+        for model in ["gemini-3.1-flash-image", "gemini-2.5-flash-image"] {
+            assert!(
+                instances[0].image_models.iter().any(|item| item == model),
+                "{model}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -5898,13 +6411,17 @@ mod tests {
 
         let registry = center.model_registry().read().expect("model registry lock");
         let flash_items = registry.default_items_for_path("llm.gemini-flash");
-        assert!(flash_items
-            .values()
-            .any(|item| { item.target == "gemini-2.5-flash@google-gemini-default" }));
+        assert!(
+            flash_items
+                .values()
+                .any(|item| { item.target == "gemini-2.5-flash@google-gemini-default" })
+        );
         let pro_items = registry.default_items_for_path("llm.gemini-pro");
-        assert!(pro_items
-            .values()
-            .any(|item| item.target == "gemini-2.5-pro@google-gemini-default"));
+        assert!(
+            pro_items
+                .values()
+                .any(|item| item.target == "gemini-2.5-pro@google-gemini-default")
+        );
         let inventories = center.registry().inventories();
         let inventory = inventories
             .iter()
@@ -5929,14 +6446,18 @@ mod tests {
             .find(|model| model.provider_model_id == "gemini-3.1-pro-preview")
             .expect("Gemini 3 metadata");
         assert!(gemini_3.capabilities.web_search);
-        assert!(gemini_3
-            .capabilities
-            .unsupported_feature_combinations
-            .is_empty());
+        assert!(
+            gemini_3
+                .capabilities
+                .unsupported_feature_combinations
+                .is_empty()
+        );
         let image_items = registry.default_items_for_path("image.txt2img.gemini");
-        assert!(image_items
-            .values()
-            .any(|item| { item.target == "gemini-2.5-flash-image-preview@google-gemini-default" }));
+        assert!(
+            image_items.values().any(|item| {
+                item.target == "gemini-2.5-flash-image-preview@google-gemini-default"
+            })
+        );
         let split_model_items = registry.default_items_for_path("image.img2img.gemini-2");
         assert!(split_model_items.is_empty());
     }

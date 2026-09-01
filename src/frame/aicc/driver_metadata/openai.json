@@ -1,47 +1,13 @@
 {
   "format": "buckyos.aicc.provider-driver-metadata",
-  "schema_version": 3,
-  "schema_revision": 0,
+  "schema_version": 4,
+  "schema_revision": 1,
   "provider_driver": "openai",
-  "revision_seq": 1,
+  "revision_seq": 4,
   "required_features": [],
   "models": [
     {
-      "id": "sora-2",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": [
-        "video.txt2video",
-        "video.txt2video.{driver}",
-        "video.txt2video.{model}",
-        "video.img2video",
-        "video.img2video.{driver}",
-        "video.img2video.{model}"
-      ],
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 0.4
-      },
-      "estimated_latency_ms": 120000
-    },
-    {
-      "id": "sora-2-pro",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": [
-        "video.txt2video",
-        "video.txt2video.{driver}",
-        "video.txt2video.{model}",
-        "video.img2video",
-        "video.img2video.{driver}",
-        "video.img2video.{model}"
-      ],
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 1.2
-      },
-      "estimated_latency_ms": 180000
-    },
-    {
-      "id": "gpt-image-1",
+      "id": "gpt-image-2",
       "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
       "logical_mounts": [
         "image.txt2img.{driver}",
@@ -54,32 +20,9 @@
         "image.inpaint.{driver}",
         "image.inpaint.{model}"
       ],
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 0.04
-      },
+      "pricing": { "currency": "USD", "estimated_cost": 0.04 },
       "estimated_latency_ms": 5000,
-      "quality_score": 0.9
-    },
-    {
-      "id": "dall-e-3",
-      "api_types": ["image.txt2img"],
-      "logical_mounts": ["image.txt2img.{driver}", "image.txt2img.dalle", "image.txt2img.{model}"],
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 0.04
-      },
-      "estimated_latency_ms": 5000
-    },
-    {
-      "id": "dall-e-2",
-      "api_types": ["image.txt2img"],
-      "logical_mounts": ["image.txt2img.{driver}", "image.txt2img.dalle", "image.txt2img.{model}"],
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 0.02
-      },
-      "estimated_latency_ms": 5000
+      "quality_score": 1.0
     },
     {
       "id": "text-embedding-3-large",
@@ -102,6 +45,13 @@
       "estimated_latency_ms": 800
     },
     {
+      "id": "text-embedding-ada-002",
+      "api_types": ["embedding.text"],
+      "logical_mounts": ["embedding.text", "embedding.text.{driver}", "embedding.text.{model}"],
+      "pricing": { "currency": "USD", "estimated_cost": 0.0001 },
+      "estimated_latency_ms": 800
+    },
+    {
       "id": "whisper-1",
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr", "audio.asr.{driver}", "audio.asr.{model}"],
@@ -112,7 +62,7 @@
       "estimated_latency_ms": 5000
     },
     {
-      "id": "gpt-4o-mini-transcribe",
+      "id": "gpt-transcribe",
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr", "audio.asr.{driver}", "audio.asr.{model}"],
       "pricing": {
@@ -132,12 +82,12 @@
       "estimated_latency_ms": 3000
     },
     {
-      "id": "gpt-4o-mini-tts",
+      "id": "tts-1-hd",
       "api_types": ["audio.tts"],
       "logical_mounts": ["audio.tts", "audio.tts.{driver}", "audio.tts.{model}"],
       "pricing": {
         "currency": "USD",
-        "estimated_cost": 0.015
+        "estimated_cost": 0.03
       },
       "estimated_latency_ms": 3000
     }
@@ -171,6 +121,16 @@
       "estimated_latency_ms": 5000
     },
     {
+      "pattern": "tts-1*",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts", "audio.tts.{driver}", "audio.tts.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.015
+      },
+      "estimated_latency_ms": 3000
+    },
+    {
       "pattern": "*-tts*",
       "api_types": ["audio.tts"],
       "logical_mounts": ["audio.tts", "audio.tts.{driver}", "audio.tts.{model}"],
@@ -186,6 +146,94 @@
     },
     {
       "pattern": "*realtime*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-3.5-turbo*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4-0314",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4-0613",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4-turbo*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4.5-preview*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4.1-nano*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4o-2024-05-13",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4o-search-preview*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4o-mini-search-preview*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5-codex",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5.1-codex*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5.2-codex*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5-chat*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5.1-chat*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5.2-chat*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5.3-chat*",
+      "exclude": true
+    },
+    {
+      "pattern": "o1*",
+      "exclude": true
+    },
+    {
+      "pattern": "o3-mini*",
+      "exclude": true
+    },
+    {
+      "pattern": "o3-deep-research*",
+      "exclude": true
+    },
+    {
+      "pattern": "o4-mini*",
+      "exclude": true
+    },
+    {
+      "pattern": "chatgpt-*",
       "exclude": true
     },
     {
@@ -230,14 +278,331 @@
       "estimated_latency_ms": 800
     },
     {
-      "pattern": "gpt-*",
-      "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
+      "pattern": "gpt-5.6",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.gpt-pro",
+        "llm.openai.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}",
+        "image.txt2img",
+        "image.txt2img.{driver}",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000004,
+        "output_token": 0.00002,
+        "cache_input_token": 0.0000004,
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1200,
+      "quality_score": 1.0,
+      "latency_class": "normal",
+      "cost_class": "high"
+    },
+    {
+      "pattern": "gpt-5.6-sol*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.gpt-pro",
+        "llm.openai.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}",
+        "image.txt2img",
+        "image.txt2img.{driver}",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000004,
+        "output_token": 0.00002,
+        "cache_input_token": 0.0000004,
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1200,
+      "quality_score": 1.0,
+      "latency_class": "normal",
+      "cost_class": "high"
+    },
+    {
+      "pattern": "gpt-5.6-terra*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.gpt-mini",
+        "llm.openai.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}",
+        "image.txt2img",
+        "image.txt2img.{driver}",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000002,
+        "output_token": 0.000012,
+        "cache_input_token": 0.0000002,
+        "estimated_cost": 0.005
+      },
+      "estimated_latency_ms": 1000,
+      "quality_score": 0.95,
+      "latency_class": "normal",
+      "cost_class": "medium"
+    },
+    {
+      "pattern": "gpt-5.6-luna*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.gpt-nano",
+        "llm.openai.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}",
+        "image.txt2img",
+        "image.txt2img.{driver}",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.0000002,
+        "output_token": 0.0000012,
+        "cache_input_token": 0.00000002,
+        "estimated_cost": 0.001
+      },
+      "estimated_latency_ms": 800,
+      "quality_score": 0.9,
+      "latency_class": "fast",
+      "cost_class": "low"
+    },
+    {
+      "pattern": "gpt-5.2-pro*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "logical_mounts": [
         "llm.{driver}",
         "llm.openai.{model}",
-        "rerank",
-        "rerank.openai",
-        "rerank.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}",
+        "image.txt2img",
+        "image.txt2img.{driver}",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": false,
+        "web_search": true,
+        "vision": true,
+        "image_generation": true,
+        "max_context_tokens": 400000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1200,
+      "quality_score": 1.0,
+      "latency_class": "slow",
+      "cost_class": "high"
+    },
+    {
+      "pattern": "gpt-5.4-pro*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.openai.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}",
+        "image.txt2img",
+        "image.txt2img.{driver}",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": false,
+        "web_search": true,
+        "vision": true,
+        "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1200,
+      "quality_score": 1.0,
+      "latency_class": "slow",
+      "cost_class": "high"
+    },
+    {
+      "pattern": "gpt-5.5-pro*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.openai.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}",
+        "image.txt2img",
+        "image.txt2img.{driver}",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}"
+      ],
+      "capabilities": {
+        "streaming": false,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1200,
+      "quality_score": 1.0,
+      "latency_class": "slow",
+      "cost_class": "high"
+    },
+    {
+      "pattern": "gpt-5*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.openai.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}",
+        "image.txt2img",
+        "image.txt2img.{driver}",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "image_generation": true,
+        "max_context_tokens": 128000,
+        "max_output_tokens": 8192
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1200,
+      "quality_score": 0.9,
+      "latency_class": "normal",
+      "cost_class": "medium"
+    },
+    {
+      "pattern": "gpt-*",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.openai.{model}",
         "vision.ocr",
         "vision.ocr.{driver}",
         "vision.ocr.{model}",
@@ -262,25 +627,6 @@
       "quality_score": 0.9,
       "latency_class": "normal",
       "cost_class": "medium"
-    },
-    {
-      "pattern": "chatgpt-*",
-      "api_types": ["llm"],
-      "logical_mounts": ["llm.{driver}", "llm.openai.{model}"],
-      "capabilities": {
-        "streaming": true,
-        "tool_call": true,
-        "json_schema": true,
-        "web_search": true,
-        "vision": true,
-        "max_context_tokens": 128000,
-        "max_output_tokens": 8192
-      },
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 0.01
-      },
-      "estimated_latency_ms": 1200
     },
     {
       "pattern": "o*",
@@ -318,12 +664,116 @@
   },
   "variants": [
     {
-      "name": "reasoning.low",
+      "name": "reasoning.low.gpt-5",
+      "model_pattern": "gpt-5",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5-snapshot",
+      "model_pattern": "gpt-5-20*",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5-mini",
+      "model_pattern": "gpt-5-mini*",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5-nano",
+      "model_pattern": "gpt-5-nano*",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5-search-api",
+      "model_pattern": "gpt-5-search-api*",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5.1",
+      "model_pattern": "gpt-5.1*",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5.2",
+      "model_pattern": "gpt-5.2",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5.2-snapshot",
+      "model_pattern": "gpt-5.2-20*",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5.3-codex",
+      "model_pattern": "gpt-5.3-codex*",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5.4",
+      "model_pattern": "gpt-5.4",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5.4-snapshot",
+      "model_pattern": "gpt-5.4-20*",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5.4-mini",
+      "model_pattern": "gpt-5.4-mini*",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5.4-nano",
+      "model_pattern": "gpt-5.4-nano*",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5.5",
+      "model_pattern": "gpt-5.5",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5.5-snapshot",
+      "model_pattern": "gpt-5.5-20*",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.low.gpt-5.6",
+      "model_pattern": "gpt-5.6*",
       "mount_suffix": "reasoning-low",
       "provider_options": { "reasoning": { "effort": "low" } }
     },
     {
       "name": "reasoning.high",
+      "model_pattern": "gpt-5*",
+      "mount_suffix": "reasoning-high",
+      "provider_options": { "reasoning": { "effort": "high" } }
+    },
+    {
+      "name": "reasoning.low.o-series",
+      "model_pattern": "o*",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.high.o-series",
+      "model_pattern": "o*",
       "mount_suffix": "reasoning-high",
       "provider_options": { "reasoning": { "effort": "high" } }
     }
@@ -333,7 +783,8 @@
       "family": "gpt",
       "tier": "standard",
       "model_pattern": "gpt-*",
-      "exclude_tier_tokens": ["pro", "mini", "nano", "nono"],
+      "exclude_tier_tokens": ["pro", "mini", "nano", "nono", "sol", "terra", "luna"],
+      "exclude_patterns": ["gpt-5.6"],
       "version_rank": { "prefix": "gpt" },
       "stability": {
         "unstable_tokens": ["preview", "experimental", "beta"],
@@ -363,7 +814,8 @@
       "family": "gpt",
       "tier": "pro",
       "model_pattern": "gpt-*",
-      "tier_tokens": ["pro"],
+      "tier_tokens": ["pro", "sol"],
+      "tier_patterns": ["gpt-5.6"],
       "version_rank": { "prefix": "gpt" },
       "stability": {
         "unstable_tokens": ["preview", "experimental", "beta"],
@@ -390,7 +842,7 @@
       "family": "gpt",
       "tier": "mini",
       "model_pattern": "gpt-*",
-      "tier_tokens": ["mini"],
+      "tier_tokens": ["mini", "terra"],
       "version_rank": { "prefix": "gpt" },
       "stability": {
         "unstable_tokens": ["preview", "experimental", "beta"],
@@ -417,7 +869,7 @@
       "family": "gpt",
       "tier": "nano",
       "model_pattern": "gpt-*",
-      "tier_tokens": ["nano", "nono"],
+      "tier_tokens": ["nano", "nono", "luna"],
       "version_rank": { "prefix": "gpt" },
       "stability": {
         "unstable_tokens": ["preview", "experimental", "beta"],

@@ -61,7 +61,72 @@ def pdf() -> Path:
     return path
 
 
+def legacy_xls() -> bytes:
+    def record(kind: int, data: bytes = b"") -> bytes:
+        return struct.pack("<HH", kind, len(data)) + data
+
+    bof_globals = record(0x0809, struct.pack("<HHHHII", 0x0600, 0x0005, 0x0DBB, 0x07CC, 0x41, 0x06))
+    codepage = record(0x0042, struct.pack("<H", 1252))
+    sheet_name = b"Facts"
+    boundsheet_size = 4 + 2 + 2 + len(sheet_name)
+    globals_size = len(bof_globals) + len(codepage) + 4 + boundsheet_size + 4
+    boundsheet = record(0x0085, struct.pack("<IBBBB", globals_size, 0, 0, len(sheet_name), 0) + sheet_name)
+    workbook_globals = bof_globals + codepage + boundsheet + record(0x000A)
+
+    bof_sheet = record(0x0809, struct.pack("<HHHHII", 0x0600, 0x0010, 0x0DBB, 0x07CC, 0x41, 0x06))
+    dimensions = record(0x0200, struct.pack("<IIHHH", 0, 1, 0, 2, 0))
+    marker = MARKER.encode("latin-1")
+    label = record(0x0204, struct.pack("<HHHHB", 0, 0, 0, len(marker), 0) + marker)
+    number = record(0x0203, struct.pack("<HHHd", 0, 1, 0, 4827.0))
+    workbook = workbook_globals + bof_sheet + dimensions + label + number + record(0x000A)
+    workbook = workbook.ljust(4096, b"\x00")
+
+    free = 0xFFFFFFFF
+    end = 0xFFFFFFFE
+    fat_sector = 0xFFFFFFFD
+    fat = [free] * 128
+    for sector in range(7):
+        fat[sector] = sector + 1
+    fat[7] = end
+    fat[8] = end
+    fat[9] = fat_sector
+
+    def directory_entry(name: str, entry_type: int, child: int, start: int, size: int) -> bytes:
+        encoded = (name + "\x00").encode("utf-16le")
+        return (
+            encoded.ljust(64, b"\x00")
+            + struct.pack("<HBBIII", len(encoded), entry_type, 1, free, free, child)
+            + b"\x00" * 16
+            + struct.pack("<IQQIQ", 0, 0, 0, start, size)
+        )
+
+    directory = directory_entry("Root Entry", 5, 1, end, 0)
+    directory += directory_entry("Workbook", 2, free, 0, len(workbook))
+    directory = directory.ljust(512, b"\x00")
+
+    header = bytearray(512)
+    header[:8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    struct.pack_into("<HHHH", header, 24, 0x003E, 3, 0xFFFE, 9)
+    struct.pack_into("<H", header, 32, 6)
+    struct.pack_into("<IIIIIIII", header, 40, 0, 1, 8, 0, 4096, end, 0, end)
+    struct.pack_into("<I", header, 72, 0)
+    struct.pack_into("<I", header, 76, 9)
+    for offset in range(80, 512, 4):
+        struct.pack_into("<I", header, offset, free)
+    return bytes(header) + workbook + directory + struct.pack("<128I", *fat)
+
+
 def office_documents() -> list[Path]:
+    doc = ROOT / "facts.doc"
+    doc_data = doc.read_bytes()
+    if not doc_data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") or "WordDocument".encode("utf-16le") not in doc_data:
+        raise ValueError("facts.doc must be a genuine OLE Word binary fixture")
+    xls = ROOT / "facts.xls"
+    xls.write_bytes(legacy_xls())
+    ppt = ROOT / "facts.ppt"
+    ppt_data = ppt.read_bytes()
+    if not ppt_data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") or "PowerPoint Document".encode("utf-16le") not in ppt_data:
+        raise ValueError("facts.ppt must be a genuine OLE PowerPoint binary fixture")
     docx = package("facts.docx", [
         ("[Content_Types].xml", b'<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>', False),
         ("_rels/.rels", b'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>', False),
@@ -87,7 +152,7 @@ def office_documents() -> list[Path]:
         ("OEBPS/content.opf", b'<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">aicc-fixture</dc:identifier><dc:title>AICC fixture</dc:title><dc:language>en</dc:language></metadata><manifest><item id="c" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c"/></spine></package>', False),
         ("OEBPS/chapter.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml"><body><p>{MARKER}</p></body></html>'.encode(), False),
     ])
-    return [docx, xlsx, pptx, epub]
+    return [doc, docx, xls, xlsx, ppt, pptx, epub]
 
 
 def png(name: str, width: int, height: int, color_type: int, rows: bytes) -> Path:
@@ -103,6 +168,34 @@ def png(name: str, width: int, height: int, color_type: int, rows: bytes) -> Pat
 def media() -> list[Path]:
     transparent = png("transparent.png", 2, 1, 6, b"\x00\xff\x00\x00\x00\x00\x00\xff\xff")
     mask = png("mask.png", 2, 1, 0, b"\x00\x00\xff")
+    size = 1024
+    inpaint_image_rows = bytearray()
+    inpaint_mask_rows = bytearray()
+    for y in range(size):
+        inpaint_image_rows.append(0)
+        inpaint_mask_rows.append(0)
+        for x in range(size):
+            center = 320 <= x < 704 and 320 <= y < 704
+            inpaint_image_rows.extend((210, 210, 210, 255) if center else (70, 125, 180, 255))
+            inpaint_mask_rows.extend((0, 0, 0, 0 if center else 255))
+    inpaint_image = png("inpaint_image.png", size, size, 6, bytes(inpaint_image_rows))
+    inpaint_mask = png("inpaint_mask.png", size, size, 6, bytes(inpaint_mask_rows))
+    bg_remove_rows = bytearray()
+    for y in range(512):
+        bg_remove_rows.append(0)
+        for x in range(512):
+            apple = ((x - 256) / 125) ** 2 + ((y - 286) / 145) ** 2 <= 1
+            leaf = ((x - 326) / 58) ** 2 + ((y - 126) / 30) ** 2 <= 1
+            stem = 242 <= x < 270 and 105 <= y < 170
+            pixel = (218, 38, 45, 255) if apple else (255, 255, 255, 255)
+            if apple and ((x - 218) / 24) ** 2 + ((y - 225) / 38) ** 2 <= 1:
+                pixel = (255, 120, 110, 255)
+            if stem:
+                pixel = (105, 62, 30, 255)
+            if leaf:
+                pixel = (45, 145, 55, 255)
+            bg_remove_rows.extend(pixel)
+    bg_remove_image = png("background_remove.png", 512, 512, 6, bytes(bg_remove_rows))
     jpeg_data = base64.b64decode("/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABD/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/EH//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/EH//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/EH//2Q==")
     jpeg = ROOT / "marker.jpg"
     jpeg.write_bytes(jpeg_data)
@@ -117,7 +210,7 @@ def media() -> list[Path]:
             frames.extend(struct.pack("<hh", sample, sample))
         output.writeframes(frames)
     subtitle = write_text("marker.srt", f"1\n00:00:00,000 --> 00:00:02,000\n{MARKER}\n")
-    return [transparent, mask, jpeg, wav, subtitle]
+    return [transparent, mask, inpaint_image, inpaint_mask, bg_remove_image, jpeg, wav, subtitle]
 
 
 def archives() -> list[Path]:
@@ -157,6 +250,8 @@ def manifest(paths: list[tuple[Path, str, list[str], list[str], str]]) -> None:
     fixtures = []
     for path, mime, facts, cases, source in paths:
         data = path.read_bytes()
+        if path.suffix not in {".bin", ".docx", ".epub", ".jpg", ".mp4", ".pdf", ".png", ".pptx", ".wav", ".xls", ".xlsx", ".zip"}:
+            data = data.replace(b"\r\n", b"\n")
         fixtures.append({
             "id": path.name.replace("_", "-").replace(".", "-"),
             "path": (Path("../../jarvis_media_dv/assets") / path.name).as_posix()
@@ -202,7 +297,8 @@ def main() -> None:
     mime_by_suffix = {
         ".txt": "text/plain", ".md": "text/markdown", ".html": "text/html", ".csv": "text/csv",
         ".tsv": "text/tab-separated-values", ".json": "application/json", ".yaml": "application/yaml",
-        ".xml": "application/xml", ".rtf": "application/rtf", ".py": "text/x-python", ".pdf": "application/pdf",
+        ".xml": "text/xml", ".rtf": "application/rtf", ".py": "text/x-python", ".pdf": "application/pdf",
+        ".doc": "application/msword", ".xls": "application/vnd.ms-excel", ".ppt": "application/vnd.ms-powerpoint",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -211,7 +307,13 @@ def main() -> None:
     }
     for path in documents + media_paths + archive_paths + [zero, mismatch]:
         facts = [MARKER] if path.name.startswith("facts") or path.suffix in {".srt"} else [path.stem]
-        records.append((path, mime_by_suffix[path.suffix], facts, ["T1.resource", "T2.format", "T3.attachment"], "deterministic:generate_fixtures.py"))
+        source = "deterministic:generate_fixtures.py"
+        if path.name == "facts.doc":
+            facts = ["I am a test document", "This is page 1"]
+            source = "Apache POI SampleDoc.doc test fixture"
+        elif path.name == "facts.ppt":
+            source = "prebuilt:Microsoft PowerPoint 97 binary fixture"
+        records.append((path, mime_by_suffix[path.suffix], facts, ["T1.resource", "T2.format", "T3.attachment"], source))
     for name, mime, facts in [
         ("image_primary.png", "image/png", ["pink flower"]),
         ("image_secondary.png", "image/png", ["mountain road"]),

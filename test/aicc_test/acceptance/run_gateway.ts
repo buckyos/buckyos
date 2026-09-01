@@ -18,7 +18,7 @@ import {
   type ResourceRef,
 } from "./payloads.ts";
 import { runPreflight } from "./preflight.ts";
-import { defectFromFailure, writeReport } from "./report.ts";
+import { defectFromFailure, isProviderRestricted, writeReport } from "./report.ts";
 import type {
   AcceptanceReport,
   CaseReport,
@@ -49,10 +49,20 @@ import {
   type ProviderTokens,
 } from "./provider_credentials.ts";
 import { SettingsCleanupError, withAiccSettingsOverride } from "./settings_transaction.ts";
-import { validateArtifactBytes, validateNamedArtifact, type ArtifactAudit, type ReadableNamedData } from "./artifact_validation.ts";
-import { JudgeError, runJudge } from "./judge.ts";
+import {
+  assertBackgroundRemovalTransparency,
+  validateArtifactBytes,
+  validateNamedArtifact,
+  type ArtifactAudit,
+  type ReadableNamedData,
+} from "./artifact_validation.ts";
+import { JudgeError, runJudge, selectJudgeModel } from "./judge.ts";
 import { bindOfficialCatalogInstances, fetchOfficialCatalogs } from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
+import {
+  startNdnFixtureService,
+  type NdnFixtureService,
+} from "./ndn_fixture_service.ts";
 
 type Options = {
   configPath: string;
@@ -89,6 +99,10 @@ type Options = {
   shardIndex: number;
   shardCount: number;
   caseIds: string[];
+  ndnGatewayBinary: string;
+  ndnNamedStoreConfigPath: string;
+  ndnGatewayControlUrl: string;
+  ndnSystemRoot: string;
 };
 
 type AiMethodResponse = {
@@ -108,7 +122,7 @@ function compactFailure(value: unknown, depth = 0): Record<string, unknown> | un
     else if (typeof field === "number") summary[key] = field;
   }
   if (Object.keys(summary).length > 0) return summary;
-  for (const key of ["error", "result", "cause"] as const) {
+  for (const key of ["error", "result", "extra", "cause"] as const) {
     const nested = compactFailure(object[key], depth + 1);
     if (nested) return nested;
   }
@@ -159,19 +173,75 @@ function base64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+const TRANSPARENT_OCR_MASK_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAABFAAAACECAYAAAC3Z98WAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAJMSURBVHhe7cEBDQAAAMKg909tDwcEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHKsB5fwAAcDqUMkAAAAASUVORK5CYII=";
+
+function uniqueNamedFixture(bytes: Uint8Array, mime: string, nonce: string): Uint8Array {
+  if (mime !== "video/mp4") return bytes;
+  const suffix = new Uint8Array(24);
+  new DataView(suffix.buffer).setUint32(0, suffix.length);
+  suffix.set(new TextEncoder().encode("free"), 4);
+  suffix.set(new TextEncoder().encode(nonce).subarray(0, 16), 8);
+  const result = new Uint8Array(bytes.length + suffix.length);
+  result.set(bytes);
+  result.set(suffix, bytes.length);
+  return result;
+}
+
 async function loadDefaultFixtures(
   fixtures: FixtureRefs,
+  fixtureNonce: string,
   gatewayUrl: string,
   sessionToken: string,
   uploadNamedObjects: boolean,
+  publicNdnBaseUrl: string | undefined,
   uploadedObjectIds: string[],
 ): Promise<FixtureRefs> {
-  const defaults: Record<Exclude<keyof FixtureRefs, "documents">, { path: string; mime: string }> = {
-    image: { path: join(here, "../fixtures/marker.jpg"), mime: "image/jpeg" },
-    mask: { path: join(here, "../fixtures/mask.png"), mime: "image/png" },
-    audio: { path: join(here, "../../jarvis_media_dv/assets/audio_speech.wav"), mime: "audio/wav" },
-    video: { path: join(here, "../../jarvis_media_dv/assets/video_fresh.mp4"), mime: "video/mp4" },
-    document: { path: join(here, "../fixtures/facts.pdf"), mime: "application/pdf" },
+  const fixtureRevision = "d3aef519a1ab24fcdd5e1e54c6270465d0b28b48";
+  const rawFixtureUrl = (path: string) =>
+    `https://raw.githubusercontent.com/streetycat/buckyos/${fixtureRevision}/${path}`;
+  const defaults: Record<Exclude<keyof FixtureRefs, "documents">, { path: string; mime: string; url?: string }> = {
+    image: {
+      path: join(here, "../../jarvis_media_dv/assets/image_primary.png"),
+      mime: "image/png",
+      url: rawFixtureUrl("test/jarvis_media_dv/assets/image_primary.png"),
+    },
+    bgRemoveImage: {
+      path: join(here, "../fixtures/background_remove.png"),
+      mime: "image/png",
+      url: rawFixtureUrl("test/aicc_test/fixtures/background_remove.png"),
+    },
+    ocrImage: {
+      path: join(here, "../../jarvis_media_dv/assets/image_ocr.png"),
+      mime: "image/png",
+      url: rawFixtureUrl("test/jarvis_media_dv/assets/image_ocr.png"),
+    },
+    mask: { path: join(here, "../fixtures/mask.png"), mime: "image/png", url: rawFixtureUrl("test/aicc_test/fixtures/mask.png") },
+    audio: {
+      path: join(here, "../../jarvis_media_dv/assets/audio_speech.wav"),
+      mime: "audio/wav",
+      url: rawFixtureUrl("test/jarvis_media_dv/assets/audio_speech.wav"),
+    },
+    video: {
+      path: join(here, "../../jarvis_media_dv/assets/video_fresh.mp4"),
+      mime: "video/mp4",
+      url: rawFixtureUrl("test/jarvis_media_dv/assets/video_fresh.mp4"),
+    },
+    document: {
+      path: join(here, "../fixtures/facts.pdf"),
+      mime: "application/pdf",
+      url: rawFixtureUrl("test/aicc_test/fixtures/facts.pdf"),
+    },
+    inpaintImage: {
+      path: join(here, "../fixtures/inpaint_image.png"),
+      mime: "image/png",
+      url: rawFixtureUrl("test/aicc_test/fixtures/inpaint_image.png"),
+    },
+    inpaintMask: {
+      path: join(here, "../fixtures/inpaint_mask.png"),
+      mime: "image/png",
+      url: rawFixtureUrl("test/aicc_test/fixtures/inpaint_mask.png"),
+    },
   };
   const loaded = { ...fixtures };
   const { ndm_proxy, ndn } = await import("buckyos");
@@ -193,19 +263,42 @@ async function loadDefaultFixtures(
     bytes: Uint8Array,
     mime: string,
     configured?: ResourceFixture,
+    defaultUrl?: string,
   ): Promise<ResourceFixture> => {
+    const namedBytes = uniqueNamedFixture(bytes, mime, fixtureNonce);
     const objId = ndn.ChunkId.fromMix256Result(
-      bytes.byteLength,
-      ndn.sha256Bytes(bytes),
+      namedBytes.byteLength,
+      ndn.sha256Bytes(namedBytes),
     ).toString();
     if (ndmProxy) {
-      await ndmProxy.putChunk(objId, bytes);
+      await ndmProxy.putChunk(objId, namedBytes);
       uploadedObjectIds.push(objId);
+    }
+    const publicUrl = ndmProxy && publicNdnBaseUrl
+      ? `${publicNdnBaseUrl}/${objId}`
+      : defaultUrl;
+    if (publicUrl && ndmProxy) {
+      const response = await fetch(publicUrl);
+      if (!response.ok) {
+        throw new Error(
+          `public NDN fixture download failed with HTTP ${response.status}: ${objId}`,
+        );
+      }
+      const downloaded = new Uint8Array(await response.arrayBuffer());
+      if (
+        downloaded.length !== namedBytes.length ||
+        !downloaded.every((value, index) => value === namedBytes[index])
+      ) {
+        throw new Error(`public NDN fixture content mismatch: ${objId}`);
+      }
     }
     const result: Partial<Record<ResourceRef["kind"], ResourceRef>> = {
       base64: { kind: "base64", mime, data_base64: base64(bytes) },
       named_object: { kind: "named_object", obj_id: objId },
     };
+    if (publicUrl) {
+      result.url = { kind: "url", url: publicUrl, mime_hint: mime };
+    }
     if (configured) {
       if ("kind" in configured) result[configured.kind] = configured;
       else Object.assign(result, configured);
@@ -216,20 +309,30 @@ async function loadDefaultFixtures(
     Exclude<keyof FixtureRefs, "documents">,
     { path: string; mime: string },
   ]>) {
-    const bytes = await Deno.readFile(fixture.path);
-    loaded[kind] = await variants(bytes, fixture.mime, loaded[kind]);
+    const configured = loaded[kind];
+    const configuredPath = configured && "kind" in configured && configured.kind === "url" &&
+        typeof configured.url === "string" && !/^[a-z][a-z0-9+.-]*:/i.test(configured.url)
+      ? configured.url
+      : undefined;
+    const bytes = kind === "mask"
+      ? decodeBase64(TRANSPARENT_OCR_MASK_BASE64)
+      : await Deno.readFile(configuredPath ?? fixture.path);
+    loaded[kind] = await variants(bytes, fixture.mime, configuredPath ? undefined : configured, fixture.url);
   }
   const documentFixtures: Record<string, { path: string; mime: string }> = {
     txt: { path: join(here, "../fixtures/facts.txt"), mime: "text/plain" },
     md: { path: join(here, "../fixtures/facts.md"), mime: "text/markdown" },
     pdf: { path: join(here, "../fixtures/facts.pdf"), mime: "application/pdf" },
+    doc: { path: join(here, "../fixtures/facts.doc"), mime: "application/msword" },
     docx: { path: join(here, "../fixtures/facts.docx"), mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+    xls: { path: join(here, "../fixtures/facts.xls"), mime: "application/vnd.ms-excel" },
     xlsx: { path: join(here, "../fixtures/facts.xlsx"), mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
     csv: { path: join(here, "../fixtures/facts.csv"), mime: "text/csv" },
     tsv: { path: join(here, "../fixtures/facts.tsv"), mime: "text/tab-separated-values" },
+    ppt: { path: join(here, "../fixtures/facts.ppt"), mime: "application/vnd.ms-powerpoint" },
     pptx: { path: join(here, "../fixtures/facts.pptx"), mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
     html: { path: join(here, "../fixtures/facts.html"), mime: "text/html" },
-    xml: { path: join(here, "../fixtures/facts.xml"), mime: "application/xml" },
+    xml: { path: join(here, "../fixtures/facts.xml"), mime: "text/xml" },
     json: { path: join(here, "../fixtures/facts.json"), mime: "application/json" },
     yaml: { path: join(here, "../fixtures/facts.yaml"), mime: "application/yaml" },
     rtf: { path: join(here, "../fixtures/facts.rtf"), mime: "application/rtf" },
@@ -242,6 +345,7 @@ async function loadDefaultFixtures(
       await Deno.readFile(fixture.path),
       fixture.mime,
       loaded.documents[format],
+      rawFixtureUrl(`test/aicc_test/fixtures/${fixture.path.split(/[\\/]/).at(-1)}`),
     );
   }
   return loaded;
@@ -329,6 +433,14 @@ async function parseOptions(args: string[]): Promise<Options> {
     shardIndex: tomlNumber(config, "runner.shard_index") ?? 0,
     shardCount: tomlNumber(config, "runner.shard_count") ?? 1,
     caseIds: [],
+    ndnGatewayBinary: tomlString(config, "fixtures.ndn_gateway_binary") ??
+      env("AICC_NDN_GATEWAY_BINARY") ?? "/opt/buckyos/bin/cyfs-gateway/cyfs_gateway",
+    ndnNamedStoreConfigPath: tomlString(config, "fixtures.ndn_named_store_config") ??
+      env("AICC_NDN_NAMED_STORE_CONFIG") ?? "/opt/buckyos/storage/named_store.json",
+    ndnGatewayControlUrl: tomlString(config, "fixtures.ndn_gateway_control_url") ??
+      env("AICC_NDN_GATEWAY_CONTROL_URL") ?? "http://127.0.0.1:13451",
+    ndnSystemRoot: tomlString(config, "fixtures.ndn_system_root") ??
+      env("AICC_NDN_SYSTEM_ROOT") ?? "/opt/buckyos",
     fixtures: {
       image: resource("image", tomlString(config, "fixtures.image"), "image/png"),
       mask: resource("mask", tomlString(config, "fixtures.mask"), "image/png"),
@@ -531,6 +643,17 @@ function taskValue(raw: unknown): Record<string, unknown> {
     : envelope;
 }
 
+function auditTaskId(task: Record<string, unknown>, fallback: string): string {
+  for (const snapshot of [task.result, task.progress, task.input]) {
+    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) continue;
+    const request = (snapshot as Record<string, unknown>).request;
+    if (!request || typeof request !== "object" || Array.isArray(request)) continue;
+    const externalTaskId = (request as Record<string, unknown>).external_task_id;
+    if (typeof externalTaskId === "string" && externalTaskId.trim()) return externalTaskId;
+  }
+  return fallback;
+}
+
 async function waitForTask(
   taskManager: RpcClient,
   response: AiMethodResponse,
@@ -556,7 +679,8 @@ async function waitForTask(
         );
       }
       return {
-        task_id: response.task_id,
+        task_id: auditTaskId(task, response.task_id),
+        task_manager_id: response.task_id,
         status: "succeeded",
         result: task.result?.result?.output,
         event_ref: response.event_ref,
@@ -591,9 +715,11 @@ function retryable(error: unknown): boolean {
     "network",
     "temporarily unavailable",
     "service unavailable",
+    "server had an error",
     "bad gateway",
     "gateway timeout",
     "provider_start_failed",
+    "aicc returned failed",
   ].some((marker) => message.includes(marker)) || /\b5\d\d\b/.test(message);
 }
 
@@ -608,16 +734,16 @@ function semanticRubric(cell: { api_type: string; method: string }): string[] {
   const apiType = cell.api_type;
   if (apiType === "image.txt2img") return ["The image visibly contains a blue square and the number 4827."];
   if (apiType === "image.img2img") return ["The output preserves the source composition and applies warm evening light."];
-  if (apiType === "image.inpaint") return ["The masked region is filled with plausible green leaves without corrupting the rest of the image."];
+  if (apiType === "image.inpaint") return ["The edited image contains plausible green leaves in the intended central masked region and remains a simple square-canvas composition rather than an unrelated scene. The mask is model guidance, so surrounding colors need not match pixel-for-pixel."];
   if (apiType === "image.upscale") return ["The output preserves the source content and has visibly improved or increased resolution."];
-  if (apiType === "image.bg_remove") return ["The foreground is preserved and the background is removed or transparent."];
+  if (apiType === "image.bg_remove") return ["The red apple with its brown stem and green leaf remains the foreground subject, while the uniform white surrounding background is removed or transparent."];
   if (apiType === "vision.ocr") return ["The recognized text contains the visible acceptance marker 4827."];
   if (apiType === "vision.caption") return ["The caption accurately describes the supplied marker image."];
   if (apiType === "vision.detect") return ["The structured detection result identifies visible objects in the supplied image."];
   if (apiType === "vision.segment") return ["The segmentation result corresponds to visible regions in the supplied image."];
   if (apiType === "audio.tts") return ["The speech clearly says BuckyOS test number four eight two seven."];
   if (apiType === "audio.asr") return ["The transcript faithfully represents the supplied speech audio."];
-  if (apiType === "audio.music") return ["The output is a short calm instrumental passage rather than speech or silence."];
+  if (apiType === "audio.music") return ["The output is a short, calm ambient instrumental passage with no vocals, speech, or dance beat."];
   if (apiType === "audio.enhance") return ["The output preserves the source audio while reducing noise or improving clarity."];
   if (apiType === "video.txt2video") return ["The video shows a paper plane moving across a desk."];
   if (apiType === "video.img2video") return ["The video preserves the supplied image content and adds subtle motion with a slow camera push."];
@@ -725,11 +851,14 @@ async function main(): Promise<void> {
     appId: options.appId,
   });
   const uploadedFixtureIds: string[] = [];
+  const configuredFixtures = structuredClone(options.fixtures);
   options.fixtures = await loadDefaultFixtures(
-    options.fixtures,
+    configuredFixtures,
+    runId,
     options.gatewayUrl,
     session.sessionToken,
     false,
+    undefined,
     uploadedFixtureIds,
   );
   const selectedDrivers = options.providers.length > 0
@@ -758,6 +887,7 @@ async function main(): Promise<void> {
     baseline,
     officialCatalogs,
     uploadedFixtureIds,
+    configuredFixtures,
   });
   options.providerTokens = selectProviderTokens(options.providerTokens, options.providers);
   const tokenDrivers = providerTokenDrivers(options.providerTokens);
@@ -857,7 +987,9 @@ async function main(): Promise<void> {
   );
   if (cleanupFailure) Deno.exitCode = 1;
   if (outcome.report.cases.some((item) => item.status === "failed")) Deno.exitCode = 1;
-  else if (outcome.report.cases.some((item) => item.status === "skipped" || item.status === "review")) Deno.exitCode = 2;
+  else if (outcome.report.cases.some((item) =>
+    item.status === "provider_restricted" || item.status === "skipped" || item.status === "review"
+  )) Deno.exitCode = 2;
 }
 
 async function executeAcceptance(input: {
@@ -869,6 +1001,7 @@ async function executeAcceptance(input: {
   baseline: ProviderBaseline;
   officialCatalogs: ProviderInventory[];
   uploadedFixtureIds: string[];
+  configuredFixtures: FixtureRefs;
 }): Promise<{ report: AcceptanceReport; effectiveBaseline: Record<string, unknown> }> {
   const {
     options,
@@ -879,6 +1012,7 @@ async function executeAcceptance(input: {
     baseline,
     officialCatalogs,
     uploadedFixtureIds,
+    configuredFixtures,
   } = input;
   const { ndm_proxy } = await import("buckyos");
   const ndm = ndm_proxy.createNdmProxyClient({
@@ -932,6 +1066,7 @@ async function executeAcceptance(input: {
       inventory.provider_instance_name,
     ])),
   });
+  const judgeModel = selectJudgeModel(options.judgeModel, selectedInventories);
   const officialInventories = bindOfficialCatalogInstances(officialCatalogs, selectedInventories);
   const matrix = analyzeProviderMatrix({
     baseline,
@@ -948,6 +1083,7 @@ async function executeAcceptance(input: {
     : sortedCells.filter((_, index) => index % options.shardCount === options.shardIndex);
   const filteredRequestedCases = new Map<string, typeof matrix.coverage>();
   for (const caseId of requestedCases) {
+    if (sortedCells.some((cell) => cell.case_id === caseId)) continue;
     const matches = matrix.coverage.filter((record) => {
       const segment = record.provider_model_id.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
       return record.status === "filtered" && caseId.toLowerCase().includes(`.${segment}.`);
@@ -1004,7 +1140,7 @@ async function executeAcceptance(input: {
     });
   }
   for (const driver of selectedDrivers) {
-    if (!inventories.some((inventory) => inventory.provider_driver === driver)) {
+    if (!selectedInventories.some((inventory) => inventory.provider_driver === driver)) {
       cases.push({
         run_id: runId,
         case_id: `t2.preflight.provider_missing.${driver}`,
@@ -1113,10 +1249,18 @@ async function executeAcceptance(input: {
   const judgedCells = options.judgeEnabled
     ? executableCells.filter((cell) => semanticRubric(cell).length > 0)
     : [];
-  const plannedCalls = plannedCases * options.maxAttempts + judgedCells.length;
+  const continuationPrerequisiteCells = [...new Map(
+    executableCells
+      .filter((cell) => cell.api_type === "video.extend")
+      .map((cell) => [cell.exact_model, cell]),
+  ).values()];
+  const plannedCalls = plannedCases * options.maxAttempts + judgedCells.length + continuationPrerequisiteCells.length;
   const estimatedCost = executableCells.reduce(
     (sum, cell) => sum + estimatedCellCost(cell, options.estimatedCostPerCallUsd) * options.maxAttempts,
-    0,
+    continuationPrerequisiteCells.reduce(
+      (sum, cell) => sum + estimatedCellCost(cell, options.estimatedCostPerCallUsd),
+      0,
+    ),
   ) + judgedCells.length * options.estimatedCostPerCallUsd;
   console.log(`[plan] run_id=${runId}`);
   console.log(`[plan] providers=${selectedDrivers.join(",")}`);
@@ -1128,7 +1272,7 @@ async function executeAcceptance(input: {
     console.log(`[plan] provider_limit ${provider}: concurrency=${limits.maxConcurrency ?? options.providerLimits.maxConcurrency} interval_ms=${limits.minIntervalMs ?? options.providerLimits.minIntervalMs}`);
   }
   console.log(`[plan] estimated_cost_usd=${estimatedCost.toFixed(4)} max_cost_usd=${options.maxCostUsd.toFixed(4)}`);
-  console.log(`[plan] judge enabled=${options.judgeEnabled} model=${options.judgeModel} semantic_cases=${options.judgeEnabled ? judgedCells.length : executableCells.filter((cell) => semanticRubric(cell).length > 0).length}`);
+  console.log(`[plan] judge enabled=${options.judgeEnabled} model=${judgeModel} semantic_cases=${options.judgeEnabled ? judgedCells.length : executableCells.filter((cell) => semanticRubric(cell).length > 0).length}`);
   if (options.allowRealModelCalls && plannedCalls > options.maxRealCalls) {
     throw new Error(`planned calls ${plannedCalls} exceed max_real_calls ${options.maxRealCalls}`);
   }
@@ -1136,15 +1280,29 @@ async function executeAcceptance(input: {
     throw new Error(`estimated cost ${estimatedCost} exceeds max_cost_usd ${options.maxCostUsd}`);
   }
 
+  let ndnFixtureService: NdnFixtureService | undefined;
+  await using ndnFixtureCleanup = {
+    [Symbol.asyncDispose]: async () => await ndnFixtureService?.stop(),
+  };
   let executeRealModelCalls = options.allowRealModelCalls;
   if (executeRealModelCalls && plannedCalls > 0) {
     executeRealModelCalls = await confirmRealModelCalls(options.assumeYes);
     if (executeRealModelCalls) {
+      ndnFixtureService = await startNdnFixtureService({
+        gatewayUrl: options.gatewayUrl,
+        runId,
+        gatewayBinary: options.ndnGatewayBinary,
+        namedStoreConfigPath: options.ndnNamedStoreConfigPath,
+        gatewayControlUrl: options.ndnGatewayControlUrl,
+        systemRoot: options.ndnSystemRoot,
+      });
       options.fixtures = await loadDefaultFixtures(
-        options.fixtures,
+        configuredFixtures,
+        runId,
         options.gatewayUrl,
         session.sessionToken,
         true,
+        ndnFixtureService.publicBaseUrl,
         uploadedFixtureIds,
       );
     } else {
@@ -1155,12 +1313,90 @@ async function executeAcceptance(input: {
   let actualCalls = 0;
   const financialEntries: FinancialEntry[] = [];
   const costBudget = new CostBudget(options.maxCostUsd);
+  const prerequisiteArtifactIds: string[] = [];
   if (executeRealModelCalls) {
     const scheduler = new ProviderScheduler(
       options.globalConcurrency,
       options.providerLimits,
       options.providerLimitOverrides,
     );
+    const continuationPrerequisites = new Map<string, Promise<ResourceRef>>();
+    const continuationResource = (cell: typeof executableCells[number]): Promise<ResourceRef> => {
+      const existing = continuationPrerequisites.get(cell.exact_model);
+      if (existing) return existing;
+      const pending = scheduler.execute(cell.provider_driver, async () => {
+        if (actualCalls >= options.maxRealCalls) {
+          throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before video.extend prerequisite`);
+        }
+        const estimate = estimatedCellCost(cell, options.estimatedCostPerCallUsd);
+        const reservation = costBudget.reserve(estimate);
+        const started = Date.now();
+        actualCalls += 1;
+        try {
+          const prerequisiteRequest = structuredClone(preparedRequests.get(cell.case_id)!);
+          const payload = prerequisiteRequest.payload as Record<string, unknown>;
+          payload.input_json = {
+            prompt: "A paper plane moving across a desk, continuous steady motion",
+            duration_seconds: 4,
+          };
+          payload.resources = [];
+          prerequisiteRequest.idempotency_key = `${runId}:continuation:${cell.exact_model}`;
+          const initial = await session.aicc.call("video.txt2video", prerequisiteRequest) as AiMethodResponse;
+          const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
+          const artifacts = await validateTerminalArtifacts({
+            terminal,
+            ndm,
+            gatewayUrl: options.gatewayUrl,
+            sessionToken: session.sessionToken,
+          });
+          prerequisiteArtifactIds.push(...artifacts.ids);
+          const source = artifactSources(terminal).find((candidate) =>
+            typeof candidate.obj_id === "string" || typeof candidate.url === "string" ||
+            typeof candidate.data_base64 === "string"
+          );
+          if (!source) throw new Error("video.extend prerequisite produced no reusable video artifact");
+          const finance = extractFinance(terminal);
+          costBudget.settle(reservation, finance.actualCostUsd);
+          financialEntries.push({
+            case_id: `t2.prerequisite.video_continuation.${cell.exact_model}`,
+            attempt: 1,
+            provider_driver: cell.provider_driver,
+            provider_instance: cell.provider_instance,
+            exact_model: cell.exact_model,
+            api_type: "video.txt2video",
+            method: "video.txt2video",
+            started_at: new Date(started).toISOString(),
+            status: "passed",
+            usage: finance.usage,
+            estimated_cost_usd: estimate,
+            actual_cost_usd: finance.actualCostUsd,
+            raw_cost_usd: finance.rawCostUsd,
+            credit_applied_usd: finance.creditAppliedUsd,
+            cost_status: finance.actualCostUsd === undefined ? "unknown" : "actual",
+          });
+          const { _content_type: _, ...resource } = source;
+          return resource as ResourceRef;
+        } catch (error) {
+          costBudget.settle(reservation);
+          financialEntries.push({
+            case_id: `t2.prerequisite.video_continuation.${cell.exact_model}`,
+            attempt: 1,
+            provider_driver: cell.provider_driver,
+            provider_instance: cell.provider_instance,
+            exact_model: cell.exact_model,
+            api_type: "video.txt2video",
+            method: "video.txt2video",
+            started_at: new Date(started).toISOString(),
+            status: "failed",
+            estimated_cost_usd: estimate,
+            cost_status: "unknown",
+          });
+          throw error;
+        }
+      });
+      continuationPrerequisites.set(cell.exact_model, pending);
+      return pending;
+    };
     const executed = await Promise.all(executableCells.map(async (cell) => {
       const caseReport: CaseReport = {
         run_id: runId,
@@ -1176,13 +1412,18 @@ async function executeAcceptance(input: {
         artifact_ids: [],
         attempts: [],
       };
-      const request = preparedRequests.get(cell.case_id)!;
+      let request = preparedRequests.get(cell.case_id)!;
       for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
         const started = Date.now();
         const attemptEstimate = estimatedCellCost(cell, options.estimatedCostPerCallUsd);
         let reservation: CostReservation | undefined;
         let reservationSettled = false;
         try {
+          if (cell.api_type === "video.extend") {
+            const generatedVideo = await continuationResource(cell);
+            request = structuredClone(request);
+            (request.payload as Record<string, unknown>).resources = [generatedVideo];
+          }
           const initial = await scheduler.execute(cell.provider_driver, async () => {
             if (actualCalls >= options.maxRealCalls) {
               throw new Error(`max_real_calls ${options.maxRealCalls} exhausted`);
@@ -1199,6 +1440,9 @@ async function executeAcceptance(input: {
             gatewayUrl: options.gatewayUrl,
             sessionToken: session.sessionToken,
           });
+          if (cell.api_type === "image.bg_remove") {
+            assertBackgroundRemovalTransparency(artifacts.audits);
+          }
           caseReport.artifact_ids = artifacts.ids;
           caseReport.artifact_audits = artifacts.audits;
           const finance = extractFinance(terminal);
@@ -1222,7 +1466,7 @@ async function executeAcceptance(input: {
             cost_status: finance.actualCostUsd === undefined ? "unknown" : "actual",
           });
           caseReport.status = "passed";
-          caseReport.task_id = initial.task_id;
+          caseReport.task_id = (terminal as AiMethodResponse).task_id;
           caseReport.usage = finance.usage;
           caseReport.cost_usd = finance.actualCostUsd;
           const rubric = semanticRubric(cell);
@@ -1235,15 +1479,15 @@ async function executeAcceptance(input: {
             const judgeEstimate = options.estimatedCostPerCallUsd;
             let judgeReservation: CostReservation | undefined;
             let judgeSettled = false;
+            const judgeProviderInstance = judgeModel.includes("@")
+              ? judgeModel.slice(judgeModel.lastIndexOf("@") + 1)
+              : undefined;
             try {
-              const preferDifferentProvider = selectedInventories.some((inventory) =>
-                inventory.provider_instance_name !== cell.provider_instance &&
-                inventory.models.some((model) => model.api_types.includes("llm"))
-              );
+              const preferDifferentProvider = judgeProviderInstance !== cell.provider_instance;
               const verdict = await runJudge({
                 aicc: session.aicc,
                 taskManager: session.taskManager,
-                model: options.judgeModel,
+                model: judgeModel,
                 runId,
                 caseId: cell.case_id,
                 rubricVersion: options.judgeRubricVersion,
@@ -1252,7 +1496,12 @@ async function executeAcceptance(input: {
                 testedProviderInstance: cell.provider_instance,
                 preferDifferentProvider,
                 threshold: options.judgeMinScore,
+                testedRequest: request,
                 terminalResponse: terminal,
+                observations: artifacts.audits.map((audit) => ({
+                  label: audit.label,
+                  metadata: audit.metadata,
+                })),
                 timeoutMs: Math.min(options.timeoutMs, 180_000),
                 invoke: async (request) => await scheduler.execute("judge", async () => {
                   if (actualCalls >= options.maxRealCalls) throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before Judge`);
@@ -1268,8 +1517,8 @@ async function executeAcceptance(input: {
                 case_id: `${cell.case_id}.judge`,
                 attempt: 1,
                 provider_driver: "judge",
-                provider_instance: options.judgeModel,
-                exact_model: options.judgeModel,
+                provider_instance: judgeProviderInstance ?? judgeModel,
+                exact_model: judgeModel,
                 api_type: "llm",
                 method: "llm.chat",
                 started_at: new Date(judgeStarted).toISOString(),
@@ -1283,14 +1532,14 @@ async function executeAcceptance(input: {
               });
               caseReport.judge = {
                 rubric_version: options.judgeRubricVersion,
-                configured_model: options.judgeModel,
+                configured_model: judgeModel,
                 task_id: verdict.taskId,
                 input_summary: verdict.inputSummary,
                 score: verdict.score,
                 passed: verdict.passed,
                 reason: verdict.reason,
               };
-              if (!verdict.passed) throw new JudgeError(`Judge score ${verdict.score}: ${verdict.reason}`);
+              if (!verdict.passed) finalStatus = "review";
               diagnostic = [diagnostic, `Judge score ${verdict.score}: ${verdict.reason}`].filter(Boolean).join("; ");
             } catch (error) {
               if (judgeReservation && !judgeSettled) {
@@ -1299,8 +1548,8 @@ async function executeAcceptance(input: {
                   case_id: `${cell.case_id}.judge`,
                   attempt: 1,
                   provider_driver: "judge",
-                  provider_instance: options.judgeModel,
-                  exact_model: options.judgeModel,
+                  provider_instance: judgeProviderInstance ?? judgeModel,
+                  exact_model: judgeModel,
                   api_type: "llm",
                   method: "llm.chat",
                   started_at: new Date(judgeStarted).toISOString(),
@@ -1331,6 +1580,9 @@ async function executeAcceptance(input: {
           });
           break;
         } catch (error) {
+          const providerRestricted = isProviderRestricted(error);
+          const errorStatus = providerRestricted ? "provider_restricted" : "failed";
+          caseReport.status = errorStatus;
           if (reservation && !reservationSettled) {
             costBudget.settle(reservation);
             financialEntries.push({
@@ -1342,7 +1594,7 @@ async function executeAcceptance(input: {
               api_type: cell.api_type,
               method: cell.method,
               started_at: new Date(started).toISOString(),
-              status: "failed",
+              status: errorStatus,
               estimated_cost_usd: attemptEstimate,
               cost_status: "unknown",
             });
@@ -1351,13 +1603,15 @@ async function executeAcceptance(input: {
             attempt,
             started_at: new Date(started).toISOString(),
             elapsed_ms: Date.now() - started,
-            status: "failed",
-            failure_class: failureClass(error),
-            diagnostic: String(error),
+            status: errorStatus,
+            failure_class: providerRestricted ? "platform_limitation" : failureClass(error),
+            diagnostic: providerRestricted
+              ? `Provider restriction: ${String(error)}`
+              : String(error),
             estimated_cost_usd: reservation ? attemptEstimate : 0,
             cost_status: reservation ? "unknown" : "not_called",
           });
-          if (attempt >= options.maxAttempts || !retryable(error)) break;
+          if (providerRestricted || attempt >= options.maxAttempts || !retryable(error)) break;
           if (options.retryDelayMs > 0) {
             await new Promise((resolvePromise) => setTimeout(resolvePromise, options.retryDelayMs));
           }
@@ -1523,7 +1777,7 @@ async function executeAcceptance(input: {
           taskIds,
         });
         const traceByTask = new Map(traces.map((trace) => [trace.task_id, trace]));
-        const driverByInstance = new Map(inventories.map((inventory) => [
+        const driverByInstance = new Map(selectedInventories.map((inventory) => [
           inventory.provider_instance_name,
           inventory.provider_driver,
         ]));
@@ -1588,7 +1842,10 @@ async function executeAcceptance(input: {
   }
   const cleanupDetails: string[] = [];
   const cleanupResidual: string[] = [];
-  const generatedArtifactIds = [...new Set(cases.flatMap((item) => item.artifact_ids))]
+  const generatedArtifactIds = [...new Set([
+    ...prerequisiteArtifactIds,
+    ...cases.flatMap((item) => item.artifact_ids),
+  ])]
     .filter((objId) => !uploadedFixtureIds.includes(objId));
   const removeNamed = async (objId: string): Promise<void> => {
     if (/^(?:mix256|chunk):/i.test(objId)) await ndm.removeChunk({ chunk_id: objId });
