@@ -464,13 +464,10 @@ impl ActiveServer {
 
     async fn commit_active(&self, req: CommitActiveReq) -> Result<CommitActiveResp, RPCErrors> {
         validate_commit_request(&req, &self.config)?;
-        let mut effective_owner = req.owner_document.clone();
-        let needs_owner_publish = req.prepared.names.zone_did != effective_owner.id
-            && !effective_owner.is_bound_to_zone(&req.prepared.names.zone_did);
-        if needs_owner_publish {
-            effective_owner.set_default_zone_did(req.prepared.names.zone_did.clone());
-            validate_owner_document(&effective_owner)?;
-        }
+        let (effective_owner, needs_owner_publish) = prepare_owner_binding_for_activation(
+            &req.owner_document,
+            &req.prepared.names.zone_did,
+        )?;
 
         let bns_client = BnsIndexerClient::new_bns_server_url(req.sn.bns_url.as_str(), None);
         let sn_client =
@@ -637,6 +634,17 @@ impl ActiveServer {
             ))
             .map_err(|error| server_err!(ServerErrorCode::InvalidData, "{}", error))?)
     }
+}
+
+fn prepare_owner_binding_for_activation(
+    owner_document: &OwnerDocument,
+    zone_did: &DID,
+) -> Result<(OwnerDocument, bool), RPCErrors> {
+    let mut effective_owner = owner_document.clone();
+    effective_owner.set_default_zone_did(zone_did.clone());
+    validate_owner_document(&effective_owner)?;
+    let needs_owner_publish = effective_owner != *owner_document;
+    Ok((effective_owner, needs_owner_publish))
 }
 
 fn validate_hostname(value: &str) -> Result<(), RPCErrors> {
@@ -1679,6 +1687,54 @@ mod tests {
         assert_eq!(custom.owner_did.to_string(), "did:bns:alice");
         assert_eq!(custom.zone_did.to_string(), "did:web:home.example.com");
         assert_eq!(custom.bns_publish_name, "alice");
+    }
+
+    #[test]
+    fn activation_explicitly_binds_same_name_default_zone_as_v2() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let owner = owner_document(mnemonic);
+        let (effective, needs_publish) =
+            prepare_owner_binding_for_activation(&owner, &owner.id).unwrap();
+
+        assert!(needs_publish);
+        let value = serde_json::to_value(&effective).unwrap();
+        assert_eq!(value["zone_binding_model_version"], json!(2));
+        assert_eq!(value["binded_zone_list"], json!(["did:bns:alice"]));
+        assert!(value["service"].as_array().unwrap().iter().any(|service| {
+            service["id"] == "did:bns:alice#lastDoc"
+                && service["serviceEndpoint"] == "https://alice.bns.did/resolve/did:bns:alice"
+        }));
+    }
+
+    #[test]
+    fn activation_promotes_selected_zone_without_losing_other_zones() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mut owner = owner_document(mnemonic);
+        let first = DID::new("web", "first.example.com");
+        let selected = DID::new("web", "selected.example.com");
+        owner.set_default_zone_did(first.clone());
+        owner.set_default_zone_did(selected.clone());
+        owner.set_default_zone_did(first);
+
+        let (effective, needs_publish) =
+            prepare_owner_binding_for_activation(&owner, &selected).unwrap();
+        assert!(needs_publish);
+        assert_eq!(
+            effective
+                .binded_zone_list
+                .iter()
+                .map(DID::to_string)
+                .collect::<Vec<_>>(),
+            vec![
+                "did:web:selected.example.com".to_string(),
+                "did:web:first.example.com".to_string(),
+            ]
+        );
+
+        let (unchanged, needs_publish) =
+            prepare_owner_binding_for_activation(&effective, &selected).unwrap();
+        assert!(!needs_publish);
+        assert_eq!(unchanged, effective);
     }
 
     #[tokio::test]
