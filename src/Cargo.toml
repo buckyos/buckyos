@@ -55,9 +55,9 @@ named_store = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "name
 ndn-toolkit = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-toolkit", rev = "c1abac83c8186caa49749ff6b272edd8aa9d526e" }
 package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib", rev = "c1abac83c8186caa49749ff6b272edd8aa9d526e" }
 
-cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs_gateway", rev = "2ee3ad4697604ab6a9bcf86110c2c74f47f6911d" }
-cyfs-gateway-api = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-api", rev = "2ee3ad4697604ab6a9bcf86110c2c74f47f6911d" }
-bns-client = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "bns-client", rev = "2ee3ad4697604ab6a9bcf86110c2c74f47f6911d" }
+cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs_gateway", rev = "08c75d544fa54767ba04cb5410a4173d418f2d49" }
+cyfs-gateway-api = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-api", rev = "08c75d544fa54767ba04cb5410a4173d418f2d49" }
+bns-client = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "bns-client", rev = "08c75d544fa54767ba04cb5410a4173d418f2d49" }
 
 # Common async runtime and utilities
 tokio = { version = "1.49.0", features = ["full"] }
