@@ -367,17 +367,19 @@ Owner：Policy/Security 小组
 
 依赖：WP-01、WP-13 usage query contract；可使用 fake quota source
 
-- [ ] 定义 system/user/app/session/request policy 合并顺序；
-- [ ] 模型能力和逻辑目录 admission 由 Model Registry 负责，本工作包不建立第二套模型 admission；
-- [ ] 实现 locked policy，低优先级不能放宽；
-- [ ] 实现 local_only、local_first 和 Provider trust 判定；
-- [ ] 实现单次 cost ceiling、quota availability 和 budget rejection；
-- [ ] 定义 `quota.query`；
-- [ ] 只输出硬约束判定和可解释原因，不负责候选评分；
-- [ ] fail closed 处理安全真相源读取失败；
-- [ ] 跨租户、跨应用和 credential scope 测试。
+- [x] 定义 system/user/app/session/request policy 合并顺序；
+- [x] 模型能力和逻辑目录 admission 由 Model Registry 负责，本工作包不建立第二套模型 admission；
+- [x] 实现 locked policy，低优先级不能放宽；
+- [x] 实现 local_only、local_first 和 Provider trust 判定；
+- [x] 实现单次 cost ceiling、quota availability 和 budget rejection；
+- [x] 定义 `quota.query`；
+- [x] 只输出硬约束判定和可解释原因，不负责候选评分；
+- [x] fail closed 处理安全真相源读取失败；
+- [x] 跨租户、跨应用和 credential scope 测试。
 
 完成标准：实现位于 routing 内部策略层而非独立顶层模块；Router 把策略判定作为确定的 hard filter 输入，不自行读取 quota 或安全配置。
+
+实现记录：Policy/Security 小组在 `src/frame/aicc/src/routing/policy.rs` 实现 system、user、app、session、request 五级字段合并和 locked 冲突拒绝，复用统一 MatchRule 编译 Provider allow/block 规则；策略引擎以只读 trust、credential scope 和 quota source 视图判定 trusted local、隐私、单次成本、请求额度与剩余预算，只返回 hard filter 原因和 local-first 偏好，不实现模型 admission 或候选评分。`quota.query` 通过已冻结公共 DTO 返回调用者作用域视图，安全事实源失败、未知状态和预算存在但成本不可估算均 fail closed。新增 9 个单元测试覆盖合并顺序、locked、local/privacy/trust、quota/budget、共享 matcher、跨租户/应用/credential scope 和查询隔离；基于干净 HEAD 叠加本模块的 AICC 86 个测试全部通过，stable clippy `--no-deps -D warnings` 在豁免仓库既有 Resource 新版本 lint 后通过。真实工作区全量编译暂受并行 Claude codec 与 OperationCodec 接口未同步阻断。
 
 ### WP-10：Routing、Scheduler 与 Trace
 
