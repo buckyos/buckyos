@@ -22,6 +22,7 @@ type AiccResponse = {
   task_id?: string;
   status?: string;
   result?: unknown;
+  message?: unknown;
 };
 
 type TaskRecord = {
@@ -121,24 +122,17 @@ async function invokeChat(
   userId: string,
   runId: string,
 ): Promise<unknown> {
-  const raw = (await aicc.call("llm.chat", {
-    capability: "llm",
-    model: { alias: modelAlias },
+  const raw = (await aicc.call("helper.llm_chat", {
+    logical_model: modelAlias,
     requirements: {},
-    payload: {
-      input_json: {
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "text", text: "Reply with exactly: issue24-ok" }],
-          },
-        ],
-        temperature: 0,
-        max_output_tokens: 32,
+    messages: [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Reply with exactly: issue24-ok" }],
       },
-      resources: [],
-      options: { session_id: "issue24-sso-cache-window", rootid: runId },
-    },
+    ],
+    temperature: 0,
+    max_output_tokens: 32,
     idempotency_key: runId,
   })) as AiccResponse;
   if (!raw?.task_id || !raw.status) {
@@ -147,7 +141,7 @@ async function invokeChat(
   if (raw.status === "failed") {
     throw new Error(`AICC inference failed: ${JSON.stringify(raw.result)}`);
   }
-  if (raw.status === "succeeded" && raw.result) return raw.result;
+  if (raw.status === "succeeded" && raw.message) return raw.message;
   return await awaitTask(taskManager, raw.task_id, appId, userId);
 }
 

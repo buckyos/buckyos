@@ -44,7 +44,8 @@ import {
 } from "../lib/result.ts";
 
 const TOOL = "gen_image";
-const METHOD = "image.txt2img";
+const METHOD = "helper.text_to_image";
+const DEFAULT_LOGICAL_MODEL = "image.txt2img";
 
 export const HELP = `Usage: gen_image <prompt> <output_image> [options]
 
@@ -139,7 +140,7 @@ export async function run(argv: string[]): Promise<never> {
   let call;
   try {
     call = await textToImage(runtime, {
-      modelAlias: parsed.common.model ?? METHOD,
+      modelAlias: parsed.common.model ?? DEFAULT_LOGICAL_MODEL,
       prompt,
       inputJson,
       ...commonPolicyOptions(parsed.common),

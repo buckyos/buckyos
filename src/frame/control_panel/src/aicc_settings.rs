@@ -1387,21 +1387,26 @@ impl ControlPanelServer {
             None,
         );
 
+        let request = buckyos_api::LlmChatHelperRequest::try_from(request)
+            .map_err(RPCErrors::ParseRequestError)?;
         match aicc.helper_llm_chat(request).await {
-            Ok(result) => Ok(RPCResponse::new(
-                RPCResult::Success(json!({
-                    "providerId": provider_id,
-                    "ok": true,
-                    "status": "pass",
-                    "taskId": result.task_id,
-                    "detail": result
-                        .result
-                        .map(|summary| summary.text_content())
-                        .filter(|text| !text.trim().is_empty())
-                        .unwrap_or_else(|| "Provider test completed successfully.".to_string())
-                })),
-                req.seq,
-            )),
+            Ok(result) => {
+                let result: buckyos_api::AiMethodResponse = result.into();
+                Ok(RPCResponse::new(
+                    RPCResult::Success(json!({
+                        "providerId": provider_id,
+                        "ok": true,
+                        "status": "pass",
+                        "taskId": result.task_id,
+                        "detail": result
+                            .result
+                            .map(|summary| summary.text_content())
+                            .filter(|text| !text.trim().is_empty())
+                            .unwrap_or_else(|| "Provider test completed successfully.".to_string())
+                    })),
+                    req.seq,
+                ))
+            }
             Err(error) => Ok(RPCResponse::new(
                 RPCResult::Success(json!({
                     "providerId": provider_id,
@@ -1554,10 +1559,13 @@ impl ControlPanelServer {
             None,
         );
 
-        let result = aicc
+        let request = buckyos_api::LlmChatHelperRequest::try_from(request)
+            .map_err(RPCErrors::ParseRequestError)?;
+        let result: buckyos_api::AiMethodResponse = aicc
             .helper_llm_chat(request)
             .await
-            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?
+            .into();
         let summary = result
             .result
             .map(|summary| summary.text_content())

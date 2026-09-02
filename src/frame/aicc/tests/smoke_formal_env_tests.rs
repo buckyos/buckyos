@@ -3,7 +3,7 @@ mod common;
 use aicc::{
     AIComputeCenter, CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry,
 };
-use buckyos_api::{AiMethodRequest, Capability};
+use buckyos_api::{Capability, LlmChatHelperRequest};
 use common::*;
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -119,7 +119,7 @@ impl SmokeClient {
             }
             SmokeClient::Local { center } => match method {
                 "helper.llm_chat" => {
-                    let req: AiMethodRequest = serde_json::from_value(params)
+                    let req: LlmChatHelperRequest = serde_json::from_value(params)
                         .map_err(|err| format!("invalid helper.llm_chat params: {err}"))?;
                     let ctx = rpc_ctx_with_tenant(None);
                     let resp = center
@@ -173,48 +173,36 @@ fn now_seq() -> u64 {
 fn complete_params(prompt: &str, must_features: Vec<&str>, options: Value) -> Value {
     let alias = env::var("AICC_MODEL_ALIAS").unwrap_or_else(|_| "llm.plan.default".to_string());
     json!({
-        "capability": "llm",
-        "model": {
-            "alias": alias,
-        },
+        "logical_model": alias,
         "requirements": {
-            "must_features": must_features,
+            "streaming": must_features.contains(&"streaming"),
+            "tool_call": must_features.contains(&"tool_calling"),
+            "json_schema": must_features.contains(&"json_output"),
+            "web_search": must_features.contains(&"web_search"),
+            "vision": must_features.contains(&"vision"),
         },
-        "payload": {
-            "input_json": {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
-            },
-            "options": options,
-        },
+        "messages": [{
+            "role": "user",
+            "content": [{ "type": "text", "text": prompt }],
+        }],
+        "temperature": options.get("temperature"),
+        "max_output_tokens": options.get("max_output_tokens").or_else(|| options.get("max_tokens")),
+        "response_format": options.get("response_format"),
         "idempotency_key": format!("smoke-{}", now_seq()),
     })
 }
 
 fn complete_params_with_alias(alias: &str, prompt: &str, options: Value) -> Value {
     json!({
-        "capability": "llm",
-        "model": {
-            "alias": alias,
-        },
-        "requirements": {
-            "must_features": [],
-        },
-        "payload": {
-            "input_json": {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
-            },
-            "options": options,
-        },
+        "logical_model": alias,
+        "requirements": {},
+        "messages": [{
+            "role": "user",
+            "content": [{ "type": "text", "text": prompt }],
+        }],
+        "temperature": options.get("temperature"),
+        "max_output_tokens": options.get("max_output_tokens").or_else(|| options.get("max_tokens")),
+        "response_format": options.get("response_format"),
         "idempotency_key": format!("smoke-{}", now_seq()),
     })
 }
@@ -469,7 +457,7 @@ async fn smoke_06_bug_context_capture_template_complete() {
             "trace_id": trace_id,
             "tenant": env::var("AICC_RPC_TOKEN").ok().unwrap_or_else(|| "local-default".to_string()),
             "idempotency_key": req_params.get("idempotency_key").and_then(|v| v.as_str()).unwrap_or(""),
-            "alias": req_params.pointer("/model/alias").and_then(|v| v.as_str()).unwrap_or(""),
+            "alias": req_params.get("logical_model").and_then(|v| v.as_str()).unwrap_or(""),
         },
         "execution": {
             "error_message": error_message,

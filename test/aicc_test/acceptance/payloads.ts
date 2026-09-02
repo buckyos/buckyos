@@ -309,7 +309,7 @@ export function buildExactRequest(args: {
     capability: args.cell.api_type.split(".")[0],
     model: { alias: args.cell.exact_model },
     requirements,
-    ...(args.cell.method === "llm.chat" ? { disable: { web_search: true } } : {}),
+    ...(args.cell.method === "chat.completions.create" ? { disable: { web_search: true } } : {}),
     payload: {
       input_json: inputJson,
       resources,

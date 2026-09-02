@@ -42,7 +42,7 @@
 
 关键协议约束：
 
-- kRPC `method` 是 schema discriminator，例如 `chat.completions.create`、`images.generate`、`audio.transcriptions.create`。
+- kRPC `method` 是 schema discriminator，例如 `chat.completions.create`、`images.generate`、`audio.asr`。
 - 正式 request body 使用对应 typed method 的业务字段，资源输入统一使用 `ResourceRef`。
 - `ResourceRef` JSON tag 使用 `url`、`base64`、`named_object`。
 - AICC 不暴露独立 streaming 协议；长任务、进度、Provider streaming 中间态统一通过 task-manager event / task data 观察。

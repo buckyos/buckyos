@@ -34,7 +34,7 @@ POST /kapi/aicc
 | method | 语义 |
 |---|---|
 | `route.resolve` | 控制面路由解析。输入逻辑模型名，输出一次确定的 exact model、Provider 信息、候选顺序和 trace。 |
-| `chat.completions.create`、`embeddings.create`、`rerank.create`、`images.*`、`vision.*`、`audio.*`、`videos.*` | typed inference 数据面。只接受 `exact_model`，不接受逻辑模型名，不做逻辑 fallback。 |
+| `chat.completions.create`、`embedding.*`、`rerank`、`images.generate`、`image.*`、`vision.*`、`audio.*`、`video.*` | typed inference 数据面。只接受 `exact_model`，不接受逻辑模型名，不做逻辑 fallback。 |
 | `helper.*` | helper 组合层。接收 `logical_model` 和对应 typed request，语义等价于 `route.resolve` + typed inference。 |
 | `cancel` | 请求取消异步 task；返回值必须真实反映是否已触发上游取消或本地中止。 |
 | `service.reload_settings` | 从 `services/aicc/settings` 重新加载 Provider 配置。 |
@@ -45,7 +45,7 @@ POST /kapi/aicc
 
 ### 1.2 `method` 决定 schema，`Capability` 只做粗分组
 
-`method` 是 AICC 的请求 schema discriminator，例如 `chat.completions.create`、`images.generate`、`audio.transcriptions.create`。`api_type` 是路由能力类型，例如 `llm`、`image.txt2img`、`audio.asr`；它不等于 RPC method，也不决定 Provider endpoint。
+`method` 是 AICC 的请求 schema discriminator，例如 `chat.completions.create`、`images.generate`、`audio.asr`。`api_type` 是路由能力类型，例如 `llm`、`image.txt2img`、`audio.asr`；它不等于 RPC method，也不决定 Provider endpoint。
 
 `chat.completions.create` 是 AICC 的 provider-neutral typed method 名，不表示底层必须调用 OpenAI Chat Completions。Provider Rules 可以把它映射到 `openai-responses`、`claude-messages`、`gemini-interactions` 或显式兼容 Adapter。Adapter ID 和 operation 才决定实际 wire API。
 
@@ -64,7 +64,7 @@ Provider 不能自定义方法名，只能声明自己支持标准集合中的�
 
 | capability | 覆盖 method namespace |
 |---|---|
-| `llm` | `llm.*` |
+| `llm` | `chat.completions.*` |
 | `embedding` | `embedding.*` |
 | `rerank` | `rerank` |
 | `image` | `image.*` |
@@ -636,24 +636,22 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 | typed method | api_type | 默认逻辑目录 | 默认任务模式 |
 |---|---|---|---|
 | `chat.completions.create` | `llm` | `llm.chat` / `llm.*` | sync 或 async |
-| `embeddings.create` | `embedding.text` / `embedding.multimodal` | `embedding.*` | sync 或 async |
-| `rerank.create` | `rerank` | `rerank.general` | sync |
+| `embedding.text` | `embedding.text` | `embedding.text` | sync 或 async |
+| `embedding.multimodal` | `embedding.multimodal` | `embedding.multimodal` | sync 或 async |
+| `rerank` | `rerank` | `rerank.general` | sync |
 | `images.generate` | `image.txt2img` | `image.txt2img` | sync 或 async |
-| `images.edit` | `image.img2img` / `image.inpaint` | `image.img2img` / `image.inpaint` | sync 或 async |
-| `images.upscale` / `images.remove_background` | `image.upscale` / `image.bg_remove` | 同 api_type | sync 或 async |
+| `image.img2img` | `image.img2img` | `image.img2img` | sync 或 async |
+| `image.inpaint` | `image.inpaint` | `image.inpaint` | sync 或 async |
+| `image.upscale` / `image.bg_remove` | `image.upscale` / `image.bg_remove` | 同 api_type | sync 或 async |
 | `vision.ocr` / `vision.caption` / `vision.detect` / `vision.segment` | 同名 api_type | `image.*` | sync 或 async |
-| `audio.speech.create` | `audio.tts` | `audio.tts` | sync 或 async |
-| `audio.transcriptions.create` | `audio.asr` | `audio.asr` | sync 或 async |
-| `audio.music.create` / `audio.enhance` | `audio.music` / `audio.enhance` | 同 api_type | async 或 sync |
-| `videos.generate` | `video.txt2video` / `video.img2video` | 对应 `video.*` | async |
-| `videos.transform` / `videos.extend` / `videos.upscale` | `video.video2video` / `video.extend` / `video.upscale` | 同 api_type | async |
+| `audio.tts` | `audio.tts` | `audio.tts` | sync 或 async |
+| `audio.asr` | `audio.asr` | `audio.asr` | sync 或 async |
+| `audio.music` / `audio.enhance` | `audio.music` / `audio.enhance` | 同 api_type | async 或 sync |
+| `video.txt2video` / `video.img2video` | 同名 api_type | 对应 `video.*` | async |
+| `video.video2video` / `video.extend` / `video.upscale` | `video.video2video` / `video.extend` / `video.upscale` | 同 api_type | async |
 | `agent.computer_use` | `agent.computer_use` | `agent.computer_use` | session async |
 
-命名规范：
-
-1. 逻辑模型目录使用 `image.txt2img` / `image.img2img`。
-2. 标准 method 只使用逻辑模型目录中的 `txt2img` / `img2img`。
-3. 当前 Rust 内部已有的 `image.txt2image` / `image.img2image` 应迁移为标准 method 名，不在新协议中保留 alias。
+命名规范：`method` 只使用本表名称，`api_type` 只使用 `ApiType` 的序列化值。两者即使文本相同也承担不同职责，调用端不得互相替代。
 
 ---
 
@@ -880,7 +878,7 @@ Fallback：默认 strict。不同 reranker 分数不可直接比较，fallback �
 
 ## 8. Image API
 
-### 8.1 `image.txt2img`
+### 8.1 `images.generate`
 
 Request：
 
@@ -942,7 +940,7 @@ Request：
 }
 ```
 
-Response：同 `image.txt2img`。
+Response：同 `images.generate`。
 
 当 Provider Rules 为已选模型解析出 Responses image-generation edit operation 时，输入图片降低为 `input_image`，tool action 使用 `edit`；否则使用图片模型的 Image API edit operation。`image.inpaint` 只有在 mask lowering 已被对应 operation 明确支持时才可声明。
 
@@ -968,7 +966,7 @@ Request：
 }
 ```
 
-Response：同 `image.txt2img`。
+Response：同 `images.generate`。
 
 `mask_semantics` 枚举：
 
@@ -1039,7 +1037,7 @@ Response：
 
 Image fallback：
 
-1. `txt2img` 可 parent fallback，但必须保持 `method=image.txt2img`。
+1. `image.txt2img` 可 parent fallback，但必须保持 `method=images.generate`。
 2. `inpaint` fallback 必须保持 mask 语义一致。
 3. `upscale` fallback 必须满足目标分辨率和人脸保护等硬约束。
 
@@ -1788,8 +1786,8 @@ AICC 错误 payload schema：
 
 ### M2：ResourceRef + FileObject meta
 
-1. `payload` 顶层统一为 `input_json`、`resources`、`options`。
-2. `payload.resources` 和各 method schema 中的资源字段统一使用 `ResourceRef`。
+1. 每个 method 的业务字段直接位于 `params`，不使用通用 `payload` 容器。
+2. 各 method schema 中的资源字段统一使用 `ResourceRef`。
 3. 文件类资源用 `ResourceRef::NamedObject { obj_id }` 指向 `FileObject`。
 4. Router 只读取 `ObjId` 和 `FileObject.meta`。
 5. Provider Adapter 只在最后一跳读取资源 bytes。
@@ -1799,7 +1797,7 @@ AICC 错误 payload schema：
 优先级建议：
 
 1. `chat.completions.create` 多模态和 tool schema。
-2. `image.txt2img` / `image.img2img`。
+2. `images.generate` / `image.img2img`。
 3. `audio.asr` / `audio.tts`。
 4. `embedding.text` / `rerank`。
 5. `vision.ocr` / `vision.caption`。

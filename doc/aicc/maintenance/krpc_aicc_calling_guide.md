@@ -97,12 +97,12 @@ Helper 接受逻辑模型和对应业务字段，内部完成一次 route + type
 ## 3. Typed inference methods
 
 - LLM：`chat.completions.create`
-- Embedding：`embeddings.create`
-- Rerank：`rerank.create`
-- Image：`images.generate`、`images.edit`、`images.upscale`、`images.remove_background`
+- Embedding：`embedding.text`、`embedding.multimodal`
+- Rerank：`rerank`
+- Image：`images.generate`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove`
 - Vision：`vision.ocr`、`vision.caption`
-- Audio：`audio.speech.create`、`audio.transcriptions.create`、`audio.music.create`、`audio.enhance`
-- Video：`videos.generate`、`videos.transform`、`videos.extend`、`videos.upscale`
+- Audio：`audio.tts`、`audio.asr`、`audio.music`、`audio.enhance`
+- Video：`video.txt2video`、`video.img2video`、`video.video2video`、`video.extend`、`video.upscale`
 - Agent：`agent.computer_use`
 
 资源输入统一使用 `ResourceRef`，输出统一使用 artifact/FileObject 引用。业务结果不得塞入脱敏后的诊断字段。

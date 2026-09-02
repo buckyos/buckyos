@@ -25,13 +25,13 @@ use buckyos_api::{
     ai_methods, get_buckyos_api_runtime, task_mgr_error_code, validate_verify_hub_token_claims,
     AckControlReq, AiContent, AiMethodRequest, AiMethodResponse, AiMethodStatus, AiPayload,
     AiResponse, AiccComputeProgress, AiccComputeTaskData, AiccComputeTaskRequest, AiccHandler,
-    AiccRouteOverlay, AiccRouteTraceEvent, AiccUsageEvent, AiccVideoContinuationSource,
+    AiccRouteTraceEvent, AiccUsageEvent, AiccVideoContinuationSource,
     CancelResponse, Capability, CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq,
-    Feature, LlmChatInvokeRequest, LlmChatInvokeResponse, LlmResponseFormat, ModelSpec,
+    Feature, LlmChatHelperRequest, LlmChatInvokeRequest, LlmChatInvokeResponse, ModelSpec,
     ReportProgressReq, ReportStartedReq, Requirements, ResourceRef, RouteFallbackAttempt,
     RouteResolveRequest, RouteResolveResponse, RunnerWriteEnvelope, TaskControlAction, TaskError,
-    TaskManagerClient, TaskPhase, TextToImageInvokeRequest, TextToImageInvokeResponse, TokenUse,
-    TypedTaskData,
+    TaskManagerClient, TaskPhase, TextToImageHelperRequest, TextToImageInvokeRequest,
+    TextToImageInvokeResponse, TokenUse, TypedTaskData,
 };
 #[cfg(test)]
 use buckyos_api::{bind_token_principal_kind, bind_token_target, AuthTarget, TokenPrincipalKind};
@@ -2343,7 +2343,7 @@ fn default_method_for_capability(capability: &Capability) -> &'static str {
         Capability::Llm => ai_methods::CHAT_COMPLETIONS_CREATE,
         Capability::Embedding => ai_methods::EMBEDDING_TEXT,
         Capability::Rerank => ai_methods::RERANK,
-        Capability::Image => ai_methods::IMAGE_TXT2IMG,
+        Capability::Image => ai_methods::IMAGES_GENERATE,
         Capability::Vision => ai_methods::VISION_CAPTION,
         Capability::Audio => ai_methods::AUDIO_ASR,
         Capability::Video => ai_methods::VIDEO_TXT2VIDEO,
@@ -2358,8 +2358,7 @@ fn capability_for_method(method: &str) -> Option<Capability> {
             Some(Capability::Embedding)
         }
         ai_methods::RERANK => Some(Capability::Rerank),
-        ai_methods::IMAGE_TXT2IMG
-        | ai_methods::IMAGE_IMG2IMG
+        ai_methods::IMAGES_GENERATE | ai_methods::IMAGE_IMG2IMG
         | ai_methods::IMAGE_INPAINT
         | ai_methods::IMAGE_UPSCALE
         | ai_methods::IMAGE_BG_REMOVE => Some(Capability::Image),
@@ -2387,7 +2386,7 @@ fn api_type_for_method(method: &str) -> Option<ApiType> {
         ai_methods::EMBEDDING_TEXT => Some(ApiType::Embedding),
         ai_methods::EMBEDDING_MULTIMODAL => Some(ApiType::EmbeddingMultimodal),
         ai_methods::RERANK => Some(ApiType::Rerank),
-        ai_methods::IMAGE_TXT2IMG => Some(ApiType::ImageTextToImage),
+        ai_methods::IMAGES_GENERATE => Some(ApiType::ImageTextToImage),
         ai_methods::IMAGE_IMG2IMG => Some(ApiType::ImageToImage),
         ai_methods::IMAGE_INPAINT => Some(ApiType::ImageInpaint),
         ai_methods::IMAGE_UPSCALE => Some(ApiType::ImageUpscale),
@@ -2411,23 +2410,34 @@ fn api_type_for_method(method: &str) -> Option<ApiType> {
 }
 
 fn method_for_route_api_type(api_type: &str) -> std::result::Result<&'static str, RPCErrors> {
-    match api_type {
-        "llm" => Ok(ai_methods::CHAT_COMPLETIONS_CREATE),
-        "image.txt2img" | "images.generate" => Ok(ai_methods::IMAGE_TXT2IMG),
-        "image.img2img" | "images.edit" => Ok(ai_methods::IMAGE_IMG2IMG),
-        "image.inpaint" => Ok(ai_methods::IMAGE_INPAINT),
-        "image.upscale" => Ok(ai_methods::IMAGE_UPSCALE),
-        "embedding.text" | "embeddings.create" => Ok(ai_methods::EMBEDDING_TEXT),
-        "rerank" => Ok(ai_methods::RERANK),
-        "audio.asr" | "audio.transcriptions.create" => Ok(ai_methods::AUDIO_ASR),
-        "audio.tts" | "audio.speech.create" => Ok(ai_methods::AUDIO_TTS),
-        "video.txt2video" | "videos.generate" => Ok(ai_methods::VIDEO_TXT2VIDEO),
-        "video.img2video" => Ok(ai_methods::VIDEO_IMG2VIDEO),
-        other => Err(reason_error(
-            "invalid_request",
-            format!("unsupported api_type '{}'", other),
-        )),
-    }
+    let api_type: ApiType = serde_json::from_value(json!(api_type)).map_err(|_| {
+        reason_error("invalid_request", format!("unsupported api_type '{}'", api_type))
+    })?;
+    Ok(match api_type {
+        ApiType::Llm => ai_methods::CHAT_COMPLETIONS_CREATE,
+        ApiType::Embedding => ai_methods::EMBEDDING_TEXT,
+        ApiType::EmbeddingMultimodal => ai_methods::EMBEDDING_MULTIMODAL,
+        ApiType::Rerank => ai_methods::RERANK,
+        ApiType::ImageTextToImage => ai_methods::IMAGES_GENERATE,
+        ApiType::ImageToImage => ai_methods::IMAGE_IMG2IMG,
+        ApiType::ImageInpaint => ai_methods::IMAGE_INPAINT,
+        ApiType::ImageUpscale => ai_methods::IMAGE_UPSCALE,
+        ApiType::ImageBgRemove => ai_methods::IMAGE_BG_REMOVE,
+        ApiType::VisionOcr => ai_methods::VISION_OCR,
+        ApiType::VisionCaption => ai_methods::VISION_CAPTION,
+        ApiType::VisionDetect => ai_methods::VISION_DETECT,
+        ApiType::VisionSegment => ai_methods::VISION_SEGMENT,
+        ApiType::AudioTts => ai_methods::AUDIO_TTS,
+        ApiType::AudioAsr => ai_methods::AUDIO_ASR,
+        ApiType::AudioMusic => ai_methods::AUDIO_MUSIC,
+        ApiType::AudioEnhance => ai_methods::AUDIO_ENHANCE,
+        ApiType::VideoTextToVideo => ai_methods::VIDEO_TXT2VIDEO,
+        ApiType::VideoImageToVideo => ai_methods::VIDEO_IMG2VIDEO,
+        ApiType::VideoToVideo => ai_methods::VIDEO_VIDEO2VIDEO,
+        ApiType::VideoExtend => ai_methods::VIDEO_EXTEND,
+        ApiType::VideoUpscale => ai_methods::VIDEO_UPSCALE,
+        ApiType::AgentComputerUse => ai_methods::AGENT_COMPUTER_USE,
+    })
 }
 
 fn api_type_for_capability(capability: &Capability) -> Option<ApiType> {
@@ -2598,121 +2608,9 @@ fn merge_provider_options(payload: &mut AiPayload, provider_options: Option<Valu
     payload.options = Some(options);
 }
 
-fn payload_provider_options(payload: &AiPayload) -> Option<Value> {
-    payload
-        .options
-        .as_ref()
-        .and_then(|options| options.get("provider_options"))
-        .cloned()
-}
-
-fn helper_provider_options(route_options: Option<Value>, payload: &AiPayload) -> Option<Value> {
-    merge_provider_options_values(route_options, payload_provider_options(payload))
-}
-
 fn exact_model_spec(exact_model: &str) -> std::result::Result<ModelSpec, RPCErrors> {
     ExactModelName::parse(exact_model).map_err(route_error_to_rpc)?;
     Ok(ModelSpec::new(exact_model.to_string(), None))
-}
-
-fn route_request_from_method_request(
-    method: &str,
-    request: &AiMethodRequest,
-) -> std::result::Result<RouteResolveRequest, RPCErrors> {
-    let api_type = api_type_for_method(method).ok_or_else(|| {
-        reason_error(
-            "invalid_method",
-            format!("method '{}' is not supported by route.resolve", method),
-        )
-    })?;
-    let (estimated_input_tokens, estimated_output_tokens) = estimate_request_tokens(request);
-    let session_overlay = request_control_value(request, "session_overlay")
-        .map(|value| {
-            serde_json::from_value::<AiccRouteOverlay>(value.clone()).map_err(|error| {
-                reason_error(
-                    "invalid_request",
-                    format!("session route overlay is invalid: {}", error),
-                )
-            })
-        })
-        .transpose()?;
-    Ok(RouteResolveRequest {
-        request_id: None,
-        api_type: api_type_string(&api_type).to_string(),
-        logical_model: request.model.alias.clone(),
-        requirements: request.requirements.clone(),
-        disable: request.disable.clone(),
-        policy: request.policy.clone(),
-        estimated_input_tokens: Some(estimated_input_tokens),
-        estimated_output_tokens: Some(estimated_output_tokens),
-        session_overlay,
-    })
-}
-
-fn api_type_string(api_type: &ApiType) -> &'static str {
-    match api_type {
-        ApiType::Llm => "llm",
-        ApiType::ImageTextToImage => "image.txt2img",
-        ApiType::ImageToImage => "image.img2img",
-        ApiType::Embedding => "embedding.text",
-        ApiType::EmbeddingMultimodal => "embedding.multimodal",
-        ApiType::Rerank => "rerank",
-        ApiType::ImageInpaint => "image.inpaint",
-        ApiType::ImageUpscale => "image.upscale",
-        ApiType::ImageBgRemove => "image.bg_remove",
-        ApiType::VisionOcr => "vision.ocr",
-        ApiType::VisionCaption => "vision.caption",
-        ApiType::VisionDetect => "vision.detect",
-        ApiType::VisionSegment => "vision.segment",
-        ApiType::AudioTts => "audio.tts",
-        ApiType::AudioAsr => "audio.asr",
-        ApiType::AudioMusic => "audio.music",
-        ApiType::AudioEnhance => "audio.enhance",
-        ApiType::VideoTextToVideo => "video.txt2video",
-        ApiType::VideoImageToVideo => "video.img2video",
-        ApiType::VideoToVideo => "video.video2video",
-        ApiType::VideoExtend => "video.extend",
-        ApiType::VideoUpscale => "video.upscale",
-        ApiType::AgentComputerUse => "agent.computer_use",
-    }
-}
-
-fn ai_method_response_from_llm_chat(response: LlmChatInvokeResponse) -> AiMethodResponse {
-    let result = response.message.map(|message| AiResponse {
-        message,
-        usage: response.usage,
-        cost: response.cost,
-        finish_reason: response.finish_reason,
-        provider_task_ref: response.provider_task_ref,
-        extra: response
-            .route_trace
-            .map(|trace| json!({ "route_trace": trace })),
-    });
-    AiMethodResponse::new(
-        response.task_id,
-        response.status,
-        result,
-        response.event_ref,
-    )
-}
-
-fn ai_method_response_from_text_to_image(response: TextToImageInvokeResponse) -> AiMethodResponse {
-    let result = (!response.artifacts.is_empty()).then(|| AiResponse {
-        message: AiResponse::message_from_parts(None, Vec::new(), response.artifacts),
-        usage: response.usage,
-        cost: response.cost,
-        finish_reason: None,
-        provider_task_ref: response.provider_task_ref,
-        extra: response
-            .route_trace
-            .map(|trace| json!({ "route_trace": trace })),
-    });
-    AiMethodResponse::new(
-        response.task_id,
-        response.status,
-        result,
-        response.event_ref,
-    )
 }
 
 fn append_provider_audit_to_summary(summary: &mut AiResponse, attempt: &RouteAttempt) {
@@ -2754,22 +2652,14 @@ fn llm_chat_invoke_to_method_request(
     request: LlmChatInvokeRequest,
 ) -> std::result::Result<AiMethodRequest, RPCErrors> {
     let model = exact_model_spec(request.exact_model.as_str())?;
-    let mut payload = request.payload.unwrap_or_else(|| {
-        AiPayload::new(
-            None,
-            request.messages.clone(),
-            request.tools.clone(),
-            vec![],
-            Some(json!({})),
-            Some(json!({})),
-        )
-    });
-    if payload.messages.is_empty() {
-        payload.messages = request.messages;
-    }
-    if payload.tool_specs.is_empty() {
-        payload.tool_specs = request.tools;
-    }
+    let mut payload = AiPayload::new(
+        None,
+        request.messages,
+        request.tools,
+        vec![],
+        Some(json!({})),
+        Some(json!({})),
+    );
     let input_json = payload.input_json.get_or_insert_with(|| json!({}));
     if !input_json.is_object() {
         *input_json = json!({ "value": input_json.clone() });
@@ -2785,7 +2675,6 @@ fn llm_chat_invoke_to_method_request(
             object.insert("max_output_tokens".to_string(), json!(max_output_tokens));
         }
     }
-    merge_provider_options(&mut payload, request.provider_options);
     let mut policy = buckyos_api::RoutePolicy::default();
     policy.allow_fallback = false;
     policy.runtime_failover = false;
@@ -2804,31 +2693,27 @@ fn image_generate_to_method_request(
     request: TextToImageInvokeRequest,
 ) -> std::result::Result<AiMethodRequest, RPCErrors> {
     let model = exact_model_spec(request.exact_model.as_str())?;
-    let mut payload = request.payload.unwrap_or_else(|| {
-        AiPayload::new(
-            Some(request.prompt.clone()),
-            vec![],
-            vec![],
-            vec![],
-            Some(json!({
-                "prompt": request.prompt.clone()
-            })),
-            Some(json!({})),
-        )
-    });
-    if payload.text.is_none() {
-        payload.text = Some(request.prompt.clone());
-    }
+    let mut payload = AiPayload::new(
+        Some(request.prompt.clone()),
+        vec![],
+        vec![],
+        vec![],
+        Some(json!({ "prompt": request.prompt.clone() })),
+        Some(json!({})),
+    );
     let mut input = payload.input_json.take().unwrap_or_else(|| json!({}));
-    if !input.is_object() {
-        input = json!({ "value": input });
-    }
     if let Some(object) = input.as_object_mut() {
         object
             .entry("prompt".to_string())
             .or_insert_with(|| json!(request.prompt));
         if let Some(value) = request.negative_prompt {
             object.insert("negative_prompt".to_string(), json!(value));
+        }
+        if let Some(value) = request.n {
+            object.insert("n".to_string(), json!(value));
+        }
+        if let Some(value) = request.aspect_ratio {
+            object.insert("aspect_ratio".to_string(), json!(value));
         }
         if let Some(value) = request.size {
             object.insert("size".to_string(), json!(value));
@@ -2847,7 +2732,6 @@ fn image_generate_to_method_request(
         }
     }
     payload.input_json = Some(input);
-    merge_provider_options(&mut payload, request.provider_options);
     let mut policy = buckyos_api::RoutePolicy::default();
     policy.allow_fallback = false;
     policy.runtime_failover = false;
@@ -4390,148 +4274,94 @@ impl AIComputeCenter {
     ) -> std::result::Result<TextToImageInvokeResponse, RPCErrors> {
         let method_request = image_generate_to_method_request(request)?;
         let response = self
-            .complete_with_method(ai_methods::IMAGE_TXT2IMG, method_request, rpc_ctx)
+            .complete_with_method(ai_methods::IMAGES_GENERATE, method_request, rpc_ctx)
             .await?;
         Ok(response.into())
     }
 
     pub async fn helper_llm_chat(
         &self,
-        request: AiMethodRequest,
+        request: LlmChatHelperRequest,
         rpc_ctx: RPCContext,
-    ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-        let response_format = request
-            .payload
-            .input_json
-            .as_ref()
-            .and_then(|input| input.get("response_format"))
-            .cloned()
-            .map(|value| {
-                serde_json::from_value::<LlmResponseFormat>(value).map_err(|error| {
-                    RPCErrors::ParseRequestError(format!("invalid llm response_format: {}", error))
-                })
-            })
-            .transpose()?
-            .or_else(|| match request.requirements.resp_format {
-                buckyos_api::RespFormat::Json => Some(LlmResponseFormat::json_object()),
-                buckyos_api::RespFormat::Text => None,
-            });
+    ) -> std::result::Result<LlmChatInvokeResponse, RPCErrors> {
+        let response_format = request.response_format.clone();
         let route = self
             .resolve_route_authenticated(
-                route_request_from_method_request(
-                    ai_methods::CHAT_COMPLETIONS_CREATE,
-                    &request,
-                )?,
+                RouteResolveRequest {
+                    request_id: None,
+                    api_type: "llm".to_string(),
+                    logical_model: request.logical_model,
+                    requirements: Requirements {
+                        required: request.requirements.into(),
+                        ..Requirements::default()
+                    },
+                    disable: request.disable,
+                    policy: request.policy,
+                    estimated_input_tokens: None,
+                    estimated_output_tokens: request.max_output_tokens,
+                    session_overlay: request.session_overlay,
+                },
                 rpc_ctx.clone(),
             )
             .await?;
-        let provider_options = helper_provider_options(route.provider_options, &request.payload);
-        let typed_response = self
-            .create_chat_completion(
-                LlmChatInvokeRequest {
-                    exact_model: route.selected_exact_model,
-                    messages: request.payload.messages.clone(),
-                    tools: request.payload.tool_specs.clone(),
-                    response_format,
-                    temperature: request
-                        .payload
-                        .options
-                        .as_ref()
-                        .and_then(|options| options.get("temperature"))
-                        .and_then(Value::as_f64),
-                    max_output_tokens: request
-                        .payload
-                        .options
-                        .as_ref()
-                        .and_then(|options| options.get("max_output_tokens"))
-                        .and_then(Value::as_u64),
-                    payload: Some(request.payload),
-                    provider_options,
-                    idempotency_key: request.idempotency_key,
-                    task_options: request.task_options,
-                },
-                rpc_ctx,
-            )
-            .await?;
-        Ok(ai_method_response_from_llm_chat(typed_response))
+        self.create_chat_completion(
+            LlmChatInvokeRequest {
+                exact_model: route.selected_exact_model,
+                messages: request.messages,
+                tools: request.tools,
+                response_format,
+                temperature: request.temperature,
+                max_output_tokens: request.max_output_tokens,
+                idempotency_key: request.idempotency_key,
+                task_options: request.task_options,
+            },
+            rpc_ctx,
+        )
+        .await
     }
 
     pub async fn helper_text_to_image(
         &self,
-        request: AiMethodRequest,
+        request: TextToImageHelperRequest,
         rpc_ctx: RPCContext,
-    ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+    ) -> std::result::Result<TextToImageInvokeResponse, RPCErrors> {
         let route = self
             .resolve_route_authenticated(
-                route_request_from_method_request(ai_methods::IMAGE_TXT2IMG, &request)?,
+                RouteResolveRequest {
+                    request_id: None,
+                    api_type: "image.txt2img".to_string(),
+                    logical_model: request.logical_model,
+                    requirements: Requirements {
+                        required: request.requirements.into(),
+                        ..Requirements::default()
+                    },
+                    disable: request.disable,
+                    policy: request.policy,
+                    estimated_input_tokens: None,
+                    estimated_output_tokens: None,
+                    session_overlay: request.session_overlay,
+                },
                 rpc_ctx.clone(),
             )
             .await?;
-        let provider_options = helper_provider_options(route.provider_options, &request.payload);
-        let prompt = request.payload.text.clone().unwrap_or_else(|| {
-            request
-                .payload
-                .input_json
-                .as_ref()
-                .and_then(|value| value.get("prompt"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string()
-        });
-        let typed_response = self
-            .generate_image(
-                TextToImageInvokeRequest {
-                    exact_model: route.selected_exact_model,
-                    prompt,
-                    negative_prompt: request
-                        .payload
-                        .input_json
-                        .as_ref()
-                        .and_then(|value| value.get("negative_prompt"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    size: request
-                        .payload
-                        .input_json
-                        .as_ref()
-                        .and_then(|value| value.get("size"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    quality: request
-                        .payload
-                        .input_json
-                        .as_ref()
-                        .and_then(|value| value.get("quality"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    style: request
-                        .payload
-                        .input_json
-                        .as_ref()
-                        .and_then(|value| value.get("style"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    seed: request
-                        .payload
-                        .input_json
-                        .as_ref()
-                        .and_then(|value| value.get("seed"))
-                        .and_then(Value::as_u64),
-                    output: request
-                        .payload
-                        .input_json
-                        .as_ref()
-                        .and_then(|value| value.get("output"))
-                        .cloned(),
-                    payload: Some(request.payload),
-                    provider_options,
-                    idempotency_key: request.idempotency_key,
-                    task_options: request.task_options,
-                },
-                rpc_ctx,
-            )
-            .await?;
-        Ok(ai_method_response_from_text_to_image(typed_response))
+        self.generate_image(
+            TextToImageInvokeRequest {
+                exact_model: route.selected_exact_model,
+                prompt: request.prompt,
+                negative_prompt: request.negative_prompt,
+                n: request.n,
+                aspect_ratio: request.aspect_ratio,
+                size: request.size,
+                quality: request.quality,
+                style: request.style,
+                seed: request.seed,
+                output: request.output,
+                idempotency_key: request.idempotency_key,
+                task_options: request.task_options,
+            },
+            rpc_ctx,
+        )
+        .await
     }
 
     pub async fn complete_with_method(
@@ -5440,17 +5270,17 @@ impl AiccHandler for AIComputeCenter {
 
     async fn handle_helper_llm_chat(
         &self,
-        request: AiMethodRequest,
+        request: LlmChatHelperRequest,
         ctx: RPCContext,
-    ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+    ) -> std::result::Result<LlmChatInvokeResponse, RPCErrors> {
         self.helper_llm_chat(request, ctx).await
     }
 
     async fn handle_helper_text_to_image(
         &self,
-        request: AiMethodRequest,
+        request: TextToImageHelperRequest,
         ctx: RPCContext,
-    ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+    ) -> std::result::Result<TextToImageInvokeResponse, RPCErrors> {
         self.helper_text_to_image(request, ctx).await
     }
 }
@@ -6227,6 +6057,27 @@ fn extract_error_code(error: &RPCErrors) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_api_type_accepts_only_canonical_values() {
+        assert_eq!(
+            method_for_route_api_type("llm").unwrap(),
+            ai_methods::CHAT_COMPLETIONS_CREATE
+        );
+        assert_eq!(
+            method_for_route_api_type("image.txt2img").unwrap(),
+            ai_methods::IMAGES_GENERATE
+        );
+        for method_name in [
+            "chat.completions.create",
+            "images.generate",
+            "embeddings.create",
+            "audio.transcriptions.create",
+            "videos.generate",
+        ] {
+            assert!(method_for_route_api_type(method_name).is_err());
+        }
+    }
     use buckyos_api::{
         AckControlReq, AddTaskNoteReq, AiPayload, AiTaskOptions, CommitResultReq, CreateTaskReq,
         GetTaskReq, ListTaskNotesReq, ListTasksReq, ModelSpec, ReportProgressReq, ReportStartedReq,

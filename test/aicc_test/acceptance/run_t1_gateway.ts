@@ -7,7 +7,13 @@ import {
   tomlNumber,
   tomlString,
 } from "../../jarvis_media_dv/config.ts";
-import { loginGateway, type GatewaySession, type RpcClient } from "./gateway.ts";
+import {
+  callChatCompletions,
+  callImagesGenerate,
+  loginGateway,
+  type GatewaySession,
+  type RpcClient,
+} from "./gateway.ts";
 import { buildExactRequest, assertResponseShape } from "./payloads.ts";
 import { runPreflight } from "./preflight.ts";
 import { withMockSettings } from "./settings_transaction.ts";
@@ -498,13 +504,13 @@ function mockCells(values: ProviderInventory[]): MatrixCell[] {
   for (const inventory of values) {
     const model = inventory.models.find((item) => item.api_types.includes("llm"));
     if (!model) continue;
-    cells.push(cellFor(inventory, model, "llm", "llm.chat"));
+    cells.push(cellFor(inventory, model, "llm", "chat.completions.create"));
   }
   const firstLlm = values.flatMap((inventory) =>
     inventory.models.filter((model) => model.api_types.includes("llm")).map((model) => ({ inventory, model }))
   )[0];
   if (firstLlm) {
-    for (const method of methodsForApiType("llm").filter((method) => method !== "llm.chat")) {
+    for (const method of methodsForApiType("llm").filter((method) => method !== "chat.completions.create")) {
       cells.push(cellFor(firstLlm.inventory, firstLlm.model, "llm", method));
     }
   }
@@ -766,12 +772,12 @@ async function runRouteCases(
   await pushRouteProbe("t1.route.legal_missing_model", async () => {
     const before = await mockRequestCount(input.mockControlUrl);
     const request = buildExactRequest({
-      cell: { ...cellFor(openaiA, modelA, "llm", "llm.chat"), case_id: "t1.route.legal_missing_model" },
+      cell: { ...cellFor(openaiA, modelA, "llm", "chat.completions.create"), case_id: "t1.route.legal_missing_model" },
       runId,
       fixtures: {},
     });
     request.model = { alias: `missing-model@${openaiA.provider_instance_name}` };
-    const response = await session.aicc.call("llm.chat", request) as AiMethodResponse;
+    const response = await callChatCompletions(session.aicc, request) as AiMethodResponse;
     if (response.status !== "failed") throw new Error(`missing exact model returned ${response.status}`);
     const after = await mockRequestCount(input.mockControlUrl);
     if (after !== before) throw new Error("missing exact model unexpectedly reached Provider");
@@ -930,9 +936,9 @@ async function runRouteCases(
   }
   await pushRouteProbe("t1.route.exact_default_no_fallback", async () => {
     const before = await mockRequestCount(input.mockControlUrl);
-    const request = buildExactRequest({ cell: { ...cellFor(openaiA, modelA, "llm", "llm.chat"), case_id: "t1.route.exact_default_no_fallback" }, runId, fixtures: {} });
+    const request = buildExactRequest({ cell: { ...cellFor(openaiA, modelA, "llm", "chat.completions.create"), case_id: "t1.route.exact_default_no_fallback" }, runId, fixtures: {} });
     request.model = { alias: `missing@${openaiA.provider_instance_name}` };
-    const response = await session.aicc.call("llm.chat", request) as AiMethodResponse;
+    const response = await callChatCompletions(session.aicc, request) as AiMethodResponse;
     if (response.status !== "failed") throw new Error("missing exact model unexpectedly fell back");
     if (await mockRequestCount(input.mockControlUrl) !== before) throw new Error("exact model fallback reached another Provider");
     return "exact typed request did not fallback";
@@ -989,9 +995,9 @@ async function commitId(): Promise<string> {
 
 function canonicalCaseId(item: CaseReport): string {
   return item.case_id === "t1.mock.llm.stream_success"
-    ? "t1.protocol.llm.llm.chat.stream_success"
+    ? "t1.protocol.llm.chat.completions.create.stream_success"
     : item.case_id.startsWith("t1.mock.error.")
-    ? `t1.protocol.llm.llm.chat.${item.case_id.slice("t1.mock.error.".length)}`
+    ? `t1.protocol.llm.chat.completions.create.${item.case_id.slice("t1.mock.error.".length)}`
     : item.case_id.startsWith("t1.mock.") && item.api_type && item.method
     ? `t1.protocol.${item.api_type}.${item.method}.success`
     : item.case_id;
@@ -1242,16 +1248,16 @@ async function runCases(
       provider_instance: exactInventory.provider_instance_name,
       exact_model: exactCase.model.exact_model,
       api_type: "llm",
-      method: "llm.chat",
+      method: "chat.completions.create",
       outbound_message_ids: [],
       artifact_ids: [],
       attempts: [],
     };
     try {
       const before = (await mockRequests(input.mockControlUrl)).length;
-      const cell = cellFor(exactInventory, exactCase.model, "llm", "llm.chat");
+      const cell = cellFor(exactInventory, exactCase.model, "llm", "chat.completions.create");
       const request = buildExactRequest({ cell: { ...cell, case_id: exactCase.caseId }, runId, fixtures: {} });
-      const initial = await session.aicc.call("llm.chat", request) as AiMethodResponse;
+      const initial = await callChatCompletions(session.aicc, request) as AiMethodResponse;
       const value = await terminal(session, initial, input.timeoutMs);
       assertResponseShape(cell, value);
       const providerCalls = (await mockRequests(input.mockControlUrl)).slice(before);
@@ -1491,8 +1497,8 @@ async function runCases(
   results.push(spaceMismatchReport);
   }
 
-  const streamCell = cells.find((cell) => cell.provider_driver === "openai" && cell.method === "llm.chat") ?? cells[0];
-  if (wants(input, "t1.protocol.llm.llm.chat.stream_success")) {
+  const streamCell = cells.find((cell) => cell.provider_driver === "openai" && cell.method === "chat.completions.create") ?? cells[0];
+  if (wants(input, "t1.protocol.llm.chat.completions.create.stream_success")) {
   const streamStarted = Date.now();
   const streamCase: CaseReport = {
     run_id: runId,
@@ -1528,7 +1534,7 @@ async function runCases(
   }
 
   for (const streamCell of protocolCells.filter((cell) =>
-    cell.api_type === "llm" && cell.method !== "llm.chat" &&
+    cell.api_type === "llm" && cell.method !== "chat.completions.create" &&
     wants(input, `t1.protocol.${cell.api_type}.${cell.method}.stream_success`)
   )) {
     const started = Date.now();
@@ -1652,7 +1658,7 @@ async function runCases(
     provider_instance: openaiA?.provider_instance_name,
     exact_model: modelA?.exact_model,
     api_type: "llm",
-    method: "llm.chat",
+    method: "chat.completions.create",
     session_id: `${runId}:history-soft-preference`,
     outbound_message_ids: [],
     artifact_ids: [],
@@ -1666,7 +1672,7 @@ async function runCases(
     const firstRequest = buildExactRequest({ cell: exactCell, runId, fixtures: {} });
     const firstPayload = firstRequest.payload as Record<string, unknown>;
     firstPayload.options = { session_id: historyCase.session_id, rootid: runId };
-    const first = await session.aicc.call("llm.chat", firstRequest) as AiMethodResponse;
+    const first = await callChatCompletions(session.aicc, firstRequest) as AiMethodResponse;
     const firstSelected = await routedCompletion(session, first, historyStarted, input.timeoutMs);
     if (firstSelected !== modelA.exact_model) {
       throw new Error(`exact seed selected ${firstSelected ?? "<missing>"}, expected ${modelA.exact_model}`);
@@ -1682,7 +1688,7 @@ async function runCases(
     const secondPayload = secondRequest.payload as Record<string, unknown>;
     secondPayload.options = { session_id: historyCase.session_id, rootid: runId };
     const secondStarted = Date.now();
-    const second = await session.aicc.call("llm.chat", secondRequest) as AiMethodResponse;
+    const second = await callChatCompletions(session.aicc, secondRequest) as AiMethodResponse;
     const secondSelected = await routedCompletion(session, second, secondStarted, input.timeoutMs);
     if (secondSelected !== modelA.exact_model) {
       throw new Error(
@@ -1707,7 +1713,7 @@ async function runCases(
     provider_instance: openaiB?.provider_instance_name,
     exact_model: modelB?.exact_model,
     api_type: "llm",
-    method: "llm.chat",
+    method: "chat.completions.create",
     session_id: `${runId}:history:provider-denied`,
     outbound_message_ids: [],
     artifact_ids: [],
@@ -1717,7 +1723,7 @@ async function runCases(
     if (!openaiA || !openaiB || !modelA || !modelB || !logicalModel) {
       throw new Error("history provider-denied case needs two shared-mount OpenAI instances");
     }
-    const exactCell = cells.find((cell) => cell.exact_model === modelA.exact_model && cell.method === "llm.chat");
+    const exactCell = cells.find((cell) => cell.exact_model === modelA.exact_model && cell.method === "chat.completions.create");
     if (!exactCell) throw new Error("missing OpenAI mock cell for hard-constraint history case");
     const seedRequest = buildExactRequest({
       cell: { ...exactCell, case_id: `${hardCase.case_id}.seed` },
@@ -1727,7 +1733,7 @@ async function runCases(
     const seedPayload = seedRequest.payload as Record<string, unknown>;
     seedPayload.options = { session_id: hardCase.session_id, rootid: runId };
     const seedStarted = Date.now();
-    const seed = await session.aicc.call("llm.chat", seedRequest) as AiMethodResponse;
+    const seed = await callChatCompletions(session.aicc, seedRequest) as AiMethodResponse;
     const seedSelected = await routedCompletion(session, seed, seedStarted, input.timeoutMs);
     if (seedSelected !== modelA.exact_model) {
       throw new Error(`provider-denied seed selected ${seedSelected}, expected ${modelA.exact_model}`);
@@ -1744,7 +1750,7 @@ async function runCases(
     };
     const payload = request.payload as Record<string, unknown>;
     payload.options = { session_id: hardCase.session_id, rootid: runId };
-    const response = await session.aicc.call("llm.chat", request) as AiMethodResponse;
+    const response = await callChatCompletions(session.aicc, request) as AiMethodResponse;
     const selected = await routedCompletion(session, response, hardStarted, input.timeoutMs);
     if (selected !== modelB.exact_model) {
       throw new Error(`hard constraint selected ${selected ?? "<missing>"}; expected ${modelB.exact_model}`);
@@ -1776,7 +1782,7 @@ async function runCases(
       results.push(await executeT1Probe({
         runId,
         caseId,
-        method: "llm.chat",
+        method: "chat.completions.create",
         apiType: "llm",
         failureClass: "preflight_failed",
         execute: async () => {
@@ -1789,7 +1795,7 @@ async function runCases(
       results.push(await executeT1Probe({
         runId,
         caseId,
-        method: "llm.chat",
+        method: "chat.completions.create",
         apiType: "llm",
         failureClass: "preflight_failed",
         execute: async () => {
@@ -1801,7 +1807,7 @@ async function runCases(
     results.push(await executeT1Probe({
       runId,
       caseId,
-      method: reason === "api_type_changed" ? "image.txt2img" : "llm.chat",
+      method: reason === "api_type_changed" ? "images.generate" : "chat.completions.create",
       apiType: reason === "api_type_changed" ? "image.txt2img" : "llm",
       failureClass: "routing_failed",
       execute: async () => {
@@ -1809,26 +1815,26 @@ async function runCases(
           throw new Error("history hard-constraint case needs two shared-mount OpenAI instances");
         }
         const sessionId = `${runId}:history:${reason}`;
-        const seedCell = cells.find((cell) => cell.exact_model === modelA.exact_model && cell.method === "llm.chat");
+        const seedCell = cells.find((cell) => cell.exact_model === modelA.exact_model && cell.method === "chat.completions.create");
         if (!seedCell) throw new Error("history seed LLM cell is missing");
         const seedRequest = buildExactRequest({ cell: { ...seedCell, case_id: `${caseId}.seed` }, runId, fixtures: {} });
         const seedPayload = seedRequest.payload as Record<string, unknown>;
         seedPayload.options = { session_id: sessionId, rootid: runId };
         const seedStarted = Date.now();
-        const seed = await session.aicc.call("llm.chat", seedRequest) as AiMethodResponse;
+        const seed = await callChatCompletions(session.aicc, seedRequest) as AiMethodResponse;
         await routedCompletion(session, seed, seedStarted, input.timeoutMs);
 
         if (reason === "api_type_changed") {
           const imageModel = openaiA.models.find((item) => item.api_types.includes("image.txt2img"));
           const imageMount = imageModel?.logical_mounts[0];
           if (!imageModel || !imageMount) throw new Error("no image model is available for api_type_changed history case");
-          const imageCell = cellFor(openaiA, imageModel, "image.txt2img", "image.txt2img");
+          const imageCell = cellFor(openaiA, imageModel, "image.txt2img", "images.generate");
           const request = buildExactRequest({ cell: { ...imageCell, case_id: caseId }, runId, fixtures: {} });
           request.model = { alias: imageMount };
           const payload = request.payload as Record<string, unknown>;
           payload.options = { session_id: sessionId, rootid: runId };
           const callStarted = Date.now();
-          const response = await session.aicc.call("image.txt2img", request) as AiMethodResponse;
+          const response = await callImagesGenerate(session.aicc, request) as AiMethodResponse;
           const selected = await routedCompletion(session, response, callStarted, input.timeoutMs);
           if (!selected || selected === modelA.exact_model) throw new Error(`api type change reused prior LLM exact model ${selected ?? "<missing>"}`);
           return `api type change selected ${selected}`;
@@ -1865,7 +1871,7 @@ async function runCases(
           let response: AiMethodResponse;
           try {
             const callStarted = Date.now();
-            response = await session.aicc.call("llm.chat", request) as AiMethodResponse;
+            response = await callChatCompletions(session.aicc, request) as AiMethodResponse;
             const selected = await routedCompletion(session, response, callStarted, input.timeoutMs);
             if (!mustReject && selected !== modelB.exact_model) {
               throw new Error(`hard constraint selected ${selected}; expected ${modelB.exact_model}`);
@@ -1885,12 +1891,12 @@ async function runCases(
     results.push(await executeT1Probe({
       runId,
       caseId: "t1.history.sessions_do_not_leak",
-      method: "llm.chat",
+      method: "chat.completions.create",
       apiType: "llm",
       failureClass: "routing_failed",
       execute: async () => {
         if (!openaiA || !modelA || !logicalModel) throw new Error("history isolation requires a shared logical model");
-        const exactCell = cells.find((cell) => cell.exact_model === modelA.exact_model && cell.method === "llm.chat");
+        const exactCell = cells.find((cell) => cell.exact_model === modelA.exact_model && cell.method === "chat.completions.create");
         if (!exactCell) throw new Error("history isolation seed cell is missing");
         const logicalCall = async (sessionId: string, suffix: string): Promise<string> => {
           const request = buildExactRequest({ cell: { ...exactCell, case_id: `t1.history.sessions_do_not_leak.${suffix}` }, runId, fixtures: {} });
@@ -1898,7 +1904,7 @@ async function runCases(
           const payload = request.payload as Record<string, unknown>;
           payload.options = { session_id: sessionId, rootid: runId };
           const callStarted = Date.now();
-          const response = await session.aicc.call("llm.chat", request) as AiMethodResponse;
+          const response = await callChatCompletions(session.aicc, request) as AiMethodResponse;
           return await routedCompletion(session, response, callStarted, input.timeoutMs);
         };
         const baseline = await logicalCall(`${runId}:fresh-baseline`, "baseline");
@@ -1908,7 +1914,7 @@ async function runCases(
         const seedStarted = Date.now();
         await routedCompletion(
           session,
-          await session.aicc.call("llm.chat", seed) as AiMethodResponse,
+          await callChatCompletions(session.aicc, seed) as AiMethodResponse,
           seedStarted,
           input.timeoutMs,
         );
@@ -2030,7 +2036,7 @@ async function runCases(
     });
   }
 
-  const probeCell = cells.find((cell) => cell.provider_driver === "openai" && cell.method === "llm.chat") ?? cells[0];
+  const probeCell = cells.find((cell) => cell.provider_driver === "openai" && cell.method === "chat.completions.create") ?? cells[0];
   const asyncInventory = mockInventories.find((inventory) => inventory.provider_driver === "google-gemini");
   const asyncModel = asyncInventory?.models.find((model) =>
     model.provider_model_id.toLowerCase().includes("veo-") &&
@@ -2464,7 +2470,9 @@ async function runCases(
 
   await pushProbe("t1.security.cross_tenant_object", "ndm.open_reader", "security_failed", async () => {
     const token = otherTenantToken();
-    const imageCell = cells.find((cell) => cell.api_type === "image.txt2img" && cell.method === "image.txt2img");
+    const imageCell = cells.find((cell) =>
+      cell.api_type === "image.txt2img" && cell.method === "images.generate"
+    );
     if (!imageCell) throw new SkipCase("Mock inventory has no image.txt2img cell for object isolation");
     const request = buildExactRequest({
       cell: { ...imageCell, case_id: "t1.security.cross_tenant_object" },
@@ -2473,7 +2481,7 @@ async function runCases(
     });
     const payload = request.payload as { input_json?: Record<string, unknown> };
     if (payload.input_json) payload.input_json.output = { resource_format: "named_object" };
-    const initial = await session.aicc.call(imageCell.method, request) as AiMethodResponse;
+    const initial = await callImagesGenerate(session.aicc, request) as AiMethodResponse;
     const completed = await terminal(session, initial, input.timeoutMs);
     const objId = namedObjectId(completed);
     if (!objId) throw new SkipCase("AICC Mock image result did not expose a Named Object ID");

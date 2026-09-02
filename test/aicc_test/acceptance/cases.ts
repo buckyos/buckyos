@@ -128,7 +128,7 @@ const HISTORY_CASES: AcceptanceCase[] = [
     layer: "T1",
     priority: "P0",
     tags: ["routing", "history", "soft_preference"],
-    method: "llm.chat",
+    method: "chat.completions.create",
     api_type: "llm",
     session: "history-session-a",
     mock_scenario: "history_exact_model_still_eligible",
@@ -153,7 +153,7 @@ const HISTORY_CASES: AcceptanceCase[] = [
     layer: "T1",
     priority: "P0",
     tags: ["routing", "history", "hard_constraint"],
-    method: "llm.chat",
+    method: "chat.completions.create",
     api_type: "llm",
     session: "history-session-a",
     mock_scenario: `history_${reason}`,
@@ -172,7 +172,7 @@ const HISTORY_CASES: AcceptanceCase[] = [
     layer: "T1",
     priority: "P0",
     tags: ["routing", "history", "isolation"],
-    method: "llm.chat",
+    method: "chat.completions.create",
     api_type: "llm",
     session: "history-session-b",
     mock_scenario: "history_cross_session_isolation",
@@ -277,7 +277,7 @@ const CROSS_CUTTING_CASES: AcceptanceCase[] = [
     ? "service.reload_settings"
     : ["task.running_succeeded", "task.running_failed", "task.cancelled", "task.terminal_idempotent", "task.reload_recovery", "task.restart_recovery"].includes(String(suffix))
     ? "video.txt2video"
-    : "llm.chat",
+    : "chat.completions.create",
   api_type: String(suffix).startsWith("config.")
     ? null
     : ["task.running_succeeded", "task.running_failed", "task.cancelled", "task.terminal_idempotent", "task.reload_recovery", "task.restart_recovery"].includes(String(suffix))

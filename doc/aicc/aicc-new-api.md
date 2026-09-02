@@ -201,12 +201,12 @@ operation 按 `method > api_type > adapter default` 解析，并必须存在于 
 
 ```text
 chat.completions.create
-embeddings.create
-rerank.create
-images.generate / images.edit / images.upscale / images.remove_background
+embedding.text / embedding.multimodal
+rerank
+images.generate / image.img2img / image.upscale / image.bg_remove
 vision.ocr / vision.caption / vision.detect / vision.segment
-audio.speech.create / audio.transcriptions.create / audio.music.create / audio.enhance
-videos.generate / videos.transform / videos.extend / videos.upscale
+audio.tts / audio.asr / audio.music / audio.enhance
+video.txt2video / video.img2video / video.video2video / video.extend / video.upscale
 ```
 
 输入示例：
@@ -279,14 +279,14 @@ TextToImageInvokeResponse
 
 后续可以继续拆分：
 
-- `images.edit`
-- `images.inpaint`
-- `images.upscale`
+- `image.img2img`
+- `image.inpaint`
+- `image.upscale`
 - `vision.ocr`
-- `audio.speech.create`
-- `audio.transcriptions.create`
-- `videos.generate`
-- `videos.edit`
+- `audio.tts`
+- `audio.asr`
+- `video.txt2video`
+- `video.video2video`
 
 每类接口应根据领域输入输出定义强类型结构，而不是统一塞入 `input_json`。
 

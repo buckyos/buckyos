@@ -154,7 +154,7 @@ URL 输入通过 `--url` 或参数值的 URL scheme 识别，转换为：
 
 ### 3.1 `gen_image`
 
-文生图。映射到 `image.txt2img`。
+文生图。调用 `helper.text_to_image`，默认逻辑模型为 `image.txt2img`。
 
 ```bash
 gen_image "A precise product photo of a matte black desk lamp." result.png
@@ -662,7 +662,7 @@ AICC_DEFAULT_TIMEOUT  # milliseconds; default 900000
 ```json
 {
   "ok": true,
-  "method": "image.txt2img",
+  "method": "helper.text_to_image",
   "task_id": "aicc-001",
   "status": "succeeded",
   "outputs": [
@@ -680,7 +680,7 @@ AICC_DEFAULT_TIMEOUT  # milliseconds; default 900000
 ```json
 {
   "ok": false,
-  "method": "image.txt2img",
+  "method": "helper.text_to_image",
   "error": {
     "code": "route_failed",
     "message": "no provider available"

@@ -23,7 +23,6 @@ pub mod ai_methods {
     pub const EMBEDDING_TEXT: &str = "embedding.text";
     pub const EMBEDDING_MULTIMODAL: &str = "embedding.multimodal";
     pub const RERANK: &str = "rerank";
-    pub const IMAGE_TXT2IMG: &str = "image.txt2img";
     pub const IMAGE_IMG2IMG: &str = "image.img2img";
     pub const IMAGE_INPAINT: &str = "image.inpaint";
     pub const IMAGE_UPSCALE: &str = "image.upscale";
@@ -58,7 +57,6 @@ pub mod ai_methods {
             EMBEDDING_TEXT
                 | EMBEDDING_MULTIMODAL
                 | RERANK
-                | IMAGE_TXT2IMG
                 | IMAGE_IMG2IMG
                 | IMAGE_INPAINT
                 | IMAGE_UPSCALE
@@ -1723,6 +1721,7 @@ pub struct RouteResolveResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct LlmChatInvokeRequest {
     pub exact_model: String,
     #[serde(default)]
@@ -1736,13 +1735,134 @@ pub struct LlmChatInvokeRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<AiPayload>,
+    pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_options: Option<Value>,
+    pub task_options: Option<AiTaskOptions>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LlmChatHelperRequest {
+    pub logical_model: String,
+    #[serde(default)]
+    pub requirements: HelperModelRequirement,
+    #[serde(default, skip_serializing_if = "is_default_model_disable")]
+    pub disable: ModelDisable,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<RoutePolicy>,
+    #[serde(default)]
+    pub messages: Vec<AiMessage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<AiToolSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<LlmResponseFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_options: Option<AiTaskOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_overlay: Option<AiccRouteOverlay>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HelperModelRequirement {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub streaming: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tool_call: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub json_schema: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub web_search: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub vision: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub image_generation: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_context_tokens: Option<u64>,
+}
+
+impl From<HelperModelRequirement> for ModelRequirement {
+    fn from(value: HelperModelRequirement) -> Self {
+        Self {
+            streaming: value.streaming,
+            tool_call: value.tool_call,
+            json_schema: value.json_schema,
+            web_search: value.web_search,
+            vision: value.vision,
+            image_generation: value.image_generation,
+            min_context_tokens: value.min_context_tokens,
+        }
+    }
+}
+
+impl LlmChatHelperRequest {
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        serde_json::from_value(value).map_err(|error| {
+            RPCErrors::ParseRequestError(format!("Failed to parse LlmChatHelperRequest: {}", error))
+        })
+    }
+}
+
+impl TryFrom<AiMethodRequest> for LlmChatHelperRequest {
+    type Error = String;
+
+    fn try_from(request: AiMethodRequest) -> std::result::Result<Self, Self::Error> {
+        let mut requirements = request.requirements.required.clone();
+        for feature in &request.requirements.must_features {
+            requirements.set_feature_required(feature);
+        }
+        let input = request.payload.input_json.as_ref();
+        let response_format = input
+            .and_then(|value| value.get("response_format"))
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("invalid response_format: {}", error))?;
+        let session_overlay = input
+            .and_then(|value| value.get("session_overlay"))
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("invalid session_overlay: {}", error))?;
+        Ok(Self {
+            logical_model: request.model.alias,
+            requirements: HelperModelRequirement {
+                streaming: requirements.streaming,
+                tool_call: requirements.tool_call,
+                json_schema: requirements.json_schema,
+                web_search: requirements.web_search,
+                vision: requirements.vision,
+                image_generation: requirements.image_generation,
+                min_context_tokens: requirements.min_context_tokens,
+            },
+            disable: request.disable,
+            policy: request.policy,
+            messages: request.payload.messages,
+            tools: request.payload.tool_specs,
+            response_format,
+            temperature: request
+                .payload
+                .options
+                .as_ref()
+                .and_then(|value| value.get("temperature"))
+                .and_then(Value::as_f64),
+            max_output_tokens: request
+                .payload
+                .options
+                .as_ref()
+                .and_then(|value| value.get("max_output_tokens"))
+                .and_then(Value::as_u64),
+            idempotency_key: request.idempotency_key,
+            task_options: request.task_options,
+            session_overlay,
+        })
+    }
 }
 
 impl LlmChatInvokeRequest {
@@ -1810,12 +1930,33 @@ impl From<AiMethodResponse> for LlmChatInvokeResponse {
     }
 }
 
+impl From<LlmChatInvokeResponse> for AiMethodResponse {
+    fn from(value: LlmChatInvokeResponse) -> Self {
+        let result = value.message.map(|message| AiResponse {
+            message,
+            usage: value.usage,
+            cost: value.cost,
+            finish_reason: value.finish_reason,
+            provider_task_ref: value.provider_task_ref,
+            extra: value
+                .route_trace
+                .map(|trace| json!({ "route_trace": trace })),
+        });
+        Self::new(value.task_id, value.status, result, value.event_ref)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct TextToImageInvokeRequest {
     pub exact_model: String,
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub negative_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect_ratio: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1827,13 +1968,115 @@ pub struct TextToImageInvokeRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<AiPayload>,
+    pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_options: Option<Value>,
+    pub task_options: Option<AiTaskOptions>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TextToImageHelperRequest {
+    pub logical_model: String,
+    #[serde(default)]
+    pub requirements: HelperModelRequirement,
+    #[serde(default, skip_serializing_if = "is_default_model_disable")]
+    pub disable: ModelDisable,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<RoutePolicy>,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub negative_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect_ratio: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_options: Option<AiTaskOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_overlay: Option<AiccRouteOverlay>,
+}
+
+impl TextToImageHelperRequest {
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        serde_json::from_value(value).map_err(|error| {
+            RPCErrors::ParseRequestError(format!(
+                "Failed to parse TextToImageHelperRequest: {}",
+                error
+            ))
+        })
+    }
+}
+
+impl TryFrom<AiMethodRequest> for TextToImageHelperRequest {
+    type Error = String;
+
+    fn try_from(request: AiMethodRequest) -> std::result::Result<Self, Self::Error> {
+        let mut requirements = request.requirements.required.clone();
+        for feature in &request.requirements.must_features {
+            requirements.set_feature_required(feature);
+        }
+        let input = request.payload.input_json.as_ref();
+        let string_field = |name: &str| {
+            input
+                .and_then(|value| value.get(name))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let session_overlay = input
+            .and_then(|value| value.get("session_overlay"))
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("invalid session_overlay: {}", error))?;
+        let prompt = request
+            .payload
+            .text
+            .or_else(|| string_field("prompt"))
+            .ok_or_else(|| "text-to-image prompt is required".to_string())?;
+        Ok(Self {
+            logical_model: request.model.alias,
+            requirements: HelperModelRequirement {
+                streaming: requirements.streaming,
+                tool_call: requirements.tool_call,
+                json_schema: requirements.json_schema,
+                web_search: requirements.web_search,
+                vision: requirements.vision,
+                image_generation: requirements.image_generation,
+                min_context_tokens: requirements.min_context_tokens,
+            },
+            disable: request.disable,
+            policy: request.policy,
+            prompt,
+            negative_prompt: string_field("negative_prompt"),
+            n: input
+                .and_then(|value| value.get("n"))
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok()),
+            aspect_ratio: string_field("aspect_ratio"),
+            size: string_field("size"),
+            quality: string_field("quality"),
+            style: string_field("style"),
+            seed: input
+                .and_then(|value| value.get("seed"))
+                .and_then(Value::as_u64),
+            output: input.and_then(|value| value.get("output")).cloned(),
+            idempotency_key: request.idempotency_key,
+            task_options: request.task_options,
+            session_overlay,
+        })
+    }
 }
 
 impl TextToImageInvokeRequest {
@@ -1891,6 +2134,22 @@ impl From<AiMethodResponse> for TextToImageInvokeResponse {
                 .and_then(|extra| extra.get("route_trace").cloned()),
             event_ref: value.event_ref,
         }
+    }
+}
+
+impl From<TextToImageInvokeResponse> for AiMethodResponse {
+    fn from(value: TextToImageInvokeResponse) -> Self {
+        let result = (!value.artifacts.is_empty()).then(|| AiResponse {
+            message: AiResponse::message_from_parts(None, Vec::new(), value.artifacts),
+            usage: value.usage,
+            cost: value.cost,
+            finish_reason: None,
+            provider_task_ref: value.provider_task_ref,
+            extra: value
+                .route_trace
+                .map(|trace| json!({ "route_trace": trace })),
+        });
+        Self::new(value.task_id, value.status, result, value.event_ref)
     }
 }
 
@@ -2172,11 +2431,12 @@ impl AiccClient {
 
     pub async fn helper_llm_chat(
         &self,
-        request: AiMethodRequest,
-    ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+        request: LlmChatHelperRequest,
+    ) -> std::result::Result<LlmChatInvokeResponse, RPCErrors> {
         request
-            .payload
-            .validate_all_messages()
+            .messages
+            .iter()
+            .try_for_each(AiMessage::validate)
             .map_err(|err| RPCErrors::ParseRequestError(format!("invalid AiMessage: {err}")))?;
 
         match self {
@@ -2187,7 +2447,7 @@ impl AiccClient {
             Self::KRPC(client) => {
                 let req_json = serde_json::to_value(&request).map_err(|error| {
                     RPCErrors::ReasonError(format!(
-                        "Failed to serialize AiMethodRequest: {}",
+                        "Failed to serialize LlmChatHelperRequest: {}",
                         error
                     ))
                 })?;
@@ -2204,8 +2464,8 @@ impl AiccClient {
 
     pub async fn helper_text_to_image(
         &self,
-        request: AiMethodRequest,
-    ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+        request: TextToImageHelperRequest,
+    ) -> std::result::Result<TextToImageInvokeResponse, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
@@ -2368,9 +2628,9 @@ pub trait AiccHandler: Send + Sync {
 
     async fn handle_helper_llm_chat(
         &self,
-        _request: AiMethodRequest,
+        _request: LlmChatHelperRequest,
         _ctx: RPCContext,
-    ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+    ) -> std::result::Result<LlmChatInvokeResponse, RPCErrors> {
         Err(RPCErrors::UnknownMethod(
             ai_methods::HELPER_LLM_CHAT.to_string(),
         ))
@@ -2378,9 +2638,9 @@ pub trait AiccHandler: Send + Sync {
 
     async fn handle_helper_text_to_image(
         &self,
-        _request: AiMethodRequest,
+        _request: TextToImageHelperRequest,
         _ctx: RPCContext,
-    ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+    ) -> std::result::Result<TextToImageInvokeResponse, RPCErrors> {
         Err(RPCErrors::UnknownMethod(
             ai_methods::HELPER_TEXT_TO_IMAGE.to_string(),
         ))
@@ -2458,12 +2718,12 @@ impl<T: AiccHandler> RPCHandler for AiccServerHandler<T> {
                 RPCResult::Success(json!(result))
             }
             ai_methods::HELPER_LLM_CHAT => {
-                let method_req = AiMethodRequest::from_json(req.params)?;
+                let method_req = LlmChatHelperRequest::from_json(req.params)?;
                 let result = self.0.handle_helper_llm_chat(method_req, ctx).await?;
                 RPCResult::Success(json!(result))
             }
             ai_methods::HELPER_TEXT_TO_IMAGE => {
-                let method_req = AiMethodRequest::from_json(req.params)?;
+                let method_req = TextToImageHelperRequest::from_json(req.params)?;
                 let result = self.0.handle_helper_text_to_image(method_req, ctx).await?;
                 RPCResult::Success(json!(result))
             }
@@ -2515,6 +2775,22 @@ pub fn generate_aicc_service_doc() -> AppDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn helper_requests_reject_legacy_envelopes() {
+        assert!(LlmChatHelperRequest::from_json(json!({
+            "capability": "llm",
+            "model": { "alias": "llm.chat" },
+            "payload": { "messages": [] }
+        }))
+        .is_err());
+        assert!(TextToImageHelperRequest::from_json(json!({
+            "capability": "image",
+            "model": { "alias": "image.txt2img" },
+            "payload": { "text": "a fox" }
+        }))
+        .is_err());
+    }
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::{Arc, Mutex};
 

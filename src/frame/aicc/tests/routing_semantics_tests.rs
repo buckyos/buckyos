@@ -620,8 +620,6 @@ async fn chat_completions_create_uses_exact_model_without_runtime_fallback() {
                 response_format: None,
                 temperature: None,
                 max_output_tokens: None,
-                payload: None,
-                provider_options: None,
                 idempotency_key: None,
                 task_options: None,
             },
@@ -648,8 +646,6 @@ async fn chat_completions_create_rejects_logical_model_name() {
                 response_format: None,
                 temperature: None,
                 max_output_tokens: None,
-                payload: None,
-                provider_options: None,
                 idempotency_key: None,
                 task_options: None,
             },
@@ -673,13 +669,13 @@ async fn images_generate_rejects_logical_model_name() {
                 exact_model: "image.txt2img.default".to_string(),
                 prompt: "draw a cube".to_string(),
                 negative_prompt: None,
+                n: None,
+                aspect_ratio: None,
                 size: None,
                 quality: None,
                 style: None,
                 seed: None,
                 output: None,
-                payload: None,
-                provider_options: None,
                 idempotency_key: None,
                 task_options: None,
             },
@@ -717,8 +713,6 @@ async fn typed_exact_unavailable_does_not_fallback_to_other_model() {
                 response_format: None,
                 temperature: None,
                 max_output_tokens: None,
-                payload: None,
-                provider_options: None,
                 idempotency_key: None,
                 task_options: None,
             },
@@ -761,7 +755,7 @@ async fn helper_llm_chat_expands_to_route_resolve_and_typed_inference() {
     );
 
     let response = center
-        .helper_llm_chat(request, Default::default())
+        .helper_llm_chat(request.try_into().unwrap(), Default::default())
         .await
         .expect("helper.llm_chat should succeed through two-stage flow");
 
@@ -802,7 +796,7 @@ async fn helper_text_to_image_expands_to_route_resolve_and_typed_inference() {
     );
 
     let response = center
-        .helper_text_to_image(request, Default::default())
+        .helper_text_to_image(request.try_into().unwrap(), Default::default())
         .await
         .expect("helper.text_to_image should succeed through two-stage flow");
 
@@ -1016,8 +1010,6 @@ async fn typed_variant_exact_model_lowers_to_provider_base_and_options() {
                 response_format: None,
                 temperature: None,
                 max_output_tokens: None,
-                payload: None,
-                provider_options: None,
                 idempotency_key: None,
                 task_options: None,
             },

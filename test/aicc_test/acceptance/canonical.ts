@@ -1,11 +1,11 @@
 import type { ProviderBaseline } from "./types.ts";
 
 export const CANONICAL_API_METHODS = {
-  llm: ["llm.chat"],
+  llm: ["chat.completions.create"],
   "embedding.text": ["embedding.text"],
   "embedding.multimodal": ["embedding.multimodal"],
   rerank: ["rerank"],
-  "image.txt2img": ["image.txt2img"],
+  "image.txt2img": ["images.generate"],
   "image.img2img": ["image.img2img"],
   "image.inpaint": ["image.inpaint"],
   "image.upscale": ["image.upscale"],

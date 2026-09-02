@@ -3653,7 +3653,7 @@ impl Provider for SnAIProvider {
                 self.start_llm(&ctx, provider_model.as_str(), &req.request)
                     .await
             }
-            ai_methods::IMAGE_TXT2IMG => {
+            ai_methods::IMAGES_GENERATE => {
                 self.start_text2image(&ctx, provider_model.as_str(), &req.request)
                     .await
             }

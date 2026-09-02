@@ -12,7 +12,7 @@
 | 逻辑模型定义 | `min_line` admission 过滤、`disable_line` 禁用能力、`mount_mode` auto-mount、manual override | L1/L3 |
 | Catalog resolver | Provider mapping 优先、跨 Model Driver 唯一匹配、exact→ordered pattern→default、unknown conservative fallback、variant + Provider Rules lowering | L1/L3 |
 | Session overlay | `SessionLogicalProfile` inherit（可 fallback）/ replace（quota exhausted 失败）、overlay trace | L1/L3 |
-| Method schema | `chat.completions.create`、`embeddings.create`、`rerank.create`、`images.*`、`vision.*`、`audio.*`、`videos.*`、`agent.computer_use` 占位语义 | L1/L3/L4 |
+| Method schema | `chat.completions.create`、`embedding.*`、`rerank`、`images.generate`、`image.*`、`vision.*`、`audio.*`、`video.*`、`agent.computer_use` 占位语义 | L1/L3/L4 |
 | Provider inventory | `provider_instance_name`、`provider_profile_id`、`protocol_adapter_id`、`model_uid`、`model_driver_id`、`origin_model_id`、原始 `provider_model_id`、operation、capabilities、pricing source、health | L1/L3 |
 | 路由解析 | 逻辑模型、精确模型、非法模型名、目录不存在、完整身份链 | L1/L2/L3 |
 | Fallback | `strict`、`parent`、`target_exact`、`target_logical`、`disabled`、环路检测、最大深度 | L1/L3 |

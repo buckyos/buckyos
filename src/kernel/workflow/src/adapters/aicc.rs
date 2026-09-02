@@ -6,7 +6,7 @@
 //! ```text
 //! service::aicc.helper.llm_chat
 //! service::aicc.embedding.text
-//! service::aicc.image.txt2img
+//! service::aicc.helper.text_to_image
 //! service::aicc.cancel
 //! ```
 //!
@@ -38,7 +38,8 @@ use async_trait::async_trait;
 use buckyos_api::{
     ai_methods, get_buckyos_api_runtime, AiCost, AiMessage, AiMethodRequest, AiMethodResponse,
     AiMethodStatus, AiPayload, AiResponse, AiToolCall, AiToolSpec, AiUsage, AiccClient, Capability,
-    ModelSpec, Requirements, ResourceRef, RespFormat, RoutePolicy,
+    LlmChatHelperRequest, ModelSpec, Requirements, ResourceRef, RespFormat, RoutePolicy,
+    TextToImageHelperRequest,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -123,7 +124,7 @@ pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
 
     // ---- Image generation ----
     out.push(image_schema(
-        IMAGE_TXT2IMG,
+        HELPER_TEXT_TO_IMAGE,
         "image.txt2img",
         "Generate an image from a text prompt.",
         false,
@@ -397,8 +398,16 @@ impl AiccAdapter {
     ) -> WorkflowResult<AiMethodResponse> {
         let client = self.client().await?;
         let result = match method {
-            ai_methods::HELPER_LLM_CHAT => client.helper_llm_chat(request).await,
-            ai_methods::IMAGE_TXT2IMG => client.helper_text_to_image(request).await,
+            ai_methods::HELPER_LLM_CHAT => {
+                let request =
+                    LlmChatHelperRequest::try_from(request).map_err(WorkflowError::Dispatcher)?;
+                client.helper_llm_chat(request).await.map(Into::into)
+            }
+            ai_methods::HELPER_TEXT_TO_IMAGE => {
+                let request = TextToImageHelperRequest::try_from(request)
+                    .map_err(WorkflowError::Dispatcher)?;
+                client.helper_text_to_image(request).await.map(Into::into)
+            }
             _ => client.call_method(method, request).await,
         };
         result.map_err(|err| WorkflowError::Dispatcher(format!("aicc {} failed: {}", method, err)))
@@ -1116,7 +1125,7 @@ fn tts_input_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::AiccHandler;
+    use buckyos_api::{AiccHandler, LlmChatInvokeResponse, TextToImageInvokeResponse};
     use kRPC::{RPCContext, RPCErrors};
     use std::sync::Mutex;
 
@@ -1130,7 +1139,7 @@ mod tests {
             ai_methods::EMBEDDING_TEXT,
             ai_methods::EMBEDDING_MULTIMODAL,
             ai_methods::RERANK,
-            ai_methods::IMAGE_TXT2IMG,
+            ai_methods::HELPER_TEXT_TO_IMAGE,
             ai_methods::IMAGE_IMG2IMG,
             ai_methods::IMAGE_INPAINT,
             ai_methods::IMAGE_UPSCALE,
@@ -1174,7 +1183,7 @@ mod tests {
     #[derive(Default)]
     struct EchoHandler {
         last_method: Mutex<Option<String>>,
-        last_request: Mutex<Option<AiMethodRequest>>,
+        last_request: Mutex<Option<Value>>,
     }
 
     #[async_trait]
@@ -1198,18 +1207,48 @@ mod tests {
 
         async fn handle_helper_llm_chat(
             &self,
-            request: AiMethodRequest,
+            request: LlmChatHelperRequest,
             _ctx: RPCContext,
-        ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-            self.record(ai_methods::HELPER_LLM_CHAT, request)
+        ) -> std::result::Result<LlmChatInvokeResponse, RPCErrors> {
+            self.record_value(ai_methods::HELPER_LLM_CHAT, json!(request));
+            Ok(LlmChatInvokeResponse {
+                task_id: "task-1".to_string(),
+                status: AiMethodStatus::Succeeded,
+                message: Some(AiMessage::text(buckyos_api::AiRole::Assistant, "hello")),
+                tool_calls: Vec::new(),
+                usage: Some(AiUsage {
+                    input_tokens: Some(3),
+                    output_tokens: Some(5),
+                    total_tokens: Some(8),
+                    request_units: Some(1),
+                }),
+                cost: Some(AiCost {
+                    amount: 0.0001,
+                    currency: "USD".to_string(),
+                }),
+                finish_reason: Some("stop".to_string()),
+                provider_task_ref: None,
+                route_trace: None,
+                event_ref: Some("task://task-1/events".to_string()),
+            })
         }
 
         async fn handle_helper_text_to_image(
             &self,
-            request: AiMethodRequest,
+            request: TextToImageHelperRequest,
             _ctx: RPCContext,
-        ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-            self.record(ai_methods::HELPER_TEXT_TO_IMAGE, request)
+        ) -> std::result::Result<TextToImageInvokeResponse, RPCErrors> {
+            self.record_value(ai_methods::HELPER_TEXT_TO_IMAGE, json!(request));
+            Ok(TextToImageInvokeResponse {
+                task_id: "task-1".to_string(),
+                status: AiMethodStatus::Succeeded,
+                artifacts: Vec::new(),
+                usage: None,
+                cost: None,
+                provider_task_ref: None,
+                route_trace: None,
+                event_ref: Some("task://task-1/events".to_string()),
+            })
         }
     }
 
@@ -1220,7 +1259,7 @@ mod tests {
             request: AiMethodRequest,
         ) -> std::result::Result<AiMethodResponse, RPCErrors> {
             *self.last_method.lock().unwrap() = Some(method.to_string());
-            *self.last_request.lock().unwrap() = Some(request);
+            *self.last_request.lock().unwrap() = Some(json!(request));
             Ok(AiMethodResponse::new(
                 "task-1".to_string(),
                 AiMethodStatus::Succeeded,
@@ -1243,6 +1282,11 @@ mod tests {
                 Some("task://task-1/events".to_string()),
             ))
         }
+
+        fn record_value(&self, method: &str, request: Value) {
+            *self.last_method.lock().unwrap() = Some(method.to_string());
+            *self.last_request.lock().unwrap() = Some(request);
+        }
     }
 
     #[tokio::test]
@@ -1260,7 +1304,7 @@ mod tests {
             }],
             "options": {"temperature": 0.2},
             "model": "llm.chat.test",
-            "must_features": ["plan"],
+            "must_features": ["tool_calling"],
             "max_cost_usd": 0.01
         });
         let output = adapter.invoke(&executor, &input).await.unwrap();
@@ -1275,11 +1319,9 @@ mod tests {
         let last_method = handler.last_method.lock().unwrap().clone();
         assert_eq!(last_method.as_deref(), Some(ai_methods::HELPER_LLM_CHAT));
         let request = handler.last_request.lock().unwrap().clone().unwrap();
-        assert_eq!(request.model.alias, "llm.chat.test");
-        assert_eq!(request.requirements.must_features, vec!["plan".to_string()]);
-        assert_eq!(request.requirements.max_cost_usd, Some(0.01));
-        assert_eq!(request.payload.messages.len(), 1);
-        assert_eq!(request.payload.messages[0].text_content(), "hi");
+        assert_eq!(request["logical_model"], "llm.chat.test");
+        assert_eq!(request["requirements"]["tool_call"], true);
+        assert_eq!(request["messages"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -1289,7 +1331,7 @@ mod tests {
             handler.clone(),
         ))));
         let adapter = AiccAdapter::new(client);
-        let executor = ExecutorRef::parse("service::aicc.image.txt2img").unwrap();
+        let executor = ExecutorRef::parse("service::aicc.helper.text_to_image").unwrap();
         let input = json!({
             "input_json": {
                 "prompt": "draw a cube",
@@ -1306,11 +1348,8 @@ mod tests {
             Some(ai_methods::HELPER_TEXT_TO_IMAGE)
         );
         let request = handler.last_request.lock().unwrap().clone().unwrap();
-        assert_eq!(request.model.alias, "image.txt2img.default");
-        assert_eq!(
-            request.payload.input_json.as_ref().unwrap()["prompt"],
-            "draw a cube"
-        );
+        assert_eq!(request["logical_model"], "image.txt2img.default");
+        assert_eq!(request["prompt"], "draw a cube");
     }
 
     #[tokio::test]
@@ -1396,20 +1435,38 @@ mod tests {
 
         async fn handle_helper_llm_chat(
             &self,
-            request: AiMethodRequest,
-            ctx: RPCContext,
-        ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-            self.handle_method(ai_methods::HELPER_LLM_CHAT, request, ctx)
-                .await
+            _request: LlmChatHelperRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<LlmChatInvokeResponse, RPCErrors> {
+            Ok(LlmChatInvokeResponse {
+                task_id: "task-bad".to_string(),
+                status: AiMethodStatus::Failed,
+                message: None,
+                tool_calls: Vec::new(),
+                usage: None,
+                cost: None,
+                finish_reason: None,
+                provider_task_ref: None,
+                route_trace: None,
+                event_ref: Some("task://task-bad/events".to_string()),
+            })
         }
 
         async fn handle_helper_text_to_image(
             &self,
-            request: AiMethodRequest,
-            ctx: RPCContext,
-        ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-            self.handle_method(ai_methods::HELPER_TEXT_TO_IMAGE, request, ctx)
-                .await
+            _request: TextToImageHelperRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<TextToImageInvokeResponse, RPCErrors> {
+            Ok(TextToImageInvokeResponse {
+                task_id: "task-bad".to_string(),
+                status: AiMethodStatus::Failed,
+                artifacts: Vec::new(),
+                usage: None,
+                cost: None,
+                provider_task_ref: None,
+                route_trace: None,
+                event_ref: Some("task://task-bad/events".to_string()),
+            })
         }
     }
 
@@ -1436,17 +1493,17 @@ mod tests {
 
         async fn handle_helper_llm_chat(
             &self,
-            request: AiMethodRequest,
+            request: LlmChatHelperRequest,
             ctx: RPCContext,
-        ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+        ) -> std::result::Result<LlmChatInvokeResponse, RPCErrors> {
             self.0.handle_helper_llm_chat(request, ctx).await
         }
 
         async fn handle_helper_text_to_image(
             &self,
-            request: AiMethodRequest,
+            request: TextToImageHelperRequest,
             ctx: RPCContext,
-        ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+        ) -> std::result::Result<TextToImageInvokeResponse, RPCErrors> {
             self.0.handle_helper_text_to_image(request, ctx).await
         }
     }

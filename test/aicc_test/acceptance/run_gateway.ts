@@ -8,7 +8,12 @@ import {
   tomlString,
   tomlStrings,
 } from "../../jarvis_media_dv/config.ts";
-import { loginGateway, type GatewaySession, type RpcClient } from "./gateway.ts";
+import {
+  callChatCompletions,
+  loginGateway,
+  type GatewaySession,
+  type RpcClient,
+} from "./gateway.ts";
 import { analyzeProviderMatrix, validateProviderBaseline } from "./manifest.ts";
 import {
   assertResponseShape,
@@ -1507,7 +1512,7 @@ async function executeAcceptance(input: {
                   if (actualCalls >= options.maxRealCalls) throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before Judge`);
                   judgeReservation = costBudget.reserve(judgeEstimate);
                   actualCalls += 1;
-                  return await session.aicc.call("llm.chat", request) as AiMethodResponse;
+                  return await callChatCompletions(session.aicc, request) as AiMethodResponse;
                 }),
               });
               const judgeFinance = extractFinance(verdict.terminalResponse);
@@ -1520,7 +1525,7 @@ async function executeAcceptance(input: {
                 provider_instance: judgeProviderInstance ?? judgeModel,
                 exact_model: judgeModel,
                 api_type: "llm",
-                method: "llm.chat",
+                method: "chat.completions.create",
                 started_at: new Date(judgeStarted).toISOString(),
                 status: verdict.passed ? "passed" : "failed",
                 usage: judgeFinance.usage,
@@ -1551,7 +1556,7 @@ async function executeAcceptance(input: {
                   provider_instance: judgeProviderInstance ?? judgeModel,
                   exact_model: judgeModel,
                   api_type: "llm",
-                  method: "llm.chat",
+                  method: "chat.completions.create",
                   started_at: new Date(judgeStarted).toISOString(),
                   status: "failed",
                   estimated_cost_usd: judgeEstimate,

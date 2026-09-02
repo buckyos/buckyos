@@ -1325,39 +1325,43 @@ async function judgeStep(input: {
   }
   judgeContent.push(...(input.resourceBlocks ?? []));
   const request = {
-    capability: "llm",
-    model: { alias: input.model },
-    requirements: { must_features: ["json_output"], resp_format: "json" },
-    payload: {
-      input_json: {
-        messages: [{
-          role: "user",
-          content: judgeContent,
-        }],
-        max_output_tokens: 256,
-        response_format: {
-          type: "json_schema",
-          name: "aicc_t3_judge_verdict",
-          strict: true,
-          schema: {
-            type: "object",
-            properties: {
-              pass: { type: "boolean" },
-              score: { type: "number", minimum: 0, maximum: 1 },
-              reason: { type: "string" },
-            },
-            required: ["pass", "score", "reason"],
-            additionalProperties: false,
-          },
+    logical_model: input.model,
+    requirements: { json_schema: true },
+    messages: [{
+      role: "user",
+      content: judgeContent,
+    }],
+    max_output_tokens: 256,
+    response_format: {
+      type: "json_schema",
+      name: "aicc_t3_judge_verdict",
+      strict: true,
+      schema: {
+        type: "object",
+        properties: {
+          pass: { type: "boolean" },
+          score: { type: "number", minimum: 0, maximum: 1 },
+          reason: { type: "string" },
         },
+        required: ["pass", "score", "reason"],
+        additionalProperties: false,
       },
-      resources: [],
-      tool_specs: [],
-      options: { session_id: `${input.traceId}:judge`, rootid: input.traceId },
     },
     idempotency_key: `${input.traceId}:judge`,
   };
-  const initial = await input.aicc.call("llm.chat", request) as AiMethodResponse;
+  const typed = await input.aicc.call("helper.llm_chat", request) as Record<string, unknown>;
+  const initial = {
+    ...typed,
+    result: typed.message
+      ? {
+        message: typed.message,
+        usage: typed.usage,
+        cost: typed.cost,
+        finish_reason: typed.finish_reason,
+        provider_task_ref: typed.provider_task_ref,
+      }
+      : null,
+  } as AiMethodResponse;
   if (!initial.task_id) throw new JudgeError("LLM Judge response omitted task_id");
   const result = await waitForAiccResult(input.taskManager, initial, 180_000);
   const text = responseText(result).join("\n");

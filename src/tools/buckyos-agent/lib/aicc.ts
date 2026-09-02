@@ -23,8 +23,8 @@ export interface ModelRequirement {
   json_schema?: boolean;
   web_search?: boolean;
   vision?: boolean;
+  image_generation?: boolean;
   min_context_tokens?: number;
-  [key: string]: unknown;
 }
 
 export interface ModelDisable {
@@ -33,7 +33,8 @@ export interface ModelDisable {
   json_schema?: boolean;
   web_search?: boolean;
   vision?: boolean;
-  [key: string]: unknown;
+  image_generation?: boolean;
+  min_context_tokens?: number;
 }
 
 export interface CallOptions {
@@ -147,6 +148,42 @@ function buildPolicy(opts: CallOptions): Record<string, unknown> {
 
 function buildRequest(opts: CallOptions): Record<string, unknown> {
   const modelAlias = opts.modelAlias ?? opts.method;
+  if (opts.method === "helper.llm_chat") {
+    return {
+      logical_model: modelAlias,
+      requirements: opts.requirements ?? {},
+      disable: opts.disable ?? {},
+      policy: buildPolicy(opts),
+      messages: opts.messages ?? [],
+      tools: opts.toolSpecs ?? [],
+      ...(opts.inputJson?.response_format ? { response_format: opts.inputJson.response_format } : {}),
+      ...(typeof opts.options?.temperature === "number"
+        ? { temperature: opts.options.temperature }
+        : {}),
+      ...(typeof opts.options?.max_output_tokens === "number"
+        ? { max_output_tokens: opts.options.max_output_tokens }
+        : {}),
+      ...(opts.idempotencyKey ? { idempotency_key: opts.idempotencyKey } : {}),
+    };
+  }
+  if (opts.method === "helper.text_to_image") {
+    return {
+      logical_model: modelAlias,
+      requirements: opts.requirements ?? {},
+      disable: opts.disable ?? {},
+      policy: buildPolicy(opts),
+      prompt: opts.text ?? opts.inputJson?.prompt,
+      ...(opts.inputJson?.negative_prompt ? { negative_prompt: opts.inputJson.negative_prompt } : {}),
+      ...(typeof opts.inputJson?.n === "number" ? { n: opts.inputJson.n } : {}),
+      ...(opts.inputJson?.aspect_ratio ? { aspect_ratio: opts.inputJson.aspect_ratio } : {}),
+      ...(opts.inputJson?.size ? { size: opts.inputJson.size } : {}),
+      ...(opts.inputJson?.quality ? { quality: opts.inputJson.quality } : {}),
+      ...(opts.inputJson?.style ? { style: opts.inputJson.style } : {}),
+      ...(typeof opts.inputJson?.seed === "number" ? { seed: opts.inputJson.seed } : {}),
+      ...(opts.inputJson?.output ? { output: opts.inputJson.output } : {}),
+      ...(opts.idempotencyKey ? { idempotency_key: opts.idempotencyKey } : {}),
+    };
+  }
   const req: Record<string, unknown> = {
     capability: opts.capability,
     model: { alias: modelAlias },
@@ -237,7 +274,7 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
     return {
       taskId: response.task_id,
       status: "succeeded",
-      summary: asAiResponse(response.result ?? null),
+      summary: asAiResponse(response.result ?? response),
       rawResponse: response,
     };
   }
@@ -245,7 +282,7 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
     return {
       taskId: response.task_id,
       status: "failed",
-      summary: asAiResponse(response.result ?? null),
+      summary: asAiResponse(response.result ?? response),
       rawResponse: response,
     };
   }
@@ -295,12 +332,16 @@ export function llmChat(runtime: AiccRuntime, opts: LlmChatOptions): Promise<Cal
     ...opts,
     capability: "llm",
     method: "helper.llm_chat",
-    modelAlias: opts.modelAlias ?? "llm",
+    modelAlias: opts.modelAlias ?? "llm.chat",
     messages: opts.messages,
     toolSpecs: opts.toolSpecs,
     requirements: {
       ...(opts.requirements ?? {}),
-      ...(opts.responseFormat === "json" ? { resp_format: "Json" } : {}),
+      ...(opts.responseFormat === "json" ? { json_schema: true } : {}),
+    },
+    inputJson: {
+      ...(opts.inputJson ?? {}),
+      ...(opts.responseFormat === "json" ? { response_format: { type: "json_object" } } : {}),
     },
     options,
   });

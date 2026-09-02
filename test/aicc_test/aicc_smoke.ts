@@ -278,7 +278,7 @@ const audioResource: ResourceRef = AICC_TEST_AUDIO_BASE64
   };
 const allCases: SmokeCase[] = [
   {
-    method: "image.txt2img",
+    method: "images.generate",
     capability: "image",
     check: "artifact",
     capturesGeneratedImage: true,
@@ -292,11 +292,11 @@ const allCases: SmokeCase[] = [
     }),
   },
   {
-    method: "llm.chat",
+    method: "chat.completions.create",
     capability: "llm",
     defaultAlias: AICC_MODEL_ALIAS,
     check: "text",
-    requirements: { must_features: ["vision"] },
+    requirements: { vision: true },
     buildPayload: () => ({
       input_json: {
         messages: [{
@@ -1220,8 +1220,15 @@ async function loadModelEntries(
   }
 }
 
+function apiTypeForMethod(method: string): string {
+  if (method === "chat.completions.create") return "llm";
+  if (method === "images.generate") return "image.txt2img";
+  return method;
+}
+
 function supportsApiType(model: ModelEntry, method: string): boolean {
-  return Array.isArray(model.api_types) && model.api_types.includes(method);
+  return Array.isArray(model.api_types) &&
+    model.api_types.includes(apiTypeForMethod(method));
 }
 
 function selectModelAlias(
@@ -1246,19 +1253,20 @@ function selectModelAlias(
     return { modelAlias: testCase.method, supported: false };
   }
 
+  const logicalModel = apiTypeForMethod(testCase.method);
   const mounts = supportedModels.flatMap((model) => model.logical_mounts ?? []);
-  const exactMount = mounts.find((mount) => mount === testCase.method);
+  const exactMount = mounts.find((mount) => mount === logicalModel);
   if (exactMount) {
     return { modelAlias: exactMount, supported: true };
   }
   const defaultMount = mounts.find((mount) =>
-    mount === `${testCase.method}.default`
+    mount === `${logicalModel}.default`
   );
   if (defaultMount) {
     return { modelAlias: defaultMount, supported: true };
   }
   const prefixedMount = mounts.find((mount) =>
-    mount.startsWith(`${testCase.method}.`)
+    mount.startsWith(`${logicalModel}.`)
   );
   if (prefixedMount) {
     return { modelAlias: prefixedMount, supported: true };
@@ -1295,6 +1303,34 @@ async function buildMethodPayload(
   const payload = testCase.returnsUnstructuredData
     ? requestNamedObjectOutput(basePayload)
     : basePayload;
+  const input = payload.input_json ?? {};
+  if (testCase.method === "chat.completions.create") {
+    return {
+      exact_model: modelAlias,
+      messages: input.messages ?? [],
+      tools: input.tool_specs ?? [],
+      response_format: input.response_format,
+      temperature: input.temperature ?? payload.options?.temperature,
+      max_output_tokens: input.max_output_tokens ??
+        payload.options?.max_output_tokens,
+      idempotency_key: runId,
+    };
+  }
+  if (testCase.method === "images.generate") {
+    return {
+      exact_model: modelAlias,
+      prompt: input.prompt,
+      negative_prompt: input.negative_prompt,
+      n: input.n,
+      aspect_ratio: input.aspect_ratio,
+      size: input.size,
+      quality: input.quality,
+      style: input.style,
+      seed: input.seed,
+      output: input.output,
+      idempotency_key: runId,
+    };
+  }
   return {
     capability: testCase.capability,
     model: { alias: modelAlias },
@@ -1362,6 +1398,65 @@ function assertAiResponse(
       `${testCase.method}: expected video operation ref, artifact, or extra`,
     );
   }
+}
+
+function normalizeMethodResponse(
+  method: string,
+  raw: Record<string, unknown>,
+): AiccMethodResponse {
+  if (method === "chat.completions.create") {
+    return {
+      task_id: String(raw.task_id ?? ""),
+      status: raw.status as AiccMethodResponse["status"],
+      event_ref: typeof raw.event_ref === "string" ? raw.event_ref : null,
+      result: raw.message
+        ? {
+          message: raw.message as AiMessage,
+          usage: raw.usage as JsonValue,
+          cost: raw.cost as JsonValue,
+          finish_reason: typeof raw.finish_reason === "string"
+            ? raw.finish_reason
+            : null,
+          provider_task_ref: typeof raw.provider_task_ref === "string"
+            ? raw.provider_task_ref
+            : null,
+          extra: raw.route_trace
+            ? { route_trace: raw.route_trace as JsonValue }
+            : null,
+        }
+        : null,
+    };
+  }
+  if (method === "images.generate") {
+    const artifacts = Array.isArray(raw.artifacts)
+      ? raw.artifacts as AiArtifact[]
+      : [];
+    return {
+      task_id: String(raw.task_id ?? ""),
+      status: raw.status as AiccMethodResponse["status"],
+      event_ref: typeof raw.event_ref === "string" ? raw.event_ref : null,
+      result: artifacts.length > 0
+        ? {
+          message: {
+            role: "assistant",
+            content: artifacts.map((artifact) => ({
+              type: "image",
+              source: artifact.resource,
+            })),
+          },
+          usage: raw.usage as JsonValue,
+          cost: raw.cost as JsonValue,
+          provider_task_ref: typeof raw.provider_task_ref === "string"
+            ? raw.provider_task_ref
+            : null,
+          extra: raw.route_trace
+            ? { route_trace: raw.route_trace as JsonValue }
+            : null,
+        }
+        : null,
+    };
+  }
+  return raw as AiccMethodResponse;
 }
 
 async function runCase(args: {
@@ -1451,10 +1546,11 @@ async function runCase(args: {
 
   let response: AiccMethodResponse;
   try {
-    response = await aiccRpc.call(
+    const raw = await aiccRpc.call(
       testCase.method,
       requestPayload,
-    ) as AiccMethodResponse;
+    ) as Record<string, unknown>;
+    response = normalizeMethodResponse(testCase.method, raw);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (isSkippableError(message)) {
@@ -1740,10 +1836,10 @@ function selectedCases(): SmokeCase[] {
   );
   if (
     needsGeneratedImage &&
-    !cases.some((testCase) => testCase.method === "image.txt2img")
+    !cases.some((testCase) => testCase.method === "images.generate")
   ) {
     const generator = allCases.find((testCase) =>
-      testCase.method === "image.txt2img"
+      testCase.method === "images.generate"
     );
     return generator ? [generator, ...cases] : cases;
   }

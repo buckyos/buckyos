@@ -166,7 +166,7 @@ test("Judge resource extraction includes request resources and output artifacts"
 });
 
 test("LLM acceptance exposes only the breaking-change chat method", async () => {
-  assert.deepEqual(methodsForApiType("llm"), ["llm.chat"]);
+  assert.deepEqual(methodsForApiType("llm"), ["chat.completions.create"]);
   assert.doesNotMatch(JSON.stringify(await baseline()), /llm\.completion/);
 });
 
@@ -820,8 +820,8 @@ test("finance budget reserves concurrent attempts and reports unknown exposure",
     plannedMaxCalls: 2,
     plannedMaxCostUsd: 0.02,
     entries: [
-      { case_id: "a", attempt: 1, provider_driver: "openai", provider_instance: "one", exact_model: "m@one", api_type: "llm", method: "llm.chat", started_at: "now", status: "passed", estimated_cost_usd: 0.01, actual_cost_usd: 0.012, cost_status: "actual" },
-      { case_id: "b", attempt: 1, provider_driver: "openai", provider_instance: "one", exact_model: "m@one", api_type: "llm", method: "llm.chat", started_at: "now", status: "failed", estimated_cost_usd: 0.01, cost_status: "unknown" },
+      { case_id: "a", attempt: 1, provider_driver: "openai", provider_instance: "one", exact_model: "m@one", api_type: "llm", method: "chat.completions.create", started_at: "now", status: "passed", estimated_cost_usd: 0.01, actual_cost_usd: 0.012, cost_status: "actual" },
+      { case_id: "b", attempt: 1, provider_driver: "openai", provider_instance: "one", exact_model: "m@one", api_type: "llm", method: "chat.completions.create", started_at: "now", status: "failed", estimated_cost_usd: 0.01, cost_status: "unknown" },
     ],
   });
   assert.equal(report.actual_cost_usd, 0.012);
@@ -878,7 +878,7 @@ test("T1 manifest coverage does not count declared but unexecuted cases", () => 
     layer: "T1",
     status: "passed",
     api_type: "llm",
-    method: "llm.chat",
+    method: "chat.completions.create",
     outbound_message_ids: [],
     artifact_ids: [],
     attempts: [],
@@ -1040,7 +1040,7 @@ test("T2 successful protocol response cannot omit durable accounting fields", ()
     exact_model: "gpt@one",
     provider_model_id: "gpt",
     api_type: "llm",
-    method: "llm.chat",
+    method: "chat.completions.create",
     baseline_status: "active" as const,
     input_kinds: ["text"],
     output_kinds: ["text"],
@@ -1061,7 +1061,7 @@ test("T2 LLM output variants build and assert JSON schema and tool-call contract
     exact_model: "gpt@one",
     provider_model_id: "gpt",
     api_type: "llm",
-    method: "llm.chat",
+    method: "chat.completions.create",
     baseline_status: "active" as const,
     input_kinds: ["text"],
     source_urls: [],
@@ -1283,7 +1283,7 @@ test("report redaction removes secrets and totals statuses", () => {
   const base = {
     run_id: "run",
     layer: "T1",
-    method: "llm.chat",
+    method: "chat.completions.create",
     outbound_message_ids: [],
     artifact_ids: [],
     attempts: [],
