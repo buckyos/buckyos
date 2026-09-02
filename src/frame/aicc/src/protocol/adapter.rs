@@ -345,6 +345,7 @@ pub(crate) enum NativeTaskOperation {
 pub(crate) struct NativeTaskInput<'a> {
     pub operation: NativeTaskOperation,
     pub remote_task_id: Option<&'a str>,
+    pub codec_input: Option<&'a CodecInput>,
     pub resolved_parameters: &'a BTreeMap<String, Value>,
     pub context: &'a CodecContext,
 }
@@ -355,6 +356,12 @@ impl std::fmt::Debug for NativeTaskInput<'_> {
             .debug_struct("NativeTaskInput")
             .field("operation", &self.operation)
             .field("remote_task_id", &self.remote_task_id)
+            .field(
+                "codec_method",
+                &self
+                    .codec_input
+                    .map(|input| input.canonical_request.method()),
+            )
             .field(
                 "resolved_parameter_names",
                 &self.resolved_parameters.keys().collect::<Vec<_>>(),
@@ -743,12 +750,24 @@ impl CodecRegistry {
             ));
         }
         input.context.validate()?;
-        if input.operation != NativeTaskOperation::Submit
-            && input.remote_task_id.is_none_or(|id| id.trim().is_empty())
-        {
-            return Err(ProtocolError::invalid_request(
-                "native lifecycle operation requires a remote task ID",
-            ));
+        match input.operation {
+            NativeTaskOperation::Submit => input
+                .codec_input
+                .ok_or_else(|| {
+                    ProtocolError::invalid_request(
+                        "native task submit requires a canonical codec input",
+                    )
+                })?
+                .validate_for(&registered.binding)?,
+            NativeTaskOperation::Status
+            | NativeTaskOperation::Result
+            | NativeTaskOperation::Cancel => {
+                if input.remote_task_id.is_none_or(|id| id.trim().is_empty()) {
+                    return Err(ProtocolError::invalid_request(
+                        "native lifecycle operation requires a remote task ID",
+                    ));
+                }
+            }
         }
         let codec = self.native_task_codec(adapter_id, operation_id, api_type)?;
         if !codec.operations().contains(&input.operation) {
@@ -814,7 +833,10 @@ mod tests {
         cancellation_pair, poll_until_terminal, HttpBody, PollOutcome, PollPolicy, ProtocolEvent,
         SseConfig, SseFrame,
     };
-    use buckyos_api::{EmbeddingTextItem, EmbeddingTextRequest, LlmChatInvokeRequest};
+    use buckyos_api::{
+        EmbeddingTextItem, EmbeddingTextRequest, LlmChatInvokeRequest, ResourceRef,
+        VideoExtendRequest, VideoImageToVideoRequest, VideoTextToVideoRequest, VideoToVideoRequest,
+    };
     use futures_util::{stream, StreamExt};
     use reqwest::{header::HeaderMap, Method, StatusCode};
     use serde_json::json;
@@ -881,16 +903,19 @@ mod tests {
         }
     }
 
-    struct FakeNativeCodec(OperationDescriptor);
+    struct FakeNativeCodec {
+        descriptor: OperationDescriptor,
+        api_type: ApiType,
+    }
 
     #[async_trait]
     impl NativeTaskCodec for FakeNativeCodec {
         fn descriptor(&self) -> &OperationDescriptor {
-            &self.0
+            &self.descriptor
         }
 
         fn api_type(&self) -> ApiType {
-            ApiType::VideoTextToVideo
+            self.api_type
         }
 
         fn operations(&self) -> BTreeSet<NativeTaskOperation> {
@@ -903,9 +928,16 @@ mod tests {
         }
 
         fn encode_native(&self, input: &NativeTaskInput<'_>) -> ProtocolResultValue<HttpRequest> {
+            let method = input
+                .codec_input
+                .map(|input| input.canonical_request.method())
+                .unwrap_or("lifecycle");
             Ok(HttpRequest::new(
                 Method::POST,
-                format!("{}/native/{:?}", input.context.base_url, input.operation),
+                format!(
+                    "{}/native/{:?}/{method}",
+                    input.context.base_url, input.operation
+                ),
             ))
         }
 
@@ -1284,15 +1316,26 @@ mod tests {
                 adapter("videos", descriptor.clone()),
                 CodecRegistration {
                     operation_codecs: Vec::new(),
-                    native_task_codecs: vec![Arc::new(FakeNativeCodec(descriptor))],
+                    native_task_codecs: vec![Arc::new(FakeNativeCodec {
+                        descriptor,
+                        api_type: ApiType::VideoTextToVideo,
+                    })],
                 },
             )
             .unwrap();
         let parameters = BTreeMap::from([("prompt".to_string(), json!("ocean"))]);
         let call_context = context("https://video.example", "secret");
+        let codec_input = CodecInput {
+            canonical_request: AiccCall::VideoTextToVideo(VideoTextToVideoRequest::new(
+                "model@instance",
+                "ocean".to_string(),
+            )),
+            resolved_parameters: BTreeMap::new(),
+        };
         let submit = NativeTaskInput {
             operation: NativeTaskOperation::Submit,
             remote_task_id: None,
+            codec_input: Some(&codec_input),
             resolved_parameters: &parameters,
             context: &call_context,
         };
@@ -1410,6 +1453,145 @@ mod tests {
             panic!("expected cancellation result")
         };
         assert!(accepted);
+    }
+
+    #[test]
+    fn native_submit_dispatches_four_video_api_types_with_typed_requests() {
+        let mut descriptor = operation(
+            "models.predictLongRunning",
+            vec![
+                OperationBinding::new(ApiType::VideoTextToVideo, [ExecutionMode::NativeTask]),
+                OperationBinding::new(ApiType::VideoImageToVideo, [ExecutionMode::NativeTask]),
+                OperationBinding::new(ApiType::VideoToVideo, [ExecutionMode::NativeTask]),
+                OperationBinding::new(ApiType::VideoExtend, [ExecutionMode::NativeTask]),
+            ],
+        );
+        descriptor.supports_cancel = true;
+        let codecs = [
+            ApiType::VideoTextToVideo,
+            ApiType::VideoImageToVideo,
+            ApiType::VideoToVideo,
+            ApiType::VideoExtend,
+        ]
+        .into_iter()
+        .map(|api_type| {
+            Arc::new(FakeNativeCodec {
+                descriptor: descriptor.clone(),
+                api_type,
+            }) as Arc<dyn NativeTaskCodec>
+        })
+        .collect();
+        let mut registry = CodecRegistry::default();
+        registry
+            .register_codecs(
+                adapter("gemini-video", descriptor),
+                CodecRegistration {
+                    operation_codecs: Vec::new(),
+                    native_task_codecs: codecs,
+                },
+            )
+            .unwrap();
+
+        let image = ResourceRef::url("https://resource.example/image.png".to_string(), None);
+        let video = ResourceRef::url("https://resource.example/video.mp4".to_string(), None);
+        let text = CodecInput {
+            canonical_request: AiccCall::VideoTextToVideo(VideoTextToVideoRequest::new(
+                "model@instance",
+                "text prompt".to_string(),
+            )),
+            resolved_parameters: BTreeMap::new(),
+        };
+        let image_to_video = CodecInput {
+            canonical_request: AiccCall::VideoImageToVideo(VideoImageToVideoRequest::new(
+                "model@instance",
+                image,
+                "image prompt".to_string(),
+            )),
+            resolved_parameters: BTreeMap::new(),
+        };
+        let video_to_video = CodecInput {
+            canonical_request: AiccCall::VideoToVideo(VideoToVideoRequest::new(
+                "model@instance",
+                video.clone(),
+                "video prompt".to_string(),
+            )),
+            resolved_parameters: BTreeMap::new(),
+        };
+        let mut extend_request =
+            VideoExtendRequest::new("model@instance", video, "extend prompt".to_string());
+        extend_request.continuation_handle = Some("continuation-1".to_string());
+        let extend = CodecInput {
+            canonical_request: AiccCall::VideoExtend(extend_request),
+            resolved_parameters: BTreeMap::new(),
+        };
+        let call_context = context("https://video.example", "secret");
+        let parameters = BTreeMap::new();
+
+        for (api_type, codec_input) in [
+            (ApiType::VideoTextToVideo, &text),
+            (ApiType::VideoImageToVideo, &image_to_video),
+            (ApiType::VideoToVideo, &video_to_video),
+            (ApiType::VideoExtend, &extend),
+        ] {
+            let submit = NativeTaskInput {
+                operation: NativeTaskOperation::Submit,
+                remote_task_id: None,
+                codec_input: Some(codec_input),
+                resolved_parameters: &parameters,
+                context: &call_context,
+            };
+            let request = registry
+                .encode_native(
+                    "gemini-video",
+                    "models.predictLongRunning",
+                    api_type,
+                    &submit,
+                )
+                .unwrap();
+            assert!(request
+                .url
+                .ends_with(codec_input.canonical_request.method()));
+        }
+
+        let missing = NativeTaskInput {
+            operation: NativeTaskOperation::Submit,
+            remote_task_id: None,
+            codec_input: None,
+            resolved_parameters: &parameters,
+            context: &call_context,
+        };
+        assert_eq!(
+            registry
+                .encode_native(
+                    "gemini-video",
+                    "models.predictLongRunning",
+                    ApiType::VideoTextToVideo,
+                    &missing,
+                )
+                .unwrap_err()
+                .kind,
+            super::super::ProtocolErrorKind::InvalidRequest
+        );
+
+        let mismatch = NativeTaskInput {
+            operation: NativeTaskOperation::Submit,
+            remote_task_id: None,
+            codec_input: Some(&text),
+            resolved_parameters: &parameters,
+            context: &call_context,
+        };
+        assert_eq!(
+            registry
+                .encode_native(
+                    "gemini-video",
+                    "models.predictLongRunning",
+                    ApiType::VideoExtend,
+                    &mismatch,
+                )
+                .unwrap_err()
+                .kind,
+            super::super::ProtocolErrorKind::InvalidRequest
+        );
     }
 
     #[tokio::test]

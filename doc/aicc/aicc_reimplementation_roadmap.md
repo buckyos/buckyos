@@ -272,7 +272,9 @@ Owner：Protocol Infra 小组
 
 实现记录：Protocol Infra 小组完成 HTTP buffered/streaming transport、有界 JSON/multipart、SSE framing、四类 credential、GLM 短期 JWT、descriptor/codec registry、统一执行结果和原生任务生命周期原语；credential 与 transport 的调试输出只暴露类型、匿名引用和非敏感结构信息。当前没有选中的 realtime operation 需要 websocket，因此按目标规范未预建 websocket primitive。Protocol 模块 33 个正常、边界、错误和并发语义单测及隔离 clippy `-D warnings` 通过，且边界扫描确认不引用 Provider、model、routing 或 catalog。
 
-补充实现记录：根据 WP-06A/B/C/D 的集成反馈，operation descriptor 改为官方 operation ID 下显式声明多个 `(ApiType, Capability, execution modes)` binding，registry 按 `(adapter, operation, ApiType)` 事务注册和分发，并校验 buffered/streaming/native-task codec 集合完整性。新增类型化 `CodecContext`（resolved base URL、脱敏 credential、已物化资源、调用级 timeout/body limits）、增量 `StreamingHttpResponse -> SseFrameStream -> ProtocolStream` 入口、供 codec 映射 Provider 错误的有界非 2xx collector，以及独立于公共 `AiccCall` 的 native-task submit/status/result/cancel contract；SSE 正常终止、EOF、断线、格式错误和全程 body 上限均有单测覆盖。隔离验证 43 个 protocol 测试及 AICC `clippy --no-deps -D warnings` 通过。
+补充实现记录：根据 WP-06A/B/C/D 的集成反馈，operation descriptor 改为官方 operation ID 下显式声明多个 `(ApiType, Capability, execution modes)` binding，registry 按 `(adapter, operation, ApiType)` 事务注册和分发，并校验 buffered/streaming/native-task codec 集合完整性。新增类型化 `CodecContext`（resolved base URL、脱敏 credential、已物化资源、调用级 timeout/body limits）、增量 `StreamingHttpResponse -> SseFrameStream -> ProtocolStream` 入口、供 codec 映射 Provider 错误的有界非 2xx collector，以及独立于公共 `AiccCall` 的 native-task submit/status/result/cancel contract；SSE 正常终止、EOF、断线、格式错误和全程 body 上限均有单测覆盖。隔离验证 44 个 protocol 测试及 AICC `clippy --no-deps -D warnings` 通过。
+
+Native-task submit 后续补充为必须携带并校验 canonical `CodecInput`，从而让 codec 类型安全读取 typed request 业务字段；status/result/cancel 仍仅依赖 remote task ID、resolved parameters 和调用上下文。同一 `models.predictLongRunning` operation 下四种 video ApiType 的合法提交、缺失 canonical input 和 ApiType/request 错配均有测试覆盖。
 
 ### WP-06：基础 Protocol Codec
 
