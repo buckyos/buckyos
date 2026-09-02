@@ -113,9 +113,14 @@ export class FileItemListImpl implements FileItemList {
 
   /** Set (or change) the sort query. Changes drop all loaded data and refetch. */
   setQuery(sortKey: SortKey, sortDir: SortDir) {
-    const same = this.query && this.query.sortKey === sortKey && this.query.sortDir === sortDir
+    // Directions are capability-negotiated (§2.5): a direction the reader
+    // cannot honor is clamped here instead of silently returning pages in a
+    // different order (NFSP v1 serves ascending only).
+    const dirs = this.capabilities.sortDirs
+    const dir = dirs && !dirs.includes(sortDir) ? (dirs[0] ?? 'asc') : sortDir
+    const same = this.query && this.query.sortKey === sortKey && this.query.sortDir === dir
     if (same && this.status !== 'idle') return
-    this.query = { sortKey, sortDir }
+    this.query = { sortKey, sortDir: dir }
     this.restart()
   }
 

@@ -691,6 +691,63 @@ export function mockRenameEntry(id: string, name: string): boolean {
   return true
 }
 
+/** Rewrites a folder subtree's index keys and descendant paths after a path change. */
+function repathDescendants(oldPath: string, newPath: string) {
+  const prefix = `${oldPath}/`
+  for (const key of Object.keys(byPath)) {
+    if (key === oldPath || key.startsWith(prefix)) {
+      const moved = byPath[key]
+      delete byPath[key]
+      byPath[newPath + key.slice(oldPath.length)] = moved
+    }
+  }
+  for (const other of Object.values(byId)) {
+    if (other.path.startsWith(prefix)) {
+      other.path = newPath + other.path.slice(oldPath.length)
+    }
+  }
+}
+
+/** Destroy an entry (and a folder's subtree). Returns its parent path, or null. */
+export function mockRemoveEntry(id: string): string | null {
+  const entry = byId[id]
+  if (!entry) return null
+  const parent = parentPathOf(entry.path)
+  const doomed = [entry]
+  if (entry.kind === 'folder') {
+    const prefix = `${entry.path}/`
+    for (const key of Object.keys(byPath)) {
+      if (key === entry.path || key.startsWith(prefix)) delete byPath[key]
+    }
+    for (const other of Object.values(byId)) {
+      if (other.path.startsWith(prefix)) doomed.push(other)
+    }
+  }
+  for (const dead of doomed) {
+    delete byId[dead.id]
+    const at = entries.indexOf(dead)
+    if (at >= 0) entries.splice(at, 1)
+  }
+  byPath[parent] = (byPath[parent] ?? []).filter((sibling) => sibling !== entry)
+  return parent
+}
+
+/** Move an entry into another folder, keeping its name. Returns the old parent path. */
+export function mockMoveEntry(id: string, toParentPath: string): string | null {
+  const entry = byId[id]
+  if (!entry) return null
+  const fromParent = parentPathOf(entry.path)
+  if (fromParent === toParentPath) return null
+  const oldPath = entry.path
+  const newPath = toParentPath === '/' ? `/${entry.name}` : `${toParentPath}/${entry.name}`
+  byPath[fromParent] = (byPath[fromParent] ?? []).filter((sibling) => sibling !== entry)
+  if (!byPath[toParentPath]) byPath[toParentPath] = []
+  byPath[toParentPath].push(entry)
+  entry.path = newPath
+  if (entry.kind === 'folder') repathDescendants(oldPath, newPath)
+  return fromParent
+}
+
 export const defaultTab: BrowserTab = {
   id: 'tab-home',
   title: 'Home',

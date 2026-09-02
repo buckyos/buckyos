@@ -241,6 +241,8 @@ export function TopBar({
   const acceptsReferences = capabilities?.acceptsReferences ?? false
   const removal = capabilities ? capabilities.removal : 'destroy'
   const sortKeys = capabilities?.sortKeys ?? (['name', 'size', 'modified', 'kind'] as SortKey[])
+  // Directions are capability-negotiated like sortKeys (absent = both).
+  const sortDirs = capabilities?.sortDirs ?? (['asc', 'desc'] as SortDir[])
   const pasteEnabled = canPaste && (acceptsContent || acceptsReferences)
   const deleteLabel =
     removal === 'remove-ref'
@@ -762,7 +764,7 @@ export function TopBar({
           {/* Direction is meaningless under manual order (always collection-defined). */}
           <MenuItem
             selected={sortDir === 'asc'}
-            disabled={sortKey === 'manual'}
+            disabled={sortKey === 'manual' || !sortDirs.includes('asc')}
             onClick={() => {
               setSortMenuAnchor(null)
               onSortChange?.(sortKey, 'asc')
@@ -772,7 +774,7 @@ export function TopBar({
           </MenuItem>
           <MenuItem
             selected={sortDir === 'desc'}
-            disabled={sortKey === 'manual'}
+            disabled={sortKey === 'manual' || !sortDirs.includes('desc')}
             onClick={() => {
               setSortMenuAnchor(null)
               onSortChange?.(sortKey, 'desc')

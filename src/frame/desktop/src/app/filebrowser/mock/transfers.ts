@@ -11,48 +11,14 @@
  *   - a name that already exists in the destination commits with a conflict
  */
 
-import type { FileEntry, FileKind } from '../types'
+import type { FileEntry } from '../types'
 import type { TransferControls, TransferExecutor } from '../data/transfers'
 import { registerTransferExecutor, TransferCancelledError } from '../data/transfers'
 import type { TransferTask } from '../data/state'
+import { classifyFileKind } from '../data/fileKinds'
 import { dfsPathOf } from '../data/urls'
 import { invalidateMockPath, mockDelay } from '../data/mockReader'
 import { mockAddEntry, mockNameExists } from './data'
-
-const KIND_BY_EXT: Record<string, FileKind> = {
-  jpg: 'image',
-  jpeg: 'image',
-  png: 'image',
-  gif: 'image',
-  webp: 'image',
-  svg: 'image',
-  mp4: 'video',
-  mov: 'video',
-  mkv: 'video',
-  mp3: 'audio',
-  flac: 'audio',
-  wav: 'audio',
-  zip: 'archive',
-  tar: 'archive',
-  gz: 'archive',
-  '7z': 'archive',
-  ts: 'code',
-  tsx: 'code',
-  js: 'code',
-  rs: 'code',
-  py: 'code',
-  pdf: 'document',
-  doc: 'document',
-  docx: 'document',
-  xlsx: 'document',
-  md: 'document',
-  txt: 'document',
-}
-
-function classifyByName(name: string): FileKind {
-  const ext = name.split('.').pop()?.toLowerCase() ?? ''
-  return KIND_BY_EXT[ext] ?? 'other'
-}
 
 function checkCancelled(controls: TransferControls) {
   if (controls.isCancelled()) throw new TransferCancelledError()
@@ -114,7 +80,7 @@ async function runMockTransfer(
   const entry: FileEntry = {
     id: `upload-${task.candidate.localId}`,
     name: task.candidate.name,
-    kind: classifyByName(task.candidate.name),
+    kind: classifyFileKind(task.candidate.name, task.candidate.mimeType),
     path: parentPath === '/' ? `/${task.candidate.name}` : `${parentPath}/${task.candidate.name}`,
     sizeBytes: task.candidate.sizeBytes,
     modifiedAt: new Date().toISOString(),

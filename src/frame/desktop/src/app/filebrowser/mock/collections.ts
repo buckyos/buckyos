@@ -16,6 +16,7 @@ import type {
   ListQuery,
   LocationCapabilities,
 } from '../data/FolderReader'
+import { registerCollectionDirectory } from '../data/collectionDirectory'
 import { registerReaderProvider } from '../data/readerRegistry'
 import { resolveTarget } from '../data/targetResolver'
 import { compareEntries } from '../data/sortEntries'
@@ -419,5 +420,15 @@ export function registerCollectionReader() {
   registerReaderProvider({
     scheme: 'collection',
     create: (url) => new MockCollectionReader(url),
+  })
+  registerCollectionDirectory({
+    subscribe: (listener) => collectionStore.subscribeList(listener),
+    snapshot: () => collectionStore.listSnapshot(),
+    list: () => collectionStore.list(),
+    get: (id) => collectionStore.get(id),
+    create: async (title) => {
+      await mockDelay(20, 60)
+      return collectionStore.create(title)
+    },
   })
 }

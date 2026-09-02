@@ -39,6 +39,13 @@ export interface LocationCapabilities {
   /** Collection-only: manual ordering available (sortKeys contains 'manual'). */
   canReorder: boolean
   sortKeys: SortKey[]
+  /**
+   * Directions the reader can honor (capability-negotiated, like sortKeys).
+   * Absent = both. NFSP v1 only serves ascending order, so its readers
+   * advertise ['asc'] and the UI hides the descending toggle — the adapter
+   * never silently returns differently ordered pages (UI_DATAMODEL.md §5.2).
+   */
+  sortDirs?: SortDir[]
   /** Sort key a pane should fall back to when entering this location. */
   defaultSortKey: SortKey
 }

@@ -1,13 +1,6 @@
 import { IconButton, useMediaQuery } from '@mui/material'
 import clsx from 'clsx'
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Camera,
   ChevronRight,
@@ -44,13 +37,15 @@ import { TransfersPanel } from './TransfersPanel'
 import { NamePromptDialog } from './dialogs/NamePromptDialog'
 import type { NamePromptRequest } from './dialogs/NamePromptDialog'
 import { asCollectionReader } from './data/CollectionModel'
+import { collectionDirectory, useCollections } from './data/collectionDirectory'
+import { folderOps } from './data/folderOps'
 import type { FileItem } from './data/FolderReader'
 import { installFileBrowserData } from './data/install'
-import { invalidateMockPath } from './data/mockReader'
 import { resolveReader } from './data/readerRegistry'
 import { collectionTitleSchema, entryNameSchema, validationFallback } from './data/schemas'
 import { useSearch } from './data/search'
 import { useSidebarDevices, useSidebarDfs, useSidebarTopics } from './data/sidebarSources'
+import { toUiError } from './data/state'
 import { stashLocalFile, transferStore } from './data/transfers'
 import { useFolderList } from './data/useFolderList'
 import {
@@ -64,8 +59,6 @@ import {
   parentUrl,
   parseCollectionUrl,
 } from './data/urls'
-import { collectionStore } from './mock/collections'
-import { defaultTabs, mockAddEntry, mockNameExists, mockRenameEntry } from './mock/data'
 import type {
   BrowserTab,
   ClipboardState,
@@ -79,6 +72,18 @@ import type {
 } from './types'
 
 installFileBrowserData()
+
+/** Initial pane tabs — backend-independent defaults. */
+const DEFAULT_TABS: BrowserTab[] = [
+  { id: 'tab-home', title: 'Home', path: '/home' },
+  { id: 'tab-pictures', title: 'Pictures', path: '/home/Pictures' },
+]
+
+/** Session-local tab id (Volatile, §6.2) — module-level so the React
+ * Compiler treats event-handler calls as opaque rather than render-impure. */
+function newTabId(): string {
+  return `tab-${Date.now()}`
+}
 
 interface DetachedTab {
   tab: BrowserTab
@@ -122,6 +127,8 @@ function useBrowserPane(initialTabs: BrowserTab[]) {
       setSortKey(caps.defaultSortKey)
       setSortDir(caps.defaultSortKey === 'modified' ? 'desc' : 'asc')
     }
+    // An unsupported direction (capability-negotiated, §2.5) is clamped by
+    // FileItemList.setQuery at the reader boundary — no state fixup needed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [list])
 
@@ -377,7 +384,7 @@ export function FileBrowserView() {
   // expand control in the status bar should follow the same gate.
   const isXl = useMediaQuery('(min-width: 1280px)')
 
-  const left = useBrowserPane(defaultTabs)
+  const left = useBrowserPane(DEFAULT_TABS)
   const right = useBrowserPane([])
   const [closedTabs, setClosedTabs] = useState<BrowserTab[]>([])
   const [focusedSide, setFocusedSide] = useState<'left' | 'right'>('left')
@@ -398,8 +405,7 @@ export function FileBrowserView() {
   const topicList = topicsSource.state.data ?? []
 
   // Live collection list (sidebar + "Add to Collection" submenu).
-  useSyncExternalStore(collectionStore.subscribeList, collectionStore.listSnapshot)
-  const collections = collectionStore.list()
+  const collections = useCollections()
 
   // Mobile-only panel states
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
@@ -429,7 +435,7 @@ export function FileBrowserView() {
   }
 
   const handleNewTab = () => {
-    left.adoptTab({ id: `tab-${Date.now()}`, title: 'Home', path: '/home' })
+    left.adoptTab({ id: newTabId(), title: 'Home', path: '/home' })
     setFocusedSide('left')
   }
 
@@ -454,7 +460,7 @@ export function FileBrowserView() {
 
   const handleRestoreClosedTab = (tab: BrowserTab) => {
     setClosedTabs((prev) => prev.filter((item) => item.id !== tab.id))
-    left.adoptTab({ ...tab, id: `tab-${Date.now()}` })
+    left.adoptTab({ ...tab, id: newTabId() })
     setFocusedSide('left')
   }
 
@@ -462,6 +468,16 @@ export function FileBrowserView() {
     setToast(message)
     window.setTimeout(() => setToast(null), 2000)
   }
+
+  /** Localized display text for a normalized (or unknown) thrown error. */
+  const uiErrorText = (err: unknown) => {
+    const ui = toUiError(err)
+    return t(ui.messageKey, ui.fallback)
+  }
+
+  /** Form-dialog helper: NamePromptDialog renders `Error.message` only. */
+  const asFormError = (err: unknown): Error =>
+    err instanceof Error ? err : new Error(uiErrorText(err))
 
   const copyText = async (text: string) => {
     try {
@@ -556,10 +572,15 @@ export function FileBrowserView() {
   const addEntriesToCollection = async (collectionId: string, entries: FileEntry[]) => {
     const targets = entries.map((entry) => normalizeUrl(entry.path))
     if (!targets.length) return
-    await withCollection(collectionUrl(collectionId), (reader) =>
-      reader.addReferences(targets),
-    )
-    const title = collectionStore.get(collectionId)?.title ?? collectionId
+    try {
+      await withCollection(collectionUrl(collectionId), (reader) =>
+        reader.addReferences(targets),
+      )
+    } catch (err) {
+      showToast(uiErrorText(err))
+      return
+    }
+    const title = collectionDirectory().get(collectionId)?.title ?? collectionId
     showToast(
       t('filebrowser.toast.addedToCollection', 'Added {{count}} reference(s) to {{title}}', {
         count: targets.length,
@@ -576,9 +597,13 @@ export function FileBrowserView() {
       label: t('filebrowser.prompt.collectionTitle', 'Title'),
       submitLabel: t('filebrowser.actions.create', 'Create'),
       schema: collectionTitleSchema,
-      onSubmit: (value) => {
-        const id = collectionStore.create(value)
-        onCreated?.(id)
+      onSubmit: async (value) => {
+        try {
+          const id = await collectionDirectory().create(value)
+          onCreated?.(id)
+        } catch (err) {
+          throw asFormError(err)
+        }
       },
     })
   }
@@ -590,7 +615,13 @@ export function FileBrowserView() {
       label: t('filebrowser.prompt.groupName', 'Group name'),
       submitLabel: t('filebrowser.actions.create', 'Create'),
       schema: entryNameSchema,
-      onSubmit: (value) => withCollection(url, (reader) => reader.createGroup(value)),
+      onSubmit: async (value) => {
+        try {
+          await withCollection(url, (reader) => reader.createGroup(value))
+        } catch (err) {
+          throw asFormError(err)
+        }
+      },
     })
   }
 
@@ -602,22 +633,19 @@ export function FileBrowserView() {
       label: t('filebrowser.prompt.folderName', 'Folder name'),
       submitLabel: t('filebrowser.actions.create', 'Create'),
       schema: entryNameSchema,
-      onSubmit: (value) => {
-        if (mockNameExists(parent, value)) {
-          throw new Error(
-            t('filebrowser.error.nameConflict', '"{{name}}" already exists here', {
-              name: value,
-            }),
-          )
+      onSubmit: async (value) => {
+        try {
+          if (await folderOps().nameExists(parent, value)) {
+            throw new Error(
+              t('filebrowser.error.nameConflict', '"{{name}}" already exists here', {
+                name: value,
+              }),
+            )
+          }
+          await folderOps().createFolder(parent, value)
+        } catch (err) {
+          throw asFormError(err)
         }
-        mockAddEntry({
-          id: `folder-${Date.now()}`,
-          name: value,
-          kind: 'folder',
-          path: parent === '/' ? `/${value}` : `${parent}/${value}`,
-          modifiedAt: new Date().toISOString(),
-        })
-        invalidateMockPath(parent)
       },
     })
   }
@@ -632,23 +660,26 @@ export function FileBrowserView() {
       defaultValue: item.entry.name,
       schema: entryNameSchema,
       onSubmit: async (value) => {
-        if (isGroup) {
-          await withCollection(url, (reader) => reader.renameGroup(item.key, value))
-          return
+        try {
+          if (isGroup) {
+            await withCollection(url, (reader) => reader.renameGroup(item.key, value))
+            return
+          }
+          if (value === item.entry.name) return
+          const parent = item.entry.path.split('/').slice(0, -1).join('/') || '/'
+          if (await folderOps().nameExists(parent, value)) {
+            throw new Error(
+              t('filebrowser.error.nameConflict', '"{{name}}" already exists here', {
+                name: value,
+              }),
+            )
+          }
+          await folderOps().renameEntry(item.entry, value)
+        } catch (err) {
+          throw asFormError(err)
         }
-        const parent = item.entry.path.split('/').slice(0, -1).join('/') || '/'
-        if (mockNameExists(parent, value)) {
-          throw new Error(
-            t('filebrowser.error.nameConflict', '"{{name}}" already exists here', {
-              name: value,
-            }),
-          )
-        }
-        if (mockRenameEntry(item.entry.id, value)) {
-          invalidateMockPath(parent)
-          pane.list.reload()
-          pane.clearSelection()
-        }
+        pane.list.reload()
+        pane.clearSelection()
       },
     })
   }
@@ -739,13 +770,18 @@ export function FileBrowserView() {
       return
     }
     if (!capabilities.acceptsContent) return
+    const target = dfsPathOf(pane.currentUrl)
+    if (!target) return
+    if (clipboard.mode === 'cut') {
+      // Cut + paste into a folder is a real move (§8.3).
+      void moveSelected(pane, clipboard.entries, target)
+      setClipboard(null)
+      return
+    }
+    // NFSP v1 has no server-side copy; honest gap instead of a fake success.
     showToast(
-      t('filebrowser.toast.paste', 'Pasted {{count}} item(s) to {{target}} (mock)', {
-        count: clipboard.entries.length,
-        target: displayPath(pane.currentUrl),
-      }),
+      t('filebrowser.toast.copyUnsupported', 'Copying file content is not supported yet'),
     )
-    if (clipboard.mode === 'cut') setClipboard(null)
   }
 
   const removeFromCollection = async (pane: BrowserPane, keys: string[]) => {
@@ -757,6 +793,60 @@ export function FileBrowserView() {
         count: keys.length,
       }),
     )
+  }
+
+  /** Destroy-semantics delete for real storage entries (§8.3), with confirm. */
+  const deleteSelected = async (pane: BrowserPane, items: FileItem[]) => {
+    const entries = items.map((item) => item.entry)
+    if (!entries.length) return
+    const confirmed = window.confirm(
+      t('filebrowser.confirm.delete', 'Delete {{count}} item(s)? This cannot be undone.', {
+        count: entries.length,
+      }),
+    )
+    if (!confirmed) return
+    try {
+      await folderOps().deleteEntries(entries)
+      showToast(t('filebrowser.toast.deleted', 'Deleted {{count}} item(s)', { count: entries.length }))
+      pane.clearSelection()
+      pane.list.reload()
+    } catch (err) {
+      showToast(uiErrorText(err))
+    }
+  }
+
+  const moveSelected = async (pane: BrowserPane, moved: FileEntry[], toPath: string) => {
+    const entries = moved.filter((entry) => entry.path.startsWith('/'))
+    if (!entries.length) return
+    try {
+      await folderOps().moveEntries(entries, toPath)
+      showToast(
+        t('filebrowser.toast.moved', 'Moved {{count}} item(s) to {{target}}', {
+          count: entries.length,
+          target: toPath,
+        }),
+      )
+      pane.clearSelection()
+      pane.list.reload()
+    } catch (err) {
+      showToast(uiErrorText(err))
+    }
+  }
+
+  const downloadEntries = (entries: FileEntry[]) => {
+    let started = 0
+    for (const entry of entries) {
+      const url = folderOps().downloadUrl(entry)
+      if (!url) continue
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = entry.name
+      anchor.click()
+      started += 1
+    }
+    if (started === 0) {
+      showToast(t('filebrowser.toast.downloadUnavailable', 'Download is not available here'))
+    }
   }
 
   const moveItems = async (pane: BrowserPane, items: FileItem[], delta: -1 | 1) => {
@@ -794,22 +884,11 @@ export function FileBrowserView() {
           void removeFromCollection(pane, selectedKeys)
           return
         }
-        showToast(
-          t('filebrowser.toast.delete', 'Deleted {{count}} item(s) (mock)', {
-            count: selected.length,
-          }),
-        )
-        pane.clearSelection()
+        void deleteSelected(pane, selectedItems)
       },
       onSettings: () => showToast(`${t('filebrowser.actions.settings', 'Settings')} (mock)`),
       moveTargets,
-      onMoveTo: (path: string) =>
-        showToast(
-          t('filebrowser.toast.move', 'Move {{count}} item(s) to {{target}} (mock)', {
-            count: selected.length,
-            target: path,
-          }),
-        ),
+      onMoveTo: (path: string) => void moveSelected(pane, selected, path),
       sortKey: pane.sortKey,
       sortDir: pane.sortDir,
       onSortChange: (key: SortKey, dir: SortDir) => {
@@ -870,7 +949,6 @@ export function FileBrowserView() {
     const items = context.items
     const first = items[0]
     const entries = context.entries
-    const count = entries.length
     switch (action.command) {
       case 'open':
         if (!first) break
@@ -887,7 +965,7 @@ export function FileBrowserView() {
       case 'open-new-tab':
         if (first?.entry.kind === 'folder') {
           pane.adoptTab({
-            id: `tab-${Date.now()}`,
+            id: newTabId(),
             title: first.entry.name,
             path: first.entry.path,
           })
@@ -896,7 +974,7 @@ export function FileBrowserView() {
       case 'open-right':
         if (first?.entry.kind === 'folder') {
           right.adoptTab({
-            id: `tab-${Date.now()}`,
+            id: newTabId(),
             title: first.entry.name,
             path: first.entry.path,
           })
@@ -953,9 +1031,7 @@ export function FileBrowserView() {
         requestNewGroup(pane)
         break
       case 'download':
-        showToast(
-          t('filebrowser.toast.download', 'Downloading {{count}} item(s) (mock)', { count }),
-        )
+        downloadEntries(entries)
         break
       case 'share':
         showToast(
@@ -967,17 +1043,13 @@ export function FileBrowserView() {
       case 'rename':
         if (first) requestRename(pane, first)
         break
-      case 'move-to':
-        showToast(
-          t('filebrowser.toast.move', 'Move {{count}} item(s) to {{target}} (mock)', {
-            count,
-            target: String(action.args?.path ?? ''),
-          }),
-        )
+      case 'move-to': {
+        const path = String(action.args?.path ?? '')
+        if (path) void moveSelected(pane, entries, path)
         break
+      }
       case 'delete':
-        showToast(t('filebrowser.toast.delete', 'Deleted {{count}} item(s) (mock)', { count }))
-        pane.clearSelection()
+        void deleteSelected(pane, items)
         break
       case 'new-folder':
         requestNewFolder(pane)
@@ -1053,10 +1125,7 @@ export function FileBrowserView() {
       void removeFromCollection(left, keys)
       return
     }
-    showToast(
-      t('filebrowser.toast.delete', 'Deleted {{count}} item(s) (mock)', { count: keys.length }),
-    )
-    left.clearSelection()
+    void deleteSelected(left, [...left.selectedItemsMap.values()])
   }
 
   const handleCreateCollection = () => {

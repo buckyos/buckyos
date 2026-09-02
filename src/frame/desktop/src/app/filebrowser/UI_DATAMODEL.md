@@ -1,8 +1,10 @@
 # File Browser UI DataModel
 
-> Status: v1.1 — v1 extracted from the converged mock-first prototype; v1.1
-> records that the frontend-side deltas of §9 (items 1–5 and 11) are now
-> implemented in the prototype  
+> Status: v1.2 — v1 extracted from the converged mock-first prototype; v1.1
+> recorded the frontend-side deltas of §9 (items 1–5 and 11); v1.2 records the
+> NFSP backend-integration stage: the adapter in <code>data/nfsp/</code> is
+> implemented (§9 items 6–9 done, 10/12 still gated) and installation switches
+> by runtime (<code>data/install.ts</code>)  
 > Scope: <code>src/frame/desktop/src/app/filebrowser/</code>  
 > Last reviewed: 2026-09-02
 
@@ -302,6 +304,8 @@ export interface LocationCapabilities {
   removal: 'destroy' | 'remove-ref' | null
   canReorder: boolean
   sortKeys: SortKey[]
+  /** Directions the reader can honor; absent = both (NFSP v1: ['asc']). */
+  sortDirs?: SortDir[]
   defaultSortKey: SortKey
 }
 
@@ -320,7 +324,10 @@ The required capability matrix is:
 | Collection | false | true | <code>remove-ref</code> | true | <code>manual</code> |
 
 <code>sortKeys</code> is capability-negotiated. The UI only shows keys present in the active
-location.
+location. <code>sortDirs</code> extends the same negotiation to directions: the toolbar
+disables directions the reader does not advertise, and <code>FileItemList.setQuery</code>
+clamps an unsupported direction at the reader boundary rather than letting a reader silently
+return differently ordered pages.
 
 ### 2.6 Listing item, page, and reader
 
@@ -1024,9 +1031,12 @@ Folders/groups appear first except under manual ordering. Recent defaults to mod
 Collections default to manual; other locations default to name ascending.
 
 NFSP v1 currently exposes name/mtime/size/manual ascending order, but not direction, kind order, or
-folders-first. Because client-sorting a partial window is invalid, backend integration MUST resolve
-this protocol gap explicitly. It must not silently claim the prototype sort semantics while
-returning differently ordered pages.
+folders-first. Because client-sorting a partial window is invalid, the adapter resolves this gap
+explicitly through capability negotiation (v1.2): NFSP readers advertise only the backend-honored
+keys (no <code>kind</code>) and <code>sortDirs: ['asc']</code>, so the direction toggle is disabled
+and never claims an order the pages do not have; <code>ListQuery.foldersFirst</code> is advisory
+and NFSP listings render in backend order (folders not grouped first) until the protocol grows
+these orders. Mock readers keep the richer prototype semantics via the same capability fields.
 
 ### 5.3 Filtering
 
@@ -1238,10 +1248,13 @@ backend-integration stage.
 
 ### 8.1 Integration boundary
 
-The real implementation should add an NFSP-backed <code>FolderReader</code> and target resolver,
-using <code>NfsBrowserClient</code> for cached reads, writes, and watch invalidation. UI components
-and <code>FileItemList</code>'s observable API remain unchanged unless the unknown-total renderer
-fix described above is being made.
+The real implementation (v1.2, <code>data/nfsp/</code>) adds NFSP-backed
+<code>FolderReader</code>s and a target resolver, using <code>NfsBrowserClient</code> for cached
+reads, writes, and watch invalidation. UI components and <code>FileItemList</code>'s observable
+API are unchanged; NFSP readers never promise <code>totalCount</code>, so all NFSP listings run
+in the unknown-total sequential mode (§5.1). Direct writes additionally notify a small local
+path bus (<code>data/nfsp/invalidation.ts</code>) because the cache layer only fires listeners
+from watch events and revalidation — same-client reloads must not wait for the SSE round-trip.
 
 ~~~
 FileBrowser UI
@@ -1340,8 +1353,8 @@ Raw paths, refs, server messages, and authorization details MUST be filtered bef
 ## 9. Prototype-to-formal-model delta
 
 These are required integration or follow-up changes, not reasons to weaken the formal contract.
-Items 1–5 and 11 are DONE in the prototype (2026-09-02); the rest belong to the NFSP
-backend-integration stage:
+Items 1–5 and 11 are DONE in the prototype; items 6–9 are DONE in the NFSP integration
+(2026-09-02, <code>data/nfsp/</code>); 10 and 12 remain gated:
 
 1. ~~Replace the unused <code>types.ts SearchHit</code> and inline component type with
    <code>SearchResultItem</code>.~~ Done — <code>types.ts</code> now defines the §2 model.
@@ -1356,18 +1369,38 @@ backend-integration stage:
    for backend semantics.
 5. ~~Fix unknown-total rendering so <code>hasMore</code> listings leave initial loading and can
    request subsequent cursor pages.~~ Done — sentinel-row load-more in the virtualized views.
-6. Implement the NFSP reader/target-resolver adapter and switch data installation by environment,
-   without importing protocol DTOs into components.
-7. Resolve the NFSP sort gap for descending, kind, and folders-first before claiming identical
-   backend behavior.
-8. Replace or back the name-based Collection group URL with an entry-ref-aware deep-link model
-   (URL segments are now percent-encoded, but name-based identity remains).
-9. Define metadata namespace/key mappings for summary, tags, topics, EXIF, source, Story, and
-   trigger-policy status.
+6. ~~Implement the NFSP reader/target-resolver adapter and switch data installation by
+   environment, without importing protocol DTOs into components.~~ Done — <code>data/nfsp/</code>
+   (readers, collection reader, collection directory, sidebar sources, search provider, transfer
+   executor, folder ops, error mapper); <code>data/install.ts</code> switches on
+   <code>isMockRuntime()</code> with a <code>?fbData=mock|nfsp</code> diagnostic override and a
+   <code>VITE_NFS_PROXY</code> dev proxy. New registries extracted so components stay
+   backend-blind: <code>data/folderOps.ts</code> (mkdir/rename/delete/move/download) and
+   <code>data/collectionDirectory.ts</code> (collection list/create). NFSP v1 has no
+   list-collections method, so the NFSP directory keeps known ids in localStorage and
+   revalidates them against the server — a documented stopgap until the protocol grows
+   enumeration.
+7. ~~Resolve the NFSP sort gap for descending, kind, and folders-first before claiming identical
+   backend behavior.~~ Done — capability-negotiated <code>sortDirs</code> plus reduced
+   <code>sortKeys</code>; see §5.2.
+8. ~~Replace or back the name-based Collection group URL with an entry-ref-aware deep-link
+   model.~~ Done — the URL keeps its percent-encoded name form as a display locator, and the
+   NFSP collection reader walks each group segment through the parent listing to its
+   <code>entry_ref</code>/target Ref (slash-joined names are never sent as an id). A fully
+   identity-bearing URL form remains a possible later refinement.
+9. ~~Define metadata namespace/key mappings for summary, tags, topics, EXIF, source, Story, and
+   trigger-policy status.~~ Done — <code>data/nfsp/mapping.ts applyMetaRecords</code> maps the
+   <code>user</code>/<code>ai</code> namespaces (keys <code>summary/tags/topics/exif/source/
+   story/triggers_active</code>) into the entry projection via the preview enricher
+   (<code>data/usePreview.ts</code>); v1 nfs-server only persists the <code>user</code>
+   namespace, so AI enrichment stays absent until its pipeline exists.
 10. Replace the current device navigation placeholder with a registered device/referral reader.
+    The NFSP sidebar source returns an empty device list (explicit empty state, no fabricated
+    data) until referral readers exist.
 11. ~~Add explicit async states for sidebar sources and partial Preview metadata.~~ Done —
     <code>data/sidebarSources.ts</code>, <code>data/usePreview.ts</code>.
 12. Keep share UI feature-gated until authorization and data-plane cap enforcement are complete.
+    Unchanged: share remains an informational stub in both modes.
 
 ## 10. Stage-three completion checklist
 
