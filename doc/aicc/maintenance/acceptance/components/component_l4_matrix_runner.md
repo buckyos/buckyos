@@ -188,7 +188,7 @@ L4 runner 应把被测环境视为一次性资源，推荐流程：
 4. 使用 group template 生成临时 group 配置，最小建议为 `SN + alice-ood1`；需要多 Provider 节点或 gateway 冗余时再扩展节点。
 5. 执行 `create_vms` / `install` / `start`，并等待 gateway、system-config、verify-hub、scheduler、task-manager、AICC 全部可访问。
 6. 宿主机 runner 通过 gateway 登录并获取测试 token，后续所有 L4 调用都经 gateway 访问 `/kapi/aicc` 和相关 task / artifact 接口。
-7. 写入真实 Provider settings，触发 `reload_settings`，调用 `models.list` 并读取最终生效逻辑目录，生成 `api_type × method × logical_path × Provider × model` 矩阵。
+7. 写入真实 Provider settings，触发 `service.reload_settings`，调用 `models.list` 并读取最终生效逻辑目录，生成 `api_type × method × logical_path × Provider × model` 矩阵。
 8. 运行 L4 矩阵用例并收集报告。
 9. 默认执行 `stop` / `clean_vms` 清理临时 group；除非显式 `keep_on_failure=true`，失败环境也必须清理。
 

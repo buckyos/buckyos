@@ -11,7 +11,7 @@
 1. P0 Mock 用例 100% 通过。
 2. `cargo test -p aicc` 通过。
 3. `cargo test -p buckyos-api --test aicc_client_test` 通过。
-4. 本地 kRPC Mock 验收能完成 `reload_settings -> models.list -> route -> provider call -> task / usage / trace` 闭环。
+4. 本地 kRPC Mock 验收能完成 `service.reload_settings -> models.list -> route -> provider call -> task / usage / trace` 闭环。
 5. gateway runner 能读取 TOML 配置并生成 `summary.md` 和 `summary.json`。
 6. gateway runner 能通过 `buckyos-devkit` 启动临时 group，并从宿主机经 gateway 完成访问。
 7. 已配置真实凭据的 Provider 必须覆盖其全部可用模型；`sn-ai-provider` 必须覆盖 API Key 和动态登录两种模式；缺少所选模式凭据的 Provider 在普通开发验收中标记为 `skipped`，发布强覆盖验收中应 preflight 失败。
@@ -34,7 +34,7 @@
 | 仅更新运营策略 | 策略配置、成本 / quota / health / 权重 / 熔断 / 灰度规则 | 不改变模型事实；route trace 显示策略命中；回滚策略后路由恢复；不需要回滚 metadata |
 | 随版本内置缓存更新 | 版本包内 builtin metadata / 默认策略 | 新安装或无云端更新环境中仍能识别发布时已知模型，并生成可用默认路由 |
 | 云端 metadata 更新 | 严格递增的 manifest `revision_seq`、客户端兼容范围与分组目标；NDN 当前文件和 `metadata_target_seq`；Provider `metadata_applied_seq` | 每个受支持客户端版本获得对应的兼容发布；非法发布被拒绝；新文件就绪前 target seq 不推进；Provider 真正完成库存刷新后才推进自己的 applied seq；两个触发点均收敛全部落后 Provider |
-| 人工运行时覆盖 | `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<driver>.json` 或 `system-config/<driver>.json` | `reload_settings` 后生效；优先级高于 NDN 当前云端 metadata；损坏配置被拒绝且不破坏可用基线 |
+| 人工运行时覆盖 | `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<driver>.json` 或 `system-config/<driver>.json` | `service.reload_settings` 后生效；优先级高于 NDN 当前云端 metadata；损坏配置被拒绝且不破坏可用基线 |
 
 统一验收顺序：
 
@@ -42,7 +42,7 @@
 2. 新增或更新命名可检索的相关用例，并在 manifest tags 中标明更新类型、provider、model、api type 和逻辑目录。
 3. 为至少两个受支持客户端版本配置不同的兼容 metadata 发布目标；每个 manifest 分配严格递增且不可复用的 `revision_seq`，声明客户端兼容范围和 required features。
 4. 验证各客户端取得自己的兼容目标；尝试下发低序列、同序列不同内容和不兼容版本，并分别在下载、校验、替换和文件就绪确认阶段注入失败，确认 `metadata_target_seq` 不推进。需要恢复指定内容时，以更高序列重新发布。
-5. 正常云端场景由 NDN 替换文件并令 `metadata_target_seq = manifest.revision_seq`，不调用 `reload_settings`；人工覆盖场景才触发 `reload_settings`。
+5. 正常云端场景由 NDN 替换文件并令 `metadata_target_seq = manifest.revision_seq`，不调用 `service.reload_settings`；人工覆盖场景才触发 `service.reload_settings`。
 6. 云端场景分别验证“下一次推理前触发”和“某个 Provider 定时库存刷新触发”：任一触发都遍历全部 `metadata_applied_seq != metadata_target_seq` 的 Provider。每个 Provider 刷新前临时捕获目标 seq，真正完成库存刷新后才提交 applied seq；刷新未完成或失败时原 inventory 和 applied seq 不变，并暴露落后 seq 和失败原因；不得只处理触发请求或触发 Provider。
 7. 覆盖四种库存判定：model 列表未变且 seq 相同只探测；列表变化但 seq 相同更新库存；列表未变但 seq 不同按 metadata 重建；两者都变化时一起重建。
 8. 执行本次新增用例和受影响的现有用例，覆盖 inventory、metadata 解析、exact model、logical model、fallback、成本估算、禁用策略和错误返回。

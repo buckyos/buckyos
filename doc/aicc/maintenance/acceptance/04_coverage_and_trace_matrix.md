@@ -22,7 +22,7 @@
 | 资源 | `ResourceRef::Url`、`Base64`、`NamedObject`、FileObject meta、artifact 输出、大批量 embedding artifact | L1/L3/L4 |
 | Streaming | Provider-native streaming 转最终 summary；中间态写 task data；AICC response 只返回 `succeeded` 或 `running` | L1/L3/L4 |
 | Usage log | 成功调用写一条 durable event；幂等不重复写；缺 usage 视为 provider protocol error；按 1d/7d/provider/model 查询 | L1/L3 |
-| 控制与管理 method | `cancel`、`service.reload_settings`、`reload_settings`、`models.list`、`usage.query`、`quota.query`、`provider.list`、`provider.health`、`provider.validate`、`provider.add`、`provider.update`、`provider.delete`、`provider.refresh_models`、`provider.catalog`、`protocol_adapter.list`、`driver_metadata_update.get/set` | 历史 L1/L2/L3/L4；发布门禁按 T1/T1.5/T2/T3 |
+| 控制与管理 method | `cancel`、`service.reload_settings`、`models.list`、`usage.query`、`quota.query`、`provider.list`、`provider.health`、`provider.validate`、`provider.add`、`provider.update`、`provider.delete`、`provider.refresh_models`、`provider.catalog`、`protocol_adapter.list`、`driver_metadata_update.get/set` | 历史 L1/L2/L3/L4；发布门禁按 T1/T1.5/T2/T3 |
 | 配置 | system_config 写入、全量/局部更新、Provider validate/add/delete/refresh、`service.reload_settings`、`models.list` 生效，以及 Provider 库存定时循环停止事件与优雅退出验证 | L3/L4 |
 | 维护更新 | 模型事实基线、运营策略、NDN target seq、Provider applied/updating seq、model 列表变化矩阵、本地 override、双触发点全局收敛和发布后复验 | L3/L4 |
 | 安全 | `local_only` 硬过滤、`proxy_unknown` 非本地、trace 脱敏、密钥不入日志、跨租户隔离 | L1/L3/L4 |

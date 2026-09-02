@@ -28,9 +28,9 @@ Provider Instance、Provider Profile 和 Protocol Adapter 是不同身份：
 - `provider.list` / `provider.health`
 - `usage.query` / `trace.query`
 - `driver_metadata_update.get` / `driver_metadata_update.set`
-- `service.reload_settings` / `reload_settings`（已导出的兼容入口）
+- `service.reload_settings`
 
-除明确保留的 `reload_settings` 已导出兼容入口外，方法不新增 `service.*` 双入口、错误拼写或旧名称兼容别名。
+管理面只保留 `service.reload_settings`；`buckyos-api::aicc_client` 和全部调用方同步更新，不保留 `reload_settings` 旧接口、`service.*` 双入口、错误拼写或其它旧名称兼容别名。
 
 Provider Instance 的库存刷新定时任务是实例级运行时资源。`provider.update` 把实例从 enabled 改为 disabled、更新导致实例重建、`provider.delete`、reload 移除或替换实例，以及 AICC 服务停止时，管理层必须先把实例标记为 stopping，向其定时任务循环发送幂等 `Stop` 事件并等待循环优雅退出，再完成 registry 切换或资源清理。停止后不得接受新的定时刷新，也不得提交迟到的 inventory/health 结果。
 
@@ -510,7 +510,7 @@ Rust 契约统一定义在 `buckyos-api::aicc_client` 的 `DriverMetadataUpdate*
 
 ### 4.9 `service.reload_settings`
 
-`service.reload_settings` 是新调用方使用的 canonical settings reload 入口。`reload_settings` 已由 `buckyos-api::aicc_client` 导出，保留相同 schema 和行为；不定义 `reaload_settings` 或 `service.reaload_settings` 等错误拼写。
+`service.reload_settings` 是唯一的 settings reload 入口。`buckyos-api::aicc_client` 直接更新为调用该 method；删除 `reload_settings` 旧接口以及 `reaload_settings`、`service.reaload_settings` 等错误拼写。
 
 状态：保留。
 

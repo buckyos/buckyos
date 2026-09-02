@@ -337,7 +337,7 @@ Beta 2.2 采用一次性切换，不保留向前兼容：
 2. Helper 改为 `logical_model + typed business fields`，内部严格组合 route 和 typed inference。
 3. SDK、workflow、Agent tools、UI 和 DV tests 同步迁移。
 4. 删除 AICC service 中的 all-in-one methods、`AiMethodRequest`、`model.alias`、`must_features`、`requirements.extra.disable_capabilities` 和 `provider_options` 公共输入。
-5. 新调用方统一使用 `service.reload_settings`；保留 `buckyos-api::aicc_client` 已导出的 `reload_settings` 相同 schema 兼容入口，删除其它未导出的别名和错误拼写。
+5. 管理面只保留 `service.reload_settings`；同步更新 `buckyos-api::aicc_client` 和全部调用方，删除 `reload_settings` 旧接口、所有兼容别名和错误拼写。
 6. Provider Profile、Protocol Adapter、Model Driver、Provider Rules、Pricing 和 Known Provider catalog 同时切换到新身份与 schema。
 
 ## 9. 验收约束

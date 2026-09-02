@@ -37,7 +37,7 @@ POST /kapi/aicc
 | `chat.completions.create`、`embedding.*`、`rerank`、`images.generate`、`image.*`、`vision.*`、`audio.*`、`video.*` | typed inference 数据面。只接受 `exact_model`，不接受逻辑模型名，不做逻辑 fallback。 |
 | `helper.*` | helper 组合层。接收 `logical_model` 和对应 typed request，语义等价于 `route.resolve` + typed inference。 |
 | `cancel` | 请求取消异步 task；返回值必须真实反映是否已触发上游取消或本地中止。 |
-| `service.reload_settings` / `reload_settings` | 从 `services/aicc/settings` 重新加载 Provider 配置；后者是 `buckyos-api` 已导出的兼容入口。 |
+| `service.reload_settings` | 从 `services/aicc/settings` 重新加载 Provider 配置；这是唯一有效的管理面 reload method。 |
 | `quota.query` | 查询调用方在 capability / method 维度的剩余额度和预算状态。 |
 | `provider.list` / `provider.health` | 查询 Provider inventory 和健康状态。 |
 
@@ -414,7 +414,7 @@ Response：
 
 ### 2.10 `service.reload_settings`
 
-`service.reload_settings` 用于从 `services/aicc/settings` 重新加载 Provider Instance 配置。`reload_settings` 已由 `buckyos-api::aicc_client` 导出，保留为相同 request/response schema 的兼容入口；`reaload_settings` 和 `service.reaload_settings` 等错误拼写不是有效别名。新调用方使用 `service.reload_settings`。
+`service.reload_settings` 用于从 `services/aicc/settings` 重新加载 Provider Instance 配置，也是唯一有效的管理面 reload method。`buckyos-api::aicc_client` 直接更新为调用该 method；删除 `reload_settings`、`reaload_settings`、`service.reaload_settings` 等旧名称、兼容别名和错误拼写。
 
 语义：
 
@@ -1775,7 +1775,7 @@ AICC 错误 payload schema：
 
 1. `/kapi/aicc` 作为稳定入口。
 2. AI 调用使用标准 method 名作为 kRPC method。
-3. `cancel`、`service.reload_settings` 保持为控制类 method；仅保留 `buckyos-api` 已导出的 `reload_settings` 兼容入口，不再新增其它别名。
+3. `cancel`、`service.reload_settings` 保持为控制类 method；管理面只保留 `service.reload_settings`，并同步更新 `buckyos-api` 和全部调用方，不保留任何旧名称、兼容别名或错误拼写。
 
 ### M1：移除独立分类字段
 

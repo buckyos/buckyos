@@ -724,7 +724,7 @@ quota、budget、幂等计费和 fallback 归因在 T1 覆盖；Provider usage �
 
 ### 11.4 配置和维护
 
-- `service.reload_settings` 成功和失败，并验证已导出的 `reload_settings` 兼容入口使用相同 schema 和行为。
+- `service.reload_settings` 成功和失败，并验证 `buckyos-api::aicc_client` 及全部调用方只发送该 method；`reload_settings` 和错误拼写均被拒绝。
 - 非法新配置失败后继续使用旧配置。
 - Provider validate/add/update/delete/refresh models；`provider.update` 覆盖 enable/disable、base_url/credential/Profile/Adapter/discovery 修改、revision 冲突和实例停止/替换生命周期。
 - `driver_metadata_update.get/set` 覆盖三类 metadata catalog 的云更新配置、target/applied seq 状态和 RBAC。

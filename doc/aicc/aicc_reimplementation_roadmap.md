@@ -4,7 +4,7 @@
 
 目标版本：Beta 2.2
 
-实现原则：完全抛弃当前 AICC 内部实现，不兼容旧模块、旧 settings 结构和旧 metadata；`buckyos-api::aicc_client` 已导出的 RPC method 和请求/响应类型作为兼容边界优先保持不变，通过新 AICC 内部转换层实现；复用 BuckyOS 已有的 kRPC、system-config、TaskMgr、Named Object、RDB、HTTP 等平台能力。
+实现原则：完全抛弃当前 AICC 内部实现，不兼容旧模块、旧 settings 结构和旧 metadata；`buckyos-api::aicc_client` 已导出的 RPC method 和请求/响应类型原则上作为兼容边界优先保持不变，但 reload 接口同步更新为唯一 canonical method `service.reload_settings`，不保留旧 `reload_settings`；复用 BuckyOS 已有的 kRPC、system-config、TaskMgr、Named Object、RDB、HTTP 等平台能力。
 
 ## 1. 文档目的
 
@@ -56,7 +56,7 @@
 ### 2.2 非目标
 
 - 不读取或迁移旧 Provider family section、settings 中的 `provider_driver`、section token 或旧字段别名；新 `providers[]` 继续使用 `base_url`；
-- 不新增旧 method alias、错误拼写或重复入口；`buckyos-api::aicc_client` 已导出的入口不在本次重实现中擅自重命名或删除；
+- 不新增旧 method alias、错误拼写或重复入口；管理面只保留 `service.reload_settings`，同步更新 `buckyos-api::aicc_client` 和全部调用方，删除旧 `reload_settings`；其它已导出入口仍作为兼容边界；
 - 不为未知 Provider 自动兼容任意 OpenAI-compatible endpoint；
 - 不提前实现没有真实 Provider 需求的历史 API 代际；
 - 不把任意 Provider JSON 暴露为公共 `extra_body`；
@@ -92,7 +92,7 @@
 - [x] settings 统一使用 `providers[]` schema；
 - [x] Provider Instance settings、管理 RPC 和 Web UI DataModel 统一使用 `base_url`，不接收或返回配置字段 `endpoint`；Web UI 无升级兼容约束，不保留转换层；
 - [x] Provider Instance、Profile、Adapter、Model Driver、ModelUID 身份链已冻结；
-- [x] `buckyos-api::aicc_client` 已导出的 RPC 接口作为兼容边界，除非单独评审，不重命名或删除；
+- [x] `buckyos-api::aicc_client` 已导出的 RPC 接口原则上作为兼容边界；reload 接口是明确例外，客户端更新为 `service.reload_settings` 并删除旧 `reload_settings`；
 - [x] 首版包含 11 家内置 Provider、SN 扩展和目标 operation 覆盖矩阵；
 - [x] E2E canonical 表、Provider baseline schema 和 case manifest 必须按冻结契约对齐；
 - [x] T1、T1.5、T2、T3 的边界、矩阵维度和完成顺序已冻结；
@@ -183,7 +183,7 @@ Owner：API 小组
 - [ ] 定义 ResourceRef、artifact、usage、cost 和 route trace；
 - [ ] 定义稳定错误码和 kRPC/task error 边界；
 - [ ] 重写 `AiccClient`、`AiccHandler`、`AiccServerHandler`；
-- [ ] 删除内部 all-in-one `AiMethodRequest` 路径和未导出的临时 method alias；已由 `buckyos-api::aicc_client` 导出的 method/type 保持兼容；
+- [ ] 删除内部 all-in-one `AiMethodRequest` 路径和临时 method alias；已由 `buckyos-api::aicc_client` 导出的 method/type 保持兼容，但将旧 `reload_settings` 更新为唯一的 `service.reload_settings`；
 - [ ] 增加 serde round-trip、unknown field 和非法 schema 测试。
 
 完成标准：Rust 服务端、Workflow 和其它 Rust 调用方不再手写协议字段或 method 字符串。
@@ -493,7 +493,7 @@ Owner：Service Integration 小组
 - [ ] 实现 `provider.validate/add/update/delete/refresh_models/list/health`；
 - [ ] 实现 `usage.query`、`trace.query` 和 `quota.query`；
 - [ ] 实现 `driver_metadata_update.get/set`；
-- [ ] 新调用方统一使用 `service.reload_settings`，同时保留 `buckyos-api` 已导出的 `reload_settings` 相同 schema 兼容入口；
+- [ ] 管理面只实现 `service.reload_settings`，同步更新 `buckyos-api` 和全部调用方，删除旧 `reload_settings` 及错误拼写；
 - [ ] 所有写操作使用当前 RPC token 调 system-config；
 - [ ] 所有 settings 写使用 `exec_tx` + revision CAS；
 - [ ] `provider.validate` 不落盘；
@@ -522,7 +522,7 @@ Owner：四个并行集成小组
 
 - [ ] 更新 `src/kernel/workflow/src/adapters/aicc.rs`；
 - [ ] method schema 复用 `buckyos-api` 已导出的公共契约；
-- [ ] 删除内部重复 DTO 和 all-in-one payload，不重命名或删除已导出的 RPC method/type；
+- [ ] 删除内部重复 DTO 和 all-in-one payload；除已冻结的 reload method 更新外，不重命名或删除其它已导出的 RPC method/type；
 - [ ] 验证 Helper、typed inference、cancel 和 task response。
 
 #### WP-17C OpenDAN/Jarvis/CLI
@@ -950,7 +950,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 - [ ] 旧 complete request queue 和不符合 TaskMgr 语义的生命周期；
 - [ ] 旧 Provider section settings 解析；
 - [ ] settings 中的 `provider_driver`、`api_key/apiKey` 等旧兼容字段；保留新 settings 的 `base_url` 及公共 RPC/报告中的 `provider_driver`；
-- [ ] 未被 `buckyos-api::aicc_client` 导出的错误拼写和重复入口；已导出入口的删除或重命名单独评审；
+- [ ] `reload_settings`、`reaload_settings`、`service.reaload_settings` 等旧名称、错误拼写和重复入口；`buckyos-api::aicc_client` 同步更新为只调用 `service.reload_settings`；
 - [ ] `llm.chat`、`image.txt2image`、`image.img2image` 等旧 method；
 - [ ] Desktop、Workflow、Jarvis、CLI 的旧 DTO 和 mapping；
 - [ ] dev/rootfs 中旧 AICC 配置；
@@ -1007,7 +1007,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 AICC 重新实现只有同时满足以下条件才算完成：
 
 - 新模块依赖方向符合本文约束；
-- 当前旧内部实现和未经导出的临时兼容入口已经删除，不只是停止调用；已导出的 `buckyos-api` RPC 契约保持稳定；
+- 当前旧内部实现和临时兼容入口已经删除，不只是停止调用；`buckyos-api` 及全部调用方只使用 `service.reload_settings`，其它已导出 RPC 契约保持稳定；
 - 没有新增未经确认的 crate 或第三方依赖；
 - 公共 API、Rust client、TS canonical 和 E2E manifest 一致；
 - 11 家 Provider 和 SN 进入基线并完成对应合同；
