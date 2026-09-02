@@ -79,9 +79,9 @@ canonical `ApiType` 序列化值以协议 schema 为准：LLM chat 为 `llm`，c
 | `quota.query` | capability / method、tenant/session 上下文 | 剩余额度、预算状态、限制来源 | 未配置 quota、跨 tenant 查询、非法 method |
 | `provider.list` | 可选 provider/type/driver 过滤 | Provider 列表、inventory 摘要、health、capability、pricing 脱敏视图 | 无权限、凭据泄露、Provider 状态异常仍可诊断 |
 | `provider.health` | provider instance / driver | health 状态、最近错误摘要、latency / quota / availability | Provider 不存在、health 过期、敏感错误未脱敏 |
-| `provider.validate` | Provider Instance 草案、endpoint、Profile、Adapter、auth | schema 校验结果、可连接性 / mock 可达性、脱敏诊断 | 凭据缺失、endpoint 非法、未知 Profile/Adapter、不得写入 system_config |
+| `provider.validate` | Provider Instance 草案、base_url、Profile、Adapter、auth | schema 校验结果、可连接性 / mock 可达性、脱敏诊断 | 凭据缺失、base_url 非法、未知 Profile/Adapter、不得写入 system_config |
 | `provider.add` | provider settings、tenant/session 上下文 | system_config 写入、reload 后 `models.list` 可见、审计记录 | 重名冲突、无权限、schema 非法、写入失败回滚 |
-| `provider.update` | Provider Instance、enabled/endpoint/credential/Profile/Adapter/discovery patch | revision CAS 写入、enable/disable 与实例替换生命周期 | 实例不存在、revision 冲突、非法 patch、旧 generation 迟到写入 |
+| `provider.update` | Provider Instance、enabled/base_url/credential/Profile/Adapter/discovery patch | revision CAS 写入、enable/disable 与实例替换生命周期 | 实例不存在、revision 冲突、非法 patch、旧 generation 迟到写入 |
 | `provider.delete` | provider instance name、tenant/session 上下文 | system_config 删除、库存定时循环收到幂等 `Stop` 并优雅退出、reload 后候选消失、相关 routing 诊断 | 删除不存在、仍被 policy 锁定引用、无权限、孤儿定时器或停止后迟到写入 |
 | `provider.refresh_models` | provider instance / driver、刷新策略 | model 列表变化时更新库存；target/applied seq 不同时触发所有落后 Provider 收敛；列表未变且 seq 相同时只探测 | Provider 不可达、重建失败不推进 applied seq、目标在刷新中再次变化 |
 
@@ -209,7 +209,7 @@ case_set = {
 | 类型 | 交付物 | 必验内容 |
 |---|---|---|
 | 已有 Provider 新增协议兼容模型 | 模型事实 metadata、运营策略、必要的 routing_config | `models.list` 出现新 exact model；`api_types`、`capabilities`、上下文长度、`logical_mounts` 正确；成本、健康度、权重和 fallback 策略生效 |
-| 新增 OpenAI-compatible Provider Instance | Provider Profile、协议族、`endpoint`、授权、discovery 策略 | 用户无需选择 API 代际；接入测试优先新接口并按序测试已注册历史接口；resolved Adapter 固化后 inventory 身份链正确；运行时不得重新探测或跨代际降级 |
+| 新增 OpenAI-compatible Provider Instance | Provider Profile、协议族、`base_url`、授权、discovery 策略 | 用户无需选择 API 代际；接入测试优先新接口并按序测试已注册历史接口；resolved Adapter 固化后 inventory 身份链正确；运行时不得重新探测或跨代际降级 |
 | 新增非兼容 Provider adapter 或新 API type | 版本包、adapter、schema、metadata 基线、默认路由策略 | 新 adapter 的协议转换、错误映射、streaming / task 语义、usage、fallback 和 helper / typed inference 链路通过相关用例 |
 | 仅更新运营策略 | 策略配置、成本 / quota / health / 权重 / 熔断 / 灰度规则 | 不改变模型事实；route trace 显示策略命中；回滚策略后路由恢复；不需要回滚 metadata |
 | 随版本内置缓存更新 | 版本包内 builtin metadata / 默认策略 | 新安装或无云端更新环境中仍能识别发布时已知模型，并生成可用默认路由 |

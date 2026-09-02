@@ -1,6 +1,6 @@
 # AICC Provider UI / Backend Mapping
 
-Provider Wizard 打开时通过 `provider.catalog` 一次性读取已知 Provider profile；保存时通过 `provider.add`、修改时通过 `provider.update` 写入 Provider Instance。UI 不把服务商清单、协议选择或默认 `base_url` 作为真相源。为保持现有前端契约，管理 RPC/UI DataModel 继续使用 `endpoint`，AICC 管理层负责与 settings 的 `base_url` 双向转换。
+Provider Wizard 打开时通过 `provider.catalog` 一次性读取已知 Provider profile；保存时通过 `provider.add`、修改时通过 `provider.update` 写入 Provider Instance。UI 不把服务商清单、协议选择或默认 `base_url` 作为真相源。Provider Instance settings、管理 RPC 和 UI DataModel 统一使用 `base_url`，不接收或返回配置字段 `endpoint`。
 
 | UI DataModel | Backend field | Durable owner | Notes |
 | --- | --- | --- | --- |
@@ -9,9 +9,9 @@ Provider Wizard 打开时通过 `provider.catalog` 一次性读取已知 Provide
 | `ProtocolAdapter.protocol_family_id` | `protocol_family_id` | runtime registry | OpenAI、Claude、Gemini 协议族；不是可执行 Adapter |
 | custom Provider draft family | `protocol_family_id` | `provider.validate/add/update` request | 用户可理解的协议大类；仅用于接入解析 |
 | `ProtocolAdapter.base_adapter_id` | `base_adapter_id` | runtime registry | 只读展示语义子类关系；SN 为 `sn-openai -> openai-responses` |
-| `KnownProviderProfile.default_endpoint` | `base_url` | Provider catalog default | RPC/UI 保留 `default_endpoint`；仅作表单初值，用户可修正 |
+| `KnownProviderProfile.base_url` | `base_url` | Provider catalog default | 仅作表单初值，用户可修正 |
 | `ProviderConfig.id` | `provider_instance_name` | system-config | Zone 内唯一实例 ID |
-| `ProviderConfig.endpoint` | `base_url` | system-config | RPC/UI 保留 `endpoint`；backend 持久化时转换，不要求前端升级 |
+| `ProviderConfig.base_url` | `base_url` | system-config | UI、管理 RPC 和 settings 使用同一字段名 |
 | `ProviderConfig.provider_profile_id` | `provider_profile_id` | system-config | 不读取旧 `provider_driver` |
 | `ProviderConfig.protocol_adapter_id` | `protocol_adapter_id` | system-config | 后端接入测试解析并固化；自定义 Provider 用户不填写 |
 | `ProviderConfig.auth` | `auth` | system-config locked value / credential reference | SN 显式选择 `api_key` 或 `dynamic_login` |
@@ -36,4 +36,4 @@ Provider Wizard 打开时通过 `provider.catalog` 一次性读取已知 Provide
 
 ## Breaking contract
 
-beta 2.2 的 settings 将 `provider_driver` 拆为 `provider_profile_id` 和 `protocol_adapter_id`；模型级 `model_driver_id` 由 catalog/inventory 产生，不写入 Provider Instance settings。`buckyos-api` 和验收报告中已经导出的 `provider_driver` 兼容字段不因 settings 重构而删除。UI DataModel 与管理 RPC 原始 JSON 的转换集中在 `src/frame/desktop/src/api/aicc_mgr.ts`；管理 RPC 的 `endpoint` 与持久化 settings 的 `base_url` 之间的转换由 AICC 管理服务负责。
+beta 2.2 的 settings 将 `provider_driver` 拆为 `provider_profile_id` 和 `protocol_adapter_id`；模型级 `model_driver_id` 由 catalog/inventory 产生，不写入 Provider Instance settings。`buckyos-api` 和验收报告中已经导出的 `provider_driver` 兼容字段不因 settings 重构而删除。Web UI 无升级兼容压力，`src/frame/desktop/src/api/aicc_mgr.ts` 的 UI DataModel 和管理 RPC 原始 JSON 都直接使用 `base_url`，不保留 `endpoint` 转换层。

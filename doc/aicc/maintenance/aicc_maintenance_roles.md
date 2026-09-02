@@ -22,7 +22,7 @@
 上线新模型或新厂商时，先按下面顺序判断需要哪类维护：
 
 1. **只是已有 Provider 新增模型，且协议兼容**：优先维护 metadata / routing 配置，不需要发版。目标是让 AICC 知道模型 ID、能力、成本估算、逻辑目录挂载和路由偏好。
-2. **新厂商兼容已注册协议**：用户或服务商可以新增 Provider Instance，选择 Provider Profile 或大致协议族，配置 `endpoint`、授权信息和模型发现策略。后端自动解析具体 Protocol Adapter，通常不需要 BuckyOS 发版。
+2. **新厂商兼容已注册协议**：用户或服务商可以新增 Provider Instance，选择 Provider Profile 或大致协议族，配置 `base_url`、授权信息和模型发现策略。后端自动解析具体 Protocol Adapter，通常不需要 BuckyOS 发版。
 3. **新厂商协议不兼容现有 Protocol Adapter**：需要 BuckyOS 项目方发布新版本，注册新的 Protocol Adapter，再配套发布 Provider Profile、Provider Rules、Model Driver 和验收用例。
 4. **模型能力类型本身是新的**：例如新增 API type、输入输出形态或调度语义，通常需要发版更新 AICC 协议、inventory schema、路由策略和测试。
 
@@ -99,7 +99,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 - **发版组件清单**：需要实现或更新 Provider adapter、Provider settings 解析、inventory 生成、成本估算、协议转换、错误映射、metadata 基线、默认逻辑目录挂载、route fallback 规则和验收测试。
 - **随版本携带本地缓存**：版本包应包含发布时最新的模型事实基线、默认逻辑目录基线和默认运营策略基线。这样新安装用户在没有云端更新的情况下，也能识别该版本已支持的新模型，并获得可用的默认路由和成本/健康度策略。
 - **随版本携带验收用例**：版本发布必须带上新增或更新的测试用例，并保证用例命名能识别 provider、model、api type、逻辑目录和更新类型，方便后续只跑相关用例。
-- **期望效果**：升级版本后，用户只需选择 Provider Profile 或大致协议族，并配置授权和必要的 `endpoint`；AICC 自动按新接口优先顺序解析 Protocol Adapter、获取模型列表、生成 inventory，并按逻辑目录完成路由。
+- **期望效果**：升级版本后，用户只需选择 Provider Profile 或大致协议族，并配置授权和必要的 `base_url`；AICC 自动按新接口优先顺序解析 Protocol Adapter、获取模型列表、生成 inventory，并按逻辑目录完成路由。
 - **验收方法**：先在测试环境安装版本包，用真实或 mock Provider 验证 `/models` 拉取、`models.list` 输出、exact model 调用、logical model 路由、fallback、错误返回和成本估算；相关用例通过后执行全量用例。发布环境上线后重复相关用例和全量用例。对新 API type 还应验证 helper / typed inference 调用链。
 
 #### 规划中 / 未完全实现
@@ -141,7 +141,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 #### 已实现
 
 - **接收 BuckyOS 的模型事实和运营策略基线**：服务商可以直接使用 builtin metadata，也可以由 NDN 获取并替换当前文件、推进目标 seq。AICC 在下一次推理或 Provider 定时库存刷新时统一收敛所有 applied seq 落后的 Provider，再叠加服务商运营策略。
-- **维护产品默认 Provider settings**：服务商可以预置或引导用户通过 AICC 管理 API 配置 `services/aicc/settings`，包括 Provider Instance、`provider_profile_id`、协议族、`base_url`、是否启用和模型发现策略等。`protocol_adapter_id` 由 Known Profile 固定或由自定义 Provider 接入测试解析；前端管理 RPC 中的 `endpoint` 由 AICC 转换为 settings 的 `base_url`。
+- **维护产品默认 Provider settings**：服务商可以预置或引导用户通过 AICC 管理 API 配置 `services/aicc/settings`，包括 Provider Instance、`provider_profile_id`、协议族、`base_url`、是否启用和模型发现策略等。`protocol_adapter_id` 由 Known Profile 固定或由自定义 Provider 接入测试解析；管理 RPC 和 Web UI DataModel 也直接使用 `base_url`。
 - **维护产品默认 routing_config**：服务商可以管理系统级 `services/aicc/settings.routing_config`，设置默认逻辑目录、Provider 权重、禁用列表、exact model 权重和 fallback 策略。
 - **维护服务商相关用例集合**：服务商跟随 BuckyOS 更新时，应把本产品启用的 Provider、模型、逻辑目录和路由策略映射到测试用例命名或 tags 上，确保能筛选出本次更新相关用例。
 - **期望效果**：产品用户配置自己的 API Key 后，就能看到服务商认可的新模型；逻辑模型调用会按服务商的默认策略路由到新模型或保留旧模型 fallback。
@@ -161,7 +161,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 #### 已实现
 
-- **提供自营 Provider 网关**：如果服务商希望统一接入多个上游模型，可以提供已注册协议的 endpoint，然后在产品侧把它配置成一个 Provider Instance，维护自己的 Profile、Adapter、`endpoint`、授权策略和 discovery 设置。
+- **提供自营 Provider 网关**：如果服务商希望统一接入多个上游模型，可以提供已注册协议的服务入口，然后在产品侧把它配置成一个 Provider Instance，维护自己的 Profile、Adapter、`base_url`、授权策略和 discovery 设置。
 - **发布服务商模型事实包**：服务商可以把自家确认过的模型能力、上下文长度、api type、逻辑挂载和弃用状态作为 NDN 管理的 metadata 文件集合发布；AICC 不规定 index、manifest 或不可变对象布局。
 - **发布服务商运营策略包**：服务商可以独立维护成本估算、额度策略、健康度、推荐权重、灰度和熔断策略。这类策略可以比模型事实更新更频繁，也应能单独回滚。
 - **发布服务商默认路由策略**：服务商可以更新 `services/aicc/settings.routing_config`，例如让 `llm.chat` 优先走新模型，让 `llm.code` 保持旧模型，或为不同 Provider 设置权重。路由策略应优先引用模型事实中的逻辑目录，再叠加运营策略中的权重和健康度判断。
@@ -210,11 +210,11 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 #### 已实现
 
-- **新增或修改 Provider 授权**：用户通过 AICC `provider.add/update` 管理接口维护 `services/aicc/settings`，配置 API Key、`endpoint`、Provider Instance、`provider_profile_id`、协议族和启用状态；AICC 使用调用者 token 和 revision CAS 写 system-config，前端不直接写。管理 RPC 的 `endpoint` 持久化为 settings 的 `base_url`；用户不要求填写 API 代际或 `protocol_adapter_id`。
-- **使用 OpenAI-compatible 新厂商**：用户只需确认大致协议族，新增 Provider Instance 并填写厂商提供的 `endpoint` 和 API Key，不需要区分 Responses、Chat Completions 等代际。后端接入测试优先验证官方新接口，再验证当前已注册的历史接口并固化结果；运行时不重新探测。
+- **新增或修改 Provider 授权**：用户通过 AICC `provider.add/update` 管理接口维护 `services/aicc/settings`，配置 API Key、`base_url`、Provider Instance、`provider_profile_id`、协议族和启用状态；AICC 使用调用者 token 和 revision CAS 写 system-config，前端不直接写。管理 RPC、Web UI DataModel 和 settings 使用同一字段名；用户不要求填写 API 代际或 `protocol_adapter_id`。
+- **使用 OpenAI-compatible 新厂商**：用户只需确认大致协议族，新增 Provider Instance 并填写厂商提供的 `base_url` 和 API Key，不需要区分 Responses、Chat Completions 等代际。后端接入测试优先验证官方新接口，再验证当前已注册的历史接口并固化结果；运行时不重新探测。
 - **使用官方 SN Provider**：`sn-ai-provider` 使用独立 `sn-openai` 派生 Adapter。用户可以选择静态 API Key，或使用设备签名登录 SN 并缓存短期 token；动态登录状态只属于 SN 层，不进入 OpenAI 基础 Adapter，也不透传 BuckyOS `verify-hub` session。
 - **期望效果**：`models.list` 能看到该 Provider，并列出用户配置或 Provider `/models` 返回的新模型。
-- **验收方法**：配置后调用 `service.reload_settings`，再调用 `models.list`。如果 Provider 不出现，优先检查启用状态、Profile、Adapter、`endpoint` 和授权；如果 Provider 出现但模型不出现，检查 discovery 结果与 Model Driver catalog。
+- **验收方法**：配置后调用 `service.reload_settings`，再调用 `models.list`。如果 Provider 不出现，优先检查启用状态、Profile、Adapter、`base_url` 和授权；如果 Provider 出现但模型不出现，检查 discovery 结果与 Model Driver catalog。
 
 #### 规划中 / 未完全实现
 
@@ -257,7 +257,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 #### 已实现
 
-- **保底方法一：协议兼容时新增 Provider Instance**。如果新厂商兼容已注册 Protocol Adapter，用户选择 Provider Profile，配置 `endpoint` 和 API Key，执行 `service.reload_settings` 后即可尝试使用。
+- **保底方法一：协议兼容时新增 Provider Instance**。如果新厂商兼容已注册 Protocol Adapter，用户选择 Provider Profile，配置 `base_url` 和 API Key，执行 `service.reload_settings` 后即可尝试使用。
 - **保底方法二：直接用 exact model 调用**。如果只是已支持 Provider 发布新模型，且 adapter 能调用该模型，用户可以先用 `new-model@provider-instance` 直接测试，不必等待逻辑目录挂载。
 - **保底方法三：写 local metadata override**。当新模型可调用但 AICC 不知道它的能力或逻辑目录时，用户写本地 metadata override，补充 `api_types`、`capabilities`、`logical_mounts`。
 - **保底方法四：写 routing_config**。用户可以把新模型临时挂到逻辑目录，并保留旧模型 fallback。这样应用侧继续使用 `llm.chat` 等逻辑名，不需要立刻改业务代码。

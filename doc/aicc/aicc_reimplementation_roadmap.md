@@ -76,7 +76,7 @@
 | D-003 | method 与 api_type 混用 | 部分历史验收表把 api_type 当 method | method 与 api_type 是不同值域，不要求同名或 1:1；分别冻结值域并维护显式合法关联，preflight 不做名称相等或双射检查 | 全部数据面模块 |
 | D-004 | Provider 身份字段与 settings | 新身份设计、旧 family settings、验收报告和公共 RPC 中都出现过 `provider_driver`，新草案又把 `base_url` 改成 `endpoint` | 新 settings 使用统一 `providers[]`，保留 `base_url`，实例保存 `provider_profile_id` 和 `protocol_adapter_id`；模型级 `model_driver_id` 由 catalog/inventory 产生；不兼容读取旧 settings 的 `provider_driver`，但保留 `buckyos-api` 已导出的同名 RPC/报告字段 | Provider、UI、E2E |
 | D-005 | Provider 范围 | 内部架构要求 11 家，当前验收基线主要覆盖 7 家和 SN | 首版实现 11 家内置 Provider，SN 单独列为扩展；当前 baseline 缺口不阻塞 Gate 0，在集成测试阶段先补齐 T1/T1.5，再补齐 T2，最后进入 T3 | Provider、集成测试 |
-| D-006 | `provider.update` | 管理方法总览包含，后文又写第一版暂不做 | 纳入首版；enable/disable 以及管理 RPC 的 `endpoint`（持久化为 `base_url`）、credential、Profile、Adapter、discovery 和实例规则修改统一通过 `provider.update`，并执行 CAS 与实例停止/替换生命周期 | 管理 API、RuntimeSnapshot |
+| D-006 | `provider.update` | 管理方法总览包含，后文又写第一版暂不做 | 纳入首版；enable/disable 以及管理 RPC 的 `base_url`、credential、Profile、Adapter、discovery 和实例规则修改统一通过 `provider.update`，并执行 CAS 与实例停止/替换生命周期 | 管理 API、RuntimeSnapshot |
 | D-007 | metadata 管理方法名 | 文档同时出现 `driver_metadata_update.*` 和 `provider_catalog_update.*` | 保留已导出的 `driver_metadata_update.get/set`；接口覆盖 Model Driver、Provider Rules 和 Known Provider 三类 metadata catalog 的云更新配置与状态 | API、UI、NDN 集成 |
 | D-008 | quota/budget 边界 | 产品 P0 和验收包含 quota/budget，但目标模块树没有独立 owner | 不新增独立顶层 `admission` 模块；模型 admission 归 Model Registry，quota/budget/privacy/trust 在 routing 内部策略层判定，Router 消费判定结果 | 路由、安全、usage |
 | D-009 | 测试层级术语 | 历史维护文档使用 L1-L4，当前验收规范使用 T1/T1.5/T2/T3 | 单元测试不再包装成验收层级；集成验收统一使用 T1/T1.5/T2/T3 | CI、报告 |
@@ -90,7 +90,7 @@
 - [x] request/response、ResourceRef、AiMessage、usage、artifact、trace 和错误 schema 以目标规范为准；
 - [x] exact model 语法确定为 `<provider_model_id>[:<variant>]@<provider_instance_name>`，`provider_model_id` 和 `provider_instance_name` 均不得包含 `@`；
 - [x] settings 统一使用 `providers[]` schema；
-- [x] 新 Provider Instance settings 保留 `base_url`；管理 RPC/UI 为前端兼容继续使用 `endpoint`，由 AICC 管理层转换；
+- [x] Provider Instance settings、管理 RPC 和 Web UI DataModel 统一使用 `base_url`，不接收或返回配置字段 `endpoint`；Web UI 无升级兼容约束，不保留转换层；
 - [x] Provider Instance、Profile、Adapter、Model Driver、ModelUID 身份链已冻结；
 - [x] `buckyos-api::aicc_client` 已导出的 RPC 接口作为兼容边界，除非单独评审，不重命名或删除；
 - [x] 首版包含 11 家内置 Provider、SN 扩展和目标 operation 覆盖矩阵；
@@ -512,6 +512,7 @@ Owner：四个并行集成小组
 #### WP-17A Desktop / AI Center
 
 - [ ] 更新 `src/frame/desktop/src/api/aicc_mgr.ts`；
+- [ ] Provider DataModel、表单和管理 RPC 请求/响应统一使用 `base_url`，删除 `endpoint` 字段及转换层；
 - [ ] Provider Wizard 使用 Profile/Instance/Adapter 新身份；
 - [ ] 普通用户不选择 API 代际；
 - [ ] 接入 catalog、validate、health、usage、trace 和 settings conflict；

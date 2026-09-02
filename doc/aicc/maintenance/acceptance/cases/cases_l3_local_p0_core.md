@@ -43,7 +43,7 @@ system_config 写入 settings
 
 用例：
 
-1. 写入 Mock OpenAI Provider Instance，`endpoint` 指向本地 Mock，reload 后 `models.list` 出现 `openai-mock-1`。
+1. 写入 Mock OpenAI Provider Instance，`base_url` 指向本地 Mock，reload 后 `models.list` 出现 `openai-mock-1`。
 2. 禁用 Provider，确认向库存刷新定时任务循环发送 `Stop` 并等待优雅退出；reload 后候选消失，调用返回无候选或策略拒绝，且没有新探测或迟到的 inventory/health 写入。
 3. 修改 Model Driver 的结构化能力，reload 后 `ModelRequirement` 硬过滤结果变化。
 4. 修改 `provider_type` 为 `local_inference` / `cloud_api` / `proxy_unknown`，验证 `local_only` 过滤。

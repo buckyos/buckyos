@@ -64,14 +64,14 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 
 不使用 Provider family section、`instances[]` 包装、`provider_driver`、settings 中的 `endpoint`、section 级 token、`features` 或字段别名。`base_url` 是 Provider Instance settings 的正式字段；Profile 默认值只用于创建表单，不能覆盖实例显式配置。
 
-用户通过管理 RPC 添加自定义 Provider 时不填写 `protocol_adapter_id`，只提交协议族、`endpoint` 和凭据；管理层持久化时把 `endpoint` 转换成 settings 的 `base_url`。例如：
+用户通过管理 RPC 添加自定义 Provider 时不填写 `protocol_adapter_id`，只提交协议族、`base_url` 和凭据；管理 RPC、UI DataModel 与 settings 使用同一字段名。例如：
 
 ```json
 {
   "provider_instance_name": "compat-router",
   "provider_profile_id": "custom",
   "protocol_family_id": "openai",
-  "endpoint": "https://compat.example/v1"
+  "base_url": "https://compat.example/v1"
 }
 ```
 

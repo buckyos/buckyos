@@ -49,7 +49,7 @@ Adapter 箭头表示语义上的子类/派生关系，不强制使用语言继�
 
 - Known Provider/Profile 注册；
 - credential schema 与脱敏；
-- endpoint/region/workspace 参数解析；
+- base_url/region/workspace 参数解析；
 - 至少一项官方主 operation 的非流式调用；
 - 主 operation 支持时的流式调用；
 - 模型 discovery 或 catalog-only 库存构建；

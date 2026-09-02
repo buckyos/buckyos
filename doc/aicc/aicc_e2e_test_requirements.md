@@ -726,7 +726,7 @@ quota、budget、幂等计费和 fallback 归因在 T1 覆盖；Provider usage �
 
 - `service.reload_settings` 成功和失败，并验证已导出的 `reload_settings` 兼容入口使用相同 schema 和行为。
 - 非法新配置失败后继续使用旧配置。
-- Provider validate/add/update/delete/refresh models；`provider.update` 覆盖 enable/disable、endpoint/credential/Profile/Adapter/discovery 修改、revision 冲突和实例停止/替换生命周期。
+- Provider validate/add/update/delete/refresh models；`provider.update` 覆盖 enable/disable、base_url/credential/Profile/Adapter/discovery 修改、revision 冲突和实例停止/替换生命周期。
 - `driver_metadata_update.get/set` 覆盖三类 metadata catalog 的云更新配置、target/applied seq 状态和 RBAC。
 - 多 instance 独立更新与删除。
 - Provider 停止、禁用、删除、reload 替换和 AICC 服务退出都必须向对应库存刷新定时任务循环发送幂等 `Stop` 事件并等待优雅退出；验证停止后没有新探测、孤儿定时器或迟到的 inventory/health 写入，重新启用后创建新循环并从持久 seq 继续收敛。
