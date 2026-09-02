@@ -61,11 +61,18 @@ export function assertCanonicalCompleteness(args: {
   if (errors.length > 0) throw new Error(errors.join("; "));
 }
 
-export function parseCanonicalApiTypesFromRust(source: string): string[] {
-  const enumMatch = /pub enum ApiType\s*\{([\s\S]*?)\n\}/m.exec(source);
-  if (!enumMatch) throw new Error("cannot find ApiType enum in model_types.rs");
-  return Array.from(
-    enumMatch[1].matchAll(/#\[serde\(rename\s*=\s*"([^"]+)"\)\]/g),
-    (match) => match[1],
-  );
+export function parseCanonicalApiTypesFromRequirements(source: string): string[] {
+  const section = /当前 AICC canonical API type[\s\S]*?\n\| namespace \| canonical api_type \/ method \|([\s\S]*?)\n\n/.exec(source)?.[1];
+  if (!section) throw new Error("cannot find canonical API type table in requirements");
+  const values: string[] = [];
+  for (const line of section.split("\n")) {
+    const columns = line.split("|").map((value) => value.trim());
+    if (columns.length < 4 || columns[1] === "---") continue;
+    const cell = columns[2];
+    for (const match of cell.matchAll(/`([^`]+)`/g)) {
+      const value = match[1];
+      if (value !== "chat.completions.create") values.push(value);
+    }
+  }
+  return values;
 }

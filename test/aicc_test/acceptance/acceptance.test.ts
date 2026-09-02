@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { createServer } from "node:http";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { CANONICAL_API_TYPES, methodsForApiType } from "./canonical.ts";
@@ -29,6 +30,14 @@ import { buildNdnGatewayConfig, gatewayRouterArgs } from "./ndn_fixture_service.
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
 import { callInference, type RpcClient } from "./gateway.ts";
+import {
+  buildT15Manifest,
+  loadProviderProtocolCatalog,
+  protocolContract,
+  validateProviderRequest,
+} from "./provider_protocol_contracts.ts";
+import { buildT15TypedParams } from "./run_t15_gateway.ts";
+import { createT15MockHandler } from "./t15_mock_provider.ts";
 import {
   assertBackgroundRemovalTransparency,
   validateArtifactBytes,
@@ -485,6 +494,7 @@ test("preflight covers protocol, providers, and static cases", async () => {
   const result = await runPreflight();
   assert.equal(result.canonical_api_types, CANONICAL_API_TYPES.length);
   assert.ok(result.static_cases > CANONICAL_API_TYPES.length);
+  assert.ok(result.t15_cases > CANONICAL_API_TYPES.length);
   assert.deepEqual(result.provider_drivers, [
     "claude",
     "fal",
@@ -875,7 +885,7 @@ test("T3 provider audit derives driver coverage from exact models and runtime in
 test("T1 manifest coverage does not count declared but unexecuted cases", () => {
   const coverage = manifestCoverage([{
     run_id: "run",
-    case_id: "t1.mock.error.rate_limit",
+    case_id: "t1.route.exact_model_hits_instance",
     layer: "T1",
     status: "passed",
     api_type: "llm",
@@ -887,7 +897,7 @@ test("T1 manifest coverage does not count declared but unexecuted cases", () => 
   assert.equal(coverage.executed, 1);
   assert.equal(coverage.passed, 1);
   assert.ok(coverage.total > coverage.executed);
-  assert.ok(coverage.unexecuted_case_ids.includes("t1.route.exact_model_hits_instance"));
+  assert.ok(coverage.unexecuted_case_ids.includes("t1.route.logical_model_selects_candidate"));
 });
 
 test("T1 report separates requirement branches from combination cells", () => {
@@ -912,7 +922,7 @@ test("T1 report separates requirement branches from combination cells", () => {
     1,
   );
   assert.equal(
-    coverage.combination_groups.find((item) => item.group_id === "api_method_x_mock_scenario")?.executed_cells,
+    coverage.combination_groups.find((item) => item.group_id === "canonical_api_routes")?.executed_cells,
     0,
   );
 });
@@ -947,7 +957,7 @@ test("manifest rejects duplicate case ids", () => {
   );
 });
 
-test("provider matrix expands exact model and method", async () => {
+test("T2 provider matrix has one minimal cell per physical model and API type", async () => {
   const cells = buildProviderMatrix({
     baseline: await baseline(),
     ...matrixInputs([{
@@ -961,14 +971,11 @@ test("provider matrix expands exact model and method", async () => {
       }],
     }]),
   });
-  assert.equal(cells.length, 3);
+  assert.equal(cells.length, 1);
   assert.equal(cells[0].exact_model, "fal-ai/esrgan@fal-test-a");
   assert.equal(cells[0].method, "image.upscale");
-  assert.deepEqual([...new Set(cells.map((cell) => cell.resource_representation))].sort(), [
-    "base64",
-    "named_object",
-    "url",
-  ]);
+  assert.equal(cells[0].resource_representation, undefined);
+  assert.equal(cells[0].variant, undefined);
 });
 
 test("T2 selects one configured instance per provider and rejects ambiguity", () => {
@@ -1278,7 +1285,7 @@ test("SN matrix uses its inventory and OpenAI capability evidence", async () => 
   assert.ok(cells.every((cell) => cell.provider_driver === "sn-ai-provider"));
 });
 
-test("Gemini Embedding 2 expands official multimodal combinations and one large artifact per API", async () => {
+test("T2 Gemini Embedding 2 has one minimal cell per API type and no variant cells", async () => {
   const cells = buildProviderMatrix({
     baseline: await baseline(),
     ...matrixInputs([{
@@ -1292,22 +1299,136 @@ test("Gemini Embedding 2 expands official multimodal combinations and one large 
       }],
     }]),
   });
-  const multimodal = cells.filter((cell) =>
-    cell.api_type === "embedding.multimodal" && cell.variant === "default"
-  );
-  assert.deepEqual([...new Set(multimodal.map((cell) => cell.input_kinds.join("+")))].sort(), [
-    "audio",
-    "document",
-    "image",
-    "text",
-    "text+image",
-    "video",
-  ]);
-  assert.deepEqual(
-    [...new Set(multimodal.filter((cell) => cell.input_kinds.includes("document")).map((cell) => cell.document_format))],
-    ["pdf"],
-  );
-  assert.equal(cells.filter((cell) => cell.variant === "embedding_large_artifact").length, 2);
+  assert.equal(cells.length, 2);
+  assert.deepEqual(cells.map((cell) => cell.api_type).sort(), ["embedding.multimodal", "embedding.text"]);
+  assert.ok(cells.every((cell) => cell.variant === undefined));
+  assert.ok(cells.every((cell) => cell.resource_representation === undefined));
+});
+
+test("T1.5 protocol catalog is independent, traceable, and strict on Provider wire", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const contract = protocolContract(catalog, "claude", "anthropic.messages.2023-06-01");
+  assert.deepEqual(validateProviderRequest(contract, {
+    method: "POST",
+    pathname: "/v1/messages",
+    query: new URLSearchParams(),
+    headers: new Headers({
+      "content-type": "application/json",
+      "x-api-key": "test-key",
+      "anthropic-version": "2023-06-01",
+    }),
+    body: { model: "claude-test", messages: [], max_tokens: 16 },
+  }), []);
+  assert.deepEqual(validateProviderRequest(contract, {
+    method: "POST",
+    pathname: "/v1/messages",
+    query: new URLSearchParams(),
+    headers: new Headers({
+      "content-type": "application/json",
+      "x-api-key": "test-key",
+      "anthropic-version": "2023-06-01",
+    }),
+    body: { model: "claude-test", messages: [], max_tokens: 16, invented_by_aicc: true },
+  }), ["unknown body field invented_by_aicc"]);
+  assert.ok(contract.official_sources.every((source) => source.startsWith("https://")));
+});
+
+test("T1.5 Provider mock rejects non-official wire and redacts captured credentials", async (context) => {
+  const catalog = await loadProviderProtocolCatalog();
+  const handler = createT15MockHandler(catalog);
+  const server = createServer((request, response) => void handler(request, response));
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+  context.after(() => new Promise<void>((resolvePromise, reject) =>
+    server.close((error) => error ? reject(error) : resolvePromise())
+  ));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const select = async () => {
+    const response = await fetch(`${baseUrl}/__mock/select`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider_driver: "claude",
+        contract_id: "anthropic.messages.2023-06-01",
+        scenario: "success",
+      }),
+    });
+    assert.equal(response.status, 200);
+  };
+  await select();
+  const headers = {
+    "content-type": "application/json",
+    "x-api-key": "t15-secret-value",
+    "anthropic-version": "2023-06-01",
+  };
+  const valid = await fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ model: "claude-test", messages: [], max_tokens: 16 }),
+  });
+  assert.equal(valid.status, 200);
+  const audit = await (await fetch(`${baseUrl}/__mock/requests`)).json() as {
+    requests: Array<{ headers: Record<string, string>; validation_errors: string[] }>;
+  };
+  assert.equal(audit.requests[0].headers["x-api-key"], "[REDACTED]");
+  assert.deepEqual(audit.requests[0].validation_errors, []);
+  await select();
+  const invalid = await fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ model: "claude-test", messages: [], max_tokens: 16, invented: true }),
+  });
+  assert.equal(invalid.status, 400);
+  assert.match(await invalid.text(), /unknown body field invented/);
+});
+
+test("T1.5 manifest owns Provider normal, streaming, async, error, and variant cells", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const manifest = validateCaseManifest(buildT15Manifest(catalog, [{
+    provider_driver: "openai",
+    contract_id: "openai.responses.v1",
+    api_type: "llm",
+    model: {
+      exact_model: "gpt-5.4:reasoning-high@t15-openai",
+      provider_model_id: "gpt-5.4:reasoning-high",
+      provider_actual_model_id: "gpt-5.4",
+      provider_options: { reasoning: { effort: "high" } },
+      api_types: ["llm"],
+      logical_mounts: [],
+    },
+  }]));
+  assert.ok(manifest.some((item) => item.mock_scenario === "stream_success"));
+  assert.ok(manifest.some((item) => item.mock_scenario === "async_success"));
+  assert.ok(manifest.some((item) => item.expected_error_class === "provider_protocol_failed"));
+  assert.ok(manifest.some((item) => item.tags.includes("variant")));
+  assert.ok(manifest.every((item) => item.layer === "T1.5" && item.semantic_rubric.length === 0));
+  assert.ok(buildStaticManifest().every((item) => !item.case_id.startsWith("t1.protocol.")));
+});
+
+test("T1.5 typed request fixtures use current provider-neutral methods without legacy envelopes", () => {
+  const params = buildT15TypedParams("llm", "gpt-5.4@t15-openai", "run");
+  assert.equal(params.exact_model, "gpt-5.4@t15-openai");
+  assert.ok(Array.isArray(params.messages));
+  assert.equal("model" in params, false);
+  assert.equal("payload" in params, false);
+});
+
+test("T2 excludes independently callable metadata variants", async () => {
+  const inventories: ProviderInventory[] = [{
+    provider_instance_name: "openai-main",
+    provider_driver: "openai",
+    models: [
+      { exact_model: "gpt-5.4@openai-main", provider_model_id: "gpt-5.4", api_types: ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"], logical_mounts: [] },
+      { exact_model: "gpt-5.4:reasoning-high@openai-main", provider_model_id: "gpt-5.4:reasoning-high", provider_actual_model_id: "gpt-5.4", api_types: ["llm"], logical_mounts: [] },
+    ],
+  }];
+  const cells = buildProviderMatrix({ baseline: await baseline(), ...matrixInputs(inventories) });
+  assert.ok(cells.length > 0);
+  assert.ok(cells.every((cell) => !cell.provider_model_id.includes(":")));
 });
 
 test("report redaction removes secrets and totals statuses", () => {

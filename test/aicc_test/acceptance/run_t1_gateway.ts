@@ -97,40 +97,6 @@ function failedResponseDiagnostic(response: AiMethodResponse): string {
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
-const MOCK_SCENARIOS = [
-  "bad_request",
-  "unauthorized",
-  "forbidden",
-  "not_found",
-  "idempotency_conflict",
-  "rate_limit",
-  "provider_5xx",
-  "connection_failed",
-  "timeout_short",
-  "timeout_long",
-  "malformed_response",
-  "wrong_mime",
-  "missing_usage",
-] as const;
-
-function expectedScenarioMarkers(scenario: (typeof MOCK_SCENARIOS)[number]): string[] {
-  switch (scenario) {
-    case "bad_request": return ["400", "invalid_request", "bad request"];
-    case "unauthorized": return ["401", "invalid_api_key", "unauthorized"];
-    case "forbidden": return ["403", "content_policy", "forbidden"];
-    case "not_found": return ["404", "model_not_found", "not found"];
-    case "idempotency_conflict": return ["409", "idempotency_conflict", "conflict"];
-    case "rate_limit": return ["429", "rate_limit", "rate limit"];
-    case "provider_5xx": return ["503", "provider_unavailable", "service unavailable"];
-    case "connection_failed": return ["connection", "network", "reset", "provider"];
-    case "timeout_short":
-    case "timeout_long":
-      return ["timeout", "timed out"];
-    case "malformed_response": return ["malformed", "invalid", "json", "provider"];
-    case "wrong_mime": return ["mime", "content-type", "resource", "provider"];
-    case "missing_usage": return ["usage", "provider"];
-  }
-}
 
 function env(name: string): string | undefined {
   const value = Deno.env.get(name)?.trim();
@@ -208,7 +174,10 @@ async function options(args: string[]): Promise<Options> {
 }
 
 function wants(input: Pick<Options, "caseIds">, caseId: string): boolean {
-  return input.caseIds.length === 0 || input.caseIds.includes(caseId);
+  const isCurrentT1Case = buildStaticManifest().some((testCase) =>
+    testCase.layer === "T1" && testCase.case_id === caseId
+  );
+  return isCurrentT1Case && (input.caseIds.length === 0 || input.caseIds.includes(caseId));
 }
 
 async function waitHealth(baseUrl: string, timeoutMs = 15_000): Promise<void> {
@@ -227,11 +196,11 @@ async function waitHealth(baseUrl: string, timeoutMs = 15_000): Promise<void> {
   throw new Error(`mock provider is unreachable at ${baseUrl}: ${last}`);
 }
 
-async function setScenario(baseUrl: string, scenario: string): Promise<void> {
+async function setScenario(baseUrl: string, scenario: string, pathPrefix?: string): Promise<void> {
   const response = await fetch(`${baseUrl}/__mock/scenario`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ scenario }),
+    body: JSON.stringify({ scenario, path_prefix: pathPrefix }),
   });
   if (!response.ok) throw new Error(`failed to select mock scenario ${scenario}: ${await response.text()}`);
 }
@@ -996,13 +965,7 @@ async function commitId(): Promise<string> {
 }
 
 function canonicalCaseId(item: CaseReport): string {
-  return item.case_id === "t1.mock.llm.stream_success"
-    ? "t1.protocol.llm.chat.completions.create.stream_success"
-    : item.case_id.startsWith("t1.mock.error.")
-    ? `t1.protocol.llm.chat.completions.create.${item.case_id.slice("t1.mock.error.".length)}`
-    : item.case_id.startsWith("t1.mock.") && item.api_type && item.method
-    ? `t1.protocol.${item.api_type}.${item.method}.success`
-    : item.case_id;
+  return item.case_id;
 }
 
 export function manifestCoverage(cases: readonly CaseReport[]): NonNullable<AcceptanceReport["manifest_coverage"]> {
@@ -1110,13 +1073,14 @@ async function runCases(
     minIntervalMs: input.providerMinIntervalMs,
   });
   await setScenario(input.mockControlUrl, "success");
-  const successes = await scheduler.run(cells.filter((cell) =>
-    wants(input, `t1.protocol.${cell.api_type}.${cell.method}.success`)
+  const successes = await scheduler.run(protocolCells.filter((cell) =>
+    wants(input, `t1.route.api_type.${cell.api_type}.${cell.method}`)
   ), async (cell) => {
     const started = Date.now();
+    const caseId = `t1.route.api_type.${cell.api_type}.${cell.method}`;
     const report: CaseReport = {
       run_id: runId,
-      case_id: cell.case_id,
+      case_id: caseId,
       layer: "T1",
       status: "failed",
       provider_driver: cell.provider_driver,
@@ -1124,14 +1088,14 @@ async function runCases(
       exact_model: cell.exact_model,
       api_type: cell.api_type,
       method: cell.method,
-      session_id: `${runId}:${cell.case_id}`,
+      session_id: `${runId}:${caseId}`,
       outbound_message_ids: [],
       artifact_ids: [],
       attempts: [],
     };
     try {
       const request = buildExactRequest({
-        cell,
+        cell: { ...cell, case_id: caseId },
         runId,
         fixtures: {
           image: { kind: "url", url: `${mockBaseUrl}/__mock/fixtures/image.png`, mime_hint: "image/png" },
@@ -1157,59 +1121,12 @@ async function runCases(
       report.usage = audit.usage;
       report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "passed", estimated_cost_usd: 0, actual_cost_usd: 0, cost_status: "actual" });
     } catch (error) {
-      report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "failed", failure_class: "provider_protocol_failed", diagnostic: String(error), estimated_cost_usd: 0, cost_status: "unknown" });
+      report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "failed", failure_class: "routing_failed", diagnostic: String(error), estimated_cost_usd: 0, cost_status: "unknown" });
     }
     return report;
   });
   results.push(...successes);
 
-  const asyncCells = protocolCells.filter((cell) =>
-    wants(input, `t1.protocol.${cell.api_type}.${cell.method}.async_success`)
-  );
-  if (asyncCells.length > 0) {
-    await setScenario(input.mockControlUrl, "async_success");
-    results.push(...await scheduler.run(asyncCells, async (cell) => {
-      const started = Date.now();
-      const caseId = `t1.protocol.${cell.api_type}.${cell.method}.async_success`;
-      const report: CaseReport = {
-        run_id: runId,
-        case_id: caseId,
-        layer: "T1",
-        status: "failed",
-        provider_driver: cell.provider_driver,
-        provider_instance: cell.provider_instance,
-        exact_model: cell.exact_model,
-        api_type: cell.api_type,
-        method: cell.method,
-        session_id: `${runId}:${caseId}`,
-        outbound_message_ids: [],
-        artifact_ids: [],
-        attempts: [],
-      };
-      try {
-        const request = buildExactRequest({
-          cell: { ...cell, case_id: caseId },
-          runId,
-          fixtures: {
-            image: { kind: "url", url: `${mockBaseUrl}/__mock/fixtures/image.png`, mime_hint: "image/png" },
-            mask: { kind: "url", url: `${mockBaseUrl}/__mock/fixtures/image.png`, mime_hint: "image/png" },
-            audio: { kind: "url", url: `${mockBaseUrl}/__mock/fixtures/audio.wav`, mime_hint: "audio/wav" },
-            video: { kind: "url", url: `${mockBaseUrl}/__mock/fixtures/video.mp4`, mime_hint: "video/mp4" },
-          },
-        });
-        const initial = await callInference(session.aicc, cell.method, request) as AiMethodResponse;
-        const value = await terminal(session, initial, input.timeoutMs);
-        assertResponseShape(cell, value);
-        report.status = "passed";
-        report.task_id = initial.task_id;
-        report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "passed", diagnostic: `async Provider flow completed from initial status ${initial.status}`, estimated_cost_usd: 0, actual_cost_usd: 0, cost_status: "actual" });
-      } catch (error) {
-        report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "failed", failure_class: "provider_protocol_failed", diagnostic: String(error), estimated_cost_usd: 0, cost_status: "unknown" });
-      }
-      return report;
-    }));
-    await setScenario(input.mockControlUrl, "success");
-  }
   results.push(...await runRouteCases(session, runId, mockInventories, input));
 
   const exactInventory = mockInventories.find((inventory) =>
@@ -1228,14 +1145,10 @@ async function runCases(
     {
       caseId: "t1.route.exact_model_hits_instance",
       model: exactBaseModel,
-      expectedProviderModel: "gpt-5.4",
-      expectedReasoningEffort: undefined,
     },
     {
-      caseId: "t1.route.metadata_variant_lowers_options",
+      caseId: "t1.route.metadata_variant_expands_exact_model",
       model: exactVariantModel,
-      expectedProviderModel: "gpt-5.4",
-      expectedReasoningEffort: "high",
     },
   ];
   for (const exactCase of exactCases) {
@@ -1256,33 +1169,11 @@ async function runCases(
       attempts: [],
     };
     try {
-      const before = (await mockRequests(input.mockControlUrl)).length;
       const cell = cellFor(exactInventory, exactCase.model, "llm", "chat.completions.create");
       const request = buildExactRequest({ cell: { ...cell, case_id: exactCase.caseId }, runId, fixtures: {} });
       const initial = await callChatCompletions(session.aicc, request) as AiMethodResponse;
       const value = await terminal(session, initial, input.timeoutMs);
       assertResponseShape(cell, value);
-      const providerCalls = (await mockRequests(input.mockControlUrl)).slice(before);
-      if (providerCalls.length !== 1) {
-        throw new Error(`expected exactly one Provider request, observed ${providerCalls.length}`);
-      }
-      const body = providerCalls[0].body;
-      if (!body || typeof body !== "object" || Array.isArray(body)) {
-        throw new Error("mock Provider recorded an invalid request body");
-      }
-      const bodyObject = body as Record<string, unknown>;
-      if (bodyObject.model !== exactCase.expectedProviderModel) {
-        throw new Error(`wire model ${String(bodyObject.model)}, expected ${exactCase.expectedProviderModel}`);
-      }
-      if (exactCase.expectedReasoningEffort) {
-        const reasoning = bodyObject.reasoning;
-        const effort = reasoning && typeof reasoning === "object"
-          ? (reasoning as Record<string, unknown>).effort
-          : undefined;
-        if (effort !== exactCase.expectedReasoningEffort) {
-          throw new Error(`wire reasoning effort ${String(effort)}, expected ${exactCase.expectedReasoningEffort}`);
-        }
-      }
       const audit = await auditSuccessfulTask({
         session,
         taskId: initial.task_id,
@@ -1295,7 +1186,7 @@ async function runCases(
       report.task_id = initial.task_id;
       report.trace_id = audit.traceId;
       report.usage = audit.usage;
-      report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "passed", diagnostic: `wire model=${exactCase.expectedProviderModel}${exactCase.expectedReasoningEffort ? ` reasoning=${exactCase.expectedReasoningEffort}` : ""}`, estimated_cost_usd: 0, actual_cost_usd: 0, cost_status: "actual" });
+      report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "passed", diagnostic: `exact model ${exactCase.model.exact_model} executed without logical fallback`, estimated_cost_usd: 0, actual_cost_usd: 0, cost_status: "actual" });
     } catch (error) {
       report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "failed", failure_class: "provider_protocol_failed", diagnostic: String(error), estimated_cost_usd: 0, cost_status: "unknown" });
     }
@@ -1499,148 +1390,32 @@ async function runCases(
   results.push(spaceMismatchReport);
   }
 
-  const streamCell = cells.find((cell) => cell.provider_driver === "openai" && cell.method === "chat.completions.create") ?? cells[0];
-  if (wants(input, "t1.protocol.llm.chat.completions.create.stream_success")) {
-  const streamStarted = Date.now();
-  const streamCase: CaseReport = {
-    run_id: runId,
-    case_id: "t1.mock.llm.stream_success",
-    layer: "T1",
-    status: "failed",
-    provider_driver: streamCell.provider_driver,
-    provider_instance: streamCell.provider_instance,
-    exact_model: streamCell.exact_model,
-    api_type: streamCell.api_type,
-    method: streamCell.method,
-    outbound_message_ids: [],
-    artifact_ids: [],
-    attempts: [],
-  };
-  try {
-    await setScenario(input.mockControlUrl, "stream_success");
-    const request = buildExactRequest({ cell: streamCell, runId, fixtures: {} });
-    const payload = request.payload as Record<string, unknown>;
-    payload.options = { ...(payload.options as Record<string, unknown>), stream: true };
-    const initial = await callInference(session.aicc, streamCell.method, request) as AiMethodResponse;
-    const value = await terminal(session, initial, input.timeoutMs);
-    assertResponseShape(streamCell, value);
-    streamCase.status = "passed";
-    streamCase.task_id = initial.task_id;
-    streamCase.attempts.push({ attempt: 1, started_at: new Date(streamStarted).toISOString(), elapsed_ms: Date.now() - streamStarted, status: "passed", estimated_cost_usd: 0, actual_cost_usd: 0, cost_status: "actual" });
-  } catch (error) {
-    streamCase.attempts.push({ attempt: 1, started_at: new Date(streamStarted).toISOString(), elapsed_ms: Date.now() - streamStarted, status: "failed", failure_class: "provider_protocol_failed", diagnostic: String(error), estimated_cost_usd: 0, cost_status: "unknown" });
-  } finally {
-    await setScenario(input.mockControlUrl, "success");
-  }
-  results.push(streamCase);
-  }
-
-  for (const streamCell of protocolCells.filter((cell) =>
-    cell.api_type === "llm" && cell.method !== "chat.completions.create" &&
-    wants(input, `t1.protocol.${cell.api_type}.${cell.method}.stream_success`)
-  )) {
-    const started = Date.now();
-    const caseId = `t1.protocol.${streamCell.api_type}.${streamCell.method}.stream_success`;
-    const report: CaseReport = {
-      run_id: runId,
-      case_id: caseId,
-      layer: "T1",
-      status: "failed",
-      provider_driver: streamCell.provider_driver,
-      provider_instance: streamCell.provider_instance,
-      exact_model: streamCell.exact_model,
-      api_type: streamCell.api_type,
-      method: streamCell.method,
-      outbound_message_ids: [],
-      artifact_ids: [],
-      attempts: [],
-    };
-    try {
-      await setScenario(input.mockControlUrl, "stream_success");
-      const request = buildExactRequest({ cell: { ...streamCell, case_id: caseId }, runId, fixtures: {} });
-      const payload = request.payload as Record<string, unknown>;
-      payload.options = { ...(payload.options as Record<string, unknown>), stream: true };
-      const initial = await callInference(session.aicc, streamCell.method, request) as AiMethodResponse;
-      const value = await terminal(session, initial, input.timeoutMs);
-      assertResponseShape(streamCell, value);
-      report.status = "passed";
-      report.task_id = initial.task_id;
-      report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "passed", estimated_cost_usd: 0, actual_cost_usd: 0, cost_status: "actual" });
-    } catch (error) {
-      report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "failed", failure_class: "provider_protocol_failed", diagnostic: String(error), estimated_cost_usd: 0, cost_status: "unknown" });
-    } finally {
-      await setScenario(input.mockControlUrl, "success");
-    }
-    results.push(report);
-  }
-
-  for (const manifestCase of buildStaticManifest().filter((item) =>
-    item.case_id.startsWith("t1.protocol.") && item.mock_scenario === "stream_success" &&
-    item.api_type !== "llm" &&
-    protocolCells.some((cell) => cell.api_type === item.api_type && cell.method === item.method) &&
-    wants(input, item.case_id)
+  const executableRouteKeys = new Set(protocolCells.map((cell) => `${cell.api_type}\u0000${cell.method}`));
+  for (const manifestCase of buildStaticManifest().filter((testCase) =>
+    testCase.case_id.startsWith("t1.route.api_type.") &&
+    !executableRouteKeys.has(`${testCase.api_type}\u0000${testCase.method}`) &&
+    wants(input, testCase.case_id)
   )) {
     results.push({
       run_id: runId,
       case_id: manifestCase.case_id,
       layer: "T1",
-      status: "not_applicable",
+      status: "failed",
       api_type: manifestCase.api_type ?? undefined,
       method: manifestCase.method,
       outbound_message_ids: [],
       artifact_ids: [],
-      attempts: [],
-    });
-  }
-
-  const coveredApiTypes = new Set(cells.map((cell) => cell.api_type));
-  for (const apiType of CANONICAL_API_TYPES.filter((item) => !coveredApiTypes.has(item))) {
-    if (input.caseIds.length > 0) break;
-    const started = Date.now();
-    const caseId = `t1.mock.no_route.${apiType}`;
-    const report: CaseReport = {
-      run_id: runId,
-      case_id: caseId,
-      layer: "T1",
-      status: "failed",
-      api_type: apiType,
-      method: "route.resolve",
-      outbound_message_ids: [],
-      artifact_ids: [],
-      attempts: [],
-    };
-    try {
-      await session.aicc.call("route.resolve", {
-        request_id: `${runId}:${caseId}`,
-        api_type: apiType,
-        logical_model: apiType,
-        requirements: {},
-        disable: {},
-      });
-      report.attempts.push({
-        attempt: 1,
-        started_at: new Date(started).toISOString(),
-        elapsed_ms: Date.now() - started,
+      attempts: [{
+        attempt: 0,
+        started_at: new Date().toISOString(),
+        elapsed_ms: 0,
         status: "failed",
-        failure_class: "routing_failed",
-        diagnostic: `unsupported mock capability ${apiType} unexpectedly resolved`,
+        failure_class: "preflight_failed",
+        diagnostic: `T1 Mock inventory exposes no model for ${manifestCase.api_type}/${manifestCase.method}`,
         estimated_cost_usd: 0,
         cost_status: "not_called",
-      });
-    } catch (error) {
-      report.status = "passed";
-      report.attempts.push({
-        attempt: 1,
-        started_at: new Date(started).toISOString(),
-        elapsed_ms: Date.now() - started,
-        status: "passed",
-        diagnostic: `unsupported canonical capability correctly returned no route: ${String(error)}`,
-        estimated_cost_usd: 0,
-        actual_cost_usd: 0,
-        cost_status: "actual",
-      });
-    }
-    results.push(report);
+      }],
+    });
   }
 
   const openaiA = mockInventories.find((item) => item.provider_instance_name.includes("dv-openai-a-"));
@@ -1927,115 +1702,92 @@ async function runCases(
     }));
   }
 
-  for (const scenario of MOCK_SCENARIOS) {
-    const selectedProtocolCells = protocolCells.filter((cell) =>
-      wants(input, `t1.protocol.${cell.api_type}.${cell.method}.${scenario}`)
-    );
-    if (selectedProtocolCells.length === 0) continue;
-    await setScenario(input.mockControlUrl, scenario);
-    const requestsBefore = await mockRequestCount(input.mockControlUrl);
-    const scenarioResults = await scheduler.run(selectedProtocolCells, async (cell) => {
-      const started = Date.now();
-      const caseId = `t1.protocol.${cell.api_type}.${cell.method}.${scenario}`;
-      const report: CaseReport = {
-        run_id: runId,
-        case_id: caseId,
-        layer: "T1",
-        status: "failed",
-        provider_driver: cell.provider_driver,
-        provider_instance: cell.provider_instance,
-        exact_model: cell.exact_model,
-        api_type: cell.api_type,
-        method: cell.method,
-        session_id: `${runId}:${caseId}`,
-        outbound_message_ids: [],
-        artifact_ids: [],
-        attempts: [],
-      };
-      try {
-        const request = buildExactRequest({
-          cell: { ...cell, case_id: caseId },
-          runId,
-          fixtures: {
-            image: { kind: "url", url: `${mockBaseUrl}/__mock/fixtures/image.png`, mime_hint: "image/png" },
-            mask: { kind: "url", url: `${mockBaseUrl}/__mock/fixtures/image.png`, mime_hint: "image/png" },
-            audio: { kind: "url", url: `${mockBaseUrl}/__mock/fixtures/audio.wav`, mime_hint: "audio/wav" },
-            video: { kind: "url", url: `${mockBaseUrl}/__mock/fixtures/video.mp4`, mime_hint: "video/mp4" },
-          },
-        });
-        const initial = await callInference(session.aicc, cell.method, request) as AiMethodResponse;
-        await terminal(session, initial, Math.min(input.timeoutMs, 10_000));
-        report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "failed", failure_class: "provider_protocol_failed", diagnostic: `scenario ${scenario} unexpectedly succeeded`, estimated_cost_usd: 0, cost_status: "unknown" });
-      } catch (error) {
-        const diagnostic = String(error);
-        const normalized = diagnostic.toLowerCase();
-        const expected = expectedScenarioMarkers(scenario).some((marker) =>
-          normalized.includes(marker.toLowerCase())
-        );
-        if (expected) {
-          report.status = "passed";
-          report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "passed", diagnostic: `expected ${scenario} Provider error observed: ${diagnostic}`, estimated_cost_usd: 0, actual_cost_usd: 0, cost_status: "actual" });
-        } else {
-          report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "failed", failure_class: "provider_protocol_failed", diagnostic: `scenario ${scenario} returned an unexpected error: ${diagnostic}`, estimated_cost_usd: 0, cost_status: "unknown" });
-        }
-      }
-      return report;
-    });
-    const requestsAfter = await mockRequestCount(input.mockControlUrl);
-    const observedRequests = requestsAfter - requestsBefore;
-    if (observedRequests !== selectedProtocolCells.length) {
-      results.push({
-        run_id: runId,
-        case_id: `t1.protocol.${scenario}.provider_request_count`,
-        layer: "T1",
-        status: "failed",
-        method: "mock.requests",
-        outbound_message_ids: [],
-        artifact_ids: [],
-        attempts: [{
-          attempt: 1,
-          started_at: new Date().toISOString(),
-          elapsed_ms: 0,
-          status: "failed",
-          failure_class: "provider_protocol_failed",
-          diagnostic: `scenario ${scenario} expected exactly ${selectedProtocolCells.length} Provider requests, observed ${observedRequests}`,
-          estimated_cost_usd: 0,
-          cost_status: observedRequests === 0 ? "not_called" : "unknown",
-        }],
-      });
-    }
-    results.push(...scenarioResults);
-    await setScenario(input.mockControlUrl, "success");
+  const fallbackA = mockInventories.find((inventory) => inventory.provider_instance_name.includes("dv-openai-a-"));
+  const fallbackB = mockInventories.find((inventory) => inventory.provider_instance_name.includes("dv-openai-b-"));
+  const fallbackModelA = fallbackA?.models.find((model) =>
+    model.api_types.includes("llm") && fallbackB?.models.some((candidate) =>
+      candidate.provider_model_id === model.provider_model_id && candidate.api_types.includes("llm")
+    )
+  );
+  const fallbackModelB = fallbackModelA && fallbackB?.models.find((model) =>
+    model.provider_model_id === fallbackModelA.provider_model_id
+  );
+  const fallbackLogicalModel = fallbackModelA?.logical_mounts.find((mount) =>
+    fallbackModelB?.logical_mounts.includes(mount)
+  );
+  if (!fallbackA || !fallbackB || !fallbackModelA || !fallbackModelB || !fallbackLogicalModel) {
+    throw new Error("runtime boundary cases require two OpenAI Mock instances with a shared logical model");
   }
-
-  const executableProtocolKeys = new Set(protocolCells.map((cell) =>
-    `${cell.api_type}\u0000${cell.method}`
-  ));
-  for (const manifestCase of buildStaticManifest().filter((item) =>
-    item.case_id.startsWith("t1.protocol.") &&
-    !executableProtocolKeys.has(`${item.api_type}\u0000${item.method}`) &&
-    wants(input, item.case_id)
-  )) {
-    results.push({
+  const fallbackCell = cellFor(fallbackA, fallbackModelA, "llm", "chat.completions.create");
+  const runtimeBoundaryCases = [
+    { caseId: "t1.runtime_boundary.rate_limit_fallback", scenario: "rate_limit", expectsFallback: true, failureClass: "provider_runtime_failed" },
+    { caseId: "t1.runtime_boundary.server_error_fallback", scenario: "provider_5xx", expectsFallback: true, failureClass: "provider_runtime_failed" },
+    { caseId: "t1.runtime_boundary.connection_failure_fallback", scenario: "connection_failed", expectsFallback: true, failureClass: "provider_runtime_failed" },
+    { caseId: "t1.runtime_boundary.timeout_fallback", scenario: "timeout_short", expectsFallback: true, failureClass: "provider_runtime_failed" },
+    { caseId: "t1.runtime_boundary.malformed_response_rejected", scenario: "malformed_response", expectsFallback: false, failureClass: "provider_protocol_failed" },
+    { caseId: "t1.runtime_boundary.wrong_mime_rejected", scenario: "wrong_mime", expectsFallback: false, failureClass: "resource_failed" },
+    { caseId: "t1.runtime_boundary.missing_usage_rejected", scenario: "missing_usage", expectsFallback: false, failureClass: "usage_failed" },
+  ] as const;
+  for (const boundary of runtimeBoundaryCases) {
+    if (!wants(input, boundary.caseId)) continue;
+    const started = Date.now();
+    const report: CaseReport = {
       run_id: runId,
-      case_id: manifestCase.case_id,
+      case_id: boundary.caseId,
       layer: "T1",
       status: "failed",
-      api_type: manifestCase.api_type ?? undefined,
-      method: manifestCase.method,
+      provider_driver: fallbackA.provider_driver,
+      provider_instance: fallbackA.provider_instance_name,
+      exact_model: fallbackModelA.exact_model,
+      api_type: "llm",
+      method: "chat.completions.create",
       outbound_message_ids: [],
       artifact_ids: [],
-      attempts: [{
-        attempt: 1,
-        started_at: new Date().toISOString(),
-        elapsed_ms: 0,
-        status: "failed",
-        failure_class: "preflight_failed",
-        diagnostic: `no Mock Provider inventory model exposes ${manifestCase.api_type}/${manifestCase.method}`,
-        estimated_cost_usd: 0,
-        cost_status: "not_called",
-      }],
-    });
+      attempts: [],
+    };
+    await setScenario(input.mockControlUrl, boundary.scenario, "/instance-a/");
+    const before = await mockRequestCount(input.mockControlUrl);
+    try {
+      const request = buildExactRequest({ cell: { ...fallbackCell, case_id: boundary.caseId }, runId, fixtures: {} });
+      let initial: AiMethodResponse;
+      if (boundary.expectsFallback) {
+        request.model = { alias: fallbackLogicalModel };
+        initial = await callLlmChatHelper(session.aicc, request) as AiMethodResponse;
+        const selected = await routedCompletion(session, initial, started, input.timeoutMs);
+        if (selected === fallbackModelA.exact_model) {
+          throw new Error(`runtime failure did not move away from ${fallbackModelA.exact_model}`);
+        }
+        report.status = "passed";
+        report.task_id = initial.task_id;
+        report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "passed", diagnostic: `${boundary.scenario} switched to ${selected}`, estimated_cost_usd: 0, actual_cost_usd: 0, cost_status: "actual" });
+      } else {
+        initial = await callChatCompletions(session.aicc, request) as AiMethodResponse;
+        const value = await terminal(session, initial, Math.min(input.timeoutMs, 10_000));
+        if (boundary.scenario === "missing_usage") {
+          await auditSuccessfulTask({
+            session,
+            taskId: initial.task_id,
+            exactModel: fallbackModelA.exact_model,
+            providerInstance: fallbackA.provider_instance_name,
+            startedAtMs: started,
+            timeoutMs: input.timeoutMs,
+          });
+        }
+        throw new Error(`AICC accepted ${boundary.scenario}: ${JSON.stringify(value)}`);
+      }
+    } catch (error) {
+      if (boundary.expectsFallback) {
+        report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "failed", failure_class: boundary.failureClass, diagnostic: String(error), estimated_cost_usd: 0, cost_status: "unknown" });
+      } else if ((await mockRequestCount(input.mockControlUrl)) > before) {
+        report.status = "passed";
+        report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "passed", diagnostic: `${boundary.scenario} rejected after reaching Provider boundary: ${String(error)}`, estimated_cost_usd: 0, actual_cost_usd: 0, cost_status: "actual" });
+      } else {
+        report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "failed", failure_class: boundary.failureClass, diagnostic: `failure occurred before Provider boundary: ${String(error)}`, estimated_cost_usd: 0, cost_status: "not_called" });
+      }
+    } finally {
+      await setScenario(input.mockControlUrl, "success", "/instance-a/");
+    }
+    results.push(report);
   }
 
   const probeCell = cells.find((cell) => cell.provider_driver === "openai" && cell.method === "chat.completions.create") ?? cells[0];
@@ -2855,16 +2607,16 @@ async function main(): Promise<void> {
     const finance = buildFinancialReport({ entries: [], budgetUsd: 0, plannedMaxCalls: 0, plannedMaxCostUsd: 0 });
     const confirmedRoutingAssertions = new Set([
       "t1.route.exact_model_hits_instance",
-      "t1.route.metadata_variant_lowers_options",
-      "t1.embedding.dimension_mismatch",
-      "t1.embedding.row_count_mismatch",
-      "t1.embedding.item_order_mismatch",
-      "t1.embedding.nonfinite_value",
+      "t1.route.metadata_variant_expands_exact_model",
       "t1.embedding.large_batch_artifact",
       "t1.embedding.space_mismatch_rejected",
-      "t1.rerank.score_missing",
-      "t1.rerank.document_id_mismatch",
-      "t1.rerank.result_count_mismatch",
+      "t1.runtime_boundary.rate_limit_fallback",
+      "t1.runtime_boundary.server_error_fallback",
+      "t1.runtime_boundary.connection_failure_fallback",
+      "t1.runtime_boundary.timeout_fallback",
+      "t1.runtime_boundary.malformed_response_rejected",
+      "t1.runtime_boundary.wrong_mime_rejected",
+      "t1.runtime_boundary.missing_usage_rejected",
       "t1.history.same_session_reuses_exact_model",
       "t1.history.hard_constraint_overrides.provider_denied",
       "t1.route.invalid_logical_path",

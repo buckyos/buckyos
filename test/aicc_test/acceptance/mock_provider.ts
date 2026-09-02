@@ -45,6 +45,7 @@ type RecordedRequest = {
 type State = {
   defaultScenario: Scenario;
   scenarios: Map<string, Scenario>;
+  pathScenarios: Map<string, Scenario>;
   provider: {
     health: string;
     quota: string;
@@ -61,6 +62,7 @@ type State = {
 const state: State = {
   defaultScenario: "success",
   scenarios: new Map(),
+  pathScenarios: new Map(),
   provider: {
     health: "available",
     quota: "normal",
@@ -161,6 +163,10 @@ function scenarioFrom(request: IncomingMessage, body: Json | null): Scenario {
   if (typeof requestId === "string" && state.scenarios.has(requestId)) {
     return state.scenarios.get(requestId)!;
   }
+  const pathScenario = [...state.pathScenarios.entries()]
+    .sort(([left], [right]) => right.length - left.length)
+    .find(([prefix]) => (request.url ?? "").startsWith(prefix));
+  if (pathScenario) return pathScenario[1];
   const header = request.headers["x-aicc-mock-scenario"];
   if (typeof header === "string" && VALID_SCENARIOS.has(header as Scenario)) {
     return header as Scenario;
@@ -411,6 +417,7 @@ async function management(
   if (path === "/__mock/reset" && request.method === "POST") {
     state.defaultScenario = "success";
     state.scenarios.clear();
+    state.pathScenarios.clear();
     state.requests = [];
     state.calls = 0;
     state.errors = 0;
@@ -429,6 +436,8 @@ async function management(
     const requestId = input?.request_id;
     if (typeof requestId === "string" && requestId) {
       state.scenarios.set(requestId, scenario as Scenario);
+    } else if (typeof input?.path_prefix === "string" && input.path_prefix.startsWith("/")) {
+      state.pathScenarios.set(input.path_prefix, scenario as Scenario);
     } else {
       state.defaultScenario = scenario as Scenario;
     }

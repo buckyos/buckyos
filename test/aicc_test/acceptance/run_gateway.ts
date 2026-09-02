@@ -1220,37 +1220,6 @@ async function executeAcceptance(input: {
     }
   }
   const executableCells = selectedCells.filter((cell) => preparedRequests.has(cell.case_id));
-  const relevantDocumentCoverage = requestedCases.size === 0
-    ? matrix.documentCoverage
-    : matrix.documentCoverage.filter((record) => [...requestedCases].some((caseId) =>
-      caseId.includes(`.${record.provider_model_id.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}.`)
-    ));
-  for (const record of relevantDocumentCoverage.filter((item) => item.status === "not_applicable")) {
-    const caseId = `t2.${record.provider_driver}.${record.provider_instance}.${record.provider_model_id}.document_format.${record.format}`
-      .toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
-    cases.push({
-      run_id: runId,
-      case_id: caseId,
-      layer: "T2",
-      status: "not_applicable",
-      provider_driver: record.provider_driver,
-      provider_instance: record.provider_instance,
-      exact_model: record.exact_model,
-      api_type: "llm",
-      method: "official_capability_baseline",
-      outbound_message_ids: [],
-      artifact_ids: [],
-      attempts: [{
-        attempt: 0,
-        started_at: new Date().toISOString(),
-        elapsed_ms: 0,
-        status: "not_applicable",
-        diagnostic: `official documentation does not list ${record.format}; ${record.source_urls.join(", ")}`,
-        estimated_cost_usd: 0,
-        cost_status: "not_called",
-      }],
-    });
-  }
   const plannedCases = executableCells.length;
   const judgedCells = options.judgeEnabled
     ? executableCells.filter((cell) => semanticRubric(cell).length > 0)
@@ -1919,7 +1888,6 @@ async function executeAcceptance(input: {
     finance,
     cases,
     model_coverage: matrix.coverage,
-    document_format_coverage: matrix.documentCoverage,
     product_defects: [
       ...cases.filter((item) =>
         item.status === "failed" && item.case_id.startsWith("t2.preflight.baseline_mismatch.")
@@ -1990,7 +1958,6 @@ async function executeAcceptance(input: {
       })),
     })),
     model_coverage: matrix.coverage,
-    document_format_coverage: matrix.documentCoverage,
     shard: { index: options.shardIndex, count: options.shardCount },
     executed_matrix: selectedCells.map((cell) => ({
       case_id: cell.case_id,
@@ -1999,11 +1966,8 @@ async function executeAcceptance(input: {
       exact_model: cell.exact_model,
       api_type: cell.api_type,
       method: cell.method,
-      variant: cell.variant ?? "default",
       input_kinds: cell.input_kinds,
       output_kinds: cell.output_kinds,
-      resource_representation: cell.resource_representation ?? null,
-      document_format: cell.document_format ?? null,
       normalized_status: cell.baseline_status,
       source_urls: cell.source_urls,
     })),

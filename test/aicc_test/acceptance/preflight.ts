@@ -1,10 +1,10 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assertCanonicalCompleteness,
-  parseCanonicalApiTypesFromRust,
+  parseCanonicalApiTypesFromRequirements,
 } from "./canonical.ts";
 import { buildStaticManifest } from "./cases.ts";
 import {
@@ -12,6 +12,12 @@ import {
   validateCaseManifest,
   validateProviderBaseline,
 } from "./manifest.ts";
+import {
+  buildT15Manifest,
+  loadProviderProtocolCatalog,
+  protocolContracts,
+  REQUIRED_T15_PROVIDER_DRIVERS,
+} from "./provider_protocol_contracts.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -20,6 +26,7 @@ export type PreflightResult = {
   baseline_revision: string;
   canonical_api_types: number;
   static_cases: number;
+  t15_cases: number;
   provider_drivers: string[];
 };
 
@@ -37,13 +44,47 @@ export async function runPreflight(): Promise<PreflightResult> {
     await readFile(join(here, "provider_capability_baseline.json"), "utf8"),
   );
   const baseline = validateProviderBaseline(baselineRaw);
-  const rustSource = await readFile(
-    join(repoRoot, "src/frame/aicc/src/model_types.rs"),
+  const requirementsSource = await readFile(
+    join(repoRoot, "doc/aicc/aicc_e2e_test_requirements.md"),
     "utf8",
   );
-  const sourceApiTypes = parseCanonicalApiTypesFromRust(rustSource);
+  const sourceApiTypes = parseCanonicalApiTypesFromRequirements(requirementsSource);
   assertCanonicalCompleteness({ sourceApiTypes, baseline });
   const cases = validateCaseManifest(buildStaticManifest());
+  const coveredT1ApiTypes = new Set(cases.filter((testCase) => testCase.layer === "T1" &&
+    testCase.tags.includes("api_type")).flatMap((testCase) => testCase.api_type ? [testCase.api_type] : []));
+  const missingT1ApiTypes = sourceApiTypes.filter((apiType) => !coveredT1ApiTypes.has(apiType));
+  if (missingT1ApiTypes.length > 0) {
+    throw new Error(`T1 routing manifest missing canonical API types: ${missingT1ApiTypes.join(", ")}`);
+  }
+  const protocolCatalog = await loadProviderProtocolCatalog();
+  const t15Cases = validateCaseManifest(buildT15Manifest(protocolCatalog));
+  const coveredT15ApiTypes = new Set(protocolContracts(protocolCatalog).flatMap((contract) => contract.api_types));
+  const applicableApiTypes = new Set(baseline.providers.flatMap((provider) =>
+    provider.rules.flatMap((rule) => rule.api_types)
+  ));
+  const missingT15ApiTypes = [...applicableApiTypes].filter((apiType) => !coveredT15ApiTypes.has(apiType));
+  if (missingT15ApiTypes.length > 0) {
+    throw new Error(`T1.5 protocol contracts missing applicable API types: ${missingT15ApiTypes.join(", ")}`);
+  }
+  const contractsByDriver = new Map(protocolCatalog.providers.map((provider) => [
+    provider.provider_driver,
+    new Set(provider.contracts.flatMap((contract) => contract.api_types)),
+  ]));
+  for (const provider of baseline.providers.filter((candidate) => !candidate.capability_source_provider)) {
+    const requiredApiTypes = new Set(provider.rules.flatMap((rule) => rule.api_types));
+    const covered = contractsByDriver.get(provider.provider_driver) ?? new Set<string>();
+    const missing = [...requiredApiTypes].filter((apiType) => !covered.has(apiType));
+    if (missing.length > 0) {
+      throw new Error(`${provider.provider_driver} T1.5 contracts missing API types: ${missing.join(", ")}`);
+    }
+  }
+  const contractIds = new Set(protocolContracts(protocolCatalog).map((contract) => contract.id));
+  for (const contract of protocolContracts(protocolCatalog)) {
+    if (contract.base_contract_id && !contractIds.has(contract.base_contract_id)) {
+      throw new Error(`${contract.id} references missing base contract ${contract.base_contract_id}`);
+    }
+  }
   assertTaxonomyConstants();
 
   const fixtureManifest = JSON.parse(
@@ -103,32 +144,19 @@ export async function runPreflight(): Promise<PreflightResult> {
     throw new Error(`fixture manifest missing required coverage: ${missingFixtures.join(", ")}`);
   }
 
-  const metadataDir = join(repoRoot, "src/frame/aicc/driver_metadata");
-  const metadataFiles = (await readdir(metadataDir)).filter((name) =>
-    name.endsWith(".json")
-  );
-  const metadataDrivers = new Set<string>();
-  for (const name of metadataFiles) {
-    const value = JSON.parse(await readFile(join(metadataDir, name), "utf8"));
-    if (typeof value.provider_driver === "string") {
-      metadataDrivers.add(value.provider_driver);
-    }
-  }
   const baselineDrivers = new Set(
     baseline.providers.map((provider) => provider.provider_driver),
   );
-  const missing = [...metadataDrivers].filter((driver) => !baselineDrivers.has(driver));
+  const missing = REQUIRED_T15_PROVIDER_DRIVERS.filter((driver) => !baselineDrivers.has(driver));
   if (missing.length > 0) {
-    throw new Error(`provider baseline missing built-in drivers: ${missing.join(", ")}`);
-  }
-  if (!baselineDrivers.has("sn-ai-provider")) {
-    throw new Error("provider baseline missing sn-ai-provider");
+    throw new Error(`provider baseline missing required drivers: ${missing.join(", ")}`);
   }
 
   return {
     baseline_revision: baseline.baseline_revision,
     canonical_api_types: sourceApiTypes.length,
     static_cases: cases.length,
+    t15_cases: t15Cases.length,
     provider_drivers: [...baselineDrivers].sort(),
   };
 }

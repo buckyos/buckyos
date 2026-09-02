@@ -29,7 +29,7 @@ export const FAILURE_CLASSES = [
 
 export type FailureClass = (typeof FAILURE_CLASSES)[number];
 
-export type TestLayer = "T1" | "T2" | "T3";
+export type TestLayer = "T1" | "T1.5" | "T2" | "T3";
 export type Priority = "P0" | "P1" | "P2";
 
 export type ExpectedOutput = {
@@ -65,6 +65,12 @@ export type AcceptanceCase = {
   max_attempts: number;
   estimated_cost_usd: number;
   cleanup: string[];
+  protocol_contract_id?: string;
+  protocol_evidence_revision?: string;
+  protocol_adapter_id?: string;
+  provider_api_version?: string;
+  expected_wire_fixture?: string;
+  response_fixture?: string;
 };
 
 export type ProviderModel = {
@@ -179,7 +185,7 @@ export type MatrixCell = {
   provider_model_id: string;
   api_type: string;
   method: string;
-  variant?: "default" | "embedding_large_artifact";
+  variant?: "embedding_large_artifact";
   baseline_status: CapabilityRule["status"];
   input_kinds: string[];
   output_kinds: string[];
