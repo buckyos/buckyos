@@ -464,13 +464,10 @@ impl ActiveServer {
 
     async fn commit_active(&self, req: CommitActiveReq) -> Result<CommitActiveResp, RPCErrors> {
         validate_commit_request(&req, &self.config)?;
-        let mut effective_owner = req.owner_document.clone();
-        let needs_owner_publish = req.prepared.names.zone_did != effective_owner.id
-            && !effective_owner.is_bound_to_zone(&req.prepared.names.zone_did);
-        if needs_owner_publish {
-            effective_owner.set_default_zone_did(req.prepared.names.zone_did.clone());
-            validate_owner_document(&effective_owner)?;
-        }
+        let (effective_owner, needs_owner_publish) = prepare_owner_binding_for_activation(
+            &req.owner_document,
+            &req.prepared.names.zone_did,
+        )?;
 
         let bns_client = BnsIndexerClient::new_bns_server_url(req.sn.bns_url.as_str(), None);
         let sn_client =
@@ -490,10 +487,11 @@ impl ActiveServer {
             let owner_value = serde_json::to_value(&effective_owner)
                 .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
             let owner_bytes = canonical_json_bytes(&owner_value)?;
-            let request_id = content_request_id(
+            let request_id = content_request_id_with_context(
                 "owner",
                 req.prepared.names.owner_name.as_str(),
                 owner_bytes.as_slice(),
+                req.signed_documents.zone_document_jwt.as_bytes(),
             );
             if !projection_matches_json(
                 &bns_client,
@@ -637,6 +635,17 @@ impl ActiveServer {
             ))
             .map_err(|error| server_err!(ServerErrorCode::InvalidData, "{}", error))?)
     }
+}
+
+fn prepare_owner_binding_for_activation(
+    owner_document: &OwnerDocument,
+    zone_did: &DID,
+) -> Result<(OwnerDocument, bool), RPCErrors> {
+    let mut effective_owner = owner_document.clone();
+    effective_owner.set_default_zone_did(zone_did.clone());
+    validate_owner_document(&effective_owner)?;
+    let needs_owner_publish = effective_owner != *owner_document;
+    Ok((effective_owner, needs_owner_publish))
 }
 
 fn validate_hostname(value: &str) -> Result<(), RPCErrors> {
@@ -1311,6 +1320,26 @@ fn content_request_id(operation: &str, owner_name: &str, bytes: &[u8]) -> String
     )
 }
 
+fn content_request_id_with_context(
+    operation: &str,
+    owner_name: &str,
+    bytes: &[u8],
+    context: &[u8],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+    hasher.update((context.len() as u64).to_be_bytes());
+    hasher.update(context);
+    let digest = hasher.finalize();
+    format!(
+        "node-active:{}:{}:{}",
+        operation,
+        owner_name,
+        hex::encode(digest)
+    )
+}
+
 fn canonical_json_value(value: &Value) -> Value {
     match value {
         Value::Object(object) => {
@@ -1679,6 +1708,80 @@ mod tests {
         assert_eq!(custom.owner_did.to_string(), "did:bns:alice");
         assert_eq!(custom.zone_did.to_string(), "did:web:home.example.com");
         assert_eq!(custom.bns_publish_name, "alice");
+    }
+
+    #[test]
+    fn activation_explicitly_binds_same_name_default_zone_as_v2() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let owner = owner_document(mnemonic);
+        let (effective, needs_publish) =
+            prepare_owner_binding_for_activation(&owner, &owner.id).unwrap();
+
+        assert!(needs_publish);
+        let value = serde_json::to_value(&effective).unwrap();
+        assert_eq!(value["zone_binding_model_version"], json!(2));
+        assert_eq!(value["binded_zone_list"], json!(["did:bns:alice"]));
+        assert!(value["service"].as_array().unwrap().iter().any(|service| {
+            service["id"] == "did:bns:alice#lastDoc"
+                && service["serviceEndpoint"] == "https://alice.bns.did/resolve/did:bns:alice"
+        }));
+    }
+
+    #[test]
+    fn activation_promotes_selected_zone_without_losing_other_zones() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mut owner = owner_document(mnemonic);
+        let first = DID::new("web", "first.example.com");
+        let selected = DID::new("web", "selected.example.com");
+        owner.set_default_zone_did(first.clone());
+        owner.set_default_zone_did(selected.clone());
+        owner.set_default_zone_did(first);
+
+        let (effective, needs_publish) =
+            prepare_owner_binding_for_activation(&owner, &selected).unwrap();
+        assert!(needs_publish);
+        assert_eq!(
+            effective
+                .binded_zone_list
+                .iter()
+                .map(DID::to_string)
+                .collect::<Vec<_>>(),
+            vec![
+                "did:web:selected.example.com".to_string(),
+                "did:web:first.example.com".to_string(),
+            ]
+        );
+
+        let (unchanged, needs_publish) =
+            prepare_owner_binding_for_activation(&effective, &selected).unwrap();
+        assert!(!needs_publish);
+        assert_eq!(unchanged, effective);
+    }
+
+    #[test]
+    fn owner_publish_request_id_is_stable_per_attempt_but_fresh_for_rebind() {
+        let owner = br#"{"id":"did:bns:alice","binded_zone_list":["did:bns:alice"]}"#;
+        let first_attempt = content_request_id_with_context(
+            "owner",
+            "alice",
+            owner,
+            b"first-zone-document-jwt",
+        );
+        let first_retry = content_request_id_with_context(
+            "owner",
+            "alice",
+            owner,
+            b"first-zone-document-jwt",
+        );
+        let rebind_attempt = content_request_id_with_context(
+            "owner",
+            "alice",
+            owner,
+            b"second-zone-document-jwt",
+        );
+
+        assert_eq!(first_attempt, first_retry);
+        assert_ne!(first_attempt, rebind_attempt);
     }
 
     #[tokio::test]

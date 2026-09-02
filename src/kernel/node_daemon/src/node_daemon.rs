@@ -1937,7 +1937,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
     //  - service_info.system_config 让 boot_gateway.yaml 能把 /kapi/system_config 转发到 OOD；
     //  - node_route_map / routes 提供 OOD / ZoneGateway / SN-relay 的显式候选；
     // 这样 cyfs-gateway 起来时本机 3180 就已经能访问 system-config 了。
-    let zone_host = node_identity.zone_did.to_host_name();
+    let zone_host = zone_document_hostname(&zone_document);
     let boot_gateway_info = build_boot_node_gateway_info(
         &device_name,
         zone_host.as_str(),
