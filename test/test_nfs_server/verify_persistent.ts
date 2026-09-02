@@ -200,7 +200,7 @@ await test('previous run survived restart: files, obj_id, collection, view', asy
   assertEq(colListing.entries.length, prev.collectionMembers, 'collection member count kept')
   for (const e of colListing.entries) {
     if (e.target.kind !== 'group') {
-      assert(e.canonical_path?.startsWith('dfs://home/'), `member ${e.name} canonical path resolves`)
+      assert(e.canonical_path?.startsWith('cyfs:///home/'), `member ${e.name} canonical path resolves`)
     }
   }
 
@@ -425,7 +425,7 @@ await test('collection: create, add_ref, groups, order, canonical paths', async 
   const listing = await c.list({ uri: `collection://${record.collectionId}` })
   assertEq(listing.container.kind, 'collection', 'listed as collection')
   assertEq(listing.entries[0].name, 'greeting', 'manual order honored')
-  assertEq(listing.entries[0].canonical_path, `dfs://home/runs/${RUN}/docs/hello-moved.txt`, 'canonical path')
+  assertEq(listing.entries[0].canonical_path, `cyfs:///home/runs/${RUN}/docs/hello-moved.txt`, 'canonical path')
   const group = listing.entries.find((e) => e.target.kind === 'group')!
   assertEq(group.binding, 'member', 'group binding')
 
@@ -437,7 +437,7 @@ await test('collection: create, add_ref, groups, order, canonical paths', async 
   const groupListing = await c.list(group.target.ref as WireRef)
   assertEq(groupListing.container.kind, 'group', 'group container')
   assertEq(groupListing.entries.length, 1, 'group member added')
-  assertEq(groupListing.entries[0].canonical_path, `dfs://home/runs/${RUN}/store-probe.bin`, 'group member path')
+  assertEq(groupListing.entries[0].canonical_path, `cyfs:///home/runs/${RUN}/store-probe.bin`, 'group member path')
 
   const reopened = await c.openCollection(record.collectionId)
   assertEq(reopened.ref, cref, 'open_collection resolves same node')
@@ -481,7 +481,7 @@ await test('view: seed, open, groups, provenance, read-only', async () => {
   assertEq(group.context!.count, 1, 'group count')
   const loose = listing.entries.find((e) => e.target.kind !== 'group')!
   assertEq(loose.binding, 'derived', 'derived binding')
-  assertEq(loose.canonical_path, `dfs://home/runs/${RUN}/docs/hello-moved.txt`, 'member canonical path')
+  assertEq(loose.canonical_path, `cyfs:///home/runs/${RUN}/docs/hello-moved.txt`, 'member canonical path')
 
   const members = await c.list(group.target.ref as WireRef)
   assertEq(members.entries.length, 1, 'group member listed')

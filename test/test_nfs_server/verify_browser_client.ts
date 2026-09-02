@@ -346,7 +346,7 @@ await test('equivalence: browse semantics unchanged through the cache layer', as
   assertEq(listing!.entries[0].target.attrs!.size, 5, 'size via want=base')
   const info = await bc.stat(listing!.entries[0].target.ref, { want: ['base', 'ident', 'access'] })
   assertEq(info!.kind, 'file', 'stat by ref')
-  assert(info!.access_urls!.some((u) => u.kind === 'fs' && u.url === 'dfs://home/eq/a.txt'), 'fs url')
+  assert(info!.access_urls!.some((u) => u.kind === 'fs' && u.url === 'cyfs:///home/eq/a.txt'), 'fs url')
 
   // Errors pass through and are never cached.
   await expectErr('NOT_FOUND', () => bc.resolve('/nope'))

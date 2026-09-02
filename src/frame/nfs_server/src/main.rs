@@ -98,7 +98,7 @@ async fn async_main(config: ServerConfig) {
         }
     };
     for export in &state.config.exports {
-        log::info!("export dfs://{} -> {}", export.id, export.path.display());
+        log::info!("export cyfs:///{} -> {}", export.id, export.path.display());
     }
     if scan_interval > 0 {
         log::info!("reconciler scan every {}s", scan_interval);

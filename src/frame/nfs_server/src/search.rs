@@ -11,7 +11,7 @@
 
 use crate::error::*;
 use crate::fsutil::*;
-use crate::namespace::{canonical_path, Node};
+use crate::namespace::{canonical_path, current_zone_cyfs_path, Node};
 use crate::state::AppState;
 use crate::types::{Locator, WantMask};
 use serde_json::{json, Value};
@@ -215,10 +215,11 @@ impl AppState {
         self.config.exports.iter().position(|r| r.id == root_id).unwrap_or(usize::MAX)
     }
 
-    /// Parses a search cursor ("dfs://root/rel") into (root index, components).
+    /// Parses a search cursor ("cyfs:///root/rel") into (root index, components).
     fn parse_search_cursor(&self, cursor: &str) -> NfsResult<(usize, Vec<String>)> {
-        let rest = cursor.strip_prefix("dfs://").ok_or_else(|| invalid("bad search cursor"))?;
-        let (root, rel) = rest.split_once('/').unwrap_or((rest, ""));
+        let rest = current_zone_cyfs_path(cursor)?
+            .ok_or_else(|| invalid("bad search cursor"))?;
+        let (root, rel) = rest.split_once('/').unwrap_or((&rest, ""));
         let idx = self.root_index(root);
         if idx == usize::MAX {
             return Err(invalid("bad search cursor: unknown root"));

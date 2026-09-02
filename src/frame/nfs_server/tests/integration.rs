@@ -201,8 +201,14 @@ async fn hello_negotiation_and_browse() {
     assert_eq!(info["size"], 5);
     assert!(info["etag"].as_str().unwrap().contains('-'));
     let urls = info["access_urls"].as_array().unwrap();
-    assert!(urls.iter().any(|u| u["kind"] == "fs" && u["url"] == "dfs://home/a.txt"));
+    assert!(urls.iter().any(|u| u["kind"] == "fs" && u["url"] == "cyfs:///home/a.txt"));
     assert!(urls.iter().any(|u| u["kind"] == "read"));
+
+    // Both documented current-Zone CYFS URI forms resolve to the same namespace.
+    let by_canonical = s.ok("resolve", json!({"at": {"uri": "cyfs:///home/a.txt"}})).await;
+    assert_eq!(by_canonical["ref"], info["ref"]);
+    let by_alias = s.ok("resolve", json!({"at": {"uri": "cyfs://_/home/a.txt"}})).await;
+    assert_eq!(by_alias["ref"], info["ref"]);
 
     // Unknown paths / realms.
     let (status, v) = s.call("resolve", json!({"at": {"realm": "dfs", "path": "/nope"}})).await;
@@ -460,12 +466,12 @@ async fn revision_cas_and_seq_replay() {
 
     // mkdir -p path form.
     let deep = s
-        .ok_write("mkdir", json!({"at": {"realm": "dfs", "path": "/home/x/y/z"}}))
+        .ok_write("mkdir", json!({"at": {"uri": "cyfs:///home/x/y/z"}}))
         .await;
     assert_eq!(deep["existed"], false);
     assert!(s.home.join("x/y/z").is_dir());
     let again = s
-        .ok_write("mkdir", json!({"at": {"realm": "dfs", "path": "/home/x/y/z"}}))
+        .ok_write("mkdir", json!({"at": {"uri": "cyfs://_/home/x/y/z"}}))
         .await;
     assert_eq!(again["existed"], true);
 }
@@ -595,7 +601,7 @@ async fn move_delete_bindings_and_stale() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["binding"], "reference");
     assert_eq!(entries[0]["target"]["kind"], "file");
-    assert_eq!(entries[0]["canonical_path"], "dfs://home/dst/renamed.txt");
+    assert_eq!(entries[0]["canonical_path"], "cyfs:///home/dst/renamed.txt");
 
     // delete may not touch reference entries.
     let (_, v) = s
@@ -735,7 +741,7 @@ async fn collection_lifecycle() {
     assert_eq!(entries.len(), 4);
     assert_eq!(entries[0]["name"], "second-first");
     assert_eq!(entries[0]["binding"], "reference");
-    assert_eq!(entries[0]["canonical_path"], "dfs://home/two.pdf");
+    assert_eq!(entries[0]["canonical_path"], "cyfs:///home/two.pdf");
     assert_eq!(entries[1]["name"], "one.pdf");
     assert_eq!(entries[2]["binding"], "member");
     assert_eq!(entries[2]["target"]["kind"], "group");
@@ -845,14 +851,14 @@ async fn view_readonly_container() {
     assert_eq!(entries[0]["target"]["kind"], "group");
     assert_eq!(entries[0]["context"]["count"], 1);
     assert_eq!(entries[1]["binding"], "derived");
-    assert_eq!(entries[1]["canonical_path"], "dfs://home/photos/b.jpg");
+    assert_eq!(entries[1]["canonical_path"], "cyfs:///home/photos/b.jpg");
 
     // Group is itself listable; members carry provenance.
     let group_ref = entries[0]["target"]["ref"].clone();
     let group_listing = s.ok("list", json!({"at": {"ref": group_ref}, "want": ["base"]})).await;
     let members = group_listing["entries"].as_array().unwrap();
     assert_eq!(members.len(), 1);
-    assert_eq!(members[0]["canonical_path"], "dfs://home/photos/a.jpg");
+    assert_eq!(members[0]["canonical_path"], "cyfs:///home/photos/a.jpg");
     assert_eq!(members[0]["context"]["provenance"]["why"], "同一行程");
 
     // Resolving by uri and by ref lands on the same LiveRef.
@@ -947,7 +953,7 @@ async fn grants_record_and_revoke() {
         .await;
     let cap_id = g["cap_id"].as_str().unwrap().to_string();
     assert!(g["token"].as_str().unwrap().len() > 30);
-    assert_eq!(g["subtree"], "dfs://home/public");
+    assert_eq!(g["subtree"], "cyfs:///home/public");
     assert!(g["expires_at"].as_i64().unwrap() > 0);
     s.ok_write("revoke", json!({"args": {"cap_id": cap_id}})).await;
     let (_, v) = s.expect_err("revoke", json!({"args": {"cap_id": "cap_missing"}}), "NOT_FOUND").await;

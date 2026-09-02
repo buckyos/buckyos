@@ -1668,7 +1668,7 @@ mod tests {
     #[test]
     fn grants_lifecycle() {
         let d = db();
-        d.grant_create("cap_1", "hash1", "dfs://home/x", &["read".into()], None, Some(9999999999), None)
+        d.grant_create("cap_1", "hash1", "cyfs:///home/x", &["read".into()], None, Some(9999999999), None)
             .unwrap();
         let g = d.grant_by_token_hash("hash1").unwrap().unwrap();
         assert!(!g.revoked);

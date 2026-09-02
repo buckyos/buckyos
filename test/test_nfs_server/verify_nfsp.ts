@@ -108,7 +108,7 @@ await test('browse: resolve/list/stat, want groups, error paths', async () => {
   const info = await c.stat(home.entries[0].target.ref, { want: ['base', 'ident', 'access'] })
   assertEq(info.kind, 'file', 'stat by ref')
   assert(info.etag!.includes('-'), 'etag shape')
-  assert(info.access_urls!.some((u) => u.kind === 'fs' && u.url === 'dfs://home/a.txt'), 'fs url')
+  assert(info.access_urls!.some((u) => u.kind === 'fs' && u.url === 'cyfs:///home/a.txt'), 'fs url')
   assert(info.access_urls!.some((u) => u.kind === 'read'), 'read url')
 
   await expectErr('NOT_FOUND', () => c.resolve('/nope'), 404)
@@ -321,7 +321,7 @@ await test('move/delete/bind_ref/unlink, anchors survive, stale honesty', async 
   const listing = await c.list('/home/src')
   assertEq(listing.entries.length, 1, 'one entry')
   assertEq(listing.entries[0].binding, 'reference', 'reference binding')
-  assertEq(listing.entries[0].canonical_path, 'dfs://home/dst/renamed.txt', 'canonical path')
+  assertEq(listing.entries[0].canonical_path, 'cyfs:///home/dst/renamed.txt', 'canonical path')
 
   // delete refuses reference entries; unlink removes only the entry.
   const delErr = await expectErr('INVALID_ARGUMENT', () => c.delete('/home/src', 'link-to-file'))
@@ -392,7 +392,7 @@ await test('collection lifecycle: patch ops, groups, stale members', async () =>
   const listing = await c.list({ uri: 'collection://reading' })
   assertEq(listing.container.kind, 'collection', 'listed as collection')
   assertEq(listing.entries[0].name, 'second-first', 'manual order, position 0')
-  assertEq(listing.entries[0].canonical_path, 'dfs://home/two.pdf', 'member canonical path')
+  assertEq(listing.entries[0].canonical_path, 'cyfs:///home/two.pdf', 'member canonical path')
   const group = listing.entries.find((e) => e.target.kind === 'group')!
   assertEq(group.binding, 'member', 'group binding')
 
@@ -453,7 +453,7 @@ await test('view: debug seed, read-only overlay, groups, provenance', async () =
   assertEq(listing.entries[0].target.kind, 'group', 'group first')
   assertEq(listing.entries[0].context!.count, 1, 'group count')
   assertEq(listing.entries[1].binding, 'derived', 'derived binding')
-  assertEq(listing.entries[1].canonical_path, 'dfs://home/vphotos/b.jpg', 'canonical path')
+  assertEq(listing.entries[1].canonical_path, 'cyfs:///home/vphotos/b.jpg', 'canonical path')
 
   const members = await c.list(listing.entries[0].target.ref as WireRef)
   assertEq(members.entries.length, 1, 'group member')
@@ -506,7 +506,7 @@ await test('grant/revoke record lifecycle', async () => {
   fs.mkdirSync(hp('public'))
   const g = await c.grant('/home/public', { ops: ['read', 'list'], ttl: 3600 })
   assert(g.token.length > 30, 'token issued')
-  assertEq(g.subtree, 'dfs://home/public', 'subtree canonicalized')
+  assertEq(g.subtree, 'cyfs:///home/public', 'subtree canonicalized')
   assert(g.expires_at! > Date.now() / 1000 - 60, 'expiry set')
   await c.revoke(g.cap_id)
   await expectErr('NOT_FOUND', () => c.revoke('cap_missing'), 404)

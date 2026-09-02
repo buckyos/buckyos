@@ -82,10 +82,32 @@ impl Node {
 
 pub fn canonical_path(root: &str, rel: &str) -> String {
     if rel.is_empty() {
-        format!("dfs://{}", root)
+        format!("cyfs:///{}", root)
     } else {
-        format!("dfs://{}/{}", root, rel)
+        format!("cyfs:///{}/{}", root, rel)
     }
+}
+
+pub(crate) fn current_zone_cyfs_path(uri: &str) -> NfsResult<Option<String>> {
+    let decoded: String = percent_encoding::percent_decode_str(uri)
+        .decode_utf8()
+        .map_err(|_| invalid("bad uri encoding"))?
+        .into_owned();
+    if let Some(path) = decoded.strip_prefix("cyfs:///") {
+        return Ok(Some(path.to_string()));
+    }
+    if let Some(path) = decoded.strip_prefix("cyfs://_/") {
+        return Ok(Some(path.to_string()));
+    }
+    if decoded == "cyfs://_" {
+        return Ok(Some(String::new()));
+    }
+    if decoded.starts_with("cyfs://") {
+        return Err(invalid(
+            "nfs_server only supports current-Zone cyfs:/// or cyfs://_/ locators",
+        ));
+    }
+    Ok(None)
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -129,13 +151,13 @@ impl AppState {
     }
 
     fn resolve_uri(&self, uri: &str) -> NfsResult<Node> {
+        if let Some(path) = current_zone_cyfs_path(uri)? {
+            return self.resolve_dfs_path(&path);
+        }
         let decoded: String = percent_encoding::percent_decode_str(uri)
             .decode_utf8()
             .map_err(|_| invalid("bad uri encoding"))?
             .into_owned();
-        if let Some(rest) = decoded.strip_prefix("dfs://") {
-            return self.resolve_dfs_path(rest);
-        }
         if let Some(view_id) = decoded.strip_prefix("view://") {
             let v = self
                 .db
@@ -483,7 +505,7 @@ impl AppState {
     fn node_locations(&self, node: &Node) -> NfsResult<Vec<Value>> {
         let mut out = Vec::new();
         let (direct, target_id): (Option<String>, Option<i64>) = match node {
-            Node::Root => (Some("dfs://".to_string()), None),
+            Node::Root => (Some("cyfs:///".to_string()), None),
             Node::Native { root, rel, anchored, .. } => (
                 Some(canonical_path(root, rel)),
                 anchored.as_ref().map(|e| e.node_id),

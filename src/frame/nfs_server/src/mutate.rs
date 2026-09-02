@@ -9,7 +9,7 @@
 use crate::error::*;
 use crate::fsutil::*;
 use crate::handle::native_entry_ref;
-use crate::namespace::{canonical_path, Node};
+use crate::namespace::{canonical_path, current_zone_cyfs_path, Node};
 use crate::state::AppState;
 use crate::types::{Locator, WireRef};
 use crate::watch::ContainerKey;
@@ -139,11 +139,15 @@ impl AppState {
     }
 
     fn mkdir_path(&self, at: &Locator) -> NfsResult<Value> {
-        let path = at
-            .path
-            .clone()
-            .or_else(|| at.uri.as_ref()?.strip_prefix("dfs://").map(|s| s.to_string()))
-            .ok_or_else(|| invalid("mkdir path form requires a dfs path"))?;
+        let path = if let Some(path) = &at.path {
+            path.clone()
+        } else if let Some(uri) = &at.uri {
+            current_zone_cyfs_path(uri)?.ok_or_else(|| {
+                invalid("mkdir path form requires a current-Zone CYFS path")
+            })?
+        } else {
+            return Err(invalid("mkdir path form requires a current-Zone CYFS path"));
+        };
         let rel_all = normalize_rel(&path)?;
         let (root_id, rel) = match rel_all.split_once('/') {
             Some((r, rest)) => (r.to_string(), rest.to_string()),
@@ -763,7 +767,7 @@ impl AppState {
                 .map_err(|_| invalid("bad subtree locator"))?;
             match self.resolve_locator(&loc)? {
                 Node::Native { root, rel, .. } => canonical_path(&root, &rel),
-                Node::Root => "dfs://".to_string(),
+                Node::Root => "cyfs:///".to_string(),
                 Node::View(v) => format!("view://{}", v.view_id),
                 Node::Collection(c) => format!("collection://{}", c.collection_id),
                 _ => return Err(invalid("unsupported grant subtree")),

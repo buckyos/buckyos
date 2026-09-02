@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct ExportRoot {
-    /// Logical name: becomes the first path segment under `dfs://`.
+    /// Logical name: becomes the first path segment under current-Zone `cyfs:///`.
     pub id: String,
     /// Absolute local directory that backs this root.
     pub path: PathBuf,
