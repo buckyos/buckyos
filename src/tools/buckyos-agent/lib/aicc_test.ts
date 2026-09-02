@@ -1,4 +1,5 @@
-import { callAicc, describeFailure } from "./aicc.ts";
+import { callAicc, describeFailure, textToImage } from "./aicc.ts";
+import { aiResponseArtifacts } from "./types.ts";
 import type { AiccRuntime } from "./runtime.ts";
 
 function assertEquals(actual: unknown, expected: unknown): void {
@@ -79,4 +80,41 @@ Deno.test("describeFailure reads a beta2.2 task error", async () => {
 
   assertEquals(result.status, "failed");
   assertEquals(describeFailure(result), JSON.stringify(error));
+});
+
+Deno.test("textToImage preserves immediate typed artifacts", async () => {
+  let method = "";
+  let params: Record<string, unknown> = {};
+  const runtime = {
+    buckyos: {
+      getServiceRpcClient: () => ({
+        call: (calledMethod: string, calledParams: Record<string, unknown>) => {
+          method = calledMethod;
+          params = calledParams;
+          return Promise.resolve({
+            task_id: "image-task",
+            status: "succeeded",
+            artifacts: [{
+              name: "generated",
+              resource: {
+                kind: "url",
+                url: "https://example.invalid/image.png",
+                mime_hint: "image/png",
+              },
+            }],
+          });
+        },
+      }),
+    },
+  } as unknown as AiccRuntime;
+
+  const result = await textToImage(runtime, {
+    modelAlias: "image.txt2img",
+    prompt: "a fox",
+  });
+
+  assertEquals(method, "helper.text_to_image");
+  assertEquals("payload" in params, false);
+  assertEquals(result.status, "succeeded");
+  assertEquals(aiResponseArtifacts(result.summary!).length, 1);
 });

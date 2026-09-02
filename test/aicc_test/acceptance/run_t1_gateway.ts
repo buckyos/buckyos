@@ -9,7 +9,9 @@ import {
 } from "../../jarvis_media_dv/config.ts";
 import {
   callChatCompletions,
+  callInference,
   callImagesGenerate,
+  callLlmChatHelper,
   loginGateway,
   type GatewaySession,
   type RpcClient,
@@ -1138,7 +1140,7 @@ async function runCases(
           video: { kind: "url", url: `${mockBaseUrl}/__mock/fixtures/video.mp4`, mime_hint: "video/mp4" },
         },
       });
-      const initial = await session.aicc.call(cell.method, request) as AiMethodResponse;
+      const initial = await callInference(session.aicc, cell.method, request) as AiMethodResponse;
       const value = await terminal(session, initial, input.timeoutMs);
       assertResponseShape(cell, value);
       const audit = await auditSuccessfulTask({
@@ -1195,7 +1197,7 @@ async function runCases(
             video: { kind: "url", url: `${mockBaseUrl}/__mock/fixtures/video.mp4`, mime_hint: "video/mp4" },
           },
         });
-        const initial = await session.aicc.call(cell.method, request) as AiMethodResponse;
+        const initial = await callInference(session.aicc, cell.method, request) as AiMethodResponse;
         const value = await terminal(session, initial, input.timeoutMs);
         assertResponseShape(cell, value);
         report.status = "passed";
@@ -1519,7 +1521,7 @@ async function runCases(
     const request = buildExactRequest({ cell: streamCell, runId, fixtures: {} });
     const payload = request.payload as Record<string, unknown>;
     payload.options = { ...(payload.options as Record<string, unknown>), stream: true };
-    const initial = await session.aicc.call(streamCell.method, request) as AiMethodResponse;
+    const initial = await callInference(session.aicc, streamCell.method, request) as AiMethodResponse;
     const value = await terminal(session, initial, input.timeoutMs);
     assertResponseShape(streamCell, value);
     streamCase.status = "passed";
@@ -1558,7 +1560,7 @@ async function runCases(
       const request = buildExactRequest({ cell: { ...streamCell, case_id: caseId }, runId, fixtures: {} });
       const payload = request.payload as Record<string, unknown>;
       payload.options = { ...(payload.options as Record<string, unknown>), stream: true };
-      const initial = await session.aicc.call(streamCell.method, request) as AiMethodResponse;
+      const initial = await callInference(session.aicc, streamCell.method, request) as AiMethodResponse;
       const value = await terminal(session, initial, input.timeoutMs);
       assertResponseShape(streamCell, value);
       report.status = "passed";
@@ -1961,7 +1963,7 @@ async function runCases(
             video: { kind: "url", url: `${mockBaseUrl}/__mock/fixtures/video.mp4`, mime_hint: "video/mp4" },
           },
         });
-        const initial = await session.aicc.call(cell.method, request) as AiMethodResponse;
+        const initial = await callInference(session.aicc, cell.method, request) as AiMethodResponse;
         await terminal(session, initial, Math.min(input.timeoutMs, 10_000));
         report.attempts.push({ attempt: 1, started_at: new Date(started).toISOString(), elapsed_ms: Date.now() - started, status: "failed", failure_class: "provider_protocol_failed", diagnostic: `scenario ${scenario} unexpectedly succeeded`, estimated_cost_usd: 0, cost_status: "unknown" });
       } catch (error) {
@@ -2052,7 +2054,7 @@ async function runCases(
       runId,
       fixtures: {},
     });
-    return await session.aicc.call(probeCell.method, request) as AiMethodResponse;
+    return await callInference(session.aicc, probeCell.method, request) as AiMethodResponse;
   };
   const pushProbe = async (
     caseId: string,
@@ -2093,7 +2095,7 @@ async function runCases(
       runId,
       fixtures: {},
     });
-    return await session.aicc.call(asyncProbeCell.method, request) as AiMethodResponse;
+    return await callInference(session.aicc, asyncProbeCell.method, request) as AiMethodResponse;
   };
 
   await pushProbe("t1.task.immediate_succeeded", probeCell.method, "task_lifecycle_failed", async () => {
@@ -2182,9 +2184,9 @@ async function runCases(
     const textBlock = payload.input_json?.messages?.[0]?.content?.[0];
     if (!textBlock || textBlock.type !== "text") throw new Error("cannot mutate idempotency conflict request body");
     textBlock.text = `${textBlock.text ?? ""} different-body`;
-    const first = await session.aicc.call(probeCell.method, firstRequest) as AiMethodResponse;
+    const first = await callInference(session.aicc, probeCell.method, firstRequest) as AiMethodResponse;
     try {
-      await session.aicc.call(probeCell.method, secondRequest);
+      await callInference(session.aicc, probeCell.method, secondRequest);
     } catch (error) {
       const message = String(error);
       if (!/409|conflict|idemp/i.test(message)) {
@@ -2204,7 +2206,9 @@ async function runCases(
     const request = buildExactRequest({ cell, runId, fixtures: {} });
     request.idempotency_key = `${runId}:task-concurrent-idempotency`;
     const responses = await Promise.all(
-      Array.from({ length: 5 }, () => session.aicc.call(probeCell.method, structuredClone(request)) as Promise<AiMethodResponse>),
+      Array.from({ length: 5 }, () =>
+        callInference(session.aicc, probeCell.method, structuredClone(request)) as Promise<AiMethodResponse>
+      ),
     );
     const taskIds = new Set(responses.map((response) => response.task_id));
     if (taskIds.size !== 1) throw new Error(`concurrent idempotency created ${taskIds.size} tasks`);
@@ -2224,7 +2228,7 @@ async function runCases(
         fixtures: {},
       }));
       const initial = await Promise.all(requests.map((request) =>
-        session.aicc.call(probeCell.method, request) as Promise<AiMethodResponse>
+        callInference(session.aicc, probeCell.method, request) as Promise<AiMethodResponse>
       ));
       if (new Set(initial.map((item) => item.task_id)).size !== initial.length) {
         throw new Error("unique concurrent requests did not create unique tasks");
@@ -2303,8 +2307,8 @@ async function runCases(
     const cell = { ...probeCell, case_id: "t1.usage.idempotent_no_double_charge" };
     const request = buildExactRequest({ cell, runId, fixtures: {} });
     request.idempotency_key = `${runId}:usage-idempotent`;
-    const first = await session.aicc.call(probeCell.method, request) as AiMethodResponse;
-    const second = await session.aicc.call(probeCell.method, request) as AiMethodResponse;
+    const first = await callInference(session.aicc, probeCell.method, request) as AiMethodResponse;
+    const second = await callInference(session.aicc, probeCell.method, request) as AiMethodResponse;
     await terminal(session, first, input.timeoutMs);
     if (second.task_id !== first.task_id) throw new Error(`idempotent retry created ${first.task_id} and ${second.task_id}`);
     const after = await mockRequestCount(input.mockControlUrl);
@@ -2327,7 +2331,7 @@ async function runCases(
       const request = buildExactRequest({ cell: { ...probeCell, case_id: "t1.usage.fallback_attempts_attributed" }, runId, fixtures: {} });
       request.model = { alias: logical };
       request.policy = { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name], runtime_failover: true };
-      const initial = await session.aicc.call("helper.llm_chat", request) as AiMethodResponse;
+      const initial = await callLlmChatHelper(session.aicc, request) as AiMethodResponse;
       try {
         await terminal(session, initial, input.timeoutMs);
       } catch {}
@@ -2693,7 +2697,11 @@ async function runCases(
       runId,
       fixtures: {},
     });
-    await terminal(session, await session.aicc.call(probeCell.method, request) as AiMethodResponse, input.timeoutMs);
+    await terminal(
+      session,
+      await callInference(session.aicc, probeCell.method, request) as AiMethodResponse,
+      input.timeoutMs,
+    );
     return `${rejected ? "invalid update rejected" : "invalid update restored"}; original Provider remained callable after rollback`;
   });
 

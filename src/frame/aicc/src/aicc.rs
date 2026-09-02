@@ -2678,7 +2678,7 @@ fn llm_chat_invoke_to_method_request(
     let mut policy = buckyos_api::RoutePolicy::default();
     policy.allow_fallback = false;
     policy.runtime_failover = false;
-    Ok(AiMethodRequest::new(
+    let mut method_request = AiMethodRequest::new(
         Capability::Llm,
         model,
         Requirements::default(),
@@ -2686,7 +2686,30 @@ fn llm_chat_invoke_to_method_request(
         request.idempotency_key,
     )
     .with_policy(Some(policy))
-    .with_task_options(request.task_options))
+    .with_task_options(request.task_options);
+    method_request.disable.web_search = true;
+    Ok(method_request)
+}
+
+fn llm_chat_helper_to_method_request(
+    exact_model: String,
+    request: LlmChatHelperRequest,
+) -> std::result::Result<AiMethodRequest, RPCErrors> {
+    let required = request.requirements;
+    let disable = request.disable;
+    let mut method_request = llm_chat_invoke_to_method_request(LlmChatInvokeRequest {
+        exact_model,
+        messages: request.messages,
+        tools: request.tools,
+        response_format: request.response_format,
+        temperature: request.temperature,
+        max_output_tokens: request.max_output_tokens,
+        idempotency_key: request.idempotency_key,
+        task_options: request.task_options,
+    })?;
+    method_request.requirements.required = required.into();
+    method_request.disable = disable;
+    Ok(method_request)
 }
 
 fn image_generate_to_method_request(
@@ -4284,40 +4307,31 @@ impl AIComputeCenter {
         request: LlmChatHelperRequest,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<LlmChatInvokeResponse, RPCErrors> {
-        let response_format = request.response_format.clone();
         let route = self
             .resolve_route_authenticated(
                 RouteResolveRequest {
                     request_id: None,
                     api_type: "llm".to_string(),
-                    logical_model: request.logical_model,
+                    logical_model: request.logical_model.clone(),
                     requirements: Requirements {
-                        required: request.requirements.into(),
+                        required: request.requirements.clone().into(),
                         ..Requirements::default()
                     },
-                    disable: request.disable,
-                    policy: request.policy,
+                    disable: request.disable.clone(),
+                    policy: request.policy.clone(),
                     estimated_input_tokens: None,
                     estimated_output_tokens: request.max_output_tokens,
-                    session_overlay: request.session_overlay,
+                    session_overlay: request.session_overlay.clone(),
                 },
                 rpc_ctx.clone(),
             )
             .await?;
-        self.create_chat_completion(
-            LlmChatInvokeRequest {
-                exact_model: route.selected_exact_model,
-                messages: request.messages,
-                tools: request.tools,
-                response_format,
-                temperature: request.temperature,
-                max_output_tokens: request.max_output_tokens,
-                idempotency_key: request.idempotency_key,
-                task_options: request.task_options,
-            },
-            rpc_ctx,
-        )
-        .await
+        let method_request =
+            llm_chat_helper_to_method_request(route.selected_exact_model, request)?;
+        let response = self
+            .complete_with_method(ai_methods::CHAT_COMPLETIONS_CREATE, method_request, rpc_ctx)
+            .await?;
+        Ok(response.into())
     }
 
     pub async fn helper_text_to_image(
@@ -6617,6 +6631,37 @@ mod tests {
                 .required_features
                 .web_search
         );
+    }
+
+    #[test]
+    fn typed_chat_does_not_implicitly_enable_web_search() {
+        let request = LlmChatInvokeRequest::from_json(json!({
+            "exact_model": "gpt@test",
+            "messages": []
+        }))
+        .unwrap();
+        let mut request = llm_chat_invoke_to_method_request(request).unwrap();
+
+        apply_default_features_for_method(ai_methods::CHAT_COMPLETIONS_CREATE, &mut request);
+
+        assert!(!request.requirements.required.web_search);
+    }
+
+    #[test]
+    fn helper_chat_preserves_disabled_web_search_for_execution() {
+        let request = LlmChatHelperRequest::from_json(json!({
+            "logical_model": "llm.chat",
+            "disable": { "web_search": true },
+            "messages": []
+        }))
+        .unwrap();
+        let mut request =
+            llm_chat_helper_to_method_request("gpt@test".to_string(), request).unwrap();
+
+        apply_default_features_for_method(ai_methods::CHAT_COMPLETIONS_CREATE, &mut request);
+
+        assert!(request.disable.web_search);
+        assert!(!request.requirements.required.web_search);
     }
 
     #[test]

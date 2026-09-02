@@ -212,11 +212,29 @@ function normalizeTask(result: unknown): TaskRecord {
 }
 
 function asAiResponse(value: unknown): AiResponse | null {
-  if (
-    value && typeof value === "object" && !Array.isArray(value) &&
-    "message" in value
-  ) {
-    return value as AiResponse;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if ("message" in record) return record as unknown as AiResponse;
+  if (Array.isArray(record.artifacts) && record.artifacts.length > 0) {
+    return {
+      message: {
+        role: "assistant",
+        content: record.artifacts.flatMap((artifact) => {
+          if (!artifact || typeof artifact !== "object") return [];
+          const resource = (artifact as Record<string, unknown>).resource;
+          if (!resource || typeof resource !== "object") return [];
+          return [{ type: "image" as const, source: resource as ResourceRef }];
+        }),
+      },
+      usage: record.usage as JsonValue | null | undefined,
+      cost: record.cost as JsonValue | null | undefined,
+      provider_task_ref: typeof record.provider_task_ref === "string"
+        ? record.provider_task_ref
+        : null,
+      extra: record.route_trace
+        ? { route_trace: record.route_trace as JsonValue }
+        : null,
+    };
   }
   return null;
 }

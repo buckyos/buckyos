@@ -231,11 +231,18 @@ export function buildExactRequest(args: {
         content: [{ type: "text", text: "Complete this code with marker 4827: const marker =" }],
       }];
     }
+    const messages = inputJson.messages as Array<Record<string, unknown>>;
+    const userMessage = messages.find((message) => message.role === "user");
+    const content = userMessage && Array.isArray(userMessage.content)
+      ? userMessage.content
+      : [];
+    if (userMessage) userMessage.content = content;
     for (const kind of args.cell.input_kinds) {
-      if (kind === "image") resources.push(fixture("image"));
-      else if (kind === "document") resources.push(fixture("document"));
-      else if (kind === "audio") resources.push(fixture("audio"));
-      else if (kind === "video") resources.push(fixture("video"));
+      if (kind === "image") {
+        content.push({ type: "image", source: fixture("image") });
+      } else if (kind === "document" || kind === "audio" || kind === "video") {
+        content.push({ type: "document", source: fixture(kind) });
+      }
     }
     if (args.cell.input_kinds.includes("image")) requirements = { must_features: ["vision"] };
   }

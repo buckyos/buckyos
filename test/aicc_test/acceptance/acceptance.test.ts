@@ -28,6 +28,7 @@ import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import { buildNdnGatewayConfig, gatewayRouterArgs } from "./ndn_fixture_service.ts";
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
+import { callInference, type RpcClient } from "./gateway.ts";
 import {
   assertBackgroundRemovalTransparency,
   validateArtifactBytes,
@@ -1097,6 +1098,45 @@ test("T2 LLM output variants build and assert JSON schema and tool-call contract
       cost: {},
     },
   }));
+});
+
+test("typed inference adapter removes the legacy request envelope", async () => {
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const client: RpcClient = {
+    call: (method, params) => {
+      calls.push({ method, params });
+      return Promise.resolve({ task_id: "task", status: "running" });
+    },
+  };
+  const request = {
+    model: { alias: "gpt@test" },
+    payload: {
+      input_json: {
+        messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      },
+      resources: [{ kind: "url", url: "https://example.invalid/image.png", mime_hint: "image/png" }],
+      options: {},
+    },
+    idempotency_key: "idem",
+  };
+
+  await callInference(client, "chat.completions.create", request);
+  await callInference(client, "images.generate", {
+    ...request,
+    payload: { input_json: { prompt: "a fox" }, resources: [], options: {} },
+  });
+
+  assert.equal(calls[0].method, "chat.completions.create");
+  assert.equal(calls[0].params.exact_model, "gpt@test");
+  assert.equal("model" in calls[0].params, false);
+  assert.equal("payload" in calls[0].params, false);
+  assert.equal(
+    ((calls[0].params.messages as Array<{ content: unknown[] }>)[0].content).length,
+    2,
+  );
+  assert.equal(calls[1].method, "images.generate");
+  assert.equal(calls[1].params.prompt, "a fox");
+  assert.equal("payload" in calls[1].params, false);
 });
 
 test("active official model families are not excluded by lifecycle filters", async () => {

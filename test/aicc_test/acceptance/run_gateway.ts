@@ -10,6 +10,7 @@ import {
 } from "../../jarvis_media_dv/config.ts";
 import {
   callChatCompletions,
+  callInference,
   loginGateway,
   type GatewaySession,
   type RpcClient,
@@ -1435,7 +1436,7 @@ async function executeAcceptance(input: {
             }
             reservation = costBudget.reserve(attemptEstimate);
             actualCalls += 1;
-            return await session.aicc.call(cell.method, request) as AiMethodResponse;
+            return await callInference(session.aicc, cell.method, request) as AiMethodResponse;
           });
           const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
           assertResponseShape(cell, terminal);

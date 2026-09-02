@@ -134,7 +134,7 @@ export async function run(argv: string[]): Promise<never> {
 
   // ── 4. 调用 AICC ─────────────────────────────────────────────────────
   // callAicc 会:
-  //   • 用 modelAlias / capability / policy 包成完整 AiMethodRequest
+  //   • 用 logical_model / policy 和图像业务字段构造 helper request
   //   • 一次性走 aicc.<method> RPC，拿到 succeeded / running / failed
   //   • 如果是 running，按返回的 TaskMgr task_id 直接轮询到终态
   let call;
