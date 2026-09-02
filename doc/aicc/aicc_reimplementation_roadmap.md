@@ -27,15 +27,15 @@
 
 主要规范入口：
 
-- [`aicc_requirements.md`](../../doc/aicc/aicc_requirements.md)
-- [`aicc_api设计.md`](../../doc/aicc/aicc_api设计.md)
-- [`internal_module_architecture.md`](../../doc/aicc/internal_module_architecture.md)
-- [`provider_profile_schema.md`](../../doc/aicc/provider_profile_schema.md)
-- [`provider_architecture_durable_data_schema.md`](../../doc/aicc/provider_architecture_durable_data_schema.md)
-- [`match_rule.md`](../../doc/aicc/match_rule.md)
-- [`aicc_router.md`](../../doc/aicc/aicc_router.md)
-- [`driver_metadata_update_protocol.md`](../../doc/aicc/driver_metadata_update_protocol.md)
-- [`aicc_e2e_test_requirements.md`](../../doc/aicc/aicc_e2e_test_requirements.md)
+- [`aicc_requirements.md`](aicc_requirements.md)
+- [`aicc_api设计.md`](aicc_api设计.md)
+- [`internal_module_architecture.md`](internal_module_architecture.md)
+- [`provider_profile_schema.md`](provider_profile_schema.md)
+- [`provider_architecture_durable_data_schema.md`](provider_architecture_durable_data_schema.md)
+- [`match_rule.md`](match_rule.md)
+- [`aicc_router.md`](aicc_router.md)
+- [`driver_metadata_update_protocol.md`](driver_metadata_update_protocol.md)
+- [`aicc_e2e_test_requirements.md`](aicc_e2e_test_requirements.md)
 
 ## 2. 重建范围
 

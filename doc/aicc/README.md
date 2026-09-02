@@ -10,6 +10,7 @@
 
 - `aicc_requirements.md`：产品与功能需求。
 - `AICC.md`：服务级设计总览。
+- `aicc_reimplementation_roadmap.md`：Beta 2.2 完全重建的模块 TODO、并行工作流、实施波次和 T1/T1.5/T2/T3 验收路线图。
 - `aicc_api设计.md`：对外 API 设计。
 - `aicc_router.md`：模型路由设计。
 - `aicc_e2e_test_requirements.md`：T1 路由、T1.5 Provider 官方协议契约、T2 线上推理和 T3 消息链路的测试分层与验收要求。
