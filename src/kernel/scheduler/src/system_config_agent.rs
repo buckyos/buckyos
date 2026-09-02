@@ -15,11 +15,12 @@ use crate::system_config_builder::{
 };
 use crate::zone_route_builder::{build_forward_plan, DidIpHint, NodeGatewayRouteCandidate};
 use buckyos_api::{
-    app_availability_policy_key, get_buckyos_api_runtime, AppAvailabilityGroupRule,
-    AppAvailabilityPolicy, AppId, AppInstanceId, AppRegistry, AppServiceSpec, AvailabilityEffect,
-    KernelServiceSpec, NodeConfig, SchedulerRefreshRbacResponse, ServiceInstanceReportInfo,
-    ServiceState, SystemConfigClient, UserSettings, UserState, UserType as ApiUserType, ZoneConfig,
-    ZoneGatewaySettings, APP_REGISTRY_KEY, CONTROL_PANEL_SERVICE_PORT,
+    app_availability_policy_key, get_buckyos_api_runtime, zone_document_hostname,
+    AppAvailabilityGroupRule, AppAvailabilityPolicy, AppId, AppInstanceId, AppRegistry,
+    AppServiceSpec, AvailabilityEffect, KernelServiceSpec, NodeConfig,
+    SchedulerRefreshRbacResponse, ServiceInstanceReportInfo, ServiceState, SystemConfigClient,
+    UserSettings, UserState, UserType as ApiUserType, ZoneConfig, ZoneGatewaySettings,
+    APP_REGISTRY_KEY, CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_kit::*;
 use name_client::*;
@@ -1109,7 +1110,7 @@ pub(crate) async fn update_node_gateway_info(
     let zone_config = boot_config.zone_document()?;
     let zone_gateway_settings = get_zone_gateway_settings(input_system_config)?;
     let device_list = get_device_list(input_system_config)?;
-    let zone_host = zone_config.id.to_host_name();
+    let zone_host = zone_document_hostname(&zone_config);
     let forward_plan = build_forward_plan(node_id, &zone_config, &zone_host, &device_list);
 
     let mut node_gateway_info = NodeGatewayInfo {
@@ -1347,7 +1348,7 @@ pub(crate) async fn update_node_gateway_config(
             let identity_paths = buckyos_api::device_identity_paths(&device_info.device_doc.id)
                 .map_err(|err| anyhow::anyhow!("build device identity paths failed: {}", err))?;
             let sn_url = format!("https://{}/kapi/sn", sn_host);
-            let zone_hostname = zone_config.id.to_host_name();
+            let zone_hostname = zone_document_hostname(&zone_config);
             let wildcard_zone_domain = format!("*.{}", zone_hostname);
             node_gateway_json = json!({
                 "acme": {
