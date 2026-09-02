@@ -216,18 +216,20 @@ Owner：Metadata 小组
 
 依赖：WP-02
 
-- [ ] 实现 Model Driver Catalog DTO；
-- [ ] 实现 Provider Rules Catalog DTO；
-- [ ] 实现 Known Provider Catalog DTO；
-- [ ] 校验 schema version、revision、required features 和引用；
-- [ ] 构建 exact/pattern 索引和有序 first-match；
-- [ ] 实现跨 Model Driver 唯一匹配和 conservative fallback；
-- [ ] 静态能力、渠道规则、动态 discovery 事实保持分离；
-- [ ] Provider Rules 只能收窄 Model Driver 能力；
-- [ ] 从 NDN 当前文件集合构建不可变 `CatalogSnapshot`；
-- [ ] 不重复实现 NDN 下载、验签、activation 或防回退。
+- [x] 实现 Model Driver Catalog DTO；
+- [x] 实现 Provider Rules Catalog DTO；
+- [x] 实现 Known Provider Catalog DTO；
+- [x] 校验 schema version、revision、required features 和引用；
+- [x] 构建 exact/pattern 索引和有序 first-match；
+- [x] 实现跨 Model Driver 唯一匹配和 conservative fallback；
+- [x] 静态能力、渠道规则、动态 discovery 事实保持分离；
+- [x] Provider Rules 只能收窄 Model Driver 能力；
+- [x] 从 NDN 当前文件集合构建不可变 `CatalogSnapshot`；
+- [x] 不重复实现 NDN 下载、验签、activation 或防回退。
 
 完成标准：给定同一 catalog 文件集合，总能生成确定且可校验的 snapshot 和索引。
+
+实现记录：Owner 为 Metadata 小组；三类 catalog DTO、加载期校验与 MatchRule 编译、exact/pattern 索引、跨 Model Driver 唯一匹配、conservative fallback、能力收窄和不可变 `CatalogSnapshot` 已落在 `src/frame/aicc/src/catalog/mod.rs`。输入边界只接收 NDN 已交付的当前文件内容，不实现下载、验签、activation、防回退或持久缓存。`cargo test -p aicc` 的 17 个测试、`cargo check -p aicc --all-targets`、AICC clippy `-D warnings` 和格式检查均通过，未新增依赖；完整系统构建和后续 RuntimeSnapshot 集成由对应工作包继续验证。
 
 ### WP-04：Model Registry 与逻辑目录
 
@@ -985,7 +987,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | WP-00 | 集成人（`@streetycat`） | Review | Gate 0 | 模块骨架 |
 | WP-01 | TBD | Pending | Gate 0 | API/IR/Error |
 | WP-02 | Catalog/Matching 小组 | Done | Gate 0 | MatchRule（`a12b3e09`） |
-| WP-03 | TBD | Pending | WP-02 | CatalogSnapshot |
+| WP-03 | Metadata 小组 | Done | WP-02 | CatalogSnapshot |
 | WP-04 | TBD | Pending | WP-01/02/03 | Model Registry |
 | WP-05 | TBD | Pending | WP-01 | Protocol Infra |
 | WP-06 | TBD | Pending | WP-01/05 | Base Codec |
