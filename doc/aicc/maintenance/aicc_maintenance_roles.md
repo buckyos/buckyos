@@ -141,7 +141,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 #### 已实现
 
 - **接收 BuckyOS 的模型事实和运营策略基线**：服务商可以直接使用 builtin metadata，也可以由 NDN 获取并替换当前文件、推进目标 seq。AICC 在下一次推理或 Provider 定时库存刷新时统一收敛所有 applied seq 落后的 Provider，再叠加服务商运营策略。
-- **维护产品默认 Provider settings**：服务商可以预置或引导用户配置 `services/aicc/settings`，包括 Provider Instance、`provider_profile_id`、协议族、`endpoint`、是否启用和模型发现策略等。`protocol_adapter_id` 由 Known Profile 固定或由自定义 Provider 接入测试解析。
+- **维护产品默认 Provider settings**：服务商可以预置或引导用户通过 AICC 管理 API 配置 `services/aicc/settings`，包括 Provider Instance、`provider_profile_id`、协议族、`base_url`、是否启用和模型发现策略等。`protocol_adapter_id` 由 Known Profile 固定或由自定义 Provider 接入测试解析；前端管理 RPC 中的 `endpoint` 由 AICC 转换为 settings 的 `base_url`。
 - **维护产品默认 routing_config**：服务商可以管理系统级 `services/aicc/settings.routing_config`，设置默认逻辑目录、Provider 权重、禁用列表、exact model 权重和 fallback 策略。
 - **维护服务商相关用例集合**：服务商跟随 BuckyOS 更新时，应把本产品启用的 Provider、模型、逻辑目录和路由策略映射到测试用例命名或 tags 上，确保能筛选出本次更新相关用例。
 - **期望效果**：产品用户配置自己的 API Key 后，就能看到服务商认可的新模型；逻辑模型调用会按服务商的默认策略路由到新模型或保留旧模型 fallback。
@@ -210,7 +210,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 #### 已实现
 
-- **新增或修改 Provider 授权**：用户可以在自己的 system_config / AICC settings 中维护 `services/aicc/settings`，配置 API Key、`endpoint`、Provider Instance、`provider_profile_id`、协议族和启用状态；不要求填写 API 代际或 `protocol_adapter_id`。
+- **新增或修改 Provider 授权**：用户通过 AICC `provider.add/update` 管理接口维护 `services/aicc/settings`，配置 API Key、`endpoint`、Provider Instance、`provider_profile_id`、协议族和启用状态；AICC 使用调用者 token 和 revision CAS 写 system-config，前端不直接写。管理 RPC 的 `endpoint` 持久化为 settings 的 `base_url`；用户不要求填写 API 代际或 `protocol_adapter_id`。
 - **使用 OpenAI-compatible 新厂商**：用户只需确认大致协议族，新增 Provider Instance 并填写厂商提供的 `endpoint` 和 API Key，不需要区分 Responses、Chat Completions 等代际。后端接入测试优先验证官方新接口，再验证当前已注册的历史接口并固化结果；运行时不重新探测。
 - **使用官方 SN Provider**：`sn-ai-provider` 使用独立 `sn-openai` 派生 Adapter。用户可以选择静态 API Key，或使用设备签名登录 SN 并缓存短期 token；动态登录状态只属于 SN 层，不进入 OpenAI 基础 Adapter，也不透传 BuckyOS `verify-hub` session。
 - **期望效果**：`models.list` 能看到该 Provider，并列出用户配置或 Provider `/models` 返回的新模型。

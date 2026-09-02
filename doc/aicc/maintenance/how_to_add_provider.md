@@ -7,7 +7,7 @@
 新增渠道或模型时，依次判断：
 
 1. 已有 Provider Profile、Protocol Adapter 和 Model Driver 均适用：只新增 Provider Instance。
-2. 渠道的认证、默认 endpoint、模型别名、价格或 operation 选择不同：新增 Provider Profile / Provider Rules。
+2. 渠道的认证、默认 `base_url`、模型别名、价格或 operation 选择不同：新增 Provider Profile / Provider Rules。
 3. 上游 HTTP、SSE、异步任务或错误协议不同：实现并注册 Protocol Adapter。
 4. 模型语义、variants、能力或参数约束不同：新增或更新 Model Driver catalog。
 5. 新增 AICC 业务能力：先扩展 typed API 和 operation registry，再实现 Driver、Adapter 与验收用例。
@@ -18,7 +18,7 @@
 
 ### Provider Profile
 
-定义渠道级事实：显示信息、默认 endpoint、认证方式、默认 Adapter、discovery 与 UI hints。内置 Profile 包括 OpenAI、Claude、Gemini、OpenRouter、SN、MiniMax 和 fal；配置型 Profile 只能引用程序已经注册的 Adapter。
+定义渠道级事实：显示信息、默认 `base_url`、认证方式、默认 Adapter、discovery 与 UI hints。首版内置 Profile 包括 OpenAI、Claude、Gemini、fal、OpenRouter、MiniMax、Kimi、GLM、DeepSeek、豆包和 Qwen，SN 作为扩展 Profile 保留；配置型 Profile 只能引用程序已经注册的 Adapter。
 
 ### Provider Rules
 
@@ -36,7 +36,7 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 
 ### Model Driver
 
-定义模型的稳定语义：ModelUID、origin model、variants、结构化能力、上下文限制、参数约束和支持的 AICC api types。Driver 不包含渠道凭据、endpoint 或厂商请求模板。
+定义模型的稳定语义：ModelUID、origin model、variants、结构化能力、上下文限制、参数约束和支持的 AICC api types。Driver 不包含渠道凭据、`base_url` 或厂商请求模板。
 
 ## 3. Provider Instance 配置
 
@@ -50,7 +50,7 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
       "provider_type": "cloud_api",
       "provider_profile_id": "openai",
       "protocol_adapter_id": "openai-responses",
-      "endpoint": "https://api.openai.com/v1",
+      "base_url": "https://api.openai.com/v1",
       "credentials": {
         "type": "bearer",
         "secret_ref": "system-config://secrets/aicc/openai-work"
@@ -62,9 +62,9 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 }
 ```
 
-不使用 Provider family section、`instances[]` 包装、`provider_driver`、`base_url`、section 级 token、`features` 或字段别名。Profile 默认值只用于创建表单，不能覆盖实例显式配置。
+不使用 Provider family section、`instances[]` 包装、`provider_driver`、settings 中的 `endpoint`、section 级 token、`features` 或字段别名。`base_url` 是 Provider Instance settings 的正式字段；Profile 默认值只用于创建表单，不能覆盖实例显式配置。
 
-用户添加自定义 Provider 时不填写 `protocol_adapter_id`，只提交协议族、endpoint 和凭据。例如：
+用户通过管理 RPC 添加自定义 Provider 时不填写 `protocol_adapter_id`，只提交协议族、`endpoint` 和凭据；管理层持久化时把 `endpoint` 转换成 settings 的 `base_url`。例如：
 
 ```json
 {
@@ -79,7 +79,7 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 
 ## 4. 接入步骤
 
-1. 在 Provider Profile catalog 增加或选择 Profile，并定义认证、endpoint、discovery 和 UI schema。
+1. 在 Provider Profile catalog 增加或选择 Profile，并定义认证、默认 `base_url`、discovery 和 UI schema。
 2. 如 Provider 需要尚未实现的新协议或历史接口，在 Adapter registry 按需注册固定 `protocol_adapter_id` 和支持的 operations；不要为了覆盖厂商历史而预先实现未被使用的 Adapter。
    若只是兼容旧 API，则新增一份协议族级共享历史 Adapter，不修改官方新接口 Adapter，也不增加运行时协议 fallback；同时把它加入该协议族的接入测试候选顺序。
    若共享 Adapter 已存在且渠道没有差异，直接引用它；有认证、endpoint 或其它渠道差异时才增加派生 Adapter，声明 `base_adapter_id`，并只实现差异层。

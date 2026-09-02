@@ -8,10 +8,10 @@ AI Center 前端只调用 AICC kRPC，不直接读写 system-config。AICC 管�
 
 Provider Instance、Provider Profile 和 Protocol Adapter 是不同身份：
 
-- Instance 是用户配置的具体账号/endpoint，持久化在 `services/aicc/settings`；
+- Instance 是用户配置的具体账号/服务入口，持久化在 `services/aicc/settings`；管理 RPC 沿用前端字段 `endpoint`，持久化字段为 `base_url`；
 - Profile 是渠道 discovery、origin mapping、operation 和价格规则；
 - Adapter 是程序已注册的 wire protocol 实现；
-- Catalog 只能提供默认 Profile/endpoint/adapter，不能修改实例私有配置。
+- Catalog 只能提供默认 Profile/`base_url`/adapter，不能修改实例私有配置。
 
 所有写操作通过 `SystemConfigClient::exec_tx` 做 CAS；完整校验成功后再原子 reload。Beta 2.2 不读取旧 Provider family section、`provider_driver`、section 级 token 或字段别名。
 
@@ -27,10 +27,10 @@ Provider Instance、Provider Profile 和 Protocol Adapter 是不同身份：
 - `provider.refresh_models`
 - `provider.list` / `provider.health`
 - `usage.query` / `trace.query`
-- `provider_catalog_update.get` / `provider_catalog_update.set`
-- `service.reload_settings`
+- `driver_metadata_update.get` / `driver_metadata_update.set`
+- `service.reload_settings` / `reload_settings`（已导出的兼容入口）
 
-方法不提供 `service.*` 双入口、错误拼写或旧名称兼容别名。
+除明确保留的 `reload_settings` 已导出兼容入口外，方法不新增 `service.*` 双入口、错误拼写或旧名称兼容别名。
 
 Provider Instance 的库存刷新定时任务是实例级运行时资源。`provider.update` 把实例从 enabled 改为 disabled、更新导致实例重建、`provider.delete`、reload 移除或替换实例，以及 AICC 服务停止时，管理层必须先把实例标记为 stopping，向其定时任务循环发送幂等 `Stop` 事件并等待循环优雅退出，再完成 registry 切换或资源清理。停止后不得接受新的定时刷新，也不得提交迟到的 inventory/health 结果。
 
@@ -67,7 +67,7 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
       "provider_type": "cloud_api",
       "provider_profile_id": "openai",
       "protocol_adapter_id": "openai-responses",
-      "endpoint": "https://api.openai.com/v1",
+      "base_url": "https://api.openai.com/v1",
       "credentials": {
         "api_token": { "locked": "..." }
       },
@@ -86,11 +86,11 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
 - `provider_profile_id` 必须来自 Known Provider catalog 或 `custom`。
 - `protocol_family_id` 只用于 `custom` Provider 的创建/更新请求，表达 OpenAI-compatible、Claude-compatible、Gemini-compatible 等大类；解析成功后可由 resolved Adapter 反查，不作为另一个运行期选择字段。
 - `protocol_adapter_id` 是后端解析并保存的内部执行字段，必须来自运行时 adapter registry；Known Provider 由 Profile 给出确定值，`custom` Provider 的创建请求不要求用户填写。
-- `custom` Provider 只提交协议族、`endpoint` 和凭据；后端在保存前先测官方新接口，再测该协议族中已注册的历史接口，并固化首个协议验证成功的 Adapter。
+- `custom` Provider 管理请求只提交协议族、`endpoint` 和凭据；后端在保存前先测官方新接口，再测该协议族中已注册的历史接口，并把 `endpoint` 转换为 settings 的 `base_url`，同时固化首个协议验证成功的 Adapter。
 - 只有明确的“接口不支持”结果才继续下一候选；连接、认证、限流和服务端故障直接返回，不能用旧接口测试掩盖。
 - 凭据使用 system-config locked value 或 credential reference，不进入 catalog、inventory、trace 或日志。
-- Catalog 更新不得修改实例名称、endpoint、凭据、区域、账号或协议选择。
-- 不读取 `instance_id`、`provider_driver`、`base_url`、`api_key`、`apiKey` 等旧字段或别名。
+- Catalog 更新不得修改实例名称、`base_url`、凭据、区域、账号或协议选择。
+- 不读取 `instance_id`、`provider_driver`、`endpoint`、`api_key`、`apiKey` 等旧字段或别名；`base_url` 是新旧 settings 都保留的正式字段。
 
 ## 3. 设计原则
 
@@ -108,7 +108,7 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
 
 `protocol_adapter.list` 返回当前实际注册的 `protocol_family_id`、adapter ID、接口代际/状态、探测优先级、可选 `base_adapter_id`、支持的 operation 和协议能力。每个协议族必须包含官方新接口；历史接口由首个真实 Provider 需求触发实现，之后作为协议族级 Adapter 被多个 Provider 或派生 Adapter 共享。`sn-openai` 等派生 Adapter 使用独立 ID，并展示其确定的基础 Adapter。该接口用于后端接入解析、诊断和管理员只读展示，不作为普通用户的 API 版本选择列表。
 
-Provider Wizard 每次打开只读取一次完整 catalog；catalog 不可用时仍允许进入手工模式。手工模式让用户选择 OpenAI-compatible、Claude-compatible、Gemini-compatible 等协议族，不要求识别 Responses、Chat Completions、Interactions 等 API 代际。保存前由后端执行 endpoint、认证、协议和 discovery 验证并返回 resolved Adapter。
+Provider Wizard 每次打开只读取一次完整 catalog；catalog 不可用时仍允许进入手工模式。手工模式让用户选择 OpenAI-compatible、Claude-compatible、Gemini-compatible 等协议族，不要求识别 Responses、Chat Completions、Interactions 等 API 代际。保存前由后端执行 `endpoint`、认证、协议和 discovery 验证并返回 resolved Adapter。
 
 ### 4.1 `models.list`
 
@@ -190,7 +190,7 @@ Response：
 
 - 不写 system_config。
 - Device JWT 等非 API Key Profile 按 Profile 的认证 schema 校验。
-- Profile、Adapter 和 endpoint 必须同时通过校验。
+- Profile、Adapter 和 `endpoint` 必须同时通过校验。
 - `provider_instance_name` 可选；传入时只用于校验命名合法性，不要求已存在。
 - 第一版可以只做参数校验和轻量 HTTP 探测；若能复用已有 provider adapter 的 inventory refresh 逻辑，则返回真实 `models_discovered`。
 - 返回错误不应泄露 token、Authorization header 或完整 URL query。
@@ -206,7 +206,7 @@ Request：
   "provider_instance_name": "openai-work",
   "provider_type": "cloud_api",
   "provider_profile_id": "openai",
-      "protocol_adapter_id": "openai-responses",
+  "protocol_adapter_id": "openai-responses",
   "endpoint": "https://api.openai.com/v1",
   "credentials": {
     "type": "bearer",
@@ -233,7 +233,7 @@ Response：
 事务写入：
 
 1. 读取 `services/aicc/settings`，拿到 `version`。
-2. 校验 Profile、Adapter、endpoint、认证 schema 和 Provider Rules 引用。
+2. 校验 Profile、Adapter、`endpoint`、认证 schema 和 Provider Rules 引用，并在持久化前转换为 settings 的 `base_url`。
 3. 校验 request 中的 `provider_instance_name` 非空且全局唯一。
 4. 写回 `services/aicc/settings`。
 5. 使用 `exec_tx(tx, Some(("services/aicc/settings", version)))`。
@@ -256,7 +256,7 @@ Response：
 
 - 缺失时返回 `ReasonError("provider_instance_name is required")`。
 - `provider.add` 应返回 `ReasonError("provider already exists")`。
-- 后续如需编辑已有 provider，应新增 `provider.update`，不要让 add 混合 upsert 语义。
+- 编辑已有 Provider 必须使用 `provider.update`，不要让 add 混合 upsert 语义。
 
 写入示例：
 
@@ -267,7 +267,7 @@ Response：
     "provider_type": "cloud_api",
     "provider_profile_id": "openai",
     "protocol_adapter_id": "openai-responses",
-    "endpoint": "https://api.openai.com/v1",
+    "base_url": "https://api.openai.com/v1",
     "credentials": {
       "type": "bearer",
       "secret_ref": "system-config://secrets/aicc/openai-work"
@@ -288,7 +288,35 @@ Response：
 
 `sn-ai-provider` 使用独立 Profile 和 `sn-openai` Adapter，后者属于 `openai` 协议族并派生自 `openai-responses`。`auth.mode=api_key` 时使用静态 Bearer API Key；`auth.mode=dynamic_login` 时由 SN 层使用登录凭据换取并刷新短期 token，再委托 Responses 实现。OpenAI 官方 Adapter 不包含 SN 登录或 Provider 分支。模型能力仍由 Model Driver catalog 声明，SN discovery 只能收窄可用集合；实际价格优先来自 discovery，无法发现时使用 Provider Rules 中的静态价格。
 
-### 4.4 `provider.delete`
+### 4.4 `provider.update`
+
+用途：更新已有 Provider Instance。现有 enable/disable 功能以及实例连接配置更新统一通过本接口完成，不允许 `provider.add` 使用 upsert 语义。
+
+Request 使用 `provider_instance_name` 定位实例，其余字段为需要替换的可选字段：
+
+```json
+{
+  "provider_instance_name": "openai-work",
+  "enabled": false,
+  "endpoint": "https://api.openai.com/v1",
+  "credentials": {
+    "type": "bearer",
+    "secret": "sk-..."
+  }
+}
+```
+
+接口可以更新 `enabled`、`endpoint`、credential、Profile、Adapter、discovery 和实例规则；`endpoint` 在持久化前转换为 settings 的 `base_url`。更新流程必须：
+
+1. 读取当前 settings 和 revision，确认目标实例存在。
+2. 合并 patch 后完整校验 Profile、Adapter、`endpoint`、认证 schema 和 Provider Rules 引用；未知字段拒绝。
+3. 使用当前 RPC 调用者 token 执行 `exec_tx` revision CAS。
+4. 禁用实例或连接、Profile、Adapter、认证发生变化时，先把旧实例标记为 stopping，停止并等待其定时刷新任务退出，再发布禁用状态或替换后的实例。
+5. 构建并原子发布完整 RuntimeSnapshot；迟到的旧 inventory/health 结果不得写入新 generation。
+
+Response 与 `provider.add` 一样返回 `ok`、`provider_instance_name`、写后重新读取的 `settings_revision` 和 reload 结果。前端已有 enable/disable、修改凭据等操作可以保留自己的调用封装，内部统一调用 `provider.update`。
+
+### 4.5 `provider.delete`
 
 用途：对应 `AICCMgr.deleteProvider(id)`。
 
@@ -323,7 +351,7 @@ Response：
 5. 循环退出后从 registry 删除实例，并同步删除或解除其 credential reference；动态 token 只存在内存，无需持久化清理。
 6. 原子发布新 registry；停止过程失败时不得留下仍可路由但 settings 已删除的半状态，必须返回可诊断错误。
 
-禁用实例以及因 endpoint、Profile、Adapter、认证等变化而重建实例时使用相同停止协议：先停止旧实例的定时任务，再发布禁用状态或新实例。AICC 服务停止时应向全部 Provider 定时任务循环广播 `Stop` 并等待退出。
+禁用实例以及因 `base_url`、Profile、Adapter、认证等变化而重建实例时使用相同停止协议：先停止旧实例的定时任务，再发布禁用状态或新实例。AICC 服务停止时应向全部 Provider 定时任务循环广播 `Stop` 并等待退出。
 
 未找到时返回：
 
@@ -334,7 +362,7 @@ Response：
 }
 ```
 
-### 4.5 `provider.refresh_models`
+### 4.6 `provider.refresh_models`
 
 用途：对应 `AICCMgr.refreshProviderModels(id)`。
 
@@ -364,7 +392,7 @@ Response：
 - 前端随后会 `refresh()`，因此第一版不必在响应里返回完整 inventory。
 - 找不到 provider 时返回 `provider_not_found`。
 
-### 4.6 `usage.query`
+### 4.7 `usage.query`
 
 用途：补齐 `getUsageSummary()` / `getUsageTrend()` 的真实数据来源。
 
@@ -411,7 +439,7 @@ Response 直接复用 `buckyos_api::QueryUsageResponse`：
 - Summary：`time_range.kind=explicit`, `output_mode=summary`, `group_by=["provider_model"]`。
 - Trend：`time_range.kind=explicit`, `time_bucket=day`, `output_mode=summary`。
 
-### 4.7 `driver_metadata_update.get` / `driver_metadata_update.set`
+### 4.8 `driver_metadata_update.get` / `driver_metadata_update.set`
 
 AI Center 通过这两个接口配置和观察 NDN metadata 文件更新。AICC 不实现下载校验、activation、LKGS、水位或专用后台生效流程：
 
@@ -480,9 +508,9 @@ Response：
 
 Rust 契约统一定义在 `buckyos-api::aicc_client` 的 `DriverMetadataUpdate*` 类型、`AiccClient`、`AiccHandler` 和 `AiccServerHandler` 中；服务端和其它 Rust 调用方不得再手写字段名。
 
-### 4.8 `service.reload_settings`
+### 4.9 `service.reload_settings`
 
-该方法是唯一 settings reload 入口；不定义 `reload_settings`、`reaload_settings` 或 `service.reaload_settings` 兼容别名。
+`service.reload_settings` 是新调用方使用的 canonical settings reload 入口。`reload_settings` 已由 `buckyos-api::aicc_client` 导出，保留相同 schema 和行为；不定义 `reaload_settings` 或 `service.reaload_settings` 等错误拼写。
 
 状态：保留。
 
@@ -503,10 +531,6 @@ routing.session.patch_node
 ```
 
 并先让 AICC 启动 / reload 从 `services/aicc/settings.session_config` 加载全局 session config。否则写入 system_config 不会影响当前内存 route。
-
-### 5.2 provider.update
-
-当前 wizard 只有 add/delete/refresh/validate。编辑已有 provider 时再新增 `provider.update`，语义为修改 endpoint、Profile、Adapter、`auth`、discovery 和实例规则等字段。
 
 ## 6. system_config 事务模型
 

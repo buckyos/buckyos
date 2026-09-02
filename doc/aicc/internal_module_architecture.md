@@ -234,7 +234,7 @@ provider/
     ├── doubao       └── qwen
 ```
 
-`builtin/<provider>` 是装配模块，不是协议实现。它只提供稳定 ID、默认 endpoint 模板、区域/workspace 和 credential schema、discovery、operation/Adapter 默认绑定、catalog 入口及必要 dialect/native module 注册。
+`builtin/<provider>` 是装配模块，不是协议实现。它只提供稳定 ID、默认 `base_url` 模板、区域/workspace 和 credential schema、discovery、operation/Adapter 默认绑定、catalog 入口及必要 dialect/native module 注册。
 
 ### 5.2 首版装配矩阵
 
@@ -341,13 +341,15 @@ base codec  -> transport + resolved credential + IR
 
 禁止 `protocol -> routing`、`model -> provider`、基础 codec 引用 dialect、按 Provider ID 选择分支，或通过全局 `AIComputeCenter` 绕过边界。
 
+不建立独立顶层 `admission` 模块。模型能力门限、逻辑目录 admission 和 auto-mount 由 Model Registry 负责；quota、budget、privacy、trust 等请求级硬约束在 routing 内部策略层集中判定，Router 只消费判定结果和可解释原因，不直接读取 quota 或安全配置。
+
 ## 8. 测试划分
 
 ```text
 tests/
 ├── protocol_contract      每个 API 代际/operation 一套 golden + stream contract
 ├── dialect_contract       基础合同复用 + 仅厂商差异断言
-├── provider_builtin       11 家装配、credential、endpoint、discovery fixture
+├── provider_builtin       11 家装配、credential、base_url、discovery fixture
 ├── provider_inventory     LKGS、seq、refresh、Stop、迟到写
 ├── routing                exact/logical、能力过滤、fallback、trace
 ├── runtime_snapshot       add/reload/refresh 与并发请求
@@ -356,6 +358,8 @@ tests/
 ```
 
 OpenRouter/Kimi/GLM 共同运行 Chat Completions 基础合同；DeepSeek/豆包/Qwen 共同运行 Responses 基础合同；MiniMax 运行 Claude Messages 基础合同。每个 dialect 只增加官方差异断言。在线 smoke test 使用独立 credential，不进入默认 `cargo test`。
+
+以上是编码期间必须完成的模块单元测试。模块编码和单元测试完成后才进入集成测试：先补齐并完成 T1/T1.5，再补齐并完成 T2/T3。历史维护材料中的 L1-L4 只表示旧测试拆分，不作为 Beta 2.2 发布门禁名称。
 
 ## 9. 实施顺序
 

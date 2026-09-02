@@ -37,7 +37,7 @@ POST /kapi/aicc
 | `chat.completions.create`、`embedding.*`、`rerank`、`images.generate`、`image.*`、`vision.*`、`audio.*`、`video.*` | typed inference 数据面。只接受 `exact_model`，不接受逻辑模型名，不做逻辑 fallback。 |
 | `helper.*` | helper 组合层。接收 `logical_model` 和对应 typed request，语义等价于 `route.resolve` + typed inference。 |
 | `cancel` | 请求取消异步 task；返回值必须真实反映是否已触发上游取消或本地中止。 |
-| `service.reload_settings` | 从 `services/aicc/settings` 重新加载 Provider 配置。 |
+| `service.reload_settings` / `reload_settings` | 从 `services/aicc/settings` 重新加载 Provider 配置；后者是 `buckyos-api` 已导出的兼容入口。 |
 | `quota.query` | 查询调用方在 capability / method 维度的剩余额度和预算状态。 |
 | `provider.list` / `provider.health` | 查询 Provider inventory 和健康状态。 |
 
@@ -46,6 +46,8 @@ POST /kapi/aicc
 ### 1.2 `method` 决定 schema，`Capability` 只做粗分组
 
 `method` 是 AICC 的请求 schema discriminator，例如 `chat.completions.create`、`images.generate`、`audio.asr`。`api_type` 是路由能力类型，例如 `llm`、`image.txt2img`、`audio.asr`；它不等于 RPC method，也不决定 Provider endpoint。
+
+两者之间是显式合法关联，不是名称相等关系，也不要求 1:1 或双射。例如 `api_type=image.txt2img` 的 typed inference method 是 `images.generate`；同一个 api_type 还可以用于 `route.resolve` 和对应 Helper，而 `route.resolve` 又可以接受多个 api_type。规范和验收分别维护两个值域及其合法关联，不能通过字符串相等互相推导。
 
 `chat.completions.create` 是 AICC 的 provider-neutral typed method 名，不表示底层必须调用 OpenAI Chat Completions。Provider Rules 可以把它映射到 `openai-responses`、`claude-messages`、`gemini-interactions` 或显式兼容 Adapter。Adapter ID 和 operation 才决定实际 wire API。
 
@@ -412,7 +414,7 @@ Response：
 
 ### 2.10 `service.reload_settings`
 
-`service.reload_settings` 用于从 `services/aicc/settings` 重新加载 Provider Instance 配置。`reload_settings`、`reaload_settings` 和 `service.reaload_settings` 均不是有效别名。
+`service.reload_settings` 用于从 `services/aicc/settings` 重新加载 Provider Instance 配置。`reload_settings` 已由 `buckyos-api::aicc_client` 导出，保留为相同 request/response schema 的兼容入口；`reaload_settings` 和 `service.reaload_settings` 等错误拼写不是有效别名。新调用方使用 `service.reload_settings`。
 
 语义：
 
@@ -1773,7 +1775,7 @@ AICC 错误 payload schema：
 
 1. `/kapi/aicc` 作为稳定入口。
 2. AI 调用使用标准 method 名作为 kRPC method。
-3. `cancel`、`service.reload_settings` 保持为控制类 method，不定义兼容别名。
+3. `cancel`、`service.reload_settings` 保持为控制类 method；仅保留 `buckyos-api` 已导出的 `reload_settings` 兼容入口，不再新增其它别名。
 
 ### M1：移除独立分类字段
 

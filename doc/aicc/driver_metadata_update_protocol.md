@@ -9,8 +9,8 @@
 
 - Model Driver catalog 保存模型固有能力、家族、variant 和逻辑挂载。
 - Provider Rules catalog 保存渠道模型映射、operation、请求规则、能力收窄及价格规则；价格不再单独发布 Pricing Catalog。
-- Known Provider catalog 保存管理 UI 使用的服务商默认 endpoint、Profile 和 Adapter。
-- Provider Instance 名称、endpoint、凭据、区域、账号和协议选择属于 system-config，catalog 无权修改。
+- Known Provider catalog 保存管理 UI 使用的服务商默认 `base_url`、Profile 和 Adapter。
+- Provider Instance 名称、`base_url`、凭据、区域、账号和协议选择属于 system-config，catalog 无权修改。
 - Provider discovery 产生的 availability、deprecated、remote methods、实时价格和 health 属于实例级动态事实，不写入静态 catalog。
 - 三类 catalog 使用独立文件和 revision，但通过同一个 manifest 发布为完整版本。
 - 发布结构与文件交付由 NDN 更新链路负责；AICC 不重复实现文件下载、验签、完整性校验或 activation。
@@ -77,7 +77,7 @@ Manifest 格式为 `buckyos.aicc.provider-catalog-manifest`，描述一个完整
 
 路径：`v2/known-providers/<catalog_id>-<revision_seq>.json`。
 
-内容定义管理 UI 使用的已知服务商默认值，包括 `provider_profile_id`、显示名称、默认 endpoint、`protocol_adapter_id`、可选 `provider_rules_id` 和 UI hints。它不能修改已经存在的 Provider Instance 私有配置。
+内容定义管理 UI 使用的已知服务商默认值，包括 `provider_profile_id`、显示名称、默认 `base_url`、`protocol_adapter_id`、可选 `provider_rules_id` 和 UI hints。它不能修改已经存在的 Provider Instance 私有配置。
 
 ## 6. 版本兼容与防回退
 

@@ -1,6 +1,8 @@
 # 通过 system_config 更新 AICC 配置
 
-本文说明如何把 AICC Provider settings 写入 `system_config`，并触发 AICC 在线重载。新版模型路由以 `doc/aicc/aicc_router.md` 为准：Provider settings 只负责声明 Provider instance、部署类型、凭据、endpoint 和模型清单；逻辑模型选择由 Provider inventory、默认逻辑目录配置、`system_config` 中的 AICC 系统配置和 request/session 级 overlay 完成。
+本文说明如何把 AICC Provider settings 写入 `system_config`，并触发 AICC 在线重载。新版模型路由以 `doc/aicc/aicc_router.md` 为准：Provider settings 只负责声明 Provider instance、部署类型、凭据、`base_url` 和 discovery 配置；模型清单来自 Provider inventory，逻辑模型选择由默认逻辑目录配置、`system_config` 中的 AICC 系统配置和 request/session 级 overlay 完成。
+
+普通 AI Center 前端不得直接使用本文的 system-config 接口，而应调用 AICC `provider.add/update/delete` 管理 API，由 AICC 使用当前调用者 token 和 revision CAS 受控写入。本文的直接写法只供具备相应 RBAC 权限的管理员维护、调试和外部工具使用；无论通过哪条入口，system-config 都是唯一配置真相源。
 
 ## 1. 配置位置
 
@@ -22,7 +24,7 @@ AICC 启动和 `service.reload_settings` 时读取该 key，并原子重建 Prov
       "provider_type": "cloud_api",
       "provider_profile_id": "openai",
       "protocol_adapter_id": "openai-responses",
-      "endpoint": "https://api.openai.com/v1",
+      "base_url": "https://api.openai.com/v1",
       "credentials": {
         "api_token": { "locked": "..." }
       },
@@ -34,7 +36,7 @@ AICC 启动和 `service.reload_settings` 时读取该 key，并原子重建 Prov
 }
 ```
 
-`provider_instance_name` 是稳定主键；Profile、Protocol Adapter 和 Model Driver 是不同身份。Provider Instance 不保存静态模型能力或逻辑挂载，catalog 更新也不能修改 endpoint、凭据、区域和协议选择。
+`provider_instance_name` 是稳定主键；Profile、Protocol Adapter 和 Model Driver 是不同身份。Provider Instance 只保存 `provider_profile_id` 和 `protocol_adapter_id`，模型级 `model_driver_id` 由 catalog/inventory 解析产生。Provider Instance 不保存静态模型能力或逻辑挂载，catalog 更新也不能修改 `base_url`、凭据、区域和协议选择。
 
 SN 使用独立 `sn-openai` Adapter，并显式选择认证模式。静态 API Key 示例：
 
@@ -43,7 +45,7 @@ SN 使用独立 `sn-openai` Adapter，并显式选择认证模式。静态 API K
   "provider_instance_name": "sn-main",
   "provider_profile_id": "sn",
   "protocol_adapter_id": "sn-openai",
-  "endpoint": "https://sn.example/v1",
+  "base_url": "https://sn.example/v1",
   "auth": {
     "mode": "api_key",
     "credential_ref": "system-config://secrets/aicc/sn-main"
@@ -58,7 +60,7 @@ SN 使用独立 `sn-openai` Adapter，并显式选择认证模式。静态 API K
   "provider_instance_name": "sn-main",
   "provider_profile_id": "sn",
   "protocol_adapter_id": "sn-openai",
-  "endpoint": "https://sn.example/v1",
+  "base_url": "https://sn.example/v1",
   "auth": {
     "mode": "dynamic_login",
     "login_profile": "device_jwt",
@@ -69,7 +71,7 @@ SN 使用独立 `sn-openai` Adapter，并显式选择认证模式。静态 API K
 
 两种模式互斥。动态 token 只由 `sn-openai` 在运行时缓存和刷新，不写回 system-config，也不由 `openai` 基础 Adapter 处理。
 
-Beta 2.2 不读取 Provider family section、`instances[]` 包装、`provider_driver`、`base_url`、`features`、`alias_map`、section 级 token 或字段别名。
+Beta 2.2 不读取 Provider family section、`instances[]` 包装、`provider_driver`、`endpoint`、`features`、`alias_map`、section 级 token 或字段别名。`base_url` 是新旧 settings 都保留的正式字段。
 ## 3. 更新方式
 
 通过 `system_config` kRPC 更新：
@@ -109,7 +111,7 @@ POST /kapi/system_config
   "method": "sys_config_set",
   "params": {
     "key": "services/aicc/settings",
-    "value": "{\"providers\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai-responses\",\"endpoint\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"locked\":\"...\"}},\"provider_rules_id\":\"openai\"}]}"
+    "value": "{\"providers\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai-responses\",\"base_url\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"locked\":\"...\"}},\"provider_rules_id\":\"openai\"}]}"
   },
   "sys": [3002, "<session_token>", "trace-aicc-cfg-set"]
 }
@@ -125,7 +127,7 @@ POST /kapi/system_config
   "params": {
     "key": "services/aicc/settings",
     "json_path": "/providers/0",
-    "value": "{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai-responses\",\"endpoint\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"locked\":\"...\"}},\"provider_rules_id\":\"openai\"}"
+    "value": "{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai-responses\",\"base_url\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"locked\":\"...\"}},\"provider_rules_id\":\"openai\"}"
   },
   "sys": [3003, "<session_token>", "trace-aicc-cfg-patch"]
 }

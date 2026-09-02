@@ -33,7 +33,7 @@
 - 不把 Jarvis 组合工具生成的能力登记成 Provider 模型原生能力。
 - 不允许测试绕过 Gateway、认证和真实服务进程后仍称为 E2E/DV 通过。
 
-单元测试和模块级协议测试可以作为缺陷定位补充，但不能替代本文要求的真实链路测试。
+编码过程中必须同步完成各模块单元测试和模块级协议测试；它们是模块编码完成条件，也可以用于缺陷定位，但不能替代本文要求的真实链路测试。全部模块编码和单元测试完成后才进入集成测试：第一阶段完成 T1/T1.5，第二阶段完成 T2/T3。
 
 ## 3. 强制原则
 
@@ -126,22 +126,22 @@ T1 和 T1.5 允许使用 Mock Provider，但 AICC、Gateway、认证、Provider 
 
 unknown model 不得通过模型名猜测获得高风险能力。兼容接口偶然接受某参数，也不能替代官方支持声明。
 
-当前内置 Provider driver 必须提前进入参数化能力基线和测试清单：OpenAI、Claude、Google Gemini、Fal、MiniMax、OpenRouter 和 SN AI Provider。后续新增内置 Provider 时，必须同步扩展能力基线和用例。Provider 的模型、生命周期、能力和协议限制以模型发布方的公开官方文档为事实源；AICC inventory 是被测声明，不能反向作为官方能力依据。
+首版 11 家内置 Provider 必须进入参数化能力基线和测试清单：OpenAI、Claude、Google Gemini、Fal、OpenRouter、MiniMax、Kimi、GLM、DeepSeek、豆包和 Qwen；SN AI Provider 作为扩展 Provider 单独纳入。当前基线尚未覆盖的 Provider 在编码完成后的集成测试阶段补齐：先补齐 T1/T1.5 参数化基线和协议合同，再补齐 T2 真实 Provider 矩阵，最后进入 T3。该缺口不阻塞 Gate 0，但未补齐前不得通过对应发布门禁。Provider 的模型、生命周期、能力和协议限制以模型发布方的公开官方文档为事实源；AICC inventory 是被测声明，不能反向作为官方能力依据。
 
 当前 AICC canonical API type 必须按各层职责逐项进入 T1、T1.5 和 T2 覆盖矩阵，不得用 namespace 或“其他 API”概括：
 
-| namespace | canonical api_type / method |
-|---|---|
-| LLM | `llm`；对应 `chat.completions.create` |
-| Embedding | `embedding.text`、`embedding.multimodal` |
-| Rerank | `rerank` |
-| Image | `image.txt2img`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove` |
-| Vision | `vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment` |
-| Audio | `audio.tts`、`audio.asr`、`audio.music`、`audio.enhance` |
-| Video | `video.txt2video`、`video.img2video`、`video.video2video`、`video.extend`、`video.upscale` |
-| Agent | `agent.computer_use` |
+| namespace | canonical api_type | typed method |
+|---|---|---|
+| LLM | `llm` | `chat.completions.create` |
+| Embedding | `embedding.text`、`embedding.multimodal` | 同名 typed method |
+| Rerank | `rerank` | `rerank` |
+| Image | `image.txt2img`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove` | `images.generate`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove` |
+| Vision | `vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment` | 同名 typed method |
+| Audio | `audio.tts`、`audio.asr`、`audio.music`、`audio.enhance` | 同名 typed method |
+| Video | `video.txt2video`、`video.img2video`、`video.video2video`、`video.extend`、`video.upscale` | 同名 typed method |
+| Agent | `agent.computer_use` | `agent.computer_use` |
 
-Runner 必须从当前协议/schema 枚举 canonical API type，并与本清单和 case manifest 做双向 diff。新增、删除或改名的 canonical API type 如果没有同步更新需求清单、官方能力映射和测试用例，preflight 必须失败。该规则用于防止后续读者把未列出的能力解释为可省略项。
+method 与 api_type 是不同值域，上表描述显式合法关联，不要求名称相同或 1:1。`route.resolve` 可以接受多个 api_type，同一个 api_type 也可以出现在 route、typed inference 和 Helper 调用形态中。Runner 必须分别从当前协议/schema 枚举 canonical method 和 api_type，并与本清单和 case manifest 校验各自值域及关联；不得检查字符串相等或双射。新增、删除、改名或关联变化如果没有同步更新需求清单、官方能力映射和测试用例，preflight 必须失败。
 
 ### 4.4 Provider 官方事实源
 
@@ -724,9 +724,10 @@ quota、budget、幂等计费和 fallback 归因在 T1 覆盖；Provider usage �
 
 ### 11.4 配置和维护
 
-- `service.reload_settings` 成功和失败。
+- `service.reload_settings` 成功和失败，并验证已导出的 `reload_settings` 兼容入口使用相同 schema 和行为。
 - 非法新配置失败后继续使用旧配置。
-- Provider validate/add/delete/refresh models。
+- Provider validate/add/update/delete/refresh models；`provider.update` 覆盖 enable/disable、endpoint/credential/Profile/Adapter/discovery 修改、revision 冲突和实例停止/替换生命周期。
+- `driver_metadata_update.get/set` 覆盖三类 metadata catalog 的云更新配置、target/applied seq 状态和 RBAC。
 - 多 instance 独立更新与删除。
 - Provider 停止、禁用、删除、reload 替换和 AICC 服务退出都必须向对应库存刷新定时任务循环发送幂等 `Stop` 事件并等待优雅退出；验证停止后没有新探测、孤儿定时器或迟到的 inventory/health 写入，重新启用后创建新循环并从持久 seq 继续收敛。
 - metadata 云端发布使用严格递增且不可复用的 manifest `revision_seq`，按客户端版本/通道/灰度分组配置兼容目标；验证新旧客户端各自获得兼容版本，低序列回退、同序列不同内容和不兼容版本均被 NDN 更新链路拒绝。

@@ -81,6 +81,7 @@ canonical `ApiType` 序列化值以协议 schema 为准：LLM chat 为 `llm`，c
 | `provider.health` | Provider Instance | health 状态、最近错误摘要、latency / quota / availability | Provider 不存在、health 过期、敏感错误未脱敏 |
 | `provider.validate` | Provider Instance 草案、endpoint、Profile、Adapter、auth | schema 校验结果、可连接性 / mock 可达性、脱敏诊断 | 凭据缺失、endpoint 非法、未知 Profile/Adapter、不得写入 system_config |
 | `provider.add` | provider settings、tenant/session 上下文 | system_config 写入、reload 后 `models.list` 可见、审计记录 | 重名冲突、无权限、schema 非法、写入失败回滚 |
+| `provider.update` | Provider Instance、enabled/endpoint/credential/Profile/Adapter/discovery patch | revision CAS 写入；enable/disable 与实例替换生命周期正确；前端旧操作封装可继续使用 | 实例不存在、revision 冲突、非法 patch、停止失败、旧 generation 迟到写入 |
 | `provider.delete` | provider instance name、tenant/session 上下文 | system_config 删除、库存定时循环收到幂等 `Stop` 并优雅退出、reload 后候选消失、相关 routing 诊断 | 删除不存在、仍被 policy 锁定引用、无权限、孤儿定时器或停止后迟到写入 |
 | `provider.refresh_models` | Provider Instance、刷新策略 | model 列表变化时更新库存；target/applied seq 不同时触发所有落后 Provider 收敛；列表未变且 seq 相同时只探测 | Provider 不可达、重建失败不推进 applied seq、目标在刷新中再次变化 |
 

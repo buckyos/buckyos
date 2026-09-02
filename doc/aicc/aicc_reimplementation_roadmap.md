@@ -1,10 +1,10 @@
 # AICC Beta 2.2 重新实现路线图
 
-状态：Draft / Waiting for Gate 0
+状态：Draft / Gate 0 Frozen
 
 目标版本：Beta 2.2
 
-实现原则：完全抛弃当前 AICC 实现，不兼容旧模块、旧 API、旧 settings 和旧 metadata；复用 BuckyOS 已有的 kRPC、system-config、TaskMgr、Named Object、RDB、HTTP 等平台能力。
+实现原则：完全抛弃当前 AICC 内部实现，不兼容旧模块、旧 settings 结构和旧 metadata；`buckyos-api::aicc_client` 已导出的 RPC method 和请求/响应类型作为兼容边界优先保持不变，通过新 AICC 内部转换层实现；复用 BuckyOS 已有的 kRPC、system-config、TaskMgr、Named Object、RDB、HTTP 等平台能力。
 
 ## 1. 文档目的
 
@@ -55,8 +55,8 @@
 
 ### 2.2 非目标
 
-- 不读取或迁移旧 Provider family section、`provider_driver`、`base_url`、section token 或旧字段别名；
-- 不保留旧 method alias、错误拼写或 `service.*` 双入口；
+- 不读取或迁移旧 Provider family section、settings 中的 `provider_driver`、section token 或旧字段别名；新 `providers[]` 继续使用 `base_url`；
+- 不新增旧 method alias、错误拼写或重复入口；`buckyos-api::aicc_client` 已导出的入口不在本次重实现中擅自重命名或删除；
 - 不为未知 Provider 自动兼容任意 OpenAI-compatible endpoint；
 - 不提前实现没有真实 Provider 需求的历史 API 代际；
 - 不把任意 Provider JSON 暴露为公共 `extra_body`；
@@ -67,35 +67,39 @@
 
 ## 3. 设计一致性 Review 与 Gate 0
 
-以下问题在复核当前文档、代码和验收清单时发现。Gate 0 未完成前，公共 API、Provider Rules、Workflow schema 和 E2E canonical 表不得进入大规模实现。
+以下问题在复核当前文档、代码和验收清单时发现。Gate 0 已完成并冻结，后续实现统一遵守表中的确定结论；本次冻结同时同步到相关设计文档。
 
-| ID | 问题 | 当前不一致 | 推荐决策 | 阻塞范围 |
+| ID | 问题 | 当前不一致 | 冻结结论 | 影响范围 |
 |---|---|---|---|---|
-| D-001 | 图像 typed method 名 | API 总览使用 `images.generate`，API 章节、CLI 和 E2E 使用 `image.txt2img` | 统一为 `image.txt2img`，保持所有媒体 method 与 api_type 同名；若坚持 `images.generate`，必须一次性更新全部规范和 E2E | API、codec、Workflow、CLI、E2E |
-| D-002 | LLM canonical method | 目标 API 使用 `chat.completions.create`，`acceptance/canonical.ts` 仍使用 `llm.chat` | 使用 `chat.completions.create`；`llm` 只作为 api_type/capability | API、E2E、Workflow |
-| D-003 | method 与 api_type 混用 | 部分验收表把 api_type 当 method | 建立两张冻结表并做双向 preflight diff | 全部数据面模块 |
-| D-004 | Provider 身份字段 | 目标为 Profile/Adapter/Model Driver，部分 baseline 和配置仍使用 `provider_driver` | 新实现及新验收只使用三段身份；旧字段全部删除 | Provider、UI、E2E |
-| D-005 | Provider 范围 | 内部架构要求 11 家，旧验收基线主要覆盖 7 家和 SN | 11 家全部进入首版 baseline；SN 单独列为扩展 | Provider、T2 发布验收 |
-| D-006 | `provider.update` | 管理方法总览包含，后文又写第一版暂不做 | 建议纳入首版，否则无法完整验证 enabled、endpoint、credential 和 Adapter 替换生命周期 | 管理 API、RuntimeSnapshot |
-| D-007 | metadata 管理方法名 | 文档同时出现 `driver_metadata_update.*` 和 `provider_catalog_update.*` | 建议统一为 `provider_catalog_update.get/set`，因为更新对象已经包括三类 catalog；若保留旧名，需明确它是正式名而非兼容名 | API、UI、NDN 集成 |
-| D-008 | quota/budget 边界 | 产品 P0 和验收包含 quota/budget，但目标模块树没有独立 owner | 建议新增 `admission` 模块，负责 quota/budget/privacy/trust 硬约束，Router 只消费判定结果 | 路由、安全、usage |
+| D-001 | 图像 typed method 名 | 历史材料曾把 typed method 与 api_type 都写成 `image.txt2img` | typed method 保持 `images.generate`，对应 `api_type=image.txt2img`；二者不要求同名 | API、codec、Workflow、CLI、E2E |
+| D-002 | LLM canonical method | 历史验收材料曾使用 `llm.chat` | typed method 保持 `chat.completions.create`，对应 `api_type=llm` | API、E2E、Workflow |
+| D-003 | method 与 api_type 混用 | 部分历史验收表把 api_type 当 method | method 与 api_type 是不同值域，不要求同名或 1:1；分别冻结值域并维护显式合法关联，preflight 不做名称相等或双射检查 | 全部数据面模块 |
+| D-004 | Provider 身份字段与 settings | 新身份设计、旧 family settings、验收报告和公共 RPC 中都出现过 `provider_driver`，新草案又把 `base_url` 改成 `endpoint` | 新 settings 使用统一 `providers[]`，保留 `base_url`，实例保存 `provider_profile_id` 和 `protocol_adapter_id`；模型级 `model_driver_id` 由 catalog/inventory 产生；不兼容读取旧 settings 的 `provider_driver`，但保留 `buckyos-api` 已导出的同名 RPC/报告字段 | Provider、UI、E2E |
+| D-005 | Provider 范围 | 内部架构要求 11 家，当前验收基线主要覆盖 7 家和 SN | 首版实现 11 家内置 Provider，SN 单独列为扩展；当前 baseline 缺口不阻塞 Gate 0，在集成测试阶段先补齐 T1/T1.5，再补齐 T2，最后进入 T3 | Provider、集成测试 |
+| D-006 | `provider.update` | 管理方法总览包含，后文又写第一版暂不做 | 纳入首版；enable/disable 以及管理 RPC 的 `endpoint`（持久化为 `base_url`）、credential、Profile、Adapter、discovery 和实例规则修改统一通过 `provider.update`，并执行 CAS 与实例停止/替换生命周期 | 管理 API、RuntimeSnapshot |
+| D-007 | metadata 管理方法名 | 文档同时出现 `driver_metadata_update.*` 和 `provider_catalog_update.*` | 保留已导出的 `driver_metadata_update.get/set`；接口覆盖 Model Driver、Provider Rules 和 Known Provider 三类 metadata catalog 的云更新配置与状态 | API、UI、NDN 集成 |
+| D-008 | quota/budget 边界 | 产品 P0 和验收包含 quota/budget，但目标模块树没有独立 owner | 不新增独立顶层 `admission` 模块；模型 admission 归 Model Registry，quota/budget/privacy/trust 在 routing 内部策略层判定，Router 消费判定结果 | 路由、安全、usage |
 | D-009 | 测试层级术语 | 历史维护文档使用 L1-L4，当前验收规范使用 T1/T1.5/T2/T3 | 单元测试不再包装成验收层级；集成验收统一使用 T1/T1.5/T2/T3 | CI、报告 |
 | D-010 | settings 所有权表述 | 持久化文档称 control-panel 写、AICC 只读；管理 API 又要求 AICC 代理写 system-config | 明确 AICC 是使用调用者 token 的受控写入 facade，system-config 仍是唯一真相源，前端不得直写 | 管理 API、RBAC |
 
-### 3.1 Gate 0 TODO
+### 3.1 Gate 0 已冻结结论
 
-- [ ] 对 D-001 至 D-010 给出书面决议；
-- [ ] 冻结 canonical method 表；
-- [ ] 冻结 api_type、Capability 和 method 映射表；
-- [ ] 冻结 request/response、ResourceRef、AiMessage、usage、artifact、trace 和错误 schema；
-- [ ] 冻结 exact model 语法，建议为 `<provider_model_id>@<provider_instance_name>`；
-- [ ] 冻结统一 `providers[]` settings schema；
-- [ ] 冻结 Provider Instance、Profile、Adapter、Model Driver、ModelUID 身份链；
-- [ ] 冻结首版 Provider 和 operation 覆盖矩阵；
-- [ ] 更新 E2E canonical 表、Provider baseline schema 和 case manifest；
-- [ ] 冻结 T1、T1.5、T2、T3 的边界、矩阵维度和完成顺序；
-- [ ] 为冻结结果指定 API owner、Metadata owner、E2E owner；
-- [ ] 形成独立文档提交，避免与实现代码混合。
+- [x] D-001 至 D-010 已给出确定结论；
+- [x] canonical method 表按 D-001、D-002 冻结；
+- [x] api_type、Capability 和 method 映射边界已冻结；
+- [x] request/response、ResourceRef、AiMessage、usage、artifact、trace 和错误 schema 以目标规范为准；
+- [x] exact model 语法确定为 `<provider_model_id>[:<variant>]@<provider_instance_name>`，`provider_model_id` 和 `provider_instance_name` 均不得包含 `@`；
+- [x] settings 统一使用 `providers[]` schema；
+- [x] 新 Provider Instance settings 保留 `base_url`；管理 RPC/UI 为前端兼容继续使用 `endpoint`，由 AICC 管理层转换；
+- [x] Provider Instance、Profile、Adapter、Model Driver、ModelUID 身份链已冻结；
+- [x] `buckyos-api::aicc_client` 已导出的 RPC 接口作为兼容边界，除非单独评审，不重命名或删除；
+- [x] 首版包含 11 家内置 Provider、SN 扩展和目标 operation 覆盖矩阵；
+- [x] E2E canonical 表、Provider baseline schema 和 case manifest 必须按冻结契约对齐；
+- [x] T1、T1.5、T2、T3 的边界、矩阵维度和完成顺序已冻结；
+- [x] API owner、Metadata owner、E2E owner 为对应工作包的固定责任角色；
+- [x] Gate 0 结论由本文独立记录，后续变更必须单独评审。
+
+以上勾选表示设计决策已经确定，不表示对应代码、其它设计文档或验收资产已经完成修改；实际对齐工作仍由后续工作包跟踪。
 
 Gate 0 完成标准：任意一个 method、api_type、Provider 身份或 settings 字段都能在规范、Rust 公共类型、TS canonical 表和 case manifest 中得到唯一答案。
 
@@ -113,8 +117,7 @@ aicc
 ├── model            ModelUID、variant、目录和 registry
 ├── provider         Profile、Instance、discovery、inventory、生命周期
 ├── protocol         transport、IR、codec、dialect、native operation
-├── admission        quota、budget、privacy、trust 和调用资格；D-008 批准后独立成模块
-├── routing          候选、过滤、调度、fallback 和 trace
+├── routing          内部策略判定、候选、过滤、调度、fallback 和 trace
 ├── call             RouteDecision 到 ResolvedProviderCall 的唯一 lowering
 ├── execution        immediate、stream、task、cancel、idempotency
 ├── resource         ResourceRef 鉴权、限制和最后一跳物化
@@ -126,7 +129,7 @@ aicc
 
 ```text
 service/api -> use cases/runtime
-routing     -> model + provider read-only views + admission
+routing     -> model + provider read-only views + storage policy views
 call        -> model + provider rules + protocol descriptors/IR
 execution   -> protocol + resource + storage
 provider    -> catalog + model + matching + storage
@@ -180,7 +183,7 @@ Owner：API 小组
 - [ ] 定义 ResourceRef、artifact、usage、cost 和 route trace；
 - [ ] 定义稳定错误码和 kRPC/task error 边界；
 - [ ] 重写 `AiccClient`、`AiccHandler`、`AiccServerHandler`；
-- [ ] 删除 all-in-one `AiMethodRequest` 兼容路径和旧 method alias；
+- [ ] 删除内部 all-in-one `AiMethodRequest` 路径和未导出的临时 method alias；已由 `buckyos-api::aicc_client` 导出的 method/type 保持兼容；
 - [ ] 增加 serde round-trip、unknown field 和非法 schema 测试。
 
 完成标准：Rust 服务端、Workflow 和其它 Rust 调用方不再手写协议字段或 method 字符串。
@@ -328,7 +331,7 @@ Owner：七个可并行 Provider 小组
 
 每个子组：
 
-- [ ] 提供稳定 Profile ID、显示信息和默认 endpoint；
+- [ ] 提供稳定 Profile ID、显示信息和默认 `base_url`；
 - [ ] 提供 region/workspace/account 和 credential schema；
 - [ ] 提供 discovery 或 catalog-only inventory；
 - [ ] 提供 operation 和 Adapter 默认绑定；
@@ -346,15 +349,14 @@ Owner：七个可并行 Provider 小组
 3. OpenAI/Gemini 专用媒体 operation；
 4. MiniMax/GLM/豆包/Qwen 原生媒体 operation。
 
-### WP-09：Admission、Quota、Budget、Privacy 与 Trust
+### WP-09：Routing Policy、Quota、Budget、Privacy 与 Trust
 
 Owner：Policy/Security 小组
 
 依赖：WP-01、WP-13 usage query contract；可使用 fake quota source
 
-如果 Gate 0 不批准独立 `admission` 模块，本工作包降为 `routing/admission` 子模块，但 owner、接口、测试和 hard-filter 边界保持不变。
-
 - [ ] 定义 system/user/app/session/request policy 合并顺序；
+- [ ] 模型能力和逻辑目录 admission 由 Model Registry 负责，本工作包不建立第二套模型 admission；
 - [ ] 实现 locked policy，低优先级不能放宽；
 - [ ] 实现 local_only、local_first 和 Provider trust 判定；
 - [ ] 实现单次 cost ceiling、quota availability 和 budget rejection；
@@ -363,7 +365,7 @@ Owner：Policy/Security 小组
 - [ ] fail closed 处理安全真相源读取失败；
 - [ ] 跨租户、跨应用和 credential scope 测试。
 
-完成标准：Router 可以把 admission 结果作为确定的 hard filter 输入，不自行读取 quota 或安全配置。
+完成标准：实现位于 routing 内部策略层而非独立顶层模块；Router 把策略判定作为确定的 hard filter 输入，不自行读取 quota 或安全配置。
 
 ### WP-10：Routing、Scheduler 与 Trace
 
@@ -488,10 +490,10 @@ Owner：Service Integration 小组
 
 - [ ] 重写进程启动、依赖装配、kRPC dispatch 和优雅退出；
 - [ ] 实现 `models.list`、`provider.catalog`、`protocol_adapter.list`；
-- [ ] 实现 `provider.validate/add/delete/refresh_models/list/health`，并按 D-006 决议实现 `provider.update`；
+- [ ] 实现 `provider.validate/add/update/delete/refresh_models/list/health`；
 - [ ] 实现 `usage.query`、`trace.query` 和 `quota.query`；
-- [ ] 实现 Gate 0 冻结的 catalog update get/set；
-- [ ] 只保留 `service.reload_settings`；
+- [ ] 实现 `driver_metadata_update.get/set`；
+- [ ] 新调用方统一使用 `service.reload_settings`，同时保留 `buckyos-api` 已导出的 `reload_settings` 相同 schema 兼容入口；
 - [ ] 所有写操作使用当前 RPC token 调 system-config；
 - [ ] 所有 settings 写使用 `exec_tx` + revision CAS；
 - [ ] `provider.validate` 不落盘；
@@ -518,8 +520,8 @@ Owner：四个并行集成小组
 #### WP-17B Workflow
 
 - [ ] 更新 `src/kernel/workflow/src/adapters/aicc.rs`；
-- [ ] method schema 复用 `buckyos-api` 冻结表；
-- [ ] 删除重复 DTO、旧 method 和 all-in-one payload；
+- [ ] method schema 复用 `buckyos-api` 已导出的公共契约；
+- [ ] 删除内部重复 DTO 和 all-in-one payload，不重命名或删除已导出的 RPC method/type；
 - [ ] 验证 Helper、typed inference、cancel 和 task response。
 
 #### WP-17C OpenDAN/Jarvis/CLI
@@ -537,7 +539,7 @@ Owner：四个并行集成小组
 - [ ] 检查空配置启动、安装、reinstall 和 reload；
 - [ ] 确认 credential 只使用 locked value/reference。
 
-完成标准：仓库调用方不再引用旧 method、旧 DTO、旧 settings section 或 `provider_driver`。
+完成标准：仓库调用方不再引用旧 settings section 或内部重复 DTO；settings 不再使用 `provider_driver`，但公共 RPC/报告兼容字段继续保留。
 
 ### WP-18：验收基础、CI 与发布报告
 
@@ -545,9 +547,9 @@ Owner：E2E 小组
 
 依赖：Gate 0 后立即开始，贯穿全部工作包
 
-- [ ] 更新 canonical method/api_type 双向 diff；
-- [ ] Provider baseline schema 切换到 Profile/Adapter/Model Driver 身份；
-- [ ] 把 11 家 Provider 和 SN 加入参数化 baseline；
+- [ ] 分别校验 canonical method 值域、api_type 值域和显式合法关联，不检查同名或双射；
+- [ ] Provider baseline schema 增加 Profile/Adapter/Model Driver 身份；`provider_driver` 可继续作为与公共 RPC 一致的兼容/报告分组字段，不承担 settings 身份语义；
+- [ ] 集成测试阶段把 11 家 Provider 和 SN 加入参数化 baseline：先补齐 T1/T1.5，再补齐 T2，最后进入 T3；
 - [ ] 固定 fixture manifest、Mock Provider contract 和 report schema；
 - [ ] 汇总 WP-01 至 WP-17 的模块单元测试入口和覆盖范围；
 - [ ] AiccClient request/response、序列化和错误映射测试；
@@ -946,8 +948,8 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 - [ ] 旧 metadata resolver/updater 和 AICC 自建下载/activation；
 - [ ] 旧 complete request queue 和不符合 TaskMgr 语义的生命周期；
 - [ ] 旧 Provider section settings 解析；
-- [ ] `provider_driver`、`base_url`、`api_key/apiKey` 等兼容字段；
-- [ ] `reload_settings`、`reaload_settings`、`service.reaload_settings` 等别名；
+- [ ] settings 中的 `provider_driver`、`api_key/apiKey` 等旧兼容字段；保留新 settings 的 `base_url` 及公共 RPC/报告中的 `provider_driver`；
+- [ ] 未被 `buckyos-api::aicc_client` 导出的错误拼写和重复入口；已导出入口的删除或重命名单独评审；
 - [ ] `llm.chat`、`image.txt2image`、`image.img2image` 等旧 method；
 - [ ] Desktop、Workflow、Jarvis、CLI 的旧 DTO 和 mapping；
 - [ ] dev/rootfs 中旧 AICC 配置；
@@ -962,7 +964,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | Gate 0 契约继续变化 | 多条并行线返工 | 公共 contract 变更必须走单独 RFC，并同步 Rust/TS/E2E |
 | 11 家 Provider 同时开发导致基础 codec 分叉 | 重复代码和行为不一致 | 基础 codec owner 先交付 contract，派生 Provider 只提交差异 |
 | 媒体 operation 工作量过大 | 阻塞全部 Provider 上线 | 先完成 11 家主接口，再分批交付媒体 operation |
-| quota/budget owner 不清 | P0 发布后期被阻塞 | Gate 0 明确 admission 模块、事实源和最小 enforcement |
+| quota/budget owner 不清 | P0 发布后期被阻塞 | Gate 0 明确 routing 内部策略层 owner、事实源和最小 enforcement，不新增独立顶层模块 |
 | settings 写入与 runtime reload 非原子 | 半生效和不可恢复状态 | 候选 snapshot 完整构建后发布，失败保留旧 runtime 并返回诊断 |
 | refresh/stop 竞态 | 迟到 inventory 覆盖新实例 | Stop + join + generation token + 并发测试 |
 | metadata 全局收敛耗时 | 推理入口长时间等待 | 单执行者合并、明确 timeout、旧 LKGS 和失败 Provider 诊断 |
@@ -974,7 +976,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 
 | 工作包 | Owner | 状态 | 前置 | 主要出口 |
 |---|---|---|---|---|
-| Gate 0 | TBD | Pending | 无 | 契约冻结 |
+| Gate 0 | Architecture/API/Metadata/E2E owners | Done | 无 | 契约冻结 |
 | WP-00 | TBD | Pending | Gate 0 | 模块骨架 |
 | WP-01 | TBD | Pending | Gate 0 | API/IR/Error |
 | WP-02 | TBD | Pending | Gate 0 | MatchRule |
@@ -1004,7 +1006,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 AICC 重新实现只有同时满足以下条件才算完成：
 
 - 新模块依赖方向符合本文约束；
-- 当前旧实现和兼容入口已经删除，不只是停止调用；
+- 当前旧内部实现和未经导出的临时兼容入口已经删除，不只是停止调用；已导出的 `buckyos-api` RPC 契约保持稳定；
 - 没有新增未经确认的 crate 或第三方依赖；
 - 公共 API、Rust client、TS canonical 和 E2E manifest 一致；
 - 11 家 Provider 和 SN 进入基线并完成对应合同；

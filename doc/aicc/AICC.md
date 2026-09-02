@@ -232,12 +232,12 @@ pub struct ProviderInstance {
     pub provider_type: ProviderType,
     pub provider_profile_id: String,
     pub protocol_adapter_id: String,
-    pub endpoint: String,
+    pub base_url: String,
     pub credential_ref: CredentialRef,
 }
 ```
 
-Provider Instance 属于 system-config 管理的实例私有配置。Catalog 更新不能修改实例名称、endpoint、凭据、区域或协议选择。
+Provider Instance 属于 system-config 管理的实例私有配置。AICC Runtime 只读 settings；前端通过 AICC 管理 API 修改，由 AICC 使用调用者 token 和 revision CAS 写 system-config。settings 使用 `base_url`；管理 RPC/UI 为保持现有前端契约继续使用 `endpoint`，由 AICC 管理层转换。Catalog 更新不能修改实例名称、`base_url`、凭据、区域或协议选择。
 
 ### 5.2 Provider Trait（AICC 的“统一执行面”）
 

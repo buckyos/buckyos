@@ -125,10 +125,10 @@ flowchart LR
 
 ### 5.1 精确模型名
 
-精确模型名用于明确指定某个 Provider 下的某个模型。建议格式为：
+精确模型名用于明确指定某个 Provider 下的某个模型。冻结格式为：
 
 ```text
-<provider_model_id>@<provider_instance_name>
+<provider_model_id>[:<variant>]@<provider_instance_name>
 ```
 
 示例：
@@ -141,12 +141,12 @@ qwen3@local
 
 解析规则：
 
-1. 以最后一个 `@` 作为分隔符；
+1. 字符串必须且只能包含一个 `@`，以它作为分隔符；
 2. 最后一段是 Provider instance name，是否已注册必须在路由时校验，不能在纯字符串解析阶段假设 Provider 已完成冷启动注册；
 3. Provider instance name 不允许包含 `@`；
-4. 前面的部分作为 Provider 内部模型 ID，可包含 Provider 自己的模型命名字符和 `.`；
+4. 前面的部分作为 Provider 内部模型 ID 和可选 `:variant`；`provider_model_id` 不允许包含 `@`，可包含 Provider 自己的其它模型命名字符和 `.`；
 5. 精确模型名必须结合当前 API 能力类型一起校验，例如 LLM completion、text-to-image 等。
-6. Provider 内部模型 ID 强烈不建议包含 `@`。如果厂商原始模型 ID 包含 `@`，Provider 应提供可读 alias 或转义后的 `provider_model_id`，并在 metadata 中保留原始 ID，避免日志、UI 和错误信息难以阅读。
+6. 如果厂商原始模型 ID 包含 `@`，Provider 必须生成不含 `@` 的 AICC `provider_model_id`，并在 metadata 的独立原始 ID 字段中保留厂商值。
 
 精确模型名语义：
 
@@ -733,6 +733,8 @@ logical_tree:
 
 1. **硬过滤**：不满足硬性条件的候选直接剔除；
 2. **软评分**：对剩余候选计算综合分，选择分数最优者。
+
+模型是否有资格进入逻辑目录由 Registry admission 决定；quota、budget、privacy、trust 等请求级硬约束由 routing 内部策略层统一求值后交给 Router。它们不构成独立顶层模块，Router 也不直接读取 quota、安全配置或其它事实源。
 
 示例评分公式：
 
@@ -1546,7 +1548,7 @@ scheduler_profiles:
 
 请求 `model = gpt-5.2@openai_primary`：
 
-1. AICC 按最后一个 `@` 解析字符串；
+1. AICC 要求字符串恰好包含一个 `@`，并据此解析；
 2. 路由时校验 Provider instance 是否已注册、模型是否支持当前 API type；
 3. 默认不进入逻辑 fallback，也不使用目录权重；
 4. 如果不可用且未开启 `allow_exact_model_fallback`，返回 `AICC_ROUTE_EXACT_MODEL_UNAVAILABLE`。
@@ -1801,12 +1803,12 @@ scheduler_profiles:
 
 ---
 
-## 21. 待确认决策项
+## 21. 已冻结决策项
 
 | 决策项 | 推荐方案 | 说明 |
 |---|---|---|
-| 精确模型名顺序 | `<provider_model_id>@<provider_instance_name>` | 以最后一个 `@` 分隔 Provider 内部模型 ID 和 Provider instance name；Provider instance name 不包含 `@`，Provider 内部模型 ID 可包含 `@`。 |
-| Provider 内部模型 ID 是否允许 `@` | 强烈不建议，使用 alias 或转义 | 技术上可通过最后一个 `@` 分隔，但会降低日志和 UI 可读性。 |
+| 精确模型名顺序 | `<provider_model_id>[:<variant>]@<provider_instance_name>` | 字符串必须恰好包含一个 `@`；`provider_model_id` 和 Provider instance name 均不包含 `@`。 |
+| Provider 内部模型 ID 是否允许 `@` | 不允许 | 厂商原始模型 ID 含 `@` 时，使用不含 `@` 的 AICC ID，并在 metadata 独立字段保留原始值。 |
 | 目录权重语义 | 目录内同辈优先级，不沿路径相乘 | 符合 UI 心智：角色目录选家族，家族目录选 Provider。 |
 | Provider default items 覆盖 | `items` 完整覆盖，`item_overrides` 局部 patch | 避免 default mount 与 request overlay merge 语义不清。 |
 | 逻辑目录默认 fallback | 普通目录默认 `parent`，敏感目录默认 `strict` | 兼顾可用性和可控性。 |

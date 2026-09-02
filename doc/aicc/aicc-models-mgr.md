@@ -33,7 +33,7 @@ Protocol Adapter 只执行已经解析好的 operation
 
 - Model Driver catalog：模型固有 API type、capability、家族、版本、variant 和逻辑挂载的唯一真相源。
 - Provider Rules catalog：渠道模型 ID 到 origin/ModelUID 的映射，以及 operation、request rules、能力收窄和渠道价格规则。
-- Known Provider catalog：管理 UI 使用的服务商默认 endpoint/Profile/adapter。
+- Known Provider catalog：管理 UI 使用的服务商默认 `base_url`/Profile/adapter。
 - Provider Instance：system-config 中的实例私有配置。
 - Provider inventory：实例级 discovery 动态事实与静态能力交集，并保存 LKGS。
 - ModelRegistry：建立 exact model 和逻辑目录索引。

@@ -3,7 +3,7 @@
 
 src/frame/aicc/src/model_types.rs
 定义 ExactModelName、ApiType、ProviderInventory、ModelMetadata、ModelCandidate、RoutePolicy、RouteTrace、错误码枚举。
-单测覆盖：最后一个 @ 解析、非法 provider instance、api_type/capability 匹配、serde fixture。
+单测覆盖：exact model 恰好一个 `@`、两侧均禁止 `@`、非法 provider instance、api_type/capability 匹配、serde fixture。
 
 src/frame/aicc/src/model_registry.rs
 维护 inventory snapshot，生成 exact model 索引和 logical mount default items。

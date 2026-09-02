@@ -1,7 +1,7 @@
 # AICC Provider Profile 与 Provider Rules Schema
 
 状态：Beta 2.2 目标规范
-范围：定义 Provider Profile、Protocol Adapter、Provider Rules、Model Driver 与 Pricing 的稳定边界。AICC 重构必须以本文为准，不保留旧 `provider_driver` 兼容语义。
+范围：定义 Provider Profile、Protocol Adapter、Provider Rules、Model Driver 与 Pricing 的稳定边界。AICC 重构必须以本文为准；新 settings 不保留旧 `provider_driver` 的身份语义，已导出的公共 RPC/报告兼容字段不在此范围内删除。
 
 ## 1. Provider 分为两类
 
@@ -71,7 +71,7 @@ Provider 参数配置是配置型 Provider 内置默认行为的**可选覆盖�
 - discovery 失败策略；
 - 配置加载、schema 解析，以及由 NDN `metadata_target_seq` 和 Provider `metadata_applied_seq` 驱动的全局库存收敛机制。
 
-Provider Instance 的名称、凭据、区域和用户自定义 endpoint 属于实例私有配置，也不进入可云更新的 Provider 参数文件。
+Provider Instance 的名称、凭据、区域和用户自定义 `base_url` 属于实例私有配置，也不进入可云更新的 Provider 参数文件。
 
 ### 2.1 基础协议与派生 Adapter
 
@@ -555,11 +555,11 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 
 ## 12. 已确定的实现约束
 
-1. 内置专用 Provider 包括 OpenAI、Claude、Google Gemini、OpenRouter、SN、MiniMax 和 fal；新增发布级 Provider 必须进入协议验收矩阵。
+1. 首版 11 家内置 Provider 包括 OpenAI、Claude、Google Gemini、fal、OpenRouter、MiniMax、Kimi、GLM、DeepSeek、豆包和 Qwen；SN 作为独立扩展 Provider 保留。它们都必须在集成测试阶段进入对应的 T1/T1.5 和 T2 验收矩阵。
 2. 配置型 Provider 只能使用运行时已经注册的 Protocol Adapter；用户只提供协议族和连接信息，接入测试自动解析并固化具体 Adapter。AICC 不开放第三方 Provider 插件或任意协议 ID。
 3. Provider Rules、Model Driver、Pricing 和 Known Provider 保持独立对象和 revision；文件发现、下载、校验、替换及目标 seq 由 NDN 保证。AICC 在推理前或 Provider 定时库存刷新时统一收敛所有 applied seq 落后的 Provider；列表未变化且 seq 相同时只探测。
 4. Model Driver variant 定义语义身份；Provider variant 必须完整覆盖该身份到 adapter 参数的 lowering，否则该 Provider 不得声明对应 variant 可用。
-5. 旧 `provider_driver` 拆为 `provider_profile_id`、`protocol_adapter_id` 和模型级 `model_driver_id`，不提供兼容读取。
+5. 旧 settings 中 `provider_driver` 承担的职责拆为实例级 `provider_profile_id`、`protocol_adapter_id` 和模型级 `model_driver_id`；新 settings 不兼容读取 `provider_driver`，但不因此删除 `buckyos-api` 和验收报告中已经导出的同名兼容字段。
 6. OpenAI、Claude、Google Gemini 分别实现专用协议族；优先实现官方新接口。历史 API 代际由首个真实 Provider 需求触发实现，注册为协议族级共享 Adapter，后续 Provider 直接引用或通过 `base_adapter_id` 复用，不重复实现。
 7. SN 使用独立 `sn-openai` Adapter，并以 `openai-responses` 为 `base_adapter_id`；支持 `api_key` 与 `dynamic_login` 两种认证模式。
 8. 基础 Adapter 不依赖派生 Adapter。派生 Provider 的删除测试必须证明不需要修改基础 Adapter。

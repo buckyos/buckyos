@@ -557,7 +557,7 @@ Quota 查询。
 ```bash
 ai_quota
 ai_quota --capability image
-ai_quota --method image.txt2img
+ai_quota --method images.generate
 ```
 
 映射到 `quota.query`。

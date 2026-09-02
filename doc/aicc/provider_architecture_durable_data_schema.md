@@ -19,7 +19,7 @@
 
 | 数据项 | 所有者 | 说明 |
 | --- | --- | --- |
-| Provider Instance 配置 | system-config | 用户配置的实例名称、Provider profile、protocol adapter、endpoint、区域及凭据引用 |
+| Provider Instance 配置 | system-config | 用户配置的实例名称、Provider profile、protocol adapter、`base_url`、区域及凭据引用 |
 | 当前 metadata 文件集合 | NDN | Model Driver、Provider Rules、Pricing、Known Provider 的当前版本文件；下载、校验和替换由 NDN 保证 |
 | metadata 发布选择与目标序列 | NDN 更新链路 | 云端按客户端版本/通道/灰度分组选择兼容发布；本机 `metadata_target_seq` 等于严格递增的 manifest `revision_seq`，持续保留且不允许回退 |
 | Provider inventory LKGS | AICC RDB | 每个 Provider Instance 最近一次成功 discovery 并解析后的动态库存快照 |
@@ -42,7 +42,7 @@ Provider Instance 中不保存明文凭据；只保存 system-config 现有 lock
 
 ### 3.1 Provider Instance 配置
 
-Provider Instance 配置是 Zone 级配置，继续存储在 system-config，由 control-panel 写入、AICC 只读。AICC 不复制实例配置到本地数据库，避免两个配置真相源。
+Provider Instance 配置是 Zone 级配置，继续存储在 system-config。AICC Runtime 只读取 settings；AICC 管理 API 是受控写入 facade，使用当前 RPC 调用者 token 和 settings revision，通过 `SystemConfigClient::exec_tx` 做 CAS 更新。前端不得直接写 system-config。AICC 不复制实例配置到本地数据库，system-config 始终是唯一配置真相源。
 
 Protocol Adapter 是随程序发布并注册的代码，不属于可云更新 catalog。运行时 registry descriptor 至少包含 `protocol_family_id`、`protocol_adapter_id`、接口代际/状态、支持的 operations，以及可选 `base_adapter_id`。`base_adapter_id` 声明语义复用关系，不规定继承、组合或委托的具体实现。
 
@@ -135,7 +135,7 @@ Content Schema：
 - `catalog_id: string`
 - `providers[]`：`provider_profile_id`、`display_name`、`base_url`、`protocol_adapter_id`、可选 `provider_rules_id`、可选 UI hints。
 
-该 catalog 只提供默认值。保存 Provider Instance 前必须让用户看到并允许修正协议和 endpoint，并执行连接与协议验证。
+该 catalog 只提供默认值。保存 Provider Instance 前必须让用户看到并允许修正协议和 `base_url`，并执行连接与协议验证。
 
 Known Provider 可以为 SN 指定 `protocol_adapter_id: "sn-openai"`，不能直接填 OpenAI 官方 Adapter。registry 中 `sn-openai.protocol_family_id = "openai"`、`sn-openai.base_adapter_id = "openai-responses"`，从而保留独立身份和从 SN 到特定 OpenAI API 代际的单向依赖。
 
@@ -148,7 +148,7 @@ Content Schema：
 - `provider_instance_name: string`，Zone 内唯一且不可由 catalog 更新修改。
 - `provider_profile_id: string`，专用 Provider 或 `custom`。
 - `protocol_adapter_id: string`，必须来自运行时注册表。
-- `endpoint: string`。
+- `base_url: string`，Protocol Adapter 在此基础上构造具体 operation URL。
 - `credential_ref/locked credential fields`。
 - `auth`：认证模式及其私有参数。SN 至少允许互斥的 `api_key` 和 `dynamic_login`；动态 token 只保存在运行时凭据缓存。
 - 可选 `region/account`。
