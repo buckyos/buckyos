@@ -156,15 +156,17 @@ Owner：集成人
 
 依赖：Gate 0
 
-- [ ] 建立目标目录和 `pub(crate)` 边界；
-- [ ] 固定公共 trait、DTO、fixture 和 fake implementation；
-- [ ] 为 `lib.rs`、`main.rs`、`Cargo.toml` 指定唯一 owner；
-- [ ] 建立模块 CODEOWNERS/评审人清单；
-- [ ] 建立编译顺序和最小 smoke test；
-- [ ] 新模块不得引用旧 AICC 实现；
-- [ ] 旧实现暂留只为保持分批合并可编译，最终切换后整体删除。
+- [x] 建立目标目录和 `pub(crate)` 边界；
+- [x] 明确公共 trait、DTO、fixture 和 fake 只在对应工作包确认必要性后引入，WP-00 不预定义推测性接口；
+- [x] 为 `lib.rs`、`main.rs`、`Cargo.toml` 指定唯一 owner；
+- [x] 建立模块 CODEOWNERS/评审人清单；
+- [x] 建立编译顺序和最小 smoke test；
+- [x] 新模块不得引用旧 AICC 实现；
+- [x] 旧实现已在骨架建立前整体删除，不保留旧模块作为新实现依赖。
 
 完成标准：各小组可以只依赖公共 contract 独立开发，不需要修改同一个巨型文件。
+
+实现记录：Owner 为集成人（`@streetycat`）；关联变更为 WP-00 实现提交/PR；目标验收为 `cargo test -p aicc`、`cargo check -p aicc --all-targets`、AICC clippy 和 workspace test compile；剩余风险是公共 contract 尚未进入代码，必须由各工作包在需求确定后按 owner 边界引入并测试。
 
 所有 WP-01 至 WP-17 共同遵守：编码过程中同步完成本模块单元测试；没有覆盖正常、边界、错误和关键并发语义的工作包不得标为 Done。模块单测是编码完成条件，不用 T1/T1.5/T2/T3 代替模块单测。
 
@@ -978,7 +980,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | 工作包 | Owner | 状态 | 前置 | 主要出口 |
 |---|---|---|---|---|
 | Gate 0 | Architecture/API/Metadata/E2E owners | Done | 无 | 契约冻结 |
-| WP-00 | TBD | Pending | Gate 0 | 模块骨架 |
+| WP-00 | 集成人（`@streetycat`） | Review | Gate 0 | 模块骨架 |
 | WP-01 | TBD | Pending | Gate 0 | API/IR/Error |
 | WP-02 | TBD | Pending | Gate 0 | MatchRule |
 | WP-03 | TBD | Pending | WP-02 | CatalogSnapshot |

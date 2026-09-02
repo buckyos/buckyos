@@ -1,0 +1,5 @@
+[package]
+name = "aicc"
+version.workspace = true
+edition = "2021"
+authors = ["BuckyOS DAO"]
