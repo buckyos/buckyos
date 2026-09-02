@@ -41,18 +41,18 @@ version = "0.7.0"
 
 [workspace.dependencies]
 # BuckyOS internal dependencies
-buckyos-tracing = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-tracing", rev = "70e67dfa0c62a6304f871153d0eff8c3e33bb44d"}
-buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit", rev = "70e67dfa0c62a6304f871153d0eff8c3e33bb44d" }
-name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib", rev = "70e67dfa0c62a6304f871153d0eff8c3e33bb44d" }
-name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client", rev = "70e67dfa0c62a6304f871153d0eff8c3e33bb44d" }
-kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC", rev = "70e67dfa0c62a6304f871153d0eff8c3e33bb44d" }
-rbac = { git = "https://github.com/buckyos/buckyos-base.git", package = "rbac", rev = "70e67dfa0c62a6304f871153d0eff8c3e33bb44d" }
-buckyos-http-server = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-http-server", rev = "70e67dfa0c62a6304f871153d0eff8c3e33bb44d" }
+buckyos-tracing = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-tracing", rev = "205de60268ba037f9ae0bf853ebe5128c7ab1ad7"}
+buckyos-kit = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-kit", rev = "205de60268ba037f9ae0bf853ebe5128c7ab1ad7" }
+name-lib = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-lib", rev = "205de60268ba037f9ae0bf853ebe5128c7ab1ad7" }
+name-client = { git = "https://github.com/buckyos/buckyos-base.git", package = "name-client", rev = "205de60268ba037f9ae0bf853ebe5128c7ab1ad7" }
+kRPC = { git = "https://github.com/buckyos/buckyos-base.git", package = "kRPC", rev = "205de60268ba037f9ae0bf853ebe5128c7ab1ad7" }
+rbac = { git = "https://github.com/buckyos/buckyos-base.git", package = "rbac", rev = "205de60268ba037f9ae0bf853ebe5128c7ab1ad7" }
+buckyos-http-server = { git = "https://github.com/buckyos/buckyos-base.git", package = "buckyos-http-server", rev = "205de60268ba037f9ae0bf853ebe5128c7ab1ad7" }
 
-ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib", rev = "c1abac83c8186caa49749ff6b272edd8aa9d526e" }
-named_store = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "named_store", rev = "c1abac83c8186caa49749ff6b272edd8aa9d526e" }
-ndn-toolkit = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-toolkit", rev = "c1abac83c8186caa49749ff6b272edd8aa9d526e" }
-package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib", rev = "c1abac83c8186caa49749ff6b272edd8aa9d526e" }
+ndn-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-lib", rev = "8032ab157d5ab0ea1e35065a89ec18169295c55a" }
+named_store = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "named_store", rev = "8032ab157d5ab0ea1e35065a89ec18169295c55a" }
+ndn-toolkit = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "ndn-toolkit", rev = "8032ab157d5ab0ea1e35065a89ec18169295c55a" }
+package-lib = { git = "https://github.com/buckyos/cyfs-ndn.git", package = "package-lib", rev = "8032ab157d5ab0ea1e35065a89ec18169295c55a" }
 
 cyfs-gateway = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs_gateway", rev = "08c75d544fa54767ba04cb5410a4173d418f2d49" }
 cyfs-gateway-api = { git = "https://github.com/buckyos/cyfs-gateway.git", package = "cyfs-gateway-api", rev = "08c75d544fa54767ba04cb5410a4173d418f2d49" }
