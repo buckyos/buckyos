@@ -56,6 +56,50 @@ class WindowsPackagerTests(unittest.TestCase):
             self.assertTrue((dst / "tool.exe").is_file())
             self.assertFalse((dst / "tool").exists())
 
+    def test_buckyosapp_is_stopped_before_install_reinstall_and_uninstall(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            payload = root / "payload"
+            app_payload = payload / "BuckyOSApp"
+            app_payload.mkdir(parents=True)
+            (app_payload / "buckyosapp.exe").write_bytes(b"fake exe")
+            out_path = root / "installer.nsi"
+
+            winpkg.generate_nsis_script(
+                title="BuckyOS",
+                version="0.7.0+test",
+                architecture="amd64",
+                components=[
+                    winpkg.PublishComponent(
+                        key="BuckyOSApp",
+                        name="BuckyOS App",
+                        kind="bundle",
+                        optional=True,
+                        default_selected=True,
+                        src="buckyosapp.exe",
+                        default_target="C:\\BuckyOS\\BuckyOSApp",
+                        system_service=False,
+                    )
+                ],
+                payload_dir=payload,
+                out_path=out_path,
+            )
+
+            script = out_path.read_text(encoding="utf-8-sig")
+            self.assertIn("Function StopBuckyOSApp", script)
+            self.assertIn("Function un.StopBuckyOSApp", script)
+            self.assertEqual(script.count("taskkill /F /T /IM buckyosapp.exe >nul 2>&1"), 2)
+
+            install_section = script.index('Section "BuckyOS App" SEC_BUCKYOSAPP')
+            install_stop = script.index("Call StopBuckyOSApp", install_section)
+            install_extract = script.index("File /r", install_stop)
+            self.assertLess(install_stop, install_extract)
+
+            uninstall_section = script.index("Section Uninstall")
+            uninstall_stop = script.index("Call un.StopBuckyOSApp", uninstall_section)
+            uninstall_remove = script.index('RMDir /r "$InstDir_buckyosapp"', uninstall_stop)
+            self.assertLess(uninstall_stop, uninstall_remove)
+
     def test_buckyos_task_lifecycle_uses_component_hooks(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

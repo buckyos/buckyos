@@ -662,6 +662,10 @@ def generate_nsis_script(
         allow_arch = ""
 
     launch_bundle = next((comp for comp in components if comp.kind == "bundle"), None)
+    has_buckyosapp_bundle = any(
+        comp.kind == "bundle" and comp.key.casefold() == "buckyosapp"
+        for comp in components
+    )
     bundled_stop_script = next(
         (
             payload_dir / comp.key / "bin" / "stop.ps1"
@@ -965,6 +969,17 @@ def generate_nsis_script(
     lines.append("FunctionEnd")
     lines.append("")
 
+    if has_buckyosapp_bundle:
+        for function_name in ("StopBuckyOSApp", "un.StopBuckyOSApp"):
+            lines.append(f"Function {function_name}")
+            lines.append('  nsExec::Exec \'cmd /c "taskkill /F /T /IM buckyosapp.exe >nul 2>&1"\'')
+            lines.append("  Pop $0")
+            lines.append('  ${If} $0 == 0')
+            lines.append("    Sleep 500")
+            lines.append('  ${EndIf}')
+            lines.append("FunctionEnd")
+            lines.append("")
+
     lines.append("Function SelectBestInstallDrive")
     lines.append('  StrCpy $BestInstallDrive "C:"')
     lines.append('  Delete "$TEMP\\buckyos_best_drive.txt"')
@@ -1042,6 +1057,9 @@ def generate_nsis_script(
         # Source files - use component-specific install directory
         comp_payload = payload_dir / comp.key
         if comp_payload.exists():
+            if comp.kind == "bundle" and comp.key.casefold() == "buckyosapp":
+                lines.append("  ; Stop the desktop app before overwriting a running executable")
+                lines.append("  Call StopBuckyOSApp")
             if comp.system_service:
                 dep_label = _sanitize_id(comp.key).replace("-", "_")
                 lines.append(f"dep_check_{dep_label}:")
@@ -1235,6 +1253,10 @@ def generate_nsis_script(
     if nsis_arch == "x64":
         lines.append('  SetRegView 64')
     lines.append('  StrCpy $InstallerLogPath "$TEMP\\buckyos-windows-${PRODUCT_ARCH}-${PRODUCT_VERSION}-uninstall.log"')
+
+    if has_buckyosapp_bundle:
+        lines.append('  ; Stop the desktop app before removing its executable')
+        lines.append('  Call un.StopBuckyOSApp')
     
     lines.append('  ; Stop old Windows service for backward compatibility')
     lines.append('  nsExec::ExecToLog \'sc stop buckyos\'')
