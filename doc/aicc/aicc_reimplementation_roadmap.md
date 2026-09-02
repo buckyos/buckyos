@@ -239,16 +239,18 @@ Owner：Model/Router 小组
 
 依赖：WP-01、WP-02、WP-03
 
-- [ ] 实现 ModelUID、exact model、origin model 和 variant；
-- [ ] 实现完整 Provider/Adapter/Driver/model 身份链；
-- [ ] 实现 LogicalModelDefinition、mount、min_line、disable_line；
-- [ ] 实现系统目录、用户 overlay 和 session overlay 合成；
-- [ ] 实现目录软链接、循环检测和 fallback 深度限制；
-- [ ] 从 fixture inventory 构建模型索引和逻辑挂载；
-- [ ] 输出 UI 和 trace 所需的只读模型视图；
-- [ ] exact model 不依赖字符串猜 Provider 或能力。
+- [x] 实现 ModelUID、exact model、origin model 和 variant；
+- [x] 实现完整 Provider/Adapter/Driver/model 身份链；
+- [x] 实现 LogicalModelDefinition、mount、min_line、disable_line；
+- [x] 实现系统目录、用户 overlay 和 session overlay 合成；
+- [x] 实现目录软链接、循环检测和 fallback 深度限制；
+- [x] 从 fixture inventory 构建模型索引和逻辑挂载；
+- [x] 输出 UI 和 trace 所需的只读模型视图；
+- [x] exact model 不依赖字符串猜 Provider 或能力。
 
 完成标准：不连接真实 Provider 也能通过 fixture 完整构建目录和候选集合。
+
+实现记录：Model/Router 小组在 `src/frame/aicc/src/model/mod.rs` 实现 ModelUID、exact/origin/variant 和完整 Provider/Adapter/Driver/model 身份链，以及逻辑目录定义、分层 overlay、软链接、循环与 namespace 校验、最大 5 层 fallback、fixture inventory 索引和只读模型视图。候选展开保留来源路径、权重及 admission/rejection 原因，exact model 仅按显式身份索引，不从名称推断 Provider 或能力。AICC 全量 77 个测试、`cargo check -p aicc --all-targets`、格式与 diff 检查均通过，未新增依赖；真实 inventory 和运行时 Router 的集成分别由 WP-07、WP-10 继续完成。
 
 ### WP-05：Protocol 基础设施
 
