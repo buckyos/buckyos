@@ -206,6 +206,10 @@ servers:
                 global SERVICE_ID="control-panel";
               elif match $REQ.path "/ndm/*" then
                 global SERVICE_ID="control-panel";
+              elif match $REQ.path "/nfs/v1/*" then
+                # NFSP v0（NamedFileSystem_Protocol_v0）：zone 级通用协议入口，
+                # 与 /ndn 同级，不走 /kapi/<service> 形态；路径原样转发到 nfs-server。
+                global SERVICE_ID="nfs-server";
               elif match $REQ.path "/kapi/task-dispatcher*" then
                 # Task Dispatch Center 与 task-manager 同进程同端口，只是第二个
                 # kapi path；没有独立的 service info，按 task-manager 实例转发。

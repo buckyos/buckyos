@@ -8,6 +8,7 @@ mod control_panel;
 mod device_identity;
 mod group_mgr;
 mod msg_center_client;
+mod nfs_server_client;
 pub mod msg_queue;
 mod scheduler_client;
 mod sn_user_client;
@@ -65,6 +66,7 @@ pub use cyfs_gateway_api::{
 pub use device_identity::*;
 pub use group_mgr::*;
 pub use msg_center_client::*;
+pub use nfs_server_client::*;
 pub use repo_client::*;
 pub use scheduler_client::*;
 pub use sn_user_client::*;
@@ -562,6 +564,23 @@ pub fn generate_smb_service_doc() -> AppDoc {
     )
     .show_name("Samba Service")
     .selector_type(SelectorType::Random)
+    .build()
+    .unwrap()
+}
+
+pub fn generate_nfs_server_doc() -> AppDoc {
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+    let owner_did = DID::from_str("did:bns:buckyos").unwrap();
+    AppDoc::builder(
+        AppType::Service,
+        NFS_SERVER_UNIQUE_ID,
+        VERSION,
+        "did:bns:buckyos",
+        &owner_did,
+    )
+    .show_name("Named File System Service")
+    // Owns a node-local filedb + export tree: must never be multi-instanced.
+    .selector_type(SelectorType::Single)
     .build()
     .unwrap()
 }

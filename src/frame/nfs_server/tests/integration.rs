@@ -1176,3 +1176,79 @@ async fn session_required_and_bye() {
     let (_, v) = s.call("list", json!({"at": {"realm": "dfs", "path": "/"}})).await;
     assert_eq!(v["error"]["code"], "PERMISSION_DENIED");
 }
+
+/// BuckyOS-mode wiring: cyfs:/// backed by a data root — visible first-level
+/// dirs exported, .fsdb hidden. The zone gateway forwards the zone-level
+/// protocol path `/nfs/v1/*` verbatim (boot_gateway.yaml), so the plain
+/// router is the whole story: no /kapi prefix exists on this service.
+#[tokio::test]
+async fn buckyos_mode_data_root_discovery() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data_root = tmp.path().join("data");
+    std::fs::create_dir_all(data_root.join("home")).unwrap();
+    std::fs::create_dir_all(data_root.join("srv")).unwrap();
+    std::fs::write(data_root.join("home").join("a.txt"), b"hi").unwrap();
+
+    let config = nfs_server::config::config_from_data_root(&data_root).unwrap();
+    let state = AppState::new(config).unwrap();
+    let app = nfs_server::server::build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = reqwest::Client::new();
+    let base = format!("http://{}", addr);
+
+    let resp: Value = client
+        .post(format!("{}/nfs/v1/hello", base))
+        .json(&json!({"args": {"versions": ["nfsp/0"]}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["ok"], true, "hello failed: {}", resp);
+    let session = resp["result"]["session"].as_str().unwrap();
+
+    let v: Value = client
+        .post(format!("{}/nfs/v1/list", base))
+        .json(&json!({"session": session, "at": {"realm": "dfs", "path": "/"}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["ok"], true, "list failed: {}", v);
+    let names: Vec<&str> = v["result"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["home", "srv"], ".fsdb hidden, dirs exported");
+
+    // data plane: read the file back through the same root-level paths.
+    let v: Value = client
+        .post(format!("{}/nfs/v1/resolve", base))
+        .json(&json!({"session": session, "at": {"realm": "dfs", "path": "/home/a.txt"}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["ok"], true, "resolve failed: {}", v);
+    let node_id = v["result"]["ref"]["node_id"].as_str().unwrap();
+    let body = client
+        .get(format!("{}/nfs/v1/read/{}", base, node_id))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    assert_eq!(&body[..], b"hi");
+}

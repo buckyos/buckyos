@@ -128,6 +128,8 @@ async fn create_init_list_by_template(
         .await?
         .add_msg_center(&start_config)
         .await?
+        .add_nfs_server()
+        .await?
         .add_workflow()
         .await?
         .add_control_panel()
@@ -455,6 +457,8 @@ mod test {
         assert!(init_map.contains_key("services/repo-service/pkg_list"));
         assert!(init_map.contains_key("services/aicc/spec"));
         assert!(init_map.contains_key("services/msg-center/spec"));
+        assert!(init_map.contains_key("services/nfs-server/spec"));
+        assert!(init_map.contains_key("services/nfs-server/settings"));
         //assert!(init_map.contains_key("services/smb-service/spec"));
         assert!(init_map.contains_key(&format!("users/{}/profile", TEST_USERNAME)));
         let install_settings: buckyos_api::SystemInstallSettings = serde_json::from_str(

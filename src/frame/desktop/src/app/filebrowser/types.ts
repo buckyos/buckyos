@@ -4,6 +4,9 @@
  * The shapes here are the single source of truth for the prototype and drive
  * the mock data in `./mock/data.ts`.  Everything is derived from the PRD in
  * `product/bucky_file/filebrowser_PRD.md`.
+ *
+ * The formal stability, state, validation, Mock-contract, and NFSP mapping
+ * rules are documented in `./UI_DATAMODEL.md`.
  */
 
 export type FileKind =

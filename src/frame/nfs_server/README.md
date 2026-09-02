@@ -7,10 +7,31 @@ Node / Entry / Container 协议服务。
 - 需求文档:`buckyos/product/bucky_file/nfs_server.md`
 - 协议:`cyfs-ndn/doc/NamedFileSystem_Protocol_v0.md`(NFSP v0)
 
-## v1 形态:独立启动
+## 启动形态:BuckyOS 服务 + 独立启动
 
-v1 刻意不依赖 buckyos-api / node_daemon / NamedStore / 鉴权,聚焦协议 + filedb,
-可独立启动、独立测试:
+### BuckyOS 系统服务模式(无参数启动,node_daemon 拉起)
+
+不带 `--data-dir` / `--export` 启动时进入 buckyos 模式:通过 buckyos-api 以
+KernelService 身份 login(含心跳),读取 `services/nfs-server/settings`
+(`scan_interval_secs` / `debug_api`,缺省有默认值),然后:
+
+- `cyfs:///` 挂载 `$BUCKYOS_ROOT/data/`:每个可见一级子目录(home/、srv/ 等)
+  成为一个 export root;`.` 开头目录不导出。导出列表为启动时快照。
+- filedb + 上传暂存放在 `$BUCKYOS_ROOT/data/.fsdb/`。
+- 监听 `127.0.0.1:4110`(`NFS_SERVER_SERVICE_PORT`)。NFSP 是跨 zone 通用协议,
+  网关把 zone 级根路径 `/nfs/v1/*` 原样转发到本服务(boot_gateway.yaml,
+  与 /ndn 同级),不使用 `/kapi/<service>` 形态。
+- 暂无按请求鉴权(目录全部可见);SSO/cap 校验在 auth 里程碑接入。
+
+集成点:`buckyos-api/src/nfs_server_client.rs`(常量 + Settings)、
+`scheduler/system_config_builder.rs::add_nfs_server()`、
+`rbac_config.rs`(`g, system:nfs-server, frame`)、`bucky_project.yaml`、
+`rootfs/bin/nfs-server/`。DV smoke test:`test/nfs_server_test/`(走网关);
+协议级回归:`test/test_nfs_server/run.sh`(独立启动,46 例)。
+
+### 独立启动模式(保留,便于独立测试)
+
+给出 `--data-dir` + `--export` 即为独立模式,不依赖任何 buckyos 运行时:
 
 ```bash
 nfs_server --listen 127.0.0.1:3260 \
@@ -102,7 +123,7 @@ v1 用**扫描循环 + 访问时校验**替代平台 watcher(inotify/USN/FSEvent
 
 ## 后续接入(不在 v1)
 
-1. buckyos-api 运行时 + SSO 鉴权 + cap 校验(grant 数据面放行)。
+1. SSO 鉴权 + cap 校验(grant 数据面放行)。runtime/login/心跳/调度已接入;按请求鉴权未开。
 2. NamedStore link 模式(`add_chunk_by_link_to_local_file` / qcid 阶梯)替换 `content_index`。
 3. `repr` 缩略图、`view_patch`、`get_tree`、`publish_dir`/Frozen、referral 设备视图。
 4. NativeTree trait 冻结(M7):第二个实现(fs_meta)落地时从 `namespace.rs` 提取。

@@ -27,6 +27,9 @@ modules:
   smb_service:
     type: rust
     name: smb_service
+  nfs_server:
+    type: rust
+    name: nfs_server
   repo_service:
     type: rust
     name: repo_service
@@ -88,6 +91,7 @@ apps:
       control_panel: bin/control-panel/
       #control_panel_web: bin/control-panel/web/
       smb_service: bin/smb-service/
+      nfs_server: bin/nfs-server/
       repo_service: bin/repo-service/
       node_active: bin/node-active/
       aicc: bin/aicc/

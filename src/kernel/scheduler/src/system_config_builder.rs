@@ -5,7 +5,8 @@ use buckyos_api::msg_queue::{
 };
 use buckyos_api::{
     generate_aicc_service_doc, generate_control_panel_service_doc, generate_msg_center_service_doc,
-    generate_opendan_service_doc, generate_repo_service_doc, generate_scheduler_service_doc,
+    generate_nfs_server_doc, generate_opendan_service_doc, generate_repo_service_doc,
+    generate_scheduler_service_doc,
     generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
     generate_workflow_service_doc, AgentId, AgentServiceBinding, AgentSpec, AppDoc, AppId,
     AppInstanceId, AppRegistry, BuckyOSDevConfig, BuckyOSInfo, GatewaySettings, GatewayShortcut,
@@ -20,7 +21,8 @@ use buckyos_api::{
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
     CONTROL_PANEL_SERVICE_UNIQUE_ID, MSG_CENTER_SERVICE_PORT, MSG_CENTER_SERVICE_UNIQUE_ID,
-    REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
+    NfsServerSettings, NFS_SERVER_SERVICE_PORT, NFS_SERVER_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID,
+    SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
     TASK_MANAGER_SERVICE_UNIQUE_ID, WORKFLOW_SERVICE_PORT, WORKFLOW_SERVICE_UNIQUE_ID,
 };
 use buckyos_kit::{
@@ -655,6 +657,31 @@ impl SystemConfigBuilder {
             ),
         ]);
         self.insert_json("services/repo-service/pkg_list", &pkg_list)?;
+        Ok(self)
+    }
+
+    pub async fn add_nfs_server(&mut self) -> Result<&mut Self> {
+        let service_doc = generate_nfs_server_doc();
+        let mut config = build_kernel_service_spec(
+            NFS_SERVER_UNIQUE_ID,
+            NFS_SERVER_SERVICE_PORT,
+            1,
+            service_doc,
+        )
+        .await?;
+        // NFSP is a zone-level protocol: the gateway exposes it at the root
+        // `/nfs/v1/*` path (see boot_gateway.yaml get_service_info_from_req),
+        // not under /kapi/<service>. Keep the spec metadata in sync.
+        if let Some(expose) = config.spec_config.expose_config.get_mut("www") {
+            expose.route = ServiceExposeRouteConfig::Web {
+                sub_hostname: Vec::new(),
+                expose_uri: Some("/nfs/v1".to_string()),
+            };
+        }
+        self.insert_json("services/nfs-server/spec", &config)?;
+
+        let settings = NfsServerSettings::default();
+        self.insert_json_if_absent("services/nfs-server/settings", &settings)?;
         Ok(self)
     }
 

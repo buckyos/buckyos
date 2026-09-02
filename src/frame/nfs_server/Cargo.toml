@@ -24,6 +24,8 @@ bytes = { workspace = true }
 http = { workspace = true }
 uuid = { workspace = true }
 walkdir = "2.5"
+buckyos-kit = { workspace = true }
+buckyos-api = { path = "../../kernel/buckyos-api" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

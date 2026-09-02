@@ -1,0 +1,2 @@
+service_name = "nfs_server"
+service_type = "kernel"
