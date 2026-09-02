@@ -256,17 +256,19 @@ Owner：Protocol Infra 小组
 
 依赖：WP-01
 
-- [ ] HTTP client、timeout、proxy、Retry-After 和 request ID；
-- [ ] SSE framing、断线和终止标记，不解释业务事件；
-- [ ] 有界 JSON、multipart 和必要时的 websocket primitive；
-- [ ] Bearer、named header、fal key 和可选 GLM JWT；
-- [ ] OperationDescriptor、codec registry 和 adapter descriptor；
-- [ ] immediate、stream 和 native task 的统一协议结果；
-- [ ] polling、deadline、backoff、cancel 和 webhook 基础算法；
-- [ ] golden request/response/SSE/error contract harness；
-- [ ] 日志中只记录匿名 credential reference 和类型。
+- [x] HTTP client、timeout、proxy、Retry-After 和 request ID；
+- [x] SSE framing、断线和终止标记，不解释业务事件；
+- [x] 有界 JSON、multipart 和必要时的 websocket primitive；
+- [x] Bearer、named header、fal key 和可选 GLM JWT；
+- [x] OperationDescriptor、codec registry 和 adapter descriptor；
+- [x] immediate、stream 和 native task 的统一协议结果；
+- [x] polling、deadline、backoff、cancel 和 webhook 基础算法；
+- [x] golden request/response/SSE/error contract harness；
+- [x] 日志中只记录匿名 credential reference 和类型。
 
 完成标准：基础 transport 完全不知道 Provider、model、routing 和 catalog。
+
+实现记录：Protocol Infra 小组完成 HTTP buffered/streaming transport、有界 JSON/multipart、SSE framing、四类 credential、GLM 短期 JWT、descriptor/codec registry、统一执行结果和原生任务生命周期原语；credential 与 transport 的调试输出只暴露类型、匿名引用和非敏感结构信息。当前没有选中的 realtime operation 需要 websocket，因此按目标规范未预建 websocket primitive。Protocol 模块 33 个正常、边界、错误和并发语义单测及隔离 clippy `-D warnings` 通过，且边界扫描确认不引用 Provider、model、routing 或 catalog。
 
 ### WP-06：基础 Protocol Codec
 
