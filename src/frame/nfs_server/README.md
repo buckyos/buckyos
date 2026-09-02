@@ -20,7 +20,7 @@ nfs_server --listen 127.0.0.1:3260 \
            [--debug-api] [--log-level info]
 ```
 
-- `--export name=/abs/path`(可重复):每个 export root 成为 `dfs://` 命名空间的一级子目录。
+- `--export name=/abs/path`(可重复):每个 export root 成为当前 Zone 的 `cyfs:///` 命名空间一级子目录。
 - `--data-dir`:存放 `filedb.sqlite` 与上传暂存区(暂存区每次启动清空)。
 - `--scan-interval-secs`:Reconciler 扫描周期,0 = 关闭。
 - `--debug-api`:开启 `POST /nfs/v1/debug/{reconcile|create_view}`(仅测试/开发)。

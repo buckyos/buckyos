@@ -97,7 +97,7 @@ VirtualPlane 只在 NamespacePlane 内部按 Node kind 路由,WebUI 不得感知
 
 - frame 服务,依赖 `buckyos-kit` / `buckyos-api`,由 node_daemon 拉起,对齐 `smb_service`。
 - 导出根目录(export roots)由服务配置声明:哪些本地目录以哪个逻辑路径暴露。
-  v1 至少支持多个 root 映射到 `dfs://` 命名空间的一级子目录。
+  v1 至少支持多个 root 映射到当前 Zone 的 `cyfs:///` 命名空间一级子目录。
 - 鉴权:本 Zone 已登录用户经 buckyos SSO 换取 session(NFSP §7.1 第一行);
   分享链接走 `grant` 签发的 bearer cap。`uid/gid` 不进协议。
 

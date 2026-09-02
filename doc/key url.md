@@ -16,8 +16,8 @@
 | --- | --- |
 | `https://` | 标准的 http 链接。注意 cyfs 的 R-Link 也可以在这里表达。 |
 | `file://`  | 标准。支持 `file:///local_path`、`file://localhost/local_path`、`file://$device_id/path`。 |
-| `cyfs://`  | 我们的扩展，用来获取 NamedObject，URL 一定指向 Data。 |
-| `obj://`   | 我们的扩展，注意 `obj://` 是 cyfs 的**超集**。 |
+| `cyfs://`  | 我们的扩展，表示传统文件系统视角下的 CYFS 逻辑路径。 |
+| `obj://`   | 我们的扩展，表示 Agent 所见的 DID Object 世界。 |
 | `buckyos://` | 我们的扩展，用来拉起 current zone / buckyos app 的特定流程。 |
 
 ## 缩写路径的展开
@@ -33,6 +33,12 @@
 - 以单个 `/` 开头 → `file://` 本地路径。
 - 以 `//` 开头 → `obj://` 命名对象路径。
 
+## Current Zone 的 CYFS 路径
+
+`cyfs:///path` 与 `cyfs://_/path` 都表示当前 Zone 下的 CYFS 逻辑路径，解析后等价于
+`cyfs://$current_zone/path`。文档中的当前 Zone 路径优先使用 `cyfs:///path`；只有在需要明确
+跨 Zone 定位时，才在 authority 中写出具体的 Zone。
+
 > sys_config_service 已实现这一展开/归一化：`obj://config/`、`/config/`、前导 `/` 会被剥离得到归一化 key，反向也会把裸 key 补全为 `obj://config/...`。参见 [src/kernel/sys_config_service/src/main.rs](src/kernel/sys_config_service/src/main.rs)（`strip_config_key_prefix` / `get_full_res_path`）。
 
 ## 我们定义的服务名
@@ -41,7 +47,7 @@
 
 ```
 obj://config      # 系统配置 KV (system-config)
-obj://dfs         # 分布式文件系统命名空间
+obj://dfs         # 面向 Agent 的分布式文件系统服务对象，不是文件路径
 obj://taskmgr     # 任务管理器 (task-manager)
 obj://kmsg        # 消息队列服务 (kmsg)
 ```
@@ -64,7 +70,7 @@ p, ood,   obj://config/nodes/{device}/*,               read|write, allow
 p, app,   obj://config/users/*/apps/{app}/settings,    read|write, allow
 p, users, obj://config/users/{users}/*,                read,       allow
 p, users, obj://config/users/{users}/profile,          read|write, allow
-p, users, dfs://users/{users}/*,                        read|write, allow
+p, users, cyfs:///users/{users}/*,                       read|write, allow
 ```
 
 `{users}` / `{app}` / `{device}` / `{service}` 为 enforce 时匹配的占位通配。policy 存于 system-config 的 `system/rbac/policy`，参见 [src/rootfs/etc/scheduler/boot.template.toml](src/rootfs/etc/scheduler/boot.template.toml)。
@@ -129,6 +135,5 @@ https://$appid-$userid.$zonehost/
 
 
 ## 钱包相关协议
-
 
 
