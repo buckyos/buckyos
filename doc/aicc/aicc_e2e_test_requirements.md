@@ -2,11 +2,12 @@
 
 ## 1. 文档目的
 
-本文定义 AICC 端到端测试的完整需求，目标是从模型路由、Provider 协议实现和 Jarvis 消息链路三个层面，证明 AICC 在模型服务稳定、系统配置正确的前提下能够：
+本文定义 AICC 端到端测试的完整需求，目标是从模型路由、Provider 官方协议实现、线上模型推理和 Jarvis 消息链路四个层面，证明 AICC 在模型服务稳定、系统配置正确的前提下能够：
 
 1. 按请求约束选择正确的精确模型和 Provider instance。
-2. 按模型发布方声明正确实现每个模型支持的 API 和消息协议。
-3. 通过 message-tunnel、MessageHub、msg-center 和 Jarvis 完成真实多模态、多轮消息任务。
+2. 按 Provider 官方协议发送请求并解析正常响应与错误响应。
+3. 通过各 Provider instance 的线上模型完成其支持的 API type 推理。
+4. 通过 message-tunnel、MessageHub、msg-center 和 Jarvis 完成真实多模态、多轮消息任务。
 
 本文是测试需求文档，不规定唯一的 runner 实现方式。具体 case manifest、Mock Provider、fixture、报告器和执行脚本可以复用 `doc/aicc/maintenance/acceptance` 与 `test/jarvis_media_dv` 中已有设计和实现。
 
@@ -50,11 +51,11 @@ Test Runner
   -> Test Runner
 ```
 
-第一层允许使用 Mock Provider，但 AICC、Gateway、认证、路由、Provider adapter 和任务链路必须是真实实现。第二层必须调用真实 Provider。第三层必须通过选定的真实消息入口进入系统。
+T1 和 T1.5 允许使用 Mock Provider，但 AICC、Gateway、认证、Provider adapter 和任务链路必须是真实实现。T1.5 使用按 Provider 官方文档独立实现的高保真 Mock Provider。T2 必须调用真实 Provider。T3 必须通过选定的真实消息入口进入系统。
 
 ### 3.2 确定性与成本原则
 
-- 路由分支和异常分支优先由协议级 Mock Provider 覆盖，不产生真实模型费用。
+- 路由分支由 T1 Mock Provider 覆盖；Provider wire 协议和协议错误分支由 T1.5 高保真 Mock Provider 覆盖，均不产生真实模型费用。
 - 真实模型必须显式开启，默认禁止调用。
 - 真实模型运行前必须输出计划 case 数、最大调用次数和预计成本，并展示可取消的确认倒计时；用户主动确认或倒计时结束后才可继续。无人值守的自动化测试模式不展示倒计时，但必须通过显式参数或受控配置预先授权。
 - 真实模型调用必须同时受最大调用次数和总预算限制。
@@ -127,7 +128,7 @@ unknown model 不得通过模型名猜测获得高风险能力。兼容接口偶
 
 当前内置 Provider driver 必须提前进入参数化能力基线和测试清单：OpenAI、Claude、Google Gemini、Fal、MiniMax、OpenRouter 和 SN AI Provider。后续新增内置 Provider 时，必须同步扩展能力基线和用例。Provider 的模型、生命周期、能力和协议限制以模型发布方的公开官方文档为事实源；AICC inventory 是被测声明，不能反向作为官方能力依据。
 
-当前 AICC canonical API type 必须逐项进入 T1/T2 覆盖矩阵，不得用 namespace 或“其他 API”概括：
+当前 AICC canonical API type 必须按各层职责逐项进入 T1、T1.5 和 T2 覆盖矩阵，不得用 namespace 或“其他 API”概括：
 
 | namespace | canonical api_type / method |
 |---|---|
@@ -142,40 +143,39 @@ unknown model 不得通过模型名猜测获得高风险能力。兼容接口偶
 
 Runner 必须从当前协议/schema 枚举 canonical API type，并与本清单和 case manifest 做双向 diff。新增、删除或改名的 canonical API type 如果没有同步更新需求清单、官方能力映射和测试用例，preflight 必须失败。该规则用于防止后续读者把未列出的能力解释为可省略项。
 
-### 4.4 Provider 官方库存事实源
+### 4.4 Provider 官方事实源
 
-T2 不得使用 AICC `models.list` 作为模型库存基准；`models.list` 是被测声明。Runner 必须在每轮运行时直接访问模型发布方提供的模型目录接口（例如官方 `/models` 或等价目录 API），使用该 Provider 的参数化凭据获取本轮官方库存，并保存脱敏后的目录 revision、模型 ID 和抓取时间作为报告证据。
+T1.5 的 wire 协议契约只能来自 Provider 官方 API 文档、官方 OpenAPI/JSON Schema、官方 SDK 的公开协议定义和官方错误码文档。不得以 AICC 设计文档、AICC metadata、AICC 实现代码、现有请求日志或现有 Mock 行为反向定义期望协议。每个协议 fixture 必须记录官方证据 URL、检查时间、适用 API/version 和证据摘要；官方资料不明确时，该协议点标记为阻塞，不能依据当前实现猜测。
 
-目录认证默认复用 Provider API token；允许用 `official_catalog_credentials.<provider>.api_token` 单独覆盖。SN 的官方目录使用 SN SSO session token，必须作为目录专用凭据提供，不得将其写入 AICC Provider settings。
+T2 为每个获准测试的 Provider instance 枚举全部 active、已配置且官方声明支持的物理模型，并按每个模型支持的 API type 生成 `ProviderInstance × model × API-Type` 矩阵。模型事实依据来自 Provider 官方模型目录或官方模型文档；AICC `models.list` 仅作为被测声明参与双向一致性检查，不能成为官方能力事实源。报告必须记录模型、官方证据和检查时间。
 
-`provider_capability_baseline.json` 必须为每个 Provider 配置官方目录 endpoint、认证方式、响应格式和分页方式，并通过 `coverage_rules` 排除已退役模型、`latest`/默认/最便宜等逻辑别名，以及把版本名或别名映射到同一物理模型后去重。官方目录抓取失败、返回空列表、分页异常或缺少必要凭据时，T2 preflight 必须失败，不能回退到 AICC inventory 或硬编码默认模型。
+官方目录可用时，Runner 必须在 preflight 中获取本轮完整官方库存，过滤已移除模型和仅指向其他物理模型的逻辑别名，并与刷新后的 AICC `models.list` 双向对比。双方一致的 active 基础物理模型全部进入 T2；metadata variant 在 T1.5 覆盖，不增加 T2 真实推理单元。任一方向的库存缺失都作为 baseline mismatch 报告，不能通过缩小矩阵隐藏。目录认证默认复用 Provider API token，也允许用独立目录凭据覆盖；凭据不得写入报告。官方目录不可用但存在明确、当前有效的冻结官方模型清单时，可以使用该证据，报告必须标明证据时间和未实时确认的风险。
 
-Fal 这类异构端点市场不把市场中的全部端点视为同一个 Provider adapter 的协议兼容模型。Fal driver 的官方库存范围是其参数化配置正面声明支持的端点集合；Runner 必须用 Fal Model Search 的 Find Mode 按 `endpoint_id` 向官方目录逐项确认端点仍为 active，返回缺项或范围外端点都必须失败。不得先读取 AICC `models.list` 再反向缩小范围，也不得把未实现其独立 OpenAPI Schema 的市场端点登记成已支持模型。
-
-矩阵生成顺序固定为：官方目录抓取与过滤 -> 确定本轮每个 Provider 的参数化 instance -> 对每个选中 instance 调用 `provider.refresh_models` 直到首次成功 -> 读取刷新后的 AICC `models.list` -> 官方物理模型与 AICC 声明双向 diff -> 对双方一致的基础物理模型及其 AICC metadata variants 展开能力用例。刷新必须发生在任何测试 case 执行前；不同 Provider 可以并行，单个 Provider 的失败重试必须串行、有限并采用退避间隔，同时不小于该 Provider 配置的最小请求间隔；首次成功后本轮不得再次主动刷新。达到最大尝试次数仍未成功时 preflight 失败，不得以周期缓存代替。官方存在但 AICC 缺失、AICC 声明但官方目录不存在，均属于 inventory baseline mismatch，必须进入报告；不能因交集为空而将 Provider 整组静默跳过。
+Fal 这类异构端点市场必须把 endpoint 视为协议与能力边界。每个进入 T1.5/T2 的 endpoint 都必须有独立官方 Schema 或官方文档证据；不得把市场中的其他端点视为同一 adapter 的协议兼容模型。
 
 ## 5. 总体分层
 
 | 层级 | 被测主链路 | 模型 | 核心目标 |
 |---|---|---|---|
 | T1 路由正确性 | Gateway -> AICC -> 多个 Mock Provider | 全部 Mock | 请求选择正确模型，或返回正确错误 |
-| T2 Provider 协议 | Gateway -> AICC -> 真实 Provider | 真实精确模型 | Provider/model/api_type 和消息协议全覆盖 |
+| T1.5 Provider 协议契约 | Gateway -> AICC -> Provider 专用高保真 Mock | 全部 Mock | AICC 发出的 wire 请求及响应/错误解析符合 Provider 官方协议 |
+| T2 线上推理正确性 | Gateway -> AICC -> 真实 Provider | 全部 active 物理模型 | 覆盖 `ProviderInstance × model × API-Type` 并验证真实推理结果 |
 | T3 Jarvis 消息链路 | 消息入口 -> msg-center -> Jarvis -> AICC -> Provider -> 出站 | 少量代表模型 | 多模态、多附件、多轮任务完整进出系统 |
 
-三层分别建立覆盖矩阵和通过率，不允许用第三层少量真实场景代替第二层模型覆盖，也不允许用第二层成功调用代替第一层路由分支覆盖。
+四层分别建立覆盖矩阵和通过率。T1 不替代 T1.5 的协议断言，T1.5 不验证真实推理，T2 不重复 T1 的路由排列组合或 T1.5 的 wire 协议与错误注入，T3 的少量消息场景也不能替代 T2 的线上矩阵。
 
 分层边界固定如下：
 
-- 同一 Provider driver 的多 instance、不同凭据、不同 endpoint、不同模型集合及隔离行为只在 T1 使用 Mock Provider 覆盖；T2 每个 Provider driver 每轮只选择一个参数化 instance。T3 可参数化凭据和 instance 标识用于配置与审计，但不要求强制 Jarvis 最终路由到该 instance。
-- metadata `variants` 派生的物理模型变体在 T1 和 T2 覆盖。
-- `version_rules` 产生的逻辑目录只在 T1 覆盖，不进入 T2/T3 精确物理模型矩阵。
-- 跨租户、RBAC 和授权隔离等 BuckyOS 机制只在 T1 覆盖；T2/T3 不重复验证。
+- 同一 Provider driver 的多 instance 选择、不同模型集合及隔离行为只在 T1 覆盖。T1.5 按 Provider driver、adapter/API version 和 API type 覆盖协议差异。T2 对配置中启用且获准真实调用的每个 Provider instance，覆盖其全部 active 模型支持的每个 API type。T3 可参数化凭据和 instance 标识用于配置与审计，但不要求强制 Jarvis 最终路由到该 instance。
+- metadata `variants` 的展开和路由在 T1 覆盖。每个可独立调用的 variant 都在 T1.5 作为独立协议单元验证其 Provider model/options lowering 和响应解析；variant 不作为独立 model 进入 T2。
+- `version_rules` 产生的逻辑目录只在 T1 覆盖；除非它改变 wire 协议，否则不进入 T1.5，也不成为 T2/T3 的覆盖维度。
+- 跨租户、RBAC 和授权隔离等 BuckyOS 机制只在 T1 覆盖；T1.5/T2/T3 不重复验证。
 
 ## 6. 公共测试基础
 
 ### 6.1 Case manifest
 
-每个 case 至少声明：
+每个 case 至少声明公共字段，并按所在层级声明适用的路由、协议或内容断言：
 
 - `case_id`、层级、优先级和标签。
 - 输入入口、用户、session 和前置状态。
@@ -186,6 +186,8 @@ Fal 这类异构端点市场不把市场中的全部端点视为同一个 Provid
 - 期望精确模型、Provider instance、task 状态和错误分类。
 - 期望出站消息种类、附件数量、MIME 和语义 rubric。
 - timeout、最大 attempt、预计成本和清理要求。
+
+T1.5 case 还必须声明官方协议证据 revision、adapter/API version、预期 wire fixture 和正常/错误响应 fixture；无需声明内容语义 rubric。T2 case 必须声明 `ProviderInstance × model × API-Type` 单元和最小正确性 rubric；无需声明路由组合或 wire fixture。
 
 Manifest 解析失败、case id 重复或必要字段缺失时，runner 必须在执行前失败，不能静默跳过。
 
@@ -220,7 +222,7 @@ Manifest 解析失败、case id 重复或必要字段缺失时，runner 必须�
 
 ### 7.1 目标
 
-在不调用真实模型的情况下，覆盖真实 AICC 路由、metadata、调度、fallback、Provider adapter 和错误处理。通过后，在模型服务稳定且配置正确的前提下，AICC 应按请求需要找到正确的精确模型和 Provider instance。
+在不调用真实模型的情况下，覆盖真实 AICC 路由、metadata、调度、fallback 和路由相关错误处理。通过后，在模型服务稳定且配置正确的前提下，AICC 应按请求需要找到正确的精确模型和 Provider instance。Provider wire 协议的逐字段正确性由 T1.5 负责。
 
 ### 7.2 测试架构
 
@@ -232,7 +234,7 @@ T1 Runner
   -> 多个协议级 Mock Provider
 ```
 
-Mock Provider 必须位于 Provider HTTP/远端协议边界，不能只替换 AICC 内部 trait。Mock 应能记录收到的 instance、路径、model、headers、request body 和调用次数。
+Mock Provider 必须位于 Provider HTTP/远端协议边界，不能只替换 AICC 内部 trait。T1 Mock 只需稳定支持路由断言、调用记录和错误触发，不要求完整复刻各 Provider 官方协议；高保真协议模拟属于 T1.5。
 
 ### 7.3 模型选择维度
 
@@ -320,7 +322,7 @@ Mock Provider 必须位于 Provider HTTP/远端协议边界，不能只替换 AI
 - fallback 后 task、usage、trace 和 Provider 归因。
 - 多 instance 间 failover。
 
-### 7.8 Mock 推理结果
+### 7.8 Mock 行为
 
 Mock Provider 至少支持：
 
@@ -329,9 +331,8 @@ Mock Provider 至少支持：
 - 异步 submit/poll 成功。
 - 400、401、403、404、409、429 和 5xx。
 - 连接失败、短超时、长超时。
-- malformed response、错误 MIME、缺 usage。
-- embedding inline 向量、embedding artifact、维度错误、行数错误、item 顺序错误、`embedding_space_id` 不一致和非法数值。
-- rerank 正常排序、分数缺失、document ID 错配和结果数量错误。
+- 可供路由和 task 断言使用的确定性文本、embedding、rerank 和 artifact 结果。
+- malformed response、错误 MIME 和缺 usage 等标准化故障触发器；Provider 专属 wire 结构由 T1.5 覆盖。
 - Provider task failed/cancelled。
 - 同一 scenario 固定 usage、cost、latency 和输出对象。
 
@@ -347,7 +348,7 @@ Mock Provider 至少支持：
 每个 case 至少断言：
 
 - 选中的 exact model 和 Provider instance。
-- provider model ID 和 variant lowering 后的 provider options。
+- provider model ID 和 variant 展开结果；具体 Provider options 的 wire lowering 由 T1.5 断言。
 - 候选集合及每个候选保留/过滤原因。
 - route trace、fallback attempts 和最终错误分类。
 - 只有预期 Mock Provider 收到预期次数的请求。
@@ -355,90 +356,140 @@ Mock Provider 至少支持：
 
 T1 P0 必须零真实调用、零随机重试、100% 通过，并作为普通 CI 阻断项。
 
-## 8. T2：真实 Provider 协议测试
+## 8. T1.5：Provider 官方协议契约测试
 
 ### 8.1 目标
 
-通过真实模型验证每个 Provider adapter 对官方模型协议和能力的实现。T2 不要求穷举全部逻辑路由路径；每个 Provider driver 每轮选择一个参数化 Provider instance，并使用精确模型保证该 instance 的模型和 api_type 被实际调用。多 instance 行为由 T1 Mock 覆盖。
+使用 Provider 专用高保真 Mock Provider，验证 AICC Protocol Adapter 发出的 wire 请求与 Provider 官方要求相同，并验证 AICC 对官方正常响应和各种错误响应的解析与映射。T1.5 不覆盖 T1 的路由排列组合，不调用真实模型，也不判断推理内容是否正确。
 
-### 8.2 发布模型能力基线
+### 8.2 独立协议事实源
 
-每次发布前必须查询模型发布方文档，更新并冻结 `provider-capability-baseline`。每条记录至少包含：
+每个 Provider 的 T1.5 Mock 和断言必须直接依据 4.4 节规定的 Provider 官方资料实现。协议期望数据应作为独立、可审查的 fixture/schema 保存，且必须满足：
 
-- release 和 baseline revision。
-- provider driver 和 provider instance。
-- provider model ID 和 exact model。
-- 模型 `active`、`preview`、`deprecated`、`removed` 四种标准状态；Provider 出现其他状态值时必须原样记录，并在合入发布基线前映射到这四种状态之一或扩展标准枚举。
-- 官方文档 URL、检查时间和文档版本/证据摘要。
-- 官方 capability/endpoint。
-- 映射后的 canonical api_type 和 method。
-- 支持的输入、输出消息种类和组合。
-- streaming、异步 operation 和 usage 语义。
-- 输入/输出格式、单项大小、总请求大小、批量 item 数、图片尺寸、音频时长、视频时长、上下文长度、输出长度、region、账号等级和 preview allowlist 限制。
+- 不导入 AICC Provider adapter 的请求/响应类型来生成期望值。
+- 不复制 AICC metadata、设计文档或实现中的 endpoint、字段默认值和错误映射作为期望值。
+- 不用 AICC 当前发出的请求录制结果作为 golden fixture。
+- 官方协议版本变化时，先更新官方证据和独立 fixture，再用测试发现 AICC 实现差异。
+- Mock 未实现官方协议中的相关字段或错误形态时，该矩阵单元不得记为通过。
+
+### 8.3 测试架构
+
+```text
+T1.5 Runner
+  -> Zone Gateway
+  -> 真实 AICC typed/helper method
+  -> 真实 Protocol Adapter
+  -> Provider 专用高保真 Mock Provider
+  -> 独立 wire capture 与官方协议断言
+```
+
+测试必须用精确模型或其他确定性方式固定 Provider instance，不经过逻辑路由选择。仅为使请求到达目标 adapter 所需的最小配置不算 T1 路由覆盖。
+
+### 8.4 覆盖矩阵
+
+T1.5 的基本覆盖单元为：
+
+```text
+Provider driver
+  x Adapter / 官方 API version
+  x canonical API-Type
+  x 对应 Provider operation/endpoint
+```
+
+每个可独立调用的 variant 都增加 T1.5 矩阵单元。除此之外，只有会改变 wire 协议的模型族、区域 endpoint、同步/异步模式或内容传输方式才增加矩阵维度。相同协议的不同 Provider instance、逻辑模型、路由策略和调度组合不重复测试。
+
+### 8.5 正常请求与响应
+
+每个适用矩阵单元至少逐字段验证：
+
+- HTTP method、URL path、query、API version 和 content type。
+- 认证 header/query、必需 header、幂等键和签名输入；报告必须脱敏。
+- model/endpoint ID、请求 body、默认参数、可选参数、省略规则和枚举序列化。
+- 文本、结构化内容、tool/schema、URL、base64、multipart、文件上传及官方支持的资源引用。
+- streaming event、异步 submit/poll/cancel、operation ID 和终态协议。
+- 官方正常响应到 AICC typed response、task、usage、finish reason、tool call 和 artifact 的映射。
+
+Mock Provider 必须先按官方 schema 校验请求，再返回官方格式响应。宽松接受未知字段、错误字段名、错误路径或错误 content type 的 Mock 不能作为通过证据。
+
+### 8.6 错误覆盖
+
+每个 Provider adapter 必须覆盖官方定义且适用的错误形态，包括：
+
+- 缺失、无效和权限不足的认证。
+- 请求 schema/参数错误、模型或 endpoint 不存在、输入超限和不支持的媒体类型。
+- rate limit、quota/balance、并发限制、服务不可用和内部错误。
+- safety/content policy、region、账号等级和 allowlist 限制。
+- streaming 中断、异步 operation failed/cancelled/expired、poll timeout。
+- malformed/缺字段响应、错误 content type、不可下载 artifact 和无效 usage。
+
+必须断言 AICC 的 retryability、HTTP/kRPC 错误、稳定错误分类、Provider 原始错误摘要和 task 终态。错误覆盖按 Provider 协议分支完成，不按模型重复。
+
+### 8.7 T1.5 通过标准
+
+- 每个启用 Provider driver 的全部已实现 adapter/API version 和 API type 都有明确结果。
+- 每个可独立调用的 metadata variant 都有独立协议结果。
+- 所有请求在独立高保真 Mock 中通过官方 schema 和逐字段断言。
+- 正常响应、streaming、异步任务及官方错误分支均正确映射。
+- 测试证据能追溯到 Provider 官方资料，且未以 AICC 文档或实现生成期望值。
+- 零真实 Provider 调用、零真实推理费用；无需验证生成内容语义。
+
+## 9. T2：线上 Provider 推理正确性测试
+
+### 9.1 目标
+
+通过最少的单元内真实调用，证明每个获准测试的 Provider instance 中，每个 active 模型都能对其声明支持的每个 canonical API type 产生正确推理结果。T2 依赖 T1 保证路由、依赖 T1.5 保证 Provider wire 协议，不重复这些层的组合、错误注入和逐字段协议检查。
+
+### 9.2 线上能力基线
+
+T2 baseline 的一条记录对应一个 `ProviderInstance × model × API-Type` 矩阵单元，至少包含：
+
+- release、baseline revision、provider driver 和 provider instance。
+- provider model ID、exact model、canonical API type 和 method。
+- 模型 active 状态、官方能力证据 URL、检查时间和证据摘要。
+- 最小输入 fixture、确定性断言或版本化语义 rubric。
+- 最大调用次数、最大重试次数、timeout 和预计成本。
 - 对应 case id 和覆盖状态。
 
-T2 只覆盖有效物理模型。生成矩阵前必须：
+每个 active 基础物理模型支持的每个 API type 都必须形成矩阵单元。每个单元默认只执行一个最小正常请求；只有单次调用无法验证该 API type 的核心推理结果时，才能增加最少的补充 case，并必须在 baseline 中说明原因。指向同一物理模型的逻辑别名不重复调用；官方列为独立物理模型的快照作为不同 model 执行；metadata variant 只在 T1.5 执行。输入格式排列、协议参数和错误场景不构成 T2 的独立覆盖维度。
 
-- 排除已失效、已移除或在计划执行窗口前即将退役的模型，例如已经确认失效或即将失效的 Sora 2、GPT Image 1。
-- 排除 `latest`、默认、最便宜等指向其他模型的逻辑别名。
-- 将版本名、别名或快照名指向同一物理模型的条目去重，但保留可追溯的别名映射证据。
-- 在报告中列出全部被过滤模型、过滤原因和官方证据，供人工校对；不得将过滤等同于静默删除。
-
-发布前流程必须执行：
-
-1. 查询全部受支持 Provider 的官方模型清单和能力文档。
-2. 与上一 release baseline 比较。
-3. 标识新增、删除、改名、废弃和能力变化。
-4. 同步 Provider metadata、inventory 和 adapter。
-5. 新增、删除或更新对应测试用例。
-6. 执行受影响用例和 Provider 全量回归。
-7. 保存本次冻结基线和文档证据。
-
-官方新增能力未实现、官方删除能力仍被声明、基线模型没有覆盖状态或变化未同步用例时，发布必须失败。
-
-### 8.3 覆盖矩阵
+### 9.3 覆盖矩阵
 
 基本覆盖单元为：
 
 ```text
-Provider driver
-  x 本轮选定的参数化 Provider instance
-  x exact model
-  x 官方支持且映射后的 canonical api_type
-  x method
-  x 官方支持的输入消息种类组合
-  x 官方支持的输出消息种类组合
+Provider instance
+  x active physical model
+  x 该模型官方支持且 AICC 声明支持的 canonical API-Type
 ```
 
-同一个 workflow 可以覆盖多个能力，但报告必须能反向证明每个矩阵单元已实际执行。不得用逻辑目录随机命中代替精确模型覆盖。
+Provider driver 是 instance 的归属与报告分组字段，不增加覆盖维度。每个单元使用 baseline 指定的 exact model 发起调用，确保命中目标 instance 和 model。同一个 workflow 可以覆盖多个 API type，但报告必须能反向证明每个矩阵单元都发生了真实调用并完成结果断言。
 
-Provider adapter 声明支持的全部模型都必须进入基线。因 region、账号等级或临时服务状态无法执行时，必须保留矩阵记录和证据，不能从清单中消失。
+配置中启用且获得本轮授权的 Provider instance 及其全部 active 物理模型都必须进入矩阵。因 region、账号等级、余额或临时服务状态无法执行时，保留矩阵记录和脱敏证据，不得用同 driver 的其他 instance 或同 instance 的其他模型代替。
 
-### 8.4 消息种类
+### 9.4 最小推理用例
 
-T2 按模型官方能力覆盖：
+每个 API type 使用能低成本、明确判断推理正确性的最小输入：
 
 - 文本。
 - 图片。
 - 视频。
 - 音频。
-- 文档候选全集：TXT、Markdown、PDF、DOC、DOCX、XLS、XLSX、CSV、TSV、PPT、PPTX、HTML、XML、JSON、YAML、RTF、EPUB 和源代码文本；每个模型只执行发布方明确支持的格式，不支持的格式必须记录为 `not_applicable`。
-- 结构化数据、tool call 和 schema 输出。
-- embedding 输入，包括文本、代码、文档 chunk、图片和文本图片配对；输出包括 inline 向量和 artifact 向量数据。未来协议如新增音频、视频或新的跨模态 item，必须先扩展 canonical schema、本清单和对应 case，不能只依赖 Provider 透传。
-- rerank 输入，包括 query、内联 documents 和 resource documents；输出包括排序后的 document ID、原始 index 和 score。
+- 文档或结构化输入仅在对应 API type 的核心正确性无法由更小输入验证时使用。
+- embedding 使用最小 item 数验证维度、有限数值、顺序和 embedding space。
+- rerank 使用最小可区分候选集验证排序、document ID、index 和 score。
 
-压缩包不属于 Provider 模型原生消息类型，由 T3 Jarvis 负责解包、组合处理和重新打包。
+T2 不覆盖同一 API type 的格式全集、多输入规模边界、参数排列、streaming/非 streaming 双路径、错误响应或资源传输形态；这些属于 T1.5。压缩包和多轮组合任务属于 T3。
 
-当前 canonical API type 的行为组合必须逐项覆盖：
+各 canonical API type 的推理正确性目标如下：
 
-`chat.completions.create` 是 AICC 的 provider-neutral LLM typed inference 接口，也是 LLM typed inference 的唯一 kRPC method。底层 Responses、Chat Completions、Messages、Interactions 等 wire API 由 Provider Instance 已解析的 Adapter 决定。自定义 Provider 接入测试必须分别验证每个已注册 Adapter；推理调用失败后不能隐式切换 Adapter。
+`chat.completions.create` 是 AICC 的 provider-neutral LLM typed inference 接口，也是 LLM typed inference 的唯一 kRPC method。底层 wire API 的正确性由 T1.5 验证。
 
-- `chat.completions.create`：单轮或多轮文本、代码、文档、图片、音频或视频输入到文本、JSON schema 和 tool call；具体输入模态按官方模型能力生成矩阵。
-- `embedding.text`：单文本、批量文本、代码、文档 chunk 和 resource 文档到向量。
-- `embedding.multimodal`：文本、图片和文本图片配对到同一 embedding space 的向量。
+- `chat.completions.create`：最短确定性文本任务，验证回答包含指定事实。
+- `embedding.text`：最小文本输入到有效向量。
+- `embedding.multimodal`：最小文本与图片输入到同一 embedding space 的有效向量。
 - `rerank`：query 与内联/resource documents 到有序 document ID、index 和 score。
 - `image.txt2img`：文本到图片。
-- `image.img2img`：单图或多图加文本到图片。
+- `image.img2img`：单图加最短文本到图片。
 - `image.inpaint`：原图、mask 和文本到图片。
 - `image.upscale`：图片到高分辨率图片。
 - `image.bg_remove`：图片到透明背景图片或前景 mask，按 method schema 判定。
@@ -455,62 +506,24 @@ T2 按模型官方能力覆盖：
 - `video.video2video`：视频加文本或控制参数到视频。
 - `video.extend`：可续作视频及其 Provider/source operation 状态到延长视频。
 - `video.upscale`：视频到高分辨率视频。
-- `agent.computer_use`：观察、动作、环境状态和会话状态组成的 session async 调用；只有正式启用时才执行真实环境用例，未启用仍必须有明确覆盖状态。
-- 每个上述 API 还要覆盖发布方声明支持的多输入、多输出和多附件形态；新增 canonical API 必须先更新本清单再进入发布基线。
+- `agent.computer_use`：最小受控环境中的单个可验证动作；只有正式启用时才执行。
+- 新增 canonical API 必须定义一个最小正确性用例后再进入 T2 baseline。
 
-Embedding 结果不得通过“请求成功”判定。`embedding.text` 和 `embedding.multimodal` 必须验证 item 数量与顺序、向量维度、数值为有限值、normalize 约定、`embedding_space_id`、inline/artifact 阈值、artifact 的 `rows`/`dimensions`/space metadata，以及相同 space 内文本与图片向量可比较。小批量和大批量都必须覆盖；当前协议中 `items > 100` 或预估响应超过 1 MB 时必须验证 artifact 路径。真实模型结果不要求逐浮点一致，但同一输入重复调用的维度、space 和归一化语义必须稳定。
+真实推理不得只以“请求成功”判定。文本使用固定事实断言；embedding/rerank 使用数值与排序不变量；图片、音频和视频优先使用低分辨率、短时长 fixture，并依次使用结构检查、确定性内容检查和必要的版本化 Judge。除非结果处于 rubric 边界，不重复调用同一单元。
 
-### 8.5 Provider instance 协议覆盖
+### 9.5 Provider instance 执行断言
 
-T2 每个 Provider driver 每轮只选择一个参数化 instance，并验证：
+每个 `ProviderInstance × model × API-Type` 单元至少验证：
 
-- 凭据和 endpoint 生效。
-- 模型 inventory 与官方及配置一致。
-- 该 instance 的 region、账号等级、preview allowlist、模型白名单、endpoint 和 API version 差异被正确反映。
-- usage、cost、trace 和 Provider operation ID 按 instance 归因。
+- 请求命中 baseline 指定的 Provider instance 和 exact model。
+- Provider 返回真实 operation/request ID，或有其他可审计证据证明发生了线上调用。
+- task 达到正确终态，输出 schema、消息类型、artifact MIME 和可读性符合该 API type。
+- 推理结果通过 9.4 节规定的确定性断言或语义 rubric。
+- usage、cost、trace 和 Provider operation ID 归因到目标 instance、模型和 API type。
 
-同一 Provider 的多个 instance、不同凭据和模型集合之间的选择与隔离不得在 T2/T3 重复展开，由 T1 Mock 场景负责。T3 不校验实际路由模型是否属于 T2 的过滤矩阵。
+T2 不主动制造无效凭据、rate limit、quota exhausted、unsupported parameter、malformed response、timeout 或 cancel 等错误；这些由 T1.5 的官方协议错误覆盖保障。真实环境偶然返回此类错误时，记录为环境/Provider 失败证据，不把它扩展成新的 T2 测试矩阵。
 
-### 8.6 Provider 协议行为
-
-每个适用的 `model + api_type` 至少验证：
-
-- wire request 的模型、参数、资源和认证方式正确。
-- 同步响应或 streaming 聚合正确。
-- 异步 submit、poll、终态和 timeout 正确。
-- `succeeded`、`running`、`failed` 的 AICC 状态映射正确。
-- Provider stop reason、finish reason、safety 和 tool call 映射正确。
-- usage 存在且字段含义、单位和模型归因正确。
-- artifact URL 或对象被正确保存和返回。
-- Provider 原始错误映射为稳定、可诊断的 AICC 错误。
-
-### 8.7 资源协议
-
-对适用模型覆盖：
-
-- `url`、`base64`、`named_object` 输入。
-- artifact 输出和 Named Object 可读性。
-- MIME、文件头、大小、digest、尺寸、时长和 metadata。
-- 多资源顺序和引用关系。
-- URL 过期、对象不存在、损坏文件、类型不符和大小超限。
-- Provider 返回错误 MIME、空文件或不可下载 artifact。
-
-### 8.8 真实异常
-
-在不造成不必要费用或账号风险的前提下，至少按 Provider adapter 覆盖：
-
-- 无效或受限凭据。
-- rate limit 和 quota exhausted。
-- context/input too large。
-- unsupported parameter。
-- safety/content policy。
-- 模型不存在、下线或改名。
-- malformed/缺字段响应。
-- operation timeout、failed 和 cancel。
-
-不要求每个模型重复触发相同的账号级错误，但每个 Provider 协议分支必须有真实或协议级 Mock 证据。
-
-### 8.9 内容正确性判定
+### 9.6 内容正确性判定
 
 按以下顺序判定：
 
@@ -521,21 +534,21 @@ T2 每个 Provider driver 每轮只选择一个参数化 instance，并验证：
 
 LLM Judge 必须使用版本化 rubric、记录 Judge 模型、Provider、输入摘要、分数和理由。应优先使用不同 Provider 或模型家族，避免被测模型评价自己。Judge 不可用或输出无效时不得自动通过。
 
-### 8.10 T2 通过标准
+### 9.7 T2 通过标准
 
-- 发布基线中每个 active、受支持矩阵单元都有明确执行结果。
-- 官方能力、AICC 声明、inventory 和 adapter 行为完全一致。
-- 输出消息类型、协议结构、task、usage、artifact 和 trace 全部通过。
-- `official_supported_but_aicc_missing` 和 `official_not_supported_but_aicc_advertised` 数量为零。
+- 获准执行范围内每个 `ProviderInstance × model × API-Type` 单元都有明确执行结果。
+- 每个通过单元都完成了一次可审计的真实推理，并通过结构和内容正确性断言。
+- task、usage、artifact、trace 和 Provider operation 归因正确。
+- T2 对每个 active 模型执行其支持的 API type，同时不重复 T1 路由组合、T1.5 wire 协议/错误矩阵或单元内的输入与参数排列。
 - 发布强覆盖中不允许因缺少必要 key 静默通过；必须 preflight 失败或有明确批准的发布例外。
 
-## 9. T3：message-tunnel/Jarvis 链路测试
+## 10. T3：message-tunnel/Jarvis 链路测试
 
-### 9.1 目标
+### 10.1 目标
 
 验证消息从真实入口进入 msg-center，经 Jarvis/OpenDAN 调用 AICC 和 Provider，再由 msg-center 通过正确出口返回的完整链路。T3 侧重消息与 Agent 任务闭环，不要求覆盖全部模型和路由路径。
 
-### 9.2 入口
+### 10.2 入口
 
 runner 根据参数选择：
 
@@ -555,7 +568,7 @@ runner 根据参数选择：
 
 如果外部平台明确不支持某消息类型或多附件，必须记录 `platform_limitation` 证据并验证规定的降级行为，不能静默丢弃。
 
-### 9.3 单轮经典场景
+### 10.3 单轮经典场景
 
 至少覆盖：
 
@@ -569,7 +582,7 @@ runner 根据参数选择：
 - 压缩包解包、内容处理、结果文档和重新打包。
 - 一次回复同时包含文本和一个或多个附件。
 
-### 9.4 多附件
+### 10.4 多附件
 
 除非平台明确不支持，入站和出站都必须支持多附件。
 
@@ -597,7 +610,7 @@ runner 根据参数选择：
 
 平台不支持时，允许按明确策略拆成有序消息、生成 ZIP、返回 Named Store 引用或明确失败。报告必须同时记录标准出站消息和平台实际投递结果。
 
-### 9.5 压缩包
+### 10.5 压缩包
 
 压缩包由 Jarvis 处理，标准链路为：
 
@@ -623,7 +636,7 @@ runner 根据参数选择：
 
 Jarvis 必须限制解压目标路径、文件数、单文件大小、总大小和嵌套深度。
 
-### 9.6 多历史消息任务
+### 10.6 多历史消息任务
 
 每个场景包含前后依赖的多个指令，至少覆盖：
 
@@ -640,7 +653,7 @@ Jarvis 必须限制解压目标路径、文件数、单文件大小、总大小�
 
 “同 Provider 二次创作”必须验证 `provider_task_ref`、source task ID、Provider operation ID、exact model、Provider instance、continuation options 和输入 artifact 引用被保存和恢复；不支持原生续作时必须合理降级并向用户明确说明。
 
-### 9.7 消息与投递语义
+### 10.7 消息与投递语义
 
 必须覆盖：
 
@@ -654,11 +667,11 @@ Jarvis 必须限制解压目标路径、文件数、单文件大小、总大小�
 - msg-center/Jarvis 重启后历史、任务和未完成投递恢复。
 - 长任务完成后主动回传到原确定性 DID/信道。
 
-### 9.8 Telegram 自动化边界
+### 10.8 Telegram 自动化边界
 
 Telegram Bot API 不能模拟 owner 用户向 bot 发消息。初始方案可以使用真实 owner 的人工入站配合 runner 自动判定出站；如果要求完全自动化，必须另行设计受控 Telegram 用户测试账号、客户端协议、凭据保护和风控方案。引入新依赖前需要单独确认。
 
-### 9.9 T3 通过标准
+### 10.9 T3 通过标准
 
 - 每个启用入口的六类入站和六类出站覆盖齐全，或有平台限制和通过验证的降级策略。
 - 多附件不丢失、不乱序、不串到其他消息。
@@ -668,11 +681,13 @@ Telegram Bot API 不能模拟 owner 用户向 bot 发消息。初始方案可以
 - message ID、session、AICC task/trace、Provider operation 和出站消息可关联。
 - 结构断言全部通过，语义 Judge 达标或完成人工复核。
 
-## 10. AICC 横切能力
+## 11. AICC 横切能力
 
-以下能力必须在 T1/T2 中分工覆盖，并在 T3 选择代表场景验证链路表现。
+以下能力必须按 T1 路由与系统行为、T1.5 Provider 协议、T2 真实推理的职责分工覆盖，并在 T3 选择代表场景验证链路表现。
 
-### 10.1 Task 生命周期
+### 11.1 Task 生命周期
+
+完整状态机、幂等、取消、恢复和异常分支在 T1 覆盖；Provider 专属同步/streaming/异步 wire 状态映射在 T1.5 覆盖。T2 每个矩阵单元只验证其最小正常推理能够到达正确终态，不重复生命周期排列组合。
 
 - immediate succeeded。
 - running -> succeeded、failed、cancelled。
@@ -683,7 +698,9 @@ Telegram Bot API 不能模拟 owner 用户向 bot 发消息。初始方案可以
 - 并发完成、重复终态和迟到 Provider event。
 - 服务重启后的异步任务恢复或明确终止语义。
 
-### 10.2 Usage、费用和 quota
+### 11.2 Usage、费用和 quota
+
+quota、budget、幂等计费和 fallback 归因在 T1 覆盖；Provider usage 字段与单位的解析在 T1.5 覆盖。T2 只核对真实调用返回的 usage/cost/trace 已归因到当前矩阵单元，并把实际费用写入报告。
 
 - 成功且 Provider 返回 usage 时写入一次 durable usage。
 - 缺 usage 的成功响应按协议要求处理。
@@ -693,7 +710,7 @@ Telegram Bot API 不能模拟 owner 用户向 bot 发消息。初始方案可以
 - quota、budget、余额不足的路由拒绝。
 - 估算成本与实际 usage/cost 的报告。
 
-### 10.3 认证、安全和隔离
+### 11.3 认证、安全和隔离
 
 - 无 token、无效 token、过期 token。
 - RBAC 和管理 method 权限。
@@ -705,7 +722,7 @@ Telegram Bot API 不能模拟 owner 用户向 bot 发消息。初始方案可以
 
 跨用户、跨 tenant、RBAC 和管理 method 授权用例只在 T1 执行。需要第二租户的用例必须始终保留在 manifest；未配置 `other_tenant_session_token` 时明确记为 `skipped`，不得使用同租户凭据伪造通过，也不得阻断其它 T1 用例。
 
-### 10.4 配置和维护
+### 11.4 配置和维护
 
 - `service.reload_settings` 成功和失败。
 - 非法新配置失败后继续使用旧配置。
@@ -723,15 +740,15 @@ Gateway、消息入口、登录信息、Provider API token 和选定 instance �
 
 - 在 `finally` 中按原始序列化内容恢复 settings。
 - 等待 system-config 与 AICC runtime settings 的异步传播收敛后再执行断言或清理校验。
-- T1/T2 必须验证运行时 Provider inventory 也已恢复，不能只验证配置存储值；T3 只要求原样恢复其临时修改的 settings。
+- T1/T1.5/T2 如临时修改 Provider settings，必须验证运行时 Provider inventory 也已恢复，不能只验证配置存储值；T3 只要求原样恢复其临时修改的 settings。
 - 确保 API token、登录凭据和 session token 不进入控制台日志、报告或持久化 fixture。
 
-### 10.5 并发与稳定性
+### 11.5 并发与稳定性
 
 - 多 session 并发路由互不污染。
 - 不同 session、不同 case 应并发执行，避免无必要的全串行阻塞。
-- T1/T2 runner 必须同时提供全局并发上限、每个 Provider 的并发上限和每个 Provider 的最小请求间隔。
-- T1/T2 retry 必须重新经过相同的全局及 Provider 限流，不得绕过并发和请求间隔门禁。
+- T1/T1.5/T2 runner 必须同时提供全局并发上限、每个 Provider 的并发上限和每个 Provider 的最小请求间隔。
+- T1/T1.5/T2 retry 必须重新经过相同的全局及 Provider 限流，不得绕过并发和请求间隔门禁。
 - T3 只限制场景并发；不在 T3 runner 内重复实现全局/Provider 并发和最小请求间隔门禁。
 - 多 Provider instance 并发调用只在 T1 Mock 场景验证。
 - 并发 idempotency。
@@ -739,9 +756,9 @@ Gateway、消息入口、登录信息、Provider API token 和选定 instance �
 - timeout 有上限且输出最后已知状态。
 - runner、Mock Provider 或服务异常退出后能够清理测试状态。
 
-## 11. 可观测性与报告
+## 12. 可观测性与报告
 
-### 11.1 关联字段
+### 12.1 关联字段
 
 在适用场景下，报告应关联：
 
@@ -759,7 +776,7 @@ run_id
   -> artifact/named object ID
 ```
 
-### 11.2 失败分类
+### 12.2 失败分类
 
 至少使用：
 
@@ -779,7 +796,7 @@ run_id
 - `cleanup_failed`
 - `platform_limitation`
 
-### 11.3 报告内容
+### 12.3 报告内容
 
 报告至少包含：
 
@@ -788,7 +805,8 @@ run_id
 - planned、passed、failed、provider_restricted、skipped、not_applicable、review 数量。
 - 每次 attempt、耗时、错误码、failure class 和脱敏诊断。
 - T1 路由分支/组合覆盖率。
-- T2 官方能力与 AICC 能力差异。
+- T1.5 按 Provider、adapter/API version、API type 的官方协议请求/响应/错误覆盖率及证据 revision。
+- T2 `ProviderInstance × model × API-Type` 矩阵结果和推理正确性结论。
 - T3 各入口入站、出站和多附件覆盖率。
 - 真实调用次数、usage 和预计/实际成本。
 - 清理结果和遗留资源。
@@ -799,63 +817,68 @@ run_id
 
 真实调用的财务报告必须按 case、attempt、Provider driver、Provider instance、精确模型和 API 记录 usage/cost。Judge 调用属于真实模型调用，必须单独归因并计入调用次数和预算。Provider 未返回真实费用时必须标记为未知费用并保留估算敞口，不得按零费用处理。
 
-## 12. 执行模式与门禁
+## 13. 执行模式与门禁
 
-T2/T3 会访问真实 Provider、真实消息入口或修改运行环境。CodeAgent 为检查自身开发结果而运行 T2/T3 前，必须获得当次人工授权；已有测试代码、配置文件、`--yes`、确认倒计时超时或历史授权不能自动视为本次执行许可。授权应明确允许的 Provider、入口、配置变更和费用上限。工程内 CodeAgent 按 `harness/SKILLS/aicc-e2e-test/SKILL.md` 执行该门禁；runner 的确认机制只防止人工误触，不替代 CodeAgent 授权。T1 Mock 在不产生真实费用且配置变更已显式允许时，可按普通 CI 门禁执行。
+T2/T3 会访问真实 Provider、真实消息入口或修改运行环境。CodeAgent 为检查自身开发结果而运行 T2/T3 前，必须获得当次人工授权；已有测试代码、配置文件、`--yes`、确认倒计时超时或历史授权不能自动视为本次执行许可。授权应明确允许的 Provider、入口、配置变更和费用上限。工程内 CodeAgent 按 `harness/SKILLS/aicc-e2e-test/SKILL.md` 执行该门禁；runner 的确认机制只防止人工误触，不替代 CodeAgent 授权。T1/T1.5 Mock 在不产生真实费用且配置变更已显式允许时，可按普通 CI 门禁执行。
 
-### 12.1 普通 CI
+### 13.1 普通 CI
 
 - 执行 T1 全部 P0 Mock 用例。
+- 执行 T1.5 全部 P0 协议契约用例。
 - 不访问外网，不读取真实 Provider key。
-- T1 P0 任何失败阻断合入。
+- T1/T1.5 P0 任何失败阻断合入。
 
-### 12.2 Nightly
+### 13.2 Nightly
 
 - 执行 T1 全量。
-- 按 Provider/instance 分片执行 T2。
+- 执行 T1.5 全量，并按 Provider 分片。
+- 按 `ProviderInstance × model × API-Type` 分片执行 T2。
 - 执行 T3 自动化 MessageHub/msg-center 代表场景。
 - Telegram owner 入站、需要真实外部账号的 Email/Slack 入站和需要人工视觉、听觉判断的场景可以独立安排。
 
-### 12.3 发布验收
+### 13.3 发布验收
 
 - 重新检查并冻结 Provider 模型能力基线。
 - 执行 T1 全量。
-- 执行 T2 全 Provider；每个 Provider 选择一个经批准的参数化 instance，执行其全模型能力矩阵。
+- 执行 T1.5 全 Provider 协议契约矩阵。
+- 执行 T2 全部获准 Provider instance 的 `ProviderInstance × model × API-Type` 矩阵，每个单元使用一个最小正确性用例。
 - 执行 T3 各启用入口、六类消息、多附件和多轮核心场景。
 - 所有 `review` 必须处理完毕。
 - skipped 和平台限制必须有明确证据和发布批准，不能被计为 passed。
 
-## 13. 发布前能力同步流程
+## 14. 发布前能力同步流程
 
 每次 Provider、模型、metadata、路由或 adapter 变更后，至少执行：
 
 1. 更新官方能力证据和 release baseline。
 2. 更新 AICC metadata、inventory、api_type 和 adapter。
 3. 对比官方能力与 AICC 声明，确保双向一致。
-4. 更新受影响的 T1/T2 case manifest。
+4. 更新受影响的 T1/T1.5/T2 case manifest。
 5. 执行受影响 case。
-6. 执行该 Provider 全模型回归。
+6. 执行该 Provider 的 T1.5 协议回归和受影响的 T2 `ProviderInstance × model × API-Type` 单元。
 7. 执行全量发布验收。
 8. 验证事实配置、运营策略和路由配置的回滚。
 
-## 14. 建议实施里程碑
+## 15. 建议实施里程碑
 
 | 里程碑 | 范围 | 完成标准 |
 |---|---|---|
 | M0 规格冻结 | api_type/method、历史路由偏好、消息种类、平台限制 | 所有待定语义有书面结论 |
 | M1 公共基础 | fixture、manifest、Mock、报告、Judge | 可运行最小闭环并稳定复现 |
 | M2 T1 路由门禁 | 路由、fallback、多 instance、错误注入 | P0 进入 CI 且 100% 通过 |
-| M3 T2 Provider 基线 | 官方能力清单和真实模型矩阵 | 全部支持矩阵单元有结果 |
-| M4 T3 Jarvis 链路 | 六类消息、多附件、多轮、三个入口 | 自动及人工链路完成验收 |
-| M5 发布门禁 | 全量执行、报告、成本和清理 | 无未解释能力缺口和阻断失败 |
+| M3 T1.5 Provider 协议门禁 | 官方协议证据、高保真 Mock、正常与错误契约 | 全部支持的 Provider adapter/API type 通过独立 wire 断言 |
+| M4 T2 线上推理基线 | `ProviderInstance × model × API-Type` 最小真实推理矩阵 | 全部获准矩阵单元有结果且成本受控 |
+| M5 T3 Jarvis 链路 | 六类消息、多附件、多轮、三个入口 | 自动及人工链路完成验收 |
+| M6 发布门禁 | 全量执行、报告、成本和清理 | 无未解释能力缺口和阻断失败 |
 
-## 15. 最终验收标准
+## 16. 最终验收标准
 
 本方案完成必须同时满足：
 
 - T1 能确定性证明所有路由分支会选择正确模型/instance 或返回正确错误。
-- T2 能证明官方声明、AICC 模型能力声明、inventory 和 Provider adapter 行为完全一致。
-- 每次发布有版本化、可追溯的全 Provider/instance/model 能力基线和同步用例。
+- T1.5 能依据 Provider 官方资料独立证明 AICC wire 请求、正常响应解析和错误映射正确。
+- T2 能以最小真实调用证明每个获准 `ProviderInstance × model × API-Type` 单元的线上推理正确。
+- 每次发布有版本化、可追溯的 T1.5 Provider 协议基线和 T2 `ProviderInstance × model × API-Type` 能力基线。
 - T3 能证明每个启用入口支持六类消息、多附件和代表性多轮任务，或按平台限制正确降级。
 - task、resource、usage、quota、安全、配置和可观测性要求均有对应 case。
 - 输出消息种类不匹配必然失败；内容语义通过确定性断言、LLM Judge 和必要人工复核分层判定。

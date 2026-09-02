@@ -12,6 +12,7 @@
 - `AICC.md`：服务级设计总览。
 - `aicc_api设计.md`：对外 API 设计。
 - `aicc_router.md`：模型路由设计。
+- `aicc_e2e_test_requirements.md`：T1 路由、T1.5 Provider 官方协议契约、T2 线上推理和 T3 消息链路的测试分层与验收要求。
 - `aicc 逻辑模型目录.md`：逻辑模型目录设计。
 - `aicc_provider_plan.md`：Provider 实现方案。
 - `aicc-models-mgr.md`：模型管理与路由概念设计。
