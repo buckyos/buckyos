@@ -439,17 +439,19 @@ Owner：Resource/Security 小组
 
 依赖：WP-01、平台 Named Store/FileObject API
 
-- [ ] URL、Base64、NamedObject 鉴权；
-- [ ] Router 只读取 ObjId 和 FileObject meta；
-- [ ] Provider 选定后才读取 bytes；
-- [ ] MIME、大小、数量和批量限制；
-- [ ] 压缩包深度、文件数、加密、膨胀比和路径穿越防护；
-- [ ] 最后一跳上传和 multipart；
-- [ ] 输出 artifact/FileObject meta；
-- [ ] embedding 大结果 artifact 的 rows/dimensions/space metadata；
-- [ ] 普通日志和 trace 不保留原始内容。
+- [x] URL、Base64、NamedObject 鉴权；
+- [x] Router 只读取 ObjId 和 FileObject meta；
+- [x] Provider 选定后才读取 bytes；
+- [x] MIME、大小、数量和批量限制；
+- [x] 压缩包深度、文件数、加密、膨胀比和路径穿越防护；
+- [x] 最后一跳上传和 multipart；
+- [x] 输出 artifact/FileObject meta；
+- [x] embedding 大结果 artifact 的 rows/dimensions/space metadata；
+- [x] 普通日志和 trace 不保留原始内容。
 
 完成标准：资源权限、格式或限制失败发生在 Provider 调用前，并返回稳定 `resource_invalid`。
+
+实现记录：Resource/Security 小组已在 `src/frame/aicc/src/resource/mod.rs` 实现分阶段资源预检和最后一跳物化、显式鉴权接口、MIME 与配额限制、ZIP 安全检查、multipart、NamedDataMgr/FileObject artifact 写入及 embedding metadata；所有资源失败统一映射为非重试 `resource_invalid`，调试输出不包含原始内容或 digest。模块 8 个单元测试、`cargo test -p aicc`、all-target check、AICC clippy `-D warnings` 和格式检查均通过。RPC token 验证、RBAC authorizer 装配及真实执行链接入由 WP-16 Service Integration 完成。
 
 ### WP-14：Storage、Usage、Trace 与 Observability
 
