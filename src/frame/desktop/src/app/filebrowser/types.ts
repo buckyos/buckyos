@@ -1,14 +1,35 @@
 /**
  * File browser UI data model.
  *
- * The shapes here are the single source of truth for the prototype and drive
- * the mock data in `./mock/data.ts`.  Everything is derived from the PRD in
- * `product/bucky_file/filebrowser_PRD.md`.
- *
- * The formal stability, state, validation, Mock-contract, and NFSP mapping
- * rules are documented in `./UI_DATAMODEL.md`.
+ * The shapes here are the formal UI-facing data contract described in
+ * `./UI_DATAMODEL.md` (§2). They drive the mock fixtures in `./mock/` and are
+ * the boundary a future NFSP adapter maps onto — NFSP wire types never leak
+ * into components.
  */
 
+// ─── Semantic aliases (§2.1) ───
+// They document meaning without branded-string runtime wrappers.
+
+/** Target identity, mapped from a stable backend Ref — never a path. */
+export type FileEntryId = string
+/** Listing-occurrence identity; unique within one listing only. */
+export type ListItemKey = string
+export type CollectionId = string
+export type TopicId = string
+export type DeviceId = string
+/** Canonical location URL (dfs:// | view:// | collection://). */
+export type LocationUrl = string
+/** A DFS display/locator path — not persistent identity. */
+export type DfsPath = string
+/** ISO-8601 timestamp string. */
+export type ISODateTime = string
+
+export type LocationKind = 'folder' | 'view' | 'collection'
+
+/**
+ * Presentation classification, not backend NodeKind. Unknown/unsupported
+ * backend types render as `other`.
+ */
 export type FileKind =
   | 'folder'
   | 'image'
@@ -18,119 +39,6 @@ export type FileKind =
   | 'archive'
   | 'code'
   | 'other'
-
-/** A single entry shown in the main content area (folder or file). */
-export interface FileEntry {
-  id: string
-  name: string
-  kind: FileKind
-  /** Canonical DFS path. */
-  path: string
-  /** Optional device/mount anchor for the device view. */
-  devicePath?: string
-  /** Public URL for files located under a `public` folder. */
-  publicUrl?: string
-  sizeBytes?: number
-  /** ISO string — when the entry was last modified. */
-  modifiedAt: string
-  /** Entries inside a folder (only populated for expanded tree nodes). */
-  children?: FileEntry[]
-  /** Whether this entry is inside a folder that triggers AI/KB pipelines. */
-  triggersActive?: boolean
-  /** Tags derived from Meta / AI. */
-  tags?: string[]
-  /** Topic ids this entry belongs to. */
-  topicIds?: string[]
-  /** AI semantic description. */
-  summary?: string
-  /** Camera / EXIF info for images. */
-  exif?: {
-    camera?: string
-    takenAt?: string
-    location?: string
-    lens?: string
-  }
-  /** Source of the file (upload, IM import, shared folder, etc.). */
-  source?: {
-    type: 'local' | 'telegram' | 'shared' | 'friend-upload' | 'system'
-    label: string
-  }
-  /** Story entries — contextual memories attached to the file. */
-  story?: StoryEntry[]
-  /**
-   * This entry itself is a reference (soft link). The target is a canonical
-   * URL whose scheme decides how it resolves (`dfs://` today; more later).
-   * Item-level: link entries can live in any container, not just collections.
-   */
-  link?: { targetUrl: string; broken?: boolean }
-}
-
-export interface StoryEntry {
-  id: string
-  kind: 'chat' | 'share' | 'session' | 'note'
-  title: string
-  excerpt: string
-  /** ISO date. */
-  occurredAt: string
-  source?: string
-}
-
-/** Left sidebar DFS tree node. */
-export interface DfsNode {
-  id: string
-  name: string
-  path: string
-  icon?: string
-  kind: 'home' | 'public' | 'shared' | 'privacy' | 'generic'
-  children?: DfsNode[]
-}
-
-/** A device exposed to advanced users in the sidebar. */
-export interface DeviceNode {
-  id: string
-  name: string
-  host: string
-  status: 'online' | 'offline' | 'syncing'
-  roots: { path: string; label: string }[]
-}
-
-/** AI Topic grouping. */
-export interface Topic {
-  id: string
-  title: string
-  description: string
-  /** AI provided reason for grouping. */
-  reason: string
-  coverageCount: number
-  updatedAt: string
-  /** Second-level groups inside the topic (source / location / kind / people). */
-  groups: TopicGroup[]
-}
-
-export interface TopicGroup {
-  id: string
-  label: string
-  axis: 'source' | 'location' | 'kind' | 'people' | 'time'
-  fileIds: string[]
-}
-
-export interface TriggerRule {
-  id: string
-  name: string
-  event: 'on_new_file_upload' | 'on_new_topic_created' | 'on_file_tagged'
-  appliesTo: string[]
-  pipeline: string
-  enabled: boolean
-  reason: string
-}
-
-export interface SearchHit {
-  entryId: string
-  /** Why this entry surfaced. */
-  reason: 'filename' | 'folder' | 'fulltext' | 'ai_semantic' | 'ai_topic'
-  snippet: string
-  score: number
-}
 
 export type ViewMode = 'list' | 'icon'
 
@@ -142,17 +50,180 @@ export type ViewMode = 'list' | 'icon'
 export type SortKey = 'manual' | 'name' | 'size' | 'modified' | 'kind'
 export type SortDir = 'asc' | 'desc'
 
+// ─── File entity and attached context (§2.3) ───
+
+export interface FileExif {
+  camera?: string
+  takenAt?: ISODateTime | string
+  location?: string
+  lens?: string
+}
+
+export type FileSourceType =
+  | 'local'
+  | 'telegram'
+  | 'shared'
+  | 'friend-upload'
+  | 'system'
+
+export interface FileSource {
+  type: FileSourceType
+  /** Human-readable provenance; never used as identity. */
+  label: string
+}
+
+export interface FileLink {
+  /** Canonical target locator. Persistence MUST use the resolved target Ref. */
+  targetUrl: LocationUrl
+  /** True when the target is stale, missing, or inaccessible. */
+  broken?: boolean
+}
+
+export interface StoryEntry {
+  id: string
+  kind: 'chat' | 'share' | 'session' | 'note'
+  title: string
+  excerpt: string
+  occurredAt: ISODateTime
+  source?: string
+}
+
+/**
+ * UI projection for one underlying file/folder-like target.
+ *
+ * Optional enrichment fields stay absent when unknown — adapters must not
+ * fabricate empty strings, zero sizes, or false metadata to satisfy rendering.
+ */
+export interface FileEntry {
+  id: FileEntryId
+  name: string
+  kind: FileKind
+  /** Current original DFS/display location, not persistent identity. */
+  path: DfsPath | LocationUrl
+  /** Prototype-only device anchor until device:// or referral integration exists. */
+  devicePath?: string
+  /** Externally usable URL supplied by access metadata. */
+  publicUrl?: string
+  /** Omitted for folders and when the source did not request base attributes. */
+  sizeBytes?: number
+  modifiedAt: ISODateTime
+  /** Sidebar/tree convenience only; listing contents come from a reader. */
+  children?: FileEntry[]
+  /** Derived summary of applicable trigger policy. */
+  triggersActive?: boolean
+  tags?: string[]
+  topicIds?: TopicId[]
+  summary?: string
+  exif?: FileExif
+  source?: FileSource
+  story?: StoryEntry[]
+  /** Item-level soft link; independent of Collection membership. */
+  link?: FileLink
+}
+
+// ─── Sidebar projections (§2.4) ───
+// Separate sources, each with its own loading/error state — not one combined
+// bootstrap DTO (see FileBrowserSidebarState in data/state.ts).
+
+export interface DfsNode {
+  id: string
+  name: string
+  path: DfsPath | LocationUrl
+  icon?: string
+  kind: 'home' | 'public' | 'shared' | 'privacy' | 'generic'
+  children?: DfsNode[]
+}
+
+export interface DeviceRoot {
+  path: string
+  label: string
+}
+
+export interface DeviceNode {
+  id: DeviceId
+  name: string
+  host: string
+  status: 'online' | 'offline' | 'syncing'
+  roots: DeviceRoot[]
+}
+
+export interface TopicGroup {
+  id: string
+  label: string
+  axis: 'source' | 'location' | 'kind' | 'people' | 'time'
+  fileIds: FileEntryId[]
+}
+
+export interface Topic {
+  id: TopicId
+  title: string
+  description: string
+  /** User-visible explanation of why the grouping exists. */
+  reason: string
+  coverageCount: number
+  updatedAt: ISODateTime
+  groups: TopicGroup[]
+}
+
+export interface CollectionSummary {
+  id: CollectionId
+  title: string
+  /** Recursive reference count; Collection groups are not counted. */
+  refCount: number
+}
+
+// ─── Search result model (§2.9) ───
+// The rendered shape: full projected entry + explanation. Reasons are an
+// extensible registry — unknown reasons render in a generic section, never
+// dropped.
+
+export type SearchReason =
+  | 'filename'
+  | 'folder'
+  | 'fulltext'
+  | 'ai_semantic'
+  | 'ai_topic'
+  | (string & {})
+
+export interface SearchResultItem {
+  entry: FileEntry
+  reason: SearchReason
+  /** User-visible evidence/explanation, already safe to display. */
+  detail: string
+  score?: number
+}
+
+export interface SearchSourceStatus {
+  mode: string
+  state: 'ok' | 'degraded' | 'error' | (string & {})
+  tookMs?: number
+  reason?: string
+}
+
+export interface SearchResultPage {
+  items: SearchResultItem[]
+  partial: boolean
+  sources: SearchSourceStatus[]
+  nextCursor?: string
+}
+
+// ─── Browser runtime state (§2.11) ───
+// Session-local; never persisted as-is (Sets/Maps/pending promises would need
+// normalization first). Recently closed tabs retain at most ten items.
+
 export interface BrowserTab {
   id: string
   title: string
-  path: string
+  /** Canonical location URL after adoption into a pane. */
+  path: LocationUrl
 }
 
-export interface FileBrowserSnapshot {
-  dfsRoots: DfsNode[]
-  devices: DeviceNode[]
-  topics: Topic[]
-  triggers: TriggerRule[]
-  entriesByPath: Record<string, FileEntry[]>
-  entriesById: Record<string, FileEntry>
+export interface HistoryState {
+  back: LocationUrl[]
+  forward: LocationUrl[]
+}
+
+export interface ClipboardState {
+  entries: FileEntry[]
+  mode: 'cut' | 'copy'
 }

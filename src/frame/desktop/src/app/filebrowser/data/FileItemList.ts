@@ -5,10 +5,15 @@
  * Holds a sparse map of loaded items so virtual scrolling can demand-load by
  * index; requests are page-aligned (PAGE_SIZE) and deduped in flight, and a
  * version token discards stale responses after reload / query changes.
+ *
+ * Totals may be unknown (cursor-backed readers): the list then loads
+ * sequentially (`loadedCount` + `hasMore`, mirroring an NFSP cursor chain —
+ * no random access is invented from an unknown cursor) and the renderer shows
+ * a load-more sentinel row instead of a fixed extent (UI_DATAMODEL.md §5.1).
  */
 
 import type { SortDir, SortKey } from '../types'
-import type { FileItem, FolderReader, LocationCapabilities } from './FolderReader'
+import type { FileItem, FolderReader, LocationCapabilities, LocationMeta } from './FolderReader'
 import { resolveReader } from './readerRegistry'
 
 export const PAGE_SIZE = 200
@@ -21,9 +26,13 @@ export interface FileItemList {
   readonly snapshot: number
   /** Pass-through of the reader's — the UI's single point of consumption. */
   readonly capabilities: LocationCapabilities
-  readonly meta?: { title: string; description?: string }
-  /** Unknown while no page answered yet — UI shows "…" / load-more mode. */
+  readonly meta?: LocationMeta
+  /** Unknown while no page answered yet, or for cursor-backed listings. */
   readonly totalCount: number | undefined
+  /** Contiguous items loaded from index 0 — the virtual extent when the total is unknown. */
+  readonly loadedCount: number
+  /** True when the total is unknown and the reader reported more content. */
+  readonly hasMore: boolean
   readonly status: FileItemListStatus
   readonly error: Error | null
   /** Undefined for not-yet-loaded positions → skeleton placeholder rows. */
@@ -51,6 +60,11 @@ export class FileItemListImpl implements FileItemList {
   private inFlightPages = new Set<number>()
   private lastRange: [number, number] = [0, PAGE_SIZE - 1]
 
+  // ─── Unknown-total sequential loading state ───
+  private contiguous = 0
+  private hasMoreFlag = false
+  private tailInFlight = false
+
   private listeners = new Set<() => void>()
   /** Monotonic snapshot version for useSyncExternalStore. */
   snapshot = 0
@@ -75,8 +89,16 @@ export class FileItemListImpl implements FileItemList {
     return this.ensureReader().capabilities
   }
 
-  get meta(): { title: string; description?: string } | undefined {
+  get meta(): LocationMeta | undefined {
     return this.ensureReader().meta
+  }
+
+  get loadedCount(): number {
+    return this.contiguous
+  }
+
+  get hasMore(): boolean {
+    return this.totalCount === undefined && this.hasMoreFlag
   }
 
   subscribe(listener: () => void): () => void {
@@ -106,10 +128,13 @@ export class FileItemListImpl implements FileItemList {
   private restart() {
     this.versionToken += 1
     this.inFlightPages.clear()
+    this.tailInFlight = false
     this.items.clear()
     this.byKey.clear()
     this.orderedKeysCache = null
     this.totalCount = undefined
+    this.contiguous = 0
+    this.hasMoreFlag = false
     this.error = null
     this.status = 'loading'
     this.emit()
@@ -143,11 +168,88 @@ export class FileItemListImpl implements FileItemList {
 
   private fetchRange(start: number, end: number) {
     if (!this.query) return
+    if (this.totalCount === undefined) {
+      // No known extent yet (first load, or a cursor-backed reader): load
+      // sequentially — pages from an unknown cursor cannot be random-accessed.
+      this.fetchTail()
+      return
+    }
     const firstPage = Math.floor(start / PAGE_SIZE)
     const lastPage = Math.floor(end / PAGE_SIZE)
     for (let page = firstPage; page <= lastPage; page += 1) {
       this.fetchPage(page)
     }
+  }
+
+  private listQueryAt(offset: number) {
+    const query = this.query!
+    return {
+      sortKey: query.sortKey,
+      sortDir: query.sortDir,
+      foldersFirst: query.sortKey !== 'manual',
+      offset,
+      limit: PAGE_SIZE,
+    }
+  }
+
+  private adoptTotal(totalCount: number) {
+    this.totalCount = totalCount
+    // A shrunken total (e.g. members removed) invalidates tail indexes.
+    for (const index of [...this.items.keys()]) {
+      if (index >= totalCount) {
+        const stale = this.items.get(index)
+        this.items.delete(index)
+        if (stale) this.byKey.delete(stale.key)
+      }
+    }
+    this.contiguous = Math.min(this.contiguous, totalCount)
+  }
+
+  /** Sequential loader for unknown totals — one request in flight, from `contiguous`. */
+  private fetchTail() {
+    if (this.tailInFlight || !this.query) return
+    // Already loaded past the visible window and a response told us there is
+    // more: wait for the sentinel row to come into view again.
+    if (this.contiguous > 0 && this.contiguous > this.lastRange[1]) return
+    if (this.contiguous > 0 && !this.hasMoreFlag) return
+    const token = this.versionToken
+    const offset = this.contiguous
+    this.tailInFlight = true
+    this.ensureReader()
+      .list(this.listQueryAt(offset))
+      .then((result) => {
+        if (token !== this.versionToken) return
+        this.tailInFlight = false
+        result.items.forEach((item, i) => {
+          this.items.set(offset + i, item)
+          this.byKey.set(item.key, item)
+        })
+        this.contiguous = offset + result.items.length
+        if (result.totalCount !== undefined) {
+          this.adoptTotal(result.totalCount)
+        } else if (!result.hasMore) {
+          this.totalCount = this.contiguous
+        }
+        this.hasMoreFlag = this.totalCount === undefined && result.hasMore
+        this.orderedKeysCache = null
+        this.status = 'ready'
+        this.error = null
+        this.emit()
+        if (this.totalCount !== undefined) {
+          // Extent learned — any still-unloaded part of the window can now be
+          // fetched page-aligned.
+          this.fetchRange(this.lastRange[0], this.lastRange[1])
+        } else if (this.hasMoreFlag && this.contiguous <= this.lastRange[1]) {
+          this.fetchTail()
+        }
+      })
+      .catch((err: unknown) => {
+        if (token !== this.versionToken) return
+        this.tailInFlight = false
+        this.status = 'error'
+        this.error = err instanceof Error ? err : new Error(String(err))
+        this.emit()
+      })
   }
 
   private pageLoaded(page: number): boolean {
@@ -166,17 +268,10 @@ export class FileItemListImpl implements FileItemList {
   private fetchPage(page: number) {
     if (this.inFlightPages.has(page) || this.pageLoaded(page)) return
     const token = this.versionToken
-    const query = this.query
-    if (!query) return
+    if (!this.query) return
     this.inFlightPages.add(page)
     this.ensureReader()
-      .list({
-        sortKey: query.sortKey,
-        sortDir: query.sortDir,
-        foldersFirst: query.sortKey !== 'manual',
-        offset: page * PAGE_SIZE,
-        limit: PAGE_SIZE,
-      })
+      .list(this.listQueryAt(page * PAGE_SIZE))
       .then((result) => {
         if (token !== this.versionToken) return
         this.inFlightPages.delete(page)
@@ -186,15 +281,7 @@ export class FileItemListImpl implements FileItemList {
           this.byKey.set(item.key, item)
         })
         if (result.totalCount !== undefined) {
-          this.totalCount = result.totalCount
-          // A shrunken total (e.g. members removed) invalidates tail indexes.
-          for (const index of [...this.items.keys()]) {
-            if (index >= result.totalCount) {
-              const stale = this.items.get(index)
-              this.items.delete(index)
-              if (stale) this.byKey.delete(stale.key)
-            }
-          }
+          this.adoptTotal(result.totalCount)
         } else if (!result.hasMore) {
           this.totalCount = offset + result.items.length
         }
@@ -224,6 +311,7 @@ export class FileItemListImpl implements FileItemList {
     this.reader = null
     this.versionToken += 1
     this.inFlightPages.clear()
+    this.tailInFlight = false
     // Back to idle so a StrictMode re-mount's setQuery() restarts the fetch
     // (the same-query dedupe would otherwise leave it loading forever).
     this.status = 'idle'

@@ -2,11 +2,32 @@ import type {
   BrowserTab,
   DeviceNode,
   DfsNode,
-  FileBrowserSnapshot,
   FileEntry,
+  SearchResultItem,
   Topic,
-  TriggerRule,
 } from '../types'
+
+// ─── Mock-only fixture shapes (UI_DATAMODEL.md §2.4: Volatile, not API DTOs) ───
+
+export interface TriggerRule {
+  id: string
+  name: string
+  event: 'on_new_file_upload' | 'on_new_topic_created' | 'on_file_tagged'
+  appliesTo: string[]
+  pipeline: string
+  enabled: boolean
+  reason: string
+}
+
+/** In-memory fixture source. Rendered views consume readers, never this. */
+export interface FileBrowserSnapshot {
+  dfsRoots: DfsNode[]
+  devices: DeviceNode[]
+  topics: Topic[]
+  triggers: TriggerRule[]
+  entriesByPath: Record<string, FileEntry[]>
+  entriesById: Record<string, FileEntry>
+}
 
 const publicBaseUrl = 'https://alice.personal.buckyos.dev'
 
@@ -619,6 +640,57 @@ export function mockLibraryEntries(): FileEntry[] {
   return entries
 }
 
+// ─── Mock write operations ───
+// Real mutations against the in-memory index so mkdir/rename/upload-commit
+// loops are experienceable. Persistence belongs to the backend: refresh =
+// back to seeds. Callers broadcast `invalidateMockPath` themselves.
+
+function parentPathOf(path: string): string {
+  return path.split('/').slice(0, -1).join('/') || '/'
+}
+
+/** Insert a new entry (uploaded file, created folder) under its parent path. */
+export function mockAddEntry(entry: FileEntry) {
+  entries.push(entry)
+  byId[entry.id] = entry
+  const parent = parentPathOf(entry.path)
+  if (!byPath[parent]) byPath[parent] = []
+  byPath[parent].push(entry)
+  if (entry.kind === 'folder' && !byPath[entry.path]) byPath[entry.path] = []
+}
+
+/** True when `name` already exists in the folder at `parentPath`. */
+export function mockNameExists(parentPath: string, name: string): boolean {
+  return (byPath[parentPath] ?? []).some((entry) => entry.name === name)
+}
+
+/** Rename an entry in place; folders rewrite their descendants' paths too. */
+export function mockRenameEntry(id: string, name: string): boolean {
+  const entry = byId[id]
+  if (!entry || entry.name === name) return false
+  const parent = parentPathOf(entry.path)
+  const oldPath = entry.path
+  const newPath = parent === '/' ? `/${name}` : `${parent}/${name}`
+  entry.name = name
+  entry.path = newPath
+  if (entry.kind === 'folder') {
+    const prefix = `${oldPath}/`
+    for (const key of Object.keys(byPath)) {
+      if (key === oldPath || key.startsWith(prefix)) {
+        const moved = byPath[key]
+        delete byPath[key]
+        byPath[newPath + key.slice(oldPath.length)] = moved
+      }
+    }
+    for (const other of Object.values(byId)) {
+      if (other !== entry && other.path.startsWith(prefix)) {
+        other.path = newPath + other.path.slice(oldPath.length)
+      }
+    }
+  }
+  return true
+}
+
 export const defaultTab: BrowserTab = {
   id: 'tab-home',
   title: 'Home',
@@ -630,14 +702,12 @@ export const defaultTabs: BrowserTab[] = [
   { id: 'tab-pictures', title: 'Pictures', path: '/home/Pictures' },
 ]
 
-/** Search over the mock snapshot — returns grouped hits with explainability. */
-export function searchFiles(query: string) {
+/** Search over the mock snapshot — returns explained hits (§2.9 shape). */
+export function searchFiles(query: string): SearchResultItem[] {
   const q = query.trim().toLowerCase()
-  if (!q) {
-    return [] as { entry: FileEntry; reason: string; detail: string }[]
-  }
+  if (!q) return []
 
-  const hits: { entry: FileEntry; reason: string; detail: string }[] = []
+  const hits: SearchResultItem[] = []
   for (const entry of entries) {
     if (entry.kind === 'folder') {
       if (entry.name.toLowerCase().includes(q)) {
@@ -651,7 +721,7 @@ export function searchFiles(query: string) {
     }
     const tagHit = entry.tags?.find((tag) => tag.toLowerCase().includes(q))
     if (tagHit) {
-      hits.push({ entry, reason: 'ai_semantic', detail: `Tag match — #${tagHit}` })
+      hits.push({ entry, reason: 'ai_semantic', detail: `Tag match — #${tagHit}`, score: 0.91 })
       continue
     }
     if (entry.summary?.toLowerCase().includes(q)) {
@@ -659,6 +729,7 @@ export function searchFiles(query: string) {
         entry,
         reason: 'ai_semantic',
         detail: 'AI summary mentions this term',
+        score: 0.74,
       })
       continue
     }
@@ -667,6 +738,7 @@ export function searchFiles(query: string) {
         entry,
         reason: 'ai_topic',
         detail: 'Found inside an attached story excerpt',
+        score: 0.66,
       })
     }
   }

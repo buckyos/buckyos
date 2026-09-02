@@ -206,6 +206,128 @@ class MockTopicViewReader implements FolderReader {
   dispose() {}
 }
 
+// ─── Deterministic diagnostic views (§7.2 fixtures) ───
+// Selectable by URL, no timing dependence:
+//   view://demo/error          every list() fails, retry keeps failing
+//   view://demo/flaky          first list() fails, retry succeeds
+//   view://demo/unknown-total  cursor-style pages, no totalCount promised
+
+/** Always fails — exercises the listing error state and Retry. */
+class FailingViewReader implements FolderReader {
+  readonly capabilities = VIEW_CAPABILITIES
+  readonly meta = { title: 'Demo · failing view', description: 'Every load fails on purpose.' }
+  readonly url: string
+
+  constructor(url: string) {
+    this.url = url
+  }
+
+  async list(): Promise<FileItemPage> {
+    await mockDelay(40, 90)
+    throw new Error('Deterministic mock failure (view://demo/error)')
+  }
+
+  async getItem(): Promise<FileItem | null> {
+    return null
+  }
+
+  watch(): () => void {
+    return () => {}
+  }
+
+  dispose() {}
+}
+
+/** Fails once per reader instance, then succeeds — exercises Retry recovery. */
+class FlakyViewReader implements FolderReader {
+  readonly capabilities = VIEW_CAPABILITIES
+  readonly meta = {
+    title: 'Demo · flaky view',
+    description: 'The first load fails; Retry succeeds.',
+  }
+  readonly url: string
+  private failed = false
+
+  constructor(url: string) {
+    this.url = url
+  }
+
+  async list(query: ListQuery): Promise<FileItemPage> {
+    await mockDelay(40, 90)
+    if (!this.failed) {
+      this.failed = true
+      throw new Error('Transient mock failure (view://demo/flaky) — retry succeeds')
+    }
+    const entries = mockLibraryEntries().filter((entry) => entry.kind !== 'folder')
+    const sorted = sortEntriesForQuery(entries, query.sortKey, query.sortDir, query.foldersFirst)
+    return pageOf(sorted, query)
+  }
+
+  async getItem(key: string): Promise<FileItem | null> {
+    const entry = mockEntryById(key)
+    return entry ? { key, entry } : null
+  }
+
+  watch(): () => void {
+    return () => {}
+  }
+
+  dispose() {}
+}
+
+/**
+ * Cursor-style listing that never reports a total and serves short pages —
+ * the unknown-total contract (§5.1): the UI must leave its initial skeleton
+ * via `loadedCount + hasMore` and request pages sequentially.
+ */
+const UNKNOWN_TOTAL_PAGE = 40
+
+class UnknownTotalViewReader implements FolderReader {
+  readonly capabilities: LocationCapabilities = {
+    ...VIEW_CAPABILITIES,
+    defaultSortKey: 'name',
+  }
+  readonly meta = {
+    title: 'Demo · unknown total',
+    description: 'Cursor pages without a total count — load-more mode.',
+  }
+  readonly url: string
+
+  constructor(url: string) {
+    this.url = url
+  }
+
+  async list(query: ListQuery): Promise<FileItemPage> {
+    await mockDelay()
+    const entries = mockEntriesAtPath('/home/stress-10k') ?? []
+    const sorted = sortEntriesForQuery(entries, query.sortKey, query.sortDir, query.foldersFirst)
+    const limit = Math.min(UNKNOWN_TOTAL_PAGE, query.limit)
+    const slice = sorted.slice(query.offset, query.offset + limit)
+    return {
+      items: slice.map((entry): FileItem => ({ key: entry.id, entry })),
+      hasMore: query.offset + slice.length < sorted.length,
+    }
+  }
+
+  async getItem(key: string): Promise<FileItem | null> {
+    const entry = mockEntryById(key)
+    return entry ? { key, entry } : null
+  }
+
+  watch(): () => void {
+    return () => {}
+  }
+
+  dispose() {}
+}
+
+function demoViewReader(url: string, kind: string | undefined): FolderReader {
+  if (kind === 'error') return new FailingViewReader(url)
+  if (kind === 'flaky') return new FlakyViewReader(url)
+  if (kind === 'unknown-total') return new UnknownTotalViewReader(url)
+  return new EmptyViewReader(url)
+}
+
 /** Stub for unknown view types — empty, read-only. */
 class EmptyViewReader implements FolderReader {
   readonly capabilities = VIEW_CAPABILITIES
@@ -244,6 +366,7 @@ export function registerMockReaders() {
       if (parts?.viewType === 'topic' && parts.rest[0]) {
         return new MockTopicViewReader(url, parts.rest[0])
       }
+      if (parts?.viewType === 'demo') return demoViewReader(url, parts.rest[0])
       return new EmptyViewReader(url)
     },
   })

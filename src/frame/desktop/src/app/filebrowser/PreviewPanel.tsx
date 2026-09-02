@@ -17,6 +17,7 @@ import { useState } from 'react'
 import { useI18n } from '../../i18n/provider'
 import { formatBytes, formatDate, kindIcon } from './fileDisplay'
 import type { FileItem } from './data/FolderReader'
+import { usePreview } from './data/usePreview'
 import { displayPath } from './data/urls'
 import type { Topic } from './types'
 
@@ -38,6 +39,23 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   )
 }
 
+/** Section skeleton — enrichment namespaces resolving (§4.5 Loading/Progress). */
+function SectionSkeleton({ rows = 4 }: { rows?: number }) {
+  return (
+    <div className="space-y-2" data-testid="preview-skeleton">
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="grid grid-cols-[84px_1fr] items-center gap-2">
+          <span className="h-3 w-14 animate-pulse rounded-full bg-[color:color-mix(in_srgb,var(--cp-border)_50%,transparent)]" />
+          <span
+            className="h-3 animate-pulse rounded-full bg-[color:color-mix(in_srgb,var(--cp-border)_45%,transparent)]"
+            style={{ width: `${72 - (i % 3) * 16}%` }}
+          />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function PreviewPanel({
   item,
   topics,
@@ -48,6 +66,10 @@ export function PreviewPanel({
 }: PreviewPanelProps) {
   const { t } = useI18n()
   const [tab, setTab] = useState(0)
+  // Enrichment resolves asynchronously — identity/name render immediately
+  // from the item; meta/story sections skeleton until the state settles.
+  const preview = usePreview(item, topics)
+  const enriching = preview.status === 'loading'
 
   if (!item) {
     return (
@@ -61,9 +83,7 @@ export function PreviewPanel({
   }
 
   const entry = item.entry
-  const topicChips = (entry.topicIds ?? [])
-    .map((id) => topics.find((topic) => topic.id === id))
-    .filter((topic): topic is Topic => !!topic)
+  const topicChips = preview.data?.topics ?? []
 
   // Reference items carry two paths: the collection-side path and the original.
   const refPath = item.ref && item.ref.refPath !== entry.path ? item.ref.refPath : null
@@ -119,7 +139,8 @@ export function PreviewPanel({
       </Tabs>
 
       <div className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
-        {tab === 0 ? (
+        {tab === 0 && enriching ? <SectionSkeleton rows={5} /> : null}
+        {tab === 0 && !enriching ? (
           <>
             <div className="space-y-1.5">
               <Row label={t('filebrowser.preview.size', 'Size')}>
@@ -238,7 +259,8 @@ export function PreviewPanel({
           </>
         ) : null}
 
-        {tab === 1 ? (
+        {tab === 1 && enriching ? <SectionSkeleton rows={3} /> : null}
+        {tab === 1 && !enriching ? (
           entry.story?.length ? (
             <div className="space-y-2">
               {entry.story.map((story) => (

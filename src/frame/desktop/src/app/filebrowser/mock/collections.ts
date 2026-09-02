@@ -8,7 +8,7 @@
  * backend data, the UI does not self-persist. Refresh = back to seeds.
  */
 
-import type { FileEntry, SortDir, SortKey } from '../types'
+import type { CollectionSummary, FileEntry, SortDir, SortKey } from '../types'
 import type { CollectionNode, CollectionReader } from '../data/CollectionModel'
 import type {
   FileItem,
@@ -22,12 +22,7 @@ import { compareEntries } from '../data/sortEntries'
 import { collectionUrl, dfsPathOf, parseCollectionUrl } from '../data/urls'
 import { mockDelay } from '../data/mockReader'
 
-export interface CollectionSummary {
-  id: string
-  title: string
-  /** Reference count across all nested groups. */
-  refCount: number
-}
+export type { CollectionSummary }
 
 interface CollectionDef {
   id: string

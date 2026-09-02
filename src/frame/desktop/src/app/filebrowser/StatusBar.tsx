@@ -8,8 +8,11 @@ import { displayPath } from './data/urls'
 interface StatusBarProps {
   /** Canonical location url. */
   currentUrl: string
-  /** Undefined while the first page is in flight — renders as "…". */
+  /** Undefined while the first page is in flight or for cursor-backed listings. */
   totalCount: number | undefined
+  /** Loaded window size — shown as "N+" when the total is unknown (§5.1). */
+  loadedCount?: number
+  hasMore?: boolean
   /** Captured selection — details for one item, a count for many. */
   selectedItems: FileItem[]
   onCopy: (text: string) => void
@@ -20,6 +23,8 @@ interface StatusBarProps {
 export function StatusBar({
   currentUrl,
   totalCount,
+  loadedCount,
+  hasMore,
   selectedItems,
   onCopy,
   onExpandSidebar,
@@ -44,9 +49,15 @@ export function StatusBar({
   return (
     <div className="flex flex-wrap items-center gap-3 border-t border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface)_90%,transparent)] px-3 py-1.5 text-[11px] text-[color:var(--cp-muted)]">
       <span>
-        {totalCount === undefined
-          ? t('filebrowser.status.itemsUnknown', '… items')
-          : t('filebrowser.status.items', '{{count}} items', { count: totalCount })}
+        {totalCount !== undefined
+          ? t('filebrowser.status.items', '{{count}} items', { count: totalCount })
+          : loadedCount
+            ? hasMore
+              ? t('filebrowser.status.itemsLoaded', '{{count}}+ items', {
+                  count: loadedCount,
+                })
+              : t('filebrowser.status.items', '{{count}} items', { count: loadedCount })
+            : t('filebrowser.status.itemsUnknown', '… items')}
       </span>
       {multiSelection ? (
         <>

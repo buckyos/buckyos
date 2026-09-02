@@ -7,14 +7,27 @@
  * the mock store in `../mock/collections.ts` implements it in memory.
  */
 
+import type { CollectionId, ListItemKey, LocationUrl } from '../types'
 import type { FolderReader } from './FolderReader'
 
+/**
+ * Mock store node shape — Volatile (UI_DATAMODEL.md §2.8): the backend
+ * persists a target Ref instead of `targetUrl` and identifies nodes by
+ * `entry_ref` instead of `key`. The UI-facing invariants are what is stable.
+ */
 export type CollectionNode =
-  | { type: 'ref'; key: string; targetUrl: string }
+  | { type: 'ref'; key: ListItemKey; targetUrl: LocationUrl }
   //  targetUrl is any canonical URL: the reference type is decided by its
   //  scheme (`dfs://` today) and resolved through the target-resolver
   //  registry — new reference types register a scheme, the model is unchanged.
-  | { type: 'group'; key: string; name: string; children: CollectionNode[] }
+  | { type: 'group'; key: ListItemKey; name: string; children: CollectionNode[] }
+
+export interface CollectionDetail {
+  id: CollectionId
+  title: string
+  description?: string
+  nodes: CollectionNode[]
+}
 
 /** Narrow a resolved reader to the collection interface (capability + shape check). */
 export function asCollectionReader(reader: FolderReader): CollectionReader | null {

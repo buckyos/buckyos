@@ -40,14 +40,24 @@ import { SearchResultsPanel } from './SearchResultsPanel'
 import { Sidebar } from './Sidebar'
 import { StatusBar } from './StatusBar'
 import { TopBar } from './TopBar'
+import { TransfersPanel } from './TransfersPanel'
+import { NamePromptDialog } from './dialogs/NamePromptDialog'
+import type { NamePromptRequest } from './dialogs/NamePromptDialog'
 import { asCollectionReader } from './data/CollectionModel'
 import type { FileItem } from './data/FolderReader'
 import { installFileBrowserData } from './data/install'
+import { invalidateMockPath } from './data/mockReader'
 import { resolveReader } from './data/readerRegistry'
+import { collectionTitleSchema, entryNameSchema, validationFallback } from './data/schemas'
+import { useSearch } from './data/search'
+import { useSidebarDevices, useSidebarDfs, useSidebarTopics } from './data/sidebarSources'
+import { stashLocalFile, transferStore } from './data/transfers'
 import { useFolderList } from './data/useFolderList'
 import {
+  COLLECTION_SCHEME,
   collectionUrl,
   crumbsForUrl,
+  dfsPathOf,
   displayPath,
   fallbackTitle,
   normalizeUrl,
@@ -55,15 +65,20 @@ import {
   parseCollectionUrl,
 } from './data/urls'
 import { collectionStore } from './mock/collections'
-import { defaultTabs, fileBrowserSnapshot, searchFiles } from './mock/data'
-import type { BrowserTab, DfsNode, FileEntry, SortDir, SortKey, ViewMode } from './types'
+import { defaultTabs, mockAddEntry, mockNameExists, mockRenameEntry } from './mock/data'
+import type {
+  BrowserTab,
+  ClipboardState,
+  DfsNode,
+  FileEntry,
+  HistoryState,
+  SearchResultItem,
+  SortDir,
+  SortKey,
+  ViewMode,
+} from './types'
 
 installFileBrowserData()
-
-interface HistoryState {
-  back: string[]
-  forward: string[]
-}
 
 interface DetachedTab {
   tab: BrowserTab
@@ -94,6 +109,8 @@ function useBrowserPane(initialTabs: BrowserTab[]) {
   const activeHistory = history[activeTabId] ?? { back: [], forward: [] }
 
   const list = useFolderList(currentUrl, sortKey, sortDir)
+  // Async search state — blank input stays idle and never hits the provider.
+  const search = useSearch(searchQuery)
 
   // Entering a different location kind resets the sort to its default
   // (collections open in manual order); an invalid key always resets.
@@ -339,6 +356,7 @@ function useBrowserPane(initialTabs: BrowserTab[]) {
     clearSelection,
     searchQuery,
     setSearchQuery,
+    search,
     navigate,
     revealOriginal,
     back,
@@ -368,9 +386,16 @@ export function FileBrowserView() {
   const [toast, setToast] = useState<string | null>(null)
   const [previewCollapsed, setPreviewCollapsed] = useState(false)
   /** Toolbar cut/copy clipboard, shared by both panes (mock — entries only). */
-  const [clipboard, setClipboard] = useState<{ entries: FileEntry[]; mode: 'cut' | 'copy' } | null>(
-    null,
-  )
+  const [clipboard, setClipboard] = useState<ClipboardState | null>(null)
+  /** Active form dialog (new collection/group, rename, new folder). */
+  const [namePrompt, setNamePrompt] = useState<NamePromptRequest | null>(null)
+
+  // Sidebar sources — separate async states so one failing source never
+  // blanks the browser (§4.3).
+  const dfsSource = useSidebarDfs()
+  const devicesSource = useSidebarDevices()
+  const topicsSource = useSidebarTopics()
+  const topicList = topicsSource.state.data ?? []
 
   // Live collection list (sidebar + "Add to Collection" submenu).
   useSyncExternalStore(collectionStore.subscribeList, collectionStore.listSnapshot)
@@ -459,17 +484,19 @@ export function FileBrowserView() {
   const leftSelectedItem = leftSelectedItems.length === 1 ? leftSelectedItems[0] : null
   const rightSelectedItem = rightSelectedItems.length === 1 ? rightSelectedItems[0] : null
 
-  const leftSearchHits = useMemo(
-    () => (left.searchQuery.trim() ? searchFiles(left.searchQuery) : []),
-    [left.searchQuery],
-  )
-  const rightSearchHits = useMemo(
-    () => (right.searchQuery.trim() ? searchFiles(right.searchQuery) : []),
-    [right.searchQuery],
-  )
-
-  const handleOpenEntry = (item: FileItem) => {
-    left.applySelection([item.key], new Map([[item.key, item]]))
+  /**
+   * Search selection (§2.9): a folder leaves search and navigates to its
+   * original location; a file opens its preview context. entry.path is never
+   * rewritten by search.
+   */
+  const handleSearchSelect = (pane: BrowserPane, hit: SearchResultItem) => {
+    if (hit.entry.kind === 'folder') {
+      pane.setSearchQuery('')
+      pane.navigate(hit.entry.path)
+      return
+    }
+    const item = itemOf(hit.entry)
+    pane.applySelection([item.key], new Map([[item.key, item]]))
     if (isMobile) setMobilePreviewOpen(true)
   }
 
@@ -541,18 +568,127 @@ export function FileBrowserView() {
     )
   }
 
-  const promptNewCollection = (): string | null => {
-    const name = window.prompt(
-      t('filebrowser.prompt.newCollection', 'Name for the new collection:'),
-      '',
-    )
-    if (!name?.trim()) return null
-    return collectionStore.create(name.trim())
+  // ─── Form dialogs (react-hook-form + Zod schemas, §3 — no window.prompt) ───
+
+  const requestNewCollection = (onCreated?: (id: string) => void) => {
+    setNamePrompt({
+      title: t('filebrowser.prompt.newCollection', 'New collection'),
+      label: t('filebrowser.prompt.collectionTitle', 'Title'),
+      submitLabel: t('filebrowser.actions.create', 'Create'),
+      schema: collectionTitleSchema,
+      onSubmit: (value) => {
+        const id = collectionStore.create(value)
+        onCreated?.(id)
+      },
+    })
+  }
+
+  const requestNewGroup = (pane: BrowserPane) => {
+    const url = pane.currentUrl
+    setNamePrompt({
+      title: t('filebrowser.prompt.newGroup', 'New group'),
+      label: t('filebrowser.prompt.groupName', 'Group name'),
+      submitLabel: t('filebrowser.actions.create', 'Create'),
+      schema: entryNameSchema,
+      onSubmit: (value) => withCollection(url, (reader) => reader.createGroup(value)),
+    })
+  }
+
+  const requestNewFolder = (pane: BrowserPane) => {
+    const parent = dfsPathOf(pane.currentUrl)
+    if (!parent || !pane.list.capabilities.acceptsContent) return
+    setNamePrompt({
+      title: t('filebrowser.actions.newFolder', 'New folder'),
+      label: t('filebrowser.prompt.folderName', 'Folder name'),
+      submitLabel: t('filebrowser.actions.create', 'Create'),
+      schema: entryNameSchema,
+      onSubmit: (value) => {
+        if (mockNameExists(parent, value)) {
+          throw new Error(
+            t('filebrowser.error.nameConflict', '"{{name}}" already exists here', {
+              name: value,
+            }),
+          )
+        }
+        mockAddEntry({
+          id: `folder-${Date.now()}`,
+          name: value,
+          kind: 'folder',
+          path: parent === '/' ? `/${value}` : `${parent}/${value}`,
+          modifiedAt: new Date().toISOString(),
+        })
+        invalidateMockPath(parent)
+      },
+    })
+  }
+
+  const requestRename = (pane: BrowserPane, item: FileItem) => {
+    const isGroup = !!item.ref && item.entry.path.startsWith(COLLECTION_SCHEME)
+    const url = pane.currentUrl
+    setNamePrompt({
+      title: t('filebrowser.actions.rename', 'Rename'),
+      label: t('filebrowser.prompt.entryName', 'Name'),
+      submitLabel: t('filebrowser.actions.rename', 'Rename'),
+      defaultValue: item.entry.name,
+      schema: entryNameSchema,
+      onSubmit: async (value) => {
+        if (isGroup) {
+          await withCollection(url, (reader) => reader.renameGroup(item.key, value))
+          return
+        }
+        const parent = item.entry.path.split('/').slice(0, -1).join('/') || '/'
+        if (mockNameExists(parent, value)) {
+          throw new Error(
+            t('filebrowser.error.nameConflict', '"{{name}}" already exists here', {
+              name: value,
+            }),
+          )
+        }
+        if (mockRenameEntry(item.entry.id, value)) {
+          invalidateMockPath(parent)
+          pane.list.reload()
+          pane.clearSelection()
+        }
+      },
+    })
+  }
+
+  // ─── Uploads (probe → upload → commit through the transfer store, §4.7) ───
+
+  const enqueueFiles = (target: string, files: FileList | null) => {
+    if (!files?.length) return
+    const candidates = [...files].map((file, index) => {
+      const localId = `local-${Date.now()}-${index}`
+      // The File object stays out-of-band, keyed by localId (§3).
+      stashLocalFile(localId, file)
+      return {
+        localId,
+        name: file.name,
+        sizeBytes: file.size,
+        mimeType: file.type || undefined,
+      }
+    })
+    const { rejected } = transferStore.enqueue(target, candidates)
+    for (const reject of rejected) {
+      const key = reject.messageKeys[0]
+      showToast(`${reject.name}: ${t(key, validationFallback[key] ?? key)}`)
+    }
+  }
+
+  const triggerUpload = (pane: BrowserPane) => {
+    if (!pane.list.capabilities.acceptsContent) return
+    const target = pane.currentUrl
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.multiple = true
+    input.onchange = () => enqueueFiles(target, input.files)
+    input.click()
   }
 
   // ─── Context menu (desktop) ───
 
   /** Quick "Move to" targets: DFS roots and their first-level folders. */
+  const dfsRoots = dfsSource.state.data
   const moveTargets = useMemo(() => {
     const targets: { label: string; path: string }[] = []
     const visit = (nodes: DfsNode[], depth: number) => {
@@ -563,9 +699,9 @@ export function FileBrowserView() {
         if (node.children && depth < 1) visit(node.children, depth + 1)
       }
     }
-    visit(fileBrowserSnapshot.dfsRoots, 0)
+    visit(dfsRoots ?? [], 0)
     return targets
-  }, [])
+  }, [dfsRoots])
 
   const [contextMenu, setContextMenu] = useState<{
     side: 'left' | 'right'
@@ -639,9 +775,8 @@ export function FileBrowserView() {
   /** Everything the TopBar toolbar row needs, resolved per pane. */
   const toolbarPropsFor = (side: 'left' | 'right') => {
     const pane = paneFor(side)
-    const selected = (side === 'right' ? rightSelectedItems : leftSelectedItems).map(
-      (item) => item.entry,
-    )
+    const selectedItems = side === 'right' ? rightSelectedItems : leftSelectedItems
+    const selected = selectedItems.map((item) => item.entry)
     const selectedKeys = [...(side === 'right' ? right : left).selectedKeys]
     const capabilities = pane.list.capabilities
     return {
@@ -651,12 +786,9 @@ export function FileBrowserView() {
       onCut: () => cutEntries(selected),
       onCopy: () => copyEntries(selected),
       onPaste: () => pasteInto(pane),
-      onRename: () =>
-        showToast(
-          t('filebrowser.toast.rename', 'Rename "{{name}}" (mock)', {
-            name: selected[0]?.name ?? '',
-          }),
-        ),
+      onRename: () => {
+        if (selectedItems[0]) requestRename(pane, selectedItems[0])
+      },
       onDelete: () => {
         if (capabilities.removal === 'remove-ref') {
           void removeFromCollection(pane, selectedKeys)
@@ -684,8 +816,8 @@ export function FileBrowserView() {
         pane.setSortKey(key)
         pane.setSortDir(dir)
       },
-      onUpload: () => showToast(`${t('filebrowser.actions.upload', 'Upload')} (mock)`),
-      onNewFolder: () => showToast(`${t('filebrowser.actions.newFolder', 'New folder')} (mock)`),
+      onUpload: () => triggerUpload(pane),
+      onNewFolder: () => requestNewFolder(pane),
       onNewFile: () =>
         showToast(`${t('filebrowser.actions.newTextFile', 'New text file')} (mock)`),
     }
@@ -798,8 +930,10 @@ export function FileBrowserView() {
         break
       }
       case 'new-collection': {
-        const id = promptNewCollection()
-        if (id && entries.length) void addEntriesToCollection(id, entries)
+        const toAdd = [...entries]
+        requestNewCollection((id) => {
+          if (toAdd.length) void addEntriesToCollection(id, toAdd)
+        })
         break
       }
       case 'remove-from-collection':
@@ -815,16 +949,9 @@ export function FileBrowserView() {
       case 'move-item-down':
         void moveItems(pane, items, 1)
         break
-      case 'new-group': {
-        const name = window.prompt(
-          t('filebrowser.prompt.newGroup', 'Name for the new group:'),
-          '',
-        )
-        if (name?.trim()) {
-          void withCollection(pane.currentUrl, (reader) => reader.createGroup(name.trim()))
-        }
+      case 'new-group':
+        requestNewGroup(pane)
         break
-      }
       case 'download':
         showToast(
           t('filebrowser.toast.download', 'Downloading {{count}} item(s) (mock)', { count }),
@@ -838,11 +965,7 @@ export function FileBrowserView() {
         )
         break
       case 'rename':
-        showToast(
-          t('filebrowser.toast.rename', 'Rename "{{name}}" (mock)', {
-            name: first?.entry.name ?? '',
-          }),
-        )
+        if (first) requestRename(pane, first)
         break
       case 'move-to':
         showToast(
@@ -857,10 +980,10 @@ export function FileBrowserView() {
         pane.clearSelection()
         break
       case 'new-folder':
-        showToast(`${t('filebrowser.actions.newFolder', 'New folder')} (mock)`)
+        requestNewFolder(pane)
         break
       case 'upload':
-        showToast(`${t('filebrowser.actions.upload', 'Upload')} (mock)`)
+        triggerUpload(pane)
         break
       case 'refresh':
         pane.list.reload()
@@ -937,8 +1060,7 @@ export function FileBrowserView() {
   }
 
   const handleCreateCollection = () => {
-    const id = promptNewCollection()
-    if (id) left.navigate(collectionUrl(id))
+    requestNewCollection((id) => left.navigate(collectionUrl(id)))
   }
 
   const leftSearchActive = !!left.searchQuery.trim()
@@ -1095,12 +1217,11 @@ export function FileBrowserView() {
         <div className="flex-1 overflow-hidden">
           {leftSearchActive ? (
             <SearchResultsPanel
-              hits={leftSearchHits}
+              state={left.search.state}
               query={left.searchQuery}
-              onSelect={(entry) => {
-                if (entry.kind === 'folder') left.setSearchQuery('')
-                handleMobileItemTap(itemOf(entry))
-              }}
+              onSelect={(hit) => handleSearchSelect(left, hit)}
+              onRetry={left.search.retry}
+              onLoadMore={left.search.loadMore}
             />
           ) : (
             <MainContent
@@ -1114,6 +1235,7 @@ export function FileBrowserView() {
               selectionMode={mobileSelectMode}
               onItemMenu={(item) => openMobileMenu([item])}
               onLongPress={handleMobileLongPress}
+              onUpload={() => triggerUpload(left)}
             />
           )}
         </div>
@@ -1174,7 +1296,13 @@ export function FileBrowserView() {
                     type="button"
                     onClick={() => {
                       setMobileUploadOpen(false)
-                      showToast(`${action.label} (mock)`)
+                      if (action.key === 'files' || action.key === 'photos') {
+                        triggerUpload(left)
+                      } else if (action.key === 'folder') {
+                        requestNewFolder(left)
+                      } else {
+                        showToast(`${action.label} (mock)`)
+                      }
                     }}
                     className="flex flex-col items-center gap-1.5 rounded-[16px] p-2 text-[11px] text-[color:var(--cp-text)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,transparent)]"
                   >
@@ -1207,9 +1335,9 @@ export function FileBrowserView() {
               style={{ background: 'var(--cp-surface)' }}
             >
               <Sidebar
-                dfsRoots={fileBrowserSnapshot.dfsRoots}
-                devices={fileBrowserSnapshot.devices}
-                topics={fileBrowserSnapshot.topics}
+                dfs={dfsSource}
+                devices={devicesSource}
+                topics={topicsSource}
                 collections={collections}
                 activeUrl={left.currentUrl}
                 advancedMode={advancedMode}
@@ -1249,7 +1377,7 @@ export function FileBrowserView() {
               <div className="flex-1 overflow-hidden">
                 <PreviewPanel
                   item={leftSelectedItem}
-                  topics={fileBrowserSnapshot.topics}
+                  topics={topicList}
                   onJumpToTopic={(id) => {
                     left.navigate(`view://topic/${id}`)
                     setMobilePreviewOpen(false)
@@ -1274,6 +1402,9 @@ export function FileBrowserView() {
           onClose={() => setMobileMenu(null)}
         />
 
+        <TransfersPanel />
+        <NamePromptDialog request={namePrompt} onClose={() => setNamePrompt(null)} />
+
         {toast ? (
           <div className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 rounded-full bg-black/80 px-3 py-1.5 text-xs text-white">
             {toast}
@@ -1296,9 +1427,9 @@ export function FileBrowserView() {
         onMouseDownCapture={() => setFocusedSide('left')}
       >
         <Sidebar
-          dfsRoots={fileBrowserSnapshot.dfsRoots}
-          devices={fileBrowserSnapshot.devices}
-          topics={fileBrowserSnapshot.topics}
+          dfs={dfsSource}
+          devices={devicesSource}
+          topics={topicsSource}
           collections={collections}
           activeUrl={left.currentUrl}
           advancedMode={advancedMode}
@@ -1341,9 +1472,11 @@ export function FileBrowserView() {
         <div className="min-h-0 flex-1 overflow-hidden">
           {leftSearchActive ? (
             <SearchResultsPanel
-              hits={leftSearchHits}
+              state={left.search.state}
               query={left.searchQuery}
-              onSelect={(entry) => handleOpenEntry(itemOf(entry))}
+              onSelect={(hit) => handleSearchSelect(left, hit)}
+              onRetry={left.search.retry}
+              onLoadMore={left.search.loadMore}
             />
           ) : (
             <MainContent
@@ -1356,12 +1489,15 @@ export function FileBrowserView() {
               onViewContextMenu={(position) => openMenu('left', position)}
               onClearSelection={left.clearSelection}
               currentUrl={left.currentUrl}
+              onUpload={() => triggerUpload(left)}
             />
           )}
         </div>
         <StatusBar
           currentUrl={left.currentUrl}
           totalCount={left.list.totalCount}
+          loadedCount={left.list.loadedCount}
+          hasMore={left.list.hasMore}
           selectedItems={leftSelectedItems}
           onCopy={copyText}
           onExpandSidebar={
@@ -1403,11 +1539,11 @@ export function FileBrowserView() {
           <div className="min-h-0 flex-1 overflow-hidden">
             {rightSearchActive ? (
               <SearchResultsPanel
-                hits={rightSearchHits}
+                state={right.search.state}
                 query={right.searchQuery}
-                onSelect={(entry) =>
-                  right.applySelection([entry.id], new Map([[entry.id, itemOf(entry)]]))
-                }
+                onSelect={(hit) => handleSearchSelect(right, hit)}
+                onRetry={right.search.retry}
+                onLoadMore={right.search.loadMore}
               />
             ) : (
               <MainContent
@@ -1420,12 +1556,15 @@ export function FileBrowserView() {
                 onViewContextMenu={(position) => openMenu('right', position)}
                 onClearSelection={right.clearSelection}
                 currentUrl={right.currentUrl}
+                onUpload={() => triggerUpload(right)}
               />
             )}
           </div>
           <StatusBar
             currentUrl={right.currentUrl}
             totalCount={right.list.totalCount}
+            loadedCount={right.list.loadedCount}
+            hasMore={right.list.hasMore}
             selectedItems={rightSelectedItems}
             onCopy={copyText}
             onExpandSidebar={
@@ -1452,7 +1591,7 @@ export function FileBrowserView() {
           <div className="flex-1 overflow-hidden">
             <PreviewPanel
               item={focusedSelectedItem}
-              topics={fileBrowserSnapshot.topics}
+              topics={topicList}
               onJumpToTopic={(id) => focusedPane.navigate(`view://topic/${id}`)}
               onJumpToPath={(path) => focusedPane.navigate(path)}
               embedded
@@ -1467,6 +1606,9 @@ export function FileBrowserView() {
         onInvoke={handleMenuAction}
         onClose={() => setContextMenu(null)}
       />
+
+      <TransfersPanel />
+      <NamePromptDialog request={namePrompt} onClose={() => setNamePrompt(null)} />
 
       {toast ? (
         <div className="pointer-events-none absolute bottom-8 left-1/2 -translate-x-1/2 rounded-full bg-black/80 px-3 py-1.5 text-xs text-white">

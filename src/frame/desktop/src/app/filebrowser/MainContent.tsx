@@ -73,6 +73,16 @@ interface MainContentProps {
   onItemMenu?: (item: FileItem) => void
   /** Long-press on an item (mobile) — enters/extends selection mode. */
   onLongPress?: (item: FileItem) => void
+  /** Start an upload into this location (empty-state action). */
+  onUpload?: () => void
+}
+
+/**
+ * Virtual extent (§5.1): the known total, or the loaded window plus one
+ * sentinel row that demand-loads the next cursor page when scrolled into view.
+ */
+function virtualCountOf(list: FileItemList): number {
+  return list.totalCount ?? list.loadedCount + (list.hasMore ? 1 : 0)
 }
 
 const modifiersFromEvent = (event: React.MouseEvent): SelectModifiers => ({
@@ -166,6 +176,7 @@ export function MainContent({
   selectionMode = false,
   onItemMenu,
   onLongPress,
+  onUpload,
 }: MainContentProps) {
   const { t } = useI18n()
 
@@ -241,8 +252,10 @@ export function MainContent({
         </button>
       </div>
     )
-  } else if (list.totalCount === undefined) {
-    // First page still in flight — skeleton screen.
+  } else if (virtualCountOf(list) === 0 && list.status !== 'ready') {
+    // First page still in flight — skeleton screen. Once anything is loaded
+    // (or the extent is known) the virtualized views take over, including the
+    // unknown-total load-more sentinel.
     body = (
       <div className="flex-1 overflow-hidden px-4 py-3" data-testid="filebrowser-skeleton">
         {Array.from({ length: 12 }, (_, i) => (
@@ -256,7 +269,7 @@ export function MainContent({
         ))}
       </div>
     )
-  } else if (list.totalCount === 0 && list.status === 'ready') {
+  } else if (virtualCountOf(list) === 0 && list.status === 'ready') {
     body = (
       <div
         className="flex h-full w-full flex-col items-center justify-center p-10 text-center text-[color:var(--cp-muted)]"
@@ -292,6 +305,7 @@ export function MainContent({
         {capabilities.acceptsContent ? (
           <button
             type="button"
+            onClick={onUpload}
             className="mt-4 inline-flex items-center gap-2 rounded-full border border-[color:var(--cp-border)] px-4 py-1.5 text-sm text-[color:var(--cp-text)] hover:border-[color:var(--cp-accent)]"
           >
             <Upload size={14} /> {t('filebrowser.actions.upload', 'Upload')}
@@ -374,7 +388,7 @@ function DesktopListView({
 }) {
   const { t } = useI18n()
   const parentRef = useRef<HTMLDivElement>(null)
-  const count = list.totalCount ?? 0
+  const count = virtualCountOf(list)
 
   const virtualizer = useVirtualizer({
     count,
@@ -579,7 +593,7 @@ function IconGridView({
     return () => observer.disconnect()
   }, [])
 
-  const count = list.totalCount ?? 0
+  const count = virtualCountOf(list)
   const rowCount = Math.ceil(count / columns)
 
   const virtualizer = useVirtualizer({
@@ -765,7 +779,7 @@ function MobileListView({
   onLongPress?: (item: FileItem) => void
 }) {
   const parentRef = useRef<HTMLDivElement>(null)
-  const count = list.totalCount ?? 0
+  const count = virtualCountOf(list)
 
   const virtualizer = useVirtualizer({
     count,

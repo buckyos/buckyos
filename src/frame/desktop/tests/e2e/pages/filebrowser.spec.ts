@@ -144,6 +144,183 @@ test.describe('File browser app panel', () => {
     await expect(win.getByRole('cell', { name: /2026 Q1 Review/ })).toBeVisible()
   })
 
+  test('desktop: unknown-total view loads sequentially via the sentinel row', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/?scenario=normal')
+    await page.getByTestId('desktop-app-files').click()
+    const win = page.getByTestId('window-files')
+    const sidebar = win.locator('aside').first()
+
+    // The diagnostics views live behind advanced mode.
+    await sidebar.getByRole('button', { name: 'Enable advanced mode' }).click()
+    await sidebar.getByRole('button', { name: 'Unknown total' }).click()
+
+    // First cursor page (40 items) leaves the skeleton; status shows "40+".
+    await expect(win.getByText('View: Demo · unknown total')).toBeVisible()
+    await expect(win.getByText(/40\+ items/)).toBeVisible()
+
+    // Scrolling to the sentinel demand-loads the next cursor pages.
+    const scroller = win
+      .locator('div.overflow-y-auto')
+      .filter({ has: page.locator('[role="table"]') })
+    await scroller.evaluate((el) => {
+      el.scrollTop = el.scrollHeight
+    })
+    await expect
+      .poll(async () => {
+        await scroller.evaluate((el) => {
+          el.scrollTop = el.scrollHeight
+        })
+        const text = await win
+          .getByText(/\d+\+ items/)
+          .first()
+          .textContent()
+        return Number.parseInt(text ?? '0', 10)
+      })
+      .toBeGreaterThan(40)
+  })
+
+  test('desktop: async search — partial banner, error retry, cursor load-more', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/?scenario=normal')
+    await page.getByTestId('desktop-app-files').click()
+    const win = page.getByTestId('window-files')
+
+    await win.getByRole('button', { name: 'Search', exact: true }).click()
+    const input = page.getByPlaceholder(/Search across files/)
+
+    // Deterministic partial scenario: degraded sources surface a banner but
+    // results stay usable.
+    await input.fill('partial:trip')
+    await expect(page.getByTestId('search-partial-banner')).toBeVisible()
+    await expect(
+      page.getByText(/Traditional matches|AI-enhanced matches/).first(),
+    ).toBeVisible()
+
+    // Deterministic error scenario: search-scoped error with Retry.
+    await input.fill('error:anything')
+    await expect(
+      page.getByText('Search backend unavailable', { exact: false }),
+    ).toBeVisible()
+    await expect(win.getByRole('button', { name: 'Retry' })).toBeVisible()
+
+    // Broad query pages at 8 hits — the cursor continuation appends more.
+    await input.fill('e')
+    await expect(page.getByTestId('search-load-more')).toBeVisible()
+    const countBefore = await win.locator('[class*="rounded-[16px]"]').count()
+    await page.getByTestId('search-load-more').click()
+    await expect
+      .poll(() => win.locator('[class*="rounded-[16px]"]').count())
+      .toBeGreaterThan(countBefore)
+  })
+
+  test('desktop: collection and folder forms validate through the Zod schemas', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/?scenario=normal')
+    await page.getByTestId('desktop-app-files').click()
+    const win = page.getByTestId('window-files')
+    const sidebar = win.locator('aside').first()
+
+    // New collection: empty title is rejected by collectionTitleSchema.
+    await sidebar.getByRole('button', { name: 'New collection…' }).click()
+    const dialog = page.getByTestId('name-prompt-dialog')
+    await expect(dialog).toBeVisible()
+    await dialog.getByRole('button', { name: 'Create' }).click()
+    await expect(dialog.getByText('A collection title is required')).toBeVisible()
+    await dialog.getByRole('textbox').fill('My Papers')
+    await dialog.getByRole('button', { name: 'Create' }).click()
+    await expect(win.getByText('Collection: My Papers')).toBeVisible()
+
+    // New folder in a writable location: reserved names are rejected, valid
+    // names create a real (mock) folder that shows up after invalidation.
+    await sidebar.getByRole('button', { name: /Documents/ }).first().click()
+    await win
+      .locator('div.overflow-y-auto')
+      .filter({ has: page.locator('[role="table"]') })
+      .click({ button: 'right', position: { x: 420, y: 420 } })
+    await page.getByRole('menuitem', { name: 'New folder' }).click()
+    await dialog.getByRole('textbox').fill('..')
+    await dialog.getByRole('button', { name: 'Create' }).click()
+    await expect(dialog.getByText('This name is reserved')).toBeVisible()
+    await dialog.getByRole('textbox').fill('Fixtures')
+    await dialog.getByRole('button', { name: 'Create' }).click()
+    await expect(win.getByRole('cell', { name: /^Fixtures/ })).toBeVisible()
+
+    // Rename through the same schema-driven form.
+    await win.getByRole('cell', { name: /^Fixtures/ }).click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Rename…' }).click()
+    await expect(dialog.getByRole('textbox')).toHaveValue('Fixtures')
+    await dialog.getByRole('textbox').fill('Fixtures v2')
+    await dialog.getByRole('button', { name: 'Rename' }).click()
+    await expect(win.getByRole('cell', { name: /^Fixtures v2/ })).toBeVisible()
+  })
+
+  test('desktop: upload runs the probe→upload→commit lifecycle with retryable failure', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/?scenario=normal')
+    await page.getByTestId('desktop-app-files').click()
+    const win = page.getByTestId('window-files')
+    const sidebar = win.locator('aside').first()
+    await sidebar.getByRole('button', { name: /Documents/ }).first().click()
+    await expect(win.getByText('Kyoto Trip Plan.md')).toBeVisible()
+
+    // Success path: the committed entry appears in the destination listing.
+    const chooser1 = page.waitForEvent('filechooser')
+    await win.getByRole('button', { name: 'Upload', exact: true }).click()
+    await (
+      await chooser1
+    ).setFiles({
+      name: 'notes-upload.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('hello from e2e'),
+    })
+    await expect(page.getByTestId('transfers-panel')).toBeVisible()
+    await expect(page.getByTestId('transfer-success')).toBeVisible({ timeout: 15000 })
+    await expect(win.getByRole('cell', { name: /notes-upload\.txt/ })).toBeVisible()
+
+    // Deterministic failure ("fail" in the name) keeps retry context; retrying
+    // completes the transfer.
+    const chooser2 = page.waitForEvent('filechooser')
+    await win.getByRole('button', { name: 'Upload', exact: true }).click()
+    await (
+      await chooser2
+    ).setFiles({
+      name: 'fail-clip.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('destined to fail once'),
+    })
+    const failedRow = page.getByTestId('transfer-error')
+    await expect(failedRow).toBeVisible({ timeout: 15000 })
+    await failedRow.getByRole('button', { name: 'Retry' }).click()
+    await expect(page.getByTestId('transfer-success')).toHaveCount(2, { timeout: 15000 })
+    await expect(win.getByRole('cell', { name: /fail-clip\.txt/ })).toBeVisible()
+  })
+
+  test('desktop: a failing sidebar source stays isolated and retries', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/?scenario=normal&fbFail=topics')
+    await page.getByTestId('desktop-app-files').click()
+    const win = page.getByTestId('window-files')
+    const sidebar = win.locator('aside').first()
+
+    // Topics failed — inline error in that section only; DFS still works.
+    const sectionError = sidebar.getByTestId('sidebar-section-error')
+    await expect(sectionError).toBeVisible()
+    await expect(sidebar.getByRole('button', { name: /Documents/ }).first()).toBeVisible()
+
+    // Retry recovers the source.
+    await sectionError.getByRole('button', { name: 'Retry' }).click()
+    await expect(sidebar.getByRole('button', { name: /Kyoto trip · April/ })).toBeVisible()
+  })
+
   test('desktop: public folder surfaces Public URL column', async ({ page }) => {
     const consoleErrors: string[] = []
     page.on('console', (message) => {

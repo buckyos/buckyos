@@ -1,6 +1,8 @@
 # File Browser UI DataModel
 
-> Status: v1, extracted from the converged mock-first prototype  
+> Status: v1.1 — v1 extracted from the converged mock-first prototype; v1.1
+> records that the frontend-side deltas of §9 (items 1–5 and 11) are now
+> implemented in the prototype  
 > Scope: <code>src/frame/desktop/src/app/filebrowser/</code>  
 > Last reviewed: 2026-09-02
 
@@ -72,8 +74,9 @@ The same file may occur in multiple Collections or more than once in one Collect
   client-side window.
 - A Collection stores references and groups, consumes no file-content storage, and removing a
   member never deletes the target.
-- A View is derived and read-only. Search is modeled as a query result view even though the
-  current prototype still uses a separate synchronous mock branch.
+- A View is derived and read-only. Search is modeled as a query result view; the prototype
+  routes it through the async <code>SearchProvider</code>/<code>SearchViewState</code> pair in
+  <code>data/search.ts</code> (a View-compatible reader remains a later refinement).
 - New enum values are expected. Consumers MUST provide a safe fallback for unknown kinds,
   sources, search reasons, metadata namespaces, and menu commands.
 
@@ -145,8 +148,8 @@ export interface UrlCrumb {
 }
 ~~~
 
-Group names used in URLs MUST be percent-encoded by the backend adapter. The current mock URL
-helper does not yet encode segments and is classified as a prototype limitation. In addition,
+Group names used in URLs MUST be percent-encoded. The URL helper
+(<code>data/urls.ts</code>) now encodes segments on build and decodes them on parse. In addition,
 NFSP resolves a Collection root by URI but identifies a nested group by its
 <code>entry_ref</code>. The current name-based <code>groupPath</code> is therefore a display
 locator, not durable group identity. Before backend integration, the adapter must either maintain
@@ -452,8 +455,8 @@ though this Mock representation is Volatile.
 ### 2.9 Search result model
 
 The prototype-proven shape is the rendered object containing the full projected entry and an
-explanation. This supersedes the unused <code>SearchHit</code> declaration currently present in
-<code>types.ts</code>.
+explanation. It replaced the earlier unused <code>SearchHit</code> declaration, which has been
+removed from <code>types.ts</code>.
 
 ~~~ts
 export type SearchReason =
@@ -672,8 +675,9 @@ No duplicate persisted “preview DTO” is required. The following projections 
 
 These schemas define UI constraints. They are not mechanical copies of NFSP request objects.
 Forms introduced during integration MUST use these schemas as the source of
-<code>react-hook-form</code> types. The current <code>window.prompt()</code> paths for Collection
-and group creation do not yet satisfy this contract.
+<code>react-hook-form</code> types. They live in <code>data/schemas.ts</code>; the Collection,
+group, rename, and new-folder flows now go through the schema-driven
+<code>NamePromptDialog</code> (the <code>window.prompt()</code> paths are gone).
 
 ~~~ts
 import { z } from 'zod'
@@ -884,8 +888,10 @@ export interface FileBrowserSidebarState {
 | Error | Inline error and retry for the affected source only |
 | Progress | Refresh indicator on the affected section; keep the last successful projection |
 
-The current Mock snapshot delivers DFS/devices/topics synchronously and the Collection store is
-live in memory. Integration MUST introduce these explicit source states.
+The prototype now loads DFS/devices/topics through per-source async fetchers
+(<code>data/sidebarSources.ts</code>) with exactly these states; the Collection store remains a
+live in-memory projection. A deterministic per-source failure fixture is selectable via
+<code>?fbFail=&lt;source&gt;</code>.
 
 ### 4.4 Search state
 
@@ -974,8 +980,11 @@ export interface TransferTask {
 | Success | Remove placeholder after the destination reader exposes the committed entry |
 | Error | Keep retry/cancel context; collision and commit conflicts require a user decision |
 
-The current upload buttons are Mock toasts. This state is the required UI contract for real
-<code>probe → upload → commit</code> integration.
+The prototype implements this contract: uploads run through the transfer store
+(<code>data/transfers.ts</code>) with a mock executor that walks the stages, supports
+cancel/retry, surfaces name collisions as conflicts, and commits into the mock index so the
+destination reader exposes the entry. The real <code>probe → upload → commit</code> integration
+replaces the executor only.
 
 ## 5. Pagination, sorting, filtering, and aggregation
 
@@ -987,6 +996,9 @@ The current upload buttons are Mock toasts. This state is the required UI contra
 - <code>totalCount</code> is optional. Known totals drive exact virtual extent and status text.
 - With an unknown total, the formal model uses <code>loadedCount + hasMore</code>. The renderer
   MUST expose a load-more/sentinel row instead of remaining in its initial skeleton forever.
+  Implemented: <code>FileItemList</code> loads unknown totals sequentially (no random access
+  from an unknown cursor) and the views append one sentinel row that demand-loads the next page;
+  the status bar shows <code>N+</code>. Fixture: <code>view://demo/unknown-total</code>.
 - The effective backend page size is <code>min(200, hello.limits.max_list)</code>.
 - NFSP is cursor-based. The adapter maintains a cursor chain per query/revision and satisfies the
   offset-shaped reader window sequentially. It MUST NOT invent random access from an unknown
@@ -1083,7 +1095,7 @@ Search is a separate scoped query and MUST NOT be emulated by filtering only the
 | Set/Map selection storage | Volatile | Runtime representation only |
 | <code>Date.now()</code> tab IDs | Volatile | Session-local implementation |
 | Device navigation string <code>DeviceName:/path</code> | Volatile | No registered device reader |
-| Existing unused <code>SearchHit</code> type | Volatile | Superseded by <code>SearchResultItem</code> |
+| Mock transfer executor stage timing | Volatile | Real executor drives NFSP probe/tus/commit |
 | Human-readable source label | Volatile | Presentation/provenance copy |
 | Toast duration and menu anchors | Volatile | Rendering behavior |
 
@@ -1199,10 +1211,16 @@ export const mockSearchPage: SearchResultPage = {
 | Mutation | Success, validation error, revision conflict, permission error |
 | Upload | Queued through success, retryable failure, conflict, cancellation |
 
-The existing Mock implements most normal/boundary rows, including the 10k folder, public URL,
-soft link, nested/duplicate/broken Collection references, all device statuses, topics, and empty
-folder buckets. Formal completion of the Mock contract still requires deterministic fetch errors,
-unknown-total paging, partial search, validation failures, and upload progress scenarios.
+The Mock implements the normal/boundary rows above (10k folder, public URL, soft link,
+nested/duplicate/broken Collection references, all device statuses, topics, empty folder
+buckets) plus the deterministic scenarios: fetch errors and retry recovery
+(<code>view://demo/error</code>, <code>view://demo/flaky</code>, reachable from the advanced-mode
+Diagnostics section), unknown-total paging (<code>view://demo/unknown-total</code>), partial and
+failing search (<code>partial:</code>/<code>error:</code>/<code>unknown:</code> query prefixes),
+sidebar source failure (<code>?fbFail=</code>), schema validation failures (the form dialogs),
+and upload progress including retryable failure (a name containing <code>fail</code>) and
+name-collision conflict. Revision-conflict and permission-error mutation fixtures remain for the
+backend-integration stage.
 
 ### 7.3 Mock behavior rules
 
@@ -1321,26 +1339,34 @@ Raw paths, refs, server messages, and authorization details MUST be filtered bef
 
 ## 9. Prototype-to-formal-model delta
 
-These are required integration or follow-up changes, not reasons to weaken the formal contract:
+These are required integration or follow-up changes, not reasons to weaken the formal contract.
+Items 1–5 and 11 are DONE in the prototype (2026-09-02); the rest belong to the NFSP
+backend-integration stage:
 
-1. Replace the unused <code>types.ts SearchHit</code> and inline component type with
-   <code>SearchResultItem</code>.
-2. Route search through an async state/provider, eventually a View-compatible reader.
-3. Replace Collection/group <code>window.prompt()</code> and future rename/create forms with the
-   Zod schemas and <code>react-hook-form</code>.
-4. Add deterministic File Browser error, partial, validation, unknown-total, and transfer Mock
-   scenarios plus Playwright coverage.
-5. Fix unknown-total rendering so <code>hasMore</code> listings leave initial loading and can
-   request subsequent cursor pages.
+1. ~~Replace the unused <code>types.ts SearchHit</code> and inline component type with
+   <code>SearchResultItem</code>.~~ Done — <code>types.ts</code> now defines the §2 model.
+2. ~~Route search through an async state/provider~~ Done via
+   <code>data/search.ts</code> + <code>mock/search.ts</code>; a View-compatible search reader
+   remains a later refinement.
+3. ~~Replace Collection/group <code>window.prompt()</code> and rename/create forms with the
+   Zod schemas and <code>react-hook-form</code>.~~ Done — <code>dialogs/NamePromptDialog</code>.
+4. ~~Add deterministic File Browser error, partial, validation, unknown-total, and transfer Mock
+   scenarios plus Playwright coverage.~~ Done — see §7.2; covered by
+   <code>tests/e2e/pages/filebrowser.spec.ts</code>. Revision-conflict/permission fixtures wait
+   for backend semantics.
+5. ~~Fix unknown-total rendering so <code>hasMore</code> listings leave initial loading and can
+   request subsequent cursor pages.~~ Done — sentinel-row load-more in the virtualized views.
 6. Implement the NFSP reader/target-resolver adapter and switch data installation by environment,
    without importing protocol DTOs into components.
 7. Resolve the NFSP sort gap for descending, kind, and folders-first before claiming identical
    backend behavior.
-8. Replace or back the name-based Collection group URL with an entry-ref-aware deep-link model.
+8. Replace or back the name-based Collection group URL with an entry-ref-aware deep-link model
+   (URL segments are now percent-encoded, but name-based identity remains).
 9. Define metadata namespace/key mappings for summary, tags, topics, EXIF, source, Story, and
    trigger-policy status.
 10. Replace the current device navigation placeholder with a registered device/referral reader.
-11. Add explicit async states for sidebar sources and partial Preview metadata.
+11. ~~Add explicit async states for sidebar sources and partial Preview metadata.~~ Done —
+    <code>data/sidebarSources.ts</code>, <code>data/usePreview.ts</code>.
 12. Keep share UI feature-gated until authorization and data-plane cap enforcement are complete.
 
 ## 10. Stage-three completion checklist

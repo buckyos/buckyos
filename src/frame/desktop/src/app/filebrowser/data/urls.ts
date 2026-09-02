@@ -61,8 +61,21 @@ export function displayPath(url: string): string {
 
 export interface CollectionUrlParts {
   collectionId: string
-  /** Group names from the collection root down to the open group. */
+  /**
+   * Group names from the collection root down to the open group. Segments are
+   * percent-encoded in the URL and decoded here. Note this name-based path is
+   * a display locator, not durable group identity — the NFSP adapter must
+   * back it with entry_ref resolution (UI_DATAMODEL.md §2.2).
+   */
   groupPath: string[]
+}
+
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
 }
 
 export function parseCollectionUrl(url: string): CollectionUrlParts | null {
@@ -70,12 +83,17 @@ export function parseCollectionUrl(url: string): CollectionUrlParts | null {
   const rest = url.slice(COLLECTION_SCHEME.length)
   const segments = rest.split('/').filter(Boolean)
   if (!segments.length) return null
-  return { collectionId: segments[0], groupPath: segments.slice(1) }
+  return {
+    collectionId: decodeSegment(segments[0]),
+    groupPath: segments.slice(1).map(decodeSegment),
+  }
 }
 
 export function collectionUrl(collectionId: string, groupPath: string[] = []): string {
   return stripTrailingSlash(
-    `${COLLECTION_SCHEME}${[collectionId, ...groupPath].join('/')}`,
+    `${COLLECTION_SCHEME}${[collectionId, ...groupPath]
+      .map((segment) => encodeURIComponent(segment))
+      .join('/')}`,
   )
 }
 
@@ -113,7 +131,8 @@ export function fallbackTitle(url: string): string {
     return path.split('/').filter(Boolean).pop() ?? 'root'
   }
   const segments = url.split('/').filter((seg) => seg && !seg.endsWith(':'))
-  return segments.pop() ?? url
+  const last = segments.pop()
+  return last ? decodeSegment(last) : url
 }
 
 export interface UrlCrumb {
