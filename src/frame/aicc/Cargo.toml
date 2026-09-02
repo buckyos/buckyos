@@ -3,3 +3,7 @@ name = "aicc"
 version.workspace = true
 edition = "2021"
 authors = ["BuckyOS DAO"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
