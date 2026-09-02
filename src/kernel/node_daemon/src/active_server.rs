@@ -487,10 +487,11 @@ impl ActiveServer {
             let owner_value = serde_json::to_value(&effective_owner)
                 .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
             let owner_bytes = canonical_json_bytes(&owner_value)?;
-            let request_id = content_request_id(
+            let request_id = content_request_id_with_context(
                 "owner",
                 req.prepared.names.owner_name.as_str(),
                 owner_bytes.as_slice(),
+                req.signed_documents.zone_document_jwt.as_bytes(),
             );
             if !projection_matches_json(
                 &bns_client,
@@ -1319,6 +1320,26 @@ fn content_request_id(operation: &str, owner_name: &str, bytes: &[u8]) -> String
     )
 }
 
+fn content_request_id_with_context(
+    operation: &str,
+    owner_name: &str,
+    bytes: &[u8],
+    context: &[u8],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+    hasher.update((context.len() as u64).to_be_bytes());
+    hasher.update(context);
+    let digest = hasher.finalize();
+    format!(
+        "node-active:{}:{}:{}",
+        operation,
+        owner_name,
+        hex::encode(digest)
+    )
+}
+
 fn canonical_json_value(value: &Value) -> Value {
     match value {
         Value::Object(object) => {
@@ -1735,6 +1756,32 @@ mod tests {
             prepare_owner_binding_for_activation(&effective, &selected).unwrap();
         assert!(!needs_publish);
         assert_eq!(unchanged, effective);
+    }
+
+    #[test]
+    fn owner_publish_request_id_is_stable_per_attempt_but_fresh_for_rebind() {
+        let owner = br#"{"id":"did:bns:alice","binded_zone_list":["did:bns:alice"]}"#;
+        let first_attempt = content_request_id_with_context(
+            "owner",
+            "alice",
+            owner,
+            b"first-zone-document-jwt",
+        );
+        let first_retry = content_request_id_with_context(
+            "owner",
+            "alice",
+            owner,
+            b"first-zone-document-jwt",
+        );
+        let rebind_attempt = content_request_id_with_context(
+            "owner",
+            "alice",
+            owner,
+            b"second-zone-document-jwt",
+        );
+
+        assert_eq!(first_attempt, first_retry);
+        assert_ne!(first_attempt, rebind_attempt);
     }
 
     #[tokio::test]
