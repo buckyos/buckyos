@@ -459,19 +459,21 @@ Owner：Storage/Observability 小组
 
 依赖：WP-01；可与协议开发并行
 
-- [ ] 建立 `aicc_provider_inventory_lkgs`；
-- [ ] 原子 upsert、schema、SHA-256 和无效行重建；
-- [ ] inventory 与 metadata applied seq 同事务提交；
-- [ ] 重写 usage event 写入，保留 RDB 作为唯一持久事实源；
-- [ ] 每个成功 Provider completion 严格写一条 usage；
-- [ ] 成功响应缺 usage 视为 Provider protocol error；
-- [ ] `(tenant,idempotency_key)` 和 `(tenant,task_id)` 去重；
-- [ ] 实现 usage filter/group/bucket/cursor；
-- [ ] 实现 route trace/audit 查询和 retention；
-- [ ] metrics 覆盖 latency、error、queue、health、refresh 和 snapshot generation；
-- [ ] 建立统一 redaction，并对测试报告做 secret/content 扫描。
+- [x] 建立 `aicc_provider_inventory_lkgs`；
+- [x] 原子 upsert、schema、SHA-256 和无效行重建；
+- [x] inventory 与 metadata applied seq 同事务提交；
+- [x] 重写 usage event 写入，保留 RDB 作为唯一持久事实源；
+- [x] 每个成功 Provider completion 严格写一条 usage；
+- [x] 成功响应缺 usage 视为 Provider protocol error；
+- [x] `(tenant,idempotency_key)` 和 `(tenant,task_id)` 去重；
+- [x] 实现 usage filter/group/bucket/cursor；
+- [x] 实现 route trace/audit 查询和 retention；
+- [x] metrics 覆盖 latency、error、queue、health、refresh 和 snapshot generation；
+- [x] 建立统一 redaction，并对测试报告做 secret/content 扫描。
 
 完成标准：TaskMgr completed task 删除不影响 usage，所有诊断能用 request/task/route/provider trace ID 关联。
+
+实现记录：Storage/Observability 小组已在 `src/frame/aicc/src/storage/mod.rs` 实现基于平台 RDB instance 的 inventory LKGS、usage、route trace 和 audit 持久化，包含跨 SQLite/Postgres 的原子 inventory/metadata seq upsert、SHA-256 校验与坏行重建、completion usage 强制和双重去重、filter/group/bucket/cursor 查询、四级 trace ID 关联及诊断 retention；`src/frame/aicc/src/observability/mod.rs` 实现 latency/error/queue/health/refresh/snapshot generation metrics、统一递归脱敏和 secret/content 扫描。Storage/Observability 7 个单元测试随 AICC 全量 77 个测试通过，all-target check、AICC `cargo clippy --no-deps -D warnings` 和格式检查通过；完整依赖 clippy 仍受 `buckyos-api` 既有 3 个 `redundant_field_names` 告警阻断。运行时装配及真实 completion/Provider lifecycle 接入由后续对应工作包完成。
 
 ### WP-15：RuntimeSnapshot、Settings 与 Metadata 收敛
 
@@ -1004,7 +1006,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | WP-11 | TBD | Pending | WP-03/06/10 | Call Lowering |
 | WP-12 | TBD | Pending | WP-05/11 | Execution |
 | WP-13 | TBD | Pending | WP-01 | Resource |
-| WP-14 | TBD | Pending | WP-01 | Storage/Observability |
+| WP-14 | Storage/Observability 小组 | Done | WP-01 | Storage/Observability |
 | WP-15 | TBD | Pending | WP-03/07/14 | RuntimeSnapshot |
 | WP-16 | TBD | Pending | WP-07/09-15 | Service/Admin |
 | WP-17 | TBD | Pending | WP-01/16 | Callers |
