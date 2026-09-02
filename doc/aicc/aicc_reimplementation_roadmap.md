@@ -196,17 +196,19 @@ Owner：Catalog/Matching 小组
 
 依赖：Gate 0
 
-- [ ] 实现 `MatchRule -> CompiledMatchRule`；
-- [ ] 支持 exact、`*`、`?` 和转义；
-- [ ] 支持多维 AND、数组 OR、`not`、`exists` 和允许字段上的 range；
-- [ ] 为各业务 schema 声明主维度、允许维度和类型；
-- [ ] catalog/settings 加载时完成校验和编译；
-- [ ] 推理热路径只执行编译结果；
-- [ ] trace 记录规则 ID/位置和非敏感参与维度；
-- [ ] Model Driver、Provider Rules、request/pricing rules、发布 track 共用一套 contract tests；
-- [ ] 不引入新表达式或 regex 依赖。
+- [x] 实现 `MatchRule -> CompiledMatchRule`；
+- [x] 支持 exact、`*`、`?` 和转义；
+- [x] 支持多维 AND、数组 OR、`not`、`exists` 和允许字段上的 range；
+- [x] 为各业务 schema 声明主维度、允许维度和类型；
+- [x] catalog/settings 加载时完成校验和编译；
+- [x] 推理热路径只执行编译结果；
+- [x] trace 记录规则 ID/位置和非敏感参与维度；
+- [x] Model Driver、Provider Rules、request/pricing rules、发布 track 共用一套 contract tests；
+- [x] 不引入新表达式或 regex 依赖。
 
 完成标准：仓库内不存在第二套 wildcard、predicate 或配置规则 DSL。
+
+实现记录：Owner 为 Catalog/Matching 小组；关联提交为 `a12b3e09`；统一 contract、业务 schema、加载期编译入口、有序 first-match 和脱敏 trace 已落在 `src/frame/aicc/src/matching/mod.rs`。`cargo test -p aicc` 的 10 个测试、`cargo check -p aicc --all-targets`、AICC clippy `-D warnings` 和格式检查均通过，未引入 regex、表达式引擎或新的第三方依赖。剩余集成约束是 WP-03 catalog、后续 settings loader 和推理调用方只能消费本工作包提供的编译接口，不得新增独立 matcher；完整 `buckyos-build.py --skip-web` 仍需具备四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。
 
 ### WP-03：Catalog 与 Metadata Snapshot
 
@@ -982,7 +984,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | Gate 0 | Architecture/API/Metadata/E2E owners | Done | 无 | 契约冻结 |
 | WP-00 | 集成人（`@streetycat`） | Review | Gate 0 | 模块骨架 |
 | WP-01 | TBD | Pending | Gate 0 | API/IR/Error |
-| WP-02 | TBD | Pending | Gate 0 | MatchRule |
+| WP-02 | Catalog/Matching 小组 | Done | Gate 0 | MatchRule（`a12b3e09`） |
 | WP-03 | TBD | Pending | WP-02 | CatalogSnapshot |
 | WP-04 | TBD | Pending | WP-01/02/03 | Model Registry |
 | WP-05 | TBD | Pending | WP-01 | Protocol Infra |
