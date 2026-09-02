@@ -1,4 +1,8 @@
-use super::{ProtocolError, ProtocolErrorKind, ProtocolResultValue};
+use super::{ProtocolError, ProtocolErrorKind, ProtocolResultValue, StreamingHttpResponse};
+use futures_util::{stream, Stream, StreamExt};
+use reqwest::StatusCode;
+use std::collections::VecDeque;
+use std::pin::Pin;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SseEvent {
@@ -20,6 +24,9 @@ pub(crate) enum SseFrame {
     Terminated { marker: String },
     StreamEnd(SseStreamEnd),
 }
+
+pub(crate) type SseFrameStream =
+    Pin<Box<dyn Stream<Item = ProtocolResultValue<SseFrame>> + Send + 'static>>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SseConfig {
@@ -222,9 +229,182 @@ impl SseFramer {
     }
 }
 
+pub(crate) async fn sse_frame_stream(
+    response: StreamingHttpResponse,
+    config: SseConfig,
+    max_response_bytes: usize,
+) -> ProtocolResultValue<SseFrameStream> {
+    if max_response_bytes == 0 {
+        return Err(ProtocolError::invalid_configuration(
+            "streaming response body limit must be greater than zero",
+        ));
+    }
+    if !response.status.is_success() {
+        let response = response
+            .into_bounded_error_response(max_response_bytes)
+            .await?;
+        let kind = match response.status {
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProtocolErrorKind::Authentication,
+            StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT => ProtocolErrorKind::Timeout,
+            _ => ProtocolErrorKind::InvalidResponse,
+        };
+        return Err(ProtocolError::new(
+            kind,
+            format!("upstream returned HTTP status {}", response.status.as_u16()),
+        )
+        .with_request_id(Some(response.request_id))
+        .with_retry_after(response.retry_after));
+    }
+    let StreamingHttpResponse {
+        status: _,
+        headers: _,
+        body,
+        request_id,
+        retry_after,
+    } = response;
+
+    struct State {
+        body: super::HttpByteStream,
+        framer: Option<SseFramer>,
+        queued: VecDeque<SseFrame>,
+        request_id: String,
+        retry_after: Option<std::time::Duration>,
+        received: usize,
+        max_response_bytes: usize,
+        finished: bool,
+    }
+
+    let state = State {
+        body,
+        framer: Some(SseFramer::new(config)?),
+        queued: VecDeque::new(),
+        request_id,
+        retry_after,
+        received: 0,
+        max_response_bytes,
+        finished: false,
+    };
+    let frames = stream::unfold(state, |mut state| async move {
+        loop {
+            if let Some(frame) = state.queued.pop_front() {
+                return Some((Ok(frame), state));
+            }
+            if state.finished {
+                return None;
+            }
+            match state.body.next().await {
+                Some(Ok(chunk)) => {
+                    state.received = state.received.saturating_add(chunk.len());
+                    if state.received > state.max_response_bytes {
+                        state.finished = true;
+                        return Some((
+                            Err(ProtocolError::new(
+                                ProtocolErrorKind::ResponseTooLarge,
+                                "streaming HTTP response exceeds configured byte limit",
+                            )
+                            .with_request_id(Some(state.request_id.clone()))
+                            .with_retry_after(state.retry_after)),
+                            state,
+                        ));
+                    }
+                    let framed = state
+                        .framer
+                        .as_mut()
+                        .expect("active SSE stream has a framer")
+                        .push(&chunk);
+                    match framed {
+                        Ok(frames) => {
+                            state.finished = frames
+                                .iter()
+                                .any(|frame| matches!(frame, SseFrame::Terminated { .. }));
+                            state.queued.extend(frames);
+                        }
+                        Err(error) => {
+                            state.finished = true;
+                            return Some((
+                                Err(enrich_stream_error(
+                                    error,
+                                    &state.request_id,
+                                    state.retry_after,
+                                )),
+                                state,
+                            ));
+                        }
+                    }
+                }
+                Some(Err(error)) => {
+                    state.finished = true;
+                    return Some((
+                        Err(enrich_stream_error(
+                            error,
+                            &state.request_id,
+                            state.retry_after,
+                        )),
+                        state,
+                    ));
+                }
+                None => {
+                    state.finished = true;
+                    let framed = state
+                        .framer
+                        .take()
+                        .expect("active SSE stream has a framer")
+                        .finish(SseStreamEnd::EndOfStream);
+                    match framed {
+                        Ok(frames) => state.queued.extend(frames),
+                        Err(error) => {
+                            return Some((
+                                Err(enrich_stream_error(
+                                    error,
+                                    &state.request_id,
+                                    state.retry_after,
+                                )),
+                                state,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    });
+    Ok(Box::pin(frames))
+}
+
+fn enrich_stream_error(
+    error: ProtocolError,
+    request_id: &str,
+    retry_after: Option<std::time::Duration>,
+) -> ProtocolError {
+    let request_id = error
+        .request_id
+        .clone()
+        .or_else(|| Some(request_id.to_string()));
+    let retry_after = error.retry_after.or(retry_after);
+    error
+        .with_request_id(request_id)
+        .with_retry_after(retry_after)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+    use futures_util::{stream, StreamExt};
+    use reqwest::header::HeaderMap;
+    use std::time::Duration;
+
+    fn response(
+        status: StatusCode,
+        chunks: Vec<ProtocolResultValue<Bytes>>,
+    ) -> StreamingHttpResponse {
+        StreamingHttpResponse {
+            status,
+            headers: HeaderMap::new(),
+            body: Box::pin(stream::iter(chunks)),
+            request_id: "request-stream".to_string(),
+            retry_after: Some(Duration::from_secs(3)),
+        }
+    }
 
     #[test]
     fn frames_fragmented_crlf_multiline_and_ignores_comments() {
@@ -316,5 +496,167 @@ mod tests {
                 })
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn streaming_framer_is_incremental_and_done_is_normal_termination() {
+        let mut frames = sse_frame_stream(
+            response(
+                StatusCode::OK,
+                vec![
+                    Ok(Bytes::from_static(b"event: delta\nda")),
+                    Ok(Bytes::from_static(b"ta: one\n\ndata: [DONE]\n\n")),
+                ],
+            ),
+            SseConfig::default(),
+            1024,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            frames.next().await.unwrap().unwrap(),
+            SseFrame::Event(SseEvent {
+                event: Some("delta".to_string()),
+                data: "one".to_string(),
+                id: None,
+                retry_millis: None,
+            })
+        );
+        assert_eq!(
+            frames.next().await.unwrap().unwrap(),
+            SseFrame::Terminated {
+                marker: "[DONE]".to_string()
+            }
+        );
+        assert!(frames.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn streaming_reports_clean_eof_disconnect_malformed_and_limit() {
+        let mut eof = sse_frame_stream(
+            response(
+                StatusCode::OK,
+                vec![Ok(Bytes::from_static(b"data: final\n\n"))],
+            ),
+            SseConfig::default(),
+            1024,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            eof.next().await.unwrap().unwrap(),
+            SseFrame::Event(_)
+        ));
+        assert_eq!(
+            eof.next().await.unwrap().unwrap(),
+            SseFrame::StreamEnd(SseStreamEnd::EndOfStream)
+        );
+
+        let disconnect = ProtocolError::new(ProtocolErrorKind::Transport, "disconnected");
+        let mut disconnected = sse_frame_stream(
+            response(StatusCode::OK, vec![Err(disconnect)]),
+            SseConfig::default(),
+            1024,
+        )
+        .await
+        .unwrap();
+        let error = disconnected.next().await.unwrap().unwrap_err();
+        assert_eq!(error.kind, ProtocolErrorKind::Transport);
+        assert_eq!(error.request_id.as_deref(), Some("request-stream"));
+
+        let mut malformed = sse_frame_stream(
+            response(
+                StatusCode::OK,
+                vec![Ok(Bytes::from_static(b"data: \xff\n\n"))],
+            ),
+            SseConfig::default(),
+            1024,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            malformed.next().await.unwrap().unwrap_err().kind,
+            ProtocolErrorKind::InvalidResponse
+        );
+
+        let mut oversized = sse_frame_stream(
+            response(StatusCode::OK, vec![Ok(Bytes::from_static(b"data: 12345"))]),
+            SseConfig {
+                max_line_bytes: 8,
+                max_event_bytes: 32,
+                termination_markers: Vec::new(),
+            },
+            1024,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            oversized.next().await.unwrap().unwrap_err().kind,
+            ProtocolErrorKind::ResponseTooLarge
+        );
+
+        let mut total_oversized = sse_frame_stream(
+            response(
+                StatusCode::OK,
+                vec![
+                    Ok(Bytes::from_static(b"data")),
+                    Ok(Bytes::from_static(b": more\n\n")),
+                ],
+            ),
+            SseConfig::default(),
+            6,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            total_oversized.next().await.unwrap().unwrap_err().kind,
+            ProtocolErrorKind::ResponseTooLarge
+        );
+    }
+
+    #[tokio::test]
+    async fn non_success_body_is_bounded_and_preserves_metadata() {
+        let error = sse_frame_stream(
+            response(
+                StatusCode::TOO_MANY_REQUESTS,
+                vec![Ok(Bytes::from_static(b"rate limited"))],
+            ),
+            SseConfig::default(),
+            1024,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(error.kind, ProtocolErrorKind::InvalidResponse);
+        assert_eq!(error.request_id.as_deref(), Some("request-stream"));
+        assert_eq!(error.retry_after, Some(Duration::from_secs(3)));
+
+        let server_error = sse_frame_stream(
+            response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                vec![Ok(Bytes::from_static(b"unavailable"))],
+            ),
+            SseConfig::default(),
+            1024,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(server_error.kind, ProtocolErrorKind::InvalidResponse);
+        assert!(server_error.message.contains("503"));
+
+        let too_large = sse_frame_stream(
+            response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                vec![Ok(Bytes::from_static(b"too large"))],
+            ),
+            SseConfig::default(),
+            3,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(too_large.kind, ProtocolErrorKind::ResponseTooLarge);
+        assert_eq!(too_large.request_id.as_deref(), Some("request-stream"));
     }
 }

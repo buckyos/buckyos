@@ -317,6 +317,60 @@ impl std::fmt::Debug for StreamingHttpResponse {
     }
 }
 
+impl StreamingHttpResponse {
+    pub(crate) async fn into_bounded_error_response(
+        self,
+        max_bytes: usize,
+    ) -> ProtocolResultValue<HttpResponse> {
+        if max_bytes == 0 {
+            return Err(ProtocolError::invalid_configuration(
+                "streaming error body limit must be greater than zero",
+            ));
+        }
+        if self.status.is_success() {
+            return Err(ProtocolError::invalid_request(
+                "successful streaming response cannot be buffered as an error",
+            ));
+        }
+        let Self {
+            status,
+            headers,
+            mut body,
+            request_id,
+            retry_after,
+        } = self;
+        let mut buffered = BytesMut::new();
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.map_err(|error| {
+                let error_request_id = error
+                    .request_id
+                    .clone()
+                    .or_else(|| Some(request_id.clone()));
+                let error_retry_after = error.retry_after.or(retry_after);
+                error
+                    .with_request_id(error_request_id)
+                    .with_retry_after(error_retry_after)
+            })?;
+            if buffered.len().saturating_add(chunk.len()) > max_bytes {
+                return Err(ProtocolError::new(
+                    ProtocolErrorKind::ResponseTooLarge,
+                    "upstream HTTP error body exceeds configured byte limit",
+                )
+                .with_request_id(Some(request_id))
+                .with_retry_after(retry_after));
+            }
+            buffered.extend_from_slice(&chunk);
+        }
+        Ok(HttpResponse {
+            status,
+            headers,
+            body: buffered.freeze(),
+            request_id,
+            retry_after,
+        })
+    }
+}
+
 impl HttpResponse {
     pub(crate) fn json<T: DeserializeOwned>(&self, max_bytes: usize) -> ProtocolResultValue<T> {
         decode_json(&self.body, max_bytes).map_err(|error| {
@@ -685,6 +739,7 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::stream;
     use serde::Deserialize;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -861,6 +916,41 @@ mod tests {
         assert!(saw_limit);
         assert!(response.body.next().await.is_none());
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn provider_codec_can_bounded_read_streaming_error_body() {
+        let streaming = StreamingHttpResponse {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            headers: HeaderMap::new(),
+            body: Box::pin(stream::iter(vec![
+                Ok(Bytes::from_static(b"{\"error\":")),
+                Ok(Bytes::from_static(b"\"quota\"}")),
+            ])),
+            request_id: "provider-request".to_string(),
+            retry_after: Some(Duration::from_secs(5)),
+        };
+        let buffered = streaming.into_bounded_error_response(64).await.unwrap();
+        assert_eq!(buffered.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(buffered.body, Bytes::from_static(br#"{"error":"quota"}"#));
+        assert_eq!(buffered.request_id, "provider-request");
+        assert_eq!(buffered.retry_after, Some(Duration::from_secs(5)));
+
+        let oversized = StreamingHttpResponse {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            headers: HeaderMap::new(),
+            body: Box::pin(stream::once(async { Ok(Bytes::from_static(b"too-large")) })),
+            request_id: "provider-request".to_string(),
+            retry_after: None,
+        };
+        assert_eq!(
+            oversized
+                .into_bounded_error_response(3)
+                .await
+                .unwrap_err()
+                .kind,
+            ProtocolErrorKind::ResponseTooLarge
+        );
     }
 
     #[tokio::test]
