@@ -178,17 +178,19 @@ Owner：API 小组
 
 依赖：Gate 0
 
-- [ ] 为每个 typed method 定义独立 request/response；
-- [ ] 定义 `route.resolve`、Helper、cancel 和管理 API；
-- [ ] 区分 method、api_type 和 Capability；
-- [ ] 定义 AiMessage content block、tool、thinking 和 ProviderState；
-- [ ] 定义 ResourceRef、artifact、usage、cost 和 route trace；
-- [ ] 定义稳定错误码和 kRPC/task error 边界；
-- [ ] 重写 `AiccClient`、`AiccHandler`、`AiccServerHandler`；
-- [ ] 删除内部 all-in-one `AiMethodRequest` 路径和临时 method alias；已由 `buckyos-api::aicc_client` 导出的 method/type 保持兼容，但将旧 `reload_settings` 更新为唯一的 `service.reload_settings`；
-- [ ] 增加 serde round-trip、unknown field 和非法 schema 测试。
+- [x] 为每个 typed method 定义独立 request/response；
+- [x] 定义 `route.resolve`、Helper、cancel 和管理 API；
+- [x] 区分 method、api_type 和 Capability；
+- [x] 定义 AiMessage content block、tool、thinking 和 ProviderState；
+- [x] 定义 ResourceRef、artifact、usage、cost 和 route trace；
+- [x] 定义稳定错误码和 kRPC/task error 边界；
+- [x] 重写 `AiccClient`、`AiccHandler`、`AiccServerHandler`；
+- [x] 删除内部 all-in-one `AiMethodRequest` 路径和临时 method alias；已由 `buckyos-api::aicc_client` 导出的 method/type 保持兼容，但将旧 `reload_settings` 更新为唯一的 `service.reload_settings`；
+- [x] 增加 serde round-trip、unknown field 和非法 schema 测试。
 
 完成标准：Rust 服务端、Workflow 和其它 Rust 调用方不再手写协议字段或 method 字符串。
+
+实现记录：公共 API 已改为逐方法强类型 request/response，Canonical IR、稳定错误边界和 client/handler/server dispatch 已落地；Workflow、OpenDAN、Agent Tool、Control Panel 已迁移到类型化调用，管理面 wire method 只保留 `service.reload_settings`。验收覆盖 `buckyos-api`/`aicc` 单测、受影响 crate 全 target check、workspace test compile、协议残留扫描和格式检查；AICC 严格 clippy 被仓库范围外的既有告警基线阻断。
 
 ### WP-02：统一 MatchRule
 
@@ -985,7 +987,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 |---|---|---|---|---|
 | Gate 0 | Architecture/API/Metadata/E2E owners | Done | 无 | 契约冻结 |
 | WP-00 | 集成人（`@streetycat`） | Review | Gate 0 | 模块骨架 |
-| WP-01 | TBD | Pending | Gate 0 | API/IR/Error |
+| WP-01 | API 小组 | Done | Gate 0 | API/IR/Error |
 | WP-02 | Catalog/Matching 小组 | Done | Gate 0 | MatchRule（`a12b3e09`） |
 | WP-03 | Metadata 小组 | Done | WP-02 | CatalogSnapshot |
 | WP-04 | TBD | Pending | WP-01/02/03 | Model Registry |

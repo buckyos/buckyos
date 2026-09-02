@@ -3136,11 +3136,11 @@ mod tests {
     use crate::worklog::{WorklogService, WorklogToolConfig};
     use async_trait::async_trait;
     use buckyos_api::{
-        ActorRef, AiMethodRequest, AiMethodResponse, AiccClient, AiccHandler, CancelResponse,
-        CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq, GetSubtasksReq,
-        GetTaskReq, ListTaskNotesReq, ListTasksReq, ReportProgressReq, ReportRunningReq,
-        ReportStartedReq, ReportWaitingReq, TaskControlProfile, TaskManagerClient,
-        TaskManagerHandler, TaskNote, TaskOutcome, TaskPhase, TaskSummary, TaskSummaryPage,
+        ActorRef, AiccClient, AiccHandler, CancelResponse, CommitResultReq, CreateTaskExecutor,
+        CreateTaskReq, FailTaskReq, GetSubtasksReq, GetTaskReq, ListTaskNotesReq, ListTasksReq,
+        ReportProgressReq, ReportRunningReq, ReportStartedReq, ReportWaitingReq,
+        TaskControlProfile, TaskManagerClient, TaskManagerHandler, TaskNote, TaskOutcome,
+        TaskPhase, TaskSummary, TaskSummaryPage,
     };
     use kRPC::{RPCContext, RPCErrors};
     use std::sync::atomic::{AtomicI64, Ordering};
@@ -3329,15 +3329,6 @@ mod tests {
 
     #[async_trait]
     impl AiccHandler for NoopAicc {
-        async fn handle_method(
-            &self,
-            method: &str,
-            _request: AiMethodRequest,
-            _ctx: RPCContext,
-        ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-            Err(RPCErrors::UnknownMethod(method.to_string()))
-        }
-
         async fn handle_cancel(
             &self,
             task_id: &str,

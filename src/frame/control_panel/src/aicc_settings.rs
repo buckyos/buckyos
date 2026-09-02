@@ -1,8 +1,8 @@
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use buckyos_api::{
-    get_buckyos_api_runtime, AiMessage, AiMethodRequest, AiPayload, AiRole, Capability,
-    MailboxKind, ModelSpec, MsgCenterClient, Requirements, SystemConfigClient,
+    get_buckyos_api_runtime, AiMessage, AiRole, HelperModelRequirement, LlmChatHelperRequest,
+    LlmResponseFormat, MailboxKind, ModelDisable, MsgCenterClient, SystemConfigClient,
 };
 use log::info;
 use name_lib::DID;
@@ -1365,48 +1365,45 @@ impl ControlPanelServer {
             RPCErrors::ReasonError(format!("init aicc client failed: {}", error))
         })?;
 
-        let request = AiMethodRequest::new(
-            Capability::Llm,
-            ModelSpec::new(alias.to_string(), None),
-            Requirements::default(),
-            AiPayload::new(
-                None,
-                vec![AiMessage::text(
-                    AiRole::User,
-                    "Return a compact JSON object that confirms provider connectivity.",
-                )],
-                vec![],
-                vec![],
-                None,
-                Some(json!({
-                    "max_tokens": 64,
-                    "temperature": 0.1,
-                    "response_format": { "type": "json_object" }
-                })),
-            ),
-            None,
-        );
-
-        let request = buckyos_api::LlmChatHelperRequest::try_from(request)
-            .map_err(RPCErrors::ParseRequestError)?;
+        let request = LlmChatHelperRequest {
+            logical_model: alias.to_string(),
+            requirements: HelperModelRequirement {
+                json_schema: true,
+                ..Default::default()
+            },
+            disable: ModelDisable::default(),
+            policy: None,
+            messages: vec![AiMessage::text(
+                AiRole::User,
+                "Return a compact JSON object that confirms provider connectivity.",
+            )],
+            tools: Vec::new(),
+            response_format: Some(LlmResponseFormat::json_object()),
+            temperature: Some(0.1),
+            top_p: None,
+            max_output_tokens: Some(64),
+            seed: None,
+            stop: Vec::new(),
+            output: None,
+            idempotency_key: None,
+            task_options: None,
+            session_overlay: None,
+        };
         match aicc.helper_llm_chat(request).await {
-            Ok(result) => {
-                let result: buckyos_api::AiMethodResponse = result.into();
-                Ok(RPCResponse::new(
-                    RPCResult::Success(json!({
-                        "providerId": provider_id,
-                        "ok": true,
-                        "status": "pass",
-                        "taskId": result.task_id,
-                        "detail": result
-                            .result
-                            .map(|summary| summary.text_content())
-                            .filter(|text| !text.trim().is_empty())
-                            .unwrap_or_else(|| "Provider test completed successfully.".to_string())
-                    })),
-                    req.seq,
-                ))
-            }
+            Ok(result) => Ok(RPCResponse::new(
+                RPCResult::Success(json!({
+                    "providerId": provider_id,
+                    "ok": true,
+                    "status": "pass",
+                    "taskId": result.task_id,
+                    "detail": result
+                        .message
+                        .map(|message| message.text_content())
+                        .filter(|text| !text.trim().is_empty())
+                        .unwrap_or_else(|| "Provider test completed successfully.".to_string())
+                })),
+                req.seq,
+            )),
             Err(error) => Ok(RPCResponse::new(
                 RPCResult::Success(json!({
                     "providerId": provider_id,
@@ -1537,38 +1534,38 @@ impl ControlPanelServer {
             RPCErrors::ReasonError(format!("init aicc client failed: {}", error))
         })?;
         let peer_did_string = peer_did.to_string();
-        let request = AiMethodRequest::new(
-            Capability::Llm,
-            ModelSpec::new(model_alias.clone(), None),
-            Requirements::default(),
-            AiPayload::new(
-                Some(Self::build_message_hub_summary_prompt(
+        let request = LlmChatHelperRequest {
+            logical_model: model_alias.clone(),
+            requirements: HelperModelRequirement::default(),
+            disable: ModelDisable::default(),
+            policy: None,
+            messages: vec![AiMessage::text(
+                AiRole::User,
+                Self::build_message_hub_summary_prompt(
                     peer_name.as_deref(),
                     peer_did_string.as_str(),
                     &items,
-                )),
-                vec![],
-                vec![],
-                vec![],
-                None,
-                Some(json!({
-                    "max_tokens": 240,
-                    "temperature": 0.2
-                })),
-            ),
-            None,
-        );
-
-        let request = buckyos_api::LlmChatHelperRequest::try_from(request)
-            .map_err(RPCErrors::ParseRequestError)?;
-        let result: buckyos_api::AiMethodResponse = aicc
+                ),
+            )],
+            tools: Vec::new(),
+            response_format: None,
+            temperature: Some(0.2),
+            top_p: None,
+            max_output_tokens: Some(240),
+            seed: None,
+            stop: Vec::new(),
+            output: None,
+            idempotency_key: None,
+            task_options: None,
+            session_overlay: None,
+        };
+        let result = aicc
             .helper_llm_chat(request)
             .await
-            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?
-            .into();
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         let summary = result
-            .result
-            .map(|summary| summary.text_content())
+            .message
+            .map(|message| message.text_content())
             .filter(|text| !text.trim().is_empty())
             .unwrap_or_else(|| "No summary text returned by the model.".to_string());
 
@@ -1586,15 +1583,12 @@ impl ControlPanelServer {
 
     async fn reload_aicc_settings_value(&self) -> Result<Value, RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
-        let krpc_client = runtime
-            .get_zone_service_krpc_client("aicc")
-            .await
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!("init aicc rpc client failed: {}", error))
-            })?;
+        let client = runtime.get_aicc_client().await.map_err(|error| {
+            RPCErrors::ReasonError(format!("init aicc rpc client failed: {}", error))
+        })?;
 
-        let result = krpc_client
-            .call("service.reload_settings", json!({}))
+        let result = client
+            .reload_settings(buckyos_api::ServiceReloadSettingsRequest::default())
             .await
             .map_err(|error| {
                 RPCErrors::ReasonError(format!("reload aicc settings failed: {}", error))

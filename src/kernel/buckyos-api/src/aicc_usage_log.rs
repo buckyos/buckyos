@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::aicc_client::{AiUsage, RouteTrace};
 use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 
 /// Logical name of the aicc usage-log rdb instance. The scheduler writes this
@@ -211,7 +212,7 @@ pub struct AiccUsageEvent {
     pub total_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_units: Option<u64>,
-    pub usage_json: Value,
+    pub usage_json: AiUsage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finance_snapshot_json: Option<Value>,
     pub created_at_ms: i64,
@@ -230,11 +231,12 @@ pub struct AiccRouteTraceEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_instance_name: Option<String>,
     pub api_type: String,
-    pub route_trace_json: Value,
+    pub route_trace_json: RouteTrace,
     pub created_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct QueryRouteTraceRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
@@ -357,22 +359,18 @@ impl UsageQueryBucket {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageQueryOutputMode {
+    #[default]
     Summary,
     Events,
     SummaryAndEvents,
 }
 
-impl Default for UsageQueryOutputMode {
-    fn default() -> Self {
-        Self::Summary
-    }
-}
-
 /// The general query interface mandated by the requirements doc (section 7).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct QueryUsageRequest {
     pub time_range: UsageQueryTimeRange,
     #[serde(default)]

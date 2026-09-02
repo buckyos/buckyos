@@ -22,10 +22,9 @@ use std::sync::Arc;
 use ::kRPC::RPCErrors;
 use async_trait::async_trait;
 use buckyos_api::{
-    features, get_buckyos_api_runtime, value_to_object_map, AiMethodRequest,
-    AiMethodStatus, AiPayload, AiResponse, AiToolCall, AiToolSpec, AiccClient, Capability,
-    KEventClient, LlmChatHelperRequest, ModelSpec, MsgCenterClient, Requirements, RespFormat,
-    TaskDispatcherClient, TaskManagerClient, TaskOutcome, TypedTaskData,
+    get_buckyos_api_runtime, AiMethodStatus, AiResponse, AiToolCall, AiToolSpec, AiccClient,
+    HelperModelRequirement, KEventClient, LlmChatHelperRequest, LlmResponseFormat, ModelDisable,
+    MsgCenterClient, TaskDispatcherClient, TaskManagerClient, TaskOutcome, TypedTaskData,
 };
 use log::warn;
 use serde_json::{json, Value};
@@ -107,80 +106,50 @@ impl LlmClient for AiccLlmClient {
                 .map(|spec| AiToolSpec {
                     name: spec.name,
                     description: spec.description,
-                    args_schema: value_to_object_map(spec.args_schema),
-                    output_schema: json!({}),
+                    tool_type: "function".to_string(),
+                    args_json_schema: spec.args_schema,
+                    output_schema: None,
                 })
                 .collect()
         } else {
             Vec::new()
         };
 
-        // provider_options: opaque pass-through merged into payload options.
-        let mut options = serde_json::Map::new();
-        if let Some(t) = temperature {
-            options.insert("temperature".to_string(), Value::from(t));
+        let _ = (fallbacks, provider_options);
+        let mut disable = ModelDisable::default();
+        for feature in disable_capabilities {
+            disable.set_feature_disabled(&feature);
         }
-        if let Some(m) = max_completion_tokens {
-            options.insert("max_completion_tokens".to_string(), Value::from(m));
-        }
-        if let Some(schema) = json_schema {
-            options.insert("json_schema".to_string(), schema);
-        }
-        if let Some(extra) = provider_options {
-            match extra {
-                Value::Object(obj) => {
-                    for (k, v) in obj {
-                        options.insert(k, v);
-                    }
-                }
-                other => {
-                    options.insert("provider_options".to_string(), other);
-                }
-            }
-        }
-
-        let payload = AiPayload::new(
-            None,
-            messages,
-            advertised_tools,
-            Vec::new(),
-            None,
-            Some(Value::Object(options)),
-        );
-
-        let mut must_features: Vec<String> = Vec::new();
-        if allow_tool_calls && !payload.tool_specs.is_empty() {
-            must_features.push(features::TOOL_CALLING.to_string());
-        }
-        if force_json {
-            must_features.push(features::JSON_OUTPUT.to_string());
-        }
-
-        let extra = if disable_capabilities.is_empty() {
-            None
+        let response_format = if force_json {
+            Some(match json_schema {
+                Some(schema) => LlmResponseFormat::json_schema(None, schema, None),
+                None => LlmResponseFormat::json_object(),
+            })
         } else {
-            Some(json!({
-                "disable_capabilities": disable_capabilities
-            }))
+            None
         };
-        let mut requirements = Requirements::new(must_features, None, None, extra);
-        if force_json {
-            requirements.resp_format = RespFormat::Json;
-        }
-
-        let request = AiMethodRequest::new(
-            Capability::Llm,
-            ModelSpec::new(model_alias, None),
-            requirements,
-            payload,
-            None,
-        );
-
-        // Fallbacks aren't directly representable in `AiMethodRequest` yet
-        // (model_spec carries a single alias); attach them to options so the
-        // aicc adapter can pick them up when it adds fallback wiring.
-        let _ = fallbacks;
-        let request = LlmChatHelperRequest::try_from(request).map_err(LLMComputeError::Provider)?;
+        let request = LlmChatHelperRequest {
+            logical_model: model_alias,
+            requirements: HelperModelRequirement {
+                tool_call: allow_tool_calls && !advertised_tools.is_empty(),
+                json_schema: force_json,
+                ..Default::default()
+            },
+            disable,
+            policy: None,
+            messages,
+            tools: advertised_tools,
+            response_format,
+            temperature: temperature.map(f64::from),
+            top_p: None,
+            max_output_tokens: max_completion_tokens.map(u64::from),
+            seed: None,
+            stop: Vec::new(),
+            output: None,
+            idempotency_key: None,
+            task_options: None,
+            session_overlay: None,
+        };
 
         let aicc = self.client().await.map_err(provider_error_from_rpc)?;
         let resp = aicc
