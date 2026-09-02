@@ -14,6 +14,16 @@ export const REQUIRED_T15_PROVIDER_DRIVERS = [
   "sn-ai-provider",
 ] as const;
 
+const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
+  openai: new Set(["platform.openai.com", "developers.openai.com"]),
+  claude: new Set(["platform.claude.com", "docs.anthropic.com"]),
+  "google-gemini": new Set(["ai.google.dev"]),
+  fal: new Set(["fal.ai"]),
+  minimax: new Set(["platform.minimax.io"]),
+  openrouter: new Set(["openrouter.ai"]),
+  "sn-ai-provider": new Set(["platform.openai.com", "developers.openai.com"]),
+};
+
 export type ProtocolErrorFixture = {
   scenario: string;
   status: number;
@@ -35,8 +45,15 @@ export type ProviderProtocolContract = {
   content_type: string;
   required_body_fields: string[];
   allowed_body_fields: string[];
+  body_field_types: Record<string, Array<"string" | "number" | "boolean" | "array" | "object">>;
   stream_protocol?: "openai_responses" | "claude_messages" | "gemini_interactions" | "openrouter_chat";
   async_protocol?: "fal_queue" | "minimax_video" | "google_lro" | "openai_video";
+  async_steps?: Array<{
+    name: "poll" | "result" | "cancel";
+    http_method: string;
+    path: string;
+    required_query_fields?: string[];
+  }>;
   success_content_type?: string;
   success_fixture?: Record<string, unknown>;
   async_result_fixture?: Record<string, unknown>;
@@ -51,6 +68,10 @@ export type ProviderProtocolCatalog = {
   checked_at: string;
   providers: Array<{
     provider_driver: string;
+    provider_profile_id: string;
+    endpoint_path: string;
+    credential_type: "api_key" | "bearer";
+    test_model_ids: Record<string, string>;
     contracts: ProviderProtocolContract[];
   }>;
   error_evidence: Record<string, {
@@ -103,6 +124,19 @@ export function validateProviderProtocolCatalog(value: unknown): ProviderProtoco
     const driver = nonEmptyString(provider.provider_driver, "provider_driver");
     if (providers.has(driver)) throw new Error(`duplicate protocol provider ${driver}`);
     providers.add(driver);
+    nonEmptyString(provider.provider_profile_id, `${driver}.provider_profile_id`);
+    if (typeof provider.endpoint_path !== "string" ||
+      (provider.endpoint_path !== "" && !provider.endpoint_path.startsWith("/"))) {
+      throw new Error(`${driver}.endpoint_path must be empty or start with /`);
+    }
+    if (!["api_key", "bearer"].includes(String(provider.credential_type))) {
+      throw new Error(`${driver}.credential_type is invalid`);
+    }
+    const testModelIds = object(provider.test_model_ids, `${driver}.test_model_ids`);
+    for (const [apiType, modelId] of Object.entries(testModelIds)) {
+      nonEmptyString(apiType, `${driver}.test_model_ids key`);
+      nonEmptyString(modelId, `${driver}.test_model_ids.${apiType}`);
+    }
     if (!Array.isArray(provider.contracts) || provider.contracts.length === 0) {
       throw new Error(`${driver}.contracts must not be empty`);
     }
@@ -115,23 +149,57 @@ export function validateProviderProtocolCatalog(value: unknown): ProviderProtoco
         nonEmptyString(contract[field], `${id}.${field}`);
       }
       stringArray(contract.api_types, `${id}.api_types`);
+      for (const apiType of contract.api_types as string[]) {
+        if (!testModelIds[apiType]) throw new Error(`${id} has no ${driver}.test_model_ids.${apiType}`);
+      }
       stringArray(contract.allowed_body_fields, `${id}.allowed_body_fields`);
       if (!Array.isArray(contract.required_body_fields) ||
           contract.required_body_fields.some((field) => typeof field !== "string")) {
         throw new Error(`${id}.required_body_fields must be a string array`);
       }
       const allowed = new Set(contract.allowed_body_fields as string[]);
+      const bodyFieldTypes = object(contract.body_field_types, `${id}.body_field_types`);
       for (const required of contract.required_body_fields as string[]) {
         if (!allowed.has(required)) throw new Error(`${id} required field ${required} is not allowed`);
+        if (!bodyFieldTypes[required]) throw new Error(`${id} required field ${required} has no type schema`);
+      }
+      for (const [field, rawTypes] of Object.entries(bodyFieldTypes)) {
+        if (!allowed.has(field)) throw new Error(`${id} type schema field ${field} is not allowed`);
+        const types = stringArray(rawTypes, `${id}.body_field_types.${field}`);
+        if (types.some((type) => !["string", "number", "boolean", "array", "object"].includes(type))) {
+          throw new Error(`${id}.body_field_types.${field} contains invalid type`);
+        }
       }
       const sources = stringArray(contract.official_sources, `${id}.official_sources`);
       if (sources.some((source) => !/^https:\/\//.test(source))) {
         throw new Error(`${id}.official_sources must use HTTPS`);
       }
+      if (sources.some((source) => !OFFICIAL_PROTOCOL_SOURCE_HOSTS[driver]?.has(new URL(source).hostname))) {
+        throw new Error(`${id}.official_sources must use the Provider official domain`);
+      }
       const auth = object(contract.auth, `${id}.auth`);
       if (!["header", "query"].includes(String(auth.kind))) throw new Error(`${id}.auth.kind is invalid`);
       nonEmptyString(auth.name, `${id}.auth.name`);
       if (typeof auth.prefix !== "string") throw new Error(`${id}.auth.prefix must be a string`);
+      if (contract.async_protocol) {
+        if (!Array.isArray(contract.async_steps) ||
+          !contract.async_steps.some((step) => object(step, `${id}.async_step`).name === "poll")) {
+          throw new Error(`${id}.async_steps must include poll for async protocols`);
+        }
+        for (const [index, rawStep] of (contract.async_steps as unknown[]).entries()) {
+          const step = object(rawStep, `${id}.async_steps[${index}]`);
+          if (!["poll", "result", "cancel"].includes(String(step.name))) {
+            throw new Error(`${id}.async_steps[${index}].name is invalid`);
+          }
+          nonEmptyString(step.http_method, `${id}.async_steps[${index}].http_method`);
+          nonEmptyString(step.path, `${id}.async_steps[${index}].path`);
+          if (step.required_query_fields !== undefined) {
+            stringArray(step.required_query_fields, `${id}.async_steps[${index}].required_query_fields`);
+          }
+        }
+      } else if (contract.async_steps !== undefined) {
+        throw new Error(`${id}.async_steps requires async_protocol`);
+      }
     }
   }
   for (const required of REQUIRED_T15_PROVIDER_DRIVERS) {
@@ -145,6 +213,9 @@ export function validateProviderProtocolCatalog(value: unknown): ProviderProtoco
     const evidenceSources = stringArray(evidence.official_sources, `${driver}.error_evidence.official_sources`);
     if (evidenceSources.some((source) => !/^https:\/\//.test(source))) {
       throw new Error(`${driver}.error_evidence.official_sources must use HTTPS`);
+    }
+    if (evidenceSources.some((source) => !OFFICIAL_PROTOCOL_SOURCE_HOSTS[driver]?.has(new URL(source).hostname))) {
+      throw new Error(`${driver}.error_evidence.official_sources must use the Provider official domain`);
     }
     nonEmptyString(evidence.evidence_summary, `${driver}.error_evidence.evidence_summary`);
     const fixtures = errors[driver];
@@ -193,9 +264,30 @@ export function protocolContract(
 
 function pathPattern(template: string): RegExp {
   const escaped = template.replace(/[.+?^${}()|[\]\\]/g, "\\$&")
-    .replace("\\{model\\}", "[^/]+")
-    .replace("\\{endpoint\\}", ".+");
+    .replace(/\\\{[^}]+\\\}/g, "[^/]+");
   return new RegExp(`^${escaped}$`);
+}
+
+export function validateProviderAuxiliaryRequest(
+  contract: ProviderProtocolContract,
+  request: Pick<CapturedProviderRequest, "method" | "pathname" | "query" | "headers">,
+): { step?: NonNullable<ProviderProtocolContract["async_steps"]>[number]; errors: string[] } {
+  const step = contract.async_steps?.find((candidate) =>
+    candidate.http_method.toUpperCase() === request.method.toUpperCase() &&
+    pathPattern(candidate.path).test(request.pathname)
+  );
+  const errors: string[] = [];
+  if (!step) return { errors: [`unexpected async request ${request.method} ${request.pathname}`] };
+  const authValue = contract.auth.kind === "header"
+    ? request.headers.get(contract.auth.name)
+    : request.query.get(contract.auth.name);
+  if (!authValue || !authValue.startsWith(contract.auth.prefix) || authValue.length <= contract.auth.prefix.length) {
+    errors.push(`missing or invalid ${contract.auth.kind} authentication ${contract.auth.name}`);
+  }
+  for (const field of step.required_query_fields ?? []) {
+    if (!request.query.get(field)) errors.push(`missing query field ${field}`);
+  }
+  return { step, errors };
 }
 
 export function validateProviderRequest(
@@ -233,12 +325,38 @@ export function validateProviderRequest(
   const allowed = new Set(contract.allowed_body_fields);
   for (const field of Object.keys(body)) {
     if (!allowed.has(field)) errors.push(`unknown body field ${field}`);
+    const expectedTypes = contract.body_field_types[field];
+    if (expectedTypes && !expectedTypes.includes(
+      Array.isArray(body[field]) ? "array" : body[field] !== null && typeof body[field] === "object" ? "object" : typeof body[field] as never,
+    )) {
+      errors.push(`body field ${field} has invalid type`);
+    }
   }
   return errors;
 }
 
 function caseId(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+}
+
+function providerErrorCode(fixture: ProtocolErrorFixture): string {
+  const body = fixture.body;
+  const error = body.error && typeof body.error === "object" ? body.error as Record<string, unknown> : undefined;
+  const baseResponse = body.base_resp && typeof body.base_resp === "object"
+    ? body.base_resp as Record<string, unknown>
+    : undefined;
+  for (const value of [error?.code, error?.status, error?.type, body.error_type, baseResponse?.status_code]) {
+    if (value !== undefined && value !== null && String(value)) return String(value);
+  }
+  return String(fixture.status);
+}
+
+function providerErrorRetryable(fixture: ProtocolErrorFixture): boolean {
+  const explicit = Object.entries(fixture.headers ?? {}).find(([name]) => name.toLowerCase() === "x-fal-retryable")?.[1];
+  if (explicit) return explicit.toLowerCase() === "true";
+  return fixture.status === 429 || fixture.status >= 500 ||
+    ["rate_limit", "quota", "timeout", "unavailable", "overloaded", "server_error", "provider_error"]
+      .includes(fixture.scenario);
 }
 
 type VariantCell = {
@@ -302,6 +420,16 @@ export function buildT15Manifest(
             expected_wire_fixture: `${contract.id}.request.stream`,
             response_fixture: `${contract.id}.stream`,
           } as AcceptanceCase);
+          cases.push({
+            ...common,
+            case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.stream-interrupted`),
+            priority: "P1",
+            mock_scenario: "stream_interrupted",
+            expected_task_status: "failed",
+            expected_error_class: "provider_protocol_failed",
+            expected_wire_fixture: `${contract.id}.request.stream`,
+            response_fixture: `${contract.id}.stream.interrupted`,
+          } as AcceptanceCase);
         }
         if (apiType === primaryApiType && contract.async_protocol) {
           cases.push({
@@ -311,17 +439,68 @@ export function buildT15Manifest(
             expected_wire_fixture: `${contract.id}.request.async`,
             response_fixture: `${contract.id}.async`,
           } as AcceptanceCase);
+          cases.push({
+            ...common,
+            case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.async-failed`),
+            priority: "P1",
+            mock_scenario: "async_failed",
+            expected_task_status: "failed",
+            expected_error_class: "provider_protocol_failed",
+            expected_wire_fixture: `${contract.id}.request.async`,
+            response_fixture: `${contract.id}.async.failed`,
+          } as AcceptanceCase);
+          for (const scenario of ["async_poll_timeout", "async_artifact_unavailable"] as const) {
+            cases.push({
+              ...common,
+              case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.${scenario}`),
+              priority: "P1",
+              mock_scenario: scenario,
+              expected_task_status: "failed",
+              expected_error_class: "provider_protocol_failed",
+              expected_wire_fixture: `${contract.id}.request.async`,
+              response_fixture: `${contract.id}.${scenario}`,
+              timeout_ms: scenario === "async_poll_timeout" ? 1_500 : common.timeout_ms,
+            } as AcceptanceCase);
+          }
+          if (contract.async_steps?.some((step) => step.name === "cancel")) {
+            cases.push({
+              ...common,
+              case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.async-cancel`),
+              priority: "P1",
+              mock_scenario: "async_cancel",
+              expected_task_status: "failed",
+              expected_wire_fixture: `${contract.id}.request.async.cancel`,
+              response_fixture: `${contract.id}.async.cancelled`,
+            } as AcceptanceCase);
+          }
         }
         for (const error of apiType === primaryApiType ? catalog.error_fixtures[provider.provider_driver] : []) {
           cases.push({
             ...common,
             case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.error.${error.scenario}`),
             priority: "P1",
+            tags: [...common.tags!, "official_error"],
             mock_scenario: error.scenario,
             expected_task_status: "failed",
             expected_error_class: "provider_protocol_failed",
             response_fixture: `${provider.provider_driver}.error.${error.scenario}`,
+            expected_aicc_error_code: "provider_start_failed",
+            expected_provider_error_code: providerErrorCode(error),
+            expected_retryable: providerErrorRetryable(error),
           } as AcceptanceCase);
+        }
+        if (apiType === primaryApiType) {
+          for (const scenario of ["malformed_response", "wrong_content_type", "missing_required_response_field"] as const) {
+            cases.push({
+              ...common,
+              case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.response.${scenario}`),
+              priority: "P1",
+              mock_scenario: scenario,
+              expected_task_status: "failed",
+              expected_error_class: "provider_protocol_failed",
+              response_fixture: `${contract.id}.response.${scenario}`,
+            } as AcceptanceCase);
+          }
         }
       }
     }

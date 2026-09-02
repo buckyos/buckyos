@@ -71,6 +71,9 @@ export type AcceptanceCase = {
   provider_api_version?: string;
   expected_wire_fixture?: string;
   response_fixture?: string;
+  expected_aicc_error_code?: string;
+  expected_provider_error_code?: string;
+  expected_retryable?: boolean;
 };
 
 export type ProviderModel = {

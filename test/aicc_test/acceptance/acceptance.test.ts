@@ -34,9 +34,11 @@ import {
   buildT15Manifest,
   loadProviderProtocolCatalog,
   protocolContract,
+  validateProviderProtocolCatalog,
+  validateProviderAuxiliaryRequest,
   validateProviderRequest,
 } from "./provider_protocol_contracts.ts";
-import { buildT15TypedParams } from "./run_t15_gateway.ts";
+import { assertT15ResponseMapping, buildT15TypedParams } from "./run_t15_gateway.ts";
 import { createT15MockHandler } from "./t15_mock_provider.ts";
 import {
   assertBackgroundRemovalTransparency,
@@ -1330,7 +1332,21 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
     }),
     body: { model: "claude-test", messages: [], max_tokens: 16, invented_by_aicc: true },
   }), ["unknown body field invented_by_aicc"]);
+  assert.deepEqual(validateProviderRequest(contract, {
+    method: "POST",
+    pathname: "/v1/messages",
+    query: new URLSearchParams(),
+    headers: new Headers({
+      "content-type": "application/json",
+      "x-api-key": "test-key",
+      "anthropic-version": "2023-06-01",
+    }),
+    body: { model: "claude-test", messages: {}, max_tokens: "16" },
+  }), ["body field messages has invalid type", "body field max_tokens has invalid type"]);
   assert.ok(contract.official_sources.every((source) => source.startsWith("https://")));
+  const invalidCatalog = structuredClone(catalog);
+  invalidCatalog.providers[0].contracts[0].official_sources = ["https://example.com/not-provider-evidence"];
+  assert.throws(() => validateProviderProtocolCatalog(invalidCatalog), /Provider official domain/);
 });
 
 test("T1.5 Provider mock rejects non-official wire and redacts captured credentials", async (context) => {
@@ -1386,6 +1402,49 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
   assert.match(await invalid.text(), /unknown body field invented/);
 });
 
+test("T1.5 async lifecycle validates and captures official poll/result wire", async (context) => {
+  const catalog = await loadProviderProtocolCatalog();
+  const contract = protocolContract(catalog, "fal", "fal.esrgan.queue-v1");
+  assert.deepEqual(validateProviderAuxiliaryRequest(contract, {
+    method: "GET",
+    pathname: "/fal-ai/esrgan/requests/fal_mock_1/status",
+    query: new URLSearchParams(),
+    headers: new Headers({ authorization: "Key test-key" }),
+  }).errors, []);
+  assert.match(validateProviderAuxiliaryRequest(contract, {
+    method: "GET",
+    pathname: "/fal-ai/esrgan/requests/fal_mock_1/status",
+    query: new URLSearchParams(),
+    headers: new Headers(),
+  }).errors.join(";"), /authentication/);
+
+  const handler = createT15MockHandler(catalog);
+  const server = createServer((request, response) => void handler(request, response));
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+  context.after(() => new Promise<void>((resolvePromise, reject) =>
+    server.close((error) => error ? reject(error) : resolvePromise())
+  ));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  assert.equal((await fetch(`${baseUrl}/__mock/select`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ provider_driver: "fal", contract_id: contract.id, scenario: "async_success" }),
+  })).status, 200);
+  const headers = { authorization: "Key test-key" };
+  assert.equal((await fetch(`${baseUrl}/fal-ai/esrgan/requests/fal_mock_1/status`, { headers })).status, 200);
+  assert.equal((await fetch(`${baseUrl}/fal-ai/esrgan/requests/fal_mock_1`, { headers })).status, 200);
+  const audit = await (await fetch(`${baseUrl}/__mock/requests`)).json() as {
+    requests: Array<{ async_step?: string; validation_errors: string[] }>;
+  };
+  assert.deepEqual(audit.requests.map((request) => request.async_step), ["poll", "result"]);
+  assert.ok(audit.requests.every((request) => request.validation_errors.length === 0));
+});
+
 test("T1.5 manifest owns Provider normal, streaming, async, error, and variant cells", async () => {
   const catalog = await loadProviderProtocolCatalog();
   const manifest = validateCaseManifest(buildT15Manifest(catalog, [{
@@ -1403,6 +1462,8 @@ test("T1.5 manifest owns Provider normal, streaming, async, error, and variant c
   }]));
   assert.ok(manifest.some((item) => item.mock_scenario === "stream_success"));
   assert.ok(manifest.some((item) => item.mock_scenario === "async_success"));
+  assert.ok(manifest.some((item) => item.mock_scenario === "async_failed"));
+  assert.ok(manifest.some((item) => item.mock_scenario === "async_cancel"));
   assert.ok(manifest.some((item) => item.expected_error_class === "provider_protocol_failed"));
   assert.ok(manifest.some((item) => item.tags.includes("variant")));
   assert.ok(manifest.every((item) => item.layer === "T1.5" && item.semantic_rubric.length === 0));
@@ -1415,6 +1476,25 @@ test("T1.5 typed request fixtures use current provider-neutral methods without l
   assert.ok(Array.isArray(params.messages));
   assert.equal("model" in params, false);
   assert.equal("payload" in params, false);
+});
+
+test("T1.5 success mapping requires canonical output, usage, and async attribution", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const llm = protocolContract(catalog, "openai", "openai.responses.v1");
+  assert.doesNotThrow(() => assertT15ResponseMapping("llm", {
+    status: "succeeded",
+    message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+    usage: { input_tokens: 1, output_tokens: 1 },
+  }, llm));
+  assert.throws(() => assertT15ResponseMapping("llm", {
+    status: "succeeded",
+    usage: { input_tokens: 1 },
+  }, llm), /missing mapped field message/);
+  const video = protocolContract(catalog, "openai", "openai.videos.v1");
+  assert.throws(() => assertT15ResponseMapping("video.txt2video", {
+    status: "succeeded",
+    video: { kind: "named_object", obj_id: "chunk:video" },
+  }, video), /operation attribution/);
 });
 
 test("T2 excludes independently callable metadata variants", async () => {

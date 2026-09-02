@@ -137,37 +137,22 @@ async function selectMock(baseUrl: string, testCase: AcceptanceCase): Promise<vo
   if (!response.ok) throw new Error(`mock selection failed: ${response.status} ${await response.text()}`);
 }
 
-async function capturedRequests(baseUrl: string): Promise<Array<{ validation_errors?: unknown[]; pathname?: string; body?: unknown }>> {
+async function resetMock(baseUrl: string): Promise<void> {
+  const response = await fetch(`${baseUrl}/__mock/reset`, { method: "POST" });
+  if (!response.ok) throw new Error(`mock reset failed: ${response.status} ${await response.text()}`);
+}
+
+async function capturedRequests(baseUrl: string): Promise<Array<{
+  validation_errors?: unknown[];
+  pathname?: string;
+  body?: unknown;
+  async_step?: "poll" | "result" | "cancel";
+}>> {
   const response = await fetch(`${baseUrl}/__mock/requests`);
   if (!response.ok) throw new Error(`mock request audit failed: ${response.status} ${await response.text()}`);
   const value = await response.json() as { requests?: unknown };
   if (!Array.isArray(value.requests)) throw new Error("mock request audit is malformed");
   return value.requests as Array<{ validation_errors?: unknown[]; pathname?: string; body?: unknown }>;
-}
-
-const PROFILE_IDS: Record<string, string> = {
-  openai: "openai",
-  claude: "claude",
-  "google-gemini": "gemini",
-  fal: "fal",
-  minimax: "minimax",
-  openrouter: "openrouter",
-  "sn-ai-provider": "sn",
-};
-
-function providerEndpoint(driver: string, mockBaseUrl: string): string {
-  const suffix: Record<string, string> = {
-    openai: "/v1",
-    claude: "/v1",
-    "google-gemini": "/v1beta",
-    openrouter: "/api/v1",
-    "sn-ai-provider": "/v1",
-  };
-  return `${mockBaseUrl}${suffix[driver] ?? ""}`;
-}
-
-function credentialType(driver: string): string {
-  return ["claude", "google-gemini", "fal"].includes(driver) ? "api_key" : "bearer";
 }
 
 async function addProvider(
@@ -182,10 +167,10 @@ async function addProvider(
   await session.aicc.call("provider.add", {
     provider_instance_name: instance,
     provider_type: "cloud_api",
-    provider_profile_id: PROFILE_IDS[driver],
+    provider_profile_id: provider.provider_profile_id,
     protocol_adapter_id: provider.contracts[0].protocol_adapter_id,
-    endpoint: providerEndpoint(driver, mockBaseUrl),
-    credentials: { type: credentialType(driver), secret: `t15-mock-${driver}` },
+    endpoint: `${mockBaseUrl}${provider.endpoint_path}`,
+    credentials: { type: provider.credential_type, secret: `t15-mock-${driver}` },
     auto_sync_models: true,
     enabled: true,
   });
@@ -209,19 +194,25 @@ async function waitInventory(session: GatewaySession, instance: string, timeoutM
   throw new Error(`Provider inventory ${instance} did not converge; found=${last.map((item) => item.provider_instance_name).join(",")}`);
 }
 
-const MODEL_IDS: Record<string, Record<string, string>> = {
-  openai: { llm: "gpt-5.4", "vision.ocr": "gpt-5.4", "vision.caption": "gpt-5.4", "agent.computer_use": "gpt-5.4", "embedding.text": "text-embedding-3-small", "image.txt2img": "gpt-image-1", "image.img2img": "gpt-image-1", "image.inpaint": "gpt-image-1", "audio.tts": "tts-1", "audio.asr": "whisper-1", "video.txt2video": "sora-2", "video.img2video": "sora-2" },
-  claude: { llm: "claude-3-7-sonnet-20250219", "vision.ocr": "claude-3-7-sonnet-20250219", "vision.caption": "claude-3-7-sonnet-20250219" },
-  "google-gemini": { llm: "gemini-3.5-pro", "vision.ocr": "gemini-3.5-pro", "vision.caption": "gemini-3.5-pro", "vision.detect": "gemini-3.5-pro", "vision.segment": "gemini-3.5-pro", "audio.asr": "gemini-3.5-pro", "agent.computer_use": "gemini-3.5-pro", "embedding.text": "gemini-embedding-2", "embedding.multimodal": "gemini-embedding-2" },
-  fal: { "image.upscale": "fal-ai/esrgan", "image.bg_remove": "fal-ai/imageutils/rembg", "audio.enhance": "fal-ai/deepfilternet3", "video.upscale": "fal-ai/video-upscaler" },
-  minimax: { llm: "MiniMax-M2.5", "audio.tts": "speech-2.8-hd", "image.txt2img": "image-01", "image.img2img": "image-01", "video.txt2video": "MiniMax-Hailuo-02", "video.img2video": "MiniMax-Hailuo-02", "audio.music": "music-2.0" },
-  openrouter: { llm: "openai/gpt-5.4" },
-  "sn-ai-provider": { llm: "gpt-5.4", "vision.ocr": "gpt-5.4", "vision.caption": "gpt-5.4", "agent.computer_use": "gpt-5.4" },
-};
+async function waitInventoryAbsent(session: GatewaySession, instance: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let last: ProviderInventory[] = [];
+  while (Date.now() < deadline) {
+    last = inventories(await session.aicc.call("models.list", {}));
+    if (!last.some((inventory) => inventory.provider_instance_name === instance)) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
+  }
+  throw new Error(`deleted Provider inventory ${instance} is still present`);
+}
 
-function exactModel(testCase: AcceptanceCase, inventory: ProviderInventory): string {
+function exactModel(
+  catalog: ProviderProtocolCatalog,
+  testCase: AcceptanceCase,
+  inventory: ProviderInventory,
+): string {
   if (testCase.model_selector?.kind === "exact") return testCase.model_selector.value;
-  const id = MODEL_IDS[testCase.provider_driver ?? ""]?.[testCase.api_type ?? ""];
+  const id = catalog.providers.find((provider) => provider.provider_driver === testCase.provider_driver)
+    ?.test_model_ids[testCase.api_type ?? ""];
   const model = inventory.models.find((candidate) => candidate.provider_model_id === id) ??
     inventory.models.find((candidate) => candidate.api_types.includes(testCase.api_type ?? ""));
   if (!model) throw new Error(`no exact model for ${testCase.provider_driver}/${testCase.api_type}`);
@@ -282,8 +273,62 @@ async function terminal(session: GatewaySession, value: unknown, timeoutMs: numb
   throw new Error(`task ${response.task_id} timed out`);
 }
 
+function hasMappedField(value: unknown, names: Set<string>, seen = new Set<object>()): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.some((item) => hasMappedField(item, names, seen));
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => names.has(key))) return true;
+  return Object.values(record).some((item) => hasMappedField(item, names, seen));
+}
+
+export function assertT15ResponseMapping(
+  apiType: string,
+  value: unknown,
+  contract: ReturnType<typeof protocolContract>,
+): void {
+  const expectedFields: Record<string, string[]> = {
+    llm: ["message"],
+    "embedding.text": ["data", "data_resource", "embeddings"],
+    "embedding.multimodal": ["data", "data_resource", "embeddings"],
+    rerank: ["results"],
+    "image.txt2img": ["images", "artifacts"],
+    "image.img2img": ["images", "image", "artifacts"],
+    "image.inpaint": ["images", "image", "artifacts"],
+    "image.upscale": ["image", "artifacts"],
+    "image.bg_remove": ["image", "artifacts"],
+    "vision.ocr": ["pages", "artifacts"],
+    "vision.caption": ["captions"],
+    "vision.detect": ["detections"],
+    "vision.segment": ["masks", "artifacts"],
+    "audio.tts": ["audio", "artifacts"],
+    "audio.asr": ["text", "segments"],
+    "audio.music": ["audio", "artifacts"],
+    "audio.enhance": ["audio", "artifacts"],
+    "video.txt2video": ["video", "artifacts"],
+    "video.img2video": ["video", "artifacts"],
+    "video.video2video": ["video", "artifacts"],
+    "video.extend": ["video", "artifacts"],
+    "video.upscale": ["video", "artifacts"],
+    "agent.computer_use": ["action", "actions"],
+  };
+  const fields = expectedFields[apiType];
+  if (!fields || !hasMappedField(value, new Set(fields))) {
+    throw new Error(`typed ${apiType} response is missing mapped field ${fields?.join("|") ?? "<unknown>"}`);
+  }
+  if (hasMappedField(contract.success_fixture, new Set(["usage"])) &&
+    !hasMappedField(value, new Set(["usage"]))) {
+    throw new Error(`typed ${apiType} response is missing mapped Provider usage`);
+  }
+  if (contract.async_protocol && !hasMappedField(value, new Set(["provider_task_ref", "provider_operation_id"]))) {
+    throw new Error(`typed ${apiType} response is missing Provider operation attribution`);
+  }
+}
+
 async function executeCase(
   session: GatewaySession,
+  catalog: ProviderProtocolCatalog,
   testCase: AcceptanceCase,
   inventory: ProviderInventory,
   controlUrl: string,
@@ -292,12 +337,28 @@ async function executeCase(
 ): Promise<CaseResult> {
   await selectMock(controlUrl, testCase);
   let failed: unknown;
+  let terminalValue: unknown;
   try {
     const result = await session.aicc.call(
       testCase.method,
-      buildT15TypedParams(testCase.api_type!, exactModel(testCase, inventory), runId),
-    );
-    await terminal(session, result, timeoutMs);
+      buildT15TypedParams(testCase.api_type!, exactModel(catalog, testCase, inventory), runId),
+    ) as Record<string, unknown>;
+    if (testCase.mock_scenario === "async_cancel") {
+      if (result.status !== "running" || typeof result.task_id !== "string") {
+        throw new Error(`async cancel requires running task: ${JSON.stringify(result)}`);
+      }
+      const cancelled = await session.aicc.call("cancel", { task_id: result.task_id }) as Record<string, unknown>;
+      if (cancelled.accepted !== true) throw new Error(`AICC did not accept Provider cancellation: ${JSON.stringify(cancelled)}`);
+    } else {
+      terminalValue = await terminal(session, result, Math.min(timeoutMs, testCase.timeout_ms));
+      if (!testCase.expected_error_class) {
+        assertT15ResponseMapping(
+          testCase.api_type!,
+          terminalValue,
+          protocolContract(catalog, testCase.provider_driver!, testCase.protocol_contract_id!),
+        );
+      }
+    }
   } catch (error) {
     failed = error;
   }
@@ -307,6 +368,19 @@ async function executeCase(
   const diagnostics: string[] = [];
   if (requests.length === 0) diagnostics.push("Provider mock received no request");
   if (validationErrors.length > 0) diagnostics.push(`wire contract violations: ${JSON.stringify(validationErrors)}`);
+  const contract = protocolContract(catalog, testCase.provider_driver!, testCase.protocol_contract_id!);
+  const observedAsyncSteps = new Set(requests.map((request) => request.async_step).filter(Boolean));
+  if (testCase.mock_scenario === "async_success") {
+    for (const step of contract.async_steps?.filter((candidate) => candidate.name !== "cancel") ?? []) {
+      if (!observedAsyncSteps.has(step.name)) diagnostics.push(`missing async ${step.name} wire request`);
+    }
+  }
+  if (["async_failed", "async_poll_timeout", "async_artifact_unavailable"].includes(testCase.mock_scenario ?? "") && !observedAsyncSteps.has("poll")) {
+    diagnostics.push("missing async poll wire request before failure mapping");
+  }
+  if (testCase.mock_scenario === "async_cancel" && !observedAsyncSteps.has("cancel")) {
+    diagnostics.push("missing Provider async cancel wire request");
+  }
   const selectedModel = inventory.models.find((model) =>
     testCase.model_selector?.kind === "exact" && model.exact_model === testCase.model_selector.value
   );
@@ -327,6 +401,17 @@ async function executeCase(
   }
   if (expectsFailure && !failed) diagnostics.push("official Provider error fixture was not mapped to a failed AICC call/task");
   if (!expectsFailure && failed) diagnostics.push(String(failed));
+  if (testCase.tags.includes("official_error") && failed) {
+    const evidence = String(failed);
+    if (!evidence.toLowerCase().includes(testCase.expected_aicc_error_code!.toLowerCase())) {
+      diagnostics.push(`missing stable AICC error code ${testCase.expected_aicc_error_code}`);
+    }
+    if (!evidence.toLowerCase().includes(testCase.expected_provider_error_code!.toLowerCase())) {
+      diagnostics.push(`missing Provider error summary code ${testCase.expected_provider_error_code}`);
+    }
+    const retryable = new RegExp(`retryable[\\s\"':=]+${String(testCase.expected_retryable)}`, "i");
+    if (!retryable.test(evidence)) diagnostics.push(`missing retryable=${String(testCase.expected_retryable)} mapping`);
+  }
   return {
     case_id: testCase.case_id,
     provider_driver: testCase.provider_driver,
@@ -366,6 +451,7 @@ async function main(): Promise<void> {
   const runId = `t15-${new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)}-${process.pid}`;
   const created: string[] = [];
   const results: CaseResult[] = [];
+  const unmatchedCaseIds = new Set(input.caseIds);
   let session: GatewaySession | undefined;
   try {
     await waitMock(input.mockControlUrl);
@@ -398,26 +484,37 @@ async function main(): Promise<void> {
       const manifest = validateCaseManifest(buildT15Manifest(catalog, variantCells(catalog, inventory)))
         .filter((testCase) => testCase.provider_driver === driver)
         .filter((testCase) => input.caseIds.length === 0 || input.caseIds.includes(testCase.case_id));
+      for (const testCase of manifest) unmatchedCaseIds.delete(testCase.case_id);
       for (const [index, testCase] of manifest.entries()) {
         if (index > 0 && input.providerMinIntervalMs > 0) {
           await new Promise((resolvePromise) => setTimeout(resolvePromise, input.providerMinIntervalMs));
         }
         testCase.provider_instance = instance;
         testCase.expected_provider_instance = instance;
-        results.push(await executeCase(session, testCase, inventory, input.mockControlUrl, runId, input.timeoutMs));
+        results.push(await executeCase(session, catalog, testCase, inventory, input.mockControlUrl, runId, input.timeoutMs));
       }
       await session.aicc.call("provider.delete", { provider_instance_name: instance });
+      await waitInventoryAbsent(session, instance, input.timeoutMs);
       created.splice(created.indexOf(instance), 1);
+    }
+    if (unmatchedCaseIds.size > 0) {
+      throw new Error(`unknown or out-of-scope --case: ${[...unmatchedCaseIds].sort().join(", ")}`);
     }
   } finally {
     if (session) {
       for (const providerInstanceName of created.reverse()) {
         try {
           await session.aicc.call("provider.delete", { provider_instance_name: providerInstanceName });
+          await waitInventoryAbsent(session, providerInstanceName, input.timeoutMs);
         } catch (error) {
           results.push({ case_id: `t1.5.cleanup.${providerInstanceName}`, provider_driver: null, scenario: null, status: "failed", diagnostic: String(error), captured_requests: 0 });
         }
       }
+    }
+    try {
+      await resetMock(input.mockControlUrl);
+    } catch (error) {
+      results.push({ case_id: "t1.5.cleanup.mock", provider_driver: null, scenario: null, status: "failed", diagnostic: String(error), captured_requests: 0 });
     }
     mockProcess?.kill("SIGTERM");
   }

@@ -52,7 +52,7 @@ export function validateCaseManifest(value: unknown): AcceptanceCase[] {
     requireStringArray(raw.required_capabilities, `${caseId}.required_capabilities`);
     requireStringArray(raw.disabled_capabilities, `${caseId}.disabled_capabilities`);
     requireStringArray(raw.fixtures, `${caseId}.fixtures`);
-    requireStringArray(raw.semantic_rubric, `${caseId}.semantic_rubric`);
+    const semanticRubric = requireStringArray(raw.semantic_rubric, `${caseId}.semantic_rubric`);
     requireStringArray(raw.cleanup, `${caseId}.cleanup`);
     if (!isObject(raw.expected_output)) {
       throw new Error(`${caseId}.expected_output must be an object`);
@@ -90,8 +90,15 @@ export function validateCaseManifest(value: unknown): AcceptanceCase[] {
       ]) {
         requireString(raw[field], `${caseId}.${field}`);
       }
-      if (raw.semantic_rubric.length !== 0) {
+      if (semanticRubric.length !== 0) {
         throw new Error(`${caseId}.semantic_rubric must be empty for T1.5`);
+      }
+      if ((raw.tags as string[]).includes("official_error")) {
+        requireString(raw.expected_aicc_error_code, `${caseId}.expected_aicc_error_code`);
+        requireString(raw.expected_provider_error_code, `${caseId}.expected_provider_error_code`);
+        if (typeof raw.expected_retryable !== "boolean") {
+          throw new Error(`${caseId}.expected_retryable must be boolean`);
+        }
       }
     }
     return raw as AcceptanceCase;

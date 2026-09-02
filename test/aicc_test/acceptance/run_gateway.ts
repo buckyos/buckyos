@@ -313,7 +313,7 @@ async function loadDefaultFixtures(
   };
   for (const [kind, fixture] of Object.entries(defaults) as Array<[
     Exclude<keyof FixtureRefs, "documents">,
-    { path: string; mime: string },
+    { path: string; mime: string; url?: string },
   ]>) {
     const configured = loaded[kind];
     const configuredPath = configured && "kind" in configured && configured.kind === "url" &&

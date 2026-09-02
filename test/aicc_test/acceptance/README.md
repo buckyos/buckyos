@@ -12,8 +12,8 @@ T2 的模型库存基准来自 Runner 直接调用 `provider_capability_baseline
 
 - `preflight.ts`：从规范文档校验 23 个 canonical API，并检查静态 T1 case、T1.5 官方协议契约、Provider 能力基线和 fixture 完整性；不读取 AICC 实现代码或实现 metadata。
 - `mock_provider.ts`：T1 使用的通用确定性 Mock。
-- `provider_protocol_contracts.json`：T1.5 独立协议契约、官方证据 revision、正常响应和 Provider 专属错误 fixture。
-- `t15_mock_provider.ts`：T1.5 高保真 Mock；按所选官方契约严格校验 method、path、认证、content type、必需字段和未知字段，然后返回对应 Provider 的正常、stream、异步或错误响应。
+- `provider_protocol_contracts.json`：T1.5 独立协议契约、官方证据 revision、测试用 Provider Profile/模型映射、请求字段类型、正常响应、异步 lifecycle 和 Provider 专属错误 fixture。Runner 不按模型名或厂商名选择协议分支。
+- `t15_mock_provider.ts`：T1.5 高保真 Mock；按所选官方契约严格校验 method、path、认证、content type、必需字段、字段类型和未知字段，并独立记录 submit、poll、result、cancel wire，然后返回对应 Provider 的正常、stream、异步或错误响应。
 - `run_t15_gateway.ts`：临时注册目标 Provider instance，用精确模型固定 adapter，经 Gateway 执行 T1.5 并审计 Mock capture；每个运行时可独立调用的 variant 形成独立协议单元。
 - `run_gateway.ts`：经 Zone Gateway 登录真实 AICC；默认只生成 T2 计划，只有显式允许时才调用真实 Provider。
 - `provider_capability_baseline.json`：按 Provider 参数化的版本化能力证据基线。
@@ -34,9 +34,9 @@ AICC_T15_ALLOW_CONFIG_MUTATION=true pnpm run acceptance:t1.5 -- \
 pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml
 ```
 
-T1.5 可以用 `--start-local-mock` 启动本机 Mock；只有 AICC 服务也能访问 runner loopback 时才可将其作为 Provider endpoint。配置变更需要环境变量 `AICC_T15_ALLOW_CONFIG_MUTATION=true` 与命令行 `--allow-config-mutation` 同时授权。Runner 创建带 `run_id` 的临时 Provider instance，并在正常结束或异常退出时调用 `provider.delete` 清理。它顺序执行单元，固定全局和 Provider 并发为 1，并用 `--provider-min-interval-ms` 控制同 Provider 请求间隔。按 Provider 回归使用 `--provider <driver>`；目标重测可以重复传 `--case <case_id>`。
+T1.5 可以用 `--start-local-mock` 启动本机 Mock；只有 AICC 服务也能访问 runner loopback 时才可将其作为 Provider endpoint。配置变更需要环境变量 `AICC_T15_ALLOW_CONFIG_MUTATION=true` 与命令行 `--allow-config-mutation` 同时授权。Runner 创建带 `run_id` 的临时 Provider instance，并在正常结束或异常退出时调用 `provider.delete`，等待运行时 inventory 中该实例消失，再重置 Mock。它顺序执行单元，固定全局和 Provider 并发为 1，并用 `--provider-min-interval-ms` 控制同 Provider 请求间隔。按 Provider 回归使用 `--provider <driver>`；目标重测可以重复传 `--case <case_id>`，未知或超出 Provider 范围的 case 会使执行失败。
 
-T1.5 契约的 endpoint、header、body、response 和错误形态只允许依据 Provider 官方 API 文档、官方 schema/SDK 协议定义和官方错误文档更新。AICC 设计文档只用于确定 typed method、adapter/operation 边界和 Provider instance 配置，不用于生成 Provider wire 期望。官方资料不明确的协议点不得从 AICC 实现、metadata、日志或旧 Mock 猜测。
+T1.5 契约的 endpoint、header、body、response、stream event、异步状态和错误形态只允许依据 Provider 官方 API 文档、官方 schema/SDK 协议定义和官方错误文档更新。AICC 设计文档只用于确定 typed method、adapter/operation 边界、稳定错误码和 Provider instance 配置，不用于生成 Provider wire 期望。官方资料不明确的协议点不得从 AICC 实现、metadata、日志或旧 Mock 猜测。成功用例同时检查 Provider 响应被映射成对应 canonical typed 输出、usage 和异步 operation 归因；错误用例检查 `provider_start_failed`、Provider 原始错误码摘要和 `retryable`。
 
 真实调用必须通过 `allow_real_model_calls = true` 或命令行 `--allow-real-model-calls` 显式开启，并受调用数、成本和 timeout 上限约束。需要安全审计计划时，`--no-real-model-calls` 可强制覆盖 TOML 中的开启值，仍读取真实 inventory、生成完整 skipped/N/A/基线差异与零成本报告。Provider 返回 `request not allowed` 时记录为 `provider_restricted` 和 `platform_limitation`，不计入 passed、failed 或 skipped。报告会把能力基线不一致、路由/资源/安全断言失败和成功调用后的 usage/trace 归因失败写入结构化 `product_defects`，记录预期、实际结果和证据路径；测试不会修改 AICC/Jarvis 实现。
 

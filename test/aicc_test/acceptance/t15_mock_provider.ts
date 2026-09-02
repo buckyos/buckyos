@@ -7,6 +7,7 @@ import {
   type CapturedProviderRequest,
   type ProviderProtocolCatalog,
   type ProviderProtocolContract,
+  validateProviderAuxiliaryRequest,
   validateProviderRequest,
 } from "./provider_protocol_contracts.ts";
 
@@ -19,6 +20,7 @@ type AuditRecord = {
   query: Record<string, string>;
   headers: Record<string, string>;
   body: unknown;
+  async_step?: "poll" | "result" | "cancel";
   validation_errors: string[];
 };
 
@@ -109,7 +111,15 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         const scenarios = new Set([
           "success",
           "stream_success",
+          "stream_interrupted",
           "async_success",
+          "async_failed",
+          "async_cancel",
+          "async_poll_timeout",
+          "async_artifact_unavailable",
+          "malformed_response",
+          "wrong_content_type",
+          "missing_required_response_field",
           ...catalog.error_fixtures[parsed.provider_driver].map((fixture) => fixture.scenario),
         ]);
         if (!scenarios.has(parsed.scenario)) return json(response, 400, { error: "unknown scenario" });
@@ -122,76 +132,139 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
       }
       if (!selection) return json(response, 409, { error: "select a Provider contract before calling the mock" });
       const contract = protocolContract(catalog, selection.provider_driver, selection.contract_id);
+      const provider = catalog.providers.find((candidate) => candidate.provider_driver === selection?.provider_driver)!;
+      const modelIds = [...new Set(Object.values(provider.test_model_ids))];
+      const captureAuxiliary = () => {
+        const captured = {
+          method: request.method ?? "",
+          pathname: url.pathname,
+          query: url.searchParams,
+          headers: new Headers(request.headers as Record<string, string>),
+        };
+        const validation = validateProviderAuxiliaryRequest(contract, captured);
+        requests.push({
+          received_at: new Date().toISOString(),
+          selection: selection!,
+          method: captured.method,
+          pathname: captured.pathname,
+          query: Object.fromEntries(captured.query),
+          headers: safeHeaders(request.headers),
+          body: null,
+          async_step: validation.step?.name,
+          validation_errors: validation.errors,
+        });
+        return validation.errors;
+      };
 
       if (request.method === "GET" && ["/v1/models", "/api/v1/models"].includes(url.pathname)) {
-        const models: Record<string, string[]> = {
-          openai: ["gpt-5.4", "text-embedding-3-small", "gpt-image-1", "tts-1", "whisper-1", "sora-2"],
-          claude: ["claude-3-7-sonnet-20250219"],
-          minimax: ["MiniMax-M2.5", "speech-2.8-hd", "image-01", "MiniMax-Hailuo-02", "music-2.0"],
-          openrouter: ["openai/gpt-5.4"],
-          "sn-ai-provider": ["gpt-5.4"],
-        };
         return json(response, 200, {
           object: "list",
-          data: (models[selection.provider_driver] ?? ["mock-model"]).map((id) => ({ id, object: "model" })),
+          data: modelIds.map((id) => ({ id, object: "model" })),
           has_more: false,
         });
       }
       if (request.method === "GET" && url.pathname === "/v1beta/models") {
         return json(response, 200, {
-          models: [
-            { name: "models/gemini-3.5-pro", supportedGenerationMethods: ["generateContent"] },
-            { name: "models/gemini-embedding-2", supportedGenerationMethods: ["embedContent"] },
-          ],
+          models: modelIds.map((id) => ({
+            name: `models/${id}`,
+            supportedGenerationMethods: provider.contracts
+              .filter((candidate) => Object.entries(provider.test_model_ids)
+                .some(([apiType, modelId]) => modelId === id && candidate.api_types.includes(apiType)))
+              .map((candidate) => candidate.operation.split(".").at(-1)),
+          })),
           nextPageToken: "",
         });
       }
 
       if (contract.async_protocol === "fal_queue") {
         if (/\/requests\/fal_mock_1\/status$/.test(url.pathname) && request.method === "GET") {
+          const errors = captureAuxiliary();
+          if (errors.length > 0) return json(response, 400, { type: "t15_mock_contract_violation", errors });
+          if (selection.scenario === "async_cancel") {
+            return json(response, 200, { status: "IN_QUEUE", request_id: "fal_mock_1", queue_position: 0 });
+          }
+          if (selection.scenario === "async_poll_timeout") {
+            return json(response, 200, { status: "IN_PROGRESS", request_id: "fal_mock_1", logs: [] });
+          }
+          if (selection.scenario === "async_failed") {
+            return json(response, 200, { status: "FAILED", request_id: "fal_mock_1", error: "mock inference failed" });
+          }
           return json(response, 200, { status: "COMPLETED", request_id: "fal_mock_1", response_url: url.href.replace(/\/status$/, ""), metrics: { inference_time: 0.01 } });
         }
         if (/\/requests\/fal_mock_1(?:\/response)?$/.test(url.pathname) && request.method === "GET") {
+          const errors = captureAuxiliary();
+          if (errors.length > 0) return json(response, 400, { type: "t15_mock_contract_violation", errors });
+          if (selection.scenario === "async_artifact_unavailable") {
+            return json(response, 404, { detail: "Result artifact is unavailable", error_type: "not_found" });
+          }
           return json(response, 200, contract.async_result_fixture ?? {});
         }
         if (/\/requests\/fal_mock_1\/cancel$/.test(url.pathname) && request.method === "PUT") {
+          const errors = captureAuxiliary();
+          if (errors.length > 0) return json(response, 400, { type: "t15_mock_contract_violation", errors });
           return json(response, 202, { status: "CANCELLATION_REQUESTED" });
         }
       }
-      if (contract.async_protocol === "minimax_video" && url.pathname === "/v1/query/video_generation") {
-        return json(response, 200, { status: "Success", file_id: "minimax_file_mock_1", base_resp: { status_code: 0, status_msg: "success" } });
+      if (contract.async_protocol === "minimax_video" && url.pathname === "/v1/query/video_generation" && request.method === "GET") {
+        const errors = captureAuxiliary();
+        if (errors.length > 0) return json(response, 400, { type: "t15_mock_contract_violation", errors });
+        return json(response, 200, selection.scenario === "async_failed"
+          ? { task_id: "minimax_task_mock_1", status: "Fail", base_resp: { status_code: 1024, status_msg: "internal error" } }
+          : selection.scenario === "async_poll_timeout"
+          ? { task_id: "minimax_task_mock_1", status: "Processing", base_resp: { status_code: 0, status_msg: "success" } }
+          : { task_id: "minimax_task_mock_1", status: "Success", file_id: "minimax_file_mock_1", base_resp: { status_code: 0, status_msg: "success" } });
       }
       if (contract.async_protocol === "google_lro" && url.pathname === "/v1beta/operations/gemini_mock_1" && request.method === "GET") {
+        const errors = captureAuxiliary();
+        if (errors.length > 0) return json(response, 400, { type: "t15_mock_contract_violation", errors });
+        if (selection.scenario === "async_failed") {
+          return json(response, 200, { name: "operations/gemini_mock_1", done: true, error: { code: 13, message: "Internal error", status: "INTERNAL" } });
+        }
+        if (selection.scenario === "async_poll_timeout") {
+          return json(response, 200, { name: "operations/gemini_mock_1", done: false });
+        }
         return json(response, 200, {
           name: "operations/gemini_mock_1",
           done: true,
           response: {
-            generateVideoResponse: { generatedSamples: [{ video: { uri: "http://mock/artifacts/result.mp4" } }] },
+            generateVideoResponse: { generatedSamples: [{ video: { uri: selection.scenario === "async_artifact_unavailable" ? "http://mock/artifacts/unavailable.mp4" : "http://mock/artifacts/result.mp4" } }] },
           },
         });
       }
       if (contract.async_protocol === "openai_video" && url.pathname === "/v1/videos/video_mock_1" && request.method === "GET") {
+        const errors = captureAuxiliary();
+        if (errors.length > 0) return json(response, 400, { type: "t15_mock_contract_violation", errors });
         return json(response, 200, {
           id: "video_mock_1",
           object: "video",
           model: "mock-model",
-          status: "completed",
+          status: selection.scenario === "async_failed" ? "failed" : selection.scenario === "async_poll_timeout" ? "in_progress" : "completed",
           progress: 100,
           created_at: 1770000000,
           completed_at: 1770000001,
         });
       }
       if (contract.async_protocol === "openai_video" && url.pathname === "/v1/videos/video_mock_1/content" && request.method === "GET") {
+        const errors = captureAuxiliary();
+        if (errors.length > 0) return json(response, 400, { type: "t15_mock_contract_violation", errors });
+        if (selection.scenario === "async_artifact_unavailable") return json(response, 404, { error: { type: "not_found", message: "Video content unavailable" } });
         response.writeHead(200, { "content-type": "video/mp4" });
-        return response.end(Buffer.from("mock-video"));
+        response.end(Buffer.from("mock-video"));
+        return;
       }
       if (url.pathname === "/v1/files/retrieve" && request.method === "GET") {
-        return json(response, 200, { file: { download_url: "http://mock/artifacts/result.mp4" }, base_resp: { status_code: 0, status_msg: "success" } });
+        if (contract.async_protocol === "minimax_video") {
+          const errors = captureAuxiliary();
+          if (errors.length > 0) return json(response, 400, { type: "t15_mock_contract_violation", errors });
+        }
+        return json(response, 200, { file: { download_url: selection.scenario === "async_artifact_unavailable" ? "http://mock/artifacts/unavailable.mp4" : "http://mock/artifacts/result.mp4" }, base_resp: { status_code: 0, status_msg: "success" } });
       }
       if (url.pathname.startsWith("/artifacts/") && request.method === "GET") {
+        if (url.pathname.includes("unavailable")) return json(response, 404, { error: "artifact unavailable" });
         const mime = url.pathname.endsWith(".png") ? "image/png" : url.pathname.endsWith(".wav") ? "audio/wav" : "video/mp4";
         response.writeHead(200, { "content-type": mime });
-        return response.end(Buffer.from("mock-artifact"));
+        response.end(Buffer.from("mock-artifact"));
+        return;
       }
 
       const bytes = await bodyBytes(request);
@@ -220,13 +293,35 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
       const errorFixture = catalog.error_fixtures[selection.provider_driver]
         .find((fixture) => fixture.scenario === selection?.scenario);
       if (errorFixture) return json(response, errorFixture.status, errorFixture.body, errorFixture.headers);
-      if (selection.scenario === "stream_success") {
+      if (["stream_success", "stream_interrupted"].includes(selection.scenario)) {
+        if ((parsedBody as Record<string, unknown>)?.stream !== true) {
+          return json(response, 400, { type: "t15_mock_contract_violation", errors: ["stream must equal true"] });
+        }
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-        return response.end(streamFixture(contract));
+        if (selection.scenario === "stream_interrupted") {
+          response.end(streamFixture(contract).split("\n\n").slice(0, 2).join("\n\n"));
+          return;
+        }
+        response.end(streamFixture(contract));
+        return;
+      }
+      if (selection.scenario === "malformed_response") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{\"malformed\":");
+        return;
+      }
+      if (selection.scenario === "wrong_content_type") {
+        response.writeHead(200, { "content-type": "text/plain" });
+        response.end(JSON.stringify(contract.success_fixture ?? {}));
+        return;
+      }
+      if (selection.scenario === "missing_required_response_field") {
+        return json(response, 200, {});
       }
       if (contract.success_fixture_base64) {
         response.writeHead(200, { "content-type": contract.success_content_type ?? "application/octet-stream" });
-        return response.end(Buffer.from(contract.success_fixture_base64, "base64"));
+        response.end(Buffer.from(contract.success_fixture_base64, "base64"));
+        return;
       }
       const fixture = structuredClone(contract.success_fixture ?? {});
       if (contract.async_protocol === "fal_queue" && fixture && typeof fixture === "object") {
