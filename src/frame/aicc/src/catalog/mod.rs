@@ -751,6 +751,16 @@ impl CatalogSnapshot {
             .and_then(|catalog| catalog.providers.get(*position))
     }
 
+    pub(crate) fn known_providers(&self) -> impl Iterator<Item = &KnownProvider> {
+        self.known_provider_index
+            .values()
+            .filter_map(|(catalog_id, position)| {
+                self.known_provider_catalogs
+                    .get(catalog_id)
+                    .and_then(|catalog| catalog.providers.get(*position))
+            })
+    }
+
     pub(crate) fn matching_model_variants(
         &self,
         model_driver_id: &str,
@@ -2394,6 +2404,38 @@ mod tests {
         assert!(fallback.model_driver_id.is_none());
         assert!(fallback.semantics.api_types.unwrap().is_empty());
         assert!(fallback.semantics.capabilities.unwrap().is_empty());
+    }
+
+    #[test]
+    fn known_provider_enumeration_is_read_only_and_sorted_by_profile_id() {
+        let catalog = |catalog_id: &str, provider_profile_id: &str| {
+            json!({
+                "format": KNOWN_PROVIDER_FORMAT,
+                "schema_version": 1,
+                "schema_revision": 0,
+                "revision_seq": 11,
+                "catalog_id": catalog_id,
+                "providers": [{
+                    "provider_profile_id": provider_profile_id,
+                    "display_name": provider_profile_id,
+                    "base_url": format!("https://{provider_profile_id}.example"),
+                    "protocol_adapter_id": "test-adapter"
+                }]
+            })
+        };
+        let snapshot = build(vec![
+            file(CatalogKind::KnownProvider, catalog("z-catalog", "zeta")),
+            file(CatalogKind::KnownProvider, catalog("a-catalog", "alpha")),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            snapshot
+                .known_providers()
+                .map(|provider| provider.provider_profile_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "zeta"]
+        );
     }
 
     #[test]
