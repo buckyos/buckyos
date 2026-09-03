@@ -995,6 +995,71 @@ pub(crate) struct ProviderInventoryCandidate {
     inventory: Arc<ProviderInventorySnapshot>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProviderDraftValidationStage {
+    Connection,
+    Authentication,
+    Protocol,
+    Discovery,
+    Inventory,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProviderDraftValidationError {
+    pub stage: ProviderDraftValidationStage,
+    pub kind: ProviderRefreshFailure,
+}
+
+impl ProviderDraftValidationError {
+    fn from_provider_error(stage: ProviderDraftValidationStage, error: &ProviderError) -> Self {
+        Self {
+            stage,
+            kind: ProviderRefreshFailure::from_error(error),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ProviderDraftConfig {
+    pub provider_instance_name: String,
+    pub provider_profile_id: String,
+    pub protocol_adapter_id: String,
+    pub provider_rules_id: Option<String>,
+    pub base_url: Option<String>,
+    pub region: Option<String>,
+    pub workspace: Option<String>,
+    pub account: Option<String>,
+    pub auth: ProviderAuthConfig,
+    pub dynamic_login_user_name: Option<String>,
+}
+
+impl fmt::Debug for ProviderDraftConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderDraftConfig")
+            .field("provider_instance_name", &self.provider_instance_name)
+            .field("provider_profile_id", &self.provider_profile_id)
+            .field("protocol_adapter_id", &self.protocol_adapter_id)
+            .field("provider_rules_id", &self.provider_rules_id)
+            .field("base_url", &self.base_url)
+            .field("region", &self.region)
+            .field("workspace", &self.workspace)
+            .field("account", &self.account)
+            .field("auth_mode", &self.auth.mode())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProviderDraftNegotiation {
+    pub provider_profile_id: String,
+    pub protocol_adapter_id: String,
+    pub auth_mode: ProviderAuthMode,
+    pub connection: ResolvedProviderConnection,
+    pub catalog_revision_seq: u64,
+    pub inventory: Arc<ProviderInventorySnapshot>,
+}
+
 impl fmt::Debug for ProviderInventoryCandidate {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -1379,6 +1444,155 @@ impl ProviderRuntimeManager {
 
     pub(crate) async fn current_catalog(&self) -> Arc<CatalogSnapshot> {
         self.catalog.read().await.clone()
+    }
+
+    pub(crate) async fn validate_draft(
+        &self,
+        draft: &ProviderDraftConfig,
+        connection_contract: &ProviderConnectionContract,
+        discovery: &dyn ProviderDiscovery,
+        dynamic_login_resolver: Option<&dyn DynamicLoginCredentialResolver>,
+    ) -> Result<ProviderDraftNegotiation, ProviderDraftValidationError> {
+        let profile = self
+            .profiles
+            .get(&draft.provider_profile_id)
+            .cloned()
+            .ok_or_else(|| ProviderDraftValidationError {
+                stage: ProviderDraftValidationStage::Protocol,
+                kind: ProviderRefreshFailure::UnknownDependency,
+            })?;
+        if profile.default_protocol_adapter_id != draft.protocol_adapter_id
+            && draft.provider_profile_id != "custom"
+        {
+            return Err(ProviderDraftValidationError {
+                stage: ProviderDraftValidationStage::Protocol,
+                kind: ProviderRefreshFailure::InvalidConfiguration,
+            });
+        }
+        if self.codecs.adapter(&draft.protocol_adapter_id).is_none() {
+            return Err(ProviderDraftValidationError {
+                stage: ProviderDraftValidationStage::Protocol,
+                kind: ProviderRefreshFailure::UnknownDependency,
+            });
+        }
+        let connection = connection_contract
+            .resolve(ProviderConnectionInput {
+                base_url: draft.base_url.as_deref(),
+                region: draft.region.as_deref(),
+                workspace: draft.workspace.as_deref(),
+                account: draft.account.as_deref(),
+            })
+            .map_err(|error| {
+                ProviderDraftValidationError::from_provider_error(
+                    ProviderDraftValidationStage::Connection,
+                    &error,
+                )
+            })?;
+        draft.auth.validate().map_err(|error| {
+            ProviderDraftValidationError::from_provider_error(
+                ProviderDraftValidationStage::Authentication,
+                &error,
+            )
+        })?;
+        let (credential_reference, credential) = match &draft.auth {
+            ProviderAuthConfig::ApiKey { credential_ref } => {
+                let reference = CredentialReference {
+                    reference: credential_ref.clone(),
+                };
+                let credential = self
+                    .credential_resolver
+                    .resolve(&profile.credential, &reference)
+                    .await
+                    .map_err(|error| {
+                        ProviderDraftValidationError::from_provider_error(
+                            ProviderDraftValidationStage::Authentication,
+                            &error,
+                        )
+                    })?;
+                (reference, credential)
+            }
+            ProviderAuthConfig::DynamicLogin { .. } => {
+                let user_name = draft.dynamic_login_user_name.as_deref().ok_or(
+                    ProviderDraftValidationError {
+                        stage: ProviderDraftValidationStage::Authentication,
+                        kind: ProviderRefreshFailure::InvalidConfiguration,
+                    },
+                )?;
+                let context = draft
+                    .auth
+                    .dynamic_login_context(&draft.provider_instance_name, user_name)
+                    .map_err(|error| {
+                        ProviderDraftValidationError::from_provider_error(
+                            ProviderDraftValidationStage::Authentication,
+                            &error,
+                        )
+                    })?;
+                let resolver = dynamic_login_resolver.ok_or(ProviderDraftValidationError {
+                    stage: ProviderDraftValidationStage::Authentication,
+                    kind: ProviderRefreshFailure::UnknownDependency,
+                })?;
+                let credential = resolver.resolve_dynamic(&context).await.map_err(|error| {
+                    ProviderDraftValidationError::from_provider_error(
+                        ProviderDraftValidationStage::Authentication,
+                        &error,
+                    )
+                })?;
+                (
+                    CredentialReference {
+                        reference: "dynamic-login".into(),
+                    },
+                    credential,
+                )
+            }
+        };
+        let instance = ProviderInstanceConfig {
+            provider_instance_name: draft.provider_instance_name.clone(),
+            provider_profile_id: draft.provider_profile_id.clone(),
+            protocol_adapter_id: draft.protocol_adapter_id.clone(),
+            base_url: connection.base_url.clone(),
+            credential: credential_reference,
+            provider_rules_id: draft.provider_rules_id.clone(),
+            region: connection.region.clone(),
+            account: connection.account.clone(),
+        };
+        instance.validate().map_err(|error| {
+            ProviderDraftValidationError::from_provider_error(
+                ProviderDraftValidationStage::Connection,
+                &error,
+            )
+        })?;
+        let discovered = discovery
+            .discover(&DiscoveryContext {
+                profile: &profile,
+                instance: &instance,
+                credential: &credential,
+            })
+            .await
+            .map_err(|error| {
+                ProviderDraftValidationError::from_provider_error(
+                    ProviderDraftValidationStage::Discovery,
+                    &error,
+                )
+            })?;
+        let catalog = self.catalog.read().await.clone();
+        let inventory =
+            InventoryBuilder::build(&profile, &instance, discovered, &catalog, &self.codecs)
+                .map_err(|error| {
+                    let stage = if matches!(error, ProviderError::Discovery(_)) {
+                        ProviderDraftValidationStage::Discovery
+                    } else {
+                        ProviderDraftValidationStage::Inventory
+                    };
+                    ProviderDraftValidationError::from_provider_error(stage, &error)
+                })?;
+        Ok(ProviderDraftNegotiation {
+            provider_profile_id: profile.provider_profile_id.clone(),
+            protocol_adapter_id: instance.protocol_adapter_id,
+            auth_mode: draft.auth.mode(),
+            connection,
+            catalog_revision_seq: catalog.target_revision_seq(),
+            inventory: Arc::new(inventory),
+        })
     }
 
     pub(crate) async fn start(
@@ -2423,6 +2637,49 @@ mod tests {
         (manager, discovery)
     }
 
+    fn connection_contract() -> ProviderConnectionContract {
+        ProviderConnectionContract {
+            default_base_url: "https://{workspace}.example.test/v1/".into(),
+            region: ProviderFieldSchema::unsupported(),
+            workspace: ProviderFieldSchema::required(),
+            account: ProviderFieldSchema::optional(),
+        }
+    }
+
+    fn draft(auth: ProviderAuthConfig) -> ProviderDraftConfig {
+        ProviderDraftConfig {
+            provider_instance_name: "draft-provider".into(),
+            provider_profile_id: "openai".into(),
+            protocol_adapter_id: "openai-responses".into(),
+            provider_rules_id: None,
+            base_url: None,
+            region: None,
+            workspace: Some("workspace-1".into()),
+            account: None,
+            auth,
+            dynamic_login_user_name: None,
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeDynamicCredentialResolver {
+        calls: AtomicUsize,
+        contexts: Mutex<Vec<DynamicLoginContext>>,
+    }
+
+    #[async_trait]
+    impl DynamicLoginCredentialResolver for FakeDynamicCredentialResolver {
+        async fn resolve_dynamic(
+            &self,
+            context: &DynamicLoginContext,
+        ) -> ProviderResult<ResolvedCredential> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.contexts.lock().await.push(context.clone());
+            ResolvedCredential::bearer("dynamic-login", "draft-secret")
+                .map_err(|error| ProviderError::Credential(error.to_string()))
+        }
+    }
+
     #[test]
     fn inventory_intersects_capabilities_and_uses_dynamic_pricing() {
         let inventory = InventoryBuilder::build(
@@ -2447,6 +2704,141 @@ mod tests {
         );
         assert_eq!(model.provider_rules_revision, Some(7));
         assert!(!inventory.provider_model_list_fingerprint.is_empty());
+    }
+
+    #[tokio::test]
+    async fn draft_validation_negotiates_without_runtime_or_storage_side_effects() {
+        let store = Arc::new(MemoryStore::default());
+        let discovery = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+        let (manager, _) = manager(store.clone(), discovery.clone());
+        let draft = draft(ProviderAuthConfig::ApiKey {
+            credential_ref: "system-config://secrets/aicc/openai".into(),
+        });
+
+        let negotiated = manager
+            .validate_draft(&draft, &connection_contract(), discovery.as_ref(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(negotiated.provider_profile_id, "openai");
+        assert_eq!(negotiated.protocol_adapter_id, "openai-responses");
+        assert_eq!(negotiated.auth_mode, ProviderAuthMode::ApiKey);
+        assert_eq!(
+            negotiated.connection.base_url,
+            "https://workspace-1.example.test/v1/"
+        );
+        assert_eq!(negotiated.catalog_revision_seq, 7);
+        assert_eq!(negotiated.inventory.models.len(), 1);
+        assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+        assert!(store.records.lock().await.is_empty());
+        assert!(manager.runtimes.lock().await.is_empty());
+        assert!(manager.registry().await.list().is_empty());
+        tokio::task::yield_now().await;
+        assert_eq!(discovery.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn draft_validation_resolves_dynamic_login_without_exposing_token() {
+        let store = Arc::new(MemoryStore::default());
+        let discovery = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+        let (manager, _) = manager(store.clone(), discovery.clone());
+        let resolver = FakeDynamicCredentialResolver::default();
+        let mut draft = draft(ProviderAuthConfig::DynamicLogin {
+            login_profile: "device_jwt".into(),
+            login_endpoint: "https://sn.example.test/login".into(),
+        });
+        draft.dynamic_login_user_name = Some("alice".into());
+
+        let negotiated = manager
+            .validate_draft(
+                &draft,
+                &connection_contract(),
+                discovery.as_ref(),
+                Some(&resolver),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(negotiated.auth_mode, ProviderAuthMode::DynamicLogin);
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(resolver.contexts.lock().await[0].user_name, "alice");
+        assert!(!format!("{negotiated:?}").contains("draft-secret"));
+        assert!(!serde_json::to_string(negotiated.inventory.as_ref())
+            .unwrap()
+            .contains("draft-secret"));
+        assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+        assert!(manager.runtimes.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn draft_validation_classifies_connection_auth_discovery_and_adapter_failures() {
+        let store = Arc::new(MemoryStore::default());
+        let discovery_impl = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+        let (manager, _) = manager(store.clone(), discovery_impl.clone());
+
+        let mut invalid_connection = draft(ProviderAuthConfig::ApiKey {
+            credential_ref: "system-config://secrets/aicc/openai".into(),
+        });
+        invalid_connection.workspace = None;
+        let error = manager
+            .validate_draft(
+                &invalid_connection,
+                &connection_contract(),
+                discovery_impl.as_ref(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.stage, ProviderDraftValidationStage::Connection);
+
+        let invalid_auth = draft(ProviderAuthConfig::ApiKey {
+            credential_ref: "missing-secret".into(),
+        });
+        let error = manager
+            .validate_draft(
+                &invalid_auth,
+                &connection_contract(),
+                discovery_impl.as_ref(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.stage, ProviderDraftValidationStage::Authentication);
+        assert_eq!(error.kind, ProviderRefreshFailure::Credential);
+
+        let mut invalid_adapter = draft(ProviderAuthConfig::ApiKey {
+            credential_ref: "system-config://secrets/aicc/openai".into(),
+        });
+        invalid_adapter.protocol_adapter_id = "missing-adapter".into();
+        let error = manager
+            .validate_draft(
+                &invalid_adapter,
+                &connection_contract(),
+                discovery_impl.as_ref(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.stage, ProviderDraftValidationStage::Protocol);
+
+        let failed_discovery = ScriptedDiscovery::new(
+            [Err("invalid discovery response".into())],
+            discovery("gpt-test"),
+        );
+        let valid = draft(ProviderAuthConfig::ApiKey {
+            credential_ref: "system-config://secrets/aicc/openai".into(),
+        });
+        let error = manager
+            .validate_draft(&valid, &connection_contract(), &failed_discovery, None)
+            .await
+            .unwrap_err();
+        assert_eq!(error.stage, ProviderDraftValidationStage::Discovery);
+        assert_eq!(error.kind, ProviderRefreshFailure::Discovery);
+
+        assert_eq!(discovery_impl.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+        assert!(manager.runtimes.lock().await.is_empty());
+        assert!(manager.registry().await.list().is_empty());
     }
 
     #[test]
