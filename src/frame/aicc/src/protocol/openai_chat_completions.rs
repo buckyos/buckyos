@@ -26,6 +26,72 @@ const OPENAI_PROVIDER_NAMESPACE: &str = "openai";
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChatCompletionsTokenLimitParameter {
+    MaxCompletionTokens,
+    MaxTokens,
+}
+
+impl ChatCompletionsTokenLimitParameter {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::MaxCompletionTokens => "max_completion_tokens",
+            Self::MaxTokens => "max_tokens",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ChatCompletionsImmediateExtensions {
+    pub(crate) content: Vec<AiContent>,
+    pub(crate) usage: Option<AiUsage>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ChatCompletionsStreamExtensions {
+    pub(crate) thinking_delta: Option<String>,
+    pub(crate) content: Vec<AiContent>,
+    pub(crate) usage: Option<AiUsage>,
+}
+
+pub(crate) trait OpenAiChatCompletionsDialect: std::fmt::Debug + Send + Sync {
+    fn token_limit_parameter(&self) -> ChatCompletionsTokenLimitParameter {
+        ChatCompletionsTokenLimitParameter::MaxCompletionTokens
+    }
+
+    fn allows_unmapped_message_content(&self, _role: AiRole, _content: &AiContent) -> bool {
+        false
+    }
+
+    fn transform_request(
+        &self,
+        _request: &LlmChatInvokeRequest,
+        _body: &mut Map<String, Value>,
+        _headers: &mut HeaderMap,
+    ) -> ProtocolResultValue<()> {
+        Ok(())
+    }
+
+    fn transform_immediate_response(
+        &self,
+        _response: &mut Map<String, Value>,
+    ) -> ProtocolResultValue<ChatCompletionsImmediateExtensions> {
+        Ok(ChatCompletionsImmediateExtensions::default())
+    }
+
+    fn transform_stream_chunk(
+        &self,
+        _chunk: &mut Map<String, Value>,
+    ) -> ProtocolResultValue<ChatCompletionsStreamExtensions> {
+        Ok(ChatCompletionsStreamExtensions::default())
+    }
+}
+
+#[derive(Debug, Default)]
+struct StandardChatCompletionsDialect;
+
+impl OpenAiChatCompletionsDialect for StandardChatCompletionsDialect {}
+
 pub(crate) fn openai_chat_completions_adapter() -> (AdapterDescriptor, CodecRegistration) {
     let codec = OpenAiChatCompletionsCodec::new();
     (
@@ -40,12 +106,18 @@ pub(crate) fn openai_chat_completions_adapter() -> (AdapterDescriptor, CodecRegi
 #[derive(Debug, Clone)]
 pub(crate) struct OpenAiChatCompletionsCodec {
     descriptor: OperationDescriptor,
+    dialect: Arc<dyn OpenAiChatCompletionsDialect>,
 }
 
 impl OpenAiChatCompletionsCodec {
     pub(crate) fn new() -> Self {
+        Self::with_dialect(Arc::new(StandardChatCompletionsDialect))
+    }
+
+    pub(crate) fn with_dialect(dialect: Arc<dyn OpenAiChatCompletionsDialect>) -> Self {
         Self {
             descriptor: openai_chat_completions_operation_descriptor(),
+            dialect,
         }
     }
 
@@ -75,7 +147,7 @@ impl OpenAiChatCompletionsCodec {
             ("model".to_string(), Value::String(provider_model_id)),
             (
                 "messages".to_string(),
-                Value::Array(encode_messages(&request.messages)?),
+                Value::Array(encode_messages(&request.messages, self.dialect.as_ref())?),
             ),
         ]);
         if !request.tools.is_empty() {
@@ -106,7 +178,7 @@ impl OpenAiChatCompletionsCodec {
                 ));
             }
             body.insert(
-                "max_completion_tokens".to_string(),
+                self.dialect.token_limit_parameter().wire_name().to_string(),
                 Value::from(max_output_tokens),
             );
         }
@@ -119,7 +191,11 @@ impl OpenAiChatCompletionsCodec {
                 serde_json::to_value(&request.stop).map_err(invalid_request_json)?,
             );
         }
-        apply_resolved_parameters(&mut body, &call.input.resolved_parameters)?;
+        apply_resolved_parameters(
+            &mut body,
+            &call.input.resolved_parameters,
+            self.dialect.as_ref(),
+        )?;
 
         let mut headers = HeaderMap::new();
         let credential = call.context.credential.as_ref().ok_or_else(|| {
@@ -129,6 +205,8 @@ impl OpenAiChatCompletionsCodec {
             )
         })?;
         credential.apply(&mut headers)?;
+        self.dialect
+            .transform_request(request, &mut body, &mut headers)?;
 
         let mut wire_request = HttpRequest::new(
             Method::POST,
@@ -190,8 +268,12 @@ impl OperationCodec for OpenAiChatCompletionsCodec {
             return Err(decode_error_response(response));
         }
         let request_id = response.request_id.clone();
-        let value: Value = response.json(self.descriptor.max_response_bytes)?;
-        let output = normalize_completion(&value)
+        let mut value: Value = response.json(self.descriptor.max_response_bytes)?;
+        let object = value.as_object_mut().ok_or_else(|| {
+            ProtocolError::invalid_response("Chat Completions response must be an object")
+        })?;
+        let extensions = self.dialect.transform_immediate_response(object)?;
+        let output = normalize_completion(&value, extensions)
             .map_err(|error| error.with_request_id(Some(request_id)))?;
         Ok(ProtocolExecution::Immediate(output))
     }
@@ -200,7 +282,12 @@ impl OperationCodec for OpenAiChatCompletionsCodec {
         &self,
         response: StreamingHttpResponse,
     ) -> ProtocolResultValue<ProtocolStream> {
-        decode_incremental_stream(response, self.descriptor.max_response_bytes).await
+        decode_incremental_stream(
+            response,
+            self.descriptor.max_response_bytes,
+            Arc::clone(&self.dialect),
+        )
+        .await
     }
 }
 
@@ -257,11 +344,20 @@ fn validate_request(request: &LlmChatInvokeRequest) -> ProtocolResultValue<()> {
     Ok(())
 }
 
-fn encode_messages(messages: &[AiMessage]) -> ProtocolResultValue<Vec<Value>> {
-    messages.iter().map(encode_message).collect()
+fn encode_messages(
+    messages: &[AiMessage],
+    dialect: &dyn OpenAiChatCompletionsDialect,
+) -> ProtocolResultValue<Vec<Value>> {
+    messages
+        .iter()
+        .map(|message| encode_message(message, dialect))
+        .collect()
 }
 
-fn encode_message(message: &AiMessage) -> ProtocolResultValue<Value> {
+fn encode_message(
+    message: &AiMessage,
+    dialect: &dyn OpenAiChatCompletionsDialect,
+) -> ProtocolResultValue<Value> {
     match message.role {
         AiRole::System | AiRole::Developer => Ok(json!({
             "role": message.role.as_str(),
@@ -269,9 +365,9 @@ fn encode_message(message: &AiMessage) -> ProtocolResultValue<Value> {
         })),
         AiRole::User => Ok(json!({
             "role": "user",
-            "content": encode_user_content(&message.content)?
+            "content": encode_user_content(&message.content, dialect)?
         })),
-        AiRole::Assistant => encode_assistant_message(&message.content),
+        AiRole::Assistant => encode_assistant_message(&message.content, dialect),
         AiRole::Tool => encode_tool_message(&message.content),
     }
 }
@@ -289,7 +385,10 @@ fn text_only_content(content: &[AiContent]) -> ProtocolResultValue<String> {
     Ok(text)
 }
 
-fn encode_user_content(content: &[AiContent]) -> ProtocolResultValue<Value> {
+fn encode_user_content(
+    content: &[AiContent],
+    dialect: &dyn OpenAiChatCompletionsDialect,
+) -> ProtocolResultValue<Value> {
     if content
         .iter()
         .all(|block| matches!(block, AiContent::Text { .. }))
@@ -304,13 +403,23 @@ fn encode_user_content(content: &[AiContent]) -> ProtocolResultValue<Value> {
                 "type": "image_url",
                 "image_url": {"url": encode_image_url(source)?}
             })),
+            AiContent::Document { .. }
+                if dialect.allows_unmapped_message_content(AiRole::User, block) =>
+            {
+                Ok(Value::Null)
+            }
             AiContent::Document { .. } => Err(ProtocolError::new(
                 ProtocolErrorKind::UnsupportedOperation,
                 "base Chat Completions does not map document content",
             )),
+            _ if dialect.allows_unmapped_message_content(AiRole::User, block) => Ok(Value::Null),
             _ => Err(ProtocolError::invalid_request(
                 "Chat Completions user message contains an invalid content block",
             )),
+        })
+        .filter_map(|part| match part {
+            Ok(Value::Null) => None,
+            other => Some(other),
         })
         .collect::<ProtocolResultValue<Vec<_>>>()?;
     Ok(Value::Array(parts))
@@ -328,7 +437,10 @@ fn encode_image_url(source: &ResourceRef) -> ProtocolResultValue<String> {
     }
 }
 
-fn encode_assistant_message(content: &[AiContent]) -> ProtocolResultValue<Value> {
+fn encode_assistant_message(
+    content: &[AiContent],
+    dialect: &dyn OpenAiChatCompletionsDialect,
+) -> ProtocolResultValue<Value> {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
     let mut refusal = None;
@@ -347,6 +459,8 @@ fn encode_assistant_message(content: &[AiContent]) -> ProtocolResultValue<Value>
                     "arguments": serde_json::to_string(args).map_err(invalid_request_json)?
                 }
             })),
+            AiContent::Thinking { .. }
+                if dialect.allows_unmapped_message_content(AiRole::Assistant, block) => {}
             AiContent::Thinking { .. } => {
                 return Err(ProtocolError::new(
                     ProtocolErrorKind::UnsupportedOperation,
@@ -361,6 +475,7 @@ fn encode_assistant_message(content: &[AiContent]) -> ProtocolResultValue<Value>
                 refusal = Some(required_value_string(value, "refusal")?);
             }
             AiContent::ProviderState { .. } => {}
+            _ if dialect.allows_unmapped_message_content(AiRole::Assistant, block) => {}
             _ => {
                 return Err(ProtocolError::invalid_request(
                     "Chat Completions assistant history contains an unsupported content block",
@@ -497,6 +612,7 @@ fn encode_response_format(format: &LlmResponseFormat) -> ProtocolResultValue<Val
 fn apply_resolved_parameters(
     body: &mut Map<String, Value>,
     parameters: &BTreeMap<String, Value>,
+    dialect: &dyn OpenAiChatCompletionsDialect,
 ) -> ProtocolResultValue<()> {
     for (name, value) in parameters {
         if name == "provider_model_id" {
@@ -519,7 +635,12 @@ fn apply_resolved_parameters(
                 )));
             }
         }
-        body.insert(name.clone(), value.clone());
+        let wire_name = if name == "max_completion_tokens" {
+            dialect.token_limit_parameter().wire_name()
+        } else {
+            name
+        };
+        body.insert(wire_name.to_string(), value.clone());
     }
     if body.get("stream").and_then(Value::as_bool) == Some(true)
         && !body.contains_key("stream_options")
@@ -583,7 +704,10 @@ fn invalid_request_json(error: serde_json::Error) -> ProtocolError {
     ))
 }
 
-fn normalize_completion(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
+fn normalize_completion(
+    value: &Value,
+    extensions: ChatCompletionsImmediateExtensions,
+) -> ProtocolResultValue<ProtocolOutput> {
     let object = value.as_object().ok_or_else(|| {
         ProtocolError::invalid_response("Chat Completions response must be an object")
     })?;
@@ -609,17 +733,23 @@ fn normalize_completion(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
             "Chat Completions response choice index must be zero",
         ));
     }
-    let message = decode_assistant_message(choice.get("message"))?;
+    let message = decode_assistant_message(choice.get("message"), extensions.content)?;
     let finish_reason = choice
         .get("finish_reason")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ProtocolError::invalid_response("response finish_reason is missing"))?;
-    let usage = decode_usage(object.get("usage"))?;
+    let usage = match extensions.usage {
+        Some(usage) => Some(usage),
+        None => decode_usage(object.get("usage"))?,
+    };
     normalized_output(message, finish_reason, usage)
 }
 
-fn decode_assistant_message(value: Option<&Value>) -> ProtocolResultValue<AiMessage> {
+fn decode_assistant_message(
+    value: Option<&Value>,
+    extensions: Vec<AiContent>,
+) -> ProtocolResultValue<AiMessage> {
     let message = value.and_then(Value::as_object).ok_or_else(|| {
         ProtocolError::invalid_response("response assistant message must be an object")
     })?;
@@ -670,6 +800,7 @@ fn decode_assistant_message(value: Option<&Value>) -> ProtocolResultValue<AiMess
                 .collect::<ProtocolResultValue<Vec<_>>>()?,
         );
     }
+    content.extend(extensions);
     let message = AiMessage::new(AiRole::Assistant, content);
     message.validate().map_err(|error| {
         ProtocolError::invalid_response(format!("invalid normalized assistant message: {error}"))
@@ -794,9 +925,11 @@ struct PartialToolCall {
 
 #[derive(Debug, Default)]
 struct ChatCompletionStreamState {
+    thinking: String,
     text: String,
     refusal: String,
     tool_calls: BTreeMap<usize, PartialToolCall>,
+    dialect_content: Vec<AiContent>,
     finish_reason: Option<String>,
     usage: Option<AiUsage>,
     saw_chunk: bool,
@@ -805,6 +938,7 @@ struct ChatCompletionStreamState {
 async fn decode_incremental_stream(
     response: StreamingHttpResponse,
     max_response_bytes: usize,
+    dialect: Arc<dyn OpenAiChatCompletionsDialect>,
 ) -> ProtocolResultValue<ProtocolStream> {
     if !response.status.is_success() {
         let response = response
@@ -829,6 +963,7 @@ async fn decode_incremental_stream(
         queued: VecDeque<ProtocolResultValue<ProtocolEvent>>,
         request_id: String,
         retry_after: Option<std::time::Duration>,
+        dialect: Arc<dyn OpenAiChatCompletionsDialect>,
         finished: bool,
     }
 
@@ -838,6 +973,7 @@ async fn decode_incremental_stream(
         queued: VecDeque::new(),
         request_id,
         retry_after,
+        dialect,
         finished: false,
     };
     let events = stream::unfold(state, |mut state| async move {
@@ -851,7 +987,7 @@ async fn decode_incremental_stream(
             let next = state.frames.next().await;
             let result = match next {
                 Some(Ok(SseFrame::Event(event))) => {
-                    apply_stream_chunk(&event.data, &mut state.chat)
+                    apply_stream_chunk(&event.data, &mut state.chat, state.dialect.as_ref())
                 }
                 Some(Ok(SseFrame::Terminated { marker })) if marker == "[DONE]" => {
                     state.finished = true;
@@ -895,11 +1031,12 @@ async fn decode_incremental_stream(
 fn apply_stream_chunk(
     data: &str,
     state: &mut ChatCompletionStreamState,
+    dialect: &dyn OpenAiChatCompletionsDialect,
 ) -> ProtocolResultValue<Vec<ProtocolEvent>> {
-    let value: Value = serde_json::from_str(data).map_err(|_| {
+    let mut value: Value = serde_json::from_str(data).map_err(|_| {
         ProtocolError::invalid_response("Chat Completions SSE data is not valid JSON")
     })?;
-    let object = value.as_object().ok_or_else(|| {
+    let object = value.as_object_mut().ok_or_else(|| {
         ProtocolError::invalid_response("Chat Completions SSE chunk must be an object")
     })?;
     if let Some(error) = object.get("error").and_then(Value::as_object) {
@@ -919,14 +1056,30 @@ fn apply_stream_chunk(
             ),
         ));
     }
+    let extensions = dialect.transform_stream_chunk(object)?;
     if object.get("object").and_then(Value::as_str) != Some("chat.completion.chunk") {
         return Err(ProtocolError::invalid_response(
             "Chat Completions SSE chunk has an invalid object type",
         ));
     }
     state.saw_chunk = true;
-    if let Some(usage) = decode_usage(object.get("usage"))? {
+    let usage = match extensions.usage {
+        Some(usage) => Some(usage),
+        None => decode_usage(object.get("usage"))?,
+    };
+    if let Some(usage) = usage {
         state.usage = Some(usage);
+    }
+    state.dialect_content.extend(extensions.content);
+    let mut events = Vec::new();
+    if let Some(thinking_delta) = extensions.thinking_delta {
+        if !thinking_delta.is_empty() {
+            state.thinking.push_str(&thinking_delta);
+            events.push(ProtocolEvent::Delta(json!({
+                "type": "thinking_delta",
+                "text": thinking_delta
+            })));
+        }
     }
     let choices = object
         .get("choices")
@@ -938,7 +1091,7 @@ fn apply_stream_chunk(
         ));
     }
     let Some(choice) = choices.first() else {
-        return Ok(Vec::new());
+        return Ok(events);
     };
     let choice = choice
         .as_object()
@@ -958,7 +1111,6 @@ fn apply_stream_chunk(
             "Chat Completions SSE emitted a delta after finish_reason",
         ));
     }
-    let mut events = Vec::new();
     if let Some(delta) = choice.get("delta").and_then(Value::as_object) {
         if let Some(role) = delta.get("role") {
             if role.as_str() != Some("assistant") {
@@ -1092,6 +1244,13 @@ fn finalize_stream(state: &mut ChatCompletionStreamState) -> ProtocolResultValue
         ProtocolError::invalid_response("Chat Completions stream is missing finish_reason")
     })?;
     let mut content = Vec::new();
+    if !state.thinking.is_empty() {
+        content.push(AiContent::Thinking {
+            summary: None,
+            text: Some(std::mem::take(&mut state.thinking)),
+            provider_metadata: None,
+        });
+    }
     if !state.text.is_empty() {
         content.push(AiContent::Text {
             text: std::mem::take(&mut state.text),
@@ -1133,6 +1292,7 @@ fn finalize_stream(state: &mut ChatCompletionStreamState) -> ProtocolResultValue
             args: arguments.clone().into_iter().collect(),
         });
     }
+    content.append(&mut state.dialect_content);
     let message = AiMessage::new(AiRole::Assistant, content);
     message.validate().map_err(|error| {
         ProtocolError::invalid_response(format!("invalid streamed assistant message: {error}"))
@@ -1183,7 +1343,144 @@ mod tests {
     use futures_util::{stream, StreamExt};
     use reqwest::header::{HeaderValue, AUTHORIZATION};
     use std::collections::HashMap;
+    use std::sync::Arc;
     use std::time::{Duration, UNIX_EPOCH};
+
+    const FAKE_DERIVED_ADAPTER_ID: &str = "fake-chat-completions-dialect";
+
+    #[derive(Debug)]
+    struct FakeDerivedDialect;
+
+    impl OpenAiChatCompletionsDialect for FakeDerivedDialect {
+        fn token_limit_parameter(&self) -> ChatCompletionsTokenLimitParameter {
+            ChatCompletionsTokenLimitParameter::MaxTokens
+        }
+
+        fn allows_unmapped_message_content(&self, role: AiRole, content: &AiContent) -> bool {
+            role == AiRole::Assistant && matches!(content, AiContent::Thinking { .. })
+        }
+
+        fn transform_request(
+            &self,
+            request: &LlmChatInvokeRequest,
+            body: &mut Map<String, Value>,
+            headers: &mut HeaderMap,
+        ) -> ProtocolResultValue<()> {
+            headers.insert("x-fake-dialect", HeaderValue::from_static("enabled"));
+            body.insert("fake_route".to_string(), json!({"order": ["primary"]}));
+            let thinking = request
+                .messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .find_map(|content| match content {
+                    AiContent::Thinking { text, .. } => text.clone(),
+                    _ => None,
+                });
+            if let Some(thinking) = thinking {
+                let message = body
+                    .get_mut("messages")
+                    .and_then(Value::as_array_mut)
+                    .and_then(|messages| messages.last_mut())
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| {
+                        ProtocolError::invalid_request(
+                            "fake dialect expected an encoded assistant message",
+                        )
+                    })?;
+                message.insert("reasoning_content".to_string(), Value::String(thinking));
+            }
+            Ok(())
+        }
+
+        fn transform_immediate_response(
+            &self,
+            response: &mut Map<String, Value>,
+        ) -> ProtocolResultValue<ChatCompletionsImmediateExtensions> {
+            let message = response
+                .get_mut("choices")
+                .and_then(Value::as_array_mut)
+                .and_then(|choices| choices.first_mut())
+                .and_then(Value::as_object_mut)
+                .and_then(|choice| choice.get_mut("message"))
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| ProtocolError::invalid_response("fake message is missing"))?;
+            let thinking = message
+                .remove("reasoning_content")
+                .and_then(|value| value.as_str().map(str::to_string))
+                .ok_or_else(|| ProtocolError::invalid_response("fake thinking is missing"))?;
+            let metadata = response
+                .remove("fake_metadata")
+                .ok_or_else(|| ProtocolError::invalid_response("fake metadata is missing"))?;
+            Ok(ChatCompletionsImmediateExtensions {
+                content: vec![
+                    AiContent::Thinking {
+                        summary: None,
+                        text: Some(thinking),
+                        provider_metadata: None,
+                    },
+                    AiContent::ProviderState {
+                        provider: "fake".to_string(),
+                        value: metadata,
+                    },
+                ],
+                usage: Some(AiUsage {
+                    input_tokens: Some(11),
+                    output_tokens: Some(7),
+                    total_tokens: Some(18),
+                    request_units: None,
+                }),
+            })
+        }
+
+        fn transform_stream_chunk(
+            &self,
+            chunk: &mut Map<String, Value>,
+        ) -> ProtocolResultValue<ChatCompletionsStreamExtensions> {
+            let mut extensions = ChatCompletionsStreamExtensions::default();
+            if let Some(metadata) = chunk.remove("fake_metadata") {
+                extensions.content.push(AiContent::ProviderState {
+                    provider: "fake".to_string(),
+                    value: metadata,
+                });
+            }
+            let Some(delta) = chunk
+                .get_mut("choices")
+                .and_then(Value::as_array_mut)
+                .and_then(|choices| choices.first_mut())
+                .and_then(Value::as_object_mut)
+                .and_then(|choice| choice.get_mut("delta"))
+                .and_then(Value::as_object_mut)
+            else {
+                return Ok(extensions);
+            };
+            extensions.thinking_delta = delta
+                .remove("reasoning_content")
+                .and_then(|value| value.as_str().map(str::to_string));
+            if let Some(tool_calls) = delta.remove("fake_tool_stream") {
+                delta.insert("tool_calls".to_string(), tool_calls);
+            }
+            Ok(extensions)
+        }
+    }
+
+    fn fake_derived_registration() -> (AdapterDescriptor, CodecRegistration) {
+        let operation = openai_chat_completions_operation_descriptor();
+        let codec = OpenAiChatCompletionsCodec::with_dialect(Arc::new(FakeDerivedDialect));
+        (
+            AdapterDescriptor {
+                protocol_family_id: OPENAI_PROTOCOL_FAMILY_ID.to_string(),
+                protocol_adapter_id: FAKE_DERIVED_ADAPTER_ID.to_string(),
+                interface_generation: "fake-v1".to_string(),
+                base_adapter_id: Some(OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_string()),
+                status: AdapterStatus::Stable,
+                operations: BTreeMap::from([(operation.operation_id.clone(), operation)]),
+            },
+            CodecRegistration {
+                operation_codecs: vec![Arc::new(codec)],
+                native_task_codecs: Vec::new(),
+            },
+        )
+    }
 
     fn codec() -> OpenAiChatCompletionsCodec {
         OpenAiChatCompletionsCodec::new()
@@ -1267,6 +1564,143 @@ mod tests {
             )
             .is_ok());
         assert!(registry.adapter("openai-responses").is_none());
+    }
+
+    #[tokio::test]
+    async fn fake_derived_adapter_reuses_request_immediate_and_stream_hooks() {
+        let mut registry = CodecRegistry::default();
+        let (base_descriptor, base_codecs) = openai_chat_completions_adapter();
+        registry
+            .register_codecs(base_descriptor, base_codecs)
+            .unwrap();
+        let (derived_descriptor, derived_codecs) = fake_derived_registration();
+        assert_eq!(
+            derived_descriptor.base_adapter_id.as_deref(),
+            Some(OPENAI_CHAT_COMPLETIONS_ADAPTER_ID)
+        );
+        registry
+            .register_codecs(derived_descriptor, derived_codecs)
+            .unwrap();
+
+        let mut request = LlmChatInvokeRequest::new(
+            "model@provider",
+            vec![
+                AiMessage::text(AiRole::User, "hello"),
+                AiMessage::new(
+                    AiRole::Assistant,
+                    vec![AiContent::Thinking {
+                        summary: None,
+                        text: Some("prior thought".to_string()),
+                        provider_metadata: None,
+                    }],
+                ),
+            ],
+        );
+        request.max_output_tokens = Some(42);
+        let input = input(request, &[("stream", json!(true))]);
+        let wire = registry
+            .encode(
+                FAKE_DERIVED_ADAPTER_ID,
+                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                ApiType::Llm,
+                &input,
+                &context("https://fake.example/v1"),
+            )
+            .unwrap();
+        assert_eq!(wire.headers["x-fake-dialect"], "enabled");
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected fake derived JSON body")
+        };
+        assert_eq!(body["max_tokens"], 42);
+        assert!(body.get("max_completion_tokens").is_none());
+        assert_eq!(body["fake_route"]["order"][0], "primary");
+        assert_eq!(body["messages"][1]["reasoning_content"], "prior thought");
+
+        let ProtocolExecution::Immediate(output) = registry
+            .decode(
+                FAKE_DERIVED_ADAPTER_ID,
+                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                ApiType::Llm,
+                success_response(json!({
+                    "object": "chat.completion",
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "answer",
+                            "reasoning_content": "derived thought"
+                        },
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"vendor_shape": true},
+                    "fake_metadata": {"route": "primary"}
+                })),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected fake derived immediate output")
+        };
+        assert_eq!(output.value["message"]["content"][0]["text"], "answer");
+        assert_eq!(
+            output.value["message"]["content"][1]["text"],
+            "derived thought"
+        );
+        assert_eq!(
+            output.value["message"]["content"][2]["value"]["route"],
+            "primary"
+        );
+        assert_eq!(output.usage.unwrap().total_tokens, Some(18));
+
+        let chunks = vec![
+            Ok(Bytes::from_static(
+                b"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"plan-\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n",
+            )),
+            Ok(Bytes::from_static(
+                b"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"done\",\"fake_tool_stream\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"tool\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            )),
+            Ok(Bytes::from_static(
+                b"data: {\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5},\"fake_metadata\":{\"route\":\"stream-primary\"}}\n\n",
+            )),
+            Ok(Bytes::from_static(b"data: [DONE]\n\n")),
+        ];
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+        let mut stream = registry
+            .decode_stream(
+                FAKE_DERIVED_ADAPTER_ID,
+                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                ApiType::Llm,
+                StreamingHttpResponse {
+                    status: StatusCode::OK,
+                    headers,
+                    body: Box::pin(stream::iter(chunks)),
+                    request_id: "fake-stream".to_string(),
+                    retry_after: None,
+                },
+            )
+            .await
+            .unwrap();
+        let mut events = Vec::new();
+        while let Some(event) = stream.events.next().await {
+            events.push(event.unwrap());
+        }
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ProtocolEvent::Delta(value)
+                if value == &json!({"type": "thinking_delta", "text": "plan-"})
+        )));
+        let ProtocolEvent::Final(output) = events.last().unwrap() else {
+            panic!("expected fake derived final output")
+        };
+        assert_eq!(output.value["message"]["content"][0]["text"], "plan-done");
+        assert_eq!(output.value["message"]["content"][1]["text"], "Hi");
+        assert_eq!(output.value["tool_calls"][0]["call_id"], "call-1");
+        assert_eq!(
+            output.value["message"]["content"][3]["value"]["route"],
+            "stream-primary"
+        );
+        assert_eq!(output.usage.as_ref().unwrap().total_tokens, Some(5));
     }
 
     #[test]
