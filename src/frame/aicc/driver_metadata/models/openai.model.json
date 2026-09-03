@@ -1,0 +1,172 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "model_driver_id": "openai",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "gpt-5.6",
+      "parameter_scale": "sol",
+      "api_types": ["llm", "image.txt2img", "image.img2img"],
+      "logical_mounts": ["llm.openai", "llm.gpt-sol", "llm.{driver}.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "reasoning": true,
+        "vision": true,
+        "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000004,
+        "cache_input_token": 0.0000004,
+        "output_token": 0.00002
+      }
+    },
+    {
+      "id": "gpt-image-2",
+      "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
+      "logical_mounts": [
+        "image.txt2img.openai",
+        "image.txt2img.{model}",
+        "image.img2img.openai",
+        "image.img2img.{model}",
+        "image.inpaint.openai",
+        "image.inpaint.{model}"
+      ],
+      "capabilities": {
+        "streaming": false,
+        "vision": true,
+        "image_generation": true
+      }
+    },
+    {
+      "id": "text-embedding-3-large",
+      "parameter_scale": "large",
+      "api_types": ["embedding.text"],
+      "logical_mounts": ["embedding.text", "embedding.text.openai", "embedding.text.{model}"],
+      "capabilities": { "max_context_tokens": 8192 },
+      "pricing": { "currency": "USD", "input_token": 0.00000013 }
+    },
+    {
+      "id": "text-embedding-3-small",
+      "parameter_scale": "small",
+      "api_types": ["embedding.text"],
+      "logical_mounts": ["embedding.text", "embedding.text.openai", "embedding.text.{model}"],
+      "capabilities": { "max_context_tokens": 8192 },
+      "pricing": { "currency": "USD", "input_token": 0.00000002 }
+    },
+    {
+      "id": "gpt-transcribe",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr", "audio.asr.openai", "audio.asr.{model}"]
+    },
+    {
+      "id": "gpt-4o-transcribe",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr", "audio.asr.openai", "audio.asr.{model}"],
+      "capabilities": {
+        "max_context_tokens": 16000,
+        "max_output_tokens": 2000
+      }
+    },
+    {
+      "id": "gpt-4o-mini-transcribe",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr", "audio.asr.openai", "audio.asr.{model}"]
+    },
+    {
+      "id": "gpt-4o-mini-tts",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts", "audio.tts.openai", "audio.tts.{model}"],
+      "capabilities": { "max_context_tokens": 2000 }
+    }
+  ],
+  "patterns": [
+    {
+      "match": "gpt-5.6-sol*",
+      "parameter_scale": "sol",
+      "api_types": ["llm", "image.txt2img", "image.img2img"],
+      "logical_mounts": ["llm.openai", "llm.gpt-sol", "llm.{driver}.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "reasoning": true,
+        "vision": true,
+        "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000004,
+        "cache_input_token": 0.0000004,
+        "output_token": 0.00002
+      }
+    },
+    {
+      "match": "gpt-5.6-terra*",
+      "parameter_scale": "terra",
+      "api_types": ["llm", "image.txt2img", "image.img2img"],
+      "logical_mounts": ["llm.openai", "llm.gpt-terra", "llm.{driver}.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "reasoning": true,
+        "vision": true,
+        "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000002,
+        "cache_input_token": 0.0000002,
+        "output_token": 0.000012
+      }
+    },
+    {
+      "match": "gpt-5.6-luna*",
+      "parameter_scale": "luna",
+      "api_types": ["llm", "image.txt2img", "image.img2img"],
+      "logical_mounts": ["llm.openai", "llm.gpt-luna", "llm.{driver}.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "reasoning": true,
+        "vision": true,
+        "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.0000002,
+        "cache_input_token": 0.00000002,
+        "output_token": 0.0000012
+      }
+    }
+  ],
+  "defaults": {},
+  "variants": [
+    { "name": "reasoning-none", "match": "gpt-5.6*", "mount_suffix": "reasoning-none" },
+    { "name": "reasoning-low", "match": "gpt-5.6*", "mount_suffix": "reasoning-low" },
+    { "name": "reasoning-medium", "match": "gpt-5.6*", "mount_suffix": "reasoning-medium" },
+    { "name": "reasoning-high", "match": "gpt-5.6*", "mount_suffix": "reasoning-high" },
+    { "name": "reasoning-xhigh", "match": "gpt-5.6*", "mount_suffix": "reasoning-xhigh" },
+    { "name": "reasoning-max", "match": "gpt-5.6*", "mount_suffix": "reasoning-max" }
+  ],
+  "version_rules": []
+}

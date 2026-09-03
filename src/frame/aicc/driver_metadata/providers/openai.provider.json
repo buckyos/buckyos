@@ -1,0 +1,65 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "provider_profile_id": "openai",
+  "metadata_drivers": ["openai"],
+  "origin_provider_aliases": {},
+  "origin_mappings": [],
+  "models": [],
+  "patterns": [
+    {
+      "match": "*",
+      "operations": {
+        "llm": "responses.create",
+        "embedding.text": "embeddings.create",
+        "image.txt2img": "images.generate",
+        "image.img2img": "images.edit",
+        "image.inpaint": "images.edit",
+        "audio.tts": "audio.speech",
+        "audio.asr": "audio.transcriptions",
+        "video.txt2video": "videos.create",
+        "video.img2video": "videos.create"
+      }
+    }
+  ],
+  "variants": [
+    {
+      "model_driver": "openai",
+      "variant": "reasoning-none",
+      "match": { "provider_model_id": "gpt-5.6*", "variant": "reasoning-none" },
+      "provider_options": { "reasoning": { "effort": "none" } }
+    },
+    {
+      "model_driver": "openai",
+      "variant": "reasoning-low",
+      "match": { "provider_model_id": "gpt-5.6*", "variant": "reasoning-low" },
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "model_driver": "openai",
+      "variant": "reasoning-medium",
+      "match": { "provider_model_id": "gpt-5.6*", "variant": "reasoning-medium" },
+      "provider_options": { "reasoning": { "effort": "medium" } }
+    },
+    {
+      "model_driver": "openai",
+      "variant": "reasoning-high",
+      "match": { "provider_model_id": "gpt-5.6*", "variant": "reasoning-high" },
+      "provider_options": { "reasoning": { "effort": "high" } }
+    },
+    {
+      "model_driver": "openai",
+      "variant": "reasoning-xhigh",
+      "match": { "provider_model_id": "gpt-5.6*", "variant": "reasoning-xhigh" },
+      "provider_options": { "reasoning": { "effort": "xhigh" } }
+    },
+    {
+      "model_driver": "openai",
+      "variant": "reasoning-max",
+      "match": { "provider_model_id": "gpt-5.6*", "variant": "reasoning-max" },
+      "provider_options": { "reasoning": { "effort": "max" } }
+    }
+  ]
+}

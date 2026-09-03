@@ -1,0 +1,28 @@
+{
+  "format": "buckyos.aicc.known-provider-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "catalog_id": "openai",
+  "providers": [
+    {
+      "provider_profile_id": "openai",
+      "display_name": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "protocol_adapter_id": "openai-responses",
+      "provider_rules_id": "openai",
+      "ui_hints": {
+        "credential": {
+          "kind": "bearer",
+          "required": true,
+          "secret": true
+        },
+        "instance_fields": {
+          "region": { "mode": "unsupported" },
+          "workspace": { "mode": "unsupported" },
+          "account": { "mode": "unsupported" }
+        }
+      }
+    }
+  ]
+}
