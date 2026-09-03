@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{broadcast, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 const INVENTORY_SCHEMA_VERSION: u32 = 1;
@@ -50,6 +50,8 @@ pub(crate) enum ProviderError {
     Storage(String),
     #[error("provider instance stopped before refresh could commit")]
     Stopped,
+    #[error("provider inventory candidate is stale")]
+    StaleCandidate,
 }
 
 pub(crate) type ProviderResult<T> = Result<T, ProviderError>;
@@ -926,6 +928,92 @@ impl Default for ProviderHealth {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProviderRefreshTrigger {
+    Initial,
+    Manual,
+    Scheduled,
+    Reconciliation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ProviderRefreshOutcome {
+    Committed {
+        changed: bool,
+        inventory_revision: Option<String>,
+        metadata_applied_seq: u64,
+    },
+    Failed {
+        kind: ProviderRefreshFailure,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProviderRefreshFailure {
+    InvalidConfiguration,
+    UnknownDependency,
+    Credential,
+    Discovery,
+    Inventory,
+    Storage,
+    Stopped,
+    StaleCandidate,
+}
+
+impl ProviderRefreshFailure {
+    fn from_error(error: &ProviderError) -> Self {
+        match error {
+            ProviderError::InvalidConfiguration(_)
+            | ProviderError::DuplicateInstance(_)
+            | ProviderError::UnknownInstance(_) => Self::InvalidConfiguration,
+            ProviderError::UnknownProfile(_) | ProviderError::UnknownAdapter(_) => {
+                Self::UnknownDependency
+            }
+            ProviderError::Credential(_) => Self::Credential,
+            ProviderError::Discovery(_) => Self::Discovery,
+            ProviderError::Inventory(_) => Self::Inventory,
+            ProviderError::Storage(_) => Self::Storage,
+            ProviderError::Stopped => Self::Stopped,
+            ProviderError::StaleCandidate => Self::StaleCandidate,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProviderRefreshEvent {
+    pub provider_instance_name: String,
+    pub trigger: ProviderRefreshTrigger,
+    pub outcome: ProviderRefreshOutcome,
+}
+
+#[derive(Clone)]
+pub(crate) struct ProviderInventoryCandidate {
+    provider_instance_name: String,
+    generation: u64,
+    candidate_seq: u64,
+    catalog_revision_seq: u64,
+    inventory: Arc<ProviderInventorySnapshot>,
+}
+
+impl fmt::Debug for ProviderInventoryCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderInventoryCandidate")
+            .field("provider_instance_name", &self.provider_instance_name)
+            .field("generation", &self.generation)
+            .field("candidate_seq", &self.candidate_seq)
+            .field("catalog_revision_seq", &self.catalog_revision_seq)
+            .field("inventory_revision", &self.inventory.inventory_revision)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ProviderInventoryCandidate {
+    pub(crate) fn inventory(&self) -> &Arc<ProviderInventorySnapshot> {
+        &self.inventory
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ExecutableProviderInstance {
     pub config: Arc<ProviderInstanceConfig>,
@@ -960,7 +1048,7 @@ impl ExecutableProviderInstance {
     }
 
     pub(crate) async fn current_inventory(&self) -> Arc<ProviderInventorySnapshot> {
-        self.runtime.inventory.read().await.clone()
+        self.inventory.clone()
     }
 }
 
@@ -984,11 +1072,14 @@ struct ProviderRuntime {
     profile: Arc<ProviderProfile>,
     discovery: Arc<dyn ProviderDiscovery>,
     credential_resolver: Arc<dyn CredentialResolver>,
-    catalog: Arc<CatalogSnapshot>,
+    catalog: Arc<RwLock<Arc<CatalogSnapshot>>>,
     codecs: Arc<CodecRegistry>,
     store: Arc<dyn ProviderInventoryStore>,
+    registry: Arc<RwLock<Arc<ProviderRegistry>>>,
+    refresh_events: broadcast::Sender<ProviderRefreshEvent>,
     generation: u64,
     current_generation: Arc<AtomicU64>,
+    current_candidate_seq: AtomicU64,
     commit_gate: RwLock<()>,
     refresh_lock: Mutex<()>,
     inventory: RwLock<Arc<ProviderInventorySnapshot>>,
@@ -1006,10 +1097,12 @@ impl ProviderRuntime {
             .await
     }
 
-    async fn discover_and_build(&self) -> ProviderResult<ProviderInventorySnapshot> {
+    async fn build_candidate(&self) -> ProviderResult<ProviderInventoryCandidate> {
         if !self.is_current() {
             return Err(ProviderError::Stopped);
         }
+        let candidate_seq = self.current_candidate_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        let catalog = self.catalog.read().await.clone();
         let credential = self.resolve_credential().await?;
         let snapshot = self
             .discovery
@@ -1019,48 +1112,98 @@ impl ProviderRuntime {
                 credential: &credential,
             })
             .await?;
-        InventoryBuilder::build(
+        let inventory = InventoryBuilder::build(
             &self.profile,
             &self.config,
             snapshot,
-            &self.catalog,
+            &catalog,
             &self.codecs,
-        )
+        )?;
+        Ok(ProviderInventoryCandidate {
+            provider_instance_name: self.config.provider_instance_name.clone(),
+            generation: self.generation,
+            candidate_seq,
+            catalog_revision_seq: catalog.target_revision_seq(),
+            inventory: Arc::new(inventory),
+        })
     }
 
-    async fn refresh_once(&self, force: bool) -> ProviderResult<Arc<ProviderInventorySnapshot>> {
+    async fn refresh_once(
+        self: &Arc<Self>,
+        force: bool,
+        trigger: ProviderRefreshTrigger,
+        publish: bool,
+    ) -> ProviderResult<Arc<ProviderInventorySnapshot>> {
         let _refresh = self.refresh_lock.lock().await;
         let attempt_at_ms = now_ms()?;
-        let built = match self.discover_and_build().await {
+        let candidate = match self.build_candidate().await {
             Ok(built) => built,
             Err(error) => {
                 self.record_failure(attempt_at_ms, &error).await;
+                self.publish_refresh_event(
+                    trigger,
+                    ProviderRefreshOutcome::Failed {
+                        kind: ProviderRefreshFailure::from_error(&error),
+                    },
+                );
                 return Err(error);
             }
         };
         let current = self.inventory.read().await.clone();
         let changed = force
-            || current.provider_model_list_fingerprint != built.provider_model_list_fingerprint
-            || current.metadata_applied_seq != built.metadata_applied_seq;
-        let built = Arc::new(built);
+            || current.provider_model_list_fingerprint
+                != candidate.inventory.provider_model_list_fingerprint
+            || current.metadata_applied_seq != candidate.inventory.metadata_applied_seq;
         if changed {
-            if let Err(error) = self.commit_inventory(built.clone()).await {
-                self.record_failure(attempt_at_ms, &error).await;
+            if let Err(error) = self.commit_candidate(&candidate, publish).await {
+                if !matches!(error, ProviderError::StaleCandidate) {
+                    self.record_failure(attempt_at_ms, &error).await;
+                }
+                self.publish_refresh_event(
+                    trigger,
+                    ProviderRefreshOutcome::Failed {
+                        kind: ProviderRefreshFailure::from_error(&error),
+                    },
+                );
                 return Err(error);
             }
         }
-        self.record_success(attempt_at_ms, built.health).await?;
-        Ok(if changed { built } else { current })
+        self.record_success(attempt_at_ms, candidate.inventory.health)
+            .await?;
+        let inventory = if changed {
+            candidate.inventory.clone()
+        } else {
+            current
+        };
+        self.publish_refresh_event(
+            trigger,
+            ProviderRefreshOutcome::Committed {
+                changed,
+                inventory_revision: inventory.inventory_revision.clone(),
+                metadata_applied_seq: inventory.metadata_applied_seq,
+            },
+        );
+        Ok(inventory)
     }
 
-    async fn commit_inventory(
-        &self,
-        inventory: Arc<ProviderInventorySnapshot>,
+    async fn commit_candidate(
+        self: &Arc<Self>,
+        candidate: &ProviderInventoryCandidate,
+        publish: bool,
     ) -> ProviderResult<()> {
         let _gate = self.commit_gate.read().await;
         if !self.is_current() {
             return Err(ProviderError::Stopped);
         }
+        let latest_catalog_revision = self.catalog.read().await.target_revision_seq();
+        if candidate.provider_instance_name != self.config.provider_instance_name
+            || candidate.generation != self.generation
+            || candidate.candidate_seq != self.current_candidate_seq.load(Ordering::Acquire)
+            || candidate.catalog_revision_seq != latest_catalog_revision
+        {
+            return Err(ProviderError::StaleCandidate);
+        }
+        let inventory = candidate.inventory.clone();
         let snapshot = serde_json::to_value(inventory.as_ref())
             .map_err(|error| ProviderError::Inventory(error.to_string()))?;
         let record = InventoryLkgsRecord::new(
@@ -1076,8 +1219,33 @@ impl ProviderRuntime {
         )
         .map_err(|error| ProviderError::Storage(error.to_string()))?;
         self.store.commit(&record).await?;
-        *self.inventory.write().await = inventory;
+        *self.inventory.write().await = inventory.clone();
+        if publish {
+            let executable = Arc::new(ExecutableProviderInstance {
+                config: self.config.clone(),
+                profile: self.profile.clone(),
+                inventory,
+                generation: self.generation,
+                runtime: self.clone(),
+            });
+            let current = self.registry.read().await.clone();
+            let mut next = current.instances.clone();
+            next.insert(self.config.provider_instance_name.clone(), executable);
+            *self.registry.write().await = Arc::new(ProviderRegistry { instances: next });
+        }
         Ok(())
+    }
+
+    fn publish_refresh_event(
+        &self,
+        trigger: ProviderRefreshTrigger,
+        outcome: ProviderRefreshOutcome,
+    ) {
+        let _ = self.refresh_events.send(ProviderRefreshEvent {
+            provider_instance_name: self.config.provider_instance_name.clone(),
+            trigger,
+            outcome,
+        });
     }
 
     async fn record_success(&self, at_ms: i64, state: ProviderHealthState) -> ProviderResult<()> {
@@ -1122,7 +1290,7 @@ impl ProviderRuntime {
                     }
                 }
                 _ = tokio::time::sleep(delay) => {
-                    match self.refresh_once(false).await {
+                    match self.refresh_once(false, ProviderRefreshTrigger::Scheduled, true).await {
                         Ok(_) => delay = self.profile.refresh.interval,
                         Err(ProviderError::Stopped) => break,
                         Err(_) => {
@@ -1158,11 +1326,12 @@ impl ProviderRuntime {
 pub(crate) struct ProviderRuntimeManager {
     profiles: BTreeMap<String, Arc<ProviderProfile>>,
     credential_resolver: Arc<dyn CredentialResolver>,
-    catalog: Arc<CatalogSnapshot>,
+    catalog: Arc<RwLock<Arc<CatalogSnapshot>>>,
     codecs: Arc<CodecRegistry>,
     store: Arc<dyn ProviderInventoryStore>,
     runtimes: Mutex<BTreeMap<String, Arc<ProviderRuntime>>>,
-    registry: RwLock<Arc<ProviderRegistry>>,
+    registry: Arc<RwLock<Arc<ProviderRegistry>>>,
+    refresh_events: broadcast::Sender<ProviderRefreshEvent>,
     generations: Mutex<BTreeMap<String, Arc<AtomicU64>>>,
     lifecycle_lock: Mutex<()>,
 }
@@ -1185,14 +1354,16 @@ impl ProviderRuntimeManager {
                 )));
             }
         }
+        let (refresh_events, _) = broadcast::channel(64);
         Ok(Self {
             profiles: profile_map,
             credential_resolver,
-            catalog,
+            catalog: Arc::new(RwLock::new(catalog)),
             codecs,
             store,
             runtimes: Mutex::new(BTreeMap::new()),
-            registry: RwLock::new(Arc::new(ProviderRegistry::default())),
+            registry: Arc::new(RwLock::new(Arc::new(ProviderRegistry::default()))),
+            refresh_events,
             generations: Mutex::new(BTreeMap::new()),
             lifecycle_lock: Mutex::new(()),
         })
@@ -1200,6 +1371,14 @@ impl ProviderRuntimeManager {
 
     pub(crate) async fn registry(&self) -> Arc<ProviderRegistry> {
         self.registry.read().await.clone()
+    }
+
+    pub(crate) fn subscribe_refresh_events(&self) -> broadcast::Receiver<ProviderRefreshEvent> {
+        self.refresh_events.subscribe()
+    }
+
+    pub(crate) async fn current_catalog(&self) -> Arc<CatalogSnapshot> {
+        self.catalog.read().await.clone()
     }
 
     pub(crate) async fn start(
@@ -1252,7 +1431,8 @@ impl ProviderRuntimeManager {
         };
         let generation = generation_cell.fetch_add(1, Ordering::AcqRel) + 1;
         let (stop_tx, stop_rx) = watch::channel(false);
-        let placeholder = empty_inventory(&profile, &config, self.catalog.target_revision_seq());
+        let catalog = self.catalog.read().await.clone();
+        let placeholder = empty_inventory(&profile, &config, catalog.target_revision_seq());
         let runtime = Arc::new(ProviderRuntime {
             config: config.clone(),
             profile: profile.clone(),
@@ -1261,8 +1441,11 @@ impl ProviderRuntimeManager {
             catalog: self.catalog.clone(),
             codecs: self.codecs.clone(),
             store: self.store.clone(),
+            registry: self.registry.clone(),
+            refresh_events: self.refresh_events.clone(),
             generation,
             current_generation: generation_cell,
+            current_candidate_seq: AtomicU64::new(0),
             commit_gate: RwLock::new(()),
             refresh_lock: Mutex::new(()),
             inventory: RwLock::new(Arc::new(placeholder)),
@@ -1273,7 +1456,10 @@ impl ProviderRuntimeManager {
             stop_lock: Mutex::new(()),
         });
 
-        let inventory = match runtime.refresh_once(true).await {
+        let inventory = match runtime
+            .refresh_once(true, ProviderRefreshTrigger::Initial, false)
+            .await
+        {
             Ok(inventory) => inventory,
             Err(discovery_error) => match load_lkgs(&runtime).await {
                 Ok(Some(inventory)) => inventory,
@@ -1282,7 +1468,7 @@ impl ProviderRuntimeManager {
                         &profile,
                         &config,
                         default,
-                        &self.catalog,
+                        &catalog,
                         &self.codecs,
                     )?),
                     None => return Err(discovery_error),
@@ -1326,9 +1512,85 @@ impl ProviderRuntimeManager {
             .get(provider_instance_name)
             .cloned()
             .ok_or_else(|| ProviderError::UnknownInstance(provider_instance_name.into()))?;
-        let inventory = runtime.refresh_once(true).await?;
-        self.republish_runtime(&runtime, inventory.clone()).await;
-        Ok(inventory)
+        runtime
+            .refresh_once(true, ProviderRefreshTrigger::Manual, true)
+            .await
+    }
+
+    pub(crate) async fn build_inventory_candidate(
+        &self,
+        provider_instance_name: &str,
+    ) -> ProviderResult<ProviderInventoryCandidate> {
+        let runtime = self.runtime(provider_instance_name).await?;
+        let _refresh = runtime.refresh_lock.lock().await;
+        runtime.build_candidate().await
+    }
+
+    pub(crate) async fn commit_inventory_candidate(
+        &self,
+        candidate: ProviderInventoryCandidate,
+        trigger: ProviderRefreshTrigger,
+    ) -> ProviderResult<Arc<ProviderInventorySnapshot>> {
+        let runtime = self.runtime(&candidate.provider_instance_name).await?;
+        let attempt_at_ms = now_ms()?;
+        match runtime.commit_candidate(&candidate, true).await {
+            Ok(()) => {
+                runtime
+                    .record_success(attempt_at_ms, candidate.inventory.health)
+                    .await?;
+                runtime.publish_refresh_event(
+                    trigger,
+                    ProviderRefreshOutcome::Committed {
+                        changed: true,
+                        inventory_revision: candidate.inventory.inventory_revision.clone(),
+                        metadata_applied_seq: candidate.inventory.metadata_applied_seq,
+                    },
+                );
+                Ok(candidate.inventory)
+            }
+            Err(error) => {
+                if !matches!(error, ProviderError::StaleCandidate) {
+                    runtime.record_failure(attempt_at_ms, &error).await;
+                }
+                runtime.publish_refresh_event(
+                    trigger,
+                    ProviderRefreshOutcome::Failed {
+                        kind: ProviderRefreshFailure::from_error(&error),
+                    },
+                );
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) async fn reconcile_inventory(
+        &self,
+        catalog: Arc<CatalogSnapshot>,
+    ) -> Vec<ProviderRefreshEvent> {
+        *self.catalog.write().await = catalog;
+        let runtimes: Vec<_> = self.runtimes.lock().await.values().cloned().collect();
+        let mut results = Vec::with_capacity(runtimes.len());
+        for runtime in runtimes {
+            let outcome = match runtime
+                .refresh_once(true, ProviderRefreshTrigger::Reconciliation, true)
+                .await
+            {
+                Ok(inventory) => ProviderRefreshOutcome::Committed {
+                    changed: true,
+                    inventory_revision: inventory.inventory_revision.clone(),
+                    metadata_applied_seq: inventory.metadata_applied_seq,
+                },
+                Err(error) => ProviderRefreshOutcome::Failed {
+                    kind: ProviderRefreshFailure::from_error(&error),
+                },
+            };
+            results.push(ProviderRefreshEvent {
+                provider_instance_name: runtime.config.provider_instance_name.clone(),
+                trigger: ProviderRefreshTrigger::Reconciliation,
+                outcome,
+            });
+        }
+        results
     }
 
     pub(crate) async fn replace(
@@ -1379,19 +1641,13 @@ impl ProviderRuntimeManager {
         *self.registry.write().await = Arc::new(ProviderRegistry { instances: next });
     }
 
-    async fn republish_runtime(
-        &self,
-        runtime: &Arc<ProviderRuntime>,
-        inventory: Arc<ProviderInventorySnapshot>,
-    ) {
-        let instance = Arc::new(ExecutableProviderInstance {
-            config: runtime.config.clone(),
-            profile: runtime.profile.clone(),
-            inventory,
-            generation: runtime.generation,
-            runtime: runtime.clone(),
-        });
-        self.publish_instance(instance).await;
+    async fn runtime(&self, name: &str) -> ProviderResult<Arc<ProviderRuntime>> {
+        self.runtimes
+            .lock()
+            .await
+            .get(name)
+            .cloned()
+            .ok_or_else(|| ProviderError::UnknownInstance(name.into()))
     }
 }
 
@@ -1985,12 +2241,16 @@ mod tests {
     }
 
     fn catalog() -> Arc<CatalogSnapshot> {
+        catalog_with_revision(7, 8192)
+    }
+
+    fn catalog_with_revision(revision_seq: u64, context_tokens: u64) -> Arc<CatalogSnapshot> {
         let model_driver: ModelDriverCatalog = serde_json::from_value(serde_json::json!({
             "format": "buckyos.aicc.model-driver-catalog",
             "schema_version": 1,
             "schema_revision": 0,
             "model_driver_id": "openai",
-            "revision_seq": 7,
+            "revision_seq": revision_seq,
             "models": [{
                 "id": "gpt-test",
                 "api_types": ["llm", "embedding.text"],
@@ -1998,7 +2258,7 @@ mod tests {
                 "capabilities": {
                     "tool_call": true,
                     "json_schema": true,
-                    "context_tokens": 8192
+                    "context_tokens": context_tokens
                 },
                 "pricing": {"currency": "USD", "input_token": 9.0}
             }],
@@ -2012,7 +2272,7 @@ mod tests {
             "format": "buckyos.aicc.provider-rules-catalog",
             "schema_version": 1,
             "schema_revision": 0,
-            "revision_seq": 7,
+            "revision_seq": revision_seq,
             "provider_profile_id": "openai",
             "metadata_drivers": ["openai"],
             "models": [{
@@ -2026,7 +2286,7 @@ mod tests {
         .unwrap();
         Arc::new(
             CatalogSnapshot::build(
-                7,
+                revision_seq,
                 CatalogDocuments {
                     model_drivers: vec![model_driver],
                     provider_rules: vec![provider_rules],
@@ -2315,12 +2575,150 @@ mod tests {
             .get("primary")
             .cloned()
             .unwrap();
-        runtime.refresh_once(false).await.unwrap();
+        runtime
+            .refresh_once(false, ProviderRefreshTrigger::Manual, true)
+            .await
+            .unwrap();
         assert_eq!(store.commits.load(Ordering::SeqCst), 1);
         assert_eq!(
             runtime.health.read().await.state,
             ProviderHealthState::Healthy
         );
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn reconciliation_uses_latest_catalog_and_atomically_publishes_registry() {
+        let store = Arc::new(MemoryStore::default());
+        let discovery = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+        let (manager, discovery) = manager(store, discovery);
+        manager.start(instance("primary"), discovery).await.unwrap();
+        let old_registry = manager.registry().await;
+        assert_eq!(
+            old_registry
+                .get("primary")
+                .unwrap()
+                .current_inventory()
+                .await
+                .metadata_applied_seq,
+            7
+        );
+        let mut events = manager.subscribe_refresh_events();
+
+        let report = manager
+            .reconcile_inventory(catalog_with_revision(8, 16_384))
+            .await;
+
+        assert_eq!(manager.current_catalog().await.target_revision_seq(), 8);
+        assert_eq!(report.len(), 1);
+        assert!(matches!(
+            report[0].outcome,
+            ProviderRefreshOutcome::Committed {
+                metadata_applied_seq: 8,
+                ..
+            }
+        ));
+        let event = events.recv().await.unwrap();
+        assert_eq!(event.trigger, ProviderRefreshTrigger::Reconciliation);
+        assert!(matches!(
+            event.outcome,
+            ProviderRefreshOutcome::Committed {
+                metadata_applied_seq: 8,
+                ..
+            }
+        ));
+        let new_registry = manager.registry().await;
+        assert_eq!(
+            new_registry
+                .get("primary")
+                .unwrap()
+                .current_inventory()
+                .await
+                .models[0]
+                .capabilities["context_tokens"],
+            Value::from(16_384)
+        );
+        assert_eq!(
+            old_registry
+                .get("primary")
+                .unwrap()
+                .current_inventory()
+                .await
+                .metadata_applied_seq,
+            7
+        );
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn candidate_commit_rejects_catalog_or_build_order_staleness() {
+        let store = Arc::new(MemoryStore::default());
+        let discovery = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+        let (manager, discovery) = manager(store, discovery);
+        manager.start(instance("primary"), discovery).await.unwrap();
+
+        let stale_catalog = manager.build_inventory_candidate("primary").await.unwrap();
+        manager
+            .reconcile_inventory(catalog_with_revision(8, 16_384))
+            .await;
+        assert!(matches!(
+            manager
+                .commit_inventory_candidate(stale_catalog, ProviderRefreshTrigger::Reconciliation)
+                .await,
+            Err(ProviderError::StaleCandidate)
+        ));
+
+        let stale_order = manager.build_inventory_candidate("primary").await.unwrap();
+        let newest = manager.build_inventory_candidate("primary").await.unwrap();
+        assert!(matches!(
+            manager
+                .commit_inventory_candidate(stale_order, ProviderRefreshTrigger::Manual)
+                .await,
+            Err(ProviderError::StaleCandidate)
+        ));
+        assert_eq!(
+            manager
+                .commit_inventory_candidate(newest, ProviderRefreshTrigger::Manual)
+                .await
+                .unwrap()
+                .metadata_applied_seq,
+            8
+        );
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn scheduled_refresh_publishes_success_and_error_without_credentials() {
+        let store = Arc::new(MemoryStore::default());
+        let secret = "event-must-not-contain-this-secret";
+        let scripted = Arc::new(ScriptedDiscovery::new(
+            [
+                Ok(discovery("gpt-test")),
+                Err("scheduled endpoint unavailable".into()),
+            ],
+            discovery("gpt-test"),
+        ));
+        let manager = Arc::new(
+            ProviderRuntimeManager::new([profile()], resolver(secret), catalog(), codecs(), store)
+                .unwrap(),
+        );
+        manager.start(instance("primary"), scripted).await.unwrap();
+        let mut events = manager.subscribe_refresh_events();
+        let runtime = manager.runtime("primary").await.unwrap();
+
+        assert!(matches!(
+            runtime
+                .refresh_once(false, ProviderRefreshTrigger::Scheduled, true)
+                .await,
+            Err(ProviderError::Discovery(_))
+        ));
+        let event = events.recv().await.unwrap();
+        assert_eq!(event.trigger, ProviderRefreshTrigger::Scheduled);
+        assert!(matches!(
+            event.outcome,
+            ProviderRefreshOutcome::Failed { .. }
+        ));
+        assert!(!format!("{event:?}").contains(secret));
         manager.shutdown().await;
     }
 
