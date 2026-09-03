@@ -299,9 +299,11 @@ Owner：四个并行协议小组
 
 #### WP-06C Gemini Interactions
 
-- [ ] Interactions request/response/event；
-- [ ] Gemini auth、files、embeddings 和首版 gen-media；
-- [ ] 只有实际 Provider 需求确认后才增加 `generateContent` 历史 Adapter。
+- [x] Interactions request/response/event；
+- [x] Gemini auth、files、embeddings 和首版 gen-media；
+- [x] 只有实际 Provider 需求确认后才增加 `generateContent` 历史 Adapter。
+
+实现记录：Gemini Interactions 小组已在 `src/frame/aicc/src/protocol/gemini.rs` 实现独立 `gemini-interactions` Adapter，覆盖 `interactions.create` 请求、即时响应、增量 SSE event、错误映射、tool、usage、ProviderState，以及 `x-goog-api-key` named-header credential；另按官方 operation 独立注册 `models.embedContent` 和 `models.predictLongRunning`，覆盖文本/多模态 embeddings、首版图片/语音/音乐生成与视频 native-task 生命周期，并实现 Gemini Files 可恢复上传、查询和删除。基础 codec 只消费 WP-05 提供的类型化上下文、已物化资源和 native-task contract，未加入尚无实际 Provider 需求的 `generateContent` 历史 Adapter。8 个 Gemini 合同单测随 AICC 全量 158 个测试通过，all-target check、排除 Resource 模块既有 `manual_is_multiple_of` lint 后的 clippy `-D warnings`、格式及 diff 检查通过；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。
 
 #### WP-06D OpenAI Chat Completions
 

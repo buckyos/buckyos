@@ -4,6 +4,7 @@ mod adapter;
 mod auth;
 mod contract;
 mod error;
+mod gemini;
 mod openai_chat_completions;
 mod openai_responses;
 mod result;
@@ -19,6 +20,8 @@ pub(crate) use auth::*;
 pub(crate) use contract::*;
 #[allow(unused_imports)]
 pub(crate) use error::*;
+#[allow(unused_imports)]
+pub(crate) use gemini::*;
 #[allow(unused_imports)]
 pub(crate) use openai_chat_completions::*;
 #[allow(unused_imports)]
