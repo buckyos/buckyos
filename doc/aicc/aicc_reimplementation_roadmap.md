@@ -347,7 +347,7 @@ Owner：七个可并行 Provider 小组
 
 | 子组 | Provider | 基础依赖 |
 |---|---|---|
-| WP-08A | OpenAI | OpenAI Responses |
+| WP-08A（已完成） | OpenAI | OpenAI Responses |
 | WP-08B | Claude、MiniMax | Claude Messages |
 | WP-08C | Gemini | Gemini Interactions |
 | WP-08D | OpenRouter、Kimi、GLM | OpenAI Chat Completions |
@@ -367,6 +367,8 @@ Owner：七个可并行 Provider 小组
 - [ ] dialect 声明 `base_adapter_id`、覆盖点和不支持能力；
 - [ ] 能由 Profile/Rules 表达的差异不得建立空 dialect；
 - [ ] 删除该 Provider 后，基础 codec 不需要修改。
+
+WP-08A 实现记录：OpenAI builtin 装配已落在 `src/frame/aicc/src/provider/builtin/openai.rs`，提供稳定 `openai` Profile、显示信息、默认 `https://api.openai.com/v1`、Bearer credential schema，并明确 region/workspace/account 不支持；通过官方 `/v1/models` 机器接口构建动态 discovery snapshot，保留 ETag revision、健康状态和有界错误处理。内置 Provider Rules 固定 `metadata_drivers: ["openai"]`，将 LLM、embedding、image、audio 和 video API type 显式绑定到 WP-06A 的 `openai-responses` 及专用 operation。OpenAI 没有额外 wire 差异，因此直接复用基础 Adapter，不创建空 dialect，也未修改基础 codec。4 个 builtin 单元测试随 AICC 全量 162 个测试通过，library check、格式与 diff 检查通过；stable clippy 在豁免 Resource 模块既有 `manual_is_multiple_of` lint 后通过，未新增依赖。
 
 建议批次：
 

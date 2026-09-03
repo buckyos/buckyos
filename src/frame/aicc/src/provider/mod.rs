@@ -1,5 +1,10 @@
 #![allow(dead_code)]
 
+mod builtin;
+
+#[allow(unused_imports)]
+pub(crate) use builtin::*;
+
 use crate::catalog::{CatalogSnapshot, Pricing};
 use crate::matching::MatchContext;
 use crate::model::{
