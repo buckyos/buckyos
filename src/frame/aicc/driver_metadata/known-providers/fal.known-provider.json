@@ -1,0 +1,30 @@
+{
+  "format": "buckyos.aicc.known-provider-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "catalog_id": "fal",
+  "providers": [
+    {
+      "provider_profile_id": "fal",
+      "display_name": "fal",
+      "base_url": "https://queue.fal.run",
+      "protocol_adapter_id": "fal-queue",
+      "provider_rules_id": "fal",
+      "ui_hints": {
+        "credential": {
+          "kind": "fal_key",
+          "header_name": "Authorization",
+          "prefix": "Key",
+          "required": true,
+          "secret": true
+        },
+        "instance_fields": {
+          "region": { "mode": "unsupported" },
+          "workspace": { "mode": "unsupported" },
+          "account": { "mode": "unsupported" }
+        }
+      }
+    }
+  ]
+}
