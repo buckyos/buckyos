@@ -10,10 +10,14 @@ use buckyos_api::{
     features, AiccFallbackMode, AiccFallbackRule, AiccSchedulerProfile, AiccSchedulerProfileConfig,
     AiccSchedulerProfileWeights, ApiType, Capability, Feature, ModelDisable, ModelRequirement,
 };
+#[allow(unused_imports)]
+pub(crate) use policy::{
+    CallerIdentity, QuotaLookup, QuotaSnapshot, QuotaSourceError, QuotaSourceFactory,
+    QuotaTruthPort,
+};
 use policy::{
-    CallerIdentity, CandidatePolicyInput, CredentialScope, LocalityPreference, PolicyEngine,
-    PolicyReason, ProviderPrivacy, ProviderTrustView, ProviderType, QuotaSource,
-    RequestPolicyInput,
+    CandidatePolicyInput, CredentialScope, LocalityPreference, PolicyEngine, PolicyReason,
+    ProviderPrivacy, ProviderTrustView, ProviderType, QuotaSource, RequestPolicyInput,
 };
 use serde::Serialize;
 use serde_json::Value;
