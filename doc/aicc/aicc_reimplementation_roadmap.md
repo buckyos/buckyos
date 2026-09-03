@@ -524,7 +524,7 @@ Owner：Storage/Observability 小组
 
 完成标准：TaskMgr completed task 删除不影响 usage，所有诊断能用 request/task/route/provider trace ID 关联。
 
-实现记录：Storage/Observability 小组已在 `src/frame/aicc/src/storage/mod.rs` 实现基于平台 RDB instance 的 inventory LKGS、usage、route trace 和 audit 持久化，包含跨 SQLite/Postgres 的原子 inventory/metadata seq upsert、SHA-256 校验与坏行重建、completion usage 强制和双重去重、filter/group/bucket/cursor 查询、四级 trace ID 关联及诊断 retention；`src/frame/aicc/src/observability/mod.rs` 实现 latency/error/queue/health/refresh/snapshot generation metrics、统一递归脱敏和 secret/content 扫描。Storage/Observability 7 个单元测试随 AICC 全量 77 个测试通过，all-target check、AICC `cargo clippy --no-deps -D warnings` 和格式检查通过；完整依赖 clippy 仍受 `buckyos-api` 既有 3 个 `redundant_field_names` 告警阻断。运行时装配及真实 completion/Provider lifecycle 接入由后续对应工作包完成。
+实现记录：Storage/Observability 小组已在 `src/frame/aicc/src/storage/mod.rs` 实现基于平台 RDB instance 的 inventory LKGS、usage、route trace 和 audit 持久化，包含跨 SQLite/Postgres 的原子 inventory/metadata seq upsert、SHA-256 校验与坏行重建、completion usage 强制和双重去重、filter/group/bucket/cursor 查询、四级 trace ID 关联及诊断 retention；usage 持久事实显式记录 `user_id`、canonical `method` 和 `provider_instance_name`，对应过滤、聚合与 `[start_time_ms, end_time_ms)` 半开周期可直接供用户级和 method 级预算使用。`src/frame/aicc/src/observability/mod.rs` 实现 latency/error/queue/health/refresh/snapshot generation metrics、统一递归脱敏和 secret/content 扫描。Storage/Observability 8 个单元测试随 AICC 全量测试通过，all-target check、AICC `cargo clippy --no-deps -D warnings` 和格式检查通过；完整依赖 clippy 仍受 `buckyos-api` 既有 3 个 `redundant_field_names` 告警阻断。运行时装配及真实 completion/Provider lifecycle 接入由后续对应工作包完成。
 
 ### WP-15：RuntimeSnapshot、Settings 与 Metadata 收敛
 

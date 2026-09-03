@@ -2,10 +2,10 @@
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use buckyos_api::{
-    get_rdb_instance, AiUsage, AiccRouteTraceEvent, AiccUsageEvent, QueryRouteTraceRequest,
-    QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse, RdbBackend, UsageAggregate,
-    UsageBucketedRow, UsageGroupedRow, UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange,
-    AICC_USAGE_LOG_RDB_INSTANCE_ID,
+    ai_methods, get_rdb_instance, AiUsage, AiccRouteTraceEvent, AiccUsageEvent,
+    QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
+    RdbBackend, UsageAggregate, UsageBucketedRow, UsageGroupedRow, UsageQueryGroup,
+    UsageQueryOutputMode, UsageQueryTimeRange, AICC_USAGE_LOG_RDB_INSTANCE_ID,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -32,12 +32,16 @@ CREATE TABLE IF NOT EXISTS aicc_provider_inventory_lkgs (
 CREATE INDEX IF NOT EXISTS idx_aicc_provider_inventory_lkgs_updated ON aicc_provider_inventory_lkgs(updated_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_provider_inventory_lkgs_metadata ON aicc_provider_inventory_lkgs(metadata_applied_seq);
 CREATE TABLE IF NOT EXISTS aicc_usage_event (
- event_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, caller_app_id TEXT, task_id TEXT NOT NULL,
- idempotency_key TEXT, capability TEXT NOT NULL, request_model TEXT NOT NULL,
+ event_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
+ caller_app_id TEXT, task_id TEXT NOT NULL, idempotency_key TEXT, method TEXT NOT NULL,
+ capability TEXT NOT NULL, request_model TEXT NOT NULL, provider_instance_name TEXT NOT NULL,
  provider_model TEXT NOT NULL, input_tokens BIGINT, output_tokens BIGINT, total_tokens BIGINT,
  request_units BIGINT, usage_json TEXT NOT NULL, finance_snapshot_json TEXT, created_at_ms BIGINT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time ON aicc_usage_event(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time ON aicc_usage_event(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_user_time ON aicc_usage_event(user_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_method_time ON aicc_usage_event(method, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_provider_instance_time ON aicc_usage_event(provider_instance_name, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_model_time ON aicc_usage_event(provider_model, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_request_model_time ON aicc_usage_event(request_model, created_at_ms);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_task ON aicc_usage_event(tenant_id, task_id);
@@ -155,11 +159,14 @@ impl InventoryLkgsRecord {
 pub(crate) struct ProviderCompletion {
     pub event_id: String,
     pub tenant_id: String,
+    pub user_id: String,
     pub caller_app_id: Option<String>,
     pub task_id: String,
     pub idempotency_key: Option<String>,
+    pub method: String,
     pub capability: String,
     pub request_model: String,
+    pub provider_instance_name: String,
     pub provider_model: String,
     pub usage: Option<AiUsage>,
     pub finance_snapshot: Option<Value>,
@@ -345,11 +352,14 @@ impl AiccStorage {
         let event = AiccUsageEvent {
             event_id: completion.event_id,
             tenant_id: completion.tenant_id,
+            user_id: completion.user_id,
             caller_app_id: completion.caller_app_id,
             task_id: completion.task_id,
             idempotency_key: completion.idempotency_key,
+            method: completion.method,
             capability: completion.capability,
             request_model: completion.request_model,
+            provider_instance_name: completion.provider_instance_name,
             provider_model: completion.provider_model,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
@@ -366,9 +376,12 @@ impl AiccStorage {
         if [
             &e.event_id,
             &e.tenant_id,
+            &e.user_id,
             &e.task_id,
+            &e.method,
             &e.capability,
             &e.request_model,
+            &e.provider_instance_name,
             &e.provider_model,
         ]
         .iter()
@@ -379,18 +392,27 @@ impl AiccStorage {
                 "usage attribution is incomplete".into(),
             ));
         }
+        if !ai_methods::is_ai_method(&e.method) {
+            return Err(StorageError::InvalidRecord(
+                "usage method is not canonical".into(),
+            ));
+        }
         let sql = self.sql("INSERT INTO aicc_usage_event
-          (event_id,tenant_id,caller_app_id,task_id,idempotency_key,capability,request_model,
-           provider_model,input_tokens,output_tokens,total_tokens,request_units,usage_json,
-           finance_snapshot_json,created_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING");
+          (event_id,tenant_id,user_id,caller_app_id,task_id,idempotency_key,method,capability,
+           request_model,provider_instance_name,provider_model,input_tokens,output_tokens,total_tokens,
+           request_units,usage_json,finance_snapshot_json,created_at_ms)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING");
         let result = sqlx::query(&sql)
             .bind(&e.event_id)
             .bind(&e.tenant_id)
+            .bind(&e.user_id)
             .bind(&e.caller_app_id)
             .bind(&e.task_id)
             .bind(&e.idempotency_key)
+            .bind(&e.method)
             .bind(&e.capability)
             .bind(&e.request_model)
+            .bind(&e.provider_instance_name)
             .bind(&e.provider_model)
             .bind(opt_i64(e.input_tokens)?)
             .bind(opt_i64(e.output_tokens)?)
@@ -656,11 +678,14 @@ fn usage_from_row(row: AnyRow) -> StorageResult<AiccUsageEvent> {
     Ok(AiccUsageEvent {
         event_id: row.try_get("event_id")?,
         tenant_id: row.try_get("tenant_id")?,
+        user_id: row.try_get("user_id")?,
         caller_app_id: row.try_get("caller_app_id")?,
         task_id: row.try_get("task_id")?,
         idempotency_key: row.try_get("idempotency_key")?,
+        method: row.try_get("method")?,
         capability: row.try_get("capability")?,
         request_model: row.try_get("request_model")?,
+        provider_instance_name: row.try_get("provider_instance_name")?,
         provider_model: row.try_get("provider_model")?,
         input_tokens: opt_from_i64(row.try_get("input_tokens")?)?,
         output_tokens: opt_from_i64(row.try_get("output_tokens")?)?,
@@ -733,22 +758,21 @@ fn time_range(range: &UsageQueryTimeRange, now: i64) -> StorageResult<(i64, i64)
 
 fn usage_matches(e: &AiccUsageEvent, f: &buckyos_api::UsageQueryFilters) -> bool {
     exact(&f.tenant_ids, Some(&e.tenant_id))
+        && exact(&f.user_ids, Some(&e.user_id))
         && exact(&f.caller_app_ids, e.caller_app_id.as_deref())
         && fuzzy(f.caller_app_query.as_deref(), e.caller_app_id.as_deref())
         && exact(&f.request_models, Some(&e.request_model))
         && exact(&f.provider_models, Some(&e.provider_model))
         && fuzzy(f.provider_model_query.as_deref(), Some(&e.provider_model))
-        && exact(
-            &f.provider_instance_names,
-            provider_instance(&e.provider_model),
-        )
+        && exact(&f.provider_instance_names, Some(&e.provider_instance_name))
         && fuzzy(
             f.provider_instance_query.as_deref(),
-            provider_instance(&e.provider_model),
+            Some(&e.provider_instance_name),
         )
         && exact(&f.capabilities, Some(&e.capability))
         && exact(&f.task_ids, Some(&e.task_id))
         && exact(&f.idempotency_keys, e.idempotency_key.as_deref())
+        && exact(&f.methods, Some(&e.method))
 }
 
 fn grouped(events: &[AiccUsageEvent], groups: &[UsageQueryGroup]) -> Vec<UsageGroupedRow> {
@@ -807,9 +831,12 @@ fn group_values(e: &AiccUsageEvent, groups: &[UsageQueryGroup]) -> Vec<String> {
         .iter()
         .map(|g| match g {
             UsageQueryGroup::ProviderModel => e.provider_model.clone(),
+            UsageQueryGroup::ProviderInstanceName => e.provider_instance_name.clone(),
             UsageQueryGroup::RequestModel => e.request_model.clone(),
+            UsageQueryGroup::Method => e.method.clone(),
             UsageQueryGroup::Capability => e.capability.clone(),
             UsageQueryGroup::CallerAppId => e.caller_app_id.clone().unwrap_or_default(),
+            UsageQueryGroup::UserId => e.user_id.clone(),
             UsageQueryGroup::TenantId => e.tenant_id.clone(),
         })
         .collect()
@@ -899,9 +926,6 @@ fn exact(values: &[String], actual: Option<&str>) -> bool {
 fn fuzzy(query: Option<&str>, actual: Option<&str>) -> bool {
     query.is_none_or(|q| actual.is_some_and(|a| a.to_lowercase().contains(&q.to_lowercase())))
 }
-fn provider_instance(model: &str) -> Option<&str> {
-    model.rsplit_once('@').map(|(_, instance)| instance)
-}
 fn limit(value: Option<u32>) -> usize {
     value
         .map(|v| v as usize)
@@ -979,11 +1003,14 @@ mod tests {
         ProviderCompletion {
             event_id: id.into(),
             tenant_id: "tenant-a".into(),
+            user_id: "user-a".into(),
             caller_app_id: Some("app-a".into()),
             task_id: task.into(),
             idempotency_key: Some(idem.into()),
+            method: ai_methods::CHAT_COMPLETIONS_CREATE.into(),
             capability: "llm".into(),
             request_model: "llm.chat".into(),
+            provider_instance_name: "openai-primary".into(),
             provider_model: "gpt-5:reasoning@openai-primary".into(),
             usage: Some(AiUsage {
                 input_tokens: Some(10),
@@ -1066,7 +1093,11 @@ mod tests {
                 end_time_ms: 20_000,
             },
             filters: UsageQueryFilters::default(),
-            group_by: vec![UsageQueryGroup::ProviderModel],
+            group_by: vec![
+                UsageQueryGroup::ProviderInstanceName,
+                UsageQueryGroup::Method,
+                UsageQueryGroup::UserId,
+            ],
             time_bucket: Some(UsageQueryBucket::Hour),
             output_mode: UsageQueryOutputMode::SummaryAndEvents,
             limit: Some(1),
@@ -1077,12 +1108,59 @@ mod tests {
         assert_eq!(first.total.total_tokens, 30);
         assert_eq!(first.total.finance_amount, Some(0.5));
         assert_eq!(first.grouped.len(), 1);
+        assert_eq!(first.grouped[0].group["user_id"], "user-a");
+        assert_eq!(
+            first.grouped[0].group["method"],
+            ai_methods::CHAT_COMPLETIONS_CREATE
+        );
+        assert_eq!(
+            first.grouped[0].group["provider_instance_name"],
+            "openai-primary"
+        );
         assert_eq!(first.buckets.len(), 1);
         assert_eq!(first.events.len(), 1);
         assert!(first.next_cursor.is_some());
         let mut next = request;
         next.cursor = first.next_cursor;
         assert_eq!(db.query_usage(&next, 20_000).await.unwrap().events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn usage_identity_filters_use_half_open_time_range() {
+        let db = db().await;
+        db.write_provider_completion(completion("start", "task-start", "idem-start", 10_000))
+            .await
+            .unwrap();
+        db.write_provider_completion(completion("end", "task-end", "idem-end", 11_000))
+            .await
+            .unwrap();
+        let request = QueryUsageRequest {
+            time_range: UsageQueryTimeRange::Explicit {
+                start_time_ms: 10_000,
+                end_time_ms: 11_000,
+            },
+            filters: UsageQueryFilters {
+                user_ids: vec!["user-a".into()],
+                methods: vec![ai_methods::CHAT_COMPLETIONS_CREATE.into()],
+                provider_instance_names: vec!["openai-primary".into()],
+                ..UsageQueryFilters::default()
+            },
+            group_by: vec![],
+            time_bucket: None,
+            output_mode: UsageQueryOutputMode::Events,
+            limit: None,
+            cursor: None,
+        };
+        let response = db.query_usage(&request, 12_000).await.unwrap();
+        assert_eq!(response.total.total_requests, 1);
+        assert_eq!(response.events[0].event_id, "start");
+
+        let mut invalid = completion("bad", "task-bad", "idem-bad", 12_000);
+        invalid.method = "provider.list".into();
+        assert!(matches!(
+            db.write_provider_completion(invalid).await,
+            Err(StorageError::InvalidRecord(_))
+        ));
     }
 
     #[tokio::test]
