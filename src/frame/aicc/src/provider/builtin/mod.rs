@@ -79,6 +79,7 @@ mod wp08d_tests {
             },
             provider_rules_id: Some(profile.to_owned()),
             region: None,
+            workspace: None,
             account: None,
         }
     }

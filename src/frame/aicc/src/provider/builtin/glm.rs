@@ -255,6 +255,7 @@ mod tests {
             },
             provider_rules_id: Some(GLM_PROVIDER_PROFILE_ID.to_owned()),
             region: Some("global".to_owned()),
+            workspace: None,
             account: None,
         };
         let credential = ResolvedCredential::bearer("secret://glm", "secret").unwrap();

@@ -166,6 +166,7 @@ mod tests {
             },
             provider_rules_id: Some(FAL_PROVIDER_PROFILE_ID.to_owned()),
             region: None,
+            workspace: None,
             account: None,
         }
     }

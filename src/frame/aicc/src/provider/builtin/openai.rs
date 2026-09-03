@@ -374,6 +374,7 @@ mod tests {
             },
             provider_rules_id: Some(OPENAI_PROVIDER_PROFILE_ID.to_owned()),
             region: None,
+            workspace: None,
             account: None,
         }
     }

@@ -417,6 +417,7 @@ pub(crate) struct ProviderInstanceConfig {
     pub credential: CredentialReference,
     pub provider_rules_id: Option<String>,
     pub region: Option<String>,
+    pub workspace: Option<String>,
     pub account: Option<String>,
 }
 
@@ -1553,6 +1554,7 @@ impl ProviderRuntimeManager {
             credential: credential_reference,
             provider_rules_id: draft.provider_rules_id.clone(),
             region: connection.region.clone(),
+            workspace: connection.workspace.clone(),
             account: connection.account.clone(),
         };
         instance.validate().map_err(|error| {
@@ -2368,6 +2370,25 @@ mod tests {
         }
     }
 
+    struct WorkspaceRecordingDiscovery {
+        snapshot: ProviderDiscoverySnapshot,
+        workspaces: Mutex<Vec<Option<String>>>,
+    }
+
+    #[async_trait]
+    impl ProviderDiscovery for WorkspaceRecordingDiscovery {
+        async fn discover(
+            &self,
+            context: &DiscoveryContext<'_>,
+        ) -> ProviderResult<ProviderDiscoverySnapshot> {
+            self.workspaces
+                .lock()
+                .await
+                .push(context.instance.workspace.clone());
+            Ok(self.snapshot.clone())
+        }
+    }
+
     struct BlockingDiscovery {
         snapshot: ProviderDiscoverySnapshot,
         calls: AtomicUsize,
@@ -2420,6 +2441,7 @@ mod tests {
             },
             provider_rules_id: None,
             region: None,
+            workspace: None,
             account: None,
         }
     }
@@ -2709,7 +2731,10 @@ mod tests {
     #[tokio::test]
     async fn draft_validation_negotiates_without_runtime_or_storage_side_effects() {
         let store = Arc::new(MemoryStore::default());
-        let discovery = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+        let discovery = Arc::new(WorkspaceRecordingDiscovery {
+            snapshot: discovery("gpt-test"),
+            workspaces: Mutex::new(Vec::new()),
+        });
         let (manager, _) = manager(store.clone(), discovery.clone());
         let draft = draft(ProviderAuthConfig::ApiKey {
             credential_ref: "system-config://secrets/aicc/openai".into(),
@@ -2724,6 +2749,10 @@ mod tests {
         assert_eq!(negotiated.protocol_adapter_id, "openai-responses");
         assert_eq!(negotiated.auth_mode, ProviderAuthMode::ApiKey);
         assert_eq!(
+            negotiated.connection.workspace.as_deref(),
+            Some("workspace-1")
+        );
+        assert_eq!(
             negotiated.connection.base_url,
             "https://workspace-1.example.test/v1/"
         );
@@ -2734,7 +2763,69 @@ mod tests {
         assert!(manager.runtimes.lock().await.is_empty());
         assert!(manager.registry().await.list().is_empty());
         tokio::task::yield_now().await;
-        assert_eq!(discovery.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            discovery.workspaces.lock().await.as_slice(),
+            &[Some("workspace-1".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_survives_inventory_build_and_instance_replace() {
+        let store = Arc::new(MemoryStore::default());
+        let initial_discovery = Arc::new(WorkspaceRecordingDiscovery {
+            snapshot: discovery("gpt-test"),
+            workspaces: Mutex::new(Vec::new()),
+        });
+        let (manager, _) = manager(store, initial_discovery.clone());
+        let mut initial = instance("primary");
+        initial.workspace = Some("workspace-initial".into());
+        manager
+            .start(initial, initial_discovery.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            manager
+                .registry()
+                .await
+                .get("primary")
+                .unwrap()
+                .config
+                .workspace
+                .as_deref(),
+            Some("workspace-initial")
+        );
+
+        let replacement_discovery = Arc::new(WorkspaceRecordingDiscovery {
+            snapshot: discovery("gpt-test"),
+            workspaces: Mutex::new(Vec::new()),
+        });
+        let mut replacement = instance("primary");
+        replacement.workspace = Some("workspace-reloaded".into());
+        manager
+            .replace(replacement, replacement_discovery.clone())
+            .await
+            .unwrap();
+        manager.build_inventory_candidate("primary").await.unwrap();
+
+        assert_eq!(
+            replacement_discovery.workspaces.lock().await.as_slice(),
+            &[
+                Some("workspace-reloaded".into()),
+                Some("workspace-reloaded".into())
+            ]
+        );
+        assert_eq!(
+            manager
+                .registry()
+                .await
+                .get("primary")
+                .unwrap()
+                .config
+                .workspace
+                .as_deref(),
+            Some("workspace-reloaded")
+        );
+        manager.shutdown().await;
     }
 
     #[tokio::test]

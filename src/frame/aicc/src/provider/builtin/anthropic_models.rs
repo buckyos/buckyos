@@ -343,6 +343,7 @@ mod tests {
             },
             provider_rules_id: Some("claude".to_owned()),
             region: None,
+            workspace: None,
             account: None,
         }
     }

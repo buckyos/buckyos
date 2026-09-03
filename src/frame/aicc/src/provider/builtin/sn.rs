@@ -126,6 +126,7 @@ pub(crate) fn resolve_sn_provider_instance(
             credential,
             provider_rules_id,
             region: connection.region,
+            workspace: connection.workspace,
             account: connection.account,
         },
         auth: input.auth,

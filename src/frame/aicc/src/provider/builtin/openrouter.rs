@@ -454,6 +454,7 @@ mod tests {
             },
             provider_rules_id: Some(OPENROUTER_PROVIDER_PROFILE_ID.to_owned()),
             region: None,
+            workspace: None,
             account: None,
         };
         let credential = ResolvedCredential::bearer("secret://openrouter", "secret").unwrap();

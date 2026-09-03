@@ -686,6 +686,7 @@ mod tests {
             },
             provider_rules_id: Some(DEEPSEEK_PROFILE_ID.to_owned()),
             region: None,
+            workspace: None,
             account: None,
         };
         let credential =
@@ -743,6 +744,7 @@ mod tests {
                 },
                 provider_rules_id: Some(profile_id.clone()),
                 region: None,
+                workspace: (profile_id == QWEN_PROFILE_ID).then(|| "workspace1".to_owned()),
                 account: None,
             };
             let inventory = InventoryBuilder::build(

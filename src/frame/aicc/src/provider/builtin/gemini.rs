@@ -455,6 +455,7 @@ mod tests {
             },
             provider_rules_id: Some(GEMINI_PROVIDER_PROFILE_ID.to_owned()),
             region: None,
+            workspace: None,
             account: None,
         }
     }
