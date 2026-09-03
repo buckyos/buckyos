@@ -352,7 +352,7 @@ Owner：七个可并行 Provider 小组
 | 子组 | Provider | 基础依赖 |
 |---|---|---|
 | WP-08A（已完成） | OpenAI | OpenAI Responses |
-| WP-08B | Claude、MiniMax | Claude Messages |
+| WP-08B（已完成） | Claude、MiniMax | Claude Messages |
 | WP-08C（已完成） | Gemini | Gemini Interactions |
 | WP-08D（已完成） | OpenRouter、Kimi、GLM | OpenAI Chat Completions |
 | WP-08E（已完成） | DeepSeek、豆包、Qwen | OpenAI Responses |
@@ -373,6 +373,8 @@ Owner：七个可并行 Provider 小组
 - [ ] 删除该 Provider 后，基础 codec 不需要修改。
 
 WP-08A 实现记录：OpenAI builtin 装配已落在 `src/frame/aicc/src/provider/builtin/openai.rs`，提供稳定 `openai` Profile、显示信息、默认 `https://api.openai.com/v1`、Bearer credential schema，并明确 region/workspace/account 不支持；通过官方 `/v1/models` 机器接口构建动态 discovery snapshot，保留 ETag revision、健康状态和有界错误处理。内置 Provider Rules 固定 `metadata_drivers: ["openai"]`，将 LLM、embedding、image、audio 和 video API type 显式绑定到 WP-06A 的 `openai-responses` 及专用 operation。OpenAI 没有额外 wire 差异，因此直接复用基础 Adapter，不创建空 dialect，也未修改基础 codec。4 个 builtin 单元测试随 AICC 全量 162 个测试通过，library check、格式与 diff 检查通过；stable clippy 在豁免 Resource 模块既有 `manual_is_multiple_of` lint 后通过，未新增依赖。
+
+WP-08B 实现记录：Claude 与 MiniMax builtin 装配分别落在 `src/frame/aicc/src/provider/builtin/claude.rs` 和 `src/frame/aicc/src/provider/builtin/minimax.rs`，提供稳定 Profile/显示信息、`x-api-key` named-header credential、region/workspace/account schema，以及 Claude 官方地址和 MiniMax global/china 地址解析。两者复用 `anthropic_models.rs` 的分页 Models API discovery，动态库存仅声明 `llm / messages.create`；Provider Rules 分别绑定 `claude`、`minimax` metadata driver 和 WP-06B 的 Messages operation。Claude 直接注册未修改的 `claude-messages` 基础 codec；MiniMax 的 `minimax-messages` 显式声明 `base_adapter_id: claude-messages`、覆盖点和不支持参数，只处理 MiniMax 已确认的参数范围、`base_resp` 错误及 ProviderState namespace，request/response/SSE 其余语义继续委托基础 codec。10 个 WP-08B 定向测试和 31 个 builtin 测试通过；基于当前已提交依赖、只叠加 WP-08B 的隔离基线中，AICC 全量 185 个测试、all-target check 和 stable clippy `--no-deps -D warnings`（豁免 Resource 模块既有新版本 lint）均通过。WP-08D/WP-08F 更新后，共享工作树 AICC 全量 236 个测试及 all-target check 通过；共享严格 clippy 仅被 WP-08E 的既有 `redundant_closure` 告警阻断。格式与 diff 检查通过，未新增依赖，删除 Claude/MiniMax builtin 与 MiniMax dialect 不要求修改基础 codec。
 
 WP-08C 实现记录：Gemini builtin 装配已落在 `src/frame/aicc/src/provider/builtin/gemini.rs`，提供稳定 `gemini` Profile、`Google Gemini` 显示信息、默认 `https://generativelanguage.googleapis.com/v1beta`、`x-goog-api-key` named-header credential schema，并通过 WP-07 的统一 connection contract 明确 region/workspace/account 均不支持。Gemini discovery 使用官方分页 `/v1beta/models` 机器接口，校验模型资源名、合并重复模型的公开 generation methods、拒绝重复 page token，以稳定 hash 生成 inventory revision，并把官方方法映射到 `interactions.create`、`models.embedContent` 和 `models.predictLongRunning`；动态 discovery 不声明价格或扩张 Model Driver 能力。Provider Rules 固定 `metadata_drivers: ["gemini"]`，把首版 LLM、vision、embedding、image、audio 和 video API type 显式绑定到 WP-06C operation。Gemini 无额外渠道级 wire 差异，因此直接复用 `gemini-interactions` 基础 Adapter，未创建空 dialect，也未修改基础 codec。5 个 WP-08C 定向测试和 AICC 全量 234 个测试、all-target check、格式与 diff 检查通过；stable clippy 在豁免 WP-08E 的 `redundant_closure` 和 Resource 模块既有 `manual_is_multiple_of` lint 后以 `-D warnings` 通过，未新增依赖。真实 Gemini API 与 T1/T1.5/T2 验收按 WP-18 集成阶段执行。
 
