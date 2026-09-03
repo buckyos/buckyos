@@ -383,7 +383,7 @@ WP-08C 实现记录：Gemini builtin 装配已落在 `src/frame/aicc/src/provide
 
 WP-08D 实现记录：OpenRouter、Kimi 和 GLM builtin 装配分别落在 `src/frame/aicc/src/provider/builtin/openrouter.rs`、`kimi.rs` 和 `glm.rs`，提供稳定 Profile/显示信息、Bearer credential、统一 region/workspace/account schema、默认 base URL、LLM operation 绑定和 Provider Rules。OpenRouter 与 Kimi 使用官方 Models API discovery，保留 ETag/稳定 revision、公开能力和 OpenRouter 动态价格；OpenRouter Rules 通过 WP-07 的 origin mapping 将 `vendor/model` 显式归属到 Model Driver，即使跨 driver 存在同名模型也不猜测。GLM 提供 global/china 地址解析、Bearer/可选 GLM JWT schema 和显式 catalog-only inventory。`src/frame/aicc/src/protocol/chat_completions_dialects.rs` 注册三个窄 dialect，均声明 `base_adapter_id: openai-chat-completions`、请求/响应覆盖点和不支持项，只处理三家已确认的 routing、thinking/reasoning、cache、partial、tool stream 与 ProviderState 差异；基础请求、响应、SSE 和错误继续委托 WP-06D codec，基础 codec 未加入 Provider 分支。13 个 WP-08D 定向测试随 AICC 全量 236 个测试通过，`cargo check -p aicc --all-targets`、格式与 diff 检查通过；stable clippy 在豁免 WP-08E 的 `redundant_closure` 和 Resource 模块既有 `manual_is_multiple_of` 后以 `-D warnings` 通过，未新增依赖。完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。
 
-WP-08E 实现记录：DeepSeek、豆包和 Qwen builtin 装配已落在 `src/frame/aicc/src/provider/builtin/deepseek_doubao_qwen.rs`，Rust 仅保留稳定 Profile ID、DeepSeek Models API discovery、catalog-only discovery、连接模板执行和不可声明化的 Responses wire 差异。显示名称、默认 `base_url`、Adapter、Bearer credential 与 region/workspace/account 声明由 `driver_metadata/known-providers/{deepseek,doubao,qwen}.known-provider.json` 分厂商提供；operation、Model Driver 限定、请求参数收窄与 reasoning variant 由 `driver_metadata/providers/{deepseek,doubao,qwen}.provider.json` 分厂商提供；三家均为模型原厂，其已确认的模型 ID/系列、能力与 token 限制由 `driver_metadata/models/{deepseek,doubao,qwen}.model.json` 分厂商提供，未知模型保持 conservative fallback。配置事实依据为 DeepSeek 官方 [Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)、[Responses API](https://api-docs.deepseek.com/api/create-response/) 与 [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)，火山方舟官方 [Responses API](https://www.volcengine.com/docs/82379/1795150) 与 [豆包模型产品页](https://www.volcengine.com/product/doubao/)，以及阿里云百炼官方 [Qwen Responses API](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses) 与 [文本生成模型列表](https://help.aliyun.com/zh/model-studio/text-generation-model)。动态分时价格及无法由当前 schema 按 region 安全表达的 variant 没有写入配置。`src/frame/aicc/src/protocol/derived_responses.rs` 不再保存 Provider 参数黑名单，只保留 Qwen session-cache header 与三家 ProviderState namespace 的最小 wire 行为，其余 request/response/SSE/error 继续委托 WP-06A 基础 codec。九份 builtin catalog 已通过同一个 `CatalogSnapshot` 校验并构建真实 inventory，WP-08E 9 个定向测试及 AICC 全量 240 个测试通过，`cargo check -p aicc --all-targets`、Rust 文件格式和 diff 检查通过，未新增依赖；NDN 云更新、override 优先级和 RuntimeSnapshot 原子发布仍由 Pending 的 WP-15 负责，豆包/Qwen 原生媒体 operation 按本文建议批次 4 另行实施。
+WP-08E 实现记录：DeepSeek、豆包和 Qwen 作为 OpenAI Responses 兼容 Provider，builtin 装配已落在 `src/frame/aicc/src/provider/builtin/openai_responses_compatible.rs`；该模块按协议兼容关系组织，可继续接入满足相同契约的 Provider。Rust 仅保留稳定 Profile ID、DeepSeek Models API discovery、catalog-only discovery、连接模板执行和不可声明化的 Responses wire 差异。显示名称、默认 `base_url`、Adapter、Bearer credential 与 region/workspace/account 声明由 `driver_metadata/known-providers/{deepseek,doubao,qwen}.known-provider.json` 分厂商提供；operation、Model Driver 限定、请求参数收窄与 reasoning variant 由 `driver_metadata/providers/{deepseek,doubao,qwen}.provider.json` 分厂商提供；三家均为模型原厂，其已确认的模型 ID/系列、能力与 token 限制由 `driver_metadata/models/{deepseek,doubao,qwen}.model.json` 分厂商提供，未知模型保持 conservative fallback。配置事实依据为 DeepSeek 官方 [Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)、[Responses API](https://api-docs.deepseek.com/api/create-response/) 与 [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)，火山方舟官方 [Responses API](https://www.volcengine.com/docs/82379/1795150) 与 [豆包模型产品页](https://www.volcengine.com/product/doubao/)，以及阿里云百炼官方 [Qwen Responses API](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses) 与 [文本生成模型列表](https://help.aliyun.com/zh/model-studio/text-generation-model)。动态分时价格及无法由当前 schema 按 region 安全表达的 variant 没有写入配置。`src/frame/aicc/src/protocol/derived_responses.rs` 不再保存 Provider 参数黑名单，只保留 Qwen session-cache header 与三家 ProviderState namespace 的最小 wire 行为，其余 request/response/SSE/error 继续委托 WP-06A 基础 codec。九份 builtin catalog 已通过同一个 `CatalogSnapshot` 校验并构建真实 inventory，WP-08E 9 个定向测试及 AICC 全量 240 个测试通过，`cargo check -p aicc --all-targets`、Rust 文件格式和 diff 检查通过，未新增依赖；NDN 云更新、override 优先级和 RuntimeSnapshot 原子发布仍由 Pending 的 WP-15 负责，豆包/Qwen 原生媒体 operation 按本文建议批次 4 另行实施。
 
 WP-08F 实现记录（已完成）：fal builtin 装配已落在 `src/frame/aicc/src/provider/builtin/fal.rs`，提供稳定 `fal` Profile、显示信息、默认 `https://queue.fal.run`、`Authorization: Key` credential schema，并明确 region/workspace/account 不支持；使用 catalog-only inventory 提供首版图像放大、背景移除、音频增强和视频放大 endpoint fixture。`src/frame/aicc/src/protocol/fal_queue.rs` 实现独立 `fal-queue / queue.submit` native-task Adapter，覆盖媒体 typed request lowering、submit/status/result/cancel、Submitted/Queued/Running/Succeeded/Failed/Cancelled 映射、官方错误、路径校验、资源归一化及 artifact 输出，复用 WP-05 polling/deadline/backoff/cancel contract，不引入基础 codec 或 Provider 名分支。Provider Rules 将 14 个 image/audio/video API type 显式绑定到 Queue operation；未新增依赖。fal 定向测试 19/19、AICC 全量测试 229/229、all-target check 和格式检查通过；排除 WP-08E `redundant_closure` 与 resource 模块既有 `manual_is_multiple_of` lint 后，clippy `-D warnings` 通过。
 
@@ -528,21 +528,23 @@ Owner：Runtime/Consistency 小组
 
 依赖：WP-03、WP-07、WP-14
 
-- [ ] 实现不可变 RuntimeSnapshot；
-- [ ] 实现 `system-config > local > cloud > builtin` 的逐 `(catalog_kind, catalog_id)` 整文件选择，不跨来源 merge；
-- [ ] add/reload/metadata refresh 在不可见候选区完成；
-- [ ] 校验成功后一次性替换完整 `Arc<RuntimeSnapshot>`；
-- [ ] 请求只捕获一次 snapshot；
-- [ ] 只解析统一 `providers[]` settings；
-- [ ] 实现 target/applied/updating seq；
-- [ ] 推理前和任一 Provider refresh 触发同一个全局收敛；
-- [ ] 并发收敛合并为单执行者；
-- [ ] 单 Provider 失败保留旧 inventory 和旧 applied seq；
-- [ ] 刷新过程中目标推进时只提交本轮捕获序列；
-- [ ] 列表未变且 seq 相同只做 probe，不重写 inventory；
-- [ ] reload/delete/disable/replace/exit 无孤儿任务和迟到写。
+- [x] 实现不可变 RuntimeSnapshot；
+- [x] 实现 `system-config > local > cloud > builtin` 的逐 `(catalog_kind, catalog_id)` 整文件选择，不跨来源 merge；
+- [x] add/reload/metadata refresh 在不可见候选区完成；
+- [x] 校验成功后一次性替换完整 `Arc<RuntimeSnapshot>`；
+- [x] 请求只捕获一次 snapshot；
+- [x] 只解析统一 `providers[]` settings；
+- [x] 实现 target/applied/updating seq；
+- [x] 推理前和任一 Provider refresh 触发同一个全局收敛；
+- [x] 并发收敛合并为单执行者；
+- [x] 单 Provider 失败保留旧 inventory 和旧 applied seq；
+- [x] 刷新过程中目标推进时只提交本轮捕获序列；
+- [x] 列表未变且 seq 相同只做 probe，不重写 inventory；
+- [x] reload/delete/disable/replace/exit 无孤儿任务和迟到写。
 
 完成标准：并发请求只能观察到完整旧代或完整新代，不能看到半加入 Provider 或混合 catalog revision。
+
+实现记录：`src/frame/aicc/src/runtime/mod.rs` 已实现不可变快照、原子换代、请求级快照捕获、统一单执行者收敛、序列状态和 Provider 生命周期清理；`src/frame/aicc/src/settings/mod.rs` 已实现统一 `providers[]` settings 解析及按 `(catalog_kind, catalog_id)` 的来源优先级整文件选择。AICC 的 273 个单元测试、全目标检查、稳定版 rustfmt 和 clippy 均通过；完整构建仍需补齐 SDK 工具链相关环境变量。
 
 ### WP-16：Service 与管理 API
 
