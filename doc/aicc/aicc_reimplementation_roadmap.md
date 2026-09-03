@@ -355,7 +355,7 @@ Owner：七个可并行 Provider 小组
 | WP-08D | OpenRouter、Kimi、GLM | OpenAI Chat Completions |
 | WP-08E | DeepSeek、豆包、Qwen | OpenAI Responses |
 | WP-08F | fal | task polling + fal Queue |
-| WP-08G | SN | OpenAI Responses + dynamic credential |
+| WP-08G（已完成） | SN | OpenAI Responses + dynamic credential |
 
 每个子组：
 
@@ -373,6 +373,8 @@ Owner：七个可并行 Provider 小组
 WP-08A 实现记录：OpenAI builtin 装配已落在 `src/frame/aicc/src/provider/builtin/openai.rs`，提供稳定 `openai` Profile、显示信息、默认 `https://api.openai.com/v1`、Bearer credential schema，并明确 region/workspace/account 不支持；通过官方 `/v1/models` 机器接口构建动态 discovery snapshot，保留 ETag revision、健康状态和有界错误处理。内置 Provider Rules 固定 `metadata_drivers: ["openai"]`，将 LLM、embedding、image、audio 和 video API type 显式绑定到 WP-06A 的 `openai-responses` 及专用 operation。OpenAI 没有额外 wire 差异，因此直接复用基础 Adapter，不创建空 dialect，也未修改基础 codec。4 个 builtin 单元测试随 AICC 全量 162 个测试通过，library check、格式与 diff 检查通过；stable clippy 在豁免 Resource 模块既有 `manual_is_multiple_of` lint 后通过，未新增依赖。
 
 WP-08F 实现记录（待验证）：fal builtin 装配已落在 `src/frame/aicc/src/provider/builtin/fal.rs`，提供稳定 `fal` Profile、显示信息、默认 `https://queue.fal.run`、`Authorization: Key` credential schema，并明确 region/workspace/account 不支持；使用 catalog-only inventory 提供首版图像放大、背景移除、音频增强和视频放大 endpoint fixture。`src/frame/aicc/src/protocol/fal_queue.rs` 实现独立 `fal-queue / queue.submit` native-task Adapter，覆盖媒体 typed request lowering、submit/status/result/cancel、Submitted/Queued/Running/Succeeded/Failed/Cancelled 映射、官方错误、路径校验、资源归一化及 artifact 输出，复用 WP-05 polling/deadline/backoff/cancel contract，不引入基础 codec 或 Provider 名分支。Provider Rules 将 14 个 image/audio/video API type 显式绑定到 Queue operation；未新增依赖。当前定向测试、AICC 全量测试和 all-target check 等待同工作区 WP-08B/WP-08E 恢复共享 crate 编译后执行。
+
+WP-08G 实现记录：SN 扩展 Provider 装配已落在 `src/frame/aicc/src/provider/builtin/sn.rs`，提供稳定 `sn` Profile、`SN AI Provider` 显示信息、默认 `https://sn.buckyos.ai/api/v1/ai`、region/workspace/account schema、互斥的 `api_key`/`dynamic_login` credential schema，以及绑定 `openai` Model Driver 和 `responses.create` 的 Provider Rules。SN discovery 使用带 Bearer credential 的 `/models` 机器接口，仅把真实返回的模型作为 LLM inventory。`sn-openai` 声明 `base_adapter_id: openai-responses`，仅覆盖 credential resolution 并通过 WP-05 派生注册直接委托基础 Responses codec；动态登录复用 BuckyOS device-token 登录 API，按 TTL 在内存缓存 token，同实例并发刷新合并，替换/删除时可失效，认证错误及 Debug 输出不暴露 token。7 个 SN 正常、边界、错误、并发、inventory 和基础 codec 隔离测试通过，`cargo check -p aicc --all-targets` 通过，未新增依赖；AICC 全量 218 个测试中 216 个通过，剩余 2 个失败来自并行 WP-08B/WP-08F，严格 clippy 也仅剩对应并行文件的 3 项告警。
 
 建议批次：
 
