@@ -276,6 +276,8 @@ Owner：Protocol Infra 小组
 
 Native-task submit 后续补充为必须携带并校验 canonical `CodecInput`，从而让 codec 类型安全读取 typed request 业务字段；status/result/cancel 仍仅依赖 remote task ID、resolved parameters 和调用上下文。同一 `models.predictLongRunning` operation 下四种 video ApiType 的合法提交、缺失 canonical input 和 ApiType/request 错配均有测试覆盖。
 
+派生 Adapter 后续补充 `CodecRegistry::register_derived` 委托机制：派生层只注册真实 override，未覆盖且 descriptor/binding 完全一致的 buffered、streaming 和 native-task codec 从已注册 `base_adapter_id` 继承；不兼容声明必须显式提供 codec，注册失败保持事务性且不影响基础 Adapter。`sn-openai -> openai-responses` 的 encode、buffered decode、streaming decode 委托和不兼容声明拒绝已有单测，当前基线隔离运行 83 个 protocol 测试及 AICC `clippy --no-deps -D warnings` 通过。
+
 ### WP-06：基础 Protocol Codec
 
 Owner：四个并行协议小组
@@ -369,6 +371,8 @@ Owner：七个可并行 Provider 小组
 - [ ] 删除该 Provider 后，基础 codec 不需要修改。
 
 WP-08A 实现记录：OpenAI builtin 装配已落在 `src/frame/aicc/src/provider/builtin/openai.rs`，提供稳定 `openai` Profile、显示信息、默认 `https://api.openai.com/v1`、Bearer credential schema，并明确 region/workspace/account 不支持；通过官方 `/v1/models` 机器接口构建动态 discovery snapshot，保留 ETag revision、健康状态和有界错误处理。内置 Provider Rules 固定 `metadata_drivers: ["openai"]`，将 LLM、embedding、image、audio 和 video API type 显式绑定到 WP-06A 的 `openai-responses` 及专用 operation。OpenAI 没有额外 wire 差异，因此直接复用基础 Adapter，不创建空 dialect，也未修改基础 codec。4 个 builtin 单元测试随 AICC 全量 162 个测试通过，library check、格式与 diff 检查通过；stable clippy 在豁免 Resource 模块既有 `manual_is_multiple_of` lint 后通过，未新增依赖。
+
+WP-08F 实现记录（待验证）：fal builtin 装配已落在 `src/frame/aicc/src/provider/builtin/fal.rs`，提供稳定 `fal` Profile、显示信息、默认 `https://queue.fal.run`、`Authorization: Key` credential schema，并明确 region/workspace/account 不支持；使用 catalog-only inventory 提供首版图像放大、背景移除、音频增强和视频放大 endpoint fixture。`src/frame/aicc/src/protocol/fal_queue.rs` 实现独立 `fal-queue / queue.submit` native-task Adapter，覆盖媒体 typed request lowering、submit/status/result/cancel、Submitted/Queued/Running/Succeeded/Failed/Cancelled 映射、官方错误、路径校验、资源归一化及 artifact 输出，复用 WP-05 polling/deadline/backoff/cancel contract，不引入基础 codec 或 Provider 名分支。Provider Rules 将 14 个 image/audio/video API type 显式绑定到 Queue operation；未新增依赖。当前定向测试、AICC 全量测试和 all-target check 等待同工作区 WP-08B/WP-08E 恢复共享 crate 编译后执行。
 
 建议批次：
 

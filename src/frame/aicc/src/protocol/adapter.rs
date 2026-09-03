@@ -502,8 +502,28 @@ impl CodecRegistry {
         for operation in descriptor.operations.values() {
             for binding in &operation.bindings {
                 let key = (operation.operation_id.clone(), binding.api_type);
-                let operation_codec = operation_codecs.remove(&key);
-                let native_task_codec = native_task_codecs.remove(&key);
+                let inherited = descriptor
+                    .base_adapter_id
+                    .as_ref()
+                    .and_then(|base_adapter_id| {
+                        self.operations.get(&(
+                            base_adapter_id.clone(),
+                            operation.operation_id.clone(),
+                            binding.api_type,
+                        ))
+                    });
+                let compatible_inherited = inherited.filter(|registered| {
+                    registered.descriptor == *operation && registered.binding == *binding
+                });
+                let operation_codec = operation_codecs.remove(&key).or_else(|| {
+                    compatible_inherited
+                        .and_then(|registered| registered.codec.as_ref().map(Arc::clone))
+                });
+                let native_task_codec = native_task_codecs.remove(&key).or_else(|| {
+                    compatible_inherited.and_then(|registered| {
+                        registered.native_task_codec.as_ref().map(Arc::clone)
+                    })
+                });
                 let needs_operation_codec = binding
                     .execution_modes
                     .iter()
@@ -552,6 +572,19 @@ impl CodecRegistry {
         self.adapters
             .insert(descriptor.protocol_adapter_id.clone(), descriptor);
         Ok(())
+    }
+
+    pub(crate) fn register_derived(
+        &mut self,
+        descriptor: AdapterDescriptor,
+        overrides: CodecRegistration,
+    ) -> ProtocolResultValue<()> {
+        if descriptor.base_adapter_id.is_none() {
+            return Err(ProtocolError::invalid_configuration(
+                "derived adapter registration requires a base adapter ID",
+            ));
+        }
+        self.register_codecs(descriptor, overrides)
     }
 
     fn validate_adapter_identity(&self, descriptor: &AdapterDescriptor) -> ProtocolResultValue<()> {
@@ -1123,6 +1156,120 @@ mod tests {
             ],
         );
         assert!(duplicate.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn derived_adapter_delegates_unchanged_bindings_to_registered_base() {
+        let operation = operation(
+            "responses.create",
+            vec![OperationBinding::new(
+                ApiType::Llm,
+                [ExecutionMode::Immediate, ExecutionMode::Stream],
+            )],
+        );
+        let mut registry = CodecRegistry::default();
+        registry
+            .register(
+                adapter("openai-responses", operation.clone()),
+                vec![Arc::new(FakeCodec {
+                    descriptor: operation.clone(),
+                    api_type: ApiType::Llm,
+                })],
+            )
+            .unwrap();
+        let base_codec = registry
+            .codec("openai-responses", "responses.create", ApiType::Llm)
+            .unwrap();
+
+        let mut derived = adapter("sn-openai", operation);
+        derived.base_adapter_id = Some("openai-responses".to_string());
+        registry
+            .register_derived(derived, CodecRegistration::default())
+            .unwrap();
+        let delegated = registry
+            .codec("sn-openai", "responses.create", ApiType::Llm)
+            .unwrap();
+        assert!(Arc::ptr_eq(&base_codec, &delegated));
+
+        let input = CodecInput {
+            canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest::new(
+                "model@instance",
+                Vec::new(),
+            )),
+            resolved_parameters: BTreeMap::new(),
+        };
+        assert!(registry
+            .encode(
+                "sn-openai",
+                "responses.create",
+                ApiType::Llm,
+                &input,
+                &context("https://sn.example", "secret"),
+            )
+            .is_ok());
+        assert!(matches!(
+            registry
+                .decode(
+                    "sn-openai",
+                    "responses.create",
+                    ApiType::Llm,
+                    response(json!({"ok":true})),
+                )
+                .await
+                .unwrap(),
+            ProtocolExecution::Immediate(_)
+        ));
+
+        let wire = StreamingHttpResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Box::pin(stream::iter(vec![Ok(Bytes::from_static(
+                b"data: delegated\n\ndata: [DONE]\n\n",
+            ))])),
+            request_id: "req-derived".to_string(),
+            retry_after: None,
+        };
+        let mut stream = registry
+            .decode_stream("sn-openai", "responses.create", ApiType::Llm, wire)
+            .await
+            .unwrap();
+        assert_eq!(
+            stream.events.next().await.unwrap().unwrap(),
+            ProtocolEvent::Delta(json!({"data":"delegated"}))
+        );
+    }
+
+    #[test]
+    fn incompatible_derived_descriptor_requires_override_and_is_transactional() {
+        let operation = operation(
+            "responses.create",
+            vec![OperationBinding::new(
+                ApiType::Llm,
+                [ExecutionMode::Immediate],
+            )],
+        );
+        let mut registry = CodecRegistry::default();
+        registry
+            .register(
+                adapter("openai-responses", operation.clone()),
+                vec![Arc::new(FakeCodec {
+                    descriptor: operation.clone(),
+                    api_type: ApiType::Llm,
+                })],
+            )
+            .unwrap();
+
+        let mut changed_operation = operation;
+        changed_operation.max_response_bytes += 1;
+        let mut derived = adapter("sn-openai", changed_operation);
+        derived.base_adapter_id = Some("openai-responses".to_string());
+        assert!(registry
+            .register_derived(derived, CodecRegistration::default())
+            .is_err());
+        assert!(registry.adapter("sn-openai").is_none());
+        assert!(registry
+            .codec("openai-responses", "responses.create", ApiType::Llm)
+            .is_ok());
     }
 
     #[test]
