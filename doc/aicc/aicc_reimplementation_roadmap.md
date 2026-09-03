@@ -278,6 +278,8 @@ Native-task submit 后续补充为必须携带并校验 canonical `CodecInput`�
 
 派生 Adapter 后续补充 `CodecRegistry::register_derived` 委托机制：派生层只注册真实 override，未覆盖且 descriptor/binding 完全一致的 buffered、streaming 和 native-task codec 从已注册 `base_adapter_id` 继承；不兼容声明必须显式提供 codec，注册失败保持事务性且不影响基础 Adapter。`sn-openai -> openai-responses` 的 encode、buffered decode、streaming decode 委托和不兼容声明拒绝已有单测，当前基线隔离运行 83 个 protocol 测试及 AICC `clippy --no-deps -D warnings` 通过。
 
+管理面后续补充 `CodecRegistry::adapters()` 只读枚举接口，直接按内部 `BTreeMap` 的 `protocol_adapter_id` 升序返回 descriptor 引用，不暴露 codec 或可变引用；空 registry 和逆序注册已有确定顺序测试覆盖。
+
 ### WP-06：基础 Protocol Codec
 
 Owner：四个并行协议小组

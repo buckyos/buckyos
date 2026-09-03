@@ -614,6 +614,12 @@ impl CodecRegistry {
         self.adapters.get(adapter_id)
     }
 
+    pub(crate) fn adapters(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = &AdapterDescriptor> + ExactSizeIterator {
+        self.adapters.values()
+    }
+
     fn registered(
         &self,
         adapter_id: &str,
@@ -1156,6 +1162,39 @@ mod tests {
             ],
         );
         assert!(duplicate.validate().is_err());
+    }
+
+    #[test]
+    fn adapter_enumeration_is_read_only_and_sorted_by_id() {
+        let mut registry = CodecRegistry::default();
+        for adapter_id in ["zeta", "alpha", "middle"] {
+            let descriptor = operation(
+                "responses.create",
+                vec![OperationBinding::new(
+                    ApiType::Llm,
+                    [ExecutionMode::Immediate],
+                )],
+            );
+            registry
+                .register(
+                    adapter(adapter_id, descriptor.clone()),
+                    vec![Arc::new(FakeCodec {
+                        descriptor,
+                        api_type: ApiType::Llm,
+                    })],
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            registry
+                .adapters()
+                .map(|descriptor| descriptor.protocol_adapter_id.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "middle", "zeta"]
+        );
+        assert_eq!(registry.adapters().len(), 3);
+        assert_eq!(CodecRegistry::default().adapters().len(), 0);
     }
 
     #[tokio::test]
