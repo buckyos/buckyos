@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::aicc_client::{AiUsage, RouteTrace};
+use crate::aicc_client::{ai_methods, AiUsage, RouteTrace};
 use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 
 /// Logical name of the aicc usage-log rdb instance. The scheduler writes this
@@ -27,7 +27,7 @@ use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 pub const AICC_USAGE_LOG_RDB_INSTANCE_ID: &str = "aicc-usage-log";
 
 /// Version of the usage-log schema. Bump whenever the DDL changes.
-pub const AICC_USAGE_LOG_RDB_SCHEMA_VERSION: u64 = 4;
+pub const AICC_USAGE_LOG_RDB_SCHEMA_VERSION: u64 = 5;
 
 /// Sqlite DDL for the usage-log database. The only required table in v1 is
 /// `aicc_usage_event`; summary tables can be added later when SQL aggregation
@@ -36,11 +36,14 @@ pub const AICC_USAGE_LOG_RDB_SCHEMA_SQLITE: &str = r#"
 CREATE TABLE IF NOT EXISTS aicc_usage_event (
     event_id              TEXT PRIMARY KEY,
     tenant_id             TEXT NOT NULL,
+    user_id               TEXT NOT NULL,
     caller_app_id         TEXT,
     task_id               TEXT NOT NULL,
     idempotency_key       TEXT,
+    method                TEXT NOT NULL,
     capability            TEXT NOT NULL,
     request_model         TEXT NOT NULL,
+    provider_instance_name TEXT NOT NULL,
     provider_model        TEXT NOT NULL,
     input_tokens          INTEGER,
     output_tokens         INTEGER,
@@ -54,6 +57,12 @@ CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time
     ON aicc_usage_event(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time
     ON aicc_usage_event(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_user_time
+    ON aicc_usage_event(user_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_method_time
+    ON aicc_usage_event(method, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_provider_instance_time
+    ON aicc_usage_event(provider_instance_name, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_model_time
     ON aicc_usage_event(provider_model, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_request_model_time
@@ -99,11 +108,14 @@ pub const AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES: &str = r#"
 CREATE TABLE IF NOT EXISTS aicc_usage_event (
     event_id              TEXT PRIMARY KEY,
     tenant_id             TEXT NOT NULL,
+    user_id               TEXT NOT NULL,
     caller_app_id         TEXT,
     task_id               TEXT NOT NULL,
     idempotency_key       TEXT,
+    method                TEXT NOT NULL,
     capability            TEXT NOT NULL,
     request_model         TEXT NOT NULL,
+    provider_instance_name TEXT NOT NULL,
     provider_model        TEXT NOT NULL,
     input_tokens          BIGINT,
     output_tokens         BIGINT,
@@ -117,6 +129,12 @@ CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time
     ON aicc_usage_event(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time
     ON aicc_usage_event(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_user_time
+    ON aicc_usage_event(user_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_method_time
+    ON aicc_usage_event(method, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_provider_instance_time
+    ON aicc_usage_event(provider_instance_name, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_model_time
     ON aicc_usage_event(provider_model, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_request_model_time
@@ -193,16 +211,25 @@ pub struct AiccVideoContinuationSource {
 /// non-token providers; future extensions (image count, audio seconds, ...)
 /// should add their own top-level columns as the schema version bumps.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct AiccUsageEvent {
     pub event_id: String,
     pub tenant_id: String,
+    pub user_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_app_id: Option<String>,
     pub task_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
+    /// Canonical typed inference method from [`ai_methods`].
+    #[serde(
+        serialize_with = "serialize_canonical_typed_method",
+        deserialize_with = "deserialize_canonical_typed_method"
+    )]
+    pub method: String,
     pub capability: String,
     pub request_model: String,
+    pub provider_instance_name: String,
     pub provider_model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
@@ -216,6 +243,31 @@ pub struct AiccUsageEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finance_snapshot_json: Option<Value>,
     pub created_at_ms: i64,
+}
+
+fn serialize_canonical_typed_method<S>(method: &String, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if !ai_methods::is_ai_method(method) {
+        return Err(serde::ser::Error::custom(format!(
+            "usage method `{method}` is not a canonical typed method"
+        )));
+    }
+    serializer.serialize_str(method)
+}
+
+fn deserialize_canonical_typed_method<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let method = String::deserialize(deserializer)?;
+    if !ai_methods::is_ai_method(&method) {
+        return Err(serde::de::Error::custom(format!(
+            "usage method `{method}` is not a canonical typed method"
+        )));
+    }
+    Ok(method)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -291,6 +343,7 @@ pub enum UsageQueryTimeRange {
     Last1d,
     Last7d,
     Last30d,
+    /// A half-open time interval: `[start_time_ms, end_time_ms)`.
     Explicit {
         start_time_ms: i64,
         end_time_ms: i64,
@@ -305,6 +358,8 @@ pub struct UsageQueryFilters {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tenant_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub caller_app_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_app_query: Option<String>,
@@ -314,6 +369,7 @@ pub struct UsageQueryFilters {
     pub provider_models: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_model_query: Option<String>,
+    /// Matches the persisted `provider_instance_name` column directly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_instance_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,6 +380,8 @@ pub struct UsageQueryFilters {
     pub task_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub idempotency_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<String>,
 }
 
 /// Group dimensions supported by `query_usage`. Multiple values produce a
@@ -332,9 +390,12 @@ pub struct UsageQueryFilters {
 #[serde(rename_all = "snake_case")]
 pub enum UsageQueryGroup {
     ProviderModel,
+    ProviderInstanceName,
     RequestModel,
+    Method,
     Capability,
     CallerAppId,
+    UserId,
     TenantId,
 }
 
@@ -342,9 +403,12 @@ impl UsageQueryGroup {
     pub fn as_key(self) -> &'static str {
         match self {
             Self::ProviderModel => "provider_model",
+            Self::ProviderInstanceName => "provider_instance_name",
             Self::RequestModel => "request_model",
+            Self::Method => "method",
             Self::Capability => "capability",
             Self::CallerAppId => "caller_app_id",
+            Self::UserId => "user_id",
             Self::TenantId => "tenant_id",
         }
     }
@@ -449,4 +513,155 @@ pub struct QueryUsageResponse {
     pub events: Vec<AiccUsageEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn usage_event() -> AiccUsageEvent {
+        AiccUsageEvent {
+            event_id: "event-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            user_id: "user-1".to_string(),
+            caller_app_id: Some("app-1".to_string()),
+            task_id: "task-1".to_string(),
+            idempotency_key: Some("idem-1".to_string()),
+            method: ai_methods::CHAT_COMPLETIONS_CREATE.to_string(),
+            capability: "chat".to_string(),
+            request_model: "smart".to_string(),
+            provider_instance_name: "openai-main".to_string(),
+            provider_model: "gpt-5.openai-main".to_string(),
+            input_tokens: Some(10),
+            output_tokens: Some(4),
+            total_tokens: Some(14),
+            request_units: None,
+            usage_json: AiUsage {
+                input_tokens: Some(10),
+                output_tokens: Some(4),
+                total_tokens: Some(14),
+                request_units: None,
+            },
+            finance_snapshot_json: None,
+            created_at_ms: 1_750_000_000_000,
+        }
+    }
+
+    #[test]
+    fn usage_event_serde_round_trip_preserves_identity_dimensions() {
+        let event = usage_event();
+        let value = serde_json::to_value(&event).expect("serialize usage event");
+
+        assert_eq!(value["user_id"], "user-1");
+        assert_eq!(value["method"], ai_methods::CHAT_COMPLETIONS_CREATE);
+        assert_eq!(value["provider_instance_name"], "openai-main");
+        assert_eq!(
+            serde_json::from_value::<AiccUsageEvent>(value).expect("deserialize usage event"),
+            event
+        );
+    }
+
+    #[test]
+    fn usage_event_rejects_noncanonical_method_and_unknown_fields() {
+        let mut invalid_method =
+            serde_json::to_value(usage_event()).expect("serialize usage event");
+        invalid_method["method"] = json!("provider.list");
+        assert!(serde_json::from_value::<AiccUsageEvent>(invalid_method).is_err());
+
+        let mut invalid_event = usage_event();
+        invalid_event.method = "provider.list".to_string();
+        assert!(serde_json::to_value(invalid_event).is_err());
+
+        let mut unknown_field = serde_json::to_value(usage_event()).expect("serialize usage event");
+        unknown_field["unexpected"] = json!(true);
+        assert!(serde_json::from_value::<AiccUsageEvent>(unknown_field).is_err());
+    }
+
+    #[test]
+    fn usage_query_filters_round_trip_and_reject_unknown_fields() {
+        let filters = UsageQueryFilters {
+            user_ids: vec!["user-1".to_string()],
+            methods: vec![ai_methods::EMBEDDING_TEXT.to_string()],
+            provider_instance_names: vec!["openai-main".to_string()],
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&filters).expect("serialize usage filters");
+        assert_eq!(
+            serde_json::from_value::<UsageQueryFilters>(value).expect("deserialize usage filters"),
+            filters
+        );
+
+        assert!(serde_json::from_value::<UsageQueryFilters>(json!({
+            "user_ids": ["user-1"],
+            "unknown": true
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn usage_query_group_keys_and_wire_names_are_canonical() {
+        let cases = [
+            (
+                UsageQueryGroup::ProviderInstanceName,
+                "provider_instance_name",
+            ),
+            (UsageQueryGroup::Method, "method"),
+            (UsageQueryGroup::UserId, "user_id"),
+        ];
+
+        for (group, expected) in cases {
+            assert_eq!(group.as_key(), expected);
+            assert_eq!(
+                serde_json::to_value(group).expect("serialize group"),
+                expected
+            );
+            assert_eq!(
+                serde_json::from_value::<UsageQueryGroup>(json!(expected))
+                    .expect("deserialize group"),
+                group
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_time_range_keeps_half_open_bounds_on_wire() {
+        let range = UsageQueryTimeRange::Explicit {
+            start_time_ms: 100,
+            end_time_ms: 200,
+        };
+        assert_eq!(
+            serde_json::to_value(range).expect("serialize time range"),
+            json!({
+                "kind": "explicit",
+                "start_time_ms": 100,
+                "end_time_ms": 200
+            })
+        );
+    }
+
+    #[test]
+    fn usage_schema_v5_contains_identity_columns_and_indexes() {
+        assert_eq!(AICC_USAGE_LOG_RDB_SCHEMA_VERSION, 5);
+        for ddl in [
+            AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
+            AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES,
+        ] {
+            for column in [
+                "user_id               TEXT NOT NULL",
+                "method                TEXT NOT NULL",
+                "provider_instance_name TEXT NOT NULL",
+            ] {
+                assert!(ddl.contains(column), "missing column: {column}");
+            }
+            for index in [
+                "idx_aicc_usage_event_user_time",
+                "idx_aicc_usage_event_method_time",
+                "idx_aicc_usage_event_provider_instance_time",
+            ] {
+                assert!(ddl.contains(index), "missing index: {index}");
+            }
+        }
+    }
 }
