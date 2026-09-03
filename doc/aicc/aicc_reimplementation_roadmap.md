@@ -465,18 +465,20 @@ Owner：Execution 小组
 
 依赖：WP-01、WP-05、WP-11；可先使用 fake Provider
 
-- [ ] 统一 immediate、Provider stream 和 task-backed 外部语义；
-- [ ] Provider streaming 中间态写入 TaskMgr event/task data；
-- [ ] AICC RPC 不新增独立 streaming transport；
-- [ ] 实现启动阶段 failover；
-- [ ] Provider task 提交成功后固定 runtime/Adapter，不跨 Provider 重试；
-- [ ] 映射 Submitted/Queued/Running/Succeeded/Failed/Cancelled；
-- [ ] cancel 返回真实上游取消或本地中止结果；
-- [ ] 实现 idempotency scope、canonical body fingerprint 和 conflict；
-- [ ] 统一 immediate 与 long task 的 usage completion path；
-- [ ] 覆盖重启、并发、迟到 completion 和取消竞态。
+- [x] 统一 immediate、Provider stream 和 task-backed 外部语义；
+- [x] Provider streaming 中间态写入 TaskMgr event/task data；
+- [x] AICC RPC 不新增独立 streaming transport；
+- [x] 实现启动阶段 failover；
+- [x] Provider task 提交成功后固定 runtime/Adapter，不跨 Provider 重试；
+- [x] 映射 Submitted/Queued/Running/Succeeded/Failed/Cancelled；
+- [x] cancel 返回真实上游取消或本地中止结果；
+- [x] 实现 idempotency scope、canonical body fingerprint 和 conflict；
+- [x] 统一 immediate 与 long task 的 usage completion path；
+- [x] 覆盖重启、并发、迟到 completion 和取消竞态。
 
 完成标准：所有执行形态对调用方暴露一致的 task、event、error、usage 和 cancel 语义。
+
+实现记录：Execution 小组在 `src/frame/aicc/src/execution/mod.rs` 实现统一的 `ExecutionEngine`，通过窄端口装配 TaskMgr、Provider runtime、持久执行状态和 usage completion。三种执行形态共享 task、event、error、usage 和终态语义；Provider stream 的 delta/progress 写入 TaskMgr data，原生任务持久固定 runtime generation、Provider、Adapter、operation 和 remote task id，重启后只恢复原 binding。运行时 failover 仅允许发生在 Provider 接受请求前，提交成功或接受后失败均不跨 Provider 重试。幂等按 `tenant_id + method + idempotency_key` 定义至少 24 小时窗口，对去除 key 后的 canonical JSON 计算 SHA-256 fingerprint，并原样重放运行中、成功、失败或取消结果；cancel 仅在真实上游接受或本地执行成功中止并安装 late-final 屏蔽时返回成功。新增 12 个 Execution 定向测试覆盖三种执行形态、完整状态映射、stream progress、并发去重、body conflict、启动期 failover、重启恢复、缺失 usage、租户隔离、Provider 不支持取消和取消/迟到完成竞态；AICC 全量 257 个测试、all-target check、格式和 diff 检查通过。严格 clippy 在排除 WP-08E 既有 `redundant_closure` 后以 `-D warnings` 通过；完整 `buckyos-build.py --skip-web` 因环境缺少四个 `BUCKYOS_SDK_TOOL_*` 不可变输入而未执行。未新增依赖，真实 TaskMgr/storage/runtime 端口装配由 WP-16 完成。
 
 ### WP-13：Resource 与 Artifact
 
@@ -1050,7 +1052,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | WP-09 | TBD | Pending | WP-01/14 | Admission |
 | WP-10 | TBD | Pending | WP-04/09 | Routing |
 | WP-11 | Protocol/Router 联合小组 | Done | WP-03/06/10 | Call Lowering |
-| WP-12 | TBD | Pending | WP-05/11 | Execution |
+| WP-12 | Execution 小组 | Done | WP-01/05/11 | Execution |
 | WP-13 | TBD | Pending | WP-01 | Resource |
 | WP-14 | Storage/Observability 小组 | Done | WP-01 | Storage/Observability |
 | WP-15 | TBD | Pending | WP-03/07/14 | RuntimeSnapshot |
