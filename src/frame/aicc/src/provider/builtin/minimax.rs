@@ -3,36 +3,47 @@ use super::super::{
     ProviderFieldSchema, ProviderProfile, ProviderResult, RefreshPolicy,
 };
 use super::anthropic_models::{AnthropicModelsDiscovery, AnthropicModelsSpec};
-use crate::catalog::{KnownProvider, ProviderPatternRule, ProviderRulesCatalog};
-use crate::matching::MatchRule;
-use crate::protocol::{
-    CredentialKind, HttpTransport, CLAUDE_MESSAGES_OPERATION_ID, MINIMAX_MESSAGES_ADAPTER_ID,
+use crate::catalog::{
+    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ModelDriverCatalog,
+    ProviderRulesCatalog,
 };
-use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
+use crate::protocol::{CredentialKind, HttpTransport};
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
+use std::collections::BTreeMap;
 
 pub(crate) const MINIMAX_PROVIDER_PROFILE_ID: &str = "minimax";
-pub(crate) const MINIMAX_DISPLAY_NAME: &str = "MiniMax";
-pub(crate) const MINIMAX_DEFAULT_BASE_URL: &str = "https://api.minimax.io/anthropic";
-pub(crate) const MINIMAX_CHINA_BASE_URL: &str = "https://api.minimaxi.com/anthropic";
-pub(crate) const MINIMAX_CREDENTIAL_HEADER: &str = "x-api-key";
+
+const MINIMAX_PROVIDER_RULES: &[u8] =
+    include_bytes!("../../../driver_metadata/providers/minimax.provider.json");
+const MINIMAX_KNOWN_PROVIDER: &[u8] =
+    include_bytes!("../../../driver_metadata/known-providers/minimax.known-provider.json");
+const MINIMAX_MODEL_DRIVER: &[u8] =
+    include_bytes!("../../../driver_metadata/models/minimax.model.json");
 
 pub(super) const MINIMAX_SPEC: AnthropicModelsSpec = AnthropicModelsSpec {
-    provider_profile_id: MINIMAX_PROVIDER_PROFILE_ID,
-    protocol_adapter_id: MINIMAX_MESSAGES_ADAPTER_ID,
+    profile: minimax_profile,
     version_header: false,
     connection_contract: minimax_connection_contract,
     label: "MiniMax",
 };
 
 pub(crate) fn minimax_profile() -> ProviderProfile {
+    let known = minimax_known_provider();
+    let credential: CredentialDeclaration = embedded_value(
+        &known,
+        "credential",
+        "MiniMax Known Provider credential declaration",
+    );
+    assert_eq!(credential.kind, "named_header");
+    assert!(credential.required && credential.secret);
     ProviderProfile {
         provider_profile_id: MINIMAX_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: MINIMAX_DISPLAY_NAME.to_owned(),
-        default_protocol_adapter_id: MINIMAX_MESSAGES_ADAPTER_ID.to_owned(),
+        display_name: known.display_name,
+        default_protocol_adapter_id: known.protocol_adapter_id,
         credential: CredentialDescriptor {
             kind: CredentialKind::NamedHeader,
-            header_name: Some(MINIMAX_CREDENTIAL_HEADER.to_owned()),
+            header_name: Some(credential.header_name),
         },
         discovery_mode: DiscoveryMode::MachineApi,
         refresh: RefreshPolicy::default(),
@@ -41,94 +52,107 @@ pub(crate) fn minimax_profile() -> ProviderProfile {
 }
 
 pub(crate) fn minimax_known_provider() -> KnownProvider {
-    KnownProvider {
-        provider_profile_id: MINIMAX_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: MINIMAX_DISPLAY_NAME.to_owned(),
-        base_url: MINIMAX_DEFAULT_BASE_URL.to_owned(),
-        protocol_adapter_id: MINIMAX_MESSAGES_ADAPTER_ID.to_owned(),
-        provider_rules_id: Some(MINIMAX_PROVIDER_PROFILE_ID.to_owned()),
-        ui_hints: BTreeMap::from([
-            (
-                "credential".to_owned(),
-                json!({
-                    "kind": "named_header",
-                    "header_name": MINIMAX_CREDENTIAL_HEADER,
-                    "required": true,
-                    "secret": true
-                }),
-            ),
-            (
-                "instance_fields".to_owned(),
-                json!({
-                    "region": {"default": "global", "values": ["global", "china"]},
-                    "workspace": "unsupported",
-                    "account": "unsupported"
-                }),
-            ),
-            (
-                "region_base_urls".to_owned(),
-                json!({
-                    "global": MINIMAX_DEFAULT_BASE_URL,
-                    "china": MINIMAX_CHINA_BASE_URL
-                }),
-            ),
-        ]),
-    }
+    embedded_json::<KnownProviderCatalog>(MINIMAX_KNOWN_PROVIDER, "MiniMax Known Provider catalog")
+        .providers
+        .into_iter()
+        .find(|provider| provider.provider_profile_id == MINIMAX_PROVIDER_PROFILE_ID)
+        .expect("MiniMax Known Provider catalog must contain the MiniMax profile")
 }
 
 pub(crate) fn minimax_connection_contract() -> ProviderConnectionContract {
+    let known = minimax_known_provider();
+    let fields: InstanceFieldDeclarations = embedded_value(
+        &known,
+        "instance_fields",
+        "MiniMax Known Provider instance fields",
+    );
     ProviderConnectionContract {
-        default_base_url: MINIMAX_DEFAULT_BASE_URL.to_owned(),
-        region: ProviderFieldSchema::optional_with_default("global")
-            .with_allowed_values(["global", "china"]),
-        workspace: ProviderFieldSchema::unsupported(),
-        account: ProviderFieldSchema::unsupported(),
+        default_base_url: known.base_url,
+        region: fields.region,
+        workspace: fields.workspace,
+        account: fields.account,
     }
 }
 
 pub(crate) fn resolve_minimax_connection(
     input: ProviderConnectionInput<'_>,
 ) -> ProviderResult<super::super::ResolvedProviderConnection> {
-    let default_base_url = match input.region.unwrap_or("global") {
-        "global" => MINIMAX_DEFAULT_BASE_URL,
-        "china" => MINIMAX_CHINA_BASE_URL,
-        _ => MINIMAX_DEFAULT_BASE_URL,
-    };
-    minimax_connection_contract().resolve(ProviderConnectionInput {
-        base_url: input.base_url.or(Some(default_base_url)),
+    let known = minimax_known_provider();
+    let region_base_urls: BTreeMap<String, String> = embedded_value(
+        &known,
+        "region_base_urls",
+        "MiniMax Known Provider regional base URLs",
+    );
+    let contract = minimax_connection_contract();
+    contract.resolve(ProviderConnectionInput {
+        base_url: Some(&known.base_url),
+        ..input.clone()
+    })?;
+    let region = input
+        .region
+        .or(contract.region.default_value.as_deref())
+        .expect("MiniMax region must have a configured default");
+    let regional_base_url = region_base_urls
+        .get(region)
+        .expect("every allowed MiniMax region must have a configured base URL");
+    contract.resolve(ProviderConnectionInput {
+        base_url: input.base_url.or(Some(regional_base_url)),
         ..input
     })
 }
 
-pub(crate) fn minimax_provider_rules(revision_seq: u64) -> ProviderRulesCatalog {
-    ProviderRulesCatalog {
-        format: "buckyos.aicc.provider-rules-catalog".to_owned(),
-        schema_version: 1,
-        schema_revision: 0,
-        revision_seq,
-        provider_profile_id: MINIMAX_PROVIDER_PROFILE_ID.to_owned(),
-        metadata_drivers: Some(vec![MINIMAX_PROVIDER_PROFILE_ID.to_owned()]),
-        origin_provider_aliases: BTreeMap::new(),
-        origin_mappings: Vec::new(),
-        models: Vec::new(),
-        patterns: vec![ProviderPatternRule {
-            match_rule: MatchRule::Shorthand("*".to_owned()),
-            exclude: false,
-            operations: BTreeMap::from([(
-                "llm".to_owned(),
-                CLAUDE_MESSAGES_OPERATION_ID.to_owned(),
-            )]),
-            provider_options: BTreeMap::new(),
-            request_rules: Vec::new(),
-            pricing: None,
-            remove_api_types: BTreeSet::new(),
-            remove_features: BTreeSet::new(),
-            estimated_latency_ms: None,
-            latency_class: None,
-            cost_class: None,
-        }],
-        variants: Vec::new(),
-    }
+pub(crate) fn minimax_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
+    embedded_json(MINIMAX_PROVIDER_RULES, "MiniMax Provider Rules catalog")
+}
+
+pub(crate) fn minimax_model_driver() -> ModelDriverCatalog {
+    embedded_json(MINIMAX_MODEL_DRIVER, "MiniMax Model Driver catalog")
+}
+
+pub(crate) fn minimax_catalog_files() -> Vec<CurrentCatalogFile> {
+    [
+        (CatalogKind::KnownProvider, MINIMAX_KNOWN_PROVIDER),
+        (CatalogKind::ProviderRules, MINIMAX_PROVIDER_RULES),
+        (CatalogKind::ModelDriver, MINIMAX_MODEL_DRIVER),
+    ]
+    .into_iter()
+    .map(|(kind, contents)| CurrentCatalogFile {
+        kind,
+        contents: contents.to_vec(),
+    })
+    .collect()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialDeclaration {
+    kind: String,
+    header_name: String,
+    required: bool,
+    secret: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstanceFieldDeclarations {
+    region: ProviderFieldSchema,
+    workspace: ProviderFieldSchema,
+    account: ProviderFieldSchema,
+}
+
+fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
+    serde_json::from_value(
+        known
+            .ui_hints
+            .get(key)
+            .unwrap_or_else(|| panic!("{label} is missing"))
+            .clone(),
+    )
+    .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
+}
+
+fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
+    serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 pub(crate) fn minimax_discovery(transport: HttpTransport) -> AnthropicModelsDiscovery {
@@ -138,27 +162,38 @@ pub(crate) fn minimax_discovery(transport: HttpTransport) -> AnthropicModelsDisc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::CatalogBuildOptions;
     use crate::protocol::{
         minimax_messages_adapter, minimax_messages_dialect_contract, CodecRegistry,
-        CLAUDE_MESSAGES_ADAPTER_ID,
+        CLAUDE_MESSAGES_ADAPTER_ID, CLAUDE_MESSAGES_OPERATION_ID, MINIMAX_MESSAGES_ADAPTER_ID,
     };
+    use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
 
     #[test]
-    fn builtin_identity_regions_rules_and_dialect_are_stable() {
+    fn embedded_catalogs_drive_identity_regions_rules_and_models() {
         let profile = minimax_profile();
         let known = minimax_known_provider();
         let rules = minimax_provider_rules(9);
+        let models = minimax_model_driver();
         let contract = minimax_messages_dialect_contract();
         let (adapter, registration) = minimax_messages_adapter();
 
-        assert_eq!(profile.provider_profile_id, "minimax");
-        assert_eq!(profile.default_protocol_adapter_id, "minimax-messages");
+        assert_eq!(profile.provider_profile_id, MINIMAX_PROVIDER_PROFILE_ID);
+        assert_eq!(
+            profile.default_protocol_adapter_id,
+            MINIMAX_MESSAGES_ADAPTER_ID
+        );
         assert_eq!(profile.credential.kind, CredentialKind::NamedHeader);
         assert_eq!(
             resolve_minimax_connection(Default::default())
                 .unwrap()
                 .base_url,
-            MINIMAX_DEFAULT_BASE_URL
+            known.base_url
+        );
+        let regional_urls: BTreeMap<String, String> = embedded_value(
+            &known,
+            "region_base_urls",
+            "MiniMax Known Provider regional base URLs",
         );
         assert_eq!(
             resolve_minimax_connection(ProviderConnectionInput {
@@ -167,25 +202,55 @@ mod tests {
             })
             .unwrap()
             .base_url,
-            MINIMAX_CHINA_BASE_URL
+            regional_urls["china"]
         );
         assert!(resolve_minimax_connection(ProviderConnectionInput {
             region: Some("unknown"),
             ..Default::default()
         })
         .is_err());
-        assert_eq!(known.provider_rules_id.as_deref(), Some("minimax"));
-        assert_eq!(rules.metadata_drivers, Some(vec!["minimax".to_owned()]));
         assert_eq!(
-            rules.patterns[0].operations["llm"],
+            known.provider_rules_id.as_deref(),
+            Some(MINIMAX_PROVIDER_PROFILE_ID)
+        );
+        assert_eq!(
+            rules.metadata_drivers,
+            Some(vec![MINIMAX_PROVIDER_PROFILE_ID.to_owned()])
+        );
+        assert_eq!(
+            rules.models[0].operations["llm"],
             CLAUDE_MESSAGES_OPERATION_ID
         );
+        assert_eq!(rules.models[0].request_rules[0].defaults["top_p"], 0.95);
+        assert!(rules.models[0].request_rules[0]
+            .remove
+            .contains(&"/stop".to_owned()));
+        assert_eq!(models.model_driver_id, MINIMAX_PROVIDER_PROFILE_ID);
+        assert!(models.models.iter().any(|model| model.id == "MiniMax-M3"));
         assert_eq!(contract.base_adapter_id, CLAUDE_MESSAGES_ADAPTER_ID);
         assert_eq!(
             adapter.base_adapter_id.as_deref(),
             Some(CLAUDE_MESSAGES_ADAPTER_ID)
         );
         assert_eq!(registration.operation_codecs.len(), 1);
+        let builtin = minimax_catalog_files()
+            .into_iter()
+            .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let catalog = MetadataSources {
+            builtin,
+            ..MetadataSources::default()
+        }
+        .build_snapshot(1, &CatalogBuildOptions::default())
+        .unwrap();
+        assert!(catalog
+            .known_provider(MINIMAX_PROVIDER_PROFILE_ID)
+            .is_some());
+        assert!(catalog
+            .provider_rules(MINIMAX_PROVIDER_PROFILE_ID)
+            .is_some());
+        assert!(catalog.model_driver(MINIMAX_PROVIDER_PROFILE_ID).is_some());
     }
 
     #[test]

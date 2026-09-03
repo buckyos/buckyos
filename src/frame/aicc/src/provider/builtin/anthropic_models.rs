@@ -1,13 +1,10 @@
 use super::super::{
     validate_discovery, DiscoveredModel, DiscoveryContext, ModelAvailability,
     ProviderConnectionContract, ProviderConnectionInput, ProviderDiscovery,
-    ProviderDiscoverySnapshot, ProviderError, ProviderHealthState, ProviderResult,
+    ProviderDiscoverySnapshot, ProviderError, ProviderHealthState, ProviderProfile, ProviderResult,
 };
-use crate::protocol::{
-    CredentialKind, HttpRequest, HttpResponse, HttpTransport, CLAUDE_MESSAGES_OPERATION_ID,
-};
+use crate::protocol::{CredentialKind, HttpRequest, HttpResponse, HttpTransport};
 use async_trait::async_trait;
-use buckyos_api::ApiType;
 use reqwest::{Method, Url};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -21,8 +18,7 @@ const MAX_DISCOVERY_PAGES: usize = 100;
 
 #[derive(Clone, Copy)]
 pub(super) struct AnthropicModelsSpec {
-    pub provider_profile_id: &'static str,
-    pub protocol_adapter_id: &'static str,
+    pub profile: fn() -> ProviderProfile,
     pub version_header: bool,
     pub connection_contract: fn() -> ProviderConnectionContract,
     pub label: &'static str,
@@ -120,9 +116,9 @@ impl ProviderDiscovery for AnthropicModelsDiscovery {
                 models.entry(model.id.clone()).or_insert(DiscoveredModel {
                     provider_model_id: model.id,
                     origin_model_id: None,
-                    api_types: Some(vec![ApiType::Llm]),
+                    api_types: None,
                     supported_features: None,
-                    remote_methods: Some(BTreeSet::from([CLAUDE_MESSAGES_OPERATION_ID.to_owned()])),
+                    remote_methods: None,
                     availability: ModelAvailability::Available,
                     deprecated: false,
                     pricing: None,
@@ -168,10 +164,11 @@ fn validate_context(
     spec: AnthropicModelsSpec,
     context: &DiscoveryContext<'_>,
 ) -> ProviderResult<()> {
-    if context.profile.provider_profile_id != spec.provider_profile_id
-        || context.profile.default_protocol_adapter_id != spec.protocol_adapter_id
-        || context.instance.provider_profile_id != spec.provider_profile_id
-        || context.instance.protocol_adapter_id != spec.protocol_adapter_id
+    let configured = (spec.profile)();
+    if context.profile.provider_profile_id != configured.provider_profile_id
+        || context.profile.default_protocol_adapter_id != configured.default_protocol_adapter_id
+        || context.instance.provider_profile_id != configured.provider_profile_id
+        || context.instance.protocol_adapter_id != configured.default_protocol_adapter_id
     {
         return Err(ProviderError::InvalidConfiguration(format!(
             "{} discovery requires its builtin profile and adapter",
@@ -180,7 +177,7 @@ fn validate_context(
     }
     if context.credential.audit().kind != CredentialKind::NamedHeader {
         return Err(ProviderError::Credential(format!(
-            "{} discovery requires an x-api-key credential",
+            "{} discovery requires its configured named-header credential",
             spec.label
         )));
     }
@@ -283,9 +280,11 @@ struct ErrorObject {
 mod tests {
     use super::*;
     use crate::protocol::{HttpBody, ProtocolError, ResolvedCredential};
-    use crate::provider::builtin::claude::{claude_profile, CLAUDE_DEFAULT_BASE_URL, CLAUDE_SPEC};
+    use crate::provider::builtin::claude::{
+        claude_connection_contract, claude_profile, CLAUDE_SPEC,
+    };
     use crate::provider::builtin::minimax::{
-        minimax_profile, MINIMAX_DEFAULT_BASE_URL, MINIMAX_SPEC,
+        minimax_connection_contract, minimax_profile, MINIMAX_SPEC,
     };
     use crate::provider::{CredentialReference, ProviderInstanceConfig};
     use bytes::Bytes;
@@ -338,7 +337,7 @@ mod tests {
             provider_instance_name: "claude-main".to_owned(),
             provider_profile_id: "claude".to_owned(),
             protocol_adapter_id: "claude-messages".to_owned(),
-            base_url: CLAUDE_DEFAULT_BASE_URL.to_owned(),
+            base_url: claude_connection_contract().default_base_url,
             credential: CredentialReference {
                 reference: "secret://claude/main".to_owned(),
             },
@@ -410,7 +409,7 @@ mod tests {
         instance.provider_instance_name = "minimax-main".to_owned();
         instance.provider_profile_id = "minimax".to_owned();
         instance.protocol_adapter_id = "minimax-messages".to_owned();
-        instance.base_url = MINIMAX_DEFAULT_BASE_URL.to_owned();
+        instance.base_url = minimax_connection_contract().default_base_url;
         instance.provider_rules_id = Some("minimax".to_owned());
         instance.region = Some("global".to_owned());
         let credential =

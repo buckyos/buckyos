@@ -1,0 +1,14 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "provider_profile_id": "claude",
+  "metadata_drivers": ["claude"],
+  "patterns": [
+    {
+      "match": "*",
+      "operations": { "llm": "messages.create" }
+    }
+  ]
+}

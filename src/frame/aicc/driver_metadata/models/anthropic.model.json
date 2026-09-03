@@ -1,0 +1,93 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "model_driver_id": "claude",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "claude-fable-5",
+      "parameter_scale": "fable",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.00001,
+        "output_token": 0.00005
+      }
+    },
+    {
+      "id": "claude-opus-5",
+      "parameter_scale": "opus",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000005,
+        "output_token": 0.000025
+      }
+    },
+    {
+      "id": "claude-sonnet-5",
+      "parameter_scale": "sonnet",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000003,
+        "output_token": 0.000015
+      }
+    },
+    {
+      "id": "claude-haiku-4-5-20251001",
+      "parameter_scale": "haiku",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}"],
+      "capabilities": {
+        "max_context_tokens": 200000,
+        "max_output_tokens": 65536,
+        "streaming": true,
+        "tool_call": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000001,
+        "output_token": 0.000005
+      }
+    }
+  ],
+  "patterns": [],
+  "defaults": { "api_types": [], "capabilities": {} },
+  "variants": [],
+  "version_rules": []
+}

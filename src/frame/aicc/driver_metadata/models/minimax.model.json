@@ -1,0 +1,84 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "model_driver_id": "minimax",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "MiniMax-M3",
+      "parameter_scale": "m3",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.minimax", "llm.{driver}.{model}"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 524288,
+        "streaming": true,
+        "tool_call": true,
+        "vision": true,
+        "reasoning": true
+      }
+    },
+    {
+      "id": "MiniMax-M2.7",
+      "parameter_scale": "m2.7",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.minimax", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 204800, "max_output_tokens": 204800, "streaming": true, "tool_call": true, "reasoning": true },
+      "pricing": { "currency": "USD", "input_token": 0.0000003, "cache_input_token": 0.00000006, "output_token": 0.0000012 }
+    },
+    {
+      "id": "MiniMax-M2.7-highspeed",
+      "parameter_scale": "m2.7-highspeed",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.minimax", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 204800, "max_output_tokens": 204800, "streaming": true, "tool_call": true, "reasoning": true },
+      "pricing": { "currency": "USD", "input_token": 0.0000006, "cache_input_token": 0.00000006, "output_token": 0.0000024 }
+    },
+    {
+      "id": "MiniMax-M2.5",
+      "parameter_scale": "m2.5",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.minimax", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 204800, "max_output_tokens": 204800, "streaming": true, "tool_call": true, "reasoning": true },
+      "pricing": { "currency": "USD", "input_token": 0.0000003, "cache_input_token": 0.00000003, "output_token": 0.0000012 }
+    },
+    {
+      "id": "MiniMax-M2.5-highspeed",
+      "parameter_scale": "m2.5-highspeed",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.minimax", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 204800, "max_output_tokens": 204800, "streaming": true, "tool_call": true, "reasoning": true },
+      "pricing": { "currency": "USD", "input_token": 0.0000006, "cache_input_token": 0.00000003, "output_token": 0.0000024 }
+    },
+    {
+      "id": "MiniMax-M2.1",
+      "parameter_scale": "m2.1",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.minimax", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 204800, "max_output_tokens": 204800, "streaming": true, "tool_call": true, "reasoning": true },
+      "pricing": { "currency": "USD", "input_token": 0.0000003, "cache_input_token": 0.00000003, "output_token": 0.0000012 }
+    },
+    {
+      "id": "MiniMax-M2.1-highspeed",
+      "parameter_scale": "m2.1-highspeed",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.minimax", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 204800, "max_output_tokens": 204800, "streaming": true, "tool_call": true, "reasoning": true },
+      "pricing": { "currency": "USD", "input_token": 0.0000006, "cache_input_token": 0.00000003, "output_token": 0.0000024 }
+    },
+    {
+      "id": "MiniMax-M2",
+      "parameter_scale": "m2",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.minimax", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 204800, "max_output_tokens": 204800, "streaming": true, "tool_call": true, "reasoning": true },
+      "pricing": { "currency": "USD", "input_token": 0.0000003, "cache_input_token": 0.00000003, "output_token": 0.0000012 }
+    }
+  ],
+  "patterns": [],
+  "defaults": { "api_types": [], "capabilities": {} },
+  "variants": [],
+  "version_rules": []
+}

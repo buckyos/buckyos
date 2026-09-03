@@ -30,7 +30,7 @@ pub(crate) fn minimax_messages_dialect_contract() -> MiniMaxMessagesDialectContr
             "base_resp_error",
             "provider_state_namespace",
         ]),
-        unsupported_parameters: BTreeSet::from(["stop_sequences"]),
+        unsupported_parameters: BTreeSet::new(),
         unsupported_capabilities: BTreeSet::new(),
     }
 }
@@ -141,26 +141,12 @@ fn validate_minimax_request(call: &CodecCall<'_>) -> ProtocolResultValue<()> {
             "MiniMax Messages only accepts chat.completions.create",
         ));
     };
-    if !request.stop.is_empty() {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::UnsupportedOperation,
-            "MiniMax Messages ignores stop sequences, so AICC does not advertise them",
-        ));
-    }
     if request
         .temperature
         .is_some_and(|value| !value.is_finite() || !(0.0..=2.0).contains(&value))
     {
         return Err(ProtocolError::invalid_request(
             "MiniMax Messages temperature must be between 0 and 2",
-        ));
-    }
-    if request
-        .top_p
-        .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
-    {
-        return Err(ProtocolError::invalid_request(
-            "MiniMax Messages top_p must be between 0 and 1",
         ));
     }
     Ok(())
@@ -349,7 +335,7 @@ mod tests {
         let contract = minimax_messages_dialect_contract();
         assert_eq!(contract.base_adapter_id, CLAUDE_MESSAGES_ADAPTER_ID);
         assert!(contract.override_points.contains("base_resp_error"));
-        assert!(contract.unsupported_parameters.contains("stop_sequences"));
+        assert!(contract.unsupported_parameters.is_empty());
 
         let (descriptor, registration) = minimax_messages_adapter();
         assert_eq!(
@@ -373,20 +359,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_silently_ignored_or_out_of_range_parameters() {
+    fn rejects_out_of_range_temperature() {
         let (_, registration) = minimax_messages_adapter();
         let codec = &registration.operation_codecs[0];
-        let stop = input(vec!["done".to_owned()], None);
         let temperature = input(Vec::new(), Some(2.1));
-        for input in [&stop, &temperature] {
-            assert!(codec
-                .encode(&CodecCall {
-                    api_type: ApiType::Llm,
-                    input,
-                    context: &context(),
-                })
-                .is_err());
-        }
+        assert!(codec
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &temperature,
+                context: &context(),
+            })
+            .is_err());
     }
 
     #[tokio::test]

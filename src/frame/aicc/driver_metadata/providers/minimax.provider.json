@@ -1,0 +1,37 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "provider_profile_id": "minimax",
+  "metadata_drivers": ["minimax"],
+  "models": [
+    {
+      "id": "MiniMax-M3",
+      "operations": { "llm": "messages.create" },
+      "request_rules": [
+        {
+          "defaults": { "temperature": 1.0, "top_p": 0.95 },
+          "remove": ["/stop"]
+        }
+      ]
+    }
+  ],
+  "patterns": [
+    {
+      "match": "MiniMax-M2*",
+      "operations": { "llm": "messages.create" },
+      "request_rules": [
+        {
+          "defaults": { "temperature": 1.0, "top_p": 0.9 },
+          "remove": ["/stop"]
+        }
+      ]
+    },
+    {
+      "match": "*",
+      "operations": { "llm": "messages.create" },
+      "request_rules": [{ "remove": ["/stop"] }]
+    }
+  ]
+}

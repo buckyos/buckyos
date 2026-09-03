@@ -1,0 +1,37 @@
+{
+  "format": "buckyos.aicc.known-provider-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "catalog_id": "minimax",
+  "providers": [
+    {
+      "provider_profile_id": "minimax",
+      "display_name": "MiniMax",
+      "base_url": "https://api.minimax.io/anthropic",
+      "protocol_adapter_id": "minimax-messages",
+      "provider_rules_id": "minimax",
+      "ui_hints": {
+        "credential": {
+          "kind": "named_header",
+          "header_name": "x-api-key",
+          "required": true,
+          "secret": true
+        },
+        "instance_fields": {
+          "region": {
+            "mode": "optional",
+            "default_value": "global",
+            "allowed_values": ["china", "global"]
+          },
+          "workspace": { "mode": "unsupported" },
+          "account": { "mode": "unsupported" }
+        },
+        "region_base_urls": {
+          "china": "https://api.minimaxi.com/anthropic",
+          "global": "https://api.minimax.io/anthropic"
+        }
+      }
+    }
+  ]
+}

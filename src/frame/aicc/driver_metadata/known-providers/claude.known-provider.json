@@ -1,0 +1,29 @@
+{
+  "format": "buckyos.aicc.known-provider-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "catalog_id": "claude",
+  "providers": [
+    {
+      "provider_profile_id": "claude",
+      "display_name": "Anthropic Claude",
+      "base_url": "https://api.anthropic.com/v1",
+      "protocol_adapter_id": "claude-messages",
+      "provider_rules_id": "claude",
+      "ui_hints": {
+        "credential": {
+          "kind": "named_header",
+          "header_name": "x-api-key",
+          "required": true,
+          "secret": true
+        },
+        "instance_fields": {
+          "region": { "mode": "unsupported" },
+          "workspace": { "mode": "unsupported" },
+          "account": { "mode": "unsupported" }
+        }
+      }
+    }
+  ]
+}
