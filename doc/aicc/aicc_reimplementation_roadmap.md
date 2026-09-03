@@ -190,7 +190,7 @@ Owner：API 小组
 
 完成标准：Rust 服务端、Workflow 和其它 Rust 调用方不再手写协议字段或 method 字符串。
 
-实现记录：公共 API 已改为逐方法强类型 request/response，Canonical IR、稳定错误边界和 client/handler/server dispatch 已落地；Workflow、OpenDAN、Agent Tool、Control Panel 已迁移到类型化调用，管理面 wire method 只保留 `service.reload_settings`。验收覆盖 `buckyos-api`/`aicc` 单测、受影响 crate 全 target check、workspace test compile、协议残留扫描和格式检查；AICC 严格 clippy 被仓库范围外的既有告警基线阻断。
+实现记录：公共 API 已改为逐方法强类型 request/response，Canonical IR、稳定错误边界和 client/handler/server dispatch 已落地；Workflow、OpenDAN、Agent Tool、Control Panel 已迁移到类型化调用，管理面 wire method 只保留 `service.reload_settings`。WP-16 所需的 `provider.catalog`、`protocol_adapter.list`、`provider.validate/add/delete/refresh_models`、`usage.query` 和 `trace.query` 均提供 canonical request/response、Client、Handler 和 kRPC dispatch，不需要 service 层私建协议。验收覆盖 `buckyos-api`/`aicc` 单测、受影响 crate 全 target check、workspace test compile、协议残留扫描和格式检查；AICC 严格 clippy 被仓库范围外的既有告警基线阻断。
 
 ### WP-02：统一 MatchRule
 

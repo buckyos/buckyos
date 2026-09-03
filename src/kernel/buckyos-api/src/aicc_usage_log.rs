@@ -235,7 +235,7 @@ pub struct AiccRouteTraceEvent {
     pub created_at_ms: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct QueryRouteTraceRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -262,6 +262,12 @@ pub struct QueryRouteTraceRequest {
     pub query: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+}
+
+impl QueryRouteTraceRequest {
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -294,6 +300,7 @@ pub enum UsageQueryTimeRange {
 /// Optional `WHERE` filters. Every field is independent; omitted fields mean
 /// "no filter on this dimension".
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct UsageQueryFilters {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tenant_ids: Vec<String>,
@@ -385,6 +392,20 @@ pub struct QueryUsageRequest {
     pub limit: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+}
+
+impl QueryUsageRequest {
+    pub fn new(time_range: UsageQueryTimeRange) -> Self {
+        Self {
+            time_range,
+            filters: UsageQueryFilters::default(),
+            group_by: Vec::new(),
+            time_bucket: None,
+            output_mode: UsageQueryOutputMode::default(),
+            limit: None,
+            cursor: None,
+        }
+    }
 }
 
 /// Aggregated counts / totals. Units beyond tokens go into `request_units`.

@@ -1,3 +1,6 @@
+use crate::aicc_usage_log::{
+    QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
+};
 use crate::{AppDoc, AppType, SelectorType};
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -44,9 +47,17 @@ pub mod ai_methods {
     pub const CANCEL: &str = "cancel";
     pub const SERVICE_RELOAD_SETTINGS: &str = "service.reload_settings";
     pub const QUOTA_QUERY: &str = "quota.query";
+    pub const USAGE_QUERY: &str = "usage.query";
+    pub const TRACE_QUERY: &str = "trace.query";
+    pub const PROVIDER_CATALOG: &str = "provider.catalog";
+    pub const PROTOCOL_ADAPTER_LIST: &str = "protocol_adapter.list";
+    pub const PROVIDER_VALIDATE: &str = "provider.validate";
+    pub const PROVIDER_ADD: &str = "provider.add";
     pub const PROVIDER_LIST: &str = "provider.list";
     pub const PROVIDER_HEALTH: &str = "provider.health";
     pub const PROVIDER_UPDATE: &str = "provider.update";
+    pub const PROVIDER_DELETE: &str = "provider.delete";
+    pub const PROVIDER_REFRESH_MODELS: &str = "provider.refresh_models";
     pub const MODELS_LIST: &str = "models.list";
     pub const DRIVER_METADATA_UPDATE_GET: &str = "driver_metadata_update.get";
     pub const DRIVER_METADATA_UPDATE_SET: &str = "driver_metadata_update.set";
@@ -85,6 +96,28 @@ pub mod ai_methods {
             method,
             ROUTE_RESOLVE | HELPER_LLM_CHAT | HELPER_TEXT_TO_IMAGE
         ) || is_ai_method(method)
+    }
+
+    pub fn is_management_method(method: &str) -> bool {
+        matches!(
+            method,
+            SERVICE_RELOAD_SETTINGS
+                | QUOTA_QUERY
+                | USAGE_QUERY
+                | TRACE_QUERY
+                | PROVIDER_CATALOG
+                | PROTOCOL_ADAPTER_LIST
+                | PROVIDER_VALIDATE
+                | PROVIDER_ADD
+                | PROVIDER_LIST
+                | PROVIDER_HEALTH
+                | PROVIDER_UPDATE
+                | PROVIDER_DELETE
+                | PROVIDER_REFRESH_MODELS
+                | MODELS_LIST
+                | DRIVER_METADATA_UPDATE_GET
+                | DRIVER_METADATA_UPDATE_SET
+        )
     }
 }
 
@@ -313,6 +346,253 @@ mod canonical_contract_tests {
             )
             .await;
         assert!(matches!(legacy_reload, Err(RPCErrors::UnknownMethod(_))));
+    }
+
+    #[test]
+    fn management_requests_are_strict_and_methods_are_canonical() {
+        for method in [
+            ai_methods::PROVIDER_CATALOG,
+            ai_methods::PROTOCOL_ADAPTER_LIST,
+            ai_methods::PROVIDER_VALIDATE,
+            ai_methods::PROVIDER_ADD,
+            ai_methods::PROVIDER_DELETE,
+            ai_methods::PROVIDER_REFRESH_MODELS,
+            ai_methods::USAGE_QUERY,
+            ai_methods::TRACE_QUERY,
+        ] {
+            assert!(ai_methods::is_management_method(method));
+        }
+
+        let request = ProviderAddRequest::new(
+            "openai-main",
+            "cloud_api",
+            "openai",
+            "https://api.openai.com/v1",
+            json!({"type": "bearer", "secret": "redacted"}),
+        );
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(ProviderAddRequest::from_json(value).unwrap(), request);
+        assert!(ProviderAddRequest::from_json(json!({
+            "provider_instance_name": "openai-main",
+            "provider_type": "cloud_api",
+            "provider_profile_id": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "credentials": {},
+            "endpoint": "https://legacy.invalid"
+        }))
+        .is_err());
+        assert!(QueryUsageRequest::from_json(json!({
+            "time_range": {"kind": "last30d"},
+            "filters": {"unknown_filter": "value"}
+        }))
+        .is_err());
+        assert!(QueryRouteTraceRequest::from_json(json!({"unknown": true})).is_err());
+        assert!(serde_json::from_value::<ProviderDeleteResponse>(json!({
+            "ok": false,
+            "reason": "provider_not_found"
+        }))
+        .is_ok());
+    }
+
+    struct ManagementHandler;
+
+    #[async_trait]
+    impl AiccHandler for ManagementHandler {
+        async fn handle_cancel(
+            &self,
+            task_id: &str,
+            _ctx: RPCContext,
+        ) -> std::result::Result<CancelResponse, RPCErrors> {
+            Ok(CancelResponse::new(task_id.to_string(), true))
+        }
+
+        async fn handle_provider_catalog(
+            &self,
+            _request: ProviderCatalogRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<ProviderCatalogResponse, RPCErrors> {
+            Ok(ProviderCatalogResponse::default())
+        }
+
+        async fn handle_list_protocol_adapters(
+            &self,
+            _request: ProtocolAdapterListRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<ProtocolAdapterListResponse, RPCErrors> {
+            Ok(ProtocolAdapterListResponse::default())
+        }
+
+        async fn handle_validate_provider(
+            &self,
+            _request: ProviderValidateRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<ProviderValidateResponse, RPCErrors> {
+            Ok(ProviderValidateResponse::default())
+        }
+
+        async fn handle_add_provider(
+            &self,
+            request: ProviderAddRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<ProviderAddResponse, RPCErrors> {
+            Ok(ProviderAddResponse {
+                ok: true,
+                provider_instance_name: request.provider_instance_name,
+                settings_revision: 1,
+                reload: ProviderReloadResult {
+                    ok: true,
+                    providers_registered: 1,
+                },
+            })
+        }
+
+        async fn handle_delete_provider(
+            &self,
+            request: ProviderDeleteRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<ProviderDeleteResponse, RPCErrors> {
+            Ok(ProviderDeleteResponse {
+                ok: true,
+                provider_instance_name: Some(request.provider_instance_name),
+                settings_revision: Some(2),
+                reload: None,
+                reason: None,
+            })
+        }
+
+        async fn handle_refresh_provider_models(
+            &self,
+            request: ProviderRefreshModelsRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<ProviderRefreshModelsResponse, RPCErrors> {
+            Ok(ProviderRefreshModelsResponse {
+                ok: true,
+                provider_instance_name: request.provider_instance_name,
+                inventory_revision: "inventory-1".to_string(),
+            })
+        }
+
+        async fn handle_query_usage(
+            &self,
+            _request: QueryUsageRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<QueryUsageResponse, RPCErrors> {
+            Ok(QueryUsageResponse::default())
+        }
+
+        async fn handle_query_trace(
+            &self,
+            _request: QueryRouteTraceRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<QueryRouteTraceResponse, RPCErrors> {
+            Ok(QueryRouteTraceResponse::default())
+        }
+    }
+
+    fn provider_validate_request() -> ProviderValidateRequest {
+        ProviderValidateRequest::new(
+            "cloud_api",
+            "openai",
+            "https://api.openai.com/v1",
+            json!({"type": "bearer", "secret": "redacted"}),
+        )
+    }
+
+    fn provider_add_request() -> ProviderAddRequest {
+        ProviderAddRequest::new(
+            "openai-main",
+            "cloud_api",
+            "openai",
+            "https://api.openai.com/v1",
+            json!({"type": "bearer", "secret": "redacted"}),
+        )
+    }
+
+    #[tokio::test]
+    async fn management_client_and_server_dispatch_all_canonical_methods() {
+        let client = AiccClient::new_in_process(Box::new(ManagementHandler));
+        client
+            .provider_catalog(ProviderCatalogRequest::new())
+            .await
+            .unwrap();
+        client
+            .list_protocol_adapters(ProtocolAdapterListRequest::new())
+            .await
+            .unwrap();
+        client
+            .validate_provider(provider_validate_request())
+            .await
+            .unwrap();
+        client.add_provider(provider_add_request()).await.unwrap();
+        client
+            .delete_provider(ProviderDeleteRequest::new("openai-main"))
+            .await
+            .unwrap();
+        client
+            .refresh_provider_models(ProviderRefreshModelsRequest::new("openai-main"))
+            .await
+            .unwrap();
+        client
+            .query_usage(QueryUsageRequest::new(crate::UsageQueryTimeRange::Last30d))
+            .await
+            .unwrap();
+        client
+            .query_trace(QueryRouteTraceRequest::new())
+            .await
+            .unwrap();
+
+        let calls = [
+            (
+                ai_methods::PROVIDER_CATALOG,
+                serde_json::to_value(ProviderCatalogRequest::new()).unwrap(),
+            ),
+            (
+                ai_methods::PROTOCOL_ADAPTER_LIST,
+                serde_json::to_value(ProtocolAdapterListRequest::new()).unwrap(),
+            ),
+            (
+                ai_methods::PROVIDER_VALIDATE,
+                serde_json::to_value(provider_validate_request()).unwrap(),
+            ),
+            (
+                ai_methods::PROVIDER_ADD,
+                serde_json::to_value(provider_add_request()).unwrap(),
+            ),
+            (
+                ai_methods::PROVIDER_DELETE,
+                serde_json::to_value(ProviderDeleteRequest::new("openai-main")).unwrap(),
+            ),
+            (
+                ai_methods::PROVIDER_REFRESH_MODELS,
+                serde_json::to_value(ProviderRefreshModelsRequest::new("openai-main")).unwrap(),
+            ),
+            (
+                ai_methods::USAGE_QUERY,
+                serde_json::to_value(QueryUsageRequest::new(crate::UsageQueryTimeRange::Last30d))
+                    .unwrap(),
+            ),
+            (
+                ai_methods::TRACE_QUERY,
+                serde_json::to_value(QueryRouteTraceRequest::new()).unwrap(),
+            ),
+        ];
+        let server = AiccServerHandler::new(ManagementHandler);
+        for (seq, (method, params)) in calls.into_iter().enumerate() {
+            let response = server
+                .handle_rpc_call(
+                    RPCRequest {
+                        method: method.to_string(),
+                        params,
+                        seq: seq as u64,
+                        token: None,
+                        trace_id: Some(format!("management-{seq}")),
+                    },
+                    "127.0.0.1".parse().unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.seq, seq as u64);
+        }
     }
 }
 
@@ -2933,6 +3213,337 @@ impl ListModelsRequest {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct ProviderCatalogRequest {}
+
+impl_request_json!(ProviderCatalogRequest);
+
+impl ProviderCatalogRequest {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCatalogEntry {
+    pub provider_profile_id: String,
+    pub display_name: String,
+    pub base_url: String,
+    pub protocol_adapter_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_rules_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ui_hints: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCatalogResponse {
+    pub catalog_revision: u64,
+    #[serde(default)]
+    pub providers: Vec<ProviderCatalogEntry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProtocolAdapterListRequest {}
+
+impl_request_json!(ProtocolAdapterListRequest);
+
+impl ProtocolAdapterListRequest {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtocolAdapterStatus {
+    Stable,
+    Preview,
+    Deprecated,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtocolExecutionMode {
+    Immediate,
+    Stream,
+    NativeTask,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProtocolAdapterOperation {
+    pub operation_id: String,
+    #[serde(default)]
+    pub api_types: Vec<ApiType>,
+    #[serde(default)]
+    pub capabilities: Vec<Capability>,
+    #[serde(default)]
+    pub supported_features: Vec<String>,
+    #[serde(default)]
+    pub execution_modes: Vec<ProtocolExecutionMode>,
+    pub supports_cancel: bool,
+    pub supports_webhook: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProtocolAdapterView {
+    pub protocol_family_id: String,
+    pub protocol_adapter_id: String,
+    pub interface_generation: String,
+    pub status: ProtocolAdapterStatus,
+    pub probe_priority: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_adapter_id: Option<String>,
+    #[serde(default)]
+    pub operations: Vec<ProtocolAdapterOperation>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProtocolAdapterListResponse {
+    #[serde(default)]
+    pub adapters: Vec<ProtocolAdapterView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderValidateRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_instance_name: Option<String>,
+    pub provider_type: String,
+    pub provider_profile_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_family_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_adapter_id: Option<String>,
+    pub base_url: String,
+    pub credentials: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_rules_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_rules: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_sync_models: Option<bool>,
+}
+
+impl_request_json!(ProviderValidateRequest);
+
+impl ProviderValidateRequest {
+    pub fn new(
+        provider_type: impl Into<String>,
+        provider_profile_id: impl Into<String>,
+        base_url: impl Into<String>,
+        credentials: Value,
+    ) -> Self {
+        Self {
+            provider_instance_name: None,
+            provider_type: provider_type.into(),
+            provider_profile_id: provider_profile_id.into(),
+            protocol_family_id: None,
+            protocol_adapter_id: None,
+            base_url: base_url.into(),
+            credentials,
+            region: None,
+            workspace: None,
+            account: None,
+            provider_rules_id: None,
+            auth: None,
+            discovery: None,
+            instance_rules: None,
+            timeout_ms: None,
+            auto_sync_models: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderValidationErrorKind {
+    Configuration,
+    BaseUrl,
+    Authentication,
+    Protocol,
+    Models,
+    Balance,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderValidationErrorDetail {
+    pub kind: ProviderValidationErrorKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderValidateResponse {
+    pub base_url_reachable: bool,
+    pub auth_valid: bool,
+    #[serde(default)]
+    pub models_discovered: Vec<String>,
+    pub balance_available: bool,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    #[serde(default)]
+    pub error_details: Vec<ProviderValidationErrorDetail>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_protocol_adapter_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderAddRequest {
+    pub provider_instance_name: String,
+    pub provider_type: String,
+    pub provider_profile_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_family_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_adapter_id: Option<String>,
+    pub base_url: String,
+    pub credentials: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_rules_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_rules: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_sync_models: Option<bool>,
+}
+
+impl_request_json!(ProviderAddRequest);
+
+impl ProviderAddRequest {
+    pub fn new(
+        provider_instance_name: impl Into<String>,
+        provider_type: impl Into<String>,
+        provider_profile_id: impl Into<String>,
+        base_url: impl Into<String>,
+        credentials: Value,
+    ) -> Self {
+        Self {
+            provider_instance_name: provider_instance_name.into(),
+            provider_type: provider_type.into(),
+            provider_profile_id: provider_profile_id.into(),
+            protocol_family_id: None,
+            protocol_adapter_id: None,
+            base_url: base_url.into(),
+            credentials,
+            region: None,
+            workspace: None,
+            account: None,
+            provider_rules_id: None,
+            auth: None,
+            discovery: None,
+            instance_rules: None,
+            timeout_ms: None,
+            auto_sync_models: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderReloadResult {
+    pub ok: bool,
+    pub providers_registered: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderAddResponse {
+    pub ok: bool,
+    pub provider_instance_name: String,
+    pub settings_revision: u64,
+    pub reload: ProviderReloadResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderDeleteRequest {
+    pub provider_instance_name: String,
+}
+
+impl_request_json!(ProviderDeleteRequest);
+
+impl ProviderDeleteRequest {
+    pub fn new(provider_instance_name: impl Into<String>) -> Self {
+        Self {
+            provider_instance_name: provider_instance_name.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderDeleteResponse {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_instance_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reload: Option<ProviderReloadResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderRefreshModelsRequest {
+    pub provider_instance_name: String,
+}
+
+impl_request_json!(ProviderRefreshModelsRequest);
+
+impl ProviderRefreshModelsRequest {
+    pub fn new(provider_instance_name: impl Into<String>) -> Self {
+        Self {
+            provider_instance_name: provider_instance_name.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderRefreshModelsResponse {
+    pub ok: bool,
+    pub provider_instance_name: String,
+    pub inventory_revision: String,
+}
+
+impl_request_json!(QueryUsageRequest);
+impl_request_json!(QueryRouteTraceRequest);
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct QuotaQueryRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability: Option<Capability>,
@@ -3842,6 +4453,48 @@ impl AiccClient {
         QuotaQueryResponse
     );
     client_typed_method!(
+        query_usage,
+        handle_query_usage,
+        ai_methods::USAGE_QUERY,
+        QueryUsageRequest,
+        QueryUsageResponse
+    );
+    client_typed_method!(
+        query_trace,
+        handle_query_trace,
+        ai_methods::TRACE_QUERY,
+        QueryRouteTraceRequest,
+        QueryRouteTraceResponse
+    );
+    client_typed_method!(
+        provider_catalog,
+        handle_provider_catalog,
+        ai_methods::PROVIDER_CATALOG,
+        ProviderCatalogRequest,
+        ProviderCatalogResponse
+    );
+    client_typed_method!(
+        list_protocol_adapters,
+        handle_list_protocol_adapters,
+        ai_methods::PROTOCOL_ADAPTER_LIST,
+        ProtocolAdapterListRequest,
+        ProtocolAdapterListResponse
+    );
+    client_typed_method!(
+        validate_provider,
+        handle_validate_provider,
+        ai_methods::PROVIDER_VALIDATE,
+        ProviderValidateRequest,
+        ProviderValidateResponse
+    );
+    client_typed_method!(
+        add_provider,
+        handle_add_provider,
+        ai_methods::PROVIDER_ADD,
+        ProviderAddRequest,
+        ProviderAddResponse
+    );
+    client_typed_method!(
         list_providers,
         handle_list_providers,
         ai_methods::PROVIDER_LIST,
@@ -3861,6 +4514,20 @@ impl AiccClient {
         ai_methods::PROVIDER_UPDATE,
         ProviderUpdateRequest,
         ProviderUpdateResponse
+    );
+    client_typed_method!(
+        delete_provider,
+        handle_delete_provider,
+        ai_methods::PROVIDER_DELETE,
+        ProviderDeleteRequest,
+        ProviderDeleteResponse
+    );
+    client_typed_method!(
+        refresh_provider_models,
+        handle_refresh_provider_models,
+        ai_methods::PROVIDER_REFRESH_MODELS,
+        ProviderRefreshModelsRequest,
+        ProviderRefreshModelsResponse
     );
 
     pub async fn cancel(&self, task_id: &str) -> std::result::Result<CancelResponse, RPCErrors> {
@@ -4245,6 +4912,66 @@ pub trait AiccHandler: Send + Sync {
         ))
     }
 
+    async fn handle_query_usage(
+        &self,
+        _request: QueryUsageRequest,
+        _ctx: RPCContext,
+    ) -> std::result::Result<QueryUsageResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::USAGE_QUERY.to_string(),
+        ))
+    }
+
+    async fn handle_query_trace(
+        &self,
+        _request: QueryRouteTraceRequest,
+        _ctx: RPCContext,
+    ) -> std::result::Result<QueryRouteTraceResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::TRACE_QUERY.to_string(),
+        ))
+    }
+
+    async fn handle_provider_catalog(
+        &self,
+        _request: ProviderCatalogRequest,
+        _ctx: RPCContext,
+    ) -> std::result::Result<ProviderCatalogResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::PROVIDER_CATALOG.to_string(),
+        ))
+    }
+
+    async fn handle_list_protocol_adapters(
+        &self,
+        _request: ProtocolAdapterListRequest,
+        _ctx: RPCContext,
+    ) -> std::result::Result<ProtocolAdapterListResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::PROTOCOL_ADAPTER_LIST.to_string(),
+        ))
+    }
+
+    async fn handle_validate_provider(
+        &self,
+        _request: ProviderValidateRequest,
+        _ctx: RPCContext,
+    ) -> std::result::Result<ProviderValidateResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::PROVIDER_VALIDATE.to_string(),
+        ))
+    }
+
+    async fn handle_add_provider(
+        &self,
+        _request: ProviderAddRequest,
+        _ctx: RPCContext,
+    ) -> std::result::Result<ProviderAddResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::PROVIDER_ADD.to_string(),
+        ))
+    }
+
     async fn handle_list_providers(
         &self,
         _request: ProviderListRequest,
@@ -4272,6 +4999,26 @@ pub trait AiccHandler: Send + Sync {
     ) -> std::result::Result<ProviderUpdateResponse, RPCErrors> {
         Err(RPCErrors::UnknownMethod(
             ai_methods::PROVIDER_UPDATE.to_string(),
+        ))
+    }
+
+    async fn handle_delete_provider(
+        &self,
+        _request: ProviderDeleteRequest,
+        _ctx: RPCContext,
+    ) -> std::result::Result<ProviderDeleteResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::PROVIDER_DELETE.to_string(),
+        ))
+    }
+
+    async fn handle_refresh_provider_models(
+        &self,
+        _request: ProviderRefreshModelsRequest,
+        _ctx: RPCContext,
+    ) -> std::result::Result<ProviderRefreshModelsResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::PROVIDER_REFRESH_MODELS.to_string(),
         ))
     }
 
@@ -4515,6 +5262,39 @@ impl<T: AiccHandler> RPCHandler for AiccServerHandler<T> {
                     .handle_query_quota(QuotaQueryRequest::from_json(req.params)?, ctx)
                     .await?
             )),
+            ai_methods::USAGE_QUERY => RPCResult::Success(json!(
+                self.0
+                    .handle_query_usage(QueryUsageRequest::from_json(req.params)?, ctx)
+                    .await?
+            )),
+            ai_methods::TRACE_QUERY => RPCResult::Success(json!(
+                self.0
+                    .handle_query_trace(QueryRouteTraceRequest::from_json(req.params)?, ctx)
+                    .await?
+            )),
+            ai_methods::PROVIDER_CATALOG => RPCResult::Success(json!(
+                self.0
+                    .handle_provider_catalog(ProviderCatalogRequest::from_json(req.params)?, ctx)
+                    .await?
+            )),
+            ai_methods::PROTOCOL_ADAPTER_LIST => RPCResult::Success(json!(
+                self.0
+                    .handle_list_protocol_adapters(
+                        ProtocolAdapterListRequest::from_json(req.params)?,
+                        ctx
+                    )
+                    .await?
+            )),
+            ai_methods::PROVIDER_VALIDATE => RPCResult::Success(json!(
+                self.0
+                    .handle_validate_provider(ProviderValidateRequest::from_json(req.params)?, ctx)
+                    .await?
+            )),
+            ai_methods::PROVIDER_ADD => RPCResult::Success(json!(
+                self.0
+                    .handle_add_provider(ProviderAddRequest::from_json(req.params)?, ctx)
+                    .await?
+            )),
             ai_methods::PROVIDER_LIST => RPCResult::Success(json!(
                 self.0
                     .handle_list_providers(ProviderListRequest::from_json(req.params)?, ctx)
@@ -4528,6 +5308,19 @@ impl<T: AiccHandler> RPCHandler for AiccServerHandler<T> {
             ai_methods::PROVIDER_UPDATE => RPCResult::Success(json!(
                 self.0
                     .handle_update_provider(ProviderUpdateRequest::from_json(req.params)?, ctx)
+                    .await?
+            )),
+            ai_methods::PROVIDER_DELETE => RPCResult::Success(json!(
+                self.0
+                    .handle_delete_provider(ProviderDeleteRequest::from_json(req.params)?, ctx)
+                    .await?
+            )),
+            ai_methods::PROVIDER_REFRESH_MODELS => RPCResult::Success(json!(
+                self.0
+                    .handle_refresh_provider_models(
+                        ProviderRefreshModelsRequest::from_json(req.params)?,
+                        ctx
+                    )
                     .await?
             )),
             ai_methods::MODELS_LIST => RPCResult::Success(
