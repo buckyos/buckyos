@@ -140,6 +140,272 @@ pub(crate) struct CredentialReference {
     pub reference: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProviderAuthMode {
+    ApiKey,
+    DynamicLogin,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ProviderAuthConfig {
+    ApiKey {
+        credential_ref: String,
+    },
+    DynamicLogin {
+        login_profile: String,
+        login_endpoint: String,
+    },
+}
+
+impl ProviderAuthConfig {
+    pub(crate) fn mode(&self) -> ProviderAuthMode {
+        match self {
+            Self::ApiKey { .. } => ProviderAuthMode::ApiKey,
+            Self::DynamicLogin { .. } => ProviderAuthMode::DynamicLogin,
+        }
+    }
+
+    pub(crate) fn validate(&self) -> ProviderResult<()> {
+        match self {
+            Self::ApiKey { credential_ref } => validate_nonempty("credential_ref", credential_ref),
+            Self::DynamicLogin {
+                login_profile,
+                login_endpoint,
+            } => {
+                validate_id("login_profile", login_profile)?;
+                validate_provider_url("login_endpoint", login_endpoint)
+            }
+        }
+    }
+
+    pub(crate) fn credential_reference(&self) -> Option<CredentialReference> {
+        match self {
+            Self::ApiKey { credential_ref } => Some(CredentialReference {
+                reference: credential_ref.clone(),
+            }),
+            Self::DynamicLogin { .. } => None,
+        }
+    }
+
+    pub(crate) fn dynamic_login_context(
+        &self,
+        provider_instance_name: impl Into<String>,
+        user_name: impl Into<String>,
+    ) -> ProviderResult<DynamicLoginContext> {
+        self.validate()?;
+        let Self::DynamicLogin {
+            login_profile,
+            login_endpoint,
+        } = self
+        else {
+            return Err(ProviderError::InvalidConfiguration(
+                "dynamic login context requires auth.mode=dynamic_login".into(),
+            ));
+        };
+        DynamicLoginContext::new(
+            provider_instance_name,
+            user_name,
+            login_profile.clone(),
+            login_endpoint.clone(),
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DynamicLoginContext {
+    pub provider_instance_name: String,
+    pub user_name: String,
+    pub login_profile: String,
+    pub login_endpoint: String,
+}
+
+impl DynamicLoginContext {
+    pub(crate) fn new(
+        provider_instance_name: impl Into<String>,
+        user_name: impl Into<String>,
+        login_profile: impl Into<String>,
+        login_endpoint: impl Into<String>,
+    ) -> ProviderResult<Self> {
+        let result = Self {
+            provider_instance_name: provider_instance_name.into(),
+            user_name: user_name.into(),
+            login_profile: login_profile.into(),
+            login_endpoint: login_endpoint.into(),
+        };
+        validate_id("provider_instance_name", &result.provider_instance_name)?;
+        validate_nonempty("user_name", &result.user_name)?;
+        validate_id("login_profile", &result.login_profile)?;
+        validate_provider_url("login_endpoint", &result.login_endpoint)?;
+        Ok(result)
+    }
+
+    pub(crate) fn cache_key(&self) -> &str {
+        &self.provider_instance_name
+    }
+}
+
+#[async_trait]
+pub(crate) trait DynamicLoginCredentialResolver: Send + Sync {
+    async fn resolve_dynamic(
+        &self,
+        context: &DynamicLoginContext,
+    ) -> ProviderResult<ResolvedCredential>;
+
+    async fn invalidate(&self, _provider_instance_name: &str) {}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderFieldMode {
+    Unsupported,
+    Optional,
+    Required,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderFieldSchema {
+    pub mode: ProviderFieldMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub allowed_values: BTreeSet<String>,
+}
+
+impl ProviderFieldSchema {
+    pub(crate) fn unsupported() -> Self {
+        Self {
+            mode: ProviderFieldMode::Unsupported,
+            default_value: None,
+            allowed_values: BTreeSet::new(),
+        }
+    }
+
+    pub(crate) fn optional() -> Self {
+        Self {
+            mode: ProviderFieldMode::Optional,
+            default_value: None,
+            allowed_values: BTreeSet::new(),
+        }
+    }
+
+    pub(crate) fn optional_with_default(default_value: impl Into<String>) -> Self {
+        Self {
+            mode: ProviderFieldMode::Optional,
+            default_value: Some(default_value.into()),
+            allowed_values: BTreeSet::new(),
+        }
+    }
+
+    pub(crate) fn required() -> Self {
+        Self {
+            mode: ProviderFieldMode::Required,
+            default_value: None,
+            allowed_values: BTreeSet::new(),
+        }
+    }
+
+    pub(crate) fn with_allowed_values(
+        mut self,
+        values: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.allowed_values = values.into_iter().map(Into::into).collect();
+        self
+    }
+
+    fn resolve(&self, field: &str, value: Option<&str>) -> ProviderResult<Option<String>> {
+        if self.mode == ProviderFieldMode::Unsupported {
+            if value.is_some() || self.default_value.is_some() || !self.allowed_values.is_empty() {
+                return Err(ProviderError::InvalidConfiguration(format!(
+                    "{field} is not supported"
+                )));
+            }
+            return Ok(None);
+        }
+        let value = value
+            .map(str::to_owned)
+            .or_else(|| self.default_value.clone());
+        if self.mode == ProviderFieldMode::Required && value.is_none() {
+            return Err(ProviderError::InvalidConfiguration(format!(
+                "{field} is required"
+            )));
+        }
+        if let Some(value) = value.as_deref() {
+            validate_endpoint_field(field, value)?;
+            if !self.allowed_values.is_empty() && !self.allowed_values.contains(value) {
+                return Err(ProviderError::InvalidConfiguration(format!(
+                    "{field} has an unsupported value"
+                )));
+            }
+        }
+        Ok(value)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderConnectionContract {
+    pub default_base_url: String,
+    pub region: ProviderFieldSchema,
+    pub workspace: ProviderFieldSchema,
+    pub account: ProviderFieldSchema,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProviderConnectionInput<'a> {
+    pub base_url: Option<&'a str>,
+    pub region: Option<&'a str>,
+    pub workspace: Option<&'a str>,
+    pub account: Option<&'a str>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedProviderConnection {
+    pub base_url: String,
+    pub region: Option<String>,
+    pub workspace: Option<String>,
+    pub account: Option<String>,
+}
+
+impl ProviderConnectionContract {
+    pub(crate) fn resolve(
+        &self,
+        input: ProviderConnectionInput<'_>,
+    ) -> ProviderResult<ResolvedProviderConnection> {
+        let region = self.region.resolve("region", input.region)?;
+        let workspace = self.workspace.resolve("workspace", input.workspace)?;
+        let account = self.account.resolve("account", input.account)?;
+        let mut base_url = input.base_url.unwrap_or(&self.default_base_url).to_owned();
+        for (placeholder, value) in [
+            ("{region}", region.as_deref()),
+            ("{workspace}", workspace.as_deref()),
+            ("{account}", account.as_deref()),
+        ] {
+            if base_url.contains(placeholder) {
+                let value = value.ok_or_else(|| {
+                    ProviderError::InvalidConfiguration(format!(
+                        "{placeholder} is required to resolve base_url"
+                    ))
+                })?;
+                base_url = base_url.replace(placeholder, value);
+            }
+        }
+        if base_url.contains('{') || base_url.contains('}') {
+            return Err(ProviderError::InvalidConfiguration(
+                "base_url contains an unsupported placeholder".into(),
+            ));
+        }
+        validate_provider_url("base_url", &base_url)?;
+        Ok(ResolvedProviderConnection {
+            base_url,
+            region,
+            workspace,
+            account,
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ProviderInstanceConfig {
     pub provider_instance_name: String,
@@ -1347,6 +1613,49 @@ fn validate_id(field: &str, value: &str) -> ProviderResult<()> {
     Ok(())
 }
 
+fn validate_nonempty(field: &str, value: &str) -> ProviderResult<()> {
+    if value.is_empty() || value.trim() != value || value.chars().any(char::is_control) {
+        return Err(ProviderError::InvalidConfiguration(format!(
+            "{field} must not be empty or contain surrounding/control whitespace"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_endpoint_field(field: &str, value: &str) -> ProviderResult<()> {
+    validate_nonempty(field, value)?;
+    if value
+        .bytes()
+        .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')))
+    {
+        return Err(ProviderError::InvalidConfiguration(format!(
+            "{field} contains characters that are unsafe in a base_url template"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_provider_url(field: &str, value: &str) -> ProviderResult<()> {
+    let url = reqwest::Url::parse(value).map_err(|_| {
+        ProviderError::InvalidConfiguration(format!("{field} must be an absolute URL"))
+    })?;
+    if !matches!(url.scheme(), "http" | "https") || url.cannot_be_a_base() {
+        return Err(ProviderError::InvalidConfiguration(format!(
+            "{field} must use http or https and support relative paths"
+        )));
+    }
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ProviderError::InvalidConfiguration(format!(
+            "{field} must not contain user info, query, or fragment"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1364,6 +1673,117 @@ mod tests {
 
     struct FakeCodec {
         descriptor: OperationDescriptor,
+    }
+
+    #[test]
+    fn provider_auth_modes_are_structurally_exclusive() {
+        let api_key: ProviderAuthConfig = serde_json::from_value(serde_json::json!({
+            "mode": "api_key",
+            "credential_ref": "system-config://secrets/aicc/sn-main"
+        }))
+        .unwrap();
+        assert_eq!(api_key.mode(), ProviderAuthMode::ApiKey);
+        assert_eq!(
+            api_key.credential_reference().unwrap().reference,
+            "system-config://secrets/aicc/sn-main"
+        );
+        assert!(api_key.validate().is_ok());
+
+        let dynamic: ProviderAuthConfig = serde_json::from_value(serde_json::json!({
+            "mode": "dynamic_login",
+            "login_profile": "device_jwt",
+            "login_endpoint": "https://sn.example/api/user/login_by_device_token"
+        }))
+        .unwrap();
+        assert_eq!(dynamic.mode(), ProviderAuthMode::DynamicLogin);
+        assert!(dynamic.credential_reference().is_none());
+        let context = dynamic.dynamic_login_context("sn-main", "alice").unwrap();
+        assert_eq!(context.cache_key(), "sn-main");
+        assert_eq!(context.user_name, "alice");
+
+        assert!(
+            serde_json::from_value::<ProviderAuthConfig>(serde_json::json!({
+                "mode": "api_key",
+                "credential_ref": "secret-ref",
+                "login_profile": "device_jwt",
+                "login_endpoint": "https://sn.example/login"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ProviderAuthConfig>(serde_json::json!({
+                "mode": "dynamic_login",
+                "credential_ref": "secret-ref",
+                "login_profile": "device_jwt",
+                "login_endpoint": "https://sn.example/login"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn provider_connection_resolves_workspace_and_default_base_url() {
+        let contract = ProviderConnectionContract {
+            default_base_url: "https://{workspace}.{region}.maas.example/compatible-mode/v1".into(),
+            region: ProviderFieldSchema::optional_with_default("cn-beijing")
+                .with_allowed_values(["cn-beijing", "cn-shanghai"]),
+            workspace: ProviderFieldSchema::required(),
+            account: ProviderFieldSchema::optional(),
+        };
+        let resolved = contract
+            .resolve(ProviderConnectionInput {
+                workspace: Some("workspace-1"),
+                account: Some("account_1"),
+                ..ProviderConnectionInput::default()
+            })
+            .unwrap();
+        assert_eq!(
+            resolved.base_url,
+            "https://workspace-1.cn-beijing.maas.example/compatible-mode/v1"
+        );
+        assert_eq!(resolved.region.as_deref(), Some("cn-beijing"));
+        assert_eq!(resolved.workspace.as_deref(), Some("workspace-1"));
+        assert_eq!(resolved.account.as_deref(), Some("account_1"));
+
+        let overridden = contract
+            .resolve(ProviderConnectionInput {
+                base_url: Some("https://gateway.example/v1"),
+                region: Some("cn-shanghai"),
+                workspace: Some("workspace-1"),
+                ..ProviderConnectionInput::default()
+            })
+            .unwrap();
+        assert_eq!(overridden.base_url, "https://gateway.example/v1");
+        assert_eq!(overridden.region.as_deref(), Some("cn-shanghai"));
+    }
+
+    #[test]
+    fn provider_connection_rejects_missing_or_unsupported_fields() {
+        let contract = ProviderConnectionContract {
+            default_base_url: "https://{workspace}.example/v1".into(),
+            region: ProviderFieldSchema::unsupported(),
+            workspace: ProviderFieldSchema::required(),
+            account: ProviderFieldSchema::unsupported(),
+        };
+        assert!(matches!(
+            contract.resolve(ProviderConnectionInput::default()),
+            Err(ProviderError::InvalidConfiguration(_))
+        ));
+        assert!(matches!(
+            contract.resolve(ProviderConnectionInput {
+                region: Some("global"),
+                workspace: Some("workspace-1"),
+                ..ProviderConnectionInput::default()
+            }),
+            Err(ProviderError::InvalidConfiguration(_))
+        ));
+        assert!(matches!(
+            contract.resolve(ProviderConnectionInput {
+                workspace: Some("unsafe/workspace"),
+                ..ProviderConnectionInput::default()
+            }),
+            Err(ProviderError::InvalidConfiguration(_))
+        ));
     }
 
     #[async_trait]

@@ -339,7 +339,7 @@ Owner：Provider Runtime 小组
 
 完成标准：Provider 生命周期可以完全通过 fake discovery 和 fake codec 测试，不依赖 Router。
 
-实现记录：Provider Runtime 小组在 `src/frame/aicc/src/provider/mod.rs` 实现 Provider Profile、Instance、copy-on-write Registry、credential resolver、统一 `ProviderDiscovery`、catalog-only discovery、三方能力交集和带 fingerprint/revision/pricing source 的实例级 inventory；复用 WP-14 RDB LKGS 接口完成有效快照恢复，加入 refresh loop、健康探测、有界指数退避、单实例刷新互斥、幂等 Stop、优雅退出和 generation token 迟到写保护，禁用、删除、替换及服务退出均先停止旧循环。12 个 fake discovery/fake codec 生命周期单测随 AICC 全量 158 个测试通过，all-target check、AICC `clippy --no-deps -D warnings`、格式和 diff 检查通过；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。全局 metadata target/applied 收敛和 RuntimeSnapshot 原子发布仍由 WP-15 负责。
+实现记录：Provider Runtime 小组在 `src/frame/aicc/src/provider/mod.rs` 实现 Provider Profile、Instance、copy-on-write Registry、credential resolver、统一 `ProviderDiscovery`、catalog-only discovery、三方能力交集和带 fingerprint/revision/pricing source 的实例级 inventory；复用 WP-14 RDB LKGS 接口完成有效快照恢复，加入 refresh loop、健康探测、有界指数退避、单实例刷新互斥、幂等 Stop、优雅退出和 generation token 迟到写保护，禁用、删除、替换及服务退出均先停止旧循环。后续补充 SN 可复用的 `api_key`/`dynamic_login` 互斥认证配置、无 token 的动态登录上下文与解析 trait，以及统一的 region/workspace/account schema、默认 base URL 模板和显式 URL 覆盖解析。原始 12 个 fake discovery/fake codec 生命周期单测随 AICC 全量 158 个测试通过；补充契约在隔离工作树中通过全部 15 个 Provider 测试、all-target check、AICC `clippy --no-deps -D warnings`、格式和 diff 检查。主工作区复验仍被并行 WP-08E 的共享 crate 编译错误阻断；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。全局 metadata target/applied 收敛和 RuntimeSnapshot 原子发布仍由 WP-15 负责。
 
 ### WP-08：内置 Provider 装配与 Dialect
 
