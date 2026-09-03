@@ -1,19 +1,17 @@
 mod anthropic_models;
 mod claude;
-mod deepseek_doubao_qwen;
 mod fal;
 mod gemini;
 mod glm;
 mod kimi;
 mod minimax;
 mod openai;
+mod openai_responses_compatible;
 mod openrouter;
 mod sn;
 
 #[allow(unused_imports)]
 pub(crate) use claude::*;
-#[allow(unused_imports)]
-pub(crate) use deepseek_doubao_qwen::*;
 #[allow(unused_imports)]
 pub(crate) use fal::*;
 #[allow(unused_imports)]
@@ -26,6 +24,8 @@ pub(crate) use kimi::*;
 pub(crate) use minimax::*;
 #[allow(unused_imports)]
 pub(crate) use openai::*;
+#[allow(unused_imports)]
+pub(crate) use openai_responses_compatible::*;
 #[allow(unused_imports)]
 pub(crate) use openrouter::*;
 #[allow(unused_imports)]

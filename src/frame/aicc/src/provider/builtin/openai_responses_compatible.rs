@@ -115,7 +115,7 @@ impl BuiltinProviderDescriptor {
     }
 }
 
-pub(crate) fn deepseek_doubao_qwen_builtin_providers() -> Vec<BuiltinProviderDescriptor> {
+pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProviderDescriptor> {
     let known: [KnownProviderCatalog; 3] = [
         decode_catalog(DEEPSEEK_KNOWN_PROVIDER, "DeepSeek Known Provider"),
         decode_catalog(DOUBAO_KNOWN_PROVIDER, "Doubao Known Provider"),
@@ -161,7 +161,7 @@ pub(crate) fn deepseek_doubao_qwen_builtin_providers() -> Vec<BuiltinProviderDes
     .collect()
 }
 
-pub(crate) fn deepseek_doubao_qwen_catalog_files() -> Vec<CurrentCatalogFile> {
+pub(crate) fn openai_responses_compatible_catalog_files() -> Vec<CurrentCatalogFile> {
     [
         (CatalogKind::KnownProvider, DEEPSEEK_KNOWN_PROVIDER),
         (CatalogKind::KnownProvider, DOUBAO_KNOWN_PROVIDER),
@@ -181,7 +181,7 @@ pub(crate) fn deepseek_doubao_qwen_catalog_files() -> Vec<CurrentCatalogFile> {
     .collect()
 }
 
-pub(crate) fn deepseek_doubao_qwen_model_driver_catalogs() -> Vec<ModelDriverCatalog> {
+pub(crate) fn openai_responses_compatible_model_driver_catalogs() -> Vec<ModelDriverCatalog> {
     [
         (DEEPSEEK_MODEL_DRIVER, "DeepSeek Model Driver"),
         (DOUBAO_MODEL_DRIVER, "Doubao Model Driver"),
@@ -269,7 +269,7 @@ fn descriptor(
 }
 
 fn configured_provider(profile_id: &str) -> BuiltinProviderDescriptor {
-    deepseek_doubao_qwen_builtin_providers()
+    openai_responses_compatible_builtin_providers()
         .into_iter()
         .find(|provider| provider.profile.provider_profile_id == profile_id)
         .unwrap_or_else(|| panic!("Provider configuration is missing `{profile_id}`"))
@@ -481,7 +481,7 @@ mod tests {
     use super::*;
     use crate::catalog::{CatalogBuildOptions, CatalogSnapshot};
     use crate::protocol::{
-        deepseek_doubao_qwen_responses_adapters, openai_responses_adapter, CodecRegistry,
+        openai_responses_adapter, openai_responses_compatible_adapters, CodecRegistry,
         ResolvedCredential,
     };
     use crate::provider::{CredentialReference, InventoryBuilder, ProviderInstanceConfig};
@@ -492,7 +492,7 @@ mod tests {
     fn bundled_provider_and_model_catalogs_build_one_snapshot() {
         let catalog = CatalogSnapshot::from_current_files(
             1,
-            deepseek_doubao_qwen_catalog_files(),
+            openai_responses_compatible_catalog_files(),
             &CatalogBuildOptions::default(),
         )
         .unwrap();
@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn profiles_are_assembled_from_known_provider_configuration() {
-        let providers = deepseek_doubao_qwen_builtin_providers();
+        let providers = openai_responses_compatible_builtin_providers();
         assert_eq!(
             providers
                 .iter()
@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn provider_rules_are_loaded_without_rust_generated_revisions() {
-        for provider in deepseek_doubao_qwen_builtin_providers() {
+        for provider in openai_responses_compatible_builtin_providers() {
             let rules = provider.provider_rules(7);
             assert_eq!(rules.revision_seq, 1);
             assert!(rules.models.is_empty());
@@ -627,7 +627,7 @@ mod tests {
 
     #[test]
     fn known_provider_fixture_keeps_templates_and_ui_schema() {
-        let providers = deepseek_doubao_qwen_builtin_providers();
+        let providers = openai_responses_compatible_builtin_providers();
         let known = providers
             .iter()
             .map(BuiltinProviderDescriptor::known_provider)
@@ -701,22 +701,25 @@ mod tests {
     fn rules_and_dialects_build_complete_inventory_identity_for_all_three_providers() {
         let catalog = CatalogSnapshot::from_current_files(
             1,
-            deepseek_doubao_qwen_catalog_files(),
+            openai_responses_compatible_catalog_files(),
             &CatalogBuildOptions::default(),
         )
         .unwrap();
-        for (provider, model_id) in deepseek_doubao_qwen_builtin_providers().into_iter().zip([
-            "deepseek-v4-flash",
-            "doubao-seed-2-0-lite-260215",
-            "qwen3.8-max",
-        ]) {
+        for (provider, model_id) in openai_responses_compatible_builtin_providers()
+            .into_iter()
+            .zip([
+                "deepseek-v4-flash",
+                "doubao-seed-2-0-lite-260215",
+                "qwen3.8-max",
+            ])
+        {
             let profile_id = provider.profile.provider_profile_id.clone();
             let (base_descriptor, base_registration) = openai_responses_adapter();
             let mut codecs = CodecRegistry::default();
             codecs
                 .register_codecs(base_descriptor, base_registration)
                 .unwrap();
-            for (descriptor, registration) in deepseek_doubao_qwen_responses_adapters().unwrap() {
+            for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
                 codecs.register_derived(descriptor, registration).unwrap();
             }
             let base_url = if profile_id == QWEN_PROFILE_ID {
