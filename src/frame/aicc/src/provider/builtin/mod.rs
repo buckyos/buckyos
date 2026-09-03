@@ -1,10 +1,13 @@
 mod fal;
+mod gemini;
 mod openai;
 mod sn;
 mod wp08e;
 
 #[allow(unused_imports)]
 pub(crate) use fal::*;
+#[allow(unused_imports)]
+pub(crate) use gemini::*;
 #[allow(unused_imports)]
 pub(crate) use openai::*;
 #[allow(unused_imports)]

@@ -351,7 +351,7 @@ Owner：七个可并行 Provider 小组
 |---|---|---|
 | WP-08A（已完成） | OpenAI | OpenAI Responses |
 | WP-08B | Claude、MiniMax | Claude Messages |
-| WP-08C | Gemini | Gemini Interactions |
+| WP-08C（已完成） | Gemini | Gemini Interactions |
 | WP-08D | OpenRouter、Kimi、GLM | OpenAI Chat Completions |
 | WP-08E（已完成） | DeepSeek、豆包、Qwen | OpenAI Responses |
 | WP-08F（已完成） | fal | task polling + fal Queue |
@@ -371,6 +371,8 @@ Owner：七个可并行 Provider 小组
 - [ ] 删除该 Provider 后，基础 codec 不需要修改。
 
 WP-08A 实现记录：OpenAI builtin 装配已落在 `src/frame/aicc/src/provider/builtin/openai.rs`，提供稳定 `openai` Profile、显示信息、默认 `https://api.openai.com/v1`、Bearer credential schema，并明确 region/workspace/account 不支持；通过官方 `/v1/models` 机器接口构建动态 discovery snapshot，保留 ETag revision、健康状态和有界错误处理。内置 Provider Rules 固定 `metadata_drivers: ["openai"]`，将 LLM、embedding、image、audio 和 video API type 显式绑定到 WP-06A 的 `openai-responses` 及专用 operation。OpenAI 没有额外 wire 差异，因此直接复用基础 Adapter，不创建空 dialect，也未修改基础 codec。4 个 builtin 单元测试随 AICC 全量 162 个测试通过，library check、格式与 diff 检查通过；stable clippy 在豁免 Resource 模块既有 `manual_is_multiple_of` lint 后通过，未新增依赖。
+
+WP-08C 实现记录：Gemini builtin 装配已落在 `src/frame/aicc/src/provider/builtin/gemini.rs`，提供稳定 `gemini` Profile、`Google Gemini` 显示信息、默认 `https://generativelanguage.googleapis.com/v1beta`、`x-goog-api-key` named-header credential schema，并通过 WP-07 的统一 connection contract 明确 region/workspace/account 均不支持。Gemini discovery 使用官方分页 `/v1beta/models` 机器接口，校验模型资源名、合并重复模型的公开 generation methods、拒绝重复 page token，以稳定 hash 生成 inventory revision，并把官方方法映射到 `interactions.create`、`models.embedContent` 和 `models.predictLongRunning`；动态 discovery 不声明价格或扩张 Model Driver 能力。Provider Rules 固定 `metadata_drivers: ["gemini"]`，把首版 LLM、vision、embedding、image、audio 和 video API type 显式绑定到 WP-06C operation。Gemini 无额外渠道级 wire 差异，因此直接复用 `gemini-interactions` 基础 Adapter，未创建空 dialect，也未修改基础 codec。5 个 WP-08C 定向测试和 AICC 全量 234 个测试、all-target check、格式与 diff 检查通过；stable clippy 在豁免 WP-08E 的 `redundant_closure` 和 Resource 模块既有 `manual_is_multiple_of` lint 后以 `-D warnings` 通过，未新增依赖。真实 Gemini API 与 T1/T1.5/T2 验收按 WP-18 集成阶段执行。
 
 WP-08E 实现记录：DeepSeek、豆包和 Qwen builtin 装配已落在 `src/frame/aicc/src/provider/builtin/wp08e.rs`，提供稳定 Profile/显示信息、Bearer credential、统一 region/workspace/account schema、默认 base URL 模板、LLM operation 绑定和 Provider Rules；Qwen 按 workspace 与五个明确 region 解析专属域名，豆包使用方舟 `/api/v3`，DeepSeek 使用官方 `/models` 机器接口并保留 ETag revision，豆包/Qwen 使用显式模型 ID 的 catalog-only inventory，不硬编码易变模型或价格。`src/frame/aicc/src/protocol/derived_responses.rs` 注册 `deepseek-responses`、`doubao-responses`、`qwen-responses` 三个窄 dialect，均声明 `base_adapter_id: openai-responses`、覆盖点和不支持项；派生层只处理已确认的参数限制、Qwen session-cache header 和 ProviderState namespace，request/response/SSE/error 继续委托 WP-06A 基础 codec。14 个装配、库存身份链、派生注册、请求约束与委托单测通过，AICC 全量 229 个测试和 `cargo check -p aicc --all-targets` 通过，未新增依赖；豆包/Qwen 原生媒体 operation 按本文建议批次 4 另行实施，不属于本次 Responses 主接口装配。
 
