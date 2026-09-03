@@ -391,18 +391,20 @@ Owner：Model/Router 小组
 
 依赖：WP-04、WP-09；使用 fixture inventory 可早于真实 Provider 完成
 
-- [ ] exact route 和 logical route；
-- [ ] method/operation/capability/feature 硬过滤；
-- [ ] privacy/trust/budget/health/allow/block 硬过滤；
-- [ ] 逻辑目录展开和 strict/parent/target fallback；
-- [ ] exact model 默认不 fallback；
-- [ ] balanced、cost、latency、quality、local 和 strict_local profile；
-- [ ] item weight、exact model weight 和确定性 tie-break；
-- [ ] session 历史 exact model 软优先，但 AICC 不维护 session cache；
-- [ ] 输出 RouteDecision、fallback candidates、完整 trace 和用户摘要；
-- [ ] trace 不记录 prompt、资源内容、credential 或敏感 option。
+- [x] exact route 和 logical route；
+- [x] method/operation/capability/feature 硬过滤；
+- [x] privacy/trust/budget/health/allow/block 硬过滤；
+- [x] 逻辑目录展开和 strict/parent/target fallback；
+- [x] exact model 默认不 fallback；
+- [x] balanced、cost、latency、quality、local 和 strict_local profile；
+- [x] item weight、exact model weight 和确定性 tie-break；
+- [x] session 历史 exact model 软优先，但 AICC 不维护 session cache；
+- [x] 输出 RouteDecision、fallback candidates、完整 trace 和用户摘要；
+- [x] trace 不记录 prompt、资源内容、credential 或敏感 option。
 
 完成标准：T1 能确定性证明每个候选被选择或排除的原因。
+
+实现记录：Model/Router 小组在 `src/frame/aicc/src/routing/mod.rs` 实现 exact/logical 两类内部路由、method/api_type/capability/operation/feature 与 Provider runtime/policy 硬过滤、过滤后继续 fallback，以及按目录 item 权重、exact model 权重、profile 分数和 exact model 名依次排序的确定性 scheduler。六类 profile、动态成本/延迟/可靠性/质量/本地性评分、调用方传入的 session 历史 exact model 软偏好、完整有序 fallback candidates、结构化 route trace 和固定模板用户摘要均已落地；trace 类型不接收 prompt、资源、credential 或 provider option。新增 12 个单元测试覆盖正常、边界、拒绝、fallback、权重、六类 profile、历史偏好和脱敏；在干净 WP-09 基线叠加本模块后，AICC 98 个测试、all-target check 和 stable clippy `--no-deps -D warnings`（豁免仓库既有 Resource 新版本 lint）通过，当前并行集成工作区的 AICC 157 个测试与 all-target check 也已通过，未新增依赖。真实 Provider read view 到 `CandidateRuntimeState` 的装配由后续 RuntimeSnapshot/API 集成工作包完成。
 
 ### WP-11：Call Lowering
 
