@@ -1,0 +1,94 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "provider_profile_id": "deepseek",
+  "metadata_drivers": ["deepseek"],
+  "origin_provider_aliases": {},
+  "origin_mappings": [],
+  "models": [],
+  "patterns": [
+    {
+      "match": "*",
+      "operations": { "llm": "responses.create" },
+      "request_rules": [
+        {
+          "remove": [
+            "/background",
+            "/context_management",
+            "/conversation",
+            "/include",
+            "/max_tool_calls",
+            "/metadata",
+            "/parallel_tool_calls",
+            "/previous_response_id",
+            "/prompt",
+            "/prompt_cache_key",
+            "/prompt_cache_retention",
+            "/safety_identifier",
+            "/service_tier",
+            "/store",
+            "/stream_options",
+            "/truncation",
+            "/seed",
+            "/stop"
+          ]
+        },
+        {
+          "when": { "/reasoning/effort": { "not": "none" } },
+          "remove": [
+            "/frequency_penalty",
+            "/presence_penalty",
+            "/temperature",
+            "/top_p"
+          ]
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "model_driver": "deepseek",
+      "variant": "reasoning-none",
+      "match": { "provider_model_id": "deepseek-v4-*", "variant": "reasoning-none" },
+      "provider_options": { "reasoning": { "effort": "none" } }
+    },
+    {
+      "model_driver": "deepseek",
+      "variant": "reasoning-minimal",
+      "match": { "provider_model_id": "deepseek-v4-*", "variant": "reasoning-minimal" },
+      "provider_options": { "reasoning": { "effort": "minimal" } }
+    },
+    {
+      "model_driver": "deepseek",
+      "variant": "reasoning-low",
+      "match": { "provider_model_id": "deepseek-v4-*", "variant": "reasoning-low" },
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "model_driver": "deepseek",
+      "variant": "reasoning-medium",
+      "match": { "provider_model_id": "deepseek-v4-*", "variant": "reasoning-medium" },
+      "provider_options": { "reasoning": { "effort": "medium" } }
+    },
+    {
+      "model_driver": "deepseek",
+      "variant": "reasoning-high",
+      "match": { "provider_model_id": "deepseek-v4-*", "variant": "reasoning-high" },
+      "provider_options": { "reasoning": { "effort": "high" } }
+    },
+    {
+      "model_driver": "deepseek",
+      "variant": "reasoning-xhigh",
+      "match": { "provider_model_id": "deepseek-v4-*", "variant": "reasoning-xhigh" },
+      "provider_options": { "reasoning": { "effort": "xhigh" } }
+    },
+    {
+      "model_driver": "deepseek",
+      "variant": "reasoning-max",
+      "match": { "provider_model_id": "deepseek-v4-*", "variant": "reasoning-max" },
+      "provider_options": { "reasoning": { "effort": "max" } }
+    }
+  ]
+}

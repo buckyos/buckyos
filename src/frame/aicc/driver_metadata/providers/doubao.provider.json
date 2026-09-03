@@ -1,0 +1,18 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "provider_profile_id": "doubao",
+  "metadata_drivers": ["doubao"],
+  "origin_provider_aliases": {},
+  "origin_mappings": [],
+  "models": [],
+  "patterns": [
+    {
+      "match": "*",
+      "operations": { "llm": "responses.create" }
+    }
+  ],
+  "variants": []
+}

@@ -2,22 +2,23 @@ use super::super::{
     validate_discovery, CatalogOnlyDiscovery, CredentialDescriptor, DiscoveredModel,
     DiscoveryContext, DiscoveryMode, ModelAvailability, ProviderConnectionContract,
     ProviderConnectionInput, ProviderDiscovery, ProviderDiscoverySnapshot, ProviderError,
-    ProviderFieldSchema, ProviderHealthState, ProviderProfile, ProviderResult, RefreshPolicy,
+    ProviderHealthState, ProviderProfile, ProviderResult, RefreshPolicy,
 };
-use crate::catalog::{KnownProvider, ProviderPatternRule, ProviderRulesCatalog};
-use crate::matching::MatchRule;
+use crate::catalog::{
+    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ModelDriverCatalog,
+    ProviderRulesCatalog,
+};
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, ResponsesDialectKind,
-    DEEPSEEK_RESPONSES_ADAPTER_ID, DOUBAO_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID,
-    QWEN_RESPONSES_ADAPTER_ID,
+    DEEPSEEK_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID,
 };
 use async_trait::async_trait;
 use buckyos_api::ApiType;
 use reqwest::header::ETAG;
 use reqwest::Method;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,10 +26,19 @@ pub(crate) const DEEPSEEK_PROFILE_ID: &str = "deepseek";
 pub(crate) const DOUBAO_PROFILE_ID: &str = "doubao";
 pub(crate) const QWEN_PROFILE_ID: &str = "qwen";
 
-const DEEPSEEK_DEFAULT_BASE_URL: &str = "https://api.deepseek.com";
-const DOUBAO_DEFAULT_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/v3";
-const QWEN_DEFAULT_BASE_URL: &str =
-    "https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1";
+const KNOWN_PROVIDERS: &[u8] =
+    include_bytes!("../../../driver_metadata/known-providers/wp08e.known-provider.json");
+const DEEPSEEK_PROVIDER_RULES: &[u8] =
+    include_bytes!("../../../driver_metadata/providers/deepseek.provider.json");
+const DOUBAO_PROVIDER_RULES: &[u8] =
+    include_bytes!("../../../driver_metadata/providers/doubao.provider.json");
+const QWEN_PROVIDER_RULES: &[u8] =
+    include_bytes!("../../../driver_metadata/providers/qwen.provider.json");
+const DEEPSEEK_MODEL_DRIVER: &[u8] =
+    include_bytes!("../../../driver_metadata/models/deepseek.model.json");
+const DOUBAO_MODEL_DRIVER: &[u8] =
+    include_bytes!("../../../driver_metadata/models/doubao.model.json");
+const QWEN_MODEL_DRIVER: &[u8] = include_bytes!("../../../driver_metadata/models/qwen.model.json");
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum BuiltinDiscoveryKind {
@@ -39,71 +49,20 @@ pub(crate) enum BuiltinDiscoveryKind {
 #[derive(Clone, Debug)]
 pub(crate) struct BuiltinProviderDescriptor {
     pub profile: ProviderProfile,
-    pub default_base_url: &'static str,
     pub connection: ProviderConnectionContract,
     pub discovery: BuiltinDiscoveryKind,
-    pub operation_bindings: BTreeMap<&'static str, &'static str>,
     pub dialect: ResponsesDialectKind,
+    known_provider: KnownProvider,
+    provider_rules: ProviderRulesCatalog,
 }
 
 impl BuiltinProviderDescriptor {
     pub(crate) fn known_provider(&self) -> KnownProvider {
-        KnownProvider {
-            provider_profile_id: self.profile.provider_profile_id.clone(),
-            display_name: self.profile.display_name.clone(),
-            base_url: self.default_base_url.to_string(),
-            protocol_adapter_id: self.profile.default_protocol_adapter_id.clone(),
-            provider_rules_id: Some(self.profile.provider_profile_id.clone()),
-            ui_hints: BTreeMap::from([
-                ("credential_label".to_string(), json!("API key")),
-                (
-                    "credential_type".to_string(),
-                    json!(self.profile.credential.kind.as_str()),
-                ),
-                (
-                    "instance_fields".to_string(),
-                    serde_json::to_value(&self.connection)
-                        .expect("provider connection schema is serializable"),
-                ),
-            ]),
-        }
+        self.known_provider.clone()
     }
 
-    pub(crate) fn provider_rules(&self, revision_seq: u64) -> ProviderRulesCatalog {
-        let metadata_drivers = match self.profile.provider_profile_id.as_str() {
-            DEEPSEEK_PROFILE_ID => Some(vec!["deepseek".to_owned()]),
-            QWEN_PROFILE_ID => Some(vec!["qwen".to_owned()]),
-            DOUBAO_PROFILE_ID => Some(vec!["doubao".to_owned()]),
-            _ => None,
-        };
-        ProviderRulesCatalog {
-            format: "buckyos.aicc.provider-rules-catalog".to_owned(),
-            schema_version: 1,
-            schema_revision: 0,
-            revision_seq,
-            provider_profile_id: self.profile.provider_profile_id.clone(),
-            metadata_drivers,
-            origin_provider_aliases: BTreeMap::new(),
-            origin_mappings: Vec::new(),
-            models: Vec::new(),
-            patterns: vec![ProviderPatternRule {
-                match_rule: MatchRule::Shorthand("*".to_owned()),
-                exclude: false,
-                operations: BTreeMap::from([(
-                    "llm".to_owned(),
-                    OPENAI_RESPONSES_OPERATION_ID.to_owned(),
-                )]),
-                provider_options: BTreeMap::new(),
-                request_rules: Vec::new(),
-                pricing: None,
-                remove_api_types: BTreeSet::new(),
-                remove_features: BTreeSet::new(),
-                estimated_latency_ms: None,
-                latency_class: None,
-                cost_class: None,
-            }],
-            variants: Vec::new(),
-        }
+    pub(crate) fn provider_rules(&self, _revision_seq: u64) -> ProviderRulesCatalog {
+        self.provider_rules.clone()
     }
 
     pub(crate) fn resolve_base_url(
@@ -153,7 +112,74 @@ impl BuiltinProviderDescriptor {
 }
 
 pub(crate) fn wp08e_builtin_providers() -> Vec<BuiltinProviderDescriptor> {
-    vec![deepseek(), doubao(), qwen()]
+    let known = decode_catalog::<KnownProviderCatalog>(KNOWN_PROVIDERS, "WP-08E Known Provider");
+    let rules: [ProviderRulesCatalog; 3] = [
+        decode_catalog(DEEPSEEK_PROVIDER_RULES, "DeepSeek Provider Rules"),
+        decode_catalog(DOUBAO_PROVIDER_RULES, "Doubao Provider Rules"),
+        decode_catalog(QWEN_PROVIDER_RULES, "Qwen Provider Rules"),
+    ];
+    [
+        (
+            DEEPSEEK_PROFILE_ID,
+            BuiltinDiscoveryKind::OpenAiModelsApi,
+            ResponsesDialectKind::DeepSeek,
+        ),
+        (
+            DOUBAO_PROFILE_ID,
+            BuiltinDiscoveryKind::CatalogOnly,
+            ResponsesDialectKind::Doubao,
+        ),
+        (
+            QWEN_PROFILE_ID,
+            BuiltinDiscoveryKind::CatalogOnly,
+            ResponsesDialectKind::Qwen,
+        ),
+    ]
+    .into_iter()
+    .map(|(profile_id, discovery, dialect)| {
+        let provider = known
+            .providers
+            .iter()
+            .find(|provider| provider.provider_profile_id == profile_id)
+            .cloned()
+            .unwrap_or_else(|| panic!("WP-08E Known Provider is missing `{profile_id}`"));
+        let provider_rules = rules
+            .iter()
+            .find(|rules| rules.provider_profile_id == profile_id)
+            .cloned()
+            .unwrap_or_else(|| panic!("WP-08E Provider Rules are missing `{profile_id}`"));
+        descriptor(provider, provider_rules, discovery, dialect)
+    })
+    .collect()
+}
+
+pub(crate) fn wp08e_catalog_files() -> Vec<CurrentCatalogFile> {
+    [
+        (CatalogKind::KnownProvider, KNOWN_PROVIDERS),
+        (CatalogKind::ProviderRules, DEEPSEEK_PROVIDER_RULES),
+        (CatalogKind::ProviderRules, DOUBAO_PROVIDER_RULES),
+        (CatalogKind::ProviderRules, QWEN_PROVIDER_RULES),
+        (CatalogKind::ModelDriver, DEEPSEEK_MODEL_DRIVER),
+        (CatalogKind::ModelDriver, DOUBAO_MODEL_DRIVER),
+        (CatalogKind::ModelDriver, QWEN_MODEL_DRIVER),
+    ]
+    .into_iter()
+    .map(|(kind, contents)| CurrentCatalogFile {
+        kind,
+        contents: contents.to_vec(),
+    })
+    .collect()
+}
+
+pub(crate) fn wp08e_model_driver_catalogs() -> Vec<ModelDriverCatalog> {
+    [
+        (DEEPSEEK_MODEL_DRIVER, "DeepSeek Model Driver"),
+        (DOUBAO_MODEL_DRIVER, "Doubao Model Driver"),
+        (QWEN_MODEL_DRIVER, "Qwen Model Driver"),
+    ]
+    .into_iter()
+    .map(|(contents, label)| decode_catalog(contents, label))
+    .collect()
 }
 
 pub(crate) fn deepseek_models_discovery(transport: HttpTransport) -> DeepSeekModelsDiscovery {
@@ -161,81 +187,62 @@ pub(crate) fn deepseek_models_discovery(transport: HttpTransport) -> DeepSeekMod
 }
 
 fn deepseek() -> BuiltinProviderDescriptor {
-    descriptor(
-        DEEPSEEK_PROFILE_ID,
-        "DeepSeek",
-        DEEPSEEK_RESPONSES_ADAPTER_ID,
-        DEEPSEEK_DEFAULT_BASE_URL,
-        ProviderConnectionContract {
-            default_base_url: DEEPSEEK_DEFAULT_BASE_URL.to_owned(),
-            region: ProviderFieldSchema::unsupported(),
-            workspace: ProviderFieldSchema::unsupported(),
-            account: ProviderFieldSchema::unsupported(),
-        },
-        BuiltinDiscoveryKind::OpenAiModelsApi,
-        ResponsesDialectKind::DeepSeek,
-    )
+    configured_provider(DEEPSEEK_PROFILE_ID)
 }
 
 fn doubao() -> BuiltinProviderDescriptor {
-    descriptor(
-        DOUBAO_PROFILE_ID,
-        "豆包（火山方舟）",
-        DOUBAO_RESPONSES_ADAPTER_ID,
-        DOUBAO_DEFAULT_BASE_URL,
-        ProviderConnectionContract {
-            default_base_url: "https://ark.{region}.volces.com/api/v3".to_owned(),
-            region: ProviderFieldSchema::optional_with_default("cn-beijing")
-                .with_allowed_values(["cn-beijing"]),
-            workspace: ProviderFieldSchema::unsupported(),
-            account: ProviderFieldSchema::unsupported(),
-        },
-        BuiltinDiscoveryKind::CatalogOnly,
-        ResponsesDialectKind::Doubao,
-    )
+    configured_provider(DOUBAO_PROFILE_ID)
 }
 
 fn qwen() -> BuiltinProviderDescriptor {
-    descriptor(
-        QWEN_PROFILE_ID,
-        "Qwen（阿里云百炼）",
-        QWEN_RESPONSES_ADAPTER_ID,
-        QWEN_DEFAULT_BASE_URL,
-        ProviderConnectionContract {
-            default_base_url: QWEN_DEFAULT_BASE_URL.to_owned(),
-            region: ProviderFieldSchema::optional_with_default("cn-beijing").with_allowed_values([
-                "cn-beijing",
-                "ap-southeast-1",
-                "us-east-1",
-                "eu-central-1",
-                "ap-northeast-1",
-            ]),
-            workspace: ProviderFieldSchema::required(),
-            account: ProviderFieldSchema::unsupported(),
-        },
-        BuiltinDiscoveryKind::CatalogOnly,
-        ResponsesDialectKind::Qwen,
-    )
+    configured_provider(QWEN_PROFILE_ID)
 }
 
 fn descriptor(
-    profile_id: &str,
-    display_name: &str,
-    adapter_id: &str,
-    default_base_url: &'static str,
-    connection: ProviderConnectionContract,
+    known_provider: KnownProvider,
+    provider_rules: ProviderRulesCatalog,
     discovery: BuiltinDiscoveryKind,
     dialect: ResponsesDialectKind,
 ) -> BuiltinProviderDescriptor {
+    let connection = known_provider
+        .ui_hints
+        .get("instance_fields")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_else(|| {
+            panic!(
+                "Known Provider `{}` has an invalid instance_fields schema",
+                known_provider.provider_profile_id
+            )
+        });
+    let credential_type = known_provider
+        .ui_hints
+        .get("credential_type")
+        .and_then(|value| value.as_str());
+    let credential = match credential_type {
+        Some("bearer") => CredentialDescriptor {
+            kind: CredentialKind::Bearer,
+            header_name: None,
+        },
+        _ => panic!(
+            "Known Provider `{}` has an unsupported credential_type",
+            known_provider.provider_profile_id
+        ),
+    };
+    assert_eq!(
+        known_provider.provider_rules_id.as_deref(),
+        Some(provider_rules.provider_profile_id.as_str())
+    );
+    assert_eq!(
+        known_provider.protocol_adapter_id,
+        dialect.contract().protocol_adapter_id
+    );
     BuiltinProviderDescriptor {
         profile: ProviderProfile {
-            provider_profile_id: profile_id.to_string(),
-            display_name: display_name.to_string(),
-            default_protocol_adapter_id: adapter_id.to_string(),
-            credential: CredentialDescriptor {
-                kind: CredentialKind::Bearer,
-                header_name: None,
-            },
+            provider_profile_id: known_provider.provider_profile_id.clone(),
+            display_name: known_provider.display_name.clone(),
+            default_protocol_adapter_id: known_provider.protocol_adapter_id.clone(),
+            credential,
             discovery_mode: match discovery {
                 BuiltinDiscoveryKind::OpenAiModelsApi => DiscoveryMode::MachineApi,
                 BuiltinDiscoveryKind::CatalogOnly => DiscoveryMode::CatalogOnly,
@@ -243,12 +250,24 @@ fn descriptor(
             refresh: RefreshPolicy::default(),
             default_inventory: None,
         },
-        default_base_url,
         connection,
         discovery,
-        operation_bindings: BTreeMap::from([("llm", OPENAI_RESPONSES_OPERATION_ID)]),
         dialect,
+        known_provider,
+        provider_rules,
     }
+}
+
+fn configured_provider(profile_id: &str) -> BuiltinProviderDescriptor {
+    wp08e_builtin_providers()
+        .into_iter()
+        .find(|provider| provider.profile.provider_profile_id == profile_id)
+        .unwrap_or_else(|| panic!("WP-08E configuration is missing `{profile_id}`"))
+}
+
+fn decode_catalog<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
+    serde_json::from_slice(contents)
+        .unwrap_or_else(|error| panic!("{label} configuration is invalid: {error}"))
 }
 
 fn catalog_model(provider_model_id: String) -> DiscoveredModel {
@@ -450,19 +469,70 @@ fn parse_deepseek_models(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::{
-        CatalogBuildOptions, CatalogDocuments, CatalogSnapshot, KnownProviderCatalog,
-        ModelDriverCatalog,
-    };
+    use crate::catalog::{CatalogBuildOptions, CatalogSnapshot};
     use crate::protocol::{
         openai_responses_adapter, wp08e_responses_adapters, CodecRegistry, ResolvedCredential,
     };
     use crate::provider::{CredentialReference, InventoryBuilder, ProviderInstanceConfig};
     use reqwest::header::AUTHORIZATION;
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     #[test]
-    fn profiles_have_stable_ids_urls_schemas_and_responses_bindings() {
+    fn bundled_provider_and_model_catalogs_build_one_snapshot() {
+        let catalog = CatalogSnapshot::from_current_files(
+            1,
+            wp08e_catalog_files(),
+            &CatalogBuildOptions::default(),
+        )
+        .unwrap();
+        for profile_id in [DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID] {
+            assert!(catalog.known_provider(profile_id).is_some());
+            let rules = catalog.provider_rules(profile_id).unwrap();
+            assert_eq!(
+                rules.metadata_drivers.as_deref(),
+                Some(&[profile_id.to_owned()][..])
+            );
+            assert_eq!(
+                rules.patterns[0].operations.get("llm"),
+                Some(&OPENAI_RESPONSES_OPERATION_ID.to_owned())
+            );
+            assert!(catalog.model_driver(profile_id).is_some());
+        }
+
+        let deepseek = catalog.model_driver(DEEPSEEK_PROFILE_ID).unwrap();
+        let flash = deepseek
+            .models
+            .iter()
+            .find(|model| model.id == "deepseek-v4-flash")
+            .unwrap();
+        assert_eq!(
+            flash.capabilities.as_ref().unwrap()["max_context_tokens"],
+            1_000_000
+        );
+        assert_eq!(
+            flash.capabilities.as_ref().unwrap()["max_output_tokens"],
+            393_216
+        );
+
+        let doubao = catalog.model_driver(DOUBAO_PROFILE_ID).unwrap();
+        assert!(doubao
+            .models
+            .iter()
+            .any(|model| model.id == "doubao-seed-2-0-lite-260215"));
+        assert!(doubao
+            .patterns
+            .iter()
+            .any(|model| model.parameter_scale.as_deref() == Some("pro")));
+
+        let qwen = catalog.model_driver(QWEN_PROFILE_ID).unwrap();
+        assert!(qwen.patterns.iter().any(|model| {
+            model.parameter_scale.as_deref() == Some("max")
+                && model.capabilities.as_ref().unwrap()["max_context_tokens"] == 1_000_000
+        }));
+    }
+
+    #[test]
+    fn profiles_are_assembled_from_known_provider_configuration() {
         let providers = wp08e_builtin_providers();
         assert_eq!(
             providers
@@ -473,10 +543,6 @@ mod tests {
         );
         for provider in &providers {
             assert_eq!(provider.profile.credential.kind, CredentialKind::Bearer);
-            assert_eq!(
-                provider.operation_bindings.get("llm"),
-                Some(&OPENAI_RESPONSES_OPERATION_ID)
-            );
             assert_eq!(
                 provider.profile.default_protocol_adapter_id,
                 provider.dialect.contract().protocol_adapter_id
@@ -490,7 +556,10 @@ mod tests {
             providers[2].connection.workspace.mode,
             crate::provider::ProviderFieldMode::Required
         );
-        assert_eq!(providers[1].default_base_url, DOUBAO_DEFAULT_BASE_URL);
+        assert_eq!(
+            providers[1].known_provider().base_url,
+            "https://ark.cn-beijing.volces.com/api/v3"
+        );
     }
 
     #[test]
@@ -526,21 +595,23 @@ mod tests {
     }
 
     #[test]
-    fn provider_rules_fixtures_bind_llm_to_responses_without_model_versions() {
+    fn provider_rules_are_loaded_without_rust_generated_revisions() {
         for provider in wp08e_builtin_providers() {
             let rules = provider.provider_rules(7);
-            assert_eq!(rules.revision_seq, 7);
+            assert_eq!(rules.revision_seq, 1);
             assert!(rules.models.is_empty());
             assert_eq!(rules.patterns.len(), 1);
             assert_eq!(
                 rules.patterns[0].operations.get("llm"),
                 Some(&OPENAI_RESPONSES_OPERATION_ID.to_string())
             );
-            assert!(serde_json::to_string(&rules)
-                .unwrap()
-                .find("deepseek-v")
-                .is_none());
         }
+        assert!(deepseek().provider_rules(99).patterns[0].request_rules[0]
+            .remove
+            .contains(&"/store".to_owned()));
+        assert!(qwen().provider_rules(99).patterns[0].request_rules[0]
+            .remove
+            .contains(&"/background".to_owned()));
     }
 
     #[test]
@@ -550,8 +621,11 @@ mod tests {
             .iter()
             .map(BuiltinProviderDescriptor::known_provider)
             .collect::<Vec<_>>();
-        assert_eq!(known[0].base_url, DEEPSEEK_DEFAULT_BASE_URL);
-        assert_eq!(known[2].base_url, QWEN_DEFAULT_BASE_URL);
+        assert_eq!(known[0].base_url, "https://api.deepseek.com");
+        assert_eq!(
+            known[2].base_url,
+            "https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1"
+        );
         assert_eq!(
             known[2].ui_hints["instance_fields"]["workspace"]["mode"],
             Value::String("required".to_owned())
@@ -589,7 +663,7 @@ mod tests {
             provider_instance_name: "deepseek-main".to_owned(),
             provider_profile_id: DEEPSEEK_PROFILE_ID.to_owned(),
             protocol_adapter_id: DEEPSEEK_RESPONSES_ADAPTER_ID.to_owned(),
-            base_url: DEEPSEEK_DEFAULT_BASE_URL.to_owned(),
+            base_url: deepseek().known_provider().base_url,
             credential: CredentialReference {
                 reference: "secret://deepseek/main".to_owned(),
             },
@@ -614,44 +688,18 @@ mod tests {
 
     #[test]
     fn rules_and_dialects_build_complete_inventory_identity_for_all_three_providers() {
-        for provider in wp08e_builtin_providers() {
+        let catalog = CatalogSnapshot::from_current_files(
+            1,
+            wp08e_catalog_files(),
+            &CatalogBuildOptions::default(),
+        )
+        .unwrap();
+        for (provider, model_id) in wp08e_builtin_providers().into_iter().zip([
+            "deepseek-v4-flash",
+            "doubao-seed-2-0-lite-260215",
+            "qwen3.8-max",
+        ]) {
             let profile_id = provider.profile.provider_profile_id.clone();
-            let model_id = format!("{profile_id}-fixture-model");
-            let model_driver: ModelDriverCatalog = serde_json::from_value(json!({
-                "format": "buckyos.aicc.model-driver-catalog",
-                "schema_version": 1,
-                "schema_revision": 0,
-                "model_driver_id": profile_id,
-                "revision_seq": 3,
-                "models": [{
-                    "id": model_id,
-                    "api_types": ["llm"],
-                    "capabilities": {"reasoning": true, "tool_calling": true}
-                }],
-                "patterns": [],
-                "defaults": {},
-                "variants": [],
-                "version_rules": []
-            }))
-            .unwrap();
-            let known = KnownProviderCatalog {
-                format: "buckyos.aicc.known-provider-catalog".to_owned(),
-                schema_version: 1,
-                schema_revision: 0,
-                revision_seq: 3,
-                catalog_id: format!("{profile_id}-fixture"),
-                providers: vec![provider.known_provider()],
-            };
-            let catalog = CatalogSnapshot::build(
-                3,
-                CatalogDocuments {
-                    model_drivers: vec![model_driver],
-                    provider_rules: vec![provider.provider_rules(3)],
-                    known_providers: vec![known],
-                },
-                &CatalogBuildOptions::default(),
-            )
-            .unwrap();
             let (base_descriptor, base_registration) = openai_responses_adapter();
             let mut codecs = CodecRegistry::default();
             codecs
@@ -684,7 +732,7 @@ mod tests {
                     revision: Some("fixture-v1".to_owned()),
                     discovered_at_ms: 1,
                     health: ProviderHealthState::Healthy,
-                    models: vec![catalog_model(model_id.clone())],
+                    models: vec![catalog_model(model_id.to_owned())],
                 },
                 &catalog,
                 &codecs,

@@ -1,0 +1,68 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "model_driver_id": "deepseek",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "deepseek-v4-flash",
+      "parameter_scale": "flash",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 393216
+      }
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "parameter_scale": "pro",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 393216
+      }
+    },
+    {
+      "id": "deepseek-v4-flash-vision-exp",
+      "parameter_scale": "flash",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "reasoning": true,
+        "vision": true,
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 393216
+      }
+    }
+  ],
+  "patterns": [],
+  "defaults": {
+    "api_types": [],
+    "capabilities": {}
+  },
+  "variants": [
+    { "name": "reasoning-none", "match": "deepseek-v4-*" },
+    { "name": "reasoning-minimal", "match": "deepseek-v4-*" },
+    { "name": "reasoning-low", "match": "deepseek-v4-*" },
+    { "name": "reasoning-medium", "match": "deepseek-v4-*" },
+    { "name": "reasoning-high", "match": "deepseek-v4-*" },
+    { "name": "reasoning-xhigh", "match": "deepseek-v4-*" },
+    { "name": "reasoning-max", "match": "deepseek-v4-*" }
+  ],
+  "version_rules": []
+}

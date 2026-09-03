@@ -32,8 +32,6 @@ pub(crate) struct ResponsesDialectContract {
     pub protocol_adapter_id: &'static str,
     pub base_adapter_id: &'static str,
     pub override_points: BTreeSet<&'static str>,
-    pub unsupported_parameters: BTreeSet<&'static str>,
-    pub unsupported_features: BTreeSet<&'static str>,
 }
 
 impl ResponsesDialectKind {
@@ -42,48 +40,20 @@ impl ResponsesDialectKind {
             Self::DeepSeek => ResponsesDialectContract {
                 protocol_adapter_id: DEEPSEEK_RESPONSES_ADAPTER_ID,
                 base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
-                override_points: BTreeSet::from([
-                    "request_parameter_validation",
-                    "provider_state_namespace",
-                ]),
-                unsupported_parameters: BTreeSet::from([
-                    "background",
-                    "include",
-                    "metadata",
-                    "parallel_tool_calls",
-                    "service_tier",
-                    "store",
-                    "truncation",
-                ]),
-                unsupported_features: BTreeSet::from(["server_managed_conversation"]),
+                override_points: BTreeSet::from(["provider_state_namespace"]),
             },
             Self::Doubao => ResponsesDialectContract {
                 protocol_adapter_id: DOUBAO_RESPONSES_ADAPTER_ID,
                 base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
-                override_points: BTreeSet::from([
-                    "builtin_tool_events",
-                    "provider_state_namespace",
-                ]),
-                unsupported_parameters: BTreeSet::new(),
-                unsupported_features: BTreeSet::new(),
+                override_points: BTreeSet::from(["provider_state_namespace"]),
             },
             Self::Qwen => ResponsesDialectContract {
                 protocol_adapter_id: QWEN_RESPONSES_ADAPTER_ID,
                 base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
                 override_points: BTreeSet::from([
-                    "request_parameter_validation",
                     "session_cache_header",
                     "provider_state_namespace",
                 ]),
-                unsupported_parameters: BTreeSet::from([
-                    "background",
-                    "include",
-                    "metadata",
-                    "parallel_tool_calls",
-                    "service_tier",
-                    "truncation",
-                ]),
-                unsupported_features: BTreeSet::from(["background_execution"]),
             },
         }
     }
@@ -171,18 +141,6 @@ impl OperationCodec for ResponsesDialectCodec {
     }
 
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
-        let contract = self.dialect.contract();
-        if let Some(parameter) = call
-            .input
-            .resolved_parameters
-            .keys()
-            .find(|name| contract.unsupported_parameters.contains(name.as_str()))
-        {
-            return Err(ProtocolError::invalid_request(format!(
-                "{} does not support Responses parameter `{parameter}`",
-                contract.protocol_adapter_id
-            )));
-        }
         let mut parameters = call.input.resolved_parameters.clone();
         let session_cache = if self.dialect == ResponsesDialectKind::Qwen {
             parameters.remove(QWEN_SESSION_CACHE_PARAMETER)
@@ -344,10 +302,10 @@ mod tests {
             assert_eq!(registration.operation_codecs.len(), 1);
             assert!(registration.native_task_codecs.is_empty());
         }
-        assert!(ResponsesDialectKind::DeepSeek
-            .contract()
-            .unsupported_parameters
-            .contains("store"));
+        assert_eq!(
+            ResponsesDialectKind::DeepSeek.contract().override_points,
+            BTreeSet::from(["provider_state_namespace"])
+        );
         assert!(ResponsesDialectKind::Qwen
             .contract()
             .override_points
@@ -429,20 +387,23 @@ mod tests {
     }
 
     #[test]
-    fn dialects_reject_confirmed_unsupported_parameters_before_http() {
+    fn provider_parameter_policy_is_not_hardcoded_in_dialects() {
         for (dialect, parameter) in [
             (ResponsesDialectKind::DeepSeek, "store"),
             (ResponsesDialectKind::Qwen, "background"),
         ] {
             let (_, registration) = responses_dialect_adapter(dialect).unwrap();
-            let error = registration.operation_codecs[0]
+            let request = registration.operation_codecs[0]
                 .encode(&CodecCall {
                     api_type: ApiType::Llm,
                     input: &input(BTreeMap::from([(parameter.to_string(), Value::Bool(true))])),
                     context: &context("https://provider.example/v1"),
                 })
-                .unwrap_err();
-            assert!(error.message.contains(parameter));
+                .unwrap();
+            let crate::protocol::HttpBody::Json(body) = request.body else {
+                panic!("expected JSON request")
+            };
+            assert_eq!(body[parameter], Value::Bool(true));
         }
     }
 

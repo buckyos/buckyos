@@ -1,0 +1,63 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "provider_profile_id": "qwen",
+  "metadata_drivers": ["qwen"],
+  "origin_provider_aliases": {},
+  "origin_mappings": [],
+  "models": [],
+  "patterns": [
+    {
+      "match": "*",
+      "operations": { "llm": "responses.create" },
+      "request_rules": [
+        {
+          "remove": [
+            "/background",
+            "/include",
+            "/metadata",
+            "/parallel_tool_calls",
+            "/service_tier",
+            "/truncation",
+            "/seed",
+            "/stop"
+          ]
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "model_driver": "qwen",
+      "variant": "reasoning-none",
+      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-none" },
+      "provider_options": { "reasoning": { "effort": "none" } }
+    },
+    {
+      "model_driver": "qwen",
+      "variant": "reasoning-minimal",
+      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-minimal" },
+      "provider_options": { "reasoning": { "effort": "minimal" } }
+    },
+    {
+      "model_driver": "qwen",
+      "variant": "reasoning-low",
+      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-low" },
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "model_driver": "qwen",
+      "variant": "reasoning-medium",
+      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-medium" },
+      "provider_options": { "reasoning": { "effort": "medium" } }
+    },
+    {
+      "model_driver": "qwen",
+      "variant": "reasoning-high",
+      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-high" },
+      "provider_options": { "reasoning": { "effort": "high" } }
+    }
+  ]
+}

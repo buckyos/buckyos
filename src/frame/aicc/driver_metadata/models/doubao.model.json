@@ -1,0 +1,72 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "model_driver_id": "doubao",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "doubao-seed-2-0-lite-260215",
+      "parameter_scale": "lite",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true
+      }
+    }
+  ],
+  "patterns": [
+    {
+      "match": "doubao-seed-2-0-pro-*",
+      "parameter_scale": "pro",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true
+      }
+    },
+    {
+      "match": "doubao-seed-2-0-lite-*",
+      "parameter_scale": "lite",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true
+      }
+    },
+    {
+      "match": "doubao-seed-2-0-mini-*",
+      "parameter_scale": "mini",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "reasoning": true,
+        "vision": true
+      }
+    },
+    {
+      "match": "doubao-seed-2-0-code-*",
+      "parameter_scale": "code",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true
+      }
+    }
+  ],
+  "defaults": {
+    "api_types": [],
+    "capabilities": {}
+  },
+  "variants": [],
+  "version_rules": []
+}

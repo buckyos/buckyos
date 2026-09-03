@@ -1,0 +1,237 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "model_driver_id": "qwen",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "qwen3.6-max-preview",
+      "parameter_scale": "max",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 262144
+      }
+    },
+    {
+      "id": "qwen3.8-2.4t-a95b",
+      "parameter_scale": "2.4t-a95b",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true
+      }
+    },
+    {
+      "id": "qwen3.8-27b",
+      "parameter_scale": "27b",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true
+      }
+    },
+    {
+      "id": "qwen3.6-35b-a3b",
+      "parameter_scale": "35b-a3b",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true
+      }
+    }
+  ],
+  "patterns": [
+    {
+      "match": "qwen3.8-max*",
+      "parameter_scale": "max",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000
+      }
+    },
+    {
+      "match": "qwen3.8-flash*",
+      "parameter_scale": "flash",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000
+      }
+    },
+    {
+      "match": "qwen3.7-max*",
+      "parameter_scale": "max",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000
+      }
+    },
+    {
+      "match": "qwen3.7-plus*",
+      "parameter_scale": "plus",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000
+      }
+    },
+    {
+      "match": "qwen3.7-flash*",
+      "parameter_scale": "flash",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000
+      }
+    },
+    {
+      "match": "qwen3.6-plus*",
+      "parameter_scale": "plus",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000
+      }
+    },
+    {
+      "match": "qwen3.6-flash*",
+      "parameter_scale": "flash",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000
+      }
+    },
+    {
+      "match": "qwen3.5-plus*",
+      "parameter_scale": "plus",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000
+      }
+    },
+    {
+      "match": "qwen3.5-flash*",
+      "parameter_scale": "flash",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000
+      }
+    },
+    {
+      "match": "qwen3.5-397b-a17b*",
+      "parameter_scale": "397b-a17b",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 262144
+      }
+    },
+    {
+      "match": "qwen3.5-122b-a10b*",
+      "parameter_scale": "122b-a10b",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 262144
+      }
+    },
+    {
+      "match": "qwen3.5-35b-a3b*",
+      "parameter_scale": "35b-a3b",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 262144
+      }
+    },
+    {
+      "match": "qwen3.5-27b*",
+      "parameter_scale": "27b",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 262144
+      }
+    },
+    {
+      "match": "qwen3-max*",
+      "parameter_scale": "max",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 262144
+      }
+    }
+  ],
+  "defaults": {
+    "api_types": [],
+    "capabilities": {}
+  },
+  "variants": [
+    { "name": "reasoning-none", "match": "qwen3*" },
+    { "name": "reasoning-minimal", "match": "qwen3*" },
+    { "name": "reasoning-low", "match": "qwen3*" },
+    { "name": "reasoning-medium", "match": "qwen3*" },
+    { "name": "reasoning-high", "match": "qwen3*" }
+  ],
+  "version_rules": []
+}
