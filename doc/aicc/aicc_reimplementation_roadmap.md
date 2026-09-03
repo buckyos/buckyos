@@ -293,9 +293,11 @@ Owner：四个并行协议小组
 
 #### WP-06B Claude Messages
 
-- [ ] Messages request/response/content block；
-- [ ] version header、SSE、tool use、thinking 和 usage；
-- [ ] 不包含 MiniMax 分支。
+- [x] Messages request/response/content block；
+- [x] version header、SSE、tool use、thinking 和 usage；
+- [x] 不包含 MiniMax 分支。
+
+实现记录：Claude Messages 小组已在 `src/frame/aicc/src/protocol/claude_messages.rs` 实现独立 `claude-messages / messages.create / llm` binding，覆盖 Messages 请求、响应、content block、`anthropic-version`、named-header credential、tool use/result、thinking/signature、ProviderState、usage、错误映射和真正增量的 SSE 归并；streaming 通过 WP-05 的 `StreamingHttpResponse -> SseFrameStream -> ProtocolStream` 接口逐块消费，不缓冲完整响应，且保留 request ID、Retry-After、断连和有界非 2xx 错误。基础 codec 只包含 Claude Messages wire 语义，不引用 MiniMax 或 Provider/Router/Model 模块。8 个 Claude 合同单测随 AICC 全量 158 个测试通过，all-target check、排除 Resource 模块既有 `manual_is_multiple_of` lint 后的 clippy `-D warnings` 和格式检查通过；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。
 
 #### WP-06C Gemini Interactions
 

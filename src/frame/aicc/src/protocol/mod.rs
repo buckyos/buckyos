@@ -2,6 +2,7 @@
 
 mod adapter;
 mod auth;
+mod claude_messages;
 mod contract;
 mod error;
 mod gemini;
@@ -16,6 +17,8 @@ mod transport;
 pub(crate) use adapter::*;
 #[allow(unused_imports)]
 pub(crate) use auth::*;
+#[allow(unused_imports)]
+pub(crate) use claude_messages::*;
 #[allow(unused_imports)]
 pub(crate) use contract::*;
 #[allow(unused_imports)]
