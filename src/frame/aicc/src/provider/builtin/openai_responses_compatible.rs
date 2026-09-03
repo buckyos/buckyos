@@ -485,16 +485,22 @@ mod tests {
         ResolvedCredential,
     };
     use crate::provider::{CredentialReference, InventoryBuilder, ProviderInstanceConfig};
+    use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
     use reqwest::header::AUTHORIZATION;
     use serde_json::{json, Value};
 
     #[test]
     fn bundled_provider_and_model_catalogs_build_one_snapshot() {
-        let catalog = CatalogSnapshot::from_current_files(
-            1,
-            openai_responses_compatible_catalog_files(),
-            &CatalogBuildOptions::default(),
-        )
+        let builtin = openai_responses_compatible_catalog_files()
+            .into_iter()
+            .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let catalog = MetadataSources {
+            builtin,
+            ..MetadataSources::default()
+        }
+        .build_snapshot(1, &CatalogBuildOptions::default())
         .unwrap();
         for profile_id in [DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID] {
             assert!(catalog.known_provider(profile_id).is_some());
