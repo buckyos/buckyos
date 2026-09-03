@@ -449,6 +449,12 @@ pub(crate) struct OriginTransform {
     pub on_missing: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedProviderOrigin {
+    pub origin_model_id: String,
+    pub model_driver_id: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProviderVariantRule {
@@ -565,11 +571,17 @@ struct CompiledProviderRule {
 #[derive(Clone, Debug)]
 struct CompiledProviderRulesCatalog {
     document: ProviderRulesCatalog,
+    origin_mappings: Vec<CompiledOriginMapping>,
     exact_index: BTreeMap<String, usize>,
     patterns: CompiledRuleSet,
     exact_compiled: Vec<CompiledProviderRule>,
     pattern_compiled: Vec<CompiledProviderRule>,
     compiled_variants: Vec<CompiledMatchRule>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CompiledOriginMapping {
+    VendorModel,
 }
 
 #[derive(Clone, Debug)]
@@ -944,6 +956,69 @@ impl CatalogSnapshot {
         }))
     }
 
+    pub(crate) fn resolve_provider_origin(
+        &self,
+        provider_profile_id: &str,
+        provider_model_id: &str,
+    ) -> Result<ResolvedProviderOrigin, CatalogResolveError> {
+        let catalog = self
+            .provider_rules
+            .get(provider_profile_id)
+            .ok_or_else(|| CatalogResolveError::UnknownProviderRules {
+                provider_profile_id: provider_profile_id.to_owned(),
+            })?;
+        let mut resolved = Vec::new();
+        for (mapping, compiled) in catalog
+            .document
+            .origin_mappings
+            .iter()
+            .zip(&catalog.origin_mappings)
+        {
+            let Some(origin) = apply_origin_mapping(
+                provider_profile_id,
+                provider_model_id,
+                mapping,
+                *compiled,
+                &catalog.document.origin_provider_aliases,
+            )?
+            else {
+                continue;
+            };
+            if !self.model_drivers.contains_key(&origin.model_driver_id) {
+                return Err(CatalogResolveError::UnknownOriginProvider {
+                    provider_profile_id: provider_profile_id.to_owned(),
+                    origin_provider: origin.model_driver_id,
+                });
+            }
+            if catalog
+                .document
+                .metadata_drivers
+                .as_ref()
+                .is_some_and(|drivers| !drivers.contains(&origin.model_driver_id))
+            {
+                return Err(CatalogResolveError::OriginDriverOutsideMetadataDrivers {
+                    provider_profile_id: provider_profile_id.to_owned(),
+                    model_driver_id: origin.model_driver_id,
+                });
+            }
+            if !resolved.contains(&origin) {
+                resolved.push(origin);
+            }
+        }
+        match resolved.len() {
+            0 => Err(CatalogResolveError::OriginMappingNotFound {
+                provider_profile_id: provider_profile_id.to_owned(),
+                provider_model_id: provider_model_id.to_owned(),
+            }),
+            1 => Ok(resolved.pop().expect("one resolved origin")),
+            _ => Err(CatalogResolveError::ConflictingOriginMappings {
+                provider_profile_id: provider_profile_id.to_owned(),
+                provider_model_id: provider_model_id.to_owned(),
+                resolved,
+            }),
+        }
+    }
+
     fn resolve_candidates(
         &self,
         requested: Option<&[String]>,
@@ -1037,6 +1112,11 @@ fn compile_model_driver(
 fn compile_provider_rules(
     document: ProviderRulesCatalog,
 ) -> Result<CompiledProviderRulesCatalog, CatalogBuildError> {
+    let origin_mappings = document
+        .origin_mappings
+        .iter()
+        .map(|mapping| compile_origin_mapping(&document.provider_profile_id, mapping))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut exact_index = BTreeMap::new();
     for (position, rule) in document.models.iter().enumerate() {
         if exact_index.insert(rule.id.clone(), position).is_some() {
@@ -1073,12 +1153,114 @@ fn compile_provider_rules(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(CompiledProviderRulesCatalog {
         document,
+        origin_mappings,
         exact_index,
         patterns,
         exact_compiled,
         pattern_compiled,
         compiled_variants,
     })
+}
+
+fn compile_origin_mapping(
+    owner: &str,
+    mapping: &OriginMapping,
+) -> Result<CompiledOriginMapping, CatalogBuildError> {
+    if mapping.extract.regex != "^(?<driver>[^/]+)/(?<model>.+)$" {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: owner.to_owned(),
+            field: "origin_mappings.extract.regex",
+            reason: "only the built-in vendor/model capture is supported".to_owned(),
+        });
+    }
+    for (capture, transforms) in &mapping.transforms {
+        if capture != "driver" && capture != "model" {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "origin_mappings.transforms",
+                reason: format!("unknown capture {capture:?}"),
+            });
+        }
+        for transform in transforms {
+            match transform.op.as_str() {
+                "trim" | "lowercase" => {
+                    if transform.table.is_some() || transform.on_missing.is_some() {
+                        return Err(CatalogBuildError::InvalidValue {
+                            owner: owner.to_owned(),
+                            field: "origin_mappings.transforms",
+                            reason: format!("transform {:?} does not accept options", transform.op),
+                        });
+                    }
+                }
+                "alias" => {
+                    if capture != "driver"
+                        || transform.table.as_deref() != Some("origin_provider_aliases")
+                        || !matches!(transform.on_missing.as_deref(), None | Some("keep"))
+                    {
+                        return Err(CatalogBuildError::InvalidValue {
+                            owner: owner.to_owned(),
+                            field: "origin_mappings.transforms",
+                            reason: "alias must target driver/origin_provider_aliases and on_missing may only be keep".to_owned(),
+                        });
+                    }
+                }
+                _ => {
+                    return Err(CatalogBuildError::InvalidValue {
+                        owner: owner.to_owned(),
+                        field: "origin_mappings.transforms",
+                        reason: format!("unsupported transform {:?}", transform.op),
+                    });
+                }
+            }
+        }
+    }
+    Ok(CompiledOriginMapping::VendorModel)
+}
+
+fn apply_origin_mapping(
+    provider_profile_id: &str,
+    provider_model_id: &str,
+    mapping: &OriginMapping,
+    compiled: CompiledOriginMapping,
+    aliases: &BTreeMap<String, String>,
+) -> Result<Option<ResolvedProviderOrigin>, CatalogResolveError> {
+    let (mut driver, mut model) = match compiled {
+        CompiledOriginMapping::VendorModel => {
+            let Some((driver, model)) = provider_model_id.split_once('/') else {
+                return Ok(None);
+            };
+            if driver.is_empty() || model.is_empty() {
+                return Ok(None);
+            }
+            (driver.to_owned(), model.to_owned())
+        }
+    };
+    for (capture, value) in [("driver", &mut driver), ("model", &mut model)] {
+        for transform in mapping.transforms.get(capture).into_iter().flatten() {
+            match transform.op.as_str() {
+                "trim" => *value = value.trim().to_owned(),
+                "lowercase" => *value = value.to_lowercase(),
+                "alias" => {
+                    if let Some(mapped) = aliases.get(value.as_str()) {
+                        *value = mapped.clone();
+                    } else if transform.on_missing.as_deref() != Some("keep") {
+                        return Err(CatalogResolveError::UnknownOriginProvider {
+                            provider_profile_id: provider_profile_id.to_owned(),
+                            origin_provider: value.clone(),
+                        });
+                    }
+                }
+                _ => unreachable!("origin transforms are validated during snapshot build"),
+            }
+        }
+    }
+    if driver.is_empty() || model.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(ResolvedProviderOrigin {
+        origin_model_id: model,
+        model_driver_id: driver,
+    }))
 }
 
 trait ProviderRuleData {
@@ -1580,6 +1762,20 @@ fn validate_references(
         }
         for target in catalog.document.origin_provider_aliases.values() {
             require_model_driver(model_drivers, owner, "origin_provider_aliases", target)?;
+            if catalog
+                .document
+                .metadata_drivers
+                .as_ref()
+                .is_some_and(|drivers| !drivers.contains(target))
+            {
+                return Err(CatalogBuildError::InvalidValue {
+                    owner: owner.clone(),
+                    field: "origin_provider_aliases",
+                    reason: format!(
+                        "Model Driver {target:?} is outside the provider's metadata_drivers"
+                    ),
+                });
+            }
         }
         for variant in &catalog.document.variants {
             require_model_driver(
@@ -1905,6 +2101,23 @@ pub(crate) enum CatalogResolveError {
         origin_model_id: String,
         model_driver_ids: Vec<String>,
     },
+    OriginMappingNotFound {
+        provider_profile_id: String,
+        provider_model_id: String,
+    },
+    UnknownOriginProvider {
+        provider_profile_id: String,
+        origin_provider: String,
+    },
+    OriginDriverOutsideMetadataDrivers {
+        provider_profile_id: String,
+        model_driver_id: String,
+    },
+    ConflictingOriginMappings {
+        provider_profile_id: String,
+        provider_model_id: String,
+        resolved: Vec<ResolvedProviderOrigin>,
+    },
 }
 
 impl fmt::Display for CatalogResolveError {
@@ -1926,6 +2139,40 @@ impl fmt::Display for CatalogResolveError {
                 formatter,
                 "origin model {origin_model_id:?} matches multiple Model Drivers: {}",
                 model_driver_ids.join(", ")
+            ),
+            Self::OriginMappingNotFound {
+                provider_profile_id,
+                provider_model_id,
+            } => write!(
+                formatter,
+                "Provider Rules {provider_profile_id:?} cannot map provider model {provider_model_id:?} to an origin"
+            ),
+            Self::UnknownOriginProvider {
+                provider_profile_id,
+                origin_provider,
+            } => write!(
+                formatter,
+                "Provider Rules {provider_profile_id:?} resolved unknown origin provider {origin_provider:?}"
+            ),
+            Self::OriginDriverOutsideMetadataDrivers {
+                provider_profile_id,
+                model_driver_id,
+            } => write!(
+                formatter,
+                "Provider Rules {provider_profile_id:?} resolved Model Driver {model_driver_id:?} outside metadata_drivers"
+            ),
+            Self::ConflictingOriginMappings {
+                provider_profile_id,
+                provider_model_id,
+                resolved,
+            } => write!(
+                formatter,
+                "Provider Rules {provider_profile_id:?} has conflicting origin mappings for {provider_model_id:?}: {}",
+                resolved
+                    .iter()
+                    .map(|origin| format!("{}/{}", origin.model_driver_id, origin.origin_model_id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         }
     }
@@ -2006,6 +2253,39 @@ mod tests {
                 "match": "gpt-*",
                 "provider_options": {"reasoning": {"effort": "high"}}
             }]
+        })
+    }
+
+    fn routed_provider_rules(
+        metadata_drivers: Option<Vec<&str>>,
+        aliases: Value,
+        mappings: Value,
+    ) -> Value {
+        json!({
+            "format": PROVIDER_RULES_FORMAT,
+            "schema_version": 1,
+            "schema_revision": 0,
+            "revision_seq": 9,
+            "provider_profile_id": "router",
+            "metadata_drivers": metadata_drivers,
+            "origin_provider_aliases": aliases,
+            "origin_mappings": mappings,
+            "models": [],
+            "patterns": [],
+            "variants": []
+        })
+    }
+
+    fn vendor_model_mapping(driver_transforms: Value, model_transforms: Value) -> Value {
+        json!({
+            "extract": {
+                "source": "provider_model_id",
+                "regex": "^(?<driver>[^/]+)/(?<model>.+)$"
+            },
+            "transforms": {
+                "driver": driver_transforms,
+                "model": model_transforms
+            }
         })
     }
 
@@ -2216,6 +2496,174 @@ mod tests {
             pattern_conflict.resolve_model("shared-model", None, &MatchContext::new()),
             Err(CatalogResolveError::AmbiguousModelDrivers { .. })
         ));
+    }
+
+    #[test]
+    fn provider_origin_mapping_uniquely_selects_driver_for_shared_model_id() {
+        let rules = routed_provider_rules(
+            None,
+            json!({"anthropic": "claude", "openai": "openai"}),
+            json!([vendor_model_mapping(
+                json!([
+                    {"op": "lowercase"},
+                    {"op": "alias", "table": "origin_provider_aliases"}
+                ]),
+                json!([{"op": "trim"}])
+            )]),
+        );
+        let snapshot = build(vec![
+            file(
+                CatalogKind::ModelDriver,
+                model_driver("claude", json!([{"id": "shared-model"}]), json!([])),
+            ),
+            file(
+                CatalogKind::ModelDriver,
+                model_driver("openai", json!([{"id": "shared-model"}]), json!([])),
+            ),
+            file(CatalogKind::ProviderRules, rules),
+        ])
+        .unwrap();
+
+        let origin = snapshot
+            .resolve_provider_origin("router", "ANTHROPIC/shared-model")
+            .unwrap();
+        assert_eq!(
+            origin,
+            ResolvedProviderOrigin {
+                origin_model_id: "shared-model".to_owned(),
+                model_driver_id: "claude".to_owned(),
+            }
+        );
+        let candidates = vec![origin.model_driver_id];
+        let model = snapshot
+            .resolve_model(
+                &origin.origin_model_id,
+                Some(&candidates),
+                &MatchContext::new(),
+            )
+            .unwrap();
+        assert_eq!(model.model_driver_id.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn provider_origin_mapping_rejects_unknown_vendor_and_conflicts() {
+        let alias_mapping = vendor_model_mapping(
+            json!([
+                {"op": "lowercase"},
+                {"op": "alias", "table": "origin_provider_aliases"}
+            ]),
+            json!([]),
+        );
+        let unknown_snapshot = build(vec![
+            file(
+                CatalogKind::ModelDriver,
+                model_driver("claude", json!([{"id": "shared-model"}]), json!([])),
+            ),
+            file(
+                CatalogKind::ProviderRules,
+                routed_provider_rules(
+                    None,
+                    json!({"anthropic": "claude"}),
+                    json!([alias_mapping.clone()]),
+                ),
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            unknown_snapshot
+                .resolve_provider_origin("router", "unknown/shared-model")
+                .unwrap_err(),
+            CatalogResolveError::UnknownOriginProvider {
+                provider_profile_id: "router".to_owned(),
+                origin_provider: "unknown".to_owned(),
+            }
+        );
+
+        let conflict_snapshot = build(vec![
+            file(
+                CatalogKind::ModelDriver,
+                model_driver("claude", json!([{"id": "shared-model"}]), json!([])),
+            ),
+            file(
+                CatalogKind::ModelDriver,
+                model_driver("anthropic", json!([{"id": "shared-model"}]), json!([])),
+            ),
+            file(
+                CatalogKind::ProviderRules,
+                routed_provider_rules(
+                    None,
+                    json!({"anthropic": "claude"}),
+                    json!([
+                        alias_mapping,
+                        vendor_model_mapping(json!([{"op": "lowercase"}]), json!([]))
+                    ]),
+                ),
+            ),
+        ])
+        .unwrap();
+        assert!(matches!(
+            conflict_snapshot.resolve_provider_origin("router", "ANTHROPIC/shared-model"),
+            Err(CatalogResolveError::ConflictingOriginMappings { resolved, .. })
+                if resolved.len() == 2
+        ));
+    }
+
+    #[test]
+    fn provider_origin_aliases_cannot_escape_metadata_drivers() {
+        let rules = routed_provider_rules(
+            Some(vec!["openai"]),
+            json!({"anthropic": "claude"}),
+            json!([vendor_model_mapping(
+                json!([{"op": "alias", "table": "origin_provider_aliases"}]),
+                json!([])
+            )]),
+        );
+        assert!(matches!(
+            build(vec![
+                file(
+                    CatalogKind::ModelDriver,
+                    model_driver("openai", json!([]), json!([])),
+                ),
+                file(
+                    CatalogKind::ModelDriver,
+                    model_driver("claude", json!([]), json!([])),
+                ),
+                file(CatalogKind::ProviderRules, rules),
+            ]),
+            Err(CatalogBuildError::InvalidValue {
+                field: "origin_provider_aliases",
+                ..
+            })
+        ));
+
+        let snapshot = build(vec![
+            file(
+                CatalogKind::ModelDriver,
+                model_driver("openai", json!([]), json!([])),
+            ),
+            file(
+                CatalogKind::ModelDriver,
+                model_driver("claude", json!([]), json!([])),
+            ),
+            file(
+                CatalogKind::ProviderRules,
+                routed_provider_rules(
+                    Some(vec!["openai"]),
+                    json!({}),
+                    json!([vendor_model_mapping(json!([]), json!([]))]),
+                ),
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            snapshot
+                .resolve_provider_origin("router", "claude/shared-model")
+                .unwrap_err(),
+            CatalogResolveError::OriginDriverOutsideMetadataDrivers {
+                provider_profile_id: "router".to_owned(),
+                model_driver_id: "claude".to_owned(),
+            }
+        );
     }
 
     #[test]
