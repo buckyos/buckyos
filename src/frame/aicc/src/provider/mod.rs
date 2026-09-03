@@ -13,7 +13,7 @@ use crate::model::{
 use crate::protocol::{CodecRegistry, CredentialKind, ResolvedCredential};
 use crate::storage::{AiccStorage, InventoryLkgsRecord};
 use async_trait::async_trait;
-use buckyos_api::ApiType;
+use buckyos_api::{AiCost, ApiType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -534,7 +534,7 @@ pub(crate) enum ProviderQuotaObservationState {
 pub(crate) struct ProviderQuotaReading {
     pub state: ProviderQuotaLevel,
     pub remaining_request_units: Option<u64>,
-    pub remaining_cost_usd: Option<f64>,
+    pub remaining_cost_usd: Option<AiCost>,
     pub reset_at_ms: Option<i64>,
 }
 
@@ -543,7 +543,7 @@ pub(crate) struct ProviderQuotaReading {
 pub(crate) struct ProviderQuotaObservation {
     pub state: ProviderQuotaObservationState,
     pub remaining_request_units: Option<u64>,
-    pub remaining_cost_usd: Option<f64>,
+    pub remaining_cost_usd: Option<AiCost>,
     pub reset_at_ms: Option<i64>,
     pub observed_at_ms: i64,
     pub source: String,
@@ -2150,10 +2150,12 @@ fn validate_pricing(pricing: &Pricing) -> ProviderResult<()> {
 }
 
 fn validate_quota_reading(reading: ProviderQuotaReading) -> ProviderResult<ProviderQuotaReading> {
-    if reading
-        .remaining_cost_usd
-        .is_some_and(|value| !value.is_finite() || value < 0.0)
-        || reading.reset_at_ms.is_some_and(|value| value < 0)
+    if reading.remaining_cost_usd.as_ref().is_some_and(|value| {
+        value.currency.trim().is_empty()
+            || value.currency.trim() != value.currency
+            || !value.amount.is_finite()
+            || value.amount < 0.0
+    }) || reading.reset_at_ms.is_some_and(|value| value < 0)
     {
         return Err(ProviderError::InvalidConfiguration(
             "provider quota observation contains an invalid value".into(),
@@ -2576,7 +2578,10 @@ mod tests {
             Ok(ProviderQuotaReading {
                 state: ProviderQuotaLevel::NearLimit,
                 remaining_request_units: Some(12),
-                remaining_cost_usd: Some(3.5),
+                remaining_cost_usd: Some(AiCost {
+                    amount: 3.5,
+                    currency: "USD".into(),
+                }),
                 reset_at_ms: Some(4_000_000_000_000),
             })
         }
@@ -3072,7 +3077,13 @@ mod tests {
         let observed = manager.quota_observation("primary").await.unwrap();
         assert_eq!(observed.state, ProviderQuotaObservationState::NearLimit);
         assert_eq!(observed.remaining_request_units, Some(12));
-        assert_eq!(observed.remaining_cost_usd, Some(3.5));
+        assert_eq!(
+            observed.remaining_cost_usd,
+            Some(AiCost {
+                amount: 3.5,
+                currency: "USD".into()
+            })
+        );
         assert_eq!(observed.reset_at_ms, Some(4_000_000_000_000));
         assert!(observed.observed_at_ms > 0);
         assert_eq!(observed.source, "provider_api");
