@@ -505,6 +505,60 @@ pub(crate) struct DiscoveryContext<'a> {
     pub credential: &'a ResolvedCredential,
 }
 
+pub(crate) struct ProviderQuotaContext<'a> {
+    pub profile: &'a ProviderProfile,
+    pub instance: &'a ProviderInstanceConfig,
+    pub credential: &'a ResolvedCredential,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderQuotaLevel {
+    Normal,
+    NearLimit,
+    Exhausted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderQuotaObservationState {
+    Normal,
+    NearLimit,
+    Exhausted,
+    Unsupported,
+    QueryFailed,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderQuotaReading {
+    pub state: ProviderQuotaLevel,
+    pub remaining_request_units: Option<u64>,
+    pub remaining_cost_usd: Option<f64>,
+    pub reset_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderQuotaObservation {
+    pub state: ProviderQuotaObservationState,
+    pub remaining_request_units: Option<u64>,
+    pub remaining_cost_usd: Option<f64>,
+    pub reset_at_ms: Option<i64>,
+    pub observed_at_ms: i64,
+    pub source: String,
+}
+
+#[async_trait]
+pub(crate) trait ProviderQuotaObserver: Send + Sync {
+    fn source(&self) -> &'static str;
+
+    async fn observe(
+        &self,
+        context: &ProviderQuotaContext<'_>,
+    ) -> ProviderResult<ProviderQuotaReading>;
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ModelAvailability {
@@ -1116,6 +1170,10 @@ impl ExecutableProviderInstance {
     pub(crate) async fn current_inventory(&self) -> Arc<ProviderInventorySnapshot> {
         self.inventory.clone()
     }
+
+    pub(crate) async fn quota_observation(&self) -> ProviderQuotaObservation {
+        self.runtime.quota_observation().await
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1138,6 +1196,7 @@ struct ProviderRuntime {
     profile: Arc<ProviderProfile>,
     discovery: Arc<dyn ProviderDiscovery>,
     credential_resolver: Arc<dyn CredentialResolver>,
+    quota_observer: Option<Arc<dyn ProviderQuotaObserver>>,
     catalog: Arc<RwLock<Arc<CatalogSnapshot>>>,
     codecs: Arc<CodecRegistry>,
     store: Arc<dyn ProviderInventoryStore>,
@@ -1161,6 +1220,55 @@ impl ProviderRuntime {
         self.credential_resolver
             .resolve(&self.profile.credential, &self.config.credential)
             .await
+    }
+
+    async fn quota_observation(&self) -> ProviderQuotaObservation {
+        let observed_at_ms = now_ms().unwrap_or(0);
+        let Some(observer) = &self.quota_observer else {
+            return ProviderQuotaObservation {
+                state: ProviderQuotaObservationState::Unsupported,
+                remaining_request_units: None,
+                remaining_cost_usd: None,
+                reset_at_ms: None,
+                observed_at_ms,
+                source: "unsupported".into(),
+            };
+        };
+        let source = observer.source().to_owned();
+        let reading = match self.resolve_credential().await {
+            Ok(credential) => {
+                observer
+                    .observe(&ProviderQuotaContext {
+                        profile: &self.profile,
+                        instance: &self.config,
+                        credential: &credential,
+                    })
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        match reading.and_then(validate_quota_reading) {
+            Ok(reading) => ProviderQuotaObservation {
+                state: match reading.state {
+                    ProviderQuotaLevel::Normal => ProviderQuotaObservationState::Normal,
+                    ProviderQuotaLevel::NearLimit => ProviderQuotaObservationState::NearLimit,
+                    ProviderQuotaLevel::Exhausted => ProviderQuotaObservationState::Exhausted,
+                },
+                remaining_request_units: reading.remaining_request_units,
+                remaining_cost_usd: reading.remaining_cost_usd,
+                reset_at_ms: reading.reset_at_ms,
+                observed_at_ms,
+                source,
+            },
+            Err(_) => ProviderQuotaObservation {
+                state: ProviderQuotaObservationState::QueryFailed,
+                remaining_request_units: None,
+                remaining_cost_usd: None,
+                reset_at_ms: None,
+                observed_at_ms,
+                source,
+            },
+        }
     }
 
     async fn build_candidate(&self) -> ProviderResult<ProviderInventoryCandidate> {
@@ -1392,6 +1500,7 @@ impl ProviderRuntime {
 pub(crate) struct ProviderRuntimeManager {
     profiles: BTreeMap<String, Arc<ProviderProfile>>,
     credential_resolver: Arc<dyn CredentialResolver>,
+    quota_observers: BTreeMap<String, Arc<dyn ProviderQuotaObserver>>,
     catalog: Arc<RwLock<Arc<CatalogSnapshot>>>,
     codecs: Arc<CodecRegistry>,
     store: Arc<dyn ProviderInventoryStore>,
@@ -1424,6 +1533,7 @@ impl ProviderRuntimeManager {
         Ok(Self {
             profiles: profile_map,
             credential_resolver,
+            quota_observers: BTreeMap::new(),
             catalog: Arc::new(RwLock::new(catalog)),
             codecs,
             store,
@@ -1435,8 +1545,41 @@ impl ProviderRuntimeManager {
         })
     }
 
+    pub(crate) fn with_quota_observers(
+        mut self,
+        observers: impl IntoIterator<Item = (String, Arc<dyn ProviderQuotaObserver>)>,
+    ) -> ProviderResult<Self> {
+        for (provider_profile_id, observer) in observers {
+            if !self.profiles.contains_key(&provider_profile_id) {
+                return Err(ProviderError::UnknownProfile(provider_profile_id));
+            }
+            validate_id("quota source", observer.source())?;
+            if self
+                .quota_observers
+                .insert(provider_profile_id.clone(), observer)
+                .is_some()
+            {
+                return Err(ProviderError::InvalidConfiguration(format!(
+                    "duplicate quota observer for provider profile `{provider_profile_id}`"
+                )));
+            }
+        }
+        Ok(self)
+    }
+
     pub(crate) async fn registry(&self) -> Arc<ProviderRegistry> {
         self.registry.read().await.clone()
+    }
+
+    pub(crate) async fn quota_observation(
+        &self,
+        provider_instance_name: &str,
+    ) -> ProviderResult<ProviderQuotaObservation> {
+        Ok(self
+            .runtime(provider_instance_name)
+            .await?
+            .quota_observation()
+            .await)
     }
 
     pub(crate) fn subscribe_refresh_events(&self) -> broadcast::Receiver<ProviderRefreshEvent> {
@@ -1654,6 +1797,10 @@ impl ProviderRuntimeManager {
             profile: profile.clone(),
             discovery,
             credential_resolver: self.credential_resolver.clone(),
+            quota_observer: self
+                .quota_observers
+                .get(&profile.provider_profile_id)
+                .cloned(),
             catalog: self.catalog.clone(),
             codecs: self.codecs.clone(),
             store: self.store.clone(),
@@ -2000,6 +2147,19 @@ fn validate_pricing(pricing: &Pricing) -> ProviderResult<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_quota_reading(reading: ProviderQuotaReading) -> ProviderResult<ProviderQuotaReading> {
+    if reading
+        .remaining_cost_usd
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+        || reading.reset_at_ms.is_some_and(|value| value < 0)
+    {
+        return Err(ProviderError::InvalidConfiguration(
+            "provider quota observation contains an invalid value".into(),
+        ));
+    }
+    Ok(reading)
 }
 
 fn resolve_operation(
@@ -2386,6 +2546,39 @@ mod tests {
                 .await
                 .push(context.instance.workspace.clone());
             Ok(self.snapshot.clone())
+        }
+    }
+
+    struct FakeQuotaObserver {
+        fail: AtomicBool,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ProviderQuotaObserver for FakeQuotaObserver {
+        fn source(&self) -> &'static str {
+            "provider_api"
+        }
+
+        async fn observe(
+            &self,
+            context: &ProviderQuotaContext<'_>,
+        ) -> ProviderResult<ProviderQuotaReading> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(context.profile.provider_profile_id, "openai");
+            assert_eq!(context.instance.provider_instance_name, "primary");
+            assert!(!format!("{:?}", context.credential).contains("test-secret"));
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(ProviderError::Discovery(
+                    "quota endpoint leaked-private-detail".into(),
+                ));
+            }
+            Ok(ProviderQuotaReading {
+                state: ProviderQuotaLevel::NearLimit,
+                remaining_request_units: Some(12),
+                remaining_cost_usd: Some(3.5),
+                reset_at_ms: Some(4_000_000_000_000),
+            })
         }
     }
 
@@ -2825,6 +3018,74 @@ mod tests {
                 .as_deref(),
             Some("workspace-reloaded")
         );
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn quota_view_uses_only_registered_truth_and_distinguishes_query_failure() {
+        let store = Arc::new(MemoryStore::default());
+        let mut untrusted_discovery = discovery("gpt-test");
+        untrusted_discovery.models[0]
+            .supported_features
+            .get_or_insert_default()
+            .insert("remaining_request_units=999999".into());
+        let untrusted_discovery_source = Arc::new(ScriptedDiscovery::new([], untrusted_discovery));
+        let (unsupported_manager, unsupported_discovery) =
+            manager(store, untrusted_discovery_source);
+        unsupported_manager
+            .start(instance("primary"), unsupported_discovery)
+            .await
+            .unwrap();
+        let unsupported = unsupported_manager
+            .quota_observation("primary")
+            .await
+            .unwrap();
+        assert_eq!(
+            unsupported.state,
+            ProviderQuotaObservationState::Unsupported
+        );
+        assert_eq!(unsupported.remaining_request_units, None);
+        assert_eq!(unsupported.remaining_cost_usd, None);
+        assert_eq!(unsupported.source, "unsupported");
+        unsupported_manager.shutdown().await;
+
+        let observer = Arc::new(FakeQuotaObserver {
+            fail: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+        });
+        let discovery = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+        let manager = ProviderRuntimeManager::new(
+            [profile()],
+            resolver("test-secret"),
+            catalog(),
+            codecs(),
+            Arc::new(MemoryStore::default()),
+        )
+        .unwrap()
+        .with_quota_observers([(
+            "openai".into(),
+            observer.clone() as Arc<dyn ProviderQuotaObserver>,
+        )])
+        .unwrap();
+        manager.start(instance("primary"), discovery).await.unwrap();
+
+        let observed = manager.quota_observation("primary").await.unwrap();
+        assert_eq!(observed.state, ProviderQuotaObservationState::NearLimit);
+        assert_eq!(observed.remaining_request_units, Some(12));
+        assert_eq!(observed.remaining_cost_usd, Some(3.5));
+        assert_eq!(observed.reset_at_ms, Some(4_000_000_000_000));
+        assert!(observed.observed_at_ms > 0);
+        assert_eq!(observed.source, "provider_api");
+
+        observer.fail.store(true, Ordering::SeqCst);
+        let failed = manager.quota_observation("primary").await.unwrap();
+        assert_eq!(failed.state, ProviderQuotaObservationState::QueryFailed);
+        assert_eq!(failed.remaining_request_units, None);
+        assert_eq!(failed.remaining_cost_usd, None);
+        assert_eq!(failed.reset_at_ms, None);
+        assert_eq!(failed.source, "provider_api");
+        assert!(!format!("{failed:?}").contains("leaked-private-detail"));
+        assert_eq!(observer.calls.load(Ordering::SeqCst), 2);
         manager.shutdown().await;
     }
 
