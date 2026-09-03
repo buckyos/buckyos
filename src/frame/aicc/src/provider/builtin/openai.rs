@@ -324,6 +324,7 @@ mod tests {
     };
     use crate::protocol::{HttpBody, ResolvedCredential};
     use crate::provider::{CredentialReference, InventoryBuilder, ProviderInstanceConfig};
+    use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
     use bytes::Bytes;
     use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
     use reqwest::StatusCode;
@@ -389,6 +390,21 @@ mod tests {
         }
     }
 
+    fn configured_catalog() -> Arc<CatalogSnapshot> {
+        let builtin = openai_catalog_files()
+            .into_iter()
+            .map(|file| {
+                MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents).unwrap()
+            })
+            .collect();
+        MetadataSources {
+            builtin,
+            ..MetadataSources::default()
+        }
+        .build_snapshot(1, &CatalogBuildOptions::default())
+        .unwrap()
+    }
+
     #[test]
     fn builtin_identity_and_catalog_fixtures_are_stable() {
         let profile = openai_profile();
@@ -449,13 +465,8 @@ mod tests {
     }
 
     #[test]
-    fn embedded_catalogs_build_as_one_valid_snapshot() {
-        let catalog = CatalogSnapshot::from_current_files(
-            1,
-            openai_catalog_files(),
-            &CatalogBuildOptions::default(),
-        )
-        .unwrap();
+    fn embedded_catalogs_build_through_the_builtin_metadata_source() {
+        let catalog = configured_catalog();
 
         assert_eq!(
             catalog.known_provider("openai").unwrap().display_name,
@@ -535,12 +546,7 @@ mod tests {
 
     #[test]
     fn configured_model_and_rules_build_inventory_without_a_dialect() {
-        let catalog = CatalogSnapshot::from_current_files(
-            1,
-            openai_catalog_files(),
-            &CatalogBuildOptions::default(),
-        )
-        .unwrap();
+        let catalog = configured_catalog();
         let (adapter, codecs) = openai_responses_adapter();
         let mut registry = CodecRegistry::default();
         registry.register_codecs(adapter, codecs).unwrap();
