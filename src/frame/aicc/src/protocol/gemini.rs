@@ -49,11 +49,7 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
             binding(
                 ApiType::Llm,
                 [ExecutionMode::Immediate, ExecutionMode::Stream],
-                [
-                    features::TOOL_CALLING,
-                    features::JSON_OUTPUT,
-                    features::VISION,
-                ],
+                [features::TOOL_CALL, features::JSON_SCHEMA, features::VISION],
             ),
             binding(ApiType::VisionOcr, [ExecutionMode::Immediate], []),
             binding(ApiType::VisionCaption, [ExecutionMode::Immediate], []),

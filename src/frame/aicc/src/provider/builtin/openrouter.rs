@@ -221,14 +221,14 @@ impl ProviderDiscovery for OpenRouterDiscovery {
                 .iter()
                 .any(|parameter| parameter == "tools")
             {
-                supported_features.insert(features::TOOL_CALLING.to_owned());
+                supported_features.insert(features::TOOL_CALL.to_owned());
             }
             if model
                 .supported_parameters
                 .iter()
                 .any(|parameter| parameter == "response_format")
             {
-                supported_features.insert(features::JSON_OUTPUT.to_owned());
+                supported_features.insert(features::JSON_SCHEMA.to_owned());
             }
             if model.architecture.as_ref().is_some_and(|architecture| {
                 architecture

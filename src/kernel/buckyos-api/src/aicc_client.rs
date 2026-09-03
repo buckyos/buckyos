@@ -117,6 +117,26 @@ mod canonical_contract_tests {
     }
 
     #[test]
+    fn model_requirement_uses_canonical_capability_names() {
+        assert_eq!(features::TOOL_CALL, "tool_call");
+        assert_eq!(features::JSON_SCHEMA, "json_schema");
+
+        let requirement = ModelRequirement {
+            tool_call: true,
+            json_schema: true,
+            ..ModelRequirement::default()
+        };
+        assert_eq!(
+            requirement.feature_names(),
+            vec!["tool_call".to_string(), "json_schema".to_string()]
+        );
+        assert!(requirement.requires_feature("tool_call"));
+        assert!(requirement.requires_feature("json_schema"));
+        assert!(!requirement.requires_feature("tool_calling"));
+        assert!(!requirement.requires_feature("json_output"));
+    }
+
+    #[test]
     fn canonical_ir_round_trips_without_losing_opaque_state() {
         let message = AiMessage::new(
             AiRole::Assistant,
@@ -442,8 +462,8 @@ pub type Feature = String;
 
 pub mod features {
     pub const PLAN: &str = "plan";
-    pub const TOOL_CALLING: &str = "tool_calling";
-    pub const JSON_OUTPUT: &str = "json_output";
+    pub const TOOL_CALL: &str = "tool_call";
+    pub const JSON_SCHEMA: &str = "json_schema";
     pub const WEB_SEARCH: &str = "web_search";
     pub const VISION: &str = "vision";
     pub const IMAGE_GENERATION: &str = "image_generation";
@@ -680,8 +700,8 @@ pub struct ModelRequirement {
 impl ModelRequirement {
     pub fn set_feature_required(&mut self, feature: &str) {
         match feature {
-            features::TOOL_CALLING => self.tool_call = true,
-            features::JSON_OUTPUT => self.json_schema = true,
+            features::TOOL_CALL => self.tool_call = true,
+            features::JSON_SCHEMA => self.json_schema = true,
             features::WEB_SEARCH => self.web_search = true,
             features::VISION => self.vision = true,
             features::IMAGE_GENERATION => self.image_generation = true,
@@ -692,8 +712,8 @@ impl ModelRequirement {
 
     pub fn requires_feature(&self, feature: &str) -> bool {
         match feature {
-            features::TOOL_CALLING => self.tool_call,
-            features::JSON_OUTPUT => self.json_schema,
+            features::TOOL_CALL => self.tool_call,
+            features::JSON_SCHEMA => self.json_schema,
             features::WEB_SEARCH => self.web_search,
             features::VISION => self.vision,
             features::IMAGE_GENERATION => self.image_generation,
@@ -708,10 +728,10 @@ impl ModelRequirement {
             features.push("streaming".to_string());
         }
         if self.tool_call {
-            features.push(features::TOOL_CALLING.to_string());
+            features.push(features::TOOL_CALL.to_string());
         }
         if self.json_schema {
-            features.push(features::JSON_OUTPUT.to_string());
+            features.push(features::JSON_SCHEMA.to_string());
         }
         if self.web_search {
             features.push(features::WEB_SEARCH.to_string());
@@ -747,8 +767,8 @@ pub struct ModelDisable {
 impl ModelDisable {
     pub fn set_feature_disabled(&mut self, feature: &str) {
         match feature {
-            features::TOOL_CALLING => self.tool_call = true,
-            features::JSON_OUTPUT => self.json_schema = true,
+            features::TOOL_CALL => self.tool_call = true,
+            features::JSON_SCHEMA => self.json_schema = true,
             features::WEB_SEARCH => self.web_search = true,
             features::VISION => self.vision = true,
             features::IMAGE_GENERATION => self.image_generation = true,
@@ -759,8 +779,8 @@ impl ModelDisable {
 
     pub fn disables_feature(&self, feature: &str) -> bool {
         match feature {
-            features::TOOL_CALLING => self.tool_call,
-            features::JSON_OUTPUT => self.json_schema,
+            features::TOOL_CALL => self.tool_call,
+            features::JSON_SCHEMA => self.json_schema,
             features::WEB_SEARCH => self.web_search,
             features::VISION => self.vision,
             features::IMAGE_GENERATION => self.image_generation,
@@ -775,10 +795,10 @@ impl ModelDisable {
             features.push("streaming".to_string());
         }
         if self.tool_call {
-            features.push(features::TOOL_CALLING.to_string());
+            features.push(features::TOOL_CALL.to_string());
         }
         if self.json_schema {
-            features.push(features::JSON_OUTPUT.to_string());
+            features.push(features::JSON_SCHEMA.to_string());
         }
         if self.web_search {
             features.push(features::WEB_SEARCH.to_string());

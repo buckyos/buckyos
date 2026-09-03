@@ -1684,6 +1684,7 @@ mod tests {
     use crate::catalog::{
         CatalogBuildOptions, CatalogDocuments, ModelDriverCatalog, ProviderRulesCatalog,
     };
+    use crate::model::{LogicalModelDefinition, ModelRegistry, MountMode, RegistryLayers};
     use crate::protocol::{
         AdapterDescriptor, AdapterStatus, CodecCall, ExecutionMode, HttpRequest, HttpResponse,
         OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolExecution,
@@ -1962,7 +1963,10 @@ mod tests {
                 provider_model_id: model_id.into(),
                 origin_model_id: None,
                 api_types: Some(vec![ApiType::Llm, ApiType::EmbeddingText]),
-                supported_features: Some(BTreeSet::from(["tool_calling".into()])),
+                supported_features: Some(BTreeSet::from([
+                    buckyos_api::features::TOOL_CALL.into(),
+                    buckyos_api::features::JSON_SCHEMA.into(),
+                ])),
                 remote_methods: Some(BTreeSet::from(["responses.create".into()])),
                 availability: ModelAvailability::Available,
                 deprecated: false,
@@ -1990,8 +1994,12 @@ mod tests {
             "models": [{
                 "id": "gpt-test",
                 "api_types": ["llm", "embedding.text"],
-                "logical_mounts": ["llm/test"],
-                "capabilities": {"tool_calling": true, "context_tokens": 8192},
+                "logical_mounts": ["llm.test"],
+                "capabilities": {
+                    "tool_call": true,
+                    "json_schema": true,
+                    "context_tokens": 8192
+                },
                 "pricing": {"currency": "USD", "input_token": 9.0}
             }],
             "patterns": [],
@@ -2041,7 +2049,7 @@ mod tests {
                 "models": [{
                     "id": "shared-model",
                     "api_types": ["llm"],
-                    "capabilities": {"tool_calling": true}
+                    "capabilities": {"tool_call": true}
                 }],
                 "patterns": [],
                 "defaults": {},
@@ -2105,7 +2113,10 @@ mod tests {
             bindings: vec![OperationBinding {
                 api_type: ApiType::Llm,
                 capability: ApiType::Llm.capability(),
-                supported_features: BTreeSet::from(["tool_calling".into()]),
+                supported_features: BTreeSet::from([
+                    buckyos_api::features::TOOL_CALL.into(),
+                    buckyos_api::features::JSON_SCHEMA.into(),
+                ]),
                 execution_modes: BTreeSet::from([ExecutionMode::Immediate]),
             }],
             supports_cancel: false,
@@ -2167,7 +2178,8 @@ mod tests {
         let model = &inventory.models[0];
         assert_eq!(model.api_types, vec![ApiType::Llm]);
         assert_eq!(model.operations["llm"], "responses.create");
-        assert_eq!(model.capabilities["tool_calling"], Value::Bool(true));
+        assert_eq!(model.capabilities["tool_call"], Value::Bool(true));
+        assert_eq!(model.capabilities["json_schema"], Value::Bool(true));
         assert_eq!(model.capabilities["context_tokens"], Value::from(8192));
         assert_eq!(
             model.pricing.as_ref().unwrap().source,
@@ -2175,6 +2187,48 @@ mod tests {
         );
         assert_eq!(model.provider_rules_revision, Some(7));
         assert!(!inventory.provider_model_list_fingerprint.is_empty());
+    }
+
+    #[test]
+    fn openai_inventory_satisfies_canonical_tool_and_schema_requirements() {
+        let catalog = catalog();
+        let inventory = InventoryBuilder::build(
+            &profile(),
+            &instance("primary"),
+            discovery("gpt-test"),
+            &catalog,
+            &codecs(),
+        )
+        .unwrap()
+        .as_model_inventory();
+        let registry = ModelRegistry::build(
+            &catalog,
+            &[inventory],
+            vec![LogicalModelDefinition {
+                path: "llm.contract".into(),
+                api_type: ApiType::Llm,
+                min_line: buckyos_api::ModelRequirement {
+                    tool_call: true,
+                    json_schema: true,
+                    ..buckyos_api::ModelRequirement::default()
+                },
+                disable_line: buckyos_api::ModelDisable::default(),
+                default_options: BTreeMap::new(),
+                mount_mode: MountMode::Auto,
+                scheduler_profile: buckyos_api::AiccSchedulerProfile::Balanced,
+                fallback: None,
+                route_policy: buckyos_api::AiccPolicyConfig::default(),
+                user_visible_tier: None,
+            }],
+            RegistryLayers::default(),
+        )
+        .unwrap();
+
+        let candidates = registry
+            .resolve_candidates("llm.contract", ApiType::Llm)
+            .unwrap();
+        assert_eq!(candidates.candidates.len(), 1);
+        assert!(candidates.admissions.iter().all(|record| record.admitted));
     }
 
     #[test]

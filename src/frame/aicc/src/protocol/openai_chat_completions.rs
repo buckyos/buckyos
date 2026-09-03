@@ -305,8 +305,8 @@ pub(crate) fn openai_chat_completions_operation_descriptor() -> OperationDescrip
         [ExecutionMode::Immediate, ExecutionMode::Stream],
     );
     binding.supported_features = BTreeSet::from([
-        features::TOOL_CALLING.to_string(),
-        features::JSON_OUTPUT.to_string(),
+        features::TOOL_CALL.to_string(),
+        features::JSON_SCHEMA.to_string(),
         features::VISION.to_string(),
     ]);
     OperationDescriptor {

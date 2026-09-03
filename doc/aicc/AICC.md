@@ -115,13 +115,13 @@ pub enum Capability {
     Video2Text,
 }
 
-/// 高层特性声明（如 plan/json_output/web_search/vision/asr 等）
+/// 高层特性声明（如 plan/json_schema/web_search/vision/asr 等）
 pub type Feature = String;
 
 pub mod features {
     pub const PLAN: &str = "plan";
-    pub const TOOL_CALLING: &str = "tool_calling";
-    pub const JSON_OUTPUT: &str = "json_output";
+    pub const TOOL_CALL: &str = "tool_call";
+    pub const JSON_SCHEMA: &str = "json_schema";
     pub const WEB_SEARCH: &str = "web_search";
     pub const VISION: &str = "vision";
     pub const ASR: &str = "asr";

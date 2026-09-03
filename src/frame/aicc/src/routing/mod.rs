@@ -1061,11 +1061,11 @@ fn disabled_features(directory: &ModelDisable, request: &ModelDisable) -> Vec<Fe
     [
         ("streaming", directory.streaming || request.streaming),
         (
-            features::TOOL_CALLING,
+            features::TOOL_CALL,
             directory.tool_call || request.tool_call,
         ),
         (
-            features::JSON_OUTPUT,
+            features::JSON_SCHEMA,
             directory.json_schema || request.json_schema,
         ),
         (
@@ -1315,7 +1315,7 @@ mod tests {
         .unwrap()
     }
 
-    fn inventory(instance: &str, id: &str, tool_calling: bool) -> ProviderInventory {
+    fn inventory(instance: &str, id: &str, tool_call: bool) -> ProviderInventory {
         ProviderInventory {
             provider_instance_name: instance.into(),
             provider_profile_id: "profile".into(),
@@ -1329,7 +1329,7 @@ mod tests {
                 logical_mounts: Vec::new(),
                 variants: Vec::new(),
                 capabilities: BTreeMap::from([
-                    ("tool_calling".into(), json!(tool_calling)),
+                    ("tool_call".into(), json!(tool_call)),
                     ("max_context_tokens".into(), json!(128_000)),
                 ]),
                 attributes: BTreeMap::new(),

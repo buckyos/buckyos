@@ -43,7 +43,12 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
             binding(
                 ApiType::Llm,
                 [ExecutionMode::Immediate, ExecutionMode::Stream],
-                ["tool_calling", "json_output", "reasoning", "vision"],
+                [
+                    buckyos_api::features::TOOL_CALL,
+                    buckyos_api::features::JSON_SCHEMA,
+                    "reasoning",
+                    buckyos_api::features::VISION,
+                ],
             ),
             binding(
                 ApiType::ImageTextToImage,

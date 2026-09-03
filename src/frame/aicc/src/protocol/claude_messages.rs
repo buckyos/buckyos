@@ -223,7 +223,7 @@ pub(crate) fn claude_messages_operation_descriptor() -> OperationDescriptor {
         [ExecutionMode::Immediate, ExecutionMode::Stream],
     );
     binding.supported_features = BTreeSet::from([
-        features::TOOL_CALLING.to_string(),
+        features::TOOL_CALL.to_string(),
         features::VISION.to_string(),
         features::PLAN.to_string(),
     ]);

@@ -183,8 +183,8 @@ impl ProviderDiscovery for KimiDiscovery {
                 ));
             }
             let mut supported_features = BTreeSet::from([
-                features::TOOL_CALLING.to_owned(),
-                features::JSON_OUTPUT.to_owned(),
+                features::TOOL_CALL.to_owned(),
+                features::JSON_SCHEMA.to_owned(),
             ]);
             if model.supports_image_in.unwrap_or(false) || model.supports_video_in.unwrap_or(false)
             {
