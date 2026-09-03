@@ -440,17 +440,19 @@ Owner：Protocol/Router 联合小组
 
 依赖：WP-01、WP-03、WP-06、WP-10
 
-- [ ] 建立进入协议层的唯一 lowering；
-- [ ] 解析 exact variant；
-- [ ] 应用 Provider Rules operation 映射；
-- [ ] 应用 request defaults、rewrite、delete 和 provider options；
-- [ ] 明确全部参数优先级；
-- [ ] 校验 Provider variant 完整覆盖 Model Driver variant；
-- [ ] 最终确定 operation、credential 和资源需求；
-- [ ] Adapter 不根据 Provider/model 名猜 operation；
-- [ ] 为每个 Provider/operation 建立 golden lowering fixture。
+- [x] 建立进入协议层的唯一 lowering；
+- [x] 解析 exact variant；
+- [x] 应用 Provider Rules operation 映射；
+- [x] 应用 request defaults、rewrite、delete 和 provider options；
+- [x] 明确全部参数优先级；
+- [x] 校验 Provider variant 完整覆盖 Model Driver variant；
+- [x] 最终确定 operation、credential 和资源需求；
+- [x] Adapter 不根据 Provider/model 名猜 operation；
+- [x] 为每个 Provider/operation 建立 golden lowering fixture。
 
 完成标准：相同 RouteDecision、canonical request 和 catalog snapshot 必须产生相同 ResolvedProviderCall。
+
+实现记录：`src/frame/aicc/src/call/mod.rs` 提供唯一的 `CallResolver`，将 typed call、路由结果、catalog snapshot 与已解析的 Provider 目标确定性 lowering 为 `ResolvedProviderCall`。实现覆盖 exact variant、operation 优先级（method > api_type > 唯一 adapter default）、Provider defaults、用户 canonical 参数、rewrite/delete、provider options、credential、资源需求、pricing 与 revision；Codec 只接收已确定的 operation 和 options，不再根据 Provider/model 名猜测。golden 测试覆盖当前 12 个内置 Provider 的 48 组 Provider/adapter/api/operation binding，并包含参数优先级、variant 覆盖、资源引用、敏感信息脱敏及确定性验证。验证通过 `cargo test -p aicc`、`cargo check -p aicc --all-targets`、限定 WP-11 范围的 clippy、workspace fmt check 和 diff check；全仓 `buckyos-build.py --skip-web` 在编译前因环境未提供四个 `BUCKYOS_SDK_TOOL_*` 不可变输入而未执行。
 
 ### WP-12：Execution、Task、Cancel 与 Idempotency
 
@@ -1041,7 +1043,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | WP-08 | TBD | Pending | WP-06/07 | 11+1 Providers |
 | WP-09 | TBD | Pending | WP-01/14 | Admission |
 | WP-10 | TBD | Pending | WP-04/09 | Routing |
-| WP-11 | TBD | Pending | WP-03/06/10 | Call Lowering |
+| WP-11 | Protocol/Router 联合小组 | Done | WP-03/06/10 | Call Lowering |
 | WP-12 | TBD | Pending | WP-05/11 | Execution |
 | WP-13 | TBD | Pending | WP-01 | Resource |
 | WP-14 | Storage/Observability 小组 | Done | WP-01 | Storage/Observability |
