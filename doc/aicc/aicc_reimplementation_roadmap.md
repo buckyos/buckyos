@@ -341,6 +341,8 @@ Owner：Provider Runtime 小组
 
 实现记录：Provider Runtime 小组在 `src/frame/aicc/src/provider/mod.rs` 实现 Provider Profile、Instance、copy-on-write Registry、credential resolver、统一 `ProviderDiscovery`、catalog-only discovery、三方能力交集和带 fingerprint/revision/pricing source 的实例级 inventory；复用 WP-14 RDB LKGS 接口完成有效快照恢复，加入 refresh loop、健康探测、有界指数退避、单实例刷新互斥、幂等 Stop、优雅退出和 generation token 迟到写保护，禁用、删除、替换及服务退出均先停止旧循环。后续补充 SN 可复用的 `api_key`/`dynamic_login` 互斥认证配置、无 token 的动态登录上下文与解析 trait，以及统一的 region/workspace/account schema、默认 base URL 模板和显式 URL 覆盖解析。原始 12 个 fake discovery/fake codec 生命周期单测随 AICC 全量 158 个测试通过；补充契约在隔离工作树中通过全部 15 个 Provider 测试、all-target check、AICC `clippy --no-deps -D warnings`、格式和 diff 检查。主工作区复验仍被并行 WP-08E 的共享 crate 编译错误阻断；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。全局 metadata target/applied 收敛和 RuntimeSnapshot 原子发布仍由 WP-15 负责。
 
+补充实现记录：WP-03 在 `282e815e` 提供 `CatalogSnapshot::resolve_provider_origin`，正式执行 Provider Rules 的 `origin_provider_aliases`、`origin_mappings` 和 `metadata_drivers` 边界；WP-07 在 `b2cfd4be` 将其接入 `InventoryBuilder`，声明 mapping 时先解析唯一 origin model/driver，再以 singleton candidate 调用 Model Driver resolver，并拒绝 discovery 与 mapping 的 origin 冲突。Catalog 测试覆盖同名模型唯一选择、未知 vendor、冲突 mapping 和 metadata 越权，Provider 16 个测试及 all-target check 通过；严格 clippy 仅被 WP-08E 既有 `redundant_closure` 阻断，豁免该单项后通过。
+
 ### WP-08：内置 Provider 装配与 Dialect
 
 Owner：七个可并行 Provider 小组
