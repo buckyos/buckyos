@@ -394,6 +394,39 @@ mod canonical_contract_tests {
         .is_ok());
     }
 
+    #[test]
+    fn metadata_view_exposes_target_and_per_provider_applied_sequences() {
+        let view = DriverMetadataUpdateView {
+            enabled: true,
+            source_url: Some("ndn://metadata.example/aicc".to_string()),
+            source_configured: true,
+            interval_secs: 900,
+            metadata_target_seq: 42,
+            providers: vec![DriverMetadataProviderStatus::new("openai-main", 41)],
+            status: DriverMetadataUpdateStatus::Updating,
+            active_revision: Some(42),
+            last_attempt_at_ms: None,
+            last_success_at_ms: None,
+            last_error: None,
+            consecutive_failures: 0,
+        };
+        let value = serde_json::to_value(&view).unwrap();
+        assert_eq!(value["metadata_target_seq"], 42);
+        assert_eq!(value["providers"][0]["metadata_applied_seq"], 41);
+        assert_eq!(
+            serde_json::from_value::<DriverMetadataUpdateView>(value).unwrap(),
+            view
+        );
+        assert!(serde_json::from_value::<DriverMetadataUpdateView>(json!({
+            "enabled": true,
+            "source_configured": true,
+            "interval_secs": 900,
+            "status": "updating",
+            "consecutive_failures": 0
+        }))
+        .is_err());
+    }
+
     struct ManagementHandler;
 
     #[async_trait]
@@ -3917,12 +3950,31 @@ pub enum DriverMetadataUpdateStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DriverMetadataProviderStatus {
+    pub provider_instance_name: String,
+    pub metadata_applied_seq: u64,
+}
+
+impl DriverMetadataProviderStatus {
+    pub fn new(provider_instance_name: impl Into<String>, metadata_applied_seq: u64) -> Self {
+        Self {
+            provider_instance_name: provider_instance_name.into(),
+            metadata_applied_seq,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct DriverMetadataUpdateView {
     pub enabled: bool,
     #[serde(default)]
     pub source_url: Option<String>,
     pub source_configured: bool,
     pub interval_secs: u64,
+    pub metadata_target_seq: u64,
+    pub providers: Vec<DriverMetadataProviderStatus>,
     pub status: DriverMetadataUpdateStatus,
     #[serde(default)]
     pub active_revision: Option<u64>,
