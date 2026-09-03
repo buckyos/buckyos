@@ -1061,7 +1061,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | WP-12 | Execution 小组 | Done | WP-01/05/11 | Execution |
 | WP-13 | TBD | Pending | WP-01 | Resource |
 | WP-14 | Storage/Observability 小组 | Done | WP-01 | Storage/Observability |
-| WP-15 | TBD | Pending | WP-03/07/14 | RuntimeSnapshot |
+| WP-15 | Runtime/Consistency 小组 | Done | WP-03/07/14 | RuntimeSnapshot |
 | WP-16 | TBD | Pending | WP-07/09-15 | Service/Admin |
 | WP-17 | TBD | Pending | WP-01/16 | Callers |
 | WP-18 | TBD | Pending | Gate 0 | Acceptance |
