@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
 use thiserror::Error;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProviderMetadataState {
@@ -138,6 +138,8 @@ pub(crate) struct RuntimePreparedState {
 
 #[async_trait]
 pub(crate) trait RuntimeBackend: Send + Sync {
+    async fn refresh_provider(&self, provider_instance_name: &str) -> Result<bool, RuntimeError>;
+
     async fn converge(
         &self,
         catalog: Arc<CatalogSnapshot>,
@@ -169,14 +171,26 @@ impl ProviderRuntimeBackend {
     ) -> Self {
         Self { manager, models }
     }
-
-    pub(crate) fn manager(&self) -> &Arc<ProviderRuntimeManager> {
-        &self.manager
-    }
 }
 
 #[async_trait]
 impl RuntimeBackend for ProviderRuntimeBackend {
+    async fn refresh_provider(&self, provider_instance_name: &str) -> Result<bool, RuntimeError> {
+        let before = match self.manager.registry().await.get(provider_instance_name) {
+            Some(provider) => Some(provider.current_inventory().await),
+            None => None,
+        };
+        let refreshed = self
+            .manager
+            .refresh(provider_instance_name)
+            .await
+            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+        Ok(before.is_none_or(|before| {
+            before.provider_model_list_fingerprint != refreshed.provider_model_list_fingerprint
+                || before.metadata_applied_seq != refreshed.metadata_applied_seq
+        }))
+    }
+
     async fn converge(
         &self,
         catalog: Arc<CatalogSnapshot>,
@@ -271,11 +285,70 @@ struct RuntimeGeneration {
     backend: Arc<dyn RuntimeBackend>,
 }
 
+#[must_use = "publish the prepared runtime after CAS success or discard it after CAS failure"]
+pub(crate) struct PreparedRuntimeMutation {
+    current: Arc<RwLock<Arc<RuntimeGeneration>>>,
+    replacement: Option<Arc<RuntimeGeneration>>,
+    convergence_guard: Option<OwnedMutexGuard<()>>,
+    expected_settings_revision: u64,
+}
+
+impl PreparedRuntimeMutation {
+    pub(crate) fn expected_settings_revision(&self) -> u64 {
+        self.expected_settings_revision
+    }
+
+    pub(crate) fn settings_revision(&self) -> u64 {
+        self.replacement
+            .as_ref()
+            .expect("prepared runtime mutation is finalized")
+            .snapshot
+            .settings_revision
+    }
+
+    pub(crate) async fn publish(mut self) -> Arc<RuntimeSnapshot> {
+        let replacement = self
+            .replacement
+            .take()
+            .expect("prepared runtime mutation is finalized");
+        let snapshot = replacement.snapshot.clone();
+        let previous = {
+            let mut current = self.current.write().await;
+            std::mem::replace(&mut *current, replacement)
+        };
+        self.convergence_guard.take();
+        previous.backend.shutdown().await;
+        snapshot
+    }
+
+    pub(crate) async fn discard(mut self) {
+        let replacement = self
+            .replacement
+            .take()
+            .expect("prepared runtime mutation is finalized");
+        self.convergence_guard.take();
+        replacement.backend.shutdown().await;
+    }
+}
+
+impl Drop for PreparedRuntimeMutation {
+    fn drop(&mut self) {
+        let Some(replacement) = self.replacement.take() else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                replacement.backend.shutdown().await;
+            });
+        }
+    }
+}
+
 pub(crate) struct RuntimeState {
-    current: RwLock<Arc<RuntimeGeneration>>,
+    current: Arc<RwLock<Arc<RuntimeGeneration>>>,
     inputs: Arc<dyn RuntimeInputs>,
     factory: Arc<dyn RuntimeFactory>,
-    convergence: Mutex<()>,
+    convergence: Arc<Mutex<()>>,
     observed_target_seq: AtomicU64,
     updating: Arc<StdRwLock<BTreeMap<String, u64>>>,
     stopped: AtomicBool,
@@ -310,13 +383,13 @@ impl RuntimeState {
             }
         };
         Ok(Arc::new(Self {
-            current: RwLock::new(Arc::new(RuntimeGeneration {
+            current: Arc::new(RwLock::new(Arc::new(RuntimeGeneration {
                 snapshot,
                 backend: prepared.backend,
-            })),
+            }))),
             inputs,
             factory,
-            convergence: Mutex::new(()),
+            convergence: Arc::new(Mutex::new(())),
             observed_target_seq: AtomicU64::new(target_seq),
             updating: Arc::new(StdRwLock::new(BTreeMap::new())),
             stopped: AtomicBool::new(false),
@@ -327,11 +400,11 @@ impl RuntimeState {
         self.current.read().await.snapshot.clone()
     }
 
-    pub(crate) async fn reload(
+    pub(crate) async fn prepare_reload(
         &self,
         settings: SettingsDocument,
-    ) -> Result<Arc<RuntimeSnapshot>, RuntimeError> {
-        let _single_executor = self.convergence.lock().await;
+    ) -> Result<PreparedRuntimeMutation, RuntimeError> {
+        let convergence_guard = self.convergence.clone().lock_owned().await;
         self.ensure_running()?;
         let current_generation = self.current.read().await.clone();
         let target_seq = self.inputs.metadata_target_seq().await?;
@@ -358,16 +431,44 @@ impl RuntimeState {
             snapshot: snapshot.clone(),
             backend: prepared.backend,
         });
-        let previous = {
-            let mut current = self.current.write().await;
-            std::mem::replace(&mut *current, replacement)
-        };
-        previous.backend.shutdown().await;
-        Ok(snapshot)
+        Ok(PreparedRuntimeMutation {
+            current: self.current.clone(),
+            replacement: Some(replacement),
+            convergence_guard: Some(convergence_guard),
+            expected_settings_revision: current_generation.snapshot.settings_revision,
+        })
     }
 
     pub(crate) async fn before_inference(&self) -> Result<Arc<RuntimeSnapshot>, RuntimeError> {
         self.converge(ConvergenceTrigger::Inference).await
+    }
+
+    pub(crate) async fn refresh_provider(
+        &self,
+        provider_instance_name: &str,
+    ) -> Result<Arc<RuntimeSnapshot>, RuntimeError> {
+        let _single_executor = self.convergence.lock().await;
+        self.ensure_running()?;
+        let current_generation = self.current.read().await.clone();
+        let refresh = current_generation
+            .backend
+            .refresh_provider(provider_instance_name)
+            .await;
+        let inventory_changed = refresh.as_ref().copied().unwrap_or(false);
+        let convergence = self
+            .converge_locked(
+                current_generation,
+                ConvergenceTrigger::ProviderRefresh {
+                    provider_instance_name: provider_instance_name.to_owned(),
+                    inventory_changed,
+                },
+                false,
+            )
+            .await;
+        match refresh {
+            Ok(_) => convergence,
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) async fn provider_refreshed(
@@ -407,6 +508,18 @@ impl RuntimeState {
         let _single_executor = self.convergence.lock().await;
         self.ensure_running()?;
         let current_generation = self.current.read().await.clone();
+        let concurrent_run_completed =
+            current_generation.snapshot.generation != observed_generation;
+        self.converge_locked(current_generation, trigger, concurrent_run_completed)
+            .await
+    }
+
+    async fn converge_locked(
+        &self,
+        current_generation: Arc<RuntimeGeneration>,
+        trigger: ConvergenceTrigger,
+        concurrent_run_completed: bool,
+    ) -> Result<Arc<RuntimeSnapshot>, RuntimeError> {
         let current = current_generation.snapshot.clone();
         let target_seq = self.inputs.metadata_target_seq().await?;
         self.observed_target_seq
@@ -419,7 +532,6 @@ impl RuntimeState {
         }
         let lagging = lagging_providers(&current, target_seq);
         let catalog_behind = target_seq != current.metadata_target_seq;
-        let concurrent_run_completed = current.generation != observed_generation;
         if !catalog_behind
             && lagging.is_empty()
             && (!trigger.is_probe() || concurrent_run_completed)
@@ -719,6 +831,23 @@ mod tests {
 
     #[async_trait]
     impl RuntimeBackend for TestBackend {
+        async fn refresh_provider(
+            &self,
+            provider_instance_name: &str,
+        ) -> Result<bool, RuntimeError> {
+            if self
+                .provider_names
+                .iter()
+                .any(|name| name == provider_instance_name)
+            {
+                Ok(true)
+            } else {
+                Err(RuntimeError::Backend(format!(
+                    "unknown provider `{provider_instance_name}`"
+                )))
+            }
+        }
+
         async fn converge(
             &self,
             catalog: Arc<CatalogSnapshot>,
@@ -875,6 +1004,8 @@ mod tests {
         });
         let started = Arc::new(Notify::new());
         let proceed = Arc::new(Notify::new());
+        let prepared_ready = Arc::new(Notify::new());
+        let publish = Arc::new(Notify::new());
         let runtime = RuntimeState::bootstrap(
             settings(1, &["primary"]),
             inputs,
@@ -890,17 +1021,31 @@ mod tests {
         .unwrap();
         let old = runtime.capture().await;
         let reload_runtime = runtime.clone();
+        let reload_prepared_ready = prepared_ready.clone();
+        let reload_publish = publish.clone();
         let reload = tokio::spawn(async move {
-            reload_runtime
-                .reload(settings(2, &["replacement"]))
+            let prepared = reload_runtime
+                .prepare_reload(settings(2, &["replacement"]))
                 .await
-                .unwrap()
+                .unwrap();
+            reload_prepared_ready.notify_one();
+            reload_publish.notified().await;
+            prepared.publish().await
         });
         started.notified().await;
         let during_prepare = runtime.capture().await;
         assert!(Arc::ptr_eq(&old, &during_prepare));
         proceed.notify_one();
+        prepared_ready.notified().await;
+        let during_cas = runtime.capture().await;
+        assert!(Arc::ptr_eq(&old, &during_cas));
+        let inference_runtime = runtime.clone();
+        let inference = tokio::spawn(async move { inference_runtime.before_inference().await });
+        tokio::task::yield_now().await;
+        assert!(!inference.is_finished());
+        publish.notify_one();
         let new = reload.await.unwrap();
+        let inference_snapshot = inference.await.unwrap().unwrap();
         assert_eq!(old.generation, 1);
         assert_eq!(old.settings.providers[0].provider_instance_name, "primary");
         assert_eq!(new.generation, 2);
@@ -908,6 +1053,7 @@ mod tests {
             new.settings.providers[0].provider_instance_name,
             "replacement"
         );
+        assert!(Arc::ptr_eq(&new, &inference_snapshot));
         assert_eq!(backend.shutdowns.load(Ordering::SeqCst), 1);
     }
 
@@ -977,13 +1123,187 @@ mod tests {
         .unwrap();
         let before = runtime.capture().await;
         assert!(matches!(
-            runtime.reload(settings(2, &["replacement"])).await,
+            runtime.prepare_reload(settings(2, &["replacement"])).await,
             Err(RuntimeError::CandidateProviderSetMismatch { .. })
         ));
         let after = runtime.capture().await;
         assert!(Arc::ptr_eq(&before, &after));
         assert_eq!(initial.shutdowns.load(Ordering::SeqCst), 0);
         assert_eq!(candidate.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn discarded_reload_candidate_preserves_current_generation() {
+        struct ReloadFactory {
+            initial: Arc<TestBackend>,
+            candidate: Arc<TestBackend>,
+            calls: AtomicU64,
+        }
+
+        #[async_trait]
+        impl RuntimeFactory for ReloadFactory {
+            async fn prepare(
+                &self,
+                settings: Arc<AiccSettings>,
+                catalog: Arc<CatalogSnapshot>,
+                target_seq: u64,
+            ) -> Result<PreparedRuntime, RuntimeError> {
+                let names: Vec<_> = settings.enabled_provider_names().into_iter().collect();
+                let borrowed: Vec<_> = names.iter().map(String::as_str).collect();
+                let mut state = prepared_state(target_seq, &borrowed, true);
+                state.catalog = catalog;
+                let backend: Arc<dyn RuntimeBackend> =
+                    if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        self.initial.clone()
+                    } else {
+                        self.candidate.clone()
+                    };
+                Ok(PreparedRuntime { backend, state })
+            }
+        }
+
+        let inputs = Arc::new(TestInputs {
+            target: AtomicU64::new(1),
+        });
+        let initial = Arc::new(TestBackend {
+            calls: AtomicU64::new(0),
+            shutdowns: AtomicU64::new(0),
+            provider_names: vec!["primary".into()],
+            fail_provider: None,
+            started: None,
+            proceed: None,
+        });
+        let candidate = Arc::new(TestBackend {
+            calls: AtomicU64::new(0),
+            shutdowns: AtomicU64::new(0),
+            provider_names: vec!["replacement".into()],
+            fail_provider: None,
+            started: None,
+            proceed: None,
+        });
+        let runtime = RuntimeState::bootstrap(
+            settings(1, &["primary"]),
+            inputs,
+            Arc::new(ReloadFactory {
+                initial: initial.clone(),
+                candidate: candidate.clone(),
+                calls: AtomicU64::new(0),
+            }),
+        )
+        .await
+        .unwrap();
+        let before = runtime.capture().await;
+        let prepared = runtime
+            .prepare_reload(settings(2, &["replacement"]))
+            .await
+            .unwrap();
+        assert_eq!(prepared.expected_settings_revision(), 1);
+        assert_eq!(prepared.settings_revision(), 2);
+        assert!(Arc::ptr_eq(&before, &runtime.capture().await));
+        prepared.discard().await;
+        assert!(Arc::ptr_eq(&before, &runtime.capture().await));
+        assert_eq!(initial.shutdowns.load(Ordering::SeqCst), 0);
+        assert_eq!(candidate.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn named_refresh_uses_published_backend_and_runs_global_convergence() {
+        struct RefreshBackend {
+            provider_name: String,
+            refreshes: AtomicU64,
+            shutdowns: AtomicU64,
+        }
+
+        #[async_trait]
+        impl RuntimeBackend for RefreshBackend {
+            async fn refresh_provider(
+                &self,
+                provider_instance_name: &str,
+            ) -> Result<bool, RuntimeError> {
+                if provider_instance_name != self.provider_name {
+                    return Err(RuntimeError::Backend("unknown provider".into()));
+                }
+                self.refreshes.fetch_add(1, Ordering::SeqCst);
+                Ok(true)
+            }
+
+            async fn converge(
+                &self,
+                catalog: Arc<CatalogSnapshot>,
+                target_seq: u64,
+                _trigger: ConvergenceTrigger,
+            ) -> Result<RuntimePreparedState, RuntimeError> {
+                let mut state = prepared_state(target_seq, &[&self.provider_name], true);
+                state.catalog = catalog;
+                Ok(state)
+            }
+
+            async fn shutdown(&self) {
+                self.shutdowns.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        struct RefreshFactory {
+            initial: Arc<RefreshBackend>,
+            replacement: Arc<RefreshBackend>,
+            calls: AtomicU64,
+        }
+
+        #[async_trait]
+        impl RuntimeFactory for RefreshFactory {
+            async fn prepare(
+                &self,
+                _settings: Arc<AiccSettings>,
+                catalog: Arc<CatalogSnapshot>,
+                target_seq: u64,
+            ) -> Result<PreparedRuntime, RuntimeError> {
+                let mut state = prepared_state(target_seq, &["primary"], true);
+                state.catalog = catalog;
+                let backend: Arc<dyn RuntimeBackend> =
+                    if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        self.initial.clone()
+                    } else {
+                        self.replacement.clone()
+                    };
+                Ok(PreparedRuntime { backend, state })
+            }
+        }
+
+        let initial = Arc::new(RefreshBackend {
+            provider_name: "primary".into(),
+            refreshes: AtomicU64::new(0),
+            shutdowns: AtomicU64::new(0),
+        });
+        let replacement = Arc::new(RefreshBackend {
+            provider_name: "primary".into(),
+            refreshes: AtomicU64::new(0),
+            shutdowns: AtomicU64::new(0),
+        });
+        let runtime = RuntimeState::bootstrap(
+            settings(1, &["primary"]),
+            Arc::new(TestInputs {
+                target: AtomicU64::new(1),
+            }),
+            Arc::new(RefreshFactory {
+                initial: initial.clone(),
+                replacement: replacement.clone(),
+                calls: AtomicU64::new(0),
+            }),
+        )
+        .await
+        .unwrap();
+        runtime
+            .prepare_reload(settings(2, &["primary"]))
+            .await
+            .unwrap()
+            .publish()
+            .await;
+
+        let snapshot = runtime.refresh_provider("primary").await.unwrap();
+        assert_eq!(snapshot.generation, 3);
+        assert_eq!(initial.refreshes.load(Ordering::SeqCst), 0);
+        assert_eq!(replacement.refreshes.load(Ordering::SeqCst), 1);
+        assert_eq!(initial.shutdowns.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -1076,6 +1396,13 @@ mod tests {
         struct ProbeBackend(AtomicU64);
         #[async_trait]
         impl RuntimeBackend for ProbeBackend {
+            async fn refresh_provider(
+                &self,
+                _provider_instance_name: &str,
+            ) -> Result<bool, RuntimeError> {
+                Ok(false)
+            }
+
             async fn converge(
                 &self,
                 catalog: Arc<CatalogSnapshot>,
@@ -1190,7 +1517,12 @@ mod tests {
             proceed: None,
         });
         let runtime = runtime(inputs, backend.clone(), &["primary"]).await;
-        runtime.reload(settings(2, &[])).await.unwrap();
+        runtime
+            .prepare_reload(settings(2, &[]))
+            .await
+            .unwrap()
+            .publish()
+            .await;
         let event = ProviderRefreshEvent {
             provider_instance_name: "primary".into(),
             trigger: ProviderRefreshTrigger::Scheduled,
@@ -1255,7 +1587,7 @@ mod tests {
             Err(RuntimeError::Stopped)
         ));
         assert!(matches!(
-            runtime.reload(settings(2, &[])).await,
+            runtime.prepare_reload(settings(2, &[])).await,
             Err(RuntimeError::Stopped)
         ));
     }
