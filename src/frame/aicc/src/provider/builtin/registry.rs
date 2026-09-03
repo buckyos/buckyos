@@ -1,4 +1,7 @@
 use super::*;
+use crate::catalog::{
+    CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ModelDriverCatalog, ProviderRulesCatalog,
+};
 use crate::protocol::{
     fal_queue_adapter, gemini_interactions_adapter, glm_chat_adapter, kimi_chat_adapter,
     minimax_messages_adapter, openai_chat_completions_adapter, openai_responses_adapter,
@@ -69,6 +72,7 @@ pub(crate) struct BuiltinProviderRequest<'a> {
 pub(crate) struct BuiltinProviderRegistry {
     providers: BTreeMap<String, BuiltinProviderRegistration>,
     codecs: Arc<CodecRegistry>,
+    catalog_files: Vec<CurrentCatalogFile>,
     transport_config: HttpTransportConfig,
     dynamic_login_resolver: Arc<dyn DynamicLoginCredentialResolver>,
 }
@@ -102,10 +106,12 @@ impl BuiltinProviderRegistry {
             })
             .collect();
         let codecs = Arc::new(builtin_codec_registry()?);
+        let catalog_files = builtin_catalog_files()?;
         let dynamic_login_resolver = Arc::new(SnDynamicLoginResolver::new(reqwest::Client::new()));
         Ok(Self {
             providers,
             codecs,
+            catalog_files,
             transport_config,
             dynamic_login_resolver,
         })
@@ -117,6 +123,10 @@ impl BuiltinProviderRegistry {
 
     pub(crate) fn codecs(&self) -> Arc<CodecRegistry> {
         self.codecs.clone()
+    }
+
+    pub(crate) fn catalog_files(&self) -> Vec<CurrentCatalogFile> {
+        self.catalog_files.clone()
     }
 
     pub(crate) fn resolve(
@@ -331,6 +341,57 @@ fn builtin_codec_registry() -> ProviderResult<CodecRegistry> {
     Ok(registry)
 }
 
+fn builtin_catalog_files() -> ProviderResult<Vec<CurrentCatalogFile>> {
+    let files = [
+        openai_catalog_files(),
+        claude_catalog_files(),
+        minimax_catalog_files(),
+        gemini_catalog_files(),
+        openrouter_catalog_files(),
+        kimi_catalog_files(),
+        glm_catalog_files(),
+        openai_responses_compatible_catalog_files(),
+        fal_catalog_files(),
+        sn_catalog_files(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let mut identities = BTreeMap::new();
+    for file in &files {
+        let catalog_id = match file.kind {
+            CatalogKind::ModelDriver => {
+                serde_json::from_slice::<ModelDriverCatalog>(&file.contents)
+                    .map(|catalog| catalog.model_driver_id)
+            }
+            CatalogKind::ProviderRules => {
+                serde_json::from_slice::<ProviderRulesCatalog>(&file.contents)
+                    .map(|catalog| catalog.provider_profile_id)
+            }
+            CatalogKind::KnownProvider => {
+                serde_json::from_slice::<KnownProviderCatalog>(&file.contents)
+                    .map(|catalog| catalog.catalog_id)
+            }
+        }
+        .map_err(|error| {
+            ProviderError::InvalidConfiguration(format!(
+                "builtin {} catalog is invalid: {error}",
+                file.kind
+            ))
+        })?;
+        if identities
+            .insert((file.kind, catalog_id.clone()), ())
+            .is_some()
+        {
+            return Err(ProviderError::InvalidConfiguration(format!(
+                "duplicate builtin {} catalog `{catalog_id}`",
+                file.kind
+            )));
+        }
+    }
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +401,7 @@ mod tests {
         OPENAI_RESPONSES_ADAPTER_ID, OPENROUTER_CHAT_ADAPTER_ID,
     };
     use crate::provider::{CredentialReference, ProviderHealthState};
+    use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
     use buckyos_api::ApiType;
     use std::collections::BTreeSet;
 
@@ -407,6 +469,54 @@ mod tests {
                 ApiType::ImageTextToImage,
             )
             .is_ok());
+    }
+
+    #[test]
+    fn builtin_catalog_files_cover_all_three_kinds_without_duplicate_identity() {
+        let registry = builtin_provider_registry().unwrap();
+        let files = registry.catalog_files();
+        assert_eq!(files.len(), 33);
+        assert_eq!(
+            files
+                .iter()
+                .filter(|file| file.kind == CatalogKind::KnownProvider)
+                .count(),
+            12
+        );
+        assert_eq!(
+            files
+                .iter()
+                .filter(|file| file.kind == CatalogKind::ProviderRules)
+                .count(),
+            12
+        );
+        assert_eq!(
+            files
+                .iter()
+                .filter(|file| file.kind == CatalogKind::ModelDriver)
+                .count(),
+            9
+        );
+
+        let builtin = files
+            .into_iter()
+            .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let snapshot = MetadataSources {
+            builtin,
+            ..MetadataSources::default()
+        }
+        .build_snapshot(1, &crate::catalog::CatalogBuildOptions::default())
+        .unwrap();
+        for profile in registry.profiles() {
+            assert!(snapshot
+                .known_provider(&profile.provider_profile_id)
+                .is_some());
+            assert!(snapshot
+                .provider_rules(&profile.provider_profile_id)
+                .is_some());
+        }
     }
 
     #[test]
