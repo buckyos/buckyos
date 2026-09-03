@@ -8,6 +8,7 @@ mod minimax;
 mod openai;
 mod openai_responses_compatible;
 mod openrouter;
+mod registry;
 mod sn;
 
 #[allow(unused_imports)]
@@ -28,6 +29,8 @@ pub(crate) use openai::*;
 pub(crate) use openai_responses_compatible::*;
 #[allow(unused_imports)]
 pub(crate) use openrouter::*;
+#[allow(unused_imports)]
+pub(crate) use registry::*;
 #[allow(unused_imports)]
 pub(crate) use sn::*;
 
