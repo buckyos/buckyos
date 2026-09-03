@@ -2,6 +2,7 @@
 
 mod adapter;
 mod auth;
+mod chat_completions_dialects;
 mod claude_messages;
 mod contract;
 mod derived_responses;
@@ -19,6 +20,8 @@ mod transport;
 pub(crate) use adapter::*;
 #[allow(unused_imports)]
 pub(crate) use auth::*;
+#[allow(unused_imports)]
+pub(crate) use chat_completions_dialects::*;
 #[allow(unused_imports)]
 pub(crate) use claude_messages::*;
 #[allow(unused_imports)]
