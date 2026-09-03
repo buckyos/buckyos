@@ -316,18 +316,20 @@ Owner：Provider Runtime 小组
 
 依赖：WP-03、WP-05；可先使用 fake codec
 
-- [ ] 实现 Provider Profile、Instance 和 Registry；
-- [ ] 实现 resolved credential，凭据不进入 snapshot；
-- [ ] 定义统一 ProviderDiscovery；
-- [ ] discovery 只使用官方机器接口或 catalog-only，不抓网页；
-- [ ] 合并 Model Driver、Adapter operation 和 discovery 动态能力的交集；
-- [ ] inventory schema、fingerprint、revision 和 pricing source；
-- [ ] 实现 inventory LKGS fallback；
-- [ ] 实现实例 refresh loop、健康探测和退避；
-- [ ] 实现幂等 Stop、优雅退出和 generation token 迟到写保护；
-- [ ] 禁用、删除、替换和服务退出时先停止旧循环。
+- [x] 实现 Provider Profile、Instance 和 Registry；
+- [x] 实现 resolved credential，凭据不进入 snapshot；
+- [x] 定义统一 ProviderDiscovery；
+- [x] discovery 只使用官方机器接口或 catalog-only，不抓网页；
+- [x] 合并 Model Driver、Adapter operation 和 discovery 动态能力的交集；
+- [x] inventory schema、fingerprint、revision 和 pricing source；
+- [x] 实现 inventory LKGS fallback；
+- [x] 实现实例 refresh loop、健康探测和退避；
+- [x] 实现幂等 Stop、优雅退出和 generation token 迟到写保护；
+- [x] 禁用、删除、替换和服务退出时先停止旧循环。
 
 完成标准：Provider 生命周期可以完全通过 fake discovery 和 fake codec 测试，不依赖 Router。
+
+实现记录：Provider Runtime 小组在 `src/frame/aicc/src/provider/mod.rs` 实现 Provider Profile、Instance、copy-on-write Registry、credential resolver、统一 `ProviderDiscovery`、catalog-only discovery、三方能力交集和带 fingerprint/revision/pricing source 的实例级 inventory；复用 WP-14 RDB LKGS 接口完成有效快照恢复，加入 refresh loop、健康探测、有界指数退避、单实例刷新互斥、幂等 Stop、优雅退出和 generation token 迟到写保护，禁用、删除、替换及服务退出均先停止旧循环。12 个 fake discovery/fake codec 生命周期单测随 AICC 全量 158 个测试通过，all-target check、AICC `clippy --no-deps -D warnings`、格式和 diff 检查通过；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。全局 metadata target/applied 收敛和 RuntimeSnapshot 原子发布仍由 WP-15 负责。
 
 ### WP-08：内置 Provider 装配与 Dialect
 

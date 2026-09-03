@@ -1,1 +1,1952 @@
+#![allow(dead_code)]
 
+use crate::catalog::{CatalogSnapshot, Pricing};
+use crate::matching::MatchContext;
+use crate::model::{
+    InventoryModel, InventoryModelVariant, ModelUid, ProviderInventory as ModelProviderInventory,
+};
+use crate::protocol::{CodecRegistry, CredentialKind, ResolvedCredential};
+use crate::storage::{AiccStorage, InventoryLkgsRecord};
+use async_trait::async_trait;
+use buckyos_api::ApiType;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use thiserror::Error;
+use tokio::sync::{watch, Mutex, RwLock};
+use tokio::task::JoinHandle;
+
+const INVENTORY_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Error)]
+pub(crate) enum ProviderError {
+    #[error("invalid provider configuration: {0}")]
+    InvalidConfiguration(String),
+    #[error("provider profile `{0}` is not registered")]
+    UnknownProfile(String),
+    #[error("protocol adapter `{0}` is not registered")]
+    UnknownAdapter(String),
+    #[error("provider instance `{0}` is already registered")]
+    DuplicateInstance(String),
+    #[error("provider instance `{0}` is not registered")]
+    UnknownInstance(String),
+    #[error("credential resolution failed: {0}")]
+    Credential(String),
+    #[error("provider discovery failed: {0}")]
+    Discovery(String),
+    #[error("inventory build failed: {0}")]
+    Inventory(String),
+    #[error("inventory storage failed: {0}")]
+    Storage(String),
+    #[error("provider instance stopped before refresh could commit")]
+    Stopped,
+}
+
+pub(crate) type ProviderResult<T> = Result<T, ProviderError>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DiscoveryMode {
+    MachineApi,
+    CatalogOnly,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CredentialDescriptor {
+    pub kind: CredentialKind,
+    pub header_name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RefreshPolicy {
+    pub interval: Duration,
+    pub initial_backoff: Duration,
+    pub max_backoff: Duration,
+}
+
+impl Default for RefreshPolicy {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(15 * 60),
+            initial_backoff: Duration::from_secs(5),
+            max_backoff: Duration::from_secs(5 * 60),
+        }
+    }
+}
+
+impl RefreshPolicy {
+    fn validate(&self) -> ProviderResult<()> {
+        if self.interval.is_zero()
+            || self.initial_backoff.is_zero()
+            || self.max_backoff < self.initial_backoff
+        {
+            return Err(ProviderError::InvalidConfiguration(
+                "refresh interval/backoff is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProviderProfile {
+    pub provider_profile_id: String,
+    pub display_name: String,
+    pub default_protocol_adapter_id: String,
+    pub credential: CredentialDescriptor,
+    pub discovery_mode: DiscoveryMode,
+    pub refresh: RefreshPolicy,
+    pub default_inventory: Option<ProviderDiscoverySnapshot>,
+}
+
+impl ProviderProfile {
+    fn validate(&self) -> ProviderResult<()> {
+        validate_id("provider_profile_id", &self.provider_profile_id)?;
+        validate_id(
+            "default_protocol_adapter_id",
+            &self.default_protocol_adapter_id,
+        )?;
+        if self.display_name.trim().is_empty() {
+            return Err(ProviderError::InvalidConfiguration(
+                "provider display name must not be empty".into(),
+            ));
+        }
+        if self.credential.kind == CredentialKind::NamedHeader
+            && self
+                .credential
+                .header_name
+                .as_deref()
+                .is_none_or(str::is_empty)
+        {
+            return Err(ProviderError::InvalidConfiguration(
+                "named-header credentials require a header name".into(),
+            ));
+        }
+        self.refresh.validate()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CredentialReference {
+    pub reference: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProviderInstanceConfig {
+    pub provider_instance_name: String,
+    pub provider_profile_id: String,
+    pub protocol_adapter_id: String,
+    pub base_url: String,
+    pub credential: CredentialReference,
+    pub provider_rules_id: Option<String>,
+    pub region: Option<String>,
+    pub account: Option<String>,
+}
+
+impl ProviderInstanceConfig {
+    fn validate(&self) -> ProviderResult<()> {
+        validate_id("provider_instance_name", &self.provider_instance_name)?;
+        validate_id("provider_profile_id", &self.provider_profile_id)?;
+        validate_id("protocol_adapter_id", &self.protocol_adapter_id)?;
+        if self.credential.reference.trim().is_empty() {
+            return Err(ProviderError::InvalidConfiguration(
+                "credential reference must not be empty".into(),
+            ));
+        }
+        let url = reqwest::Url::parse(&self.base_url).map_err(|_| {
+            ProviderError::InvalidConfiguration("base_url must be an absolute URL".into())
+        })?;
+        if !matches!(url.scheme(), "http" | "https") || url.cannot_be_a_base() {
+            return Err(ProviderError::InvalidConfiguration(
+                "base_url must use http or https and support relative paths".into(),
+            ));
+        }
+        if let Some(provider_rules_id) = &self.provider_rules_id {
+            validate_id("provider_rules_id", provider_rules_id)?;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+pub(crate) trait CredentialResolver: Send + Sync {
+    async fn resolve(
+        &self,
+        descriptor: &CredentialDescriptor,
+        reference: &CredentialReference,
+    ) -> ProviderResult<ResolvedCredential>;
+}
+
+#[derive(Clone)]
+pub(crate) struct StaticCredentialResolver {
+    values: BTreeMap<String, String>,
+}
+
+impl StaticCredentialResolver {
+    pub(crate) fn new(values: BTreeMap<String, String>) -> Self {
+        Self { values }
+    }
+}
+
+#[async_trait]
+impl CredentialResolver for StaticCredentialResolver {
+    async fn resolve(
+        &self,
+        descriptor: &CredentialDescriptor,
+        reference: &CredentialReference,
+    ) -> ProviderResult<ResolvedCredential> {
+        let value = self.values.get(&reference.reference).ok_or_else(|| {
+            ProviderError::Credential("credential reference was not resolved".into())
+        })?;
+        let result = match descriptor.kind {
+            CredentialKind::Bearer => {
+                ResolvedCredential::bearer(&reference.reference, value.clone())
+            }
+            CredentialKind::NamedHeader => ResolvedCredential::named_header(
+                &reference.reference,
+                descriptor.header_name.as_deref().unwrap_or_default(),
+                value.clone(),
+            ),
+            CredentialKind::FalKey => {
+                ResolvedCredential::fal_key(&reference.reference, value.clone())
+            }
+            CredentialKind::GlmJwt => ResolvedCredential::glm_jwt(
+                &reference.reference,
+                value,
+                SystemTime::now(),
+                Duration::from_secs(10 * 60),
+            ),
+        };
+        result.map_err(|error| ProviderError::Credential(error.to_string()))
+    }
+}
+
+pub(crate) struct DiscoveryContext<'a> {
+    pub profile: &'a ProviderProfile,
+    pub instance: &'a ProviderInstanceConfig,
+    pub credential: &'a ResolvedCredential,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ModelAvailability {
+    Available,
+    Unavailable,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderHealthState {
+    Unknown,
+    Healthy,
+    Degraded,
+    Unavailable,
+    Stopped,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DiscoveredModel {
+    pub provider_model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_types: Option<Vec<ApiType>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported_features: Option<BTreeSet<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_methods: Option<BTreeSet<String>>,
+    pub availability: ModelAvailability,
+    #[serde(default)]
+    pub deprecated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<Pricing>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderDiscoverySnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    pub discovered_at_ms: i64,
+    pub health: ProviderHealthState,
+    #[serde(default)]
+    pub models: Vec<DiscoveredModel>,
+}
+
+#[async_trait]
+pub(crate) trait ProviderDiscovery: Send + Sync {
+    async fn discover(
+        &self,
+        context: &DiscoveryContext<'_>,
+    ) -> ProviderResult<ProviderDiscoverySnapshot>;
+}
+
+pub(crate) struct CatalogOnlyDiscovery {
+    snapshot: ProviderDiscoverySnapshot,
+}
+
+impl CatalogOnlyDiscovery {
+    pub(crate) fn new(snapshot: ProviderDiscoverySnapshot) -> Self {
+        Self { snapshot }
+    }
+}
+
+#[async_trait]
+impl ProviderDiscovery for CatalogOnlyDiscovery {
+    async fn discover(
+        &self,
+        _context: &DiscoveryContext<'_>,
+    ) -> ProviderResult<ProviderDiscoverySnapshot> {
+        Ok(self.snapshot.clone())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PricingSource {
+    Discovery,
+    ProviderRules,
+    ModelDriver,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InventoryPricing {
+    pub source: PricingSource,
+    pub value: Pricing,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderInventoryModel {
+    pub provider_model_id: String,
+    pub model_uid: String,
+    pub model_driver_id: String,
+    pub origin_model_id: String,
+    pub api_types: Vec<ApiType>,
+    #[serde(default)]
+    pub logical_mounts: Vec<String>,
+    #[serde(default)]
+    pub capabilities: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub operations: BTreeMap<String, String>,
+    pub availability: ModelAvailability,
+    #[serde(default)]
+    pub deprecated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_methods: Option<BTreeSet<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<InventoryPricing>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_catalog_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_rules_revision: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderInventorySnapshot {
+    pub schema_version: u32,
+    pub provider_instance_name: String,
+    pub provider_profile_id: String,
+    pub protocol_adapter_id: String,
+    pub provider_model_list_fingerprint: String,
+    pub metadata_applied_seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory_revision: Option<String>,
+    pub discovered_at_ms: i64,
+    pub health: ProviderHealthState,
+    pub models: Vec<ProviderInventoryModel>,
+}
+
+impl ProviderInventorySnapshot {
+    pub(crate) fn as_model_inventory(&self) -> ModelProviderInventory {
+        ModelProviderInventory {
+            provider_instance_name: self.provider_instance_name.clone(),
+            provider_profile_id: self.provider_profile_id.clone(),
+            protocol_adapter_id: self.protocol_adapter_id.clone(),
+            inventory_revision: self.inventory_revision.clone().unwrap_or_default(),
+            models: self
+                .models
+                .iter()
+                .filter(|model| {
+                    model.availability == ModelAvailability::Available
+                        && !model.deprecated
+                        && !model.api_types.is_empty()
+                })
+                .map(|model| InventoryModel {
+                    provider_model_id: model.provider_model_id.clone(),
+                    model_driver_id: model.model_driver_id.clone(),
+                    origin_model_id: model.origin_model_id.clone(),
+                    api_types: model.api_types.clone(),
+                    logical_mounts: model.logical_mounts.clone(),
+                    variants: Vec::<InventoryModelVariant>::new(),
+                    capabilities: model.capabilities.clone(),
+                    attributes: BTreeMap::from([
+                        ("model_uid".into(), Value::String(model.model_uid.clone())),
+                        (
+                            "pricing".into(),
+                            model
+                                .pricing
+                                .as_ref()
+                                .and_then(|pricing| serde_json::to_value(pricing).ok())
+                                .unwrap_or(Value::Null),
+                        ),
+                    ]),
+                    operations: model.operations.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
+pub(crate) struct InventoryBuilder;
+
+impl InventoryBuilder {
+    pub(crate) fn build(
+        profile: &ProviderProfile,
+        instance: &ProviderInstanceConfig,
+        discovery: ProviderDiscoverySnapshot,
+        catalog: &CatalogSnapshot,
+        codecs: &CodecRegistry,
+    ) -> ProviderResult<ProviderInventorySnapshot> {
+        validate_discovery(&discovery)?;
+        let adapter = codecs
+            .adapter(&instance.protocol_adapter_id)
+            .ok_or_else(|| ProviderError::UnknownAdapter(instance.protocol_adapter_id.clone()))?;
+        let rules_id = instance
+            .provider_rules_id
+            .as_deref()
+            .unwrap_or(&profile.provider_profile_id);
+        let rules = catalog.provider_rules(rules_id);
+        let candidate_drivers = rules.and_then(|rules| rules.metadata_drivers.as_deref());
+        let fingerprint = model_list_fingerprint(&discovery.models);
+        let mut models = Vec::new();
+
+        for discovered in discovery.models {
+            let origin_model_id = discovered
+                .origin_model_id
+                .clone()
+                .unwrap_or_else(|| discovered.provider_model_id.clone());
+            let dimensions = MatchContext::from([
+                (
+                    "provider_model_id".into(),
+                    Value::String(discovered.provider_model_id.clone()),
+                ),
+                (
+                    "origin_model_id".into(),
+                    Value::String(origin_model_id.clone()),
+                ),
+            ]);
+            let provider_rule = if catalog.provider_rules(rules_id).is_some() {
+                catalog
+                    .resolve_provider_rule(rules_id, &discovered.provider_model_id, &dimensions)
+                    .map_err(|error| ProviderError::Inventory(error.to_string()))?
+            } else {
+                None
+            };
+            if provider_rule
+                .as_ref()
+                .is_some_and(|rule| rule.action.exclude)
+            {
+                continue;
+            }
+            let resolved = catalog
+                .resolve_model(&origin_model_id, candidate_drivers, &dimensions)
+                .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+            if resolved.semantics.exclude.unwrap_or(false) {
+                continue;
+            }
+            let Some(model_driver_id) = resolved.model_driver_id.clone() else {
+                continue;
+            };
+            let mut static_api_types = resolved.semantics.api_types.unwrap_or_default();
+            let mut capabilities = resolved.semantics.capabilities.unwrap_or_default();
+            let mut pricing = resolved.semantics.pricing.map(|value| InventoryPricing {
+                source: PricingSource::ModelDriver,
+                value,
+            });
+            let mut provider_rules_revision = None;
+            let operation_overrides = if let Some(rule) = &provider_rule {
+                let narrowed = rule.action.narrow(&static_api_types, &capabilities);
+                static_api_types = narrowed.api_types;
+                capabilities = narrowed.capabilities;
+                if let Some(value) = &rule.action.pricing {
+                    pricing = Some(InventoryPricing {
+                        source: PricingSource::ProviderRules,
+                        value: value.clone(),
+                    });
+                }
+                provider_rules_revision = Some(rule.catalog_revision_seq);
+                &rule.action.operations
+            } else {
+                static EMPTY_OPERATIONS: std::sync::LazyLock<BTreeMap<String, String>> =
+                    std::sync::LazyLock::new(BTreeMap::new);
+                &EMPTY_OPERATIONS
+            };
+            if let Some(value) = discovered.pricing.clone() {
+                pricing = Some(InventoryPricing {
+                    source: PricingSource::Discovery,
+                    value,
+                });
+            }
+
+            let discovered_api_types = discovered.api_types.as_ref().map(|items| {
+                items
+                    .iter()
+                    .filter_map(|api_type| api_type_name(*api_type).ok())
+                    .collect::<BTreeSet<_>>()
+            });
+            if let Some(discovered_api_types) = &discovered_api_types {
+                static_api_types.retain(|api_type| discovered_api_types.contains(api_type));
+            }
+
+            let mut api_types = Vec::new();
+            let mut operations = BTreeMap::new();
+            let mut adapter_features = BTreeSet::new();
+            for api_type_name in static_api_types {
+                let api_type = parse_api_type(&api_type_name)?;
+                let operation_id =
+                    resolve_operation(adapter, operation_overrides, api_type, &api_type_name)?;
+                let Some(operation_id) = operation_id else {
+                    continue;
+                };
+                if discovered.remote_methods.as_ref().is_some_and(|methods| {
+                    !methods.contains(&operation_id)
+                        && !methods.contains(api_type.typed_method())
+                        && !methods.contains(&api_type_name)
+                }) {
+                    continue;
+                }
+                let descriptor = codecs
+                    .operation_descriptor(&instance.protocol_adapter_id, &operation_id, api_type)
+                    .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+                let binding = descriptor
+                    .binding(api_type)
+                    .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+                adapter_features.extend(binding.supported_features.iter().cloned());
+                api_types.push(api_type);
+                operations.insert(api_type_name, operation_id);
+            }
+            retain_supported_features(
+                &mut capabilities,
+                &adapter_features,
+                discovered.supported_features.as_ref(),
+            );
+            api_types.sort_by_key(|api_type| api_type.typed_method());
+            if discovered.availability != ModelAvailability::Available || discovered.deprecated {
+                api_types.clear();
+                operations.clear();
+            }
+            let model_uid = ModelUid::new(
+                &model_driver_id,
+                &origin_model_id,
+                &instance.protocol_adapter_id,
+                None,
+            )
+            .map_err(|error| ProviderError::Inventory(error.to_string()))?
+            .as_stable_string();
+            models.push(ProviderInventoryModel {
+                provider_model_id: discovered.provider_model_id,
+                model_uid,
+                model_driver_id,
+                origin_model_id,
+                api_types,
+                logical_mounts: resolved.semantics.logical_mounts.unwrap_or_default(),
+                capabilities,
+                operations,
+                availability: discovered.availability,
+                deprecated: discovered.deprecated,
+                remote_methods: discovered.remote_methods,
+                pricing,
+                model_catalog_revision: resolved.catalog_revision_seq,
+                provider_rules_revision,
+            });
+        }
+        models.sort_by(|left, right| left.provider_model_id.cmp(&right.provider_model_id));
+        Ok(ProviderInventorySnapshot {
+            schema_version: INVENTORY_SCHEMA_VERSION,
+            provider_instance_name: instance.provider_instance_name.clone(),
+            provider_profile_id: profile.provider_profile_id.clone(),
+            protocol_adapter_id: instance.protocol_adapter_id.clone(),
+            provider_model_list_fingerprint: fingerprint,
+            metadata_applied_seq: catalog.target_revision_seq(),
+            inventory_revision: discovery.revision,
+            discovered_at_ms: discovery.discovered_at_ms,
+            health: discovery.health,
+            models,
+        })
+    }
+}
+
+#[async_trait]
+pub(crate) trait ProviderInventoryStore: Send + Sync {
+    async fn load(
+        &self,
+        provider_instance_name: &str,
+    ) -> ProviderResult<Option<InventoryLkgsRecord>>;
+    async fn commit(&self, record: &InventoryLkgsRecord) -> ProviderResult<()>;
+}
+
+#[async_trait]
+impl ProviderInventoryStore for AiccStorage {
+    async fn load(
+        &self,
+        provider_instance_name: &str,
+    ) -> ProviderResult<Option<InventoryLkgsRecord>> {
+        self.load_inventory(provider_instance_name)
+            .await
+            .map_err(|error| ProviderError::Storage(error.to_string()))
+    }
+
+    async fn commit(&self, record: &InventoryLkgsRecord) -> ProviderResult<()> {
+        self.upsert_inventory(record)
+            .await
+            .map_err(|error| ProviderError::Storage(error.to_string()))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProviderHealth {
+    pub state: ProviderHealthState,
+    pub consecutive_failures: u32,
+    pub last_success_at_ms: Option<i64>,
+    pub last_attempt_at_ms: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+impl Default for ProviderHealth {
+    fn default() -> Self {
+        Self {
+            state: ProviderHealthState::Unknown,
+            consecutive_failures: 0,
+            last_success_at_ms: None,
+            last_attempt_at_ms: None,
+            last_error: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ExecutableProviderInstance {
+    pub config: Arc<ProviderInstanceConfig>,
+    pub profile: Arc<ProviderProfile>,
+    inventory: Arc<ProviderInventorySnapshot>,
+    generation: u64,
+    runtime: Arc<ProviderRuntime>,
+}
+
+impl fmt::Debug for ExecutableProviderInstance {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExecutableProviderInstance")
+            .field(
+                "provider_instance_name",
+                &self.config.provider_instance_name,
+            )
+            .field("provider_profile_id", &self.profile.provider_profile_id)
+            .field("protocol_adapter_id", &self.config.protocol_adapter_id)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ExecutableProviderInstance {
+    pub(crate) async fn resolve_credential(&self) -> ProviderResult<ResolvedCredential> {
+        self.runtime.resolve_credential().await
+    }
+
+    pub(crate) async fn health(&self) -> ProviderHealth {
+        self.runtime.health.read().await.clone()
+    }
+
+    pub(crate) async fn current_inventory(&self) -> Arc<ProviderInventorySnapshot> {
+        self.runtime.inventory.read().await.clone()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ProviderRegistry {
+    instances: BTreeMap<String, Arc<ExecutableProviderInstance>>,
+}
+
+impl ProviderRegistry {
+    pub(crate) fn get(&self, name: &str) -> Option<Arc<ExecutableProviderInstance>> {
+        self.instances.get(name).cloned()
+    }
+
+    pub(crate) fn list(&self) -> Vec<Arc<ExecutableProviderInstance>> {
+        self.instances.values().cloned().collect()
+    }
+}
+
+struct ProviderRuntime {
+    config: Arc<ProviderInstanceConfig>,
+    profile: Arc<ProviderProfile>,
+    discovery: Arc<dyn ProviderDiscovery>,
+    credential_resolver: Arc<dyn CredentialResolver>,
+    catalog: Arc<CatalogSnapshot>,
+    codecs: Arc<CodecRegistry>,
+    store: Arc<dyn ProviderInventoryStore>,
+    generation: u64,
+    current_generation: Arc<AtomicU64>,
+    commit_gate: RwLock<()>,
+    refresh_lock: Mutex<()>,
+    inventory: RwLock<Arc<ProviderInventorySnapshot>>,
+    health: RwLock<ProviderHealth>,
+    stopped: AtomicBool,
+    stop_tx: watch::Sender<bool>,
+    task: Mutex<Option<JoinHandle<()>>>,
+    stop_lock: Mutex<()>,
+}
+
+impl ProviderRuntime {
+    async fn resolve_credential(&self) -> ProviderResult<ResolvedCredential> {
+        self.credential_resolver
+            .resolve(&self.profile.credential, &self.config.credential)
+            .await
+    }
+
+    async fn discover_and_build(&self) -> ProviderResult<ProviderInventorySnapshot> {
+        if !self.is_current() {
+            return Err(ProviderError::Stopped);
+        }
+        let credential = self.resolve_credential().await?;
+        let snapshot = self
+            .discovery
+            .discover(&DiscoveryContext {
+                profile: &self.profile,
+                instance: &self.config,
+                credential: &credential,
+            })
+            .await?;
+        InventoryBuilder::build(
+            &self.profile,
+            &self.config,
+            snapshot,
+            &self.catalog,
+            &self.codecs,
+        )
+    }
+
+    async fn refresh_once(&self, force: bool) -> ProviderResult<Arc<ProviderInventorySnapshot>> {
+        let _refresh = self.refresh_lock.lock().await;
+        let attempt_at_ms = now_ms()?;
+        let built = match self.discover_and_build().await {
+            Ok(built) => built,
+            Err(error) => {
+                self.record_failure(attempt_at_ms, &error).await;
+                return Err(error);
+            }
+        };
+        let current = self.inventory.read().await.clone();
+        let changed = force
+            || current.provider_model_list_fingerprint != built.provider_model_list_fingerprint
+            || current.metadata_applied_seq != built.metadata_applied_seq;
+        let built = Arc::new(built);
+        if changed {
+            if let Err(error) = self.commit_inventory(built.clone()).await {
+                self.record_failure(attempt_at_ms, &error).await;
+                return Err(error);
+            }
+        }
+        self.record_success(attempt_at_ms, built.health).await?;
+        Ok(if changed { built } else { current })
+    }
+
+    async fn commit_inventory(
+        &self,
+        inventory: Arc<ProviderInventorySnapshot>,
+    ) -> ProviderResult<()> {
+        let _gate = self.commit_gate.read().await;
+        if !self.is_current() {
+            return Err(ProviderError::Stopped);
+        }
+        let snapshot = serde_json::to_value(inventory.as_ref())
+            .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+        let record = InventoryLkgsRecord::new(
+            &inventory.provider_instance_name,
+            &inventory.provider_profile_id,
+            &inventory.protocol_adapter_id,
+            &inventory.provider_model_list_fingerprint,
+            inventory.metadata_applied_seq,
+            inventory.inventory_revision.clone(),
+            inventory.discovered_at_ms,
+            snapshot,
+            now_ms()?,
+        )
+        .map_err(|error| ProviderError::Storage(error.to_string()))?;
+        self.store.commit(&record).await?;
+        *self.inventory.write().await = inventory;
+        Ok(())
+    }
+
+    async fn record_success(&self, at_ms: i64, state: ProviderHealthState) -> ProviderResult<()> {
+        let _gate = self.commit_gate.read().await;
+        if !self.is_current() {
+            return Err(ProviderError::Stopped);
+        }
+        *self.health.write().await = ProviderHealth {
+            state,
+            consecutive_failures: 0,
+            last_success_at_ms: Some(at_ms),
+            last_attempt_at_ms: Some(at_ms),
+            last_error: None,
+        };
+        Ok(())
+    }
+
+    async fn record_failure(&self, at_ms: i64, error: &ProviderError) {
+        let _gate = self.commit_gate.read().await;
+        if !self.is_current() {
+            return;
+        }
+        let mut health = self.health.write().await;
+        health.state = ProviderHealthState::Degraded;
+        health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+        health.last_attempt_at_ms = Some(at_ms);
+        health.last_error = Some(error.to_string());
+    }
+
+    fn is_current(&self) -> bool {
+        !self.stopped.load(Ordering::Acquire)
+            && self.current_generation.load(Ordering::Acquire) == self.generation
+    }
+
+    async fn run(self: Arc<Self>, mut stop_rx: watch::Receiver<bool>) {
+        let mut delay = self.profile.refresh.interval;
+        loop {
+            tokio::select! {
+                changed = stop_rx.changed() => {
+                    if changed.is_err() || *stop_rx.borrow() {
+                        break;
+                    }
+                }
+                _ = tokio::time::sleep(delay) => {
+                    match self.refresh_once(false).await {
+                        Ok(_) => delay = self.profile.refresh.interval,
+                        Err(ProviderError::Stopped) => break,
+                        Err(_) => {
+                            let failures = self.health.read().await.consecutive_failures;
+                            delay = exponential_backoff(&self.profile.refresh, failures);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn stop(&self) {
+        let _stop = self.stop_lock.lock().await;
+        if self.stopped.load(Ordering::Acquire) {
+            return;
+        }
+        {
+            let _gate = self.commit_gate.write().await;
+            self.stopped.store(true, Ordering::Release);
+            self.current_generation.fetch_add(1, Ordering::AcqRel);
+            let _ = self.stop_tx.send(true);
+        }
+        if let Some(task) = self.task.lock().await.take() {
+            let _ = task.await;
+        }
+        let mut health = self.health.write().await;
+        health.state = ProviderHealthState::Stopped;
+        health.last_error = None;
+    }
+}
+
+pub(crate) struct ProviderRuntimeManager {
+    profiles: BTreeMap<String, Arc<ProviderProfile>>,
+    credential_resolver: Arc<dyn CredentialResolver>,
+    catalog: Arc<CatalogSnapshot>,
+    codecs: Arc<CodecRegistry>,
+    store: Arc<dyn ProviderInventoryStore>,
+    runtimes: Mutex<BTreeMap<String, Arc<ProviderRuntime>>>,
+    registry: RwLock<Arc<ProviderRegistry>>,
+    generations: Mutex<BTreeMap<String, Arc<AtomicU64>>>,
+    lifecycle_lock: Mutex<()>,
+}
+
+impl ProviderRuntimeManager {
+    pub(crate) fn new(
+        profiles: impl IntoIterator<Item = ProviderProfile>,
+        credential_resolver: Arc<dyn CredentialResolver>,
+        catalog: Arc<CatalogSnapshot>,
+        codecs: Arc<CodecRegistry>,
+        store: Arc<dyn ProviderInventoryStore>,
+    ) -> ProviderResult<Self> {
+        let mut profile_map = BTreeMap::new();
+        for profile in profiles {
+            profile.validate()?;
+            let id = profile.provider_profile_id.clone();
+            if profile_map.insert(id.clone(), Arc::new(profile)).is_some() {
+                return Err(ProviderError::InvalidConfiguration(format!(
+                    "duplicate provider profile `{id}`"
+                )));
+            }
+        }
+        Ok(Self {
+            profiles: profile_map,
+            credential_resolver,
+            catalog,
+            codecs,
+            store,
+            runtimes: Mutex::new(BTreeMap::new()),
+            registry: RwLock::new(Arc::new(ProviderRegistry::default())),
+            generations: Mutex::new(BTreeMap::new()),
+            lifecycle_lock: Mutex::new(()),
+        })
+    }
+
+    pub(crate) async fn registry(&self) -> Arc<ProviderRegistry> {
+        self.registry.read().await.clone()
+    }
+
+    pub(crate) async fn start(
+        &self,
+        config: ProviderInstanceConfig,
+        discovery: Arc<dyn ProviderDiscovery>,
+    ) -> ProviderResult<Arc<ExecutableProviderInstance>> {
+        let _lifecycle = self.lifecycle_lock.lock().await;
+        if self
+            .runtimes
+            .lock()
+            .await
+            .contains_key(&config.provider_instance_name)
+        {
+            return Err(ProviderError::DuplicateInstance(
+                config.provider_instance_name,
+            ));
+        }
+        self.start_unpublished(config, discovery).await
+    }
+
+    async fn start_unpublished(
+        &self,
+        config: ProviderInstanceConfig,
+        discovery: Arc<dyn ProviderDiscovery>,
+    ) -> ProviderResult<Arc<ExecutableProviderInstance>> {
+        config.validate()?;
+        let profile = self
+            .profiles
+            .get(&config.provider_profile_id)
+            .cloned()
+            .ok_or_else(|| ProviderError::UnknownProfile(config.provider_profile_id.clone()))?;
+        if profile.default_protocol_adapter_id != config.protocol_adapter_id
+            && config.provider_profile_id != "custom"
+        {
+            return Err(ProviderError::InvalidConfiguration(
+                "dedicated provider must use its profile adapter".into(),
+            ));
+        }
+        if self.codecs.adapter(&config.protocol_adapter_id).is_none() {
+            return Err(ProviderError::UnknownAdapter(config.protocol_adapter_id));
+        }
+        let config = Arc::new(config);
+        let generation_cell = {
+            let mut generations = self.generations.lock().await;
+            generations
+                .entry(config.provider_instance_name.clone())
+                .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+                .clone()
+        };
+        let generation = generation_cell.fetch_add(1, Ordering::AcqRel) + 1;
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let placeholder = empty_inventory(&profile, &config, self.catalog.target_revision_seq());
+        let runtime = Arc::new(ProviderRuntime {
+            config: config.clone(),
+            profile: profile.clone(),
+            discovery,
+            credential_resolver: self.credential_resolver.clone(),
+            catalog: self.catalog.clone(),
+            codecs: self.codecs.clone(),
+            store: self.store.clone(),
+            generation,
+            current_generation: generation_cell,
+            commit_gate: RwLock::new(()),
+            refresh_lock: Mutex::new(()),
+            inventory: RwLock::new(Arc::new(placeholder)),
+            health: RwLock::new(ProviderHealth::default()),
+            stopped: AtomicBool::new(false),
+            stop_tx,
+            task: Mutex::new(None),
+            stop_lock: Mutex::new(()),
+        });
+
+        let inventory = match runtime.refresh_once(true).await {
+            Ok(inventory) => inventory,
+            Err(discovery_error) => match load_lkgs(&runtime).await {
+                Ok(Some(inventory)) => inventory,
+                Ok(None) => match profile.default_inventory.clone() {
+                    Some(default) => Arc::new(InventoryBuilder::build(
+                        &profile,
+                        &config,
+                        default,
+                        &self.catalog,
+                        &self.codecs,
+                    )?),
+                    None => return Err(discovery_error),
+                },
+                Err(_) => return Err(discovery_error),
+            },
+        };
+        *runtime.inventory.write().await = inventory.clone();
+        let executable = Arc::new(ExecutableProviderInstance {
+            config: config.clone(),
+            profile,
+            inventory,
+            generation,
+            runtime: runtime.clone(),
+        });
+        {
+            let mut runtimes = self.runtimes.lock().await;
+            if runtimes
+                .insert(config.provider_instance_name.clone(), runtime.clone())
+                .is_some()
+            {
+                runtime.stop().await;
+                return Err(ProviderError::DuplicateInstance(
+                    config.provider_instance_name.clone(),
+                ));
+            }
+        }
+        self.publish_instance(executable.clone()).await;
+        *runtime.task.lock().await = Some(tokio::spawn(runtime.clone().run(stop_rx)));
+        Ok(executable)
+    }
+
+    pub(crate) async fn refresh(
+        &self,
+        provider_instance_name: &str,
+    ) -> ProviderResult<Arc<ProviderInventorySnapshot>> {
+        let runtime = self
+            .runtimes
+            .lock()
+            .await
+            .get(provider_instance_name)
+            .cloned()
+            .ok_or_else(|| ProviderError::UnknownInstance(provider_instance_name.into()))?;
+        let inventory = runtime.refresh_once(true).await?;
+        self.republish_runtime(&runtime, inventory.clone()).await;
+        Ok(inventory)
+    }
+
+    pub(crate) async fn replace(
+        &self,
+        config: ProviderInstanceConfig,
+        discovery: Arc<dyn ProviderDiscovery>,
+    ) -> ProviderResult<Arc<ExecutableProviderInstance>> {
+        let _lifecycle = self.lifecycle_lock.lock().await;
+        let name = config.provider_instance_name.clone();
+        self.stop_and_remove_unlocked(&name).await?;
+        self.start_unpublished(config, discovery).await
+    }
+
+    pub(crate) async fn stop_and_remove(&self, name: &str) -> ProviderResult<()> {
+        let _lifecycle = self.lifecycle_lock.lock().await;
+        self.stop_and_remove_unlocked(name).await
+    }
+
+    async fn stop_and_remove_unlocked(&self, name: &str) -> ProviderResult<()> {
+        let runtime = self.runtimes.lock().await.remove(name);
+        let Some(runtime) = runtime else {
+            return Ok(());
+        };
+        runtime.stop().await;
+        let current = self.registry.read().await.clone();
+        let mut next = current.instances.clone();
+        next.remove(name);
+        *self.registry.write().await = Arc::new(ProviderRegistry { instances: next });
+        Ok(())
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        let _lifecycle = self.lifecycle_lock.lock().await;
+        let runtimes = {
+            let mut runtimes = self.runtimes.lock().await;
+            std::mem::take(&mut *runtimes)
+        };
+        for runtime in runtimes.values() {
+            runtime.stop().await;
+        }
+        *self.registry.write().await = Arc::new(ProviderRegistry::default());
+    }
+
+    async fn publish_instance(&self, instance: Arc<ExecutableProviderInstance>) {
+        let current = self.registry.read().await.clone();
+        let mut next = current.instances.clone();
+        next.insert(instance.config.provider_instance_name.clone(), instance);
+        *self.registry.write().await = Arc::new(ProviderRegistry { instances: next });
+    }
+
+    async fn republish_runtime(
+        &self,
+        runtime: &Arc<ProviderRuntime>,
+        inventory: Arc<ProviderInventorySnapshot>,
+    ) {
+        let instance = Arc::new(ExecutableProviderInstance {
+            config: runtime.config.clone(),
+            profile: runtime.profile.clone(),
+            inventory,
+            generation: runtime.generation,
+            runtime: runtime.clone(),
+        });
+        self.publish_instance(instance).await;
+    }
+}
+
+async fn load_lkgs(
+    runtime: &ProviderRuntime,
+) -> ProviderResult<Option<Arc<ProviderInventorySnapshot>>> {
+    let Some(record) = runtime
+        .store
+        .load(&runtime.config.provider_instance_name)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if record.provider_profile_id != runtime.profile.provider_profile_id
+        || record.protocol_adapter_id != runtime.config.protocol_adapter_id
+    {
+        return Ok(None);
+    }
+    let inventory: ProviderInventorySnapshot = serde_json::from_value(record.snapshot.clone())
+        .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+    validate_inventory_identity(&inventory, &runtime.profile, &runtime.config)?;
+    if inventory.provider_model_list_fingerprint != record.provider_model_list_fingerprint
+        || inventory.metadata_applied_seq != record.metadata_applied_seq
+        || inventory.inventory_revision != record.inventory_revision
+        || inventory.discovered_at_ms != record.discovered_at_ms
+    {
+        return Err(ProviderError::Inventory(
+            "LKGS row columns do not match its inventory snapshot".into(),
+        ));
+    }
+    let mut model_ids = BTreeSet::new();
+    for model in &inventory.models {
+        if !model_ids.insert(&model.provider_model_id) {
+            return Err(ProviderError::Inventory(
+                "LKGS contains duplicate provider model IDs".into(),
+            ));
+        }
+        for api_type in &model.api_types {
+            let name = api_type_name(*api_type)?;
+            let operation = model.operations.get(&name).ok_or_else(|| {
+                ProviderError::Inventory("LKGS model is missing an operation binding".into())
+            })?;
+            runtime
+                .codecs
+                .operation_descriptor(&inventory.protocol_adapter_id, operation, *api_type)
+                .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+        }
+    }
+    Ok(Some(Arc::new(inventory)))
+}
+
+fn validate_inventory_identity(
+    inventory: &ProviderInventorySnapshot,
+    profile: &ProviderProfile,
+    instance: &ProviderInstanceConfig,
+) -> ProviderResult<()> {
+    if inventory.schema_version != INVENTORY_SCHEMA_VERSION
+        || inventory.provider_instance_name != instance.provider_instance_name
+        || inventory.provider_profile_id != profile.provider_profile_id
+        || inventory.protocol_adapter_id != instance.protocol_adapter_id
+        || inventory.provider_model_list_fingerprint.trim().is_empty()
+    {
+        return Err(ProviderError::Inventory(
+            "LKGS identity or schema does not match the provider instance".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn empty_inventory(
+    profile: &ProviderProfile,
+    instance: &ProviderInstanceConfig,
+    metadata_applied_seq: u64,
+) -> ProviderInventorySnapshot {
+    ProviderInventorySnapshot {
+        schema_version: INVENTORY_SCHEMA_VERSION,
+        provider_instance_name: instance.provider_instance_name.clone(),
+        provider_profile_id: profile.provider_profile_id.clone(),
+        protocol_adapter_id: instance.protocol_adapter_id.clone(),
+        provider_model_list_fingerprint: "pending".into(),
+        metadata_applied_seq,
+        inventory_revision: None,
+        discovered_at_ms: 0,
+        health: ProviderHealthState::Unknown,
+        models: Vec::new(),
+    }
+}
+
+fn validate_discovery(discovery: &ProviderDiscoverySnapshot) -> ProviderResult<()> {
+    if discovery.discovered_at_ms < 0 {
+        return Err(ProviderError::Discovery(
+            "discovery timestamp must not be negative".into(),
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    for model in &discovery.models {
+        if model.provider_model_id.trim().is_empty() || model.provider_model_id.contains('@') {
+            return Err(ProviderError::Discovery(
+                "provider model IDs must be non-empty and must not contain `@`".into(),
+            ));
+        }
+        if !ids.insert(&model.provider_model_id) {
+            return Err(ProviderError::Discovery(format!(
+                "duplicate provider model `{}`",
+                model.provider_model_id
+            )));
+        }
+        if let Some(pricing) = &model.pricing {
+            validate_pricing(pricing)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_pricing(pricing: &Pricing) -> ProviderResult<()> {
+    if pricing.currency.trim().is_empty()
+        || [
+            pricing.input_token,
+            pricing.output_token,
+            pricing.cache_input_token,
+            pricing.estimated_cost,
+            pricing.amount,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.is_finite() || value < 0.0)
+        || pricing
+            .rules
+            .iter()
+            .any(|rule| !rule.amount.is_finite() || rule.amount < 0.0)
+    {
+        return Err(ProviderError::Discovery(
+            "discovery pricing must be finite, non-negative, and have a currency".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_operation(
+    adapter: &crate::protocol::AdapterDescriptor,
+    overrides: &BTreeMap<String, String>,
+    api_type: ApiType,
+    api_type_name: &str,
+) -> ProviderResult<Option<String>> {
+    if let Some(operation) = overrides
+        .get(api_type.typed_method())
+        .or_else(|| overrides.get(api_type_name))
+    {
+        return Ok(Some(operation.clone()));
+    }
+    let matching = adapter
+        .operations
+        .values()
+        .filter(|operation| {
+            operation
+                .bindings
+                .iter()
+                .any(|binding| binding.api_type == api_type)
+        })
+        .map(|operation| operation.operation_id.clone())
+        .collect::<Vec<_>>();
+    match matching.as_slice() {
+        [] => Ok(None),
+        [operation] => Ok(Some(operation.clone())),
+        _ => Err(ProviderError::Inventory(format!(
+            "adapter has multiple default operations for api_type `{api_type_name}`"
+        ))),
+    }
+}
+
+fn retain_supported_features(
+    capabilities: &mut BTreeMap<String, Value>,
+    adapter_features: &BTreeSet<String>,
+    discovery_features: Option<&BTreeSet<String>>,
+) {
+    capabilities.retain(|name, value| {
+        if !value.as_bool().unwrap_or(false) {
+            return true;
+        }
+        adapter_features.contains(name)
+            && discovery_features.is_none_or(|features| features.contains(name))
+    });
+}
+
+fn model_list_fingerprint(models: &[DiscoveredModel]) -> String {
+    let mut ids = models
+        .iter()
+        .map(|model| model.provider_model_id.as_str())
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    let mut hasher = Sha256::new();
+    for id in ids {
+        hasher.update((id.len() as u64).to_be_bytes());
+        hasher.update(id.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn api_type_name(api_type: ApiType) -> ProviderResult<String> {
+    serde_json::to_value(api_type)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| ProviderError::Inventory("invalid API type".into()))
+}
+
+fn parse_api_type(value: &str) -> ProviderResult<ApiType> {
+    serde_json::from_value(Value::String(value.to_owned())).map_err(|_| {
+        ProviderError::Inventory(format!("catalog contains unsupported api_type `{value}`"))
+    })
+}
+
+fn exponential_backoff(policy: &RefreshPolicy, failures: u32) -> Duration {
+    let shift = failures.saturating_sub(1).min(31);
+    policy
+        .initial_backoff
+        .checked_mul(1_u32 << shift)
+        .unwrap_or(policy.max_backoff)
+        .min(policy.max_backoff)
+}
+
+fn now_ms() -> ProviderResult<i64> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ProviderError::Inventory("system time is before unix epoch".into()))?
+        .as_millis();
+    i64::try_from(millis)
+        .map_err(|_| ProviderError::Inventory("system time does not fit i64".into()))
+}
+
+fn validate_id(field: &str, value: &str) -> ProviderResult<()> {
+    if value.is_empty()
+        || value.trim() != value
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(ProviderError::InvalidConfiguration(format!(
+            "{field} is not a valid stable ID"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::{
+        CatalogBuildOptions, CatalogDocuments, ModelDriverCatalog, ProviderRulesCatalog,
+    };
+    use crate::protocol::{
+        AdapterDescriptor, AdapterStatus, CodecCall, ExecutionMode, HttpRequest, HttpResponse,
+        OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolExecution,
+        ProtocolResultValue,
+    };
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+
+    struct FakeCodec {
+        descriptor: OperationDescriptor,
+    }
+
+    #[async_trait]
+    impl OperationCodec for FakeCodec {
+        fn descriptor(&self) -> &OperationDescriptor {
+            &self.descriptor
+        }
+
+        fn api_type(&self) -> ApiType {
+            ApiType::Llm
+        }
+
+        fn execution_modes(&self) -> BTreeSet<ExecutionMode> {
+            BTreeSet::from([ExecutionMode::Immediate])
+        }
+
+        fn encode(&self, _call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
+            Err(ProtocolError::invalid_request("not used by provider tests"))
+        }
+
+        async fn decode(&self, _response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
+            Err(ProtocolError::invalid_response(
+                "not used by provider tests",
+            ))
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryStore {
+        records: Mutex<BTreeMap<String, InventoryLkgsRecord>>,
+        commits: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ProviderInventoryStore for MemoryStore {
+        async fn load(
+            &self,
+            provider_instance_name: &str,
+        ) -> ProviderResult<Option<InventoryLkgsRecord>> {
+            Ok(self
+                .records
+                .lock()
+                .await
+                .get(provider_instance_name)
+                .cloned())
+        }
+
+        async fn commit(&self, record: &InventoryLkgsRecord) -> ProviderResult<()> {
+            self.commits.fetch_add(1, Ordering::SeqCst);
+            self.records
+                .lock()
+                .await
+                .insert(record.provider_instance_name.clone(), record.clone());
+            Ok(())
+        }
+    }
+
+    struct ScriptedDiscovery {
+        results: Mutex<VecDeque<Result<ProviderDiscoverySnapshot, String>>>,
+        fallback: ProviderDiscoverySnapshot,
+        calls: AtomicUsize,
+    }
+
+    impl ScriptedDiscovery {
+        fn new(
+            results: impl IntoIterator<Item = Result<ProviderDiscoverySnapshot, String>>,
+            fallback: ProviderDiscoverySnapshot,
+        ) -> Self {
+            Self {
+                results: Mutex::new(results.into_iter().collect()),
+                fallback,
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ProviderDiscovery for ScriptedDiscovery {
+        async fn discover(
+            &self,
+            _context: &DiscoveryContext<'_>,
+        ) -> ProviderResult<ProviderDiscoverySnapshot> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match self.results.lock().await.pop_front() {
+                Some(Ok(snapshot)) => Ok(snapshot),
+                Some(Err(error)) => Err(ProviderError::Discovery(error)),
+                None => Ok(self.fallback.clone()),
+            }
+        }
+    }
+
+    struct BlockingDiscovery {
+        snapshot: ProviderDiscoverySnapshot,
+        calls: AtomicUsize,
+        started: Notify,
+        release: Notify,
+    }
+
+    #[async_trait]
+    impl ProviderDiscovery for BlockingDiscovery {
+        async fn discover(
+            &self,
+            _context: &DiscoveryContext<'_>,
+        ) -> ProviderResult<ProviderDiscoverySnapshot> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(self.snapshot.clone());
+            }
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(self.snapshot.clone())
+        }
+    }
+
+    fn profile() -> ProviderProfile {
+        ProviderProfile {
+            provider_profile_id: "openai".into(),
+            display_name: "OpenAI".into(),
+            default_protocol_adapter_id: "openai-responses".into(),
+            credential: CredentialDescriptor {
+                kind: CredentialKind::Bearer,
+                header_name: None,
+            },
+            discovery_mode: DiscoveryMode::MachineApi,
+            refresh: RefreshPolicy {
+                interval: Duration::from_secs(3_600),
+                initial_backoff: Duration::from_millis(10),
+                max_backoff: Duration::from_millis(40),
+            },
+            default_inventory: None,
+        }
+    }
+
+    fn instance(name: &str) -> ProviderInstanceConfig {
+        ProviderInstanceConfig {
+            provider_instance_name: name.into(),
+            provider_profile_id: "openai".into(),
+            protocol_adapter_id: "openai-responses".into(),
+            base_url: "https://api.example.test/v1/".into(),
+            credential: CredentialReference {
+                reference: "system-config://secrets/aicc/openai".into(),
+            },
+            provider_rules_id: None,
+            region: None,
+            account: None,
+        }
+    }
+
+    fn discovery(model_id: &str) -> ProviderDiscoverySnapshot {
+        ProviderDiscoverySnapshot {
+            revision: Some("remote-1".into()),
+            discovered_at_ms: 100,
+            health: ProviderHealthState::Healthy,
+            models: vec![DiscoveredModel {
+                provider_model_id: model_id.into(),
+                origin_model_id: None,
+                api_types: Some(vec![ApiType::Llm, ApiType::EmbeddingText]),
+                supported_features: Some(BTreeSet::from(["tool_calling".into()])),
+                remote_methods: Some(BTreeSet::from(["responses.create".into()])),
+                availability: ModelAvailability::Available,
+                deprecated: false,
+                pricing: Some(Pricing {
+                    currency: "USD".into(),
+                    input_token: Some(0.5),
+                    output_token: None,
+                    cache_input_token: None,
+                    estimated_cost: None,
+                    unit: None,
+                    amount: None,
+                    rules: vec![],
+                }),
+            }],
+        }
+    }
+
+    fn catalog() -> Arc<CatalogSnapshot> {
+        let model_driver: ModelDriverCatalog = serde_json::from_value(serde_json::json!({
+            "format": "buckyos.aicc.model-driver-catalog",
+            "schema_version": 1,
+            "schema_revision": 0,
+            "model_driver_id": "openai",
+            "revision_seq": 7,
+            "models": [{
+                "id": "gpt-test",
+                "api_types": ["llm", "embedding.text"],
+                "logical_mounts": ["llm/test"],
+                "capabilities": {"tool_calling": true, "context_tokens": 8192},
+                "pricing": {"currency": "USD", "input_token": 9.0}
+            }],
+            "patterns": [],
+            "defaults": {},
+            "variants": [],
+            "version_rules": []
+        }))
+        .unwrap();
+        let provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
+            "format": "buckyos.aicc.provider-rules-catalog",
+            "schema_version": 1,
+            "schema_revision": 0,
+            "revision_seq": 7,
+            "provider_profile_id": "openai",
+            "metadata_drivers": ["openai"],
+            "models": [{
+                "id": "gpt-test",
+                "operations": {"llm": "responses.create"},
+                "pricing": {"currency": "USD", "input_token": 2.0}
+            }],
+            "patterns": [],
+            "variants": []
+        }))
+        .unwrap();
+        Arc::new(
+            CatalogSnapshot::build(
+                7,
+                CatalogDocuments {
+                    model_drivers: vec![model_driver],
+                    provider_rules: vec![provider_rules],
+                    known_providers: vec![],
+                },
+                &CatalogBuildOptions::default(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn codecs() -> Arc<CodecRegistry> {
+        let descriptor = OperationDescriptor {
+            operation_id: "responses.create".into(),
+            bindings: vec![OperationBinding {
+                api_type: ApiType::Llm,
+                capability: ApiType::Llm.capability(),
+                supported_features: BTreeSet::from(["tool_calling".into()]),
+                execution_modes: BTreeSet::from([ExecutionMode::Immediate]),
+            }],
+            supports_cancel: false,
+            supports_webhook: false,
+            max_request_bytes: 1024,
+            max_response_bytes: 1024,
+        };
+        let adapter = AdapterDescriptor {
+            protocol_family_id: "openai".into(),
+            protocol_adapter_id: "openai-responses".into(),
+            interface_generation: "responses-v1".into(),
+            base_adapter_id: None,
+            status: AdapterStatus::Stable,
+            operations: BTreeMap::from([("responses.create".into(), descriptor.clone())]),
+        };
+        let mut registry = CodecRegistry::default();
+        registry
+            .register(adapter, vec![Arc::new(FakeCodec { descriptor })])
+            .unwrap();
+        Arc::new(registry)
+    }
+
+    fn resolver(secret: &str) -> Arc<StaticCredentialResolver> {
+        Arc::new(StaticCredentialResolver::new(BTreeMap::from([(
+            "system-config://secrets/aicc/openai".into(),
+            secret.into(),
+        )])))
+    }
+
+    fn manager(
+        store: Arc<MemoryStore>,
+        discovery: Arc<dyn ProviderDiscovery>,
+    ) -> (Arc<ProviderRuntimeManager>, Arc<dyn ProviderDiscovery>) {
+        let manager = Arc::new(
+            ProviderRuntimeManager::new(
+                [profile()],
+                resolver("test-secret"),
+                catalog(),
+                codecs(),
+                store,
+            )
+            .unwrap(),
+        );
+        (manager, discovery)
+    }
+
+    #[test]
+    fn inventory_intersects_capabilities_and_uses_dynamic_pricing() {
+        let inventory = InventoryBuilder::build(
+            &profile(),
+            &instance("primary"),
+            discovery("gpt-test"),
+            &catalog(),
+            &codecs(),
+        )
+        .unwrap();
+        assert_eq!(inventory.metadata_applied_seq, 7);
+        assert_eq!(inventory.models.len(), 1);
+        let model = &inventory.models[0];
+        assert_eq!(model.api_types, vec![ApiType::Llm]);
+        assert_eq!(model.operations["llm"], "responses.create");
+        assert_eq!(model.capabilities["tool_calling"], Value::Bool(true));
+        assert_eq!(model.capabilities["context_tokens"], Value::from(8192));
+        assert_eq!(
+            model.pricing.as_ref().unwrap().source,
+            PricingSource::Discovery
+        );
+        assert_eq!(model.provider_rules_revision, Some(7));
+        assert!(!inventory.provider_model_list_fingerprint.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolved_credential_never_enters_inventory_or_debug_output() {
+        let secret = "super-secret-value";
+        let store = Arc::new(MemoryStore::default());
+        let discovery = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+        let (manager, discovery) = manager(store, discovery);
+        let executable = manager.start(instance("primary"), discovery).await.unwrap();
+        let credential = executable.resolve_credential().await.unwrap();
+        assert!(!format!("{credential:?}").contains(secret));
+        let json = serde_json::to_string(executable.current_inventory().await.as_ref()).unwrap();
+        assert!(!json.contains(secret));
+        assert!(!json.contains("credential"));
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn discovery_failure_falls_back_to_valid_lkgs() {
+        let store = Arc::new(MemoryStore::default());
+        let good = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+        let (first_manager, good) = manager(store.clone(), good);
+        first_manager
+            .start(instance("primary"), good)
+            .await
+            .unwrap();
+        first_manager.shutdown().await;
+
+        let failed = Arc::new(ScriptedDiscovery::new(
+            [Err("offline".into())],
+            discovery("gpt-test"),
+        ));
+        let (second_manager, failed) = manager(store, failed);
+        let executable = second_manager
+            .start(instance("primary"), failed)
+            .await
+            .unwrap();
+        assert_eq!(executable.current_inventory().await.models.len(), 1);
+        assert_eq!(
+            executable.health().await.state,
+            ProviderHealthState::Degraded
+        );
+        second_manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unchanged_probe_updates_health_without_rewriting_inventory() {
+        let store = Arc::new(MemoryStore::default());
+        let discovery = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+        let (manager, discovery) = manager(store.clone(), discovery);
+        manager.start(instance("primary"), discovery).await.unwrap();
+        assert_eq!(store.commits.load(Ordering::SeqCst), 1);
+        let runtime = manager
+            .runtimes
+            .lock()
+            .await
+            .get("primary")
+            .cloned()
+            .unwrap();
+        runtime.refresh_once(false).await.unwrap();
+        assert_eq!(store.commits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            runtime.health.read().await.state,
+            ProviderHealthState::Healthy
+        );
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_preserves_lkgs_and_reports_degraded_health() {
+        let store = Arc::new(MemoryStore::default());
+        let scripted = Arc::new(ScriptedDiscovery::new(
+            [Ok(discovery("gpt-test")), Err("temporary failure".into())],
+            discovery("gpt-test"),
+        ));
+        let (manager, discovery) = manager(store.clone(), scripted);
+        let executable = manager.start(instance("primary"), discovery).await.unwrap();
+        let original = executable.current_inventory().await;
+        assert!(matches!(
+            manager.refresh("primary").await,
+            Err(ProviderError::Discovery(_))
+        ));
+        assert_eq!(store.commits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            executable
+                .current_inventory()
+                .await
+                .provider_model_list_fingerprint,
+            original.provider_model_list_fingerprint
+        );
+        let health = executable.health().await;
+        assert_eq!(health.state, ProviderHealthState::Degraded);
+        assert_eq!(health.consecutive_failures, 1);
+        assert!(health.last_error.unwrap().contains("temporary failure"));
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn registry_publication_is_copy_on_write_and_stop_is_idempotent() {
+        let store = Arc::new(MemoryStore::default());
+        let discovery = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+        let (manager, discovery) = manager(store, discovery);
+        let before = manager.registry().await;
+        manager.start(instance("primary"), discovery).await.unwrap();
+        let after = manager.registry().await;
+        assert!(before.get("primary").is_none());
+        assert!(after.get("primary").is_some());
+        assert_eq!(after.list().len(), 1);
+
+        manager.stop_and_remove("primary").await.unwrap();
+        manager.stop_and_remove("primary").await.unwrap();
+        assert!(manager.registry().await.get("primary").is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_lkgs_is_not_used_as_fallback() {
+        let store = Arc::new(MemoryStore::default());
+        let snapshot = InventoryBuilder::build(
+            &profile(),
+            &instance("primary"),
+            discovery("gpt-test"),
+            &catalog(),
+            &codecs(),
+        )
+        .unwrap();
+        let mut record = InventoryLkgsRecord::new(
+            "primary",
+            "openai",
+            "openai-responses",
+            &snapshot.provider_model_list_fingerprint,
+            snapshot.metadata_applied_seq,
+            snapshot.inventory_revision.clone(),
+            snapshot.discovered_at_ms,
+            serde_json::to_value(&snapshot).unwrap(),
+            100,
+        )
+        .unwrap();
+        record.provider_model_list_fingerprint = "tampered".into();
+        store.records.lock().await.insert("primary".into(), record);
+        let failed = Arc::new(ScriptedDiscovery::new(
+            [Err("offline".into())],
+            discovery("gpt-test"),
+        ));
+        let (manager, failed) = manager(store, failed);
+        assert!(matches!(
+            manager.start(instance("primary"), failed).await,
+            Err(ProviderError::Discovery(_))
+        ));
+    }
+
+    #[test]
+    fn invalid_discovery_facts_are_rejected() {
+        let mut duplicate = discovery("gpt-test");
+        duplicate.models.push(duplicate.models[0].clone());
+        assert!(matches!(
+            InventoryBuilder::build(
+                &profile(),
+                &instance("primary"),
+                duplicate,
+                &catalog(),
+                &codecs(),
+            ),
+            Err(ProviderError::Discovery(_))
+        ));
+
+        let mut invalid_price = discovery("gpt-test");
+        invalid_price.models[0]
+            .pricing
+            .as_mut()
+            .unwrap()
+            .input_token = Some(-1.0);
+        assert!(matches!(
+            InventoryBuilder::build(
+                &profile(),
+                &instance("primary"),
+                invalid_price,
+                &catalog(),
+                &codecs(),
+            ),
+            Err(ProviderError::Discovery(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn invalid_instance_is_rejected_before_discovery() {
+        let store = Arc::new(MemoryStore::default());
+        let scripted = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+        let (manager, discovery) = manager(store, scripted.clone());
+        let mut invalid = instance("primary");
+        invalid.base_url = "file:///tmp/provider".into();
+        assert!(matches!(
+            manager.start(invalid, discovery).await,
+            Err(ProviderError::InvalidConfiguration(_))
+        ));
+        assert_eq!(scripted.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn stop_is_idempotent_and_rejects_late_refresh_commit() {
+        let store = Arc::new(MemoryStore::default());
+        let discovery = Arc::new(BlockingDiscovery {
+            snapshot: discovery("gpt-test"),
+            calls: AtomicUsize::new(0),
+            started: Notify::new(),
+            release: Notify::new(),
+        });
+        let (manager, discovery_trait) = manager(store.clone(), discovery.clone());
+        manager
+            .start(instance("primary"), discovery_trait)
+            .await
+            .unwrap();
+        assert_eq!(store.commits.load(Ordering::SeqCst), 1);
+
+        let refresh_manager = manager.clone();
+        let refresh = tokio::spawn(async move { refresh_manager.refresh("primary").await });
+        discovery.started.notified().await;
+        manager.stop_and_remove("primary").await.unwrap();
+        discovery.release.notify_waiters();
+        assert!(matches!(
+            refresh.await.unwrap(),
+            Err(ProviderError::Stopped)
+        ));
+        assert_eq!(store.commits.load(Ordering::SeqCst), 1);
+
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_refreshes_are_serialized_per_instance() {
+        let store = Arc::new(MemoryStore::default());
+        let discovery = Arc::new(BlockingDiscovery {
+            snapshot: discovery("gpt-test"),
+            calls: AtomicUsize::new(0),
+            started: Notify::new(),
+            release: Notify::new(),
+        });
+        let (manager, discovery_trait) = manager(store, discovery.clone());
+        manager
+            .start(instance("primary"), discovery_trait)
+            .await
+            .unwrap();
+
+        let first_manager = manager.clone();
+        let first = tokio::spawn(async move { first_manager.refresh("primary").await });
+        discovery.started.notified().await;
+        let second_manager = manager.clone();
+        let second = tokio::spawn(async move { second_manager.refresh("primary").await });
+        tokio::task::yield_now().await;
+        assert_eq!(discovery.calls.load(Ordering::SeqCst), 2);
+
+        discovery.release.notify_one();
+        discovery.started.notified().await;
+        assert!(first.await.unwrap().is_ok());
+        assert_eq!(discovery.calls.load(Ordering::SeqCst), 3);
+        discovery.release.notify_one();
+        assert!(second.await.unwrap().is_ok());
+        manager.shutdown().await;
+    }
+
+    #[test]
+    fn backoff_is_bounded_and_fingerprint_is_order_independent() {
+        let policy = RefreshPolicy {
+            interval: Duration::from_secs(1),
+            initial_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(40),
+        };
+        assert_eq!(exponential_backoff(&policy, 1), Duration::from_millis(10));
+        assert_eq!(exponential_backoff(&policy, 2), Duration::from_millis(20));
+        assert_eq!(exponential_backoff(&policy, 9), Duration::from_millis(40));
+        let mut discovered = discovery("gpt-test");
+        let first = vec![
+            discovered.models.remove(0),
+            DiscoveredModel {
+                provider_model_id: "gpt-other".into(),
+                origin_model_id: None,
+                api_types: None,
+                supported_features: None,
+                remote_methods: None,
+                availability: ModelAvailability::Unknown,
+                deprecated: false,
+                pricing: None,
+            },
+        ];
+        let mut second = first.clone();
+        second.reverse();
+        assert_eq!(
+            model_list_fingerprint(&first),
+            model_list_fingerprint(&second)
+        );
+    }
+}
