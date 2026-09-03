@@ -1,0 +1,36 @@
+{
+  "format": "buckyos.aicc.known-provider-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "catalog_id": "sn",
+  "providers": [
+    {
+      "provider_profile_id": "sn",
+      "display_name": "BuckyOS SN",
+      "base_url": "https://sn.buckyos.ai/api/v1/ai",
+      "protocol_adapter_id": "sn-openai",
+      "provider_rules_id": "sn",
+      "ui_hints": {
+        "credential": {
+          "kind": "bearer",
+          "required": true,
+          "secret": true
+        },
+        "auth": {
+          "modes": ["api_key", "dynamic_login"],
+          "dynamic_login_profiles": ["device_jwt"],
+          "mutually_exclusive": true
+        },
+        "instance_fields": {
+          "region": { "mode": "unsupported" },
+          "workspace": { "mode": "unsupported" },
+          "account": {
+            "api_key": { "mode": "optional" },
+            "dynamic_login": { "mode": "required" }
+          }
+        }
+      }
+    }
+  ]
+}

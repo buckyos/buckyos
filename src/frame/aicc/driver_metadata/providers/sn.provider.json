@@ -1,0 +1,23 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "provider_profile_id": "sn",
+  "origin_provider_aliases": {},
+  "origin_mappings": [],
+  "models": [],
+  "patterns": [
+    {
+      "match": "*",
+      "operations": {
+        "llm": "responses.create"
+      },
+      "remove_api_types": [
+        "image.txt2img",
+        "image.img2img"
+      ]
+    }
+  ],
+  "variants": []
+}
