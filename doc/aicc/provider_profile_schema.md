@@ -56,6 +56,8 @@ Provider 参数配置是官方支持 Provider 的渠道声明层，不是可执�
 - 厂商名使用稳定的小写 slug。同一厂商不得按模型、API 代际或 Provider Instance 拆成多个同类参数文件；`models/` 与 `providers/` 必须分目录，不能仅依赖 `.model.json` / `.provider.json` 后缀避免命名冲突；
 - 以上名称是 AICC 加载后的规范配置文件名。NDN 发布制品可以按发布协议在对象路径或父目录中携带 revision，但不能改变文件内部的厂商归属，也不能把多个厂商合并为一个配置文件。
 
+同一 catalog 身份可能同时存在于 `builtin`、`cloud`、`local`、`system-config` 四个来源。加载器按 `system-config > local > cloud > builtin` 选择最高优先级来源中的整个 JSON 文件，不在来源之间合并任何字段、map、数组、规则或默认值。某个高优先级来源没有该身份时，低优先级文件继续有效；例如 cloud 只提供 OpenAI 文件时，builtin MiniMax 不受影响。最终 catalog snapshot 是这些逐身份获胜文件的并集。
+
 - 纯协议且不随 Provider 渠道变化的固定语义不写入配置；
 - 所有字段均可省略；
 - `custom` Provider 的空对象 `{}` 必须合法，表示使用已解析 Adapter 的标准协议行为，并按原始模型名搜索全部 Model Driver；
@@ -549,9 +551,9 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 
 这类映射一旦存在，便是该 Provider 的官方渠道规则，不再属于 `{}` custom Provider 的默认行为。
 
-## 11. 默认值与覆盖语义
+## 11. 文件选择与规则解析语义
 
-`custom` Provider 解析出的特定 Adapter 提供经过验证的标准协议行为；官方 Provider Rules 提供厂商映射和显式差异。配置不能把多个 API 代际合并为一个运行时探测或降级 Adapter：
+来源选择先于规则解析。同一 `provider_profile_id` 在多个来源出现时，只读取 `system-config > local > cloud > builtin` 中最高优先级的完整文件；下层同名文件不参与解析，也不提供缺失字段的默认值。下面的覆盖规则只用于“已选文件内部的规则”和程序定义的 schema/Adapter 默认值，不是跨来源 merge：
 
 - map 按 key 覆盖；
 - `models` 按 `id` 覆盖同名 exact rule；
@@ -560,6 +562,8 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 - `variants` 按 `model_driver + variant + match` 覆盖；
 - 字段缺失继续使用默认值；
 - `{}` 仅用于 `custom` Provider：使用 Adapter 标准协议行为、保留原始模型名并搜索全部 Model Driver，不启用任何厂商映射。
+
+配置不能把多个 API 代际合并为一个运行时探测或降级 Adapter。Cloud manifest 是完整的 cloud 来源版本，不是最终有效配置全集；它缺少的 Provider 身份可以继续由 builtin 提供。
 
 内置专用 Provider 的常规渠道规则由 NDN 交付的 `.provider.json` 更新；Provider Instance 或调用方不得用任意 JSON 绕过该 catalog。代码中的核心执行逻辑不接受配置替换，但必须消费配置解析后的结果，不能另外硬编码同一份规则。
 

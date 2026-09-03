@@ -226,7 +226,7 @@ Owner：Metadata 小组
 - [x] 实现跨 Model Driver 唯一匹配和 conservative fallback；
 - [x] 静态能力、渠道规则、动态 discovery 事实保持分离；
 - [x] Provider Rules 只能收窄 Model Driver 能力；
-- [x] 从 NDN 当前文件集合构建不可变 `CatalogSnapshot`；
+- [x] 从上游已按身份选择的完整文件集合构建不可变 `CatalogSnapshot`；
 - [x] 不重复实现 NDN 下载、验签、activation 或防回退。
 
 完成标准：给定同一 catalog 文件集合，总能生成确定且可校验的 snapshot 和索引。
@@ -527,6 +527,7 @@ Owner：Runtime/Consistency 小组
 依赖：WP-03、WP-07、WP-14
 
 - [ ] 实现不可变 RuntimeSnapshot；
+- [ ] 实现 `system-config > local > cloud > builtin` 的逐 `(catalog_kind, catalog_id)` 整文件选择，不跨来源 merge；
 - [ ] add/reload/metadata refresh 在不可见候选区完成；
 - [ ] 校验成功后一次性替换完整 `Arc<RuntimeSnapshot>`；
 - [ ] 请求只捕获一次 snapshot；

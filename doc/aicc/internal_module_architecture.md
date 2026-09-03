@@ -74,6 +74,8 @@ HTTP/SSE/JSON/异步轮询基础设施
 
 未被官方 catalog 收录的 `custom` Provider 使用空 Provider Rules `{}`。用户选择的协议族只确定 Adapter；模型归属使用 discovery 返回的原始模型名，在全部 Model Driver 的 exact/pattern 规则中要求唯一命中。只有命中后才使用该 Driver defaults；不做渠道前后缀、alias 或其它隐式改名。Known Provider 的 origin mapping 不得泄漏给 `custom` Provider。
 
+Catalog loader 对 `builtin`、`cloud`、`local`、`system-config` 四个来源按 `(catalog_kind, catalog_id)` 做整文件选择，优先级为 `system-config > local > cloud > builtin`。同一身份不做字段或规则 merge；某个高优先级来源未提供的其它身份仍从低优先级来源进入有效 snapshot。
+
 ### 2.2 operation 是最小协议复用单位
 
 一个 Adapter 由若干 operation 组合，而不是一个文件包揽厂商全部 API。例如 OpenAI Provider 可以同时绑定：

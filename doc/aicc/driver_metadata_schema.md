@@ -16,12 +16,26 @@ rule must constrain multiple dimensions.
 
 ## Source priority
 
-The resolver loads metadata in this override order:
+Metadata has four independent sources. From highest to lowest priority they are:
 
-1. builtin metadata under `src/frame/aicc/driver_metadata/models/<origin-vendor-lowercase>.model.json`
-2. current cloud metadata files delivered and replaced by NDN
-3. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/models/<origin-vendor-lowercase>.model.json`
-4. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/system-config/models/<origin-vendor-lowercase>.model.json`
+1. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/system-config/`
+2. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/`
+3. the current cloud source delivered and replaced by NDN
+4. builtin metadata under `src/frame/aicc/driver_metadata/`
+
+Selection is performed independently for each `(catalog_kind, catalog_id)`.
+When the same identity exists in more than one source, the resolver selects the
+highest-priority complete JSON document. It never merges fields, rules, arrays,
+or defaults across source documents. A higher-priority source only shadows the
+identities that it actually contains; it does not replace the effective catalog
+set as a whole. For example, if cloud contains `openai.provider.json` but not
+`minimax.provider.json`, cloud OpenAI and builtin MiniMax are both effective.
+
+The effective catalog set is the union of these per-identity winners. Only after
+this source-selection step does AICC validate references and build the immutable
+catalog snapshot. `models/`, `providers/`, and `known-providers/` use the same
+selection rule. A Known Provider file is atomic by `catalog_id`; independently
+overridable providers therefore need independently stable catalog IDs/files.
 
 All model parameters belonging to one origin vendor must be collected in that
 vendor's single standalone file. The lowercase vendor slug is stable and must
@@ -32,9 +46,10 @@ parameters, including both origin vendors and aggregators, use one
 code must not compensate for missing metadata by branching on model names,
 model-name prefixes, or Provider-vendor names.
 
-For one origin model, match priority is exact `models[].id`, ordered
-`patterns[].match`, `defaults`, then conservative fallback. Exact rules win
-before patterns across the effective source set.
+For one origin model, match priority inside the selected Model Driver document
+is exact `models[].id`, ordered `patterns[].match`, `defaults`, then conservative
+fallback. Exact rules win before patterns; rules from shadowed source documents
+do not participate.
 
 ## Document
 
@@ -58,9 +73,13 @@ before patterns across the effective source set.
 `google-gemini`, `fal`, or `minimax`. `openrouter` is a Provider Profile and is
 therefore not a Model Driver.
 
-NDN must deliver a complete file set conforming to this schema. AICC only parses
-the current files into runtime types; a parse failure is an NDN delivery-contract
-violation and must keep the update marker for diagnosis. The former `provider_driver`, `provider_options`,
+NDN must deliver a complete, internally consistent cloud-source file set
+conforming to this schema. It need not duplicate identities supplied by builtin
+or higher-priority sources. AICC resolves all four sources before parsing the
+effective documents into runtime types. A cloud-source parse failure is an NDN
+delivery-contract violation and must keep the update marker for diagnosis;
+invalid local or system-config documents are reported against their own source
+and must not produce a partially merged snapshot. The former `provider_driver`, `provider_options`,
 `origin_provider_aliases`, `origin_mappings` and `signature` fields are rejected
 in beta 2.2; no compatibility alias is provided. Catalog authenticity comes
 from NDN's file delivery contract; AICC does not repeat file verification.

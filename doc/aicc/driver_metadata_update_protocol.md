@@ -12,7 +12,7 @@
 - Known Provider catalog 保存管理 UI 使用的服务商默认 `base_url`、Profile 和 Adapter。
 - Provider Instance 名称、`base_url`、凭据、区域、账号和协议选择属于 system-config，catalog 无权修改。
 - Provider discovery 产生的 availability、deprecated、remote methods、实时价格和 health 属于实例级动态事实，不写入静态 catalog。
-- 三类 catalog 使用独立文件和 revision，但通过同一个 manifest 发布为完整版本。
+- 三类 catalog 使用独立文件和 revision，但通过同一个 manifest 发布为完整的云来源版本；该版本不需要重复 builtin、local 或 system-config 已有的其它 catalog。
 - 内置专用 Provider 也属于这套发布集合；其 Rust 实现不能替代或旁路对应的 Model Driver、Provider Rules、Known Provider 文件。
 - 发布结构与文件交付由 NDN 更新链路负责；AICC 不重复实现文件下载、验签、完整性校验或 activation。
 
@@ -50,15 +50,27 @@ Index 格式为 `buckyos.aicc.provider-catalog-index`，至少包含：
 
 ## 4. Manifest
 
-Manifest 格式为 `buckyos.aicc.provider-catalog-manifest`，描述一个完整可用的发布版本，至少包含：
+Manifest 格式为 `buckyos.aicc.provider-catalog-manifest`，描述一个完整可用的云来源发布版本，至少包含：
 
 - `protocol_version: 2`；
 - 全局唯一、严格递增且不可复用的 `revision_seq`；
 - 与 index track 一致的客户端兼容范围和 `required_features`；
 - `files[]`：`catalog_kind`、`catalog_id`、path、schema version、对象 revision 和对象身份；
-- `tombstones[]`：从完整发布集合中删除的 catalog kind/id 及其 revision。
+- `tombstones[]`：从完整 cloud 发布集合中删除的 catalog kind/id 及其 revision。
 
-`catalog_kind` 只允许 `model_driver`、`provider_rules`、`known_provider`。`catalog_kind + catalog_id` 在 manifest 内唯一；未变化文件可以保持自己的 revision 和对象身份，删除必须使用 tombstone。Manifest 指向的三类文件合起来构成该 `revision_seq` 的完整 metadata 文件集合。
+`catalog_kind` 只允许 `model_driver`、`provider_rules`、`known_provider`。`catalog_kind + catalog_id` 在 manifest 内唯一；未变化文件可以保持自己的 revision 和对象身份，删除必须使用 tombstone。Manifest 指向的三类文件合起来构成该 `revision_seq` 的完整云来源文件集合，而不是机器最终生效的全部 metadata。Tombstone 从云来源删除对应身份；若低优先级来源仍有同一身份，该文件会在下一次来源选择时重新显现。
+
+## 4.1 来源选择
+
+AICC 构建 catalog snapshot 时，按 `(catalog_kind, catalog_id)` 独立选择文件，来源优先级固定为：
+
+```text
+system-config > local > cloud > builtin
+```
+
+同一身份只启用最高优先级来源中的完整 JSON 文件，不做字段、数组、规则或默认值合并。高优先级来源中没有某个身份时，继续使用低优先级来源中的该身份；因此 cloud 更新 OpenAI 不会使 builtin MiniMax 失效。最终生效集合是逐身份选择结果的并集，再对整个集合执行 schema、唯一性和跨 catalog 引用校验。
+
+Known Provider 的选择身份是 `catalog_id`。一个文件内包含多个 `providers[]` 时，该文件整体是原子覆盖单元；需要独立更新的 Provider 应使用独立且稳定的 catalog ID/文件。
 
 ## 5. 发布文件内容
 
@@ -97,11 +109,12 @@ Manifest 格式为 `buckyos.aicc.provider-catalog-manifest`，描述一个完整
 
 ```text
 读取 index，并按客户端版本/通道/灰度分组选择兼容且 revision_seq 更高的 manifest
-  -> 下载并校验 manifest 指定的完整 catalog 文件集合
-  -> 替换当前 metadata 文件并确认新文件已可供 Provider 应用
+  -> 下载并校验 manifest 指定的完整云来源 catalog 文件集合
+  -> 原子替换当前云来源文件并确认新文件已可供 Provider 应用
   -> 发布 metadata_target_seq = manifest.revision_seq
   -> 收到下一次 AICC 推理请求，或进入任一 Provider Instance 定时库存刷新
-  -> 统一加载 target_seq 对应的全部 metadata 更新
+  -> 按 system-config > local > cloud > builtin 对每个 catalog 身份做整文件选择
+  -> 加载本轮有效 metadata snapshot
   -> 收敛所有 applied_seq != target_seq 的 Provider inventory
   -> 每个 Provider 真正完成库存刷新后提交 applied_seq = 本次捕获的 target_seq
   -> 继续原推理或定时库存刷新
@@ -113,11 +126,11 @@ Manifest 格式为 `buckyos.aicc.provider-catalog-manifest`，描述一个完整
 
 ## 8. NDN 更新链路责任
 
-- 读取并验证 index、所选 track、manifest 和 manifest 指定的完整文件集合；
+- 读取并验证 index、所选 track、manifest 和 manifest 指定的完整云来源文件集合；
 - 根据客户端版本、更新通道和灰度分组选择兼容 track；
 - 检查 manifest `revision_seq` 高于本机已接受水位；没有更高兼容版本时保持现状；
-- 保证文件来源可信、内容完整、版本匹配、引用一致且集合可用；
-- 替换当前文件集合并确认新文件可供 Provider 加载；
+- 保证云来源文件可信、内容完整、版本匹配且集合可用；跨来源引用在 AICC 形成有效集合后校验；
+- 替换当前云来源文件集合并确认新文件可供 Provider 加载；
 - 仅在文件就绪后发布 `metadata_target_seq = manifest.revision_seq`。
 
 版本不兼容、序列未前进，或下载、校验、替换、就绪确认任一步失败时，都不得推进目标序列。签名、ObjId、digest、断点续传、具体替换方法和失败恢复属于 NDN 实现；本协议只固定发布结构及交付结果。
@@ -135,7 +148,7 @@ Provider Instance 停止、禁用、删除、被 reload 替换或随 AICC 服务
 
 ## 10. Provider 库存收敛
 
-全局收敛先加载本次捕获的目标序列对应的完整 metadata snapshot，再遍历所有 Provider：
+全局收敛先以本次捕获的云目标序列解析四个来源，加载对应的完整有效 metadata snapshot，再遍历所有 Provider：
 
 1. 读取 Provider 当前 `metadata_applied_seq` 和已保存的 provider model 列表。
 2. 获取本轮可用的 provider model 列表：定时刷新触发的 Provider 使用刚探测的列表，其它 Provider 可以使用已保存列表。
