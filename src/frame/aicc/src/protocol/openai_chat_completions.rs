@@ -63,6 +63,14 @@ pub(crate) trait OpenAiChatCompletionsDialect: std::fmt::Debug + Send + Sync {
         false
     }
 
+    fn transform_resolved_parameter(
+        &self,
+        _name: &str,
+        _value: &Value,
+    ) -> ProtocolResultValue<Option<(String, Value)>> {
+        Ok(None)
+    }
+
     fn transform_request(
         &self,
         _request: &LlmChatInvokeRequest,
@@ -618,29 +626,44 @@ fn apply_resolved_parameters(
         if name == "provider_model_id" {
             continue;
         }
-        match name.as_str() {
-            "stream" | "parallel_tool_calls" | "logprobs" if value.is_boolean() => {}
-            "max_completion_tokens" if value.as_u64().is_some_and(|value| value > 0) => {}
-            "top_logprobs" if value.as_u64().is_some_and(|value| value <= 20) => {}
-            "frequency_penalty" | "presence_penalty"
-                if value
-                    .as_f64()
-                    .is_some_and(|value| (-2.0..=2.0).contains(&value)) => {}
-            "service_tier" | "reasoning_effort" if value.is_string() => {}
-            "tool_choice" if value.is_string() || value.is_object() => {}
-            "stream_options" => validate_stream_options(value)?,
-            _ => {
-                return Err(ProtocolError::invalid_request(format!(
-                    "resolved Chat Completions parameter `{name}` is not supported or has an invalid value"
-                )));
-            }
-        }
-        let wire_name = if name == "max_completion_tokens" {
-            dialect.token_limit_parameter().wire_name()
-        } else {
-            name
+        let (mapped, from_dialect) = match transform_base_resolved_parameter(name, value, dialect)?
+        {
+            Some(mapped) => (Some(mapped), false),
+            None => (dialect.transform_resolved_parameter(name, value)?, true),
         };
-        body.insert(wire_name.to_string(), value.clone());
+        let Some((wire_name, wire_value)) = mapped else {
+            return Err(unsupported_resolved_parameter(name));
+        };
+        if wire_name.trim().is_empty() {
+            return Err(ProtocolError::invalid_configuration(
+                "Chat Completions dialect returned an empty parameter name",
+            ));
+        }
+        if from_dialect
+            && (is_base_resolved_parameter_name(&wire_name)
+                || matches!(
+                    wire_name.as_str(),
+                    "model"
+                        | "messages"
+                        | "tools"
+                        | "response_format"
+                        | "temperature"
+                        | "top_p"
+                        | "seed"
+                        | "stop"
+                        | "provider_model_id"
+                ))
+        {
+            return Err(ProtocolError::invalid_configuration(format!(
+                "Chat Completions dialect parameter `{wire_name}` conflicts with a base field"
+            )));
+        }
+        if from_dialect && body.contains_key(&wire_name) {
+            return Err(ProtocolError::invalid_configuration(format!(
+                "Chat Completions dialect parameter `{wire_name}` is duplicated"
+            )));
+        }
+        body.insert(wire_name, wire_value);
     }
     if body.get("stream").and_then(Value::as_bool) == Some(true)
         && !body.contains_key("stream_options")
@@ -655,6 +678,61 @@ fn apply_resolved_parameters(
         ));
     }
     Ok(())
+}
+
+fn transform_base_resolved_parameter(
+    name: &str,
+    value: &Value,
+    dialect: &dyn OpenAiChatCompletionsDialect,
+) -> ProtocolResultValue<Option<(String, Value)>> {
+    let valid = match name {
+        "stream" | "parallel_tool_calls" | "logprobs" => value.is_boolean(),
+        "max_completion_tokens" => value.as_u64().is_some_and(|value| value > 0),
+        "top_logprobs" => value.as_u64().is_some_and(|value| value <= 20),
+        "frequency_penalty" | "presence_penalty" => value
+            .as_f64()
+            .is_some_and(|value| (-2.0..=2.0).contains(&value)),
+        "service_tier" | "reasoning_effort" => value.is_string(),
+        "tool_choice" => value.is_string() || value.is_object(),
+        "stream_options" => {
+            validate_stream_options(value)?;
+            true
+        }
+        _ => return Ok(None),
+    };
+    if !valid {
+        return Err(unsupported_resolved_parameter(name));
+    }
+    let wire_name = if name == "max_completion_tokens" {
+        dialect.token_limit_parameter().wire_name()
+    } else {
+        name
+    };
+    Ok(Some((wire_name.to_string(), value.clone())))
+}
+
+fn is_base_resolved_parameter_name(name: &str) -> bool {
+    matches!(
+        name,
+        "stream"
+            | "parallel_tool_calls"
+            | "logprobs"
+            | "max_completion_tokens"
+            | "max_tokens"
+            | "top_logprobs"
+            | "frequency_penalty"
+            | "presence_penalty"
+            | "service_tier"
+            | "reasoning_effort"
+            | "tool_choice"
+            | "stream_options"
+    )
+}
+
+fn unsupported_resolved_parameter(name: &str) -> ProtocolError {
+    ProtocolError::invalid_request(format!(
+        "resolved Chat Completions parameter `{name}` is not supported or has an invalid value"
+    ))
 }
 
 fn validate_stream_options(value: &Value) -> ProtocolResultValue<()> {
@@ -1360,6 +1438,22 @@ mod tests {
             role == AiRole::Assistant && matches!(content, AiContent::Thinking { .. })
         }
 
+        fn transform_resolved_parameter(
+            &self,
+            name: &str,
+            value: &Value,
+        ) -> ProtocolResultValue<Option<(String, Value)>> {
+            if name != "fake_routing" {
+                return Ok(None);
+            }
+            if !value.is_object() {
+                return Err(ProtocolError::invalid_request(
+                    "fake_routing must be an object",
+                ));
+            }
+            Ok(Some(("fake_route".to_string(), value.clone())))
+        }
+
         fn transform_request(
             &self,
             request: &LlmChatInvokeRequest,
@@ -1367,7 +1461,6 @@ mod tests {
             headers: &mut HeaderMap,
         ) -> ProtocolResultValue<()> {
             headers.insert("x-fake-dialect", HeaderValue::from_static("enabled"));
-            body.insert("fake_route".to_string(), json!({"order": ["primary"]}));
             let thinking = request
                 .messages
                 .iter()
@@ -1597,13 +1690,19 @@ mod tests {
             ],
         );
         request.max_output_tokens = Some(42);
-        let input = input(request, &[("stream", json!(true))]);
+        let derived_input = input(
+            request,
+            &[
+                ("stream", json!(true)),
+                ("fake_routing", json!({"order": ["primary"]})),
+            ],
+        );
         let wire = registry
             .encode(
                 FAKE_DERIVED_ADAPTER_ID,
                 OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
                 ApiType::Llm,
-                &input,
+                &derived_input,
                 &context("https://fake.example/v1"),
             )
             .unwrap();
@@ -1615,6 +1714,27 @@ mod tests {
         assert!(body.get("max_completion_tokens").is_none());
         assert_eq!(body["fake_route"]["order"][0], "primary");
         assert_eq!(body["messages"][1]["reasoning_content"], "prior thought");
+
+        let standard_input = input(
+            LlmChatInvokeRequest::new(
+                "model@provider",
+                vec![AiMessage::text(AiRole::User, "hello")],
+            ),
+            &[("fake_routing", json!({"order": ["primary"]}))],
+        );
+        assert_eq!(
+            registry
+                .encode(
+                    OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+                    OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                    ApiType::Llm,
+                    &standard_input,
+                    &context("https://standard.example/v1"),
+                )
+                .unwrap_err()
+                .kind,
+            ProtocolErrorKind::InvalidRequest
+        );
 
         let ProtocolExecution::Immediate(output) = registry
             .decode(
