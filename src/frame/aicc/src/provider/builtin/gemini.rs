@@ -384,6 +384,7 @@ mod tests {
         GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID,
     };
     use crate::provider::{CredentialReference, InventoryBuilder, ProviderInstanceConfig};
+    use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
     use bytes::Bytes;
     use reqwest::header::HeaderMap;
     use reqwest::StatusCode;
@@ -517,6 +518,25 @@ mod tests {
             rules.patterns[0].operations["video.extend"],
             GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID
         );
+    }
+
+    #[test]
+    fn wp15_metadata_sources_load_the_complete_gemini_builtin_set() {
+        let builtin = gemini_catalog_files()
+            .into_iter()
+            .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let catalog = MetadataSources {
+            builtin,
+            ..MetadataSources::default()
+        }
+        .build_snapshot(1, &CatalogBuildOptions::default())
+        .unwrap();
+
+        assert!(catalog.known_provider(GEMINI_PROVIDER_PROFILE_ID).is_some());
+        assert!(catalog.provider_rules(GEMINI_PROVIDER_PROFILE_ID).is_some());
+        assert!(catalog.model_driver(GEMINI_PROVIDER_PROFILE_ID).is_some());
     }
 
     #[tokio::test]
