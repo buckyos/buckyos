@@ -748,6 +748,7 @@ mod tests {
                         credentials: json!({"credential_ref": format!("secret://{name}")}),
                         enabled: true,
                         region: None,
+                        workspace: None,
                         account: None,
                         provider_rules_id: Some("openai".into()),
                         auth: None,

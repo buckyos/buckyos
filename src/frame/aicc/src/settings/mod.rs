@@ -37,6 +37,8 @@ pub(crate) struct ProviderSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_rules_id: Option<String>,
@@ -64,6 +66,7 @@ impl fmt::Debug for ProviderSettings {
             .field("credentials", &"<redacted>")
             .field("enabled", &self.enabled)
             .field("region", &self.region)
+            .field("workspace", &self.workspace)
             .field("account", &self.account)
             .field("provider_rules_id", &self.provider_rules_id)
             .field("auth", &self.auth.as_ref().map(|_| "<redacted>"))
@@ -143,6 +146,7 @@ impl ProviderSettings {
             validate_id("provider_rules_id", provider_rules_id)?;
         }
         validate_optional_nonempty("region", self.region.as_deref())?;
+        validate_optional_nonempty("workspace", self.workspace.as_deref())?;
         validate_optional_nonempty("account", self.account.as_deref())?;
         let url = reqwest::Url::parse(&self.base_url).map_err(|_| SettingsError::InvalidField {
             field: "base_url",
@@ -476,17 +480,48 @@ mod tests {
     fn settings_debug_redacts_credentials_and_private_auth() {
         let secret = "must-not-appear";
         let mut value = provider("primary");
+        value["workspace"] = json!("engineering");
         value["credentials"] = json!({"api_token": {"locked": secret}});
         value["auth"] = json!({"credential_ref": secret});
         let document =
             SettingsDocument::parse(1, &json!({"providers": [value]}).to_string()).unwrap();
-        assert!(!format!("{document:?}").contains(secret));
+        let debug = format!("{document:?}");
+        assert!(!debug.contains(secret));
+        assert!(debug.contains("engineering"));
 
         let mut unsafe_url = provider("unsafe-url");
         unsafe_url["base_url"] = json!("https://token@example.test/v1?api_key=secret");
         assert!(
             SettingsDocument::parse(1, &json!({"providers": [unsafe_url]}).to_string()).is_err()
         );
+    }
+
+    #[test]
+    fn provider_settings_workspace_round_trips_and_rejects_empty_values() {
+        let mut value = provider("primary");
+        value["region"] = json!("us-west");
+        value["workspace"] = json!("engineering");
+        value["account"] = json!("production");
+        let document =
+            SettingsDocument::parse(7, &json!({"providers": [value]}).to_string()).unwrap();
+        assert_eq!(
+            document.settings.providers[0].workspace.as_deref(),
+            Some("engineering")
+        );
+
+        let serialized = serde_json::to_string(document.settings.as_ref()).unwrap();
+        let round_tripped = SettingsDocument::parse(7, &serialized).unwrap();
+        assert_eq!(round_tripped, document);
+
+        let mut invalid = provider("invalid");
+        invalid["workspace"] = json!("  ");
+        assert!(matches!(
+            SettingsDocument::parse(1, &json!({"providers": [invalid]}).to_string()),
+            Err(SettingsError::InvalidField {
+                field: "workspace",
+                ..
+            })
+        ));
     }
 
     fn model_driver(source: MetadataSource, id: &str, revision: u64, marker: &str) -> MetadataFile {
