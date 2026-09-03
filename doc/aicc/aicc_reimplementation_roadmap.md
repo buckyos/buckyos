@@ -284,10 +284,12 @@ Owner：四个并行协议小组
 
 #### WP-06A OpenAI Responses
 
-- [ ] Responses request/response/event/error；
-- [ ] tool、structured output、reasoning、usage 和 ProviderState；
-- [ ] OpenAI embeddings/images/audio/videos 独立 operation，按首版矩阵实现；
-- [ ] 不包含 OpenRouter、DeepSeek、豆包、Qwen 或 SN 分支。
+- [x] Responses request/response/event/error；
+- [x] tool、structured output、reasoning、usage 和 ProviderState；
+- [x] OpenAI embeddings/images/audio/videos 独立 operation，按首版矩阵实现；
+- [x] 不包含 OpenRouter、DeepSeek、豆包、Qwen 或 SN 分支。
+
+实现记录：在 `src/frame/aicc/src/protocol/openai_responses.rs` 实现独立 `openai-responses` Adapter，覆盖 Responses 请求、即时响应、真正增量的 SSE event、OpenAI 错误体、function tool、JSON schema structured output、reasoning、usage 和可回放 ProviderState；GPT 主线图片能力通过 Responses `image_generation` tool lowering，completed 图片结果生成通用 artifact。另按官方 operation 独立注册 embeddings、Images generate/edit/inpaint、Audio speech/transcriptions 和 Videos submit/status/content/cancel，视频生命周期复用 WP-05 native-task contract。基础 codec 只消费已解析的模型、参数、base URL、Bearer credential 和已物化资源，不包含 OpenRouter、DeepSeek、豆包、Qwen、SN 或 Router/Model 分支。11 个定向合同测试随 AICC 全量 158 个测试通过，all-target check、格式检查及排除 resource 模块既有 `manual_is_multiple_of` lint 后的 clippy `-D warnings` 通过；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。
 
 #### WP-06B Claude Messages
 
