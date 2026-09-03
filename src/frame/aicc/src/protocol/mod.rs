@@ -6,6 +6,7 @@ mod claude_messages;
 mod contract;
 mod derived_responses;
 mod error;
+mod fal_queue;
 mod gemini;
 mod openai_chat_completions;
 mod openai_responses;
@@ -26,6 +27,8 @@ pub(crate) use contract::*;
 pub(crate) use derived_responses::*;
 #[allow(unused_imports)]
 pub(crate) use error::*;
+#[allow(unused_imports)]
+pub(crate) use fal_queue::*;
 #[allow(unused_imports)]
 pub(crate) use gemini::*;
 #[allow(unused_imports)]

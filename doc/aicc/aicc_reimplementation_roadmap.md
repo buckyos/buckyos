@@ -354,7 +354,7 @@ Owner：七个可并行 Provider 小组
 | WP-08C | Gemini | Gemini Interactions |
 | WP-08D | OpenRouter、Kimi、GLM | OpenAI Chat Completions |
 | WP-08E（已完成） | DeepSeek、豆包、Qwen | OpenAI Responses |
-| WP-08F | fal | task polling + fal Queue |
+| WP-08F（已完成） | fal | task polling + fal Queue |
 | WP-08G（已完成） | SN | OpenAI Responses + dynamic credential |
 
 每个子组：
@@ -374,7 +374,7 @@ WP-08A 实现记录：OpenAI builtin 装配已落在 `src/frame/aicc/src/provide
 
 WP-08E 实现记录：DeepSeek、豆包和 Qwen builtin 装配已落在 `src/frame/aicc/src/provider/builtin/wp08e.rs`，提供稳定 Profile/显示信息、Bearer credential、统一 region/workspace/account schema、默认 base URL 模板、LLM operation 绑定和 Provider Rules；Qwen 按 workspace 与五个明确 region 解析专属域名，豆包使用方舟 `/api/v3`，DeepSeek 使用官方 `/models` 机器接口并保留 ETag revision，豆包/Qwen 使用显式模型 ID 的 catalog-only inventory，不硬编码易变模型或价格。`src/frame/aicc/src/protocol/derived_responses.rs` 注册 `deepseek-responses`、`doubao-responses`、`qwen-responses` 三个窄 dialect，均声明 `base_adapter_id: openai-responses`、覆盖点和不支持项；派生层只处理已确认的参数限制、Qwen session-cache header 和 ProviderState namespace，request/response/SSE/error 继续委托 WP-06A 基础 codec。14 个装配、库存身份链、派生注册、请求约束与委托单测通过，AICC 全量 229 个测试和 `cargo check -p aicc --all-targets` 通过，未新增依赖；豆包/Qwen 原生媒体 operation 按本文建议批次 4 另行实施，不属于本次 Responses 主接口装配。
 
-WP-08F 实现记录（待验证）：fal builtin 装配已落在 `src/frame/aicc/src/provider/builtin/fal.rs`，提供稳定 `fal` Profile、显示信息、默认 `https://queue.fal.run`、`Authorization: Key` credential schema，并明确 region/workspace/account 不支持；使用 catalog-only inventory 提供首版图像放大、背景移除、音频增强和视频放大 endpoint fixture。`src/frame/aicc/src/protocol/fal_queue.rs` 实现独立 `fal-queue / queue.submit` native-task Adapter，覆盖媒体 typed request lowering、submit/status/result/cancel、Submitted/Queued/Running/Succeeded/Failed/Cancelled 映射、官方错误、路径校验、资源归一化及 artifact 输出，复用 WP-05 polling/deadline/backoff/cancel contract，不引入基础 codec 或 Provider 名分支。Provider Rules 将 14 个 image/audio/video API type 显式绑定到 Queue operation；未新增依赖。当前定向测试、AICC 全量测试和 all-target check 等待同工作区 WP-08B/WP-08E 恢复共享 crate 编译后执行。
+WP-08F 实现记录（已完成）：fal builtin 装配已落在 `src/frame/aicc/src/provider/builtin/fal.rs`，提供稳定 `fal` Profile、显示信息、默认 `https://queue.fal.run`、`Authorization: Key` credential schema，并明确 region/workspace/account 不支持；使用 catalog-only inventory 提供首版图像放大、背景移除、音频增强和视频放大 endpoint fixture。`src/frame/aicc/src/protocol/fal_queue.rs` 实现独立 `fal-queue / queue.submit` native-task Adapter，覆盖媒体 typed request lowering、submit/status/result/cancel、Submitted/Queued/Running/Succeeded/Failed/Cancelled 映射、官方错误、路径校验、资源归一化及 artifact 输出，复用 WP-05 polling/deadline/backoff/cancel contract，不引入基础 codec 或 Provider 名分支。Provider Rules 将 14 个 image/audio/video API type 显式绑定到 Queue operation；未新增依赖。fal 定向测试 19/19、AICC 全量测试 229/229、all-target check 和格式检查通过；排除 WP-08E `redundant_closure` 与 resource 模块既有 `manual_is_multiple_of` lint 后，clippy `-D warnings` 通过。
 
 WP-08G 实现记录：SN 扩展 Provider 装配已落在 `src/frame/aicc/src/provider/builtin/sn.rs`，提供稳定 `sn` Profile、`SN AI Provider` 显示信息、默认 `https://sn.buckyos.ai/api/v1/ai`、region/workspace/account schema、互斥的 `api_key`/`dynamic_login` credential schema，以及绑定 `openai` Model Driver 和 `responses.create` 的 Provider Rules。SN discovery 使用带 Bearer credential 的 `/models` 机器接口，仅把真实返回的模型作为 LLM inventory。`sn-openai` 声明 `base_adapter_id: openai-responses`，仅覆盖 credential resolution 并通过 WP-05 派生注册直接委托基础 Responses codec；动态登录复用 BuckyOS device-token 登录 API，按 TTL 在内存缓存 token，同实例并发刷新合并，替换/删除时可失效，认证错误及 Debug 输出不暴露 token。7 个 SN 正常、边界、错误、并发、inventory 和基础 codec 隔离测试通过，`cargo check -p aicc --all-targets` 通过，未新增依赖；AICC 全量 218 个测试中 216 个通过，剩余 2 个失败来自并行 WP-08B/WP-08F，严格 clippy 也仅剩对应并行文件的 3 项告警。
 
