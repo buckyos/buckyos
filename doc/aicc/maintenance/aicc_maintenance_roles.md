@@ -26,6 +26,8 @@
 3. **新厂商协议不兼容现有 Protocol Adapter**：需要 BuckyOS 项目方发布新版本，注册新的 Protocol Adapter，再配套发布 Provider Profile、Provider Rules、Model Driver 和验收用例。
 4. **模型能力类型本身是新的**：例如新增 API type、输入输出形态或调度语义，通常需要发版更新 AICC 协议、inventory schema、路由策略和测试。
 
+每个模型原厂使用独立 `.model.json`，每个官方支持的 Provider 厂商使用独立 `.provider.json`。内置 Provider 的代码只实现无法声明化的行为；特殊 dialect 也先通过 `.provider.json` 的有界规则维护，schema 不足时先评审统一扩展，不能把常规模型、operation 或参数表直接写入代码。未被官方支持的小型 Provider 或自建代理使用 `custom + 用户明确选择的协议族 + {}`，按未改写的标准模型名搜索全部 Model Driver，不自动获得任何官方渠道的名字映射。
+
 云更新配置按确定程度分成两个维护面：
 
 - **模型事实 / 逻辑确定服务**：维护相对稳定、可由模型能力事实决定的信息，例如模型 ID、provider driver、支持的 `api_types`、上下文长度、多模态能力、是否支持 tool/function calling、是否支持 streaming、默认 `logical_mounts`、弃用状态、替代模型建议等。这部分变更应尽量可审计、可缓存、可随版本内置。
@@ -79,7 +81,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 - **官方云端自动更新服务**：版本发现、文件下载、校验、替换、失败恢复和目标 seq 属于 NDN 能力，AICC 只消费当前文件并维护各 Provider applied seq。NDN 能力不足时应向 NDN 提交 bug。
 - **metadata 可信来源展示**：可信校验属于 NDN；AICC 可以展示 NDN 提供的来源状态，但不重复验签。
-- **动态成本、套餐、免费额度、超额价格**：当前已有成本估算和 quota 字段入口，但多数直连 Provider 仍主要依赖静态 metadata 或 adapter 本地估算，不能完整获取真实套餐与余额。
+- **动态成本、套餐、免费额度、超额价格**：当前已有成本估算和 quota 字段入口，但多数直连 Provider 仍主要依赖 Provider Rules / Model Driver 中的静态估算，不能完整获取真实套餐与余额。
 - **真实健康度和熔断恢复**：inventory 和 route 中已有 health / quota / error 相关字段，但完整云端健康度采集、熔断、恢复策略不能按已完成理解。
 - **产品化 Provider 管理 UI**：AI Center PRD / 原型中已有 Provider 管理、Usage / Balance、Routing UI、health / quota 展示等内容，但不能按当前完整产品能力理解。
 

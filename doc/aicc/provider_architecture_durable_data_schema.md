@@ -116,7 +116,11 @@ Content Schema：
 
 ProviderModelRule 可包含 `match`、`exclude`、`operations`、`provider_options`、`request_rules`、`pricing`、`remove_api_types`、`remove_features`、`estimated_latency_ms`、`latency_class`、`cost_class`。`match` 通常是匹配 `provider_model_id` 的 wildcard 字符串，需要联合 `origin_model_id`、Model Driver、variant 或 API type 时才使用对象。request/pricing 条件也复用同一 `MatchRule`。`pricing` 直接保存该渠道模型的静态价格和条件计价规则。配置只能收窄 Model Driver 能力。
 
-`metadata_drivers` 缺失表示使用内置 adapter 候选范围；显式空数组表示不匹配任何 Model Driver。空对象 `{}` 是合法的配置型 Provider override，表示全部使用程序默认规则。
+`metadata_drivers` 缺失表示搜索系统当前安装的全部 Model Driver；显式空数组表示不匹配任何 Model Driver。每个官方支持的 Provider 厂商（包括内置专用 Provider）都必须有独立文件。
+
+空对象 `{}` 是未被官方 catalog 收录的 `custom` Provider 的标准运行时规则：协议族由用户明确选择并在接入测试后解析为 Adapter；模型解析保留原始 `provider_model_id`，在全部 Model Driver 中要求唯一匹配，不执行 prefix/suffix stripping、vendor alias 或其它渠道映射。该空规则属于 Provider Instance 的解析结果，不冒充 NDN 发布的官方 Provider Rules catalog。
+
+Provider Rules 是模型映射、operation、请求参数、能力收窄、静态价格及可声明 dialect 差异的唯一持久真相源。Rust builtin 或 dialect 不得构造另一份生产规则；遇到现有 schema 无法表达的差异时，应先评审有界 schema 扩展，只有无法安全声明化的执行逻辑才进入代码。
 
 ### 4.4 Object Type: Known Provider Catalog
 
@@ -136,6 +140,8 @@ Content Schema：
 - `providers[]`：`provider_profile_id`、`display_name`、`base_url`、`protocol_adapter_id`、可选 `provider_rules_id`、可选 UI hints。
 
 该 catalog 只提供默认值。保存 Provider Instance 前必须让用户看到并允许修正协议和 `base_url`，并执行连接与协议验证。
+
+Known Provider 的显示信息、默认 `base_url`、默认 Adapter 和 UI hints 不得由 Rust builtin 维护第二份生产副本；builtin 只注册相应行为实现并消费 catalog。
 
 Known Provider 可以为 SN 指定 `protocol_adapter_id: "sn-openai"`，不能直接填 OpenAI 官方 Adapter。registry 中 `sn-openai.protocol_family_id = "openai"`、`sn-openai.base_adapter_id = "openai-responses"`，从而保留独立身份和从 SN 到特定 OpenAI API 代际的单向依赖。
 

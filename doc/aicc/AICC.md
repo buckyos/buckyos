@@ -57,8 +57,8 @@ AICC 内部逻辑可以抽象为 8 个核心子系统（这里按职责描述，
 
 5. **Provider Profile（渠道策略）**
 
-   * 定义 discovery、origin mapping、operation、请求限制和渠道价格
-   * 内置主流 Provider 使用专用策略；小型兼容 Provider 使用受限配置
+   * 定义 discovery 行为入口，并通过每厂商独立 `.provider.json` 描述 origin mapping、operation、请求限制、渠道价格及可声明的 dialect 差异
+   * 内置主流 Provider 使用专用行为实现，但常规渠道规则仍基于配置；小型兼容 Provider 可以完全使用受限配置
 
 6. **Protocol Adapter（协议执行层）**
 
@@ -68,6 +68,7 @@ AICC 内部逻辑可以抽象为 8 个核心子系统（这里按职责描述，
    * 内置厂商可以声明为某个基础 Adapter 的语义子类：实现可使用继承、组合或委托，但依赖只能从派生 Adapter 指向基础 Adapter
    * 基础 Adapter 不得识别派生 Provider 的 ID、配置字段或认证流程；删除派生 Adapter 不应修改基础 Adapter
    * 官方 Profile 优先选择新接口；旧兼容接口由独立 Adapter 承担，不能在新接口 Adapter 内增加 legacy 分支或运行时 fallback
+   * 派生 dialect 是声明式配置无法安全表达时的最后手段；模型/operation/参数/能力限制等常规差异必须优先进入 `.provider.json`
 
 7. **Provider Call Resolver（调用解析）**
 
@@ -219,7 +220,9 @@ pub struct CancelResponse {
 
 Protocol Adapter registry 中每个可执行 Adapter 使用独立 `protocol_adapter_id`，并声明 `protocol_family_id`。基础协议优先实现官方推荐的新接口；某个派生 Provider 首次产生真实需求时，才为对应历史 API 代际实现并注册一份协议族级共享 Adapter，例如 `openai-chat-completions`。按需约束的是首次引入时机，不是 Adapter 的归属范围；第二、第三个使用同一历史接口的 Provider 必须复用已经注册的共享 Adapter，不能各自复制 endpoint、wire schema、事件解析和错误映射。历史 Adapter 与新接口 Adapter 平级、互不 fallback，只复用 HTTP/SSE/JSON/normalized IR 等协议中立组件。
 
-Known Provider 的 Profile/Rules 固定 Adapter 和 operation。添加自定义 Provider 时，用户只需提供协议族、`base_url` 和凭据；接入验证先测试官方新接口，再按优先级测试该协议族中已注册的历史接口，并把成功结果保存为 Provider Instance 的 `protocol_adapter_id`。如果渠道没有协议差异，多个 Provider Instance/Profile 可以直接引用同一个历史 Adapter；只有认证、endpoint 规则或其它渠道行为确有差异时，才增加派生 Adapter，并通过 `base_adapter_id` 复用该共享历史 Adapter。该字段表达架构关系，不要求编程语言层面的继承。这属于创建/更新阶段的协议解析，不是推理运行时 fallback；AICC 不在调用时重新探测接口版本，也不因新接口调用失败而静默切换旧接口。
+Known Provider 的 Profile/Rules 固定 Adapter 和 operation。添加自定义 Provider 时，用户只需提供协议族、`base_url` 和凭据；接入验证先测试官方新接口，再按优先级测试该协议族中已注册的历史接口，并把成功结果保存为 Provider Instance 的 `protocol_adapter_id`。自定义 Provider 默认使用空 Rules `{}`：协议族只决定如何调用，discovery 返回的原始模型名则在全部 Model Driver catalog 中做唯一 exact/pattern 匹配，从而确定原厂 metadata 和默认行为；系统不自动删除渠道前后缀，也不借用 OpenRouter 等 Known Provider 的命名映射。零命中使用 conservative fallback，多重命中拒绝。
+
+如果渠道没有协议差异，多个 Provider Instance/Profile 可以直接引用同一个历史 Adapter；只有认证、endpoint 规则或其它渠道行为确有差异时，才增加派生 Adapter，并通过 `base_adapter_id` 复用该共享历史 Adapter。该字段表达架构关系，不要求编程语言层面的继承。这属于创建/更新阶段的协议解析，不是推理运行时 fallback；AICC 不在调用时重新探测接口版本，也不因新接口调用失败而静默切换旧接口。
 
 SN Provider 的目标形态是独立 `sn-openai` Adapter，属于 `openai` 协议族，当前语义上派生自 `openai-responses`。SN 层只实现自身差异，当前主要是认证：既可配置 API Key，也可在运行时登录获取动态 token，然后委托 Responses Adapter 完成请求和响应处理。`openai-responses` 不包含任何 SN 登录、token 缓存、SN endpoint 或 Provider 判断。未来 SN 改为完全独立协议时，只替换或删除 `sn-openai` Adapter 及其 Profile/Rules，不修改 OpenAI 官方 Adapter。
 

@@ -351,25 +351,28 @@ Owner：七个可并行 Provider 小组
 
 | 子组 | Provider | 基础依赖 |
 |---|---|---|
-| WP-08A（已完成） | OpenAI | OpenAI Responses |
-| WP-08B（已完成） | Claude、MiniMax | Claude Messages |
-| WP-08C（已完成） | Gemini | Gemini Interactions |
-| WP-08D（已完成） | OpenRouter、Kimi、GLM | OpenAI Chat Completions |
-| WP-08E（已完成） | DeepSeek、豆包、Qwen | OpenAI Responses |
-| WP-08F（已完成） | fal | task polling + fal Queue |
-| WP-08G（已完成） | SN | OpenAI Responses + dynamic credential |
+| WP-08A（行为完成，配置化待整改） | OpenAI | OpenAI Responses |
+| WP-08B（行为完成，配置化待整改） | Claude、MiniMax | Claude Messages |
+| WP-08C（行为完成，配置化待整改） | Gemini | Gemini Interactions |
+| WP-08D（行为完成，配置化待整改） | OpenRouter、Kimi、GLM | OpenAI Chat Completions |
+| WP-08E（行为完成，配置化待整改） | DeepSeek、豆包、Qwen | OpenAI Responses |
+| WP-08F（行为完成，配置化待整改） | fal | task polling + fal Queue |
+| WP-08G（行为完成，配置化待整改） | SN | OpenAI Responses + dynamic credential |
 
 每个子组：
 
-- [ ] 提供稳定 Profile ID、显示信息和默认 `base_url`；
-- [ ] 提供 region/workspace/account 和 credential schema；
+- [ ] 提供稳定 Profile ID；
+- [ ] 以独立 `.provider.json` / Known Provider catalog 提供显示信息、默认 `base_url`、region/workspace/account 和 credential 声明；
 - [ ] 提供 discovery 或 catalog-only inventory；
-- [ ] 提供 operation 和 Adapter 默认绑定；
-- [ ] 提供 Provider Rules fixture；
+- [ ] 每个官方支持 Provider 以独立 `.provider.json` 提供 operation、Adapter 选择和 Provider Rules；
+- [ ] 涉及原厂模型时提供对应独立 `.model.json`，不得用 Rust 分支补缺失 metadata；
 - [ ] 复用基础 codec contract；
-- [ ] 仅真实 schema/event/error 差异新增 dialect；
+- [ ] 特殊 dialect 优先写入 `.provider.json`；统一 schema 不足时先评审 schema 扩展；
+- [ ] 仅无法安全声明化的 wire、认证、流式/任务状态机或错误语义新增 dialect 代码；
 - [ ] dialect 声明 `base_adapter_id`、覆盖点和不支持能力；
 - [ ] 能由 Profile/Rules 表达的差异不得建立空 dialect；
+- [ ] Rust builtin 不构造生产用 Provider Rules、Known Provider 或 Model Driver catalog；
+- [ ] `custom + {}` 保留原始模型名并搜索全部 Model Driver；不应用任何官方 Provider 的命名映射；
 - [ ] 删除该 Provider 后，基础 codec 不需要修改。
 
 WP-08A 实现记录：OpenAI builtin 装配已落在 `src/frame/aicc/src/provider/builtin/openai.rs`，提供稳定 `openai` Profile、显示信息、默认 `https://api.openai.com/v1`、Bearer credential schema，并明确 region/workspace/account 不支持；通过官方 `/v1/models` 机器接口构建动态 discovery snapshot，保留 ETag revision、健康状态和有界错误处理。内置 Provider Rules 固定 `metadata_drivers: ["openai"]`，将 LLM、embedding、image、audio 和 video API type 显式绑定到 WP-06A 的 `openai-responses` 及专用 operation。OpenAI 没有额外 wire 差异，因此直接复用基础 Adapter，不创建空 dialect，也未修改基础 codec。4 个 builtin 单元测试随 AICC 全量 162 个测试通过，library check、格式与 diff 检查通过；stable clippy 在豁免 Resource 模块既有 `manual_is_multiple_of` lint 后通过，未新增依赖。
@@ -385,6 +388,8 @@ WP-08E 实现记录：DeepSeek、豆包和 Qwen builtin 装配已落在 `src/fra
 WP-08F 实现记录（已完成）：fal builtin 装配已落在 `src/frame/aicc/src/provider/builtin/fal.rs`，提供稳定 `fal` Profile、显示信息、默认 `https://queue.fal.run`、`Authorization: Key` credential schema，并明确 region/workspace/account 不支持；使用 catalog-only inventory 提供首版图像放大、背景移除、音频增强和视频放大 endpoint fixture。`src/frame/aicc/src/protocol/fal_queue.rs` 实现独立 `fal-queue / queue.submit` native-task Adapter，覆盖媒体 typed request lowering、submit/status/result/cancel、Submitted/Queued/Running/Succeeded/Failed/Cancelled 映射、官方错误、路径校验、资源归一化及 artifact 输出，复用 WP-05 polling/deadline/backoff/cancel contract，不引入基础 codec 或 Provider 名分支。Provider Rules 将 14 个 image/audio/video API type 显式绑定到 Queue operation；未新增依赖。fal 定向测试 19/19、AICC 全量测试 229/229、all-target check 和格式检查通过；排除 WP-08E `redundant_closure` 与 resource 模块既有 `manual_is_multiple_of` lint 后，clippy `-D warnings` 通过。
 
 WP-08G 实现记录：SN 扩展 Provider 装配已落在 `src/frame/aicc/src/provider/builtin/sn.rs`，提供稳定 `sn` Profile、`SN AI Provider` 显示信息、默认 `https://sn.buckyos.ai/api/v1/ai`、region/workspace/account schema、互斥的 `api_key`/`dynamic_login` credential schema，以及绑定 `openai` Model Driver 和 `responses.create` 的 Provider Rules。SN discovery 使用带 Bearer credential 的 `/models` 机器接口，仅把真实返回的模型作为 LLM inventory。`sn-openai` 声明 `base_adapter_id: openai-responses`，仅覆盖 credential resolution 并通过 WP-05 派生注册直接委托基础 Responses codec；动态登录复用 BuckyOS device-token 登录 API，按 TTL 在内存缓存 token，同实例并发刷新合并，替换/删除时可失效，认证错误及 Debug 输出不暴露 token。7 个 SN 正常、边界、错误、并发、inventory 和基础 codec 隔离测试通过，`cargo check -p aicc --all-targets` 通过，未新增依赖；AICC 全量 218 个测试中 216 个通过，剩余 2 个失败来自并行 WP-08B/WP-08F，严格 clippy 也仅剩对应并行文件的 3 项告警。
+
+配置化整改说明：以上 WP-08 实现记录描述的是当前代码事实，不代表已经满足最终数据边界。现有 Rust builtin 中构造的 `ProviderRulesCatalog`、`KnownProvider`、operation 映射、请求参数表和其它可声明差异必须迁移到各 Provider 独立的 `.provider.json` / Known Provider catalog；模型固有 metadata 必须迁移到各原厂独立的 `.model.json`。Dialect 需逐项复审并优先改为 `.provider.json` 规则，只有无法安全声明化的最小执行逻辑可以保留。完成该整改并接入 WP-15 的 NDN catalog snapshot 前，WP-08 不得视为最终完成。
 
 建议批次：
 

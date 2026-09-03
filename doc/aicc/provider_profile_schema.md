@@ -15,24 +15,21 @@ AICC 不应把所有 Provider 都实现成同一种声明式配置。
 - OpenRouter 等影响力大、协议和模型规则具有明显特异性的聚合 Provider；
 - 其他需要长期稳定支持、必须进入发布验收矩阵的 Provider。
 
-专用 Provider 在程序中固定实现：
+专用 Provider 在程序中固定实现的是不可声明的执行逻辑：
 
-- 认证和 API 协议；
-- 模型与价格 discovery；
-- 原厂模型身份解析；
-- moving alias 和 Provider variant 的处理；
-- 不同模型、AICC `api_type` 与具体 operation 的选择；
-- 同步、流式、异步任务和错误处理；
-- 实时价格与 Provider inventory 的合并；
-- discovery 失败后的 LKGS/default inventory 行为。
+- 认证算法和 API wire protocol codec；
+- discovery 的网络交互、分页、限流和状态机；
+- 同步、流式、异步任务及无法声明化的错误处理；
+- Provider inventory 的通用合并算法；
+- discovery 失败后的 LKGS 行为。
 
-这些逻辑不作为外部 Provider 参数配置暴露。Provider API 升级时，由专用实现和测试一起升级，避免一份通用配置在 Provider 频繁变化后产生不稳定行为。
+这些逻辑不作为外部 Provider 参数配置暴露。Provider API 升级且确实改变上述执行逻辑时，由专用实现和测试一起升级。
 
-专用 Provider 仍然复用 Model Driver metadata，不复制模型 capabilities、逻辑挂载、家族、variants 和版本规则。
+专用 Provider 仍然必须使用本厂商独立的 `.provider.json`，并复用 Model Driver metadata。模型身份映射、moving alias、Provider variant、operation 选择、请求参数差异、能力收窄和静态价格等常规内容必须优先写入 `.provider.json`，不能因为 Provider 是内置专用实现就硬编码。只有统一配置 schema 无法安全表达的个性逻辑才允许留在代码中。
 
 ### 1.2 配置型 Provider
 
-影响力较小、没有必要加入 AICC 内置实现，但能够复用现有协议 adapter 的 Provider，可以通过声明式配置接入。
+未被 AICC 官方 catalog 收录、但用户明确知道其兼容某个已注册协议族的渠道，可以作为 `custom` Provider 接入。典型情况是小型 Provider 或用户自建代理。
 
 配置型 Provider 适合处理：
 
@@ -42,11 +39,15 @@ AICC 不应把所有 Provider 都实现成同一种声明式配置。
 - 少量模型需要指定不同 operation；
 - Provider 无法查询实时价格，需要配置渠道默认价格。
 
-如果一个 Provider 需要复杂状态机、特殊认证、新的流式格式、特殊错误恢复或大量模型专用分支，应升级为专用 Provider，而不是继续扩张配置 schema。
+`custom` Provider 的默认 Provider Rules 是 `{}`。它不获得任何厂商专用命名映射或参数特判：discovery 返回的 `provider_model_id` 同时作为待解析的 `origin_model_id`，按原名依次匹配系统当前安装的全部 Model Driver catalog。必须唯一命中才能取得对应原厂、默认参数和默认行为；多重命中按歧义拒绝，完全未命中进入统一 conservative fallback。标准名 `gpt-5.6-sol` 可以直接匹配，`openai/gpt-5.6-sol` 之类渠道前缀不会被自动去除。
+
+如果一个 Provider 需要复杂状态机、特殊认证算法、新的流式格式或特殊错误恢复，应在先完成声明化评审后升级为专用 Provider。成为专用 Provider 只增加必要的行为实现，不取消其 `.provider.json`；大量模型专用分支通常说明规则尚未正确配置化，不能作为直接写代码的理由。
 
 ## 2. 配置文件原则
 
-Provider 参数配置是配置型 Provider 内置默认行为的**可选覆盖层**，不是完整 Provider manifest。
+Provider 参数配置是官方支持 Provider 的渠道声明层，不是可执行 Provider manifest。每个被系统官方收录的 Provider 厂商都必须有自己的 `.provider.json`。`{}` 专门表示未被官方收录的 `custom` Provider 使用标准协议和标准模型名，不表示官方 Provider 可以省略其配置。
+
+官方 `.provider.json` 打包成 NDN Provider Rules catalog 时，发布工具必须根据文件归属和 manifest 补齐 `format`、`schema_version`、`schema_revision`、`revision_seq`、`provider_profile_id` 等 catalog envelope；AICC 运行时消费的是带完整 envelope 的发布对象。`custom` Provider 的 `{}` 是运行时生成的标准空规则体，不需要伪造一个已经被官方发布的厂商 catalog。
 
 模型参数和 Provider 参数必须按厂商拆分并分目录保存：
 
@@ -55,12 +56,13 @@ Provider 参数配置是配置型 Provider 内置默认行为的**可选覆盖�
 - 厂商名使用稳定的小写 slug。同一厂商不得按模型、API 代际或 Provider Instance 拆成多个同类参数文件；`models/` 与 `providers/` 必须分目录，不能仅依赖 `.model.json` / `.provider.json` 后缀避免命名冲突；
 - 以上名称是 AICC 加载后的规范配置文件名。NDN 发布制品可以按发布协议在对象路径或父目录中携带 revision，但不能改变文件内部的厂商归属，也不能把多个厂商合并为一个配置文件。
 
-- 程序已经确定的参数不写入配置；
+- 纯协议且不随 Provider 渠道变化的固定语义不写入配置；
 - 所有字段均可省略；
-- 空对象 `{}` 必须合法，表示全部使用对应 adapter 的默认方案；
+- `custom` Provider 的空对象 `{}` 必须合法，表示使用已解析 Adapter 的标准协议行为，并按原始模型名搜索全部 Model Driver；
 - 实际调用始终使用 Provider discovery 返回的原始 `provider_model_id`；
 - 尽量复用当前 Driver metadata 已有字段和规则结构；
 - schema 只表达数据差异，不试图声明式实现完整 Provider Adapter。
+- Provider 的特殊 dialect 也必须首先尝试用 `.provider.json` 中有界、可校验的规则表达；现有 schema 不足时，优先评审并扩展统一 schema，不能直接把常规差异写入厂商代码。
 
 以下内容由程序固定，不进入配置：
 
@@ -77,7 +79,7 @@ Provider Instance 的名称、凭据、区域和用户自定义 `base_url` 属�
 
 OpenAI、Claude、Google Gemini 必须各自拥有专门实现、独立注册和独立验收的协议族。协议族不是可执行 Adapter；同一厂商的新旧 API 形态使用不同的内部 `protocol_adapter_id`，不能在一个 Adapter 内按 endpoint 能力或 Provider ID 切换。基础协议首先实现并维护官方推荐的新接口；历史接口不要求预先完整实现，只有首个真实 Provider 需要某个历史 API 代际时才增加对应 Adapter。这个 Adapter 属于协议族并可被所有兼容 Provider 复用，不属于首个触发需求的派生 Provider，也不能在后续 Provider 中重复实现。
 
-内置厂商 Adapter 可以复用基础协议，并声明语义上的子类关系：
+内置厂商 Adapter 可以复用基础协议，并声明语义上的子类关系。派生 Adapter 是声明式配置无法表达时的最后手段，不是承载厂商参数表的默认位置：
 
 ```text
 derived protocol_adapter_id
@@ -110,9 +112,9 @@ derived protocol_adapter_id
 
 新接口 Adapter 与兼容 Adapter 是平级实现。兼容 Adapter 不继承新接口 Adapter，也不通过调用新接口失败后回退旧接口。两者只允许复用低层、无状态且协议中立的组件，例如 HTTP transport、SSE framing、通用 JSON/错误工具和 AICC normalized IR；endpoint path、request schema、response event、错误映射和能力声明保持各自内聚。
 
-同一个历史 API 代际只实现一份共享 Adapter。Provider 没有额外差异时，Provider Profile 或 Instance 直接保存这个 Adapter ID；确有渠道认证、endpoint 选择或错误语义差异时，才建立独立派生 Adapter，并用 `base_adapter_id` 指向共享历史 Adapter。多个派生 Adapter 可以引用同一个历史 Adapter，各自只实现差异层，不复制历史 wire protocol。
+同一个历史 API 代际只实现一份共享 Adapter。Provider 没有额外差异时，Provider Profile 或 Instance 直接保存这个 Adapter ID。确有渠道差异时，先用 `.provider.json` 的 operation、provider options、request rules、能力收窄及其它受限声明表达；只有不同 wire envelope、流事件状态机、签名/动态认证算法、任务生命周期或无法声明化的错误语义，才建立独立派生 Adapter，并用 `base_adapter_id` 指向共享历史 Adapter。多个派生 Adapter 可以引用同一个历史 Adapter，各自只实现剩余的最小逻辑差异，不复制历史 wire protocol，也不在代码中保存可由 Provider Rules 表达的参数表。
 
-Provider Profile/Rules 必须在路由前得到一个确定的 Adapter 和 operation。Known Provider 由内置 Profile 固定该选择；用户添加 `custom` Provider 时只选择或识别 OpenAI、Claude、Gemini 等协议族，不选择 API 代际。接入测试按该协议族“官方新接口优先、运行时已注册的历史接口其次”的顺序验证，成功后把 resolved `protocol_adapter_id` 固化到 Provider Instance。接口不支持才继续测试下一候选；认证、网络和服务端故障必须直接报告，不能被误判成历史接口需求。运行时只使用已固化 Adapter，不重新探测，也不在一次调用中静默切换新旧 Adapter。
+Provider Profile/Rules 必须在路由前得到一个确定的 Adapter 和 operation。内置 Provider 的默认选择由 Known Provider catalog 和 `.provider.json` 固定；用户添加 `custom` Provider 时只选择或识别 OpenAI、Claude、Gemini 等协议族，不选择 API 代际。接入测试按该协议族“官方新接口优先、运行时已注册的历史接口其次”的顺序验证，成功后把 resolved `protocol_adapter_id` 固化到 Provider Instance。接口不支持才继续测试下一候选；认证、网络和服务端故障必须直接报告，不能被误判成历史接口需求。运行时只使用已固化 Adapter，不重新探测，也不在一次调用中静默切换新旧 Adapter。
 
 ### 2.2 SN Provider 的 OpenAI 子类语义
 
@@ -184,13 +186,15 @@ Model Driver 的 variant 只定义语义身份，例如 `reasoning.high`。配�
 
 Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固有能力。
 
-## 4. 最小配置结构
+## 4. Custom Provider 的最小规则
 
 ```json
 {}
 ```
 
-需要覆盖默认行为时，配置只使用以下可选字段：
+`{}` 只承诺标准协议和标准模型名，不做 prefix/suffix stripping、vendor alias、moving alias 或其它重命名。系统按原始 `provider_model_id` 在全部 Model Driver 中执行 exact → pattern 匹配；唯一命中某个 Driver 后再合并该 Driver 的 defaults，零命中走 conservative fallback，多重命中拒绝。各 Driver 的 defaults 不能单独用于跨 Driver 猜测原厂。
+
+当一个 Provider 需要以下可选字段时，它已经拥有厂商规则，不再属于纯 `{}` 语义；应创建或更新官方 `.provider.json`：
 
 ```json
 {
@@ -203,7 +207,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 }
 ```
 
-- `metadata_drivers`：参与匹配的 Model Driver 列表；省略时使用 adapter 的默认候选范围。
+- `metadata_drivers`：参与匹配的 Model Driver 列表；省略时搜索系统当前安装的全部 Model Driver。
 - `origin_provider_aliases`：Provider 命名中的厂商 slug 到 Model Driver 名称的映射。
 - `origin_mappings`：可以从命名确定性解析原厂身份时使用的特殊映射。
 - `models`：按完整 `provider_model_id` 精确匹配的 Provider 规则。
@@ -212,13 +216,13 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 
 不增加 `refresh_interval_sec`、`on_no_match`、`on_ambiguous`、`failure_policy`、`protocol_adapter` 等程序固定字段。
 
-`metadata_drivers` 显式为空数组表示不使用 Model Driver metadata，所有模型进入 conservative fallback；字段省略则使用 adapter 默认候选范围。
+`metadata_drivers` 显式为空数组表示不使用 Model Driver metadata，所有模型进入 conservative fallback；字段省略则搜索系统当前安装的全部 Model Driver。未配置 `origin_mappings` 时只能按原始完整模型名匹配，不得自动删除厂商前缀、后缀或别名。
 
 ## 5. 模型规则
 
 `models` 和 `patterns` 使用 [match_rule.md](match_rule.md) 定义的统一 `MatchRule`。简单规则只写字符串 wildcard；只有同时约束多个维度时才使用对象。exact `models` 优先；未命中 exact 时，`patterns` 按数组顺序使用第一条匹配规则。
 
-专用 Provider 与配置型 Provider 都复用现有模型规则和 resolver。区别只是专用 Provider 从代码或内置数据提供 Provider model rules，配置型 Provider 从以下外部字段加载；专用 Provider 不因此开放外部覆盖。调用前可以产生临时的 resolved provider call，但它不是新的配置或真相源。
+专用 Provider 与配置型 Provider 都复用现有模型规则和 resolver，也都从各自独立的 `.provider.json` 加载 Provider model rules。两者的区别只在于专用 Provider 可以注册配置无法表达的执行逻辑，而不是拥有代码内的第二份规则真相源。调用前可以产生临时的 resolved provider call，但它不是新的配置或真相源。
 
 完整的可选配置项如下：
 
@@ -444,21 +448,29 @@ Provider 配置中的价格不能覆盖更新鲜的实时价格。
 
 ## 8. OpenAI 官方 Provider 示例
 
-OpenAI 是内置专用 Provider。它在程序中固定只使用 OpenAI Model Driver，并固定实现 discovery、operation 选择和调用协议，因此不需要 Provider 参数文件。
-
-如果统一加载流程要求配置对象存在，其内容为：
+OpenAI 是官方内置专用 Provider。程序固定实现 discovery 和调用协议，同时必须提供独立 `openai.provider.json`，明确限定原厂 metadata 和 operation，例如：
 
 ```json
-{}
+{
+  "metadata_drivers": ["openai"],
+  "patterns": [
+    {
+      "match": "*",
+      "operations": {
+        "llm": "responses.create"
+      }
+    }
+  ]
+}
 ```
 
-`metadata_drivers: ["openai"]` 是 OpenAI 专用实现的内置约束，不需要在外部配置中重复。
+示例只展示边界，不取代完整 operation 表。OpenAI 官方 Provider 不使用 `{}` 的 custom 语义，也不依赖 Rust 中隐藏的 `metadata_drivers` 或 operation 映射。
 
 ## 9. OpenRouter 示例
 
 OpenRouter 是内置专用 Provider，而不是配置型 Provider。
 
-以下逻辑由 OpenRouter 实现固定，并纳入发布测试：
+以下渠道规则应由 `openrouter.provider.json` 声明并纳入发布测试：
 
 - 解析 `vendor/model` 命名并映射到候选 Model Driver；
 - 维护 OpenRouter vendor slug 与 Model Driver 的别名关系；
@@ -466,19 +478,21 @@ OpenRouter 是内置专用 Provider，而不是配置型 Provider。
 - 保留原始 `provider_model_id` 完成实际调用；
 - 按模型和 AICC `api_type` 选择 OpenRouter chat、image、video 等 operation；
 - 从 OpenRouter discovery 获取价格并覆盖 Model Driver 默认价格；
-- 对 OpenRouter API 升级进行兼容、测试和版本发布。
+- 对可声明差异随 metadata catalog 进行版本发布。
 
-它不通过外部配置暴露上述规则。统一配置对象为空：
+OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模型固有能力，候选范围、命名解析、排除规则、operation 和静态价格规则均以 `openrouter.provider.json` 为真相源。只有 Models API 交互、无法声明化的响应/事件解析等执行逻辑留在专用实现中。
+
+## 10. Custom Provider 与正式渠道映射示例
+
+假设用户自建 `example-proxy`，明确知道它兼容 OpenAI 协议，并且它原样提供 `gpt-5.6-sol`、`claude-sonnet-4-6` 等标准模型名。用户创建 `custom` Provider、选择 `openai` 协议族、填写连接和凭据；接入测试解析具体 Adapter 后，其 Provider Rules 为：
 
 ```json
 {}
 ```
 
-OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模型固有能力，但候选范围和命名解析由专用实现决定。
+系统不会因为选择了 OpenAI 协议族就只搜索 OpenAI Model Driver，而是按原始模型名搜索全部 Model Driver。协议族决定怎么调用，模型名匹配决定模型来自哪个原厂以及采用什么默认 metadata。
 
-## 10. 小型兼容 Provider 示例
-
-假设 `example-router` 是影响力较小、仍只提供 Chat Completions 的 OpenAI-compatible 聚合服务。用户只声明 `openai` 协议族，接入测试将其解析为已注册的 `openai-chat-completions`；Provider 规则只需要配置模型匹配范围、命名映射和少量 operation：
+如果该代理返回 `openai/gpt-5.6-sol`，空规则不会自动删除 `openai/`，因此不能把它当作 `gpt-5.6-sol`。若要让这种非标准命名成为系统正式支持的渠道行为，项目方必须为它发布独立 `.provider.json`，像 OpenRouter 一样显式声明 origin mapping，例如：
 
 ```json
 {
@@ -533,15 +547,11 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 }
 ```
 
-如果接入测试解析出的 Adapter 的全部默认行为已经适用，该 Provider 同样允许使用空配置：
-
-```json
-{}
-```
+这类映射一旦存在，便是该 Provider 的官方渠道规则，不再属于 `{}` custom Provider 的默认行为。
 
 ## 11. 默认值与覆盖语义
 
-配置型 Provider 解析出的特定 Adapter 提供经过验证的默认行为，外部配置只覆盖显式字段；配置不能把多个 API 代际合并为一个运行时探测或降级 Adapter：
+`custom` Provider 解析出的特定 Adapter 提供经过验证的标准协议行为；官方 Provider Rules 提供厂商映射和显式差异。配置不能把多个 API 代际合并为一个运行时探测或降级 Adapter：
 
 - map 按 key 覆盖；
 - `models` 按 `id` 覆盖同名 exact rule；
@@ -549,9 +559,9 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 - `origin_mappings` 出现时整体替换，避免合并后产生不可解释的顺序；
 - `variants` 按 `model_driver + variant + match` 覆盖；
 - 字段缺失继续使用默认值；
-- `{}` 完全使用默认方案。
+- `{}` 仅用于 `custom` Provider：使用 Adapter 标准协议行为、保留原始模型名并搜索全部 Model Driver，不启用任何厂商映射。
 
-内置专用 Provider 不接受外部规则覆盖其核心调用和解析逻辑。
+内置专用 Provider 的常规渠道规则由 NDN 交付的 `.provider.json` 更新；Provider Instance 或调用方不得用任意 JSON 绕过该 catalog。代码中的核心执行逻辑不接受配置替换，但必须消费配置解析后的结果，不能另外硬编码同一份规则。
 
 ## 12. 已确定的实现约束
 
@@ -565,3 +575,6 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 8. 基础 Adapter 不依赖派生 Adapter。派生 Provider 的删除测试必须证明不需要修改基础 Adapter。
 9. 官方 Profile 默认新接口；自定义 Provider 接入测试先测新接口，再测已注册的历史接口，用户不选择接口版本。解析完成后新旧 Adapter 不互相 fallback，只复用协议中立的底层组件。
 10. Model Driver、Provider Rules、request/pricing rules 和发布 track 统一使用 `MatchRule`；简单规则保持 wildcard 字符串，多维条件才展开为对象，各业务模块不得再实现独立匹配 DSL。
+11. 每个官方支持的 Provider（包括内置专用 Provider）必须提供独立 `.provider.json`；每个模型原厂必须提供独立 `.model.json`。Rust builtin 模块不得构造生产用 `ProviderRulesCatalog`、`KnownProviderCatalog` 或模型 metadata 作为第二真相源。
+12. 未被官方支持的小型或自建代理可注册为 `custom` Provider，并用 `{}` 表示无渠道规则。其协议族只决定调用协议；模型归属必须按未改写的 `provider_model_id` 搜索全部 Model Driver，零命中 conservative fallback，多重命中拒绝。
+13. 特殊 dialect 必须先尝试由 `.provider.json` 的有界声明表达；schema 不足时先评审统一 schema 扩展。只有无法安全声明化的 wire、认证、流式/任务状态机或错误语义才进入代码，并保持最小差异面。

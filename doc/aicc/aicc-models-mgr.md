@@ -41,6 +41,8 @@ Protocol Adapter 只执行已经解析好的 operation
 - Provider Call Resolver：产生内部 `ResolvedProviderCall`。
 - Protocol Adapter registry：注册可执行 operation，执行层不解释模型家族。
 
+每个模型原厂都必须有独立 `.model.json`，每个官方支持的 Provider 厂商（包括内置专用 Provider）都必须有独立 `.provider.json`。内置 Provider 只把无法声明化的执行逻辑固定在代码中；常规模型事实、渠道规则及能够数据化的 dialect 差异仍由 catalog 管理并参与云更新。未被官方支持的 `custom` Provider 使用空规则 `{}`，按未改写的原始模型名搜索全部 Model Driver；协议族只决定调用协议，不决定模型原厂。
+
 三类 metadata/catalog 保持独立 schema 和 revision。每个完整发布使用严格递增、不可复用的 manifest `revision_seq` 并声明兼容客户端范围；云端可以按客户端版本、更新通道或灰度分组投放不同兼容版本。版本选择、下载、校验、防回退与文件替换由 NDN 更新链路保证，AICC 不实现 manifest activation。文件替换后 NDN 令 `metadata_target_seq = manifest.revision_seq`；下一次推理前或任一 Provider Instance 定时库存刷新时，AICC 统一收敛所有 `metadata_applied_seq` 落后的 Provider 库存。
 ## 3. 核心概念
 

@@ -13,6 +13,7 @@
 - Provider Instance 名称、`base_url`、凭据、区域、账号和协议选择属于 system-config，catalog 无权修改。
 - Provider discovery 产生的 availability、deprecated、remote methods、实时价格和 health 属于实例级动态事实，不写入静态 catalog。
 - 三类 catalog 使用独立文件和 revision，但通过同一个 manifest 发布为完整版本。
+- 内置专用 Provider 也属于这套发布集合；其 Rust 实现不能替代或旁路对应的 Model Driver、Provider Rules、Known Provider 文件。
 - 发布结构与文件交付由 NDN 更新链路负责；AICC 不重复实现文件下载、验签、完整性校验或 activation。
 
 ## 2. 发布路径
@@ -72,6 +73,10 @@ Manifest 格式为 `buckyos.aicc.provider-catalog-manifest`，描述一个完整
 路径：`v2/provider-rules/<provider_profile_id>-<revision_seq>.json`。
 
 内容定义渠道模型到原厂 Model Driver/ModelUID 的映射，以及 operation、provider options、request rules、能力收窄、价格和条件计价规则。价格使用规则内的 `pricing` 字段，不使用独立 `pricing_ref` 或 Pricing Catalog。
+
+每个官方支持的 Provider 厂商都必须有独立 Provider Rules 文件，包括内置专用 Provider；发布文件必须包含本协议要求的完整 catalog envelope、身份和 revision。特殊 dialect 的常量、参数差异和能力限制也应优先放在这里；只有无法由受限 schema 安全表达的执行逻辑进入代码。
+
+未被官方 catalog 收录的小型 Provider 或用户自建代理不要求产生伪官方发布文件。用户明确选择兼容协议族后，AICC 为该 `custom` Provider 使用空规则体 `{}`：保留 discovery 返回的原始模型名，在当前全部 Model Driver 中唯一匹配 origin identity，不应用任何渠道改名规则。
 
 ### 5.3 Known Provider
 

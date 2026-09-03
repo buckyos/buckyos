@@ -72,6 +72,8 @@ HTTP/SSE/JSON/异步轮询基础设施
 
 这一约束适用于整个实现，不只适用于基础 codec：不得把模型名、模型名前缀或 Provider 厂商名作为特征硬编码到条件分支、路由表或默认参数选择逻辑中。模型和厂商差异应优先由 Model Driver metadata、Provider Profile 和 Provider Rules 配置表达；运行时只根据解析后的能力、规则、`protocol_adapter_id` 和 operation 执行。只有配置 schema 无法表达的真实协议差异才允许进入独立 Adapter 或 dialect 代码，其注册和选择也必须基于显式配置身份，不能重新通过模型名或厂商名猜测。
 
+未被官方 catalog 收录的 `custom` Provider 使用空 Provider Rules `{}`。用户选择的协议族只确定 Adapter；模型归属使用 discovery 返回的原始模型名，在全部 Model Driver 的 exact/pattern 规则中要求唯一命中。只有命中后才使用该 Driver defaults；不做渠道前后缀、alias 或其它隐式改名。Known Provider 的 origin mapping 不得泄漏给 `custom` Provider。
+
 ### 2.2 operation 是最小协议复用单位
 
 一个 Adapter 由若干 operation 组合，而不是一个文件包揽厂商全部 API。例如 OpenAI Provider 可以同时绑定：
@@ -98,9 +100,9 @@ Gemini `generateContent` 等其它历史接口不能为了“兼容完整”预�
 
 1. Profile 数据：base URL、固定 header、credential 类型、默认 Adapter；
 2. Provider Rules：模型映射、operation、参数映射/删除、能力收窄和价格规则；
-3. dialect 代码：基础 schema 无法表达的请求、流事件、错误或任务状态差异。
+3. dialect 差异：首先由 `.provider.json` 的有界规则声明；只有基础 schema 无法安全表达的请求/响应 wire 变换、流事件、认证算法、错误或任务状态机差异才进入代码。
 
-只存在前两类差异时直接引用基础 Adapter，不创建空壳子类。需要第三类时使用独立 `protocol_adapter_id` 和 `base_adapter_id`，语义上是基础 Adapter 的子类，实现可采用组合或委托。
+只存在前两类差异时直接引用基础 Adapter，不创建空壳子类。遇到第三类差异时也必须先判断能否扩展统一且受限的 Provider Rules schema；确认不适合声明化后，才使用独立 `protocol_adapter_id` 和 `base_adapter_id`，语义上是基础 Adapter 的子类，实现可采用组合或委托。Dialect 代码不得保存模型清单、operation 映射、请求默认值、参数删除表、能力收窄或静态价格等常规数据。
 
 ### 2.5 不用通用扩展 map 掩盖协议差异
 
@@ -206,7 +208,7 @@ ResolvedProviderCall
 | `doubao-responses` | `openai-responses` | 方舟内置工具、事件与参数差异 |
 | `qwen-responses` | `openai-responses` | 支持参数子集、session cache、事件差异 |
 
-每个 dialect 必须声明 `base_adapter_id`、覆盖点和不支持能力，且不能复制基础 request schema、SSE parser 和 contract tests。若官方 wire 行为可完全由 Profile/Rules 表达，应删除该 dialect 并直接绑定 base。
+每个 dialect 必须声明 `base_adapter_id`、覆盖点和不支持能力，且不能复制基础 request schema、SSE parser 和 contract tests。实现前必须先用 `.provider.json` 表达参数、header、operation、能力限制等可声明差异；统一 schema 能表达时应删除 dialect 并直接绑定 base。现有 schema 不足不自动构成写代码的理由，应先评审是否值得增加一个有界、可复用、可校验的声明字段。
 
 ### 4.3 原生异步协议
 
@@ -234,7 +236,7 @@ provider/
     ├── doubao       └── qwen
 ```
 
-`builtin/<provider>` 是装配模块，不是协议实现。它只提供稳定 ID、默认 `base_url` 模板、区域/workspace 和 credential schema、discovery、operation/Adapter 默认绑定、catalog 入口及必要 dialect/native module 注册。
+`builtin/<provider>` 是行为装配模块，不是协议实现或配置真相源。它只注册稳定 ID、无法声明化的 credential/discovery 行为、协议 codec 及必要 dialect/native module，并消费 catalog 解析结果。显示信息、默认 `base_url`、区域/workspace schema、credential 的声明信息、模型映射、operation/Adapter 选择、请求规则、能力收窄和静态价格等常规内容来自该 Provider 独立的 `.provider.json` 或 Known Provider catalog，不得在 Rust 中重复构造生产用 catalog。
 
 ### 5.2 首版装配矩阵
 
@@ -263,7 +265,7 @@ Discovery 只采信官方机器接口，不能抓网页或读取 SDK 内置列�
 | `Authorization: Key` | fal |
 | derived short-lived token | GLM JWT，可选；由 credential provider 生成 |
 
-固定 API version、session cache、归因等 header 不是 credential，分别由基础 Adapter、dialect 或 Profile 负责。日志和 trace 只能记录 credential 类型与匿名引用。
+固定 API version、session cache、归因等 header 不是 credential，应优先由基础 Adapter 的协议常量或 `.provider.json` 的受限声明负责；只有需要运行时计算、签名或状态关联时才由 dialect 代码生成。日志和 trace 只能记录 credential 类型与匿名引用。
 
 ## 6. 核心边界
 

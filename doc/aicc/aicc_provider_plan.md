@@ -22,6 +22,9 @@ Kimi / GLM / DeepSeek / 豆包（火山方舟）/ Qwen（阿里云百炼）
 6. 同一历史接口只在首个真实需求出现时实现一次，后续 Provider 复用；
 7. “首版支持 Provider”不等于无条件开放该厂商所有 API。只有已经映射到 AICC ApiType、进入 metadata 且通过协议合同的 operation 才进入库存；
 8. 不使用本地模型，不纳入 `agent.computer_use`。
+9. “内置”只表示内置行为实现和发布验收，不表示把渠道规则硬编码进 Rust。每个官方支持的 Provider 必须有独立 `.provider.json`，每个模型原厂必须有独立 `.model.json`。
+10. 特殊 dialect 优先通过 `.provider.json` 声明；只有无法安全声明化的 wire、认证、流式/任务状态机和错误语义才实现最小代码差异层。
+11. 未被官方支持的小型 Provider 或用户自建代理使用 `custom + 协议族 + {}` 接入；原始模型名必须直接匹配全部 Model Driver，系统不自动执行任何厂商前后缀或别名转换。
 
 SN Provider 的既有 `sn-openai -> openai-responses` 设计保持不变，但它是扩展 Provider，不计入本次 11 个首版内置 Provider。SN 的 API key/动态登录双鉴权继续与 OpenAI 基础实现隔离。
 
@@ -54,6 +57,8 @@ Adapter 箭头表示语义上的子类/派生关系，不强制使用语言继�
 - 主 operation 支持时的流式调用；
 - 模型 discovery 或 catalog-only 库存构建；
 - Provider Rules、Model Driver 和 operation 能力交集；
+- 独立 `.provider.json`，以及涉及原厂模型时对应的独立 `.model.json`；
+- dialect 差异的声明化评审，确认代码中没有可由 Provider Rules 表达的常规参数表；
 - 官方错误到 AICC 稳定错误的映射；
 - health probe、inventory LKGS、metadata applied seq；
 - 禁用/删除/替换时停止刷新循环；
