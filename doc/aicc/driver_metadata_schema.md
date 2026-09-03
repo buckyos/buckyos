@@ -18,7 +18,7 @@ rule must constrain multiple dimensions.
 
 Metadata has four independent sources. From highest to lowest priority they are:
 
-1. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/system-config/`
+1. system-config key `services/aicc/driver_metadata`
 2. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/`
 3. the current cloud source delivered and replaced by NDN
 4. builtin metadata under `src/frame/aicc/driver_metadata/`
@@ -36,6 +36,44 @@ this source-selection step does AICC validate references and build the immutable
 catalog snapshot. `models/`, `providers/`, and `known-providers/` use the same
 selection rule. A Known Provider file is atomic by `catalog_id`; independently
 overridable providers therefore need independently stable catalog IDs/files.
+
+## Production source loading
+
+The local source enumerates direct `*.json` files from exactly three directories:
+
+```text
+$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/models/
+$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/providers/
+$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/known-providers/
+```
+
+The directory name determines the catalog kind. Nested directories, symlinks and
+non-JSON entries are rejected. A reload reads the complete tree twice and accepts
+it only when both reads are identical. Its opaque revision is the SHA-256 digest
+of the sorted relative paths and file contents.
+
+The system-config source is one atomic value at key
+`services/aicc/driver_metadata`:
+
+```json
+{
+  "schema_version": 1,
+  "model_drivers": [],
+  "provider_rules": [],
+  "known_providers": []
+}
+```
+
+Each array contains complete catalog documents of the corresponding kind. The
+system-config key revision is the source revision; using one key prevents a
+reload from observing a mixture of independently updated documents. A missing
+key means an empty system-config source at revision `0`.
+
+`service.reload_settings` captures a fresh local content revision and a fresh
+system-config key revision while preparing its invisible runtime candidate. Any
+I/O error, malformed document, unsupported envelope version or source change
+rejects the candidate and preserves the currently published RuntimeSnapshot.
+Cloud `metadata_target_seq` remains independent of these two revisions.
 
 All model parameters belonging to one origin vendor must be collected in that
 vendor's single standalone file. The lowercase vendor slug is stable and must

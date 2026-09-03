@@ -548,7 +548,7 @@ Owner：Runtime/Consistency 小组
 
 完成标准：并发请求只能观察到完整旧代或完整新代，不能看到半加入 Provider 或混合 catalog revision。
 
-实现记录：`src/frame/aicc/src/runtime/mod.rs` 已实现不可变快照、原子换代、请求级快照捕获、统一单执行者收敛、序列状态和 Provider 生命周期清理；`src/frame/aicc/src/settings/mod.rs` 已实现统一 `providers[]` settings 解析及按 `(catalog_kind, catalog_id)` 的来源优先级整文件选择。AICC 的 273 个单元测试、全目标检查、稳定版 rustfmt 和 clippy 均通过；完整构建仍需补齐 SDK 工具链相关环境变量。
+实现记录：`src/frame/aicc/src/runtime/mod.rs` 已实现不可变快照、原子换代、请求级快照捕获、统一单执行者收敛、序列状态和 Provider 生命周期清理；`src/frame/aicc/src/settings/mod.rs` 已实现统一 `providers[]` settings 解析、按 `(catalog_kind, catalog_id)` 的来源优先级整文件选择，以及 local/system-config metadata 的生产加载端口：local 固定枚举 `models/`、`providers/`、`known-providers/` 三类目录，用双读和内容 SHA-256 revision 捕获一致快照；system-config 以单 key `services/aicc/driver_metadata` 和其 CAS revision 提供原子三类 catalog envelope。`src/frame/aicc/src/service/cloud_update.rs` 负责 NDN cloud catalog 下载、校验、激活与持久化，并在不可见候选构建时重新捕获 local/system-config revisions。原有 WP-15 定向验证已通过；本次生产加载补充的格式和 diff 检查通过，AICC 复验暂被并行 usage API 新字段/枚举与 storage 消费端未同步阻断；完整构建仍需补齐 SDK 工具链相关环境变量。
 
 ### WP-16：Service 与管理 API
 

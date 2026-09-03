@@ -4,15 +4,21 @@ use crate::catalog::{
     CatalogBuildError, CatalogBuildOptions, CatalogKind, CatalogSnapshot, CurrentCatalogFile,
     KnownProviderCatalog, ModelDriverCatalog, ProviderRulesCatalog,
 };
-use buckyos_api::AiccRouteOverlay;
+use async_trait::async_trait;
+use buckyos_api::{AiccRouteOverlay, SystemConfigClient, SystemConfigError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
 
 pub(crate) const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
+pub(crate) const SYSTEM_CONFIG_METADATA_KEY: &str = "services/aicc/driver_metadata";
+pub(crate) const LOCAL_METADATA_RELATIVE_DIR: &str = "etc/aicc/driver_metadata/local";
+const SYSTEM_CONFIG_METADATA_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -281,12 +287,227 @@ pub(crate) enum MetadataSource {
     SystemConfig,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MetadataFile {
     pub source: MetadataSource,
     pub kind: CatalogKind,
     pub catalog_id: String,
     pub contents: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct MetadataOverrideSnapshot {
+    pub local_revision: String,
+    pub system_config_revision: u64,
+    pub local: Vec<MetadataFile>,
+    pub system_config: Vec<MetadataFile>,
+}
+
+#[async_trait]
+pub(crate) trait MetadataOverrideLoader: Send + Sync {
+    async fn load(&self) -> Result<MetadataOverrideSnapshot, SettingsError>;
+}
+
+pub(crate) struct StaticMetadataOverrideLoader {
+    snapshot: MetadataOverrideSnapshot,
+}
+
+impl StaticMetadataOverrideLoader {
+    pub(crate) fn new(local: Vec<MetadataFile>, system_config: Vec<MetadataFile>) -> Self {
+        Self {
+            snapshot: MetadataOverrideSnapshot {
+                local,
+                system_config,
+                ..Default::default()
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl MetadataOverrideLoader for StaticMetadataOverrideLoader {
+    async fn load(&self) -> Result<MetadataOverrideSnapshot, SettingsError> {
+        Ok(self.snapshot.clone())
+    }
+}
+
+pub(crate) struct ProductionMetadataOverrideLoader {
+    local_root: PathBuf,
+    system_config_url: String,
+    session_token: String,
+}
+
+impl ProductionMetadataOverrideLoader {
+    pub(crate) fn new(
+        buckyos_root: impl AsRef<Path>,
+        system_config_url: impl Into<String>,
+        session_token: impl Into<String>,
+    ) -> Self {
+        Self {
+            local_root: buckyos_root.as_ref().join(LOCAL_METADATA_RELATIVE_DIR),
+            system_config_url: system_config_url.into(),
+            session_token: session_token.into(),
+        }
+    }
+
+    pub(crate) fn local_root(&self) -> &Path {
+        &self.local_root
+    }
+
+    async fn load_local(&self) -> Result<(String, Vec<MetadataFile>), SettingsError> {
+        let first = read_local_metadata(&self.local_root).await?;
+        let second = read_local_metadata(&self.local_root).await?;
+        if first != second {
+            return Err(SettingsError::MetadataSourceChanged(MetadataSource::Local));
+        }
+        let revision = metadata_content_revision(&first);
+        let files = first
+            .into_iter()
+            .map(|file| MetadataFile::parse(MetadataSource::Local, file.kind, file.contents))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((revision, files))
+    }
+
+    async fn load_system_config(&self) -> Result<(u64, Vec<MetadataFile>), SettingsError> {
+        let client =
+            SystemConfigClient::new(Some(&self.system_config_url), Some(&self.session_token));
+        let value = match client.get(SYSTEM_CONFIG_METADATA_KEY).await {
+            Ok(value) => value,
+            Err(SystemConfigError::KeyNotFound(_)) => return Ok((0, Vec::new())),
+            Err(error) => return Err(SettingsError::SystemConfig(error.to_string())),
+        };
+        let document: SystemConfigMetadataDocument = serde_json::from_str(&value.value)?;
+        if document.schema_version != SYSTEM_CONFIG_METADATA_SCHEMA_VERSION {
+            return Err(SettingsError::UnsupportedMetadataSchema(
+                document.schema_version,
+            ));
+        }
+        Ok((value.version, document.into_files()?))
+    }
+}
+
+#[async_trait]
+impl MetadataOverrideLoader for ProductionMetadataOverrideLoader {
+    async fn load(&self) -> Result<MetadataOverrideSnapshot, SettingsError> {
+        let (local_revision, local) = self.load_local().await?;
+        let (system_config_revision, system_config) = self.load_system_config().await?;
+        Ok(MetadataOverrideSnapshot {
+            local_revision,
+            system_config_revision,
+            local,
+            system_config,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SystemConfigMetadataDocument {
+    pub schema_version: u32,
+    #[serde(default)]
+    pub model_drivers: Vec<Value>,
+    #[serde(default)]
+    pub provider_rules: Vec<Value>,
+    #[serde(default)]
+    pub known_providers: Vec<Value>,
+}
+
+impl SystemConfigMetadataDocument {
+    fn into_files(self) -> Result<Vec<MetadataFile>, SettingsError> {
+        let mut files = Vec::with_capacity(
+            self.model_drivers.len() + self.provider_rules.len() + self.known_providers.len(),
+        );
+        for (kind, documents) in [
+            (CatalogKind::ModelDriver, self.model_drivers),
+            (CatalogKind::ProviderRules, self.provider_rules),
+            (CatalogKind::KnownProvider, self.known_providers),
+        ] {
+            for document in documents {
+                files.push(MetadataFile::parse(
+                    MetadataSource::SystemConfig,
+                    kind,
+                    serde_json::to_vec(&document)?,
+                )?);
+            }
+        }
+        Ok(files)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LocalMetadataDocument {
+    relative_path: String,
+    kind: CatalogKind,
+    contents: Vec<u8>,
+}
+
+async fn read_local_metadata(root: &Path) -> Result<Vec<LocalMetadataDocument>, SettingsError> {
+    let mut documents = Vec::new();
+    for (directory, kind) in [
+        ("models", CatalogKind::ModelDriver),
+        ("providers", CatalogKind::ProviderRules),
+        ("known-providers", CatalogKind::KnownProvider),
+    ] {
+        let path = root.join(directory);
+        let mut entries = match tokio::fs::read_dir(&path).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(SettingsError::MetadataIo(error)),
+        };
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(SettingsError::MetadataIo)?
+        {
+            let file_type = entry.file_type().await.map_err(SettingsError::MetadataIo)?;
+            let file_name = entry.file_name();
+            let file_name =
+                file_name
+                    .to_str()
+                    .ok_or_else(|| SettingsError::InvalidMetadataPath {
+                        path: entry.path(),
+                        reason: "filename is not valid UTF-8".to_string(),
+                    })?;
+            if file_name.starts_with('.') {
+                continue;
+            }
+            if !file_type.is_file()
+                || Path::new(file_name)
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    != Some("json")
+            {
+                return Err(SettingsError::InvalidMetadataPath {
+                    path: entry.path(),
+                    reason: "only direct .json files are allowed".to_string(),
+                });
+            }
+            documents.push(LocalMetadataDocument {
+                relative_path: format!("{directory}/{file_name}"),
+                kind,
+                contents: tokio::fs::read(entry.path())
+                    .await
+                    .map_err(SettingsError::MetadataIo)?,
+            });
+        }
+    }
+    documents.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(documents)
+}
+
+fn metadata_content_revision(documents: &[LocalMetadataDocument]) -> String {
+    let mut digest = Sha256::new();
+    for document in documents {
+        digest.update((document.relative_path.len() as u64).to_be_bytes());
+        digest.update(document.relative_path.as_bytes());
+        digest.update((document.contents.len() as u64).to_be_bytes());
+        digest.update(&document.contents);
+    }
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 impl MetadataFile {
@@ -408,6 +629,16 @@ pub(crate) enum SettingsError {
     },
     #[error("effective catalog is invalid: {0}")]
     InvalidCatalog(#[from] CatalogBuildError),
+    #[error("metadata filesystem I/O failed: {0}")]
+    MetadataIo(#[source] std::io::Error),
+    #[error("invalid metadata path `{path}`: {reason}")]
+    InvalidMetadataPath { path: PathBuf, reason: String },
+    #[error("{0:?} metadata changed while a reload snapshot was being captured")]
+    MetadataSourceChanged(MetadataSource),
+    #[error("unsupported system-config metadata schema version {0}")]
+    UnsupportedMetadataSchema(u32),
+    #[error("system-config metadata read failed: {0}")]
+    SystemConfig(String),
 }
 
 #[cfg(test)]
@@ -522,6 +753,149 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    fn model_driver_document(id: &str, revision: u64) -> Value {
+        json!({
+            "format": "buckyos.aicc.model-driver-catalog",
+            "schema_version": 1,
+            "schema_revision": 0,
+            "model_driver_id": id,
+            "revision_seq": revision,
+            "required_features": [],
+            "models": [],
+            "patterns": [],
+            "defaults": {},
+            "variants": [],
+            "version_rules": []
+        })
+    }
+
+    #[tokio::test]
+    async fn local_metadata_loader_enumerates_three_fixed_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let local_root = temp.path().join(LOCAL_METADATA_RELATIVE_DIR);
+        tokio::fs::create_dir_all(local_root.join("models"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(local_root.join("providers"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(local_root.join("known-providers"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            local_root.join("models/vendor.json"),
+            serde_json::to_vec(&model_driver_document("vendor", 1)).unwrap(),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            local_root.join("providers/vendor.json"),
+            serde_json::to_vec(&json!({
+                "format": "buckyos.aicc.provider-rules-catalog",
+                "schema_version": 1,
+                "schema_revision": 0,
+                "revision_seq": 1,
+                "provider_profile_id": "vendor",
+                "models": [],
+                "patterns": [],
+                "variants": []
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            local_root.join("known-providers/vendor.json"),
+            serde_json::to_vec(&json!({
+                "format": "buckyos.aicc.known-provider-catalog",
+                "schema_version": 1,
+                "schema_revision": 0,
+                "revision_seq": 1,
+                "catalog_id": "vendor",
+                "providers": []
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let loader = ProductionMetadataOverrideLoader::new(
+            temp.path(),
+            "http://system-config.invalid",
+            "token",
+        );
+        assert_eq!(loader.local_root(), local_root);
+        let (first_revision, files) = loader.load_local().await.unwrap();
+        assert_eq!(files.len(), 3);
+        assert_eq!(
+            files.iter().map(|file| file.kind).collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                CatalogKind::ModelDriver,
+                CatalogKind::ProviderRules,
+                CatalogKind::KnownProvider,
+            ])
+        );
+
+        tokio::fs::write(
+            loader.local_root().join("models/vendor.json"),
+            serde_json::to_vec(&model_driver_document("vendor", 2)).unwrap(),
+        )
+        .await
+        .unwrap();
+        let (second_revision, _) = loader.load_local().await.unwrap();
+        assert_ne!(first_revision, second_revision);
+    }
+
+    #[tokio::test]
+    async fn local_metadata_loader_rejects_non_document_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let local_root = temp.path().join(LOCAL_METADATA_RELATIVE_DIR).join("models");
+        tokio::fs::create_dir_all(local_root.join("nested"))
+            .await
+            .unwrap();
+        let loader = ProductionMetadataOverrideLoader::new(
+            temp.path(),
+            "http://system-config.invalid",
+            "token",
+        );
+        assert!(matches!(
+            loader.load_local().await,
+            Err(SettingsError::InvalidMetadataPath { .. })
+        ));
+    }
+
+    #[test]
+    fn system_config_metadata_document_enumerates_all_catalog_kinds() {
+        let document: SystemConfigMetadataDocument = serde_json::from_value(json!({
+            "schema_version": 1,
+            "model_drivers": [model_driver_document("vendor", 1)],
+            "provider_rules": [{
+                "format": "buckyos.aicc.provider-rules-catalog",
+                "schema_version": 1,
+                "schema_revision": 0,
+                "revision_seq": 1,
+                "provider_profile_id": "vendor",
+                "models": [],
+                "patterns": [],
+                "variants": []
+            }],
+            "known_providers": [{
+                "format": "buckyos.aicc.known-provider-catalog",
+                "schema_version": 1,
+                "schema_revision": 0,
+                "revision_seq": 1,
+                "catalog_id": "vendor",
+                "providers": []
+            }]
+        }))
+        .unwrap();
+        let files = document.into_files().unwrap();
+        assert_eq!(files.len(), 3);
+        assert!(files
+            .iter()
+            .all(|file| file.source == MetadataSource::SystemConfig));
     }
 
     fn model_driver(source: MetadataSource, id: &str, revision: u64, marker: &str) -> MetadataFile {

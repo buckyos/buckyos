@@ -13,7 +13,10 @@ use tokio::sync::{broadcast, watch, Mutex, Notify, RwLock};
 use crate::catalog::{CatalogBuildOptions, CatalogKind, CatalogSnapshot, CurrentCatalogFile};
 use crate::matching::{CompiledMatchRule, MatchContext, MatchRule, RELEASE_TRACK_MATCH_SCHEMA};
 use crate::runtime::{RuntimeError, RuntimeInputs};
-use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
+use crate::settings::{
+    MetadataFile, MetadataOverrideLoader, MetadataSource, MetadataSources,
+    StaticMetadataOverrideLoader,
+};
 
 const INDEX_VERSION: u32 = 2;
 const PROTOCOL_VERSION: u32 = 2;
@@ -294,8 +297,7 @@ pub(crate) struct CloudUpdateManager {
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     status: RwLock<CloudUpdateRuntimeStatus>,
     builtin: Vec<CurrentCatalogFile>,
-    local: Vec<MetadataFile>,
-    system_config: Vec<MetadataFile>,
+    overrides: Arc<dyn MetadataOverrideLoader>,
 }
 
 impl CloudUpdateManager {
@@ -307,6 +309,24 @@ impl CloudUpdateManager {
         builtin: Vec<CurrentCatalogFile>,
         local: Vec<MetadataFile>,
         system_config: Vec<MetadataFile>,
+    ) -> Result<Arc<Self>, CloudUpdateError> {
+        Self::new_with_override_loader(
+            cache_root,
+            fetcher,
+            profile,
+            config,
+            builtin,
+            Arc::new(StaticMetadataOverrideLoader::new(local, system_config)),
+        )
+    }
+
+    pub(crate) fn new_with_override_loader(
+        cache_root: impl Into<PathBuf>,
+        fetcher: Arc<dyn CloudObjectFetcher>,
+        profile: CloudUpdateClientProfile,
+        config: CloudUpdateConfig,
+        builtin: Vec<CurrentCatalogFile>,
+        overrides: Arc<dyn MetadataOverrideLoader>,
     ) -> Result<Arc<Self>, CloudUpdateError> {
         config.validate()?;
         let (events, _) = broadcast::channel(16);
@@ -323,8 +343,7 @@ impl CloudUpdateManager {
             task: Mutex::new(None),
             status: RwLock::new(CloudUpdateRuntimeStatus::default()),
             builtin,
-            local,
-            system_config,
+            overrides,
         }))
     }
 
@@ -445,7 +464,8 @@ impl CloudUpdateManager {
             verify_file(file, &contents)?;
             downloaded.push((file.clone(), contents));
         }
-        self.validate_effective_catalog(manifest.revision_seq, &downloaded)?;
+        self.validate_effective_catalog(manifest.revision_seq, &downloaded)
+            .await?;
         if self.config().await != config {
             return Ok(None);
         }
@@ -569,7 +589,7 @@ impl CloudUpdateManager {
         Ok(files)
     }
 
-    fn validate_effective_catalog(
+    async fn validate_effective_catalog(
         &self,
         target_seq: u64,
         files: &[(ProviderCatalogManifestFile, Vec<u8>)],
@@ -593,11 +613,16 @@ impl CloudUpdateManager {
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| CloudUpdateError::Catalog(error.to_string()))?;
+        let overrides = self
+            .overrides
+            .load()
+            .await
+            .map_err(|error| CloudUpdateError::Catalog(error.to_string()))?;
         MetadataSources {
             builtin,
             cloud,
-            local: self.local.clone(),
-            system_config: self.system_config.clone(),
+            local: overrides.local,
+            system_config: overrides.system_config,
         }
         .build_snapshot(target_seq, &CatalogBuildOptions::default())
         .map_err(|error| CloudUpdateError::Catalog(error.to_string()))?;
@@ -627,11 +652,16 @@ impl RuntimeInputs for CloudUpdateManager {
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+        let overrides = self
+            .overrides
+            .load()
+            .await
+            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
         MetadataSources {
             builtin,
             cloud,
-            local: self.local.clone(),
-            system_config: self.system_config.clone(),
+            local: overrides.local,
+            system_config: overrides.system_config,
         }
         .build_snapshot(target_seq, &CatalogBuildOptions::default())
         .map_err(|error| RuntimeError::Backend(error.to_string()))
