@@ -1,10 +1,13 @@
 use crate::matching::{CompiledMatchRule, MatchContext, MatchRule, ROUTING_PROVIDER_MATCH_SCHEMA};
+use async_trait::async_trait;
 use buckyos_api::{
     AiccPolicyConfig, AiccSchedulerProfile, AiccSchedulerProfileConfig, ApiType, Capability,
     LockedValue, QuotaQueryRequest, QuotaQueryResponse, QuotaState, QuotaView,
 };
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PolicyScope {
@@ -405,6 +408,114 @@ pub(crate) trait QuotaSource: Send + Sync {
     fn query(&self, lookup: &QuotaLookup) -> Result<QuotaSnapshot, QuotaSourceError>;
 }
 
+#[async_trait]
+pub(crate) trait QuotaTruthPort: Send + Sync {
+    async fn query(&self, lookup: &QuotaLookup) -> Result<QuotaSnapshot, QuotaSourceError>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PreparedQuotaScope {
+    caller: CallerIdentity,
+    capability: Capability,
+    method: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedQuotaSource {
+    scope: PreparedQuotaScope,
+    providers: BTreeMap<String, QuotaSnapshot>,
+}
+
+impl QuotaSource for PreparedQuotaSource {
+    fn query(&self, lookup: &QuotaLookup) -> Result<QuotaSnapshot, QuotaSourceError> {
+        if lookup.caller != self.scope.caller
+            || lookup.capability.as_ref() != Some(&self.scope.capability)
+            || lookup.method.as_deref() != Some(self.scope.method.as_str())
+        {
+            return Err(QuotaSourceError);
+        }
+        let provider = lookup
+            .provider_instance_name
+            .as_ref()
+            .ok_or(QuotaSourceError)?;
+        self.providers
+            .get(provider)
+            .cloned()
+            .ok_or(QuotaSourceError)
+    }
+}
+
+pub(crate) struct QuotaSourceFactory {
+    truth: Arc<dyn QuotaTruthPort>,
+}
+
+impl QuotaSourceFactory {
+    pub(crate) fn new(truth: Arc<dyn QuotaTruthPort>) -> Self {
+        Self { truth }
+    }
+
+    pub(crate) async fn prepare_route<I, S>(
+        &self,
+        caller: &CallerIdentity,
+        capability: Capability,
+        method: &str,
+        provider_instance_names: I,
+    ) -> Result<PreparedQuotaSource, QuotaSourceError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        validate_lookup_scope(caller, Some(method))?;
+        let provider_names = provider_instance_names
+            .into_iter()
+            .map(Into::into)
+            .collect::<BTreeSet<_>>();
+        if provider_names.is_empty() || provider_names.iter().any(|name| name.trim().is_empty()) {
+            return Err(QuotaSourceError);
+        }
+        let mut providers = BTreeMap::new();
+        for provider_instance_name in provider_names {
+            let lookup = QuotaLookup {
+                caller: caller.clone(),
+                capability: Some(capability.clone()),
+                method: Some(method.to_owned()),
+                provider_instance_name: Some(provider_instance_name.clone()),
+            };
+            let snapshot = self.truth.query(&lookup).await?;
+            validate_snapshot(&snapshot)?;
+            providers.insert(provider_instance_name, snapshot);
+        }
+        Ok(PreparedQuotaSource {
+            scope: PreparedQuotaScope {
+                caller: caller.clone(),
+                capability,
+                method: method.to_owned(),
+            },
+            providers,
+        })
+    }
+
+    pub(crate) async fn query_quota(
+        &self,
+        caller: &CallerIdentity,
+        request: QuotaQueryRequest,
+    ) -> Result<QuotaQueryResponse, PolicyError> {
+        validate_lookup_scope(caller, request.method.as_deref())
+            .map_err(|_| PolicyError::QuotaSourceUnavailable)?;
+        let snapshot = self
+            .truth
+            .query(&QuotaLookup {
+                caller: caller.clone(),
+                capability: request.capability,
+                method: request.method,
+                provider_instance_name: None,
+            })
+            .await
+            .map_err(|_| PolicyError::QuotaSourceUnavailable)?;
+        quota_response(snapshot)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LocalityPreference {
     Neutral,
@@ -659,22 +770,48 @@ impl<Q: QuotaSource> PolicyEngine<Q> {
                 provider_instance_name: None,
             })
             .map_err(|_| PolicyError::QuotaSourceUnavailable)?;
-        let state = snapshot.state.ok_or(PolicyError::QuotaSourceUnavailable)?;
-        if snapshot
+        quota_response(snapshot)
+    }
+}
+
+fn validate_lookup_scope(
+    caller: &CallerIdentity,
+    method: Option<&str>,
+) -> Result<(), QuotaSourceError> {
+    if caller.tenant_id.trim().is_empty()
+        || caller.user_id.trim().is_empty()
+        || caller
+            .app_id
+            .as_ref()
+            .is_some_and(|app| app.trim().is_empty())
+        || method.is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(QuotaSourceError);
+    }
+    Ok(())
+}
+
+fn validate_snapshot(snapshot: &QuotaSnapshot) -> Result<(), QuotaSourceError> {
+    if snapshot.state.is_none()
+        || snapshot
             .remaining_cost_usd
             .is_some_and(|value| !value.is_finite() || value < 0.0)
-        {
-            return Err(PolicyError::QuotaSourceUnavailable);
-        }
-        Ok(QuotaQueryResponse {
-            quota: QuotaView {
-                state,
-                remaining_request_units: snapshot.remaining_request_units,
-                remaining_cost_usd: snapshot.remaining_cost_usd,
-                reset_at: snapshot.reset_at,
-            },
-        })
+    {
+        return Err(QuotaSourceError);
     }
+    Ok(())
+}
+
+fn quota_response(snapshot: QuotaSnapshot) -> Result<QuotaQueryResponse, PolicyError> {
+    validate_snapshot(&snapshot).map_err(|_| PolicyError::QuotaSourceUnavailable)?;
+    Ok(QuotaQueryResponse {
+        quota: QuotaView {
+            state: snapshot.state.expect("validated quota state"),
+            remaining_request_units: snapshot.remaining_request_units,
+            remaining_cost_usd: snapshot.remaining_cost_usd,
+            reset_at: snapshot.reset_at,
+        },
+    })
 }
 
 fn reject(reasons: &mut Vec<PolicyReason>, code: PolicyReasonCode, summary: &'static str) {
@@ -812,6 +949,19 @@ mod tests {
 
     impl QuotaSource for FakeQuota {
         fn query(&self, lookup: &QuotaLookup) -> Result<QuotaSnapshot, QuotaSourceError> {
+            self.seen.lock().unwrap().push(lookup.clone());
+            self.result.clone()
+        }
+    }
+
+    struct FakeTruthPort {
+        result: Result<QuotaSnapshot, QuotaSourceError>,
+        seen: Arc<Mutex<Vec<QuotaLookup>>>,
+    }
+
+    #[async_trait]
+    impl QuotaTruthPort for FakeTruthPort {
+        async fn query(&self, lookup: &QuotaLookup) -> Result<QuotaSnapshot, QuotaSourceError> {
             self.seen.lock().unwrap().push(lookup.clone());
             self.result.clone()
         }
@@ -1196,5 +1346,100 @@ mod tests {
             .unwrap()
             .provider_instance_name
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn production_factory_prepares_request_scoped_provider_truth() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let factory = QuotaSourceFactory::new(Arc::new(FakeTruthPort {
+            result: FakeQuota::available().result,
+            seen: seen.clone(),
+        }));
+        let caller = caller();
+        let source = factory
+            .prepare_route(
+                &caller,
+                Capability::Llm,
+                "chat.completions.create",
+                ["openai_backup", "openai_primary", "openai_primary"],
+            )
+            .await
+            .unwrap();
+        let calls = seen.lock().unwrap().clone();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls
+                .iter()
+                .map(|lookup| lookup.provider_instance_name.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["openai_backup", "openai_primary"]
+        );
+        assert!(source
+            .query(&QuotaLookup {
+                caller: caller.clone(),
+                capability: Some(Capability::Llm),
+                method: Some("chat.completions.create".into()),
+                provider_instance_name: Some("openai_primary".into()),
+            })
+            .is_ok());
+        assert!(source
+            .query(&QuotaLookup {
+                caller: CallerIdentity {
+                    tenant_id: "tenant-b".into(),
+                    ..caller
+                },
+                capability: Some(Capability::Llm),
+                method: Some("chat.completions.create".into()),
+                provider_instance_name: Some("openai_primary".into()),
+            })
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn production_factory_exposes_service_quota_query_and_fails_closed() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let factory = QuotaSourceFactory::new(Arc::new(FakeTruthPort {
+            result: FakeQuota::available().result,
+            seen: seen.clone(),
+        }));
+        let response = factory
+            .query_quota(
+                &caller(),
+                QuotaQueryRequest::new(
+                    Some(Capability::Llm),
+                    Some("chat.completions.create".into()),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.quota.state, QuotaState::Normal);
+        assert!(seen
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .provider_instance_name
+            .is_none());
+        assert!(factory
+            .query_quota(
+                &caller(),
+                QuotaQueryRequest::new(Some(Capability::Llm), None),
+            )
+            .await
+            .is_ok());
+
+        let failing = QuotaSourceFactory::new(Arc::new(FakeTruthPort {
+            result: Err(QuotaSourceError),
+            seen: Arc::new(Mutex::new(Vec::new())),
+        }));
+        assert!(failing
+            .prepare_route(
+                &caller(),
+                Capability::Llm,
+                "chat.completions.create",
+                ["openai_primary"],
+            )
+            .await
+            .is_err());
     }
 }
