@@ -696,15 +696,37 @@ impl InventoryBuilder {
             .as_deref()
             .unwrap_or(&profile.provider_profile_id);
         let rules = catalog.provider_rules(rules_id);
-        let candidate_drivers = rules.and_then(|rules| rules.metadata_drivers.as_deref());
         let fingerprint = model_list_fingerprint(&discovery.models);
         let mut models = Vec::new();
 
         for discovered in discovery.models {
-            let origin_model_id = discovered
-                .origin_model_id
-                .clone()
+            let mapped_origin = rules
+                .filter(|rules| !rules.origin_mappings.is_empty())
+                .map(|_| catalog.resolve_provider_origin(rules_id, &discovered.provider_model_id))
+                .transpose()
+                .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+            if let (Some(discovered_origin), Some(mapped_origin)) = (
+                discovered.origin_model_id.as_deref(),
+                mapped_origin.as_ref(),
+            ) {
+                if discovered_origin != mapped_origin.origin_model_id {
+                    return Err(ProviderError::Inventory(format!(
+                        "discovery origin_model_id {discovered_origin:?} conflicts with Provider Rules mapping {:?}",
+                        mapped_origin.origin_model_id
+                    )));
+                }
+            }
+            let origin_model_id = mapped_origin
+                .as_ref()
+                .map(|origin| origin.origin_model_id.clone())
+                .or_else(|| discovered.origin_model_id.clone())
                 .unwrap_or_else(|| discovered.provider_model_id.clone());
+            let mapped_candidate_drivers = mapped_origin
+                .as_ref()
+                .map(|origin| vec![origin.model_driver_id.clone()]);
+            let candidate_drivers = mapped_candidate_drivers
+                .as_deref()
+                .or_else(|| rules.and_then(|rules| rules.metadata_drivers.as_deref()));
             let dimensions = MatchContext::from([
                 (
                     "provider_model_id".into(),
@@ -2008,6 +2030,75 @@ mod tests {
         )
     }
 
+    fn routed_catalog() -> Arc<CatalogSnapshot> {
+        let driver = |model_driver_id: &str| -> ModelDriverCatalog {
+            serde_json::from_value(serde_json::json!({
+                "format": "buckyos.aicc.model-driver-catalog",
+                "schema_version": 1,
+                "schema_revision": 0,
+                "model_driver_id": model_driver_id,
+                "revision_seq": 7,
+                "models": [{
+                    "id": "shared-model",
+                    "api_types": ["llm"],
+                    "capabilities": {"tool_calling": true}
+                }],
+                "patterns": [],
+                "defaults": {},
+                "variants": [],
+                "version_rules": []
+            }))
+            .unwrap()
+        };
+        let provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
+            "format": "buckyos.aicc.provider-rules-catalog",
+            "schema_version": 1,
+            "schema_revision": 0,
+            "revision_seq": 7,
+            "provider_profile_id": "openrouter",
+            "metadata_drivers": ["openai", "claude"],
+            "origin_provider_aliases": {
+                "openai": "openai",
+                "anthropic": "claude"
+            },
+            "origin_mappings": [{
+                "extract": {
+                    "source": "provider_model_id",
+                    "regex": "^(?<driver>[^/]+)/(?<model>.+)$"
+                },
+                "transforms": {
+                    "driver": [
+                        {"op": "lowercase"},
+                        {
+                            "op": "alias",
+                            "table": "origin_provider_aliases"
+                        }
+                    ],
+                    "model": [{"op": "trim"}]
+                }
+            }],
+            "models": [],
+            "patterns": [{
+                "match": "*",
+                "operations": {"llm": "responses.create"}
+            }],
+            "variants": []
+        }))
+        .unwrap();
+        Arc::new(
+            CatalogSnapshot::build(
+                7,
+                CatalogDocuments {
+                    model_drivers: vec![driver("openai"), driver("claude")],
+                    provider_rules: vec![provider_rules],
+                    known_providers: vec![],
+                },
+                &CatalogBuildOptions::default(),
+            )
+            .unwrap(),
+        )
+    }
+
     fn codecs() -> Arc<CodecRegistry> {
         let descriptor = OperationDescriptor {
             operation_id: "responses.create".into(),
@@ -2084,6 +2175,33 @@ mod tests {
         );
         assert_eq!(model.provider_rules_revision, Some(7));
         assert!(!inventory.provider_model_list_fingerprint.is_empty());
+    }
+
+    #[test]
+    fn inventory_uses_provider_origin_mapping_to_select_unique_driver() {
+        let mut profile = profile();
+        profile.provider_profile_id = "openrouter".into();
+        let mut instance = instance("router");
+        instance.provider_profile_id = "openrouter".into();
+        instance.provider_rules_id = Some("openrouter".into());
+        let mut discovered = discovery("anthropic/shared-model");
+        discovered.models[0].origin_model_id = Some("shared-model".into());
+
+        let inventory = InventoryBuilder::build(
+            &profile,
+            &instance,
+            discovered,
+            &routed_catalog(),
+            &codecs(),
+        )
+        .unwrap();
+        assert_eq!(inventory.models.len(), 1);
+        assert_eq!(
+            inventory.models[0].provider_model_id,
+            "anthropic/shared-model"
+        );
+        assert_eq!(inventory.models[0].origin_model_id, "shared-model");
+        assert_eq!(inventory.models[0].model_driver_id, "claude");
     }
 
     #[tokio::test]
