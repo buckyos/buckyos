@@ -318,7 +318,7 @@ Owner：四个并行协议小组
 
 完成标准：每个 API 代际独立注册、独立声明 operation，基础合同可被多个派生 Provider 复用。
 
-实现记录：在 `src/frame/aicc/src/protocol/openai_chat_completions.rs` 实现独立 `openai-chat-completions / chat.completions.create / llm` binding 和注册入口，覆盖 canonical messages、图片、function tools、structured output、参数校验、即时响应、usage、错误映射及真正增量的 SSE 文本与 tool-call 参数归并。基础 codec 只消费已解析的模型、参数、URL 和凭据，不包含 OpenRouter、Kimi、GLM 或 Provider/Router/Model 分支，并通过三家消费者共用 contract 验证与 Responses 无失败后 fallback。10 个定向测试及隔离工作树内 AICC 全量 107 个测试通过，all-target check、隔离 clippy 和格式检查通过；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。
+实现记录：在 `src/frame/aicc/src/protocol/openai_chat_completions.rs` 实现独立 `openai-chat-completions / chat.completions.create / llm` binding 和注册入口，覆盖 canonical messages、图片、function tools、structured output、参数校验、即时响应、usage、错误映射及真正增量的 SSE 文本与 tool-call 参数归并。基础 codec 只消费已解析的模型、参数、URL 和凭据，不包含 OpenRouter、Kimi、GLM 或 Provider/Router/Model 分支，并通过三家消费者共用 contract 验证与 Responses 无失败后 fallback。后续按 WP-08D 的实际复用需求增加窄化的 `pub(crate)` dialect 扩展：派生 Adapter 可转换请求 JSON/header、即时响应和单个 SSE delta，可选择 `max_completion_tokens` 或 `max_tokens`，并可在基础参数未匹配时严格验证和转换 dialect 专属 resolved parameter；基础参数仍由基础 codec 校验，标准 Adapter 继续拒绝未知参数，派生输出不得覆盖基础字段，且未开放任意 `extra_body`。fake derived-adapter 合同覆盖请求、即时响应、SSE、基础 Adapter 声明和专属 resolved parameter 的完整委托链。11 个定向测试及隔离工作树内 AICC 全量 165 个测试通过，all-target check、排除 Resource 模块既有 `manual_is_multiple_of` lint 后的 clippy `-D warnings`、格式和 diff 检查通过；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。
 
 ### WP-07：Provider Core、Discovery 与 Inventory
 
