@@ -1,0 +1,24 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "provider_profile_id": "glm",
+  "metadata_drivers": ["glm"],
+  "models": [
+    {
+      "id": "glm-5.3",
+      "operations": { "llm": "chat.completions.create" },
+      "provider_options": { "reasoning_effort": "max" },
+      "request_rules": [
+        { "set": { "thinking": { "type": "enabled" } } }
+      ]
+    }
+  ],
+  "patterns": [
+    {
+      "match": "*",
+      "operations": { "llm": "chat.completions.create" }
+    }
+  ]
+}

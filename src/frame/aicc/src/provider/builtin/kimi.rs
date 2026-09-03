@@ -4,8 +4,10 @@ use super::super::{
     ProviderError, ProviderFieldSchema, ProviderHealthState, ProviderProfile, ProviderResult,
     RefreshPolicy,
 };
-use crate::catalog::{KnownProvider, ProviderPatternRule, ProviderRulesCatalog};
-use crate::matching::MatchRule;
+use crate::catalog::{
+    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ModelDriverCatalog,
+    ProviderRulesCatalog,
+};
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, KIMI_CHAT_ADAPTER_ID,
     OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
@@ -14,23 +16,35 @@ use async_trait::async_trait;
 use buckyos_api::{features, ApiType};
 use reqwest::header::ETAG;
 use reqwest::{Method, Url};
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) const KIMI_PROVIDER_PROFILE_ID: &str = "kimi";
-pub(crate) const KIMI_DISPLAY_NAME: &str = "Moonshot Kimi";
-pub(crate) const KIMI_DEFAULT_BASE_URL: &str = "https://api.moonshot.ai/v1";
+
+const KIMI_PROVIDER_RULES: &[u8] =
+    include_bytes!("../../../driver_metadata/providers/kimi.provider.json");
+const KIMI_KNOWN_PROVIDER: &[u8] =
+    include_bytes!("../../../driver_metadata/known-providers/kimi.known-provider.json");
+const KIMI_MODEL_DRIVER: &[u8] = include_bytes!("../../../driver_metadata/models/kimi.model.json");
 
 const MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 
 pub(crate) fn kimi_profile() -> ProviderProfile {
+    let known = kimi_known_provider();
+    let credential: CredentialDeclaration = embedded_value(
+        &known,
+        "credential",
+        "Kimi Known Provider credential declaration",
+    );
+    assert_eq!(credential.kind, "bearer");
+    assert!(credential.required && credential.secret);
     ProviderProfile {
         provider_profile_id: KIMI_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: KIMI_DISPLAY_NAME.to_owned(),
-        default_protocol_adapter_id: KIMI_CHAT_ADAPTER_ID.to_owned(),
+        display_name: known.display_name,
+        default_protocol_adapter_id: known.protocol_adapter_id,
         credential: CredentialDescriptor {
             kind: CredentialKind::Bearer,
             header_name: None,
@@ -42,67 +56,79 @@ pub(crate) fn kimi_profile() -> ProviderProfile {
 }
 
 pub(crate) fn kimi_connection_contract() -> ProviderConnectionContract {
+    let known = kimi_known_provider();
+    let fields: InstanceFieldDeclarations = embedded_value(
+        &known,
+        "instance_fields",
+        "Kimi Known Provider instance fields",
+    );
     ProviderConnectionContract {
-        default_base_url: KIMI_DEFAULT_BASE_URL.to_owned(),
-        region: ProviderFieldSchema::unsupported(),
-        workspace: ProviderFieldSchema::unsupported(),
-        account: ProviderFieldSchema::unsupported(),
+        default_base_url: known.base_url,
+        region: fields.region,
+        workspace: fields.workspace,
+        account: fields.account,
     }
 }
 
 pub(crate) fn kimi_known_provider() -> KnownProvider {
-    KnownProvider {
-        provider_profile_id: KIMI_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: KIMI_DISPLAY_NAME.to_owned(),
-        base_url: KIMI_DEFAULT_BASE_URL.to_owned(),
-        protocol_adapter_id: KIMI_CHAT_ADAPTER_ID.to_owned(),
-        provider_rules_id: Some(KIMI_PROVIDER_PROFILE_ID.to_owned()),
-        ui_hints: BTreeMap::from([
-            (
-                "credential".to_owned(),
-                json!({"kind": "bearer", "required": true, "secret": true}),
-            ),
-            (
-                "instance_fields".to_owned(),
-                json!({
-                    "region": "unsupported",
-                    "workspace": "unsupported",
-                    "account": "unsupported"
-                }),
-            ),
-        ]),
-    }
+    embedded_json::<KnownProviderCatalog>(KIMI_KNOWN_PROVIDER, "Kimi Known Provider catalog")
+        .providers
+        .into_iter()
+        .find(|provider| provider.provider_profile_id == KIMI_PROVIDER_PROFILE_ID)
+        .expect("Kimi Known Provider catalog must contain the Kimi profile")
 }
 
-pub(crate) fn kimi_provider_rules(revision_seq: u64) -> ProviderRulesCatalog {
-    ProviderRulesCatalog {
-        format: "buckyos.aicc.provider-rules-catalog".to_owned(),
-        schema_version: 1,
-        schema_revision: 0,
-        revision_seq,
-        provider_profile_id: KIMI_PROVIDER_PROFILE_ID.to_owned(),
-        metadata_drivers: Some(vec![KIMI_PROVIDER_PROFILE_ID.to_owned()]),
-        origin_provider_aliases: BTreeMap::new(),
-        origin_mappings: Vec::new(),
-        models: Vec::new(),
-        patterns: vec![ProviderPatternRule {
-            match_rule: MatchRule::Shorthand("*".to_owned()),
-            exclude: false,
-            operations: BTreeMap::from([(
-                "llm".to_owned(),
-                OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned(),
-            )]),
-            provider_options: BTreeMap::new(),
-            request_rules: Vec::new(),
-            pricing: None,
-            remove_api_types: BTreeSet::new(),
-            remove_features: BTreeSet::new(),
-            estimated_latency_ms: None,
-            latency_class: None,
-            cost_class: None,
-        }],
-        variants: Vec::new(),
-    }
+pub(crate) fn kimi_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
+    embedded_json(KIMI_PROVIDER_RULES, "Kimi Provider Rules catalog")
+}
+
+pub(crate) fn kimi_model_driver() -> ModelDriverCatalog {
+    embedded_json(KIMI_MODEL_DRIVER, "Kimi Model Driver catalog")
+}
+
+pub(crate) fn kimi_catalog_files() -> Vec<CurrentCatalogFile> {
+    [
+        (CatalogKind::KnownProvider, KIMI_KNOWN_PROVIDER),
+        (CatalogKind::ProviderRules, KIMI_PROVIDER_RULES),
+        (CatalogKind::ModelDriver, KIMI_MODEL_DRIVER),
+    ]
+    .into_iter()
+    .map(|(kind, contents)| CurrentCatalogFile {
+        kind,
+        contents: contents.to_vec(),
+    })
+    .collect()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialDeclaration {
+    kind: String,
+    required: bool,
+    secret: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstanceFieldDeclarations {
+    region: ProviderFieldSchema,
+    workspace: ProviderFieldSchema,
+    account: ProviderFieldSchema,
+}
+
+fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
+    serde_json::from_value(
+        known
+            .ui_hints
+            .get(key)
+            .unwrap_or_else(|| panic!("{label} is missing"))
+            .clone(),
+    )
+    .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
+}
+
+fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
+    serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 #[async_trait]
@@ -321,7 +347,7 @@ mod tests {
             provider_instance_name: "kimi-main".to_owned(),
             provider_profile_id: KIMI_PROVIDER_PROFILE_ID.to_owned(),
             protocol_adapter_id: KIMI_CHAT_ADAPTER_ID.to_owned(),
-            base_url: KIMI_DEFAULT_BASE_URL.to_owned(),
+            base_url: kimi_known_provider().base_url,
             credential: CredentialReference {
                 reference: "secret://kimi".to_owned(),
             },
@@ -374,7 +400,7 @@ mod tests {
             kimi_provider_rules(7).patterns[0].operations["llm"],
             OPENAI_CHAT_COMPLETIONS_OPERATION_ID
         );
-        assert_eq!(kimi_known_provider().base_url, KIMI_DEFAULT_BASE_URL);
+        assert_eq!(kimi_known_provider().base_url, "https://api.moonshot.ai/v1");
     }
 
     #[test]

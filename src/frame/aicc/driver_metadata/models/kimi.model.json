@@ -1,0 +1,69 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "model_driver_id": "kimi",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "kimi-k3",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.kimi", "llm.{driver}.{model}"],
+      "capabilities": {
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 1048576,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      }
+    },
+    {
+      "id": "kimi-k2.7-code",
+      "parameter_scale": "code",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.kimi", "llm.{driver}.{model}"],
+      "capabilities": {
+        "max_context_tokens": 262144,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      }
+    },
+    {
+      "id": "kimi-k2.7-code-highspeed",
+      "parameter_scale": "code-highspeed",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.kimi", "llm.{driver}.{model}"],
+      "capabilities": {
+        "max_context_tokens": 262144,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      }
+    },
+    {
+      "id": "kimi-k2.6",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.kimi", "llm.{driver}.{model}"],
+      "capabilities": {
+        "max_context_tokens": 262144,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      }
+    }
+  ],
+  "patterns": [],
+  "defaults": {},
+  "variants": [],
+  "version_rules": []
+}

@@ -6,7 +6,7 @@ use super::{
     OPENAI_CHAT_COMPLETIONS_ADAPTER_ID, OPENAI_PROTOCOL_FAMILY_ID,
 };
 use buckyos_api::{AiContent, AiRole, LlmChatInvokeRequest};
-use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::header::HeaderMap;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -128,20 +128,6 @@ impl OpenAiChatCompletionsDialect for OpenRouterDialect {
             )));
         }
         Ok(Some((name.to_owned(), value.clone())))
-    }
-
-    fn transform_request(
-        &self,
-        _request: &LlmChatInvokeRequest,
-        _body: &mut Map<String, Value>,
-        headers: &mut HeaderMap,
-    ) -> ProtocolResultValue<()> {
-        headers.insert("x-openrouter-metadata", HeaderValue::from_static("enabled"));
-        headers.insert(
-            "x-openrouter-title",
-            HeaderValue::from_static("BuckyOS AICC"),
-        );
-        Ok(())
     }
 
     fn transform_immediate_response(
@@ -554,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_accepts_only_typed_routing_options_and_adds_attribution() {
+    fn openrouter_accepts_only_typed_routing_options() {
         let registry = registry_with(openrouter_chat_adapter());
         let request = registry
             .encode(
@@ -568,8 +554,8 @@ mod tests {
                 &context(),
             )
             .unwrap();
-        assert_eq!(request.headers["x-openrouter-metadata"], "enabled");
-        assert_eq!(request.headers["x-openrouter-title"], "BuckyOS AICC");
+        assert!(!request.headers.contains_key("x-openrouter-metadata"));
+        assert!(!request.headers.contains_key("x-openrouter-title"));
         let HttpBody::Json(body) = request.body else {
             panic!()
         };

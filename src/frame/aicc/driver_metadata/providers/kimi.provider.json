@@ -1,0 +1,31 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "provider_profile_id": "kimi",
+  "metadata_drivers": ["kimi"],
+  "models": [
+    {
+      "id": "kimi-k3",
+      "operations": { "llm": "chat.completions.create" },
+      "request_rules": [
+        {
+          "remove": [
+            "/temperature",
+            "/top_p",
+            "/n",
+            "/presence_penalty",
+            "/frequency_penalty"
+          ]
+        }
+      ]
+    }
+  ],
+  "patterns": [
+    {
+      "match": "*",
+      "operations": { "llm": "chat.completions.create" }
+    }
+  ]
+}

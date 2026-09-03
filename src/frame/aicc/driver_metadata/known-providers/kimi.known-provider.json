@@ -1,0 +1,28 @@
+{
+  "format": "buckyos.aicc.known-provider-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "catalog_id": "kimi",
+  "providers": [
+    {
+      "provider_profile_id": "kimi",
+      "display_name": "Moonshot Kimi",
+      "base_url": "https://api.moonshot.ai/v1",
+      "protocol_adapter_id": "kimi-chat",
+      "provider_rules_id": "kimi",
+      "ui_hints": {
+        "credential": {
+          "kind": "bearer",
+          "required": true,
+          "secret": true
+        },
+        "instance_fields": {
+          "region": { "mode": "unsupported" },
+          "workspace": { "mode": "unsupported" },
+          "account": { "mode": "unsupported" }
+        }
+      }
+    }
+  ]
+}

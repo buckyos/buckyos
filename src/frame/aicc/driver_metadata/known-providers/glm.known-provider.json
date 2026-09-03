@@ -1,0 +1,37 @@
+{
+  "format": "buckyos.aicc.known-provider-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "catalog_id": "glm",
+  "providers": [
+    {
+      "provider_profile_id": "glm",
+      "display_name": "Z.ai GLM",
+      "base_url": "https://api.z.ai/api/paas/v4",
+      "protocol_adapter_id": "glm-chat",
+      "provider_rules_id": "glm",
+      "ui_hints": {
+        "credential": {
+          "kinds": ["bearer", "glm_jwt"],
+          "default": "bearer",
+          "required": true,
+          "secret": true
+        },
+        "instance_fields": {
+          "region": {
+            "mode": "optional",
+            "default_value": "global",
+            "allowed_values": ["china", "global"]
+          },
+          "workspace": { "mode": "unsupported" },
+          "account": { "mode": "unsupported" }
+        },
+        "region_base_urls": {
+          "global": "https://api.z.ai/api/paas/v4",
+          "china": "https://open.bigmodel.cn/api/paas/v4"
+        }
+      }
+    }
+  ]
+}

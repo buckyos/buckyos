@@ -47,6 +47,7 @@ mod wp08d_tests {
         CredentialReference, DiscoveredModel, InventoryBuilder, ModelAvailability,
         ProviderDiscoverySnapshot, ProviderHealthState, ProviderInstanceConfig,
     };
+    use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
     use buckyos_api::ApiType;
     use serde_json::json;
     use std::collections::BTreeSet;
@@ -114,8 +115,8 @@ mod wp08d_tests {
                     driver("openai", "router-model"),
                     driver("claude", "router-model"),
                     driver("gemini", "gemini-fixture"),
-                    driver("kimi", "kimi-model"),
-                    driver("glm", "glm-model"),
+                    kimi_model_driver(),
+                    glm_model_driver(),
                 ],
                 provider_rules: vec![
                     openrouter_provider_rules(1),
@@ -159,13 +160,13 @@ mod wp08d_tests {
             (
                 kimi_profile(),
                 instance("kimi", KIMI_CHAT_ADAPTER_ID),
-                discovery("kimi-model", None),
+                discovery("kimi-k3", None),
                 "kimi",
             ),
             (
                 glm_profile(),
                 instance("glm", GLM_CHAT_ADAPTER_ID),
-                discovery("glm-model", None),
+                discovery("glm-5.3", None),
                 "glm",
             ),
         ];
@@ -185,5 +186,43 @@ mod wp08d_tests {
                 OPENAI_CHAT_COMPLETIONS_OPERATION_ID
             );
         }
+    }
+
+    #[test]
+    fn wp15_metadata_sources_load_the_complete_wp08d_builtin_set() {
+        let mut builtin = openrouter_catalog_files()
+            .into_iter()
+            .chain(kimi_catalog_files())
+            .chain(glm_catalog_files())
+            .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        for model_driver in [
+            driver("claude", "claude-fixture"),
+            driver("gemini", "gemini-fixture"),
+        ] {
+            builtin.push(
+                MetadataFile::parse(
+                    MetadataSource::Builtin,
+                    crate::catalog::CatalogKind::ModelDriver,
+                    serde_json::to_vec(&model_driver).unwrap(),
+                )
+                .unwrap(),
+            );
+        }
+        let catalog = MetadataSources {
+            builtin,
+            ..MetadataSources::default()
+        }
+        .build_snapshot(1, &CatalogBuildOptions::default())
+        .unwrap();
+
+        for provider in ["openrouter", "kimi", "glm"] {
+            assert!(catalog.known_provider(provider).is_some());
+            assert!(catalog.provider_rules(provider).is_some());
+        }
+        assert!(catalog.model_driver("openrouter").is_none());
+        assert!(catalog.model_driver("kimi").is_some());
+        assert!(catalog.model_driver("glm").is_some());
     }
 }

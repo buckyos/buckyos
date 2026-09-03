@@ -1,0 +1,105 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "model_driver_id": "glm",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "glm-5.3",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 131072, "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true }
+    },
+    {
+      "id": "glm-5.2",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 131072, "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true }
+    },
+    {
+      "id": "glm-5.1",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-5-turbo",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-5",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-4.7",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-4.7-flash",
+      "parameter_scale": "flash",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-4.7-flashx",
+      "parameter_scale": "flashx",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-4.6",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-4.5-air",
+      "parameter_scale": "air",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true }
+    },
+    {
+      "id": "glm-4.5-airx",
+      "parameter_scale": "airx",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-4.5-flash",
+      "parameter_scale": "flash",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-4-flash-250414",
+      "parameter_scale": "flash",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "streaming": true, "tool_call": true }
+    },
+    {
+      "id": "glm-4-flashx-250414",
+      "parameter_scale": "flashx",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "streaming": true, "tool_call": true }
+    }
+  ],
+  "patterns": [],
+  "defaults": {},
+  "variants": [],
+  "version_rules": []
+}

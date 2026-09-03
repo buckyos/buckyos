@@ -4,17 +4,23 @@ use super::super::{
     ProviderFieldSchema, ProviderHealthState, ProviderProfile, ProviderResult, RefreshPolicy,
     ResolvedProviderConnection,
 };
-use crate::catalog::{KnownProvider, ProviderPatternRule, ProviderRulesCatalog};
-use crate::matching::MatchRule;
-use crate::protocol::{CredentialKind, GLM_CHAT_ADAPTER_ID, OPENAI_CHAT_COMPLETIONS_OPERATION_ID};
+use crate::catalog::{
+    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ModelDriverCatalog,
+    ProviderRulesCatalog,
+};
+use crate::protocol::{CredentialKind, OPENAI_CHAT_COMPLETIONS_OPERATION_ID};
 use buckyos_api::ApiType;
-use serde_json::json;
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const GLM_PROVIDER_PROFILE_ID: &str = "glm";
-pub(crate) const GLM_DISPLAY_NAME: &str = "Z.ai GLM";
-pub(crate) const GLM_DEFAULT_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
-pub(crate) const GLM_CHINA_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
+
+const GLM_PROVIDER_RULES: &[u8] =
+    include_bytes!("../../../driver_metadata/providers/glm.provider.json");
+const GLM_KNOWN_PROVIDER: &[u8] =
+    include_bytes!("../../../driver_metadata/known-providers/glm.known-provider.json");
+const GLM_MODEL_DRIVER: &[u8] = include_bytes!("../../../driver_metadata/models/glm.model.json");
 
 pub(crate) fn glm_profile() -> ProviderProfile {
     glm_profile_with_credential(CredentialKind::Bearer)
@@ -25,10 +31,27 @@ pub(crate) fn glm_jwt_profile() -> ProviderProfile {
 }
 
 fn glm_profile_with_credential(kind: CredentialKind) -> ProviderProfile {
+    let known = glm_known_provider();
+    let credential: CredentialDeclaration = embedded_value(
+        &known,
+        "credential",
+        "GLM Known Provider credential declaration",
+    );
+    let declared_kind = match kind {
+        CredentialKind::Bearer => "bearer",
+        CredentialKind::GlmJwt => "glm_jwt",
+        _ => panic!("GLM profile requested an unsupported credential kind"),
+    };
+    assert!(credential.kinds.iter().any(|item| item == declared_kind));
+    assert!(credential
+        .kinds
+        .iter()
+        .any(|item| item == &credential.default));
+    assert!(credential.required && credential.secret);
     ProviderProfile {
         provider_profile_id: GLM_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: GLM_DISPLAY_NAME.to_owned(),
-        default_protocol_adapter_id: GLM_CHAT_ADAPTER_ID.to_owned(),
+        display_name: known.display_name,
+        default_protocol_adapter_id: known.protocol_adapter_id,
         credential: CredentialDescriptor {
             kind,
             header_name: None,
@@ -40,89 +63,96 @@ fn glm_profile_with_credential(kind: CredentialKind) -> ProviderProfile {
 }
 
 pub(crate) fn glm_connection_contract() -> ProviderConnectionContract {
+    let known = glm_known_provider();
+    let fields: InstanceFieldDeclarations = embedded_value(
+        &known,
+        "instance_fields",
+        "GLM Known Provider instance fields",
+    );
     ProviderConnectionContract {
-        default_base_url: GLM_DEFAULT_BASE_URL.to_owned(),
-        region: ProviderFieldSchema::optional_with_default("global")
-            .with_allowed_values(["global", "china"]),
-        workspace: ProviderFieldSchema::unsupported(),
-        account: ProviderFieldSchema::unsupported(),
+        default_base_url: known.base_url,
+        region: fields.region,
+        workspace: fields.workspace,
+        account: fields.account,
     }
 }
 
 pub(crate) fn resolve_glm_connection(
     input: ProviderConnectionInput<'_>,
 ) -> ProviderResult<ResolvedProviderConnection> {
+    let known = glm_known_provider();
+    let region_base_urls: BTreeMap<String, String> = embedded_value(
+        &known,
+        "region_base_urls",
+        "GLM Known Provider region base URLs",
+    );
     let base_url = match (input.base_url, input.region.unwrap_or("global")) {
         (Some(base_url), _) => Some(base_url),
-        (None, "global") => Some(GLM_DEFAULT_BASE_URL),
-        (None, "china") => Some(GLM_CHINA_BASE_URL),
-        (None, _) => None,
+        (None, region) => region_base_urls.get(region).map(String::as_str),
     };
     glm_connection_contract().resolve(ProviderConnectionInput { base_url, ..input })
 }
 
 pub(crate) fn glm_known_provider() -> KnownProvider {
-    KnownProvider {
-        provider_profile_id: GLM_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: GLM_DISPLAY_NAME.to_owned(),
-        base_url: GLM_DEFAULT_BASE_URL.to_owned(),
-        protocol_adapter_id: GLM_CHAT_ADAPTER_ID.to_owned(),
-        provider_rules_id: Some(GLM_PROVIDER_PROFILE_ID.to_owned()),
-        ui_hints: BTreeMap::from([
-            (
-                "credential".to_owned(),
-                json!({
-                    "kinds": ["bearer", "glm_jwt"],
-                    "default": "bearer",
-                    "required": true,
-                    "secret": true
-                }),
-            ),
-            (
-                "instance_fields".to_owned(),
-                json!({
-                    "region": {"default": "global", "values": ["global", "china"]},
-                    "workspace": "unsupported",
-                    "account": "unsupported"
-                }),
-            ),
-            (
-                "region_base_urls".to_owned(),
-                json!({"global": GLM_DEFAULT_BASE_URL, "china": GLM_CHINA_BASE_URL}),
-            ),
-        ]),
-    }
+    embedded_json::<KnownProviderCatalog>(GLM_KNOWN_PROVIDER, "GLM Known Provider catalog")
+        .providers
+        .into_iter()
+        .find(|provider| provider.provider_profile_id == GLM_PROVIDER_PROFILE_ID)
+        .expect("GLM Known Provider catalog must contain the GLM profile")
 }
 
-pub(crate) fn glm_provider_rules(revision_seq: u64) -> ProviderRulesCatalog {
-    ProviderRulesCatalog {
-        format: "buckyos.aicc.provider-rules-catalog".to_owned(),
-        schema_version: 1,
-        schema_revision: 0,
-        revision_seq,
-        provider_profile_id: GLM_PROVIDER_PROFILE_ID.to_owned(),
-        metadata_drivers: Some(vec![GLM_PROVIDER_PROFILE_ID.to_owned()]),
-        origin_provider_aliases: BTreeMap::new(),
-        origin_mappings: Vec::new(),
-        models: Vec::new(),
-        patterns: vec![ProviderPatternRule {
-            match_rule: MatchRule::Shorthand("*".to_owned()),
-            exclude: false,
-            operations: BTreeMap::from([(
-                "llm".to_owned(),
-                OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned(),
-            )]),
-            provider_options: BTreeMap::new(),
-            request_rules: Vec::new(),
-            pricing: None,
-            remove_api_types: BTreeSet::new(),
-            remove_features: BTreeSet::new(),
-            estimated_latency_ms: None,
-            latency_class: None,
-            cost_class: None,
-        }],
-        variants: Vec::new(),
-    }
+pub(crate) fn glm_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
+    embedded_json(GLM_PROVIDER_RULES, "GLM Provider Rules catalog")
+}
+
+pub(crate) fn glm_model_driver() -> ModelDriverCatalog {
+    embedded_json(GLM_MODEL_DRIVER, "GLM Model Driver catalog")
+}
+
+pub(crate) fn glm_catalog_files() -> Vec<CurrentCatalogFile> {
+    [
+        (CatalogKind::KnownProvider, GLM_KNOWN_PROVIDER),
+        (CatalogKind::ProviderRules, GLM_PROVIDER_RULES),
+        (CatalogKind::ModelDriver, GLM_MODEL_DRIVER),
+    ]
+    .into_iter()
+    .map(|(kind, contents)| CurrentCatalogFile {
+        kind,
+        contents: contents.to_vec(),
+    })
+    .collect()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialDeclaration {
+    kinds: Vec<String>,
+    default: String,
+    required: bool,
+    secret: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstanceFieldDeclarations {
+    region: ProviderFieldSchema,
+    workspace: ProviderFieldSchema,
+    account: ProviderFieldSchema,
+}
+
+fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
+    serde_json::from_value(
+        known
+            .ui_hints
+            .get(key)
+            .unwrap_or_else(|| panic!("{label} is missing"))
+            .clone(),
+    )
+    .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
+}
+
+fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
+    serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 pub(crate) fn glm_catalog_only_inventory(
@@ -172,7 +202,7 @@ pub(crate) fn glm_catalog_only_inventory(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::ResolvedCredential;
+    use crate::protocol::{ResolvedCredential, GLM_CHAT_ADAPTER_ID};
     use crate::provider::{
         CredentialReference, DiscoveryContext, ProviderDiscovery, ProviderInstanceConfig,
     };
@@ -185,7 +215,7 @@ mod tests {
             resolve_glm_connection(ProviderConnectionInput::default())
                 .unwrap()
                 .base_url,
-            GLM_DEFAULT_BASE_URL
+            "https://api.z.ai/api/paas/v4"
         );
         assert_eq!(
             resolve_glm_connection(ProviderConnectionInput {
@@ -194,7 +224,7 @@ mod tests {
             })
             .unwrap()
             .base_url,
-            GLM_CHINA_BASE_URL
+            "https://open.bigmodel.cn/api/paas/v4"
         );
         assert!(resolve_glm_connection(ProviderConnectionInput {
             region: Some("unknown"),
@@ -219,7 +249,7 @@ mod tests {
             provider_instance_name: "glm-main".to_owned(),
             provider_profile_id: GLM_PROVIDER_PROFILE_ID.to_owned(),
             protocol_adapter_id: GLM_CHAT_ADAPTER_ID.to_owned(),
-            base_url: GLM_DEFAULT_BASE_URL.to_owned(),
+            base_url: glm_known_provider().base_url,
             credential: CredentialReference {
                 reference: "secret://glm".to_owned(),
             },

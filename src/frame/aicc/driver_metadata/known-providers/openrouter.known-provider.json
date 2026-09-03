@@ -1,0 +1,28 @@
+{
+  "format": "buckyos.aicc.known-provider-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "catalog_id": "openrouter",
+  "providers": [
+    {
+      "provider_profile_id": "openrouter",
+      "display_name": "OpenRouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "protocol_adapter_id": "openrouter-openai",
+      "provider_rules_id": "openrouter",
+      "ui_hints": {
+        "credential": {
+          "kind": "bearer",
+          "required": true,
+          "secret": true
+        },
+        "instance_fields": {
+          "region": { "mode": "unsupported" },
+          "workspace": { "mode": "unsupported" },
+          "account": { "mode": "unsupported" }
+        }
+      }
+    }
+  ]
+}

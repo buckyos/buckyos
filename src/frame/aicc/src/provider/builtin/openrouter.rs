@@ -5,10 +5,9 @@ use super::super::{
     RefreshPolicy,
 };
 use crate::catalog::{
-    KnownProvider, OriginExtract, OriginMapping, OriginTransform, Pricing, ProviderPatternRule,
+    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, Pricing,
     ProviderRulesCatalog,
 };
-use crate::matching::MatchRule;
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
     OPENROUTER_CHAT_ADAPTER_ID,
@@ -17,24 +16,35 @@ use async_trait::async_trait;
 use buckyos_api::{features, ApiType};
 use reqwest::header::ETAG;
 use reqwest::{Method, Url};
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) const OPENROUTER_PROVIDER_PROFILE_ID: &str = "openrouter";
-pub(crate) const OPENROUTER_DISPLAY_NAME: &str = "OpenRouter";
-pub(crate) const OPENROUTER_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
+
+const OPENROUTER_PROVIDER_RULES: &[u8] =
+    include_bytes!("../../../driver_metadata/providers/openrouter.provider.json");
+const OPENROUTER_KNOWN_PROVIDER: &[u8] =
+    include_bytes!("../../../driver_metadata/known-providers/openrouter.known-provider.json");
 
 const MODELS_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
 
 pub(crate) fn openrouter_profile() -> ProviderProfile {
+    let known = openrouter_known_provider();
+    let credential: CredentialDeclaration = embedded_value(
+        &known,
+        "credential",
+        "OpenRouter Known Provider credential declaration",
+    );
+    assert_eq!(credential.kind, "bearer");
+    assert!(credential.required && credential.secret);
     ProviderProfile {
         provider_profile_id: OPENROUTER_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: OPENROUTER_DISPLAY_NAME.to_owned(),
-        default_protocol_adapter_id: OPENROUTER_CHAT_ADAPTER_ID.to_owned(),
+        display_name: known.display_name,
+        default_protocol_adapter_id: known.protocol_adapter_id,
         credential: CredentialDescriptor {
             kind: CredentialKind::Bearer,
             header_name: None,
@@ -46,102 +56,80 @@ pub(crate) fn openrouter_profile() -> ProviderProfile {
 }
 
 pub(crate) fn openrouter_connection_contract() -> ProviderConnectionContract {
+    let known = openrouter_known_provider();
+    let fields: InstanceFieldDeclarations = embedded_value(
+        &known,
+        "instance_fields",
+        "OpenRouter Known Provider instance fields",
+    );
     ProviderConnectionContract {
-        default_base_url: OPENROUTER_DEFAULT_BASE_URL.to_owned(),
-        region: ProviderFieldSchema::unsupported(),
-        workspace: ProviderFieldSchema::unsupported(),
-        account: ProviderFieldSchema::unsupported(),
+        default_base_url: known.base_url,
+        region: fields.region,
+        workspace: fields.workspace,
+        account: fields.account,
     }
 }
 
 pub(crate) fn openrouter_known_provider() -> KnownProvider {
-    KnownProvider {
-        provider_profile_id: OPENROUTER_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: OPENROUTER_DISPLAY_NAME.to_owned(),
-        base_url: OPENROUTER_DEFAULT_BASE_URL.to_owned(),
-        protocol_adapter_id: OPENROUTER_CHAT_ADAPTER_ID.to_owned(),
-        provider_rules_id: Some(OPENROUTER_PROVIDER_PROFILE_ID.to_owned()),
-        ui_hints: BTreeMap::from([
-            (
-                "credential".to_owned(),
-                json!({"kind": "bearer", "required": true, "secret": true}),
-            ),
-            (
-                "instance_fields".to_owned(),
-                json!({
-                    "region": "unsupported",
-                    "workspace": "unsupported",
-                    "account": "unsupported"
-                }),
-            ),
-        ]),
-    }
+    embedded_json::<KnownProviderCatalog>(
+        OPENROUTER_KNOWN_PROVIDER,
+        "OpenRouter Known Provider catalog",
+    )
+    .providers
+    .into_iter()
+    .find(|provider| provider.provider_profile_id == OPENROUTER_PROVIDER_PROFILE_ID)
+    .expect("OpenRouter Known Provider catalog must contain the OpenRouter profile")
 }
 
-pub(crate) fn openrouter_provider_rules(revision_seq: u64) -> ProviderRulesCatalog {
-    ProviderRulesCatalog {
-        format: "buckyos.aicc.provider-rules-catalog".to_owned(),
-        schema_version: 1,
-        schema_revision: 0,
-        revision_seq,
-        provider_profile_id: OPENROUTER_PROVIDER_PROFILE_ID.to_owned(),
-        metadata_drivers: None,
-        origin_provider_aliases: BTreeMap::from([
-            ("anthropic".to_owned(), "claude".to_owned()),
-            ("google".to_owned(), "gemini".to_owned()),
-            ("moonshotai".to_owned(), "kimi".to_owned()),
-            ("z-ai".to_owned(), "glm".to_owned()),
-        ]),
-        origin_mappings: vec![OriginMapping {
-            extract: OriginExtract {
-                source: "provider_model_id".to_owned(),
-                regex: "^(?<driver>[^/]+)/(?<model>.+)$".to_owned(),
-            },
-            transforms: BTreeMap::from([
-                (
-                    "driver".to_owned(),
-                    vec![
-                        OriginTransform {
-                            op: "lowercase".to_owned(),
-                            table: None,
-                            on_missing: None,
-                        },
-                        OriginTransform {
-                            op: "alias".to_owned(),
-                            table: Some("origin_provider_aliases".to_owned()),
-                            on_missing: Some("keep".to_owned()),
-                        },
-                    ],
-                ),
-                (
-                    "model".to_owned(),
-                    vec![OriginTransform {
-                        op: "trim".to_owned(),
-                        table: None,
-                        on_missing: None,
-                    }],
-                ),
-            ]),
-        }],
-        models: Vec::new(),
-        patterns: vec![ProviderPatternRule {
-            match_rule: MatchRule::Shorthand("*".to_owned()),
-            exclude: false,
-            operations: BTreeMap::from([(
-                "llm".to_owned(),
-                OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned(),
-            )]),
-            provider_options: BTreeMap::new(),
-            request_rules: Vec::new(),
-            pricing: None,
-            remove_api_types: BTreeSet::new(),
-            remove_features: BTreeSet::new(),
-            estimated_latency_ms: None,
-            latency_class: None,
-            cost_class: None,
-        }],
-        variants: Vec::new(),
-    }
+pub(crate) fn openrouter_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
+    embedded_json(
+        OPENROUTER_PROVIDER_RULES,
+        "OpenRouter Provider Rules catalog",
+    )
+}
+
+pub(crate) fn openrouter_catalog_files() -> Vec<CurrentCatalogFile> {
+    [
+        (CatalogKind::KnownProvider, OPENROUTER_KNOWN_PROVIDER),
+        (CatalogKind::ProviderRules, OPENROUTER_PROVIDER_RULES),
+    ]
+    .into_iter()
+    .map(|(kind, contents)| CurrentCatalogFile {
+        kind,
+        contents: contents.to_vec(),
+    })
+    .collect()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialDeclaration {
+    kind: String,
+    required: bool,
+    secret: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstanceFieldDeclarations {
+    region: ProviderFieldSchema,
+    workspace: ProviderFieldSchema,
+    account: ProviderFieldSchema,
+}
+
+fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
+    serde_json::from_value(
+        known
+            .ui_hints
+            .get(key)
+            .unwrap_or_else(|| panic!("{label} is missing"))
+            .clone(),
+    )
+    .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
+}
+
+fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
+    serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 #[async_trait]
@@ -460,7 +448,7 @@ mod tests {
             provider_instance_name: "openrouter-main".to_owned(),
             provider_profile_id: OPENROUTER_PROVIDER_PROFILE_ID.to_owned(),
             protocol_adapter_id: OPENROUTER_CHAT_ADAPTER_ID.to_owned(),
-            base_url: OPENROUTER_DEFAULT_BASE_URL.to_owned(),
+            base_url: openrouter_known_provider().base_url,
             credential: CredentialReference {
                 reference: "secret://openrouter".to_owned(),
             },
@@ -496,7 +484,7 @@ mod tests {
         assert_eq!(request.headers[AUTHORIZATION], "Bearer secret");
         assert_eq!(
             openrouter_known_provider().base_url,
-            OPENROUTER_DEFAULT_BASE_URL
+            "https://openrouter.ai/api/v1"
         );
         assert_eq!(
             openrouter_provider_rules(3).patterns[0].operations["llm"],
