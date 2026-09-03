@@ -303,12 +303,14 @@ Owner：四个并行协议小组
 
 #### WP-06D OpenAI Chat Completions
 
-- [ ] 只实现一份协议族级历史 codec；
-- [ ] 服务 OpenRouter、Kimi 和 GLM；
-- [ ] 与 Responses 平级，不在调用失败后互相 fallback；
-- [ ] 三家派生 Provider 共同运行基础 contract。
+- [x] 只实现一份协议族级历史 codec；
+- [x] 服务 OpenRouter、Kimi 和 GLM；
+- [x] 与 Responses 平级，不在调用失败后互相 fallback；
+- [x] 三家派生 Provider 共同运行基础 contract。
 
 完成标准：每个 API 代际独立注册、独立声明 operation，基础合同可被多个派生 Provider 复用。
+
+实现记录：在 `src/frame/aicc/src/protocol/openai_chat_completions.rs` 实现独立 `openai-chat-completions / chat.completions.create / llm` binding 和注册入口，覆盖 canonical messages、图片、function tools、structured output、参数校验、即时响应、usage、错误映射及真正增量的 SSE 文本与 tool-call 参数归并。基础 codec 只消费已解析的模型、参数、URL 和凭据，不包含 OpenRouter、Kimi、GLM 或 Provider/Router/Model 分支，并通过三家消费者共用 contract 验证与 Responses 无失败后 fallback。10 个定向测试及隔离工作树内 AICC 全量 107 个测试通过，all-target check、隔离 clippy 和格式检查通过；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。
 
 ### WP-07：Provider Core、Discovery 与 Inventory
 

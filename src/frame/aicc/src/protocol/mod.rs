@@ -4,6 +4,7 @@ mod adapter;
 mod auth;
 mod contract;
 mod error;
+mod openai_chat_completions;
 mod result;
 mod sse;
 mod task;
@@ -17,6 +18,8 @@ pub(crate) use auth::*;
 pub(crate) use contract::*;
 #[allow(unused_imports)]
 pub(crate) use error::*;
+#[allow(unused_imports)]
+pub(crate) use openai_chat_completions::*;
 #[allow(unused_imports)]
 pub(crate) use result::*;
 #[allow(unused_imports)]
