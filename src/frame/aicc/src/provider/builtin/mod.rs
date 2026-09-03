@@ -1,5 +1,6 @@
 mod anthropic_models;
 mod claude;
+mod deepseek_doubao_qwen;
 mod fal;
 mod gemini;
 mod glm;
@@ -8,10 +9,11 @@ mod minimax;
 mod openai;
 mod openrouter;
 mod sn;
-mod wp08e;
 
 #[allow(unused_imports)]
 pub(crate) use claude::*;
+#[allow(unused_imports)]
+pub(crate) use deepseek_doubao_qwen::*;
 #[allow(unused_imports)]
 pub(crate) use fal::*;
 #[allow(unused_imports)]
@@ -28,8 +30,6 @@ pub(crate) use openai::*;
 pub(crate) use openrouter::*;
 #[allow(unused_imports)]
 pub(crate) use sn::*;
-#[allow(unused_imports)]
-pub(crate) use wp08e::*;
 
 #[cfg(test)]
 mod wp08d_tests {

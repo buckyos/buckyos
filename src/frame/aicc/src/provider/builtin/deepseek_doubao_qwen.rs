@@ -26,8 +26,12 @@ pub(crate) const DEEPSEEK_PROFILE_ID: &str = "deepseek";
 pub(crate) const DOUBAO_PROFILE_ID: &str = "doubao";
 pub(crate) const QWEN_PROFILE_ID: &str = "qwen";
 
-const KNOWN_PROVIDERS: &[u8] =
-    include_bytes!("../../../driver_metadata/known-providers/wp08e.known-provider.json");
+const DEEPSEEK_KNOWN_PROVIDER: &[u8] =
+    include_bytes!("../../../driver_metadata/known-providers/deepseek.known-provider.json");
+const DOUBAO_KNOWN_PROVIDER: &[u8] =
+    include_bytes!("../../../driver_metadata/known-providers/doubao.known-provider.json");
+const QWEN_KNOWN_PROVIDER: &[u8] =
+    include_bytes!("../../../driver_metadata/known-providers/qwen.known-provider.json");
 const DEEPSEEK_PROVIDER_RULES: &[u8] =
     include_bytes!("../../../driver_metadata/providers/deepseek.provider.json");
 const DOUBAO_PROVIDER_RULES: &[u8] =
@@ -111,8 +115,12 @@ impl BuiltinProviderDescriptor {
     }
 }
 
-pub(crate) fn wp08e_builtin_providers() -> Vec<BuiltinProviderDescriptor> {
-    let known = decode_catalog::<KnownProviderCatalog>(KNOWN_PROVIDERS, "WP-08E Known Provider");
+pub(crate) fn deepseek_doubao_qwen_builtin_providers() -> Vec<BuiltinProviderDescriptor> {
+    let known: [KnownProviderCatalog; 3] = [
+        decode_catalog(DEEPSEEK_KNOWN_PROVIDER, "DeepSeek Known Provider"),
+        decode_catalog(DOUBAO_KNOWN_PROVIDER, "Doubao Known Provider"),
+        decode_catalog(QWEN_KNOWN_PROVIDER, "Qwen Known Provider"),
+    ];
     let rules: [ProviderRulesCatalog; 3] = [
         decode_catalog(DEEPSEEK_PROVIDER_RULES, "DeepSeek Provider Rules"),
         decode_catalog(DOUBAO_PROVIDER_RULES, "Doubao Provider Rules"),
@@ -138,11 +146,11 @@ pub(crate) fn wp08e_builtin_providers() -> Vec<BuiltinProviderDescriptor> {
     .into_iter()
     .map(|(profile_id, discovery, dialect)| {
         let provider = known
-            .providers
             .iter()
+            .flat_map(|catalog| catalog.providers.iter())
             .find(|provider| provider.provider_profile_id == profile_id)
             .cloned()
-            .unwrap_or_else(|| panic!("WP-08E Known Provider is missing `{profile_id}`"));
+            .unwrap_or_else(|| panic!("Known Provider configuration is missing `{profile_id}`"));
         let provider_rules = rules
             .iter()
             .find(|rules| rules.provider_profile_id == profile_id)
@@ -153,9 +161,11 @@ pub(crate) fn wp08e_builtin_providers() -> Vec<BuiltinProviderDescriptor> {
     .collect()
 }
 
-pub(crate) fn wp08e_catalog_files() -> Vec<CurrentCatalogFile> {
+pub(crate) fn deepseek_doubao_qwen_catalog_files() -> Vec<CurrentCatalogFile> {
     [
-        (CatalogKind::KnownProvider, KNOWN_PROVIDERS),
+        (CatalogKind::KnownProvider, DEEPSEEK_KNOWN_PROVIDER),
+        (CatalogKind::KnownProvider, DOUBAO_KNOWN_PROVIDER),
+        (CatalogKind::KnownProvider, QWEN_KNOWN_PROVIDER),
         (CatalogKind::ProviderRules, DEEPSEEK_PROVIDER_RULES),
         (CatalogKind::ProviderRules, DOUBAO_PROVIDER_RULES),
         (CatalogKind::ProviderRules, QWEN_PROVIDER_RULES),
@@ -171,7 +181,7 @@ pub(crate) fn wp08e_catalog_files() -> Vec<CurrentCatalogFile> {
     .collect()
 }
 
-pub(crate) fn wp08e_model_driver_catalogs() -> Vec<ModelDriverCatalog> {
+pub(crate) fn deepseek_doubao_qwen_model_driver_catalogs() -> Vec<ModelDriverCatalog> {
     [
         (DEEPSEEK_MODEL_DRIVER, "DeepSeek Model Driver"),
         (DOUBAO_MODEL_DRIVER, "Doubao Model Driver"),
@@ -259,10 +269,10 @@ fn descriptor(
 }
 
 fn configured_provider(profile_id: &str) -> BuiltinProviderDescriptor {
-    wp08e_builtin_providers()
+    deepseek_doubao_qwen_builtin_providers()
         .into_iter()
         .find(|provider| provider.profile.provider_profile_id == profile_id)
-        .unwrap_or_else(|| panic!("WP-08E configuration is missing `{profile_id}`"))
+        .unwrap_or_else(|| panic!("Provider configuration is missing `{profile_id}`"))
 }
 
 fn decode_catalog<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
@@ -471,7 +481,8 @@ mod tests {
     use super::*;
     use crate::catalog::{CatalogBuildOptions, CatalogSnapshot};
     use crate::protocol::{
-        openai_responses_adapter, wp08e_responses_adapters, CodecRegistry, ResolvedCredential,
+        deepseek_doubao_qwen_responses_adapters, openai_responses_adapter, CodecRegistry,
+        ResolvedCredential,
     };
     use crate::provider::{CredentialReference, InventoryBuilder, ProviderInstanceConfig};
     use reqwest::header::AUTHORIZATION;
@@ -481,7 +492,7 @@ mod tests {
     fn bundled_provider_and_model_catalogs_build_one_snapshot() {
         let catalog = CatalogSnapshot::from_current_files(
             1,
-            wp08e_catalog_files(),
+            deepseek_doubao_qwen_catalog_files(),
             &CatalogBuildOptions::default(),
         )
         .unwrap();
@@ -533,7 +544,7 @@ mod tests {
 
     #[test]
     fn profiles_are_assembled_from_known_provider_configuration() {
-        let providers = wp08e_builtin_providers();
+        let providers = deepseek_doubao_qwen_builtin_providers();
         assert_eq!(
             providers
                 .iter()
@@ -596,7 +607,7 @@ mod tests {
 
     #[test]
     fn provider_rules_are_loaded_without_rust_generated_revisions() {
-        for provider in wp08e_builtin_providers() {
+        for provider in deepseek_doubao_qwen_builtin_providers() {
             let rules = provider.provider_rules(7);
             assert_eq!(rules.revision_seq, 1);
             assert!(rules.models.is_empty());
@@ -616,7 +627,7 @@ mod tests {
 
     #[test]
     fn known_provider_fixture_keeps_templates_and_ui_schema() {
-        let providers = wp08e_builtin_providers();
+        let providers = deepseek_doubao_qwen_builtin_providers();
         let known = providers
             .iter()
             .map(BuiltinProviderDescriptor::known_provider)
@@ -690,11 +701,11 @@ mod tests {
     fn rules_and_dialects_build_complete_inventory_identity_for_all_three_providers() {
         let catalog = CatalogSnapshot::from_current_files(
             1,
-            wp08e_catalog_files(),
+            deepseek_doubao_qwen_catalog_files(),
             &CatalogBuildOptions::default(),
         )
         .unwrap();
-        for (provider, model_id) in wp08e_builtin_providers().into_iter().zip([
+        for (provider, model_id) in deepseek_doubao_qwen_builtin_providers().into_iter().zip([
             "deepseek-v4-flash",
             "doubao-seed-2-0-lite-260215",
             "qwen3.8-max",
@@ -705,7 +716,7 @@ mod tests {
             codecs
                 .register_codecs(base_descriptor, base_registration)
                 .unwrap();
-            for (descriptor, registration) in wp08e_responses_adapters().unwrap() {
+            for (descriptor, registration) in deepseek_doubao_qwen_responses_adapters().unwrap() {
                 codecs.register_derived(descriptor, registration).unwrap();
             }
             let base_url = if profile_id == QWEN_PROFILE_ID {

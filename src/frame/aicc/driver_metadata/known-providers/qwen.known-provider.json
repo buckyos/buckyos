@@ -1,0 +1,36 @@
+{
+  "format": "buckyos.aicc.known-provider-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "catalog_id": "qwen",
+  "providers": [
+    {
+      "provider_profile_id": "qwen",
+      "display_name": "Qwen（阿里云百炼）",
+      "base_url": "https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1",
+      "protocol_adapter_id": "qwen-responses",
+      "provider_rules_id": "qwen",
+      "ui_hints": {
+        "credential_label": "DashScope API key",
+        "credential_type": "bearer",
+        "instance_fields": {
+          "default_base_url": "https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1",
+          "region": {
+            "mode": "optional",
+            "default_value": "cn-beijing",
+            "allowed_values": [
+              "cn-beijing",
+              "ap-southeast-1",
+              "us-east-1",
+              "eu-central-1",
+              "ap-northeast-1"
+            ]
+          },
+          "workspace": { "mode": "required" },
+          "account": { "mode": "unsupported" }
+        }
+      }
+    }
+  ]
+}

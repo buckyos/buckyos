@@ -1,0 +1,30 @@
+{
+  "format": "buckyos.aicc.known-provider-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "catalog_id": "doubao",
+  "providers": [
+    {
+      "provider_profile_id": "doubao",
+      "display_name": "豆包（火山方舟）",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "protocol_adapter_id": "doubao-responses",
+      "provider_rules_id": "doubao",
+      "ui_hints": {
+        "credential_label": "ARK API key",
+        "credential_type": "bearer",
+        "instance_fields": {
+          "default_base_url": "https://ark.{region}.volces.com/api/v3",
+          "region": {
+            "mode": "optional",
+            "default_value": "cn-beijing",
+            "allowed_values": ["cn-beijing"]
+          },
+          "workspace": { "mode": "unsupported" },
+          "account": { "mode": "unsupported" }
+        }
+      }
+    }
+  ]
+}

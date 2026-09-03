@@ -67,7 +67,7 @@ impl ResponsesDialectKind {
     }
 }
 
-pub(crate) fn wp08e_responses_adapters(
+pub(crate) fn deepseek_doubao_qwen_responses_adapters(
 ) -> ProtocolResultValue<Vec<(AdapterDescriptor, CodecRegistration)>> {
     [
         ResponsesDialectKind::DeepSeek,
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn derived_adapters_declare_base_overrides_and_only_llm_operation() {
-        let adapters = wp08e_responses_adapters().unwrap();
+        let adapters = deepseek_doubao_qwen_responses_adapters().unwrap();
         assert_eq!(adapters.len(), 3);
         for (descriptor, registration) in adapters {
             assert_eq!(
@@ -319,7 +319,7 @@ mod tests {
         registry
             .register_codecs(base_descriptor, base_registration)
             .unwrap();
-        for (descriptor, registration) in wp08e_responses_adapters().unwrap() {
+        for (descriptor, registration) in deepseek_doubao_qwen_responses_adapters().unwrap() {
             registry.register_derived(descriptor, registration).unwrap();
         }
         for adapter_id in [

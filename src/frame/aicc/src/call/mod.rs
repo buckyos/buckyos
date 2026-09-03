@@ -1062,11 +1062,12 @@ mod tests {
     };
     use crate::protocol::{openai_responses_adapter, CodecRegistry};
     use crate::provider::{
-        claude_messages_adapter, claude_profile, claude_provider_rules, fal_profile,
-        fal_provider_rules, gemini_profile, gemini_provider_rules, glm_profile, glm_provider_rules,
-        kimi_profile, kimi_provider_rules, minimax_profile, minimax_provider_rules, openai_profile,
-        openai_provider_rules, openrouter_profile, openrouter_provider_rules, sn_profile,
-        sn_provider_rules, wp08e_builtin_providers, ProviderProfile,
+        claude_messages_adapter, claude_profile, claude_provider_rules,
+        deepseek_doubao_qwen_builtin_providers, fal_profile, fal_provider_rules, gemini_profile,
+        gemini_provider_rules, glm_profile, glm_provider_rules, kimi_profile, kimi_provider_rules,
+        minimax_profile, minimax_provider_rules, openai_profile, openai_provider_rules,
+        openrouter_profile, openrouter_provider_rules, sn_profile, sn_provider_rules,
+        ProviderProfile,
     };
     use crate::routing::{RouteModelKind, RoutingTrace, ScoreBreakdown, UserFacingRouteSummary};
     use buckyos_api::{AiMessage, AiRole, LlmChatInvokeRequest};
@@ -1149,16 +1150,16 @@ mod tests {
 
     fn all_codecs() -> CodecRegistry {
         use crate::protocol::{
-            fal_queue_adapter, gemini_interactions_adapter, glm_chat_adapter, kimi_chat_adapter,
+            deepseek_doubao_qwen_responses_adapters, fal_queue_adapter,
+            gemini_interactions_adapter, glm_chat_adapter, kimi_chat_adapter,
             minimax_messages_adapter, openai_chat_completions_adapter, openrouter_chat_adapter,
-            wp08e_responses_adapters,
         };
         use crate::provider::register_sn_openai_adapter;
 
         let mut registry = CodecRegistry::default();
         let (responses, registration) = openai_responses_adapter();
         registry.register_codecs(responses, registration).unwrap();
-        for (descriptor, registration) in wp08e_responses_adapters().unwrap() {
+        for (descriptor, registration) in deepseek_doubao_qwen_responses_adapters().unwrap() {
             registry.register_derived(descriptor, registration).unwrap();
         }
         register_sn_openai_adapter(&mut registry).unwrap();
@@ -1197,7 +1198,7 @@ mod tests {
             (sn_profile(), sn_provider_rules(9)),
         ];
         providers.extend(
-            wp08e_builtin_providers()
+            deepseek_doubao_qwen_builtin_providers()
                 .into_iter()
                 .map(|provider| (provider.profile.clone(), provider.provider_rules(9))),
         );
