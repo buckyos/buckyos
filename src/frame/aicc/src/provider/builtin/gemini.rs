@@ -4,39 +4,52 @@ use super::super::{
     ProviderDiscoverySnapshot, ProviderError, ProviderFieldSchema, ProviderHealthState,
     ProviderProfile, ProviderResult, RefreshPolicy,
 };
-use crate::catalog::{KnownProvider, ProviderPatternRule, ProviderRulesCatalog};
-use crate::matching::MatchRule;
+use crate::catalog::{
+    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ModelDriverCatalog,
+    ProviderRulesCatalog,
+};
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, GEMINI_ADAPTER_ID,
-    GEMINI_EMBED_CONTENT_OPERATION_ID, GEMINI_INTERACTIONS_OPERATION_ID,
-    GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID,
 };
 use async_trait::async_trait;
 use reqwest::{Method, Url};
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) const GEMINI_PROVIDER_PROFILE_ID: &str = "gemini";
-pub(crate) const GEMINI_DISPLAY_NAME: &str = "Google Gemini";
-pub(crate) const GEMINI_DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 pub(crate) const GEMINI_CREDENTIAL_HEADER: &str = "x-goog-api-key";
+
+const GEMINI_PROVIDER_RULES: &[u8] =
+    include_bytes!("../../../driver_metadata/providers/gemini.provider.json");
+const GEMINI_KNOWN_PROVIDER: &[u8] =
+    include_bytes!("../../../driver_metadata/known-providers/gemini.known-provider.json");
+const GEMINI_MODEL_DRIVER: &[u8] =
+    include_bytes!("../../../driver_metadata/models/gemini.model.json");
 
 const MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 const DISCOVERY_PAGE_SIZE: usize = 1000;
 const MAX_DISCOVERY_PAGES: usize = 100;
 
 pub(crate) fn gemini_profile() -> ProviderProfile {
+    let known = gemini_known_provider();
+    let credential: CredentialDeclaration = embedded_value(
+        &known,
+        "credential",
+        "Gemini Known Provider credential declaration",
+    );
+    assert_eq!(credential.kind, "named_header");
+    assert!(credential.required && credential.secret);
     ProviderProfile {
         provider_profile_id: GEMINI_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: GEMINI_DISPLAY_NAME.to_owned(),
-        default_protocol_adapter_id: GEMINI_ADAPTER_ID.to_owned(),
+        display_name: known.display_name,
+        default_protocol_adapter_id: known.protocol_adapter_id,
         credential: CredentialDescriptor {
             kind: CredentialKind::NamedHeader,
-            header_name: Some(GEMINI_CREDENTIAL_HEADER.to_owned()),
+            header_name: Some(credential.header_name),
         },
         discovery_mode: DiscoveryMode::MachineApi,
         refresh: RefreshPolicy::default(),
@@ -45,89 +58,83 @@ pub(crate) fn gemini_profile() -> ProviderProfile {
 }
 
 pub(crate) fn gemini_connection_contract() -> ProviderConnectionContract {
+    let known = gemini_known_provider();
+    let fields: InstanceFieldDeclarations = embedded_value(
+        &known,
+        "instance_fields",
+        "Gemini Known Provider instance fields",
+    );
     ProviderConnectionContract {
-        default_base_url: GEMINI_DEFAULT_BASE_URL.to_owned(),
-        region: ProviderFieldSchema::unsupported(),
-        workspace: ProviderFieldSchema::unsupported(),
-        account: ProviderFieldSchema::unsupported(),
+        default_base_url: known.base_url,
+        region: fields.region,
+        workspace: fields.workspace,
+        account: fields.account,
     }
 }
 
 pub(crate) fn gemini_known_provider() -> KnownProvider {
-    KnownProvider {
-        provider_profile_id: GEMINI_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: GEMINI_DISPLAY_NAME.to_owned(),
-        base_url: GEMINI_DEFAULT_BASE_URL.to_owned(),
-        protocol_adapter_id: GEMINI_ADAPTER_ID.to_owned(),
-        provider_rules_id: Some(GEMINI_PROVIDER_PROFILE_ID.to_owned()),
-        ui_hints: BTreeMap::from([
-            (
-                "credential".to_owned(),
-                json!({
-                    "kind": "named_header",
-                    "header_name": GEMINI_CREDENTIAL_HEADER,
-                    "required": true,
-                    "secret": true
-                }),
-            ),
-            (
-                "instance_fields".to_owned(),
-                json!({
-                    "region": "unsupported",
-                    "workspace": "unsupported",
-                    "account": "unsupported"
-                }),
-            ),
-        ]),
-    }
+    embedded_json::<KnownProviderCatalog>(
+        GEMINI_KNOWN_PROVIDER,
+        "Gemini Known Provider catalog",
+    )
+    .providers
+    .into_iter()
+    .find(|provider| provider.provider_profile_id == GEMINI_PROVIDER_PROFILE_ID)
+    .expect("Gemini Known Provider catalog must contain the Gemini profile")
 }
 
-pub(crate) fn gemini_provider_rules(revision_seq: u64) -> ProviderRulesCatalog {
-    let interactions = GEMINI_INTERACTIONS_OPERATION_ID.to_owned();
-    let embeddings = GEMINI_EMBED_CONTENT_OPERATION_ID.to_owned();
-    let video = GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID.to_owned();
-    ProviderRulesCatalog {
-        format: "buckyos.aicc.provider-rules-catalog".to_owned(),
-        schema_version: 1,
-        schema_revision: 0,
-        revision_seq,
-        provider_profile_id: GEMINI_PROVIDER_PROFILE_ID.to_owned(),
-        metadata_drivers: Some(vec![GEMINI_PROVIDER_PROFILE_ID.to_owned()]),
-        origin_provider_aliases: BTreeMap::new(),
-        origin_mappings: Vec::new(),
-        models: Vec::new(),
-        patterns: vec![ProviderPatternRule {
-            match_rule: MatchRule::Shorthand("*".to_owned()),
-            exclude: false,
-            operations: BTreeMap::from([
-                ("llm".to_owned(), interactions.clone()),
-                ("vision.ocr".to_owned(), interactions.clone()),
-                ("vision.caption".to_owned(), interactions.clone()),
-                ("vision.detect".to_owned(), interactions.clone()),
-                ("vision.segment".to_owned(), interactions.clone()),
-                ("audio.asr".to_owned(), interactions.clone()),
-                ("image.txt2img".to_owned(), interactions.clone()),
-                ("image.img2img".to_owned(), interactions.clone()),
-                ("audio.tts".to_owned(), interactions.clone()),
-                ("audio.music".to_owned(), interactions),
-                ("embedding.text".to_owned(), embeddings.clone()),
-                ("embedding.multimodal".to_owned(), embeddings),
-                ("video.txt2video".to_owned(), video.clone()),
-                ("video.img2video".to_owned(), video.clone()),
-                ("video.video2video".to_owned(), video.clone()),
-                ("video.extend".to_owned(), video),
-            ]),
-            provider_options: BTreeMap::new(),
-            request_rules: Vec::new(),
-            pricing: None,
-            remove_api_types: BTreeSet::new(),
-            remove_features: BTreeSet::new(),
-            estimated_latency_ms: None,
-            latency_class: None,
-            cost_class: None,
-        }],
-        variants: Vec::new(),
-    }
+pub(crate) fn gemini_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
+    embedded_json(GEMINI_PROVIDER_RULES, "Gemini Provider Rules catalog")
+}
+
+pub(crate) fn gemini_model_driver() -> ModelDriverCatalog {
+    embedded_json(GEMINI_MODEL_DRIVER, "Gemini Model Driver catalog")
+}
+
+pub(crate) fn gemini_catalog_files() -> Vec<CurrentCatalogFile> {
+    [
+        (CatalogKind::KnownProvider, GEMINI_KNOWN_PROVIDER),
+        (CatalogKind::ProviderRules, GEMINI_PROVIDER_RULES),
+        (CatalogKind::ModelDriver, GEMINI_MODEL_DRIVER),
+    ]
+    .into_iter()
+    .map(|(kind, contents)| CurrentCatalogFile {
+        kind,
+        contents: contents.to_vec(),
+    })
+    .collect()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialDeclaration {
+    kind: String,
+    header_name: String,
+    required: bool,
+    secret: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstanceFieldDeclarations {
+    region: ProviderFieldSchema,
+    workspace: ProviderFieldSchema,
+    account: ProviderFieldSchema,
+}
+
+fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
+    serde_json::from_value(
+        known
+            .ui_hints
+            .get(key)
+            .unwrap_or_else(|| panic!("{label} is missing"))
+            .clone(),
+    )
+    .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
+}
+
+fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
+    serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 #[async_trait]
@@ -199,10 +206,14 @@ impl ProviderDiscovery for GeminiDiscovery {
             })?;
             for model in page.models {
                 let model = model.into_discovered()?;
-                models
-                    .entry(model.provider_model_id.clone())
-                    .and_modify(|current| merge_model(current, &model))
-                    .or_insert(model);
+                if models
+                    .insert(model.provider_model_id.clone(), model)
+                    .is_some()
+                {
+                    return Err(ProviderError::Discovery(
+                        "Gemini Models API returned a duplicate model".to_owned(),
+                    ));
+                }
             }
             let Some(next_page_token) = page.next_page_token.filter(|token| !token.is_empty())
             else {
@@ -241,7 +252,7 @@ fn validate_gemini_context(context: &DiscoveryContext<'_>) -> ProviderResult<()>
     }
     if context.credential.audit().kind != CredentialKind::NamedHeader {
         return Err(ProviderError::Credential(
-            "Gemini discovery requires an x-goog-api-key credential".to_owned(),
+            "Gemini discovery requires a named-header credential".to_owned(),
         ));
     }
     gemini_connection_contract().resolve(ProviderConnectionInput {
@@ -263,12 +274,7 @@ fn models_endpoint(base_url: &str, page_token: Option<&str>) -> ProviderResult<S
         ));
     }
     let base_path = url.path().trim_end_matches('/');
-    let prefix = if base_path.is_empty() {
-        "/v1beta"
-    } else {
-        base_path
-    };
-    url.set_path(&format!("{prefix}/models"));
+    url.set_path(&format!("{base_path}/models"));
     url.set_query(None);
     url.set_fragment(None);
     {
@@ -315,8 +321,6 @@ struct ModelsResponse {
 struct ModelObject {
     name: String,
     base_model_id: Option<String>,
-    #[serde(default)]
-    supported_generation_methods: Vec<String>,
 }
 
 impl ModelObject {
@@ -326,18 +330,12 @@ impl ModelObject {
             Some(value) if !value.trim().is_empty() => Some(model_id(&value)?),
             _ => None,
         };
-        let remote_methods = self
-            .supported_generation_methods
-            .iter()
-            .filter_map(|method| operation_for_generation_method(method))
-            .map(str::to_owned)
-            .collect();
         Ok(DiscoveredModel {
             provider_model_id,
             origin_model_id,
             api_types: None,
             supported_features: None,
-            remote_methods: Some(remote_methods),
+            remote_methods: None,
             availability: ModelAvailability::Available,
             deprecated: false,
             pricing: None,
@@ -357,31 +355,11 @@ fn model_id(resource_name: &str) -> ProviderResult<String> {
     Ok(id.to_owned())
 }
 
-fn operation_for_generation_method(method: &str) -> Option<&'static str> {
-    match method {
-        "generateContent" | "streamGenerateContent" => Some(GEMINI_INTERACTIONS_OPERATION_ID),
-        "embedContent" | "batchEmbedContents" => Some(GEMINI_EMBED_CONTENT_OPERATION_ID),
-        "predictLongRunning" => Some(GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID),
-        _ => None,
-    }
-}
-
-fn merge_model(current: &mut DiscoveredModel, incoming: &DiscoveredModel) {
-    if let (Some(current), Some(incoming)) = (&mut current.remote_methods, &incoming.remote_methods)
-    {
-        current.extend(incoming.iter().cloned());
-    }
-}
-
 fn models_revision(models: &[DiscoveredModel]) -> String {
     let mut hasher = Sha256::new();
     for model in models {
         hasher.update((model.provider_model_id.len() as u64).to_be_bytes());
         hasher.update(model.provider_model_id.as_bytes());
-        for method in model.remote_methods.iter().flatten() {
-            hasher.update((method.len() as u64).to_be_bytes());
-            hasher.update(method.as_bytes());
-        }
     }
     format!("sha256:{:x}", hasher.finalize())
 }
@@ -399,19 +377,17 @@ struct GeminiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::{
-        CatalogBuildOptions, CatalogDocuments, CatalogSnapshot, KnownProviderCatalog,
-        ModelDriverCatalog,
-    };
+    use crate::catalog::{CatalogBuildOptions, CatalogSnapshot};
     use crate::protocol::{
         gemini_api_key, gemini_interactions_adapter, CodecRegistry, HttpBody, ProtocolError,
-        ResolvedCredential,
+        ResolvedCredential, GEMINI_EMBED_CONTENT_OPERATION_ID, GEMINI_INTERACTIONS_OPERATION_ID,
+        GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID,
     };
     use crate::provider::{CredentialReference, InventoryBuilder, ProviderInstanceConfig};
     use bytes::Bytes;
     use reqwest::header::HeaderMap;
     use reqwest::StatusCode;
-    use serde_json::Value;
+    use serde_json::{json, Value};
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
@@ -467,11 +443,12 @@ mod tests {
     }
 
     fn instance() -> ProviderInstanceConfig {
+        let known = gemini_known_provider();
         ProviderInstanceConfig {
             provider_instance_name: "google-gemini-main".to_owned(),
             provider_profile_id: GEMINI_PROVIDER_PROFILE_ID.to_owned(),
             protocol_adapter_id: GEMINI_ADAPTER_ID.to_owned(),
-            base_url: GEMINI_DEFAULT_BASE_URL.to_owned(),
+            base_url: known.base_url,
             credential: CredentialReference {
                 reference: "secret://gemini/main".to_owned(),
             },
@@ -506,13 +483,16 @@ mod tests {
             profile.credential.header_name.as_deref(),
             Some("x-goog-api-key")
         );
-        assert_eq!(known.base_url, GEMINI_DEFAULT_BASE_URL);
+        assert_eq!(
+            known.base_url,
+            "https://generativelanguage.googleapis.com/v1beta"
+        );
         assert_eq!(
             gemini_connection_contract()
                 .resolve(ProviderConnectionInput::default())
                 .unwrap()
                 .base_url,
-            GEMINI_DEFAULT_BASE_URL
+            "https://generativelanguage.googleapis.com/v1beta"
         );
         assert!(gemini_connection_contract()
             .resolve(ProviderConnectionInput {
@@ -523,9 +503,9 @@ mod tests {
         assert_eq!(
             known.ui_hints["instance_fields"],
             json!({
-                "region": "unsupported",
-                "workspace": "unsupported",
-                "account": "unsupported"
+                "region": {"mode": "unsupported"},
+                "workspace": {"mode": "unsupported"},
+                "account": {"mode": "unsupported"}
             })
         );
         assert_eq!(rules.metadata_drivers, Some(vec!["gemini".to_owned()]));
@@ -588,13 +568,7 @@ mod tests {
         assert_eq!(requests[0].headers[GEMINI_CREDENTIAL_HEADER], "secret");
         assert!(matches!(requests[0].body, HttpBody::Empty));
         assert!(!format!("{:?}", requests[0]).contains("secret"));
-        assert_eq!(
-            snapshot.models[0].remote_methods.as_ref().unwrap(),
-            &BTreeSet::from([
-                GEMINI_EMBED_CONTENT_OPERATION_ID.to_owned(),
-                GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID.to_owned(),
-            ])
-        );
+        assert!(snapshot.models[0].remote_methods.is_none());
     }
 
     #[tokio::test]
@@ -657,36 +631,9 @@ mod tests {
 
     #[test]
     fn rules_bind_inventory_to_the_gemini_base_adapter() {
-        let model_driver: ModelDriverCatalog = serde_json::from_value(json!({
-            "format": "buckyos.aicc.model-driver-catalog",
-            "schema_version": 1,
-            "schema_revision": 0,
-            "model_driver_id": "gemini",
-            "revision_seq": 1,
-            "models": [{
-                "id": "gemini-test",
-                "api_types": ["llm", "embedding.text", "image.txt2img", "audio.tts", "video.txt2video"]
-            }],
-            "patterns": [],
-            "defaults": {},
-            "variants": [],
-            "version_rules": []
-        }))
-        .unwrap();
-        let catalog = CatalogSnapshot::build(
+        let catalog = CatalogSnapshot::from_current_files(
             1,
-            CatalogDocuments {
-                model_drivers: vec![model_driver],
-                provider_rules: vec![gemini_provider_rules(1)],
-                known_providers: vec![KnownProviderCatalog {
-                    format: "buckyos.aicc.known-provider-catalog".to_owned(),
-                    schema_version: 1,
-                    schema_revision: 0,
-                    revision_seq: 1,
-                    catalog_id: "builtin".to_owned(),
-                    providers: vec![gemini_known_provider()],
-                }],
-            },
+            gemini_catalog_files(),
             &CatalogBuildOptions::default(),
         )
         .unwrap();
@@ -701,7 +648,7 @@ mod tests {
                 discovered_at_ms: 1,
                 health: ProviderHealthState::Healthy,
                 models: vec![DiscoveredModel {
-                    provider_model_id: "gemini-test".to_owned(),
+                    provider_model_id: "gemini-3.8-flash".to_owned(),
                     origin_model_id: None,
                     api_types: None,
                     supported_features: None,
@@ -718,13 +665,7 @@ mod tests {
 
         let operations = &inventory.models[0].operations;
         assert_eq!(operations["llm"], GEMINI_INTERACTIONS_OPERATION_ID);
-        assert_eq!(
-            operations["embedding.text"],
-            GEMINI_EMBED_CONTENT_OPERATION_ID
-        );
-        assert_eq!(
-            operations["video.txt2video"],
-            GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID
-        );
+        assert!(!operations.contains_key("embedding.text"));
+        assert!(!operations.contains_key("video.txt2video"));
     }
 }

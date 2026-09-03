@@ -1,0 +1,31 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "provider_profile_id": "gemini",
+  "metadata_drivers": ["gemini"],
+  "patterns": [
+    {
+      "match": "*",
+      "operations": {
+        "llm": "interactions.create",
+        "vision.ocr": "interactions.create",
+        "vision.caption": "interactions.create",
+        "vision.detect": "interactions.create",
+        "vision.segment": "interactions.create",
+        "audio.asr": "interactions.create",
+        "image.txt2img": "interactions.create",
+        "image.img2img": "interactions.create",
+        "audio.tts": "interactions.create",
+        "audio.music": "interactions.create",
+        "embedding.text": "models.embedContent",
+        "embedding.multimodal": "models.embedContent",
+        "video.txt2video": "models.predictLongRunning",
+        "video.img2video": "models.predictLongRunning",
+        "video.video2video": "models.predictLongRunning",
+        "video.extend": "models.predictLongRunning"
+      }
+    }
+  ]
+}

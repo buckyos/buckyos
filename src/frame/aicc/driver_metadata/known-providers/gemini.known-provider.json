@@ -1,0 +1,29 @@
+{
+  "format": "buckyos.aicc.known-provider-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "catalog_id": "gemini",
+  "providers": [
+    {
+      "provider_profile_id": "gemini",
+      "display_name": "Google Gemini",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "protocol_adapter_id": "gemini-interactions",
+      "provider_rules_id": "gemini",
+      "ui_hints": {
+        "credential": {
+          "kind": "named_header",
+          "header_name": "x-goog-api-key",
+          "required": true,
+          "secret": true
+        },
+        "instance_fields": {
+          "region": { "mode": "unsupported" },
+          "workspace": { "mode": "unsupported" },
+          "account": { "mode": "unsupported" }
+        }
+      }
+    }
+  ]
+}
