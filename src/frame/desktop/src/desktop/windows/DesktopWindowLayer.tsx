@@ -298,6 +298,8 @@ export function DesktopWindowLayer({
             <AppContentRenderer
               activityLog={activityLog}
               app={windowItem.app}
+              windowId={windowItem.id}
+              launch={windowItem.launch}
               layoutState={layoutState}
               locale={locale}
               onSaveSettings={onSaveSettings}

@@ -12,6 +12,7 @@ export const DESKTOP_BUILTIN_APP_IDS = new Set([
   'my-network',
   'app-service',
   'canvas',
+  'preview',
 ])
 
 const logicalAppAliases: Readonly<Record<string, string>> = {

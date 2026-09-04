@@ -241,7 +241,7 @@ export function DesktopWindowContainer({
               className="truncate text-xs font-medium"
               style={{ color: titleTextColor }}
             >
-              {t(app.labelKey)}
+              {uiModel.title ?? t(app.labelKey)}
             </p>
           </div>
           <div

@@ -5,6 +5,7 @@ import type {
   SystemPreferencesInput,
   ThemeMode,
   WindowAppearancePreferences,
+  WindowLaunch,
 } from '../models/ui'
 
 export interface AppContentLoaderProps {
@@ -16,6 +17,10 @@ export interface AppContentLoaderProps {
   runtimeContainer: string
   themeMode: ThemeMode
   windowAppearance: WindowAppearancePreferences
+  /** Hosting window id (absent for standalone routes). */
+  windowId?: string
+  /** Launch request the window was opened / re-targeted with. */
+  launch?: WindowLaunch
 }
 
 export type AppContentLoader = ComponentType<AppContentLoaderProps>

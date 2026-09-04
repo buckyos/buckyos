@@ -9,6 +9,7 @@ import { HomeStationAppPanel } from './homestation/HomeStationAppPanel'
 import { MarketAppPanel } from './market/MarketAppPanel'
 import { MessageHubAppPanel } from './messagehub/MessageHubAppPanel'
 import { MyNetworkAppPanel } from './my-network/MyNetworkAppPanel'
+import { PreviewAppPanel } from './preview/PreviewAppPanel'
 import { SettingsAppPanel } from './settings/SettingsAppPanel'
 import { StudioAppPanel } from './studio/StudioAppPanel'
 import { SystestAppPanel } from './systest/SystestAppPanel'
@@ -37,6 +38,7 @@ const appLoaders = {
   codeassistant: CodeAssistantAppPanel,
   messagehub: MessageHubAppPanel,
   'my-network': MyNetworkAppPanel,
+  preview: PreviewAppPanel,
   homestation: HomeStationAppPanel,
   systest: SystestAppPanel,
   'task-center': TaskCenterAppPanel,

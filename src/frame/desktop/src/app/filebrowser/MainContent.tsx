@@ -59,6 +59,8 @@ interface MainContentProps {
   onSelect: (item: FileItem, modifiers?: SelectModifiers) => void
   /** Open a container (folder path or collection/view url). */
   onOpenFolder: (url: string) => void
+  /** Open a file (double-click / Enter) — the host hands it to the Preview App. */
+  onOpenFile?: (item: FileItem) => void
   /** Right-click on an item (desktop). */
   onItemContextMenu?: (item: FileItem, position: MenuPosition) => void
   /** Right-click on blank space (desktop). */
@@ -168,6 +170,7 @@ export function MainContent({
   selectedKeys,
   onSelect,
   onOpenFolder,
+  onOpenFile,
   onItemContextMenu,
   onViewContextMenu,
   onClearSelection,
@@ -204,6 +207,7 @@ export function MainContent({
 
   const openItem = (item: FileItem) => {
     if (item.entry.kind === 'folder') onOpenFolder(item.entry.path)
+    else onOpenFile?.(item)
   }
 
   // ─── Location banner (views & collections — replaces the old topic banner) ───

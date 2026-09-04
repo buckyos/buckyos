@@ -17,7 +17,10 @@ import {
   Upload as UploadIcon,
   X,
 } from 'lucide-react'
+import { normalizeCyfsPath } from '../../components/preview/session'
+import type { ContentRef, PreviewSessionContext } from '../../components/preview/types'
 import { useI18n } from '../../i18n/provider'
+import { openPreview } from '../preview/launch'
 import {
   useMobileBackHandler,
   useMobileTitleOverride,
@@ -521,6 +524,67 @@ export function FileBrowserView() {
     setMobileSidebarOpen(false)
   }
 
+  // ─── Preview App hand-off (PRD §14.1 / §14.4): Source + Session Context ───
+  // Folder listings become a Container Context; views, collections and search
+  // results hand over an explicit list of the loaded items instead.
+
+  const previewSourceOf = (item: FileItem): ContentRef => ({
+    kind: 'cyfs-path',
+    path: normalizeCyfsPath(item.entry.path),
+  })
+
+  const previewSessionOf = (pane: BrowserPane, item: FileItem): PreviewSessionContext => {
+    const dfs = dfsPathOf(pane.currentUrl)
+    if (dfs !== null && !pane.searchQuery) {
+      return {
+        kind: 'container',
+        container: { kind: 'cyfs-path', path: normalizeCyfsPath(dfs) },
+        current: previewSourceOf(item),
+      }
+    }
+    const loaded = pane.list
+      .loadedKeys()
+      .map((key) => pane.list.loadedItemByKey(key))
+      .filter((entry): entry is FileItem => !!entry && entry.entry.kind !== 'folder')
+    const currentIndex = Math.max(0, loaded.findIndex((entry) => entry.key === item.key))
+    return {
+      kind: 'list',
+      sessionId: `files:${pane.currentUrl}`,
+      items: loaded.map((entry) => ({ id: entry.key, source: previewSourceOf(entry), title: entry.entry.name })),
+      currentIndex,
+    }
+  }
+
+  const handleOpenFile = (pane: BrowserPane, item: FileItem, opts?: { newWindow?: boolean }) => {
+    openPreview({
+      source: previewSourceOf(item),
+      session: previewSessionOf(pane, item),
+      origin: { app: 'files', hostContext: pane.currentUrl },
+      newWindow: opts?.newWindow,
+    })
+  }
+
+  /** Multi-selection → stable explicit list; only the chosen files take part (§14.4). */
+  const handlePreviewItems = (pane: BrowserPane, chosen: FileItem[]) => {
+    const files = chosen.filter((entry) => entry.entry.kind !== 'folder')
+    if (!files.length) return
+    if (files.length === 1) {
+      handleOpenFile(pane, files[0])
+      return
+    }
+    openPreview({
+      source: previewSourceOf(files[0]),
+      session: {
+        kind: 'list',
+        sessionId: `files:selection:${newTabId()}`,
+        items: files.map((entry) => ({ id: entry.key, source: previewSourceOf(entry), title: entry.entry.name })),
+        currentIndex: 0,
+        navigation: 'wrap',
+      },
+      origin: { app: 'files', hostContext: pane.currentUrl },
+    })
+  }
+
   // ─── Mobile interactions: tap opens, long-press enters selection mode ───
 
   const handleMobileItemTap = (item: FileItem) => {
@@ -956,11 +1020,19 @@ export function FileBrowserView() {
           // Group entries carry collection:// paths; folder refs carry their
           // original dfs path — navigation normalizes both.
           pane.navigate(first.entry.path)
+        } else if (isMobile) {
+          pane.applySelection([first.key], new Map([[first.key, first]]))
+          setMobilePreviewOpen(true)
         } else {
           pane.applySelection([first.key], new Map([[first.key, first]]))
-          if (isMobile) setMobilePreviewOpen(true)
-          else setPreviewCollapsed(false)
+          handleOpenFile(pane, first)
         }
+        break
+      case 'preview-new-window':
+        if (first && first.entry.kind !== 'folder') handleOpenFile(pane, first, { newWindow: true })
+        break
+      case 'preview-selection':
+        handlePreviewItems(pane, items)
         break
       case 'open-new-tab':
         if (first?.entry.kind === 'folder') {
@@ -1554,6 +1626,7 @@ export function FileBrowserView() {
               selectedKeys={left.selectedKeys}
               onSelect={(item, modifiers) => left.selectItem(item, modifiers)}
               onOpenFolder={handleOpenFolder}
+              onOpenFile={(item) => handleOpenFile(left, item)}
               onItemContextMenu={(item, position) => openMenu('left', position, item)}
               onViewContextMenu={(position) => openMenu('left', position)}
               onClearSelection={left.clearSelection}
@@ -1621,6 +1694,7 @@ export function FileBrowserView() {
                 selectedKeys={right.selectedKeys}
                 onSelect={(item, modifiers) => right.selectItem(item, modifiers)}
                 onOpenFolder={(url) => right.navigate(url)}
+                onOpenFile={(item) => handleOpenFile(right, item)}
                 onItemContextMenu={(item, position) => openMenu('right', position, item)}
                 onViewContextMenu={(position) => openMenu('right', position)}
                 onClearSelection={right.clearSelection}

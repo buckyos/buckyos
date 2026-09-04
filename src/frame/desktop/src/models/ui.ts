@@ -217,12 +217,27 @@ export const noteInputSchema = z.object({
 
 export type NoteInput = z.infer<typeof noteInputSchema>
 
+/**
+ * Launch request carried by a window (multi-instance apps such as Preview).
+ * `requestId` changes on every re-targeting of the same window so the app
+ * panel can react to a new request without comparing payloads.
+ */
+export interface WindowLaunch {
+  requestId: string
+  payload: unknown
+}
+
 export interface WindowRecord {
   id: string
   appId: string
   state: WindowState
   minimizedOrder: number | null
   titleKey: string
+  /** Literal title (e.g. the open file name); falls back to `titleKey`. */
+  title?: string
+  /** Distinguishes multiple windows of one app; undefined = the app's singleton. */
+  instanceKey?: string
+  launch?: WindowLaunch
   x: number
   y: number
   width: number

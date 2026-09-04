@@ -875,6 +875,8 @@ export function DesktopRoute() {
                 <MobileWindowSheet
                   activityLog={activityLog}
                   app={topMobileWindow.app}
+                  windowId={topMobileWindow.id}
+                  launch={topMobileWindow.launch}
                   deadZone={resolvedDeadZone}
                   safeAreaBottom={safeArea.bottom}
                   layoutState={resolvedLayout}

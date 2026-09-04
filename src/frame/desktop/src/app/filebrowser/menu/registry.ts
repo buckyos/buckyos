@@ -79,8 +79,14 @@ const hasItems = (ctx: FileMenuContext) => isItem(ctx) || isSelection(ctx)
 const openProvider: FileMenuProvider = {
   id: 'default.open',
   order: 100,
-  when: isItem,
+  when: hasItems,
   build: (ctx) => {
+    if (isSelection(ctx)) {
+      // Several files → one stable Preview session over exactly those files.
+      if (ctx.entries.some((entry) => entry.kind === 'folder')) return []
+      const count = ctx.entries.length
+      return [[action('preview-selection', label('previewN', 'Preview {{count}} items', { count }), { icon: 'preview' })]]
+    }
     const entry = ctx.entries[0]
     if (!entry) return []
     if (entry.kind === 'folder') {
@@ -103,7 +109,14 @@ const openProvider: FileMenuProvider = {
       }
       return [section]
     }
-    return [[action('open', label('preview', 'Preview'), { icon: 'preview' })]]
+    return [
+      [
+        action('open', label('preview', 'Preview'), { icon: 'preview' }),
+        action('preview-new-window', label('previewNewWindow', 'Open in new Preview window'), {
+          icon: 'open-new-tab',
+        }),
+      ],
+    ]
   },
 }
 

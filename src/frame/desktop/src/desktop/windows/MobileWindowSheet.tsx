@@ -4,6 +4,7 @@ import type {
   SystemPreferencesInput,
   ThemeMode,
   WindowAppearancePreferences,
+  WindowLaunch,
 } from '../../models/ui'
 import { AppContentRenderer } from '../../app/registry'
 import type { DesktopAppItem } from '../../app/types'
@@ -24,9 +25,13 @@ export function MobileWindowSheet({
   themeMode,
   topInset,
   windowAppearance,
+  windowId,
+  launch,
 }: {
   activityLog: string[]
   app?: DesktopAppItem
+  windowId?: string
+  launch?: WindowLaunch
   deadZone: LayoutState['deadZone']
   layoutState: LayoutState
   locale: string
@@ -75,6 +80,8 @@ export function MobileWindowSheet({
             <AppContentRenderer
               activityLog={activityLog}
               app={app}
+              windowId={windowId}
+              launch={launch}
               layoutState={layoutState}
               locale={locale}
               onSaveSettings={onSaveSettings}

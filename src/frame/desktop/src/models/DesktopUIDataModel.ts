@@ -70,6 +70,7 @@ import type {
   WindowAppearancePreferences,
   WindowGeometry,
   WindowLayoutSettings,
+  WindowLaunch,
   WindowRecord,
 } from './ui'
 import {
@@ -323,6 +324,8 @@ export class DesktopUIStore {
    */
   private resizeReflowTimer: ReturnType<typeof setTimeout> | null = null
   private static readonly RESIZE_REFLOW_DELAY = 200
+  /** Last workspace bounds the view reported — lets non-React callers open windows. */
+  private lastViewportBounds: ReturnType<typeof getDesktopWindowWorkspaceBounds> | null = null
 
   constructor() {
     const runtimeContainer =
@@ -689,6 +692,7 @@ export class DesktopUIStore {
   ) {
     const app = findDesktopAppById(this.snapshot.apps, appId)
     if (!app) return
+    this.lastViewportBounds = opts.viewportBounds
 
     if (opts.isMobile && app.manifest.mobileRedirectPath) {
       opts.navigate?.(app.manifest.mobileRedirectPath)
@@ -733,6 +737,104 @@ export class DesktopUIStore {
       this.update({ runtime: { windows: [...windows, record] } })
     }
     opts.logActivity?.(`Opened ${appId}`)
+  }
+
+  private fallbackViewportBounds() {
+    return getDesktopWindowWorkspaceBounds({
+      safeArea: { top: 0, bottom: 0, left: 0, right: 0 },
+      topInset: shellStatusBarHeight('desktop'),
+      viewportSize: { width: window.innerWidth, height: window.innerHeight },
+    })
+  }
+
+  /**
+   * Opens — or re-targets — a window that carries a launch request.
+   *
+   * Unlike `openApp` (one window per app), callers can ask for a fresh
+   * instance (`newInstance`) or address an existing window by id. Multi-window
+   * apps such as Preview schedule their own windows on top of this primitive
+   * and only exchange launch metadata with the shell, never content.
+   * Returns the window id, or null when the app is unknown.
+   */
+  openAppWindow(
+    appId: string,
+    opts: {
+      viewportBounds?: ReturnType<typeof getDesktopWindowWorkspaceBounds>
+      launch?: WindowLaunch
+      title?: string
+      newInstance?: boolean
+      windowId?: string
+      instanceKey?: string
+    } = {},
+  ): string | null {
+    const app = findDesktopAppById(this.snapshot.apps, appId)
+    if (!app) return null
+    const { windows } = this.snapshot.runtime
+    const target = opts.windowId
+      ? windows.find((w) => w.id === opts.windowId)
+      : opts.newInstance
+        ? undefined
+        : windows.find((w) => w.appId === appId && (opts.instanceKey ? w.instanceKey === opts.instanceKey : true))
+
+    if (target) {
+      const top = windows.reduce((max, w) => Math.max(max, w.zIndex), windows.length + 10) + 1
+      const restoredState: WindowRecord['state'] =
+        target.state === 'minimized'
+          ? app.manifest.defaultMode === 'windowed'
+            ? 'windowed'
+            : 'maximized'
+          : target.state
+      this.update({
+        runtime: {
+          windows: windows.map((w, i) =>
+            w.id === target.id
+              ? {
+                  ...w,
+                  state: restoredState,
+                  minimizedOrder: null,
+                  zIndex: top,
+                  launch: opts.launch ?? w.launch,
+                  title: opts.title ?? w.title,
+                }
+              : { ...w, zIndex: 10 + i },
+          ),
+        },
+      })
+      return target.id
+    }
+
+    const bounds = opts.viewportBounds ?? this.lastViewportBounds ?? this.fallbackViewportBounds()
+    const preferredGeometry =
+      this.snapshot.scenario === 'normal' ? this.windowGeometryByApp[app.id] : undefined
+    const geometry = this.normalizeWindowGeometry(app, preferredGeometry, windows.length, bounds)
+    const siblings = windows.filter((w) => w.appId === appId).length
+    // Cascade sibling instances so a second window never lands exactly on the first.
+    const cascade = siblings * 28
+    const topZIndex = windows.reduce((top, w) => Math.max(top, w.zIndex), 10 + windows.length)
+    const record: WindowRecord = {
+      ...createWindowRecord(app, windows.length, geometry),
+      id: `${app.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      // A new window always lands on top of the currently focused one.
+      zIndex: topZIndex + 1,
+      x: clamp(geometry.x + cascade, bounds.minX, Math.max(bounds.minX, bounds.maxRight - geometry.width)),
+      y: clamp(geometry.y + cascade, bounds.minY, Math.max(bounds.minY, bounds.maxBottom - geometry.height)),
+      instanceKey: opts.instanceKey,
+      launch: opts.launch,
+      title: opts.title,
+    }
+    this.update({ runtime: { windows: [...windows, record] } })
+    return record.id
+  }
+
+  /** Update the shell-visible metadata of a window (title, launch request). */
+  updateWindow(windowId: string, patch: Partial<Pick<WindowRecord, 'title' | 'launch' | 'instanceKey'>>) {
+    const { windows } = this.snapshot.runtime
+    if (!windows.some((w) => w.id === windowId)) return
+    this.update({
+      runtime: {
+        windows: windows.map((w) => (w.id === windowId ? { ...w, ...patch } : w)),
+      },
+    })
   }
 
   closeWindow(windowId: string) {
@@ -862,6 +964,7 @@ export class DesktopUIStore {
       topInset: resolvedSafeArea.top + shellStatusBarHeight('desktop'),
       viewportSize,
     })
+    this.lastViewportBounds = bounds
 
     let changed = false
     const nextWindows = this.snapshot.runtime.windows.map((w, i) => {
