@@ -103,6 +103,22 @@ const ROUTING_CASES: AcceptanceCase[] = [
   expected_error_class: error as string | null,
 }));
 
+const CUSTOM_PROVIDER_CASES: AcceptanceCase[] = [
+  ["openai", "llm", "chat.completions.create"],
+  ["claude", "llm", "chat.completions.create"],
+  ["gemini", "llm", "chat.completions.create"],
+  ["fal", "image.upscale", "image.upscale"],
+].map(([protocol, apiType, method]) => makeCase({
+  case_id: `t1.custom.${protocol}`,
+  layer: "T1",
+  priority: "P0",
+  tags: ["custom_provider", "provider_protocol", String(protocol)],
+  method: String(method),
+  api_type: String(apiType),
+  mock_scenario: "success",
+  expected_error_class: null,
+}));
+
 const PROFILES = [
   "cost_first",
   "latency_first",
@@ -301,6 +317,7 @@ const EMBEDDING_BOUNDARY_CASES: AcceptanceCase[] = [
 export function buildStaticManifest(): AcceptanceCase[] {
   return [
     ...ROUTING_CASES,
+    ...CUSTOM_PROVIDER_CASES,
     ...PROFILE_CASES,
     ...CANONICAL_ROUTING_CASES,
     ...PROVIDER_BOUNDARY_TRIGGER_CASES,

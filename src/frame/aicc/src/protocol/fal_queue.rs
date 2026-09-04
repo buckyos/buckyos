@@ -6,7 +6,7 @@ use super::{
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use buckyos_api::{AiArtifact, AiccCall, ApiType, ResourceRef};
+use buckyos_api::{AiArtifact, AiUsage, AiccCall, ApiType, ResourceRef};
 use reqwest::{Method, StatusCode, Url};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -243,7 +243,13 @@ fn canonical_body(
             replace_resource(&mut body, "audio", "audio_url", &request.audio, context)?;
         }
         AiccCall::AudioEnhance(request) => {
+            if request.task != "denoise" {
+                return Err(ProtocolError::invalid_request(
+                    "fal DeepFilterNet3 supports only the `denoise` enhancement task",
+                ));
+            }
             replace_resource(&mut body, "audio", "audio_url", &request.audio, context)?;
+            body.remove("task");
         }
         AiccCall::VideoImageToVideo(request) => {
             replace_resource(&mut body, "image", "image_url", &request.image, context)?;
@@ -256,6 +262,17 @@ fn canonical_body(
         }
         AiccCall::VideoUpscale(request) => {
             replace_resource(&mut body, "video", "video_url", &request.video, context)?;
+            let scale = match request.target_resolution.as_str() {
+                "1080p" | "2x" => 2,
+                "2160p" | "4k" | "4x" => 4,
+                _ => {
+                    return Err(ProtocolError::invalid_request(
+                        "fal Video Upscaler supports target resolutions 1080p/2x and 2160p/4k/4x",
+                    ));
+                }
+            };
+            body.remove("target_resolution");
+            body.insert("scale".to_string(), json!(scale));
         }
         _ => {}
     }
@@ -353,7 +370,11 @@ fn decode_status(response: HttpResponse) -> ProtocolResultValue<NativeTaskOutput
             ));
         }
     };
-    Ok(NativeTaskOutput::Status { state, retry_after })
+    Ok(NativeTaskOutput::Status {
+        state,
+        retry_after,
+        result_ref: None,
+    })
 }
 
 fn decode_result(
@@ -380,7 +401,7 @@ fn decode_result(
                 "text": text,
                 "segments": value.get("chunks").or_else(|| value.get("segments")).cloned().unwrap_or_else(|| json!([]))
             }),
-            usage: None,
+            usage: Some(AiUsage::request_units(1)),
             artifacts: Vec::new(),
         }));
     }
@@ -426,7 +447,7 @@ fn decode_result(
         .collect();
     Ok(NativeTaskOutput::Result(ProtocolOutput {
         value: normalized,
-        usage: None,
+        usage: Some(AiUsage::request_units(1)),
         artifacts,
     }))
 }
@@ -464,9 +485,11 @@ fn media_candidates(
             .or_else(|| value.get("image").map(|item| ("images", vec![item])))
             .ok_or_else(|| ProtocolError::invalid_response("fal result has no image output")),
         ApiType::ImageUpscale | ApiType::ImageBackgroundRemove => single(value, "image", "image"),
-        ApiType::AudioTextToSpeech | ApiType::AudioMusic | ApiType::AudioEnhance => {
-            single(value, "audio", "audio")
-        }
+        ApiType::AudioTextToSpeech | ApiType::AudioMusic => single(value, "audio", "audio"),
+        ApiType::AudioEnhance => value
+            .get("audio_file")
+            .map(|item| ("audio", vec![item]))
+            .ok_or_else(|| ProtocolError::invalid_response("fal result has no audio output")),
         ApiType::VideoTextToVideo
         | ApiType::VideoImageToVideo
         | ApiType::VideoToVideo
@@ -617,15 +640,31 @@ fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
     let value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
     let kind = match response.status {
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProtocolErrorKind::Authentication,
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
+            ProtocolErrorKind::ProviderRejected
+        }
         StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT => ProtocolErrorKind::Timeout,
         _ => ProtocolErrorKind::Transport,
     };
+    let provider_code = value
+        .get("error_type")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            response
+                .headers
+                .get("x-fal-error-type")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string)
+        })
+        .or_else(|| Some(response.status.as_u16().to_string()));
     Err(fal_payload_error(
         &value,
         kind,
         Some(response.request_id.clone()),
         response.retry_after,
-    ))
+    )
+    .with_provider_code(provider_code))
 }
 
 fn fal_payload_error(
@@ -641,6 +680,12 @@ fn fal_payload_error(
         .or_else(|| value.get("message").and_then(Value::as_str))
         .unwrap_or("fal Queue request failed");
     ProtocolError::new(kind, message)
+        .with_provider_code(
+            value
+                .get("error_type")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        )
         .with_request_id(request_id)
         .with_retry_after(retry_after)
 }

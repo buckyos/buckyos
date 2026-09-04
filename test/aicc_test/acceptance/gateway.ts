@@ -113,6 +113,7 @@ export async function callChatCompletions(
     temperature: input?.temperature ?? options?.temperature,
     max_output_tokens: input?.max_output_tokens ?? options?.max_output_tokens,
     idempotency_key: request.idempotency_key,
+    session_overlay: request.session_overlay,
   }) as Record<string, unknown>;
   return normalizeChatResponse(raw);
 }
@@ -193,7 +194,76 @@ export function callInference(
   if (method === "images.generate") {
     return callImagesGenerate(client, request);
   }
-  return client.call(method, request) as Promise<Record<string, unknown>>;
+  const model = request.model as Record<string, unknown> | undefined;
+  const payload = request.payload as Record<string, unknown> | undefined;
+  const input = payload?.input_json as Record<string, unknown> | undefined ?? {};
+  const resources = Array.isArray(payload?.resources) ? payload.resources : [];
+  const common = {
+    exact_model: model?.alias,
+    execution_mode: input.execution_mode ?? "immediate",
+    idempotency_key: request.idempotency_key,
+  };
+  let params: Record<string, unknown>;
+  switch (method) {
+    case "embedding.text":
+      params = {
+        ...common,
+        ...input,
+        items: Array.isArray(input.items)
+          ? input.items.map((item) => ({ type: "text", ...(item as Record<string, unknown>) }))
+          : [],
+      };
+      break;
+    case "embedding.multimodal": {
+      const items = structuredClone(Array.isArray(input.items) ? input.items : []) as Array<Record<string, unknown>>;
+      if (items[0] && resources[0]) items[0].image = resources[0];
+      params = { ...common, ...input, items };
+      break;
+    }
+    case "image.img2img": params = { ...common, ...input, images: resources }; break;
+    case "image.inpaint": params = { ...common, ...input, image: resources[0], mask: resources[1] }; break;
+    case "image.upscale":
+    case "image.bg_remove":
+    case "video.img2video": params = { ...common, ...input, image: resources[0] }; break;
+    case "vision.ocr": {
+      const { prompt: _prompt, ...rest } = input;
+      params = { ...common, ...rest, document: resources[0] };
+      break;
+    }
+    case "vision.caption":
+    case "vision.detect": {
+      const { prompt: _prompt, ...rest } = input;
+      params = { ...common, ...rest, image: resources[0] };
+      break;
+    }
+    case "vision.segment": params = {
+      ...common,
+      ...input,
+      image: resources[0],
+      prompt: typeof input.prompt === "string" ? { type: "text", text: input.prompt } : input.prompt,
+    }; break;
+    case "audio.tts": params = {
+      ...common,
+      ...input,
+      voice: input.voice ?? { voice_id: "alloy" },
+    }; break;
+    case "audio.asr": params = { ...common, ...input, audio: resources[0] }; break;
+    case "audio.enhance": {
+      const { operation, ...rest } = input;
+      params = { ...common, ...rest, audio: resources[0], task: operation ?? input.task };
+      break;
+    }
+    case "video.video2video":
+    case "video.extend": params = { ...common, ...input, video: resources[0] }; break;
+    case "video.upscale": params = {
+      ...common,
+      ...input,
+      video: resources[0],
+      target_resolution: input.target_resolution ?? "1080p",
+    }; break;
+    default: params = { ...common, ...input };
+  }
+  return client.call(method, params) as Promise<Record<string, unknown>>;
 }
 
 export async function loginGateway(
@@ -255,4 +325,35 @@ export async function loginGateway(
       sessionToken,
     ) as RpcClient,
   };
+}
+
+export async function loginSudoSystemConfig(
+  credentials: GatewayCredentials,
+): Promise<RpcClient> {
+  if (!credentials.username || !credentials.password) {
+    throw new Error("username and password are required for sudo system-config access");
+  }
+  const { buckyos } = await import("buckyos");
+  const gatewayUrl = credentials.gatewayUrl.replace(/\/+$/, "");
+  const nonce = Date.now();
+  const verifyHub = new buckyos.kRPCClient(
+    `${gatewayUrl}/kapi/verify-hub`,
+    null,
+    nonce,
+  ) as RpcClient;
+  const result = await verifyHub.call("sudo_by_password", {
+    username: credentials.username,
+    password: buckyos.hashPassword(credentials.username, credentials.password, nonce),
+    target: { kind: "system", service_id: "control-panel" },
+    aud: "system-config",
+    login_nonce: nonce,
+  }) as { session_token?: unknown };
+  const sessionToken = typeof result.session_token === "string"
+    ? result.session_token.trim()
+    : "";
+  if (!sessionToken) throw new Error("sudo_by_password returned no session_token");
+  return new buckyos.kRPCClient(
+    `${gatewayUrl}/kapi/system_config`,
+    sessionToken,
+  ) as RpcClient;
 }

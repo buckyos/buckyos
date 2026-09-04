@@ -786,7 +786,7 @@ impl OperationCodec for GeminiEmbeddingCodec {
                 })
             })
             .collect::<ProtocolResultValue<Vec<_>>>()?;
-        let usage = decode_embedding_usage(&value)?;
+        let usage = decode_embedding_usage(&value)?.or_else(|| Some(AiUsage::request_units(1)));
         Ok(ProtocolExecution::Immediate(ProtocolOutput {
             value: json!({"data":[{"index":0,"id":null,"embedding":values,"embedding_space_id":"gemini"}],"data_resource":null}),
             usage,
@@ -1141,12 +1141,25 @@ fn parse_json_text(text: &str) -> Value {
 }
 
 fn decode_resource(value: &Value) -> ProtocolResultValue<ResourceRef> {
+    decode_resource_with_default(value, "application/octet-stream")
+}
+
+fn decode_resource_with_default(
+    value: &Value,
+    default_mime: &str,
+) -> ProtocolResultValue<ResourceRef> {
     let mime = value
         .get("mime_type")
+        .or_else(|| value.get("mimeType"))
         .and_then(Value::as_str)
-        .unwrap_or("application/octet-stream")
+        .unwrap_or(default_mime)
         .to_string();
-    if let Some(data) = value.get("data").and_then(Value::as_str) {
+    if let Some(data) = value
+        .get("data")
+        .or_else(|| value.get("videoBytes"))
+        .or_else(|| value.get("bytesBase64Encoded"))
+        .and_then(Value::as_str)
+    {
         STANDARD.decode(data).map_err(|_| {
             ProtocolError::invalid_response("Gemini media output contains invalid base64")
         })?;
@@ -1602,7 +1615,11 @@ fn decode_video_status(response: HttpResponse) -> ProtocolResultValue<NativeTask
     } else {
         NativeTaskState::Succeeded
     };
-    Ok(NativeTaskOutput::Status { state, retry_after })
+    Ok(NativeTaskOutput::Status {
+        state,
+        retry_after,
+        result_ref: None,
+    })
 }
 
 fn decode_video_result(response: HttpResponse) -> ProtocolResultValue<NativeTaskOutput> {
@@ -1619,19 +1636,21 @@ fn decode_video_result(response: HttpResponse) -> ProtocolResultValue<NativeTask
         find_media_value(value.get("response").unwrap_or(&value), "video").ok_or_else(|| {
             ProtocolError::invalid_response("Gemini video operation has no video result")
         })?;
-    let resource = decode_resource(media)?;
+    let resource = decode_resource_with_default(media, "video/mp4")?;
     let mime = media
         .get("mime_type")
         .or_else(|| media.get("mimeType"))
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .unwrap_or("video/mp4")
+        .to_string();
     Ok(NativeTaskOutput::Result(ProtocolOutput {
         value: json!({"video":resource}),
-        usage: decode_usage(value.pointer("/response/usage"))?,
+        usage: decode_usage(value.pointer("/response/usage"))?
+            .or_else(|| Some(AiUsage::request_units(1))),
         artifacts: vec![AiArtifact {
             name: "video".to_string(),
             resource,
-            mime,
+            mime: Some(mime),
             metadata: None,
         }],
     }))
@@ -1639,6 +1658,17 @@ fn decode_video_result(response: HttpResponse) -> ProtocolResultValue<NativeTask
 
 fn find_media_value<'a>(value: &'a Value, kind: &str) -> Option<&'a Value> {
     if value.get("type").and_then(Value::as_str) == Some(kind) {
+        return Some(value);
+    }
+    if kind == "video"
+        && value.is_object()
+        && (value.get("uri").and_then(Value::as_str).is_some()
+            || value.get("url").and_then(Value::as_str).is_some()
+            || value
+                .get("bytesBase64Encoded")
+                .and_then(Value::as_str)
+                .is_some())
+    {
         return Some(value);
     }
     match value {
@@ -1738,6 +1768,7 @@ fn ensure_stream_success(response: &StreamingHttpResponse) -> ProtocolResultValu
         http_error_kind(response.status),
         format!("Gemini HTTP {}", response.status.as_u16()),
     )
+    .with_provider_code(Some(response.status.as_u16().to_string()))
     .with_request_id(Some(response.request_id.clone()))
     .with_retry_after(response.retry_after))
 }
@@ -1760,6 +1791,7 @@ fn gemini_http_error(
         .and_then(Value::as_str)
         .unwrap_or("Gemini request failed");
     ProtocolError::new(http_error_kind(status), format!("Gemini {code}: {message}"))
+        .with_provider_code(Some(status.as_u16().to_string()))
         .with_request_id(Some(request_id.to_string()))
         .with_retry_after(retry_after)
 }
@@ -2329,6 +2361,12 @@ mod tests {
             .ends_with("/v1beta/operations/video-1"));
         let NativeTaskOutput::Result(output) = codec.decode_native(NativeTaskOperation::Result, response(StatusCode::OK, "application/json", json!({"done":true,"response":{"outputs":[{"type":"video","mime_type":"video/mp4","data":STANDARD.encode(b"mp4")}]}}))).await.unwrap() else { panic!("expected result") };
         assert_eq!(output.artifacts.len(), 1);
+        let NativeTaskOutput::Result(output) = codec.decode_native(NativeTaskOperation::Result, response(StatusCode::OK, "application/json", json!({"done":true,"response":{"generateVideoResponse":{"generatedSamples":[{"video":{"uri":"https://example.com/video"}}]}}}))).await.unwrap() else { panic!("expected result") };
+        assert_eq!(output.artifacts[0].mime.as_deref(), Some("video/mp4"));
+        assert!(matches!(
+            &output.artifacts[0].resource,
+            ResourceRef::Url { mime_hint: Some(mime), .. } if mime == "video/mp4"
+        ));
     }
 
     #[test]

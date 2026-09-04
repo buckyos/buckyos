@@ -10,6 +10,7 @@ pub(crate) enum ProtocolErrorKind {
     Timeout,
     ResponseTooLarge,
     InvalidResponse,
+    ProviderRejected,
     DuplicateAdapter,
     UnknownAdapter,
     UnsupportedOperation,
@@ -22,6 +23,7 @@ pub(crate) enum ProtocolErrorKind {
 pub(crate) struct ProtocolError {
     pub kind: ProtocolErrorKind,
     pub message: String,
+    pub provider_code: Option<String>,
     pub request_id: Option<String>,
     pub retry_after: Option<Duration>,
 }
@@ -31,6 +33,7 @@ impl ProtocolError {
         Self {
             kind,
             message: message.into(),
+            provider_code: None,
             request_id: None,
             retry_after: None,
         }
@@ -38,6 +41,11 @@ impl ProtocolError {
 
     pub(crate) fn with_request_id(mut self, request_id: Option<String>) -> Self {
         self.request_id = request_id;
+        self
+    }
+
+    pub(crate) fn with_provider_code(mut self, provider_code: Option<String>) -> Self {
+        self.provider_code = provider_code;
         self
     }
 
@@ -69,6 +77,12 @@ impl std::error::Error for ProtocolError {}
 
 impl From<ProtocolError> for AiccError {
     fn from(error: ProtocolError) -> Self {
+        let retriable = matches!(
+            error.kind,
+            ProtocolErrorKind::Transport
+                | ProtocolErrorKind::Timeout
+                | ProtocolErrorKind::DeadlineExceeded
+        );
         let code = match error.kind {
             ProtocolErrorKind::InvalidConfiguration
             | ProtocolErrorKind::DuplicateAdapter
@@ -76,7 +90,9 @@ impl From<ProtocolError> for AiccError {
             ProtocolErrorKind::InvalidRequest | ProtocolErrorKind::UnsupportedOperation => {
                 AiccErrorCode::InvalidRequest
             }
-            ProtocolErrorKind::Authentication => AiccErrorCode::ProviderError,
+            ProtocolErrorKind::Authentication | ProtocolErrorKind::ProviderRejected => {
+                AiccErrorCode::ProviderError
+            }
             ProtocolErrorKind::WebhookRejected => AiccErrorCode::PolicyDenied,
             ProtocolErrorKind::Timeout | ProtocolErrorKind::DeadlineExceeded => {
                 AiccErrorCode::Timeout
@@ -86,7 +102,16 @@ impl From<ProtocolError> for AiccError {
             | ProtocolErrorKind::ResponseTooLarge
             | ProtocolErrorKind::InvalidResponse => AiccErrorCode::ProviderError,
         };
-        AiccError::new(code, error.message)
+        let mut mapped = AiccError::new(code, error.message);
+        mapped.provider_code = error.provider_code;
+        mapped.retriable = retriable;
+        mapped.details = (error.request_id.is_some() || error.retry_after.is_some()).then(|| {
+            serde_json::json!({
+                "request_id": error.request_id,
+                "retry_after_ms": error.retry_after.map(|duration| duration.as_millis() as u64),
+            })
+        });
+        mapped
     }
 }
 

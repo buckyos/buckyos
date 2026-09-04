@@ -392,7 +392,7 @@ fn parse_sn_models(
             Ok(DiscoveredModel {
                 provider_model_id: provider_model_id.clone(),
                 origin_model_id: Some(provider_model_id),
-                api_types: Some(vec![buckyos_api::ApiType::Llm]),
+                api_types: None,
                 supported_features: None,
                 remote_methods: Some(BTreeSet::from([OPENAI_RESPONSES_OPERATION_ID.to_owned()])),
                 availability: ModelAvailability::Available,
@@ -758,7 +758,7 @@ mod tests {
         ModelDriverCatalog,
     };
     use crate::protocol::{HttpBody, ProtocolError, OPENAI_RESPONSES_OPERATION_ID};
-    use crate::provider::{InventoryBuilder, StaticCredentialResolver};
+    use crate::provider::{openai_catalog_files, InventoryBuilder, StaticCredentialResolver};
     use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
     use bytes::Bytes;
     use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
@@ -882,9 +882,12 @@ mod tests {
     }
 
     #[test]
-    fn wp15_loads_sn_provider_catalogs_without_an_sn_model_driver() {
+    fn wp15_loads_sn_provider_catalogs_with_the_referenced_openai_model_driver() {
         let builtin = sn_catalog_files()
             .into_iter()
+            .chain(openai_catalog_files().into_iter().filter(|file| {
+                file.kind == CatalogKind::ModelDriver
+            }))
             .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
@@ -985,10 +988,7 @@ mod tests {
         assert_eq!(snapshot.revision.as_deref(), Some("sn-models-v2"));
         assert_eq!(snapshot.models[0].provider_model_id, "gpt-4.1");
         assert_eq!(snapshot.models[1].provider_model_id, "gpt-5");
-        assert_eq!(
-            snapshot.models[0].api_types,
-            Some(vec![buckyos_api::ApiType::Llm])
-        );
+        assert_eq!(snapshot.models[0].api_types, None);
         let request = transport.request.lock().unwrap();
         let request = request.as_ref().unwrap();
         assert_eq!(request.method, Method::GET);

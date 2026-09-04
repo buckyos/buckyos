@@ -5,7 +5,7 @@ mod builtin;
 #[allow(unused_imports)]
 pub(crate) use builtin::*;
 
-use crate::catalog::{CatalogSnapshot, Pricing};
+use crate::catalog::{CatalogSnapshot, Pricing, VersionRule};
 use crate::matching::MatchContext;
 use crate::model::{
     InventoryModel, InventoryModelVariant, ModelUid, ProviderInventory as ModelProviderInventory,
@@ -721,6 +721,8 @@ pub(crate) struct ProviderInventoryModel {
     pub capabilities: BTreeMap<String, Value>,
     #[serde(default)]
     pub operations: BTreeMap<String, String>,
+    #[serde(default)]
+    pub variants: Vec<InventoryModelVariant>,
     pub availability: ModelAvailability,
     #[serde(default)]
     pub deprecated: bool,
@@ -756,7 +758,10 @@ impl ProviderInventorySnapshot {
             provider_instance_name: self.provider_instance_name.clone(),
             provider_profile_id: self.provider_profile_id.clone(),
             protocol_adapter_id: self.protocol_adapter_id.clone(),
-            inventory_revision: self.inventory_revision.clone().unwrap_or_default(),
+            inventory_revision: self
+                .inventory_revision
+                .clone()
+                .unwrap_or_else(|| self.provider_model_list_fingerprint.clone()),
             models: self
                 .models
                 .iter()
@@ -771,7 +776,7 @@ impl ProviderInventorySnapshot {
                     origin_model_id: model.origin_model_id.clone(),
                     api_types: model.api_types.clone(),
                     logical_mounts: model.logical_mounts.clone(),
-                    variants: Vec::<InventoryModelVariant>::new(),
+                    variants: model.variants.clone(),
                     capabilities: model.capabilities.clone(),
                     attributes: BTreeMap::from([
                         ("model_uid".into(), Value::String(model.model_uid.clone())),
@@ -812,6 +817,7 @@ impl InventoryBuilder {
         let rules = catalog.provider_rules(rules_id);
         let fingerprint = model_list_fingerprint(&discovery.models);
         let mut models = Vec::new();
+        let mut version_rule_refs = BTreeMap::new();
 
         for discovered in discovery.models {
             let mapped_origin = rules
@@ -873,6 +879,10 @@ impl InventoryBuilder {
             let Some(model_driver_id) = resolved.model_driver_id.clone() else {
                 continue;
             };
+            version_rule_refs.insert(
+                discovered.provider_model_id.clone(),
+                resolved.semantics.version_rules.clone(),
+            );
             let mut static_api_types = resolved.semantics.api_types.unwrap_or_default();
             let mut capabilities = resolved.semantics.capabilities.unwrap_or_default();
             let mut pricing = resolved.semantics.pricing.map(|value| InventoryPricing {
@@ -920,7 +930,13 @@ impl InventoryBuilder {
             for api_type_name in static_api_types {
                 let api_type = parse_api_type(&api_type_name)?;
                 let operation_id =
-                    resolve_operation(adapter, operation_overrides, api_type, &api_type_name)?;
+                    resolve_operation(
+                        adapter,
+                        operation_overrides,
+                        discovered.remote_methods.as_ref(),
+                        api_type,
+                        &api_type_name,
+                    )?;
                 let Some(operation_id) = operation_id else {
                     continue;
                 };
@@ -951,6 +967,8 @@ impl InventoryBuilder {
                 api_types.clear();
                 operations.clear();
             }
+            let mut logical_mounts = resolved.semantics.logical_mounts.unwrap_or_default();
+            logical_mounts.retain(|mount| logical_mount_matches_api_types(mount, &api_types));
             let model_uid = ModelUid::new(
                 &model_driver_id,
                 &origin_model_id,
@@ -959,15 +977,51 @@ impl InventoryBuilder {
             )
             .map_err(|error| ProviderError::Inventory(error.to_string()))?
             .as_stable_string();
+            let mut variants = Vec::new();
+            if catalog.provider_rules(rules_id).is_some() {
+                variants.extend(
+                    catalog
+                        .matching_model_variants(&model_driver_id, &dimensions)
+                        .map_err(|error| ProviderError::Inventory(error.to_string()))?
+                        .into_iter()
+                        .map(|variant| InventoryModelVariant {
+                            name: variant.name.clone(),
+                            logical_mounts: variant
+                                .mount_suffix
+                                .as_ref()
+                                .map(|suffix| {
+                                    logical_mounts
+                                        .clone()
+                                        .into_iter()
+                                        .map(|mount| format!("{mount}.{suffix}"))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        }),
+                );
+                variants.extend(
+                    catalog
+                        .matching_provider_variants_for_model(rules_id, &dimensions)
+                        .map_err(|error| ProviderError::Inventory(error.to_string()))?
+                        .into_iter()
+                        .map(|variant| InventoryModelVariant {
+                            name: variant.variant.clone(),
+                            logical_mounts: Vec::new(),
+                        }),
+                );
+            }
+            variants.sort_by(|left, right| left.name.cmp(&right.name));
+            variants.dedup_by(|left, right| left.name == right.name);
             models.push(ProviderInventoryModel {
                 provider_model_id: discovered.provider_model_id,
                 model_uid,
                 model_driver_id,
                 origin_model_id,
                 api_types,
-                logical_mounts: resolved.semantics.logical_mounts.unwrap_or_default(),
+                logical_mounts,
                 capabilities,
                 operations,
+                variants,
                 availability: discovered.availability,
                 deprecated: discovered.deprecated,
                 remote_methods: discovered.remote_methods,
@@ -976,6 +1030,7 @@ impl InventoryBuilder {
                 provider_rules_revision,
             });
         }
+        apply_version_rules(catalog, &version_rule_refs, &mut models)?;
         models.sort_by(|left, right| left.provider_model_id.cmp(&right.provider_model_id));
         Ok(ProviderInventorySnapshot {
             schema_version: INVENTORY_SCHEMA_VERSION,
@@ -990,6 +1045,177 @@ impl InventoryBuilder {
             models,
         })
     }
+}
+
+fn apply_version_rules(
+    catalog: &CatalogSnapshot,
+    references: &BTreeMap<String, Option<Vec<String>>>,
+    models: &mut [ProviderInventoryModel],
+) -> ProviderResult<()> {
+    let mut winners = BTreeMap::<(String, String), (usize, VersionRank)>::new();
+    for (index, model) in models.iter_mut().enumerate() {
+        let Some(rule_ids) = references
+            .get(&model.provider_model_id)
+            .and_then(Option::as_ref)
+        else {
+            continue;
+        };
+        let context = MatchContext::from([
+            (
+                "provider_model_id".to_owned(),
+                Value::String(model.provider_model_id.clone()),
+            ),
+            (
+                "origin_model_id".to_owned(),
+                Value::String(model.origin_model_id.clone()),
+            ),
+        ]);
+        for rule in catalog
+            .matching_version_rules(&model.model_driver_id, &context)
+            .map_err(|error| ProviderError::Inventory(error.to_string()))?
+            .into_iter()
+            .filter(|rule| rule_ids.contains(&rule.id))
+        {
+            if !matches_version_tier(&model.provider_model_id, rule) {
+                continue;
+            }
+            let version_mount = expand_version_mount(&rule.version_mount, &model.provider_model_id);
+            if !logical_mount_matches_api_types(&version_mount, &model.api_types) {
+                continue;
+            }
+            if !model.logical_mounts.contains(&version_mount) {
+                model.logical_mounts.push(version_mount);
+            }
+            let rank = version_rank(&model.provider_model_id, rule);
+            if rule
+                .stability
+                .as_ref()
+                .is_some_and(|stability| stability.current_requires_stable && !rank.stable)
+            {
+                continue;
+            }
+            let key = (model.model_driver_id.clone(), rule.id.clone());
+            if winners
+                .get(&key)
+                .is_none_or(|(_, current)| rank > *current)
+            {
+                winners.insert(key, (index, rank));
+            }
+        }
+    }
+    for ((model_driver_id, rule_id), (index, _)) in winners {
+        let context = MatchContext::from([
+            (
+                "provider_model_id".to_owned(),
+                Value::String(models[index].provider_model_id.clone()),
+            ),
+            (
+                "origin_model_id".to_owned(),
+                Value::String(models[index].origin_model_id.clone()),
+            ),
+        ]);
+        let rule = catalog
+            .matching_version_rules(&model_driver_id, &context)
+            .map_err(|error| ProviderError::Inventory(error.to_string()))?
+            .into_iter()
+            .find(|rule| rule.id == rule_id)
+            .ok_or_else(|| ProviderError::Inventory(format!("version rule `{rule_id}` disappeared")))?;
+        let current_mount = expand_version_mount(&rule.current_mount, &models[index].provider_model_id);
+        if logical_mount_matches_api_types(&current_mount, &models[index].api_types)
+            && !models[index].logical_mounts.contains(&current_mount)
+        {
+            models[index].logical_mounts.push(current_mount);
+        }
+    }
+    for model in models {
+        model.logical_mounts.sort();
+        model.logical_mounts.dedup();
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct VersionRank {
+    version: Vec<u64>,
+    stable: bool,
+    model_id: String,
+}
+
+fn matches_version_tier(model_id: &str, rule: &VersionRule) -> bool {
+    let tokens = version_tokens(model_id);
+    (rule.tier_tokens.is_empty()
+        || rule
+            .tier_tokens
+            .iter()
+            .all(|token| tokens.contains(&token.to_ascii_lowercase())))
+        && !rule
+            .exclude_tier_tokens
+            .iter()
+            .any(|token| tokens.contains(&token.to_ascii_lowercase()))
+}
+
+fn version_rank(model_id: &str, rule: &VersionRule) -> VersionRank {
+    let normalized = model_id.trim().to_ascii_lowercase().replace('_', "-");
+    let offset = rule
+        .version_rank
+        .as_ref()
+        .and_then(|rank| normalized.find(&rank.prefix.to_ascii_lowercase()).map(|pos| pos + rank.prefix.len()))
+        .unwrap_or_default();
+    let version = normalized[offset..]
+        .trim_start_matches(['-', '.'])
+        .split(|ch: char| !ch.is_ascii_digit())
+        .take_while(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<u64>().ok())
+        .collect();
+    let tokens = version_tokens(&normalized);
+    let stable = rule.stability.as_ref().is_none_or(|stability| {
+        !stability
+            .unstable_tokens
+            .iter()
+            .any(|token| tokens.contains(&token.to_ascii_lowercase()))
+    });
+    VersionRank {
+        version,
+        stable,
+        model_id: normalized,
+    }
+}
+
+fn version_tokens(model_id: &str) -> BTreeSet<String> {
+    model_id
+        .to_ascii_lowercase()
+        .split(|ch: char| matches!(ch, '-' | '_' | '.' | '/'))
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn expand_version_mount(template: &str, model_id: &str) -> String {
+    template.replace("{model}", &logical_mount_segment(model_id))
+}
+
+fn logical_mount_segment(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('/')
+        .split(|ch: char| matches!(ch, '/' | '_' | '.' | '-'))
+        .filter(|part| !part.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+fn logical_mount_matches_api_types(mount: &str, api_types: &[ApiType]) -> bool {
+    let namespace = mount.split('.').next().unwrap_or_default();
+    api_types.iter().any(|api_type| {
+        if *api_type == ApiType::AgentComputerUse {
+            namespace == "agent_runtime"
+        } else {
+            api_type_name(*api_type)
+                .ok()
+                .is_some_and(|name| name.split('.').next() == Some(namespace))
+        }
+    })
 }
 
 #[async_trait]
@@ -1848,7 +2074,20 @@ impl ProviderRuntimeManager {
             .get(&config.provider_profile_id)
             .cloned()
             .ok_or_else(|| ProviderError::UnknownProfile(config.provider_profile_id.clone()))?;
-        let profile = Arc::new(profile.with_credential(config.credential_kind)?);
+        let profile = if config.provider_profile_id == "custom" {
+            let adapter = self
+                .codecs
+                .adapter(&config.protocol_adapter_id)
+                .ok_or_else(|| ProviderError::UnknownAdapter(config.protocol_adapter_id.clone()))?;
+            crate::provider::builtin::custom_profile_for_adapter(
+                profile.as_ref(),
+                adapter,
+                config.credential_kind,
+            )?
+        } else {
+            profile.with_credential(config.credential_kind)?
+        };
+        let profile = Arc::new(profile);
         if profile.default_protocol_adapter_id != config.protocol_adapter_id
             && config.provider_profile_id != "custom"
         {
@@ -2246,6 +2485,7 @@ fn validate_quota_reading(reading: ProviderQuotaReading) -> ProviderResult<Provi
 fn resolve_operation(
     adapter: &crate::protocol::AdapterDescriptor,
     overrides: &BTreeMap<String, String>,
+    remote_methods: Option<&BTreeSet<String>>,
     api_type: ApiType,
     api_type_name: &str,
 ) -> ProviderResult<Option<String>> {
@@ -2266,6 +2506,23 @@ fn resolve_operation(
         })
         .map(|operation| operation.operation_id.clone())
         .collect::<Vec<_>>();
+    let matching = match remote_methods {
+        Some(methods) => {
+            let exact = matching
+                .iter()
+                .filter(|operation| methods.contains(*operation))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !exact.is_empty() {
+                exact
+            } else if methods.contains(api_type.typed_method()) || methods.contains(api_type_name) {
+                matching
+            } else {
+                Vec::new()
+            }
+        }
+        None => matching,
+    };
     match matching.as_slice() {
         [] => Ok(None),
         [operation] => Ok(Some(operation.clone())),
@@ -3021,6 +3278,57 @@ mod tests {
         assert!(!inventory.provider_model_list_fingerprint.is_empty());
     }
 
+    #[test]
+    fn version_rules_rank_numeric_versions_and_classify_tiers() {
+        let rule: VersionRule = serde_json::from_value(serde_json::json!({
+            "id": "gemini-flash-lite",
+            "family": "gemini",
+            "tier": "flash-lite",
+            "match": "gemini-*-flash-lite",
+            "tier_tokens": ["flash", "lite"],
+            "exclude_tier_tokens": ["image"],
+            "version_rank": { "prefix": "gemini" },
+            "stability": {
+                "unstable_tokens": ["preview", "beta"],
+                "current_requires_stable": true
+            },
+            "current_mount": "llm.gemini-flash-lite",
+            "version_mount": "llm.gemini.{model}"
+        }))
+        .unwrap();
+
+        assert!(matches_version_tier("gemini-3.5-flash-lite", &rule));
+        assert!(!matches_version_tier("gemini-3.5-flash", &rule));
+        assert!(!matches_version_tier("gemini-3.1-flash-lite-image", &rule));
+        assert!(
+            version_rank("gemini-3.10-flash-lite", &rule)
+                > version_rank("gemini-3.9-flash-lite", &rule)
+        );
+
+        let pro_rule: VersionRule = serde_json::from_value(serde_json::json!({
+            "id": "gemini-pro",
+            "family": "gemini",
+            "tier": "pro",
+            "match": "gemini-*",
+            "tier_tokens": ["pro"],
+            "exclude_tier_tokens": ["image", "tts", "transcribe", "omni"],
+            "version_rank": { "prefix": "gemini" },
+            "current_mount": "llm.gemini-pro",
+            "version_mount": "llm.gemini.{model}"
+        }))
+        .unwrap();
+        assert!(matches_version_tier("gemini-2.5-pro", &pro_rule));
+        assert!(!matches_version_tier(
+            "gemini-2.5-pro-preview-tts",
+            &pro_rule
+        ));
+        assert!(!version_rank("gemini-3.11-flash-lite-preview", &rule).stable);
+        assert_eq!(
+            expand_version_mount(&rule.version_mount, "Gemini_3.5/Flash.Lite"),
+            "llm.gemini.gemini-3-5-flash-lite"
+        );
+    }
+
     #[tokio::test]
     async fn draft_validation_negotiates_without_runtime_or_storage_side_effects() {
         let store = Arc::new(MemoryStore::default());
@@ -3366,6 +3674,33 @@ mod tests {
             .unwrap();
         assert_eq!(candidates.candidates.len(), 1);
         assert!(candidates.admissions.iter().all(|record| record.admitted));
+    }
+
+    #[test]
+    fn inventory_without_remote_revision_uses_model_fingerprint() {
+        let catalog = catalog();
+        let mut discovered = discovery("gpt-test");
+        discovered.revision = None;
+        let snapshot = InventoryBuilder::build(
+            &profile(),
+            &instance("primary"),
+            discovered,
+            &catalog,
+            &codecs(),
+        )
+        .unwrap();
+        let inventory = snapshot.as_model_inventory();
+        assert_eq!(
+            inventory.inventory_revision,
+            snapshot.provider_model_list_fingerprint
+        );
+        ModelRegistry::build(
+            &catalog,
+            &[inventory],
+            Vec::new(),
+            RegistryLayers::default(),
+        )
+        .unwrap();
     }
 
     #[test]

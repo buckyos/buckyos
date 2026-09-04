@@ -84,6 +84,8 @@ pub(crate) struct RoutingRequest {
     pub exact_fallback: Option<AiccFallbackRule>,
     pub previous_exact_model: Option<String>,
     pub request_units: u64,
+    pub estimated_input_tokens: Option<u64>,
+    pub estimated_output_tokens: Option<u64>,
     pub caller: CallerIdentity,
 }
 
@@ -107,6 +109,8 @@ impl RoutingRequest {
             exact_fallback: None,
             previous_exact_model: None,
             request_units: 1,
+            estimated_input_tokens: None,
+            estimated_output_tokens: None,
             caller,
         }
     }
@@ -764,6 +768,35 @@ fn hard_filter_model(
             reasons.push(filter_reason(
                 "context_length_insufficient",
                 format!("model context length is below {required}"),
+            ));
+        }
+    }
+    if let Some(required) = request.estimated_output_tokens {
+        let available = model
+            .capabilities
+            .get("max_output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        if available < required {
+            reasons.push(filter_reason(
+                "output_length_insufficient",
+                format!("model output length is below {required}"),
+            ));
+        }
+    }
+    if let Some(required) = request
+        .estimated_input_tokens
+        .and_then(|input| input.checked_add(request.estimated_output_tokens.unwrap_or_default()))
+    {
+        let available = model
+            .capabilities
+            .get("max_context_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        if available < required {
+            reasons.push(filter_reason(
+                "context_length_insufficient",
+                format!("model context length is below estimated request size {required}"),
             ));
         }
     }

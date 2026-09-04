@@ -224,14 +224,21 @@
   ],
   "defaults": {
     "api_types": [],
-    "capabilities": {}
+    "capabilities": {},
+    "version_rules": ["qwen-max", "qwen-plus", "qwen-flash"]
   },
   "variants": [
     { "name": "reasoning-none", "match": "qwen3*" },
     { "name": "reasoning-minimal", "match": "qwen3*" },
     { "name": "reasoning-low", "match": "qwen3*" },
     { "name": "reasoning-medium", "match": "qwen3*" },
-    { "name": "reasoning-high", "match": "qwen3*" }
+    { "name": "reasoning-high", "match": "qwen3*" },
+    { "name": "reasoning-xhigh", "match": "qwen3*" },
+    { "name": "reasoning-max", "match": "qwen3*" }
   ],
-  "version_rules": []
+  "version_rules": [
+    { "id": "qwen-max", "family": "qwen", "tier": "max", "match": "qwen3*-max*", "tier_tokens": ["max"], "version_rank": { "prefix": "qwen" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.qwen-max", "version_mount": "llm.qwen.{model}" },
+    { "id": "qwen-plus", "family": "qwen", "tier": "plus", "match": "qwen3*-plus*", "tier_tokens": ["plus"], "version_rank": { "prefix": "qwen" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.qwen-plus", "version_mount": "llm.qwen.{model}" },
+    { "id": "qwen-flash", "family": "qwen", "tier": "flash", "match": "qwen3*-flash*", "tier_tokens": ["flash"], "version_rank": { "prefix": "qwen" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.qwen-flash", "version_mount": "llm.qwen.{model}" }
+  ]
 }

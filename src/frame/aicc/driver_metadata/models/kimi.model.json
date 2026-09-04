@@ -63,7 +63,11 @@
     }
   ],
   "patterns": [],
-  "defaults": {},
+  "defaults": { "version_rules": ["kimi-general", "kimi-code", "kimi-code-highspeed"] },
   "variants": [],
-  "version_rules": []
+  "version_rules": [
+    { "id": "kimi-general", "family": "kimi", "tier": "general", "match": "kimi-k*", "exclude_tier_tokens": ["code", "highspeed"], "version_rank": { "prefix": "kimi-k" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.kimi", "version_mount": "llm.kimi.{model}" },
+    { "id": "kimi-code", "family": "kimi", "tier": "code", "match": "kimi-k*-code*", "tier_tokens": ["code"], "exclude_tier_tokens": ["highspeed"], "version_rank": { "prefix": "kimi-k" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.kimi-code", "version_mount": "llm.kimi.{model}" },
+    { "id": "kimi-code-highspeed", "family": "kimi", "tier": "code-highspeed", "match": "kimi-k*-code-highspeed*", "tier_tokens": ["code", "highspeed"], "version_rank": { "prefix": "kimi-k" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.kimi-code-highspeed", "version_mount": "llm.kimi.{model}" }
+  ]
 }

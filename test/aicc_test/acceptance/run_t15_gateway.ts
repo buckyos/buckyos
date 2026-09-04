@@ -2,16 +2,20 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildFinancialReport } from "./finance.ts";
-import { loginGateway, type GatewaySession } from "./gateway.ts";
+import { loginGateway, loginSudoSystemConfig, type GatewaySession, type RpcClient } from "./gateway.ts";
 import { validateCaseManifest } from "./manifest.ts";
 import {
   buildT15Manifest,
   loadProviderProtocolCatalog,
   protocolContract,
+  selectOfficialModels,
   type ProviderProtocolCatalog,
 } from "./provider_protocol_contracts.ts";
 import { defectFromFailure, writeReport } from "./report.ts";
+import { inventoriesFromModelsList } from "./inventory.ts";
+import { installFalTestMetadata } from "./metadata_transaction.ts";
 import { runPreflight } from "./preflight.ts";
+import { withMockQuotaTruth } from "./quota_transaction.ts";
 import type { AcceptanceCase, AcceptanceReport, CaseReport, ProviderInventory, ProviderModel } from "./types.ts";
 
 type Options = {
@@ -144,14 +148,16 @@ async function waitMock(baseUrl: string, timeoutMs = 15_000): Promise<void> {
   throw new Error(`T1.5 mock is unreachable: ${last}`);
 }
 
-async function selectMock(baseUrl: string, testCase: AcceptanceCase): Promise<void> {
+async function selectMock(baseUrl: string, testCase: AcceptanceCase, selectionSeed?: string): Promise<void> {
   const response = await fetch(`${baseUrl}/__mock/select`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       provider_driver: testCase.provider_driver,
       contract_id: testCase.protocol_contract_id,
+      api_type: testCase.api_type,
       scenario: testCase.mock_scenario,
+      selection_seed: selectionSeed,
     }),
   });
   if (!response.ok) throw new Error(`mock selection failed: ${response.status} ${await response.text()}`);
@@ -184,7 +190,29 @@ async function addProvider(
 ): Promise<void> {
   const provider = catalog.providers.find((candidate) => candidate.provider_driver === driver);
   if (!provider) throw new Error(`unknown T1.5 Provider ${driver}`);
-  await session.aicc.call("provider.add", {
+  const catalogOnly = new Set(["fal", "glm", "doubao", "qwen"]);
+  const catalogModels = provider.official_first_party_model_ids ?? Object.fromEntries(
+    Object.entries(provider.test_model_ids).map(([apiType, modelId]) => [apiType, [modelId]]),
+  );
+  const catalogDiscovery = catalogOnly.has(driver)
+    ? {
+      revision: `t15-${driver}-${instance}`,
+      discovered_at_ms: Date.now(),
+      health: "healthy",
+      models: Object.entries(catalogModels).flatMap(([apiType, modelIds]) =>
+        modelIds.map((providerModelId) => ({
+          provider_model_id: providerModelId,
+          api_types: [apiType],
+          remote_methods: provider.contracts
+            .filter((contract) => contract.api_types.includes(apiType))
+            .map((contract) => contract.operation),
+          availability: "available",
+          deprecated: false,
+        }))
+      ),
+    }
+    : undefined;
+  const draft = {
     provider_instance_name: instance,
     provider_type: "cloud_api",
     provider_profile_id: provider.provider_profile_id,
@@ -192,14 +220,73 @@ async function addProvider(
     base_url: `${mockBaseUrl}${provider.endpoint_path}`,
     credentials: { api_token: { locked: `t15-mock-${driver}` } },
     ...provider.instance_fields,
+    ...(catalogDiscovery ? { discovery: catalogDiscovery } : {}),
     auto_sync_models: true,
-  });
+  };
+  try {
+    await session.aicc.call("provider.add", draft);
+  } catch (error) {
+    const validation = await session.aicc.call("provider.validate", draft) as Record<string, unknown>;
+    throw new Error(`${driver} add failed: ${String(error)}; validation=${JSON.stringify(validation)}`);
+  }
+}
+
+async function addCustomProvider(
+  session: GatewaySession,
+  catalog: ProviderProtocolCatalog,
+  driver: string,
+  instance: string,
+  mockBaseUrl: string,
+  runId: string,
+): Promise<void> {
+  const provider = catalog.providers.find((candidate) => candidate.provider_driver === driver);
+  if (!provider) throw new Error(`unknown T1.5 custom Provider protocol ${driver}`);
+  const selected = selectOfficialModels(catalog, driver, runId);
+  const modelApiTypes = new Map<string, { apiTypes: string[]; remoteMethods: string[] }>();
+  for (const [apiType, modelId] of Object.entries(selected)) {
+    const model = modelApiTypes.get(modelId) ?? { apiTypes: [], remoteMethods: [] };
+    model.apiTypes.push(apiType);
+    const operation = provider.contracts.find((contract) => contract.api_types.includes(apiType))?.operation;
+    if (!operation) throw new Error(`${driver} has no protocol operation for ${apiType}`);
+    model.remoteMethods.push(operation);
+    modelApiTypes.set(modelId, model);
+  }
+  const draft = {
+    provider_instance_name: instance,
+    provider_type: "cloud_api",
+    provider_profile_id: "custom",
+    protocol_adapter_id: provider.contracts[0].protocol_adapter_id,
+    base_url: `${mockBaseUrl}${provider.endpoint_path}`,
+    credentials: { api_token: { locked: `t15-mock-custom-${driver}` } },
+    discovery: {
+      revision: `t15-custom-${driver}-${runId}`,
+      discovered_at_ms: Date.now(),
+      health: "healthy",
+      models: [...modelApiTypes].map(([provider_model_id, model]) => ({
+        provider_model_id,
+        api_types: model.apiTypes,
+        remote_methods: [...new Set(model.remoteMethods)],
+        availability: "available",
+        deprecated: false,
+      })),
+    },
+    auto_sync_models: true,
+  };
+  const validation = await session.aicc.call("provider.validate", draft) as Record<string, unknown>;
+  if ((Array.isArray(validation.errors) && validation.errors.length > 0) ||
+      (Array.isArray(validation.error_details) && validation.error_details.length > 0)) {
+    throw new Error(`custom ${driver} validation failed: ${JSON.stringify(validation)}`);
+  }
+  try {
+    await session.aicc.call("provider.add", draft);
+  } catch (error) {
+    const repeatedValidation = await session.aicc.call("provider.validate", draft) as Record<string, unknown>;
+    throw new Error(`custom ${driver} add failed: ${String(error)}; validation=${JSON.stringify(repeatedValidation)}`);
+  }
 }
 
 function inventories(value: unknown): ProviderInventory[] {
-  const providers = value && typeof value === "object" ? (value as { providers?: unknown }).providers : undefined;
-  if (!Array.isArray(providers)) throw new Error("models.list.providers must be an array");
-  return providers as ProviderInventory[];
+  return inventoriesFromModelsList(value);
 }
 
 async function waitInventory(session: GatewaySession, instance: string, timeoutMs: number): Promise<ProviderInventory> {
@@ -233,7 +320,9 @@ function exactModel(
   if (testCase.model_selector?.kind === "exact") return testCase.model_selector.value;
   const id = catalog.providers.find((provider) => provider.provider_driver === testCase.provider_driver)
     ?.test_model_ids[testCase.api_type ?? ""];
-  const model = inventory.models.find((candidate) => candidate.provider_model_id === id) ??
+  const model = inventory.models.find((candidate) =>
+    candidate.provider_model_id === id && candidate.api_types.includes(testCase.api_type ?? "")
+  ) ??
     inventory.models.find((candidate) => candidate.api_types.includes(testCase.api_type ?? ""));
   if (!model) throw new Error(`no exact model for ${testCase.provider_driver}/${testCase.api_type}`);
   return model.exact_model;
@@ -248,34 +337,35 @@ export function buildT15TypedParams(
   exactModelId: string,
   runId: string,
   executionMode: AcceptanceCase["execution_mode"] = "immediate",
+  requestKey = apiType,
 ): Record<string, unknown> {
   const common = {
     exact_model: exactModelId,
     execution_mode: executionMode,
-    idempotency_key: `${runId}:${apiType}`,
+    idempotency_key: `${runId}:${requestKey}`,
   };
   switch (apiType) {
     case "llm": return { ...common, messages: [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827." }] }], max_output_tokens: 32 };
     case "embedding.text": return { ...common, items: [{ type: "text", id: "item-1", text: "BUCKYOS-AICC-4827" }] };
     case "embedding.multimodal": return { ...common, items: [{ id: "item-1", text: "marker", image: resource("image/png") }] };
     case "image.txt2img": return { ...common, prompt: "A blue square marked 4827" };
-    case "image.img2img": return { ...common, prompt: "Preserve the image", image: resource("image/png") };
+    case "image.img2img": return { ...common, prompt: "Preserve the image", images: [resource("image/png")] };
     case "image.inpaint": return { ...common, prompt: "Fill the mask", image: resource("image/png"), mask: resource("image/png") };
     case "image.upscale": return { ...common, image: resource("image/png"), scale: 2 };
     case "image.bg_remove": return { ...common, image: resource("image/png") };
-    case "vision.ocr": return { ...common, image: resource("image/png"), prompt: "Read marker 4827" };
-    case "vision.caption": return { ...common, image: resource("image/png"), prompt: "Caption the image" };
-    case "vision.detect": return { ...common, image: resource("image/png"), prompt: "Detect objects" };
-    case "vision.segment": return { ...common, image: resource("image/png"), prompt: "Segment objects" };
-    case "audio.tts": return { ...common, text: "BuckyOS 4827", voice: "alloy" };
+    case "vision.ocr": return { ...common, document: resource("image/png") };
+    case "vision.caption": return { ...common, image: resource("image/png") };
+    case "vision.detect": return { ...common, image: resource("image/png") };
+    case "vision.segment": return { ...common, image: resource("image/png"), prompt: { type: "text", text: "Segment objects" } };
+    case "audio.tts": return { ...common, text: "BuckyOS 4827", voice: { voice_id: "alloy" } };
     case "audio.asr": return { ...common, audio: resource("audio/wav") };
     case "audio.music": return { ...common, prompt: "A short calm instrumental" };
-    case "audio.enhance": return { ...common, audio: resource("audio/wav"), operation: "denoise" };
+    case "audio.enhance": return { ...common, audio: resource("audio/wav"), task: "denoise" };
     case "video.txt2video": return { ...common, prompt: "A paper plane moves across a desk" };
     case "video.img2video": return { ...common, prompt: "Subtle motion", image: resource("image/png") };
     case "video.video2video": return { ...common, video: resource("video/mp4"), prompt: "Preserve motion" };
-    case "video.extend": return { ...common, video: resource("video/mp4"), duration_seconds: 2 };
-    case "video.upscale": return { ...common, video: resource("video/mp4") };
+    case "video.extend": return { ...common, video: resource("video/mp4"), prompt: "Continue the motion", duration_seconds: 2 };
+    case "video.upscale": return { ...common, video: resource("video/mp4"), target_resolution: "1080p" };
     case "agent.computer_use": return { ...common, task: "Read the page title", environment: "browser" };
     default: throw new Error(`no T1.5 typed request fixture for ${apiType}`);
   }
@@ -295,7 +385,10 @@ async function terminal(session: GatewaySession, value: unknown, timeoutMs: numb
     const task = raw.task && typeof raw.task === "object" ? raw.task as Record<string, unknown> : raw;
     if (task.phase === "Terminal") {
       if (task.outcome !== "Succeeded") throw new Error(`task ended ${String(task.outcome)}: ${JSON.stringify(task.error ?? {})}`);
-      return task;
+      return {
+        ...task,
+        provider_task_ref: response.provider_task_ref,
+      };
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   }
@@ -327,7 +420,7 @@ export function assertT15ResponseMapping(
     "image.inpaint": ["images", "image", "artifacts"],
     "image.upscale": ["image", "artifacts"],
     "image.bg_remove": ["image", "artifacts"],
-    "vision.ocr": ["pages", "artifacts"],
+    "vision.ocr": ["text", "pages", "artifacts"],
     "vision.caption": ["captions"],
     "vision.detect": ["detections"],
     "vision.segment": ["masks", "artifacts"],
@@ -366,11 +459,12 @@ async function executeCase(
 ): Promise<CaseResult> {
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
-  const selectedExactModel = exactModel(catalog, testCase, inventory);
-  await selectMock(controlUrl, testCase);
+  await selectMock(controlUrl, testCase, runId);
+  let selectedExactModel: string | undefined;
   let failed: unknown;
   let terminalValue: unknown;
   try {
+    selectedExactModel = exactModel(catalog, testCase, inventory);
     const result = await session.aicc.call(
       testCase.method,
       buildT15TypedParams(
@@ -378,6 +472,7 @@ async function executeCase(
         selectedExactModel,
         runId,
         testCase.execution_mode,
+        testCase.case_id,
       ),
     ) as Record<string, unknown>;
     if (testCase.mock_scenario === "async_cancel") {
@@ -447,7 +542,12 @@ async function executeCase(
       diagnostics.push(`missing Provider error summary code ${testCase.expected_provider_error_code}`);
     }
     const retriable = new RegExp(`retriable[\\s\"':=]+${String(testCase.expected_retriable)}`, "i");
-    if (!retriable.test(evidence)) diagnostics.push(`missing retriable=${String(testCase.expected_retriable)} mapping`);
+    if (testCase.expected_retriable === true && !retriable.test(evidence)) {
+      diagnostics.push("missing retriable=true mapping");
+    }
+    if (testCase.expected_retriable === false && /retriable[\\s\"':=]+true/i.test(evidence)) {
+      diagnostics.push("unexpected retriable=true mapping");
+    }
   }
   return {
     case_id: testCase.case_id,
@@ -470,8 +570,13 @@ function variantCells(catalog: ProviderProtocolCatalog, inventory: ProviderInven
   return inventory.models.filter((model) =>
     Boolean(model.provider_actual_model_id) || model.provider_model_id.includes(":")
   ).flatMap((model) => model.api_types.map((apiType) => {
+    const operation = inventory.provider_driver === "openai" &&
+        model.provider_model_id.startsWith("gpt-5") &&
+        ["image.txt2img", "image.img2img"].includes(apiType)
+      ? "responses.create"
+      : undefined;
     const contract = catalog.providers.find((provider) => provider.provider_driver === inventory.provider_driver)
-      ?.contracts.find((candidate) => candidate.api_types.includes(apiType));
+      ?.contracts.find((candidate) => operation ? candidate.operation === operation : candidate.api_types.includes(apiType));
     if (!contract) return undefined;
     return { provider_driver: inventory.provider_driver, contract_id: contract.id, api_type: apiType, model };
   })).filter((value): value is { provider_driver: string; contract_id: string; api_type: string; model: ProviderModel } => Boolean(value));
@@ -503,6 +608,7 @@ async function main(): Promise<void> {
   );
   const unmatchedCaseIds = new Set(input.caseIds);
   let session: GatewaySession | undefined;
+  let restoreMetadata: ((clients?: { systemConfig: RpcClient; aicc: RpcClient }) => Promise<void>) | undefined;
   let fatalError: unknown;
   try {
     await waitMock(input.mockControlUrl);
@@ -512,6 +618,16 @@ async function main(): Promise<void> {
       username: input.username,
       password: input.password,
       appId: input.appId,
+    });
+    let sudoSystemConfig = await loginSudoSystemConfig({
+      gatewayUrl: input.gatewayUrl,
+      username: input.username,
+      password: input.password,
+      appId: input.appId,
+    });
+    restoreMetadata = await installFalTestMetadata({
+      systemConfig: sudoSystemConfig,
+      aicc: session.aicc,
     });
     process.stdout.write(`${JSON.stringify({
       layer: "T1.5",
@@ -523,28 +639,112 @@ async function main(): Promise<void> {
       provider_min_interval_ms: input.providerMinIntervalMs,
     }, null, 2)}\n`);
     for (const driver of selectedProviders) {
+      if (input.username && input.password) {
+        session = await loginGateway({
+          gatewayUrl: input.gatewayUrl,
+          username: input.username,
+          password: input.password,
+          appId: input.appId,
+        });
+        sudoSystemConfig = await loginSudoSystemConfig({
+          gatewayUrl: input.gatewayUrl,
+          username: input.username,
+          password: input.password,
+          appId: input.appId,
+        });
+      }
       const provider = catalog.providers.find((candidate) => candidate.provider_driver === driver)!;
       const bootstrap = buildT15Manifest(catalog).find((testCase) =>
         testCase.provider_driver === driver && testCase.protocol_contract_id === provider.contracts[0].id && testCase.mock_scenario === "success"
       )!;
-      await selectMock(input.mockControlUrl, bootstrap);
+      await selectMock(input.mockControlUrl, bootstrap, runId);
       const instance = `${runId}-${driver}`.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
       await addProvider(session, catalog, driver, instance, input.mockBaseUrl);
       created.push(instance);
       const inventory = await waitInventory(session, instance, input.timeoutMs);
       const manifest = validateCaseManifest(buildT15Manifest(catalog, variantCells(catalog, inventory)))
         .filter((testCase) => testCase.provider_driver === driver)
+        .filter((testCase) => !testCase.tags.includes("custom_provider"))
         .filter((testCase) => input.caseIds.length === 0 || input.caseIds.includes(testCase.case_id));
       for (const testCase of manifest) plannedCaseIds.add(testCase.case_id);
       for (const testCase of manifest) unmatchedCaseIds.delete(testCase.case_id);
-      for (const [index, testCase] of manifest.entries()) {
-        if (index > 0 && input.providerMinIntervalMs > 0) {
-          await new Promise((resolvePromise) => setTimeout(resolvePromise, input.providerMinIntervalMs));
+      await withMockQuotaTruth({
+        systemConfig: sudoSystemConfig,
+        userId: session.userId,
+        appId: "system:control-panel",
+        inventories: [inventory],
+        execute: async () => {
+          for (const [index, testCase] of manifest.entries()) {
+            if (index > 0 && input.providerMinIntervalMs > 0) {
+              await new Promise((resolvePromise) => setTimeout(resolvePromise, input.providerMinIntervalMs));
+            }
+            testCase.provider_instance = instance;
+            testCase.expected_provider_instance = instance;
+            results.push(await executeCase(session!, catalog, testCase, inventory, input.mockControlUrl, runId, input.timeoutMs));
+          }
         }
-        testCase.provider_instance = instance;
-        testCase.expected_provider_instance = instance;
-        results.push(await executeCase(session, catalog, testCase, inventory, input.mockControlUrl, runId, input.timeoutMs));
+      });
+      await session.aicc.call("provider.delete", { provider_instance_name: instance });
+      await waitInventoryAbsent(session, instance, input.timeoutMs);
+      created.splice(created.indexOf(instance), 1);
+    }
+    for (const driver of ["openai", "claude", "google-gemini", "fal"]) {
+      if (driver === "openai") {
+        session = await loginGateway({
+          gatewayUrl: input.gatewayUrl,
+          sessionToken: input.sessionToken,
+          username: input.username,
+          password: input.password,
+          appId: input.appId,
+        });
+        sudoSystemConfig = await loginSudoSystemConfig({
+          gatewayUrl: input.gatewayUrl,
+          username: input.username,
+          password: input.password,
+          appId: input.appId,
+        });
       }
+      if (!selectedProviders.has(driver)) continue;
+      const customManifest = validateCaseManifest(buildT15Manifest(catalog))
+        .filter((testCase) => testCase.provider_driver === driver)
+        .filter((testCase) => testCase.tags.includes("custom_provider"))
+        .filter((testCase) => input.caseIds.length === 0 || input.caseIds.includes(testCase.case_id));
+      if (customManifest.length === 0) continue;
+      const bootstrap = customManifest[0];
+      await selectMock(input.mockControlUrl, bootstrap, runId);
+      const instance = `${runId}-custom-${driver}`.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+      await addCustomProvider(session, catalog, driver, instance, input.mockBaseUrl, runId);
+      created.push(instance);
+      const inventory = await waitInventory(session, instance, input.timeoutMs);
+      await withMockQuotaTruth({
+        systemConfig: sudoSystemConfig,
+        userId: session.userId,
+        appId: "system:control-panel",
+        inventories: [inventory],
+        execute: async () => {
+          for (const testCase of customManifest) {
+            plannedCaseIds.add(testCase.case_id);
+            unmatchedCaseIds.delete(testCase.case_id);
+            testCase.provider_instance = instance;
+            testCase.expected_provider_instance = instance;
+            const result = await executeCase(
+              session!,
+              catalog,
+              testCase,
+              inventory,
+              input.mockControlUrl,
+              runId,
+              input.timeoutMs,
+            );
+            result.diagnostic = [
+              `seed=${runId}`,
+              `selected_official_model=${result.exact_model?.split("@")[0] ?? "unknown"}`,
+              result.diagnostic,
+            ].filter(Boolean).join("; ");
+            results.push(result);
+          }
+        },
+      });
       await session.aicc.call("provider.delete", { provider_instance_name: instance });
       await waitInventoryAbsent(session, instance, input.timeoutMs);
       created.splice(created.indexOf(instance), 1);
@@ -566,6 +766,17 @@ async function main(): Promise<void> {
       elapsed_ms: 0,
     });
   } finally {
+    if (session && input.username && input.password) {
+      try {
+        session = await loginGateway({
+          gatewayUrl: input.gatewayUrl,
+          username: input.username,
+          password: input.password,
+          appId: input.appId,
+        });
+      } catch {
+      }
+    }
     if (session) {
       for (const providerInstanceName of created.reverse()) {
         try {
@@ -585,6 +796,33 @@ async function main(): Promise<void> {
             elapsed_ms: 0,
           });
         }
+      }
+    }
+    if (restoreMetadata) {
+      try {
+        const cleanupSystemConfig = input.username && input.password
+          ? await loginSudoSystemConfig({
+            gatewayUrl: input.gatewayUrl,
+            username: input.username,
+            password: input.password,
+            appId: input.appId,
+          })
+          : undefined;
+        await restoreMetadata(cleanupSystemConfig && session
+          ? { systemConfig: cleanupSystemConfig, aicc: session.aicc }
+          : undefined);
+      } catch (error) {
+        results.push({
+          case_id: "t1.5.cleanup.driver_metadata_restore",
+          provider_driver: null,
+          method: "sys_config_set/service.reload_settings",
+          scenario: null,
+          status: "failed",
+          diagnostic: String(error),
+          captured_requests: 0,
+          started_at: new Date().toISOString(),
+          elapsed_ms: 0,
+        });
       }
     }
     try {

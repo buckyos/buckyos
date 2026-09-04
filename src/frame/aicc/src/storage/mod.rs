@@ -1442,6 +1442,7 @@ mod tests {
         ExecutionOutput {
             value: json!({"answer": 42}),
             usage: AiUsage::request_units(1),
+            cost: None,
             artifacts: vec![],
         }
     }

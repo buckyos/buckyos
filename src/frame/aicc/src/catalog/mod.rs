@@ -922,6 +922,30 @@ impl CatalogSnapshot {
             .collect())
     }
 
+    pub(crate) fn matching_provider_variants_for_model(
+        &self,
+        provider_profile_id: &str,
+        context: &MatchContext,
+    ) -> Result<Vec<&ProviderVariantRule>, CatalogResolveError> {
+        let catalog = self
+            .provider_rules
+            .get(provider_profile_id)
+            .ok_or_else(|| CatalogResolveError::UnknownProviderRules {
+                provider_profile_id: provider_profile_id.to_owned(),
+            })?;
+        Ok(catalog
+            .document
+            .variants
+            .iter()
+            .zip(&catalog.compiled_variants)
+            .filter_map(|(variant, condition)| {
+                let mut variant_context = context.clone();
+                variant_context.insert("variant".into(), Value::String(variant.variant.clone()));
+                condition.matches(&variant_context).then_some(variant)
+            })
+            .collect())
+    }
+
     pub(crate) fn resolve_model(
         &self,
         origin_model_id: &str,

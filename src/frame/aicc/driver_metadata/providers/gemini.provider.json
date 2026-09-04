@@ -27,5 +27,10 @@
         "video.extend": "models.predictLongRunning"
       }
     }
+  ],
+  "variants": [
+    { "model_driver": "gemini", "variant": "reasoning-low", "match": { "provider_model_id": "gemini-3.8-flash", "variant": "reasoning-low" }, "provider_options": { "generation_config": { "thinking_level": "low" } } },
+    { "model_driver": "gemini", "variant": "reasoning-medium", "match": { "provider_model_id": "gemini-3.8-flash", "variant": "reasoning-medium" }, "provider_options": { "generation_config": { "thinking_level": "medium" } } },
+    { "model_driver": "gemini", "variant": "reasoning-high", "match": { "provider_model_id": "gemini-3.8-flash", "variant": "reasoning-high" }, "provider_options": { "generation_config": { "thinking_level": "high" } } }
   ]
 }

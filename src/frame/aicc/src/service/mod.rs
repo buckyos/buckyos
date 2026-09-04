@@ -8,7 +8,8 @@ use buckyos_api::{
     AudioEnhanceRequest, AudioEnhanceResponse, AudioMusicRequest, AudioMusicResponse,
     AudioSpeechRecognitionRequest, AudioSpeechRecognitionResponse, AudioTextToSpeechRequest,
     AudioTextToSpeechResponse, BuckyOSRuntimeType, CancelResponse, ComputerUseRequest,
-    ComputerUseResponse, CreateTaskExecutor, CreateTaskReq, DriverMetadataRuntimeApply,
+    AckControlReq, ActorRef, ComputerUseResponse, CreateDelegatedTaskReq,
+    DriverMetadataRuntimeApply,
     DriverMetadataUpdateSetReq, DriverMetadataUpdateSetResponse, DriverMetadataUpdateStatus,
     DriverMetadataUpdateView, EmbeddingMultimodalRequest, EmbeddingMultimodalResponse,
     EmbeddingTextRequest, EmbeddingTextResponse, ImageBackgroundRemoveRequest,
@@ -27,7 +28,9 @@ use buckyos_api::{
     RerankResponse, RouteFallbackAttempt, RouteResolveRequest, RouteResolveResponse, RouteTrace,
     RoutingGetRequest, RoutingGetResponse, RoutingUpdateRequest, RoutingUpdateResponse,
     ServiceReloadSettingsRequest, ServiceReloadSettingsResponse, SystemConfigClient,
-    SystemConfigError, TaskManagerClient, TextToImageHelperRequest, TextToImageInvokeRequest,
+    RequestControlResult, RequestDelegatedControlReq, RunnerWriteEnvelope, SystemConfigError,
+    TaskControlAction, TaskExecutor, TaskManagerClient, TextToImageHelperRequest,
+    TextToImageInvokeRequest,
     TextToImageInvokeResponse, UsageQueryOutputMode, UsageQueryTimeRange, VideoExtendRequest,
     VideoExtendResponse, VideoImageToVideoRequest, VideoImageToVideoResponse,
     VideoTextToVideoRequest, VideoTextToVideoResponse, VideoToVideoRequest, VideoToVideoResponse,
@@ -70,6 +73,7 @@ use crate::protocol::{
     AdapterStatus, CodecContext, CodecLimits, CodecRegistry, CredentialKind, ExecutionMode,
     HttpTransport, HttpTransportConfig, MaterializedResource as CodecMaterializedResource,
     NativeTaskInput, NativeTaskOperation, NativeTaskOutput, ProtocolError, ProtocolErrorKind,
+    ProtocolOutput,
 };
 use crate::provider::{
     builtin_provider_codecs, builtin_provider_registry, resolve_sn_provider_instance_with_config,
@@ -80,9 +84,10 @@ use crate::provider::{
     ProviderRuntimeManager, SnCredentialBroker, SnProviderInstanceInput, StaticCredentialResolver,
 };
 use crate::resource::{
-    NamedDataMgrResourceStore, ReqwestUrlResourceFetcher, ResourceAccessContext,
-    ResourceAccessOperation, ResourceAuthorizer, ResourceError, ResourceFailure, ResourceLimits,
-    ResourceManager, ResourceStore, ResourceTarget, UrlResourceFetcher,
+    ArtifactSpec, EmbeddingArtifactMetadata, NamedDataMgrResourceStore, ReqwestUrlResourceFetcher,
+    ResourceAccessContext, ResourceAccessOperation, ResourceAuthorizer, ResourceError,
+    ResourceFailure, ResourceLimits, ResourceManager, ResourceStore, ResourceTarget,
+    UrlResourceFetcher,
 };
 use crate::routing::policy::{
     CredentialScope, ProviderPrivacy, ProviderTrustLevel, ProviderTrustView, ProviderType,
@@ -224,16 +229,16 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
     .map_err(anyhow::Error::msg)?;
     api_runtime.login().await.map_err(anyhow::Error::msg)?;
     api_runtime
+        .renew_token_from_verify_hub()
+        .await
+        .map_err(anyhow::Error::msg)?;
+    api_runtime
         .set_main_service_port(buckyos_api::AICC_SERVICE_SERVICE_PORT)
         .await;
     let data_dir = api_runtime.get_data_folder().map_err(anyhow::Error::msg)?;
     let buckyos_root_dir = api_runtime.buckyos_root_dir.clone();
     let system_config_url = api_runtime.get_system_config_url();
     let service_token = api_runtime.get_session_token().await;
-    let task_manager = api_runtime
-        .get_task_mgr_client()
-        .await
-        .map_err(anyhow::Error::msg)?;
     let named_store = api_runtime
         .get_named_store()
         .await
@@ -273,7 +278,6 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
     let metadata_overrides = Arc::new(ProductionMetadataOverrideLoader::new(
         buckyos_root_dir,
         system_config_url.clone(),
-        service_token.clone(),
     ));
     let metadata_sources = MetadataSourceManager::new(metadata_overrides)
         .context("initialize metadata source manager")?;
@@ -304,14 +308,21 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
     let runtime = RuntimeState::bootstrap(settings, runtime_inputs, factory)
         .await
         .context("bootstrap AICC runtime")?;
+    let resource_store: Arc<dyn ResourceStore> =
+        Arc::new(NamedDataMgrResourceStore::new(named_store));
+    let url_fetcher: Arc<dyn UrlResourceFetcher> = Arc::new(
+        ReqwestUrlResourceFetcher::new().context("initialize AICC URL resource fetcher")?,
+    );
     let service_runtime: Arc<dyn ServiceRuntime> =
         Arc::new(RuntimeServiceAdapter::new(runtime.clone(), codecs.clone()));
     let execution = Arc::new(ExecutionEngine::new(
         storage.clone(),
-        Arc::new(TaskManagerExecutionPort::new(task_manager)),
+        Arc::new(TaskManagerExecutionPort::new()),
         Arc::new(RuntimeProviderExecutionPort::new(
             runtime.clone(),
             codecs.clone(),
+            resource_store.clone(),
+            url_fetcher.clone(),
         )),
         storage.clone(),
     ));
@@ -320,12 +331,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         let _ = recovery.recover().await;
     });
     let quota_factory = Arc::new(QuotaSourceFactory::new(Arc::new(
-        SystemConfigQuotaTruthPort::new(
-            &system_config_url,
-            &service_token,
-            storage.clone(),
-            runtime.clone(),
-        ),
+        SystemConfigQuotaTruthPort::new(storage.clone(), runtime.clone()),
     )));
     let inference = Arc::new(RuntimeInferencePort::new(
         runtime.clone(),
@@ -333,8 +339,8 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         quota_factory.clone(),
         execution.clone(),
         storage.clone(),
-        Arc::new(NamedDataMgrResourceStore::new(named_store)),
-        Arc::new(ReqwestUrlResourceFetcher::new().context("initialize AICC URL resource fetcher")?),
+        resource_store,
+        url_fetcher,
     ));
     let service = AiccService::new(
         Arc::new(RuntimeAuthorizer),
@@ -446,6 +452,8 @@ struct InferenceRouteInput {
     disable: buckyos_api::ModelDisable,
     policy: Option<buckyos_api::RoutePolicy>,
     session_overlay: Option<buckyos_api::AiccRouteOverlay>,
+    estimated_input_tokens: Option<u64>,
+    estimated_output_tokens: Option<u64>,
 }
 
 struct RoutedInference {
@@ -500,12 +508,19 @@ impl RuntimeInferencePort {
         };
         let trace_id = input.trace_id.unwrap_or_else(next_inference_id);
         let request_id = input.request_id.unwrap_or_else(next_inference_id);
-        let provider_names = snapshot
-            .models
-            .model_views()
-            .into_iter()
-            .map(|model| model.provider_instance_name)
-            .collect::<Vec<_>>();
+        let provider_names = if input.model.contains('@') {
+            vec![crate::model::ExactModelName::parse(&input.model)
+                .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))?
+                .provider_instance_name()
+                .to_owned()]
+        } else {
+            snapshot
+                .models
+                .model_views()
+                .into_iter()
+                .map(|model| model.provider_instance_name)
+                .collect::<Vec<_>>()
+        };
         let quota = self
             .quota
             .prepare_route(
@@ -519,12 +534,19 @@ impl RuntimeInferencePort {
                 inference_error(AiccErrorCode::PolicyDenied, "quota truth is unavailable")
             })?;
         let runtime_states = candidate_runtime_states(snapshot.as_ref(), caller).await;
+        let route_models = input
+            .session_overlay
+            .as_ref()
+            .map(|overlay| snapshot.models.with_session_overlay(overlay))
+            .transpose()
+            .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))?;
+        let models = route_models.as_ref().unwrap_or(snapshot.models.as_ref());
         let session_overlay = input
             .session_overlay
             .as_ref()
             .or(snapshot.settings.session_config.as_ref());
         let policy = policy_engine_for_route(
-            snapshot.models.as_ref(),
+            models,
             &input.model,
             session_overlay,
             input.policy.as_ref(),
@@ -541,7 +563,9 @@ impl RuntimeInferencePort {
         );
         request.requirements = input.requirements;
         request.disable = input.disable;
-        let decision = Router::new(snapshot.models.as_ref(), &policy, &runtime_states)
+        request.estimated_input_tokens = input.estimated_input_tokens;
+        request.estimated_output_tokens = input.estimated_output_tokens;
+        let decision = Router::new(models, &policy, &runtime_states)
             .route(&request)
             .map_err(|error| inference_error(AiccErrorCode::NoCandidateModel, error.to_string()))?;
         Ok(RoutedInference {
@@ -572,12 +596,7 @@ impl RuntimeInferencePort {
         let credential = provider.resolve_credential().await.map_err(|error| {
             inference_error(AiccErrorCode::NoProviderAvailable, error.to_string())
         })?;
-        let provider_rules_id = provider.config.provider_rules_id.clone().ok_or_else(|| {
-            inference_error(
-                AiccErrorCode::InternalError,
-                "selected Provider has no provider rules",
-            )
-        })?;
+        let provider_rules_id = provider.config.provider_rules_id.clone();
         let transport = HttpTransportConfig::default();
         let pricing = provider
             .inventory
@@ -636,15 +655,16 @@ impl RuntimeInferencePort {
         request_id: &str,
         call: &mut ResolvedProviderCall,
     ) -> Result<(), RPCErrors> {
-        if call.resource_requirements.is_empty() {
-            return Ok(());
-        }
         let context = ResourceAccessContext::new(
             caller.tenant_id.clone(),
             caller.user_id.clone(),
             request_id.to_string(),
         )
         .map_err(resource_rpc_error)?;
+        call.resource_access_context = Some(context.clone());
+        if call.resource_requirements.is_empty() {
+            return Ok(());
+        }
         let manager = ResourceManager::new(
             Arc::new(AuthenticatedResourceAuthorizer {
                 tenant_id: caller.tenant_id.clone(),
@@ -728,6 +748,8 @@ impl InferencePort for RuntimeInferencePort {
                     disable: request.disable,
                     policy: request.policy,
                     session_overlay: request.session_overlay,
+                    estimated_input_tokens: request.estimated_input_tokens,
+                    estimated_output_tokens: request.estimated_output_tokens,
                 },
             )
             .await?;
@@ -737,7 +759,8 @@ impl InferencePort for RuntimeInferencePort {
     async fn invoke(&self, caller: &AuthorizedCaller, call: AiccCall) -> Result<Value, RPCErrors> {
         let route_input = route_input_for_call(&call)?;
         let request_model = route_input.model.clone();
-        let routed = self.route(caller, route_input).await?;
+        let has_explicit_trace_id = call.trace_id().is_some();
+        let mut routed = self.route(caller, route_input).await?;
         let exact_call = exact_call_for_route(call, &routed.decision.selected.exact_model)?;
         let canonical_body = call_params(&exact_call)?;
         let idempotency_key = canonical_body
@@ -745,6 +768,19 @@ impl InferencePort for RuntimeInferencePort {
             .and_then(Value::as_str)
             .map(str::to_owned)
             .unwrap_or_else(|| routed.request_id.clone());
+        if !has_explicit_trace_id {
+            let digest = Sha256::digest(
+                format!("{}\0{}\0{}", caller.tenant_id, exact_call.method(), idempotency_key)
+                    .as_bytes(),
+            );
+            routed.trace_id = format!(
+                "aicc-idem-{}",
+                digest[..16]
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            );
+        }
         let parent_task_id = canonical_body
             .pointer("/task_options/parent_id")
             .and_then(Value::as_str)
@@ -811,6 +847,13 @@ impl InferencePort for RuntimeInferencePort {
             })
             .await
             .map_err(|error| inference_error(AiccErrorCode::InternalError, error.to_string()))?;
+        if receipt.provider_task_ref.is_some() && !receipt.state.is_terminal() {
+            let execution = Arc::clone(&self.execution);
+            let task_id = receipt.task_id.clone();
+            tokio::spawn(async move {
+                let _ = execution.drive_native(&task_id).await;
+            });
+        }
         inference_response(receipt, &routed.decision)
     }
 }
@@ -936,6 +979,8 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
             disable: request.disable.clone(),
             policy: request.policy.clone(),
             session_overlay: request.session_overlay.clone(),
+            estimated_input_tokens: None,
+            estimated_output_tokens: request.max_output_tokens,
         }),
         AiccCall::HelperTextToImage(request) => Ok(InferenceRouteInput {
             trace_id: request.trace_id.clone(),
@@ -946,6 +991,8 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
             disable: request.disable.clone(),
             policy: request.policy.clone(),
             session_overlay: request.session_overlay.clone(),
+            estimated_input_tokens: None,
+            estimated_output_tokens: None,
         }),
         AiccCall::RouteResolve(_) => Err(inference_error(
             AiccErrorCode::InvalidMethod,
@@ -969,6 +1016,8 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
                 disable: Default::default(),
                 policy: None,
                 session_overlay: None,
+                estimated_input_tokens: None,
+                estimated_output_tokens: None,
             })
         }
     }
@@ -1163,6 +1212,12 @@ fn inference_response(
             "usage".into(),
             serde_json::to_value(output.usage).expect("AiUsage serializes"),
         );
+        if let Some(cost) = output.cost {
+            response.insert(
+                "cost".into(),
+                serde_json::to_value(cost).expect("AiCost serializes"),
+            );
+        }
     }
     response.insert(
         "route_trace".into(),
@@ -2115,23 +2170,23 @@ struct QuotaTruthRecord {
 }
 
 pub(crate) struct SystemConfigQuotaTruthPort {
-    client: SystemConfigClient,
     storage: Arc<AiccStorage>,
     runtime: Arc<RuntimeState>,
 }
 
 impl SystemConfigQuotaTruthPort {
-    pub(crate) fn new(
-        service_url: &str,
-        service_token: &str,
-        storage: Arc<AiccStorage>,
-        runtime: Arc<RuntimeState>,
-    ) -> Self {
-        Self {
-            client: SystemConfigClient::new(Some(service_url), Some(service_token)),
-            storage,
-            runtime,
-        }
+    pub(crate) fn new(storage: Arc<AiccStorage>, runtime: Arc<RuntimeState>) -> Self {
+        Self { storage, runtime }
+    }
+
+    async fn client(&self) -> Result<SystemConfigClient, QuotaSourceError> {
+        let runtime = get_buckyos_api_runtime().map_err(|_| QuotaSourceError)?;
+        let service_url = runtime.get_system_config_url();
+        let service_token = runtime.get_session_token().await;
+        Ok(SystemConfigClient::new(
+            Some(service_url.as_str()),
+            Some(service_token.as_str()),
+        ))
     }
 }
 
@@ -2170,7 +2225,12 @@ impl QuotaTruthPort for SystemConfigQuotaTruthPort {
             "services/aicc/quota/{}/{}/{}/{}/{}/{}",
             lookup.caller.tenant_id, lookup.caller.user_id, app, capability, method, provider
         );
-        let value = self.client.get(&key).await.map_err(|_| QuotaSourceError)?;
+        let value = self
+            .client()
+            .await?
+            .get(&key)
+            .await
+            .map_err(|_| QuotaSourceError)?;
         let record: QuotaTruthRecord =
             serde_json::from_str(&value.value).map_err(|_| QuotaSourceError)?;
         validate_quota_record(&record)?;
@@ -2746,11 +2806,112 @@ impl ServiceRuntime for RuntimeServiceAdapter {
 pub(crate) struct RuntimeProviderExecutionPort {
     runtime: Arc<RuntimeState>,
     codecs: Arc<CodecRegistry>,
+    resource_store: Arc<dyn ResourceStore>,
+    url_fetcher: Arc<dyn UrlResourceFetcher>,
 }
 
 impl RuntimeProviderExecutionPort {
-    pub(crate) fn new(runtime: Arc<RuntimeState>, codecs: Arc<CodecRegistry>) -> Self {
-        Self { runtime, codecs }
+    pub(crate) fn new(
+        runtime: Arc<RuntimeState>,
+        codecs: Arc<CodecRegistry>,
+        resource_store: Arc<dyn ResourceStore>,
+        url_fetcher: Arc<dyn UrlResourceFetcher>,
+    ) -> Self {
+        Self {
+            runtime,
+            codecs,
+            resource_store,
+            url_fetcher,
+        }
+    }
+
+    async fn materialize_embedding_output(
+        &self,
+        call: &ResolvedProviderCall,
+        mut output: ProtocolOutput,
+    ) -> Result<ProtocolOutput, ProtocolError> {
+        let AiccCall::EmbeddingText(request) = &call.input.canonical_request else {
+            return Ok(output);
+        };
+        let data = output
+            .value
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ProtocolError::invalid_response("embedding output is missing data"))?;
+        let encoded = serde_json::to_vec(&output.value).map_err(|_| {
+            ProtocolError::invalid_configuration("embedding output could not be serialized")
+        })?;
+        let materialize = match request.prefer_artifact.as_ref() {
+            Some(Value::Bool(value)) => *value,
+            Some(Value::String(value)) if value == "auto" => {
+                request.items.len() > 100 || encoded.len() > 1024 * 1024
+            }
+            None => request.items.len() > 100 || encoded.len() > 1024 * 1024,
+            Some(_) => {
+                return Err(ProtocolError::invalid_request(
+                    "prefer_artifact must be true, false, or auto",
+                ));
+            }
+        };
+        if !materialize {
+            return Ok(output);
+        }
+        let first = data.first().ok_or_else(|| {
+            ProtocolError::invalid_response("embedding output must contain at least one row")
+        })?;
+        let dimensions = first
+            .get("embedding")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .filter(|value| *value > 0)
+            .ok_or_else(|| ProtocolError::invalid_response("embedding dimensions are invalid"))?;
+        let space = first
+            .get("embedding_space_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ProtocolError::invalid_response("embedding space is missing"))?;
+        if data.iter().any(|row| {
+            row.get("embedding").and_then(Value::as_array).map(Vec::len) != Some(dimensions)
+                || row.get("embedding_space_id").and_then(Value::as_str) != Some(space)
+        }) {
+            return Err(ProtocolError::invalid_response(
+                "embedding rows do not share dimensions and space",
+            ));
+        }
+        let context = call.resource_access_context.as_ref().ok_or_else(|| {
+            ProtocolError::invalid_configuration("embedding artifact context is missing")
+        })?;
+        let manager = ResourceManager::new(
+            Arc::new(AuthenticatedResourceAuthorizer {
+                tenant_id: context.tenant_id.clone(),
+                caller_id: context.caller_id.clone(),
+            }),
+            self.resource_store.clone(),
+            self.url_fetcher.clone(),
+            ResourceLimits::default(),
+        )
+        .map_err(|_| ProtocolError::invalid_configuration("artifact writer is unavailable"))?;
+        let artifact = manager
+            .write_artifact(
+                context,
+                &encoded,
+                ArtifactSpec {
+                    name: format!("embedding-{}.json", context.request_id),
+                    mime: "application/json".to_string(),
+                    attributes: Map::new(),
+                    embedding: Some(EmbeddingArtifactMetadata {
+                        rows: data.len() as u64,
+                        dimensions: dimensions as u64,
+                        space: space.to_string(),
+                    }),
+                },
+            )
+            .await
+            .map_err(|_| ProtocolError::invalid_configuration("embedding artifact write failed"))?;
+        let resource = artifact.resource.clone();
+        output.value = json!({"data": [], "data_resource": resource});
+        output.artifacts.push(artifact);
+        Ok(output)
     }
 
     fn transport(limits: &CodecLimits) -> Result<HttpTransport, ProtocolError> {
@@ -2955,6 +3116,10 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                     .map_err(ProviderStartFailure::after_accept)?;
                 match decoded {
                     crate::protocol::ProtocolExecution::Immediate(output) => {
+                        let output = self
+                            .materialize_embedding_output(call, output)
+                            .await
+                            .map_err(ProviderStartFailure::after_accept)?;
                         Ok(ProviderExecution::Immediate(output))
                     }
                     _ => Err(ProviderStartFailure::after_accept(
@@ -3059,24 +3224,48 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
         binding: &PinnedProviderTask,
         cancellation: crate::protocol::Cancellation,
     ) -> Result<NativeTaskPoll, NativeTaskResumeError> {
-        match self
+        return match self
             .native_request(binding, NativeTaskOperation::Status, Some(&cancellation))
             .await?
         {
-            NativeTaskOutput::Status { state, .. }
-                if state == crate::protocol::NativeTaskState::Succeeded => {}
+            NativeTaskOutput::Status {
+                state,
+                result_ref,
+                ..
+            } if state == crate::protocol::NativeTaskState::Succeeded => {
+                let mut result_binding = binding.clone();
+                if let Some(result_ref) = result_ref {
+                    result_binding.remote_task_id = Some(result_ref);
+                }
+                match self
+                    .native_request(
+                        &result_binding,
+                        NativeTaskOperation::Result,
+                        Some(&cancellation),
+                    )
+                    .await?
+                {
+                    NativeTaskOutput::Result(output) => Ok(NativeTaskPoll::Complete(output)),
+                    _ => Err(NativeTaskResumeError::Protocol(
+                        ProtocolError::invalid_response(
+                            "native result returned an unexpected response",
+                        ),
+                    )),
+                }
+            }
             NativeTaskOutput::Status {
                 state:
                     state @ (crate::protocol::NativeTaskState::Submitted
                     | crate::protocol::NativeTaskState::Queued
                     | crate::protocol::NativeTaskState::Running),
+                retry_after,
                 ..
-            } => return Ok(NativeTaskPoll::Pending(state, None)),
+            } => Ok(NativeTaskPoll::Pending(state, None, retry_after)),
             NativeTaskOutput::Status {
                 state: crate::protocol::NativeTaskState::Cancelled,
                 ..
             } => {
-                return Ok(NativeTaskPoll::Failed(ProtocolError::new(
+                Ok(NativeTaskPoll::Failed(ProtocolError::new(
                     ProtocolErrorKind::Cancelled,
                     "native Provider task was cancelled",
                 )))
@@ -3085,25 +3274,16 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                 state: crate::protocol::NativeTaskState::Failed,
                 ..
             } => {
-                return Ok(NativeTaskPoll::Failed(ProtocolError::invalid_response(
+                Ok(NativeTaskPoll::Failed(ProtocolError::invalid_response(
                     "native Provider task reported failure",
                 )))
             }
             _ => {
-                return Err(NativeTaskResumeError::Protocol(
+                Err(NativeTaskResumeError::Protocol(
                     ProtocolError::invalid_response("native status returned an unexpected result"),
                 ))
             }
-        }
-        match self
-            .native_request(binding, NativeTaskOperation::Result, Some(&cancellation))
-            .await?
-        {
-            NativeTaskOutput::Result(output) => Ok(NativeTaskPoll::Complete(output)),
-            _ => Err(NativeTaskResumeError::Protocol(
-                ProtocolError::invalid_response("native result returned an unexpected response"),
-            )),
-        }
+        };
     }
 
     async fn cancel_native(
@@ -3140,13 +3320,19 @@ fn credential_fingerprint(reference: &str) -> String {
         .collect()
 }
 
-pub(crate) struct TaskManagerExecutionPort {
-    client: TaskManagerClient,
-}
+pub(crate) struct TaskManagerExecutionPort;
 
 impl TaskManagerExecutionPort {
-    pub(crate) fn new(client: TaskManagerClient) -> Self {
-        Self { client }
+    pub(crate) fn new() -> Self {
+        Self
+    }
+
+    async fn client(&self) -> Result<TaskManagerClient, buckyos_api::AiccError> {
+        get_buckyos_api_runtime()
+            .map_err(task_manager_error)?
+            .get_task_mgr_client()
+            .await
+            .map_err(task_manager_error)
     }
 }
 
@@ -3154,8 +3340,10 @@ impl TaskManagerExecutionPort {
 impl TaskManagerPort for TaskManagerExecutionPort {
     async fn ensure_task(&self, spec: TaskSpec) -> Result<TaskBinding, buckyos_api::AiccError> {
         let task = self
-            .client
-            .create_task(CreateTaskReq {
+            .client()
+            .await?
+            .create_delegated_task(CreateDelegatedTaskReq {
+                task_id: None,
                 name: format!("AICC {}", spec.method),
                 schema_id: AICC_COMPUTE_TASK_SCHEMA_ID.to_string(),
                 schema_version: None,
@@ -3167,9 +3355,15 @@ impl TaskManagerPort for TaskManagerExecutionPort {
                         "request": spec.input,
                     }
                 }),
-                executor: CreateTaskExecutor::SelfApp {
-                    app_instance_id: None,
-                },
+                creator: ActorRef::new(
+                    spec.user_id,
+                    spec.caller_app_id.ok_or_else(|| {
+                        task_manager_error(RPCErrors::ReasonError(
+                            "AICC task caller app identity is unavailable".to_string(),
+                        ))
+                    })?,
+                ),
+                runner_app_instance_id: None,
                 parent_id: spec.parent_id,
                 child_control_policy: None,
                 policy_preset: None,
@@ -3195,12 +3389,14 @@ impl TaskManagerPort for TaskManagerExecutionPort {
         data: Value,
     ) -> Result<(), buckyos_api::AiccError> {
         if matches!(state, ExecutionState::Running) {
-            self.client
+            self.client()
+                .await?
                 .runner_start(task_id)
                 .await
                 .map_err(task_manager_error)?;
         }
-        self.client
+        self.client()
+            .await?
             .runner_progress(task_id, Some(data), None)
             .await
             .map(|_| ())
@@ -3212,15 +3408,20 @@ impl TaskManagerPort for TaskManagerExecutionPort {
         task_id: &str,
         output: &ExecutionOutput,
     ) -> Result<(), buckyos_api::AiccError> {
-        self.client
+        self.client()
+            .await?
             .runner_complete(
                 task_id,
-                serde_json::to_value(output).map_err(|_| {
-                    buckyos_api::AiccError::new(
-                        buckyos_api::AiccErrorCode::InternalError,
-                        "execution result could not be serialized",
-                    )
-                })?,
+                json!({
+                    "result": {
+                        "output": serde_json::to_value(output).map_err(|_| {
+                            buckyos_api::AiccError::new(
+                                buckyos_api::AiccErrorCode::InternalError,
+                                "execution result could not be serialized",
+                            )
+                        })?
+                    }
+                }),
             )
             .await
             .map(|_| ())
@@ -3232,7 +3433,8 @@ impl TaskManagerPort for TaskManagerExecutionPort {
         task_id: &str,
         error: &buckyos_api::AiccError,
     ) -> Result<(), buckyos_api::AiccError> {
-        self.client
+        self.client()
+            .await?
             .runner_fail(
                 task_id,
                 error.code.as_str(),
@@ -3244,16 +3446,63 @@ impl TaskManagerPort for TaskManagerExecutionPort {
             .map_err(task_manager_error)
     }
 
-    async fn cancel_task(&self, task_id: &str) -> Result<(), buckyos_api::AiccError> {
-        self.client
-            .cancel_task(task_id, false)
+    async fn cancel_task(
+        &self,
+        task_id: &str,
+        user_id: &str,
+        caller_app_id: &str,
+    ) -> Result<(), buckyos_api::AiccError> {
+        let client = self.client().await?;
+        let request_id = format!("aicc-cancel-{}", next_inference_id());
+        let requested = client
+            .request_delegated_control(RequestDelegatedControlReq {
+                controller: ActorRef::new(user_id, caller_app_id),
+                task_id: task_id.to_string(),
+                action: TaskControlAction::Cancel,
+                request_id: request_id.clone(),
+                expected_revision: None,
+            })
+            .await
+            .map_err(task_manager_error)?;
+        let task = match requested {
+            RequestControlResult::Task { task } => task,
+            RequestControlResult::Batch { .. } => {
+                return Err(task_manager_error(RPCErrors::ReasonError(
+                    "TaskMgr returned a batch result for a single task cancellation".to_string(),
+                )));
+            }
+        };
+        let app_instance_id = match &task.executor {
+            TaskExecutor::App {
+                app_instance_id, ..
+            } => app_instance_id.clone(),
+            _ => None,
+        };
+        client
+            .ack_control(AckControlReq {
+                envelope: RunnerWriteEnvelope {
+                    task_id: task.task_id,
+                    app_instance_id,
+                    runner_epoch: task.runner_epoch,
+                    expected_revision: task.revision,
+                },
+                request_id,
+                applied: true,
+                reject_reason: None,
+            })
             .await
             .map(|_| ())
             .map_err(task_manager_error)
     }
 }
 
-fn task_manager_error(_error: RPCErrors) -> buckyos_api::AiccError {
+fn task_manager_error(error: RPCErrors) -> buckyos_api::AiccError {
+    if error.to_string().contains(buckyos_api::TASK_ERR_IDEMPOTENCY_CONFLICT) {
+        return buckyos_api::AiccError::new(
+            buckyos_api::AiccErrorCode::IdempotencyConflict,
+            "idempotency key was already used with a different canonical request body",
+        );
+    }
     buckyos_api::AiccError::new(
         buckyos_api::AiccErrorCode::InternalError,
         "TaskMgr operation failed",
@@ -4473,6 +4722,54 @@ mod tests {
                 buckyos_api::AiccExecutionMode::Stream,
                 buckyos_api::AiccExecutionMode::Stream,
                 buckyos_api::AiccExecutionMode::Immediate,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn krpc_dispatch_preserves_stream_mode_for_typed_and_helper_calls() {
+        let fixture = fixture(false);
+        let inference = fixture.inference.clone();
+        let server = AiccHttpServer::new(fixture.service);
+
+        let mut typed = LlmChatInvokeRequest::new("model-a@primary", Vec::new());
+        typed.execution_mode = buckyos_api::AiccExecutionMode::Stream;
+        let typed_response = server
+            .handle_rpc_call(
+                RPCRequest {
+                    method: buckyos_api::ai_methods::CHAT_COMPLETIONS_CREATE.to_string(),
+                    params: serde_json::to_value(typed).unwrap(),
+                    seq: 18,
+                    token: Some("caller-token".to_string()),
+                    trace_id: Some("gateway-typed-stream".to_string()),
+                },
+                "127.0.0.1".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(typed_response.seq, 18);
+
+        let mut helper = LlmChatHelperRequest::new("llm.chat", Vec::new());
+        helper.execution_mode = buckyos_api::AiccExecutionMode::Stream;
+        let helper_response = server
+            .handle_rpc_call(
+                RPCRequest {
+                    method: buckyos_api::ai_methods::HELPER_LLM_CHAT.to_string(),
+                    params: serde_json::to_value(helper).unwrap(),
+                    seq: 19,
+                    token: Some("caller-token".to_string()),
+                    trace_id: Some("gateway-helper-stream".to_string()),
+                },
+                "127.0.0.1".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(helper_response.seq, 19);
+        assert_eq!(
+            inference.execution_modes.lock().await.as_slice(),
+            [
+                buckyos_api::AiccExecutionMode::Stream,
+                buckyos_api::AiccExecutionMode::Stream,
             ]
         );
     }

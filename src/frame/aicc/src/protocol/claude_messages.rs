@@ -10,6 +10,7 @@ use base64::Engine;
 use buckyos_api::{
     features, AiContent, AiMessage, AiRole, AiToolCall, AiToolResultContent, AiUsage, AiccCall,
     AiccExecutionMode, ApiType, LlmChatInvokeRequest, LlmResponseFormatType, ResourceRef,
+    VisionCaptionRequest, VisionOcrRequest,
 };
 use futures_util::{stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
@@ -30,12 +31,21 @@ const CLAUDE_PROVIDER_NAMESPACE: &str = "claude";
 #[derive(Debug, Clone)]
 pub(crate) struct ClaudeMessagesCodec {
     descriptor: OperationDescriptor,
+    api_type: ApiType,
 }
 
 impl ClaudeMessagesCodec {
     pub(crate) fn new() -> Self {
         Self {
             descriptor: claude_messages_operation_descriptor(),
+            api_type: ApiType::Llm,
+        }
+    }
+
+    pub(crate) fn new_for(api_type: ApiType) -> Self {
+        Self {
+            descriptor: claude_messages_operation_descriptor(),
+            api_type,
         }
     }
 
@@ -182,11 +192,15 @@ impl OperationCodec for ClaudeMessagesCodec {
     }
 
     fn api_type(&self) -> ApiType {
-        ApiType::Llm
+        self.api_type
     }
 
     fn execution_modes(&self) -> BTreeSet<ExecutionMode> {
-        BTreeSet::from([ExecutionMode::Immediate, ExecutionMode::Stream])
+        self.descriptor
+            .binding(self.api_type)
+            .expect("Claude Messages codec binding")
+            .execution_modes
+            .clone()
     }
 
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
@@ -195,6 +209,12 @@ impl OperationCodec for ClaudeMessagesCodec {
             .validate_for(self.descriptor.binding(call.api_type)?)?;
         match &call.input.canonical_request {
             AiccCall::ChatCompletionsCreate(request) => self.encode_chat(request, call),
+            AiccCall::VisionOcr(request) if self.api_type == ApiType::VisionOcr => {
+                self.encode_chat(&ocr_chat_request(request), call)
+            }
+            AiccCall::VisionCaption(request) if self.api_type == ApiType::VisionCaption => {
+                self.encode_chat(&caption_chat_request(request), call)
+            }
             _ => Err(ProtocolError::invalid_request(
                 "Claude Messages only accepts chat.completions.create",
             )),
@@ -211,7 +231,8 @@ impl OperationCodec for ClaudeMessagesCodec {
             )
             .with_request_id(Some(response.request_id)));
         }
-        decode_immediate_response(response)
+        let execution = decode_immediate_response(response)?;
+        Ok(normalize_claude_api_output(execution, self.api_type))
     }
 
     async fn decode_stream(
@@ -234,12 +255,88 @@ pub(crate) fn claude_messages_operation_descriptor() -> OperationDescriptor {
     ]);
     OperationDescriptor {
         operation_id: CLAUDE_MESSAGES_OPERATION_ID.to_string(),
-        bindings: vec![binding],
+        bindings: vec![
+            binding,
+            OperationBinding::new(ApiType::VisionOcr, [ExecutionMode::Immediate]),
+            OperationBinding::new(ApiType::VisionCaption, [ExecutionMode::Immediate]),
+        ],
         supports_cancel: false,
         supports_webhook: false,
         max_request_bytes: MAX_REQUEST_BYTES,
         max_response_bytes: MAX_RESPONSE_BYTES,
     }
+}
+
+fn ocr_chat_request(request: &VisionOcrRequest) -> LlmChatInvokeRequest {
+    vision_chat_request(
+        &request.exact_model,
+        request.execution_mode,
+        "Extract all visible text from this document.",
+        AiContent::Document {
+            source: request.document.clone(),
+            title: Some("document".to_string()),
+        },
+    )
+}
+
+fn caption_chat_request(request: &VisionCaptionRequest) -> LlmChatInvokeRequest {
+    vision_chat_request(
+        &request.exact_model,
+        request.execution_mode,
+        "Describe this image accurately.",
+        AiContent::Image {
+            source: request.image.clone(),
+        },
+    )
+}
+
+fn vision_chat_request(
+    exact_model: &str,
+    execution_mode: AiccExecutionMode,
+    prompt: &str,
+    resource: AiContent,
+) -> LlmChatInvokeRequest {
+    let mut request = LlmChatInvokeRequest::new(
+        exact_model,
+        vec![AiMessage::new(
+            AiRole::User,
+            vec![AiContent::Text { text: prompt.to_string() }, resource],
+        )],
+    );
+    request.execution_mode = execution_mode;
+    request.max_output_tokens = Some(4096);
+    request
+}
+
+fn normalize_claude_api_output(execution: ProtocolExecution, api_type: ApiType) -> ProtocolExecution {
+    let ProtocolExecution::Immediate(mut output) = execution else {
+        return execution;
+    };
+    if !matches!(api_type, ApiType::VisionOcr | ApiType::VisionCaption) {
+        return ProtocolExecution::Immediate(output);
+    }
+    let text = output
+        .value
+        .get("message")
+        .and_then(|value| serde_json::from_value::<AiMessage>(value.clone()).ok())
+        .map(|message| {
+            message
+                .content
+                .into_iter()
+                .filter_map(|content| match content {
+                    AiContent::Text { text } => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+    output.value = match api_type {
+        ApiType::VisionOcr => json!({"text":text,"pages":[],"artifacts":{}}),
+        ApiType::VisionCaption => json!({"captions":[{"text":text,"confidence":null}]}),
+        _ => unreachable!(),
+    };
+    ProtocolExecution::Immediate(output)
 }
 
 fn validate_canonical_options(request: &LlmChatInvokeRequest) -> ProtocolResultValue<()> {
@@ -520,6 +617,7 @@ fn apply_resolved_parameters(
     const ALLOWED: &[&str] = &[
         "max_tokens",
         "metadata",
+        "output_config",
         "service_tier",
         "stream",
         "thinking",
@@ -537,7 +635,7 @@ fn apply_resolved_parameters(
         }
         let valid = match name.as_str() {
             "max_tokens" | "top_k" => value.as_u64().is_some(),
-            "metadata" | "thinking" | "tool_choice" => value.is_object(),
+            "metadata" | "output_config" | "thinking" | "tool_choice" => value.is_object(),
             "service_tier" => value.is_string(),
             "stream" => value.is_boolean(),
             _ => false,
@@ -561,6 +659,22 @@ fn is_event_stream(headers: &HeaderMap) -> bool {
 }
 
 fn decode_immediate_response(response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
+    if let Some(content_type) = response.headers.get(CONTENT_TYPE) {
+        let media_type = content_type
+            .to_str()
+            .ok()
+            .and_then(|value| value.split(';').next())
+            .map(str::trim)
+            .unwrap_or_default();
+        if !media_type.eq_ignore_ascii_case("application/json")
+            && !media_type.to_ascii_lowercase().ends_with("+json")
+        {
+            return Err(ProtocolError::invalid_response(
+                "Claude JSON response has an invalid content type",
+            )
+            .with_request_id(Some(response.request_id)));
+        }
+    }
     let value: Value = serde_json::from_slice(&response.body).map_err(|error| {
         ProtocolError::invalid_response(format!("Claude response is not valid JSON: {error}"))
             .with_request_id(Some(response.request_id.clone()))
@@ -1237,7 +1351,14 @@ mod tests {
 
         let mut registry = CodecRegistry::default();
         registry
-            .register(descriptor, vec![Arc::new(codec)])
+            .register(
+                descriptor,
+                vec![
+                    Arc::new(codec),
+                    Arc::new(ClaudeMessagesCodec::new_for(ApiType::VisionOcr)),
+                    Arc::new(ClaudeMessagesCodec::new_for(ApiType::VisionCaption)),
+                ],
+            )
             .unwrap();
         assert!(registry
             .operation_descriptor(
@@ -1433,7 +1554,14 @@ mod tests {
         let descriptor = codec.adapter_descriptor();
         let mut registry = CodecRegistry::default();
         registry
-            .register(descriptor, vec![Arc::new(codec)])
+            .register(
+                descriptor,
+                vec![
+                    Arc::new(codec),
+                    Arc::new(ClaudeMessagesCodec::new_for(ApiType::VisionOcr)),
+                    Arc::new(ClaudeMessagesCodec::new_for(ApiType::VisionCaption)),
+                ],
+            )
             .unwrap();
         let mut output = registry
             .decode_stream(

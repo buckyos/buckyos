@@ -447,17 +447,34 @@ async function providerResponse(
   }
   const includeUsage = scenario !== "missing_usage";
   if (path === "/v1/models") {
+    if (request.headers["anthropic-version"] || request.headers["x-api-key"]) {
+      const minimax = !request.headers["anthropic-version"];
+      const modelIds = minimax
+        ? ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"]
+        : ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"];
+      json(response, 200, {
+        data: modelIds.map((id) => ({
+          id,
+          created_at: "2026-07-24T00:00:00Z",
+          display_name: id,
+          type: "model",
+        })),
+        first_id: modelIds[0],
+        has_more: false,
+        last_id: modelIds[modelIds.length - 1] ?? "",
+      });
+      return;
+    }
     json(response, 200, {
       object: "list",
       data: [
         { id: "gpt-4o-mini", object: "model", owned_by: "mock" },
-        { id: "gpt-5.4", object: "model", owned_by: "mock" },
+        { id: "gpt-5.6", object: "model", owned_by: "mock" },
         { id: "text-embedding-3-small", object: "model", owned_by: "mock" },
-        { id: "gpt-image-1", object: "model", owned_by: "mock" },
-        { id: "whisper-1", object: "model", owned_by: "mock" },
-        { id: "tts-1", object: "model", owned_by: "mock" },
-        { id: "sora-2", object: "model", owned_by: "mock" },
-        { id: "sora-mock-pattern", object: "model", owned_by: "mock" },
+        { id: "gpt-image-2", object: "model", owned_by: "mock" },
+        { id: "gpt-transcribe", object: "model", owned_by: "mock" },
+        { id: "gpt-4o-mini-tts", object: "model", owned_by: "mock" },
+        { id: "gpt-5.6-luna-mock", object: "model", owned_by: "mock" },
       ],
       has_more: false,
     });
@@ -492,7 +509,7 @@ async function providerResponse(
           supportedGenerationMethods: ["predictLongRunning"],
         },
         {
-          name: "models/gemini-omni-flash-preview",
+          name: "models/gemini-omni-1.1-flash",
           displayName: "Gemini Omni Mock",
           supportedGenerationMethods: ["generateContent", "predictLongRunning"],
         },
@@ -509,6 +526,35 @@ async function providerResponse(
   if (path === "/v1/responses") {
     if (scenario === "stream_success" || object(body)?.stream === true) streamOpenAi(response);
     else json(response, 200, openAiResponse(body, includeUsage, scenario));
+    return;
+  }
+  if (path === "/v1beta/interactions" || path === "/interactions") {
+    const serialized = JSON.stringify(body);
+    const structured = JSON.stringify({
+      text: "BUCKYOS-AICC-4827",
+      captions: [{ text: "BUCKYOS-AICC-4827", confidence: 0.99 }],
+      detections: [{
+        label: "marker",
+        score: 0.99,
+        bbox: { format: "xywh", unit: "relative", x: 0.1, y: 0.1, width: 0.8, height: 0.8 },
+      }],
+      masks: [{
+        id: "marker",
+        score: 0.99,
+        mask: { format: "polygon", points: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9]] },
+      }],
+    });
+    const output: Json = serialized.includes("audio") || serialized.includes("speech")
+      ? { type: "audio", data: "UklGRm1vY2stYXVkaW8tV0FWRQ==", mime_type: "audio/wav" }
+      : { type: "text", text: structured };
+    json(response, 200, {
+      id: `interaction_mock_${state.calls}`,
+      object: "interaction",
+      status: "completed",
+      model: model(body),
+      outputs: [output],
+      ...(includeUsage ? { usage: { total_input_tokens: 10, total_output_tokens: 5, total_tokens: 15 } } : {}),
+    });
     return;
   }
   if (path === "/v1/chat/completions") {
@@ -542,14 +588,17 @@ async function providerResponse(
     json(response, 200, {
       created: 1,
       data: [{
-        url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
       }],
       ...(includeUsage ? { usage: usage() } : {}),
     });
     return;
   }
   if (path === "/v1/audio/transcriptions") {
-    json(response, 200, { text: "今天的测试编号是四八二七", ...(includeUsage ? { usage: usage() } : {}) });
+    json(response, 200, {
+      text: "今天的测试编号是四八二七",
+      ...(includeUsage ? { usage: { type: "duration", seconds: 1 } } : {}),
+    });
     return;
   }
   if (path === "/v1/audio/speech") {
@@ -565,7 +614,10 @@ async function providerResponse(
     return;
   }
   if (/:embedContent$/.test(path)) {
-    json(response, 200, { embedding: { values: [0.1, 0.2, 0.3, 0.4] } });
+    json(response, 200, {
+      embedding: { values: [0.1, 0.2, 0.3, 0.4] },
+      usageMetadata: { promptTokenCount: 1, totalTokenCount: 1 },
+    });
     return;
   }
   if (/:batchEmbedContents$/.test(path)) {
@@ -612,9 +664,22 @@ async function providerResponse(
       });
     return;
   }
+  if (/^\/fal-ai\/.+\/requests\/[^/]+\/status$/.test(path)) {
+    const operation = state.operations.get(path) ?? { polls: 0, scenario };
+    operation.polls += 1;
+    state.operations.set(path, operation);
+    json(response, 200, { status: operation.polls < 2 ? "IN_PROGRESS" : "COMPLETED" });
+    return;
+  }
+  if (/^\/fal-ai\/.+\/requests\/[^/]+$/.test(path)) {
+    const mime = path.includes("video") ? "video/mp4" : path.includes("deepfilter") ? "audio/wav" : "image/png";
+    const output = { url: `https://mock.invalid/output.${mime.split("/")[1]}`, content_type: mime };
+    json(response, 200, path.includes("deepfilter") ? { audio_file: output } : { output });
+    return;
+  }
   if (path.startsWith("/fal-ai/")) {
     const requestId = `fal-mock-${state.calls}`;
-    state.operations.set(`/queue/requests/${requestId}/status`, { polls: 0, scenario });
+    state.operations.set(`${path}/requests/${requestId}/status`, { polls: 0, scenario });
     json(response, 200, { request_id: requestId, status: "IN_QUEUE" });
     return;
   }
@@ -667,7 +732,10 @@ const host = parseHost(args);
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    const providerPath = url.pathname.replace(/^\/instance-[ab](?=\/)/, "");
+    const providerPath = url.pathname.replace(
+      /^\/instance-(?:a|b|custom-(?:openai|claude|gemini))(?=\/)/,
+      "",
+    );
     const body = request.method === "POST" ? await readJson(request) : null;
     if (await management(request, response, url.pathname, body)) return;
     const scenario = scenarioFrom(request, body);

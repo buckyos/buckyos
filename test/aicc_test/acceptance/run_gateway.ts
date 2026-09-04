@@ -684,11 +684,20 @@ async function waitForTask(
           `task ${response.task_id} ended ${task.outcome}: ${JSON.stringify(compactFailure(task.error) ?? {})}`,
         );
       }
+      const output = task.result?.result?.output;
+      if (!output || typeof output !== "object" || Array.isArray(output)) {
+        throw new Error(`task ${response.task_id} completed without an AICC result output`);
+      }
+      const execution = output as Record<string, unknown>;
+      const value = execution.value;
       return {
+        ...(value && typeof value === "object" && !Array.isArray(value) ? value : {}),
         task_id: auditTaskId(task, response.task_id),
         task_manager_id: response.task_id,
         status: "succeeded",
-        result: task.result?.result?.output,
+        usage: execution.usage,
+        cost: execution.cost,
+        artifacts: execution.artifacts,
         event_ref: response.event_ref,
       };
     }

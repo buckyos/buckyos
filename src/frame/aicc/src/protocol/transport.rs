@@ -373,6 +373,23 @@ impl StreamingHttpResponse {
 
 impl HttpResponse {
     pub(crate) fn json<T: DeserializeOwned>(&self, max_bytes: usize) -> ProtocolResultValue<T> {
+        if let Some(content_type) = self.headers.get(CONTENT_TYPE) {
+            let media_type = content_type
+                .to_str()
+                .ok()
+                .and_then(|value| value.split(';').next())
+                .map(str::trim)
+                .unwrap_or_default();
+            if !media_type.eq_ignore_ascii_case("application/json")
+                && !media_type.to_ascii_lowercase().ends_with("+json")
+            {
+                return Err(ProtocolError::invalid_response(
+                    "Provider JSON response has an invalid content type",
+                )
+                .with_request_id(Some(self.request_id.clone()))
+                .with_retry_after(self.retry_after));
+            }
+        }
         decode_json(&self.body, max_bytes).map_err(|error| {
             error
                 .with_request_id(Some(self.request_id.clone()))

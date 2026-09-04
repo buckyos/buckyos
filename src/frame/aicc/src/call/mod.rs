@@ -8,10 +8,11 @@ use crate::protocol::{
     ResolvedCredential,
 };
 use crate::routing::{RouteDecision, SelectedRoute};
+use crate::resource::ResourceAccessContext;
 use buckyos_api::{AiccCall, AiccErrorCode, AiccExecutionMode, ApiType, ResourceRef};
 use serde::Serialize;
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
@@ -34,7 +35,7 @@ pub(crate) struct ResolvedPricing {
 
 #[derive(Clone)]
 pub(crate) struct ProviderCallTarget {
-    pub provider_rules_id: String,
+    pub provider_rules_id: Option<String>,
     pub base_url: String,
     pub credential: ResolvedCredential,
     pub limits: CodecLimits,
@@ -69,7 +70,7 @@ pub(crate) struct ResourceRequirement {
 pub(crate) struct LoweringRevisions {
     pub catalog_target_seq: u64,
     pub model_driver_revision_seq: u64,
-    pub provider_rules_revision_seq: u64,
+    pub provider_rules_revision_seq: Option<u64>,
     pub inventory_revision: String,
 }
 
@@ -91,6 +92,7 @@ pub(crate) struct ResolvedProviderCall {
     pub context: CodecContext,
     pub credential: CredentialAudit,
     pub resource_requirements: Vec<ResourceRequirement>,
+    pub resource_access_context: Option<ResourceAccessContext>,
     pub pricing: ResolvedPricing,
     pub revisions: LoweringRevisions,
 }
@@ -333,7 +335,7 @@ impl<'a> CallResolver<'a> {
         target: ProviderCallTarget,
     ) -> Result<ResolvedProviderCall, CallLoweringError> {
         let api_type = call_api_type(canonical_request)?;
-        let execution_mode = call_execution_mode(canonical_request)?;
+        let requested_execution_mode = call_execution_mode(canonical_request)?;
         let method = canonical_request.method().to_owned();
         let exact_model = call_exact_model(canonical_request)?;
         validate_route(&decision.selected, exact_model, api_type)?;
@@ -358,11 +360,18 @@ impl<'a> CallResolver<'a> {
         if let Some(variant) = parsed_exact.variant() {
             identity_context.insert("variant".into(), Value::String(variant.into()));
         }
-        let provider_rule = self.catalog.resolve_provider_rule(
-            &target.provider_rules_id,
-            &decision.selected.provider_model_id,
-            &identity_context,
-        )?;
+        let provider_rule = target
+            .provider_rules_id
+            .as_deref()
+            .map(|rules_id| {
+                self.catalog.resolve_provider_rule(
+                    rules_id,
+                    &decision.selected.provider_model_id,
+                    &identity_context,
+                )
+            })
+            .transpose()?
+            .flatten();
         let operation = self.resolve_operation(
             &decision.selected,
             provider_rule.as_ref(),
@@ -378,12 +387,15 @@ impl<'a> CallResolver<'a> {
                 &Value::Object(rule.action.provider_options.clone().into_iter().collect()),
             );
         }
-        let variant_options = self.resolve_variant(
-            &target.provider_rules_id,
-            &decision.selected,
-            parsed_exact.variant(),
-            &identity_context,
-        )?;
+        let variant_options = match target.provider_rules_id.as_deref() {
+            Some(rules_id) => self.resolve_variant(
+                rules_id,
+                &decision.selected,
+                parsed_exact.variant(),
+                &identity_context,
+            )?,
+            None => BTreeMap::new(),
+        };
         merge_overwrite(
             &mut normalized,
             &Value::Object(variant_options.into_iter().collect()),
@@ -408,7 +420,7 @@ impl<'a> CallResolver<'a> {
                 }
             }
         }
-        apply_execution_mode(&mut normalized, execution_mode)?;
+        apply_execution_mode(&mut normalized, requested_execution_mode)?;
         let rewritten_json = rewrite_canonical_options(&canonical_json, &normalized, option_keys)?;
         let rewritten_request =
             AiccCall::from_method_and_params(&method, rewritten_json.clone())
@@ -429,14 +441,17 @@ impl<'a> CallResolver<'a> {
         let binding = descriptor
             .binding(api_type)
             .map_err(|error| CallLoweringError::UnsupportedOperation(error.to_string()))?;
-        if !binding.execution_modes.contains(&execution_mode) {
+        let Some(execution_mode) = internal_execution_mode(
+            requested_execution_mode,
+            &binding.execution_modes,
+        ) else {
             return Err(CallLoweringError::UnsupportedExecutionMode {
                 adapter_id: decision.selected.protocol_adapter_id.clone(),
                 operation,
                 api_type: api_name.into(),
-                execution_mode: execution_mode_name(execution_mode).into(),
+                execution_mode: execution_mode_name(requested_execution_mode).into(),
             });
-        }
+        };
         input
             .validate_for(binding)
             .map_err(|error| CallLoweringError::InvalidCanonicalRequest(error.to_string()))?;
@@ -451,16 +466,20 @@ impl<'a> CallResolver<'a> {
                 ))
             })?
             .revision_seq;
-        let provider_revision = self
-            .catalog
-            .provider_rules(&target.provider_rules_id)
-            .ok_or_else(|| {
-                CallLoweringError::RouteMismatch(format!(
-                    "provider rules `{}` are absent from the catalog snapshot",
-                    target.provider_rules_id
-                ))
-            })?
-            .revision_seq;
+        let provider_revision = target
+            .provider_rules_id
+            .as_deref()
+            .map(|rules_id| {
+                self.catalog
+                    .provider_rules(rules_id)
+                    .map(|rules| rules.revision_seq)
+                    .ok_or_else(|| {
+                        CallLoweringError::RouteMismatch(format!(
+                            "provider rules `{rules_id}` are absent from the catalog snapshot"
+                        ))
+                    })
+            })
+            .transpose()?;
         let pricing_context = request_match_context(api_name, &operation, &normalized);
         let pricing = resolve_pricing(
             target.pricing,
@@ -499,6 +518,7 @@ impl<'a> CallResolver<'a> {
             context,
             credential,
             resource_requirements: resources,
+            resource_access_context: None,
             pricing,
             revisions: LoweringRevisions {
                 catalog_target_seq: self.catalog.target_revision_seq(),
@@ -518,13 +538,20 @@ impl<'a> CallResolver<'a> {
     ) -> Result<String, CallLoweringError> {
         let empty = BTreeMap::new();
         let mappings = rule.map_or(&empty, |rule| &rule.action.operations);
-        let operation = select_operation(
-            self.codecs,
-            &selected.protocol_adapter_id,
-            mappings,
-            api_type,
-            method,
-        )?;
+        let operation = if mappings.is_empty() {
+            self.codecs
+                .operation_descriptor(&selected.protocol_adapter_id, &selected.operation, api_type)
+                .map_err(|error| CallLoweringError::UnsupportedOperation(error.to_string()))?;
+            selected.operation.clone()
+        } else {
+            select_operation(
+                self.codecs,
+                &selected.protocol_adapter_id,
+                mappings,
+                api_type,
+                method,
+            )?
+        };
         if selected.operation != operation {
             return Err(CallLoweringError::RouteOperationMismatch {
                 routed: selected.operation.clone(),
@@ -743,6 +770,21 @@ fn call_execution_mode(call: &AiccCall) -> Result<ExecutionMode, CallLoweringErr
         AiccExecutionMode::Immediate => ExecutionMode::Immediate,
         AiccExecutionMode::Stream => ExecutionMode::Stream,
     })
+}
+
+fn internal_execution_mode(
+    requested: ExecutionMode,
+    supported: &BTreeSet<ExecutionMode>,
+) -> Option<ExecutionMode> {
+    if supported.contains(&requested) {
+        Some(requested)
+    } else if requested == ExecutionMode::Immediate
+        && supported.contains(&ExecutionMode::NativeTask)
+    {
+        Some(ExecutionMode::NativeTask)
+    } else {
+        None
+    }
 }
 
 fn serialize_call(call: &AiccCall) -> Result<Value, CallLoweringError> {
@@ -1364,7 +1406,7 @@ mod tests {
 
     fn target(secret: &str) -> ProviderCallTarget {
         ProviderCallTarget {
-            provider_rules_id: "openai".into(),
+            provider_rules_id: Some("openai".into()),
             base_url: "https://api.openai.test/v1".into(),
             credential: ResolvedCredential::bearer("secret://openai/main", secret).unwrap(),
             limits: CodecLimits {
@@ -1497,6 +1539,24 @@ mod tests {
                 && api_type == "embedding.text"
                 && execution_mode == "stream"
         ));
+    }
+
+    #[test]
+    fn public_immediate_mode_uses_an_internal_native_task_for_native_only_operations() {
+        assert_eq!(
+            internal_execution_mode(
+                ExecutionMode::Immediate,
+                &BTreeSet::from([ExecutionMode::NativeTask]),
+            ),
+            Some(ExecutionMode::NativeTask)
+        );
+        assert_eq!(
+            internal_execution_mode(
+                ExecutionMode::Stream,
+                &BTreeSet::from([ExecutionMode::NativeTask]),
+            ),
+            None
+        );
     }
 
     #[test]
@@ -1689,12 +1749,15 @@ mod tests {
         }
         golden.sort();
         golden.dedup();
-        assert_eq!(golden.len(), 48);
+        assert_eq!(golden.len(), 60);
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(golden.contains(&"claude|claude-messages|llm|messages.create".into()));
         assert!(golden
             .contains(&"gemini|gemini-interactions|video.extend|models.predictLongRunning".into()));
         assert!(golden.contains(&"fal|fal-queue|image.upscale|queue.submit".into()));
+        assert!(golden.contains(
+            &"minimax|minimax-messages|video.txt2video|video_generation.create".into()
+        ));
         assert!(golden.contains(&"qwen|qwen-responses|llm|responses.create".into()));
         assert!(golden.contains(&"sn|sn-openai|llm|responses.create".into()));
     }

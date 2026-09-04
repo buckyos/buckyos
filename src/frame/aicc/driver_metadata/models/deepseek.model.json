@@ -53,16 +53,19 @@
   "patterns": [],
   "defaults": {
     "api_types": [],
-    "capabilities": {}
+    "capabilities": {},
+    "version_rules": ["deepseek-flash", "deepseek-pro"]
   },
   "variants": [
     { "name": "reasoning-none", "match": "deepseek-v4-*" },
-    { "name": "reasoning-minimal", "match": "deepseek-v4-*" },
     { "name": "reasoning-low", "match": "deepseek-v4-*" },
     { "name": "reasoning-medium", "match": "deepseek-v4-*" },
     { "name": "reasoning-high", "match": "deepseek-v4-*" },
     { "name": "reasoning-xhigh", "match": "deepseek-v4-*" },
     { "name": "reasoning-max", "match": "deepseek-v4-*" }
   ],
-  "version_rules": []
+  "version_rules": [
+    { "id": "deepseek-flash", "family": "deepseek", "tier": "flash", "match": "deepseek-v*-flash*", "tier_tokens": ["flash"], "version_rank": { "prefix": "deepseek-v" }, "stability": { "unstable_tokens": ["preview", "experimental", "exp", "beta"], "current_requires_stable": true }, "current_mount": "llm.deepseek-flash", "version_mount": "llm.deepseek.{model}" },
+    { "id": "deepseek-pro", "family": "deepseek", "tier": "pro", "match": "deepseek-v*-pro*", "tier_tokens": ["pro"], "version_rank": { "prefix": "deepseek-v" }, "stability": { "unstable_tokens": ["preview", "experimental", "exp", "beta"], "current_requires_stable": true }, "current_mount": "llm.deepseek-pro", "version_mount": "llm.deepseek.{model}" }
+  ]
 }

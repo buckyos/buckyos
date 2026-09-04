@@ -10,6 +10,7 @@ mod error;
 mod fal_queue;
 mod gemini;
 mod minimax_messages;
+mod minimax_media;
 mod openai_chat_completions;
 mod openai_responses;
 mod result;
@@ -37,6 +38,8 @@ pub(crate) use fal_queue::*;
 pub(crate) use gemini::*;
 #[allow(unused_imports)]
 pub(crate) use minimax_messages::*;
+#[allow(unused_imports)]
+pub(crate) use minimax_media::*;
 #[allow(unused_imports)]
 pub(crate) use openai_chat_completions::*;
 #[allow(unused_imports)]

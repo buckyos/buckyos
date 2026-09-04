@@ -65,8 +65,14 @@
   ],
   "defaults": {
     "api_types": [],
-    "capabilities": {}
+    "capabilities": {},
+    "version_rules": ["doubao-pro", "doubao-lite", "doubao-mini", "doubao-code"]
   },
   "variants": [],
-  "version_rules": []
+  "version_rules": [
+    { "id": "doubao-pro", "family": "doubao-seed", "tier": "pro", "match": "doubao-seed-*-pro-*", "tier_tokens": ["pro"], "version_rank": { "prefix": "doubao-seed" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.doubao-pro", "version_mount": "llm.doubao.{model}" },
+    { "id": "doubao-lite", "family": "doubao-seed", "tier": "lite", "match": "doubao-seed-*-lite-*", "tier_tokens": ["lite"], "version_rank": { "prefix": "doubao-seed" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.doubao-lite", "version_mount": "llm.doubao.{model}" },
+    { "id": "doubao-mini", "family": "doubao-seed", "tier": "mini", "match": "doubao-seed-*-mini-*", "tier_tokens": ["mini"], "version_rank": { "prefix": "doubao-seed" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.doubao-mini", "version_mount": "llm.doubao.{model}" },
+    { "id": "doubao-code", "family": "doubao-seed", "tier": "code", "match": "doubao-seed-*-code-*", "tier_tokens": ["code"], "version_rank": { "prefix": "doubao-seed" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.doubao-code", "version_mount": "llm.doubao.{model}" }
+  ]
 }

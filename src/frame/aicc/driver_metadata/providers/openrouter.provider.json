@@ -30,5 +30,13 @@
       "match": "*",
       "operations": { "llm": "chat.completions.create" }
     }
+  ],
+  "variants": [
+    { "model_driver": "openai", "variant": "reasoning-none", "match": { "provider_model_id": "openai/gpt-5.6*", "variant": "reasoning-none" }, "provider_options": { "reasoning_effort": "none" } },
+    { "model_driver": "openai", "variant": "reasoning-low", "match": { "provider_model_id": "openai/gpt-5.6*", "variant": "reasoning-low" }, "provider_options": { "reasoning_effort": "low" } },
+    { "model_driver": "openai", "variant": "reasoning-medium", "match": { "provider_model_id": "openai/gpt-5.6*", "variant": "reasoning-medium" }, "provider_options": { "reasoning_effort": "medium" } },
+    { "model_driver": "openai", "variant": "reasoning-high", "match": { "provider_model_id": "openai/gpt-5.6*", "variant": "reasoning-high" }, "provider_options": { "reasoning_effort": "high" } },
+    { "model_driver": "openai", "variant": "reasoning-xhigh", "match": { "provider_model_id": "openai/gpt-5.6*", "variant": "reasoning-xhigh" }, "provider_options": { "reasoning_effort": "xhigh" } },
+    { "model_driver": "openai", "variant": "reasoning-max", "match": { "provider_model_id": "openai/gpt-5.6*", "variant": "reasoning-max" }, "provider_options": { "reasoning_effort": "max" } }
   ]
 }

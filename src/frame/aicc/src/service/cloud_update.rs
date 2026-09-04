@@ -26,6 +26,7 @@ const MANIFEST_FORMAT: &str = "buckyos.aicc.provider-catalog-manifest";
 const INDEX_PATH: &str = "aicc/provider-catalog/index.json";
 const STATE_FILE: &str = "state.json";
 const REVISIONS_DIR: &str = "revisions";
+const BUILTIN_CATALOG_REVISION_SEQ: u64 = 1;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -647,11 +648,20 @@ impl CloudMetadataSource for CloudUpdateManager {
     async fn target_seq(&self) -> Result<u64, SettingsError> {
         self.load_state()
             .await
-            .map(|state| state.map_or(0, |state| state.target_seq))
+            .map(|state| state.map_or(BUILTIN_CATALOG_REVISION_SEQ, |state| state.target_seq))
             .map_err(|error| SettingsError::Cloud(error.to_string()))
     }
 
     async fn load_files(&self, target_seq: u64) -> Result<Vec<MetadataFile>, SettingsError> {
+        if target_seq == BUILTIN_CATALOG_REVISION_SEQ
+            && self
+                .load_state()
+                .await
+                .map_err(|error| SettingsError::Cloud(error.to_string()))?
+                .is_none()
+        {
+            return Ok(Vec::new());
+        }
         self.load_cloud_files(target_seq)
             .await
             .map_err(|error| SettingsError::Cloud(error.to_string()))
@@ -1149,7 +1159,18 @@ mod tests {
         let mut events = manager.subscribe();
 
         assert!(manager.check_once().await.is_err());
-        assert_eq!(manager.metadata_target_seq().await.unwrap(), 0);
+        assert_eq!(
+            manager.metadata_target_seq().await.unwrap(),
+            BUILTIN_CATALOG_REVISION_SEQ
+        );
+        assert_eq!(
+            manager
+                .load_catalog(BUILTIN_CATALOG_REVISION_SEQ)
+                .await
+                .unwrap()
+                .target_revision_seq(),
+            BUILTIN_CATALOG_REVISION_SEQ
+        );
         assert!(matches!(
             events.try_recv(),
             Err(broadcast::error::TryRecvError::Empty)

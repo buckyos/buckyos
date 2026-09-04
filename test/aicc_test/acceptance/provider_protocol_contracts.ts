@@ -82,6 +82,7 @@ export type ProviderProtocolCatalog = {
     endpoint_path: string;
     credential_type: "api_key" | "bearer";
     instance_fields?: { region?: string; workspace?: string; account?: string };
+    official_first_party_model_ids?: Record<string, string[]>;
     test_model_ids: Record<string, string>;
     contracts: ProviderProtocolContract[];
   }>;
@@ -156,6 +157,21 @@ export function validateProviderProtocolCatalog(value: unknown): ProviderProtoco
     for (const [apiType, modelId] of Object.entries(testModelIds)) {
       nonEmptyString(apiType, `${driver}.test_model_ids key`);
       nonEmptyString(modelId, `${driver}.test_model_ids.${apiType}`);
+    }
+    if (["openai", "claude", "google-gemini", "fal"].includes(driver)) {
+      const officialModelIds = object(
+        provider.official_first_party_model_ids,
+        `${driver}.official_first_party_model_ids`,
+      );
+      for (const [apiType, modelId] of Object.entries(testModelIds)) {
+        const pool = stringArray(
+          officialModelIds[apiType],
+          `${driver}.official_first_party_model_ids.${apiType}`,
+        );
+        if (!pool.includes(String(modelId))) {
+          throw new Error(`${driver}.test_model_ids.${apiType} is absent from its official model pool`);
+        }
+      }
     }
     if (!Array.isArray(provider.contracts) || provider.contracts.length === 0) {
       throw new Error(`${driver}.contracts must not be empty`);
@@ -264,6 +280,30 @@ export async function loadProviderProtocolCatalog(): Promise<ProviderProtocolCat
   ));
 }
 
+function seededIndex(seed: string, length: number): number {
+  let hash = 0x811c9dc5;
+  for (const byte of new TextEncoder().encode(seed)) {
+    hash ^= byte;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash % length;
+}
+
+export function selectOfficialModels(
+  catalog: ProviderProtocolCatalog,
+  providerDriver: string,
+  seed: string,
+): Record<string, string> {
+  const provider = catalog.providers.find((candidate) => candidate.provider_driver === providerDriver);
+  if (!provider?.official_first_party_model_ids) {
+    throw new Error(`${providerDriver} has no official first-party model pool`);
+  }
+  return Object.fromEntries(Object.entries(provider.official_first_party_model_ids).map(([apiType, pool]) => [
+    apiType,
+    pool[seededIndex(`${seed}\0${providerDriver}\0${apiType}`, pool.length)],
+  ]));
+}
+
 export function protocolContracts(catalog: ProviderProtocolCatalog): Array<ProviderProtocolContract & { provider_driver: string }> {
   return catalog.providers.flatMap((provider) => provider.contracts.map((contract) => ({
     ...contract,
@@ -365,7 +405,7 @@ function providerErrorCode(fixture: ProtocolErrorFixture): string {
   const baseResponse = body.base_resp && typeof body.base_resp === "object"
     ? body.base_resp as Record<string, unknown>
     : undefined;
-  for (const value of [error?.code, error?.status, error?.type, body.error_type, baseResponse?.status_code]) {
+  for (const value of [error?.code, error?.status, error?.type, body.code, body.error_type, baseResponse?.status_code]) {
     if (value !== undefined && value !== null && String(value)) return String(value);
   }
   return String(fixture.status);
@@ -472,7 +512,11 @@ export function buildT15Manifest(
             expected_wire_fixture: `${contract.id}.request.async`,
             response_fixture: `${contract.id}.async.failed`,
           } as AcceptanceCase);
-          for (const scenario of ["async_poll_timeout", "async_artifact_unavailable"] as const) {
+          const terminalFailureScenarios = contract.async_protocol === "google_lro" ||
+              contract.async_protocol === "minimax_video"
+            ? ["async_poll_timeout"] as const
+            : ["async_poll_timeout", "async_artifact_unavailable"] as const;
+          for (const scenario of terminalFailureScenarios) {
             cases.push({
               ...common,
               case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.${scenario}`),
@@ -507,7 +551,7 @@ export function buildT15Manifest(
             expected_task_status: "failed",
             expected_error_class: "provider_protocol_failed",
             response_fixture: `${provider.provider_driver}.error.${error.scenario}`,
-            expected_aicc_error_code: "provider_start_failed",
+            expected_aicc_error_code: "provider_error",
             expected_provider_error_code: providerErrorCode(error),
             expected_retriable: providerErrorRetriable(error),
           } as AcceptanceCase);
@@ -528,9 +572,25 @@ export function buildT15Manifest(
       }
     }
   }
+  const customDrivers = new Set(["openai", "claude", "google-gemini", "fal"]);
+  cases.push(...cases.filter((testCase) =>
+    customDrivers.has(testCase.provider_driver ?? "") &&
+    testCase.mock_scenario === "success" &&
+    !testCase.tags.includes("custom_provider")
+  ).map((testCase) => ({
+    ...testCase,
+    case_id: caseId(`t1.5.custom.${testCase.provider_driver}.${testCase.protocol_contract_id}.${testCase.api_type}.success`),
+    tags: [...testCase.tags, "custom_provider"],
+    provider_instance: `t15-custom-${testCase.provider_driver}`,
+    expected_provider_instance: `t15-custom-${testCase.provider_driver}`,
+  })));
   for (const variant of variants) {
     const contract = protocolContract(catalog, variant.provider_driver, variant.contract_id);
-    if (!contract.api_types.includes(variant.api_type)) {
+    const openAiResponsesImage = variant.provider_driver === "openai" &&
+      variant.model.provider_model_id.startsWith("gpt-5") &&
+      ["image.txt2img", "image.img2img"].includes(variant.api_type) &&
+      contract.operation === "responses.create";
+    if (!contract.api_types.includes(variant.api_type) && !openAiResponsesImage) {
       throw new Error(`${variant.contract_id} does not support ${variant.api_type}`);
     }
     cases.push({

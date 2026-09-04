@@ -22,9 +22,10 @@ use std::sync::Arc;
 use ::kRPC::RPCErrors;
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, AiMethodStatus, AiResponse, AiToolCall, AiToolSpec, AiccClient,
-    HelperModelRequirement, KEventClient, LlmChatHelperRequest, LlmResponseFormat, ModelDisable,
-    MsgCenterClient, TaskDispatcherClient, TaskManagerClient, TaskOutcome, TypedTaskData,
+    get_buckyos_api_runtime, AiccClient, AiccExecutionMode, AiMethodStatus, AiResponse, AiToolCall,
+    AiToolSpec, HelperModelRequirement, KEventClient, LlmChatHelperRequest, LlmResponseFormat,
+    ModelDisable, MsgCenterClient, TaskDispatcherClient, TaskManagerClient, TaskOutcome,
+    TypedTaskData,
 };
 use log::warn;
 use serde_json::{json, Value};
@@ -132,6 +133,7 @@ impl LlmClient for AiccLlmClient {
         let request = LlmChatHelperRequest {
             logical_model: model_alias,
             trace_id,
+            execution_mode: AiccExecutionMode::Immediate,
             requirements: HelperModelRequirement {
                 tool_call: allow_tool_calls && !advertised_tools.is_empty(),
                 json_schema: force_json,

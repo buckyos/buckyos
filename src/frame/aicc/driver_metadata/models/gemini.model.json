@@ -179,7 +179,15 @@
     }
   ],
   "patterns": [],
-  "defaults": {},
-  "variants": [],
-  "version_rules": []
+  "defaults": { "version_rules": ["gemini-flash", "gemini-flash-lite", "gemini-pro"] },
+  "variants": [
+    { "name": "reasoning-low", "match": "gemini-3.8-flash", "mount_suffix": "reasoning-low" },
+    { "name": "reasoning-medium", "match": "gemini-3.8-flash", "mount_suffix": "reasoning-medium" },
+    { "name": "reasoning-high", "match": "gemini-3.8-flash", "mount_suffix": "reasoning-high" }
+  ],
+  "version_rules": [
+    { "id": "gemini-flash", "family": "gemini", "tier": "flash", "match": "gemini-*", "tier_tokens": ["flash"], "exclude_tier_tokens": ["lite", "image", "tts", "transcribe", "omni"], "version_rank": { "prefix": "gemini" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.gemini-flash", "version_mount": "llm.gemini.{model}" },
+    { "id": "gemini-flash-lite", "family": "gemini", "tier": "flash-lite", "match": "gemini-*-flash-lite", "tier_tokens": ["flash", "lite"], "exclude_tier_tokens": ["image", "tts"], "version_rank": { "prefix": "gemini" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.gemini-flash-lite", "version_mount": "llm.gemini.{model}" },
+    { "id": "gemini-pro", "family": "gemini", "tier": "pro", "match": "gemini-*", "tier_tokens": ["pro"], "exclude_tier_tokens": ["image", "tts", "transcribe", "omni"], "version_rank": { "prefix": "gemini" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.gemini-pro", "version_mount": "llm.gemini.{model}" }
+  ]
 }

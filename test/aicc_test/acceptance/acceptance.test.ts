@@ -26,6 +26,7 @@ import {
   validateAcceptanceReport,
 } from "./report.ts";
 import { buildMockSettings, configValue } from "./mock_settings.ts";
+import { inventoriesFromModelsList } from "./inventory.ts";
 import { withAiccSettingsOverride, withMockSettings } from "./settings_transaction.ts";
 import { ProviderScheduler } from "./scheduler.ts";
 import { buildFinancialReport, CostBudget, extractFinance } from "./finance.ts";
@@ -45,6 +46,7 @@ import {
   buildT15Manifest,
   loadProviderProtocolCatalog,
   protocolContract,
+  selectOfficialModels,
   type ProviderProtocolContract,
   validateProviderProtocolCatalog,
   validateProviderAuxiliaryRequest,
@@ -706,7 +708,10 @@ test("T3 report records product assertions with expected, observed, and evidence
 });
 
 test("T1 mock settings append run-scoped instances without mutating backup", () => {
-  const original = { openai: { enabled: true, instances: [{ provider_instance_name: "production" }] } };
+  const original = {
+    providers: [{ provider_instance_name: "production", provider_profile_id: "openai" }],
+    session_config: { revision: "production" },
+  };
   const serialized = JSON.stringify(original);
   const decoded = configValue({ value: serialized });
   const patched = buildMockSettings(decoded.parsed, {
@@ -714,13 +719,54 @@ test("T1 mock settings append run-scoped instances without mutating backup", () 
     runId: "run:one",
   });
   assert.equal(JSON.stringify(original), serialized);
-  const openai = patched.openai as { instances: { provider_instance_name: string }[] };
-  assert.equal(openai.instances[0].provider_instance_name, "production");
-  assert.deepEqual(openai.instances.slice(1).map((item) => item.provider_instance_name), [
+  const providers = patched.providers as Array<Record<string, unknown>>;
+  assert.equal(providers[0].provider_instance_name, "production");
+  assert.deepEqual(providers.slice(1, 3).map((item) => item.provider_instance_name), [
     "dv-openai-a-run-one",
     "dv-openai-b-run-one",
   ]);
+  assert.equal(providers.length, 11);
+  assert.deepEqual(providers[1].credentials, { api_token: { locked: "mock-a-run-one" } });
+  assert.deepEqual(
+    providers.slice(7).map((item) => [item.provider_profile_id, item.protocol_adapter_id]),
+    [
+      ["custom", "openai-responses"],
+      ["custom", "claude-messages"],
+      ["custom", "gemini-interactions"],
+      ["custom", "fal-queue"],
+    ],
+  );
+  assert.equal((patched.session_config as { revision: string }).revision, "dv-routing-run-one");
   assert.equal(decoded.serialized, serialized);
+});
+
+test("models.list flat catalog is grouped into Provider inventories", () => {
+  const inventories = inventoriesFromModelsList({
+    generation: "g1",
+    models: [
+      {
+        exact_model: "gpt-5.6@openai-main",
+        provider_model_id: "gpt-5.6",
+        provider_instance_name: "openai-main",
+        provider_profile_id: "openai",
+        inventory_revision: "r1",
+        api_types: ["llm"],
+        logical_mounts: ["llm.openai"],
+      },
+      {
+        exact_model: "gemini-2.5-flash@gemini-main",
+        provider_model_id: "gemini-2.5-flash",
+        provider_instance_name: "gemini-main",
+        provider_profile_id: "gemini",
+        api_types: ["llm"],
+        logical_mounts: ["llm.gemini"],
+      },
+    ],
+  });
+  assert.equal(inventories.length, 2);
+  assert.equal(inventories[0].provider_driver, "openai");
+  assert.equal(inventories[0].inventory_revision, "r1");
+  assert.equal(inventories[1].provider_driver, "google-gemini");
 });
 
 test("T1 settings transaction restores exact backup after execution failure", async () => {
@@ -1454,6 +1500,12 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
   assert.equal(sn.path, "/api/v1/ai/responses");
   assert.ok(sn.official_sources.every((source) => source.includes("buckyos/sn-business/blob/f765081")));
   assert.equal(catalog.providers.find((provider) => provider.provider_driver === "qwen")?.instance_fields?.workspace, "t15-workspace");
+  const selected = selectOfficialModels(catalog, "google-gemini", "seed-4827");
+  assert.deepEqual(selected, selectOfficialModels(catalog, "google-gemini", "seed-4827"));
+  const gemini = catalog.providers.find((provider) => provider.provider_driver === "google-gemini")!;
+  for (const [apiType, modelId] of Object.entries(selected)) {
+    assert.ok(gemini.official_first_party_model_ids?.[apiType].includes(modelId));
+  }
   const invalidCatalog = structuredClone(catalog);
   invalidCatalog.providers[0].contracts[0].official_sources = ["https://example.com/not-provider-evidence"];
   assert.throws(() => validateProviderProtocolCatalog(invalidCatalog), /Provider official domain/);
@@ -1500,7 +1552,7 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
     headers: { authorization: "Bearer t15-secret-value" },
   });
   assert.equal(discovery.status, 200);
-  assert.ok(((await discovery.json()) as { data: Array<{ id: string }> }).data.some((model) => model.id === "gpt-5.4"));
+  assert.ok(((await discovery.json()) as { data: Array<{ id: string }> }).data.some((model) => model.id === "gpt-5.6"));
   assert.equal((await fetch(`${baseUrl}/__mock/select`, {
     method: "POST",
     headers: { "content-type": "application/json" },

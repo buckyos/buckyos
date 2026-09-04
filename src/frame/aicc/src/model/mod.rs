@@ -6,6 +6,7 @@ use buckyos_api::{
     AiccPolicyConfig, AiccRouteOverlay, AiccSchedulerProfile, ApiType, ModelDisable, ModelItem,
     ModelItemPatch, ModelRequirement, OverlayMergeMode,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -144,7 +145,7 @@ pub(crate) struct ProviderModelIdentity {
     pub provider_model_id: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct InventoryModelVariant {
     pub name: String,
     pub logical_mounts: Vec<String>,
@@ -361,6 +362,17 @@ impl ModelRegistry {
                 registry.apply_route_overlay(layer, source)?;
             }
         }
+        registry.validate_item_graph()?;
+        registry.validate_fallback_graph()?;
+        Ok(registry)
+    }
+
+    pub(crate) fn with_session_overlay(
+        &self,
+        overlay: &AiccRouteOverlay,
+    ) -> Result<Self, ModelRegistryError> {
+        let mut registry = self.clone();
+        registry.apply_route_overlay(overlay, LogicalItemSource::SessionOverlay)?;
         registry.validate_item_graph()?;
         registry.validate_fallback_graph()?;
         Ok(registry)
@@ -1165,7 +1177,10 @@ impl From<&RegisteredModel> for ModelView {
             protocol_adapter_id: model.identity.protocol_adapter_id.clone(),
             model_driver_id: model.identity.model_driver_id.clone(),
             origin_model_id: model.identity.origin_model_id.clone(),
-            provider_model_id: model.identity.provider_model_id.clone(),
+            provider_model_id: model.exact_model.variant().map_or_else(
+                || model.identity.provider_model_id.clone(),
+                |variant| format!("{}:{variant}", model.identity.provider_model_id),
+            ),
             variant: model.exact_model.variant.clone(),
             api_types: model
                 .api_types
@@ -1801,6 +1816,7 @@ mod tests {
         assert_eq!(variant.identity.model_driver_id, "openai");
         assert_eq!(variant.identity.origin_model_id, "gpt-5.2");
         assert_eq!(variant.identity.provider_model_id, "gpt-5.2");
+        assert_eq!(ModelView::from(variant).provider_model_id, "gpt-5.2:reasoning-high");
         assert_eq!(
             registry
                 .resolve_candidates("llm.reason", ApiType::Llm)

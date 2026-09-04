@@ -75,10 +75,92 @@
       "logical_mounts": ["llm.minimax", "llm.{driver}.{model}"],
       "capabilities": { "max_context_tokens": 204800, "max_output_tokens": 204800, "streaming": true, "tool_call": true, "reasoning": true },
       "pricing": { "currency": "USD", "input_token": 0.0000003, "cache_input_token": 0.00000003, "output_token": 0.0000012 }
+    },
+    {
+      "id": "speech-2.8-hd",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts.minimax", "audio.tts.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "speech-2.8-turbo",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts.minimax-turbo", "audio.tts.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "speech-2.6-hd",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts.minimax", "audio.tts.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "speech-2.6-turbo",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts.minimax-turbo", "audio.tts.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "image-01",
+      "api_types": ["image.txt2img", "image.img2img"],
+      "logical_mounts": ["image.txt2img.minimax", "image.txt2img.{model}", "image.img2img.minimax", "image.img2img.{model}"],
+      "capabilities": { "image_generation": true }
+    },
+    {
+      "id": "image-01-live",
+      "api_types": ["image.img2img"],
+      "logical_mounts": ["image.img2img.minimax", "image.img2img.{model}"],
+      "capabilities": { "image_generation": true }
+    },
+    {
+      "id": "MiniMax-Hailuo-2.3",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": ["video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax", "video.img2video.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "MiniMax-Hailuo-2.3-Fast",
+      "api_types": ["video.img2video"],
+      "logical_mounts": ["video.img2video.minimax-fast", "video.img2video.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "MiniMax-Hailuo-02",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": ["video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax", "video.img2video.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "music-2.6",
+      "api_types": ["audio.music"],
+      "logical_mounts": ["audio.music.minimax", "audio.music.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "music-2.6-free",
+      "api_types": ["audio.music"],
+      "logical_mounts": ["audio.music.minimax-free", "audio.music.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "music-2.0",
+      "api_types": ["audio.music"],
+      "logical_mounts": ["audio.music.minimax", "audio.music.{model}"],
+      "capabilities": {}
     }
   ],
   "patterns": [],
-  "defaults": { "api_types": [], "capabilities": {} },
+  "defaults": { "api_types": [], "capabilities": {}, "version_rules": ["minimax-standard", "minimax-highspeed", "minimax-speech-hd", "minimax-speech-turbo", "minimax-image", "minimax-video", "minimax-video-fast", "minimax-music", "minimax-music-free"] },
   "variants": [],
-  "version_rules": []
+  "version_rules": [
+    { "id": "minimax-standard", "family": "minimax", "tier": "standard", "match": "MiniMax-M*", "exclude_tier_tokens": ["highspeed"], "version_rank": { "prefix": "minimax-m" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.minimax", "version_mount": "llm.minimax.{model}" },
+    { "id": "minimax-highspeed", "family": "minimax", "tier": "highspeed", "match": "MiniMax-M*-highspeed", "tier_tokens": ["highspeed"], "version_rank": { "prefix": "minimax-m" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.minimax-highspeed", "version_mount": "llm.minimax.{model}" },
+    { "id": "minimax-speech-hd", "family": "minimax-speech", "tier": "hd", "match": "speech-*-hd", "tier_tokens": ["hd"], "version_rank": { "prefix": "speech" }, "stability": { "unstable_tokens": ["preview", "beta"], "current_requires_stable": true }, "current_mount": "audio.tts.minimax", "version_mount": "audio.tts.minimax.{model}" },
+    { "id": "minimax-speech-turbo", "family": "minimax-speech", "tier": "turbo", "match": "speech-*-turbo", "tier_tokens": ["turbo"], "version_rank": { "prefix": "speech" }, "stability": { "unstable_tokens": ["preview", "beta"], "current_requires_stable": true }, "current_mount": "audio.tts.minimax-turbo", "version_mount": "audio.tts.minimax.{model}" },
+    { "id": "minimax-image", "family": "minimax-image", "tier": "standard", "match": "image-*", "exclude_tier_tokens": ["live"], "version_rank": { "prefix": "image" }, "stability": { "unstable_tokens": ["preview", "beta"], "current_requires_stable": true }, "current_mount": "image.txt2img.minimax", "version_mount": "image.txt2img.minimax.{model}" },
+    { "id": "minimax-video", "family": "minimax-video", "tier": "standard", "match": "MiniMax-Hailuo-*", "exclude_tier_tokens": ["fast"], "version_rank": { "prefix": "minimax-hailuo" }, "stability": { "unstable_tokens": ["preview", "beta"], "current_requires_stable": true }, "current_mount": "video.txt2video.minimax", "version_mount": "video.txt2video.minimax.{model}" },
+    { "id": "minimax-video-fast", "family": "minimax-video", "tier": "fast", "match": "MiniMax-Hailuo-*-Fast", "tier_tokens": ["fast"], "version_rank": { "prefix": "minimax-hailuo" }, "stability": { "unstable_tokens": ["preview", "beta"], "current_requires_stable": true }, "current_mount": "video.img2video.minimax-fast", "version_mount": "video.img2video.minimax.{model}" },
+    { "id": "minimax-music", "family": "minimax-music", "tier": "standard", "match": "music-*", "exclude_tier_tokens": ["free", "cover"], "version_rank": { "prefix": "music" }, "stability": { "unstable_tokens": ["preview", "beta"], "current_requires_stable": true }, "current_mount": "audio.music.minimax", "version_mount": "audio.music.minimax.{model}" },
+    { "id": "minimax-music-free", "family": "minimax-music", "tier": "free", "match": "music-*-free", "tier_tokens": ["free"], "version_rank": { "prefix": "music" }, "stability": { "unstable_tokens": ["preview", "beta"], "current_requires_stable": true }, "current_mount": "audio.music.minimax-free", "version_mount": "audio.music.minimax.{model}" }
+  ]
 }

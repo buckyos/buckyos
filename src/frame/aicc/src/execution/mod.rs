@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_IDEMPOTENCY_WINDOW_MS: u64 = 24 * 60 * 60 * 1_000;
 
@@ -108,7 +108,7 @@ pub(crate) enum ExecutionState {
 }
 
 impl ExecutionState {
-    fn is_terminal(self) -> bool {
+    pub(crate) fn is_terminal(self) -> bool {
         matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
     }
 }
@@ -130,6 +130,7 @@ impl From<NativeTaskState> for ExecutionState {
 pub(crate) struct ExecutionOutput {
     pub value: Value,
     pub usage: AiUsage,
+    pub cost: Option<AiCost>,
     pub artifacts: Vec<AiArtifact>,
 }
 
@@ -158,6 +159,7 @@ impl TryFrom<ProtocolOutput> for ExecutionOutput {
         Ok(Self {
             value: value.value,
             usage,
+            cost: None,
             artifacts: value.artifacts,
         })
     }
@@ -424,6 +426,7 @@ pub(crate) trait ExecutionStore: Send + Sync {
 pub(crate) struct TaskSpec {
     pub tenant_id: String,
     pub user_id: String,
+    pub caller_app_id: Option<String>,
     pub method: String,
     pub trace_id: Option<String>,
     pub idempotency_key: String,
@@ -449,7 +452,12 @@ pub(crate) trait TaskManagerPort: Send + Sync {
     async fn commit_result(&self, task_id: &str, output: &ExecutionOutput)
         -> Result<(), AiccError>;
     async fn fail_task(&self, task_id: &str, error: &AiccError) -> Result<(), AiccError>;
-    async fn cancel_task(&self, task_id: &str) -> Result<(), AiccError>;
+    async fn cancel_task(
+        &self,
+        task_id: &str,
+        user_id: &str,
+        caller_app_id: &str,
+    ) -> Result<(), AiccError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -503,7 +511,7 @@ impl ProviderStartFailure {
 
 #[derive(Debug)]
 pub(crate) enum NativeTaskPoll {
-    Pending(NativeTaskState, Option<Value>),
+    Pending(NativeTaskState, Option<Value>, Option<Duration>),
     Complete(ProtocolOutput),
     Failed(ProtocolError),
 }
@@ -694,6 +702,7 @@ impl ExecutionEngine {
             .ensure_task(TaskSpec {
                 tenant_id: request.tenant_id.clone(),
                 user_id: request.user_id.clone(),
+                caller_app_id: request.caller_app_id.clone(),
                 method: request.primary.method.clone(),
                 trace_id: request.trace_id.clone(),
                 idempotency_key: request.idempotency_key.clone(),
@@ -856,7 +865,10 @@ impl ExecutionEngine {
                         && failure.retryable
                         && request.runtime_failover
                         && index + 1 < calls.len();
-                    let error: AiccError = failure.error.into();
+                    let mut error: AiccError = failure.error.into();
+                    if failure.provider_accepted {
+                        error.code = AiccErrorCode::ProviderError;
+                    }
                     if can_failover {
                         self.tasks
                             .report_state(
@@ -935,10 +947,18 @@ impl ExecutionEngine {
             return self.finish_failure(task_id, error).await;
         }
         let (cancel, cancellation) = cancellation_pair();
-        self.active
-            .lock()
-            .expect("active execution lock")
-            .insert(task_id.to_string(), ActiveExecution { cancel });
+        let already_active = {
+            let mut active = self.active.lock().expect("active execution lock");
+            if active.contains_key(task_id) {
+                true
+            } else {
+                active.insert(task_id.to_string(), ActiveExecution { cancel });
+                false
+            }
+        };
+        if already_active {
+            return self.current_receipt(task_id).await;
+        }
         loop {
             if cancellation.is_cancelled() {
                 self.remove_active(task_id);
@@ -949,7 +969,7 @@ impl ExecutionEngine {
                 .poll_native(&binding, cancellation.clone())
                 .await
             {
-                Ok(NativeTaskPoll::Pending(state, progress)) => {
+                Ok(NativeTaskPoll::Pending(state, progress, retry_after)) => {
                     if state.is_terminal() {
                         let error = aicc_error(
                             AiccErrorCode::ProviderError,
@@ -973,6 +993,7 @@ impl ExecutionEngine {
                             json_state("provider_progress", progress, record.trace_id.as_deref()),
                         )
                         .await?;
+                    tokio::time::sleep(retry_after.unwrap_or(Duration::from_millis(250))).await;
                 }
                 Ok(NativeTaskPoll::Complete(output)) => {
                     return self
@@ -1029,7 +1050,19 @@ impl ExecutionEngine {
             {
                 let _ = self.providers.cancel_native(binding).await;
             }
-            self.tasks.cancel_task(task_id).await?;
+            self.tasks
+                .cancel_task(
+                    task_id,
+                    &record.user_id,
+                    record.caller_app_id.as_deref().ok_or_else(|| {
+                        aicc_error(
+                            AiccErrorCode::InternalError,
+                            "task caller app identity is unavailable",
+                            false,
+                        )
+                    })?,
+                )
+                .await?;
             return Ok(true);
         }
         let Some(binding) = record
@@ -1051,7 +1084,19 @@ impl ExecutionEngine {
         if !accepted || !self.store.try_cancel(task_id).await? {
             return Ok(false);
         }
-        self.tasks.cancel_task(task_id).await?;
+        self.tasks
+            .cancel_task(
+                task_id,
+                &record.user_id,
+                record.caller_app_id.as_deref().ok_or_else(|| {
+                    aicc_error(
+                        AiccErrorCode::InternalError,
+                        "task caller app identity is unavailable",
+                        false,
+                    )
+                })?,
+            )
+            .await?;
         Ok(true)
     }
 
@@ -1131,10 +1176,11 @@ impl ExecutionEngine {
             Ok(timestamp) => timestamp,
             Err(error) => return self.finish_failure(task_id, error).await,
         };
-        let output = match ExecutionOutput::try_from(output) {
+        let mut output = match ExecutionOutput::try_from(output) {
             Ok(output) => output,
             Err(error) => return self.finish_failure(task_id, error).await,
         };
+        output.cost = finance_snapshot.clone();
         let record = self.store.get_task(task_id).await?.ok_or_else(|| {
             aicc_error(
                 AiccErrorCode::InternalError,
@@ -1502,7 +1548,12 @@ mod tests {
             Ok(())
         }
 
-        async fn cancel_task(&self, task_id: &str) -> Result<(), AiccError> {
+        async fn cancel_task(
+            &self,
+            task_id: &str,
+            _user_id: &str,
+            _caller_app_id: &str,
+        ) -> Result<(), AiccError> {
             self.cancelled
                 .lock()
                 .unwrap()
@@ -1666,6 +1717,7 @@ mod tests {
                 .unwrap(),
             },
             resource_requirements: Vec::new(),
+            resource_access_context: None,
             pricing: ResolvedPricing {
                 source: PricingSource::RouteEstimate,
                 pricing: None,
@@ -1675,7 +1727,7 @@ mod tests {
             revisions: LoweringRevisions {
                 catalog_target_seq: 1,
                 model_driver_revision_seq: 1,
-                provider_rules_revision_seq: 1,
+                provider_rules_revision_seq: Some(1),
                 inventory_revision: "inv-1".into(),
             },
         }
@@ -2170,6 +2222,7 @@ mod tests {
             NativeTaskPoll::Pending(
                 NativeTaskState::Running,
                 Some(json!({"frames_generated": 2})),
+                None,
             ),
             NativeTaskPoll::Complete(output("video")),
         ]);

@@ -56,12 +56,6 @@
     },
     {
       "model_driver": "deepseek",
-      "variant": "reasoning-minimal",
-      "match": { "provider_model_id": "deepseek-v4-*", "variant": "reasoning-minimal" },
-      "provider_options": { "reasoning": { "effort": "minimal" } }
-    },
-    {
-      "model_driver": "deepseek",
       "variant": "reasoning-low",
       "match": { "provider_model_id": "deepseek-v4-*", "variant": "reasoning-low" },
       "provider_options": { "reasoning": { "effort": "low" } }

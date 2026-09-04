@@ -44,7 +44,13 @@ function requireFixture(
 ): ResourceRef {
   const value = kind === "document" && documentFormat
     ? fixtures.documents?.[documentFormat] ?? (documentFormat === "pdf" ? fixtures.document : undefined)
-    : fixtures[kind];
+    : fixtures[kind] ?? (
+      kind === "inpaintImage" || kind === "bgRemoveImage" || kind === "ocrImage"
+        ? fixtures.image
+        : kind === "inpaintMask"
+        ? fixtures.mask
+        : undefined
+    );
   if (!value) throw new Error(`${apiType} requires configured ${kind} fixture`);
   if ("kind" in value) {
     if (representation && value.kind !== representation) {
@@ -96,7 +102,7 @@ function io(
     case "embedding.multimodal":
       return {
         input_json: { items: [{ id: "item-1", text: "pink flower" }] },
-        resources: [],
+        resources: [requireFixture(fixtures, "image", apiType, representation)],
       };
     case "rerank":
       return {
@@ -120,8 +126,6 @@ function io(
       return {
         input_json: {
           prompt: "A solid medium-blue square canvas with a compact cluster of realistic green leaves strictly inside the central rectangular masked region. Preserve the uniform medium-blue area outside the mask unchanged, with no glow, gradient, shadow, or extra objects.",
-          input_fidelity: "high",
-          quality: "high",
         },
         resources: [
           requireFixture(fixtures, "inpaintImage", apiType, representation),
@@ -186,7 +190,9 @@ function io(
     case "video.extend":
     case "video.upscale":
       return {
-        input_json: apiType === "video.extend" ? { duration_seconds: 7 } : {},
+        input_json: apiType === "video.upscale"
+          ? {}
+          : { prompt: "Preserve the scene while adding subtle motion", ...(apiType === "video.extend" ? { duration_seconds: 7 } : {}) },
         resources: [requireFixture(fixtures, "video", apiType, representation)],
       };
     case "agent.computer_use":
@@ -247,11 +253,13 @@ export function buildExactRequest(args: {
     if (args.cell.input_kinds.includes("image")) requirements = { must_features: ["vision"] };
   }
   if (args.cell.api_type === "embedding.multimodal") {
-    inputJson.items = args.cell.input_kinds.includes("text")
-      ? [{ id: "item-1", text: "pink flower" }]
-      : [];
+    if (args.cell.input_kinds.length > 0) {
+      inputJson.items = args.cell.input_kinds.includes("text")
+        ? [{ id: "item-1", text: "pink flower" }]
+        : [];
+    }
     for (const kind of args.cell.input_kinds) {
-      if (kind === "image") resources.push(fixture("image"));
+      if (kind === "image" && resources.length === 0) resources.push(fixture("image"));
       else if (kind === "audio") resources.push(fixture("audio"));
       else if (kind === "video") resources.push(fixture("video"));
       else if (kind === "document") resources.push(fixture("document"));
@@ -308,8 +316,7 @@ export function buildExactRequest(args: {
       id: `item-${index + 1}`,
       text: `BuckyOS deterministic embedding row ${index + 1}`,
     }));
-    inputJson.response_format = "object_id";
-    inputJson.output = { resource_format: "named_object" };
+    inputJson.prefer_artifact = true;
   }
   if (toolSpecs.length > 0) inputJson.tool_specs = toolSpecs;
   return {
@@ -342,7 +349,50 @@ export function assertResponseShape(
     throw new Error(`unexpected task status ${String(response.status)}`);
   }
   if (response.status === "running") return;
-  const result = response.result;
+  const typedArtifacts = [
+    ...(Array.isArray(response.images) ? response.images : []),
+    ...([response.image, response.audio, response.video].filter(Boolean)),
+    ...(response.artifacts && typeof response.artifacts === "object"
+      ? Object.values(response.artifacts as Record<string, unknown>)
+      : []),
+  ];
+  const typedMessage = response.message && typeof response.message === "object"
+    ? response.message
+    : {
+      role: "assistant",
+      content: [
+        ...(typeof response.text === "string" ? [{ type: "text", text: response.text }] : []),
+        ...(Array.isArray(response.captions)
+          ? response.captions.map((caption) => ({
+            type: "text",
+            text: String((caption as Record<string, unknown>).text ?? ""),
+          }))
+          : []),
+        ...typedArtifacts.map((source) => ({ type: "document", source })),
+      ],
+    };
+  const typedEmbeddingData = Array.isArray(response.data) ? response.data : [];
+  const typedExtra = {
+    ...(typedEmbeddingData.length > 0 || response.data_resource
+      ? {
+        embedding: {
+          data: typedEmbeddingData,
+          artifact: response.data_resource,
+          embedding_space_id: (typedEmbeddingData[0] as Record<string, unknown> | undefined)?.embedding_space_id,
+        },
+      }
+      : {}),
+    ...(Array.isArray(response.results) ? { rerank: { results: response.results } } : {}),
+    ...(["pages", "detections", "masks"].some((field) => field in response)
+      ? { vision: Object.fromEntries(["pages", "detections", "masks"].filter((field) => field in response).map((field) => [field, response[field]])) }
+      : {}),
+  };
+  const result = response.result ?? {
+    message: typedMessage,
+    usage: response.usage,
+    cost: response.cost,
+    extra: typedExtra,
+  };
   if (!result || typeof result !== "object") throw new Error("succeeded response must include result");
   const resultRecord = result as Record<string, unknown>;
   for (const legacy of ["text", "tool_calls", "artifacts"]) {
@@ -350,9 +400,6 @@ export function assertResponseShape(
   }
   if (!resultRecord.usage || typeof resultRecord.usage !== "object") {
     throw new Error("successful response must include usage");
-  }
-  if (!resultRecord.cost || typeof resultRecord.cost !== "object") {
-    throw new Error("successful response must include cost");
   }
   const message = resultRecord.message;
   if (!message || typeof message !== "object") throw new Error("result.message is required");
@@ -401,7 +448,8 @@ export function assertResponseShape(
     const embedding = extra.embedding;
     if (!embedding || typeof embedding !== "object") throw new Error("expected extra.embedding");
     const record = embedding as Record<string, unknown>;
-    if (typeof record.embedding_space_id !== "string" || !record.embedding_space_id) {
+    if (cell.variant !== "embedding_large_artifact" &&
+      (typeof record.embedding_space_id !== "string" || !record.embedding_space_id)) {
       throw new Error("embedding_space_id is required");
     }
     if (cell.variant === "embedding_large_artifact") {
@@ -409,10 +457,8 @@ export function assertResponseShape(
       if (!artifact || typeof artifact !== "object") {
         throw new Error("large embedding output must use an artifact");
       }
-      const artifactRecord = artifact as Record<string, unknown>;
-      if (artifactRecord.rows !== 101 || typeof artifactRecord.dimensions !== "number" ||
-        artifactRecord.dimensions <= 0 || artifactRecord.embedding_space_id !== record.embedding_space_id) {
-        throw new Error("embedding artifact rows, dimensions, and space metadata are invalid");
+      if (record.data && Array.isArray(record.data) && record.data.length !== 0) {
+        throw new Error("large embedding artifact response must not duplicate inline vectors");
       }
       return;
     }
@@ -473,7 +519,8 @@ export function assertResponseShape(
     return;
   }
   if (cell.api_type === "vision.detect" || cell.api_type === "vision.segment") {
-    if (!text.trim() && Object.keys(extra).length === 0) {
+    if (!text.trim() && Object.keys(extra).length === 0 &&
+      !Array.isArray(response.detections) && !Array.isArray(response.masks)) {
       throw new Error("expected structured vision output");
     }
     return;

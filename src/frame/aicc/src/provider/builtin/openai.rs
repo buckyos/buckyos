@@ -318,7 +318,6 @@ mod tests {
     use crate::protocol::{
         openai_responses_adapter, CodecRegistry, ProtocolError, OPENAI_AUDIO_SPEECH_OPERATION_ID,
         OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID, OPENAI_EMBEDDINGS_OPERATION_ID,
-        OPENAI_IMAGES_EDIT_OPERATION_ID, OPENAI_IMAGES_GENERATE_OPERATION_ID,
         OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID, OPENAI_VIDEOS_OPERATION_ID,
     };
     use crate::protocol::{HttpBody, ResolvedCredential};
@@ -427,26 +426,26 @@ mod tests {
         assert_eq!(rules.metadata_drivers, Some(vec!["openai".to_owned()]));
         assert_eq!(
             rules.patterns[0].operations["image.txt2img"],
-            OPENAI_IMAGES_GENERATE_OPERATION_ID
+            OPENAI_RESPONSES_OPERATION_ID
         );
         assert_eq!(
             rules.patterns[0].operations["image.img2img"],
-            OPENAI_IMAGES_EDIT_OPERATION_ID
+            OPENAI_RESPONSES_OPERATION_ID
         );
         assert_eq!(
-            rules.patterns[0].operations["video.txt2video"],
+            rules.patterns[1].operations["video.txt2video"],
             OPENAI_VIDEOS_OPERATION_ID
         );
         assert_eq!(
-            rules.patterns[0].operations["embedding.text"],
+            rules.patterns[1].operations["embedding.text"],
             OPENAI_EMBEDDINGS_OPERATION_ID
         );
         assert_eq!(
-            rules.patterns[0].operations["audio.tts"],
+            rules.patterns[1].operations["audio.tts"],
             OPENAI_AUDIO_SPEECH_OPERATION_ID
         );
         assert_eq!(
-            rules.patterns[0].operations["audio.asr"],
+            rules.patterns[1].operations["audio.asr"],
             OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID
         );
         assert_eq!(models.model_driver_id, "openai");
@@ -573,9 +572,9 @@ mod tests {
         assert_eq!(operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
         assert_eq!(
             operations["image.txt2img"],
-            OPENAI_IMAGES_GENERATE_OPERATION_ID
+            OPENAI_RESPONSES_OPERATION_ID
         );
-        assert_eq!(operations["image.img2img"], OPENAI_IMAGES_EDIT_OPERATION_ID);
+        assert_eq!(operations["image.img2img"], OPENAI_RESPONSES_OPERATION_ID);
         assert_eq!(model.capabilities["tool_call"], true);
         assert_eq!(model.capabilities["json_schema"], true);
         assert_eq!(model.capabilities["max_context_tokens"], 1_050_000);

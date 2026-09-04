@@ -14,6 +14,7 @@ use buckyos_api::{
     AiccExecutionMode, ApiType, AudioSpeechRecognitionRequest, AudioTextToSpeechRequest,
     EmbeddingTextItem, ImageInpaintRequest, ImageToImageRequest, LlmChatInvokeRequest,
     LlmResponseFormatType, ResourceRef as PublicResourceRef, TextToImageInvokeRequest,
+    VisionCaptionRequest, VisionOcrRequest,
 };
 use futures_util::{stream, StreamExt};
 use reqwest::header::{HeaderValue, CONTENT_TYPE};
@@ -49,6 +50,16 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
                     "reasoning",
                     buckyos_api::features::VISION,
                 ],
+            ),
+            binding(
+                ApiType::VisionOcr,
+                [ExecutionMode::Immediate],
+                [buckyos_api::features::VISION],
+            ),
+            binding(
+                ApiType::VisionCaption,
+                [ExecutionMode::Immediate],
+                [buckyos_api::features::VISION],
             ),
             binding(
                 ApiType::ImageTextToImage,
@@ -159,6 +170,14 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
         Arc::new(OpenAiResponsesCodec::new(responses.clone(), ApiType::Llm)),
         Arc::new(OpenAiResponsesCodec::new(
             responses.clone(),
+            ApiType::VisionOcr,
+        )),
+        Arc::new(OpenAiResponsesCodec::new(
+            responses.clone(),
+            ApiType::VisionCaption,
+        )),
+        Arc::new(OpenAiResponsesCodec::new(
+            responses.clone(),
             ApiType::ImageTextToImage,
         )),
         Arc::new(OpenAiResponsesCodec::new(
@@ -251,13 +270,23 @@ impl OperationCodec for OpenAiResponsesCodec {
     }
 
     fn execution_modes(&self) -> BTreeSet<ExecutionMode> {
-        BTreeSet::from([ExecutionMode::Immediate, ExecutionMode::Stream])
+        self.descriptor
+            .binding(self.api_type)
+            .expect("OpenAI Responses codec binding")
+            .execution_modes
+            .clone()
     }
 
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
         let body = match (&call.input.canonical_request, self.api_type) {
             (AiccCall::ChatCompletionsCreate(request), ApiType::Llm) => {
                 encode_responses_llm(request, call)?
+            }
+            (AiccCall::VisionOcr(request), ApiType::VisionOcr) => {
+                encode_responses_ocr(request, call)?
+            }
+            (AiccCall::VisionCaption(request), ApiType::VisionCaption) => {
+                encode_responses_caption(request, call)?
             }
             (AiccCall::ImagesGenerate(request), ApiType::ImageTextToImage) => {
                 encode_responses_image_generate(request, call)?
@@ -280,9 +309,11 @@ impl OperationCodec for OpenAiResponsesCodec {
             return decode_buffered_responses_stream(response);
         }
         let value: Value = response.json(self.descriptor.max_response_bytes)?;
-        Ok(ProtocolExecution::Immediate(decode_response_object(
-            &value,
-        )?))
+        let output = decode_response_object(&value)?;
+        Ok(ProtocolExecution::Immediate(normalize_responses_api_output(
+            output,
+            self.api_type,
+        )))
     }
 
     async fn decode_stream(
@@ -398,6 +429,87 @@ fn encode_responses_llm(
         body.insert("stream".to_string(), Value::Bool(true));
     }
     Ok(Value::Object(body))
+}
+
+fn encode_responses_ocr(
+    request: &VisionOcrRequest,
+    call: &CodecCall<'_>,
+) -> ProtocolResultValue<Value> {
+    let resource = match &request.document {
+        PublicResourceRef::Base64 { mime, .. } if mime.starts_with("image/") => {
+            encode_input_image(&request.document, call)?
+        }
+        PublicResourceRef::Url { mime_hint: Some(mime), .. } if mime.starts_with("image/") => {
+            encode_input_image(&request.document, call)?
+        }
+        _ => encode_input_file(&request.document, Some("document"), call)?,
+    };
+    encode_responses_vision(
+        call,
+        request.execution_mode,
+        "Extract all visible text from this document.",
+        resource,
+    )
+}
+
+fn encode_responses_caption(
+    request: &VisionCaptionRequest,
+    call: &CodecCall<'_>,
+) -> ProtocolResultValue<Value> {
+    encode_responses_vision(
+        call,
+        request.execution_mode,
+        "Describe this image accurately.",
+        encode_input_image(&request.image, call)?,
+    )
+}
+
+fn encode_responses_vision(
+    call: &CodecCall<'_>,
+    execution_mode: AiccExecutionMode,
+    prompt: &str,
+    resource: Value,
+) -> ProtocolResultValue<Value> {
+    let mut body = Map::from_iter([
+        ("model".to_string(), Value::String(provider_model_id(call)?)),
+        (
+            "input".to_string(),
+            json!([{"role":"user","content":[{"type":"input_text","text":prompt},resource]}]),
+        ),
+    ]);
+    apply_responses_parameters(&mut body, &call.input.resolved_parameters)?;
+    if execution_mode == AiccExecutionMode::Stream {
+        body.insert("stream".to_string(), Value::Bool(true));
+    }
+    Ok(Value::Object(body))
+}
+
+fn normalize_responses_api_output(mut output: ProtocolOutput, api_type: ApiType) -> ProtocolOutput {
+    if !matches!(api_type, ApiType::VisionOcr | ApiType::VisionCaption) {
+        return output;
+    }
+    let text = output
+        .value
+        .get("message")
+        .and_then(|value| serde_json::from_value::<AiMessage>(value.clone()).ok())
+        .map(|message| {
+            message
+                .content
+                .into_iter()
+                .filter_map(|content| match content {
+                    AiContent::Text { text } => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+    output.value = match api_type {
+        ApiType::VisionOcr => json!({"text":text,"pages":[],"artifacts":{}}),
+        ApiType::VisionCaption => json!({"captions":[{"text":text,"confidence":null}]}),
+        _ => unreachable!(),
+    };
+    output
 }
 
 fn encode_response_input(
@@ -1214,10 +1326,12 @@ fn openai_http_error(
     let provider_code = value
         .as_ref()
         .and_then(|value| value.pointer("/error/code"))
+        .or_else(|| value.as_ref().and_then(|value| value.get("code")))
         .and_then(Value::as_str);
     let message = value
         .as_ref()
         .and_then(|value| value.pointer("/error/message"))
+        .or_else(|| value.as_ref().and_then(|value| value.get("message")))
         .and_then(Value::as_str)
         .unwrap_or("OpenAI request failed");
     let label = provider_code.or(provider_type).unwrap_or("http_error");
@@ -1225,6 +1339,7 @@ fn openai_http_error(
         http_error_kind(status),
         format!("OpenAI {label}: {message}"),
     )
+    .with_provider_code(provider_code.map(str::to_owned))
     .with_request_id(Some(request_id.to_string()))
     .with_retry_after(retry_after)
 }
@@ -1372,14 +1487,19 @@ impl OperationCodec for OpenAiEmbeddingCodec {
         if request.chunking.is_some()
             || request.embedding_space_id.is_some()
             || request.normalize == Some(false)
-            || request
-                .prefer_artifact
-                .as_ref()
-                .is_some_and(|value| value == &json!(true))
         {
             return Err(ProtocolError::new(
                 ProtocolErrorKind::UnsupportedOperation,
                 "OpenAI embeddings received an unsupported canonical transform",
+            ));
+        }
+        if request.prefer_artifact.as_ref().is_some_and(|value| match value {
+            Value::Bool(_) => false,
+            Value::String(mode) if mode == "auto" => false,
+            _ => true,
+        }) {
+            return Err(ProtocolError::invalid_request(
+                "prefer_artifact must be true, false, or auto",
             ));
         }
         let input = request
@@ -1864,10 +1984,16 @@ fn decode_audio_speech(response: HttpResponse) -> ProtocolResultValue<ProtocolEx
         .and_then(|value| value.split(';').next())
         .unwrap_or("audio/mpeg")
         .to_string();
+    if !mime.to_ascii_lowercase().starts_with("audio/") {
+        return Err(ProtocolError::invalid_response(
+            "OpenAI speech response has an invalid content type",
+        )
+        .with_request_id(Some(response.request_id)));
+    }
     let resource = PublicResourceRef::base64(mime.clone(), STANDARD.encode(&response.body));
     Ok(ProtocolExecution::Immediate(ProtocolOutput {
         value: json!({"audio": resource}),
-        usage: None,
+        usage: Some(AiUsage::request_units(1)),
         artifacts: vec![AiArtifact {
             name: "speech".to_string(),
             resource,
@@ -2229,6 +2355,7 @@ fn decode_video_status(response: HttpResponse) -> ProtocolResultValue<NativeTask
     Ok(NativeTaskOutput::Status {
         state: decode_video_state(&value)?,
         retry_after: response.retry_after,
+        result_ref: None,
     })
 }
 
@@ -2261,7 +2388,7 @@ fn decode_video_result(response: HttpResponse) -> ProtocolResultValue<NativeTask
     let resource = PublicResourceRef::base64(mime.clone(), STANDARD.encode(response.body));
     Ok(NativeTaskOutput::Result(ProtocolOutput {
         value: json!({"video": resource}),
-        usage: None,
+        usage: Some(AiUsage::request_units(1)),
         artifacts: vec![AiArtifact {
             name: "video".to_string(),
             resource,
@@ -2944,6 +3071,7 @@ mod tests {
             panic!("expected speech")
         };
         assert_eq!(output.artifacts[0].mime.as_deref(), Some("audio/mpeg"));
+        assert_eq!(output.usage, Some(AiUsage::request_units(1)));
 
         let audio = PublicResourceRef::url(
             "https://download.invalid/audio.wav?credential=must-not-leak".to_string(),

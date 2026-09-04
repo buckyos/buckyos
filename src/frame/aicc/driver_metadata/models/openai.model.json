@@ -9,7 +9,7 @@
     {
       "id": "gpt-5.6",
       "parameter_scale": "sol",
-      "api_types": ["llm", "image.txt2img", "image.img2img"],
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "logical_mounts": ["llm.openai", "llm.gpt-sol", "llm.{driver}.{model}"],
       "capabilities": {
         "streaming": true,
@@ -27,7 +27,8 @@
         "input_token": 0.000004,
         "cache_input_token": 0.0000004,
         "output_token": 0.00002
-      }
+      },
+      "version_rules": ["gpt-sol"]
     },
     {
       "id": "gpt-image-2",
@@ -86,13 +87,24 @@
       "api_types": ["audio.tts"],
       "logical_mounts": ["audio.tts", "audio.tts.openai", "audio.tts.{model}"],
       "capabilities": { "max_context_tokens": 2000 }
+    },
+    {
+      "id": "sora-2",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": ["video.txt2video.openai", "video.txt2video.{model}", "video.img2video.openai", "video.img2video.{model}"]
+    },
+    {
+      "id": "sora-2-pro",
+      "parameter_scale": "pro",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": ["video.txt2video.openai", "video.txt2video.{model}", "video.img2video.openai", "video.img2video.{model}"]
     }
   ],
   "patterns": [
     {
       "match": "gpt-5.6-sol*",
       "parameter_scale": "sol",
-      "api_types": ["llm", "image.txt2img", "image.img2img"],
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "logical_mounts": ["llm.openai", "llm.gpt-sol", "llm.{driver}.{model}"],
       "capabilities": {
         "streaming": true,
@@ -110,12 +122,13 @@
         "input_token": 0.000004,
         "cache_input_token": 0.0000004,
         "output_token": 0.00002
-      }
+      },
+      "version_rules": ["gpt-sol"]
     },
     {
       "match": "gpt-5.6-terra*",
       "parameter_scale": "terra",
-      "api_types": ["llm", "image.txt2img", "image.img2img"],
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "logical_mounts": ["llm.openai", "llm.gpt-terra", "llm.{driver}.{model}"],
       "capabilities": {
         "streaming": true,
@@ -133,12 +146,13 @@
         "input_token": 0.000002,
         "cache_input_token": 0.0000002,
         "output_token": 0.000012
-      }
+      },
+      "version_rules": ["gpt-terra"]
     },
     {
       "match": "gpt-5.6-luna*",
       "parameter_scale": "luna",
-      "api_types": ["llm", "image.txt2img", "image.img2img"],
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "logical_mounts": ["llm.openai", "llm.gpt-luna", "llm.{driver}.{model}"],
       "capabilities": {
         "streaming": true,
@@ -156,7 +170,8 @@
         "input_token": 0.0000002,
         "cache_input_token": 0.00000002,
         "output_token": 0.0000012
-      }
+      },
+      "version_rules": ["gpt-luna"]
     }
   ],
   "defaults": {},
@@ -168,5 +183,39 @@
     { "name": "reasoning-xhigh", "match": "gpt-5.6*", "mount_suffix": "reasoning-xhigh" },
     { "name": "reasoning-max", "match": "gpt-5.6*", "mount_suffix": "reasoning-max" }
   ],
-  "version_rules": []
+  "version_rules": [
+    {
+      "id": "gpt-sol",
+      "family": "gpt",
+      "tier": "sol",
+      "match": "gpt-5.6*",
+      "exclude_tier_tokens": ["terra", "luna"],
+      "version_rank": { "prefix": "gpt" },
+      "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
+      "current_mount": "llm.gpt-sol",
+      "version_mount": "llm.openai.{model}"
+    },
+    {
+      "id": "gpt-terra",
+      "family": "gpt",
+      "tier": "terra",
+      "match": "gpt-5.6*",
+      "tier_tokens": ["terra"],
+      "version_rank": { "prefix": "gpt" },
+      "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
+      "current_mount": "llm.gpt-terra",
+      "version_mount": "llm.openai.{model}"
+    },
+    {
+      "id": "gpt-luna",
+      "family": "gpt",
+      "tier": "luna",
+      "match": "gpt-5.6*",
+      "tier_tokens": ["luna"],
+      "version_rank": { "prefix": "gpt" },
+      "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
+      "current_mount": "llm.gpt-luna",
+      "version_mount": "llm.openai.{model}"
+    }
+  ]
 }

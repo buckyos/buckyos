@@ -135,10 +135,15 @@ pub(crate) fn claude_discovery(transport: HttpTransport) -> AnthropicModelsDisco
 
 pub(crate) fn claude_messages_adapter() -> (crate::protocol::AdapterDescriptor, CodecRegistration) {
     let codec = ClaudeMessagesCodec::new();
+    let descriptor = codec.adapter_descriptor();
     (
-        codec.adapter_descriptor(),
+        descriptor,
         CodecRegistration {
-            operation_codecs: vec![Arc::new(codec)],
+            operation_codecs: vec![
+                Arc::new(codec),
+                Arc::new(ClaudeMessagesCodec::new_for(buckyos_api::ApiType::VisionOcr)),
+                Arc::new(ClaudeMessagesCodec::new_for(buckyos_api::ApiType::VisionCaption)),
+            ],
             native_task_codecs: Vec::new(),
         },
     )
@@ -197,7 +202,7 @@ mod tests {
         );
         assert_eq!(sonnet.pricing.as_ref().unwrap().input_token, Some(0.000003));
         assert_eq!(adapter.base_adapter_id, None);
-        assert_eq!(registration.operation_codecs.len(), 1);
+        assert_eq!(registration.operation_codecs.len(), 3);
         let builtin = claude_catalog_files()
             .into_iter()
             .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))

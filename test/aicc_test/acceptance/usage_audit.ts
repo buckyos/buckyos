@@ -191,7 +191,10 @@ export async function queryRouteTraces(input: {
     const rawTraces = Array.isArray(response.traces) ? response.traces : [];
     for (const rawTrace of rawTraces) {
       if (!rawTrace || typeof rawTrace !== "object") throw new Error("trace.query contains invalid trace");
-      const trace = rawTrace as RouteTraceEvent;
+      const envelope = rawTrace as Record<string, unknown>;
+      const trace = (envelope.trace && typeof envelope.trace === "object")
+        ? envelope.trace as RouteTraceEvent
+        : envelope as RouteTraceEvent;
       if (!trace.trace_id || !trace.task_id) throw new Error("route trace is missing identity fields");
       if (seen.has(trace.trace_id)) throw new Error(`trace.query repeated trace ${trace.trace_id}`);
       seen.add(trace.trace_id);

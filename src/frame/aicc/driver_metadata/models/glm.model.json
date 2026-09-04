@@ -99,7 +99,14 @@
     }
   ],
   "patterns": [],
-  "defaults": {},
+  "defaults": { "version_rules": ["glm-standard", "glm-turbo", "glm-air", "glm-airx", "glm-flash", "glm-flashx"] },
   "variants": [],
-  "version_rules": []
+  "version_rules": [
+    { "id": "glm-standard", "family": "glm", "tier": "standard", "match": "glm-*", "exclude_tier_tokens": ["turbo", "air", "airx", "flash", "flashx"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm", "version_mount": "llm.glm.{model}" },
+    { "id": "glm-turbo", "family": "glm", "tier": "turbo", "match": "glm-*-turbo*", "tier_tokens": ["turbo"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm-turbo", "version_mount": "llm.glm.{model}" },
+    { "id": "glm-air", "family": "glm", "tier": "air", "match": "glm-*-air*", "tier_tokens": ["air"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm-air", "version_mount": "llm.glm.{model}" },
+    { "id": "glm-airx", "family": "glm", "tier": "airx", "match": "glm-*-airx*", "tier_tokens": ["airx"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm-airx", "version_mount": "llm.glm.{model}" },
+    { "id": "glm-flash", "family": "glm", "tier": "flash", "match": "glm-*-flash*", "tier_tokens": ["flash"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm-flash", "version_mount": "llm.glm.{model}" },
+    { "id": "glm-flashx", "family": "glm", "tier": "flashx", "match": "glm-*-flashx*", "tier_tokens": ["flashx"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm-flashx", "version_mount": "llm.glm.{model}" }
+  ]
 }

@@ -8,7 +8,10 @@ use super::{
 use async_trait::async_trait;
 use buckyos_api::ApiType;
 use futures_util::StreamExt;
-use reqwest::header::{HeaderName, HeaderValue};
+use reqwest::{
+    header::{HeaderName, HeaderValue},
+    Url,
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -157,6 +160,16 @@ impl OperationCodec for ResponsesDialectCodec {
             context: call.context,
         };
         let mut request = self.base.encode(&delegated)?;
+        if self.dialect == ResponsesDialectKind::DeepSeek {
+            let base = Url::parse(&call.context.base_url).map_err(|_| {
+                ProtocolError::invalid_configuration("DeepSeek base URL is invalid")
+            })?;
+            if base.path().trim_matches('/').is_empty() {
+                let mut endpoint = base;
+                endpoint.set_path("/responses");
+                request.url = endpoint.to_string();
+            }
+        }
         if let Some(enabled) = session_cache {
             let enabled = enabled.as_bool().ok_or_else(|| {
                 ProtocolError::invalid_request("Qwen session_cache must be a boolean")
@@ -359,6 +372,19 @@ mod tests {
             assert_eq!(request.url, "https://provider.example/v1/responses");
             assert!(request.headers.contains_key(AUTHORIZATION));
         }
+    }
+
+    #[test]
+    fn deepseek_empty_base_path_uses_official_responses_endpoint() {
+        let (_, registration) = responses_dialect_adapter(ResponsesDialectKind::DeepSeek).unwrap();
+        let request = registration.operation_codecs[0]
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &input(BTreeMap::new()),
+                context: &context("https://api.deepseek.com"),
+            })
+            .unwrap();
+        assert_eq!(request.url, "https://api.deepseek.com/responses");
     }
 
     #[test]

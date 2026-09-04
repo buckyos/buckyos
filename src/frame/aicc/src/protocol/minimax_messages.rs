@@ -37,23 +37,33 @@ pub(crate) fn minimax_messages_dialect_contract() -> MiniMaxMessagesDialectContr
 
 pub(crate) fn minimax_messages_adapter() -> (AdapterDescriptor, CodecRegistration) {
     let base = ClaudeMessagesCodec::new();
-    let operation = base.descriptor().clone();
+    let mut operation = base.descriptor().clone();
+    operation.bindings.retain(|binding| binding.api_type == ApiType::Llm);
+    let (media_operations, media_registration) = super::minimax_media_registration();
+    let mut operations = BTreeMap::from([(operation.operation_id.clone(), operation.clone())]);
+    operations.extend(
+        media_operations
+            .into_iter()
+            .map(|operation| (operation.operation_id.clone(), operation)),
+    );
     let descriptor = AdapterDescriptor {
         protocol_family_id: "claude".to_owned(),
         protocol_adapter_id: MINIMAX_MESSAGES_ADAPTER_ID.to_owned(),
         interface_generation: "messages-2023-06-01-minimax".to_owned(),
         base_adapter_id: Some(CLAUDE_MESSAGES_ADAPTER_ID.to_owned()),
         status: AdapterStatus::Stable,
-        operations: BTreeMap::from([(operation.operation_id.clone(), operation.clone())]),
+        operations,
     };
     (
         descriptor,
         CodecRegistration {
-            operation_codecs: vec![Arc::new(MiniMaxMessagesCodec {
+            operation_codecs: std::iter::once(Arc::new(MiniMaxMessagesCodec {
                 descriptor: operation,
                 base: Arc::new(base),
-            })],
-            native_task_codecs: Vec::new(),
+            }) as Arc<dyn OperationCodec>)
+            .chain(media_registration.operation_codecs)
+            .collect(),
+            native_task_codecs: media_registration.native_task_codecs,
         },
     )
 }
@@ -152,7 +162,7 @@ fn validate_minimax_request(call: &CodecCall<'_>) -> ProtocolResultValue<()> {
     Ok(())
 }
 
-fn validate_minimax_response(response: &HttpResponse) -> ProtocolResultValue<()> {
+pub(super) fn validate_minimax_response(response: &HttpResponse) -> ProtocolResultValue<()> {
     if !response.status.is_success() {
         return Err(minimax_http_error(response));
     }
@@ -180,6 +190,7 @@ fn validate_minimax_response(response: &HttpResponse) -> ProtocolResultValue<()>
     let kind = match status_code {
         1004 => ProtocolErrorKind::Authentication,
         1001 => ProtocolErrorKind::Timeout,
+        1008 => ProtocolErrorKind::ProviderRejected,
         1026 | 1027 | 1039 | 1042 | 2013 => ProtocolErrorKind::InvalidRequest,
         _ => ProtocolErrorKind::Transport,
     };
@@ -344,7 +355,7 @@ mod tests {
             descriptor.base_adapter_id.as_deref(),
             Some(CLAUDE_MESSAGES_ADAPTER_ID)
         );
-        assert_eq!(descriptor.operations.len(), 1);
+        assert_eq!(descriptor.operations.len(), 5);
         let request = registration.operation_codecs[0]
             .encode(&CodecCall {
                 api_type: ApiType::Llm,
@@ -393,6 +404,28 @@ mod tests {
         assert_eq!(error.kind, ProtocolErrorKind::Authentication);
         assert!(error.message.contains("1004"));
         assert_eq!(error.request_id.as_deref(), Some("request-1"));
+    }
+
+    #[tokio::test]
+    async fn maps_minimax_insufficient_balance_as_non_retriable_provider_rejection() {
+        let (_, registration) = minimax_messages_adapter();
+        let response = HttpResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from_static(
+                br#"{"base_resp":{"status_code":1008,"status_msg":"insufficient balance"}}"#,
+            ),
+            request_id: "request-1".to_owned(),
+            retry_after: None,
+        };
+        let error = registration.operation_codecs[0]
+            .decode(response)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, ProtocolErrorKind::ProviderRejected);
+        let mapped: buckyos_api::AiccError = error.into();
+        assert_eq!(mapped.code, buckyos_api::AiccErrorCode::ProviderError);
+        assert!(!mapped.retriable);
     }
 
     #[tokio::test]

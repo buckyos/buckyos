@@ -10,6 +10,16 @@
   "models": [],
   "patterns": [
     {
+      "match": "gpt-5*",
+      "operations": {
+        "llm": "responses.create",
+        "vision.ocr": "responses.create",
+        "vision.caption": "responses.create",
+        "image.txt2img": "responses.create",
+        "image.img2img": "responses.create"
+      }
+    },
+    {
       "match": "*",
       "operations": {
         "llm": "responses.create",

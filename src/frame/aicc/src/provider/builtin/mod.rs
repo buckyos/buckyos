@@ -230,6 +230,7 @@ mod wp08d_tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         for model_driver in [
+            driver("openai", "gpt-5.6"),
             driver("claude", "claude-fixture"),
             driver("gemini", "gemini-fixture"),
         ] {

@@ -266,6 +266,7 @@ impl OpenAiChatCompletionsDialect for GlmDialect {
         body: &mut Map<String, Value>,
         _headers: &mut HeaderMap,
     ) -> ProtocolResultValue<()> {
+        body.remove("stream_options");
         restore_assistant_state(request, body, "glm", false)
     }
 
@@ -273,6 +274,12 @@ impl OpenAiChatCompletionsDialect for GlmDialect {
         &self,
         response: &mut Map<String, Value>,
     ) -> ProtocolResultValue<ChatCompletionsImmediateExtensions> {
+        if !response.contains_key("object") {
+            response.insert(
+                "object".to_owned(),
+                Value::String("chat.completion".to_owned()),
+            );
+        }
         reasoning_from_response(response, "glm")
     }
 

@@ -159,11 +159,10 @@ impl BuiltinProviderRegistry {
             .providers
             .get(request.provider_profile_id)
             .ok_or_else(|| ProviderError::UnknownProfile(request.provider_profile_id.to_owned()))?;
-        if self.codecs.adapter(request.protocol_adapter_id).is_none() {
-            return Err(ProviderError::UnknownAdapter(
-                request.protocol_adapter_id.to_owned(),
-            ));
-        }
+        let adapter = self
+            .codecs
+            .adapter(request.protocol_adapter_id)
+            .ok_or_else(|| ProviderError::UnknownAdapter(request.protocol_adapter_id.to_owned()))?;
         if !registration.supports_any_adapter
             && registration.profile.default_protocol_adapter_id != request.protocol_adapter_id
         {
@@ -180,9 +179,13 @@ impl BuiltinProviderRegistry {
                 request.provider_profile_id
             )));
         }
-        let profile = registration
-            .profile
-            .with_credential(request.credential_kind)?;
+        let profile = if request.provider_profile_id == CUSTOM_PROVIDER_PROFILE_ID {
+            custom_profile_for_adapter(&registration.profile, adapter, request.credential_kind)?
+        } else {
+            registration
+                .profile
+                .with_credential(request.credential_kind)?
+        };
         let discovery = self.discovery(registration.discovery, request.configured_inventory)?;
         Ok(BuiltinProviderBinding {
             profile,
@@ -244,6 +247,48 @@ impl BuiltinProviderRegistry {
             BuiltinDiscoveryFactory::CatalogOnly => unreachable!(),
         })
     }
+}
+
+pub(crate) fn custom_profile_for_adapter(
+    profile: &ProviderProfile,
+    adapter: &crate::protocol::AdapterDescriptor,
+    requested: Option<CredentialKind>,
+) -> ProviderResult<ProviderProfile> {
+    let credential = match adapter.protocol_family_id.as_str() {
+        "openai" => CredentialDescriptor {
+            kind: CredentialKind::Bearer,
+            header_name: None,
+        },
+        "claude" => CredentialDescriptor {
+            kind: CredentialKind::NamedHeader,
+            header_name: Some("x-api-key".to_owned()),
+        },
+        "gemini" => CredentialDescriptor {
+            kind: CredentialKind::NamedHeader,
+            header_name: Some("x-goog-api-key".to_owned()),
+        },
+        "fal" => CredentialDescriptor {
+            kind: CredentialKind::FalKey,
+            header_name: None,
+        },
+        family => {
+            return Err(ProviderError::InvalidConfiguration(format!(
+                "custom provider protocol family `{family}` has no credential contract"
+            )))
+        }
+    };
+    if requested.is_some_and(|kind| kind != credential.kind) {
+        return Err(ProviderError::InvalidConfiguration(format!(
+            "custom provider adapter `{}` requires credential kind `{}`",
+            adapter.protocol_adapter_id,
+            credential.kind.as_str()
+        )));
+    }
+    let mut selected = profile.clone();
+    selected.default_protocol_adapter_id = adapter.protocol_adapter_id.clone();
+    selected.credential = credential;
+    selected.credential_variants.clear();
+    Ok(selected)
 }
 
 fn builtin_provider_registrations(
@@ -876,6 +921,8 @@ mod tests {
             binding.profile.provider_profile_id,
             CUSTOM_PROVIDER_PROFILE_ID
         );
+        assert_eq!(binding.profile.credential.kind, CredentialKind::NamedHeader);
+        assert_eq!(binding.profile.credential.header_name.as_deref(), Some("x-api-key"));
         assert_eq!(binding.instance_rules, Some(Value::Object(Map::new())));
         assert_eq!(
             binding
@@ -918,6 +965,33 @@ mod tests {
             Err(ProviderError::InvalidConfiguration(message))
                 if message == "provider profile `custom` does not support dynamic login"
         ));
+
+        for (adapter, kind, header) in [
+            (OPENAI_RESPONSES_ADAPTER_ID, CredentialKind::Bearer, None),
+            (
+                crate::protocol::CLAUDE_MESSAGES_ADAPTER_ID,
+                CredentialKind::NamedHeader,
+                Some("x-api-key"),
+            ),
+            (
+                crate::protocol::GEMINI_ADAPTER_ID,
+                CredentialKind::NamedHeader,
+                Some("x-goog-api-key"),
+            ),
+            (FAL_QUEUE_ADAPTER_ID, CredentialKind::FalKey, None),
+        ] {
+            let binding = registry
+                .resolve(BuiltinProviderRequest {
+                    provider_profile_id: CUSTOM_PROVIDER_PROFILE_ID,
+                    protocol_adapter_id: adapter,
+                    auth_mode: ProviderAuthMode::ApiKey,
+                    credential_kind: None,
+                    configured_inventory: Some(configured_inventory()),
+                })
+                .unwrap();
+            assert_eq!(binding.profile.credential.kind, kind);
+            assert_eq!(binding.profile.credential.header_name.as_deref(), header);
+        }
     }
 
     #[test]

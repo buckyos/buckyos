@@ -7,11 +7,12 @@ import {
   type CapturedProviderRequest,
   type ProviderProtocolCatalog,
   type ProviderProtocolContract,
+  selectOfficialModels,
   validateProviderAuxiliaryRequest,
   validateProviderRequest,
 } from "./provider_protocol_contracts.ts";
 
-type Selection = { provider_driver: string; contract_id: string; scenario: string };
+type Selection = { provider_driver: string; contract_id: string; api_type?: string; scenario: string; selection_seed?: string };
 type DiscoveryContract = {
   mode: "machine_api" | "catalog_only";
   path?: string;
@@ -114,8 +115,16 @@ function rewriteMockUrls(value: unknown, authority: string, endpoint: string): u
 function discoveryFixture(
   provider: ProviderProtocolCatalog["providers"][number],
   shape: NonNullable<DiscoveryContract["response_shape"]>,
+  selectionSeed?: string,
 ): unknown {
-  const modelIds = [...new Set(Object.values(provider.test_model_ids))];
+  const randomModels = provider.official_first_party_model_ids && selectionSeed
+    ? Object.values(selectOfficialModels(
+      { schema_version: 1, revision: "selection", checked_at: "selection", providers: [provider], error_evidence: {}, error_fixtures: {} },
+      provider.provider_driver,
+      selectionSeed,
+    ))
+    : [];
+  const modelIds = [...new Set([...Object.values(provider.test_model_ids), ...randomModels])];
   if (shape === "sn") {
     return {
       revision: "t15-mock-1",
@@ -156,6 +165,8 @@ function streamFixture(contract: ProviderProtocolContract): string {
         "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_mock_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"mock-model\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":4,\"output_tokens\":0}}}",
         "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
         "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"BUCKYOS-AICC-4827\"}}",
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":3}}",
         "event: message_stop\ndata: {\"type\":\"message_stop\"}",
       ].join("\n\n") + "\n\n";
     case "gemini_interactions":
@@ -263,7 +274,11 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         if (discoveryErrors.length > 0) {
           return json(response, 400, { type: "t15_mock_contract_violation", errors: discoveryErrors });
         }
-        return json(response, 200, discoveryFixture(discoveryProvider, discovery.response_shape!));
+          return json(response, 200, discoveryFixture(
+            discoveryProvider,
+            discovery.response_shape!,
+            selection?.selection_seed,
+          ));
       }
       if (selectedProvider && request.method === "GET" && url.pathname.endsWith("/models")) {
         return json(response, 404, {
@@ -447,8 +462,31 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         response.end(Buffer.from(contract.success_fixture_base64, "base64"));
         return;
       }
+      const rawFixture = structuredClone(contract.success_fixture ?? {}) as Record<string, unknown>;
+      if (selection.provider_driver === "openai" &&
+          contract.id === "openai.responses.v1" &&
+          ["image.txt2img", "image.img2img"].includes(selection.api_type ?? "")) {
+        rawFixture.output = [{
+          type: "image_generation_call",
+          id: "ig_mock_1",
+          status: "completed",
+          result: "aW1hZ2U=",
+          output_format: "png",
+        }];
+      }
+      if (selection.provider_driver === "google-gemini" &&
+          contract.id === "gemini.interactions.v1beta" &&
+          Array.isArray(rawFixture.outputs)) {
+        const structuredText: Record<string, string> = {
+          "vision.ocr": JSON.stringify({ text: "BUCKYOS-AICC-4827", pages: [{ page_index: 0, width: 1, height: 1, blocks: [] }] }),
+          "vision.detect": JSON.stringify({ detections: [{ label: "marker", score: 1, bbox: { format: "xywh", unit: "relative", x: 0, y: 0, width: 1, height: 1 } }] }),
+          "vision.segment": JSON.stringify({ masks: [{ id: "mask-1", score: 1, mask: { format: "polygon", points: [[0, 0], [1, 0], [1, 1]] } }] }),
+        };
+        const text = selection.api_type ? structuredText[selection.api_type] : undefined;
+        if (text) rawFixture.outputs = [{ type: "text", text }];
+      }
       const fixture = rewriteMockUrls(
-        structuredClone(contract.success_fixture ?? {}),
+        rawFixture,
         request.headers.host ?? "127.0.0.1",
         url.pathname.replace(/^\//, ""),
       );

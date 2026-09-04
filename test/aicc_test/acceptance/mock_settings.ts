@@ -5,60 +5,97 @@ function object(value: unknown): JsonObject {
   return value as JsonObject;
 }
 
-function instances(value: unknown): JsonObject[] {
-  return Array.isArray(value) ? value.filter((item) => item && typeof item === "object") as JsonObject[] : [];
+function provider(input: {
+  name: string;
+  profile: string;
+  adapter: string;
+  baseUrl: string;
+  token: string;
+  timeoutMs: number;
+  discovery?: JsonObject;
+  providerRulesId?: string | null;
+}): JsonObject {
+  return {
+    provider_instance_name: input.name,
+    provider_type: "cloud_api",
+    provider_profile_id: input.profile,
+    protocol_adapter_id: input.adapter,
+    ...(input.providerRulesId === null
+      ? {}
+      : { provider_rules_id: input.providerRulesId ?? input.profile }),
+    base_url: input.baseUrl,
+    credentials: { api_token: { locked: input.token } },
+    enabled: true,
+    timeout_ms: input.timeoutMs,
+    auto_sync_models: true,
+    ...(input.discovery ? { discovery: input.discovery } : {}),
+  };
 }
 
-function appendSection(
-  settings: JsonObject,
-  key: string,
-  additions: JsonObject[],
-): void {
-  const current = object(settings[key]);
-  settings[key] = {
-    ...current,
-    enabled: true,
-    instances: [...instances(current.instances), ...additions],
+function customDiscovery(
+  revision: string,
+  protocol: "openai" | "claude" | "google-gemini" | "fal",
+  selectedModels: Record<string, string>,
+): JsonObject {
+  const models = new Map<string, { apiTypes: string[]; remoteMethods: string[] }>();
+  const operation = (apiType: string): string => {
+    if (protocol === "claude") return "messages.create";
+    if (protocol === "google-gemini") {
+      if (apiType.startsWith("embedding.")) return "models.embedContent";
+      if (apiType.startsWith("video.")) return "models.predictLongRunning";
+      return "interactions.create";
+    }
+    if (protocol === "fal") return "queue.submit";
+    if (apiType === "embedding.text") return "embeddings.create";
+    if (apiType === "image.txt2img") return "images.generate";
+    if (apiType === "image.img2img" || apiType === "image.inpaint") return "images.edit";
+    if (apiType === "audio.tts") return "audio.speech.create";
+    if (apiType === "audio.asr") return "audio.transcriptions.create";
+    if (apiType.startsWith("video.")) return "videos.create";
+    return "responses.create";
+  };
+  for (const [apiType, modelId] of Object.entries(selectedModels)) {
+    const model = models.get(modelId) ?? { apiTypes: [], remoteMethods: [] };
+    model.apiTypes.push(apiType);
+    model.remoteMethods.push(operation(apiType));
+    models.set(modelId, model);
+  }
+  return {
+    revision,
+    discovered_at_ms: Date.now(),
+    health: "healthy",
+    models: [...models].map(([provider_model_id, model]) => ({
+      provider_model_id,
+      api_types: model.apiTypes,
+      remote_methods: [...new Set(model.remoteMethods)],
+      availability: "available",
+      deprecated: false,
+    })),
   };
 }
 
 function installRoutingFixtures(settings: JsonObject, suffix: string): void {
-  const routing = object(settings.routing_config);
-  const definitions = Array.isArray(routing.logical_definitions)
-    ? routing.logical_definitions.filter((item) => item && typeof item === "object") as JsonObject[]
-    : [];
-  const fixtureDefinitions: JsonObject[] = [
-    { path: "llm.dv_acceptance.auto", api_type: "llm", mount_mode: "auto" },
-    { path: "llm.dv_acceptance.manual", api_type: "llm", mount_mode: "manual" },
-    {
-      path: "llm.dv_acceptance.min_line",
-      api_type: "llm",
-      mount_mode: "auto",
-      min_line: { min_context_tokens: 1_000_000_000 },
-    },
-    {
-      path: "llm.dv_acceptance.disable_line",
-      api_type: "llm",
-      mount_mode: "auto",
-      disable_line: { web_search: true },
-    },
-    { path: "llm.dv_acceptance.system_overlay", api_type: "llm", mount_mode: "manual" },
-  ];
-  const fixturePaths = new Set(fixtureDefinitions.map((item) => String(item.path)));
-  routing.logical_definitions = [
-    ...definitions.filter((item) => !fixturePaths.has(String(item.path))),
-    ...fixtureDefinitions,
-  ];
-
-  const logicalTree = object(routing.logical_tree);
+  const session = object(settings.session_config);
+  const logicalTree = object(session.logical_tree);
   const llm = object(logicalTree.llm);
   const llmChildren = object(llm.children);
   const acceptance = object(llmChildren.dv_acceptance);
   const acceptanceChildren = object(acceptance.children);
+  acceptanceChildren.manual = { items: {}, source: "dv_system_routing_fixture" };
+  acceptanceChildren.disable_line = {
+    items: {
+      primary: {
+        target: `gpt-5.6@dv-openai-a-${suffix}`,
+        weight: 1,
+      },
+    },
+    disable_line: { web_search: true },
+    source: "dv_system_routing_fixture",
+  };
   acceptanceChildren.system_overlay = {
     items: {
       system: {
-        target: `gpt-4o-mini@dv-openai-a-${suffix}`,
+        target: `gpt-5.6@dv-openai-a-${suffix}`,
         weight: 1,
       },
     },
@@ -68,70 +105,146 @@ function installRoutingFixtures(settings: JsonObject, suffix: string): void {
   llmChildren.dv_acceptance = acceptance;
   llm.children = llmChildren;
   logicalTree.llm = llm;
-  routing.logical_tree = logicalTree;
-  routing.revision = `dv-routing-${suffix}`;
-  settings.routing_config = routing;
+  session.logical_tree = logicalTree;
+  session.revision = `dv-routing-${suffix}`;
+  settings.session_config = session;
+}
+
+function falDiscovery(): JsonObject {
+  return {
+    revision: "t1-fal-v1",
+    discovered_at_ms: Date.now(),
+    health: "healthy",
+    models: [
+      ["fal-ai/esrgan", ["image.upscale"]],
+      ["fal-ai/imageutils/rembg", ["image.bg_remove"]],
+      ["fal-ai/deepfilternet3", ["audio.enhance"]],
+      ["fal-ai/video-upscaler", ["video.upscale"]],
+    ].map(([provider_model_id, api_types]) => ({
+      provider_model_id,
+      api_types,
+      availability: "available",
+      deprecated: false,
+    })),
+  };
 }
 
 export function buildMockSettings(
   original: unknown,
-  input: { baseUrl: string; runId: string; timeoutMs?: number },
+  input: {
+    baseUrl: string;
+    runId: string;
+    timeoutMs?: number;
+    customModels?: Record<"openai" | "claude" | "google-gemini" | "fal", Record<string, string>>;
+  },
 ): JsonObject {
   const settings = structuredClone(object(original));
   const baseUrl = input.baseUrl.replace(/\/+$/, "");
   if (!/^https?:\/\//.test(baseUrl)) throw new Error("mock base URL must be HTTP(S)");
   const suffix = input.runId.replace(/[^a-zA-Z0-9_-]/g, "-");
   if (!suffix) throw new Error("run_id is required");
-  const timeout_ms = input.timeoutMs ?? 5_000;
-  const common = { provider_type: "cloud_api", api_token: `mock-${suffix}`, timeout_ms };
-
-  appendSection(settings, "openai", [
-    {
-      ...common,
-      api_token: `mock-a-${suffix}`,
-      provider_instance_name: `dv-openai-a-${suffix}`,
-      provider_driver: "openai",
-      base_url: `${baseUrl}/instance-a/v1`,
-      models: ["gpt-4o-mini", "gpt-5.4", "text-embedding-3-small", "gpt-image-1", "whisper-1", "tts-1", "sora-2", "sora-mock-pattern"],
-    },
-    {
-      ...common,
-      api_token: `mock-b-${suffix}`,
-      provider_instance_name: `dv-openai-b-${suffix}`,
-      provider_driver: "openai",
-      base_url: `${baseUrl}/instance-b/v1`,
-      models: ["gpt-4o-mini", "gpt-5-mini", "text-embedding-3-small"],
-    },
-  ]);
-  appendSection(settings, "claude", [{
-    ...common,
-    provider_instance_name: `dv-claude-${suffix}`,
-    provider_driver: "claude",
-    base_url: `${baseUrl}/v1`,
-    models: ["claude-3-7-sonnet-20250219"],
-  }]);
-  appendSection(settings, "gemini", [{
-    ...common,
-    provider_instance_name: `dv-gemini-${suffix}`,
-    provider_driver: "google-gemini",
-    base_url: `${baseUrl}/v1beta`,
-  }]);
-  appendSection(settings, "minimax", [{
-    ...common,
-    provider_instance_name: `dv-minimax-${suffix}`,
-    provider_driver: "minimax",
-    base_url: `${baseUrl}/v1`,
-    models: ["MiniMax-M2.5"],
-  }]);
-  appendSection(settings, "fal", [{
-    ...common,
-    provider_instance_name: `dv-fal-${suffix}`,
-    base_url: baseUrl,
-    image_upscale_models: ["fal-ai/esrgan"],
-    image_bg_remove_models: ["fal-ai/imageutils/rembg"],
-    audio_enhance_models: ["fal-ai/deepfilternet3"],
-    video_upscale_models: ["fal-ai/video-upscaler"],
-  }]);
+  const timeoutMs = input.timeoutMs ?? 5_000;
+  const customModels = input.customModels ?? {
+    openai: { llm: "gpt-5.6-sol" },
+    claude: { llm: "claude-sonnet-5" },
+    "google-gemini": { llm: "gemini-3.8-flash" },
+    fal: { "image.upscale": "fal-ai/esrgan" },
+  };
+  const currentProviders = Array.isArray(settings.providers)
+    ? settings.providers.filter((item) => item && typeof item === "object")
+    : [];
+  settings.providers = [
+    ...currentProviders,
+    provider({
+      name: `dv-openai-a-${suffix}`,
+      profile: "openai",
+      adapter: "openai-responses",
+      baseUrl: `${baseUrl}/instance-a/v1`,
+      token: `mock-a-${suffix}`,
+      timeoutMs,
+    }),
+    provider({
+      name: `dv-openai-b-${suffix}`,
+      profile: "openai",
+      adapter: "openai-responses",
+      baseUrl: `${baseUrl}/instance-b/v1`,
+      token: `mock-b-${suffix}`,
+      timeoutMs,
+    }),
+    provider({
+      name: `dv-claude-${suffix}`,
+      profile: "claude",
+      adapter: "claude-messages",
+      baseUrl: `${baseUrl}/v1`,
+      token: `mock-${suffix}`,
+      timeoutMs,
+    }),
+    provider({
+      name: `dv-gemini-${suffix}`,
+      profile: "gemini",
+      adapter: "gemini-interactions",
+      baseUrl: `${baseUrl}/v1beta`,
+      token: `mock-${suffix}`,
+      timeoutMs,
+    }),
+    provider({
+      name: `dv-minimax-${suffix}`,
+      profile: "minimax",
+      adapter: "minimax-messages",
+      baseUrl: `${baseUrl}/v1`,
+      token: `mock-${suffix}`,
+      timeoutMs,
+    }),
+    provider({
+      name: `dv-fal-${suffix}`,
+      profile: "fal",
+      adapter: "fal-queue",
+      baseUrl,
+      token: `mock-${suffix}`,
+      timeoutMs,
+      discovery: falDiscovery(),
+    }),
+    provider({
+      name: `dv-custom-openai-${suffix}`,
+      profile: "custom",
+      adapter: "openai-responses",
+      providerRulesId: null,
+      baseUrl: `${baseUrl}/instance-custom-openai/v1`,
+      token: `mock-custom-openai-${suffix}`,
+      timeoutMs,
+      discovery: customDiscovery(`t1-custom-openai-${suffix}`, "openai", customModels.openai),
+    }),
+    provider({
+      name: `dv-custom-claude-${suffix}`,
+      profile: "custom",
+      adapter: "claude-messages",
+      providerRulesId: null,
+      baseUrl: `${baseUrl}/instance-custom-claude/v1`,
+      token: `mock-custom-claude-${suffix}`,
+      timeoutMs,
+      discovery: customDiscovery(`t1-custom-claude-${suffix}`, "claude", customModels.claude),
+    }),
+    provider({
+      name: `dv-custom-gemini-${suffix}`,
+      profile: "custom",
+      adapter: "gemini-interactions",
+      providerRulesId: null,
+      baseUrl: `${baseUrl}/instance-custom-gemini/v1beta`,
+      token: `mock-custom-gemini-${suffix}`,
+      timeoutMs,
+      discovery: customDiscovery(`t1-custom-gemini-${suffix}`, "google-gemini", customModels["google-gemini"]),
+    }),
+    provider({
+      name: `dv-custom-fal-${suffix}`,
+      profile: "custom",
+      adapter: "fal-queue",
+      providerRulesId: null,
+      baseUrl,
+      token: `mock-custom-fal-${suffix}`,
+      timeoutMs,
+      discovery: customDiscovery(`t1-custom-fal-${suffix}`, "fal", customModels.fal),
+    }),
+  ];
   installRoutingFixtures(settings, suffix);
   return settings;
 }

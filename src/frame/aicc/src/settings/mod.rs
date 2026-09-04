@@ -5,7 +5,9 @@ use crate::catalog::{
     KnownProviderCatalog, ModelDriverCatalog, ProviderRulesCatalog,
 };
 use async_trait::async_trait;
-use buckyos_api::{AiccRouteOverlay, SystemConfigClient, SystemConfigError};
+use buckyos_api::{
+    get_buckyos_api_runtime, AiccRouteOverlay, SystemConfigClient, SystemConfigError,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -469,19 +471,16 @@ impl MetadataOverrideLoader for StaticMetadataOverrideLoader {
 pub(crate) struct ProductionMetadataOverrideLoader {
     local_root: PathBuf,
     system_config_url: String,
-    session_token: String,
 }
 
 impl ProductionMetadataOverrideLoader {
     pub(crate) fn new(
         buckyos_root: impl AsRef<Path>,
         system_config_url: impl Into<String>,
-        session_token: impl Into<String>,
     ) -> Self {
         Self {
             local_root: buckyos_root.as_ref().join(LOCAL_METADATA_RELATIVE_DIR),
             system_config_url: system_config_url.into(),
-            session_token: session_token.into(),
         }
     }
 
@@ -501,8 +500,16 @@ impl ProductionMetadataOverrideLoader {
     }
 
     async fn load_system_config(&self) -> Result<(u64, Vec<MetadataFile>), SettingsError> {
-        let client =
-            SystemConfigClient::new(Some(&self.system_config_url), Some(&self.session_token));
+        let session_token = get_buckyos_api_runtime()
+            .map_err(|error| SettingsError::SystemConfig(error.to_string()))?
+            .get_session_token()
+            .await;
+        if session_token.is_empty() {
+            return Err(SettingsError::SystemConfig(
+                "AICC service credential is unavailable".to_string(),
+            ));
+        }
+        let client = SystemConfigClient::new(Some(&self.system_config_url), Some(&session_token));
         let value = match client.get(SYSTEM_CONFIG_METADATA_KEY).await {
             Ok(value) => value,
             Err(SystemConfigError::KeyNotFound(_)) => return Ok((0, Vec::new())),
@@ -1080,11 +1087,8 @@ mod tests {
         .await
         .unwrap();
 
-        let loader = ProductionMetadataOverrideLoader::new(
-            temp.path(),
-            "http://system-config.invalid",
-            "token",
-        );
+        let loader =
+            ProductionMetadataOverrideLoader::new(temp.path(), "http://system-config.invalid");
         assert_eq!(loader.local_root(), local_root);
         let (first_revision, files) = loader.load_local().await.unwrap();
         assert_eq!(files.len(), 3);
@@ -1164,11 +1168,8 @@ mod tests {
         tokio::fs::create_dir_all(local_root.join("nested"))
             .await
             .unwrap();
-        let loader = ProductionMetadataOverrideLoader::new(
-            temp.path(),
-            "http://system-config.invalid",
-            "token",
-        );
+        let loader =
+            ProductionMetadataOverrideLoader::new(temp.path(), "http://system-config.invalid");
         assert!(matches!(
             loader.load_local().await,
             Err(SettingsError::InvalidMetadataPath { .. })

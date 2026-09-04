@@ -1,5 +1,9 @@
 import type { RpcClient } from "./gateway.ts";
 import { buildMockSettings, configValue } from "./mock_settings.ts";
+import {
+  loadProviderProtocolCatalog,
+  selectOfficialModels,
+} from "./provider_protocol_contracts.ts";
 
 const SETTINGS_KEY = "services/aicc/settings";
 
@@ -54,6 +58,13 @@ export async function withMockSettings<T>(input: {
   execute: () => Promise<T>;
   refreshClients?: () => Promise<{ systemConfig: RpcClient; aicc: RpcClient }>;
 }): Promise<{ result: T; cleanup: "restored" }> {
+  const catalog = await loadProviderProtocolCatalog();
+  const customModels = Object.fromEntries(
+    ["openai", "claude", "google-gemini", "fal"].map((driver) => [
+      driver,
+      selectOfficialModels(catalog, driver, input.runId),
+    ]),
+  ) as Record<"openai" | "claude" | "google-gemini" | "fal", Record<string, string>>;
   return await withAiccSettingsOverride({
     systemConfig: input.systemConfig,
     aicc: input.aicc,
@@ -61,6 +72,7 @@ export async function withMockSettings<T>(input: {
     patch: (settings) => buildMockSettings(settings, {
       baseUrl: input.baseUrl,
       runId: input.runId,
+      customModels,
     }),
     execute: input.execute,
     refreshClients: input.refreshClients,

@@ -15,6 +15,22 @@
           "remove": ["/stop"]
         }
       ]
+    },
+    {
+      "id": "speech-2.8-hd",
+      "operations": { "audio.tts": "t2a.create" }
+    },
+    {
+      "id": "image-01",
+      "operations": { "image.txt2img": "image_generation.create", "image.img2img": "image_generation.create" }
+    },
+    {
+      "id": "MiniMax-Hailuo-02",
+      "operations": { "video.txt2video": "video_generation.create", "video.img2video": "video_generation.create" }
+    },
+    {
+      "id": "music-2.0",
+      "operations": { "audio.music": "music_generation.create" }
     }
   ],
   "patterns": [
@@ -27,6 +43,22 @@
           "remove": ["/stop"]
         }
       ]
+    },
+    {
+      "match": "speech-*",
+      "operations": { "audio.tts": "t2a.create" }
+    },
+    {
+      "match": "image-*",
+      "operations": { "image.txt2img": "image_generation.create", "image.img2img": "image_generation.create" }
+    },
+    {
+      "match": "MiniMax-Hailuo-*",
+      "operations": { "video.txt2video": "video_generation.create", "video.img2video": "video_generation.create" }
+    },
+    {
+      "match": "music-*",
+      "operations": { "audio.music": "music_generation.create" }
     },
     {
       "match": "*",

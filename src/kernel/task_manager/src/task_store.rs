@@ -115,7 +115,11 @@ impl TaskStore {
         domain: StorageDomain,
     ) -> std::result::Result<Self, String> {
         ensure_any_drivers_installed();
-        let mut opts = AnyPoolOptions::new().max_connections(8);
+        let mut opts = AnyPoolOptions::new().max_connections(if backend == RdbBackend::Sqlite {
+            1
+        } else {
+            8
+        });
         // Each pooled sqlite connection needs `foreign_keys = ON`; the pragma
         // is per-connection, so it must run in after_connect for every
         // connection the pool opens.
@@ -123,6 +127,7 @@ impl TaskStore {
             opts = opts.after_connect(|conn, _meta| {
                 Box::pin(async move {
                     conn.execute("PRAGMA foreign_keys = ON;").await?;
+                    conn.execute("PRAGMA busy_timeout = 5000;").await?;
                     Ok(())
                 })
             });

@@ -387,6 +387,7 @@ pub(crate) enum NativeTaskOutput {
     Status {
         state: NativeTaskState,
         retry_after: Option<Duration>,
+        result_ref: Option<String>,
     },
     Result(ProtocolOutput),
     Cancelled {
@@ -1010,7 +1011,11 @@ mod tests {
                         "cancelled" => NativeTaskState::Cancelled,
                         _ => return Err(ProtocolError::invalid_response("unknown task state")),
                     };
-                    Ok(NativeTaskOutput::Status { state, retry_after })
+                    Ok(NativeTaskOutput::Status {
+                        state,
+                        retry_after,
+                        result_ref: None,
+                    })
                 }
                 NativeTaskOperation::Result => Ok(NativeTaskOutput::Result(ProtocolOutput::new(
                     value["result"].clone(),
