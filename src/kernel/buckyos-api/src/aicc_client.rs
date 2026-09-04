@@ -319,6 +319,10 @@ mod canonical_contract_tests {
         chat.execution_mode = AiccExecutionMode::Stream;
         let chat = LlmChatInvokeRequest::from_json(serde_json::to_value(chat).unwrap()).unwrap();
         assert_eq!(chat.execution_mode, AiccExecutionMode::Stream);
+        assert_eq!(
+            AiccCall::ChatCompletionsCreate(chat).execution_mode(),
+            AiccExecutionMode::Stream
+        );
 
         let embedding = EmbeddingTextRequest::from_json(json!({
             "exact_model": "embedding@provider",
@@ -4400,6 +4404,37 @@ impl AiccCall {
             Self::VideoExtend(request) => request.trace_id.as_deref(),
             Self::VideoUpscale(request) => request.trace_id.as_deref(),
             Self::ComputerUse(request) => request.trace_id.as_deref(),
+        }
+    }
+
+    pub fn execution_mode(&self) -> AiccExecutionMode {
+        match self {
+            Self::RouteResolve(request) => request.execution_mode,
+            Self::ChatCompletionsCreate(request) => request.execution_mode,
+            Self::ImagesGenerate(request) => request.execution_mode,
+            Self::HelperLlmChat(request) => request.execution_mode,
+            Self::HelperTextToImage(request) => request.execution_mode,
+            Self::EmbeddingText(request) => request.execution_mode,
+            Self::EmbeddingMultimodal(request) => request.execution_mode,
+            Self::Rerank(request) => request.execution_mode,
+            Self::ImageToImage(request) => request.execution_mode,
+            Self::ImageInpaint(request) => request.execution_mode,
+            Self::ImageUpscale(request) => request.execution_mode,
+            Self::ImageBackgroundRemove(request) => request.execution_mode,
+            Self::VisionOcr(request) => request.execution_mode,
+            Self::VisionCaption(request) => request.execution_mode,
+            Self::VisionDetect(request) => request.execution_mode,
+            Self::VisionSegment(request) => request.execution_mode,
+            Self::AudioTextToSpeech(request) => request.execution_mode,
+            Self::AudioSpeechRecognition(request) => request.execution_mode,
+            Self::AudioMusic(request) => request.execution_mode,
+            Self::AudioEnhance(request) => request.execution_mode,
+            Self::VideoTextToVideo(request) => request.execution_mode,
+            Self::VideoImageToVideo(request) => request.execution_mode,
+            Self::VideoToVideo(request) => request.execution_mode,
+            Self::VideoExtend(request) => request.execution_mode,
+            Self::VideoUpscale(request) => request.execution_mode,
+            Self::ComputerUse(request) => request.execution_mode,
         }
     }
 
