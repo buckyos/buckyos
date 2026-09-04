@@ -4,6 +4,7 @@
 > 日期：2026-09-04  
 > 适用对象：BuckyOS 产品、系统 UI、Runtime、NDN/CFS、App Framework、第三方开发者  
 > 本文中的 **Preview** 统一指系统级内容预览能力；**Preview Component** 指可嵌入组件；**Preview App** 指系统自带的独立预览应用。
+> 应用扩展的后续统一机制见 [BuckyOS 内容扩展机制（Content Extension）](../../doc/sdk/context%20ext.md)；Preview 首版不启用其中的应用 `preview` Handler。
 
 ---
 
@@ -76,6 +77,7 @@ BuckyOS 的内容体系天然围绕 Named Data Object、内容创建、发布、
 5. 不由 Preview Component 管理桌面窗口、应用实例和跨窗口调度。
 6. 不在 v1 中提供两个文件的语义 Diff 或结构化差异计算；多窗口并排查看是 Diff 工作流的基础能力，但不是差异算法本身。
 7. 不允许 Preview 绕过源内容本身的访问控制、加密策略或对象权限。
+8. 首版不接入 AppDoc `content_handlers`、`system/content_registry` 或第三方 App 提供的 Preview converter / renderer；这些能力按 Content Extension 机制后续启用。
 
 ---
 
@@ -85,7 +87,7 @@ BuckyOS 的内容体系天然围绕 Named Data Object、内容创建、发布、
 |---|---|
 | Preview Component | 系统提供的可嵌入 UI 组件，负责在指定区域中展示内容并处理标准交互。 |
 | Preview App | 使用 Preview Component 构建的系统独立应用，拥有独立窗口和完整 App 生命周期。 |
-| Preview Pipeline | 系统内容处理管线，将原始内容转换为 Preview Component 可消费的内容。 |
+| Preview Pipeline | 系统内容处理管线，将原始内容转换为 Preview Component 可消费的内容；首版 Provider 为 `nfs_server repr`。 |
 | Preview Renderer | Preview Component 内针对图片、SVG、HTML、文本、音频、视频等标准类型的渲染实现。 |
 | Content Source / Source | 当前需要打开的内容引用，核心支持 CYFS URL 与 Object ID。 |
 | Session Context | 当前内容所在的浏览上下文，用于定义 Session Items、顺序、上一项和下一项。 |
@@ -139,7 +141,7 @@ flowchart LR
     D --> E[Preview Controller]
     E --> F{当前 Runtime 可直接支持?}
     F -->|是| G[Built-in Renderer]
-    F -->|否| H[System Preview Pipeline]
+    F -->|否| H[System Preview Pipeline<br/>P0: nfs_server repr]
     H --> I[Pipeline Extension / Converter]
     I --> J[Browser-native Preview Result]
     J --> G
@@ -152,7 +154,7 @@ flowchart LR
 |---|---|---|
 | Preview Component | 内容展示、标准交互、UI 模式、Session 内导航、触发 Pipeline、结果渲染、错误呈现 | 创建窗口、选择复用哪个 App 窗口、安装扩展、编辑原始格式 |
 | Preview App | 独立窗口、系统默认打开、窗口策略、App 级菜单、跨窗口调度、全局设置 | 自己重新实现格式转换和渲染内核 |
-| Preview Pipeline | 格式识别、能力匹配、转换、缓存、返回标准 Preview 结果 | 决定宿主 UI、创建窗口、提供完整编辑体验 |
+| Preview Pipeline（P0: `nfs_server repr`） | 格式识别、能力匹配、转换、缓存、返回标准 Preview 结果 | 决定宿主 UI、创建窗口、提供完整编辑体验 |
 | Host App | 提供 Source、显示区域、Session Context、展示模式和可选宿主动作 | 重复实现系统已经提供的格式查看器 |
 | Full App | 完整格式语义、编辑、保存、专业工作流 | 作为系统统一 Preview 管线的替代品 |
 
@@ -200,6 +202,8 @@ Preview 的直接支持格式不是永久写死的。若某格式过去需要 `A
 ### 9.1 定位
 
 Preview Pipeline 是系统级内容归一化管线。其职责是把任意已支持的原始内容转换为 Preview Component 可以稳定消费的标准结果。
+
+**首版部署边界**：只使用系统内建 Pipeline，并全部由 `nfs_server` 实现和执行。Preview Component 不调用第三方 App converter，不读取 `system/content_registry`，也不自行运行转换命令。这里的“可扩展”指协议和数据模型预留，不代表首版开放应用扩展。
 
 示例：
 
@@ -266,9 +270,9 @@ Pipeline 请求至少包含：
 - 资源过大或当前设备能力不足；
 - 结果格式与 Runtime 不兼容。
 
-### 9.5 扩展注册与匹配
+### 9.5 内置注册与未来扩展匹配
 
-Preview Pipeline 扩展应向系统注册：
+首版由 `nfs_server` 维护只读的系统内建 Pipeline Catalog，安装 App 不会改变候选集合。内建条目仍应声明以下字段，以保证未来接入 Content Registry 时不用修改 Preview Planner 和缓存语义：
 
 - 稳定的 `pipelineId`、可读名称、`pipelineVersion` 和实现身份；
 - 可识别的输入格式、MIME、对象类型或内容特征；
@@ -281,6 +285,8 @@ Preview Pipeline 扩展应向系统注册：
 扩展名和调用方提供的 MIME 只能作为 hint；匹配应综合对象类型、FileObject 元数据、响应头和有界内容探测，安全敏感格式不得只按扩展名判定。
 
 系统负责选择合适的直接渲染或转换路径。Host 不指定具体 Pipeline，只能提供目标 Profile、质量、页码等产品参数；Preview Planner 必须输出固定到版本的确定性 Pipeline Plan，Preview Component 只触发该 Plan 并消费结果。
+
+后续应用扩展统一采用 [BuckyOS 内容扩展机制（Content Extension）](../../doc/sdk/context%20ext.md) 中的 `ContentDescriptor`、`intent: preview`、Content Registry 和 `HandlerPlan`。其中 `handler_id + handler_version + app_doc_object_id` 对应本 PRD 的 Pipeline 实现身份。该文档中的阶段标签描述 Content Extension 机制自身的演进，不覆盖本 PRD 的 Preview 首版范围；首版不得先实现一套私有插件注册协议。
 
 ### 9.6 管线拼接
 
@@ -991,7 +997,7 @@ Smart Window Mode 必须设置自动创建窗口上限：
 4. Esc 的标准 Exit Preview 语义；
 5. 图片、SVG、文本、HTML、音频、视频的基础 Renderer；
 6. PDF 通过 `PDFIframeRenderer` 使用 Runtime 内置 Viewer 直开，并在不可用时降级为下载/使用其他应用打开；
-7. Preview Pipeline 调用、扩展匹配、失败和缓存基本框架；
+7. 调用 `nfs_server` 内置 Preview Pipeline，完成内置匹配、处理状态查询、失败和缓存基本框架；
 8. Single、Container、Explicit Item List 三种 Session Context；
 9. Previous / Next 与稳定 Session Items；
 10. Preview App 独立窗口；
@@ -1014,6 +1020,7 @@ Smart Window Mode 必须设置自动创建窗口上限：
 9. 无障碍和平台快捷键精细适配；
 10. Pipeline 质量、成本和速度智能选择。
 11. PDF.js、自绘分页、页码/缩放控制、文本层和 PDF → Page Images / Safe HTML / Preview Manifest 转换。
+12. 按 [Content Extension](../../doc/sdk/context%20ext.md) 接入 AppDoc `content_handlers`、`system/content_registry` 和应用提供的 Preview converter / renderer。
 
 ### P2：未来能力
 
@@ -1045,9 +1052,10 @@ Smart Window Mode 必须设置自动创建窗口上限：
 ### 21.2 Pipeline
 
 - [ ] Runtime 直接支持的格式不经过无必要转换。
+- [ ] P0 的 Pipeline 候选只来自 `nfs_server` 系统内建 Catalog；安装或卸载普通 App 不改变 Preview 支持集合。
 - [ ] CYFS Path 只有在需要转换时才固化为不可变 `inputObjectId`，缓存不以可变 path 为身份。
-- [ ] 不支持格式可通过已安装扩展转换为标准结果并展示。
-- [ ] 扩展移除后正确进入 Unsupported，而不是崩溃。
+- [ ] Runtime 不支持但命中 `nfs_server` 内置 Pipeline 的格式可转换为标准结果并展示。
+- [ ] 未命中内置 Pipeline 的格式正确进入 Unsupported，而不是尝试调用应用扩展或崩溃。
 - [ ] Source Version 变化后不会错误复用旧缓存。
 - [ ] 相同 `workKey` 的并发请求只产生一个活动任务，并都能取得同一完成结果。
 - [ ] Pipeline 查询能稳定区分 `processing`、`completed`、`failed`，失败结果包含可否重试和稳定错误码。
@@ -1094,7 +1102,8 @@ Smart Window Mode 必须设置自动创建窗口上限：
 | Pipeline 选择 | Preview Planner 按探测后的输入格式和 Runtime Target Profile 自动选择，Host 不指定实现 |
 | Pipeline workKey | 固定版本 Pipeline Plan + `inputObjectId` + 规范化转换参数 + 权限域摘要 |
 | Pipeline 对外状态 | `processing` / `completed` / `failed`；Direct 和 Unsupported 作为独立结果类型 |
-| P0 执行路径 | Preview Pipeline Service 管理任务与缓存，采用 Thunk-compatible 语义，但不依赖当前未打通的 `scheduler.run_thunk` 分发链路 |
+| P0 Pipeline Provider | 仅 `nfs_server` 系统内建 Pipeline Catalog；不解析或调用应用 `preview` Handler |
+| P0 执行路径 | `nfs_server` 管理 Pipeline、任务状态与缓存，采用 Thunk-compatible 语义，但不依赖当前未打通的 `scheduler.run_thunk` 分发链路 |
 | 手工新窗口 | 始终允许，不计入自动窗口上限 |
 | 手工/固定窗口自动复用 | 默认禁止无关请求复用 |
 
@@ -1108,13 +1117,13 @@ Smart Window Mode 必须设置自动创建窗口上限：
 
 截至本 PRD 编写时，相关系统能力的现状如下：
 
-1. NFSP 已能把 path 解析为文件节点，提供 read URL、Range、ETag 和可选 `obj_id`；但 `repr` 派生表示尚未实现，未锚定的本地文件也不保证立即具有内容 Object ID。当前 NFSP 数据面的 SSO / Capability 放行尚未接通，因此 P0 必须补齐鉴权或通过已鉴权的读取代理访问，不能把现有 read URL 本身视为 Capability。
+1. NFSP 已能把 path 解析为文件节点，提供 read URL、Range、ETag 和可选 `obj_id`；但 `repr` 派生表示尚未实现，未锚定的本地文件也不保证立即具有内容 Object ID。`nfs_server` 产品设计中原有的 `repr(thumb256/thumb1024)` 也只覆盖缩略图概念。Preview 首版的 Pipeline 建设落点就是在 `nfs_server` 补齐 `repr`，把 Profile 扩展为 `purpose: preview | thumbnail` 所需的系统内建集合，并增加任务/结果查询能力。当前 NFSP 数据面的 SSO / Capability 放行尚未接通，因此 P0 必须补齐鉴权或通过已鉴权的读取代理访问，不能把现有 read URL 本身视为 Capability。
 2. NDN 的 Object ID 是内容寻址标识；`FileObject` 可通过 `content` 指向 chunk / chunk list，并携带文件元数据。因此 Pipeline 应以最终待处理字节内容的不可变 Object ID 为输入，而不是以显示路径为输入。
 3. 系统已定义 `FunctionObject`、`ThunkObject`、`ThunkExecutionResult`，以及 TaskMgr 中的 Thunk Task 数据结构。内部状态可表达 waiting / dispatched / success / failed / cancelled，TaskMgr 也能持久化任务生命周期。
 4. 当前 `scheduler.run_thunk` 只完成选点，投递端仍是 stub，且没有正式调用方；不能把它当作 P0 已可用的端到端转换执行服务。
 5. 当前 Desktop 的 `PreviewPanel` 是文件元数据侧栏，不是本文定义的通用内容 Preview Component；新实现不能把其 UI state 或数据模型当成 Pipeline 协议。
 
-由此确定：P0 新增统一的 **Preview Pipeline Service** 作为 Source 解析、Pipeline 规划、任务去重、状态查询和结果缓存的边界；派生产物写入 NDN / Named Store，每次实际执行必须创建由 Preview Service 自身绑定并恢复的 TaskMgr Task。Preview Service 不使用 Task Dispatch Center，除非以后确实需要把工作持久交接给其他 App / Node；也不在 system-config 中保存运行态。
+由此确定：P0 不新增独立部署的 Preview Pipeline Service，**`nfs_server` 就是首版 Preview Pipeline Provider**。它通过 NFSP 完成 Source 解析，并在内部 `repr` 模块负责内置 Pipeline Catalog、规划、任务去重、状态查询和结果缓存；派生产物写入 NDN / Named Store，每次实际转换创建由 `nfs_server` 自身绑定并恢复的 TaskMgr Task。首版不读取 `system/content_registry`，不调用应用 Handler，也不使用 Task Dispatch Center；运行态不写入 system-config。
 
 ### 23.2 从 Source 到可渲染结果的固定流程
 
@@ -1124,10 +1133,10 @@ flowchart TD
     B --> C[构造 Content Descriptor]
     C --> D{Built-in Renderer + 当前 Runtime 可直接渲染?}
     D -->|是| E[Direct Result]
-    D -->|否| F[按输入格式与 Target Profile 规划 Pipeline]
+    D -->|否| F[nfs_server 按输入格式与 Target Profile 规划内置 Pipeline]
     F -->|无匹配| G[Unsupported]
     F -->|有匹配| H[固化 inputObjectId + 规范化参数]
-    H --> I[计算 workKey 并原子 ensure]
+    H --> I[nfs_server 计算 workKey 并原子 ensure]
     I -->|已有完成结果| J[completed + Preview Result]
     I -->|已有活动任务| K[processing + 同一 taskId]
     I -->|首次请求或可重试| L[创建 Pipeline Task]
@@ -1142,7 +1151,7 @@ flowchart TD
 1. `path` 和 `objectId` 都先进入 Source Resolver；两者不得在后续流程中形成两套 Pipeline API。
 2. Direct 判断发生在 Pipeline 之前。Direct 只表示“不转换”，仍必须经过 Preview Renderer 的安全策略。
 3. 只有确实需要 Pipeline 时，才强制取得不可变 `inputObjectId`。普通本地图片可先使用 NFSP read URL 直出，不能为了查缓存而阻塞首帧去计算整文件 Hash。
-4. Pipeline Planner 由探测后的输入描述和 Runtime 可接受的 Target Profile 选择管线；Host 和 Preview UI 不硬编码 Pipeline 名称。
+4. Pipeline Planner 由探测后的输入描述和 Runtime 可接受的 Target Profile 选择管线；首版候选只来自 `nfs_server` 内建 Catalog，Host 和 Preview UI 不硬编码 Pipeline 名称。
 5. `ensure` 是幂等操作：一次调用同时完成“查完成缓存、复用处理中任务、按策略复用失败记录或创建新任务”，不得先查后建造成并发重复转换。
 
 ### 23.3 Source Resolver 与 Direct 判定
@@ -1191,13 +1200,13 @@ PDF.js、统一页码/缩放 API、文本层、缩略图、页面图片和 Previ
 
 ### 23.4 Pipeline 注册、选择与参数
 
-每个可选择 Pipeline 至少暴露：
+P0 不提供外部注册入口。`nfs_server` 以代码内建或系统只读配置维护 Pipeline Catalog；Catalog 条目必须固定版本、随 `nfs_server` 发布，并至少暴露：
 
 ```ts
 interface PreviewPipelineDescriptor {
   pipelineId: string;        // 稳定机器标识，不是显示名称
   pipelineVersion: string;   // 语义或实现版本
-  implementationId: string;  // FunctionObject ID / package digest / engine identity
+  implementationId: string;  // nfs_server build / converter engine identity
   inputMatchers: unknown[];
   outputProfiles: unknown[];
   paramsSchema: unknown;
@@ -1214,11 +1223,13 @@ Planner 的固定选择顺序是：
 1. 过滤输入类型、输出 Profile、安全策略和当前资源不兼容的候选；
 2. 优先更精确的内容特征匹配；
 3. 在满足目标的候选中依次比较保真度、显式优先级、预计延迟与资源成本；
-4. 最后按稳定 `pipelineId` 决胜，保证相同注册表快照与输入产生相同 Plan。
+4. 最后按稳定 `pipelineId` 决胜，保证相同内建 Catalog 版本与输入产生相同 Plan。
 
 Pipeline 的默认参数必须由 descriptor 的 schema 补全并规范化为 canonical JSON 后再计算 `workKey`。未知参数直接拒绝，不能静默忽略。Pipeline 更新、实现包更新或外部引擎版本变化必须改变 `pipelineVersion` / `implementationId`，从而自然产生新缓存键。
 
 多步转换由 Planner 生成固定版本的 `PipelinePlan`，Component 不自行拼接。每一步都必须声明输入输出兼容性；继续遵守 §9.6 的环路、步数和总预算限制。
+
+应用扩展阶段不重新发明 Catalog schema，而是按 [Content Extension §9.2](../../doc/sdk/context%20ext.md#92-preview) 将 `intent: preview` 的 `HandlerPlan` 适配为相同的 `PreviewPipelineDescriptor`：`handler_id` 对应 `pipelineId`，`handler_version + app_doc_object_id` 进入版本和实现身份。系统内建条目继续拥有优先级和安全策略优势。
 
 ### 23.5 是否使用 Thunk
 
@@ -1226,15 +1237,15 @@ Pipeline 的默认参数必须由 descriptor 的 schema 补全并规范化为 ca
 
 - Pipeline Plan 是“为什么选择这些步骤”的编排结果，Thunk 是某个确定步骤的一次执行实例，两者不能合并成一个概念。
 - 适合缓存的转换步骤必须是幂等的，可表达为 `FunctionObject + inputObjectId + canonical params`，输出为 Named Object / Preview Manifest 引用。
-- P0 由 Preview Pipeline Service 通过受控本地 runner 或已注册 AppService 执行，并把业务 Task 交给 TaskMgr 管理；以后需要跨节点、GPU 或独立 runner 时，再把步骤降级为 `ThunkObject`，按“Scheduler 给 placement 建议 + Task Dispatch Center 持久交接”接入。
+- P0 由 `nfs_server` 内部受控 runner 执行系统自带转换器，并把业务 Task 交给 TaskMgr 管理；不解析 AppService 或第三方 FunctionObject。以后启用 Content Extension，或确实需要跨节点、GPU、独立 runner 时，再把步骤降级为 `ThunkObject`，按“Scheduler 给 placement 建议 + Task Dispatch Center 持久交接”接入。
 - `ThunkObject.metadata` 中的 request ID、trace ID、attempt 等运行信息不得进入 `workKey`。当前按完整 Thunk JSON 计算出的 `thunk_obj_id` 会受到 metadata 影响，因此 `thunk_obj_id`、`taskId`、`attemptId` 与跨请求复用的 `workKey` 必须是不同字段。
 - 非幂等、依赖实时外部状态或未固定模型 / provider / prompt 版本的步骤默认不得跨请求缓存。
 
 ### 23.6 缓存、并发与状态查询
 
-Preview Pipeline Service 维护以 `workKey` 为唯一键的可变索引；P0 使用平台 RDB 的服务自有分区（单机 backend 为 SQLite）实现唯一约束和原子事务。TaskMgr 保存每个 attempt 的实际任务生命周期，NDN / Named Store 保存不可变的派生产物和 Preview Manifest。`task.name` 不承担唯一性；TaskMgr 的 `idempotency_key` 使用 `hash(workKey, attemptId)`，同一 attempt 重放必须取得同一 Task，不同 retry attempt 必须得到新 Task。
+`nfs_server` 的 `repr` 模块维护以 `workKey` 为唯一键的可变索引；P0 使用 `nfs_server` 自有 RDB / filedb 分区（单机 backend 为 SQLite）实现唯一约束和原子事务。TaskMgr 保存每个 attempt 的实际任务生命周期，NDN / Named Store 保存不可变的派生产物和 Preview Manifest。`task.name` 不承担唯一性；TaskMgr 的 `idempotency_key` 使用 `hash(workKey, attemptId)`，同一 attempt 重放必须取得同一 Task，不同 retry attempt 必须得到新 Task。
 
-P0 注册专用 Task Schema `preview.pipeline/v1`。其不可变 input 至少包含 `workKey`、`attemptId`、`inputObjectId`、固定 Pipeline Plan 或其可解析引用、canonical params、`paramsHash` 和权限域引用；成功 result 只保存 Preview Result / Manifest 的 Object ID 与必要摘要，不内联二进制内容、原始 token 或完整路径。
+P0 注册由 `nfs_server` 拥有的专用 Task Schema `nfs.repr/v1`。其不可变 input 至少包含 `workKey`、`attemptId`、`inputObjectId`、固定 Pipeline Plan 或其可解析引用、canonical params、`paramsHash` 和权限域引用；成功 result 只保存 Preview Result / Manifest 的 Object ID 与必要摘要，不内联二进制内容、原始 token 或完整路径。
 
 状态记录至少包含：
 
@@ -1297,10 +1308,10 @@ type PreviewResolution =
   | { kind: "unsupported"; reason: string };
 ```
 
-Preview Controller 与 Preview Pipeline Service 之间至少提供三个操作：
+Preview Controller 与 `nfs_server` 之间至少需要以下三个逻辑操作；最终可以收敛为 NFSP `resolve/stat`、`repr` 和 `get_repr`，方法名由 API Spec 冻结：
 
 1. `resolvePreviewSource(source)`：按调用者权限解析 Source，返回 `ResolvedPreviewSource`。Direct 能力最终由 Component 的 Runtime Adapter 判断；
-2. `ensurePreviewWork(resolvedSource, runtimeProfile, targetProfile, options)`：仅在不能 Direct 时调用；必要时固化 `inputObjectId`、规划 Pipeline，并原子查询或创建 work；
+2. `ensurePreviewWork(resolvedSource, runtimeProfile, targetProfile, options)`：仅在不能 Direct 时调用；映射到 `nfs_server repr` 的 `purpose: preview | thumbnail` 与内建 Target Profile，必要时固化 `inputObjectId`、规划 Pipeline，并原子查询或创建 work；
 3. `getPreviewWork(workKey)`：只查询已有 Pipeline work，不隐式创建新 attempt。显式重试通过 `ensurePreviewWork(..., { retry: true, expectedAttemptId })` 做 CAS，避免并发 Retry 产生多个 attempt。
 
 事件订阅可作为优化，轮询必须可用作断线降级。`Unsupported` 表示没有可行 Direct / Pipeline，是规划结果；`failed` 表示已经选中了 Pipeline，但某次处理执行失败，两者不得混用。
@@ -1309,16 +1320,16 @@ Preview Controller 与 Preview Pipeline Service 之间至少提供三个操作�
 
 以下事项不改变上述执行契约，但仍需在各自实现阶段落定：
 
-1. Preview Pipeline 扩展包的 manifest 字段、注册路径、签名、沙箱与升级/卸载生命周期；
-2. `resolvePreviewSource`、`ensurePreviewWork`、`getPreviewWork` 和事件订阅的最终 kRPC / HTTP schema、错误码及 RBAC；
+1. `nfs_server` 首批内置 Pipeline / Target Profile 清单，以及各转换器的版本、资源预算和失败分类；
+2. NFSP `repr`、结果查询和事件订阅的最终 request/response schema、错误码、RBAC 与 `hello` feature 名称；
 3. 各 Web Runtime 对图片编码、媒体 codec、PDF iframe 和流式能力的具体探测 Adapter，以及 PDF iframe 的隔离域、sandbox / CSP 兼容矩阵；
 4. P1 PDF 增强采用 PDF.js、自绘分页、Page Images、Safe HTML 或 Preview Manifest 的实现顺序；
 5. Container 枚举接口和跨 CYFS / NDN / ZIP 的统一 Iterator；
 6. Provider-based Session 的分页、回收和一致性协议；
 7. Smart Window 相关性评分的精确权重；
 8. 不同桌面平台的快捷键映射；
-9. Preview 缓存数据库 schema、总容量、TTL、LRU/GC 水位和磁盘压力策略；
-10. Full App 注册、默认关联和“使用其他应用打开”的系统协议；
+9. `nfs_server` Preview 缓存数据库 schema、总容量、TTL、LRU/GC 水位和磁盘压力策略；
+10. Content Extension 启用阶段的 App Handler manifest、签名、沙箱、升级/卸载生命周期，以及 Full App 默认关联和“使用其他应用打开”的系统协议；
 11. Host Actions 的安全权限和视觉位置规范。
 
 ---
