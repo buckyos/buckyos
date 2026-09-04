@@ -1,11 +1,16 @@
 #![allow(dead_code)]
 
+use crate::execution::{
+    ExecutionOutput, ExecutionRecord, ExecutionState, ExecutionStore, IdempotencyClaim,
+    PinnedProviderTask, UsageCompletion, UsageCompletionPort,
+};
+use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use buckyos_api::{
-    ai_methods, get_rdb_instance, AiUsage, AiccRouteTraceEvent, AiccUsageEvent,
-    QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
-    RdbBackend, UsageAggregate, UsageBucketedRow, UsageGroupedRow, UsageQueryGroup,
-    UsageQueryOutputMode, UsageQueryTimeRange, AICC_USAGE_LOG_RDB_INSTANCE_ID,
+    ai_methods, get_rdb_instance, AiUsage, AiccError, AiccErrorCode, AiccRouteTraceEvent,
+    AiccUsageEvent, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
+    QueryUsageResponse, RdbBackend, UsageAggregate, UsageBucketedRow, UsageGroupedRow,
+    UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange, AICC_USAGE_LOG_RDB_INSTANCE_ID,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -46,6 +51,13 @@ CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_model_time ON aicc_usage_event(p
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_request_model_time ON aicc_usage_event(request_model, created_at_ms);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_task ON aicc_usage_event(tenant_id, task_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_idem ON aicc_usage_event(tenant_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS aicc_execution_record (
+ tenant_id TEXT NOT NULL, method TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+ task_id TEXT NOT NULL UNIQUE, body_fingerprint TEXT NOT NULL, state TEXT NOT NULL,
+ record_json TEXT NOT NULL, created_at_ms BIGINT NOT NULL, expires_at_ms BIGINT NOT NULL,
+ PRIMARY KEY (tenant_id, method, idempotency_key));
+CREATE INDEX IF NOT EXISTS idx_aicc_execution_record_state ON aicc_execution_record(state, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_execution_record_expiry ON aicc_execution_record(expires_at_ms);
 CREATE TABLE IF NOT EXISTS aicc_route_trace_event (
  trace_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, caller_app_id TEXT, task_id TEXT NOT NULL,
  request_id TEXT, route_id TEXT, provider_trace_id TEXT, request_model TEXT NOT NULL,
@@ -435,6 +447,118 @@ impl AiccStorage {
         })
     }
 
+    async fn claim_execution(&self, initial: &ExecutionRecord) -> StorageResult<IdempotencyClaim> {
+        validate_initial_execution(initial)?;
+        let record_json = serde_json::to_string(initial)?;
+        let sql = self.sql(
+            "INSERT INTO aicc_execution_record
+             (tenant_id,method,idempotency_key,task_id,body_fingerprint,state,record_json,
+              created_at_ms,expires_at_ms) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+        );
+        let inserted = sqlx::query(&sql)
+            .bind(&initial.scope.tenant_id)
+            .bind(&initial.scope.method)
+            .bind(&initial.scope.key)
+            .bind(&initial.task_id)
+            .bind(&initial.body_fingerprint)
+            .bind(state_name(initial.state))
+            .bind(record_json)
+            .bind(to_i64(initial.created_at_ms)?)
+            .bind(to_i64(initial.expires_at_ms)?)
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            == 1;
+        if inserted {
+            return Ok(IdempotencyClaim::Created(initial.clone()));
+        }
+        let Some(existing) = self
+            .execution_by_scope(
+                &initial.scope.tenant_id,
+                &initial.scope.method,
+                &initial.scope.key,
+            )
+            .await?
+        else {
+            return Err(StorageError::InvalidRecord(
+                "execution task ID is already bound to another idempotency scope".into(),
+            ));
+        };
+        Ok(if existing.body_fingerprint == initial.body_fingerprint {
+            IdempotencyClaim::Existing(existing)
+        } else {
+            IdempotencyClaim::Conflict
+        })
+    }
+
+    async fn execution_by_scope(
+        &self,
+        tenant_id: &str,
+        method: &str,
+        key: &str,
+    ) -> StorageResult<Option<ExecutionRecord>> {
+        let sql = self.sql(
+            "SELECT state,record_json FROM aicc_execution_record
+             WHERE tenant_id=? AND method=? AND idempotency_key=?",
+        );
+        sqlx::query(&sql)
+            .bind(tenant_id)
+            .bind(method)
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(execution_from_row)
+            .transpose()
+    }
+
+    async fn execution_by_task(&self, task_id: &str) -> StorageResult<Option<ExecutionRecord>> {
+        let sql = self.sql("SELECT state,record_json FROM aicc_execution_record WHERE task_id=?");
+        sqlx::query(&sql)
+            .bind(task_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(execution_from_row)
+            .transpose()
+    }
+
+    async fn mutate_execution(
+        &self,
+        task_id: &str,
+        mutation: impl FnOnce(&mut ExecutionRecord),
+    ) -> StorageResult<bool> {
+        let Some(mut record) = self.execution_by_task(task_id).await? else {
+            return Err(StorageError::InvalidRecord(
+                "execution task does not exist".into(),
+            ));
+        };
+        if execution_is_terminal(record.state) {
+            return Ok(false);
+        }
+        mutation(&mut record);
+        let sql = self.sql(
+            "UPDATE aicc_execution_record SET state=?,record_json=? WHERE task_id=?
+             AND state IN ('submitted','queued','running')",
+        );
+        Ok(sqlx::query(&sql)
+            .bind(state_name(record.state))
+            .bind(serde_json::to_string(&record)?)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            == 1)
+    }
+
+    async fn recoverable_executions(&self) -> StorageResult<Vec<ExecutionRecord>> {
+        let rows = sqlx::query(
+            "SELECT state,record_json FROM aicc_execution_record
+             WHERE state IN ('submitted','queued','running') ORDER BY created_at_ms,task_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(execution_from_row).collect()
+    }
+
     pub(crate) async fn query_usage(
         &self,
         req: &QueryUsageRequest,
@@ -654,6 +778,173 @@ impl AiccStorage {
     }
 }
 
+#[async_trait]
+impl ExecutionStore for AiccStorage {
+    async fn claim(&self, initial: ExecutionRecord) -> Result<IdempotencyClaim, AiccError> {
+        self.claim_execution(&initial).await.map_err(storage_error)
+    }
+
+    async fn get_task(&self, task_id: &str) -> Result<Option<ExecutionRecord>, AiccError> {
+        self.execution_by_task(task_id).await.map_err(storage_error)
+    }
+
+    async fn set_running(
+        &self,
+        task_id: &str,
+        state: ExecutionState,
+        binding: PinnedProviderTask,
+    ) -> Result<bool, AiccError> {
+        if execution_is_terminal(state) {
+            return Err(AiccError::new(
+                AiccErrorCode::InternalError,
+                "set_running cannot persist a terminal execution state",
+            ));
+        }
+        self.mutate_execution(task_id, |record| {
+            record.state = state;
+            record.binding = Some(binding);
+        })
+        .await
+        .map_err(storage_error)
+    }
+
+    async fn try_complete(
+        &self,
+        task_id: &str,
+        output: ExecutionOutput,
+    ) -> Result<bool, AiccError> {
+        self.mutate_execution(task_id, |record| {
+            record.state = ExecutionState::Succeeded;
+            record.output = Some(output);
+        })
+        .await
+        .map_err(storage_error)
+    }
+
+    async fn try_fail(&self, task_id: &str, error: AiccError) -> Result<bool, AiccError> {
+        self.mutate_execution(task_id, |record| {
+            record.state = if error.code == AiccErrorCode::Cancelled {
+                ExecutionState::Cancelled
+            } else {
+                ExecutionState::Failed
+            };
+            record.error = Some(error);
+        })
+        .await
+        .map_err(storage_error)
+    }
+
+    async fn try_cancel(&self, task_id: &str) -> Result<bool, AiccError> {
+        self.mutate_execution(task_id, |record| {
+            record.state = ExecutionState::Cancelled;
+            record.error = Some(AiccError::new(
+                AiccErrorCode::Cancelled,
+                "task was cancelled",
+            ));
+        })
+        .await
+        .map_err(storage_error)
+    }
+
+    async fn recoverable(&self) -> Result<Vec<ExecutionRecord>, AiccError> {
+        self.recoverable_executions().await.map_err(storage_error)
+    }
+}
+
+#[async_trait]
+impl UsageCompletionPort for AiccStorage {
+    async fn write_once(&self, completion: UsageCompletion) -> Result<(), AiccError> {
+        self.write_provider_completion(ProviderCompletion {
+            event_id: completion.event_id,
+            tenant_id: completion.tenant_id,
+            user_id: completion.user_id,
+            caller_app_id: completion.caller_app_id,
+            task_id: completion.task_id,
+            idempotency_key: Some(completion.idempotency_key),
+            method: completion.method,
+            capability: completion.capability,
+            request_model: completion.request_model,
+            provider_instance_name: completion.provider_instance_name,
+            provider_model: completion.provider_model,
+            usage: Some(completion.usage),
+            finance_snapshot: completion
+                .finance_snapshot
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|_| {
+                    AiccError::new(
+                        AiccErrorCode::InternalError,
+                        "usage finance snapshot could not be serialized",
+                    )
+                })?,
+            created_at_ms: completion.completed_at_ms,
+        })
+        .await
+        .map(|_| ())
+        .map_err(storage_error)
+    }
+}
+
+fn validate_initial_execution(record: &ExecutionRecord) -> StorageResult<()> {
+    if record.usage_event_id.trim().is_empty()
+        || record.user_id.trim().is_empty()
+        || record.request_model.trim().is_empty()
+        || record.body_fingerprint.trim().is_empty()
+        || record.task_id.trim().is_empty()
+        || record.event_ref.trim().is_empty()
+        || record.scope.tenant_id.trim().is_empty()
+        || record.scope.method.trim().is_empty()
+        || record.scope.key.trim().is_empty()
+        || record.expires_at_ms < record.created_at_ms
+        || record.state != ExecutionState::Submitted
+        || record.binding.is_some()
+        || record.output.is_some()
+        || record.error.is_some()
+    {
+        return Err(StorageError::InvalidRecord(
+            "initial execution record is invalid".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn execution_from_row(row: AnyRow) -> StorageResult<ExecutionRecord> {
+    let state: String = row.try_get("state")?;
+    let record_json: String = row.try_get("record_json")?;
+    let record: ExecutionRecord = serde_json::from_str(&record_json)?;
+    if state != state_name(record.state) {
+        return Err(StorageError::InvalidRecord(
+            "execution state does not match its durable record".into(),
+        ));
+    }
+    Ok(record)
+}
+
+fn state_name(state: ExecutionState) -> &'static str {
+    match state {
+        ExecutionState::Submitted => "submitted",
+        ExecutionState::Queued => "queued",
+        ExecutionState::Running => "running",
+        ExecutionState::Succeeded => "succeeded",
+        ExecutionState::Failed => "failed",
+        ExecutionState::Cancelled => "cancelled",
+    }
+}
+
+fn execution_is_terminal(state: ExecutionState) -> bool {
+    matches!(
+        state,
+        ExecutionState::Succeeded | ExecutionState::Failed | ExecutionState::Cancelled
+    )
+}
+
+fn storage_error(_: StorageError) -> AiccError {
+    AiccError::new(
+        AiccErrorCode::InternalError,
+        "persistent AICC storage operation failed",
+    )
+}
+
 fn inventory_from_row(row: AnyRow) -> StorageResult<InventoryLkgsRecord> {
     let snapshot: String = row.try_get("snapshot_json")?;
     Ok(InventoryLkgsRecord {
@@ -844,35 +1135,50 @@ fn group_values(e: &AiccUsageEvent, groups: &[UsageQueryGroup]) -> Vec<String> {
 
 fn aggregate<'a>(events: impl IntoIterator<Item = &'a AiccUsageEvent>) -> UsageAggregate {
     let mut a = UsageAggregate::default();
-    let mut finance = 0.0;
-    let mut currency: Option<&str> = None;
-    let mut comparable = true;
-    let mut found = false;
+    let mut mixed_currency = false;
     for e in events {
         a.total_requests += 1;
         a.input_tokens += e.input_tokens.unwrap_or(0);
         a.output_tokens += e.output_tokens.unwrap_or(0);
         a.total_tokens += e.total_tokens.unwrap_or(0);
-        a.request_units += e.request_units.unwrap_or(0);
-        if let Some(v) = &e.finance_snapshot_json {
-            match (
-                v.get("amount").and_then(Value::as_f64),
-                v.get("currency").and_then(Value::as_str),
-            ) {
-                (Some(amount), Some(unit)) => {
-                    found = true;
-                    comparable &= currency.is_none_or(|known| known == unit);
-                    currency = Some(unit);
-                    finance += amount;
+        a.consumed_request_units += e.request_units.unwrap_or(1).max(1);
+        match e.finance_snapshot_json.as_ref().and_then(valid_finance) {
+            Some((amount, currency)) if !mixed_currency => {
+                if a.finance_currency
+                    .as_ref()
+                    .is_some_and(|known| known != &currency)
+                {
+                    a.finance_amount = 0.0;
+                    a.finance_currency = None;
+                    a.finance_complete = false;
+                    mixed_currency = true;
+                } else {
+                    let total = a.finance_amount + amount;
+                    if total.is_finite() {
+                        a.finance_amount = total;
+                        a.finance_currency = Some(currency);
+                    } else {
+                        a.finance_amount = 0.0;
+                        a.finance_currency = None;
+                        a.finance_complete = false;
+                        mixed_currency = true;
+                    }
                 }
-                _ => comparable = false,
             }
+            Some(_) => {}
+            None => a.finance_complete = false,
         }
     }
-    if found && comparable {
-        a.finance_amount = Some(finance)
-    }
     a
+}
+
+fn valid_finance(value: &Value) -> Option<(f64, String)> {
+    let amount = value.get("amount")?.as_f64()?;
+    let currency = value.get("currency")?.as_str()?.trim();
+    if !amount.is_finite() || amount < 0.0 || currency.is_empty() {
+        return None;
+    }
+    Some((amount, currency.to_ascii_uppercase()))
 }
 
 fn trace_matches(r: &RouteTraceRecord, q: &QueryRouteTraceRequest) -> bool {
@@ -991,7 +1297,7 @@ fn placeholders(sql: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{RouteTrace, UsageQueryBucket, UsageQueryFilters};
+    use buckyos_api::{AiCost, ApiType, RouteTrace, UsageQueryBucket, UsageQueryFilters};
     use serde_json::json;
 
     async fn db() -> AiccStorage {
@@ -1020,6 +1326,81 @@ mod tests {
             }),
             finance_snapshot: Some(json!({"amount": 0.25, "currency": "USD"})),
             created_at_ms: at,
+        }
+    }
+
+    fn usage_event(id: &str, finance: Option<Value>, request_units: Option<u64>) -> AiccUsageEvent {
+        let usage = AiUsage {
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            request_units,
+        };
+        AiccUsageEvent {
+            event_id: id.into(),
+            tenant_id: "tenant-a".into(),
+            user_id: "user-a".into(),
+            caller_app_id: Some("app-a".into()),
+            task_id: format!("task-{id}"),
+            idempotency_key: Some(format!("idem-{id}")),
+            method: ai_methods::CHAT_COMPLETIONS_CREATE.into(),
+            capability: "llm".into(),
+            request_model: "llm.chat".into(),
+            provider_instance_name: "openai-primary".into(),
+            provider_model: "gpt-5:reasoning@openai-primary".into(),
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            request_units,
+            usage_json: usage,
+            finance_snapshot_json: finance,
+            created_at_ms: 10_000,
+        }
+    }
+
+    fn execution_record(task_id: &str, key: &str) -> ExecutionRecord {
+        ExecutionRecord {
+            scope: crate::execution::IdempotencyScope::new(
+                "tenant-a",
+                ai_methods::CHAT_COMPLETIONS_CREATE,
+                key,
+            )
+            .unwrap(),
+            usage_event_id: format!("usage-{task_id}"),
+            user_id: "user-a".into(),
+            caller_app_id: Some("app-a".into()),
+            request_model: "llm.chat".into(),
+            body_fingerprint: format!("fingerprint-{task_id}"),
+            task_id: task_id.into(),
+            event_ref: format!("event-{task_id}"),
+            state: ExecutionState::Submitted,
+            binding: None,
+            output: None,
+            error: None,
+            created_at_ms: 10_000,
+            expires_at_ms: 100_000_000,
+        }
+    }
+
+    fn provider_binding() -> PinnedProviderTask {
+        PinnedProviderTask {
+            runtime_generation: 7,
+            exact_model: "gpt-5:reasoning@openai-primary".into(),
+            provider_model_id: "gpt-5".into(),
+            provider_instance_name: "openai-primary".into(),
+            protocol_adapter_id: "openai-responses".into(),
+            operation: "responses.create".into(),
+            api_type: ApiType::Llm,
+            remote_task_id: Some("remote-1".into()),
+            cancel_supported: true,
+        }
+    }
+
+    fn execution_output() -> ExecutionOutput {
+        ExecutionOutput {
+            value: json!({"answer": 42}),
+            usage: AiUsage::request_units(1),
+            artifacts: vec![],
         }
     }
 
@@ -1055,6 +1436,139 @@ mod tests {
             .await
             .unwrap();
         assert!(db.load_inventory("openai-primary").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn execution_store_persists_claim_binding_and_terminal_cas() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("aicc.db");
+        let connection = format!("sqlite://{}?mode=rwc", path.display());
+        let db = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+
+        let running = execution_record("task-running", "key-running");
+        assert!(matches!(
+            db.claim(running.clone()).await.unwrap(),
+            IdempotencyClaim::Created(_)
+        ));
+        assert!(matches!(
+            db.claim(running.clone()).await.unwrap(),
+            IdempotencyClaim::Existing(existing) if existing == running
+        ));
+        let mut conflicting = running.clone();
+        conflicting.body_fingerprint = "different".into();
+        assert!(matches!(
+            db.claim(conflicting).await.unwrap(),
+            IdempotencyClaim::Conflict
+        ));
+        assert!(db
+            .set_running(
+                &running.task_id,
+                ExecutionState::Running,
+                provider_binding(),
+            )
+            .await
+            .unwrap());
+        drop(db);
+
+        let db = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+        let restored = db.get_task(&running.task_id).await.unwrap().unwrap();
+        assert_eq!(restored.state, ExecutionState::Running);
+        assert_eq!(restored.binding, Some(provider_binding()));
+        assert_eq!(db.recoverable().await.unwrap(), vec![restored]);
+        assert!(db.try_cancel(&running.task_id).await.unwrap());
+        assert!(!db
+            .try_complete(&running.task_id, execution_output())
+            .await
+            .unwrap());
+
+        let completed = execution_record("task-complete", "key-complete");
+        db.claim(completed.clone()).await.unwrap();
+        assert!(db
+            .try_complete(&completed.task_id, execution_output())
+            .await
+            .unwrap());
+        assert_eq!(
+            db.get_task(&completed.task_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            ExecutionState::Succeeded
+        );
+
+        let failed = execution_record("task-failed", "key-failed");
+        db.claim(failed.clone()).await.unwrap();
+        assert!(db
+            .try_fail(
+                &failed.task_id,
+                AiccError::new(AiccErrorCode::ProviderError, "provider failed"),
+            )
+            .await
+            .unwrap());
+        assert_eq!(
+            db.get_task(&failed.task_id).await.unwrap().unwrap().state,
+            ExecutionState::Failed
+        );
+
+        let raced = execution_record("task-raced", "key-raced");
+        db.claim(raced.clone()).await.unwrap();
+        let (complete, cancel) = tokio::join!(
+            db.try_complete(&raced.task_id, execution_output()),
+            db.try_cancel(&raced.task_id)
+        );
+        assert_ne!(complete.unwrap(), cancel.unwrap());
+        assert!(db.recoverable().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn usage_completion_writer_is_durable_and_idempotent() {
+        let db = db().await;
+        let completion = UsageCompletion {
+            event_id: "usage-production".into(),
+            tenant_id: "tenant-a".into(),
+            user_id: "user-a".into(),
+            caller_app_id: Some("app-a".into()),
+            task_id: "task-production".into(),
+            idempotency_key: "idem-production".into(),
+            method: ai_methods::CHAT_COMPLETIONS_CREATE.into(),
+            capability: "llm".into(),
+            request_model: "llm.chat".into(),
+            provider_instance_name: "openai-primary".into(),
+            provider_model: "gpt-5:reasoning@openai-primary".into(),
+            usage: AiUsage {
+                input_tokens: Some(10),
+                output_tokens: Some(5),
+                total_tokens: Some(15),
+                request_units: None,
+            },
+            finance_snapshot: Some(AiCost {
+                amount: 0.25,
+                currency: "EUR".into(),
+            }),
+            completed_at_ms: 10_000,
+        };
+        db.write_once(completion.clone()).await.unwrap();
+        db.write_once(completion).await.unwrap();
+
+        let result = db
+            .query_usage(
+                &QueryUsageRequest::new(UsageQueryTimeRange::Explicit {
+                    start_time_ms: 10_000,
+                    end_time_ms: 10_001,
+                }),
+                10_001,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.total.total_requests, 1);
+        assert_eq!(result.total.consumed_request_units, 1);
+        assert_eq!(result.total.finance_amount, 0.25);
+        assert_eq!(result.total.finance_currency.as_deref(), Some("EUR"));
+        assert!(result.total.finance_complete);
     }
 
     #[tokio::test]
@@ -1106,7 +1620,10 @@ mod tests {
         let first = db.query_usage(&request, 20_000).await.unwrap();
         assert_eq!(first.total.total_requests, 2);
         assert_eq!(first.total.total_tokens, 30);
-        assert_eq!(first.total.finance_amount, Some(0.5));
+        assert_eq!(first.total.consumed_request_units, 2);
+        assert_eq!(first.total.finance_amount, 0.5);
+        assert_eq!(first.total.finance_currency.as_deref(), Some("USD"));
+        assert!(first.total.finance_complete);
         assert_eq!(first.grouped.len(), 1);
         assert_eq!(first.grouped[0].group["user_id"], "user-a");
         assert_eq!(
@@ -1117,12 +1634,104 @@ mod tests {
             first.grouped[0].group["provider_instance_name"],
             "openai-primary"
         );
+        assert_eq!(first.grouped[0].aggregate, first.total);
         assert_eq!(first.buckets.len(), 1);
+        assert_eq!(first.buckets[0].aggregate, first.total);
         assert_eq!(first.events.len(), 1);
         assert!(first.next_cursor.is_some());
         let mut next = request;
         next.cursor = first.next_cursor;
         assert_eq!(db.query_usage(&next, 20_000).await.unwrap().events.len(), 1);
+    }
+
+    #[test]
+    fn finance_aggregation_is_currency_explicit_and_fail_closed() {
+        let empty = aggregate(std::iter::empty());
+        assert_eq!(empty, UsageAggregate::default());
+
+        let complete = [
+            usage_event(
+                "one",
+                Some(json!({"amount": 0.25, "currency": " usd "})),
+                None,
+            ),
+            usage_event(
+                "two",
+                Some(json!({"amount": 0.25, "currency": "USD"})),
+                Some(0),
+            ),
+            usage_event(
+                "three",
+                Some(json!({"amount": 0.25, "currency": "usd"})),
+                Some(3),
+            ),
+        ];
+        let complete = aggregate(&complete);
+        assert_eq!(complete.consumed_request_units, 5);
+        assert_eq!(complete.finance_amount, 0.75);
+        assert_eq!(complete.finance_currency.as_deref(), Some("USD"));
+        assert!(complete.finance_complete);
+
+        let partial = [
+            usage_event(
+                "priced",
+                Some(json!({"amount": 0.25, "currency": "USD"})),
+                None,
+            ),
+            usage_event("missing", None, None),
+        ];
+        let partial = aggregate(&partial);
+        assert_eq!(partial.finance_amount, 0.25);
+        assert_eq!(partial.finance_currency.as_deref(), Some("USD"));
+        assert!(!partial.finance_complete);
+
+        for (id, finance) in [
+            ("negative", json!({"amount": -0.1, "currency": "USD"})),
+            ("not-number", json!({"amount": "0.1", "currency": "USD"})),
+            ("no-amount", json!({"currency": "USD"})),
+            ("no-currency", json!({"amount": 0.1})),
+            ("empty-currency", json!({"amount": 0.1, "currency": " "})),
+        ] {
+            let event = usage_event(id, Some(finance), None);
+            let invalid = aggregate([&event]);
+            assert_eq!(invalid.finance_amount, 0.0, "{id}");
+            assert_eq!(invalid.finance_currency, None, "{id}");
+            assert!(!invalid.finance_complete, "{id}");
+        }
+
+        let mixed = [
+            usage_event(
+                "dollars",
+                Some(json!({"amount": 0.25, "currency": "USD"})),
+                None,
+            ),
+            usage_event(
+                "euros",
+                Some(json!({"amount": 0.25, "currency": "EUR"})),
+                None,
+            ),
+        ];
+        let mixed = aggregate(&mixed);
+        assert_eq!(mixed.finance_amount, 0.0);
+        assert_eq!(mixed.finance_currency, None);
+        assert!(!mixed.finance_complete);
+
+        let overflow = [
+            usage_event(
+                "huge-one",
+                Some(json!({"amount": 1.0e308, "currency": "JPY"})),
+                None,
+            ),
+            usage_event(
+                "huge-two",
+                Some(json!({"amount": 1.0e308, "currency": "JPY"})),
+                None,
+            ),
+        ];
+        let overflow = aggregate(&overflow);
+        assert_eq!(overflow.finance_amount, 0.0);
+        assert_eq!(overflow.finance_currency, None);
+        assert!(!overflow.finance_complete);
     }
 
     #[tokio::test]
