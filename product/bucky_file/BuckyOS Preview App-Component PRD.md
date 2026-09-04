@@ -220,16 +220,20 @@ v1 至少支持以下结果族：
 4. **HTML / Rich Text**；
 5. **Audio**：当前 Runtime 原生支持的格式或流；
 6. **Video**：当前 Runtime 原生支持的格式或流；
-7. **PDF / Paged Document**：优先使用 Runtime 原生 PDF 能力；不具备时允许转换为安全 HTML 或分页图片结果；
+7. **PDF**：P0 保留原始 PDF，通过专用 `PDFIframeRenderer` 交给 Runtime 内置 PDF Viewer 展示；
 8. **Preview Manifest**：描述多页、分片、渐进加载、封面、元数据和备用结果的标准清单。
 
 > 原始格式可以很多，但进入 Preview Component 的内容类型应保持有限和稳定。
 
 ### 9.3 Pipeline 输入
 
+Host 仍只传入 `CYFS Path` 或 `Object ID`。Preview 在调用 Pipeline 前必须先通过 Source Resolver 将其解析为稳定的输入描述；**未解析的可变 path 不得直接作为转换任务或缓存的身份**。
+
 Pipeline 请求至少包含：
 
-- Source：CYFS URL、Object ID 或系统支持的其他 Content Reference；
+- 原始 Source：用于显示来源、重新授权和错误定位；
+- `inputObjectId`：待处理字节内容的不可变 Object ID。若 Source 是 path，进入 Pipeline 前必须先固化或锚定为 Object ID；
+- 受当前调用者权限约束的读取引用或 Capability，不能把长期凭证写入任务参数；
 - 已知媒体信息：MIME、扩展名、对象类型、大小、版本、Hash 等；
 - Preview Component 当前可接受的结果类型；
 - 显示区域与像素密度；
@@ -266,6 +270,7 @@ Pipeline 请求至少包含：
 
 Preview Pipeline 扩展应向系统注册：
 
+- 稳定的 `pipelineId`、可读名称、`pipelineVersion` 和实现身份；
 - 可识别的输入格式、MIME、对象类型或内容特征；
 - 可输出的标准结果类型；
 - 预计成本、延迟、资源需求和保真等级；
@@ -273,7 +278,9 @@ Preview Pipeline 扩展应向系统注册：
 - 运行沙箱和权限需求；
 - 版本和优先级。
 
-系统负责选择合适的直接渲染或转换路径，Preview Component 只触发管线并消费结果。
+扩展名和调用方提供的 MIME 只能作为 hint；匹配应综合对象类型、FileObject 元数据、响应头和有界内容探测，安全敏感格式不得只按扩展名判定。
+
+系统负责选择合适的直接渲染或转换路径。Host 不指定具体 Pipeline，只能提供目标 Profile、质量、页码等产品参数；Preview Planner 必须输出固定到版本的确定性 Pipeline Plan，Preview Component 只触发该 Plan 并消费结果。
 
 ### 9.6 管线拼接
 
@@ -297,14 +304,32 @@ v1 建议最多允许 2～3 个转换步骤，避免不可预测的延迟和资�
 
 ### 9.7 缓存
 
-缓存键至少应包含：
+Preview 使用独立于 UI Session、Task ID 和单次执行 metadata 的 `workKey`：
 
-`Source ID + Source Version/Hash + Target Profile + Target Size + Pipeline Version`
+```text
+workKey = hash(
+  "preview-work/v1",
+  inputObjectId,
+  pipelinePlanDigest,
+  canonicalTransformParams,
+  permissionScopeKey
+)
+```
+
+其中：
+
+- `pipelinePlanDigest` 包含每一步的 `pipelineId`、`pipelineVersion` 和 Function / Engine 实现身份，不能只使用可变的管线名称；
+- `canonicalTransformParams` 包含会改变结果的用途、输出格式、尺寸档位、DPI、页码/时间范围、质量和安全净化策略；UI Mode、窗口大小、trace ID、Task ID 等不改变结果的字段不得进入；
+- 原始像素尺寸应尽量规整为有限 Target Profile / Size Bucket，避免拖动窗口产生大量近似缓存；
+- `permissionScopeKey` 是基于 Zone、principal、策略版本和可见性等级等稳定语义生成的不可逆权限域摘要，不是 token 字符串的 Hash；原始 token、Cookie 和长期凭证不得进入缓存键或持久化记录。
 
 缓存要求：
 
 - 源内容变更后不得复用旧结果；
 - 不同用户、权限或加密上下文不得错误共享受限结果；
+- 同一 `workKey` 的并发请求必须通过原子 get-or-create 合并为一个活动任务；
+- 完成记录必须验证结果 Object 仍然存在且可读，否则按 cache miss 重新处理；
+- 失败可以短期负缓存，但必须记录错误分类、`retryable` 和重试时间，不能永久污染同一 key；
 - 临时预览结果不得被当作新的权威源内容；
 - 缓存空间由系统统一管理，组件不得私自长期保存副本。
 
@@ -431,11 +456,12 @@ Preview Component 提供三种 UI 策略。
 
 #### PDF / 分页内容
 
-- 滚轮和触控板翻页或连续滚动；
-- 页码跳转；
-- 缩放和适应宽度/页面；
-- 文本层可用时支持选择和查找；
-- 无文本层时仍应提供页面图像预览。
+- P0 使用专用 `PDFIframeRenderer`，将原始 PDF 的已鉴权 read URL 放入 `iframe`，由 Runtime 内置 PDF Viewer 完成显示；
+- P0 的目标是稳定“能看到”，翻页、滚动、缩放、查找、下载和打印等能力沿用 Runtime 自带 Viewer，不重复实现 PDF Toolbar；
+- Component 不读取或注入 PDF Viewer 的内部 DOM，也不把 Runtime Viewer 私有 API 作为系统协议；
+- `capabilities` 只声明 Component 能稳定控制的能力。即使 iframe 内部 Viewer 自带缩放或查找，P0 也不因此声明 Component-level `zoom` / `search`；
+- Exit、信息和“使用其他应用打开”等系统动作必须位于 iframe 外层，确保在 Viewer 能力不一致时仍可使用；
+- Runtime 无法在 iframe 中显示 PDF、读取端点不满足要求或加载超时时，显示“当前 Runtime 无法内嵌预览 PDF”，提供下载和使用其他应用打开；P0 不自动转换为页面图片或 HTML。
 
 > 最终键位应按 Windows、macOS、Linux 和触屏平台做轻量映射，但同一平台内必须保持一致。
 
@@ -481,7 +507,7 @@ stateDiagram-v2
 - Cancelled；
 - Error。
 
-用户切换上一项、下一项时，前一个尚未完成的任务必须取消或降为低优先级。
+用户切换上一项、下一项时，前一请求的 UI 订阅必须立即失效，迟到结果不得覆盖当前内容。若后台任务只有该请求一个消费者，应取消或降为低优先级；若相同 `workKey` 正被其他消费者复用，不得因一个组件退出而取消共享任务。
 
 ---
 
@@ -926,6 +952,7 @@ Smart Window Mode 必须设置自动创建窗口上限：
 - 所有核心操作必须可通过键盘完成；
 - Auto UI 隐藏时，焦点仍保持可预测；
 - 屏幕阅读器可读取内容类型、标题、页码、时长和错误信息；
+- P0 PDF iframe 的文档内无障碍能力由 Runtime 内置 Viewer 提供；Component 至少提供文件名、内容类型、加载状态、退出和“使用其他应用打开”的可访问语义，页内结构化无障碍增强属于 P1；
 - 工具栏按钮具有明确语义和快捷键提示；
 - 低视力用户可覆盖默认 Silent/Auto 策略，强制 Visible；
 - 动画与 UI 浮现遵循“减少动态效果”系统设置；
@@ -963,7 +990,7 @@ Smart Window Mode 必须设置自动创建窗口上限：
 3. Auto、Visible、Silent 三种 UI Mode；
 4. Esc 的标准 Exit Preview 语义；
 5. 图片、SVG、文本、HTML、音频、视频的基础 Renderer；
-6. PDF 的 Runtime 直开或降级 Preview；
+6. PDF 通过 `PDFIframeRenderer` 使用 Runtime 内置 Viewer 直开，并在不可用时降级为下载/使用其他应用打开；
 7. Preview Pipeline 调用、扩展匹配、失败和缓存基本框架；
 8. Single、Container、Explicit Item List 三种 Session Context；
 9. Previous / Next 与稳定 Session Items；
@@ -986,6 +1013,7 @@ Smart Window Mode 必须设置自动创建窗口上限：
 8. Host Actions 标准扩展位；
 9. 无障碍和平台快捷键精细适配；
 10. Pipeline 质量、成本和速度智能选择。
+11. PDF.js、自绘分页、页码/缩放控制、文本层和 PDF → Page Images / Safe HTML / Preview Manifest 转换。
 
 ### P2：未来能力
 
@@ -1010,14 +1038,20 @@ Smart Window Mode 必须设置自动创建窗口上限：
 - [ ] Component 获得焦点时按 Esc 发出 `requestExit`。
 - [ ] 图片可平移、缩放、适应窗口并通过 Session 导航。
 - [ ] 文本左键拖拽用于选择，不被图片画布逻辑覆盖。
+- [ ] PDF 使用 `PDFIframeRenderer` 打开满足鉴权与响应头要求的原始 PDF，不触发 PDF 转图片/HTML Pipeline。
+- [ ] Runtime 无法内嵌 PDF 时显示明确降级态，并提供下载和“使用其他应用打开”。
 - [ ] 切换 item 时，旧 Pipeline 任务被取消或失效。
 
 ### 21.2 Pipeline
 
 - [ ] Runtime 直接支持的格式不经过无必要转换。
+- [ ] CYFS Path 只有在需要转换时才固化为不可变 `inputObjectId`，缓存不以可变 path 为身份。
 - [ ] 不支持格式可通过已安装扩展转换为标准结果并展示。
 - [ ] 扩展移除后正确进入 Unsupported，而不是崩溃。
 - [ ] Source Version 变化后不会错误复用旧缓存。
+- [ ] 相同 `workKey` 的并发请求只产生一个活动任务，并都能取得同一完成结果。
+- [ ] Pipeline 查询能稳定区分 `processing`、`completed`、`failed`，失败结果包含可否重试和稳定错误码。
+- [ ] 一个 Preview 实例切换内容不会取消其他实例仍在等待的共享任务，迟到结果也不会覆盖新内容。
 - [ ] 权限不同的用户不会共享受限派生结果。
 - [ ] 转换超时、内容损坏和权限不足有不同错误态。
 
@@ -1056,26 +1090,236 @@ Smart Window Mode 必须设置自动创建窗口上限：
 | 普通 Container 导航 | Bounded，可由 Host 改为 Wrap |
 | 相邻项预取 | 当前项就绪后预取前后各 1 项 |
 | HTML 执行 | Sandbox，脚本和外部网络默认禁用 |
-| PDF | Runtime 原生优先，否则转换为安全分页结果 |
+| PDF P0 | 原始 PDF + `PDFIframeRenderer` + Runtime 内置 Viewer；失败时下载/使用其他应用打开，不做格式转换 |
+| Pipeline 选择 | Preview Planner 按探测后的输入格式和 Runtime Target Profile 自动选择，Host 不指定实现 |
+| Pipeline workKey | 固定版本 Pipeline Plan + `inputObjectId` + 规范化转换参数 + 权限域摘要 |
+| Pipeline 对外状态 | `processing` / `completed` / `failed`；Direct 和 Unsupported 作为独立结果类型 |
+| P0 执行路径 | Preview Pipeline Service 管理任务与缓存，采用 Thunk-compatible 语义，但不依赖当前未打通的 `scheduler.run_thunk` 分发链路 |
 | 手工新窗口 | 始终允许，不计入自动窗口上限 |
 | 手工/固定窗口自动复用 | 默认禁止无关请求复用 |
 
 ---
 
-## 23. 仍需在技术设计阶段确认的事项
+## 23. 技术设计阶段已确认约束与仍需确认事项
 
-这些事项不阻塞本 PRD 的产品边界，但需要在 Architecture / API Spec 中最终确定：
+本节把进入 Architecture / API Spec 和交给 Code Agent 实现前必须遵守的边界固定下来。这里定义产品级执行契约，不要求 Preview Component 感知具体调度节点、转换命令或缓存数据库。
 
-1. Preview Pipeline 扩展包的注册格式、签名、沙箱与生命周期；
-2. 当前 Web Runtime 的标准结果类型能力探测 API；
-3. PDF 的统一中间表示是否采用原生 PDF、分页图片、HTML，或 Preview Manifest；
-4. Container 枚举接口和跨 CYFS / NDN / ZIP 的统一 Iterator；
-5. Provider-based Session 的分页、回收和一致性协议；
-6. Smart Window 相关性评分的精确权重；
-7. 不同桌面平台的快捷键映射；
-8. Preview 派生结果缓存的持久化层与清理策略；
-9. Full App 注册、默认关联和“使用其他应用打开”的系统协议；
-10. Host Actions 的安全权限和视觉位置规范。
+### 23.1 与当前系统实现的衔接结论
+
+截至本 PRD 编写时，相关系统能力的现状如下：
+
+1. NFSP 已能把 path 解析为文件节点，提供 read URL、Range、ETag 和可选 `obj_id`；但 `repr` 派生表示尚未实现，未锚定的本地文件也不保证立即具有内容 Object ID。当前 NFSP 数据面的 SSO / Capability 放行尚未接通，因此 P0 必须补齐鉴权或通过已鉴权的读取代理访问，不能把现有 read URL 本身视为 Capability。
+2. NDN 的 Object ID 是内容寻址标识；`FileObject` 可通过 `content` 指向 chunk / chunk list，并携带文件元数据。因此 Pipeline 应以最终待处理字节内容的不可变 Object ID 为输入，而不是以显示路径为输入。
+3. 系统已定义 `FunctionObject`、`ThunkObject`、`ThunkExecutionResult`，以及 TaskMgr 中的 Thunk Task 数据结构。内部状态可表达 waiting / dispatched / success / failed / cancelled，TaskMgr 也能持久化任务生命周期。
+4. 当前 `scheduler.run_thunk` 只完成选点，投递端仍是 stub，且没有正式调用方；不能把它当作 P0 已可用的端到端转换执行服务。
+5. 当前 Desktop 的 `PreviewPanel` 是文件元数据侧栏，不是本文定义的通用内容 Preview Component；新实现不能把其 UI state 或数据模型当成 Pipeline 协议。
+
+由此确定：P0 新增统一的 **Preview Pipeline Service** 作为 Source 解析、Pipeline 规划、任务去重、状态查询和结果缓存的边界；派生产物写入 NDN / Named Store，每次实际执行必须创建由 Preview Service 自身绑定并恢复的 TaskMgr Task。Preview Service 不使用 Task Dispatch Center，除非以后确实需要把工作持久交接给其他 App / Node；也不在 system-config 中保存运行态。
+
+### 23.2 从 Source 到可渲染结果的固定流程
+
+```mermaid
+flowchart TD
+    A[Preview.setSource: path / objectId] --> B[Resolve Source + 权限检查]
+    B --> C[构造 Content Descriptor]
+    C --> D{Built-in Renderer + 当前 Runtime 可直接渲染?}
+    D -->|是| E[Direct Result]
+    D -->|否| F[按输入格式与 Target Profile 规划 Pipeline]
+    F -->|无匹配| G[Unsupported]
+    F -->|有匹配| H[固化 inputObjectId + 规范化参数]
+    H --> I[计算 workKey 并原子 ensure]
+    I -->|已有完成结果| J[completed + Preview Result]
+    I -->|已有活动任务| K[processing + 同一 taskId]
+    I -->|首次请求或可重试| L[创建 Pipeline Task]
+    L --> K
+    K -->|成功| J
+    K -->|失败| M[failed + stable error]
+    J --> N[Built-in Renderer]
+```
+
+固定规则：
+
+1. `path` 和 `objectId` 都先进入 Source Resolver；两者不得在后续流程中形成两套 Pipeline API。
+2. Direct 判断发生在 Pipeline 之前。Direct 只表示“不转换”，仍必须经过 Preview Renderer 的安全策略。
+3. 只有确实需要 Pipeline 时，才强制取得不可变 `inputObjectId`。普通本地图片可先使用 NFSP read URL 直出，不能为了查缓存而阻塞首帧去计算整文件 Hash。
+4. Pipeline Planner 由探测后的输入描述和 Runtime 可接受的 Target Profile 选择管线；Host 和 Preview UI 不硬编码 Pipeline 名称。
+5. `ensure` 是幂等操作：一次调用同时完成“查完成缓存、复用处理中任务、按策略复用失败记录或创建新任务”，不得先查后建造成并发重复转换。
+
+### 23.3 Source Resolver 与 Direct 判定
+
+Source Resolver 至少产出以下逻辑字段，字段名可在 API Spec 中按语言调整：
+
+```ts
+interface ResolvedPreviewSource {
+  originalSource: ContentRef;
+  sourceObjectId?: string;   // FileObject / wrapper 的身份，用于 provenance
+  inputObjectId?: string;    // 实际字节内容的不可变身份；Pipeline 前必须存在
+  versionToken?: string;     // live path 的 ETag / revision，只用于重验，不替代 inputObjectId
+  displayName?: string;
+  size?: number;
+  objectType?: string;
+  mediaTypeHints: string[];
+  readRef: unknown;          // 受权限约束的 URL、stream 或 capability
+}
+```
+
+若 Object ID 指向 `FileObject`，Resolver 应保留 `sourceObjectId` 用于来源追踪，并展开其 `content` 得到用于读取和转换缓存的 `inputObjectId`。若 path 指向 live file 且尚无稳定内容 ID，只有在需要转换时才执行 Hash、锚定或写入 Named Store；固化期间必须用 ETag / revision 重验，源发生变化则重新解析，不得把旧内容关联到新 path 状态。
+
+同时满足以下条件才进入 Direct：
+
+1. Source 已通过当前调用者的读取权限检查，并能提供 Renderer 可消费的 read URL 或 stream；
+2. Preview 存在对应 Built-in Renderer；
+3. 当前 Runtime 明确支持具体封装、编码或文档能力，例如视频不能只判断 `video/*`；
+4. 内容大小、解码预算、HTML 沙箱和宿主策略允许直接加载；
+5. 类型判断至少综合对象类型、FileObject metadata、响应 `Content-Type`、扩展名 hint 和必要的有界 magic-byte probe。扩展名不能成为唯一依据。
+
+Runtime 判断不确定时允许进行一次受控 Direct decode probe。若失败原因是“不支持的编码”，回到 Pipeline Planner；若确认是内容损坏，则进入 Corrupted Content，除非某个 Pipeline 明确声明具有修复或容错能力。
+
+#### 23.3.1 PDF 的 P0 Direct 特例
+
+当输入内容本身已经是 PDF 时，P0 只走 Direct，不再进入 PDF 预处理 Pipeline。其他专有文档仍可通过 Pipeline 产出 PDF，再由同一个 `PDFIframeRenderer` 展示。Renderer 的输入是 PDF read URL，并遵守以下契约：
+
+1. Resolver 必须先确认内容是 PDF；`application/pdf`、文件名和 `%PDF-` 有界探测可共同用于识别，不能只相信 `.pdf` 扩展名。
+2. read URL 必须继承当前用户权限，支持浏览器按需读取；响应使用 `Content-Type: application/pdf`、`Content-Disposition: inline`（或不强制下载），并尽量支持 `Accept-Ranges: bytes`。
+3. 对只有 Object ID、没有合适文件名或 HTTP 响应头的 Source，由已鉴权的 Preview / NDN 读取代理生成短期 URL 和正确响应头；不得把公开 URL 或长期 token 拼入 iframe 地址。
+4. iframe 必须使用系统控制的同源或隔离内容域，响应不得用 `X-Frame-Options` / CSP 阻止合法嵌入；具体 sandbox flag 和 CSP 由 Runtime Adapter 验证后采用最小权限集合。
+5. Component 把 iframe 当作不透明 Renderer，不访问 Viewer DOM、不依赖浏览器私有消息协议，也不把 PDF 内容注入父页面。
+6. iframe 的 `load` 事件只代表导航完成，不能单独证明页面已经成功渲染。P0 结合 URL 预检、Runtime 支持矩阵、load/error 和超时给出 best-effort 状态；失败统一进入 PDF 降级态。
+7. 原始 PDF 的 Direct 路径不创建 `workKey`、TaskMgr Task 或派生缓存；若 PDF 是其他格式的 Pipeline 产物，则沿用该 Pipeline 的 work 与缓存。HTTP / NDN 对 PDF Object 的正常读取缓存仍可生效。
+
+PDF.js、统一页码/缩放 API、文本层、缩略图、页面图片和 Preview Manifest 均属于 P1。以后增加 PDF Pipeline 时不得改变 P0 `PDFIframeRenderer` 的 Direct 快速路径。
+
+### 23.4 Pipeline 注册、选择与参数
+
+每个可选择 Pipeline 至少暴露：
+
+```ts
+interface PreviewPipelineDescriptor {
+  pipelineId: string;        // 稳定机器标识，不是显示名称
+  pipelineVersion: string;   // 语义或实现版本
+  implementationId: string;  // FunctionObject ID / package digest / engine identity
+  inputMatchers: unknown[];
+  outputProfiles: unknown[];
+  paramsSchema: unknown;
+  priority: number;
+  fidelity: number;
+  estimatedCost: unknown;
+  capabilities: unknown;     // stream / paged / region / thumbnail 等
+  securityProfile: unknown;
+}
+```
+
+Planner 的固定选择顺序是：
+
+1. 过滤输入类型、输出 Profile、安全策略和当前资源不兼容的候选；
+2. 优先更精确的内容特征匹配；
+3. 在满足目标的候选中依次比较保真度、显式优先级、预计延迟与资源成本；
+4. 最后按稳定 `pipelineId` 决胜，保证相同注册表快照与输入产生相同 Plan。
+
+Pipeline 的默认参数必须由 descriptor 的 schema 补全并规范化为 canonical JSON 后再计算 `workKey`。未知参数直接拒绝，不能静默忽略。Pipeline 更新、实现包更新或外部引擎版本变化必须改变 `pipelineVersion` / `implementationId`，从而自然产生新缓存键。
+
+多步转换由 Planner 生成固定版本的 `PipelinePlan`，Component 不自行拼接。每一步都必须声明输入输出兼容性；继续遵守 §9.6 的环路、步数和总预算限制。
+
+### 23.5 是否使用 Thunk
+
+结论是：**采用 Thunk 的纯函数、内容寻址和可复用结果语义，但 P0 不直接依赖当前尚未打通的通用 `scheduler.run_thunk` 链路。**
+
+- Pipeline Plan 是“为什么选择这些步骤”的编排结果，Thunk 是某个确定步骤的一次执行实例，两者不能合并成一个概念。
+- 适合缓存的转换步骤必须是幂等的，可表达为 `FunctionObject + inputObjectId + canonical params`，输出为 Named Object / Preview Manifest 引用。
+- P0 由 Preview Pipeline Service 通过受控本地 runner 或已注册 AppService 执行，并把业务 Task 交给 TaskMgr 管理；以后需要跨节点、GPU 或独立 runner 时，再把步骤降级为 `ThunkObject`，按“Scheduler 给 placement 建议 + Task Dispatch Center 持久交接”接入。
+- `ThunkObject.metadata` 中的 request ID、trace ID、attempt 等运行信息不得进入 `workKey`。当前按完整 Thunk JSON 计算出的 `thunk_obj_id` 会受到 metadata 影响，因此 `thunk_obj_id`、`taskId`、`attemptId` 与跨请求复用的 `workKey` 必须是不同字段。
+- 非幂等、依赖实时外部状态或未固定模型 / provider / prompt 版本的步骤默认不得跨请求缓存。
+
+### 23.6 缓存、并发与状态查询
+
+Preview Pipeline Service 维护以 `workKey` 为唯一键的可变索引；P0 使用平台 RDB 的服务自有分区（单机 backend 为 SQLite）实现唯一约束和原子事务。TaskMgr 保存每个 attempt 的实际任务生命周期，NDN / Named Store 保存不可变的派生产物和 Preview Manifest。`task.name` 不承担唯一性；TaskMgr 的 `idempotency_key` 使用 `hash(workKey, attemptId)`，同一 attempt 重放必须取得同一 Task，不同 retry attempt 必须得到新 Task。
+
+P0 注册专用 Task Schema `preview.pipeline/v1`。其不可变 input 至少包含 `workKey`、`attemptId`、`inputObjectId`、固定 Pipeline Plan 或其可解析引用、canonical params、`paramsHash` 和权限域引用；成功 result 只保存 Preview Result / Manifest 的 Object ID 与必要摘要，不内联二进制内容、原始 token 或完整路径。
+
+状态记录至少包含：
+
+```ts
+interface PreviewWorkRecord {
+  workKey: string;
+  state: "processing" | "completed" | "failed";
+  attemptId: string;
+  taskId?: string;
+  inputObjectId: string;
+  pipelinePlanDigest: string;
+  paramsHash: string;
+  progress?: { completed: number; total?: number; message?: string };
+  result?: { resultObjectId?: string; manifestObjectId?: string; mediaType: string };
+  error?: { code: string; message: string; retryable: boolean; retryAfter?: number };
+  createdAt: number;
+  updatedAt: number;
+  expiresAt?: number;
+}
+```
+
+状态规则：
+
+- 不存在记录：原子创建 `processing` 和新的 attempt；
+- `processing`：返回同一 `taskId`，调用方轮询或订阅，不重复创建；
+- `completed`：校验产物存在且有权限后直接返回；产物已被 GC 则将记录失效并重新 ensure；
+- `failed`：稳定失败在负缓存 TTL 内直接返回；可重试失败到达 `retryAfter` 或用户显式 Retry 后，以同一 `workKey` 创建新 `attemptId`；
+- TaskMgr 显示 Promised / Accepted / Running / Waiting / Paused 时统一映射为 `processing`，Terminal + Succeeded 映射为 `completed`，Terminal + Failed 映射为 `failed`；Canceled 不作为可长期复用的失败缓存；
+- 服务重启后必须对 `processing` 记录与 TaskMgr 做恢复核对，不能让孤儿记录永久保持处理中。
+
+Component 只保留当前 Source 的 request generation。任何 progress 或 completed 回调都必须同时匹配当前 generation 和 `workKey` 后才能更新 UI。
+
+### 23.7 Preview 对外结果契约
+
+产品级结果建议固定为以下互斥联合类型：
+
+```ts
+type PreviewResolution =
+  | { kind: "direct"; source: ResolvedPreviewSource; rendererType: string }
+  | {
+      kind: "pipeline";
+      workKey: string;
+      state: "processing";
+      taskId?: string;
+      progress?: unknown;
+      retryAfterMs?: number;
+    }
+  | {
+      kind: "pipeline";
+      workKey: string;
+      state: "completed";
+      result: unknown; // §9.4 Preview Result / Manifest
+    }
+  | {
+      kind: "pipeline";
+      workKey: string;
+      state: "failed";
+      error: { code: string; message: string; retryable: boolean; retryAfter?: number };
+    }
+  | { kind: "unsupported"; reason: string };
+```
+
+Preview Controller 与 Preview Pipeline Service 之间至少提供三个操作：
+
+1. `resolvePreviewSource(source)`：按调用者权限解析 Source，返回 `ResolvedPreviewSource`。Direct 能力最终由 Component 的 Runtime Adapter 判断；
+2. `ensurePreviewWork(resolvedSource, runtimeProfile, targetProfile, options)`：仅在不能 Direct 时调用；必要时固化 `inputObjectId`、规划 Pipeline，并原子查询或创建 work；
+3. `getPreviewWork(workKey)`：只查询已有 Pipeline work，不隐式创建新 attempt。显式重试通过 `ensurePreviewWork(..., { retry: true, expectedAttemptId })` 做 CAS，避免并发 Retry 产生多个 attempt。
+
+事件订阅可作为优化，轮询必须可用作断线降级。`Unsupported` 表示没有可行 Direct / Pipeline，是规划结果；`failed` 表示已经选中了 Pipeline，但某次处理执行失败，两者不得混用。
+
+### 23.8 仍需在 Architecture / API Spec 中最终确认
+
+以下事项不改变上述执行契约，但仍需在各自实现阶段落定：
+
+1. Preview Pipeline 扩展包的 manifest 字段、注册路径、签名、沙箱与升级/卸载生命周期；
+2. `resolvePreviewSource`、`ensurePreviewWork`、`getPreviewWork` 和事件订阅的最终 kRPC / HTTP schema、错误码及 RBAC；
+3. 各 Web Runtime 对图片编码、媒体 codec、PDF iframe 和流式能力的具体探测 Adapter，以及 PDF iframe 的隔离域、sandbox / CSP 兼容矩阵；
+4. P1 PDF 增强采用 PDF.js、自绘分页、Page Images、Safe HTML 或 Preview Manifest 的实现顺序；
+5. Container 枚举接口和跨 CYFS / NDN / ZIP 的统一 Iterator；
+6. Provider-based Session 的分页、回收和一致性协议；
+7. Smart Window 相关性评分的精确权重；
+8. 不同桌面平台的快捷键映射；
+9. Preview 缓存数据库 schema、总容量、TTL、LRU/GC 水位和磁盘压力策略；
+10. Full App 注册、默认关联和“使用其他应用打开”的系统协议；
+11. Host Actions 的安全权限和视觉位置规范。
 
 ---
 
