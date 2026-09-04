@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "buckyos": "git+https://github.com/streetycat/buckyos-websdk#refactor/aicc"
+    "buckyos": "git+https://github.com/streetycat/buckyos-websdk#07a153caccec177ccb819754474ec46f82e4f7f7"
   },
   "scripts": {
     "build:web": "pnpm --filter ./web run build",

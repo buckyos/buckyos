@@ -4,10 +4,19 @@ use anyhow::Context;
 use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AiccError,
-    AiccHandler, AiccServerHandler, BuckyOSRuntimeType, CancelResponse, CreateTaskExecutor,
+    AiccCall, AiccErrorCode, AiccHandler, AiccServerHandler, AiMethodStatus,
+    AudioEnhanceRequest, AudioEnhanceResponse, AudioMusicRequest, AudioMusicResponse,
+    AudioSpeechRecognitionRequest, AudioSpeechRecognitionResponse, AudioTextToSpeechRequest,
+    AudioTextToSpeechResponse, BuckyOSRuntimeType, CancelResponse, ComputerUseRequest,
+    ComputerUseResponse, CreateTaskExecutor,
     CreateTaskReq, DriverMetadataRuntimeApply, DriverMetadataUpdateSetReq,
     DriverMetadataUpdateSetResponse, DriverMetadataUpdateStatus, DriverMetadataUpdateView,
-    ListModelsRequest, ProtocolAdapterListRequest, ProtocolAdapterListResponse, ProviderAddRequest,
+    EmbeddingMultimodalRequest, EmbeddingMultimodalResponse, EmbeddingTextRequest,
+    EmbeddingTextResponse, ImageBackgroundRemoveRequest, ImageBackgroundRemoveResponse,
+    ImageInpaintRequest, ImageInpaintResponse, ImageToImageRequest, ImageToImageResponse,
+    ImageUpscaleRequest, ImageUpscaleResponse, ListModelsRequest, LlmChatHelperRequest,
+    LlmChatInvokeRequest, LlmChatInvokeResponse, ProtocolAdapterListRequest,
+    ProtocolAdapterListResponse, ProviderAddRequest,
     ProviderAddResponse, ProviderCatalogRequest, ProviderCatalogResponse, ProviderDeleteRequest,
     ProviderDeleteResponse, ProviderHealthRequest, ProviderHealthResponse,
     ProviderInstanceAuthMode, ProviderInstanceAuthView, ProviderInstanceHealthState,
@@ -17,9 +26,17 @@ use buckyos_api::{
     ProviderUpdateResponse, ProviderValidateRequest, ProviderValidateResponse,
     QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
     QuotaQueryRequest, QuotaQueryResponse, QuotaState, RoutingGetRequest, RoutingGetResponse,
-    RoutingUpdateRequest, RoutingUpdateResponse, ServiceReloadSettingsRequest,
+    RerankRequest, RerankResponse, RouteFallbackAttempt, RouteResolveRequest,
+    RouteResolveResponse, RouteTrace, RoutingUpdateRequest, RoutingUpdateResponse,
+    ServiceReloadSettingsRequest,
     ServiceReloadSettingsResponse, SystemConfigClient, SystemConfigError, TaskManagerClient,
-    UsageQueryOutputMode, UsageQueryTimeRange, AICC_COMPUTE_TASK_SCHEMA_ID,
+    TextToImageHelperRequest, TextToImageInvokeRequest, TextToImageInvokeResponse,
+    UsageQueryOutputMode, UsageQueryTimeRange, VideoExtendRequest, VideoExtendResponse,
+    VideoImageToVideoRequest, VideoImageToVideoResponse, VideoTextToVideoRequest,
+    VideoTextToVideoResponse, VideoToVideoRequest, VideoToVideoResponse, VideoUpscaleRequest,
+    VideoUpscaleResponse, VisionCaptionRequest, VisionCaptionResponse, VisionDetectRequest,
+    VisionDetectResponse, VisionOcrRequest, VisionOcrResponse, VisionSegmentRequest,
+    VisionSegmentResponse, AICC_COMPUTE_TASK_SCHEMA_ID,
 };
 use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, Runner, ServerError, ServerErrorCode,
@@ -31,14 +48,19 @@ use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use kRPC::{RPCContext, RPCErrors, RPCRequest};
 use kRPC::{RPCHandler, RPCResponse};
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex};
 
 use crate::catalog::CatalogSnapshot;
+use crate::call::{CallResolver, ProviderCallTarget, ResolvedProviderCall};
 use crate::execution::{
     ExecutionEngine, ExecutionOutput, ExecutionState, NativeTaskPoll, NativeTaskResumeDescriptor,
     NativeTaskResumeError, PinnedProviderTask, ProviderExecution, ProviderExecutionPort,
@@ -60,8 +82,13 @@ use crate::provider::{
     ProviderRuntimeManager, SnCredentialBroker, SnProviderInstanceInput, StaticCredentialResolver,
 };
 use crate::routing::{
-    CallerIdentity, QuotaLookup, QuotaSnapshot, QuotaSourceError, QuotaSourceFactory,
-    QuotaTruthPort,
+    policy_engine_for_route, CallerIdentity, CandidateRuntimeState, ProviderHealthStatus,
+    QuotaLookup, QuotaSnapshot, QuotaSourceError, QuotaSourceFactory, QuotaTruthPort,
+    RouteDecision, Router, RoutingRequest,
+};
+use crate::routing::policy::{
+    CredentialScope, ProviderPrivacy, ProviderTrustLevel, ProviderTrustView, ProviderType,
+    ProviderTypeSource,
 };
 use crate::runtime::{
     ConvergenceTrigger, ModelRegistryAssembler, PreparedRuntime, ProviderRuntimeBackend,
@@ -2120,6 +2147,7 @@ impl TaskManagerPort for TaskManagerExecutionPort {
                     "request": {
                         "version": 1,
                         "tenant_id": spec.tenant_id,
+                        "trace_id": spec.trace_id,
                         "request": spec.input,
                     }
                 }),

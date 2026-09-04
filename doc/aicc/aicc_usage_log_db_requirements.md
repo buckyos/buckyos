@@ -60,6 +60,7 @@ Table: `aicc_usage_event`
 | `tenant_id` | TEXT | NO | User / tenant identity from RPC context. |
 | `caller_app_id` | TEXT | YES | Caller app id if available. |
 | `task_id` | TEXT | NO | AICC external task id. |
+| `trace_id` | TEXT | YES | Canonical AICC trace id shared with routing, task data, progress events, and route trace. |
 | `idempotency_key` | TEXT | YES | Request idempotency key if provided. |
 | `capability` | TEXT | NO | AICC capability, such as `LlmRouter` or `Text2Image`. |
 | `request_model` | TEXT | NO | Logical model requested by caller, such as `llm.plan.default`. |
@@ -76,6 +77,7 @@ Indexes:
 
 - `idx_aicc_usage_event_time` on `created_at_ms`
 - `idx_aicc_usage_event_tenant_time` on `(tenant_id, created_at_ms)`
+- `idx_aicc_usage_event_trace_time` on `(trace_id, created_at_ms)`
 - `idx_aicc_usage_event_model_time` on `(provider_model, created_at_ms)`
 - `idx_aicc_usage_event_request_model_time` on `(request_model, created_at_ms)`
 

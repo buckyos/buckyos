@@ -295,6 +295,7 @@ mod tests {
         CodecInput {
             canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest {
                 exact_model: "logical.model".to_owned(),
+                trace_id: None,
                 messages: vec![AiMessage::new(AiRole::User, vec![AiContent::text("hello")])],
                 tools: Vec::new(),
                 response_format: None,

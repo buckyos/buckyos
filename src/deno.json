@@ -1,6 +1,6 @@
 {
   "imports": {
-    "buckyos/provision": "https://raw.githubusercontent.com/streetycat/buckyos-websdk/refs/heads/refactor/aicc/dist/provision.mjs"
+    "buckyos/provision": "https://raw.githubusercontent.com/streetycat/buckyos-websdk/07a153caccec177ccb819754474ec46f82e4f7f7/dist/provision.mjs"
   },
   "tasks": {
     "make_config": "deno run -A make_config.ts"

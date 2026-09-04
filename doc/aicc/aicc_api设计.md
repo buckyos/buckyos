@@ -84,6 +84,8 @@ Provider 不能自定义方法名，只能声明自己支持标准集合中的�
 2. typed inference 是数据面。请求必须包含 `exact_model`，逻辑模型名会被拒绝；内部关闭逻辑 fallback。调用阶段重新校验 catalog revision 和动态 availability，并生成内部 `ResolvedProviderCall`。
 3. `helper.*` 接受 `logical_model`、结构化 requirements/policy 和对应 typed 业务字段，内部先 `route.resolve`，再调用 typed inference。Helper 不接受或构造 `AiMethodRequest`。
 
+`route.resolve`、全部 typed inference request 以及两个 Helper request 都接受可选的 body 字段 `trace_id`。调用方提供时，Service 必须原样将其用于路由决策、TaskMgr task data/progress event、usage event 和 route trace 的关联；未提供时由 Service 生成非空 canonical trace id。该字段与 kRPC `sys` 中的传输 trace、`request_id` 及 Provider 返回的 `provider_trace_id` 相互独立，任一字段都不能替代 canonical `trace_id`。
+
 `fallback_attempts` 表达路由建议的运行时 failover 候选顺序，不是 lease，也不保证候选在后续时刻仍可用。它不包含 primary；当前受 `runtime_failover` 和系统 `fallback_limit` 限制，排序来自 scheduler 之后的同 method 候选。
 
 `enabled_capabilities` / `disabled_capabilities` 表达本次路由后模型可用能力与请求禁用能力。能力判断使用结构化 `ModelRequirement` / `ModelDisable`，最终能力是 Model Driver、Protocol Adapter 与 Provider discovery 的交集。

@@ -381,6 +381,7 @@ impl NativeTaskResumeDescriptor {
 pub(crate) struct ExecutionRecord {
     pub scope: IdempotencyScope,
     pub usage_event_id: String,
+    pub trace_id: Option<String>,
     pub user_id: String,
     pub caller_app_id: Option<String>,
     pub request_model: String,
@@ -424,6 +425,7 @@ pub(crate) struct TaskSpec {
     pub tenant_id: String,
     pub user_id: String,
     pub method: String,
+    pub trace_id: Option<String>,
     pub idempotency_key: String,
     pub parent_id: Option<String>,
     pub input: Value,
@@ -457,6 +459,7 @@ pub(crate) struct UsageCompletion {
     pub user_id: String,
     pub caller_app_id: Option<String>,
     pub task_id: String,
+    pub trace_id: Option<String>,
     pub idempotency_key: String,
     pub method: String,
     pub capability: String,
@@ -570,6 +573,7 @@ pub(crate) struct ExecutionRequest {
     pub tenant_id: String,
     pub user_id: String,
     pub caller_app_id: Option<String>,
+    pub trace_id: Option<String>,
     pub request_model: String,
     pub idempotency_key: String,
     pub canonical_body: Value,
@@ -680,6 +684,7 @@ impl ExecutionEngine {
                 tenant_id: request.tenant_id.clone(),
                 user_id: request.user_id.clone(),
                 method: request.primary.method.clone(),
+                trace_id: request.trace_id.clone(),
                 idempotency_key: request.idempotency_key.clone(),
                 parent_id: request.parent_task_id,
                 input: request.canonical_body,
@@ -688,6 +693,7 @@ impl ExecutionEngine {
         let initial = ExecutionRecord {
             scope,
             usage_event_id: usage_event_id(&task.task_id),
+            trace_id: request.trace_id,
             user_id: request.user_id,
             caller_app_id: request.caller_app_id,
             request_model: request.request_model,
@@ -717,7 +723,7 @@ impl ExecutionEngine {
             .report_state(
                 &record.task_id,
                 ExecutionState::Submitted,
-                json_state("submitted", None),
+                json_state("submitted", None, record.trace_id.as_deref()),
             )
             .await?;
         let (cancel, cancellation) = cancellation_pair();
@@ -786,7 +792,7 @@ impl ExecutionEngine {
                             .report_state(
                                 &record.task_id,
                                 ExecutionState::Running,
-                                json_state("running", None),
+                                json_state("running", None, record.trace_id.as_deref()),
                             )
                             .await?;
                         return self
@@ -796,6 +802,7 @@ impl ExecutionEngine {
                                 binding,
                                 stream,
                                 cancellation.clone(),
+                                record.trace_id.as_deref(),
                             )
                             .await;
                     }
@@ -822,7 +829,11 @@ impl ExecutionEngine {
                             .report_state(
                                 &record.task_id,
                                 state,
-                                json_state("provider_task_started", None),
+                                json_state(
+                                    "provider_task_started",
+                                    None,
+                                    record.trace_id.as_deref(),
+                                ),
                             )
                             .await?;
                         self.remove_active(&record.task_id);
@@ -843,6 +854,7 @@ impl ExecutionEngine {
                                 json_state(
                                     "runtime_failover",
                                     Some(Value::String(call.exact_model.clone())),
+                                    record.trace_id.as_deref(),
                                 ),
                             )
                             .await?;
@@ -947,7 +959,7 @@ impl ExecutionEngine {
                         .report_state(
                             task_id,
                             ExecutionState::from(state),
-                            json_state("provider_progress", progress),
+                            json_state("provider_progress", progress, record.trace_id.as_deref()),
                         )
                         .await?;
                 }
@@ -1039,6 +1051,7 @@ impl ExecutionEngine {
         binding: PinnedProviderTask,
         mut stream: ProtocolStream,
         cancellation: Cancellation,
+        trace_id: Option<&str>,
     ) -> Result<ExecutionReceipt, AiccError> {
         loop {
             let event = tokio::select! {
@@ -1057,7 +1070,7 @@ impl ExecutionEngine {
                         .report_state(
                             task_id,
                             ExecutionState::Running,
-                            json_state("delta", Some(delta)),
+                            json_state("delta", Some(delta), trace_id),
                         )
                         .await?;
                 }
@@ -1066,7 +1079,7 @@ impl ExecutionEngine {
                         .report_state(
                             task_id,
                             ExecutionState::Running,
-                            json_state("progress", Some(progress)),
+                            json_state("progress", Some(progress), trace_id),
                         )
                         .await?;
                 }
@@ -1126,6 +1139,7 @@ impl ExecutionEngine {
                 user_id: record.user_id,
                 caller_app_id: record.caller_app_id,
                 task_id: task_id.to_string(),
+                trace_id: record.trace_id,
                 idempotency_key: scope.key.clone(),
                 method: scope.method.clone(),
                 capability: capability_name(binding.api_type).to_string(),
@@ -1181,19 +1195,17 @@ impl ExecutionEngine {
     }
 }
 
-fn json_state(kind: &str, value: Option<Value>) -> Value {
+fn json_state(kind: &str, value: Option<Value>, trace_id: Option<&str>) -> Value {
     let mut progress = Map::new();
     progress.insert("kind".into(), Value::String(kind.into()));
     if let Some(value) = value {
         progress.insert("value".into(), value);
     }
-    Value::Object(Map::from_iter([(
-        "aicc".into(),
-        Value::Object(Map::from_iter([(
-            "progress".into(),
-            Value::Object(progress),
-        )])),
-    )]))
+    let mut aicc = Map::from_iter([("progress".into(), Value::Object(progress))]);
+    if let Some(trace_id) = trace_id {
+        aicc.insert("trace_id".into(), Value::String(trace_id.into()));
+    }
+    Value::Object(Map::from_iter([("aicc".into(), Value::Object(aicc))]))
 }
 
 fn aicc_error(code: AiccErrorCode, message: &str, retriable: bool) -> AiccError {
@@ -1401,6 +1413,7 @@ mod tests {
     struct MemoryTasks {
         next_id: Mutex<u64>,
         by_key: Mutex<BTreeMap<String, TaskBinding>>,
+        specs: Mutex<Vec<TaskSpec>>,
         events: Mutex<Vec<(String, ExecutionState, Value)>>,
         completed: Mutex<Vec<String>>,
         failed: Mutex<Vec<String>>,
@@ -1418,6 +1431,7 @@ mod tests {
             if let Some(binding) = by_key.get(&key) {
                 return Ok(binding.clone());
             }
+            self.specs.lock().unwrap().push(spec.clone());
             let mut next = self.next_id.lock().unwrap();
             *next += 1;
             let binding = TaskBinding {
@@ -1659,6 +1673,7 @@ mod tests {
             tenant_id: "tenant-1".into(),
             user_id: "user-1".into(),
             caller_app_id: Some("app-1".into()),
+            trace_id: Some("trace-1".into()),
             request_model: "smart-chat".into(),
             idempotency_key: "idem-1".into(),
             canonical_body: json!({"exact_model": primary.exact_model, "prompt": "hello", "idempotency_key": "idem-1"}),
@@ -1756,6 +1771,7 @@ mod tests {
         assert_eq!(completion.tenant_id, "tenant-1");
         assert_eq!(completion.user_id, "user-1");
         assert_eq!(completion.caller_app_id.as_deref(), Some("app-1"));
+        assert_eq!(completion.trace_id.as_deref(), Some("trace-1"));
         assert_eq!(completion.method, "chat.completions.create");
         assert_eq!(completion.capability, "llm");
         assert_eq!(completion.request_model, "smart-chat");
@@ -1772,6 +1788,15 @@ mod tests {
         let encoded = serde_json::to_value(completion).unwrap();
         let decoded: UsageCompletion = serde_json::from_value(encoded).unwrap();
         assert_eq!(&decoded, completion);
+        let specs = tasks.specs.lock().unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].trace_id.as_deref(), Some("trace-1"));
+        drop(specs);
+        let events = tasks.events.lock().unwrap();
+        assert!(!events.is_empty());
+        assert!(events.iter().all(|(_, _, data)| {
+            data.pointer("/aicc/trace_id").and_then(Value::as_str) == Some("trace-1")
+        }));
         assert_eq!(tasks.completed.lock().unwrap().len(), 1);
     }
 

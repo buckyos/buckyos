@@ -38,12 +38,13 @@ CREATE INDEX IF NOT EXISTS idx_aicc_provider_inventory_lkgs_updated ON aicc_prov
 CREATE INDEX IF NOT EXISTS idx_aicc_provider_inventory_lkgs_metadata ON aicc_provider_inventory_lkgs(metadata_applied_seq);
 CREATE TABLE IF NOT EXISTS aicc_usage_event (
  event_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
- caller_app_id TEXT, task_id TEXT NOT NULL, idempotency_key TEXT, method TEXT NOT NULL,
+ caller_app_id TEXT, task_id TEXT NOT NULL, trace_id TEXT, idempotency_key TEXT, method TEXT NOT NULL,
  capability TEXT NOT NULL, request_model TEXT NOT NULL, provider_instance_name TEXT NOT NULL,
  provider_model TEXT NOT NULL, input_tokens BIGINT, output_tokens BIGINT, total_tokens BIGINT,
  request_units BIGINT, usage_json TEXT NOT NULL, finance_snapshot_json TEXT, created_at_ms BIGINT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time ON aicc_usage_event(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time ON aicc_usage_event(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_trace_time ON aicc_usage_event(trace_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_user_time ON aicc_usage_event(user_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_method_time ON aicc_usage_event(method, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_provider_instance_time ON aicc_usage_event(provider_instance_name, created_at_ms);
@@ -174,6 +175,7 @@ pub(crate) struct ProviderCompletion {
     pub user_id: String,
     pub caller_app_id: Option<String>,
     pub task_id: String,
+    pub trace_id: Option<String>,
     pub idempotency_key: Option<String>,
     pub method: String,
     pub capability: String,
@@ -367,6 +369,7 @@ impl AiccStorage {
             user_id: completion.user_id,
             caller_app_id: completion.caller_app_id,
             task_id: completion.task_id,
+            trace_id: completion.trace_id,
             idempotency_key: completion.idempotency_key,
             method: completion.method,
             capability: completion.capability,
@@ -410,16 +413,17 @@ impl AiccStorage {
             ));
         }
         let sql = self.sql("INSERT INTO aicc_usage_event
-          (event_id,tenant_id,user_id,caller_app_id,task_id,idempotency_key,method,capability,
+          (event_id,tenant_id,user_id,caller_app_id,task_id,trace_id,idempotency_key,method,capability,
            request_model,provider_instance_name,provider_model,input_tokens,output_tokens,total_tokens,
            request_units,usage_json,finance_snapshot_json,created_at_ms)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING");
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING");
         let result = sqlx::query(&sql)
             .bind(&e.event_id)
             .bind(&e.tenant_id)
             .bind(&e.user_id)
             .bind(&e.caller_app_id)
             .bind(&e.task_id)
+            .bind(&e.trace_id)
             .bind(&e.idempotency_key)
             .bind(&e.method)
             .bind(&e.capability)
@@ -860,6 +864,7 @@ impl UsageCompletionPort for AiccStorage {
             user_id: completion.user_id,
             caller_app_id: completion.caller_app_id,
             task_id: completion.task_id,
+            trace_id: completion.trace_id,
             idempotency_key: Some(completion.idempotency_key),
             method: completion.method,
             capability: completion.capability,
@@ -972,6 +977,7 @@ fn usage_from_row(row: AnyRow) -> StorageResult<AiccUsageEvent> {
         user_id: row.try_get("user_id")?,
         caller_app_id: row.try_get("caller_app_id")?,
         task_id: row.try_get("task_id")?,
+        trace_id: row.try_get("trace_id")?,
         idempotency_key: row.try_get("idempotency_key")?,
         method: row.try_get("method")?,
         capability: row.try_get("capability")?,
@@ -1309,6 +1315,7 @@ mod tests {
             user_id: "user-a".into(),
             caller_app_id: Some("app-a".into()),
             task_id: task.into(),
+            trace_id: Some(format!("trace-{id}")),
             idempotency_key: Some(idem.into()),
             method: ai_methods::CHAT_COMPLETIONS_CREATE.into(),
             capability: "llm".into(),
@@ -1339,6 +1346,7 @@ mod tests {
             user_id: "user-a".into(),
             caller_app_id: Some("app-a".into()),
             task_id: format!("task-{id}"),
+            trace_id: Some(format!("trace-{id}")),
             idempotency_key: Some(format!("idem-{id}")),
             method: ai_methods::CHAT_COMPLETIONS_CREATE.into(),
             capability: "llm".into(),
@@ -1364,6 +1372,7 @@ mod tests {
             )
             .unwrap(),
             usage_event_id: format!("usage-{task_id}"),
+            trace_id: Some(format!("trace-{task_id}")),
             user_id: "user-a".into(),
             caller_app_id: Some("app-a".into()),
             request_model: "llm.chat".into(),
@@ -1570,6 +1579,7 @@ mod tests {
             user_id: "user-a".into(),
             caller_app_id: Some("app-a".into()),
             task_id: "task-production".into(),
+            trace_id: Some("trace-production".into()),
             idempotency_key: "idem-production".into(),
             method: ai_methods::CHAT_COMPLETIONS_CREATE.into(),
             capability: "llm".into(),

@@ -27,7 +27,7 @@ use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 pub const AICC_USAGE_LOG_RDB_INSTANCE_ID: &str = "aicc-usage-log";
 
 /// Version of the usage-log schema. Bump whenever the DDL changes.
-pub const AICC_USAGE_LOG_RDB_SCHEMA_VERSION: u64 = 5;
+pub const AICC_USAGE_LOG_RDB_SCHEMA_VERSION: u64 = 6;
 
 /// Sqlite DDL for the usage-log database. The only required table in v1 is
 /// `aicc_usage_event`; summary tables can be added later when SQL aggregation
@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS aicc_usage_event (
     user_id               TEXT NOT NULL,
     caller_app_id         TEXT,
     task_id               TEXT NOT NULL,
+    trace_id              TEXT,
     idempotency_key       TEXT,
     method                TEXT NOT NULL,
     capability            TEXT NOT NULL,
@@ -57,6 +58,8 @@ CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time
     ON aicc_usage_event(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time
     ON aicc_usage_event(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_trace_time
+    ON aicc_usage_event(trace_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_user_time
     ON aicc_usage_event(user_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_method_time
@@ -111,6 +114,7 @@ CREATE TABLE IF NOT EXISTS aicc_usage_event (
     user_id               TEXT NOT NULL,
     caller_app_id         TEXT,
     task_id               TEXT NOT NULL,
+    trace_id              TEXT,
     idempotency_key       TEXT,
     method                TEXT NOT NULL,
     capability            TEXT NOT NULL,
@@ -129,6 +133,8 @@ CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time
     ON aicc_usage_event(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time
     ON aicc_usage_event(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_trace_time
+    ON aicc_usage_event(trace_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_user_time
     ON aicc_usage_event(user_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_method_time
@@ -219,6 +225,8 @@ pub struct AiccUsageEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_app_id: Option<String>,
     pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
     /// Canonical typed inference method from [`ai_methods`].
@@ -551,6 +559,7 @@ mod tests {
             user_id: "user-1".to_string(),
             caller_app_id: Some("app-1".to_string()),
             task_id: "task-1".to_string(),
+            trace_id: Some("trace-1".to_string()),
             idempotency_key: Some("idem-1".to_string()),
             method: ai_methods::CHAT_COMPLETIONS_CREATE.to_string(),
             capability: "chat".to_string(),
@@ -665,8 +674,8 @@ mod tests {
     }
 
     #[test]
-    fn usage_schema_v5_contains_identity_columns_and_indexes() {
-        assert_eq!(AICC_USAGE_LOG_RDB_SCHEMA_VERSION, 5);
+    fn usage_schema_v6_contains_identity_columns_and_indexes() {
+        assert_eq!(AICC_USAGE_LOG_RDB_SCHEMA_VERSION, 6);
         for ddl in [
             AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
             AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES,
@@ -675,6 +684,7 @@ mod tests {
                 "user_id               TEXT NOT NULL",
                 "method                TEXT NOT NULL",
                 "provider_instance_name TEXT NOT NULL",
+                "trace_id              TEXT",
             ] {
                 assert!(ddl.contains(column), "missing column: {column}");
             }
@@ -682,6 +692,7 @@ mod tests {
                 "idx_aicc_usage_event_user_time",
                 "idx_aicc_usage_event_method_time",
                 "idx_aicc_usage_event_provider_instance_time",
+                "idx_aicc_usage_event_trace_time",
             ] {
                 assert!(ddl.contains(index), "missing index: {index}");
             }
