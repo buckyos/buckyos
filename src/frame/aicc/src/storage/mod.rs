@@ -1297,7 +1297,10 @@ fn placeholders(sql: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::{NativeTaskResumeDescriptor, ResumeCredential, ResumeCredentialKind};
+    use crate::execution::{
+        NativeTaskResumeDescriptor, PinnedPricingBasis, PinnedPricingSnapshot, ResumeCredential,
+        ResumeCredentialKind,
+    };
     use buckyos_api::{AiCost, ApiType, RouteTrace, UsageQueryBucket, UsageQueryFilters};
     use serde_json::json;
 
@@ -1414,6 +1417,14 @@ mod tests {
                 max_request_bytes: 1_048_576,
                 max_response_bytes: 8_388_608,
             }),
+            pricing: Some(PinnedPricingSnapshot {
+                currency: "USD".into(),
+                basis: PinnedPricingBasis::Tokens {
+                    input_token: Some(0.000_001_25),
+                    cache_input_token: Some(0.000_000_125),
+                    output_token: Some(0.000_01),
+                },
+            }),
         }
     }
 
@@ -1503,6 +1514,10 @@ mod tests {
         assert_eq!(
             restored_binding.resume.as_ref(),
             provider_binding().resume.as_ref()
+        );
+        assert_eq!(
+            restored_binding.pricing.as_ref(),
+            provider_binding().pricing.as_ref()
         );
         let encoded_binding = serde_json::to_string(restored_binding).unwrap();
         assert!(encoded_binding.contains("system-config://secrets/aicc/openai-primary/api-key"));
