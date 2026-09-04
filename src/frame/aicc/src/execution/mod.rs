@@ -1290,8 +1290,8 @@ mod tests {
     use crate::call::{LoweringRevisions, PricingSource, ResolvedPricing};
     use crate::catalog::Pricing;
     use crate::protocol::{
-        CodecContext, CodecInput, CodecLimits, CredentialAudit, CredentialKind, NativeTaskHandle,
-        ResolvedCredential,
+        CodecContext, CodecInput, CodecLimits, CredentialAudit, CredentialKind, ExecutionMode,
+        NativeTaskHandle, ResolvedCredential,
     };
     use buckyos_api::{AiccCall, LlmChatInvokeRequest};
     use futures_util::stream;
@@ -1643,6 +1643,7 @@ mod tests {
             method: "chat.completions.create".into(),
             api_type: ApiType::Llm,
             operation: "fake.create".into(),
+            execution_mode: ExecutionMode::Immediate,
             input: CodecInput {
                 canonical_request: AiccCall::ChatCompletionsCreate(request),
                 resolved_parameters: BTreeMap::new(),

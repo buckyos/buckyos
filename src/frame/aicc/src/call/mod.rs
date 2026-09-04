@@ -4,10 +4,11 @@ use crate::catalog::{CatalogResolveError, CatalogSnapshot, Pricing, ResolvedProv
 use crate::matching::MatchContext;
 use crate::model::{ExactModelName, ModelRegistryError};
 use crate::protocol::{
-    CodecContext, CodecInput, CodecLimits, CodecRegistry, CredentialAudit, ResolvedCredential,
+    CodecContext, CodecInput, CodecLimits, CodecRegistry, CredentialAudit, ExecutionMode,
+    ResolvedCredential,
 };
 use crate::routing::{RouteDecision, SelectedRoute};
-use buckyos_api::{AiccCall, ApiType, ResourceRef};
+use buckyos_api::{AiccCall, AiccErrorCode, AiccExecutionMode, ApiType, ResourceRef};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -85,6 +86,7 @@ pub(crate) struct ResolvedProviderCall {
     pub method: String,
     pub api_type: ApiType,
     pub operation: String,
+    pub execution_mode: ExecutionMode,
     pub input: CodecInput,
     pub context: CodecContext,
     pub credential: CredentialAudit,
@@ -108,6 +110,7 @@ impl fmt::Debug for ResolvedProviderCall {
             .field("method", &self.method)
             .field("api_type", &self.api_type)
             .field("operation", &self.operation)
+            .field("execution_mode", &self.execution_mode)
             .field("input", &self.input)
             .field("context", &self.context)
             .field("credential", &self.credential)
@@ -138,6 +141,7 @@ pub(crate) struct DeterministicCallView<'a> {
     method: &'a str,
     api_type: &'static str,
     operation: &'a str,
+    execution_mode: &'static str,
     resolved_parameters: &'a BTreeMap<String, Value>,
     credential_kind: &'static str,
     credential_ref: &'a str,
@@ -160,6 +164,7 @@ impl ResolvedProviderCall {
             method: &self.method,
             api_type: api_type_name(self.api_type),
             operation: &self.operation,
+            execution_mode: execution_mode_name(self.execution_mode),
             resolved_parameters: &self.input.resolved_parameters,
             credential_kind: self.credential.kind.as_str(),
             credential_ref: self.credential.anonymous_ref.as_str(),
@@ -211,7 +216,22 @@ pub(crate) enum CallLoweringError {
         lowered: String,
     },
     UnsupportedOperation(String),
+    UnsupportedExecutionMode {
+        adapter_id: String,
+        operation: String,
+        api_type: String,
+        execution_mode: String,
+    },
     InvalidRule(String),
+}
+
+impl CallLoweringError {
+    pub(crate) fn code(&self) -> AiccErrorCode {
+        match self {
+            Self::UnsupportedExecutionMode { .. } => AiccErrorCode::UnsupportedExecutionMode,
+            _ => AiccErrorCode::InvalidRequest,
+        }
+    }
 }
 
 impl fmt::Display for CallLoweringError {
@@ -270,6 +290,15 @@ impl fmt::Display for CallLoweringError {
                 "routed operation `{routed}` differs from lowered operation `{lowered}`"
             ),
             Self::UnsupportedOperation(v) => f.write_str(v),
+            Self::UnsupportedExecutionMode {
+                adapter_id,
+                operation,
+                api_type,
+                execution_mode,
+            } => write!(
+                f,
+                "adapter `{adapter_id}` operation `{operation}` does not support `{execution_mode}` execution for `{api_type}`"
+            ),
             Self::InvalidRule(v) => write!(f, "invalid request rule: {v}"),
         }
     }
@@ -304,6 +333,7 @@ impl<'a> CallResolver<'a> {
         target: ProviderCallTarget,
     ) -> Result<ResolvedProviderCall, CallLoweringError> {
         let api_type = call_api_type(canonical_request)?;
+        let execution_mode = call_execution_mode(canonical_request)?;
         let method = canonical_request.method().to_owned();
         let exact_model = call_exact_model(canonical_request)?;
         validate_route(&decision.selected, exact_model, api_type)?;
@@ -378,6 +408,7 @@ impl<'a> CallResolver<'a> {
                 }
             }
         }
+        apply_execution_mode(&mut normalized, execution_mode)?;
         let rewritten_json = rewrite_canonical_options(&canonical_json, &normalized, option_keys)?;
         let rewritten_request =
             AiccCall::from_method_and_params(&method, rewritten_json.clone())
@@ -395,12 +426,19 @@ impl<'a> CallResolver<'a> {
             .codecs
             .operation_descriptor(&decision.selected.protocol_adapter_id, &operation, api_type)
             .map_err(|error| CallLoweringError::UnsupportedOperation(error.to_string()))?;
+        let binding = descriptor
+            .binding(api_type)
+            .map_err(|error| CallLoweringError::UnsupportedOperation(error.to_string()))?;
+        if !binding.execution_modes.contains(&execution_mode) {
+            return Err(CallLoweringError::UnsupportedExecutionMode {
+                adapter_id: decision.selected.protocol_adapter_id.clone(),
+                operation,
+                api_type: api_name.into(),
+                execution_mode: execution_mode_name(execution_mode).into(),
+            });
+        }
         input
-            .validate_for(
-                descriptor
-                    .binding(api_type)
-                    .map_err(|error| CallLoweringError::UnsupportedOperation(error.to_string()))?,
-            )
+            .validate_for(binding)
             .map_err(|error| CallLoweringError::InvalidCanonicalRequest(error.to_string()))?;
         let resources = collect_resource_requirements(&rewritten_json);
         let model_revision = self
@@ -456,6 +494,7 @@ impl<'a> CallResolver<'a> {
             method,
             api_type,
             operation,
+            execution_mode,
             input,
             context,
             credential,
@@ -654,6 +693,14 @@ fn call_api_type(call: &AiccCall) -> Result<ApiType, CallLoweringError> {
     }
 }
 
+fn execution_mode_name(mode: ExecutionMode) -> &'static str {
+    match mode {
+        ExecutionMode::Immediate => "immediate",
+        ExecutionMode::Stream => "stream",
+        ExecutionMode::NativeTask => "native_task",
+    }
+}
+
 macro_rules! call_request {
     ($call:expr, $binding:ident => $value:expr) => {
         match $call {
@@ -689,6 +736,13 @@ macro_rules! call_request {
             }
         }
     };
+}
+
+fn call_execution_mode(call: &AiccCall) -> Result<ExecutionMode, CallLoweringError> {
+    Ok(match call.execution_mode() {
+        AiccExecutionMode::Immediate => ExecutionMode::Immediate,
+        AiccExecutionMode::Stream => ExecutionMode::Stream,
+    })
 }
 
 fn serialize_call(call: &AiccCall) -> Result<Value, CallLoweringError> {
@@ -860,6 +914,20 @@ fn fill_defaults(target: &mut Value, defaults: &Value) {
             }
         }
     }
+}
+
+fn apply_execution_mode(
+    normalized: &mut Value,
+    execution_mode: ExecutionMode,
+) -> Result<(), CallLoweringError> {
+    let parameters = normalized.as_object_mut().ok_or_else(|| {
+        CallLoweringError::InvalidRule("normalized options must be an object".into())
+    })?;
+    parameters.remove("stream");
+    if execution_mode == ExecutionMode::Stream {
+        parameters.insert("stream".into(), Value::Bool(true));
+    }
+    Ok(())
 }
 
 fn remove_pointer(value: &mut Value, pointer: &str) -> Result<(), CallLoweringError> {
@@ -1064,7 +1132,7 @@ mod tests {
     use crate::protocol::{openai_responses_adapter, CodecRegistry};
     use crate::provider::claude_messages_adapter;
     use crate::routing::{RouteModelKind, RoutingTrace, ScoreBreakdown, UserFacingRouteSummary};
-    use buckyos_api::{AiMessage, AiRole, LlmChatInvokeRequest};
+    use buckyos_api::{AiMessage, AiRole, EmbeddingTextRequest, LlmChatInvokeRequest};
     use serde_json::json;
     use std::time::Duration;
 
@@ -1079,7 +1147,7 @@ mod tests {
             "schema_revision": 0,
             "model_driver_id": "openai",
             "revision_seq": 7,
-            "models": [{"id": "gpt-5.2", "api_types": ["llm"]}],
+            "models": [{"id": "gpt-5.2", "api_types": ["llm", "embedding.text"]}],
             "defaults": {},
             "variants": [{"name": "reasoning-high", "match": "gpt-*"}],
             "version_rules": []
@@ -1095,11 +1163,13 @@ mod tests {
                 "id": "gpt-5.2",
                 "operations": {
                     "llm": "responses.create",
-                    "chat.completions.create": "responses.create"
+                    "chat.completions.create": "responses.create",
+                    "embedding.text": "embeddings.create"
                 },
                 "provider_options": {
                     "reasoning": {"effort": "minimal"},
-                    "service_tier": "auto"
+                    "service_tier": "auto",
+                    "stream": false
                 },
                 "request_rules": [
                     {"defaults": {"temperature": 0.2, "top_p": 0.8, "max_output_tokens": 100}},
@@ -1333,6 +1403,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(lowered.operation, "responses.create");
+        assert_eq!(lowered.execution_mode, ExecutionMode::Immediate);
         assert_eq!(lowered.variant.as_deref(), Some("reasoning-high"));
         assert_eq!(
             lowered.input.resolved_parameters,
@@ -1353,8 +1424,79 @@ mod tests {
         assert_eq!(lowered.revisions.catalog_target_seq, 11);
         let golden = serde_json::to_value(lowered.deterministic_view()).unwrap();
         assert_eq!(golden["operation"], "responses.create");
+        assert_eq!(golden["execution_mode"], "immediate");
         assert_eq!(golden["credential_kind"], "bearer");
         assert!(!golden.to_string().contains("credential-secret"));
+    }
+
+    #[test]
+    fn stream_mode_is_lowered_to_internal_wire_parameter() {
+        let catalog = catalog();
+        let codecs = codecs();
+        let resolver = CallResolver::new(&catalog, &codecs);
+        let mut call = call();
+        let AiccCall::ChatCompletionsCreate(request) = &mut call else {
+            unreachable!()
+        };
+        request.execution_mode = AiccExecutionMode::Stream;
+
+        let lowered = resolver
+            .lower(
+                &decision(call_exact_model(&call).unwrap()),
+                &call,
+                target("secret"),
+            )
+            .unwrap();
+
+        assert_eq!(lowered.execution_mode, ExecutionMode::Stream);
+        assert_eq!(
+            lowered.input.resolved_parameters.get("stream"),
+            Some(&Value::Bool(true))
+        );
+        let canonical = serialize_call(&lowered.input.canonical_request).unwrap();
+        assert_eq!(canonical["execution_mode"], "stream");
+        assert!(canonical.get("stream").is_none());
+        assert_eq!(
+            serde_json::to_value(lowered.deterministic_view()).unwrap()["execution_mode"],
+            "stream"
+        );
+    }
+
+    #[test]
+    fn provider_wire_stream_parameter_is_not_a_canonical_input() {
+        let mut canonical = serialize_call(&call()).unwrap();
+        canonical["stream"] = Value::Bool(true);
+        let error =
+            AiccCall::from_method_and_params("chat.completions.create", canonical).unwrap_err();
+        assert!(error.to_string().contains("unknown field `stream`"));
+    }
+
+    #[test]
+    fn unsupported_execution_mode_fails_during_lowering() {
+        let catalog = catalog();
+        let codecs = codecs();
+        let resolver = CallResolver::new(&catalog, &codecs);
+        let mut request =
+            EmbeddingTextRequest::new("gpt-5.2:reasoning-high@openai-primary", Vec::new());
+        request.execution_mode = AiccExecutionMode::Stream;
+        let call = AiccCall::EmbeddingText(request);
+        let mut route = decision(call_exact_model(&call).unwrap());
+        route.selected.operation = "embeddings.create".into();
+
+        let error = resolver.lower(&route, &call, target("secret")).unwrap_err();
+        assert_eq!(error.code(), AiccErrorCode::UnsupportedExecutionMode);
+        assert!(matches!(
+            error,
+            CallLoweringError::UnsupportedExecutionMode {
+                ref adapter_id,
+                ref operation,
+                ref api_type,
+                ref execution_mode,
+            } if adapter_id == "openai-responses"
+                && operation == "embeddings.create"
+                && api_type == "embedding.text"
+                && execution_mode == "stream"
+        ));
     }
 
     #[test]
