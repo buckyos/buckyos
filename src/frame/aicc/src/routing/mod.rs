@@ -73,6 +73,7 @@ impl CandidateRuntimeState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RoutingRequest {
+    pub trace_id: String,
     pub request_id: String,
     pub model: String,
     pub api_type: ApiType,
@@ -88,12 +89,14 @@ pub(crate) struct RoutingRequest {
 
 impl RoutingRequest {
     pub(crate) fn new(
+        trace_id: impl Into<String>,
         request_id: impl Into<String>,
         model: impl Into<String>,
         api_type: ApiType,
         caller: CallerIdentity,
     ) -> Self {
         Self {
+            trace_id: trace_id.into(),
             request_id: request_id.into(),
             model: model.into(),
             api_type,
@@ -136,6 +139,7 @@ pub(crate) struct RouteDecision {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct RoutingTrace {
+    pub trace_id: String,
     pub request_id: String,
     pub api_type: String,
     pub requested_model: String,
@@ -621,6 +625,7 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
         let selected_score = selected.score.clone();
         let was_fallback = !fallback_chain.is_empty();
         let trace = RoutingTrace {
+            trace_id: request.trace_id.clone(),
             request_id: request.request_id.clone(),
             api_type: api_type_name(request.api_type),
             requested_model: request.model.clone(),
@@ -690,9 +695,12 @@ struct ScoreComponents {
 }
 
 fn validate_request(request: &RoutingRequest) -> Result<(), RoutingError> {
-    if request.request_id.trim().is_empty() || request.model.trim().is_empty() {
+    if request.trace_id.trim().is_empty()
+        || request.request_id.trim().is_empty()
+        || request.model.trim().is_empty()
+    {
         return Err(RoutingError::InvalidRequest(
-            "request_id and model must not be empty".into(),
+            "trace_id, request_id, and model must not be empty".into(),
         ));
     }
     if request.method != request.api_type.typed_method() {
@@ -1532,6 +1540,7 @@ mod tests {
 
     fn request(model: &str) -> RoutingRequest {
         RoutingRequest::new(
+            "trace-1",
             "request-1",
             model,
             ApiType::Llm,
@@ -1785,8 +1794,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(decision.selected.exact_model, "cheap@cloud-a");
+        assert_eq!(decision.trace.trace_id, "trace-1");
         assert_eq!(decision.trace.ranked_candidates.len(), 2);
         let trace = serde_json::to_string(&decision.trace).unwrap();
+        assert!(trace.contains("\"trace_id\":\"trace-1\""));
+        assert!(!trace.contains("provider_trace_id"));
         for forbidden in ["prompt", "credential", "secret", "options"] {
             assert!(!trace.contains(forbidden));
         }
@@ -1813,6 +1825,18 @@ mod tests {
                 AiccSchedulerProfile::Balanced,
                 &RoutingPolicyPatch::default(),
                 &bad_capability,
+                &runtime()
+            ),
+            Err(RoutingError::InvalidRequest(_))
+        ));
+
+        let mut missing_trace_id = request("llm.family");
+        missing_trace_id.trace_id.clear();
+        assert!(matches!(
+            route(
+                AiccSchedulerProfile::Balanced,
+                &RoutingPolicyPatch::default(),
+                &missing_trace_id,
                 &runtime()
             ),
             Err(RoutingError::InvalidRequest(_))

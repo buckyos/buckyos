@@ -472,6 +472,8 @@ Owner：Model/Router 小组
 
 WP-16 生产编排契约补充：`ModelRegistry` 提供逻辑目录 `route_policy` 的只读入口，Router 侧新增 `resolve_effective_routing_policy` 与 `policy_engine_for_route`，按 logical directory < request `session_overlay` < request `RoutePolicy` 的固定顺序统一生成 `EffectiveRoutingPolicy`/`PolicyEngine`，所有字段继续经过 `LockedValue` 冲突检查，Service 不再需要复制合并逻辑。公共 `RoutePolicyProfile::{Cheap, Fast, Balanced, Quality}` 分别唯一映射为 scheduler 的 `CostFirst`、`LatencyFirst`、`Balanced`、`QualityFirst`；`RoutePolicy.max_latency_ms` 已进入 effective policy，并按候选 p95 latency 执行 fail-closed 硬过滤，延迟未知、非法或超限均拒绝。新增 4 个测试覆盖目录策略、global/profile session overlay、request policy、locked 拒绝、四类 profile 映射和 latency 上限；AICC 全量 336 个测试及 all-target check 通过，未新增依赖，未修改 WP-16 Service owner 文件。
 
+WP-01TS trace 契约补充：内部 `RoutingRequest` 要求 Service 传入已经规范化且非空的 canonical `trace_id`，`RoutingTrace` 原样携带该字段并与 `request_id` 分离。Router 不接收 Provider 返回的 `provider_trace_id`，因此 Provider 标识只能由后续执行/观测链路写入其独立字段，不能替换 canonical `trace_id`；单元测试覆盖传递、空值拒绝及 trace schema 中不存在 `provider_trace_id`。
+
 ### WP-11：Call Lowering
 
 Owner：Protocol/Router 联合小组

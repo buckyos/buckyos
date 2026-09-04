@@ -1166,6 +1166,7 @@ LogicalTreeOverlay
 
 ```ts
 interface RouteTrace {
+  trace_id: string;
   request_id: string;
   api_type: string;
   requested_model: string;

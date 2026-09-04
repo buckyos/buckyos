@@ -1250,6 +1250,7 @@ mod tests {
             selected,
             fallback_candidates: Vec::new(),
             trace: RoutingTrace {
+                trace_id: "trace-1".into(),
                 request_id: "request-1".into(),
                 api_type: "llm".into(),
                 requested_model: exact_model.into(),
