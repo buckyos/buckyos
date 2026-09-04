@@ -3,20 +3,22 @@ mod cloud_update;
 use anyhow::Context;
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AiccHandler,
-    AiccServerHandler, BuckyOSRuntimeType, CancelResponse, CreateTaskExecutor, CreateTaskReq,
-    DriverMetadataRuntimeApply, DriverMetadataUpdateSetReq, DriverMetadataUpdateSetResponse,
-    DriverMetadataUpdateStatus, DriverMetadataUpdateView, ListModelsRequest,
-    ProtocolAdapterListRequest, ProtocolAdapterListResponse, ProviderAddRequest,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AiccError,
+    AiccHandler, AiccServerHandler, BuckyOSRuntimeType, CancelResponse, CreateTaskExecutor,
+    CreateTaskReq, DriverMetadataRuntimeApply, DriverMetadataUpdateSetReq,
+    DriverMetadataUpdateSetResponse, DriverMetadataUpdateStatus, DriverMetadataUpdateView,
+    ListModelsRequest, ProtocolAdapterListRequest, ProtocolAdapterListResponse, ProviderAddRequest,
     ProviderAddResponse, ProviderCatalogRequest, ProviderCatalogResponse, ProviderDeleteRequest,
-    ProviderDeleteResponse, ProviderHealthRequest, ProviderHealthResponse, ProviderListRequest,
-    ProviderListResponse, ProviderRefreshModelsRequest, ProviderRefreshModelsResponse,
-    ProviderReloadResult, ProviderUpdateRequest, ProviderUpdateResponse, ProviderValidateRequest,
-    ProviderValidateResponse, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
-    QueryUsageResponse, QuotaQueryRequest, QuotaQueryResponse, QuotaState,
-    ServiceReloadSettingsRequest, ServiceReloadSettingsResponse, SystemConfigClient,
-    SystemConfigError, TaskManagerClient, UsageQueryOutputMode, UsageQueryTimeRange,
-    AICC_COMPUTE_TASK_SCHEMA_ID,
+    ProviderDeleteResponse, ProviderHealthRequest, ProviderHealthResponse,
+    ProviderInstanceAuthMode, ProviderInstanceAuthView, ProviderInstanceHealthState,
+    ProviderInstanceHealthView, ProviderInstanceInventoryState, ProviderInstanceInventoryView,
+    ProviderInstanceView, ProviderListRequest, ProviderListResponse, ProviderRefreshModelsRequest,
+    ProviderRefreshModelsResponse, ProviderReloadResult, ProviderUpdateRequest,
+    ProviderUpdateResponse, ProviderValidateRequest, ProviderValidateResponse,
+    QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
+    QuotaQueryRequest, QuotaQueryResponse, QuotaState, ServiceReloadSettingsRequest,
+    ServiceReloadSettingsResponse, SystemConfigClient, SystemConfigError, TaskManagerClient,
+    UsageQueryOutputMode, UsageQueryTimeRange, AICC_COMPUTE_TASK_SCHEMA_ID,
 };
 use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, Runner, ServerError, ServerErrorCode,
@@ -52,9 +54,9 @@ use crate::provider::{
     builtin_provider_codecs, builtin_provider_registry, resolve_sn_provider_instance_with_config,
     BuiltinProviderRequest, CredentialReference, CredentialResolver, ProviderAuthConfig,
     ProviderConnectionInput, ProviderDiscoverySnapshot, ProviderDraftConfig,
-    ProviderDraftValidationStage, ProviderInstanceConfig, ProviderQuotaObservation,
-    ProviderQuotaObservationState, ProviderRefreshEvent, ProviderRuntimeManager,
-    SnCredentialBroker, SnProviderInstanceInput, StaticCredentialResolver,
+    ProviderDraftValidationStage, ProviderHealthState, ProviderInstanceConfig,
+    ProviderQuotaObservation, ProviderQuotaObservationState, ProviderRefreshEvent,
+    ProviderRuntimeManager, SnCredentialBroker, SnProviderInstanceInput, StaticCredentialResolver,
 };
 use crate::routing::{
     CallerIdentity, QuotaLookup, QuotaSnapshot, QuotaSourceError, QuotaSourceFactory,
@@ -357,7 +359,7 @@ pub(crate) struct RuntimeAdminSnapshot {
     pub provider_catalog: ProviderCatalogResponse,
     pub protocol_adapters: ProtocolAdapterListResponse,
     pub models: Value,
-    pub providers: Vec<Value>,
+    pub providers: Vec<ProviderInstanceView>,
     pub inventory_revision: String,
     pub provider_health: BTreeMap<String, Value>,
 }
@@ -671,22 +673,14 @@ impl AiccHandler for AiccService {
 
     async fn handle_list_providers(
         &self,
-        request: ProviderListRequest,
+        _request: ProviderListRequest,
         ctx: RPCContext,
     ) -> Result<ProviderListResponse, RPCErrors> {
         self.authorize(&ctx, "read", RESOURCE_INFO).await?;
         let snapshot = self.runtime.capture().await?;
-        let providers = if let Some(method) = request.method {
-            snapshot
-                .providers
-                .into_iter()
-                .filter(|provider| value_supports_method(provider, &method))
-                .collect()
-        } else {
-            snapshot.providers
-        };
         Ok(ProviderListResponse {
-            providers,
+            providers: snapshot.providers,
+            settings_revision: snapshot.settings_revision,
             inventory_revision: snapshot.inventory_revision,
         })
     }
@@ -766,8 +760,10 @@ impl AiccHandler for AiccService {
         let provider = snapshot
             .providers
             .iter()
-            .find(|provider| provider["provider_instance_name"] == name)
-            .cloned();
+            .find(|provider| provider.provider_instance_name == name)
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(to_rpc_error)?;
         Ok(ProviderUpdateResponse {
             ok: true,
             settings_revision: snapshot.settings_revision,
@@ -983,17 +979,8 @@ fn reload_result(snapshot: &RuntimeAdminSnapshot) -> ProviderReloadResult {
     }
 }
 
-fn value_supports_method(provider: &Value, method: &str) -> bool {
-    provider
-        .get("methods")
-        .and_then(Value::as_array)
-        .is_none_or(|methods| methods.iter().any(|candidate| candidate == method))
-}
-
 fn conflict_error(expected: u64, actual: u64) -> RPCErrors {
-    RPCErrors::ReasonError(format!(
-        "settings revision conflict: expected {expected}, actual {actual}"
-    ))
+    AiccError::settings_revision_conflict(expected, actual).to_krpc_error()
 }
 
 fn to_rpc_error(error: impl std::fmt::Display) -> RPCErrors {
@@ -2573,27 +2560,101 @@ fn runtime_admin_snapshot(
     codecs: &CodecRegistry,
 ) -> RuntimeAdminSnapshot {
     let providers = snapshot
+        .settings
         .providers
-        .list()
-        .into_iter()
-        .map(|provider| {
-            json!({
-                "provider_instance_name": provider.config.provider_instance_name,
-                "provider_profile_id": provider.config.provider_profile_id,
-                "protocol_adapter_id": provider.config.protocol_adapter_id,
-                "base_url": provider.config.base_url,
-                "provider_rules_id": provider.config.provider_rules_id,
-                "region": provider.config.region,
-                "workspace": provider.config.workspace,
-                "account": provider.config.account,
-                "health": provider.inventory.health,
-                "model_count": provider.inventory.models.len(),
-                "methods": provider.inventory.models.iter()
-                    .flat_map(|model| model.api_types.iter().map(|api_type| api_type.typed_method()))
-                    .collect::<std::collections::BTreeSet<_>>(),
-                "inventory_revision": provider.inventory.inventory_revision,
-                "metadata_applied_seq": provider.inventory.metadata_applied_seq,
-            })
+        .iter()
+        .map(|settings| {
+            let runtime = settings
+                .enabled
+                .then(|| snapshot.providers.get(&settings.provider_instance_name))
+                .flatten();
+            let configured_auth = settings
+                .auth
+                .as_ref()
+                .and_then(|auth| serde_json::from_value::<ProviderAuthConfig>(auth.clone()).ok());
+            let default_credential_kind = runtime
+                .map(|provider| provider.profile.credential.kind.as_str().to_string())
+                .or_else(|| {
+                    snapshot
+                        .catalog
+                        .resolve_provider_configuration(&settings.provider_profile_id)
+                        .ok()
+                        .map(|configuration| {
+                            provider_credential_kind_name(configuration.credential.kind).to_string()
+                        })
+                });
+            let auth = match configured_auth {
+                Some(ProviderAuthConfig::ApiKey {
+                    credential_kind, ..
+                }) => ProviderInstanceAuthView {
+                    mode: Some(ProviderInstanceAuthMode::ApiKey),
+                    credential_kind: credential_kind
+                        .map(|kind| kind.as_str().to_string())
+                        .or(default_credential_kind),
+                    configured: provider_credentials_configured(&settings.credentials),
+                },
+                Some(ProviderAuthConfig::DynamicLogin { .. }) => ProviderInstanceAuthView {
+                    mode: Some(ProviderInstanceAuthMode::DynamicLogin),
+                    credential_kind: None,
+                    configured: provider_credentials_configured(&settings.credentials),
+                },
+                None => ProviderInstanceAuthView {
+                    mode: Some(ProviderInstanceAuthMode::ApiKey),
+                    credential_kind: default_credential_kind,
+                    configured: provider_credentials_configured(&settings.credentials),
+                },
+            };
+            let (inventory, health) = if !settings.enabled {
+                (
+                    ProviderInstanceInventoryView {
+                        state: ProviderInstanceInventoryState::Disabled,
+                        revision: None,
+                        model_count: 0,
+                        updated_at_ms: None,
+                    },
+                    ProviderInstanceHealthView {
+                        state: ProviderInstanceHealthState::Disabled,
+                        checked_at_ms: None,
+                    },
+                )
+            } else if let Some(runtime) = runtime {
+                (
+                    ProviderInstanceInventoryView {
+                        state: ProviderInstanceInventoryState::Loaded,
+                        revision: runtime.inventory.inventory_revision.clone(),
+                        model_count: runtime.inventory.models.len() as u64,
+                        updated_at_ms: Some(runtime.inventory.discovered_at_ms),
+                    },
+                    ProviderInstanceHealthView {
+                        state: provider_health_state(runtime.inventory.health),
+                        checked_at_ms: Some(runtime.inventory.discovered_at_ms),
+                    },
+                )
+            } else {
+                (
+                    ProviderInstanceInventoryView {
+                        state: ProviderInstanceInventoryState::NotLoaded,
+                        revision: None,
+                        model_count: 0,
+                        updated_at_ms: None,
+                    },
+                    ProviderInstanceHealthView {
+                        state: ProviderInstanceHealthState::NotLoaded,
+                        checked_at_ms: None,
+                    },
+                )
+            };
+            ProviderInstanceView {
+                provider_instance_name: settings.provider_instance_name.clone(),
+                provider_type: settings.provider_type.clone(),
+                provider_profile_id: settings.provider_profile_id.clone(),
+                protocol_adapter_id: settings.protocol_adapter_id.clone(),
+                base_url: settings.base_url.clone(),
+                enabled: settings.enabled,
+                auth,
+                inventory,
+                health,
+            }
         })
         .collect::<Vec<_>>();
     let inventory_revision = format!("{}:{}", snapshot.generation, snapshot.metadata_target_seq);
@@ -2656,6 +2717,32 @@ fn runtime_admin_snapshot(
         providers,
         inventory_revision,
         provider_health,
+    }
+}
+
+fn provider_credentials_configured(credentials: &Value) -> bool {
+    credentials
+        .as_object()
+        .is_some_and(|credentials| !credentials.is_empty())
+}
+
+fn provider_credential_kind_name(kind: crate::catalog::ProviderCredentialKind) -> &'static str {
+    match kind {
+        crate::catalog::ProviderCredentialKind::Bearer => "bearer",
+        crate::catalog::ProviderCredentialKind::NamedHeader => "named_header",
+        crate::catalog::ProviderCredentialKind::FalKey => "fal_key",
+        crate::catalog::ProviderCredentialKind::GlmJwt => "glm_jwt",
+    }
+}
+
+fn provider_health_state(health: ProviderHealthState) -> ProviderInstanceHealthState {
+    match health {
+        ProviderHealthState::Unknown => ProviderInstanceHealthState::Unknown,
+        ProviderHealthState::Healthy => ProviderInstanceHealthState::Healthy,
+        ProviderHealthState::Degraded => ProviderInstanceHealthState::Degraded,
+        ProviderHealthState::Unavailable | ProviderHealthState::Stopped => {
+            ProviderInstanceHealthState::Unavailable
+        }
     }
 }
 
@@ -3105,13 +3192,38 @@ mod tests {
         request
     }
 
-    fn provider_public_view(provider: &ProviderSettings) -> Value {
-        json!({
-            "provider_instance_name": provider.provider_instance_name,
-            "provider_profile_id": provider.provider_profile_id,
-            "protocol_adapter_id": provider.protocol_adapter_id,
-            "base_url": provider.base_url,
-        })
+    fn provider_public_view(provider: &ProviderSettings) -> ProviderInstanceView {
+        ProviderInstanceView {
+            provider_instance_name: provider.provider_instance_name.clone(),
+            provider_type: provider.provider_type.clone(),
+            provider_profile_id: provider.provider_profile_id.clone(),
+            protocol_adapter_id: provider.protocol_adapter_id.clone(),
+            base_url: provider.base_url.clone(),
+            enabled: provider.enabled,
+            auth: ProviderInstanceAuthView {
+                mode: Some(ProviderInstanceAuthMode::ApiKey),
+                credential_kind: Some("bearer".to_string()),
+                configured: true,
+            },
+            inventory: ProviderInstanceInventoryView {
+                state: if provider.enabled {
+                    ProviderInstanceInventoryState::Loaded
+                } else {
+                    ProviderInstanceInventoryState::Disabled
+                },
+                revision: provider.enabled.then(|| "inventory-test".to_string()),
+                model_count: u64::from(provider.enabled),
+                updated_at_ms: provider.enabled.then_some(1),
+            },
+            health: ProviderInstanceHealthView {
+                state: if provider.enabled {
+                    ProviderInstanceHealthState::Healthy
+                } else {
+                    ProviderInstanceHealthState::Disabled
+                },
+                checked_at_ms: provider.enabled.then_some(1),
+            },
+        }
     }
 
     #[tokio::test]
@@ -3257,6 +3369,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_list_returns_disabled_instances_revision_and_no_credentials() {
+        let fixture = fixture(false);
+        let disabled = ProviderSettings {
+            provider_instance_name: "disabled-provider".to_string(),
+            provider_type: "cloud_api".to_string(),
+            provider_profile_id: "openai".to_string(),
+            protocol_adapter_id: "openai-responses".to_string(),
+            base_url: "https://api.example/v1".to_string(),
+            credentials: json!({"api_token": {"locked": "must-not-leak"}}),
+            enabled: false,
+            region: None,
+            workspace: None,
+            account: None,
+            provider_rules_id: None,
+            auth: Some(json!({
+                "mode": "api_key",
+                "credential_ref": "locked://disabled-provider/api_token",
+                "credential_kind": "bearer"
+            })),
+            discovery: None,
+            instance_rules: None,
+            timeout_ms: None,
+            auto_sync_models: None,
+        };
+        {
+            let mut snapshot = fixture.runtime.snapshot.lock().await;
+            snapshot.settings_revision = 12;
+            snapshot.providers = vec![provider_public_view(&disabled)];
+        }
+
+        let response = fixture
+            .service
+            .handle_list_providers(
+                ProviderListRequest::new(Some(
+                    buckyos_api::ai_methods::CHAT_COMPLETIONS_CREATE.to_string(),
+                )),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.settings_revision, 12);
+        assert_eq!(response.providers.len(), 1);
+        assert_eq!(
+            response.providers[0].provider_instance_name,
+            "disabled-provider"
+        );
+        assert_eq!(
+            response.providers[0].inventory.state,
+            ProviderInstanceInventoryState::Disabled
+        );
+        assert_eq!(
+            response.providers[0].health.state,
+            ProviderInstanceHealthState::Disabled
+        );
+        let wire = serde_json::to_string(&response).unwrap();
+        assert!(!wire.contains("must-not-leak"));
+        assert!(!wire.contains("credential_ref"));
+        assert!(!wire.contains("locked://"));
+    }
+
+    #[tokio::test]
     async fn update_and_delete_use_revision_cas_without_exposing_credentials() {
         let fixture = fixture(false);
         fixture
@@ -3280,11 +3454,23 @@ mod tests {
         assert_eq!(fixture.settings.writes.load(Ordering::SeqCst), 2);
 
         let stale = ProviderUpdateRequest::new("primary", 5);
-        assert!(fixture
+        let conflict = fixture
             .service
             .handle_update_provider(stale, RPCContext::default())
             .await
-            .is_err());
+            .unwrap_err();
+        let conflict = AiccError::from_krpc_error(&conflict).unwrap();
+        assert_eq!(
+            conflict.code,
+            buckyos_api::AiccErrorCode::SettingsRevisionConflict
+        );
+        assert_eq!(
+            conflict.details,
+            Some(json!({
+                "expected_revision": 5,
+                "actual_revision": 6
+            }))
+        );
         assert_eq!(fixture.settings.writes.load(Ordering::SeqCst), 2);
 
         let deleted = fixture
@@ -3312,9 +3498,23 @@ mod tests {
             snapshot.catalog_revision = 12;
             snapshot.inventory_revision = "generation-7".to_string();
             snapshot.models = json!({"models": [{"exact_model": "model-a@primary"}]});
-            snapshot.providers = vec![json!({
-                "provider_instance_name": "primary",
-                "methods": [buckyos_api::ai_methods::CHAT_COMPLETIONS_CREATE]
+            snapshot.providers = vec![provider_public_view(&ProviderSettings {
+                provider_instance_name: "primary".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_profile_id: "openai".to_string(),
+                protocol_adapter_id: "openai-responses".to_string(),
+                base_url: "https://api.example/v1".to_string(),
+                credentials: json!({"api_token": {"locked": "not-returned"}}),
+                enabled: true,
+                region: None,
+                workspace: None,
+                account: None,
+                provider_rules_id: None,
+                auth: None,
+                discovery: None,
+                instance_rules: None,
+                timeout_ms: None,
+                auto_sync_models: None,
             })];
             snapshot
                 .provider_health
@@ -3369,6 +3569,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(providers.providers.len(), 1);
+        assert_eq!(providers.settings_revision, 4);
         assert_eq!(providers.inventory_revision, "generation-7");
         assert_eq!(
             fixture
