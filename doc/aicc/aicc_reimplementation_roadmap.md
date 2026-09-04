@@ -645,12 +645,14 @@ Owner：四个并行集成小组
 
 #### WP-17D Rootfs / Dev Config / RBAC
 
-- [ ] 把 `src/dev_configs/aicc.json` 切换为统一 `providers[]`；
-- [ ] 更新 rootfs service settings、RBAC 和默认配置；
-- [ ] 检查空配置启动、安装、reinstall 和 reload；
-- [ ] 确认 credential 只使用 locked value/reference。
+- [x] 把 `src/dev_configs/aicc.json` 切换为统一 `providers[]`；
+- [x] 更新 rootfs service settings、RBAC 和默认配置；
+- [x] 检查空配置启动、安装、reinstall 和 reload；
+- [x] 确认 credential 只使用 locked value/reference。
 
 完成标准：仓库调用方不再引用旧 settings section 或内部重复 DTO；settings 不再使用 `provider_driver`，但公共 RPC/报告兼容字段继续保留。
+
+实现记录：Rootfs/Dev Config/RBAC 小组将 `src/dev_configs/aicc.json` 和 rootfs boot sample 切换为统一 `providers[]`，scheduler 首装/重装默认配置按 Known Provider 身份生成 OpenAI、Claude、Gemini、OpenRouter、GLM 和受管 SN Provider Instance；静态凭据只写入 `credentials.*.locked`，SN 动态登录只保存 runtime credential reference，空配置固定为 `{"providers":[]}`。SN endpoint 重算只更新身份匹配的受管实例，保留用户自建、显式禁用或删除的实例；RBAC 保持普通用户/App/Agent 可读取 AICC service info、仅管理员可读写 settings，并增加显式边界测试。`cargo test -p scheduler`（52+19 项）、`cargo test -p buckyos-api`（208 项）、`cargo test -p aicc`（350 项）及三个 crate 的 all-target check 均通过；dev/rootfs 配置资产由 scheduler 单测直接解析并检查 canonical schema。完整 `buckyos-build.py --skip-web` 因缺少四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入未执行完成，实际部署后的进程启动与 Gateway reload 仍归 T1 环境验收。
 
 ### WP-18：验收基础、CI 与发布报告
 

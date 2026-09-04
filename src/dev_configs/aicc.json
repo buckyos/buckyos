@@ -1,18 +1,19 @@
 {
-  "openai": {
-    "enabled": true,
-    "api_token": "sk-xxx",
-    "instances": [
-      {
-        "provider_instance_name": "openai-default",
-        "provider_type": "cloud_api",
-        "provider_driver": "openai",
-        "base_url": "https://api.openai.com/v1",
-        "timeout_ms": 300000,
-        "models": ["gpt-5.2", "gpt-5.2 chat"],
-        "default_model": "gpt-5-mini",
-        "features": ["plan", "json_output", "tool_calling"]
-      }
-    ]
-  }
+  "providers": [
+    {
+      "provider_instance_name": "openai-default",
+      "provider_type": "cloud_api",
+      "provider_profile_id": "openai",
+      "protocol_adapter_id": "openai-responses",
+      "provider_rules_id": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "credentials": {
+        "api_token": {
+          "locked": "sk-xxx"
+        }
+      },
+      "enabled": true,
+      "timeout_ms": 300000
+    }
+  ]
 }
