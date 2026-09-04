@@ -1058,16 +1058,11 @@ fn resolve_pricing(
 mod tests {
     use super::*;
     use crate::catalog::{
-        CatalogBuildOptions, CatalogDocuments, ModelDriverCatalog, ProviderRulesCatalog,
+        CatalogBuildOptions, CatalogDocuments, CatalogKind, CurrentCatalogFile, ModelDriverCatalog,
+        ProviderRulesCatalog, ResolvedProviderConfiguration,
     };
     use crate::protocol::{openai_responses_adapter, CodecRegistry};
-    use crate::provider::{
-        claude_messages_adapter, claude_profile, claude_provider_rules, fal_profile,
-        fal_provider_rules, gemini_profile, gemini_provider_rules, glm_profile, glm_provider_rules,
-        kimi_profile, kimi_provider_rules, minimax_profile, minimax_provider_rules, openai_profile,
-        openai_provider_rules, openai_responses_compatible_builtin_providers, openrouter_profile,
-        openrouter_provider_rules, sn_profile, sn_provider_rules, ProviderProfile,
-    };
+    use crate::provider::claude_messages_adapter;
     use crate::routing::{RouteModelKind, RoutingTrace, ScoreBreakdown, UserFacingRouteSummary};
     use buckyos_api::{AiMessage, AiRole, LlmChatInvokeRequest};
     use serde_json::json;
@@ -1184,24 +1179,46 @@ mod tests {
         registry
     }
 
-    fn built_in_rules() -> Vec<(ProviderProfile, ProviderRulesCatalog)> {
-        let mut providers = vec![
-            (openai_profile(), openai_provider_rules(9)),
-            (claude_profile(), claude_provider_rules(9)),
-            (minimax_profile(), minimax_provider_rules(9)),
-            (gemini_profile(), gemini_provider_rules(9)),
-            (openrouter_profile(), openrouter_provider_rules(9)),
-            (kimi_profile(), kimi_provider_rules(9)),
-            (glm_profile(), glm_provider_rules(9)),
-            (fal_profile(), fal_provider_rules(9)),
-            (sn_profile(), sn_provider_rules(9)),
-        ];
-        providers.extend(
-            openai_responses_compatible_builtin_providers()
-                .into_iter()
-                .map(|provider| (provider.profile.clone(), provider.provider_rules(9))),
-        );
-        providers
+    fn metadata_snapshot() -> CatalogSnapshot {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("driver_metadata");
+        let mut files = Vec::new();
+        for (directory, kind) in [
+            ("models", CatalogKind::ModelDriver),
+            ("providers", CatalogKind::ProviderRules),
+            ("known-providers", CatalogKind::KnownProvider),
+        ] {
+            let mut paths = std::fs::read_dir(root.join(directory))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "json")
+                })
+                .collect::<Vec<_>>();
+            paths.sort();
+            files.extend(paths.into_iter().map(|path| CurrentCatalogFile {
+                kind,
+                contents: std::fs::read(path).unwrap(),
+            }));
+        }
+        CatalogSnapshot::from_current_files(1, files, &CatalogBuildOptions::default()).unwrap()
+    }
+
+    fn built_in_rules() -> Vec<(ResolvedProviderConfiguration, ProviderRulesCatalog)> {
+        let catalog = metadata_snapshot();
+        catalog
+            .known_providers()
+            .map(|known_provider| {
+                let configuration = catalog
+                    .resolve_provider_configuration(&known_provider.provider_profile_id)
+                    .unwrap();
+                let rules = catalog
+                    .provider_rules(&configuration.provider_rules_id)
+                    .unwrap()
+                    .clone();
+                (configuration, rules)
+            })
+            .collect()
     }
 
     fn api_type_from_mapping_key(key: &str) -> ApiType {
@@ -1510,7 +1527,7 @@ mod tests {
                     let api_type = api_type_from_mapping_key(key);
                     let actual = select_operation(
                         &codecs,
-                        &profile.default_protocol_adapter_id,
+                        &profile.protocol_adapter_id,
                         mappings,
                         api_type,
                         api_type.typed_method(),
@@ -1520,7 +1537,7 @@ mod tests {
                     golden.push(format!(
                         "{}|{}|{}|{}",
                         profile.provider_profile_id,
-                        profile.default_protocol_adapter_id,
+                        profile.protocol_adapter_id,
                         api_type_name(api_type),
                         actual
                     ));
