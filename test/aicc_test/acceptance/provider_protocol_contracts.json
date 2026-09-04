@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-09-02.1",
-  "checked_at": "2026-09-02",
+  "revision": "official-provider-protocols-2026-09-04.1",
+  "checked_at": "2026-09-04",
   "providers": [
     {
       "provider_driver": "openai",
@@ -528,9 +528,137 @@
       }]
     },
     {
+      "provider_driver": "kimi",
+      "provider_profile_id": "kimi",
+      "endpoint_path": "/v1",
+      "credential_type": "bearer",
+      "test_model_ids": { "llm": "kimi-k3" },
+      "contracts": [{
+        "id": "kimi.chat-completions.v1",
+        "protocol_adapter_id": "kimi-chat",
+        "api_version": "v1",
+        "api_types": ["llm"],
+        "operation": "chat.completions.create",
+        "http_method": "POST",
+        "path": "/v1/chat/completions",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "messages"],
+        "allowed_body_fields": ["model", "messages", "max_tokens", "max_completion_tokens", "response_format", "stop", "stream", "stream_options", "tools", "tool_choice", "thinking", "reasoning_effort", "prompt_cache_key"],
+        "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"] },
+        "stream_protocol": "openai_chat",
+        "success_fixture": { "id": "cmpl_mock_1", "object": "chat.completion", "created": 1770000000, "model": "kimi-k3", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cached_tokens": 0 } },
+        "official_sources": ["https://platform.kimi.com/docs/api/chat", "https://platform.kimi.com/docs/api/errors"],
+        "evidence_summary": "Kimi Chat Completions uses POST /v1/chat/completions with Bearer authentication, JSON model/messages, OpenAI-style choices and data-only SSE terminated by [DONE]."
+      }]
+    },
+    {
+      "provider_driver": "glm",
+      "provider_profile_id": "glm",
+      "endpoint_path": "/api/paas/v4",
+      "credential_type": "bearer",
+      "instance_fields": { "region": "global" },
+      "test_model_ids": { "llm": "glm-5.3" },
+      "contracts": [{
+        "id": "glm.chat-completions.v4",
+        "protocol_adapter_id": "glm-chat",
+        "api_version": "v4",
+        "api_types": ["llm"],
+        "operation": "chat.completions.create",
+        "http_method": "POST",
+        "path": "/api/paas/v4/chat/completions",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "messages"],
+        "allowed_body_fields": ["model", "messages", "request_id", "do_sample", "stream", "thinking", "temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice", "response_format", "tool_stream", "user_id"],
+        "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"], "thinking": ["object"] },
+        "stream_protocol": "openai_chat",
+        "success_fixture": { "id": "glm_mock_1", "request_id": "req_mock_1", "created": 1770000000, "model": "glm-5.3", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827", "reasoning_content": "" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://docs.z.ai/api-reference/llm/chat-completion", "https://docs.bigmodel.cn/cn/api/api-code"],
+        "evidence_summary": "GLM Chat Completion uses POST /api/paas/v4/chat/completions with Bearer authentication and JSON model/messages; streaming is standard SSE terminated by [DONE]."
+      }]
+    },
+    {
+      "provider_driver": "deepseek",
+      "provider_profile_id": "deepseek",
+      "endpoint_path": "",
+      "credential_type": "bearer",
+      "test_model_ids": { "llm": "deepseek-v4-flash" },
+      "contracts": [{
+        "id": "deepseek.responses.v1",
+        "protocol_adapter_id": "deepseek-responses",
+        "api_version": "v1",
+        "api_types": ["llm"],
+        "operation": "responses.create",
+        "http_method": "POST",
+        "path": "/responses",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "instructions", "max_output_tokens", "reasoning", "stream", "temperature", "text", "tool_choice", "tools", "top_logprobs", "top_p", "user"],
+        "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "reasoning": ["object"] },
+        "stream_protocol": "openai_responses",
+        "success_fixture": { "id": "resp_deepseek_mock_1", "object": "response", "created_at": 1770000000, "status": "completed", "error": null, "incomplete_details": null, "model": "deepseek-v4-flash", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://api-docs.deepseek.com/api/create-response/", "https://api-docs.deepseek.com/quick_start/error_codes/"],
+        "evidence_summary": "DeepSeek Responses uses POST /responses with Bearer authentication and stateless JSON model/input; semantic SSE ends with a response terminal event and no [DONE] marker."
+      }]
+    },
+    {
+      "provider_driver": "doubao",
+      "provider_profile_id": "doubao",
+      "endpoint_path": "/api/v3",
+      "credential_type": "bearer",
+      "instance_fields": { "region": "cn-beijing" },
+      "test_model_ids": { "llm": "doubao-seed-2-0-lite-260215" },
+      "contracts": [{
+        "id": "doubao.responses.v3",
+        "protocol_adapter_id": "doubao-responses",
+        "api_version": "v3",
+        "api_types": ["llm"],
+        "operation": "responses.create",
+        "http_method": "POST",
+        "path": "/api/v3/responses",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "instructions", "max_output_tokens", "previous_response_id", "reasoning", "store", "stream", "temperature", "text", "tool_choice", "tools", "top_p"],
+        "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "reasoning": ["object"] },
+        "stream_protocol": "openai_responses",
+        "success_fixture": { "created_at": 1770000000, "id": "resp_doubao_mock_1", "model": "doubao-seed-2-0-lite-260215", "object": "response", "output": [{ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }], "status": "completed", "id": "msg_mock_1" }], "status": "completed", "store": false, "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://www.volcengine.com/docs/82379/1958524?lang=zh", "https://www.volcengine.com/docs/82379/1783703?lang=zh"],
+        "evidence_summary": "Volcano Ark Responses uses POST /api/v3/responses with Bearer authentication and JSON model/input, returning an OpenAI-style response object."
+      }]
+    },
+    {
+      "provider_driver": "qwen",
+      "provider_profile_id": "qwen",
+      "endpoint_path": "/compatible-mode/v1",
+      "credential_type": "bearer",
+      "instance_fields": { "region": "cn-beijing", "workspace": "t15-workspace" },
+      "test_model_ids": { "llm": "qwen3.6-max-preview" },
+      "contracts": [{
+        "id": "qwen.responses.compatible-v1",
+        "protocol_adapter_id": "qwen-responses",
+        "api_version": "compatible-v1",
+        "api_types": ["llm"],
+        "operation": "responses.create",
+        "http_method": "POST",
+        "path": "/compatible-mode/v1/responses",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "instructions", "max_output_tokens", "previous_response_id", "reasoning", "stream", "temperature", "text", "tool_choice", "tools", "top_p", "ocr_options"],
+        "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "reasoning": ["object"] },
+        "stream_protocol": "openai_responses",
+        "success_fixture": { "id": "resp_qwen_mock_1", "object": "response", "created_at": 1770000000, "status": "completed", "model": "qwen3.6-max-preview", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses", "https://www.alibabacloud.com/help/en/model-studio/error-code"],
+        "evidence_summary": "Qwen workspace-compatible Responses uses POST /compatible-mode/v1/responses with Bearer authentication and JSON model/input, returning OpenAI-style response output."
+      }]
+    },
+    {
       "provider_driver": "sn-ai-provider",
       "provider_profile_id": "sn",
-      "endpoint_path": "/v1",
+      "endpoint_path": "/api/v1/ai",
       "credential_type": "bearer",
       "test_model_ids": { "llm": "gpt-5.4", "vision.ocr": "gpt-5.4", "vision.caption": "gpt-5.4", "agent.computer_use": "gpt-5.4" },
       "contracts": [{
@@ -541,7 +669,7 @@
         "api_types": ["llm", "vision.ocr", "vision.caption", "agent.computer_use"],
         "operation": "responses.create",
         "http_method": "POST",
-        "path": "/v1/responses",
+        "path": "/api/v1/ai/responses",
         "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
         "content_type": "application/json",
         "required_body_fields": ["model", "input"],
@@ -549,8 +677,8 @@
         "body_field_types": { "model": ["string"], "input": ["string", "array"] },
         "stream_protocol": "openai_responses",
         "success_fixture": { "id": "resp_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
-        "official_sources": ["https://platform.openai.com/docs/api-reference/responses/create", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
-        "evidence_summary": "SN base wire contract is OpenAI Responses; SN-specific authentication behavior is selected by the AICC design contract."
+        "official_sources": ["https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/http/public.rs", "https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/litellm/mod.rs"],
+        "evidence_summary": "SN public source at f765081 exposes POST /api/v1/ai/responses with Bearer authentication and forwards the Responses JSON/SSE wire to LiteLLM /v1/responses."
       }]
     }
   ],
@@ -561,7 +689,12 @@
     "fal": { "applicable_api_versions": ["queue-v1"], "official_sources": ["https://fal.ai/docs/documentation/model-apis/errors", "https://fal.ai/docs/documentation/model-apis/request-errors"], "evidence_summary": "fal separates typed model-validation detail arrays from flat infrastructure detail/error_type responses and exposes retry/error headers." },
     "minimax": { "applicable_api_versions": ["v1", "v2", "anthropic-v1"], "official_sources": ["https://platform.minimax.io/docs/api-reference/errorcode"], "evidence_summary": "MiniMax documents Provider application error codes carried by base_resp, including timeout, rate limit, auth, balance, safety and internal errors." },
     "openrouter": { "applicable_api_versions": ["v1"], "official_sources": ["https://openrouter.ai/docs/api-reference/overview", "https://openrouter.ai/openapi.yaml"], "evidence_summary": "OpenRouter documents numeric HTTP-aligned error codes in its error envelope and upstream Provider failures." },
-    "sn-ai-provider": { "applicable_api_versions": ["v1"], "official_sources": ["https://platform.openai.com/docs/guides/error-codes/api-errors"], "evidence_summary": "SN reuses the OpenAI Responses error wire contract; SN authentication behavior is tested as the derived adapter difference." }
+    "kimi": { "applicable_api_versions": ["v1"], "official_sources": ["https://platform.kimi.com/docs/api/errors"], "evidence_summary": "Kimi documents error.type/message envelopes for invalid requests, authentication, permissions, missing resources, rate limits, quota and server failures." },
+    "glm": { "applicable_api_versions": ["v4"], "official_sources": ["https://docs.bigmodel.cn/cn/api/api-code", "https://docs.bigmodel.cn/cn/api/rate-limit"], "evidence_summary": "GLM documents an error code/message envelope with HTTP status plus business codes including 1000 authentication, 1210 invalid parameter, 1302 rate limit and 1305 overload." },
+    "deepseek": { "applicable_api_versions": ["v1"], "official_sources": ["https://api-docs.deepseek.com/quick_start/error_codes/"], "evidence_summary": "DeepSeek documents 400 invalid format, 401 authentication, 402 balance, 422 invalid parameters, 429 rate limit and 5xx service failures." },
+    "doubao": { "applicable_api_versions": ["v3"], "official_sources": ["https://www.volcengine.com/docs/82379/1330312?lang=zh"], "evidence_summary": "Volcano Ark documents OpenAI-compatible error envelopes and HTTP-aligned request, authentication, throttling and server failure codes." },
+    "qwen": { "applicable_api_versions": ["compatible-v1"], "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/error-code"], "evidence_summary": "Alibaba Model Studio documents OpenAI-compatible error codes including invalid_request_error, invalid_api_key, access_denied, Throttling and InternalError." },
+    "sn-ai-provider": { "applicable_api_versions": ["v1"], "official_sources": ["https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/http/error.rs"], "evidence_summary": "SN source at f765081 defines HTTP errors as code/message and the 429 insufficient-balance special case as an OpenAI-shaped nested error." }
   },
   "error_fixtures": {
     "openai": [
@@ -609,10 +742,51 @@
       { "scenario": "rate_limit", "status": 429, "body": { "error": { "code": 429, "message": "Rate limit exceeded" } } },
       { "scenario": "provider_error", "status": 502, "body": { "error": { "code": 502, "message": "Provider error" } } }
     ],
+    "kimi": [
+      { "scenario": "invalid_request", "status": 400, "body": { "error": { "type": "invalid_request_error", "message": "Invalid request: missing messages" } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "type": "invalid_authentication_error", "message": "Invalid Authentication" } } },
+      { "scenario": "permission", "status": 403, "body": { "error": { "type": "permission_denied_error", "message": "The API you are accessing is not open" } } },
+      { "scenario": "not_found", "status": 404, "body": { "error": { "type": "resource_not_found_error", "message": "Not found the model kimi-missing or Permission denied" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "error": { "type": "rate_limit_reached_error", "message": "Request reached organization max concurrency" } } },
+      { "scenario": "server_error", "status": 500, "body": { "error": { "type": "server_error", "message": "Failed to extract file" } } }
+    ],
+    "glm": [
+      { "scenario": "invalid_parameters", "status": 400, "body": { "error": { "code": "1210", "message": "API call parameters are incorrect" } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "code": "1000", "message": "Authentication failed" } } },
+      { "scenario": "insufficient_balance", "status": 429, "body": { "error": { "code": "1113", "message": "Account balance is insufficient" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "error": { "code": "1302", "message": "Rate limit reached" } } },
+      { "scenario": "overloaded", "status": 429, "body": { "error": { "code": "1305", "message": "The model is overloaded" } } },
+      { "scenario": "server_error", "status": 500, "body": { "error": { "code": "1200", "message": "API call failed" } } }
+    ],
+    "deepseek": [
+      { "scenario": "invalid_format", "status": 400, "body": { "error": { "message": "Invalid request body format", "type": "invalid_request_error", "code": "invalid_format" } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "message": "Authentication failed", "type": "authentication_error", "code": "invalid_api_key" } } },
+      { "scenario": "insufficient_balance", "status": 402, "body": { "error": { "message": "Insufficient balance", "type": "insufficient_balance_error", "code": "insufficient_balance" } } },
+      { "scenario": "invalid_parameters", "status": 422, "body": { "error": { "message": "Invalid parameters", "type": "invalid_request_error", "code": "invalid_parameters" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "error": { "message": "Rate limit reached", "type": "rate_limit_error", "code": "rate_limit_exceeded" } } },
+      { "scenario": "overloaded", "status": 503, "body": { "error": { "message": "Server overloaded", "type": "server_error", "code": "server_overloaded" } } }
+    ],
+    "doubao": [
+      { "scenario": "invalid_request", "status": 400, "body": { "error": { "code": "InvalidParameter", "message": "The request parameter is invalid", "param": "input", "type": "BadRequest" } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "code": "AuthenticationError", "message": "Invalid API key", "param": "", "type": "Unauthorized" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "error": { "code": "RequestBurstTooFast", "message": "System protection triggered by request burst", "param": "", "type": "TooManyRequests" } } },
+      { "scenario": "overloaded", "status": 429, "body": { "error": { "code": "ServerOverloaded", "message": "The service is currently unable to handle additional requests", "param": "", "type": "TooManyRequests" } } },
+      { "scenario": "server_error", "status": 500, "body": { "error": { "code": "InternalServiceError", "message": "Internal service error", "param": "", "type": "InternalServerError" } } }
+    ],
+    "qwen": [
+      { "scenario": "invalid_request", "status": 400, "body": { "error": { "code": "invalid_request_error", "message": "You must provide a model parameter", "type": "invalid_request_error" } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "code": "invalid_api_key", "message": "Incorrect API key provided", "type": "invalid_request_error" } } },
+      { "scenario": "permission", "status": 403, "body": { "error": { "code": "access_denied", "message": "Access denied", "type": "permission_error" } } },
+      { "scenario": "not_found", "status": 404, "body": { "error": { "code": "model_not_supported", "message": "Unsupported model for OpenAI compatibility mode", "type": "invalid_request_error" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "error": { "code": "Throttling.RateQuota", "message": "Requests rate limit exceeded", "type": "rate_limit_error" } } },
+      { "scenario": "server_error", "status": 500, "body": { "error": { "code": "InternalError", "message": "An internal error has occurred", "type": "server_error" } } }
+    ],
     "sn-ai-provider": [
-      { "scenario": "authentication", "status": 401, "body": { "error": { "message": "Invalid authentication", "type": "invalid_request_error", "param": null, "code": "invalid_api_key" } } },
-      { "scenario": "rate_limit", "status": 429, "body": { "error": { "message": "Rate limit reached", "type": "rate_limit_error", "param": null, "code": "rate_limit_exceeded" } } },
-      { "scenario": "server_error", "status": 500, "body": { "error": { "message": "Internal server error", "type": "server_error", "param": null, "code": null } } }
+      { "scenario": "invalid_argument", "status": 400, "body": { "code": "invalid_argument", "message": "litellm rejected request" } },
+      { "scenario": "authentication", "status": 401, "body": { "code": "unauthorized", "message": "invalid or missing credentials" } },
+      { "scenario": "insufficient_balance", "status": 429, "body": { "error": { "message": "Insufficient credit balance.", "type": "insufficient_balance", "param": null, "code": "429" } } },
+      { "scenario": "unavailable", "status": 503, "body": { "code": "dependency_unavailable", "message": "litellm is unavailable" } },
+      { "scenario": "timeout", "status": 504, "body": { "code": "timeout", "message": "litellm request timed out" } }
     ]
   }
 }

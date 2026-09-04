@@ -27,6 +27,7 @@ function makeCase(seed: CaseSeed): AcceptanceCase {
     model_selector: seed.model_selector ?? null,
     api_type: seed.api_type,
     method: seed.method,
+    execution_mode: seed.execution_mode ?? "immediate",
     required_capabilities: seed.required_capabilities ?? [],
     disabled_capabilities: seed.disabled_capabilities ?? [],
     fixtures: seed.fixtures ?? [],

@@ -19,6 +19,8 @@ on:
       - "make_local_pkg.py"
       - "notepads/GitActionv2.md"
       - "src/**"
+      - "test/aicc_test/**"
+      - "doc/aicc/**"
 
 permissions:
   contents: read
@@ -57,11 +59,42 @@ jobs:
         with:
           limit-access-to-actor: true
 
+  aicc-acceptance-static:
+    name: AICC Acceptance Static Gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: pnpm
+          cache-dependency-path: test/aicc_test/pnpm-lock.yaml
+
+      - name: Install AICC acceptance dependencies
+        working-directory: ./test/aicc_test
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate AICC acceptance contracts
+        working-directory: ./test/aicc_test
+        run: |
+          pnpm run acceptance:preflight
+          pnpm run acceptance:self-test
+
   dev-tests:
     name: ${{ matrix.name }}
     needs:
       - quick-unit-tests
-    if: ${{ always() && (needs.quick-unit-tests.result == 'success' || needs.quick-unit-tests.result == 'skipped') }}
+      - aicc-acceptance-static
+    if: ${{ always() && (needs.quick-unit-tests.result == 'success' || needs.quick-unit-tests.result == 'skipped') && needs.aicc-acceptance-static.result == 'success' }}
     runs-on: ${{ fromJSON((matrix.platform_key == 'macos' && matrix.arch == 'aarch64' && vars.DEVTESTS_MACOS_ARM64_RUNNER_JSON) || (matrix.platform_key == 'macos' && matrix.arch == 'x86_64' && vars.DEVTESTS_MACOS_X64_RUNNER_JSON) || matrix.runner_json) }}
     timeout-minutes: 180
     strategy:

@@ -31,6 +31,7 @@ export type FailureClass = (typeof FAILURE_CLASSES)[number];
 
 export type TestLayer = "T1" | "T1.5" | "T2" | "T3";
 export type Priority = "P0" | "P1" | "P2";
+export type ExecutionMode = "immediate" | "stream";
 
 export type ExpectedOutput = {
   kinds: string[];
@@ -51,6 +52,7 @@ export type AcceptanceCase = {
   model_selector: { kind: "exact" | "logical"; value: string } | null;
   api_type: string | null;
   method: string;
+  execution_mode: ExecutionMode;
   required_capabilities: string[];
   disabled_capabilities: string[];
   fixtures: string[];
@@ -158,6 +160,9 @@ export type ProviderBaseline = {
   canonical_api_types: string[];
   providers: Array<{
     provider_driver: string;
+    provider_profile_id: string;
+    protocol_adapter_ids: string[];
+    model_driver_ids: string[];
     discovery: "official_catalog" | "runtime_catalog" | "internal_inventory";
     official_catalog: OfficialCatalogConfig;
     capability_source_provider?: string;

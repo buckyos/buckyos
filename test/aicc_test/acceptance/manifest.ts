@@ -49,6 +49,19 @@ export function validateCaseManifest(value: unknown): AcceptanceCase[] {
     requireString(raw.user, `${caseId}.user`);
     requireString(raw.session, `${caseId}.session`);
     requireString(raw.method, `${caseId}.method`);
+    if (!(raw.execution_mode === "immediate" || raw.execution_mode === "stream")) {
+      throw new Error(`${caseId}.execution_mode is invalid`);
+    }
+    if (raw.api_type !== null) {
+      const apiType = requireString(raw.api_type, `${caseId}.api_type`);
+      if (!CANONICAL_API_TYPES.includes(apiType as never)) {
+        throw new Error(`${caseId}.api_type is not canonical`);
+      }
+      if (raw.method !== "route.resolve" &&
+        !methodsForApiType(apiType).includes(String(raw.method) as never)) {
+        throw new Error(`${caseId}.method is not valid for api_type ${apiType}`);
+      }
+    }
     requireStringArray(raw.required_capabilities, `${caseId}.required_capabilities`);
     requireStringArray(raw.disabled_capabilities, `${caseId}.disabled_capabilities`);
     requireStringArray(raw.fixtures, `${caseId}.fixtures`);
@@ -107,7 +120,7 @@ export function validateCaseManifest(value: unknown): AcceptanceCase[] {
 
 export function validateProviderBaseline(value: unknown): ProviderBaseline {
   if (!isObject(value)) throw new Error("provider baseline must be an object");
-  if (value.schema_version !== 2) throw new Error("unsupported baseline schema_version");
+  if (value.schema_version !== 3) throw new Error("unsupported baseline schema_version");
   requireString(value.baseline_revision, "baseline_revision");
   requireString(value.checked_at, "checked_at");
   const canonical = requireStringArray(value.canonical_api_types, "canonical_api_types");
@@ -121,6 +134,15 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
     const driver = requireString(rawProvider.provider_driver, "provider_driver");
     if (drivers.has(driver)) throw new Error(`duplicate provider baseline ${driver}`);
     drivers.add(driver);
+    requireString(rawProvider.provider_profile_id, `${driver}.provider_profile_id`);
+    const adapterIds = requireStringArray(rawProvider.protocol_adapter_ids, `${driver}.protocol_adapter_ids`);
+    const modelDriverIds = requireStringArray(rawProvider.model_driver_ids, `${driver}.model_driver_ids`);
+    if (adapterIds.length === 0 || new Set(adapterIds).size !== adapterIds.length) {
+      throw new Error(`${driver}.protocol_adapter_ids must be non-empty and unique`);
+    }
+    if (modelDriverIds.length === 0 || new Set(modelDriverIds).size !== modelDriverIds.length) {
+      throw new Error(`${driver}.model_driver_ids must be non-empty and unique`);
+    }
     if (!isObject(rawProvider.official_catalog)) {
       throw new Error(`${driver}.official_catalog must be an object`);
     }
@@ -232,6 +254,14 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
         if (!CANONICAL_API_TYPES.includes(apiType as never)) {
           throw new Error(`${driver} uses unknown api_type ${apiType}`);
         }
+      }
+      const expectedMethods = new Set(
+        (rule.api_types as string[]).flatMap((apiType) => methodsForApiType(apiType)),
+      );
+      const declaredMethods = new Set(rule.methods as string[]);
+      if (expectedMethods.size !== declaredMethods.size ||
+        [...expectedMethods].some((method) => !declaredMethods.has(method))) {
+        throw new Error(`${driver}.${String(rule.model_pattern)} has invalid method/api_type association`);
       }
     }
   }

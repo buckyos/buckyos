@@ -11,6 +11,11 @@ export const REQUIRED_T15_PROVIDER_DRIVERS = [
   "fal",
   "minimax",
   "openrouter",
+  "kimi",
+  "glm",
+  "deepseek",
+  "doubao",
+  "qwen",
   "sn-ai-provider",
 ] as const;
 
@@ -21,7 +26,12 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
   fal: new Set(["fal.ai"]),
   minimax: new Set(["platform.minimax.io"]),
   openrouter: new Set(["openrouter.ai"]),
-  "sn-ai-provider": new Set(["platform.openai.com", "developers.openai.com"]),
+  kimi: new Set(["platform.kimi.com"]),
+  glm: new Set(["docs.z.ai", "docs.bigmodel.cn"]),
+  deepseek: new Set(["api-docs.deepseek.com"]),
+  doubao: new Set(["www.volcengine.com", "docs.volcengine.com"]),
+  qwen: new Set(["www.alibabacloud.com"]),
+  "sn-ai-provider": new Set(["github.com"]),
 };
 
 export type ProtocolErrorFixture = {
@@ -46,7 +56,7 @@ export type ProviderProtocolContract = {
   required_body_fields: string[];
   allowed_body_fields: string[];
   body_field_types: Record<string, Array<"string" | "number" | "boolean" | "array" | "object">>;
-  stream_protocol?: "openai_responses" | "claude_messages" | "gemini_interactions" | "openrouter_chat";
+  stream_protocol?: "openai_responses" | "openai_chat" | "claude_messages" | "gemini_interactions" | "openrouter_chat";
   async_protocol?: "fal_queue" | "minimax_video" | "google_lro" | "openai_video";
   async_steps?: Array<{
     name: "poll" | "result" | "cancel";
@@ -71,6 +81,7 @@ export type ProviderProtocolCatalog = {
     provider_profile_id: string;
     endpoint_path: string;
     credential_type: "api_key" | "bearer";
+    instance_fields?: { region?: string; workspace?: string; account?: string };
     test_model_ids: Record<string, string>;
     contracts: ProviderProtocolContract[];
   }>;
@@ -131,6 +142,15 @@ export function validateProviderProtocolCatalog(value: unknown): ProviderProtoco
     }
     if (!["api_key", "bearer"].includes(String(provider.credential_type))) {
       throw new Error(`${driver}.credential_type is invalid`);
+    }
+    if (provider.instance_fields !== undefined) {
+      const fields = object(provider.instance_fields, `${driver}.instance_fields`);
+      for (const [name, fieldValue] of Object.entries(fields)) {
+        if (!["region", "workspace", "account"].includes(name)) {
+          throw new Error(`${driver}.instance_fields.${name} is invalid`);
+        }
+        nonEmptyString(fieldValue, `${driver}.instance_fields.${name}`);
+      }
     }
     const testModelIds = object(provider.test_model_ids, `${driver}.test_model_ids`);
     for (const [apiType, modelId] of Object.entries(testModelIds)) {
@@ -386,6 +406,7 @@ export function buildT15Manifest(
           model_selector: null,
           api_type: apiType,
           method: methodsForApiType(apiType)[0] ?? apiType,
+          execution_mode: "immediate",
           required_capabilities: [],
           disabled_capabilities: [],
           fixtures: [],
@@ -417,6 +438,7 @@ export function buildT15Manifest(
             ...common,
             case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.stream`),
             mock_scenario: "stream_success",
+            execution_mode: "stream",
             expected_wire_fixture: `${contract.id}.request.stream`,
             response_fixture: `${contract.id}.stream`,
           } as AcceptanceCase);
@@ -425,6 +447,7 @@ export function buildT15Manifest(
             case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.stream-interrupted`),
             priority: "P1",
             mock_scenario: "stream_interrupted",
+            execution_mode: "stream",
             expected_task_status: "failed",
             expected_error_class: "provider_protocol_failed",
             expected_wire_fixture: `${contract.id}.request.stream`,
@@ -523,6 +546,7 @@ export function buildT15Manifest(
       model_selector: { kind: "exact", value: variant.model.exact_model },
       api_type: variant.api_type,
       method: methodsForApiType(variant.api_type)[0] ?? variant.api_type,
+      execution_mode: "immediate",
       required_capabilities: [],
       disabled_capabilities: [],
       fixtures: [],

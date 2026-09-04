@@ -12,6 +12,44 @@ import {
 } from "./provider_protocol_contracts.ts";
 
 type Selection = { provider_driver: string; contract_id: string; scenario: string };
+type DiscoveryContract = {
+  mode: "machine_api" | "catalog_only";
+  path?: string;
+  required_query?: Record<string, string>;
+  required_headers?: Record<string, string>;
+  response_shape?: "openai" | "anthropic" | "gemini" | "sn";
+};
+
+export const T15_PROVIDER_DISCOVERY_CONTRACTS: Record<string, DiscoveryContract> = {
+  openai: { mode: "machine_api", path: "/v1/models", response_shape: "openai" },
+  claude: {
+    mode: "machine_api",
+    path: "/v1/models",
+    required_query: { limit: "1000" },
+    required_headers: { "anthropic-version": "2023-06-01" },
+    response_shape: "anthropic",
+  },
+  "google-gemini": {
+    mode: "machine_api",
+    path: "/v1beta/models",
+    required_query: { pageSize: "1000" },
+    response_shape: "gemini",
+  },
+  fal: { mode: "catalog_only" },
+  minimax: {
+    mode: "machine_api",
+    path: "/anthropic/v1/models",
+    required_query: { limit: "1000" },
+    response_shape: "anthropic",
+  },
+  openrouter: { mode: "machine_api", path: "/api/v1/models", response_shape: "openai" },
+  kimi: { mode: "machine_api", path: "/v1/models", response_shape: "openai" },
+  glm: { mode: "catalog_only" },
+  deepseek: { mode: "machine_api", path: "/models", response_shape: "openai" },
+  doubao: { mode: "catalog_only" },
+  qwen: { mode: "catalog_only" },
+  "sn-ai-provider": { mode: "machine_api", path: "/api/v1/ai/models", response_shape: "sn" },
+};
 type AuditRecord = {
   received_at: string;
   selection: Selection;
@@ -61,6 +99,50 @@ function safeHeaders(headers: IncomingMessage["headers"]): Record<string, string
   ]));
 }
 
+function rewriteMockUrls(value: unknown, authority: string, endpoint: string): unknown {
+  if (typeof value === "string") {
+    return value.replaceAll("http://mock/{endpoint}", `http://${authority}/${endpoint}`)
+      .replaceAll("http://mock", `http://${authority}`);
+  }
+  if (Array.isArray(value)) return value.map((item) => rewriteMockUrls(item, authority, endpoint));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, rewriteMockUrls(item, authority, endpoint)]));
+  }
+  return value;
+}
+
+function discoveryFixture(
+  provider: ProviderProtocolCatalog["providers"][number],
+  shape: NonNullable<DiscoveryContract["response_shape"]>,
+): unknown {
+  const modelIds = [...new Set(Object.values(provider.test_model_ids))];
+  if (shape === "sn") {
+    return {
+      revision: "t15-mock-1",
+      items: modelIds.map((model) => ({ model, provider: "t15-mock", display_name: model })),
+      default_model: modelIds[0] ?? null,
+    };
+  }
+  if (shape === "gemini") {
+    return {
+      models: modelIds.map((id) => ({ name: `models/${id}`, baseModelId: `models/${id}` })),
+      nextPageToken: "",
+    };
+  }
+  if (shape === "anthropic") {
+    return {
+      data: modelIds.map((id) => ({ id, type: "model", display_name: id, created_at: "2026-01-01T00:00:00Z" })),
+      has_more: false,
+      first_id: modelIds[0] ?? null,
+      last_id: modelIds.at(-1) ?? null,
+    };
+  }
+  return {
+    object: "list",
+    data: modelIds.map((id) => ({ id, object: "model", owned_by: provider.provider_driver })),
+  };
+}
+
 function streamFixture(contract: ProviderProtocolContract): string {
   switch (contract.stream_protocol) {
     case "openai_responses":
@@ -82,6 +164,7 @@ function streamFixture(contract: ProviderProtocolContract): string {
         "event: content.delta\ndata: {\"event_type\":\"content.delta\",\"delta\":{\"type\":\"text\",\"text\":\"BUCKYOS-AICC-4827\"}}",
         `event: interaction.completed\ndata: ${JSON.stringify({ event_type: "interaction.completed", interaction: contract.success_fixture })}`,
       ].join("\n\n") + "\n\n";
+    case "openai_chat":
     case "openrouter_chat":
       return [
         "data: {\"id\":\"gen_mock_1\",\"object\":\"chat.completion.chunk\",\"created\":1770000000,\"model\":\"mock-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"BUCKYOS-AICC-4827\"},\"finish_reason\":null}]}",
@@ -94,6 +177,13 @@ function streamFixture(contract: ProviderProtocolContract): string {
 }
 
 export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
+  const catalogDrivers = new Set(catalog.providers.map((provider) => provider.provider_driver));
+  const discoveryDrivers = new Set(Object.keys(T15_PROVIDER_DISCOVERY_CONTRACTS));
+  const missingDiscovery = [...catalogDrivers].filter((driver) => !discoveryDrivers.has(driver));
+  const unknownDiscovery = [...discoveryDrivers].filter((driver) => !catalogDrivers.has(driver));
+  if (missingDiscovery.length > 0 || unknownDiscovery.length > 0) {
+    throw new Error(`T1.5 discovery contracts differ from Provider catalog: missing=${missingDiscovery.join(",")} unknown=${unknownDiscovery.join(",")}`);
+  }
   let selection: Selection | undefined;
   let requests: AuditRecord[] = [];
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
@@ -107,21 +197,25 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
       }
       if (url.pathname === "/__mock/select" && request.method === "POST") {
         const parsed = JSON.parse((await bodyBytes(request)).toString("utf8")) as Selection;
-        protocolContract(catalog, parsed.provider_driver, parsed.contract_id);
+        const contract = protocolContract(catalog, parsed.provider_driver, parsed.contract_id);
         const scenarios = new Set([
           "success",
-          "stream_success",
-          "stream_interrupted",
-          "async_success",
-          "async_failed",
-          "async_cancel",
-          "async_poll_timeout",
-          "async_artifact_unavailable",
           "malformed_response",
           "wrong_content_type",
           "missing_required_response_field",
           ...catalog.error_fixtures[parsed.provider_driver].map((fixture) => fixture.scenario),
         ]);
+        if (contract.stream_protocol) {
+          scenarios.add("stream_success");
+          scenarios.add("stream_interrupted");
+        }
+        if (contract.async_protocol) {
+          scenarios.add("async_success");
+          scenarios.add("async_failed");
+          scenarios.add("async_poll_timeout");
+          scenarios.add("async_artifact_unavailable");
+          if (contract.async_steps?.some((step) => step.name === "cancel")) scenarios.add("async_cancel");
+        }
         if (!scenarios.has(parsed.scenario)) return json(response, 400, { error: "unknown scenario" });
         selection = parsed;
         requests = [];
@@ -130,10 +224,56 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
       if (url.pathname === "/__mock/requests" && request.method === "GET") {
         return json(response, 200, { selection, requests });
       }
+      const selectedProvider = selection
+        ? catalog.providers.find((provider) => provider.provider_driver === selection?.provider_driver)
+        : undefined;
+      const discoveryProvider = selectedProvider && T15_PROVIDER_DISCOVERY_CONTRACTS[selectedProvider.provider_driver]?.mode === "machine_api"
+        ? selectedProvider
+        : undefined;
+      const discovery = discoveryProvider
+        ? T15_PROVIDER_DISCOVERY_CONTRACTS[discoveryProvider.provider_driver]
+        : undefined;
+      if (discoveryProvider && discovery?.path === url.pathname && request.method === "GET") {
+        const auth = discoveryProvider.contracts[0].auth;
+        const authValue = auth.kind === "header"
+          ? request.headers[auth.name.toLowerCase()]
+          : url.searchParams.get(auth.name);
+        const value = Array.isArray(authValue) ? authValue[0] : authValue;
+        if (!value || !value.startsWith(auth.prefix) || value.length <= auth.prefix.length) {
+          return json(response, 401, { error: { code: "authentication_error", message: "invalid discovery credential" } });
+        }
+        const discoveryErrors = [
+          ...Object.entries(discovery.required_query ?? {}).flatMap(([name, expected]) =>
+            url.searchParams.get(name) === expected ? [] : [`query ${name} must equal ${expected}`]
+          ),
+          ...Object.entries(discovery.required_headers ?? {}).flatMap(([name, expected]) =>
+            request.headers[name] === expected ? [] : [`header ${name} must equal ${expected}`]
+          ),
+        ];
+        requests.push({
+          received_at: new Date().toISOString(),
+          selection: selection!,
+          method: request.method,
+          pathname: url.pathname,
+          query: Object.fromEntries(url.searchParams),
+          headers: safeHeaders(request.headers),
+          body: null,
+          validation_errors: discoveryErrors,
+        });
+        if (discoveryErrors.length > 0) {
+          return json(response, 400, { type: "t15_mock_contract_violation", errors: discoveryErrors });
+        }
+        return json(response, 200, discoveryFixture(discoveryProvider, discovery.response_shape!));
+      }
+      if (selectedProvider && request.method === "GET" && url.pathname.endsWith("/models")) {
+        return json(response, 404, {
+          error: T15_PROVIDER_DISCOVERY_CONTRACTS[selectedProvider.provider_driver].mode === "catalog_only"
+            ? "Provider uses catalog-only discovery"
+            : "unexpected Provider discovery path",
+        });
+      }
       if (!selection) return json(response, 409, { error: "select a Provider contract before calling the mock" });
       const contract = protocolContract(catalog, selection.provider_driver, selection.contract_id);
-      const provider = catalog.providers.find((candidate) => candidate.provider_driver === selection?.provider_driver)!;
-      const modelIds = [...new Set(Object.values(provider.test_model_ids))];
       const captureAuxiliary = () => {
         const captured = {
           method: request.method ?? "",
@@ -155,26 +295,6 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         });
         return validation.errors;
       };
-
-      if (request.method === "GET" && ["/v1/models", "/api/v1/models"].includes(url.pathname)) {
-        return json(response, 200, {
-          object: "list",
-          data: modelIds.map((id) => ({ id, object: "model" })),
-          has_more: false,
-        });
-      }
-      if (request.method === "GET" && url.pathname === "/v1beta/models") {
-        return json(response, 200, {
-          models: modelIds.map((id) => ({
-            name: `models/${id}`,
-            supportedGenerationMethods: provider.contracts
-              .filter((candidate) => Object.entries(provider.test_model_ids)
-                .some(([apiType, modelId]) => modelId === id && candidate.api_types.includes(apiType)))
-              .map((candidate) => candidate.operation.split(".").at(-1)),
-          })),
-          nextPageToken: "",
-        });
-      }
 
       if (contract.async_protocol === "fal_queue") {
         if (/\/requests\/fal_mock_1\/status$/.test(url.pathname) && request.method === "GET") {
@@ -209,10 +329,10 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         const errors = captureAuxiliary();
         if (errors.length > 0) return json(response, 400, { type: "t15_mock_contract_violation", errors });
         return json(response, 200, selection.scenario === "async_failed"
-          ? { task_id: "minimax_task_mock_1", status: "Fail", base_resp: { status_code: 1024, status_msg: "internal error" } }
+          ? { task_id: "minimax_video_mock_1", status: "Fail", base_resp: { status_code: 1024, status_msg: "internal error" } }
           : selection.scenario === "async_poll_timeout"
-          ? { task_id: "minimax_task_mock_1", status: "Processing", base_resp: { status_code: 0, status_msg: "success" } }
-          : { task_id: "minimax_task_mock_1", status: "Success", file_id: "minimax_file_mock_1", base_resp: { status_code: 0, status_msg: "success" } });
+          ? { task_id: "minimax_video_mock_1", status: "Processing", base_resp: { status_code: 0, status_msg: "success" } }
+          : { task_id: "minimax_video_mock_1", status: "Success", file_id: "minimax_file_mock_1", base_resp: { status_code: 0, status_msg: "success" } });
       }
       if (contract.async_protocol === "google_lro" && url.pathname === "/v1beta/operations/gemini_mock_1" && request.method === "GET") {
         const errors = captureAuxiliary();
@@ -227,7 +347,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           name: "operations/gemini_mock_1",
           done: true,
           response: {
-            generateVideoResponse: { generatedSamples: [{ video: { uri: selection.scenario === "async_artifact_unavailable" ? "http://mock/artifacts/unavailable.mp4" : "http://mock/artifacts/result.mp4" } }] },
+            generateVideoResponse: { generatedSamples: [{ video: { uri: selection.scenario === "async_artifact_unavailable" ? `http://${request.headers.host}/artifacts/unavailable.mp4` : `http://${request.headers.host}/artifacts/result.mp4` } }] },
           },
         });
       }
@@ -257,7 +377,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           const errors = captureAuxiliary();
           if (errors.length > 0) return json(response, 400, { type: "t15_mock_contract_violation", errors });
         }
-        return json(response, 200, { file: { download_url: selection.scenario === "async_artifact_unavailable" ? "http://mock/artifacts/unavailable.mp4" : "http://mock/artifacts/result.mp4" }, base_resp: { status_code: 0, status_msg: "success" } });
+        return json(response, 200, { file: { download_url: selection.scenario === "async_artifact_unavailable" ? `http://${request.headers.host}/artifacts/unavailable.mp4` : `http://${request.headers.host}/artifacts/result.mp4` }, base_resp: { status_code: 0, status_msg: "success" } });
       }
       if (url.pathname.startsWith("/artifacts/") && request.method === "GET") {
         if (url.pathname.includes("unavailable")) return json(response, 404, { error: "artifact unavailable" });
@@ -323,14 +443,11 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         response.end(Buffer.from(contract.success_fixture_base64, "base64"));
         return;
       }
-      const fixture = structuredClone(contract.success_fixture ?? {});
-      if (contract.async_protocol === "fal_queue" && fixture && typeof fixture === "object") {
-        const endpoint = url.pathname.replace(/^\//, "");
-        for (const key of ["response_url", "status_url", "cancel_url"] as const) {
-          const current = (fixture as Record<string, unknown>)[key];
-          if (typeof current === "string") (fixture as Record<string, unknown>)[key] = current.replace("http://mock/{endpoint}", `http://${request.headers.host}/${endpoint}`);
-        }
-      }
+      const fixture = rewriteMockUrls(
+        structuredClone(contract.success_fixture ?? {}),
+        request.headers.host ?? "127.0.0.1",
+        url.pathname.replace(/^\//, ""),
+      );
       return json(response, 200, fixture);
     } catch (error) {
       return json(response, 500, { error: String(error) });

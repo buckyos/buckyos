@@ -1,7 +1,7 @@
 {
-  "schema_version": 2,
-  "baseline_revision": "2026-08-30.7",
-  "checked_at": "2026-08-30",
+  "schema_version": 3,
+  "baseline_revision": "2026-09-04.1",
+  "checked_at": "2026-09-04",
   "canonical_api_types": [
     "llm",
     "embedding.text",
@@ -30,6 +30,9 @@
   "providers": [
     {
       "provider_driver": "openai",
+      "provider_profile_id": "openai",
+      "protocol_adapter_ids": ["openai-responses"],
+      "model_driver_ids": ["openai"],
       "discovery": "official_catalog",
       "official_catalog": {
         "endpoint": "https://api.openai.com/v1/models",
@@ -449,6 +452,9 @@
     },
     {
       "provider_driver": "claude",
+      "provider_profile_id": "claude",
+      "protocol_adapter_ids": ["claude-messages"],
+      "model_driver_ids": ["claude"],
       "discovery": "official_catalog",
       "official_catalog": {
         "endpoint": "https://api.anthropic.com/v1/models",
@@ -524,6 +530,9 @@
     },
     {
       "provider_driver": "google-gemini",
+      "provider_profile_id": "gemini",
+      "protocol_adapter_ids": ["gemini-interactions"],
+      "model_driver_ids": ["google-gemini"],
       "discovery": "official_catalog",
       "official_catalog": {
         "endpoint": "https://generativelanguage.googleapis.com/v1beta/models",
@@ -832,6 +841,9 @@
     },
     {
       "provider_driver": "fal",
+      "provider_profile_id": "fal",
+      "protocol_adapter_ids": ["fal-queue"],
+      "model_driver_ids": ["fal"],
       "discovery": "official_catalog",
       "official_catalog": {
         "endpoint": "https://api.fal.ai/v1/models",
@@ -907,6 +919,9 @@
     },
     {
       "provider_driver": "minimax",
+      "provider_profile_id": "minimax",
+      "protocol_adapter_ids": ["minimax-messages"],
+      "model_driver_ids": ["minimax"],
       "discovery": "official_catalog",
       "official_catalog": {
         "endpoint": "https://api.minimax.io/v1/models",
@@ -982,6 +997,9 @@
     },
     {
       "provider_driver": "openrouter",
+      "provider_profile_id": "openrouter",
+      "protocol_adapter_ids": ["openrouter-openai"],
+      "model_driver_ids": ["openai", "claude", "google-gemini", "minimax", "deepseek", "kimi", "glm", "qwen"],
       "discovery": "runtime_catalog",
       "official_catalog": {
         "endpoint": "https://openrouter.ai/api/v1/models?output_modalities=all",
@@ -1017,7 +1035,125 @@
       ]
     },
     {
+      "provider_driver": "kimi",
+      "provider_profile_id": "kimi",
+      "protocol_adapter_ids": ["kimi-chat"],
+      "model_driver_ids": ["kimi"],
+      "discovery": "official_catalog",
+      "official_catalog": { "endpoint": "https://api.moonshot.cn/v1/models", "format": "openai", "authentication": "bearer" },
+      "source_urls": ["https://platform.kimi.com/docs/api/chat", "https://platform.kimi.com/docs/api/models-overview"],
+      "protocol_evidence": {
+        "documentation_version": "official documentation checked 2026-09-04",
+        "streaming_semantics": "Chat Completions streams data-only SSE chunks and terminates with data: [DONE].",
+        "async_operation_semantics": "Chat Completions is synchronous or streamed; no background task lifecycle is inferred.",
+        "usage_semantics": "Non-streaming and terminal streaming responses expose prompt, completion, total and cached token counts.",
+        "input_output_formats": "Chat messages accept text and documented image/video URL content parts; output is text, reasoning content or tool calls.",
+        "item_request_batch_limits": "Tool count and stop sequence limits are taken from the matching official request schema.",
+        "image_audio_video_limits": "Only documented Kimi message content types and per-model media support are eligible.",
+        "context_output_limits": "Context and output limits are model specific and not inferred from the protocol.",
+        "region_restrictions": "China and global Kimi platforms use independent endpoints and credentials.",
+        "account_tier_restrictions": "Model access, concurrency and quota depend on account authorization and tier.",
+        "preview_allowlist": "Only models returned by the authenticated catalog are eligible."
+      },
+      "rules": [{ "model_pattern": "*", "status": "active", "source_status": "kimi_models_api_runtime_membership", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text", "image", "video"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://platform.kimi.com/docs/api/chat"], "evidence_summary": "Kimi Chat Completions model capability is refined by the authenticated model catalog and model documentation." }]
+    },
+    {
+      "provider_driver": "glm",
+      "provider_profile_id": "glm",
+      "protocol_adapter_ids": ["glm-chat"],
+      "model_driver_ids": ["glm"],
+      "discovery": "official_catalog",
+      "official_catalog": { "endpoint": "https://api.z.ai/api/paas/v4/models", "format": "openai", "authentication": "bearer" },
+      "source_urls": ["https://docs.z.ai/api-reference/llm/chat-completion", "https://docs.bigmodel.cn/cn/api/api-code"],
+      "protocol_evidence": {
+        "documentation_version": "official documentation checked 2026-09-04",
+        "streaming_semantics": "Chat Completion streams standard Event Stream chunks and terminates with data: [DONE].",
+        "async_operation_semantics": "The covered Chat Completion operation is synchronous or streamed.",
+        "usage_semantics": "Completed responses expose prompt, completion, cached and total token counts.",
+        "input_output_formats": "Documented messages can include text and supported multimodal inputs; responses contain message, reasoning and tool-call fields.",
+        "item_request_batch_limits": "Tool and request limits remain those published on the official API page.",
+        "image_audio_video_limits": "Media support is model specific and must be confirmed in the official model catalog.",
+        "context_output_limits": "Context and maximum output limits are per physical GLM model.",
+        "region_restrictions": "Global Z.ai and China BigModel endpoints are separate selectable regions.",
+        "account_tier_restrictions": "Balance, rate limit and model access are account dependent.",
+        "preview_allowlist": "Only catalog-visible models are eligible."
+      },
+      "rules": [{ "model_pattern": "*", "status": "active", "source_status": "glm_models_api_runtime_membership", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://docs.z.ai/api-reference/llm/chat-completion"], "evidence_summary": "GLM Chat Completion capabilities are constrained by the selected physical model." }]
+    },
+    {
+      "provider_driver": "deepseek",
+      "provider_profile_id": "deepseek",
+      "protocol_adapter_ids": ["deepseek-responses"],
+      "model_driver_ids": ["deepseek"],
+      "discovery": "official_catalog",
+      "official_catalog": { "endpoint": "https://api.deepseek.com/models", "format": "openai", "authentication": "bearer" },
+      "source_urls": ["https://api-docs.deepseek.com/api/create-response/", "https://api-docs.deepseek.com/api/list-models/"],
+      "protocol_evidence": {
+        "documentation_version": "official documentation checked 2026-09-04",
+        "streaming_semantics": "Responses streams semantic SSE events ending in a response terminal event without data: [DONE].",
+        "async_operation_semantics": "The Responses API is stateless and does not store background response tasks.",
+        "usage_semantics": "The terminal response object contains input, output and total token usage.",
+        "input_output_formats": "Responses accepts string or input-item arrays, documented tools and model-specific image input.",
+        "item_request_batch_limits": "Only input item types published by DeepSeek are accepted.",
+        "image_audio_video_limits": "Image input applies only to the documented vision model; file input is unsupported.",
+        "context_output_limits": "The authenticated catalog and model pages define physical-model limits.",
+        "region_restrictions": "Availability follows the DeepSeek API service endpoint.",
+        "account_tier_restrictions": "Concurrency, balance and model access are account dependent.",
+        "preview_allowlist": "Only models returned by /models are eligible."
+      },
+      "rules": [{ "model_pattern": "*", "status": "active", "source_status": "deepseek_models_api_runtime_membership", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://api-docs.deepseek.com/api/create-response/"], "evidence_summary": "DeepSeek Responses capability follows the official per-model compatibility table." }]
+    },
+    {
+      "provider_driver": "doubao",
+      "provider_profile_id": "doubao",
+      "protocol_adapter_ids": ["doubao-responses"],
+      "model_driver_ids": ["doubao"],
+      "discovery": "official_catalog",
+      "official_catalog": { "endpoint": "https://ark.cn-beijing.volces.com/api/v3/models", "format": "openai", "authentication": "bearer" },
+      "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh", "https://www.volcengine.com/docs/82379/1783703?lang=zh"],
+      "protocol_evidence": {
+        "documentation_version": "official documentation checked 2026-09-04",
+        "streaming_semantics": "Responses supports streamed semantic events for compatible language models.",
+        "async_operation_semantics": "The covered language Responses call returns a response object; no media task lifecycle is inferred.",
+        "usage_semantics": "Response usage is retained when the model returns it.",
+        "input_output_formats": "Responses accepts documented message/input items and returns response output items.",
+        "item_request_batch_limits": "Request limits remain model and tool specific.",
+        "image_audio_video_limits": "Only media forms documented for the selected model are eligible.",
+        "context_output_limits": "Context and output limits are model specific.",
+        "region_restrictions": "The endpoint region is explicit and currently constrained to cn-beijing by the built-in profile.",
+        "account_tier_restrictions": "Endpoint access, quota and throttling depend on the Ark account.",
+        "preview_allowlist": "Only activated endpoints/models visible to the account are eligible."
+      },
+      "rules": [{ "model_pattern": "*", "status": "active", "source_status": "doubao_models_api_runtime_membership", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text", "image"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "Doubao Responses capability is limited to activated physical models and documented tools." }]
+    },
+    {
+      "provider_driver": "qwen",
+      "provider_profile_id": "qwen",
+      "protocol_adapter_ids": ["qwen-responses"],
+      "model_driver_ids": ["qwen"],
+      "discovery": "official_catalog",
+      "official_catalog": { "endpoint": "https://{workspace}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models", "format": "openai", "authentication": "bearer" },
+      "source_urls": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses", "https://www.alibabacloud.com/help/en/model-studio/models"],
+      "protocol_evidence": {
+        "documentation_version": "official documentation checked 2026-09-04",
+        "streaming_semantics": "The OpenAI-compatible Responses endpoint supports semantic streaming.",
+        "async_operation_semantics": "The covered language Responses operation is immediate or streamed.",
+        "usage_semantics": "Responses usage is retained when returned by Model Studio.",
+        "input_output_formats": "Responses accepts documented text, image and file input items with model-specific support.",
+        "item_request_batch_limits": "Limits are model and input-type specific and remain sourced from official documentation.",
+        "image_audio_video_limits": "Multimodal support and limits are taken from the selected Qwen model page.",
+        "context_output_limits": "Context and output limits are per physical model.",
+        "region_restrictions": "Workspace endpoints are region-specific and API keys must match the endpoint region.",
+        "account_tier_restrictions": "Workspace authorization, subscription, quota and model access apply.",
+        "preview_allowlist": "Preview and plan-exclusive models require explicit account entitlement."
+      },
+      "rules": [{ "model_pattern": "*", "status": "active", "source_status": "qwen_models_api_runtime_membership", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text", "image", "document"], "output_kinds": ["text", "json", "tool_call"], "document_formats": ["pdf"], "source_urls": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses"], "evidence_summary": "Qwen Responses capabilities are refined from the workspace catalog and per-model documentation." }]
+    },
+    {
       "provider_driver": "sn-ai-provider",
+      "provider_profile_id": "sn",
+      "protocol_adapter_ids": ["sn-openai"],
+      "model_driver_ids": ["openai"],
       "discovery": "internal_inventory",
       "official_catalog": {
         "endpoint": "https://sn.buckyos.ai/api/v1/ai/models",
@@ -1026,11 +1162,11 @@
       },
       "capability_source_provider": "openai",
       "source_urls": [
-        "https://github.com/buckyos/buckyos",
+        "https://github.com/buckyos/sn-business/tree/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc",
         "https://developers.openai.com/api/docs/models/all"
       ],
       "protocol_evidence": {
-        "documentation_version": "BuckyOS inventory and OpenAI documentation checked 2026-08-27",
+        "documentation_version": "sn-business f765081 and OpenAI model documentation checked 2026-09-04",
         "streaming_semantics": "Only OpenAI-compatible models actually present in SN runtime inventory inherit their documented streaming semantics.",
         "async_operation_semantics": "Async behavior is limited to the current SN inventory and AICC adapter implementation; no unsupported OpenAI models are synthesized.",
         "usage_semantics": "SN usage, credit, and raw cost must be reported through AICC durable finance snapshots.",

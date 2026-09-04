@@ -4,7 +4,11 @@ import { dirname, join } from "node:path";
 import { createServer } from "node:http";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { CANONICAL_API_TYPES, methodsForApiType } from "./canonical.ts";
+import {
+  CANONICAL_API_TYPES,
+  methodsForApiType,
+  parseCanonicalAssociationsFromRequirements,
+} from "./canonical.ts";
 import { buildStaticManifest } from "./cases.ts";
 import {
   analyzeProviderMatrix,
@@ -13,7 +17,14 @@ import {
   validateProviderBaseline,
 } from "./manifest.ts";
 import { runPreflight } from "./preflight.ts";
-import { assertNoSecrets, caseTotals, isProviderRestricted, redact } from "./report.ts";
+import {
+  ACCEPTANCE_REPORT_SCHEMA_VERSION,
+  assertNoSecrets,
+  caseTotals,
+  isProviderRestricted,
+  redact,
+  validateAcceptanceReport,
+} from "./report.ts";
 import { buildMockSettings, configValue } from "./mock_settings.ts";
 import { withAiccSettingsOverride, withMockSettings } from "./settings_transaction.ts";
 import { ProviderScheduler } from "./scheduler.ts";
@@ -39,7 +50,13 @@ import {
   validateProviderRequest,
 } from "./provider_protocol_contracts.ts";
 import { assertT15ResponseMapping, buildT15TypedParams } from "./run_t15_gateway.ts";
-import { createT15MockHandler } from "./t15_mock_provider.ts";
+import { createT15MockHandler, T15_PROVIDER_DISCOVERY_CONTRACTS } from "./t15_mock_provider.ts";
+import {
+  MOCK_PROVIDER_CONTRACT_VERSION,
+  MOCK_PROVIDER_MANAGEMENT_ROUTES,
+  MOCK_PROVIDER_SCENARIOS,
+  validateMockProviderContract,
+} from "./mock_provider_contract.ts";
 import {
   assertBackgroundRemovalTransparency,
   validateArtifactBytes,
@@ -180,6 +197,15 @@ test("Judge resource extraction includes request resources and output artifacts"
 test("LLM acceptance exposes only the breaking-change chat method", async () => {
   assert.deepEqual(methodsForApiType("llm"), ["chat.completions.create"]);
   assert.doesNotMatch(JSON.stringify(await baseline()), /llm\.completion/);
+});
+
+test("canonical requirements preserve separate api_type and method value sets", async () => {
+  const source = await readFile(join(here, "../../../doc/aicc/aicc_e2e_test_requirements.md"), "utf8");
+  const associations = parseCanonicalAssociationsFromRequirements(source);
+  assert.deepEqual(associations.get("llm"), ["chat.completions.create"]);
+  assert.deepEqual(associations.get("image.txt2img"), ["images.generate"]);
+  assert.notEqual("image.txt2img", associations.get("image.txt2img")?.[0]);
+  assert.deepEqual([...associations.keys()], CANONICAL_API_TYPES);
 });
 
 async function baseline() {
@@ -497,15 +523,32 @@ test("preflight covers protocol, providers, and static cases", async () => {
   assert.equal(result.canonical_api_types, CANONICAL_API_TYPES.length);
   assert.ok(result.static_cases > CANONICAL_API_TYPES.length);
   assert.ok(result.t15_cases > CANONICAL_API_TYPES.length);
+  assert.equal(result.mock_provider_contract_version, MOCK_PROVIDER_CONTRACT_VERSION);
   assert.deepEqual(result.provider_drivers, [
     "claude",
+    "deepseek",
+    "doubao",
     "fal",
+    "glm",
     "google-gemini",
+    "kimi",
     "minimax",
     "openai",
     "openrouter",
+    "qwen",
     "sn-ai-provider",
   ]);
+});
+
+test("T1 Mock Provider uses a fixed versioned control contract", () => {
+  assert.doesNotThrow(validateMockProviderContract);
+  assert.deepEqual(MOCK_PROVIDER_MANAGEMENT_ROUTES.reset, {
+    method: "POST",
+    path: "/__mock/reset",
+  });
+  assert.ok(MOCK_PROVIDER_SCENARIOS.includes("stream_success"));
+  assert.ok(MOCK_PROVIDER_SCENARIOS.includes("async_success"));
+  assert.ok(MOCK_PROVIDER_SCENARIOS.includes("rate_limit"));
 });
 
 test("T3 manifest includes six inbound kinds and multi-attachment history", () => {
@@ -959,6 +1002,20 @@ test("manifest rejects duplicate case ids", () => {
   );
 });
 
+test("manifest rejects an illegal method and api_type association", () => {
+  const testCase = structuredClone(buildStaticManifest().find((item) => item.api_type === "image.txt2img")!);
+  testCase.method = "image.txt2img";
+  assert.throws(() => validateCaseManifest([testCase]), /method is not valid for api_type/);
+});
+
+test("provider baseline requires profile, adapter, and model driver identities", async () => {
+  const valid = await baseline();
+  const invalid = structuredClone(valid) as unknown as Record<string, unknown>;
+  const providers = invalid.providers as Array<Record<string, unknown>>;
+  delete providers[0].provider_profile_id;
+  assert.throws(() => validateProviderBaseline(invalid), /provider_profile_id/);
+});
+
 test("T2 provider matrix has one minimal cell per physical model and API type", async () => {
   const cells = buildProviderMatrix({
     baseline: await baseline(),
@@ -1309,6 +1366,11 @@ test("T2 Gemini Embedding 2 has one minimal cell per API type and no variant cel
 
 test("T1.5 protocol catalog is independent, traceable, and strict on Provider wire", async () => {
   const catalog = await loadProviderProtocolCatalog();
+  assert.equal(catalog.providers.length, 12);
+  assert.deepEqual(
+    catalog.providers.map((provider) => provider.provider_driver).sort(),
+    ["claude", "deepseek", "doubao", "fal", "glm", "google-gemini", "kimi", "minimax", "openai", "openrouter", "qwen", "sn-ai-provider"],
+  );
   const contract = protocolContract(catalog, "claude", "anthropic.messages.2023-06-01");
   assert.deepEqual(validateProviderRequest(contract, {
     method: "POST",
@@ -1344,6 +1406,10 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
     body: { model: "claude-test", messages: {}, max_tokens: "16" },
   }), ["body field messages has invalid type", "body field max_tokens has invalid type"]);
   assert.ok(contract.official_sources.every((source) => source.startsWith("https://")));
+  const sn = protocolContract(catalog, "sn-ai-provider", "sn.openai-responses.v1");
+  assert.equal(sn.path, "/api/v1/ai/responses");
+  assert.ok(sn.official_sources.every((source) => source.includes("buckyos/sn-business/blob/f765081")));
+  assert.equal(catalog.providers.find((provider) => provider.provider_driver === "qwen")?.instance_fields?.workspace, "t15-workspace");
   const invalidCatalog = structuredClone(catalog);
   invalidCatalog.providers[0].contracts[0].official_sources = ["https://example.com/not-provider-evidence"];
   assert.throws(() => validateProviderProtocolCatalog(invalidCatalog), /Provider official domain/);
@@ -1363,6 +1429,48 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const baseUrl = `http://127.0.0.1:${address.port}`;
+  assert.equal((await fetch(`${baseUrl}/__mock/select`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      provider_driver: "qwen",
+      contract_id: "qwen.responses.compatible-v1",
+      scenario: "success",
+    }),
+  })).status, 200);
+  assert.equal((await fetch(`${baseUrl}/compatible-mode/v1/models`, {
+    headers: { authorization: "Bearer t15-secret-value" },
+  })).status, 404);
+  assert.equal((await fetch(`${baseUrl}/__mock/select`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      provider_driver: "openai",
+      contract_id: "openai.responses.v1",
+      scenario: "success",
+    }),
+  })).status, 200);
+  const unauthenticatedDiscovery = await fetch(`${baseUrl}/v1/models`);
+  assert.equal(unauthenticatedDiscovery.status, 401);
+  const discovery = await fetch(`${baseUrl}/v1/models`, {
+    headers: { authorization: "Bearer t15-secret-value" },
+  });
+  assert.equal(discovery.status, 200);
+  assert.ok(((await discovery.json()) as { data: Array<{ id: string }> }).data.some((model) => model.id === "gpt-5.4"));
+  assert.equal((await fetch(`${baseUrl}/__mock/select`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      provider_driver: "sn-ai-provider",
+      contract_id: "sn.openai-responses.v1",
+      scenario: "success",
+    }),
+  })).status, 200);
+  const snDiscovery = await fetch(`${baseUrl}/api/v1/ai/models`, {
+    headers: { authorization: "Bearer t15-secret-value" },
+  });
+  assert.equal(snDiscovery.status, 200);
+  assert.ok(Array.isArray(((await snDiscovery.json()) as { items: unknown[] }).items));
   const select = async () => {
     const response = await fetch(`${baseUrl}/__mock/select`, {
       method: "POST",
@@ -1461,6 +1569,10 @@ test("T1.5 manifest owns Provider normal, streaming, async, error, and variant c
     },
   }]));
   assert.ok(manifest.some((item) => item.mock_scenario === "stream_success"));
+  assert.ok(manifest.filter((item) => item.mock_scenario === "stream_success" ||
+    item.mock_scenario === "stream_interrupted").every((item) => item.execution_mode === "stream"));
+  assert.ok(manifest.filter((item) => item.mock_scenario !== "stream_success" &&
+    item.mock_scenario !== "stream_interrupted").every((item) => item.execution_mode === "immediate"));
   assert.ok(manifest.some((item) => item.mock_scenario === "async_success"));
   assert.ok(manifest.some((item) => item.mock_scenario === "async_failed"));
   assert.ok(manifest.some((item) => item.mock_scenario === "async_cancel"));
@@ -1473,9 +1585,15 @@ test("T1.5 manifest owns Provider normal, streaming, async, error, and variant c
 test("T1.5 typed request fixtures use current provider-neutral methods without legacy envelopes", () => {
   const params = buildT15TypedParams("llm", "gpt-5.4@t15-openai", "run");
   assert.equal(params.exact_model, "gpt-5.4@t15-openai");
+  assert.equal(params.execution_mode, "immediate");
   assert.ok(Array.isArray(params.messages));
   assert.equal("model" in params, false);
   assert.equal("payload" in params, false);
+  assert.equal("stream" in params, false);
+
+  const streamParams = buildT15TypedParams("llm", "gpt-5.4@t15-openai", "run", "stream");
+  assert.equal(streamParams.execution_mode, "stream");
+  assert.equal("stream" in streamParams, false);
 });
 
 test("T1.5 success mapping requires canonical output, usage, and async attribution", async () => {
@@ -1539,6 +1657,52 @@ test("report redaction removes secrets and totals statuses", () => {
   assert.equal(totals.skipped, 0);
   assert.equal(isProviderRestricted(new Error("request not allowed for this model")), true);
   assert.equal(isProviderRestricted(new Error("provider request failed")), false);
+});
+
+test("report schema rejects version drift and duplicate case ids", () => {
+  const caseReport = {
+    run_id: "run-1",
+    case_id: "t1.schema",
+    layer: "T1",
+    status: "passed",
+    method: "route.resolve",
+    outbound_message_ids: [],
+    artifact_ids: [],
+    attempts: [],
+  };
+  const report = {
+    schema_version: ACCEPTANCE_REPORT_SCHEMA_VERSION,
+    run_id: "run-1",
+    started_at: "2026-09-02T00:00:00.000Z",
+    finished_at: "2026-09-02T00:00:01.000Z",
+    commit: "test-commit",
+    baseline_revision: "test-baseline",
+    allow_real_model_calls: false,
+    planned_real_calls: 0,
+    actual_real_calls: 0,
+    estimated_cost_usd: 0,
+    actual_cost_usd: 0,
+    raw_cost_usd: 0,
+    credit_applied_usd: 0,
+    finance: buildFinancialReport({
+      entries: [],
+      budgetUsd: 0,
+      plannedMaxCalls: 0,
+      plannedMaxCostUsd: 0,
+    }),
+    cases: [caseReport],
+    product_defects: [],
+    cleanup: { status: "passed", details: [] },
+  };
+  assert.doesNotThrow(() => validateAcceptanceReport(report));
+  assert.throws(
+    () => validateAcceptanceReport({ ...report, schema_version: 2 }),
+    /unsupported acceptance report schema_version/,
+  );
+  assert.throws(
+    () => validateAcceptanceReport({ ...report, cases: [caseReport, caseReport] }),
+    /duplicate report case_id/,
+  );
 });
 
 test("named artifact validation reads and verifies ZIP entries", async () => {

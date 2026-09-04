@@ -169,10 +169,10 @@ async function addProvider(
     provider_type: "cloud_api",
     provider_profile_id: provider.provider_profile_id,
     protocol_adapter_id: provider.contracts[0].protocol_adapter_id,
-    endpoint: `${mockBaseUrl}${provider.endpoint_path}`,
-    credentials: { type: provider.credential_type, secret: `t15-mock-${driver}` },
+    base_url: `${mockBaseUrl}${provider.endpoint_path}`,
+    credentials: { api_token: { locked: `t15-mock-${driver}` } },
+    ...provider.instance_fields,
     auto_sync_models: true,
-    enabled: true,
   });
 }
 
@@ -223,8 +223,17 @@ function resource(mime: string): Record<string, unknown> {
   return { kind: "base64", mime, data_base64: Buffer.from("t15-fixture").toString("base64") };
 }
 
-export function buildT15TypedParams(apiType: string, exactModelId: string, runId: string): Record<string, unknown> {
-  const common = { exact_model: exactModelId, idempotency_key: `${runId}:${apiType}` };
+export function buildT15TypedParams(
+  apiType: string,
+  exactModelId: string,
+  runId: string,
+  executionMode: AcceptanceCase["execution_mode"] = "immediate",
+): Record<string, unknown> {
+  const common = {
+    exact_model: exactModelId,
+    execution_mode: executionMode,
+    idempotency_key: `${runId}:${apiType}`,
+  };
   switch (apiType) {
     case "llm": return { ...common, messages: [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827." }] }], max_output_tokens: 32 };
     case "embedding.text": return { ...common, items: [{ type: "text", id: "item-1", text: "BUCKYOS-AICC-4827" }] };
@@ -341,7 +350,12 @@ async function executeCase(
   try {
     const result = await session.aicc.call(
       testCase.method,
-      buildT15TypedParams(testCase.api_type!, exactModel(catalog, testCase, inventory), runId),
+      buildT15TypedParams(
+        testCase.api_type!,
+        exactModel(catalog, testCase, inventory),
+        runId,
+        testCase.execution_mode,
+      ),
     ) as Record<string, unknown>;
     if (testCase.mock_scenario === "async_cancel") {
       if (result.status !== "running" || typeof result.task_id !== "string") {

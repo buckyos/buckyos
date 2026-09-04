@@ -12,11 +12,44 @@ T2 的模型库存基准来自 Runner 直接调用 `provider_capability_baseline
 
 - `preflight.ts`：从规范文档校验 23 个 canonical API，并检查静态 T1 case、T1.5 官方协议契约、Provider 能力基线和 fixture 完整性；不读取 AICC 实现代码或实现 metadata。
 - `mock_provider.ts`：T1 使用的通用确定性 Mock。
+- `mock_provider_contract.ts`：T1 Mock 的版本化 scenario 与管理接口契约；Mock 实现直接消费该契约，preflight 检查其完整性。
 - `provider_protocol_contracts.json`：T1.5 独立协议契约、官方证据 revision、测试用 Provider Profile/模型映射、请求字段类型、正常响应、异步 lifecycle 和 Provider 专属错误 fixture。Runner 不按模型名或厂商名选择协议分支。
 - `t15_mock_provider.ts`：T1.5 高保真 Mock；按所选官方契约严格校验 method、path、认证、content type、必需字段、字段类型和未知字段，并独立记录 submit、poll、result、cancel wire，然后返回对应 Provider 的正常、stream、异步或错误响应。
 - `run_t15_gateway.ts`：临时注册目标 Provider instance，用精确模型固定 adapter，经 Gateway 执行 T1.5 并审计 Mock capture；每个运行时可独立调用的 variant 形成独立协议单元。
 - `run_gateway.ts`：经 Zone Gateway 登录真实 AICC；默认只生成 T2 计划，只有显式允许时才调用真实 Provider。
 - `provider_capability_baseline.json`：按 Provider 参数化的版本化能力证据基线。
+
+WP-01 至 WP-17 的模块单测入口与验收职责保持如下映射；T1/T1.5 只覆盖跨模块集成，不替代这些入口：
+
+| 工作包 | 模块单测入口 | 覆盖边界 |
+|---|---|---|
+| WP-01 | `cd src && cargo test -p buckyos-api`；`cargo test -p buckyos-api --test aicc_client_test` | Rust canonical DTO、Client/Handler dispatch、序列化与稳定错误映射 |
+| WP-01TS | WebSDK 上游的 canonical AICC 测试；本仓通过 `src/apps/sys_test/package.json` 与本目录 lockfile 固定 `092009c...` | TypeScript method/DTO/export 与 Rust contract 对齐；本仓不复制 WebSDK 源码 |
+| WP-02 | `cd src && cargo test -p aicc matching` | MatchRule 编译、字段约束、组合与脱敏 trace |
+| WP-03 | `cd src && cargo test -p aicc catalog` | catalog 加载、编译、revision、冲突和 snapshot |
+| WP-04 | `cd src && cargo test -p aicc model` | model registry、logical directory、variant 与能力交集 |
+| WP-05 | `cd src && cargo test -p aicc protocol` | adapter registry、transport、codec limit 与错误边界 |
+| WP-06 | `cd src && cargo test -p aicc protocol` | OpenAI Responses、Claude Messages、Gemini Interactions、OpenAI Chat codec |
+| WP-07 | `cd src && cargo test -p aicc provider` | Provider core、discovery、inventory、LKGS 与 refresh/stop |
+| WP-08 | `cd src && cargo test -p aicc provider::builtin` | 11 家内置 Provider、SN、dialect 和 metadata 装配 |
+| WP-09 | `cd src && cargo test -p aicc admission`；`cargo test -p aicc routing` | quota、budget、privacy、trust 与 fail-closed policy |
+| WP-10 | `cd src && cargo test -p aicc routing`；`cargo test -p aicc scheduler` | deterministic routing、并发/间隔、公平性、fallback 与 trace |
+| WP-11 | `cd src && cargo test -p aicc call` | operation 选择、variant lowering、set/remove 和资源要求 |
+| WP-12 | `cd src && cargo test -p aicc execution` | immediate/stream/native task、cancel、幂等、恢复、竞态与 usage completion |
+| WP-13 | `cd src && cargo test -p aicc resource` | ResourceRef、权限、MIME、大小、压缩包安全、上传与 artifact |
+| WP-14 | `cd src && cargo test -p aicc storage`；`cargo test -p aicc usage` | 原子存储、去重、retention、usage/finance、trace 关联与脱敏 |
+| WP-15 | `cd src && cargo test -p aicc runtime`；`cargo test -p aicc metadata` | RuntimeSnapshot 原子发布、settings/metadata seq 收敛和失败保留 |
+| WP-16 | `cd src && cargo test -p aicc service`；`cargo test -p buckyos-api` | service 装配、管理 API、RBAC、reload/CAS 与 Client 映射 |
+| WP-17A | `cd src/frame/desktop && pnpm run check && pnpm run test:e2e` | AI Center DataModel、Provider Wizard、财务展示与交互 |
+| WP-17B | `cd src && cargo test -p workflow` | Workflow typed AICC adapter、任务进度与错误传播 |
+| WP-17C | `cd src && cargo test -p llm_context -p agent_tool -p opendan`；`cd src/tools/buckyos-agent && deno test --allow-read lib/aicc_test.ts` | OpenDAN/Jarvis/CLI canonical typed/helper 调用与 TaskMgr 轮询 |
+| WP-17D | `cd src && cargo test -p scheduler -p buckyos-api -p aicc` | rootfs/dev settings、首装/重装、locked credential、RBAC 与 reload |
+
+能力基线 schema v3 分别记录 `provider_driver`（公共 RPC 与报告分组）、
+`provider_profile_id`、`protocol_adapter_ids` 和 `model_driver_ids`。preflight 会独立校验
+canonical api_type 值域、typed method 值域及其显式关联，并检查能力基线与 T1.5
+协议契约中的 Profile/Adapter 身份一致；这些身份不会回退成 settings 中的
+`provider_driver`。
 
 ```bash
 cd test/aicc_test
@@ -50,6 +83,6 @@ T1 会临时写入带 `run_id` 的 Mock Provider instance，并在 `finally` 中
 
 第二租户隔离用例通过 `[auth].other_tenant_session_token` 或 `BUCKYOS_TEST_OTHER_TENANT_SESSION_TOKEN` 参数化，覆盖 task 查询/取消、usage、msg-center 消息、Named Object 和管理方法 RBAC。未配置时这些 case 保留在 manifest 和覆盖报告中并明确记为 `skipped`，不会伪造同租户结果或阻断其他 T1 用例。
 
-T2 会为 OpenAI、Claude、Google Gemini、Fal、MiniMax、OpenRouter 和 SN 生成全部 active 基础物理模型的最小 `ProviderInstance × model × API-Type` 矩阵；是否实际执行由 `--provider`、凭据和真实调用开关共同决定。可用报告中的 `targeted_retest_command`，或重复传入 `--case <case_id>`，只重跑失败单元。没有账号的 MiniMax 以及明确禁止执行的 OpenRouter/SN 仍保留基线和用例，但不应开启真实调用。
+T2 会为 OpenAI、Claude、Google Gemini、Fal、MiniMax、OpenRouter、Kimi、GLM、DeepSeek、Doubao、Qwen 和 SN 生成全部 active 基础物理模型的最小 `ProviderInstance × model × API-Type` 矩阵；是否实际执行由 `--provider`、凭据和真实调用开关共同决定。可用报告中的 `targeted_retest_command`，或重复传入 `--case <case_id>`，只重跑失败单元。没有账号或明确禁止执行的 Provider 仍保留基线和用例，但不应开启真实调用。
 
 普通 `chat.completions.create` 用例显式关闭 AICC 默认附加的 `web_search`，避免把基础聊天错误地限定为必须支持联网搜索；联网搜索作为独立 capability 分支验证。Provider 凭据临时写入后，runner 会等待 system-config 与 AICC runtime settings 收敛，再验证 settings 字节恢复、运行时 inventory、Named Data 和消息资源清理。

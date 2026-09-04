@@ -8,6 +8,9 @@ import type {
   FinancialAggregate,
   FinancialReport,
 } from "./types.ts";
+import { FAILURE_CLASSES, RESULT_STATUSES } from "./types.ts";
+
+export const ACCEPTANCE_REPORT_SCHEMA_VERSION = 1 as const;
 
 const SECRET_KEY = /(?:api[_-]?key|authorization|password|private[_-]?key|session[_-]?token|refresh[_-]?token|access[_-]?token|cookie)/i;
 const SECRET_VALUE = /(?:bearer\s+[a-z0-9._~+/=-]+|sk-[a-z0-9_-]{12,}|-----BEGIN [A-Z ]+PRIVATE KEY-----)/ig;
@@ -52,6 +55,84 @@ export function caseTotals(cases: CaseReport[]): Record<ResultStatus, number> {
   };
   for (const result of cases) totals[result.status] += 1;
   return totals;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function requireString(value: unknown, field: string): void {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${field} must be a non-empty string`);
+  }
+}
+
+function requireNonNegativeNumber(value: unknown, field: string): void {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${field} must be a finite non-negative number`);
+  }
+}
+
+export function validateAcceptanceReport(value: unknown): asserts value is AcceptanceReport {
+  if (!isObject(value)) throw new Error("acceptance report must be an object");
+  if (value.schema_version !== ACCEPTANCE_REPORT_SCHEMA_VERSION) {
+    throw new Error("unsupported acceptance report schema_version");
+  }
+  for (const field of ["run_id", "started_at", "finished_at", "commit", "baseline_revision"] as const) {
+    requireString(value[field], field);
+  }
+  if (typeof value.allow_real_model_calls !== "boolean") {
+    throw new Error("allow_real_model_calls must be boolean");
+  }
+  for (const field of [
+    "planned_real_calls", "actual_real_calls", "estimated_cost_usd", "actual_cost_usd",
+    "raw_cost_usd", "credit_applied_usd",
+  ] as const) {
+    requireNonNegativeNumber(value[field], field);
+  }
+  if (!Number.isInteger(value.planned_real_calls) || !Number.isInteger(value.actual_real_calls)) {
+    throw new Error("real call counts must be integers");
+  }
+  if (!Array.isArray(value.cases)) throw new Error("cases must be an array");
+  const caseIds = new Set<string>();
+  for (const [index, rawCase] of value.cases.entries()) {
+    if (!isObject(rawCase)) throw new Error(`cases[${index}] must be an object`);
+    requireString(rawCase.case_id, `cases[${index}].case_id`);
+    const caseId = String(rawCase.case_id);
+    if (caseIds.has(caseId)) throw new Error(`duplicate report case_id ${caseId}`);
+    caseIds.add(caseId);
+    if (rawCase.run_id !== value.run_id) throw new Error(`${caseId}.run_id differs from report`);
+    if (!["T1", "T1.5", "T2", "T3"].includes(String(rawCase.layer))) {
+      throw new Error(`${caseId}.layer is invalid`);
+    }
+    if (!RESULT_STATUSES.includes(rawCase.status as never)) throw new Error(`${caseId}.status is invalid`);
+    requireString(rawCase.method, `${caseId}.method`);
+    for (const field of ["outbound_message_ids", "artifact_ids", "attempts"] as const) {
+      if (!Array.isArray(rawCase[field])) throw new Error(`${caseId}.${field} must be an array`);
+    }
+    for (const [attemptIndex, rawAttempt] of (rawCase.attempts as unknown[]).entries()) {
+      if (!isObject(rawAttempt)) throw new Error(`${caseId}.attempts[${attemptIndex}] must be an object`);
+      if (!Number.isInteger(rawAttempt.attempt) || Number(rawAttempt.attempt) < 1) {
+        throw new Error(`${caseId}.attempts[${attemptIndex}].attempt must be a positive integer`);
+      }
+      if (!RESULT_STATUSES.includes(rawAttempt.status as never)) {
+        throw new Error(`${caseId}.attempts[${attemptIndex}].status is invalid`);
+      }
+      if (rawAttempt.failure_class !== undefined &&
+        !FAILURE_CLASSES.includes(rawAttempt.failure_class as never)) {
+        throw new Error(`${caseId}.attempts[${attemptIndex}].failure_class is invalid`);
+      }
+    }
+  }
+  if (!Array.isArray(value.product_defects)) throw new Error("product_defects must be an array");
+  if (!isObject(value.finance) || value.finance.currency !== "USD" || !Array.isArray(value.finance.entries)) {
+    throw new Error("finance must use the fixed USD report schema");
+  }
+  if (!isObject(value.cleanup) || !["passed", "failed"].includes(String(value.cleanup.status)) ||
+    !Array.isArray(value.cleanup.details) ||
+    value.cleanup.details.some((detail) => typeof detail !== "string")) {
+    throw new Error("cleanup must use the fixed report schema");
+  }
 }
 
 export function defectFromFailure(args: {
@@ -264,6 +345,7 @@ export async function writeReport(
   report: AcceptanceReport,
 ): Promise<void> {
   const safe = redact(report) as AcceptanceReport;
+  validateAcceptanceReport(safe);
   assertNoSecrets(safe);
   await mkdir(outputDir, { recursive: true });
   await writeFile(

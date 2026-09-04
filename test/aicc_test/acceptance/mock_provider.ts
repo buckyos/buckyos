@@ -1,36 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  MOCK_PROVIDER_MANAGEMENT_ROUTES,
+  MOCK_PROVIDER_SCENARIOS,
+  type MockProviderScenario as Scenario,
+} from "./mock_provider_contract.ts";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-
-type Scenario =
-  | "success"
-  | "stream_success"
-  | "async_success"
-  | "async_failed"
-  | "async_pending"
-  | "bad_request"
-  | "unauthorized"
-  | "forbidden"
-  | "not_found"
-  | "idempotency_conflict"
-  | "rate_limit"
-  | "provider_5xx"
-  | "connection_failed"
-  | "timeout_short"
-  | "timeout_long"
-  | "malformed_response"
-  | "wrong_mime"
-  | "missing_usage"
-  | "safety_blocked"
-  | "quota_exhausted"
-  | "invalid_resource"
-  | "embedding_dimension_mismatch"
-  | "embedding_row_count_mismatch"
-  | "embedding_order_mismatch"
-  | "embedding_nonfinite"
-  | "rerank_missing_score"
-  | "rerank_document_id_mismatch"
-  | "rerank_result_count_mismatch";
 
 type RecordedRequest = {
   id: number;
@@ -76,36 +51,7 @@ const state: State = {
   operations: new Map(),
 };
 
-const VALID_SCENARIOS = new Set<Scenario>([
-  "success",
-  "stream_success",
-  "async_success",
-  "async_failed",
-  "async_pending",
-  "bad_request",
-  "unauthorized",
-  "forbidden",
-  "not_found",
-  "idempotency_conflict",
-  "rate_limit",
-  "provider_5xx",
-  "connection_failed",
-  "timeout_short",
-  "timeout_long",
-  "malformed_response",
-  "wrong_mime",
-  "missing_usage",
-  "safety_blocked",
-  "quota_exhausted",
-  "invalid_resource",
-  "embedding_dimension_mismatch",
-  "embedding_row_count_mismatch",
-  "embedding_order_mismatch",
-  "embedding_nonfinite",
-  "rerank_missing_score",
-  "rerank_document_id_mismatch",
-  "rerank_result_count_mismatch",
-]);
+const VALID_SCENARIOS = new Set<Scenario>(MOCK_PROVIDER_SCENARIOS);
 
 function parsePort(args: string[]): number {
   const index = args.indexOf("--port");
@@ -389,6 +335,8 @@ async function management(
   path: string,
   body: Json | null,
 ): Promise<boolean> {
+  const matches = (route: { method: string; path: string }) =>
+    path === route.path && request.method === route.method;
   if (path.startsWith("/__mock/fixtures/") && request.method === "GET") {
     const name = path.slice("/__mock/fixtures/".length);
     if (name.endsWith(".png")) {
@@ -410,11 +358,11 @@ async function management(
       return true;
     }
   }
-  if (path === "/__mock/health" && request.method === "GET") {
+  if (matches(MOCK_PROVIDER_MANAGEMENT_ROUTES.health)) {
     json(response, 200, { ok: true, ...state.provider });
     return true;
   }
-  if (path === "/__mock/reset" && request.method === "POST") {
+  if (matches(MOCK_PROVIDER_MANAGEMENT_ROUTES.reset)) {
     state.defaultScenario = "success";
     state.scenarios.clear();
     state.pathScenarios.clear();
@@ -426,7 +374,7 @@ async function management(
     json(response, 200, { ok: true });
     return true;
   }
-  if (path === "/__mock/scenario" && request.method === "POST") {
+  if (matches(MOCK_PROVIDER_MANAGEMENT_ROUTES.scenario)) {
     const input = object(body);
     const scenario = input?.scenario;
     if (typeof scenario !== "string" || !VALID_SCENARIOS.has(scenario as Scenario)) {
@@ -444,7 +392,7 @@ async function management(
     json(response, 200, { ok: true });
     return true;
   }
-  if (path === "/__mock/provider_state" && request.method === "POST") {
+  if (matches(MOCK_PROVIDER_MANAGEMENT_ROUTES.providerState)) {
     const input = object(body);
     if (typeof input?.health === "string") state.provider.health = input.health;
     if (typeof input?.quota === "string") state.provider.quota = input.quota;
@@ -457,11 +405,11 @@ async function management(
     json(response, 200, { ok: true, ...state.provider });
     return true;
   }
-  if (path === "/__mock/requests" && request.method === "GET") {
+  if (matches(MOCK_PROVIDER_MANAGEMENT_ROUTES.requests)) {
     json(response, 200, { requests: state.requests as unknown as Json });
     return true;
   }
-  if (path === "/__mock/metrics" && request.method === "GET") {
+  if (matches(MOCK_PROVIDER_MANAGEMENT_ROUTES.metrics)) {
     json(response, 200, {
       calls: state.calls,
       errors: state.errors,

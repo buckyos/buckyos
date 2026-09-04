@@ -674,24 +674,26 @@ Owner：E2E 小组
 
 依赖：Gate 0 后立即开始，贯穿全部工作包
 
-- [ ] 分别校验 canonical method 值域、api_type 值域和显式合法关联，不检查同名或双射；
-- [ ] Provider baseline schema 增加 Profile/Adapter/Model Driver 身份；`provider_driver` 可继续作为与公共 RPC 一致的兼容/报告分组字段，不承担 settings 身份语义；
-- [ ] 集成测试阶段把 11 家 Provider 和 SN 加入参数化 baseline：先补齐 T1/T1.5，再补齐 T2，最后进入 T3；
-- [ ] 固定 fixture manifest、Mock Provider contract 和 report schema；
-- [ ] 汇总 WP-01 至 WP-17 的模块单元测试入口和覆盖范围；
-- [ ] AiccClient request/response、序列化和错误映射测试；
+- [x] 分别校验 canonical method 值域、api_type 值域和显式合法关联，不检查同名或双射；
+- [x] Provider baseline schema 增加 Profile/Adapter/Model Driver 身份；`provider_driver` 可继续作为与公共 RPC 一致的兼容/报告分组字段，不承担 settings 身份语义；
+- [x] 集成测试阶段把 11 家 Provider 和 SN 加入参数化 baseline：先补齐 T1/T1.5，再补齐 T2，最后进入 T3；
+- [x] 固定 fixture manifest、Mock Provider contract 和 report schema；
+- [x] 汇总 WP-01 至 WP-17 的模块单元测试入口和覆盖范围；
+- [x] AiccClient request/response、序列化和错误映射测试；
 - [ ] T1 经 Zone Gateway 执行真实 AICC 路由链路和多 Mock Provider；
 - [ ] T1.5 经 Zone Gateway 执行真实 AICC typed/helper method、真实 Adapter 和 Provider 专用高保真 Mock；
 - [ ] T1.5 fixture 只依据 Provider 官方 API 文档、官方 schema、官方 SDK 协议定义和官方错误文档；
 - [ ] T1.5 覆盖 Provider driver × Adapter/API version × API-Type × operation，以及每个可独立调用的 metadata variant；
 - [ ] T2 官方 inventory 双向 diff 和 `ProviderInstance × model × API-Type` 最小真实推理矩阵；
 - [ ] T3 message-tunnel/Jarvis 六类消息、多附件、多轮和入口矩阵；
-- [ ] 全局/Provider 并发、最小间隔、重试、timeout 和预算门禁；
-- [ ] cleanup、settings 字节恢复、Named Object 和消息资源清理；
-- [ ] targeted retest command、finance report 和 product defect evidence；
-- [ ] 默认 CI 不产生真实模型费用。
+- [x] 全局/Provider 并发、最小间隔、重试、timeout 和预算门禁；
+- [x] cleanup、settings 字节恢复、Named Object 和消息资源清理；
+- [x] targeted retest command、finance report 和 product defect evidence；
+- [x] 默认 CI 不产生真实模型费用。
 
 完成标准：每个需求、method、Provider、operation 和横切能力都能追踪到模块单测或稳定的 T1/T1.5/T2/T3 case ID，并能明确证明四层之间没有用后一层重复代替前一层。
+
+实现记录：E2E 小组已完成 WP-18 静态基础与四层 Runner/manifest：preflight 分别校验 canonical api_type、typed method 及显式关联，Provider baseline schema v3 固定 11 家 Provider 与 SN 的 Profile/Adapter/Model Driver 身份；fixture manifest、T1 Mock contract 和 acceptance report 均使用固定 schema。T1.5 manifest 显式携带 canonical `execution_mode`，流式用例只向 AICC 传 `execution_mode=stream`，禁止调用方传 Provider wire `stream`；高保真 Mock 独立要求 Adapter 产生 `stream=true`。AiccClient 集成测试覆盖 request/response、严格 serde、`unsupported_execution_mode` 与稳定错误映射；默认 CI 只运行 preflight/self-test，不开放真实模型调用。静态 preflight、自测 67 项和 `cargo test -p buckyos-api --test aicc_client_test` 4 项通过。T1/T1.5 尚待全部工作包 Done 后的编码冻结环境执行；T2/T3 还需要每次运行的人工授权，因此对应六项集成验收保持未完成。
 
 ## 6. 实施波次与并行关系
 
@@ -937,7 +939,7 @@ cargo test -p buckyos-api --test aicc_client_test
 uv run buckyos-build.py --skip-web
 ```
 
-当前仓库尚无 `src/kernel/buckyos-api/tests/aicc_client_test.rs`；该测试目标由 WP-18 创建。在它落地前，相关命令是路线图目标而不是当前可执行门禁。
+`src/kernel/buckyos-api/tests/aicc_client_test.rs` 已由 WP-18 建立，并作为可执行的 API 契约门禁。
 
 ### 9.3 编码期间的 Push Gate
 
@@ -1123,7 +1125,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | WP-15 | Runtime/Consistency 小组 | Done | WP-03/07/14 | RuntimeSnapshot |
 | WP-16 | Service Integration 小组 | Done | WP-07/09-15 | Service/Admin |
 | WP-17 | TBD | Pending | WP-01/16 | Callers |
-| WP-18 | TBD | Pending | Gate 0 | Acceptance |
+| WP-18 | E2E 小组 | In Progress | 本提交；待集成 Gate | Acceptance |
 | T1/T1.5 Gate | TBD | Pending | WP-01 至 WP-18 Done、编码冻结 | 零真实调用的集成验收 |
 | T2/T3 Gate | TBD | Pending | T1/T1.5 Gate Done、当次授权 | 真实 Provider 与消息链路发布验收 |
 
