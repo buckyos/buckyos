@@ -8,8 +8,10 @@ use super::super::{
     CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderProfile, RefreshPolicy,
 };
 #[cfg(test)]
+use crate::catalog::KnownProvider;
+use crate::catalog::Pricing;
+#[cfg(test)]
 use crate::catalog::{CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ProviderRulesCatalog};
-use crate::catalog::{KnownProvider, Pricing};
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
     OPENROUTER_CHAT_ADAPTER_ID,
@@ -18,6 +20,7 @@ use async_trait::async_trait;
 use buckyos_api::{features, ApiType};
 use reqwest::header::ETAG;
 use reqwest::{Method, Url};
+#[cfg(test)]
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -47,6 +50,7 @@ pub(crate) fn openrouter_profile() -> ProviderProfile {
             kind: CredentialKind::Bearer,
             header_name: None,
         },
+        credential_variants: Vec::new(),
         discovery_mode: DiscoveryMode::MachineApi,
         refresh: RefreshPolicy::default(),
         default_inventory: None,
@@ -66,6 +70,7 @@ pub(crate) fn openrouter_connection_contract() -> ProviderConnectionContract {
         region: fields.region,
         workspace: fields.workspace,
         account: fields.account,
+        region_base_urls: known.connection.region_base_urls,
     }
 }
 
@@ -107,6 +112,7 @@ struct InstanceFieldDeclarations {
     account: ProviderFieldSchema,
 }
 
+#[cfg(test)]
 fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
     serde_json::from_value(
         known
@@ -118,6 +124,7 @@ fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: 
     .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
+#[cfg(test)]
 fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
     serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
@@ -442,6 +449,7 @@ mod tests {
             credential: CredentialReference {
                 reference: "secret://openrouter".to_owned(),
             },
+            credential_kind: None,
             provider_rules_id: Some(OPENROUTER_PROVIDER_PROFILE_ID.to_owned()),
             region: None,
             workspace: None,

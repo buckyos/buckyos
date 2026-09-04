@@ -71,6 +71,8 @@ SN 使用独立 `sn-openai` Adapter，并显式选择认证模式。静态 API K
 
 两种模式互斥。动态 token 只由 `sn-openai` 在运行时缓存和刷新，不写回 system-config，也不由 `openai` 基础 Adapter 处理。
 
+GLM 默认使用 Bearer。需要由 AICC 从 `key-id.secret` 生成短期 JWT 时，在静态认证中显式增加 `"credential_kind": "glm_jwt"`；其它 Provider 请求未声明的 credential kind 会被拒绝。
+
 Beta 2.2 不读取 Provider family section、`instances[]` 包装、`provider_driver`、`endpoint`、`features`、`alias_map`、section 级 token 或字段别名。`base_url` 是新旧 settings 都保留的正式字段。
 ## 3. 更新方式
 

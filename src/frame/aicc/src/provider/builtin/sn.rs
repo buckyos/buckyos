@@ -8,6 +8,7 @@ use super::super::{
 };
 #[cfg(test)]
 use super::super::{DiscoveryMode, RefreshPolicy};
+#[cfg(test)]
 use crate::catalog::KnownProvider;
 #[cfg(test)]
 use crate::catalog::{CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ProviderRulesCatalog};
@@ -20,6 +21,7 @@ use async_trait::async_trait;
 use buckyos_api::{generate_sn_user_device_token, login_sn_user_by_device_token};
 use reqwest::header::ETAG;
 use reqwest::{Method, Url};
+#[cfg(test)]
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::Value;
@@ -29,6 +31,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock};
 
 pub(crate) const SN_PROVIDER_PROFILE_ID: &str = "sn";
+pub(crate) const SN_DYNAMIC_LOGIN_PROFILE_ID: &str = "device_jwt";
 pub(crate) const SN_OPENAI_ADAPTER_ID: &str = "sn-openai";
 
 const SN_MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
@@ -51,6 +54,7 @@ pub(crate) fn sn_profile() -> ProviderProfile {
         display_name: known.display_name,
         default_protocol_adapter_id: known.protocol_adapter_id,
         credential,
+        credential_variants: Vec::new(),
         discovery_mode: DiscoveryMode::MachineApi,
         refresh: RefreshPolicy::default(),
         default_inventory: None,
@@ -85,6 +89,7 @@ pub(crate) fn sn_connection_contract(auth_mode: ProviderAuthMode) -> ProviderCon
             ProviderAuthMode::ApiKey => fields.account.api_key,
             ProviderAuthMode::DynamicLogin => fields.account.dynamic_login,
         },
+        region_base_urls: known.connection.region_base_urls,
     }
 }
 
@@ -131,6 +136,7 @@ pub(crate) fn resolve_sn_provider_instance_with_config(
             protocol_adapter_id: profile.default_protocol_adapter_id.clone(),
             base_url: connection.base_url,
             credential,
+            credential_kind: input.auth.credential_kind(),
             provider_rules_id,
             region: connection.region,
             workspace: connection.workspace,
@@ -176,15 +182,6 @@ struct CredentialDeclaration {
 #[cfg(test)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AuthDeclaration {
-    modes: BTreeSet<String>,
-    dynamic_login_profiles: Vec<String>,
-    mutually_exclusive: bool,
-}
-
-#[cfg(test)]
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct InstanceFieldDeclarations {
     region: ProviderFieldSchema,
     workspace: ProviderFieldSchema,
@@ -201,20 +198,10 @@ struct AccountFieldDeclarations {
 
 #[cfg(test)]
 fn sn_dynamic_login_profile() -> String {
-    let known = sn_known_provider();
-    let auth: AuthDeclaration =
-        embedded_value(&known, "auth", "SN Known Provider auth declaration");
-    assert!(auth.mutually_exclusive);
-    assert_eq!(
-        auth.modes,
-        BTreeSet::from(["api_key".to_owned(), "dynamic_login".to_owned()])
-    );
-    let [profile] = auth.dynamic_login_profiles.as_slice() else {
-        panic!("SN Known Provider must declare exactly one dynamic login profile")
-    };
-    profile.clone()
+    SN_DYNAMIC_LOGIN_PROFILE_ID.to_owned()
 }
 
+#[cfg(test)]
 fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
     serde_json::from_value(
         known
@@ -226,6 +213,7 @@ fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: 
     .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
+#[cfg(test)]
 fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
     serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
@@ -541,7 +529,7 @@ impl SnCredentialBroker {
         instance: &ResolvedSnProviderInstance,
     ) -> ProviderResult<ResolvedCredential> {
         match &instance.auth {
-            ProviderAuthConfig::ApiKey { credential_ref } => {
+            ProviderAuthConfig::ApiKey { credential_ref, .. } => {
                 self.api_key_resolver
                     .resolve(
                         &bearer_credential_descriptor(),
@@ -866,7 +854,6 @@ mod tests {
         assert_eq!(profile.default_protocol_adapter_id, "sn-openai");
         assert_eq!(known.display_name, "BuckyOS SN");
         assert_eq!(known.base_url, "https://sn.buckyos.ai/api/v1/ai");
-        assert_eq!(known.ui_hints["auth"]["mutually_exclusive"], true);
         assert_eq!(rules.metadata_drivers, None);
         assert_eq!(
             rules.patterns[0].operations["llm"],
@@ -876,7 +863,7 @@ mod tests {
             rules.patterns[0].remove_api_types,
             BTreeSet::from(["image.img2img".to_owned(), "image.txt2img".to_owned()])
         );
-        assert_eq!(sn_dynamic_login_profile(), "device_jwt");
+        assert_eq!(sn_dynamic_login_profile(), SN_DYNAMIC_LOGIN_PROFILE_ID);
 
         let dynamic = dynamic_instance();
         assert_eq!(dynamic.runtime.base_url, known.base_url);
@@ -1113,6 +1100,7 @@ mod tests {
             account: None,
             auth: ProviderAuthConfig::ApiKey {
                 credential_ref: "secret://sn/api-key".to_owned(),
+                credential_kind: None,
             },
         })
         .unwrap();

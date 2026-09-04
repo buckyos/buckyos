@@ -5,6 +5,7 @@ use super::super::{
     ProviderProfile, ProviderResult, RefreshPolicy,
 };
 use super::anthropic_models::{AnthropicModelsDiscovery, AnthropicModelsSpec};
+#[cfg(test)]
 use crate::catalog::KnownProvider;
 #[cfg(test)]
 use crate::catalog::{
@@ -13,10 +14,9 @@ use crate::catalog::{
 #[cfg(test)]
 use crate::protocol::CredentialKind;
 use crate::protocol::HttpTransport;
+#[cfg(test)]
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
-#[cfg(test)]
-use std::collections::BTreeMap;
 
 pub(crate) const MINIMAX_PROVIDER_PROFILE_ID: &str = "minimax";
 
@@ -44,6 +44,7 @@ pub(crate) fn minimax_profile() -> ProviderProfile {
             kind: CredentialKind::NamedHeader,
             header_name: Some(credential.header_name),
         },
+        credential_variants: Vec::new(),
         discovery_mode: DiscoveryMode::MachineApi,
         refresh: RefreshPolicy::default(),
         default_inventory: None,
@@ -75,6 +76,7 @@ pub(crate) fn minimax_connection_contract() -> ProviderConnectionContract {
         region: fields.region,
         workspace: fields.workspace,
         account: fields.account,
+        region_base_urls: known.connection.region_base_urls,
     }
 }
 
@@ -82,28 +84,7 @@ pub(crate) fn minimax_connection_contract() -> ProviderConnectionContract {
 pub(crate) fn resolve_minimax_connection(
     input: ProviderConnectionInput<'_>,
 ) -> ProviderResult<super::super::ResolvedProviderConnection> {
-    let known = minimax_known_provider();
-    let region_base_urls: BTreeMap<String, String> = embedded_value(
-        &known,
-        "region_base_urls",
-        "MiniMax Known Provider regional base URLs",
-    );
-    let contract = minimax_connection_contract();
-    contract.resolve(ProviderConnectionInput {
-        base_url: Some(&known.base_url),
-        ..input.clone()
-    })?;
-    let region = input
-        .region
-        .or(contract.region.default_value.as_deref())
-        .expect("MiniMax region must have a configured default");
-    let regional_base_url = region_base_urls
-        .get(region)
-        .expect("every allowed MiniMax region must have a configured base URL");
-    contract.resolve(ProviderConnectionInput {
-        base_url: input.base_url.or(Some(regional_base_url)),
-        ..input
-    })
+    minimax_connection_contract().resolve(input)
 }
 
 #[cfg(test)]
@@ -138,6 +119,7 @@ struct InstanceFieldDeclarations {
     account: ProviderFieldSchema,
 }
 
+#[cfg(test)]
 fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
     serde_json::from_value(
         known
@@ -149,6 +131,7 @@ fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: 
     .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
+#[cfg(test)]
 fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
     serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
@@ -188,11 +171,6 @@ mod tests {
                 .base_url,
             known.base_url
         );
-        let regional_urls: BTreeMap<String, String> = embedded_value(
-            &known,
-            "region_base_urls",
-            "MiniMax Known Provider regional base URLs",
-        );
         assert_eq!(
             resolve_minimax_connection(ProviderConnectionInput {
                 region: Some("china"),
@@ -200,7 +178,7 @@ mod tests {
             })
             .unwrap()
             .base_url,
-            regional_urls["china"]
+            known.connection.region_base_urls["china"]
         );
         assert!(resolve_minimax_connection(ProviderConnectionInput {
             region: Some("unknown"),

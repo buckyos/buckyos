@@ -6,8 +6,8 @@ use crate::catalog::{
 use crate::protocol::{
     fal_queue_adapter, gemini_interactions_adapter, glm_chat_adapter, kimi_chat_adapter,
     minimax_messages_adapter, openai_chat_completions_adapter, openai_responses_adapter,
-    openai_responses_compatible_adapters, openrouter_chat_adapter, CodecRegistry, HttpTransport,
-    HttpTransportConfig,
+    openai_responses_compatible_adapters, openrouter_chat_adapter, CodecRegistry, CredentialKind,
+    HttpTransport, HttpTransportConfig,
 };
 use crate::provider::{
     CatalogOnlyDiscovery, CredentialDescriptor, DiscoveryMode, DynamicLoginCredentialResolver,
@@ -76,6 +76,7 @@ pub(crate) struct BuiltinProviderRequest<'a> {
     pub provider_profile_id: &'a str,
     pub protocol_adapter_id: &'a str,
     pub auth_mode: ProviderAuthMode,
+    pub credential_kind: Option<CredentialKind>,
     pub configured_inventory: Option<ProviderDiscoverySnapshot>,
 }
 
@@ -128,7 +129,7 @@ impl BuiltinProviderRegistry {
         let codecs = Arc::new(builtin_codec_registry()?);
         let dynamic_login_resolver = Arc::new(SnDynamicLoginResolver::new(
             reqwest::Client::new(),
-            sn_dynamic_login_profile(catalog)?,
+            SN_DYNAMIC_LOGIN_PROFILE_ID.to_owned(),
         ));
         Ok(Self {
             providers,
@@ -179,9 +180,12 @@ impl BuiltinProviderRegistry {
                 request.provider_profile_id
             )));
         }
+        let profile = registration
+            .profile
+            .with_credential(request.credential_kind)?;
         let discovery = self.discovery(registration.discovery, request.configured_inventory)?;
         Ok(BuiltinProviderBinding {
-            profile: registration.profile.clone(),
+            profile,
             connection: registration.connection.build(request.auth_mode),
             discovery,
             dynamic_login_resolver: (request.auth_mode == ProviderAuthMode::DynamicLogin)
@@ -200,6 +204,7 @@ impl BuiltinProviderRegistry {
             provider_profile_id: &instance.provider_profile_id,
             protocol_adapter_id: &instance.protocol_adapter_id,
             auth_mode,
+            credential_kind: instance.credential_kind,
             configured_inventory,
         })
     }
@@ -386,6 +391,19 @@ fn profile_from_catalog(
             },
             header_name: configuration.credential.header_name.clone(),
         },
+        credential_variants: configuration
+            .credential_variants
+            .iter()
+            .map(|credential| CredentialDescriptor {
+                kind: match credential.kind {
+                    ProviderCredentialKind::Bearer => CredentialKind::Bearer,
+                    ProviderCredentialKind::NamedHeader => CredentialKind::NamedHeader,
+                    ProviderCredentialKind::FalKey => CredentialKind::FalKey,
+                    ProviderCredentialKind::GlmJwt => CredentialKind::GlmJwt,
+                },
+                header_name: credential.header_name.clone(),
+            })
+            .collect(),
         discovery_mode: if discovery == BuiltinDiscoveryFactory::CatalogOnly {
             DiscoveryMode::CatalogOnly
         } else {
@@ -404,6 +422,7 @@ fn connection_from_catalog(
         region: field_from_catalog(&configuration.connection.region),
         workspace: field_from_catalog(&configuration.connection.workspace),
         account: field_from_catalog(&configuration.connection.account),
+        region_base_urls: configuration.connection.region_base_urls.clone(),
     }
 }
 
@@ -419,33 +438,6 @@ fn field_from_catalog(schema: &crate::catalog::ProviderFieldSchema) -> ProviderF
     }
 }
 
-fn sn_dynamic_login_profile(catalog: &CatalogSnapshot) -> ProviderResult<String> {
-    let profiles = catalog
-        .known_provider(SN_PROVIDER_PROFILE_ID)
-        .and_then(|provider| provider.ui_hints.get("auth"))
-        .and_then(|auth| auth.get("dynamic_login_profiles"))
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            ProviderError::InvalidConfiguration(
-                "SN dynamic login profiles are missing from effective metadata".to_owned(),
-            )
-        })?;
-    let [profile] = profiles.as_slice() else {
-        return Err(ProviderError::InvalidConfiguration(
-            "SN effective metadata must declare exactly one dynamic login profile".to_owned(),
-        ));
-    };
-    profile
-        .as_str()
-        .filter(|profile| !profile.trim().is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            ProviderError::InvalidConfiguration(
-                "SN dynamic login profile must be a non-empty string".to_owned(),
-            )
-        })
-}
-
 fn custom_registration() -> BuiltinProviderRegistration {
     BuiltinProviderRegistration {
         profile: ProviderProfile {
@@ -456,6 +448,7 @@ fn custom_registration() -> BuiltinProviderRegistration {
                 kind: crate::protocol::CredentialKind::Bearer,
                 header_name: None,
             },
+            credential_variants: Vec::new(),
             discovery_mode: DiscoveryMode::CatalogOnly,
             refresh: RefreshPolicy::default(),
             default_inventory: None,
@@ -465,6 +458,7 @@ fn custom_registration() -> BuiltinProviderRegistration {
             region: ProviderFieldSchema::optional(),
             workspace: ProviderFieldSchema::optional(),
             account: ProviderFieldSchema::optional(),
+            region_base_urls: BTreeMap::new(),
         }),
         discovery: BuiltinDiscoveryFactory::CatalogOnly,
         supports_dynamic_login: false,
@@ -692,6 +686,7 @@ mod tests {
                 provider_profile_id: OPENAI_PROVIDER_PROFILE_ID,
                 protocol_adapter_id: &profile.default_protocol_adapter_id,
                 auth_mode: ProviderAuthMode::ApiKey,
+                credential_kind: None,
                 configured_inventory: None,
             })
             .unwrap();
@@ -699,6 +694,120 @@ mod tests {
             binding.connection.default_base_url,
             "https://local.example/v1"
         );
+    }
+
+    #[test]
+    fn sn_registry_does_not_require_ui_hints() {
+        let mut document: Value = serde_json::from_slice(
+            &load_builtin_metadata()
+                .unwrap()
+                .into_iter()
+                .find(|file| {
+                    file.kind == CatalogKind::KnownProvider
+                        && file.catalog_id == SN_PROVIDER_PROFILE_ID
+                })
+                .unwrap()
+                .contents,
+        )
+        .unwrap();
+        document["providers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("ui_hints");
+        let local = MetadataFile::parse(
+            MetadataSource::Local,
+            CatalogKind::KnownProvider,
+            serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        let catalog = MetadataSources {
+            builtin: load_builtin_metadata().unwrap(),
+            local: vec![local],
+            ..MetadataSources::default()
+        }
+        .build_snapshot(1, &crate::catalog::CatalogBuildOptions::default())
+        .unwrap();
+
+        let registry = builtin_provider_registry(catalog.as_ref()).unwrap();
+        let binding = registry
+            .resolve(BuiltinProviderRequest {
+                provider_profile_id: SN_PROVIDER_PROFILE_ID,
+                protocol_adapter_id: SN_OPENAI_ADAPTER_ID,
+                auth_mode: ProviderAuthMode::DynamicLogin,
+                credential_kind: None,
+                configured_inventory: None,
+            })
+            .unwrap();
+        assert!(binding.dynamic_login_resolver.is_some());
+    }
+
+    #[test]
+    fn glm_credential_variant_and_regional_endpoints_use_typed_catalog() {
+        let registry = registry();
+        let glm = registry
+            .resolve(BuiltinProviderRequest {
+                provider_profile_id: GLM_PROVIDER_PROFILE_ID,
+                protocol_adapter_id: GLM_CHAT_ADAPTER_ID,
+                auth_mode: ProviderAuthMode::ApiKey,
+                credential_kind: Some(CredentialKind::GlmJwt),
+                configured_inventory: Some(configured_inventory()),
+            })
+            .unwrap();
+        assert_eq!(glm.profile.credential.kind, CredentialKind::GlmJwt);
+        assert_eq!(
+            glm.connection
+                .resolve(ProviderConnectionInput {
+                    region: Some("china"),
+                    ..ProviderConnectionInput::default()
+                })
+                .unwrap()
+                .base_url,
+            "https://open.bigmodel.cn/api/paas/v4"
+        );
+        assert_eq!(
+            glm.connection
+                .resolve(ProviderConnectionInput {
+                    base_url: Some("https://glm-proxy.example/v1"),
+                    region: Some("china"),
+                    ..ProviderConnectionInput::default()
+                })
+                .unwrap()
+                .base_url,
+            "https://glm-proxy.example/v1"
+        );
+
+        let minimax = registry
+            .resolve(BuiltinProviderRequest {
+                provider_profile_id: MINIMAX_PROVIDER_PROFILE_ID,
+                protocol_adapter_id: MINIMAX_MESSAGES_ADAPTER_ID,
+                auth_mode: ProviderAuthMode::ApiKey,
+                credential_kind: None,
+                configured_inventory: None,
+            })
+            .unwrap();
+        assert_eq!(
+            minimax
+                .connection
+                .resolve(ProviderConnectionInput {
+                    region: Some("china"),
+                    ..ProviderConnectionInput::default()
+                })
+                .unwrap()
+                .base_url,
+            "https://api.minimaxi.com/anthropic"
+        );
+
+        assert!(matches!(
+            registry.resolve(BuiltinProviderRequest {
+                provider_profile_id: OPENAI_PROVIDER_PROFILE_ID,
+                protocol_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
+                auth_mode: ProviderAuthMode::ApiKey,
+                credential_kind: Some(CredentialKind::GlmJwt),
+                configured_inventory: None,
+            }),
+            Err(ProviderError::InvalidConfiguration(message))
+                if message.contains("does not support credential kind `glm_jwt`")
+        ));
     }
 
     #[test]
@@ -716,6 +825,7 @@ mod tests {
                 credential: CredentialReference {
                     reference: "secret://provider".to_owned(),
                 },
+                credential_kind: None,
                 provider_rules_id: (profile.provider_profile_id != CUSTOM_PROVIDER_PROFILE_ID)
                     .then(|| profile.provider_profile_id.clone()),
                 region: None,
@@ -742,6 +852,7 @@ mod tests {
                 provider_profile_id: SN_PROVIDER_PROFILE_ID,
                 protocol_adapter_id: SN_OPENAI_ADAPTER_ID,
                 auth_mode: ProviderAuthMode::DynamicLogin,
+                credential_kind: None,
                 configured_inventory: None,
             })
             .unwrap();
@@ -756,6 +867,7 @@ mod tests {
                 provider_profile_id: CUSTOM_PROVIDER_PROFILE_ID,
                 protocol_adapter_id: MINIMAX_MESSAGES_ADAPTER_ID,
                 auth_mode: ProviderAuthMode::ApiKey,
+                credential_kind: None,
                 configured_inventory: Some(configured_inventory()),
             })
             .unwrap();
@@ -785,6 +897,7 @@ mod tests {
             provider_profile_id: CUSTOM_PROVIDER_PROFILE_ID,
             protocol_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
             auth_mode: ProviderAuthMode::ApiKey,
+            credential_kind: None,
             configured_inventory: None,
         });
         assert!(matches!(
@@ -797,6 +910,7 @@ mod tests {
             provider_profile_id: CUSTOM_PROVIDER_PROFILE_ID,
             protocol_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
             auth_mode: ProviderAuthMode::DynamicLogin,
+            credential_kind: None,
             configured_inventory: Some(configured_inventory()),
         });
         assert!(matches!(
@@ -813,6 +927,7 @@ mod tests {
             provider_profile_id: "missing-profile",
             protocol_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
             auth_mode: ProviderAuthMode::ApiKey,
+            credential_kind: None,
             configured_inventory: None,
         });
         assert!(matches!(
@@ -824,6 +939,7 @@ mod tests {
             provider_profile_id: OPENAI_PROVIDER_PROFILE_ID,
             protocol_adapter_id: "missing-adapter",
             auth_mode: ProviderAuthMode::ApiKey,
+            credential_kind: None,
             configured_inventory: None,
         });
         assert!(matches!(

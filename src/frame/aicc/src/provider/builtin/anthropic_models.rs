@@ -334,6 +334,7 @@ mod tests {
             credential: CredentialReference {
                 reference: "secret://claude/main".to_owned(),
             },
+            credential_kind: None,
             provider_rules_id: Some("claude".to_owned()),
             region: None,
             workspace: None,

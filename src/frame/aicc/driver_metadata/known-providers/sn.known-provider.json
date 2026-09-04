@@ -23,11 +23,6 @@
           "required": true,
           "secret": true
         },
-        "auth": {
-          "modes": ["api_key", "dynamic_login"],
-          "dynamic_login_profiles": ["device_jwt"],
-          "mutually_exclusive": true
-        },
         "instance_fields": {
           "region": { "mode": "unsupported" },
           "workspace": { "mode": "unsupported" },

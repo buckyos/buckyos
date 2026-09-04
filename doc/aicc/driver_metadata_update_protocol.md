@@ -96,7 +96,7 @@ Known Provider 的选择身份是 `catalog_id`。一个文件内包含多个 `pr
 
 路径：`v2/known-providers/<catalog_id>-<revision_seq>.json`。
 
-内容定义管理 UI 使用的已知服务商默认值，包括 `provider_profile_id`、显示名称、默认 `base_url`、`protocol_adapter_id`、可选 `provider_rules_id` 和 UI hints。它不能修改已经存在的 Provider Instance 私有配置。
+内容定义已知服务商的 typed 默认值，包括 `provider_profile_id`、显示名称、默认 `base_url`、`protocol_adapter_id`、可选 `provider_rules_id`、默认 credential、credential variants、connection schema 和区域 URL；UI hints 只能承载展示信息。它不能修改已经存在的 Provider Instance 私有配置。
 
 ## 6. 版本兼容与防回退
 

@@ -4,6 +4,7 @@ use super::super::{
     CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderProfile, RefreshPolicy,
 };
 use super::anthropic_models::{AnthropicModelsDiscovery, AnthropicModelsSpec};
+#[cfg(test)]
 use crate::catalog::KnownProvider;
 #[cfg(test)]
 use crate::catalog::{
@@ -12,6 +13,7 @@ use crate::catalog::{
 #[cfg(test)]
 use crate::protocol::CredentialKind;
 use crate::protocol::{ClaudeMessagesCodec, CodecRegistration, HttpTransport};
+#[cfg(test)]
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -42,6 +44,7 @@ pub(crate) fn claude_profile() -> ProviderProfile {
             kind: CredentialKind::NamedHeader,
             header_name: Some(credential.header_name),
         },
+        credential_variants: Vec::new(),
         discovery_mode: DiscoveryMode::MachineApi,
         refresh: RefreshPolicy::default(),
         default_inventory: None,
@@ -61,6 +64,7 @@ pub(crate) fn claude_connection_contract() -> ProviderConnectionContract {
         region: fields.region,
         workspace: fields.workspace,
         account: fields.account,
+        region_base_urls: known.connection.region_base_urls,
     }
 }
 
@@ -108,6 +112,7 @@ struct InstanceFieldDeclarations {
     account: ProviderFieldSchema,
 }
 
+#[cfg(test)]
 fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
     serde_json::from_value(
         known
@@ -119,6 +124,7 @@ fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: 
     .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
+#[cfg(test)]
 fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
     serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }

@@ -149,6 +149,18 @@ SN Provider 支持两种显式且互斥的认证模式：
 - OpenAI 基础 Adapter 只消费已解析的认证材料，不知道 token 来自静态 API Key 还是 SN 登录。
 - 不允许把动态登录作为 OpenAI Adapter 的可选分支；这保证 SN 将来采用独立协议时可以干净拆除。
 
+GLM JWT 使用同一个 `api_key` 模式并显式选择 typed credential variant：
+
+```json
+{
+  "auth": {
+    "mode": "api_key",
+    "credential_ref": "system-config://secrets/aicc/glm-main",
+    "credential_kind": "glm_jwt"
+  }
+}
+```
+
 其他内置厂商也可以使用同样的派生 Adapter 模式，但必须有独立 ID、明确差异面和基础/派生两层验收。
 
 ## 3. Model Driver 与 Provider 配置边界
@@ -158,6 +170,8 @@ SN Provider 支持两种显式且互斥的认证模式：
 Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯一 metadata 来源。每项必须直接包含 typed `credential` 与 `connection`，不得从 `ui_hints` 推断。`CatalogSnapshot::resolve_provider_configuration()` 同时解析 Known Provider 和其 `provider_rules_id`，校验 Rules 存在且 identity 一致后，返回生成 `ProviderProfile` 与 `ProviderConnectionContract` 所需的默认配置。
 
 行为 registry 只注册 discovery、refresh、default inventory、动态登录、可选 credential 和区域 URL 选择等可执行行为。GLM catalog 默认 credential 为 Bearer，JWT 是行为 registry 的显式可选变体；SN catalog 默认静态认证为 Bearer API key，dynamic login 及其 account 约束由 SN 行为按显式 auth mode 收窄。任何缺失或冲突均拒绝装配，不允许读取 `ui_hints`、按 Provider ID 猜测或静默 first-match。
+
+可选 credential 由 typed `credential_variants[]` 声明，实例在 `auth.mode=api_key` 时用 `credential_kind` 显式选择；省略则使用 `credential` 默认值。区域入口由 typed `connection.region_base_urls` 声明，只有实例未显式提供 `base_url` 时才按解析后的 region 选择。GLM 的 `glm_jwt` 和 GLM/MiniMax 的区域入口均通过这两个 typed 字段进入 production registry。SN 的 `device_jwt` 是 SN 登录实现支持的稳定行为 ID，由显式 `auth.login_profile` 选择和校验，不从可选的 `ui_hints` 推断。
 
 ### 3.1 Model Driver metadata 管理
 

@@ -107,6 +107,7 @@ mod wp08d_tests {
             credential: CredentialReference {
                 reference: format!("secret://{profile}"),
             },
+            credential_kind: None,
             provider_rules_id: Some(profile.to_owned()),
             region: None,
             workspace: None,
@@ -157,7 +158,7 @@ mod wp08d_tests {
                 known_providers: vec![KnownProviderCatalog {
                     format: "buckyos.aicc.known-provider-catalog".to_owned(),
                     schema_version: 1,
-                    schema_revision: 0,
+                    schema_revision: 1,
                     revision_seq: 1,
                     catalog_id: "wp08d-builtins".to_owned(),
                     providers: vec![

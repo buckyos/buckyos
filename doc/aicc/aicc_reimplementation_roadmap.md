@@ -234,7 +234,7 @@ Owner：Metadata 小组
 
 实现记录：Owner 为 Metadata 小组；三类 catalog DTO、加载期校验与 MatchRule 编译、exact/pattern 索引、跨 Model Driver 唯一匹配、conservative fallback、能力收窄和不可变 `CatalogSnapshot` 已落在 `src/frame/aicc/src/catalog/mod.rs`。输入边界只接收 NDN 已交付的当前文件内容，不实现下载、验签、activation、防回退或持久缓存。`cargo test -p aicc` 的 17 个测试、`cargo check -p aicc --all-targets`、AICC clippy `-D warnings` 和格式检查均通过，未新增依赖；完整系统构建和后续 RuntimeSnapshot 集成由对应工作包继续验证。
 
-补充实现记录：Known Provider catalog 新增 typed credential 与 region/workspace/account connection schema；`CatalogSnapshot::resolve_provider_configuration()` 返回默认 base URL、credential、connection、Adapter 和 Rules identity，并对未知 Provider、缺失 Rules、无效字段及引用不一致 fail closed。discovery、refresh、可选认证和动态 URL 行为继续由 Provider registry 注册，`ui_hints` 不再是运行配置来源。
+补充实现记录：Known Provider catalog 新增 typed credential 与 region/workspace/account connection schema；`CatalogSnapshot::resolve_provider_configuration()` 返回默认 base URL、credential、connection、Adapter 和 Rules identity，并对未知 Provider、缺失 Rules、无效字段及引用不一致 fail closed。后续边界修复将 `credential_variants[]` 与 `connection.region_base_urls` 纳入 schema revision 1：GLM 可按实例显式选择 `glm_jwt`，GLM/MiniMax 从有效 snapshot 执行区域 URL 选择；SN `device_jwt` 由行为 registry 的稳定 ID 校验，不再读取 `ui_hints`。discovery、refresh、可选认证和动态 URL 执行继续由 Provider registry 注册，`ui_hints` 不再是运行配置来源。
 
 ### WP-04：Model Registry 与逻辑目录
 

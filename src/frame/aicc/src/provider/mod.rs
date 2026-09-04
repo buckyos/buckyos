@@ -105,6 +105,7 @@ pub(crate) struct ProviderProfile {
     pub display_name: String,
     pub default_protocol_adapter_id: String,
     pub credential: CredentialDescriptor,
+    pub credential_variants: Vec<CredentialDescriptor>,
     pub discovery_mode: DiscoveryMode,
     pub refresh: RefreshPolicy,
     pub default_inventory: Option<ProviderDiscoverySnapshot>,
@@ -122,18 +123,49 @@ impl ProviderProfile {
                 "provider display name must not be empty".into(),
             ));
         }
-        if self.credential.kind == CredentialKind::NamedHeader
-            && self
-                .credential
-                .header_name
-                .as_deref()
-                .is_none_or(str::is_empty)
-        {
-            return Err(ProviderError::InvalidConfiguration(
-                "named-header credentials require a header name".into(),
-            ));
+        let mut kinds = BTreeSet::new();
+        for credential in std::iter::once(&self.credential).chain(&self.credential_variants) {
+            if !kinds.insert(credential.kind) {
+                return Err(ProviderError::InvalidConfiguration(
+                    "provider credential kinds must be unique".into(),
+                ));
+            }
+            if credential.kind == CredentialKind::NamedHeader
+                && credential.header_name.as_deref().is_none_or(str::is_empty)
+            {
+                return Err(ProviderError::InvalidConfiguration(
+                    "named-header credentials require a header name".into(),
+                ));
+            }
         }
         self.refresh.validate()
+    }
+
+    fn credential_for(
+        &self,
+        requested: Option<CredentialKind>,
+    ) -> ProviderResult<&CredentialDescriptor> {
+        let Some(requested) = requested else {
+            return Ok(&self.credential);
+        };
+        std::iter::once(&self.credential)
+            .chain(&self.credential_variants)
+            .find(|credential| credential.kind == requested)
+            .ok_or_else(|| {
+                ProviderError::InvalidConfiguration(format!(
+                    "provider profile `{}` does not support credential kind `{}`",
+                    self.provider_profile_id,
+                    requested.as_str()
+                ))
+            })
+    }
+
+    fn with_credential(&self, requested: Option<CredentialKind>) -> ProviderResult<Self> {
+        let credential = self.credential_for(requested)?.clone();
+        let mut selected = self.clone();
+        selected.credential = credential;
+        selected.credential_variants.clear();
+        Ok(selected)
     }
 }
 
@@ -153,6 +185,8 @@ pub(crate) enum ProviderAuthMode {
 pub(crate) enum ProviderAuthConfig {
     ApiKey {
         credential_ref: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_kind: Option<CredentialKind>,
     },
     DynamicLogin {
         login_profile: String,
@@ -170,7 +204,9 @@ impl ProviderAuthConfig {
 
     pub(crate) fn validate(&self) -> ProviderResult<()> {
         match self {
-            Self::ApiKey { credential_ref } => validate_nonempty("credential_ref", credential_ref),
+            Self::ApiKey { credential_ref, .. } => {
+                validate_nonempty("credential_ref", credential_ref)
+            }
             Self::DynamicLogin {
                 login_profile,
                 login_endpoint,
@@ -183,9 +219,18 @@ impl ProviderAuthConfig {
 
     pub(crate) fn credential_reference(&self) -> Option<CredentialReference> {
         match self {
-            Self::ApiKey { credential_ref } => Some(CredentialReference {
+            Self::ApiKey { credential_ref, .. } => Some(CredentialReference {
                 reference: credential_ref.clone(),
             }),
+            Self::DynamicLogin { .. } => None,
+        }
+    }
+
+    pub(crate) fn credential_kind(&self) -> Option<CredentialKind> {
+        match self {
+            Self::ApiKey {
+                credential_kind, ..
+            } => *credential_kind,
             Self::DynamicLogin { .. } => None,
         }
     }
@@ -352,6 +397,8 @@ pub(crate) struct ProviderConnectionContract {
     pub region: ProviderFieldSchema,
     pub workspace: ProviderFieldSchema,
     pub account: ProviderFieldSchema,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub region_base_urls: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -378,7 +425,16 @@ impl ProviderConnectionContract {
         let region = self.region.resolve("region", input.region)?;
         let workspace = self.workspace.resolve("workspace", input.workspace)?;
         let account = self.account.resolve("account", input.account)?;
-        let mut base_url = input.base_url.unwrap_or(&self.default_base_url).to_owned();
+        let mut base_url = input
+            .base_url
+            .or_else(|| {
+                region
+                    .as_ref()
+                    .and_then(|region| self.region_base_urls.get(region))
+                    .map(String::as_str)
+            })
+            .unwrap_or(&self.default_base_url)
+            .to_owned();
         for (placeholder, value) in [
             ("{region}", region.as_deref()),
             ("{workspace}", workspace.as_deref()),
@@ -415,6 +471,7 @@ pub(crate) struct ProviderInstanceConfig {
     pub protocol_adapter_id: String,
     pub base_url: String,
     pub credential: CredentialReference,
+    pub credential_kind: Option<CredentialKind>,
     pub provider_rules_id: Option<String>,
     pub region: Option<String>,
     pub workspace: Option<String>,
@@ -1217,8 +1274,9 @@ struct ProviderRuntime {
 
 impl ProviderRuntime {
     async fn resolve_credential(&self) -> ProviderResult<ResolvedCredential> {
+        let descriptor = self.profile.credential_for(self.config.credential_kind)?;
         self.credential_resolver
-            .resolve(&self.profile.credential, &self.config.credential)
+            .resolve(descriptor, &self.config.credential)
             .await
     }
 
@@ -1638,14 +1696,33 @@ impl ProviderRuntimeManager {
                 &error,
             )
         })?;
+        let profile = Arc::new(
+            profile
+                .with_credential(draft.auth.credential_kind())
+                .map_err(|error| {
+                    ProviderDraftValidationError::from_provider_error(
+                        ProviderDraftValidationStage::Authentication,
+                        &error,
+                    )
+                })?,
+        );
         let (credential_reference, credential) = match &draft.auth {
-            ProviderAuthConfig::ApiKey { credential_ref } => {
+            ProviderAuthConfig::ApiKey {
+                credential_ref,
+                credential_kind,
+            } => {
                 let reference = CredentialReference {
                     reference: credential_ref.clone(),
                 };
+                let descriptor = profile.credential_for(*credential_kind).map_err(|error| {
+                    ProviderDraftValidationError::from_provider_error(
+                        ProviderDraftValidationStage::Authentication,
+                        &error,
+                    )
+                })?;
                 let credential = self
                     .credential_resolver
-                    .resolve(&profile.credential, &reference)
+                    .resolve(descriptor, &reference)
                     .await
                     .map_err(|error| {
                         ProviderDraftValidationError::from_provider_error(
@@ -1695,6 +1772,7 @@ impl ProviderRuntimeManager {
             protocol_adapter_id: draft.protocol_adapter_id.clone(),
             base_url: connection.base_url.clone(),
             credential: credential_reference,
+            credential_kind: draft.auth.credential_kind(),
             provider_rules_id: draft.provider_rules_id.clone(),
             region: connection.region.clone(),
             workspace: connection.workspace.clone(),
@@ -1770,6 +1848,7 @@ impl ProviderRuntimeManager {
             .get(&config.provider_profile_id)
             .cloned()
             .ok_or_else(|| ProviderError::UnknownProfile(config.provider_profile_id.clone()))?;
+        let profile = Arc::new(profile.with_credential(config.credential_kind)?);
         if profile.default_protocol_adapter_id != config.protocol_adapter_id
             && config.provider_profile_id != "custom"
         {
@@ -2346,6 +2425,14 @@ mod tests {
         );
         assert!(api_key.validate().is_ok());
 
+        let glm_jwt: ProviderAuthConfig = serde_json::from_value(serde_json::json!({
+            "mode": "api_key",
+            "credential_ref": "system-config://secrets/aicc/glm-main",
+            "credential_kind": "glm_jwt"
+        }))
+        .unwrap();
+        assert_eq!(glm_jwt.credential_kind(), Some(CredentialKind::GlmJwt));
+
         let dynamic: ProviderAuthConfig = serde_json::from_value(serde_json::json!({
             "mode": "dynamic_login",
             "login_profile": "device_jwt",
@@ -2386,6 +2473,7 @@ mod tests {
                 .with_allowed_values(["cn-beijing", "cn-shanghai"]),
             workspace: ProviderFieldSchema::required(),
             account: ProviderFieldSchema::optional(),
+            region_base_urls: BTreeMap::new(),
         };
         let resolved = contract
             .resolve(ProviderConnectionInput {
@@ -2421,6 +2509,7 @@ mod tests {
             region: ProviderFieldSchema::unsupported(),
             workspace: ProviderFieldSchema::required(),
             account: ProviderFieldSchema::unsupported(),
+            region_base_urls: BTreeMap::new(),
         };
         assert!(matches!(
             contract.resolve(ProviderConnectionInput::default()),
@@ -2618,6 +2707,10 @@ mod tests {
                 kind: CredentialKind::Bearer,
                 header_name: None,
             },
+            credential_variants: vec![CredentialDescriptor {
+                kind: CredentialKind::GlmJwt,
+                header_name: None,
+            }],
             discovery_mode: DiscoveryMode::MachineApi,
             refresh: RefreshPolicy {
                 interval: Duration::from_secs(3_600),
@@ -2637,6 +2730,7 @@ mod tests {
             credential: CredentialReference {
                 reference: "system-config://secrets/aicc/openai".into(),
             },
+            credential_kind: None,
             provider_rules_id: None,
             region: None,
             workspace: None,
@@ -2863,6 +2957,7 @@ mod tests {
             region: ProviderFieldSchema::unsupported(),
             workspace: ProviderFieldSchema::required(),
             account: ProviderFieldSchema::optional(),
+            region_base_urls: BTreeMap::new(),
         }
     }
 
@@ -2936,6 +3031,7 @@ mod tests {
         let (manager, _) = manager(store.clone(), discovery.clone());
         let draft = draft(ProviderAuthConfig::ApiKey {
             credential_ref: "system-config://secrets/aicc/openai".into(),
+            credential_kind: None,
         });
 
         let negotiated = manager
@@ -2965,6 +3061,28 @@ mod tests {
             discovery.workspaces.lock().await.as_slice(),
             &[Some("workspace-1".into())]
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_uses_explicit_credential_variant() {
+        let discovery = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
+        let manager = ProviderRuntimeManager::new(
+            [profile()],
+            resolver("key-id.secret"),
+            catalog(),
+            codecs(),
+            Arc::new(MemoryStore::default()),
+        )
+        .unwrap();
+        let mut config = instance("glm-jwt");
+        config.credential_kind = Some(CredentialKind::GlmJwt);
+
+        let executable = manager.start(config, discovery).await.unwrap();
+        assert_eq!(
+            executable.resolve_credential().await.unwrap().audit().kind,
+            CredentialKind::GlmJwt
+        );
+        manager.shutdown().await;
     }
 
     #[tokio::test]
@@ -3141,6 +3259,7 @@ mod tests {
 
         let mut invalid_connection = draft(ProviderAuthConfig::ApiKey {
             credential_ref: "system-config://secrets/aicc/openai".into(),
+            credential_kind: None,
         });
         invalid_connection.workspace = None;
         let error = manager
@@ -3156,6 +3275,7 @@ mod tests {
 
         let invalid_auth = draft(ProviderAuthConfig::ApiKey {
             credential_ref: "missing-secret".into(),
+            credential_kind: None,
         });
         let error = manager
             .validate_draft(
@@ -3171,6 +3291,7 @@ mod tests {
 
         let mut invalid_adapter = draft(ProviderAuthConfig::ApiKey {
             credential_ref: "system-config://secrets/aicc/openai".into(),
+            credential_kind: None,
         });
         invalid_adapter.protocol_adapter_id = "missing-adapter".into();
         let error = manager
@@ -3190,6 +3311,7 @@ mod tests {
         );
         let valid = draft(ProviderAuthConfig::ApiKey {
             credential_ref: "system-config://secrets/aicc/openai".into(),
+            credential_kind: None,
         });
         let error = manager
             .validate_draft(&valid, &connection_contract(), &failed_discovery, None)

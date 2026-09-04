@@ -6,11 +6,13 @@ use super::super::{
 use super::super::{
     CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderProfile, RefreshPolicy,
 };
+#[cfg(test)]
 use crate::catalog::KnownProvider;
 #[cfg(test)]
 use crate::catalog::{CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ProviderRulesCatalog};
 #[cfg(test)]
 use crate::protocol::{CredentialKind, FAL_QUEUE_ADAPTER_ID};
+#[cfg(test)]
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -41,6 +43,7 @@ pub(crate) fn fal_profile() -> ProviderProfile {
         display_name: known.display_name,
         default_protocol_adapter_id: known.protocol_adapter_id,
         credential,
+        credential_variants: Vec::new(),
         discovery_mode: DiscoveryMode::CatalogOnly,
         refresh: RefreshPolicy::default(),
         default_inventory: None,
@@ -72,6 +75,7 @@ pub(crate) fn fal_connection_contract() -> ProviderConnectionContract {
         region: fields.region,
         workspace: fields.workspace,
         account: fields.account,
+        region_base_urls: known.connection.region_base_urls,
     }
 }
 
@@ -110,6 +114,7 @@ struct InstanceFieldDeclarations {
     account: ProviderFieldSchema,
 }
 
+#[cfg(test)]
 fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
     serde_json::from_value(
         known
@@ -121,6 +126,7 @@ fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: 
     .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
+#[cfg(test)]
 fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
     serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
@@ -162,6 +168,7 @@ mod tests {
             credential: CredentialReference {
                 reference: "secret://fal/main".to_owned(),
             },
+            credential_kind: None,
             provider_rules_id: Some(FAL_PROVIDER_PROFILE_ID.to_owned()),
             region: None,
             workspace: None,

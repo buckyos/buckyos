@@ -7,15 +7,18 @@ use super::super::{
     CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderConnectionInput,
     ProviderProfile, RefreshPolicy, ResolvedProviderConnection,
 };
+#[cfg(test)]
 use crate::catalog::KnownProvider;
 #[cfg(test)]
 use crate::catalog::{
-    CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ModelDriverCatalog, ProviderRulesCatalog,
+    CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ModelDriverCatalog,
+    ProviderCredentialKind, ProviderRulesCatalog,
 };
 #[cfg(test)]
 use crate::protocol::CredentialKind;
 use crate::protocol::OPENAI_CHAT_COMPLETIONS_OPERATION_ID;
 use buckyos_api::ApiType;
+#[cfg(test)]
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,22 +38,14 @@ pub(crate) fn glm_jwt_profile() -> ProviderProfile {
 #[cfg(test)]
 fn glm_profile_with_credential(kind: CredentialKind) -> ProviderProfile {
     let known = glm_known_provider();
-    let credential: CredentialDeclaration = embedded_value(
-        &known,
-        "credential",
-        "GLM Known Provider credential declaration",
-    );
     let declared_kind = match kind {
-        CredentialKind::Bearer => "bearer",
-        CredentialKind::GlmJwt => "glm_jwt",
+        CredentialKind::Bearer => ProviderCredentialKind::Bearer,
+        CredentialKind::GlmJwt => ProviderCredentialKind::GlmJwt,
         _ => panic!("GLM profile requested an unsupported credential kind"),
     };
-    assert!(credential.kinds.iter().any(|item| item == declared_kind));
-    assert!(credential
-        .kinds
-        .iter()
-        .any(|item| item == &credential.default));
-    assert!(credential.required && credential.secret);
+    assert!(std::iter::once(&known.credential)
+        .chain(&known.credential_variants)
+        .any(|item| item.kind == declared_kind));
     ProviderProfile {
         provider_profile_id: GLM_PROVIDER_PROFILE_ID.to_owned(),
         display_name: known.display_name,
@@ -59,6 +54,7 @@ fn glm_profile_with_credential(kind: CredentialKind) -> ProviderProfile {
             kind,
             header_name: None,
         },
+        credential_variants: Vec::new(),
         discovery_mode: DiscoveryMode::CatalogOnly,
         refresh: RefreshPolicy::default(),
         default_inventory: None,
@@ -78,6 +74,7 @@ pub(crate) fn glm_connection_contract() -> ProviderConnectionContract {
         region: fields.region,
         workspace: fields.workspace,
         account: fields.account,
+        region_base_urls: known.connection.region_base_urls,
     }
 }
 
@@ -85,17 +82,7 @@ pub(crate) fn glm_connection_contract() -> ProviderConnectionContract {
 pub(crate) fn resolve_glm_connection(
     input: ProviderConnectionInput<'_>,
 ) -> ProviderResult<ResolvedProviderConnection> {
-    let known = glm_known_provider();
-    let region_base_urls: BTreeMap<String, String> = embedded_value(
-        &known,
-        "region_base_urls",
-        "GLM Known Provider region base URLs",
-    );
-    let base_url = match (input.base_url, input.region.unwrap_or("global")) {
-        (Some(base_url), _) => Some(base_url),
-        (None, region) => region_base_urls.get(region).map(String::as_str),
-    };
-    glm_connection_contract().resolve(ProviderConnectionInput { base_url, ..input })
+    glm_connection_contract().resolve(input)
 }
 
 #[cfg(test)]
@@ -127,21 +114,13 @@ pub(crate) fn glm_catalog_files() -> Vec<CurrentCatalogFile> {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CredentialDeclaration {
-    kinds: Vec<String>,
-    default: String,
-    required: bool,
-    secret: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct InstanceFieldDeclarations {
     region: ProviderFieldSchema,
     workspace: ProviderFieldSchema,
     account: ProviderFieldSchema,
 }
 
+#[cfg(test)]
 fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
     serde_json::from_value(
         known
@@ -153,6 +132,7 @@ fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: 
     .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
+#[cfg(test)]
 fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
     serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
@@ -255,6 +235,7 @@ mod tests {
             credential: CredentialReference {
                 reference: "secret://glm".to_owned(),
             },
+            credential_kind: None,
             provider_rules_id: Some(GLM_PROVIDER_PROFILE_ID.to_owned()),
             region: Some("global".to_owned()),
             workspace: None,

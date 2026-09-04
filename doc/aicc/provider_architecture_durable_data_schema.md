@@ -150,12 +150,16 @@ Content Schema：
   - `protocol_adapter_id`；
   - `provider_rules_id`：正式 Provider configuration 必须提供，且被引用 Rules 的 `provider_profile_id` 必须与本项一致；
   - `credential`：typed 默认凭据描述，`kind` 为 `bearer`、`named_header`、`fal_key` 或 `glm_jwt`；`named_header` 必须同时提供非空 `header_name`；
+  - 可选 `credential_variants[]`：同结构的实例级可选凭据；kind 不得与默认凭据或其它变体重复，实例通过 `auth.credential_kind` 显式选择，省略时使用默认凭据；
   - `connection.region/workspace/account`：每项均包含 `mode: unsupported|optional|required`，可选 `default_value`、`allowed_values`；unsupported 字段不得携带默认值或允许值，默认值必须属于非空的 allowed values；
+  - 可选 `connection.region_base_urls`：从已声明的 `allowed_values` region 到默认 base URL 的 typed 映射；实例显式 `base_url` 优先于该映射；
   - 可选 `ui_hints`：只承载展示提示，不是 Provider Profile、连接合同、认证或 Rules identity 的配置来源。
 
-`CatalogSnapshot::resolve_provider_configuration(provider_profile_id)` 把以上数据解析为 `ResolvedProviderConfiguration`。返回结果包含 typed credential、typed connection schema、默认 base URL、Adapter ID 和 Rules ID。Known Provider 不存在、Rules 引用缺失、Rules 不存在、identity 不一致或 typed 字段无效时必须 fail closed，调用方不得回退到 `ui_hints` 或 Rust builtin metadata helper。
+`credential_variants` 与 `connection.region_base_urls` 从 Known Provider `schema_revision: 1` 起可用；revision 0 文档携带这些字段必须拒绝。
 
-该对象只声明可直接生成 `ProviderProfile` 和 `ProviderConnectionContract` 的默认静态配置。discovery mode、refresh policy、default inventory、GLM 可选 JWT、SN dynamic login、按 region 选择 URL 等需要执行代码的变体属于 Provider 行为 registry；registry 必须基于同 generation snapshot 的 resolved configuration 装配，不能维护另一份默认配置。
+`CatalogSnapshot::resolve_provider_configuration(provider_profile_id)` 把以上数据解析为 `ResolvedProviderConfiguration`。返回结果包含默认 credential、credential variants、typed connection schema、默认及区域 base URL、Adapter ID 和 Rules ID。Known Provider 不存在、Rules 引用缺失、Rules 不存在、identity 不一致或 typed 字段无效时必须 fail closed，调用方不得回退到 `ui_hints` 或 Rust builtin metadata helper。
+
+该对象只声明可直接生成 `ProviderProfile` 和 `ProviderConnectionContract` 的静态配置。Provider 行为 registry 负责执行 credential variant 选择和 region URL 选择，并注册 discovery、refresh、default inventory、SN dynamic login 等不可声明化行为；registry 必须基于同 generation snapshot 的 resolved configuration 装配，不能维护另一份默认配置。
 
 该 catalog 只提供默认值。保存 Provider Instance 前必须让用户看到并允许修正协议和 `base_url`，并执行连接与协议验证。
 

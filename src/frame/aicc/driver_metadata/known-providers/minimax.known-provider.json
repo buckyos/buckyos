@@ -1,7 +1,7 @@
 {
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "revision_seq": 1,
   "catalog_id": "minimax",
   "providers": [
@@ -19,7 +19,11 @@
           "allowed_values": ["china", "global"]
         },
         "workspace": { "mode": "unsupported" },
-        "account": { "mode": "unsupported" }
+        "account": { "mode": "unsupported" },
+        "region_base_urls": {
+          "china": "https://api.minimaxi.com/anthropic",
+          "global": "https://api.minimax.io/anthropic"
+        }
       },
       "ui_hints": {
         "credential": {
@@ -36,10 +40,6 @@
           },
           "workspace": { "mode": "unsupported" },
           "account": { "mode": "unsupported" }
-        },
-        "region_base_urls": {
-          "china": "https://api.minimaxi.com/anthropic",
-          "global": "https://api.minimax.io/anthropic"
         }
       }
     }

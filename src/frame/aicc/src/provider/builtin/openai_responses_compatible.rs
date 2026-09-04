@@ -230,6 +230,7 @@ fn descriptor(
             display_name: known_provider.display_name.clone(),
             default_protocol_adapter_id: known_provider.protocol_adapter_id.clone(),
             credential,
+            credential_variants: Vec::new(),
             discovery_mode: match discovery {
                 BuiltinDiscoveryKind::OpenAiModelsApi => DiscoveryMode::MachineApi,
                 BuiltinDiscoveryKind::CatalogOnly => DiscoveryMode::CatalogOnly,
@@ -657,6 +658,7 @@ mod tests {
             credential: CredentialReference {
                 reference: "secret://deepseek/main".to_owned(),
             },
+            credential_kind: None,
             provider_rules_id: Some(DEEPSEEK_PROFILE_ID.to_owned()),
             region: None,
             workspace: None,
@@ -715,6 +717,7 @@ mod tests {
                 credential: CredentialReference {
                     reference: format!("secret://{profile_id}/main"),
                 },
+                credential_kind: None,
                 provider_rules_id: Some(profile_id.clone()),
                 region: None,
                 workspace: (profile_id == QWEN_PROFILE_ID).then(|| "workspace1".to_owned()),

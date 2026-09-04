@@ -17,7 +17,9 @@ const KNOWN_PROVIDER_FORMAT: &str = "buckyos.aicc.known-provider-catalog";
 const MODEL_DRIVER_SCHEMA_VERSION: u32 = 1;
 const PROVIDER_RULES_SCHEMA_VERSION: u32 = 1;
 const KNOWN_PROVIDER_SCHEMA_VERSION: u32 = 1;
-const SUPPORTED_SCHEMA_REVISION: u32 = 0;
+const MODEL_DRIVER_SUPPORTED_SCHEMA_REVISION: u32 = 0;
+const PROVIDER_RULES_SUPPORTED_SCHEMA_REVISION: u32 = 0;
+const KNOWN_PROVIDER_SUPPORTED_SCHEMA_REVISION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum CatalogKind {
@@ -490,12 +492,14 @@ pub(crate) struct KnownProvider {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_rules_id: Option<String>,
     pub credential: ProviderCredentialDescriptor,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_variants: Vec<ProviderCredentialDescriptor>,
     pub connection: ProviderConnectionSchema,
     #[serde(default)]
     pub ui_hints: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ProviderCredentialKind {
     Bearer,
@@ -536,6 +540,8 @@ pub(crate) struct ProviderConnectionSchema {
     pub region: ProviderFieldSchema,
     pub workspace: ProviderFieldSchema,
     pub account: ProviderFieldSchema,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub region_base_urls: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -544,6 +550,7 @@ pub(crate) struct ResolvedProviderConfiguration {
     pub display_name: String,
     pub default_base_url: String,
     pub credential: ProviderCredentialDescriptor,
+    pub credential_variants: Vec<ProviderCredentialDescriptor>,
     pub connection: ProviderConnectionSchema,
     pub protocol_adapter_id: String,
     pub provider_rules_id: String,
@@ -850,6 +857,7 @@ impl CatalogSnapshot {
             display_name: provider.display_name.clone(),
             default_base_url: provider.base_url.clone(),
             credential: provider.credential.clone(),
+            credential_variants: provider.credential_variants.clone(),
             connection: provider.connection.clone(),
             protocol_adapter_id: provider.protocol_adapter_id.clone(),
             provider_rules_id: provider_rules_id.clone(),
@@ -1428,6 +1436,7 @@ fn validate_model_driver(
         &catalog.format,
         MODEL_DRIVER_FORMAT,
         MODEL_DRIVER_SCHEMA_VERSION,
+        MODEL_DRIVER_SUPPORTED_SCHEMA_REVISION,
         catalog.schema_version,
         catalog.schema_revision,
     )?;
@@ -1562,6 +1571,7 @@ fn validate_provider_rules(catalog: &ProviderRulesCatalog) -> Result<(), Catalog
         &catalog.format,
         PROVIDER_RULES_FORMAT,
         PROVIDER_RULES_SCHEMA_VERSION,
+        PROVIDER_RULES_SUPPORTED_SCHEMA_REVISION,
         catalog.schema_version,
         catalog.schema_revision,
     )?;
@@ -1747,11 +1757,23 @@ fn validate_known_provider_catalog(
         &catalog.format,
         KNOWN_PROVIDER_FORMAT,
         KNOWN_PROVIDER_SCHEMA_VERSION,
+        KNOWN_PROVIDER_SUPPORTED_SCHEMA_REVISION,
         catalog.schema_version,
         catalog.schema_revision,
     )?;
     let mut profiles = BTreeSet::new();
     for provider in &catalog.providers {
+        if catalog.schema_revision == 0
+            && (!provider.credential_variants.is_empty()
+                || !provider.connection.region_base_urls.is_empty())
+        {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: catalog.catalog_id.clone(),
+                field: "schema_revision",
+                reason: "credential_variants and region_base_urls require schema_revision 1"
+                    .to_owned(),
+            });
+        }
         for (field, value) in [
             (
                 "providers.provider_profile_id",
@@ -1792,29 +1814,16 @@ fn validate_provider_configuration(
     owner: &str,
     provider: &KnownProvider,
 ) -> Result<(), CatalogBuildError> {
-    match provider.credential.kind {
-        ProviderCredentialKind::NamedHeader => {
-            if provider
-                .credential
-                .header_name
-                .as_deref()
-                .is_none_or(|value| value.trim().is_empty())
-            {
-                return Err(CatalogBuildError::InvalidValue {
-                    owner: owner.to_owned(),
-                    field: "providers.credential.header_name",
-                    reason: "named_header credentials require a non-empty header name".to_owned(),
-                });
-            }
-        }
-        _ if provider.credential.header_name.is_some() => {
+    let mut credential_kinds = BTreeSet::new();
+    for credential in std::iter::once(&provider.credential).chain(&provider.credential_variants) {
+        if !credential_kinds.insert(credential.kind) {
             return Err(CatalogBuildError::InvalidValue {
                 owner: owner.to_owned(),
-                field: "providers.credential.header_name",
-                reason: "is only valid for named_header credentials".to_owned(),
+                field: "providers.credential_variants",
+                reason: "credential kinds must be unique".to_owned(),
             });
         }
-        _ => {}
+        validate_provider_credential(owner, credential)?;
     }
     for (field, schema) in [
         ("providers.connection.region", &provider.connection.region),
@@ -1856,6 +1865,59 @@ fn validate_provider_configuration(
             }
         }
     }
+    for (region, base_url) in &provider.connection.region_base_urls {
+        if region.trim().is_empty()
+            || !provider
+                .connection
+                .region
+                .allowed_values
+                .iter()
+                .any(|value| value == region)
+        {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "providers.connection.region_base_urls",
+                reason: "every region URL must name an allowed region".to_owned(),
+            });
+        }
+        if !base_url.starts_with("https://") && !base_url.starts_with("http://") {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "providers.connection.region_base_urls",
+                reason: "region base URLs must use http or https".to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_provider_credential(
+    owner: &str,
+    credential: &ProviderCredentialDescriptor,
+) -> Result<(), CatalogBuildError> {
+    match credential.kind {
+        ProviderCredentialKind::NamedHeader => {
+            if credential
+                .header_name
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                return Err(CatalogBuildError::InvalidValue {
+                    owner: owner.to_owned(),
+                    field: "providers.credential.header_name",
+                    reason: "named_header credentials require a non-empty header name".to_owned(),
+                });
+            }
+        }
+        _ if credential.header_name.is_some() => {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "providers.credential.header_name",
+                reason: "is only valid for named_header credentials".to_owned(),
+            });
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -1865,6 +1927,7 @@ fn validate_header(
     format: &str,
     expected_format: &'static str,
     expected_schema_version: u32,
+    supported_schema_revision: u32,
     schema_version: u32,
     schema_revision: u32,
 ) -> Result<(), CatalogBuildError> {
@@ -1877,7 +1940,7 @@ fn validate_header(
             actual: format.to_owned(),
         });
     }
-    if schema_version != expected_schema_version || schema_revision > SUPPORTED_SCHEMA_REVISION {
+    if schema_version != expected_schema_version || schema_revision > supported_schema_revision {
         return Err(CatalogBuildError::UnsupportedSchema {
             kind,
             id: id.to_owned(),
@@ -2636,6 +2699,40 @@ mod tests {
     }
 
     #[test]
+    fn resolves_typed_credential_variants_and_region_base_urls() {
+        let mut document = known_providers();
+        document["schema_revision"] = json!(1);
+        document["providers"][0]["credential_variants"] = json!([{"kind": "glm_jwt"}]);
+        document["providers"][0]["connection"] = json!({
+            "region": {
+                "mode": "optional",
+                "default_value": "global",
+                "allowed_values": ["china", "global"]
+            },
+            "workspace": {"mode": "unsupported"},
+            "account": {"mode": "unsupported"},
+            "region_base_urls": {
+                "china": "https://china.example/v1",
+                "global": "https://global.example/v1"
+            }
+        });
+        let mut files = complete_files();
+        files[0] = file(CatalogKind::KnownProvider, document);
+        let snapshot = build(files).unwrap();
+        let resolved = snapshot.resolve_provider_configuration("openai").unwrap();
+
+        assert_eq!(resolved.credential_variants.len(), 1);
+        assert_eq!(
+            resolved.credential_variants[0].kind,
+            ProviderCredentialKind::GlmJwt
+        );
+        assert_eq!(
+            resolved.connection.region_base_urls["china"],
+            "https://china.example/v1"
+        );
+    }
+
+    #[test]
     fn provider_configuration_resolution_fails_closed() {
         let snapshot = build(complete_files()).unwrap();
         assert_eq!(
@@ -2663,6 +2760,7 @@ mod tests {
     fn invalid_typed_provider_configuration_is_rejected() {
         let cases = [
             ("credential", json!({"kind": "named_header"})),
+            ("credential_variants", json!([{"kind": "bearer"}])),
             (
                 "connection",
                 json!({
@@ -2681,6 +2779,18 @@ mod tests {
                     },
                     "workspace": {"mode": "unsupported"},
                     "account": {"mode": "unsupported"}
+                }),
+            ),
+            (
+                "connection",
+                json!({
+                    "region": {
+                        "mode": "optional",
+                        "allowed_values": ["global"]
+                    },
+                    "workspace": {"mode": "unsupported"},
+                    "account": {"mode": "unsupported"},
+                    "region_base_urls": {"china": "https://china.example/v1"}
                 }),
             ),
         ];
