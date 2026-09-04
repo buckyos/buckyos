@@ -2155,10 +2155,10 @@ impl TaskManagerPort for TaskManagerExecutionPort {
     }
 }
 
-fn task_manager_error(error: RPCErrors) -> buckyos_api::AiccError {
+fn task_manager_error(_error: RPCErrors) -> buckyos_api::AiccError {
     buckyos_api::AiccError::new(
         buckyos_api::AiccErrorCode::InternalError,
-        format!("TaskMgr operation failed: {error}"),
+        "TaskMgr operation failed",
     )
 }
 
@@ -3222,6 +3222,177 @@ mod tests {
                 .await,
             Err(RPCErrors::NoPermission(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn update_and_delete_use_revision_cas_without_exposing_credentials() {
+        let fixture = fixture(false);
+        fixture
+            .service
+            .handle_add_provider(provider_add(), RPCContext::default())
+            .await
+            .unwrap();
+
+        let mut update = ProviderUpdateRequest::new("primary", 5);
+        update.base_url = Some("https://api.updated.example/v1".to_string());
+        update.credential = Some(json!({"api_token": {"locked": "replacement-secret"}}));
+        let response = fixture
+            .service
+            .handle_update_provider(update, RPCContext::default())
+            .await
+            .unwrap();
+        assert_eq!(response.settings_revision, 6);
+        assert!(!serde_json::to_string(&response)
+            .unwrap()
+            .contains("replacement-secret"));
+        assert_eq!(fixture.settings.writes.load(Ordering::SeqCst), 2);
+
+        let stale = ProviderUpdateRequest::new("primary", 5);
+        assert!(fixture
+            .service
+            .handle_update_provider(stale, RPCContext::default())
+            .await
+            .is_err());
+        assert_eq!(fixture.settings.writes.load(Ordering::SeqCst), 2);
+
+        let deleted = fixture
+            .service
+            .handle_delete_provider(ProviderDeleteRequest::new("primary"), RPCContext::default())
+            .await
+            .unwrap();
+        assert_eq!(deleted.settings_revision, Some(7));
+        assert_eq!(fixture.settings.writes.load(Ordering::SeqCst), 3);
+        assert!(fixture
+            .settings
+            .value
+            .lock()
+            .await
+            .settings
+            .providers
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn management_reads_and_krpc_dispatch_use_one_runtime_view() {
+        let fixture = fixture(false);
+        {
+            let mut snapshot = fixture.runtime.snapshot.lock().await;
+            snapshot.catalog_revision = 12;
+            snapshot.inventory_revision = "generation-7".to_string();
+            snapshot.models = json!({"models": [{"exact_model": "model-a@primary"}]});
+            snapshot.providers = vec![json!({
+                "provider_instance_name": "primary",
+                "methods": [buckyos_api::ai_methods::CHAT_COMPLETIONS_CREATE]
+            })];
+            snapshot
+                .provider_health
+                .insert("model-a@primary".to_string(), json!({"state": "available"}));
+            snapshot.provider_catalog = ProviderCatalogResponse {
+                catalog_revision: 12,
+                providers: vec![buckyos_api::ProviderCatalogEntry {
+                    provider_profile_id: "openai".to_string(),
+                    display_name: "OpenAI".to_string(),
+                    base_url: "https://api.example/v1".to_string(),
+                    protocol_adapter_id: "openai-responses".to_string(),
+                    provider_rules_id: Some("openai".to_string()),
+                    ui_hints: BTreeMap::new(),
+                }],
+            };
+        }
+
+        let catalog = fixture
+            .service
+            .handle_provider_catalog(ProviderCatalogRequest::new(), RPCContext::default())
+            .await
+            .unwrap();
+        assert_eq!(catalog.catalog_revision, 12);
+        assert!(
+            fixture
+                .service
+                .handle_list_protocol_adapters(
+                    ProtocolAdapterListRequest::new(),
+                    RPCContext::default(),
+                )
+                .await
+                .unwrap()
+                .adapters
+                .is_empty()
+        );
+        assert_eq!(
+            fixture
+                .service
+                .handle_list_models(ListModelsRequest::new(), RPCContext::default())
+                .await
+                .unwrap()["models"][0]["exact_model"],
+            "model-a@primary"
+        );
+        let providers = fixture
+            .service
+            .handle_list_providers(
+                ProviderListRequest::new(Some(
+                    buckyos_api::ai_methods::CHAT_COMPLETIONS_CREATE.to_string(),
+                )),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(providers.providers.len(), 1);
+        assert_eq!(providers.inventory_revision, "generation-7");
+        assert_eq!(
+            fixture
+                .service
+                .handle_provider_health(
+                    ProviderHealthRequest::new("model-a@primary"),
+                    RPCContext::default(),
+                )
+                .await
+                .unwrap()
+                .health["state"],
+            "available"
+        );
+
+        let server = AiccServerHandler::new(fixture.service);
+        let response = server
+            .handle_rpc_call(
+                RPCRequest {
+                    method: buckyos_api::ai_methods::MODELS_LIST.to_string(),
+                    params: json!({}),
+                    seq: 17,
+                    token: Some("caller-token".to_string()),
+                    trace_id: Some("management-dispatch".to_string()),
+                },
+                "127.0.0.1".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.seq, 17);
+    }
+
+    #[tokio::test]
+    async fn reload_publishes_current_settings_without_persisting() {
+        let fixture = fixture(false);
+        let response = fixture
+            .service
+            .handle_reload_settings(ServiceReloadSettingsRequest::new(), RPCContext::default())
+            .await
+            .unwrap();
+        assert!(response.ok);
+        assert_eq!(response.settings_revision, 4);
+        assert_eq!(fixture.settings.writes.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.runtime.publishes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            fixture.settings.tokens.lock().await.as_slice(),
+            ["caller-token"]
+        );
+    }
+
+    #[test]
+    fn task_manager_errors_are_redacted() {
+        let error = task_manager_error(RPCErrors::ReasonError(
+            "upstream response contained top-secret".to_string(),
+        ));
+        assert_eq!(error.message, "TaskMgr operation failed");
+        assert!(!format!("{error:?}").contains("top-secret"));
     }
 
     fn quota_record() -> QuotaTruthRecord {
