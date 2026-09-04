@@ -1,18 +1,25 @@
-name: Build Buckyos Linux Components
-on: 
-    workflow_call:
-        inputs:
-            arch:
-                required: true
-                type: string
-            enable_tests:
-                required: false
-                type: boolean
-                default: false
+name: Build BuckyOS Linux Staged Artifact
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        required: true
+        type: string
+      enable_tests:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  DENO_VERSION: v2.9.2
 
 jobs:
   build:
-    name: build
+    name: Linux ${{ inputs.arch }}
     runs-on: ${{ inputs.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     steps:
     - name: Checkout
@@ -25,75 +32,100 @@ jobs:
       uses: actions/setup-node@v6
       with:
         node-version: '24.x'
+    - name: Setup Deno
+      uses: denoland/setup-deno@v2
+      with:
+        deno-version: ${{ env.DENO_VERSION }}
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
         targets: ${{inputs.arch}}-unknown-linux-${{inputs.arch == 'aarch64' && 'gnu' || 'musl'}}
-    - name: Setup Needed Packages
+    - name: Cache musl toolchain
       if: ${{ inputs.arch == 'x86_64' }}
+      id: musl-toolchain-cache
+      uses: actions/cache@v5
+      with:
+        path: ${{ runner.temp }}/x86_64-linux-musl-cross
+        key: musl-cc-v0.0.1-x86_64-linux-musl-cross-52abd1a56e670952116e35d1a62e048a9b6160471d988e16fa0e1611923dd108a581d2e00874af5eb04e4968b1ba32e0eb449a1f15c3e4d5240ebe09caf5a9f3
+    - name: Install full musl C/C++ toolchain
+      if: ${{ inputs.arch == 'x86_64' && steps.musl-toolchain-cache.outputs.cache-hit != 'true' }}
+      env:
+        MUSL_TOOLCHAIN_URL: https://github.com/musl-cc/musl.cc/releases/download/v0.0.1/x86_64-linux-musl-cross.tgz
+        MUSL_TOOLCHAIN_SHA512: 52abd1a56e670952116e35d1a62e048a9b6160471d988e16fa0e1611923dd108a581d2e00874af5eb04e4968b1ba32e0eb449a1f15c3e4d5240ebe09caf5a9f3
       run: |
-          set -euxo pipefail
-          sudo apt update
-          sudo apt install -y musl-tools g++ binutils
+        set -euxo pipefail
+        archive="$RUNNER_TEMP/x86_64-linux-musl-cross.tgz"
+        curl --fail --location --retry 3 --output "$archive" "$MUSL_TOOLCHAIN_URL"
+        printf '%s  %s\n' "$MUSL_TOOLCHAIN_SHA512" "$archive" | sha512sum --check --strict
+        tar --extract --gzip --file="$archive" --directory="$RUNNER_TEMP" --no-same-owner
+    - name: Verify full musl C/C++ toolchain
+      if: ${{ inputs.arch == 'x86_64' }}
+      env:
+        MUSL_TOOLCHAIN_ROOT: ${{ runner.temp }}/x86_64-linux-musl-cross
+      run: |
+        set -euxo pipefail
+        echo "$MUSL_TOOLCHAIN_ROOT/bin" >> "$GITHUB_PATH"
+        export PATH="$MUSL_TOOLCHAIN_ROOT/bin:$PATH"
 
-          tool_dir="$RUNNER_TEMP/musl-toolchain-bin"
-          mkdir -p "$tool_dir"
+        command -v x86_64-linux-musl-gcc
+        command -v x86_64-linux-musl-g++
+        command -v x86_64-linux-musl-ar
+        command -v x86_64-linux-musl-ranlib
+        test "$(x86_64-linux-musl-g++ -dumpmachine)" = "x86_64-linux-musl"
 
-          native_gxx="$(command -v x86_64-linux-gnu-g++ || command -v g++)"
-          native_ar="$(command -v x86_64-linux-gnu-ar || command -v ar)"
-          native_ranlib="$(command -v x86_64-linux-gnu-ranlib || command -v ranlib)"
-
-          cat > "$tool_dir/x86_64-linux-musl-g++" <<EOF
-          #!/bin/sh
-          exec "$native_gxx" "\$@" -specs /usr/lib/x86_64-linux-musl/musl-gcc.specs
-          EOF
-          chmod +x "$tool_dir/x86_64-linux-musl-g++"
-
-          ln -sf "$native_ar" "$tool_dir/x86_64-linux-musl-ar"
-          ln -sf "$native_ranlib" "$tool_dir/x86_64-linux-musl-ranlib"
-          ln -sf "$tool_dir/x86_64-linux-musl-g++" "$tool_dir/musl-g++"
-          ln -sf "$tool_dir/x86_64-linux-musl-ar" "$tool_dir/musl-ar"
-          ln -sf "$tool_dir/x86_64-linux-musl-ranlib" "$tool_dir/musl-ranlib"
-          echo "$tool_dir" >> "$GITHUB_PATH"
-          export PATH="$tool_dir:$PATH"
-
-          command -v x86_64-linux-musl-gcc
-          command -v x86_64-linux-musl-g++
-          command -v x86_64-linux-musl-ar
-          command -v x86_64-linux-musl-ranlib
+        source="$RUNNER_TEMP/musl-cxx-smoke.cpp"
+        binary="$RUNNER_TEMP/musl-cxx-smoke"
+        printf '%s\n' '#include <iostream>' 'int main() { std::cout << "musl-cxx-ok"; }' > "$source"
+        x86_64-linux-musl-g++ -static "$source" -o "$binary"
+        test "$("$binary")" = "musl-cxx-ok"
     - name: cargo test
       working-directory: ./src
-      if: ${{inputs.enable_tests == 'true'}}
+      if: ${{ inputs.enable_tests }}
       run: cargo test -- --test-threads=1
-    - name: install buckyos devkit
+    - name: Install BuckyOS devkit
       run: pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
-    - name: build buckyos
+    - name: Prepare SDK/Tool distribution
       working-directory: ./src
-      run: buckyos-build
-    - name: Get Version
-      id: get_version
-      run: |
-        full_version=`./src/rootfs/bin/node-daemon/node_daemon --version|grep -oP '\d+(?:\.\d+)*\+build\S+'`
-        echo "full_version=$full_version" >> $GITHUB_OUTPUT
-        short_version=`./src/rootfs/bin/node-daemon/node_daemon --version|grep -oP '\d+(?:\.\d+)*\+build\d+'`
-        echo "short_version=$short_version" >> $GITHUB_OUTPUT
-    - name: Tar Rootfs
-      run:
-        cd ./src/rootfs && tar -cvf ../../rootfs.tar .
-    - name: Upload
-      uses: actions/upload-artifact@v6
-      id: upload
-      with:
-        name: buckyos-linux-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{steps.get_version.outputs.short_version}}
-        path: rootfs.tar
-        if-no-files-found: error
-    - name: Report Upload Urls
-      run: |
-        npm install @buckyos/test-server-client
-        npx test-server-client seturl buckyos ${{steps.get_version.outputs.short_version}} linux ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}} ${{github.sha}}
       env:
-        USERNAME: ${{ secrets.TEST_SERVER_USERNAME }}
-        PRIVATE_KEY: ${{ secrets.TEST_SERVER_PRIVATE_KEY }}
-        ENDPOINT: "https://buckyos.ai"
+        SDK_TOOL_WORK_DIR: ${{ runner.temp }}/sdk-tool-distribution
+      run: python3 tools/prepare_sdk_tool_distribution.py --work-dir "$SDK_TOOL_WORK_DIR"
+    - name: Build BuckyOS
+      working-directory: ./src
+      run: buckyos-build --app=buckyos --target=${{ inputs.arch }}-unknown-linux-${{ inputs.arch == 'aarch64' && 'gnu' || 'musl' }}
+    - name: Install staged payload
+      working-directory: ./src
+      env:
+        STAGE_ROOT: ${{ runner.temp }}/staged
+      run: |
+        set -euxo pipefail
+        rm -rf "$STAGE_ROOT"
+        mkdir -p "$STAGE_ROOT/buckyos"
+        buckyos-install --app=buckyos --all --target-rootfs="$STAGE_ROOT/buckyos"
+        test -n "$(find "$STAGE_ROOT/buckyos" -mindepth 1 -print -quit)"
+    - name: Get staged BuckyOS version
+      id: version
+      env:
+        STAGE_ROOT: ${{ runner.temp }}/staged
+      run: |
+        set -euo pipefail
+        version_output="$("$STAGE_ROOT/buckyos/bin/node-daemon/node_daemon" --version)"
+        version_pattern='[0-9]+(\.[0-9]+)*\+build[0-9]+'
+        if [[ ! "$version_output" =~ $version_pattern ]]; then
+          echo "Unable to parse BuckyOS version from: $version_output" >&2
+          exit 1
+        fi
+        echo "value=${BASH_REMATCH[0]}" >> "$GITHUB_OUTPUT"
+    - name: Archive staged payload
+      env:
+        STAGE_ROOT: ${{ runner.temp }}/staged
+        ARCHIVE_PATH: ${{ runner.temp }}/buckyos-linux-${{ inputs.arch == 'x86_64' && 'amd64' || 'aarch64' }}-${{ steps.version.outputs.value }}.tar.gz
+      run: tar -czf "$ARCHIVE_PATH" -C "$STAGE_ROOT" .
+    - name: Upload staged artifact
+      uses: actions/upload-artifact@v6
+      with:
+        name: buckyos-linux-${{ inputs.arch == 'x86_64' && 'amd64' || 'aarch64' }}-${{ steps.version.outputs.value }}
+        path: ${{ runner.temp }}/buckyos-linux-${{ inputs.arch == 'x86_64' && 'amd64' || 'aarch64' }}-${{ steps.version.outputs.value }}.tar.gz
+        if-no-files-found: error
+        compression-level: 0
 

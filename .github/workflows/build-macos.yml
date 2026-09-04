@@ -1,18 +1,25 @@
-name: Build Buckyos MacOS Components
-on: 
-    workflow_call:
-        inputs:
-            arch:
-                required: true
-                type: string
-            enable_tests:
-                required: false
-                type: boolean
-                default: false
+name: Build BuckyOS macOS Staged Artifact
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        required: true
+        type: string
+      enable_tests:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  DENO_VERSION: v2.9.2
 
 jobs:
   build:
-    name: build
+    name: macOS ${{ inputs.arch }}
     runs-on: ${{ inputs.arch == 'aarch64' && 'macos-15' || 'macos-15-intel' }}
     steps:
     - name: Checkout
@@ -25,6 +32,10 @@ jobs:
       uses: actions/setup-node@v6
       with:
         node-version: '24.x'
+    - name: Setup Deno
+      uses: denoland/setup-deno@v2
+      with:
+        deno-version: ${{ env.DENO_VERSION }}
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
@@ -32,38 +43,50 @@ jobs:
         targets: ${{inputs.arch}}-apple-darwin
     - name: cargo test
       working-directory: ./src
-      if: ${{inputs.enable_tests == 'true'}}
-      run: sudo cargo test -- --test-threads=1
-    - name: install buckyos devkit
+      if: ${{ inputs.enable_tests }}
+      run: cargo test -- --test-threads=1
+    - name: Install BuckyOS devkit
       run: pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
-    - name: build buckyos
+    - name: Prepare SDK/Tool distribution
       working-directory: ./src
-      run: sudo buckyos-build
-    - name: Tar Rootfs
-      run: 
-        cd ./src/rootfs && tar -cvf ../../rootfs.tar .
-    - name: Get Version
-      id: get_version
+      env:
+        SDK_TOOL_WORK_DIR: ${{ runner.temp }}/sdk-tool-distribution
+      run: python3 tools/prepare_sdk_tool_distribution.py --work-dir "$SDK_TOOL_WORK_DIR"
+    - name: Build BuckyOS
+      working-directory: ./src
+      run: buckyos-build --app=buckyos --target=${{ inputs.arch }}-apple-darwin
+    - name: Install staged payload
+      working-directory: ./src
+      env:
+        STAGE_ROOT: ${{ runner.temp }}/staged
       run: |
-        version=$("./src/rootfs/bin/node-daemon/node_daemon" --version)
-
-        full_version=$(printf '%s\n' "$version" | sed -En 's/^[^0-9]*([0-9]+(\.[0-9]+)*\+build[^[:space:]]+).*/\1/p')
-        echo "full_version=$full_version" >> "$GITHUB_OUTPUT"
-
-        short_version=$(printf '%s\n' "$version" | sed -En 's/^[^0-9]*([0-9]+(\.[0-9]+)*\+build[0-9]+).*/\1/p')
-        echo "short_version=$short_version" >> "$GITHUB_OUTPUT"
-    - name: Upload
-      id: upload
+        set -euxo pipefail
+        rm -rf "$STAGE_ROOT"
+        mkdir -p "$STAGE_ROOT/buckyos"
+        buckyos-install --app=buckyos --all --target-rootfs="$STAGE_ROOT/buckyos"
+        test -n "$(find "$STAGE_ROOT/buckyos" -mindepth 1 -print -quit)"
+    - name: Get staged BuckyOS version
+      id: version
+      env:
+        STAGE_ROOT: ${{ runner.temp }}/staged
+      run: |
+        set -euo pipefail
+        version_output="$("$STAGE_ROOT/buckyos/bin/node-daemon/node_daemon" --version)"
+        version_pattern='[0-9]+(\.[0-9]+)*\+build[0-9]+'
+        if [[ ! "$version_output" =~ $version_pattern ]]; then
+          echo "Unable to parse BuckyOS version from: $version_output" >&2
+          exit 1
+        fi
+        echo "value=${BASH_REMATCH[0]}" >> "$GITHUB_OUTPUT"
+    - name: Archive staged payload
+      env:
+        STAGE_ROOT: ${{ runner.temp }}/staged
+        ARCHIVE_PATH: ${{ runner.temp }}/buckyos-apple-${{ inputs.arch == 'x86_64' && 'amd64' || 'aarch64' }}-${{ steps.version.outputs.value }}.tar.gz
+      run: tar -czf "$ARCHIVE_PATH" -C "$STAGE_ROOT" .
+    - name: Upload staged artifact
       uses: actions/upload-artifact@v6
       with:
-        name: buckyos-apple-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{steps.get_version.outputs.short_version}}
-        path: rootfs.tar
+        name: buckyos-apple-${{ inputs.arch == 'x86_64' && 'amd64' || 'aarch64' }}-${{ steps.version.outputs.value }}
+        path: ${{ runner.temp }}/buckyos-apple-${{ inputs.arch == 'x86_64' && 'amd64' || 'aarch64' }}-${{ steps.version.outputs.value }}.tar.gz
         if-no-files-found: error
-    - name: Report Upload Urls
-      run: |
-        npm install @buckyos/test-server-client
-        npx test-server-client seturl buckyos ${{steps.get_version.outputs.short_version}} macos ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}} ${{github.sha}}
-      env:
-        USERNAME: ${{ secrets.TEST_SERVER_USERNAME }}
-        PRIVATE_KEY: ${{ secrets.TEST_SERVER_PRIVATE_KEY }}
-        ENDPOINT: "https://buckyos.ai"
+        compression-level: 0

@@ -1,18 +1,25 @@
-name: Build Buckyos Windows Components
-on: 
-    workflow_call:
-        inputs:
-            arch:
-                required: true
-                type: string
-            enable_tests:
-                required: false
-                type: boolean
-                default: false
+name: Build BuckyOS Windows Staged Artifact
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        required: true
+        type: string
+      enable_tests:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  DENO_VERSION: v2.9.2
 
 jobs:
   build:
-    name: build
+    name: Windows ${{ inputs.arch }}
     runs-on: ${{ inputs.arch == 'aarch64' && 'windows-11-arm' || 'windows-2025' }}
     steps:
     - name: Checkout
@@ -25,6 +32,10 @@ jobs:
       uses: actions/setup-node@v6
       with:
         node-version: '24.x'
+    - name: Setup Deno
+      uses: denoland/setup-deno@v2
+      with:
+        deno-version: ${{ env.DENO_VERSION }}
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
@@ -37,43 +48,66 @@ jobs:
         python-version: '3.11'
     - name: cargo test
       working-directory: ./src
-      if: ${{inputs.enable_tests == true}}
+      if: ${{ inputs.enable_tests }}
       run: cargo test -- --test-threads=1
-    - name: install buckyos devkit
+    - name: Install BuckyOS devkit
       run: pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
-    - name: build buckyos
+    - name: Prepare SDK/Tool distribution
       working-directory: ./src
-      run: buckyos-build
+      shell: pwsh
+      env:
+        SDK_TOOL_WORK_DIR: ${{ runner.temp }}/sdk-tool-distribution
+      run: python tools/prepare_sdk_tool_distribution.py --work-dir $env:SDK_TOOL_WORK_DIR
+    - name: Build BuckyOS
+      working-directory: ./src
+      run: buckyos-build --app=buckyos --target=${{ inputs.arch }}-pc-windows-msvc
       env:
         PYTHONIOENCODING: 'utf-8'
         PYTHONLEGACYWINDOWSSTDIO: "utf-8"
-    - name: Get Version
-      id: get_version
+    - name: Install staged payload
+      working-directory: ./src
       shell: pwsh
       run: |
-        $version = (& './src/rootfs/bin/node-daemon/node_daemon' --version)
-
-        if ($version -match '\d+(?:\.\d+)*\+build\S+') {
-            $full_version = $matches[0]
-            Add-Content -Path $env:GITHUB_OUTPUT -Value "full_version=$full_version"
+        $stageRoot = Join-Path $env:RUNNER_TEMP 'staged'
+        $payloadRoot = Join-Path $stageRoot 'buckyos'
+        if (Test-Path $stageRoot) {
+          Remove-Item -Recurse -Force $stageRoot
         }
-
-        if ($version -match '\d+(?:\.\d+)*\+build\d+') {
-            $short_version = $matches[0]
-            Add-Content -Path $env:GITHUB_OUTPUT -Value "short_version=$short_version"
+        New-Item -ItemType Directory -Force -Path $payloadRoot | Out-Null
+        buckyos-install --app=buckyos --all "--target-rootfs=$payloadRoot"
+        if ($LASTEXITCODE -ne 0) {
+          throw "buckyos-install failed with exit code $LASTEXITCODE"
         }
-    - name: Upload
-      id: upload
+        if (-not (Get-ChildItem -Force $payloadRoot | Select-Object -First 1)) {
+          throw "staged BuckyOS payload is empty: $payloadRoot"
+        }
+    - name: Get staged BuckyOS version
+      id: version
+      shell: pwsh
+      run: |
+        $binary = Join-Path $env:RUNNER_TEMP 'staged\buckyos\bin\node-daemon\node_daemon.exe'
+        $versionOutput = (& $binary --version) -join "`n"
+        if ($LASTEXITCODE -ne 0) {
+          throw "node_daemon --version failed with exit code $LASTEXITCODE"
+        }
+        $versionMatch = [regex]::Match($versionOutput, '\d+(?:\.\d+)*\+build\d+')
+        if (-not $versionMatch.Success) {
+          throw "Unable to parse BuckyOS version from: $versionOutput"
+        }
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "value=$($versionMatch.Value)"
+    - name: Archive staged payload
+      shell: pwsh
+      run: |
+        $stageRoot = Join-Path $env:RUNNER_TEMP 'staged'
+        $archivePath = Join-Path $env:RUNNER_TEMP "buckyos-windows-${{ inputs.arch == 'x86_64' && 'amd64' || 'aarch64' }}-${{ steps.version.outputs.value }}.tar.gz"
+        tar -czf $archivePath -C $stageRoot .
+        if ($LASTEXITCODE -ne 0) {
+          throw "tar failed with exit code $LASTEXITCODE"
+        }
+    - name: Upload staged artifact
       uses: actions/upload-artifact@v6
       with:
-        name: buckyos-windows-${{inputs.arch == 'x86_64' && 'amd64' || 'aarch64'}}-${{steps.get_version.outputs.short_version}}
-        path: src/rootfs
+        name: buckyos-windows-${{ inputs.arch == 'x86_64' && 'amd64' || 'aarch64' }}-${{ steps.version.outputs.value }}
+        path: ${{ runner.temp }}/buckyos-windows-${{ inputs.arch == 'x86_64' && 'amd64' || 'aarch64' }}-${{ steps.version.outputs.value }}.tar.gz
         if-no-files-found: error
-    - name: Report Upload Urls
-      run: |
-        npm install @buckyos/test-server-client
-        npx test-server-client seturl buckyos ${{steps.get_version.outputs.short_version}} windows ${{inputs.arch}} ${{steps.upload.outputs.artifact-url}} ${{github.sha}}
-      env:
-        USERNAME: ${{ secrets.TEST_SERVER_USERNAME }}
-        PRIVATE_KEY: ${{ secrets.TEST_SERVER_PRIVATE_KEY }}
-        ENDPOINT: "https://buckyos.ai"
+        compression-level: 0

@@ -1,14 +1,7 @@
-name: Build All
+name: Build All BuckyOS Artifacts
 
 on:
   workflow_dispatch:
-    inputs:
-      enable_tests:
-        description: 'Enable cargo tests during build'
-        required: false
-        type: boolean
-        default: false
-  workflow_call:
     inputs:
       enable_tests:
         description: 'Enable cargo tests during build'
@@ -19,28 +12,28 @@ on:
 jobs:
   build-windows:
     strategy:
+      fail-fast: false
       matrix:
         arch: ["x86_64"]
     uses: ./.github/workflows/build-windows.yml
     with:
       arch: ${{ matrix.arch }}
-      enable_tests: ${{inputs.enable_tests}}
-    secrets: inherit
+      enable_tests: ${{ inputs.enable_tests }}
   build-linux:
     strategy:
+      fail-fast: false
       matrix:
         arch: ["x86_64", "aarch64"]
     uses: ./.github/workflows/build-linux.yml
     with:
       arch: ${{ matrix.arch }}
-      enable_tests: ${{inputs.enable_tests}}
-    secrets: inherit
+      enable_tests: ${{ inputs.enable_tests }}
   build-macos:
     strategy:
+      fail-fast: false
       matrix:
         arch: ["x86_64", "aarch64"]
     uses: ./.github/workflows/build-macos.yml
     with:
       arch: ${{ matrix.arch }}
-      enable_tests: ${{inputs.enable_tests}}
-    secrets: inherit
+      enable_tests: ${{ inputs.enable_tests }}
