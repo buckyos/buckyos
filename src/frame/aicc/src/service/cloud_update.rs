@@ -10,7 +10,9 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{broadcast, watch, Mutex, Notify, RwLock};
 
-use crate::catalog::{CatalogBuildOptions, CatalogKind, CatalogSnapshot, CurrentCatalogFile};
+use crate::catalog::{CatalogBuildOptions, CatalogKind, CatalogSnapshot};
+#[cfg(test)]
+use crate::catalog::CurrentCatalogFile;
 use crate::matching::{CompiledMatchRule, MatchContext, MatchRule, RELEASE_TRACK_MATCH_SCHEMA};
 use crate::runtime::{RuntimeError, RuntimeInputs};
 use crate::settings::{
@@ -305,7 +307,6 @@ impl CloudUpdateManager {
         fetcher: Arc<dyn CloudObjectFetcher>,
         profile: CloudUpdateClientProfile,
         config: CloudUpdateConfig,
-        _builtin: Vec<CurrentCatalogFile>,
         local: Vec<MetadataFile>,
         system_config: Vec<MetadataFile>,
     ) -> Result<Arc<Self>, CloudUpdateError> {
@@ -314,7 +315,6 @@ impl CloudUpdateManager {
             fetcher,
             profile,
             config,
-            Vec::new(),
             Arc::new(StaticMetadataOverrideLoader::new(local, system_config)),
         )
     }
@@ -324,7 +324,6 @@ impl CloudUpdateManager {
         fetcher: Arc<dyn CloudObjectFetcher>,
         profile: CloudUpdateClientProfile,
         config: CloudUpdateConfig,
-        _builtin: Vec<CurrentCatalogFile>,
         overrides: Arc<dyn MetadataOverrideLoader>,
     ) -> Result<Arc<Self>, CloudUpdateError> {
         Self::new_with_managed_sources(cache_root, fetcher, profile, config, overrides)
@@ -1166,7 +1165,7 @@ mod tests {
     async fn partial_cloud_release_is_validated_with_builtin_fallback() {
         let temp = tempfile::tempdir().unwrap();
         let source = "ndn://metadata.test";
-        let (mut fetcher, builtins) = fixtures(source, 42, false);
+        let (mut fetcher, _) = fixtures(source, 42, false);
         let manifest_url = join_url(source, "aicc/provider-catalog/v2/manifest-42.json").unwrap();
         let mut manifest: ProviderCatalogManifest =
             serde_json::from_slice(fetcher.objects.get(&manifest_url).unwrap()).unwrap();
@@ -1183,7 +1182,6 @@ mod tests {
                 source_url: Some(source.to_string()),
                 interval_secs: 60,
             },
-            builtins,
             Vec::new(),
             Vec::new(),
         )
