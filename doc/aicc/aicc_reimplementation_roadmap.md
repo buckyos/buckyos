@@ -587,7 +587,7 @@ Owner：Service Integration 小组
 
 完成标准：前端不直接读写 system-config，管理操作不会产生 settings 已写但 runtime 半生效的状态。
 
-实现记录：Service Integration 小组在 `src/frame/aicc/src/service/` 完成生产依赖装配、kRPC handler、settings CAS、Provider 管理、usage/trace/quota、metadata 更新和退出收敛；集成人从 `lib.rs` 导出唯一 `run_service()`，由 `main.rs` 创建 Tokio runtime 并调用该入口，同时将 node-daemon 原生服务身份固定为 `KernelService`，按 login 后注册 4040 端口的顺序启动 `/kapi/aicc`。现有 build/rootfs 映射、scheduler service spec/RDB 注册和初始化链已复核，无需重复修改。Service 定向 22 项测试及 AICC all-target check 通过；全量 AICC 单测当前受并行 Provider metadata 工作树的 8 项失败影响，rootfs 新 settings/RBAC 和实际启动验收属于 WP-17D/T1。
+实现记录：Service Integration 小组在 `src/frame/aicc/src/service/` 完成生产依赖装配、kRPC handler、settings CAS、Provider 管理、usage/trace/quota、metadata 更新和退出收敛；集成人从 `lib.rs` 导出唯一 `run_service()`，由 `main.rs` 创建 Tokio runtime 并调用该入口，同时将 node-daemon 原生服务身份固定为 `KernelService`，按 login 后注册 4040 端口的顺序启动 `/kapi/aicc`。现有 build/rootfs 映射、scheduler service spec/RDB 注册和初始化链已复核，无需重复修改。Service 定向 22 项测试、AICC 全量 349 项单测及 all-target check 均通过；rootfs 新 settings/RBAC 和实际启动验收属于 WP-17D/T1。
 
 ### WP-17：调用方联动
 
