@@ -1040,7 +1040,9 @@ global_exact_model_weights:
 ```yaml
 policy:
   profile: cost_first
-  max_estimated_cost_usd: 0.02
+  max_estimated_cost:
+    amount: 0.02
+    currency: USD
 ```
 
 ### 11.4 只允许本地模型

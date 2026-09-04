@@ -427,6 +427,66 @@ mod canonical_contract_tests {
         .is_err());
     }
 
+    #[test]
+    fn quota_and_policy_money_are_currency_explicit_and_strict() {
+        let money = Money::new(12.5, "USD");
+        let quota = QuotaView {
+            state: QuotaState::Normal,
+            remaining_request_units: Some(1_000),
+            remaining_cost: Some(money.clone()),
+            reset_at: Some("2026-04-26T00:00:00Z".to_string()),
+        };
+        let value = serde_json::to_value(&quota).unwrap();
+        assert_eq!(
+            value["remaining_cost"],
+            json!({
+                "amount": 12.5,
+                "currency": "USD"
+            })
+        );
+        assert!(value.get("remaining_cost_usd").is_none());
+        assert_eq!(serde_json::from_value::<QuotaView>(value).unwrap(), quota);
+
+        let policy = AiccPolicyConfig {
+            max_estimated_cost: Some(LockedValue::locked(money.clone())),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&policy).unwrap();
+        assert_eq!(value["max_estimated_cost"]["value"], json!(money));
+        assert!(value.get("max_estimated_cost_usd").is_none());
+        assert!(serde_json::from_value::<AiccPolicyConfig>(json!({
+            "max_estimated_cost_usd": 0.25
+        }))
+        .is_err());
+
+        let route_policy = RoutePolicy {
+            max_cost: Some(Money::new(0.25, "USD")),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(route_policy).unwrap();
+        assert_eq!(
+            value["max_cost"],
+            json!({"amount": 0.25, "currency": "USD"})
+        );
+        assert!(value.get("max_cost_usd").is_none());
+        assert!(serde_json::from_value::<RoutePolicy>(json!({
+            "max_cost_usd": 0.25
+        }))
+        .is_err());
+
+        assert!(serde_json::from_value::<Money>(json!({
+            "amount": 1.0,
+            "currency": "USD",
+            "unit": "dollar"
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<QuotaView>(json!({
+            "state": "normal",
+            "remaining_cost_usd": 12.5
+        }))
+        .is_err());
+    }
+
     struct ManagementHandler;
 
     #[async_trait]
@@ -1252,7 +1312,24 @@ impl<T> LockedValue<T> {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Money {
+    pub amount: f64,
+    pub currency: String,
+}
+
+impl Money {
+    pub fn new(amount: f64, currency: impl Into<String>) -> Self {
+        Self {
+            amount,
+            currency: currency.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct AiccPolicyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<LockedValue<AiccSchedulerProfile>>,
@@ -1273,7 +1350,7 @@ pub struct AiccPolicyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_provider_instances: Option<LockedValue<Vec<String>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_estimated_cost_usd: Option<LockedValue<f64>>,
+    pub max_estimated_cost: Option<LockedValue<Money>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -1414,6 +1491,7 @@ fn is_false(value: &bool) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct RoutePolicy {
     #[serde(default, skip_serializing_if = "is_default_route_policy_profile")]
     pub profile: RoutePolicyProfile,
@@ -1430,7 +1508,7 @@ pub struct RoutePolicy {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocked_provider_instances: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_cost_usd: Option<f64>,
+    pub max_cost: Option<Money>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_latency_ms: Option<u64>,
 }
@@ -1453,7 +1531,7 @@ impl Default for RoutePolicy {
             explain: false,
             allowed_provider_instances: Vec::new(),
             blocked_provider_instances: Vec::new(),
-            max_cost_usd: None,
+            max_cost: None,
             max_latency_ms: None,
         }
     }
@@ -3601,12 +3679,13 @@ pub enum QuotaState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct QuotaView {
     pub state: QuotaState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remaining_request_units: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remaining_cost_usd: Option<f64>,
+    pub remaining_cost: Option<Money>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_at: Option<String>,
 }

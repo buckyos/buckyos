@@ -1058,7 +1058,10 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
     "policy": {
       "profile": "quality_first",
       "local_only": false,
-      "max_estimated_cost_usd": 0.05,
+      "max_estimated_cost": {
+        "amount": 0.05,
+        "currency": "USD"
+      },
       "allow_fallback": true,
       "allow_exact_model_fallback": false,
       "runtime_failover": true,

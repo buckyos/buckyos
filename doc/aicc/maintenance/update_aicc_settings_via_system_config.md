@@ -240,7 +240,7 @@ POST /kapi/aicc
 
 - `no_provider_available`：Provider 未注册、`logical_mounts` 不包含目标逻辑目录、Provider 不可用、策略过滤后无候选。
 - `logical_model_not_found`：目标逻辑模型不存在或没有可用候选。
-- `max_cost_exceeded`：所有候选超过 `requirements.max_cost_usd`。
+- `max_cost_exceeded`：所有候选超过 `requirements.max_cost.amount`；金额币种由 `requirements.max_cost.currency` 明确指定。
 - `resource_invalid`：payload resources 格式不合法。
 - `provider_start_failed`：Provider 已选中，但上游调用失败。
 

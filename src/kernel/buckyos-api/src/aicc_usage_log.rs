@@ -472,16 +472,39 @@ impl QueryUsageRequest {
     }
 }
 
-/// Aggregated counts / totals. Units beyond tokens go into `request_units`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+/// Aggregated counts and totals.
+///
+/// `finance_complete` is true only when every event has a valid finance
+/// snapshot and all snapshots use the same normalized currency. Consumers
+/// must not treat `finance_amount` as a complete cost when it is false.
+/// `consumed_request_units` counts every successful completion as at least one
+/// unit: `max(request_units.unwrap_or(1), 1)`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct UsageAggregate {
     pub total_requests: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
-    pub request_units: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finance_amount: Option<f64>,
+    pub consumed_request_units: u64,
+    pub finance_amount: f64,
+    pub finance_currency: Option<String>,
+    pub finance_complete: bool,
+}
+
+impl Default for UsageAggregate {
+    fn default() -> Self {
+        Self {
+            total_requests: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            consumed_request_units: 0,
+            finance_amount: 0.0,
+            finance_currency: None,
+            finance_complete: true,
+        }
+    }
 }
 
 /// One row of a grouped query result. `group` holds `dimension → value`
@@ -663,5 +686,72 @@ mod tests {
                 assert!(ddl.contains(index), "missing index: {index}");
             }
         }
+    }
+
+    #[test]
+    fn usage_aggregate_default_is_complete_zero_event_contract() {
+        let aggregate = UsageAggregate::default();
+        assert_eq!(aggregate.total_requests, 0);
+        assert_eq!(aggregate.consumed_request_units, 0);
+        assert_eq!(aggregate.finance_amount, 0.0);
+        assert_eq!(aggregate.finance_currency, None);
+        assert!(aggregate.finance_complete);
+
+        let value = serde_json::to_value(&aggregate).expect("serialize aggregate");
+        assert_eq!(
+            value,
+            json!({
+                "total_requests": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "consumed_request_units": 0,
+                "finance_amount": 0.0,
+                "finance_currency": null,
+                "finance_complete": true
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<UsageAggregate>(value).expect("deserialize aggregate"),
+            aggregate
+        );
+    }
+
+    #[test]
+    fn usage_aggregate_exposes_complete_and_incomplete_finance_contracts() {
+        let complete = UsageAggregate {
+            total_requests: 2,
+            consumed_request_units: 2,
+            finance_amount: 0.75,
+            finance_currency: Some("USD".to_string()),
+            finance_complete: true,
+            ..Default::default()
+        };
+        let incomplete = UsageAggregate {
+            total_requests: 2,
+            consumed_request_units: 3,
+            finance_amount: 0.5,
+            finance_currency: Some("USD".to_string()),
+            finance_complete: false,
+            ..Default::default()
+        };
+
+        for aggregate in [complete, incomplete] {
+            let value = serde_json::to_value(&aggregate).expect("serialize aggregate");
+            assert_eq!(
+                serde_json::from_value::<UsageAggregate>(value).expect("deserialize aggregate"),
+                aggregate
+            );
+        }
+
+        assert!(serde_json::from_value::<UsageAggregate>(json!({
+            "total_requests": 1,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "request_units": 1,
+            "finance_amount": 0.5
+        }))
+        .is_err());
     }
 }

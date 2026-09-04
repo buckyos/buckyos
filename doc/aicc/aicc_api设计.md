@@ -384,7 +384,10 @@ Response：
   "quota": {
     "state": "normal",
     "remaining_request_units": 1000,
-    "remaining_cost_usd": 12.5,
+    "remaining_cost": {
+      "amount": 12.5,
+      "currency": "USD"
+    },
     "reset_at": "2026-04-26T00:00:00Z"
   }
 }
