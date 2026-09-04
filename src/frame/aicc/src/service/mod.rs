@@ -3,40 +3,37 @@ mod cloud_update;
 use anyhow::Context;
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AiccError,
-    AiccCall, AiccErrorCode, AiccHandler, AiccServerHandler, AiMethodStatus,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AiMethodStatus,
+    AiccCall, AiccError, AiccErrorCode, AiccHandler, AiccRouteTraceEvent, AiccServerHandler,
     AudioEnhanceRequest, AudioEnhanceResponse, AudioMusicRequest, AudioMusicResponse,
     AudioSpeechRecognitionRequest, AudioSpeechRecognitionResponse, AudioTextToSpeechRequest,
     AudioTextToSpeechResponse, BuckyOSRuntimeType, CancelResponse, ComputerUseRequest,
-    ComputerUseResponse, CreateTaskExecutor,
-    CreateTaskReq, DriverMetadataRuntimeApply, DriverMetadataUpdateSetReq,
-    DriverMetadataUpdateSetResponse, DriverMetadataUpdateStatus, DriverMetadataUpdateView,
-    EmbeddingMultimodalRequest, EmbeddingMultimodalResponse, EmbeddingTextRequest,
-    EmbeddingTextResponse, ImageBackgroundRemoveRequest, ImageBackgroundRemoveResponse,
-    ImageInpaintRequest, ImageInpaintResponse, ImageToImageRequest, ImageToImageResponse,
-    ImageUpscaleRequest, ImageUpscaleResponse, ListModelsRequest, LlmChatHelperRequest,
-    LlmChatInvokeRequest, LlmChatInvokeResponse, ProtocolAdapterListRequest,
-    ProtocolAdapterListResponse, ProviderAddRequest,
-    ProviderAddResponse, ProviderCatalogRequest, ProviderCatalogResponse, ProviderDeleteRequest,
-    ProviderDeleteResponse, ProviderHealthRequest, ProviderHealthResponse,
-    ProviderInstanceAuthMode, ProviderInstanceAuthView, ProviderInstanceHealthState,
-    ProviderInstanceHealthView, ProviderInstanceInventoryState, ProviderInstanceInventoryView,
-    ProviderInstanceView, ProviderListRequest, ProviderListResponse, ProviderRefreshModelsRequest,
-    ProviderRefreshModelsResponse, ProviderReloadResult, ProviderUpdateRequest,
-    ProviderUpdateResponse, ProviderValidateRequest, ProviderValidateResponse,
-    QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
-    QuotaQueryRequest, QuotaQueryResponse, QuotaState, RoutingGetRequest, RoutingGetResponse,
-    RerankRequest, RerankResponse, RouteFallbackAttempt, RouteResolveRequest,
-    RouteResolveResponse, RouteTrace, RoutingUpdateRequest, RoutingUpdateResponse,
-    ServiceReloadSettingsRequest,
-    ServiceReloadSettingsResponse, SystemConfigClient, SystemConfigError, TaskManagerClient,
-    TextToImageHelperRequest, TextToImageInvokeRequest, TextToImageInvokeResponse,
-    UsageQueryOutputMode, UsageQueryTimeRange, VideoExtendRequest, VideoExtendResponse,
-    VideoImageToVideoRequest, VideoImageToVideoResponse, VideoTextToVideoRequest,
-    VideoTextToVideoResponse, VideoToVideoRequest, VideoToVideoResponse, VideoUpscaleRequest,
-    VideoUpscaleResponse, VisionCaptionRequest, VisionCaptionResponse, VisionDetectRequest,
-    VisionDetectResponse, VisionOcrRequest, VisionOcrResponse, VisionSegmentRequest,
-    VisionSegmentResponse, AICC_COMPUTE_TASK_SCHEMA_ID,
+    ComputerUseResponse, CreateTaskExecutor, CreateTaskReq, DriverMetadataRuntimeApply,
+    DriverMetadataUpdateSetReq, DriverMetadataUpdateSetResponse, DriverMetadataUpdateStatus,
+    DriverMetadataUpdateView, EmbeddingMultimodalRequest, EmbeddingMultimodalResponse,
+    EmbeddingTextRequest, EmbeddingTextResponse, ImageBackgroundRemoveRequest,
+    ImageBackgroundRemoveResponse, ImageInpaintRequest, ImageInpaintResponse, ImageToImageRequest,
+    ImageToImageResponse, ImageUpscaleRequest, ImageUpscaleResponse, ListModelsRequest,
+    LlmChatHelperRequest, LlmChatInvokeRequest, LlmChatInvokeResponse, ProtocolAdapterListRequest,
+    ProtocolAdapterListResponse, ProviderAddRequest, ProviderAddResponse, ProviderCatalogRequest,
+    ProviderCatalogResponse, ProviderDeleteRequest, ProviderDeleteResponse, ProviderHealthRequest,
+    ProviderHealthResponse, ProviderInstanceAuthMode, ProviderInstanceAuthView,
+    ProviderInstanceHealthState, ProviderInstanceHealthView, ProviderInstanceInventoryState,
+    ProviderInstanceInventoryView, ProviderInstanceView, ProviderListRequest, ProviderListResponse,
+    ProviderRefreshModelsRequest, ProviderRefreshModelsResponse, ProviderReloadResult,
+    ProviderUpdateRequest, ProviderUpdateResponse, ProviderValidateRequest,
+    ProviderValidateResponse, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
+    QueryUsageResponse, QuotaQueryRequest, QuotaQueryResponse, QuotaState, RerankRequest,
+    RerankResponse, RouteFallbackAttempt, RouteResolveRequest, RouteResolveResponse, RouteTrace,
+    RoutingGetRequest, RoutingGetResponse, RoutingUpdateRequest, RoutingUpdateResponse,
+    ServiceReloadSettingsRequest, ServiceReloadSettingsResponse, SystemConfigClient,
+    SystemConfigError, TaskManagerClient, TextToImageHelperRequest, TextToImageInvokeRequest,
+    TextToImageInvokeResponse, UsageQueryOutputMode, UsageQueryTimeRange, VideoExtendRequest,
+    VideoExtendResponse, VideoImageToVideoRequest, VideoImageToVideoResponse,
+    VideoTextToVideoRequest, VideoTextToVideoResponse, VideoToVideoRequest, VideoToVideoResponse,
+    VideoUpscaleRequest, VideoUpscaleResponse, VisionCaptionRequest, VisionCaptionResponse,
+    VisionDetectRequest, VisionDetectResponse, VisionOcrRequest, VisionOcrResponse,
+    VisionSegmentRequest, VisionSegmentResponse, AICC_COMPUTE_TASK_SCHEMA_ID,
 };
 use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, Runner, ServerError, ServerErrorCode,
@@ -49,18 +46,16 @@ use http_body_util::combinators::BoxBody;
 use kRPC::{RPCContext, RPCErrors, RPCRequest};
 use kRPC::{RPCHandler, RPCResponse};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, Mutex};
 
-use crate::catalog::CatalogSnapshot;
 use crate::call::{CallResolver, ProviderCallTarget, ResolvedProviderCall};
+use crate::catalog::CatalogSnapshot;
 use crate::execution::{
     ExecutionEngine, ExecutionOutput, ExecutionState, NativeTaskPoll, NativeTaskResumeDescriptor,
     NativeTaskResumeError, PinnedProviderTask, ProviderExecution, ProviderExecutionPort,
@@ -81,14 +76,14 @@ use crate::provider::{
     ProviderQuotaObservation, ProviderQuotaObservationState, ProviderRefreshEvent,
     ProviderRuntimeManager, SnCredentialBroker, SnProviderInstanceInput, StaticCredentialResolver,
 };
+use crate::routing::policy::{
+    CredentialScope, ProviderPrivacy, ProviderTrustLevel, ProviderTrustView, ProviderType,
+    ProviderTypeSource,
+};
 use crate::routing::{
     policy_engine_for_route, CallerIdentity, CandidateRuntimeState, ProviderHealthStatus,
     QuotaLookup, QuotaSnapshot, QuotaSourceError, QuotaSourceFactory, QuotaTruthPort,
     RouteDecision, Router, RoutingRequest,
-};
-use crate::routing::policy::{
-    CredentialScope, ProviderPrivacy, ProviderTrustLevel, ProviderTrustView, ProviderType,
-    ProviderTypeSource,
 };
 use crate::runtime::{
     ConvergenceTrigger, ModelRegistryAssembler, PreparedRuntime, ProviderRuntimeBackend,
@@ -99,7 +94,7 @@ use crate::settings::{
     AiccSettings, MetadataSourceManager, ProductionMetadataOverrideLoader, ProductionRuntimeInputs,
     ProviderSettings, SettingsDocument,
 };
-use crate::storage::AiccStorage;
+use crate::storage::{AiccStorage, RouteTraceRecord};
 use cloud_update::{
     CloudUpdateClientProfile, CloudUpdateConfig, CloudUpdateManager, NdnCloudObjectFetcher,
 };
@@ -302,7 +297,10 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
     let execution = Arc::new(ExecutionEngine::new(
         storage.clone(),
         Arc::new(TaskManagerExecutionPort::new(task_manager)),
-        Arc::new(RuntimeProviderExecutionPort::new(runtime.clone(), codecs)),
+        Arc::new(RuntimeProviderExecutionPort::new(
+            runtime.clone(),
+            codecs.clone(),
+        )),
         storage.clone(),
     ));
     let recovery = execution.clone();
@@ -317,6 +315,13 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
             runtime.clone(),
         ),
     )));
+    let inference = Arc::new(RuntimeInferencePort::new(
+        runtime.clone(),
+        codecs,
+        quota_factory.clone(),
+        execution.clone(),
+        storage.clone(),
+    ));
     let service = AiccService::new(
         Arc::new(RuntimeAuthorizer),
         Arc::new(SystemConfigSettingsStore::new(system_config_url.clone())),
@@ -333,7 +338,8 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
             runtime.clone(),
         )),
     )
-    .with_execution(execution);
+    .with_execution(execution)
+    .with_inference(inference);
     serve_service(service, runtime, cloud_update, provider_events).await
 }
 
@@ -407,6 +413,653 @@ pub(crate) trait ServiceRuntime: Send + Sync {
 }
 
 #[async_trait]
+pub(crate) trait InferencePort: Send + Sync {
+    async fn resolve_route(
+        &self,
+        caller: &AuthorizedCaller,
+        request: RouteResolveRequest,
+    ) -> Result<RouteResolveResponse, RPCErrors>;
+
+    async fn invoke(&self, caller: &AuthorizedCaller, call: AiccCall) -> Result<Value, RPCErrors>;
+}
+
+struct InferenceRouteInput {
+    trace_id: Option<String>,
+    request_id: Option<String>,
+    model: String,
+    api_type: buckyos_api::ApiType,
+    requirements: buckyos_api::ModelRequirement,
+    disable: buckyos_api::ModelDisable,
+    policy: Option<buckyos_api::RoutePolicy>,
+    session_overlay: Option<buckyos_api::AiccRouteOverlay>,
+}
+
+struct RoutedInference {
+    snapshot: Arc<crate::runtime::RuntimeSnapshot>,
+    decision: RouteDecision,
+    runtime_failover: bool,
+    trace_id: String,
+    request_id: String,
+}
+
+pub(crate) struct RuntimeInferencePort {
+    runtime: Arc<RuntimeState>,
+    codecs: Arc<CodecRegistry>,
+    quota: Arc<QuotaSourceFactory>,
+    execution: Arc<ExecutionEngine>,
+    storage: Arc<AiccStorage>,
+}
+
+impl RuntimeInferencePort {
+    pub(crate) fn new(
+        runtime: Arc<RuntimeState>,
+        codecs: Arc<CodecRegistry>,
+        quota: Arc<QuotaSourceFactory>,
+        execution: Arc<ExecutionEngine>,
+        storage: Arc<AiccStorage>,
+    ) -> Self {
+        Self {
+            runtime,
+            codecs,
+            quota,
+            execution,
+            storage,
+        }
+    }
+
+    async fn route(
+        &self,
+        caller: &AuthorizedCaller,
+        input: InferenceRouteInput,
+    ) -> Result<RoutedInference, RPCErrors> {
+        let snapshot = self.runtime.capture().await;
+        let caller_identity = CallerIdentity {
+            tenant_id: caller.tenant_id.clone(),
+            user_id: caller.user_id.clone(),
+            app_id: caller.app_id.clone(),
+        };
+        let trace_id = input.trace_id.unwrap_or_else(next_inference_id);
+        let request_id = input.request_id.unwrap_or_else(next_inference_id);
+        let provider_names = snapshot
+            .models
+            .model_views()
+            .into_iter()
+            .map(|model| model.provider_instance_name)
+            .collect::<Vec<_>>();
+        let quota = self
+            .quota
+            .prepare_route(
+                &caller_identity,
+                input.api_type.capability(),
+                input.api_type.typed_method(),
+                provider_names,
+            )
+            .await
+            .map_err(|_| {
+                inference_error(AiccErrorCode::PolicyDenied, "quota truth is unavailable")
+            })?;
+        let runtime_states = candidate_runtime_states(snapshot.as_ref(), caller).await;
+        let session_overlay = input
+            .session_overlay
+            .as_ref()
+            .or(snapshot.settings.session_config.as_ref());
+        let policy = policy_engine_for_route(
+            snapshot.models.as_ref(),
+            &input.model,
+            session_overlay,
+            input.policy.as_ref(),
+            quota,
+        )
+        .map_err(|error| inference_error(AiccErrorCode::PolicyDenied, error.to_string()))?;
+        let runtime_failover = policy.policy().runtime_failover.value;
+        let mut request = RoutingRequest::new(
+            trace_id.clone(),
+            request_id.clone(),
+            input.model,
+            input.api_type,
+            caller_identity,
+        );
+        request.requirements = input.requirements;
+        request.disable = input.disable;
+        let decision = Router::new(snapshot.models.as_ref(), &policy, &runtime_states)
+            .route(&request)
+            .map_err(|error| inference_error(AiccErrorCode::NoCandidateModel, error.to_string()))?;
+        Ok(RoutedInference {
+            snapshot,
+            decision,
+            runtime_failover,
+            trace_id,
+            request_id,
+        })
+    }
+
+    async fn lower_call(
+        &self,
+        snapshot: &crate::runtime::RuntimeSnapshot,
+        decision: &RouteDecision,
+        call: &AiccCall,
+    ) -> Result<ResolvedProviderCall, RPCErrors> {
+        let selected = &decision.selected;
+        let provider = snapshot
+            .providers
+            .get(&selected.provider_instance_name)
+            .ok_or_else(|| {
+                inference_error(
+                    AiccErrorCode::NoProviderAvailable,
+                    "selected Provider is unavailable",
+                )
+            })?;
+        let credential = provider.resolve_credential().await.map_err(|error| {
+            inference_error(AiccErrorCode::NoProviderAvailable, error.to_string())
+        })?;
+        let provider_rules_id = provider.config.provider_rules_id.clone().ok_or_else(|| {
+            inference_error(
+                AiccErrorCode::InternalError,
+                "selected Provider has no provider rules",
+            )
+        })?;
+        let transport = HttpTransportConfig::default();
+        let mut match_dimensions = BTreeMap::new();
+        for (name, value) in [
+            ("region", provider.config.region.as_ref()),
+            ("workspace", provider.config.workspace.as_ref()),
+            ("account", provider.config.account.as_ref()),
+        ] {
+            if let Some(value) = value {
+                match_dimensions.insert(name.to_string(), Value::String(value.clone()));
+            }
+        }
+        CallResolver::new(snapshot.catalog.as_ref(), self.codecs.as_ref())
+            .lower(
+                decision,
+                call,
+                ProviderCallTarget {
+                    provider_rules_id,
+                    base_url: provider.config.base_url.clone(),
+                    credential,
+                    limits: CodecLimits {
+                        request_timeout: transport.request_timeout,
+                        max_request_bytes: transport.max_request_bytes,
+                        max_response_bytes: transport.max_response_bytes,
+                    },
+                    pricing: None,
+                    match_dimensions,
+                },
+            )
+            .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))
+    }
+}
+
+#[async_trait]
+impl InferencePort for RuntimeInferencePort {
+    async fn resolve_route(
+        &self,
+        caller: &AuthorizedCaller,
+        request: RouteResolveRequest,
+    ) -> Result<RouteResolveResponse, RPCErrors> {
+        let routed = self
+            .route(
+                caller,
+                InferenceRouteInput {
+                    trace_id: request.trace_id,
+                    request_id: request.request_id,
+                    model: request.logical_model,
+                    api_type: request.api_type,
+                    requirements: request.requirements,
+                    disable: request.disable,
+                    policy: request.policy,
+                    session_overlay: request.session_overlay,
+                },
+            )
+            .await?;
+        Ok(route_response(&routed.decision))
+    }
+
+    async fn invoke(&self, caller: &AuthorizedCaller, call: AiccCall) -> Result<Value, RPCErrors> {
+        let route_input = route_input_for_call(&call)?;
+        let request_model = route_input.model.clone();
+        let routed = self.route(caller, route_input).await?;
+        let exact_call = exact_call_for_route(call, &routed.decision.selected.exact_model)?;
+        let canonical_body = call_params(&exact_call)?;
+        let idempotency_key = canonical_body
+            .get("idempotency_key")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| routed.request_id.clone());
+        let parent_task_id = canonical_body
+            .pointer("/task_options/parent_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let primary = self
+            .lower_call(routed.snapshot.as_ref(), &routed.decision, &exact_call)
+            .await?;
+        let mut failover = Vec::new();
+        for candidate in &routed.decision.fallback_candidates {
+            let mut fallback_decision = routed.decision.clone();
+            fallback_decision.selected = candidate.clone();
+            let fallback_call = call_with_exact_model(&exact_call, &candidate.exact_model)?;
+            if let Ok(call) = self
+                .lower_call(routed.snapshot.as_ref(), &fallback_decision, &fallback_call)
+                .await
+            {
+                failover.push(call);
+            }
+        }
+        let receipt = self
+            .execution
+            .execute(crate::execution::ExecutionRequest {
+                tenant_id: caller.tenant_id.clone(),
+                user_id: caller.user_id.clone(),
+                caller_app_id: caller.app_id.clone(),
+                trace_id: Some(routed.trace_id.clone()),
+                request_model: request_model.clone(),
+                idempotency_key,
+                canonical_body,
+                parent_task_id,
+                runtime_generation: routed.snapshot.generation,
+                primary,
+                failover,
+                runtime_failover: routed.runtime_failover,
+                now_ms: now_ms(),
+                idempotency_window_ms: None,
+            })
+            .await
+            .map_err(|error| error.to_krpc_error())?;
+        self.storage
+            .write_route_trace(&RouteTraceRecord {
+                trace: AiccRouteTraceEvent {
+                    trace_id: routed.trace_id.clone(),
+                    tenant_id: caller.tenant_id.clone(),
+                    caller_app_id: caller.app_id.clone(),
+                    task_id: receipt.task_id.clone(),
+                    request_model,
+                    selected_exact_model: Some(routed.decision.selected.exact_model.clone()),
+                    provider_instance_name: Some(
+                        routed.decision.selected.provider_instance_name.clone(),
+                    ),
+                    api_type: routed.decision.trace.api_type.clone(),
+                    route_trace_json: public_route_trace(&routed.decision),
+                    created_at_ms: now_ms() as i64,
+                },
+                request_id: Some(routed.request_id.clone()),
+                route_id: None,
+                provider_trace_id: None,
+                scheduler_profile: Some(routed.decision.trace.scheduler_profile.clone()),
+                outcome: Some(execution_state_name(receipt.state).to_string()),
+            })
+            .await
+            .map_err(|error| inference_error(AiccErrorCode::InternalError, error.to_string()))?;
+        inference_response(receipt, &routed.decision)
+    }
+}
+
+static INFERENCE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_inference_id() -> String {
+    format!(
+        "aicc-{}-{}",
+        now_ms(),
+        INFERENCE_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn execution_state_name(state: ExecutionState) -> &'static str {
+    match state {
+        ExecutionState::Submitted => "submitted",
+        ExecutionState::Queued => "queued",
+        ExecutionState::Running => "running",
+        ExecutionState::Succeeded => "succeeded",
+        ExecutionState::Failed => "failed",
+        ExecutionState::Cancelled => "cancelled",
+    }
+}
+
+fn inference_error(code: AiccErrorCode, message: impl Into<String>) -> RPCErrors {
+    AiccError::new(code, message).to_krpc_error()
+}
+
+async fn candidate_runtime_states(
+    snapshot: &crate::runtime::RuntimeSnapshot,
+    caller: &AuthorizedCaller,
+) -> BTreeMap<String, CandidateRuntimeState> {
+    let mut credentials = BTreeMap::new();
+    for provider in snapshot.providers.list() {
+        credentials.insert(
+            provider.config.provider_instance_name.clone(),
+            provider.resolve_credential().await.is_ok(),
+        );
+    }
+    snapshot
+        .models
+        .model_views()
+        .into_iter()
+        .map(|model| {
+            let settings =
+                snapshot.settings.providers.iter().find(|provider| {
+                    provider.provider_instance_name == model.provider_instance_name
+                });
+            let runtime = snapshot.providers.get(&model.provider_instance_name);
+            let provider_type = match settings.map(|provider| provider.provider_type.as_str()) {
+                Some("local_inference") => ProviderType::LocalInference,
+                Some("cloud_api") => ProviderType::CloudApi,
+                _ => ProviderType::ProxyUnknown,
+            };
+            let local = provider_type == ProviderType::LocalInference;
+            let health = match runtime.map(|provider| provider.inventory.health) {
+                Some(ProviderHealthState::Healthy) => ProviderHealthStatus::Available,
+                Some(ProviderHealthState::Degraded) => ProviderHealthStatus::Degraded,
+                _ => ProviderHealthStatus::Unavailable,
+            };
+            let metadata_routable = snapshot
+                .provider_metadata
+                .get(&model.provider_instance_name)
+                .is_none_or(|metadata| metadata.routable);
+            let enabled = settings.is_some_and(|provider| provider.enabled) && metadata_routable;
+            let state = CandidateRuntimeState {
+                enabled,
+                credential_available: credentials
+                    .get(&model.provider_instance_name)
+                    .copied()
+                    .unwrap_or(false),
+                model_available: runtime.is_some(),
+                health,
+                provider_privacy: if local {
+                    ProviderPrivacy::Local
+                } else {
+                    ProviderPrivacy::PublicCloud
+                },
+                trust: Some(ProviderTrustView {
+                    provider_type,
+                    provider_type_source: ProviderTypeSource::SystemConfig,
+                    provider_type_revision: snapshot.settings_revision.to_string(),
+                    asserted_at_ms: 0,
+                    trust_level: if local {
+                        ProviderTrustLevel::Verified
+                    } else {
+                        ProviderTrustLevel::Registered
+                    },
+                }),
+                credential_scope: CredentialScope::Tenant {
+                    tenant_id: caller.tenant_id.clone(),
+                },
+                estimated_cost_usd: None,
+                p95_latency_ms: None,
+                error_rate_5m: None,
+                recent_failures: 0,
+                quality_score: None,
+                cache_hit_probability: None,
+            };
+            (model.exact_model, state)
+        })
+        .collect()
+}
+
+fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCErrors> {
+    match call {
+        AiccCall::HelperLlmChat(request) => Ok(InferenceRouteInput {
+            trace_id: request.trace_id.clone(),
+            request_id: None,
+            model: request.logical_model.clone(),
+            api_type: buckyos_api::ApiType::Llm,
+            requirements: request.requirements.clone().into(),
+            disable: request.disable.clone(),
+            policy: request.policy.clone(),
+            session_overlay: request.session_overlay.clone(),
+        }),
+        AiccCall::HelperTextToImage(request) => Ok(InferenceRouteInput {
+            trace_id: request.trace_id.clone(),
+            request_id: None,
+            model: request.logical_model.clone(),
+            api_type: buckyos_api::ApiType::ImageTextToImage,
+            requirements: request.requirements.clone().into(),
+            disable: request.disable.clone(),
+            policy: request.policy.clone(),
+            session_overlay: request.session_overlay.clone(),
+        }),
+        AiccCall::RouteResolve(_) => Err(inference_error(
+            AiccErrorCode::InvalidMethod,
+            "route.resolve is not an inference invocation",
+        )),
+        _ => {
+            let params = call_params(call)?;
+            let model = params
+                .get("exact_model")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    inference_error(AiccErrorCode::InvalidModelName, "exact_model is missing")
+                })?
+                .to_string();
+            Ok(InferenceRouteInput {
+                trace_id: call.trace_id().map(str::to_owned),
+                request_id: None,
+                model,
+                api_type: api_type_for_method(call.method())?,
+                requirements: Default::default(),
+                disable: Default::default(),
+                policy: None,
+                session_overlay: None,
+            })
+        }
+    }
+}
+
+fn api_type_for_method(method: &str) -> Result<buckyos_api::ApiType, RPCErrors> {
+    use buckyos_api::ai_methods;
+    Ok(match method {
+        ai_methods::CHAT_COMPLETIONS_CREATE => buckyos_api::ApiType::Llm,
+        ai_methods::IMAGES_GENERATE => buckyos_api::ApiType::ImageTextToImage,
+        ai_methods::EMBEDDING_TEXT => buckyos_api::ApiType::EmbeddingText,
+        ai_methods::EMBEDDING_MULTIMODAL => buckyos_api::ApiType::EmbeddingMultimodal,
+        ai_methods::RERANK => buckyos_api::ApiType::Rerank,
+        ai_methods::IMAGE_IMG2IMG => buckyos_api::ApiType::ImageImageToImage,
+        ai_methods::IMAGE_INPAINT => buckyos_api::ApiType::ImageInpaint,
+        ai_methods::IMAGE_UPSCALE => buckyos_api::ApiType::ImageUpscale,
+        ai_methods::IMAGE_BG_REMOVE => buckyos_api::ApiType::ImageBackgroundRemove,
+        ai_methods::VISION_OCR => buckyos_api::ApiType::VisionOcr,
+        ai_methods::VISION_CAPTION => buckyos_api::ApiType::VisionCaption,
+        ai_methods::VISION_DETECT => buckyos_api::ApiType::VisionDetect,
+        ai_methods::VISION_SEGMENT => buckyos_api::ApiType::VisionSegment,
+        ai_methods::AUDIO_TTS => buckyos_api::ApiType::AudioTextToSpeech,
+        ai_methods::AUDIO_ASR => buckyos_api::ApiType::AudioSpeechRecognition,
+        ai_methods::AUDIO_MUSIC => buckyos_api::ApiType::AudioMusic,
+        ai_methods::AUDIO_ENHANCE => buckyos_api::ApiType::AudioEnhance,
+        ai_methods::VIDEO_TXT2VIDEO => buckyos_api::ApiType::VideoTextToVideo,
+        ai_methods::VIDEO_IMG2VIDEO => buckyos_api::ApiType::VideoImageToVideo,
+        ai_methods::VIDEO_VIDEO2VIDEO => buckyos_api::ApiType::VideoToVideo,
+        ai_methods::VIDEO_EXTEND => buckyos_api::ApiType::VideoExtend,
+        ai_methods::VIDEO_UPSCALE => buckyos_api::ApiType::VideoUpscale,
+        ai_methods::AGENT_COMPUTER_USE => buckyos_api::ApiType::AgentComputerUse,
+        _ => {
+            return Err(inference_error(
+                AiccErrorCode::InvalidMethod,
+                "unsupported inference method",
+            ))
+        }
+    })
+}
+
+fn exact_call_for_route(call: AiccCall, exact_model: &str) -> Result<AiccCall, RPCErrors> {
+    let method = match &call {
+        AiccCall::HelperLlmChat(_) => buckyos_api::ai_methods::CHAT_COMPLETIONS_CREATE,
+        AiccCall::HelperTextToImage(_) => buckyos_api::ai_methods::IMAGES_GENERATE,
+        _ => return Ok(call),
+    };
+    let mut params = call_params(&call)?;
+    let object = params.as_object_mut().ok_or_else(|| {
+        inference_error(
+            AiccErrorCode::InvalidRequest,
+            "helper request must be an object",
+        )
+    })?;
+    for field in [
+        "logical_model",
+        "requirements",
+        "disable",
+        "policy",
+        "session_overlay",
+    ] {
+        object.remove(field);
+    }
+    object.insert("exact_model".into(), Value::String(exact_model.to_string()));
+    AiccCall::from_method_and_params(method, params)
+}
+
+fn call_with_exact_model(call: &AiccCall, exact_model: &str) -> Result<AiccCall, RPCErrors> {
+    let mut params = call_params(call)?;
+    params
+        .as_object_mut()
+        .ok_or_else(|| {
+            inference_error(
+                AiccErrorCode::InvalidRequest,
+                "canonical request must be an object",
+            )
+        })?
+        .insert(
+            "exact_model".to_string(),
+            Value::String(exact_model.to_string()),
+        );
+    AiccCall::from_method_and_params(call.method(), params)
+}
+
+macro_rules! serialize_call_variants {
+    ($call:expr, $( $variant:ident ),+ $(,)?) => {
+        match $call {
+            $(AiccCall::$variant(request) => serde_json::to_value(request),)+
+        }
+    };
+}
+
+fn call_params(call: &AiccCall) -> Result<Value, RPCErrors> {
+    serialize_call_variants!(
+        call,
+        RouteResolve,
+        ChatCompletionsCreate,
+        ImagesGenerate,
+        HelperLlmChat,
+        HelperTextToImage,
+        EmbeddingText,
+        EmbeddingMultimodal,
+        Rerank,
+        ImageToImage,
+        ImageInpaint,
+        ImageUpscale,
+        ImageBackgroundRemove,
+        VisionOcr,
+        VisionCaption,
+        VisionDetect,
+        VisionSegment,
+        AudioTextToSpeech,
+        AudioSpeechRecognition,
+        AudioMusic,
+        AudioEnhance,
+        VideoTextToVideo,
+        VideoImageToVideo,
+        VideoToVideo,
+        VideoExtend,
+        VideoUpscale,
+        ComputerUse,
+    )
+    .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))
+}
+
+fn route_response(decision: &RouteDecision) -> RouteResolveResponse {
+    let selected = &decision.selected;
+    RouteResolveResponse {
+        selected_exact_model: selected.exact_model.clone(),
+        selected_model_uid: selected.model_uid.clone(),
+        provider_instance_name: selected.provider_instance_name.clone(),
+        provider_profile_id: selected.provider_profile_id.clone(),
+        protocol_adapter_id: selected.protocol_adapter_id.clone(),
+        model_driver_id: selected.model_driver_id.clone(),
+        provider_driver: None,
+        origin_model_id: selected.origin_model_id.clone(),
+        provider_model_id: selected.provider_model_id.clone(),
+        operation: selected.operation.clone(),
+        enabled_capabilities: selected.enabled_capabilities.clone(),
+        disabled_capabilities: selected.disabled_capabilities.clone(),
+        fallback_attempts: decision
+            .fallback_candidates
+            .iter()
+            .map(|candidate| RouteFallbackAttempt {
+                exact_model: candidate.exact_model.clone(),
+                provider_instance_name: candidate.provider_instance_name.clone(),
+                provider_model_id: candidate.provider_model_id.clone(),
+            })
+            .collect(),
+        route_trace: public_route_trace(decision),
+        inventory_revision: selected.inventory_revision.clone(),
+    }
+}
+
+fn public_route_trace(decision: &RouteDecision) -> RouteTrace {
+    RouteTrace {
+        attempts: Vec::new(),
+        final_model: Some(decision.selected.exact_model.clone()),
+    }
+}
+
+fn inference_response(
+    receipt: crate::execution::ExecutionReceipt,
+    decision: &RouteDecision,
+) -> Result<Value, RPCErrors> {
+    let mut response = match receipt.output.as_ref() {
+        Some(output) => match &output.value {
+            Value::Object(object) => object.clone(),
+            Value::Null => Map::new(),
+            _ => {
+                return Err(inference_error(
+                    AiccErrorCode::ProviderError,
+                    "Provider returned a non-object canonical response",
+                ))
+            }
+        },
+        None => Map::new(),
+    };
+    let status = match receipt.state {
+        ExecutionState::Succeeded => AiMethodStatus::Succeeded,
+        ExecutionState::Failed | ExecutionState::Cancelled => AiMethodStatus::Failed,
+        ExecutionState::Submitted | ExecutionState::Queued | ExecutionState::Running => {
+            AiMethodStatus::Running
+        }
+    };
+    response.insert("task_id".into(), Value::String(receipt.task_id));
+    response.insert(
+        "status".into(),
+        serde_json::to_value(status).expect("AiMethodStatus serializes"),
+    );
+    if let Some(output) = receipt.output {
+        response.insert(
+            "usage".into(),
+            serde_json::to_value(output.usage).expect("AiUsage serializes"),
+        );
+    }
+    response.insert(
+        "route_trace".into(),
+        serde_json::to_value(public_route_trace(decision)).expect("RouteTrace serializes"),
+    );
+    response.insert("event_ref".into(), Value::String(receipt.event_ref));
+    if let Some(provider_task_ref) = receipt.provider_task_ref {
+        response.insert("provider_task_ref".into(), Value::String(provider_task_ref));
+    }
+    if let Some(error) = receipt.error {
+        response.insert(
+            "error".into(),
+            serde_json::to_value(error).expect("AiccError serializes"),
+        );
+    }
+    Ok(Value::Object(response))
+}
+
+#[async_trait]
 pub(crate) trait ProviderValidator: Send + Sync {
     async fn validate(
         &self,
@@ -456,6 +1109,7 @@ pub(crate) struct AiccService {
     quota: Arc<dyn QuotaQueryPort>,
     metadata: Arc<dyn DriverMetadataPort>,
     execution: Option<Arc<ExecutionEngine>>,
+    inference: Option<Arc<dyn InferencePort>>,
     settings_mutation: Mutex<()>,
 }
 
@@ -478,12 +1132,18 @@ impl AiccService {
             quota,
             metadata,
             execution: None,
+            inference: None,
             settings_mutation: Mutex::new(()),
         }
     }
 
     pub(crate) fn with_execution(mut self, execution: Arc<ExecutionEngine>) -> Self {
         self.execution = Some(execution);
+        self
+    }
+
+    pub(crate) fn with_inference(mut self, inference: Arc<dyn InferencePort>) -> Self {
+        self.inference = Some(inference);
         self
     }
 
@@ -494,6 +1154,29 @@ impl AiccService {
         resource: &'static str,
     ) -> Result<AuthorizedCaller, RPCErrors> {
         self.authorizer.authorize(context, action, resource).await
+    }
+
+    async fn invoke_typed<R>(
+        &self,
+        caller: &AuthorizedCaller,
+        call: AiccCall,
+    ) -> Result<R, RPCErrors>
+    where
+        R: DeserializeOwned,
+    {
+        let inference = self.inference.as_ref().ok_or_else(|| {
+            inference_error(
+                AiccErrorCode::InternalError,
+                "inference runtime is unavailable",
+            )
+        })?;
+        let response = inference.invoke(caller, call).await?;
+        serde_json::from_value(response).map_err(|error| {
+            inference_error(
+                AiccErrorCode::InternalError,
+                format!("canonical inference response is invalid: {error}"),
+            )
+        })
     }
 
     async fn mutate_settings<F>(
@@ -554,6 +1237,32 @@ impl AiccService {
     }
 }
 
+macro_rules! typed_inference_handler {
+    ($method:ident, $request:ty, $response:ty, $variant:ident) => {
+        fn $method<'life0, 'async_trait>(
+            &'life0 self,
+            request: $request,
+            ctx: RPCContext,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<$response, RPCErrors>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
+                self.invoke_typed(&caller, AiccCall::$variant(request))
+                    .await
+            })
+        }
+    };
+}
+
 #[async_trait]
 impl AiccHandler for AiccService {
     async fn handle_cancel(
@@ -575,6 +1284,167 @@ impl AiccHandler for AiccService {
             accepted,
         })
     }
+
+    async fn handle_route_resolve(
+        &self,
+        request: RouteResolveRequest,
+        ctx: RPCContext,
+    ) -> Result<RouteResolveResponse, RPCErrors> {
+        let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
+        let inference = self.inference.as_ref().ok_or_else(|| {
+            inference_error(
+                AiccErrorCode::InternalError,
+                "inference runtime is unavailable",
+            )
+        })?;
+        inference.resolve_route(&caller, request).await
+    }
+
+    typed_inference_handler!(
+        handle_chat_completions_create,
+        LlmChatInvokeRequest,
+        LlmChatInvokeResponse,
+        ChatCompletionsCreate
+    );
+    typed_inference_handler!(
+        handle_images_generate,
+        TextToImageInvokeRequest,
+        TextToImageInvokeResponse,
+        ImagesGenerate
+    );
+    typed_inference_handler!(
+        handle_helper_llm_chat,
+        LlmChatHelperRequest,
+        LlmChatInvokeResponse,
+        HelperLlmChat
+    );
+    typed_inference_handler!(
+        handle_helper_text_to_image,
+        TextToImageHelperRequest,
+        TextToImageInvokeResponse,
+        HelperTextToImage
+    );
+    typed_inference_handler!(
+        handle_embedding_text,
+        EmbeddingTextRequest,
+        EmbeddingTextResponse,
+        EmbeddingText
+    );
+    typed_inference_handler!(
+        handle_embedding_multimodal,
+        EmbeddingMultimodalRequest,
+        EmbeddingMultimodalResponse,
+        EmbeddingMultimodal
+    );
+    typed_inference_handler!(handle_rerank, RerankRequest, RerankResponse, Rerank);
+    typed_inference_handler!(
+        handle_image_to_image,
+        ImageToImageRequest,
+        ImageToImageResponse,
+        ImageToImage
+    );
+    typed_inference_handler!(
+        handle_image_inpaint,
+        ImageInpaintRequest,
+        ImageInpaintResponse,
+        ImageInpaint
+    );
+    typed_inference_handler!(
+        handle_image_upscale,
+        ImageUpscaleRequest,
+        ImageUpscaleResponse,
+        ImageUpscale
+    );
+    typed_inference_handler!(
+        handle_image_background_remove,
+        ImageBackgroundRemoveRequest,
+        ImageBackgroundRemoveResponse,
+        ImageBackgroundRemove
+    );
+    typed_inference_handler!(
+        handle_vision_ocr,
+        VisionOcrRequest,
+        VisionOcrResponse,
+        VisionOcr
+    );
+    typed_inference_handler!(
+        handle_vision_caption,
+        VisionCaptionRequest,
+        VisionCaptionResponse,
+        VisionCaption
+    );
+    typed_inference_handler!(
+        handle_vision_detect,
+        VisionDetectRequest,
+        VisionDetectResponse,
+        VisionDetect
+    );
+    typed_inference_handler!(
+        handle_vision_segment,
+        VisionSegmentRequest,
+        VisionSegmentResponse,
+        VisionSegment
+    );
+    typed_inference_handler!(
+        handle_audio_text_to_speech,
+        AudioTextToSpeechRequest,
+        AudioTextToSpeechResponse,
+        AudioTextToSpeech
+    );
+    typed_inference_handler!(
+        handle_audio_speech_recognition,
+        AudioSpeechRecognitionRequest,
+        AudioSpeechRecognitionResponse,
+        AudioSpeechRecognition
+    );
+    typed_inference_handler!(
+        handle_audio_music,
+        AudioMusicRequest,
+        AudioMusicResponse,
+        AudioMusic
+    );
+    typed_inference_handler!(
+        handle_audio_enhance,
+        AudioEnhanceRequest,
+        AudioEnhanceResponse,
+        AudioEnhance
+    );
+    typed_inference_handler!(
+        handle_video_text_to_video,
+        VideoTextToVideoRequest,
+        VideoTextToVideoResponse,
+        VideoTextToVideo
+    );
+    typed_inference_handler!(
+        handle_video_image_to_video,
+        VideoImageToVideoRequest,
+        VideoImageToVideoResponse,
+        VideoImageToVideo
+    );
+    typed_inference_handler!(
+        handle_video_to_video,
+        VideoToVideoRequest,
+        VideoToVideoResponse,
+        VideoToVideo
+    );
+    typed_inference_handler!(
+        handle_video_extend,
+        VideoExtendRequest,
+        VideoExtendResponse,
+        VideoExtend
+    );
+    typed_inference_handler!(
+        handle_video_upscale,
+        VideoUpscaleRequest,
+        VideoUpscaleResponse,
+        VideoUpscale
+    );
+    typed_inference_handler!(
+        handle_computer_use,
+        ComputerUseRequest,
+        ComputerUseResponse,
+        ComputerUse
+    );
 
     async fn handle_reload_settings(
         &self,
@@ -3239,6 +4109,60 @@ mod tests {
         }
     }
 
+    struct FakeInference {
+        calls: Mutex<Vec<(String, Option<String>)>>,
+    }
+
+    #[async_trait]
+    impl InferencePort for FakeInference {
+        async fn resolve_route(
+            &self,
+            _caller: &AuthorizedCaller,
+            request: RouteResolveRequest,
+        ) -> Result<RouteResolveResponse, RPCErrors> {
+            self.calls
+                .lock()
+                .await
+                .push(("route.resolve".to_string(), request.trace_id.clone()));
+            Ok(RouteResolveResponse {
+                selected_exact_model: "model-a@primary".to_string(),
+                selected_model_uid: "model-uid-a".to_string(),
+                provider_instance_name: "primary".to_string(),
+                provider_profile_id: "openai".to_string(),
+                protocol_adapter_id: "openai-responses".to_string(),
+                model_driver_id: "model-a".to_string(),
+                provider_driver: None,
+                origin_model_id: "model-a".to_string(),
+                provider_model_id: "model-a".to_string(),
+                operation: request.api_type.typed_method().to_string(),
+                enabled_capabilities: Vec::new(),
+                disabled_capabilities: Vec::new(),
+                fallback_attempts: Vec::new(),
+                route_trace: RouteTrace {
+                    attempts: Vec::new(),
+                    final_model: Some("model-a@primary".to_string()),
+                },
+                inventory_revision: "inventory-1".to_string(),
+            })
+        }
+
+        async fn invoke(
+            &self,
+            _caller: &AuthorizedCaller,
+            call: AiccCall,
+        ) -> Result<Value, RPCErrors> {
+            self.calls.lock().await.push((
+                call.method().to_string(),
+                call.trace_id().map(str::to_owned),
+            ));
+            Ok(json!({
+                "task_id": "task-1",
+                "status": "succeeded",
+                "event_ref": "event-1"
+            }))
+        }
+    }
+
     struct Fixture {
         service: AiccService,
         settings: Arc<FakeSettingsStore>,
@@ -3246,6 +4170,7 @@ mod tests {
         validator: Arc<FakeValidator>,
         usage: Arc<FakeUsage>,
         authorizer: Arc<FakeAuthorizer>,
+        inference: Arc<FakeInference>,
     }
 
     fn fixture(deny: bool) -> Fixture {
@@ -3263,6 +4188,9 @@ mod tests {
             tenant: "tenant-a",
             calls: Mutex::new(Vec::new()),
         });
+        let inference = Arc::new(FakeInference {
+            calls: Mutex::new(Vec::new()),
+        });
         let service = AiccService::new(
             authorizer.clone(),
             settings.clone(),
@@ -3271,7 +4199,8 @@ mod tests {
             usage.clone(),
             Arc::new(FakeQuota),
             Arc::new(FakeMetadata),
-        );
+        )
+        .with_inference(inference.clone());
         Fixture {
             service,
             settings,
@@ -3279,6 +4208,7 @@ mod tests {
             validator,
             usage,
             authorizer,
+            inference,
         }
     }
 
@@ -3326,6 +4256,77 @@ mod tests {
                 checked_at_ms: provider.enabled.then_some(1),
             },
         }
+    }
+
+    #[tokio::test]
+    async fn route_helper_and_typed_handlers_use_inference_port() {
+        let fixture = fixture(false);
+        let mut route_request = RouteResolveRequest::new(buckyos_api::ApiType::Llm, "llm.chat");
+        route_request.trace_id = Some("trace-route".to_string());
+        let route = fixture
+            .service
+            .handle_route_resolve(route_request, RPCContext::default())
+            .await
+            .unwrap();
+        assert_eq!(route.selected_exact_model, "model-a@primary");
+
+        let mut chat_request = LlmChatInvokeRequest::new("model-a@primary", Vec::new());
+        chat_request.trace_id = Some("trace-chat".to_string());
+        let chat = fixture
+            .service
+            .handle_chat_completions_create(chat_request, RPCContext::default())
+            .await
+            .unwrap();
+        assert_eq!(chat.task_id, "task-1");
+        assert_eq!(chat.status, AiMethodStatus::Succeeded);
+
+        let mut helper_request = LlmChatHelperRequest::new("llm.chat", Vec::new());
+        helper_request.trace_id = Some("trace-helper".to_string());
+        let helper = fixture
+            .service
+            .handle_helper_llm_chat(helper_request, RPCContext::default())
+            .await
+            .unwrap();
+        assert_eq!(helper.task_id, "task-1");
+
+        let embedding = fixture
+            .service
+            .handle_embedding_text(
+                EmbeddingTextRequest::new("embed-a@primary", Vec::new()),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(embedding.task_id, "task-1");
+        assert_eq!(
+            fixture.inference.calls.lock().await.as_slice(),
+            [
+                ("route.resolve".to_string(), Some("trace-route".to_string())),
+                (
+                    buckyos_api::ai_methods::CHAT_COMPLETIONS_CREATE.to_string(),
+                    Some("trace-chat".to_string()),
+                ),
+                (
+                    buckyos_api::ai_methods::HELPER_LLM_CHAT.to_string(),
+                    Some("trace-helper".to_string()),
+                ),
+                (buckyos_api::ai_methods::EMBEDDING_TEXT.to_string(), None),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn inference_handlers_fail_closed_on_rbac_denial() {
+        let fixture = fixture(true);
+        let result = fixture
+            .service
+            .handle_images_generate(
+                TextToImageInvokeRequest::new("image-a@primary", "cat"),
+                RPCContext::default(),
+            )
+            .await;
+        assert!(matches!(result, Err(RPCErrors::NoPermission(_))));
+        assert!(fixture.inference.calls.lock().await.is_empty());
     }
 
     #[tokio::test]
