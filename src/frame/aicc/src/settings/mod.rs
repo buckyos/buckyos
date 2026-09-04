@@ -37,6 +37,10 @@ const BUILTIN_METADATA_DOCUMENTS: &[(CatalogKind, &[u8])] = &[
     ),
     (
         CatalogKind::ModelDriver,
+        include_bytes!("../../driver_metadata/models/fal.model.json"),
+    ),
+    (
+        CatalogKind::ModelDriver,
         include_bytes!("../../driver_metadata/models/gemini.model.json"),
     ),
     (

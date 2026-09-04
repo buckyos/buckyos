@@ -134,7 +134,7 @@ fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::{CatalogBuildOptions, CatalogSnapshot, ModelDriverCatalog};
+    use crate::catalog::{CatalogBuildOptions, CatalogSnapshot};
     use crate::protocol::{
         fal_queue_adapter, CodecRegistry, ResolvedCredential, FAL_QUEUE_OPERATION_ID,
     };
@@ -205,21 +205,30 @@ mod tests {
             rules.patterns[0].operations["video.img2video"],
             FAL_QUEUE_OPERATION_ID
         );
-        assert!(rules.metadata_drivers.is_none());
+        assert_eq!(rules.metadata_drivers, Some(vec!["fal".to_owned()]));
+        assert_eq!(rules.models.len(), 4);
 
         let files = fal_catalog_files();
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 3);
         assert!(files
             .iter()
-            .all(|file| file.kind != CatalogKind::ModelDriver));
+            .any(|file| file.kind == CatalogKind::ModelDriver));
         let catalog =
             CatalogSnapshot::from_current_files(1, files, &CatalogBuildOptions::default()).unwrap();
         assert!(catalog.known_provider(FAL_PROVIDER_PROFILE_ID).is_some());
         assert!(catalog.provider_rules(FAL_PROVIDER_PROFILE_ID).is_some());
+        assert_eq!(
+            catalog
+                .model_driver(FAL_PROVIDER_PROFILE_ID)
+                .unwrap()
+                .models
+                .len(),
+            4
+        );
     }
 
     #[tokio::test]
-    async fn catalog_only_discovery_uses_configured_inventory_without_builtin_models() {
+    async fn configured_inventory_is_validated_for_catalog_only_discovery() {
         let profile = fal_profile();
         let instance = instance();
         let configured = ProviderDiscoverySnapshot {
@@ -258,27 +267,7 @@ mod tests {
 
     #[test]
     fn configured_rules_and_adapter_build_complete_inventory_identity() {
-        let driver: ModelDriverCatalog = serde_json::from_value(json!({
-            "format": "buckyos.aicc.model-driver-catalog",
-            "schema_version": 1,
-            "schema_revision": 0,
-            "model_driver_id": "fal-fixture",
-            "revision_seq": 1,
-            "models": [{
-                "id": "fal-fixture-model",
-                "api_types": ["image.txt2img", "video.img2video"]
-            }],
-            "patterns": [],
-            "defaults": {},
-            "variants": [],
-            "version_rules": []
-        }))
-        .unwrap();
-        let mut files = fal_catalog_files();
-        files.push(CurrentCatalogFile {
-            kind: CatalogKind::ModelDriver,
-            contents: serde_json::to_vec(&driver).unwrap(),
-        });
+        let files = fal_catalog_files();
         let catalog =
             CatalogSnapshot::from_current_files(1, files, &CatalogBuildOptions::default()).unwrap();
         let (descriptor, registration) = fal_queue_adapter();
@@ -291,19 +280,29 @@ mod tests {
                 revision: Some("fixture-v1".to_owned()),
                 discovered_at_ms: 1,
                 health: ProviderHealthState::Healthy,
-                models: vec![model(
-                    "fal-fixture-model",
-                    [ApiType::ImageTextToImage, ApiType::VideoImageToVideo],
-                )],
+                models: vec![
+                    model("fal-ai/esrgan", [ApiType::ImageUpscale]),
+                    model("fal-ai/imageutils/rembg", [ApiType::ImageBackgroundRemove]),
+                    model("fal-ai/deepfilternet3", [ApiType::AudioEnhance]),
+                    model("fal-ai/video-upscaler", [ApiType::VideoUpscale]),
+                ],
             },
             &catalog,
             &codecs,
         )
         .unwrap();
-        assert_eq!(inventory.models.len(), 1);
-        assert_eq!(inventory.models[0].model_driver_id, "fal-fixture");
+        assert_eq!(inventory.models.len(), 4);
+        assert!(inventory
+            .models
+            .iter()
+            .all(|model| model.model_driver_id == "fal"));
         assert_eq!(
-            inventory.models[0].operations["video.img2video"],
+            inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == "fal-ai/video-upscaler")
+                .unwrap()
+                .operations["video.upscale"],
             FAL_QUEUE_OPERATION_ID
         );
         assert_eq!(inventory.protocol_adapter_id, FAL_QUEUE_ADAPTER_ID);

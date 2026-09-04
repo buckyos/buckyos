@@ -10,10 +10,11 @@ use crate::protocol::{
     HttpTransport, HttpTransportConfig,
 };
 use crate::provider::{
-    CatalogOnlyDiscovery, CredentialDescriptor, DiscoveryMode, DynamicLoginCredentialResolver,
-    ProviderAuthMode, ProviderConnectionContract, ProviderDiscovery, ProviderDiscoverySnapshot,
-    ProviderError, ProviderFieldMode, ProviderFieldSchema, ProviderInstanceConfig, ProviderProfile,
-    ProviderResult, RefreshPolicy,
+    CatalogOnlyDiscovery, CredentialDescriptor, DiscoveredModel, DiscoveryMode,
+    DynamicLoginCredentialResolver, ModelAvailability, ProviderAuthMode,
+    ProviderConnectionContract, ProviderDiscovery, ProviderDiscoverySnapshot, ProviderError,
+    ProviderFieldMode, ProviderFieldSchema, ProviderHealthState, ProviderInstanceConfig,
+    ProviderProfile, ProviderResult, RefreshPolicy,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -186,7 +187,11 @@ impl BuiltinProviderRegistry {
                 .profile
                 .with_credential(request.credential_kind)?
         };
-        let discovery = self.discovery(registration.discovery, request.configured_inventory)?;
+        let discovery = self.discovery(
+            registration.discovery,
+            request.configured_inventory,
+            registration.profile.default_inventory.clone(),
+        )?;
         Ok(BuiltinProviderBinding {
             profile,
             connection: registration.connection.build(request.auth_mode),
@@ -216,9 +221,10 @@ impl BuiltinProviderRegistry {
         &self,
         factory: BuiltinDiscoveryFactory,
         configured_inventory: Option<ProviderDiscoverySnapshot>,
+        default_inventory: Option<ProviderDiscoverySnapshot>,
     ) -> ProviderResult<Arc<dyn ProviderDiscovery>> {
         if factory == BuiltinDiscoveryFactory::CatalogOnly {
-            let inventory = configured_inventory.ok_or_else(|| {
+            let inventory = configured_inventory.or(default_inventory).ok_or_else(|| {
                 ProviderError::InvalidConfiguration(
                     "catalog-only provider requires configured discovery inventory".to_owned(),
                 )
@@ -409,13 +415,48 @@ fn catalog_registration(
     let configuration = catalog
         .resolve_provider_configuration(provider_profile_id)
         .map_err(|error| ProviderError::InvalidConfiguration(error.to_string()))?;
+    let mut profile = profile_from_catalog(&configuration, discovery);
+    if provider_profile_id == FAL_PROVIDER_PROFILE_ID {
+        profile.default_inventory = catalog_default_inventory(catalog, provider_profile_id);
+    }
     Ok(BuiltinProviderRegistration {
-        profile: profile_from_catalog(&configuration, discovery),
+        profile,
         connection: BuiltinConnectionFactory::Configured(connection_from_catalog(&configuration)),
         discovery,
         supports_dynamic_login,
         supports_any_adapter,
         instance_rules: None,
+    })
+}
+
+fn catalog_default_inventory(
+    catalog: &CatalogSnapshot,
+    provider_profile_id: &str,
+) -> Option<ProviderDiscoverySnapshot> {
+    let rules = catalog.provider_rules(provider_profile_id)?;
+    let models = rules
+        .models
+        .iter()
+        .filter(|model| !model.exclude)
+        .map(|model| DiscoveredModel {
+            provider_model_id: model.id.clone(),
+            origin_model_id: None,
+            api_types: None,
+            supported_features: None,
+            remote_methods: None,
+            availability: ModelAvailability::Available,
+            deprecated: false,
+            pricing: None,
+        })
+        .collect::<Vec<_>>();
+    (!models.is_empty()).then(|| ProviderDiscoverySnapshot {
+        revision: Some(format!(
+            "catalog-{provider_profile_id}-{}",
+            rules.revision_seq
+        )),
+        discovered_at_ms: 0,
+        health: ProviderHealthState::Healthy,
+        models,
     })
 }
 
@@ -642,7 +683,7 @@ mod tests {
     fn metadata_source_manager_supplies_all_builtin_catalogs_to_registry() {
         let registry = registry();
         let files = load_builtin_metadata().unwrap();
-        assert_eq!(files.len(), 33);
+        assert_eq!(files.len(), 34);
         assert_eq!(
             files
                 .iter()
@@ -662,7 +703,7 @@ mod tests {
                 .iter()
                 .filter(|file| file.kind == CatalogKind::ModelDriver)
                 .count(),
-            9
+            10
         );
 
         let snapshot = MetadataSources {
@@ -739,6 +780,27 @@ mod tests {
             binding.connection.default_base_url,
             "https://local.example/v1"
         );
+    }
+
+    #[test]
+    fn fal_uses_catalog_default_inventory_without_configured_discovery() {
+        let registry = registry();
+        let binding = registry
+            .resolve(BuiltinProviderRequest {
+                provider_profile_id: FAL_PROVIDER_PROFILE_ID,
+                protocol_adapter_id: FAL_QUEUE_ADAPTER_ID,
+                auth_mode: ProviderAuthMode::ApiKey,
+                credential_kind: None,
+                configured_inventory: None,
+            })
+            .unwrap();
+        let inventory = binding.profile.default_inventory.unwrap();
+        assert_eq!(inventory.revision.as_deref(), Some("catalog-fal-1"));
+        assert_eq!(inventory.models.len(), 4);
+        assert!(inventory
+            .models
+            .iter()
+            .all(|model| model.availability == ModelAvailability::Available));
     }
 
     #[test]

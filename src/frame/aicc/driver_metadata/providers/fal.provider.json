@@ -4,6 +4,25 @@
   "schema_revision": 0,
   "revision_seq": 1,
   "provider_profile_id": "fal",
+  "metadata_drivers": ["fal"],
+  "models": [
+    {
+      "id": "fal-ai/esrgan",
+      "operations": { "image.upscale": "queue.submit" }
+    },
+    {
+      "id": "fal-ai/imageutils/rembg",
+      "operations": { "image.bg_remove": "queue.submit" }
+    },
+    {
+      "id": "fal-ai/deepfilternet3",
+      "operations": { "audio.enhance": "queue.submit" }
+    },
+    {
+      "id": "fal-ai/video-upscaler",
+      "operations": { "video.upscale": "queue.submit" }
+    }
+  ],
   "patterns": [
     {
       "match": "*",
