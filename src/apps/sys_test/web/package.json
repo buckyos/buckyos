@@ -16,6 +16,6 @@
     "vite": "^5.4.8"
   },
   "dependencies": {
-    "buckyos": "git+https://github.com/streetycat/buckyos-websdk#07a153caccec177ccb819754474ec46f82e4f7f7"
+    "buckyos": "git+https://github.com/streetycat/buckyos-websdk#092009c262279f3ec7c51a30880fdb6cd8f64606"
   }
 }
