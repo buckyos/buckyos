@@ -125,6 +125,19 @@ export function validateAcceptanceReport(value: unknown): asserts value is Accep
     }
   }
   if (!Array.isArray(value.product_defects)) throw new Error("product_defects must be an array");
+  for (const field of ["protocol_evidence_revision", "official_evidence_checked_at"] as const) {
+    if (value[field] !== undefined) requireString(value[field], field);
+  }
+  if (value.providers !== undefined &&
+    (!Array.isArray(value.providers) || value.providers.some((provider) => typeof provider !== "string" || !provider))) {
+    throw new Error("providers must be a string array");
+  }
+  if (value.limits !== undefined) {
+    if (!isObject(value.limits)) throw new Error("limits must be an object");
+    for (const field of ["global_concurrency", "provider_concurrency", "provider_min_interval_ms"] as const) {
+      requireNonNegativeNumber(value.limits[field], `limits.${field}`);
+    }
+  }
   if (!isObject(value.finance) || value.finance.currency !== "USD" || !Array.isArray(value.finance.entries)) {
     throw new Error("finance must use the fixed USD report schema");
   }

@@ -54,6 +54,7 @@ canonical api_type 值域、typed method 值域及其显式关联，并检查能
 ```bash
 cd test/aicc_test
 pnpm run acceptance:preflight
+deno check acceptance/*.ts
 pnpm run acceptance:self-test
 cp aicc_acceptance.example.toml aicc_acceptance.local.toml
 pnpm run acceptance:t1 -- --config aicc_acceptance.local.toml --allow-config-mutation
@@ -69,7 +70,9 @@ pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml
 
 T1.5 可以用 `--start-local-mock` 启动本机 Mock；只有 AICC 服务也能访问 runner loopback 时才可将其作为 Provider endpoint。配置变更需要环境变量 `AICC_T15_ALLOW_CONFIG_MUTATION=true` 与命令行 `--allow-config-mutation` 同时授权。Runner 创建带 `run_id` 的临时 Provider instance，并在正常结束或异常退出时调用 `provider.delete`，等待运行时 inventory 中该实例消失，再重置 Mock。它顺序执行单元，固定全局和 Provider 并发为 1，并用 `--provider-min-interval-ms` 控制同 Provider 请求间隔。按 Provider 回归使用 `--provider <driver>`；目标重测可以重复传 `--case <case_id>`，未知或超出 Provider 范围的 case 会使执行失败。
 
-T1.5 契约的 endpoint、header、body、response、stream event、异步状态和错误形态只允许依据 Provider 官方 API 文档、官方 schema/SDK 协议定义和官方错误文档更新。AICC 设计文档只用于确定 typed method、adapter/operation 边界、稳定错误码和 Provider instance 配置，不用于生成 Provider wire 期望。官方资料不明确的协议点不得从 AICC 实现、metadata、日志或旧 Mock 猜测。成功用例同时检查 Provider 响应被映射成对应 canonical typed 输出、usage 和异步 operation 归因；错误用例检查 `provider_start_failed`、Provider 原始错误码摘要和 `retryable`。
+T1.5 与其它层共用 `schema_version=1` 的 acceptance report，输出到 `<report-dir>/<run-id>/`，包含 `summary.json`、Markdown 摘要、逐 case evidence 和零费用 finance 文件；即使初始化失败，也会记录 runner failure、未执行 manifest 单元和 cleanup 结果。
+
+T1.5 契约的 endpoint、header、body、response、stream event、异步状态和错误形态只允许依据 Provider 官方 API 文档、官方 schema/SDK 协议定义和官方错误文档更新。AICC 设计文档只用于确定 typed method、adapter/operation 边界、稳定错误码和 Provider instance 配置，不用于生成 Provider wire 期望。官方资料不明确的协议点不得从 AICC 实现、metadata、日志或旧 Mock 猜测。成功用例同时检查 Provider 响应被映射成对应 canonical typed 输出、usage 和异步 operation 归因；错误用例检查 `provider_start_failed`、Provider 原始错误码摘要和 canonical `retriable`。
 
 真实调用必须通过 `allow_real_model_calls = true` 或命令行 `--allow-real-model-calls` 显式开启，并受调用数、成本和 timeout 上限约束。需要安全审计计划时，`--no-real-model-calls` 可强制覆盖 TOML 中的开启值，仍读取真实 inventory、生成完整 skipped/N/A/基线差异与零成本报告。Provider 返回 `request not allowed` 时记录为 `provider_restricted` 和 `platform_limitation`，不计入 passed、failed 或 skipped。报告会把能力基线不一致、路由/资源/安全断言失败和成功调用后的 usage/trace 归因失败写入结构化 `product_defects`，记录预期、实际结果和证据路径；测试不会修改 AICC/Jarvis 实现。
 

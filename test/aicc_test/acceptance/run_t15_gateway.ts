@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildFinancialReport } from "./finance.ts";
 import { loginGateway, type GatewaySession } from "./gateway.ts";
 import { validateCaseManifest } from "./manifest.ts";
 import {
@@ -10,8 +10,9 @@ import {
   protocolContract,
   type ProviderProtocolCatalog,
 } from "./provider_protocol_contracts.ts";
+import { defectFromFailure, writeReport } from "./report.ts";
 import { runPreflight } from "./preflight.ts";
-import type { AcceptanceCase, ProviderInventory, ProviderModel } from "./types.ts";
+import type { AcceptanceCase, AcceptanceReport, CaseReport, ProviderInventory, ProviderModel } from "./types.ts";
 
 type Options = {
   gatewayUrl: string;
@@ -35,14 +36,33 @@ type Options = {
 type CaseResult = {
   case_id: string;
   provider_driver: string | null;
+  provider_instance?: string;
+  exact_model?: string;
+  api_type?: string;
+  method: string;
   protocol_contract_id?: string;
   scenario: string | null;
   status: "passed" | "failed";
   diagnostic?: string;
   captured_requests: number;
+  started_at: string;
+  elapsed_ms: number;
 };
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+async function commitId(): Promise<string> {
+  return await new Promise((resolvePromise) => {
+    const child = spawn("git", ["rev-parse", "HEAD"], {
+      cwd: resolve(here, "../../.."),
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk) => output += String(chunk));
+    child.once("error", () => resolvePromise("unknown"));
+    child.once("close", (code) => resolvePromise(code === 0 && output.trim() ? output.trim() : "unknown"));
+  });
+}
 
 function required(args: string[], index: number, name: string): string {
   const value = args[index + 1]?.trim();
@@ -344,6 +364,9 @@ async function executeCase(
   runId: string,
   timeoutMs: number,
 ): Promise<CaseResult> {
+  const started = Date.now();
+  const startedAt = new Date(started).toISOString();
+  const selectedExactModel = exactModel(catalog, testCase, inventory);
   await selectMock(controlUrl, testCase);
   let failed: unknown;
   let terminalValue: unknown;
@@ -352,7 +375,7 @@ async function executeCase(
       testCase.method,
       buildT15TypedParams(
         testCase.api_type!,
-        exactModel(catalog, testCase, inventory),
+        selectedExactModel,
         runId,
         testCase.execution_mode,
       ),
@@ -423,17 +446,23 @@ async function executeCase(
     if (!evidence.toLowerCase().includes(testCase.expected_provider_error_code!.toLowerCase())) {
       diagnostics.push(`missing Provider error summary code ${testCase.expected_provider_error_code}`);
     }
-    const retryable = new RegExp(`retryable[\\s\"':=]+${String(testCase.expected_retryable)}`, "i");
-    if (!retryable.test(evidence)) diagnostics.push(`missing retryable=${String(testCase.expected_retryable)} mapping`);
+    const retriable = new RegExp(`retriable[\\s\"':=]+${String(testCase.expected_retriable)}`, "i");
+    if (!retriable.test(evidence)) diagnostics.push(`missing retriable=${String(testCase.expected_retriable)} mapping`);
   }
   return {
     case_id: testCase.case_id,
     provider_driver: testCase.provider_driver,
+    provider_instance: testCase.provider_instance ?? undefined,
+    exact_model: selectedExactModel,
+    api_type: testCase.api_type ?? undefined,
+    method: testCase.method,
     protocol_contract_id: testCase.protocol_contract_id,
     scenario: testCase.mock_scenario,
     status: diagnostics.length === 0 ? "passed" : "failed",
     diagnostic: diagnostics.length > 0 ? diagnostics.join("; ") : undefined,
     captured_requests: requests.length,
+    started_at: startedAt,
+    elapsed_ms: Date.now() - started,
   };
 }
 
@@ -450,6 +479,7 @@ function variantCells(catalog: ProviderProtocolCatalog, inventory: ProviderInven
 
 async function main(): Promise<void> {
   const input = options(process.argv.slice(2));
+  const startedAt = new Date().toISOString();
   await runPreflight();
   const catalog = await loadProviderProtocolCatalog();
   const selectedProviders = input.providers.length > 0 ? new Set(input.providers) : new Set(catalog.providers.map((provider) => provider.provider_driver));
@@ -465,8 +495,15 @@ async function main(): Promise<void> {
   const runId = `t15-${new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)}-${process.pid}`;
   const created: string[] = [];
   const results: CaseResult[] = [];
+  const plannedCaseIds = new Set(
+    validateCaseManifest(buildT15Manifest(catalog))
+      .filter((testCase) => selectedProviders.has(testCase.provider_driver ?? ""))
+      .filter((testCase) => input.caseIds.length === 0 || input.caseIds.includes(testCase.case_id))
+      .map((testCase) => testCase.case_id),
+  );
   const unmatchedCaseIds = new Set(input.caseIds);
   let session: GatewaySession | undefined;
+  let fatalError: unknown;
   try {
     await waitMock(input.mockControlUrl);
     session = await loginGateway({
@@ -498,6 +535,7 @@ async function main(): Promise<void> {
       const manifest = validateCaseManifest(buildT15Manifest(catalog, variantCells(catalog, inventory)))
         .filter((testCase) => testCase.provider_driver === driver)
         .filter((testCase) => input.caseIds.length === 0 || input.caseIds.includes(testCase.case_id));
+      for (const testCase of manifest) plannedCaseIds.add(testCase.case_id);
       for (const testCase of manifest) unmatchedCaseIds.delete(testCase.case_id);
       for (const [index, testCase] of manifest.entries()) {
         if (index > 0 && input.providerMinIntervalMs > 0) {
@@ -514,6 +552,19 @@ async function main(): Promise<void> {
     if (unmatchedCaseIds.size > 0) {
       throw new Error(`unknown or out-of-scope --case: ${[...unmatchedCaseIds].sort().join(", ")}`);
     }
+  } catch (error) {
+    fatalError = error;
+    results.push({
+      case_id: "t1.5.runner",
+      provider_driver: null,
+      method: "provider.add/models.list",
+      scenario: null,
+      status: "failed",
+      diagnostic: String(error),
+      captured_requests: 0,
+      started_at: new Date().toISOString(),
+      elapsed_ms: 0,
+    });
   } finally {
     if (session) {
       for (const providerInstanceName of created.reverse()) {
@@ -521,38 +572,134 @@ async function main(): Promise<void> {
           await session.aicc.call("provider.delete", { provider_instance_name: providerInstanceName });
           await waitInventoryAbsent(session, providerInstanceName, input.timeoutMs);
         } catch (error) {
-          results.push({ case_id: `t1.5.cleanup.${providerInstanceName}`, provider_driver: null, scenario: null, status: "failed", diagnostic: String(error), captured_requests: 0 });
+          results.push({
+            case_id: `t1.5.cleanup.${providerInstanceName}`,
+            provider_driver: null,
+            provider_instance: providerInstanceName,
+            method: "provider.delete",
+            scenario: null,
+            status: "failed",
+            diagnostic: String(error),
+            captured_requests: 0,
+            started_at: new Date().toISOString(),
+            elapsed_ms: 0,
+          });
         }
       }
     }
     try {
       await resetMock(input.mockControlUrl);
     } catch (error) {
-      results.push({ case_id: "t1.5.cleanup.mock", provider_driver: null, scenario: null, status: "failed", diagnostic: String(error), captured_requests: 0 });
+      results.push({
+        case_id: "t1.5.cleanup.mock",
+        provider_driver: null,
+        method: "mock.reset",
+        scenario: null,
+        status: "failed",
+        diagnostic: String(error),
+        captured_requests: 0,
+        started_at: new Date().toISOString(),
+        elapsed_ms: 0,
+      });
     }
     mockProcess?.kill("SIGTERM");
   }
-  await mkdir(input.reportDir, { recursive: true });
-  const reportPath = resolve(input.reportDir, `${runId}.json`);
-  const report = {
+  const cases: CaseReport[] = results.map((result) => ({
     run_id: runId,
+    case_id: result.case_id,
     layer: "T1.5",
+    status: result.status,
+    provider_driver: result.provider_driver ?? undefined,
+    provider_instance: result.provider_instance,
+    exact_model: result.exact_model,
+    api_type: result.api_type,
+    method: result.method,
+    outbound_message_ids: [],
+    artifact_ids: [],
+    attempts: [{
+      attempt: 1,
+      started_at: result.started_at,
+      elapsed_ms: result.elapsed_ms,
+      status: result.status,
+      failure_class: result.status === "failed"
+        ? result.case_id.startsWith("t1.5.cleanup.") ? "cleanup_failed" : "provider_protocol_failed"
+        : undefined,
+      diagnostic: [
+        result.protocol_contract_id ? `contract=${result.protocol_contract_id}` : undefined,
+        result.scenario ? `scenario=${result.scenario}` : undefined,
+        `captured_requests=${result.captured_requests}`,
+        result.diagnostic,
+      ].filter(Boolean).join("; "),
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: "actual",
+    }],
+  }));
+  const executedCaseIds = new Set(cases.map((item) => item.case_id).filter((caseId) => plannedCaseIds.has(caseId)));
+  const passedCaseIds = new Set(cases.filter((item) => item.status === "passed").map((item) => item.case_id));
+  const failedCaseIds = new Set(cases.filter((item) => item.status === "failed").map((item) => item.case_id));
+  const cleanupFailures = cases.filter((item) => item.case_id.startsWith("t1.5.cleanup.") && item.status === "failed");
+  const finance = buildFinancialReport({ entries: [], budgetUsd: 0, plannedMaxCalls: 0, plannedMaxCostUsd: 0 });
+  const report: AcceptanceReport = {
+    schema_version: 1,
+    run_id: runId,
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
+    commit: await commitId(),
+    baseline_revision: catalog.revision,
+    allow_real_model_calls: false,
+    planned_real_calls: 0,
+    actual_real_calls: 0,
+    estimated_cost_usd: 0,
+    actual_cost_usd: 0,
+    raw_cost_usd: 0,
+    credit_applied_usd: 0,
+    finance,
+    cases,
+    product_defects: cases.filter((item) => item.status === "failed" && !item.case_id.startsWith("t1.5.cleanup."))
+      .map((item) => defectFromFailure({
+        component: "AICC",
+        caseReport: item,
+        expected: "AICC maps the official Provider protocol fixture through its real Adapter",
+        observed: item.attempts.at(-1)?.diagnostic ?? "T1.5 case failed",
+        evidencePaths: [`cases/${item.case_id}.json`],
+      })),
+    cleanup: cleanupFailures.length === 0
+      ? { status: "passed", details: ["temporary Provider instances were removed and the Mock selection was reset"] }
+      : { status: "failed", details: cleanupFailures.map((item) => item.attempts.at(-1)?.diagnostic ?? item.case_id) },
+    manifest_coverage: {
+      total: plannedCaseIds.size,
+      executed: executedCaseIds.size,
+      passed: [...executedCaseIds].filter((caseId) => passedCaseIds.has(caseId)).length,
+      failed: [...executedCaseIds].filter((caseId) => failedCaseIds.has(caseId)).length,
+      coverage_rate: plannedCaseIds.size === 0 ? 1 : executedCaseIds.size / plannedCaseIds.size,
+      unexecuted_case_ids: [...plannedCaseIds].filter((caseId) => !executedCaseIds.has(caseId)).sort(),
+    },
     protocol_evidence_revision: catalog.revision,
     official_evidence_checked_at: catalog.checked_at,
-    real_provider_calls: 0,
-    estimated_cost_usd: 0,
     limits: { global_concurrency: 1, provider_concurrency: 1, provider_min_interval_ms: input.providerMinIntervalMs },
     providers: [...selectedProviders],
-    totals: {
-      cases: results.length,
-      passed: results.filter((result) => result.status === "passed").length,
-      failed: results.filter((result) => result.status === "failed").length,
-    },
-    cases: results,
+    targeted_retest_command: failedCaseIds.size === 0
+      ? undefined
+      : [
+        "AICC_T15_ALLOW_CONFIG_MUTATION=true pnpm run acceptance:t1.5 --",
+        "--gateway-url", JSON.stringify(input.gatewayUrl),
+        "--mock-base-url", JSON.stringify(input.mockBaseUrl),
+        "--mock-control-url", JSON.stringify(input.mockControlUrl),
+        "--allow-config-mutation",
+        ...[...failedCaseIds].filter((caseId) => plannedCaseIds.has(caseId)).slice(0, 20)
+          .flatMap((caseId) => ["--case", caseId]),
+      ].join(" "),
   };
-  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  process.stdout.write(`${JSON.stringify({ report: reportPath, ...report.totals }, null, 2)}\n`);
-  if (report.totals.failed > 0) process.exitCode = 1;
+  const reportDir = resolve(input.reportDir, runId);
+  await writeReport(reportDir, report);
+  process.stdout.write(`${JSON.stringify({
+    report: join(reportDir, "summary.json"),
+    cases: cases.length,
+    passed: cases.filter((item) => item.status === "passed").length,
+    failed: cases.filter((item) => item.status === "failed").length,
+  }, null, 2)}\n`);
+  if (fatalError || cases.some((item) => item.status === "failed")) process.exitCode = 1;
 }
 
 if (process.argv[1] && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1])) {

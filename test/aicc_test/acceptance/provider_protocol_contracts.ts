@@ -371,7 +371,7 @@ function providerErrorCode(fixture: ProtocolErrorFixture): string {
   return String(fixture.status);
 }
 
-function providerErrorRetryable(fixture: ProtocolErrorFixture): boolean {
+function providerErrorRetriable(fixture: ProtocolErrorFixture): boolean {
   const explicit = Object.entries(fixture.headers ?? {}).find(([name]) => name.toLowerCase() === "x-fal-retryable")?.[1];
   if (explicit) return explicit.toLowerCase() === "true";
   return fixture.status === 429 || fixture.status >= 500 ||
@@ -509,7 +509,7 @@ export function buildT15Manifest(
             response_fixture: `${provider.provider_driver}.error.${error.scenario}`,
             expected_aicc_error_code: "provider_start_failed",
             expected_provider_error_code: providerErrorCode(error),
-            expected_retryable: providerErrorRetryable(error),
+            expected_retriable: providerErrorRetriable(error),
           } as AcceptanceCase);
         }
         if (apiType === primaryApiType) {

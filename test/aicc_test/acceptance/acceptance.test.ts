@@ -45,6 +45,7 @@ import {
   buildT15Manifest,
   loadProviderProtocolCatalog,
   protocolContract,
+  type ProviderProtocolContract,
   validateProviderProtocolCatalog,
   validateProviderAuxiliaryRequest,
   validateProviderRequest,
@@ -75,6 +76,49 @@ import {
 } from "../../jarvis_media_dv/jarvis_media_dv.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+function t15FieldValue(field: string, contract: ProviderProtocolContract, model: string): unknown {
+  if (field === "model") return model;
+  const type = contract.body_field_types[field]?.[0] ?? "string";
+  if (type === "array") return [];
+  if (type === "object") return {};
+  if (type === "number") return 1;
+  if (type === "boolean") return true;
+  return `t15-${field}`;
+}
+
+function t15ProviderRequest(
+  baseUrl: string,
+  contract: ProviderProtocolContract,
+  model: string,
+  extraBody: Record<string, unknown> = {},
+): { url: string; init: RequestInit } {
+  let path = contract.path.replaceAll("{model}", encodeURIComponent(model));
+  const headers = new Headers(contract.required_headers ?? {});
+  if (contract.auth.kind === "header") headers.set(contract.auth.name, `${contract.auth.prefix}t15-secret`);
+  else {
+    const url = new URL(`${baseUrl}${path}`);
+    url.searchParams.set(contract.auth.name, `${contract.auth.prefix}t15-secret`);
+    path = `${url.pathname}${url.search}`;
+  }
+  const fields = Object.fromEntries(contract.required_body_fields.map((field) => [
+    field,
+    t15FieldValue(field, contract, model),
+  ]));
+  if (contract.content_type === "multipart/form-data") {
+    const form = new FormData();
+    for (const [field, value] of Object.entries({ ...fields, ...extraBody })) {
+      if (value && typeof value === "object") form.append(field, new Blob(["t15"]), `${field}.bin`);
+      else form.append(field, String(value));
+    }
+    return { url: `${baseUrl}${path}`, init: { method: contract.http_method, headers, body: form } };
+  }
+  headers.set("content-type", contract.content_type);
+  return {
+    url: `${baseUrl}${path}`,
+    init: { method: contract.http_method, headers, body: JSON.stringify({ ...fields, ...extraBody }) },
+  };
+}
 
 test("T2 fixture NDN service is isolated and routed only for the run lifetime", () => {
   const config = buildNdnGatewayConfig({
@@ -1510,6 +1554,162 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
   assert.match(await invalid.text(), /unknown body field invented/);
 });
 
+test("T1.5 Provider mock serves every contract for all 12 Providers", async (context) => {
+  const catalog = await loadProviderProtocolCatalog();
+  assert.equal(catalog.providers.length, 12);
+  assert.deepEqual(
+    new Set(Object.keys(T15_PROVIDER_DISCOVERY_CONTRACTS)),
+    new Set(catalog.providers.map((provider) => provider.provider_driver)),
+  );
+  const handler = createT15MockHandler(catalog);
+  const server = createServer((request, response) => void handler(request, response));
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+  context.after(() => new Promise<void>((resolvePromise, reject) =>
+    server.close((error) => error ? reject(error) : resolvePromise())
+  ));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  for (const provider of catalog.providers) {
+    for (const contract of provider.contracts) {
+      const selected = await fetch(`${baseUrl}/__mock/select`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider_driver: provider.provider_driver, contract_id: contract.id, scenario: "success" }),
+      });
+      assert.equal(selected.status, 200, `${provider.provider_driver}/${contract.id} selection`);
+      const model = provider.test_model_ids[contract.api_types[0]];
+      const providerRequest = t15ProviderRequest(baseUrl, contract, model);
+      const response = await fetch(providerRequest.url, providerRequest.init);
+      assert.equal(response.status, 200, `${provider.provider_driver}/${contract.id}: ${await response.clone().text()}`);
+      const audit = await (await fetch(`${baseUrl}/__mock/requests`)).json() as {
+        requests: Array<{ headers: Record<string, string>; validation_errors: string[] }>;
+      };
+      assert.equal(audit.requests.length, 1, `${provider.provider_driver}/${contract.id} audit count`);
+      assert.deepEqual(audit.requests[0].validation_errors, [], `${provider.provider_driver}/${contract.id} wire validation`);
+      const authHeader = contract.auth.kind === "header" ? contract.auth.name.toLowerCase() : undefined;
+      if (authHeader) assert.equal(audit.requests[0].headers[authHeader], "[REDACTED]");
+    }
+  }
+});
+
+test("T1.5 Provider mock implements each machine discovery contract and rejects catalog-only discovery", async (context) => {
+  const catalog = await loadProviderProtocolCatalog();
+  const handler = createT15MockHandler(catalog);
+  const server = createServer((request, response) => void handler(request, response));
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+  context.after(() => new Promise<void>((resolvePromise, reject) =>
+    server.close((error) => error ? reject(error) : resolvePromise())
+  ));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  for (const provider of catalog.providers) {
+    const discovery = T15_PROVIDER_DISCOVERY_CONTRACTS[provider.provider_driver];
+    const contract = provider.contracts[0];
+    assert.equal((await fetch(`${baseUrl}/__mock/select`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider_driver: provider.provider_driver, contract_id: contract.id, scenario: "success" }),
+    })).status, 200);
+    if (discovery.mode === "catalog_only") {
+      assert.equal((await fetch(`${baseUrl}${provider.endpoint_path}/models`)).status, 404, provider.provider_driver);
+      continue;
+    }
+    const unauthenticated = await fetch(`${baseUrl}${discovery.path}`);
+    assert.equal(unauthenticated.status, 401, `${provider.provider_driver} unauthenticated discovery`);
+    const url = new URL(`${baseUrl}${discovery.path}`);
+    for (const [name, value] of Object.entries(discovery.required_query ?? {})) url.searchParams.set(name, value);
+    const headers = new Headers(discovery.required_headers ?? {});
+    if (contract.auth.kind === "header") headers.set(contract.auth.name, `${contract.auth.prefix}t15-secret`);
+    else url.searchParams.set(contract.auth.name, `${contract.auth.prefix}t15-secret`);
+    const response = await fetch(url, { headers });
+    assert.equal(response.status, 200, `${provider.provider_driver} discovery: ${await response.clone().text()}`);
+    const fixture = await response.json() as Record<string, unknown>;
+    if (discovery.response_shape === "gemini") assert.ok(Array.isArray(fixture.models));
+    else if (discovery.response_shape === "sn") assert.ok(Array.isArray(fixture.items));
+    else assert.ok(Array.isArray(fixture.data));
+  }
+});
+
+test("T1.5 Provider mock serves every declared streaming and official error fixture", async (context) => {
+  const catalog = await loadProviderProtocolCatalog();
+  const handler = createT15MockHandler(catalog);
+  const server = createServer((request, response) => void handler(request, response));
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+  context.after(() => new Promise<void>((resolvePromise, reject) =>
+    server.close((error) => error ? reject(error) : resolvePromise())
+  ));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  for (const provider of catalog.providers) {
+    const primary = provider.contracts[0];
+    const model = provider.test_model_ids[primary.api_types[0]];
+    for (const fixture of catalog.error_fixtures[provider.provider_driver]) {
+      assert.equal((await fetch(`${baseUrl}/__mock/select`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider_driver: provider.provider_driver, contract_id: primary.id, scenario: fixture.scenario }),
+      })).status, 200);
+      const providerRequest = t15ProviderRequest(baseUrl, primary, model);
+      assert.equal((await fetch(providerRequest.url, providerRequest.init)).status, fixture.status,
+        `${provider.provider_driver}/${fixture.scenario}`);
+    }
+    for (const contract of provider.contracts.filter((candidate) => candidate.stream_protocol)) {
+      assert.equal((await fetch(`${baseUrl}/__mock/select`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider_driver: provider.provider_driver, contract_id: contract.id, scenario: "stream_success" }),
+      })).status, 200);
+      const providerRequest = t15ProviderRequest(
+        baseUrl,
+        contract,
+        provider.test_model_ids[contract.api_types[0]],
+        { stream: true },
+      );
+      const response = await fetch(providerRequest.url, providerRequest.init);
+      assert.equal(response.status, 200, `${provider.provider_driver}/${contract.id} stream`);
+      assert.match(response.headers.get("content-type") ?? "", /^text\/event-stream/);
+      assert.match(await response.text(), /BUCKYOS-AICC-4827/);
+      assert.equal((await fetch(`${baseUrl}/__mock/select`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider_driver: provider.provider_driver, contract_id: contract.id, scenario: "stream_interrupted" }),
+      })).status, 200);
+      const interruptedRequest = t15ProviderRequest(
+        baseUrl,
+        contract,
+        provider.test_model_ids[contract.api_types[0]],
+        { stream: true },
+      );
+      const interrupted = await fetch(interruptedRequest.url, interruptedRequest.init);
+      assert.equal(interrupted.status, 200, `${provider.provider_driver}/${contract.id} interrupted stream`);
+      const interruptedBody = await interrupted.text();
+      const terminalMarker = contract.stream_protocol === "openai_responses"
+        ? "response.completed"
+        : contract.stream_protocol === "claude_messages"
+        ? "message_stop"
+        : contract.stream_protocol === "gemini_interactions"
+        ? "interaction.completed"
+        : "[DONE]";
+      assert.equal(interruptedBody.includes(terminalMarker), false, `${contract.id} interrupted terminal marker`);
+    }
+  }
+});
+
 test("T1.5 async lifecycle validates and captures official poll/result wire", async (context) => {
   const catalog = await loadProviderProtocolCatalog();
   const contract = protocolContract(catalog, "fal", "fal.esrgan.queue-v1");
@@ -1553,6 +1753,66 @@ test("T1.5 async lifecycle validates and captures official poll/result wire", as
   assert.ok(audit.requests.every((request) => request.validation_errors.length === 0));
 });
 
+test("T1.5 Provider mock completes every declared async lifecycle", async (context) => {
+  const catalog = await loadProviderProtocolCatalog();
+  const handler = createT15MockHandler(catalog);
+  const server = createServer((request, response) => void handler(request, response));
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+  context.after(() => new Promise<void>((resolvePromise, reject) =>
+    server.close((error) => error ? reject(error) : resolvePromise())
+  ));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const asyncContracts = catalog.providers.flatMap((provider) => provider.contracts
+    .filter((contract) => contract.async_protocol)
+    .map((contract) => ({ provider, contract })));
+  assert.deepEqual(new Set(asyncContracts.map(({ contract }) => contract.async_protocol)),
+    new Set(["openai_video", "google_lro", "fal_queue", "minimax_video"]));
+
+  for (const { provider, contract } of asyncContracts) {
+    assert.equal((await fetch(`${baseUrl}/__mock/select`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider_driver: provider.provider_driver, contract_id: contract.id, scenario: "async_success" }),
+    })).status, 200);
+    const submit = t15ProviderRequest(baseUrl, contract, provider.test_model_ids[contract.api_types[0]]);
+    assert.equal((await fetch(submit.url, submit.init)).status, 200, `${contract.id} submit`);
+    for (const step of contract.async_steps ?? []) {
+      let path = step.path
+        .replaceAll("{request_id}", "fal_mock_1")
+        .replaceAll("{operation_id}", contract.async_protocol === "google_lro" ? "gemini_mock_1" : "video_mock_1");
+      const url = new URL(`${baseUrl}${path}`);
+      for (const field of step.required_query_fields ?? []) {
+        url.searchParams.set(field, field === "task_id" ? "minimax_video_mock_1" : "minimax_file_mock_1");
+      }
+      const headers = new Headers();
+      if (contract.auth.kind === "header") headers.set(contract.auth.name, `${contract.auth.prefix}t15-secret`);
+      else url.searchParams.set(contract.auth.name, `${contract.auth.prefix}t15-secret`);
+      const response = await fetch(url, { method: step.http_method, headers });
+      assert.ok([200, 202].includes(response.status), `${contract.id}/${step.name}: ${response.status} ${await response.clone().text()}`);
+      if (step.name !== "result" || !response.headers.get("content-type")?.startsWith("application/json")) continue;
+      const result = await response.json() as Record<string, unknown>;
+      const serialized = JSON.stringify(result);
+      assert.equal(serialized.includes("http://mock"), false, `${contract.id} leaked placeholder artifact authority`);
+      const artifactUrl = serialized.match(/http:\/\/127\.0\.0\.1:\d+\/artifacts\/[^"\\]+/)?.[0];
+      if (artifactUrl) assert.equal((await fetch(artifactUrl)).status, 200, `${contract.id} artifact`);
+    }
+    const audit = await (await fetch(`${baseUrl}/__mock/requests`)).json() as {
+      requests: Array<{ async_step?: string; validation_errors: string[] }>;
+    };
+    assert.ok(audit.requests.every((request) => request.validation_errors.length === 0), contract.id);
+    assert.deepEqual(
+      new Set(audit.requests.map((request) => request.async_step).filter(Boolean)),
+      new Set((contract.async_steps ?? []).map((step) => step.name)),
+      `${contract.id} lifecycle audit`,
+    );
+  }
+});
+
 test("T1.5 manifest owns Provider normal, streaming, async, error, and variant cells", async () => {
   const catalog = await loadProviderProtocolCatalog();
   const manifest = validateCaseManifest(buildT15Manifest(catalog, [{
@@ -1577,6 +1837,8 @@ test("T1.5 manifest owns Provider normal, streaming, async, error, and variant c
   assert.ok(manifest.some((item) => item.mock_scenario === "async_failed"));
   assert.ok(manifest.some((item) => item.mock_scenario === "async_cancel"));
   assert.ok(manifest.some((item) => item.expected_error_class === "provider_protocol_failed"));
+  assert.ok(manifest.filter((item) => item.tags.includes("official_error"))
+    .every((item) => typeof item.expected_retriable === "boolean" && !("expected_retryable" in item)));
   assert.ok(manifest.some((item) => item.tags.includes("variant")));
   assert.ok(manifest.every((item) => item.layer === "T1.5" && item.semantic_rubric.length === 0));
   assert.ok(buildStaticManifest().every((item) => !item.case_id.startsWith("t1.protocol.")));
@@ -1641,12 +1903,12 @@ test("report redaction removes secrets and totals statuses", () => {
   assert.doesNotThrow(() => assertNoSecrets(safe));
   const base = {
     run_id: "run",
-    layer: "T1",
+    layer: "T1" as const,
     method: "chat.completions.create",
     outbound_message_ids: [],
     artifact_ids: [],
     attempts: [],
-  } as const;
+  };
   const totals = caseTotals([
     { ...base, case_id: "passed", status: "passed" },
     { ...base, case_id: "restricted", status: "provider_restricted" },
@@ -1693,6 +1955,10 @@ test("report schema rejects version drift and duplicate case ids", () => {
     cases: [caseReport],
     product_defects: [],
     cleanup: { status: "passed", details: [] },
+    protocol_evidence_revision: "official-provider-protocols-test",
+    official_evidence_checked_at: "2026-09-02",
+    providers: ["openai"],
+    limits: { global_concurrency: 1, provider_concurrency: 1, provider_min_interval_ms: 50 },
   };
   assert.doesNotThrow(() => validateAcceptanceReport(report));
   assert.throws(
@@ -1702,6 +1968,10 @@ test("report schema rejects version drift and duplicate case ids", () => {
   assert.throws(
     () => validateAcceptanceReport({ ...report, cases: [caseReport, caseReport] }),
     /duplicate report case_id/,
+  );
+  assert.throws(
+    () => validateAcceptanceReport({ ...report, limits: { ...report.limits, provider_concurrency: -1 } }),
+    /limits.provider_concurrency/,
   );
 });
 

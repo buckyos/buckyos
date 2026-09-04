@@ -75,7 +75,7 @@ export type AcceptanceCase = {
   response_fixture?: string;
   expected_aicc_error_code?: string;
   expected_provider_error_code?: string;
-  expected_retryable?: boolean;
+  expected_retriable?: boolean;
 };
 
 export type ProviderModel = {
@@ -302,6 +302,14 @@ export type AcceptanceReport = {
   model_coverage?: ModelCoverageRecord[];
   document_format_coverage?: DocumentFormatCoverageRecord[];
   targeted_retest_command?: string;
+  protocol_evidence_revision?: string;
+  official_evidence_checked_at?: string;
+  providers?: string[];
+  limits?: {
+    global_concurrency: number;
+    provider_concurrency: number;
+    provider_min_interval_ms: number;
+  };
   manifest_coverage?: {
     total: number;
     executed: number;

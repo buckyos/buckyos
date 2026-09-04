@@ -317,7 +317,11 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           if (selection.scenario === "async_artifact_unavailable") {
             return json(response, 404, { detail: "Result artifact is unavailable", error_type: "not_found" });
           }
-          return json(response, 200, contract.async_result_fixture ?? {});
+          return json(response, 200, rewriteMockUrls(
+            contract.async_result_fixture ?? {},
+            request.headers.host ?? "127.0.0.1",
+            url.pathname.replace(/^\//, ""),
+          ));
         }
         if (/\/requests\/fal_mock_1\/cancel$/.test(url.pathname) && request.method === "PUT") {
           const errors = captureAuxiliary();

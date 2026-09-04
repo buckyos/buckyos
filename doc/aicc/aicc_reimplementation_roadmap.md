@@ -682,8 +682,8 @@ Owner：E2E 小组
 - [x] AiccClient request/response、序列化和错误映射测试；
 - [ ] T1 经 Zone Gateway 执行真实 AICC 路由链路和多 Mock Provider；
 - [ ] T1.5 经 Zone Gateway 执行真实 AICC typed/helper method、真实 Adapter 和 Provider 专用高保真 Mock；
-- [ ] T1.5 fixture 只依据 Provider 官方 API 文档、官方 schema、官方 SDK 协议定义和官方错误文档；
-- [ ] T1.5 覆盖 Provider driver × Adapter/API version × API-Type × operation，以及每个可独立调用的 metadata variant；
+- [x] T1.5 fixture 只依据 Provider 官方 API 文档、官方 schema、官方 SDK 协议定义和官方错误文档；
+- [x] T1.5 覆盖 Provider driver × Adapter/API version × API-Type × operation，以及每个可独立调用的 metadata variant；
 - [ ] T2 官方 inventory 双向 diff 和 `ProviderInstance × model × API-Type` 最小真实推理矩阵；
 - [ ] T3 message-tunnel/Jarvis 六类消息、多附件、多轮和入口矩阵；
 - [x] 全局/Provider 并发、最小间隔、重试、timeout 和预算门禁；
@@ -693,7 +693,7 @@ Owner：E2E 小组
 
 完成标准：每个需求、method、Provider、operation 和横切能力都能追踪到模块单测或稳定的 T1/T1.5/T2/T3 case ID，并能明确证明四层之间没有用后一层重复代替前一层。
 
-实现记录：E2E 小组已完成 WP-18 静态基础与四层 Runner/manifest：preflight 分别校验 canonical api_type、typed method 及显式关联，Provider baseline schema v3 固定 11 家 Provider 与 SN 的 Profile/Adapter/Model Driver 身份；fixture manifest、T1 Mock contract 和 acceptance report 均使用固定 schema。T1.5 manifest 显式携带 canonical `execution_mode`，流式用例只向 AICC 传 `execution_mode=stream`，禁止调用方传 Provider wire `stream`；高保真 Mock 独立要求 Adapter 产生 `stream=true`。AiccClient 集成测试覆盖 request/response、严格 serde、`unsupported_execution_mode` 与稳定错误映射；默认 CI 只运行 preflight/self-test，不开放真实模型调用。静态 preflight、自测 67 项和 `cargo test -p buckyos-api --test aicc_client_test` 4 项通过。T1/T1.5 尚待全部工作包 Done 后的编码冻结环境执行；T2/T3 还需要每次运行的人工授权，因此对应六项集成验收保持未完成。
+实现记录：E2E 小组已完成 WP-18 静态基础与四层 Runner/manifest：preflight 分别校验 canonical api_type、typed method 及显式关联，Provider baseline schema v3 固定 11 家 Provider 与 SN 的 Profile/Adapter/Model Driver 身份；fixture manifest、T1 Mock contract 和 acceptance report 均使用固定 schema。T1.5 manifest 显式携带 canonical `execution_mode`，流式用例只向 AICC 传 `execution_mode=stream`，禁止调用方传 Provider wire `stream`；高保真 Mock 独立要求 Adapter 产生 `stream=true`。12 家 Provider 的 Mock 按官方资料或 SN 固定源码实现逐合同请求校验、机器目录/静态目录边界、正常响应、SSE 正常与中断、官方错误，以及 OpenAI Video、Gemini LRO、Fal Queue、MiniMax Video 四类异步生命周期；T1.5 Runner 也写入统一版本化 acceptance report、逐 case evidence、manifest coverage、cleanup 与 targeted retest。AiccClient 集成测试覆盖 request/response、严格 serde、`unsupported_execution_mode` 与稳定错误映射；默认 CI 运行 Deno 类型检查、preflight/self-test，不开放真实模型调用。静态 preflight、自测 71 项、AICC 363 项单测和 `cargo test -p buckyos-api --test aicc_client_test` 4 项通过。当前本机 Zone 的 runtime check 报告 node-daemon 缺失，且没有可用的验收 session token/账号密码，因此 T1/T1.5 的真实 Zone Gateway 执行仍保持未完成；T2/T3 还需要每次运行的人工授权。
 
 ## 6. 实施波次与并行关系
 

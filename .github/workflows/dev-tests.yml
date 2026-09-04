@@ -79,6 +79,11 @@ jobs:
           cache: pnpm
           cache-dependency-path: test/aicc_test/pnpm-lock.yaml
 
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Install AICC acceptance dependencies
         working-directory: ./test/aicc_test
         run: pnpm install --frozen-lockfile
@@ -86,6 +91,7 @@ jobs:
       - name: Validate AICC acceptance contracts
         working-directory: ./test/aicc_test
         run: |
+          deno check acceptance/*.ts
           pnpm run acceptance:preflight
           pnpm run acceptance:self-test
 

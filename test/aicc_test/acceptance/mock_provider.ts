@@ -181,8 +181,8 @@ function requestsToolCall(body: Json | null): boolean {
   const bodyObject = object(body);
   return Array.isArray(bodyObject?.tools) && bodyObject.tools.some((tool) => {
     const value = object(tool);
-    return value.type === "function" || value.name === "echo_marker" ||
-      object(value.function)?.name === "echo_marker";
+    return value !== null && (value.type === "function" || value.name === "echo_marker" ||
+      object(value.function)?.name === "echo_marker");
   });
 }
 

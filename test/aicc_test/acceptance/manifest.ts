@@ -109,8 +109,8 @@ export function validateCaseManifest(value: unknown): AcceptanceCase[] {
       if ((raw.tags as string[]).includes("official_error")) {
         requireString(raw.expected_aicc_error_code, `${caseId}.expected_aicc_error_code`);
         requireString(raw.expected_provider_error_code, `${caseId}.expected_provider_error_code`);
-        if (typeof raw.expected_retryable !== "boolean") {
-          throw new Error(`${caseId}.expected_retryable must be boolean`);
+        if (typeof raw.expected_retriable !== "boolean") {
+          throw new Error(`${caseId}.expected_retriable must be boolean`);
         }
       }
     }
