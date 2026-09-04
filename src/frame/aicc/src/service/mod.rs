@@ -48,7 +48,7 @@ use kRPC::{RPCHandler, RPCResponse};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -627,7 +627,7 @@ impl RuntimeInferencePort {
                     match_dimensions,
                 },
             )
-            .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))
+            .map_err(|error| inference_error(error.code(), error.to_string()))
     }
 
     async fn materialize_resources(
@@ -2763,6 +2763,20 @@ impl RuntimeProviderExecutionPort {
         })
     }
 
+    fn execution_mode(
+        requested: ExecutionMode,
+        supported: &BTreeSet<ExecutionMode>,
+    ) -> Result<ExecutionMode, ProtocolError> {
+        supported
+            .contains(&requested)
+            .then_some(requested)
+            .ok_or_else(|| {
+                ProtocolError::invalid_configuration(
+                    "resolved execution mode is not supported by the selected binding",
+                )
+            })
+    }
+
     async fn send_cancelable<T>(
         cancellation: &crate::protocol::Cancellation,
         future: impl std::future::Future<Output = Result<T, ProtocolError>>,
@@ -2910,124 +2924,134 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                     .map(|binding| (operation.supports_cancel, binding.execution_modes.clone()))
             })
             .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+        let execution_mode = Self::execution_mode(call.execution_mode, &descriptor.1)
+            .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
         let transport = Self::transport(&call.context.limits)
             .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-        if descriptor.1.contains(&ExecutionMode::Immediate) {
-            let request = self
-                .codecs
-                .encode(
-                    &call.protocol_adapter_id,
-                    &call.operation,
-                    call.api_type,
-                    &call.input,
-                    &call.context,
-                )
-                .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-            let response = Self::send_cancelable(&cancellation, transport.send(request))
-                .await
-                .map_err(ProviderStartFailure::after_accept)?;
-            let decoded = self
-                .codecs
-                .decode(
-                    &call.protocol_adapter_id,
-                    &call.operation,
-                    call.api_type,
-                    response,
-                )
-                .await
-                .map_err(ProviderStartFailure::after_accept)?;
-            return match decoded {
-                crate::protocol::ProtocolExecution::Immediate(output) => {
-                    Ok(ProviderExecution::Immediate(output))
+        match execution_mode {
+            ExecutionMode::Immediate => {
+                let request = self
+                    .codecs
+                    .encode(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                        &call.input,
+                        &call.context,
+                    )
+                    .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+                let response = Self::send_cancelable(&cancellation, transport.send(request))
+                    .await
+                    .map_err(ProviderStartFailure::after_accept)?;
+                let decoded = self
+                    .codecs
+                    .decode(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                        response,
+                    )
+                    .await
+                    .map_err(ProviderStartFailure::after_accept)?;
+                match decoded {
+                    crate::protocol::ProtocolExecution::Immediate(output) => {
+                        Ok(ProviderExecution::Immediate(output))
+                    }
+                    _ => Err(ProviderStartFailure::after_accept(
+                        ProtocolError::invalid_response(
+                            "buffered Provider response returned an unexpected execution mode",
+                        ),
+                    )),
                 }
-                _ => Err(ProviderStartFailure::after_accept(
-                    ProtocolError::invalid_response(
-                        "buffered Provider response returned an unexpected execution mode",
-                    ),
-                )),
-            };
+            }
+            ExecutionMode::Stream => {
+                let request = self
+                    .codecs
+                    .encode(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                        &call.input,
+                        &call.context,
+                    )
+                    .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+                let response =
+                    Self::send_cancelable(&cancellation, transport.send_streaming(request))
+                        .await
+                        .map_err(ProviderStartFailure::after_accept)?;
+                self.codecs
+                    .decode_stream(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                        response,
+                    )
+                    .await
+                    .map(ProviderExecution::Stream)
+                    .map_err(ProviderStartFailure::after_accept)
+            }
+            ExecutionMode::NativeTask => {
+                let request = self
+                    .codecs
+                    .encode_native(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                        &NativeTaskInput {
+                            operation: NativeTaskOperation::Submit,
+                            remote_task_id: None,
+                            codec_input: Some(&call.input),
+                            resolved_parameters: &call.input.resolved_parameters,
+                            context: &call.context,
+                        },
+                    )
+                    .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+                let response = Self::send_cancelable(&cancellation, transport.send(request))
+                    .await
+                    .map_err(ProviderStartFailure::after_accept)?;
+                let output = self
+                    .codecs
+                    .decode_native(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                        NativeTaskOperation::Submit,
+                        response,
+                    )
+                    .await
+                    .map_err(ProviderStartFailure::after_accept)?;
+                let NativeTaskOutput::Submitted(handle) = output else {
+                    return Err(ProviderStartFailure::after_accept(
+                        ProtocolError::invalid_response(
+                            "native submit returned a non-submit result",
+                        ),
+                    ));
+                };
+                let credential =
+                    call.context
+                        .credential
+                        .as_ref()
+                        .map(|credential| ResumeCredential {
+                            reference: provider.config.credential.reference.clone(),
+                            kind: resume_credential_kind(credential.audit().kind),
+                            header_name: provider.profile.credential.header_name.clone(),
+                            fingerprint: credential_fingerprint(
+                                &provider.config.credential.reference,
+                            ),
+                        });
+                Ok(ProviderExecution::NativeTask {
+                    handle,
+                    resume: NativeTaskResumeDescriptor {
+                        base_url: call.context.base_url.clone(),
+                        credential,
+                        resolved_parameters: call.input.resolved_parameters.clone(),
+                        request_timeout_ms: call.context.limits.request_timeout.as_millis() as u64,
+                        max_request_bytes: call.context.limits.max_request_bytes as u64,
+                        max_response_bytes: call.context.limits.max_response_bytes as u64,
+                    },
+                })
+            }
         }
-        if descriptor.1.contains(&ExecutionMode::Stream) {
-            let request = self
-                .codecs
-                .encode(
-                    &call.protocol_adapter_id,
-                    &call.operation,
-                    call.api_type,
-                    &call.input,
-                    &call.context,
-                )
-                .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-            let response = Self::send_cancelable(&cancellation, transport.send_streaming(request))
-                .await
-                .map_err(ProviderStartFailure::after_accept)?;
-            return self
-                .codecs
-                .decode_stream(
-                    &call.protocol_adapter_id,
-                    &call.operation,
-                    call.api_type,
-                    response,
-                )
-                .await
-                .map(ProviderExecution::Stream)
-                .map_err(ProviderStartFailure::after_accept);
-        }
-        let request = self
-            .codecs
-            .encode_native(
-                &call.protocol_adapter_id,
-                &call.operation,
-                call.api_type,
-                &NativeTaskInput {
-                    operation: NativeTaskOperation::Submit,
-                    remote_task_id: None,
-                    codec_input: Some(&call.input),
-                    resolved_parameters: &call.input.resolved_parameters,
-                    context: &call.context,
-                },
-            )
-            .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-        let response = Self::send_cancelable(&cancellation, transport.send(request))
-            .await
-            .map_err(ProviderStartFailure::after_accept)?;
-        let output = self
-            .codecs
-            .decode_native(
-                &call.protocol_adapter_id,
-                &call.operation,
-                call.api_type,
-                NativeTaskOperation::Submit,
-                response,
-            )
-            .await
-            .map_err(ProviderStartFailure::after_accept)?;
-        let NativeTaskOutput::Submitted(handle) = output else {
-            return Err(ProviderStartFailure::after_accept(
-                ProtocolError::invalid_response("native submit returned a non-submit result"),
-            ));
-        };
-        let credential = call
-            .context
-            .credential
-            .as_ref()
-            .map(|credential| ResumeCredential {
-                reference: provider.config.credential.reference.clone(),
-                kind: resume_credential_kind(credential.audit().kind),
-                header_name: provider.profile.credential.header_name.clone(),
-                fingerprint: credential_fingerprint(&provider.config.credential.reference),
-            });
-        Ok(ProviderExecution::NativeTask {
-            handle,
-            resume: NativeTaskResumeDescriptor {
-                base_url: call.context.base_url.clone(),
-                credential,
-                resolved_parameters: call.input.resolved_parameters.clone(),
-                request_timeout_ms: call.context.limits.request_timeout.as_millis() as u64,
-                max_request_bytes: call.context.limits.max_request_bytes as u64,
-                max_response_bytes: call.context.limits.max_response_bytes as u64,
-            },
-        })
     }
 
     async fn poll_native(
@@ -4233,6 +4257,7 @@ mod tests {
 
     struct FakeInference {
         calls: Mutex<Vec<(String, Option<String>)>>,
+        execution_modes: Mutex<Vec<buckyos_api::AiccExecutionMode>>,
     }
 
     #[async_trait]
@@ -4273,6 +4298,10 @@ mod tests {
             _caller: &AuthorizedCaller,
             call: AiccCall,
         ) -> Result<Value, RPCErrors> {
+            self.execution_modes
+                .lock()
+                .await
+                .push(call.execution_mode());
             self.calls.lock().await.push((
                 call.method().to_string(),
                 call.trace_id().map(str::to_owned),
@@ -4312,6 +4341,7 @@ mod tests {
         });
         let inference = Arc::new(FakeInference {
             calls: Mutex::new(Vec::new()),
+            execution_modes: Mutex::new(Vec::new()),
         });
         let service = AiccService::new(
             authorizer.clone(),
@@ -4394,6 +4424,7 @@ mod tests {
 
         let mut chat_request = LlmChatInvokeRequest::new("model-a@primary", Vec::new());
         chat_request.trace_id = Some("trace-chat".to_string());
+        chat_request.execution_mode = buckyos_api::AiccExecutionMode::Stream;
         let chat = fixture
             .service
             .handle_chat_completions_create(chat_request, RPCContext::default())
@@ -4404,6 +4435,7 @@ mod tests {
 
         let mut helper_request = LlmChatHelperRequest::new("llm.chat", Vec::new());
         helper_request.trace_id = Some("trace-helper".to_string());
+        helper_request.execution_mode = buckyos_api::AiccExecutionMode::Stream;
         let helper = fixture
             .service
             .handle_helper_llm_chat(helper_request, RPCContext::default())
@@ -4435,6 +4467,30 @@ mod tests {
                 (buckyos_api::ai_methods::EMBEDDING_TEXT.to_string(), None),
             ]
         );
+        assert_eq!(
+            fixture.inference.execution_modes.lock().await.as_slice(),
+            [
+                buckyos_api::AiccExecutionMode::Stream,
+                buckyos_api::AiccExecutionMode::Stream,
+                buckyos_api::AiccExecutionMode::Immediate,
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_execution_uses_the_resolved_mode_without_priority_guessing() {
+        let supported = BTreeSet::from([ExecutionMode::Immediate, ExecutionMode::Stream]);
+
+        assert_eq!(
+            RuntimeProviderExecutionPort::execution_mode(ExecutionMode::Stream, &supported)
+                .unwrap(),
+            ExecutionMode::Stream
+        );
+        assert!(RuntimeProviderExecutionPort::execution_mode(
+            ExecutionMode::NativeTask,
+            &supported
+        )
+        .is_err());
     }
 
     #[tokio::test]
