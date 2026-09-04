@@ -667,6 +667,17 @@ impl ExecutionEngine {
                 false,
             ));
         }
+        if request
+            .trace_id
+            .as_deref()
+            .is_some_and(|trace_id| trace_id.trim().is_empty())
+        {
+            return Err(aicc_error(
+                AiccErrorCode::InvalidRequest,
+                "execution trace ID must not be empty",
+                false,
+            ));
+        }
         let fingerprint = canonical_body_fingerprint(&request.canonical_body)?;
         let window = request
             .idempotency_window_ms
@@ -1414,10 +1425,22 @@ mod tests {
         next_id: Mutex<u64>,
         by_key: Mutex<BTreeMap<String, TaskBinding>>,
         specs: Mutex<Vec<TaskSpec>>,
+        trace_by_task: Mutex<BTreeMap<String, Option<String>>>,
         events: Mutex<Vec<(String, ExecutionState, Value)>>,
-        completed: Mutex<Vec<String>>,
-        failed: Mutex<Vec<String>>,
-        cancelled: Mutex<Vec<String>>,
+        completed: Mutex<Vec<(String, Option<String>)>>,
+        failed: Mutex<Vec<(String, Option<String>)>>,
+        cancelled: Mutex<Vec<(String, Option<String>)>>,
+    }
+
+    impl MemoryTasks {
+        fn trace_for_task(&self, task_id: &str) -> Option<String> {
+            self.trace_by_task
+                .lock()
+                .unwrap()
+                .get(task_id)
+                .cloned()
+                .flatten()
+        }
     }
 
     #[async_trait]
@@ -1438,6 +1461,10 @@ mod tests {
                 task_id: format!("task-{next}"),
                 event_ref: format!("task-{next}/events"),
             };
+            self.trace_by_task
+                .lock()
+                .unwrap()
+                .insert(binding.task_id.clone(), spec.trace_id);
             by_key.insert(key, binding.clone());
             Ok(binding)
         }
@@ -1460,17 +1487,26 @@ mod tests {
             task_id: &str,
             _output: &ExecutionOutput,
         ) -> Result<(), AiccError> {
-            self.completed.lock().unwrap().push(task_id.into());
+            self.completed
+                .lock()
+                .unwrap()
+                .push((task_id.into(), self.trace_for_task(task_id)));
             Ok(())
         }
 
         async fn fail_task(&self, task_id: &str, _error: &AiccError) -> Result<(), AiccError> {
-            self.failed.lock().unwrap().push(task_id.into());
+            self.failed
+                .lock()
+                .unwrap()
+                .push((task_id.into(), self.trace_for_task(task_id)));
             Ok(())
         }
 
         async fn cancel_task(&self, task_id: &str) -> Result<(), AiccError> {
-            self.cancelled.lock().unwrap().push(task_id.into());
+            self.cancelled
+                .lock()
+                .unwrap()
+                .push((task_id.into(), self.trace_for_task(task_id)));
             Ok(())
         }
     }
@@ -1939,6 +1975,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_trace_is_rejected_before_task_or_provider_creation() {
+        let providers = Arc::new(FakeProviders::default());
+        let (engine, _, tasks, _) = make_engine(providers.clone());
+        let mut request = request(call("primary"));
+        request.trace_id = Some(" ".into());
+        let error = engine.execute(request).await.unwrap_err();
+        assert_eq!(error.code, AiccErrorCode::InvalidRequest);
+        assert!(tasks.by_key.lock().unwrap().is_empty());
+        assert!(providers.starts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn stream_progress_is_written_and_final_uses_common_completion() {
         let providers = Arc::new(FakeProviders::default());
         let events = vec![
@@ -2069,6 +2117,7 @@ mod tests {
         assert_eq!(started.state, ExecutionState::Queued);
         assert_eq!(started.provider_task_ref.as_deref(), Some("remote-1"));
         let persisted = store.get_task(&started.task_id).await.unwrap().unwrap();
+        assert_eq!(persisted.trace_id.as_deref(), Some("trace-1"));
         assert_eq!(persisted.user_id, "user-1");
         assert_eq!(persisted.request_model, "smart-chat");
         assert_eq!(persisted.usage_event_id, usage_event_id(&started.task_id));
@@ -2080,13 +2129,14 @@ mod tests {
         assert!(!encoded.contains("plaintext-secret"));
         assert_eq!(providers.start_generations.lock().unwrap().as_slice(), [7]);
 
-        let restarted = ExecutionEngine::new(store, tasks, providers, usage.clone());
+        let restarted = ExecutionEngine::new(store, tasks.clone(), providers, usage.clone());
         let recovered = restarted.recover().await.unwrap();
         assert_eq!(recovered[0].state, ExecutionState::Succeeded);
         let writes = usage.writes.lock().unwrap();
         assert_eq!(writes.len(), 1);
         let completion = writes.values().next().unwrap();
         assert_eq!(completion.event_id, usage_event_id(&started.task_id));
+        assert_eq!(completion.trace_id.as_deref(), Some("trace-1"));
         assert_eq!(completion.user_id, "user-1");
         assert_eq!(completion.request_model, "smart-chat");
         assert_eq!(completion.provider_instance_name, "primary");
@@ -2099,6 +2149,14 @@ mod tests {
             })
         );
         assert!(completion.completed_at_ms > 0);
+        drop(writes);
+        assert!(tasks.events.lock().unwrap().iter().all(|(_, _, data)| {
+            data.pointer("/aicc/trace_id").and_then(Value::as_str) == Some("trace-1")
+        }));
+        assert_eq!(
+            tasks.completed.lock().unwrap().as_slice(),
+            [(started.task_id, Some("trace-1".into()))]
+        );
     }
 
     #[tokio::test]
@@ -2182,7 +2240,7 @@ mod tests {
         assert!(!error.retriable);
         assert_eq!(
             tasks.failed.lock().unwrap().as_slice(),
-            [started.task_id.clone()]
+            [(started.task_id.clone(), Some("trace-1".into()))]
         );
         assert_eq!(
             store
@@ -2222,7 +2280,7 @@ mod tests {
         assert!(!error.retriable);
         assert_eq!(
             tasks.failed.lock().unwrap().as_slice(),
-            [started.task_id.clone()]
+            [(started.task_id.clone(), Some("trace-1".into()))]
         );
         assert_eq!(
             store
@@ -2259,7 +2317,10 @@ mod tests {
         assert_eq!(denied.code, AiccErrorCode::PolicyDenied);
         assert!(engine.cancel("tenant-1", &receipt.task_id).await.unwrap());
         assert!(!engine.cancel("tenant-1", &receipt.task_id).await.unwrap());
-        assert_eq!(tasks.cancelled.lock().unwrap().len(), 1);
+        assert_eq!(
+            tasks.cancelled.lock().unwrap().as_slice(),
+            [(receipt.task_id.clone(), Some("trace-1".into()))]
+        );
 
         let late = ExecutionOutput::try_from(output("late")).unwrap();
         assert!(!store.try_complete(&receipt.task_id, late).await.unwrap());
@@ -2340,6 +2401,9 @@ mod tests {
         assert_eq!(receipt.state, ExecutionState::Failed);
         assert_eq!(receipt.error.unwrap().code, AiccErrorCode::ProviderError);
         assert!(usage.writes.lock().unwrap().is_empty());
-        assert_eq!(tasks.failed.lock().unwrap().as_slice(), ["task-1"]);
+        assert_eq!(
+            tasks.failed.lock().unwrap().as_slice(),
+            [("task-1".into(), Some("trace-1".into()))]
+        );
     }
 }
