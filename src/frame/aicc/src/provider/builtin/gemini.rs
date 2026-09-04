@@ -73,14 +73,11 @@ pub(crate) fn gemini_connection_contract() -> ProviderConnectionContract {
 }
 
 pub(crate) fn gemini_known_provider() -> KnownProvider {
-    embedded_json::<KnownProviderCatalog>(
-        GEMINI_KNOWN_PROVIDER,
-        "Gemini Known Provider catalog",
-    )
-    .providers
-    .into_iter()
-    .find(|provider| provider.provider_profile_id == GEMINI_PROVIDER_PROFILE_ID)
-    .expect("Gemini Known Provider catalog must contain the Gemini profile")
+    embedded_json::<KnownProviderCatalog>(GEMINI_KNOWN_PROVIDER, "Gemini Known Provider catalog")
+        .providers
+        .into_iter()
+        .find(|provider| provider.provider_profile_id == GEMINI_PROVIDER_PROFILE_ID)
+        .expect("Gemini Known Provider catalog must contain the Gemini profile")
 }
 
 pub(crate) fn gemini_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
