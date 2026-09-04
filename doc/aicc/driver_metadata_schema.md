@@ -21,7 +21,7 @@ Metadata has four independent sources. From highest to lowest priority they are:
 1. system-config key `services/aicc/driver_metadata`
 2. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/`
 3. the current cloud source delivered and replaced by NDN
-4. builtin metadata under `src/frame/aicc/driver_metadata/`
+4. builtin metadata under `$BUCKYOS_ROOT/bin/aicc/driver_metadata/`
 
 Selection is performed independently for each `(catalog_kind, catalog_id)`.
 When the same identity exists in more than one source, the resolver selects the
@@ -38,6 +38,28 @@ selection rule. A Known Provider file is atomic by `catalog_id`; independently
 overridable providers therefore need independently stable catalog IDs/files.
 
 ## Production source loading
+
+The builtin production root is defined as
+`$BUCKYOS_ROOT/bin/aicc/driver_metadata/` according to the BuckyOS service path
+and update lifecycle in [`../path_usage.md`](../path_usage.md): versioned,
+read-only service resources live with the service under `$BUCKYOS_ROOT/bin/`
+and are replaced with the service release, rather than being written into a
+mutable service data directory. Its development source is
+`src/frame/aicc/driver_metadata/`; the build/package step must install that
+tree through `src/rootfs/bin/aicc/driver_metadata/`.
+
+The builtin loader accepts the metadata root directory and enumerates direct
+`*.json` files from exactly these three directories:
+
+```text
+$BUCKYOS_ROOT/bin/aicc/driver_metadata/models/
+$BUCKYOS_ROOT/bin/aicc/driver_metadata/providers/
+$BUCKYOS_ROOT/bin/aicc/driver_metadata/known-providers/
+```
+
+All three directories are required. Each document is parsed and validated as
+`MetadataSource::Builtin`; malformed documents, duplicate catalog identities,
+nested directories, symlinks and non-JSON entries reject the complete load.
 
 The local source enumerates direct `*.json` files from exactly three directories:
 

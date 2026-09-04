@@ -17,6 +17,7 @@ use thiserror::Error;
 
 pub(crate) const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
 pub(crate) const SYSTEM_CONFIG_METADATA_KEY: &str = "services/aicc/driver_metadata";
+pub(crate) const BUILTIN_METADATA_RELATIVE_DIR: &str = "bin/aicc/driver_metadata";
 pub(crate) const LOCAL_METADATA_RELATIVE_DIR: &str = "etc/aicc/driver_metadata/local";
 const SYSTEM_CONFIG_METADATA_SCHEMA_VERSION: u32 = 1;
 
@@ -355,16 +356,13 @@ impl ProductionMetadataOverrideLoader {
     }
 
     async fn load_local(&self) -> Result<(String, Vec<MetadataFile>), SettingsError> {
-        let first = read_local_metadata(&self.local_root).await?;
-        let second = read_local_metadata(&self.local_root).await?;
+        let first = read_metadata_directory(&self.local_root, false).await?;
+        let second = read_metadata_directory(&self.local_root, false).await?;
         if first != second {
             return Err(SettingsError::MetadataSourceChanged(MetadataSource::Local));
         }
         let revision = metadata_content_revision(&first);
-        let files = first
-            .into_iter()
-            .map(|file| MetadataFile::parse(MetadataSource::Local, file.kind, file.contents))
-            .collect::<Result<Vec<_>, _>>()?;
+        let files = parse_disk_metadata(first, MetadataSource::Local)?;
         Ok((revision, files))
     }
 
@@ -435,13 +433,23 @@ impl SystemConfigMetadataDocument {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct LocalMetadataDocument {
+struct DiskMetadataDocument {
     relative_path: String,
     kind: CatalogKind,
     contents: Vec<u8>,
 }
 
-async fn read_local_metadata(root: &Path) -> Result<Vec<LocalMetadataDocument>, SettingsError> {
+pub(crate) async fn load_builtin_metadata(
+    root: impl AsRef<Path>,
+) -> Result<Vec<MetadataFile>, SettingsError> {
+    let documents = read_metadata_directory(root.as_ref(), true).await?;
+    parse_disk_metadata(documents, MetadataSource::Builtin)
+}
+
+async fn read_metadata_directory(
+    root: &Path,
+    require_all_directories: bool,
+) -> Result<Vec<DiskMetadataDocument>, SettingsError> {
     let mut documents = Vec::new();
     for (directory, kind) in [
         ("models", CatalogKind::ModelDriver),
@@ -451,7 +459,17 @@ async fn read_local_metadata(root: &Path) -> Result<Vec<LocalMetadataDocument>, 
         let path = root.join(directory);
         let mut entries = match tokio::fs::read_dir(&path).await {
             Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && !require_all_directories =>
+            {
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(SettingsError::InvalidMetadataPath {
+                    path,
+                    reason: "required metadata directory is missing".to_string(),
+                });
+            }
             Err(error) => return Err(SettingsError::MetadataIo(error)),
         };
         while let Some(entry) = entries
@@ -482,7 +500,7 @@ async fn read_local_metadata(root: &Path) -> Result<Vec<LocalMetadataDocument>, 
                     reason: "only direct .json files are allowed".to_string(),
                 });
             }
-            documents.push(LocalMetadataDocument {
+            documents.push(DiskMetadataDocument {
                 relative_path: format!("{directory}/{file_name}"),
                 kind,
                 contents: tokio::fs::read(entry.path())
@@ -495,7 +513,28 @@ async fn read_local_metadata(root: &Path) -> Result<Vec<LocalMetadataDocument>, 
     Ok(documents)
 }
 
-fn metadata_content_revision(documents: &[LocalMetadataDocument]) -> String {
+fn parse_disk_metadata(
+    documents: Vec<DiskMetadataDocument>,
+    source: MetadataSource,
+) -> Result<Vec<MetadataFile>, SettingsError> {
+    let mut identities = BTreeSet::new();
+    documents
+        .into_iter()
+        .map(|document| {
+            let file = MetadataFile::parse(source, document.kind, document.contents)?;
+            if !identities.insert(file.identity()) {
+                return Err(SettingsError::DuplicateMetadataFile {
+                    metadata_source: source,
+                    kind: file.kind,
+                    catalog_id: file.catalog_id,
+                });
+            }
+            Ok(file)
+        })
+        .collect()
+}
+
+fn metadata_content_revision(documents: &[DiskMetadataDocument]) -> String {
     let mut digest = Sha256::new();
     for document in documents {
         digest.update((document.relative_path.len() as u64).to_be_bytes());
@@ -846,6 +885,47 @@ mod tests {
         .unwrap();
         let (second_revision, _) = loader.load_local().await.unwrap();
         assert_ne!(first_revision, second_revision);
+    }
+
+    #[tokio::test]
+    async fn builtin_metadata_loader_reads_and_validates_packaged_layout() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("driver_metadata");
+        let files = load_builtin_metadata(&root).await.unwrap();
+        assert!(!files.is_empty());
+        assert!(files
+            .iter()
+            .all(|file| file.source == MetadataSource::Builtin));
+        assert_eq!(
+            files.iter().map(|file| file.kind).collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                CatalogKind::ModelDriver,
+                CatalogKind::ProviderRules,
+                CatalogKind::KnownProvider,
+            ])
+        );
+        let catalog = MetadataSources {
+            builtin: files,
+            ..Default::default()
+        }
+        .build_snapshot(1, &CatalogBuildOptions::default())
+        .unwrap();
+        assert!(catalog.model_driver("openai").is_some());
+        assert!(catalog.provider_rules("openai").is_some());
+        assert!(catalog.known_provider("openai").is_some());
+    }
+
+    #[tokio::test]
+    async fn builtin_metadata_loader_requires_all_catalog_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir(temp.path().join("models"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            load_builtin_metadata(temp.path()).await,
+            Err(SettingsError::InvalidMetadataPath { path, reason })
+                if path == temp.path().join("providers")
+                    && reason == "required metadata directory is missing"
+        ));
     }
 
     #[tokio::test]

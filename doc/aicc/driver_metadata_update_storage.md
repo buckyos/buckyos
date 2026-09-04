@@ -10,7 +10,7 @@
 
 | 数据项 | 所有者 | 生命周期 |
 | --- | --- | --- |
-| builtin metadata 文件 | BuckyOS 发布包 | Durable/read-only；随程序版本安装，作为最低优先级来源 |
+| builtin metadata 文件 | BuckyOS 发布包 | `$BUCKYOS_ROOT/bin/aicc/driver_metadata/{models,providers,known-providers}/`；依据 [`../path_usage.md`](../path_usage.md) 的服务程序资源生命周期定义为 Durable/read-only，随 AICC 版本安装和更新，作为最低优先级来源 |
 | 当前 cloud metadata 文件集合 | NDN | Durable；下载、校验、替换完成且新文件就绪后，才能推进云目标序列 |
 | local metadata 文件 | 本机管理员 | Durable；高于 cloud、低于 system-config |
 | system-config metadata 来源 | system-config | Durable；最高优先级，可由加载器物化为对应目录/文档 |
