@@ -1297,6 +1297,7 @@ fn placeholders(sql: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution::{NativeTaskResumeDescriptor, ResumeCredential, ResumeCredentialKind};
     use buckyos_api::{AiCost, ApiType, RouteTrace, UsageQueryBucket, UsageQueryFilters};
     use serde_json::json;
 
@@ -1383,6 +1384,8 @@ mod tests {
     }
 
     fn provider_binding() -> PinnedProviderTask {
+        let reference = "system-config://secrets/aicc/openai-primary/api-key".to_string();
+        let fingerprint = sha256_hex(reference.as_bytes())[..16].to_string();
         PinnedProviderTask {
             runtime_generation: 7,
             exact_model: "gpt-5:reasoning@openai-primary".into(),
@@ -1393,6 +1396,24 @@ mod tests {
             api_type: ApiType::Llm,
             remote_task_id: Some("remote-1".into()),
             cancel_supported: true,
+            resume: Some(NativeTaskResumeDescriptor {
+                base_url: "https://openai-primary.invalid/v1".into(),
+                credential: Some(ResumeCredential {
+                    reference,
+                    kind: ResumeCredentialKind::NamedHeader,
+                    header_name: Some("X-Api-Key".into()),
+                    fingerprint,
+                }),
+                resolved_parameters: BTreeMap::from([
+                    ("provider_model_id".into(), json!("gpt-5")),
+                    ("status_path".into(), json!("/tasks/{task_id}")),
+                    ("result_path".into(), json!("/tasks/{task_id}/result")),
+                    ("cancel_path".into(), json!("/tasks/{task_id}/cancel")),
+                ]),
+                request_timeout_ms: 30_000,
+                max_request_bytes: 1_048_576,
+                max_response_bytes: 8_388_608,
+            }),
         }
     }
 
@@ -1478,6 +1499,14 @@ mod tests {
         let restored = db.get_task(&running.task_id).await.unwrap().unwrap();
         assert_eq!(restored.state, ExecutionState::Running);
         assert_eq!(restored.binding, Some(provider_binding()));
+        let restored_binding = restored.binding.as_ref().unwrap();
+        assert_eq!(
+            restored_binding.resume.as_ref(),
+            provider_binding().resume.as_ref()
+        );
+        let encoded_binding = serde_json::to_string(restored_binding).unwrap();
+        assert!(encoded_binding.contains("system-config://secrets/aicc/openai-primary/api-key"));
+        assert!(!encoded_binding.contains("plaintext-secret"));
         assert_eq!(db.recoverable().await.unwrap(), vec![restored]);
         assert!(db.try_cancel(&running.task_id).await.unwrap());
         assert!(!db
