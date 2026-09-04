@@ -1,5 +1,6 @@
 import { AICenterAppPanel } from './ai-center/AICenterAppPanel'
 import { AppServiceAppPanel } from './app-service/AppServiceAppPanel'
+import { CanvasAppPanel } from './canvas/CanvasAppPanel'
 import { CodeAssistantAppPanel } from './codeassistant/CodeAssistantAppPanel'
 import { DemosAppPanel } from './demos/DemosAppPanel'
 import { DiagnosticsAppPanel } from './diagnostics/DiagnosticsAppPanel'
@@ -26,6 +27,7 @@ import { desktopCatalogIdForLogicalApp } from './backend-apps'
 const appLoaders = {
   'ai-center': AICenterAppPanel,
   'app-service': AppServiceAppPanel,
+  canvas: CanvasAppPanel,
   settings: SettingsAppPanel,
   studio: StudioAppPanel,
   market: MarketAppPanel,

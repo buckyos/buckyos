@@ -1,0 +1,299 @@
+/* ── AI Canvas styles (scoped under .aic-root) ── */
+.aic-root {
+  --aic-grid: color-mix(in srgb, var(--cp-text) 9%, transparent);
+  --aic-card: var(--cp-surface-opaque);
+  --aic-ai: oklch(0.6 0.14 300);
+  --aic-ai-soft: color-mix(in srgb, var(--aic-ai) 12%, var(--cp-surface-opaque));
+  font-size: 13px;
+  color: var(--cp-text);
+}
+:root[data-theme='dark'] .aic-root {
+  --aic-grid: color-mix(in srgb, var(--cp-text) 12%, transparent);
+}
+.aic-canvas-bg {
+  background-color: var(--cp-bg);
+  background-image: radial-gradient(var(--aic-grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+.aic-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.aic-block {
+  position: absolute;
+  box-sizing: border-box;
+}
+.aic-card {
+  background: var(--aic-card);
+  border: 1px solid var(--cp-border-opaque);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--cp-shadow) 8%, transparent);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: 100%;
+  width: 100%;
+}
+.aic-card.is-selected {
+  outline: 2px solid var(--cp-accent);
+}
+.aic-card.is-generated {
+  border-color: color-mix(in srgb, var(--aic-ai) 45%, var(--cp-border-opaque));
+}
+.aic-highlight {
+  animation: aic-pulse 1.4s ease-in-out infinite;
+  border-radius: 12px;
+}
+@keyframes aic-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--cp-accent) 70%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 12px transparent;
+  }
+}
+.aic-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--cp-border);
+  background: color-mix(in srgb, var(--cp-surface-2-opaque) 70%, var(--aic-card));
+  cursor: grab;
+  user-select: none;
+  flex: none;
+}
+.aic-head:active {
+  cursor: grabbing;
+}
+.aic-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.aic-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: var(--cp-surface-opaque);
+  border: 1.5px solid var(--cp-accent);
+  border-radius: 2px;
+  z-index: 5;
+}
+.aic-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--cp-text) 25%, transparent) transparent;
+}
+.aic-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--cp-accent) 18%, transparent);
+  overflow: hidden;
+}
+.aic-progress > i {
+  display: block;
+  height: 100%;
+  background: var(--cp-accent);
+  transition: width 0.3s ease;
+}
+.aic-progress.is-indeterminate > i {
+  width: 40%;
+  animation: aic-slide 1.2s ease-in-out infinite;
+}
+@keyframes aic-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+.aic-cell {
+  box-sizing: border-box;
+  border-right: 1px solid var(--cp-border);
+  border-bottom: 1px solid var(--cp-border);
+  padding: 0 6px;
+  height: 28px;
+  line-height: 27px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+  cursor: cell;
+}
+.aic-cell.is-num {
+  text-align: right;
+}
+.aic-cell.is-sel {
+  background: color-mix(in srgb, var(--cp-accent) 14%, transparent);
+}
+.aic-cell.is-active {
+  outline: 2px solid var(--cp-accent);
+  outline-offset: -2px;
+}
+.aic-cell.is-ai {
+  background: var(--aic-ai-soft);
+}
+.aic-cell.is-header {
+  font-weight: 600;
+  background: var(--cp-surface-2-opaque);
+  cursor: default;
+  position: relative;
+}
+.aic-cell.is-rownum {
+  color: var(--cp-muted);
+  background: var(--cp-surface-2-opaque);
+  text-align: center;
+  cursor: default;
+}
+.aic-col-resize {
+  position: absolute;
+  right: -3px;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+.aic-input {
+  width: 100%;
+  border: 1px solid var(--cp-border-opaque);
+  border-radius: 6px;
+  background: var(--cp-surface-opaque);
+  color: var(--cp-text);
+  padding: 5px 8px;
+  font-size: 12px;
+  outline: none;
+}
+.aic-input:focus {
+  border-color: var(--cp-accent);
+  box-shadow: 0 0 0 3px var(--cp-focus-ring);
+}
+.aic-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease;
+}
+.aic-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.aic-btn-primary {
+  background: var(--cp-accent);
+  color: white;
+}
+.aic-btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--cp-accent) 88%, black);
+}
+.aic-btn-subtle {
+  background: color-mix(in srgb, var(--cp-text) 6%, transparent);
+  color: var(--cp-text);
+}
+.aic-btn-subtle:not(:disabled):hover {
+  background: color-mix(in srgb, var(--cp-text) 12%, transparent);
+}
+.aic-btn-ghost {
+  background: transparent;
+  color: var(--cp-text);
+}
+.aic-btn-ghost:not(:disabled):hover {
+  background: color-mix(in srgb, var(--cp-text) 8%, transparent);
+}
+.aic-btn-danger {
+  background: color-mix(in srgb, var(--cp-danger) 12%, transparent);
+  color: var(--cp-danger);
+}
+.aic-btn-danger:not(:disabled):hover {
+  background: color-mix(in srgb, var(--cp-danger) 22%, transparent);
+}
+.aic-btn.is-active {
+  background: color-mix(in srgb, var(--cp-accent) 16%, transparent);
+  color: var(--cp-accent);
+}
+.aic-md h1 { font-size: 18px; font-weight: 700; margin: 2px 0 6px; }
+.aic-md h2 { font-size: 15px; font-weight: 700; margin: 2px 0 6px; }
+.aic-md h3 { font-size: 13px; font-weight: 700; margin: 2px 0 4px; }
+.aic-md p { margin: 0 0 6px; line-height: 1.55; }
+.aic-md ul { margin: 0 0 6px; padding-left: 18px; list-style: disc; }
+.aic-md li { line-height: 1.55; }
+.aic-md blockquote { margin: 0 0 6px; padding-left: 10px; border-left: 3px solid var(--cp-border-opaque); color: var(--cp-muted); }
+.aic-md code { font-family: ui-monospace, monospace; background: color-mix(in srgb, var(--cp-text) 8%, transparent); padding: 0 4px; border-radius: 4px; }
+.aic-md a { color: var(--cp-accent); text-decoration: underline; }
+.aic-frame-title {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translateY(-100%);
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px 6px 0 0;
+  cursor: grab;
+  pointer-events: auto;
+  user-select: none;
+}
+.aic-menu {
+  position: absolute;
+  z-index: 60;
+  min-width: 160px;
+  background: var(--cp-surface-opaque);
+  border: 1px solid var(--cp-border-opaque);
+  border-radius: 8px;
+  box-shadow: var(--cp-panel-shadow);
+  padding: 4px;
+}
+.aic-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--cp-text);
+}
+.aic-menu button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cp-text) 8%, transparent);
+}
+.aic-menu button:disabled {
+  opacity: 0.4;
+}
+.aic-menu button.is-danger {
+  color: var(--cp-danger);
+}
+.aic-fade-in {
+  animation: aic-fade 0.18s ease-out;
+}
+@keyframes aic-fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .aic-highlight,
+  .aic-progress.is-indeterminate > i {
+    animation: none;
+  }
+}
