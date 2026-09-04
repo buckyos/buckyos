@@ -4,9 +4,9 @@ use crate::catalog::CatalogSnapshot;
 use crate::model::{ModelRegistry, ProviderInventory as ModelProviderInventory};
 use crate::protocol::ResolvedCredential;
 use crate::provider::{
-    ExecutableProviderInstance, ProviderInstanceConfig, ProviderInventorySnapshot, ProviderProfile,
-    ProviderRefreshEvent, ProviderRefreshOutcome, ProviderRefreshTrigger, ProviderRegistry,
-    ProviderResult, ProviderRuntimeManager,
+    ExecutableProviderInstance, ProviderError, ProviderInstanceConfig, ProviderInventorySnapshot,
+    ProviderProfile, ProviderQuotaObservation, ProviderRefreshEvent, ProviderRefreshOutcome,
+    ProviderRefreshTrigger, ProviderRegistry, ProviderResult, ProviderRuntimeManager,
 };
 use crate::settings::{AiccSettings, SettingsDocument, SettingsError};
 use async_trait::async_trait;
@@ -54,6 +54,10 @@ impl RuntimeProvider {
     pub(crate) async fn resolve_credential(&self) -> ProviderResult<ResolvedCredential> {
         self.executable.resolve_credential().await
     }
+
+    pub(crate) async fn quota_observation(&self) -> ProviderQuotaObservation {
+        self.executable.quota_observation().await
+    }
 }
 
 impl std::fmt::Debug for RuntimeProvider {
@@ -98,6 +102,16 @@ impl RuntimeProviderRegistry {
 
     pub(crate) fn list(&self) -> Vec<&RuntimeProvider> {
         self.instances.values().collect()
+    }
+
+    pub(crate) async fn quota_observation(
+        &self,
+        provider_instance_name: &str,
+    ) -> ProviderResult<ProviderQuotaObservation> {
+        let provider = self
+            .get(provider_instance_name)
+            .ok_or_else(|| ProviderError::UnknownInstance(provider_instance_name.to_string()))?;
+        Ok(provider.quota_observation().await)
     }
 }
 
@@ -732,6 +746,15 @@ mod tests {
     use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn published_provider_registry_rejects_unknown_quota_target() {
+        let registry = RuntimeProviderRegistry::default();
+        assert!(matches!(
+            registry.quota_observation("missing").await,
+            Err(ProviderError::UnknownInstance(name)) if name == "missing"
+        ));
+    }
 
     fn settings(revision: u64, names: &[&str]) -> SettingsDocument {
         SettingsDocument::new(
