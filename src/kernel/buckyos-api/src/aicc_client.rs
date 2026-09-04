@@ -211,7 +211,10 @@ mod canonical_contract_tests {
                 id: Some("item-1".to_string()),
             }],
         );
+        let mut request = request;
+        request.trace_id = Some("trace-embedding-1".to_string());
         let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["trace_id"], "trace-embedding-1");
         assert_eq!(EmbeddingTextRequest::from_json(value).unwrap(), request);
         assert!(EmbeddingTextRequest::from_json(json!({
             "exact_model": "m@p",
@@ -250,6 +253,53 @@ mod canonical_contract_tests {
             "logical_model": "gpt@provider"
         }))
         .is_err());
+    }
+
+    #[test]
+    fn trace_id_round_trips_on_route_inference_and_helpers() {
+        let mut route = RouteResolveRequest::new(ApiType::Llm, "llm.chat");
+        route.trace_id = Some("trace-route".to_string());
+        let route = RouteResolveRequest::from_json(serde_json::to_value(route).unwrap()).unwrap();
+        assert_eq!(route.trace_id.as_deref(), Some("trace-route"));
+
+        let mut chat = LlmChatInvokeRequest::new("gpt@provider", Vec::new());
+        chat.trace_id = Some("trace-chat".to_string());
+        let call = AiccCall::from_method_and_params(
+            ai_methods::CHAT_COMPLETIONS_CREATE,
+            serde_json::to_value(chat).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(call.trace_id(), Some("trace-chat"));
+
+        let mut image = TextToImageInvokeRequest::new("image@provider", "fox");
+        image.trace_id = Some("trace-image".to_string());
+        assert_eq!(
+            TextToImageInvokeRequest::from_json(serde_json::to_value(image).unwrap())
+                .unwrap()
+                .trace_id
+                .as_deref(),
+            Some("trace-image")
+        );
+
+        let mut chat_helper = LlmChatHelperRequest::new("llm.chat", Vec::new());
+        chat_helper.trace_id = Some("trace-chat-helper".to_string());
+        assert_eq!(
+            LlmChatHelperRequest::from_json(serde_json::to_value(chat_helper).unwrap())
+                .unwrap()
+                .trace_id
+                .as_deref(),
+            Some("trace-chat-helper")
+        );
+
+        let mut image_helper = TextToImageHelperRequest::new("image.generate", "fox");
+        image_helper.trace_id = Some("trace-image-helper".to_string());
+        assert_eq!(
+            TextToImageHelperRequest::from_json(serde_json::to_value(image_helper).unwrap())
+                .unwrap()
+                .trace_id
+                .as_deref(),
+            Some("trace-image-helper")
+        );
     }
 
     #[test]
@@ -300,7 +350,9 @@ mod canonical_contract_tests {
             let mut response = EmbeddingTextResponse::new("task-1", AiMethodStatus::Succeeded);
             response.data.push(EmbeddingValue {
                 index: 0,
-                id: Some(request.items.len().to_string()),
+                id: request
+                    .trace_id
+                    .or_else(|| Some(request.items.len().to_string())),
                 embedding: vec![0.25, 0.75],
                 embedding_space_id: "test:2:cosine:v1".to_string(),
             });
@@ -317,9 +369,12 @@ mod canonical_contract_tests {
                 id: None,
             }],
         );
+        let mut request = request;
+        request.trace_id = Some("trace-body".to_string());
         let client = AiccClient::new_in_process(Box::new(TypedHandler));
         let response = client.embedding_text(request.clone()).await.unwrap();
         assert_eq!(response.data[0].embedding, vec![0.25, 0.75]);
+        assert_eq!(response.data[0].id.as_deref(), Some("trace-body"));
 
         let server = AiccServerHandler::new(TypedHandler);
         let response = server
@@ -2460,6 +2515,8 @@ pub enum AiMethodStatus {
 #[serde(deny_unknown_fields)]
 pub struct RouteResolveRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     pub api_type: ApiType,
     pub logical_model: String,
@@ -2480,6 +2537,7 @@ pub struct RouteResolveRequest {
 impl RouteResolveRequest {
     pub fn new(api_type: ApiType, logical_model: impl Into<String>) -> Self {
         Self {
+            trace_id: None,
             request_id: None,
             api_type,
             logical_model: logical_model.into(),
@@ -2537,6 +2595,8 @@ pub struct RouteResolveResponse {
 #[serde(deny_unknown_fields)]
 pub struct LlmChatInvokeRequest {
     pub exact_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     #[serde(default)]
     pub messages: Vec<AiMessage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2565,6 +2625,8 @@ pub struct LlmChatInvokeRequest {
 #[serde(deny_unknown_fields)]
 pub struct LlmChatHelperRequest {
     pub logical_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     #[serde(default)]
     pub requirements: HelperModelRequirement,
     #[serde(default, skip_serializing_if = "is_default_model_disable")]
@@ -2634,6 +2696,7 @@ impl LlmChatHelperRequest {
     pub fn new(logical_model: impl Into<String>, messages: Vec<AiMessage>) -> Self {
         Self {
             logical_model: logical_model.into(),
+            trace_id: None,
             requirements: HelperModelRequirement::default(),
             disable: ModelDisable::default(),
             policy: None,
@@ -2666,6 +2729,7 @@ impl LlmChatInvokeRequest {
     pub fn new(exact_model: impl Into<String>, messages: Vec<AiMessage>) -> Self {
         Self {
             exact_model: exact_model.into(),
+            trace_id: None,
             messages,
             tools: Vec::new(),
             response_format: None,
@@ -2717,6 +2781,8 @@ pub struct LlmChatInvokeResponse {
 #[serde(deny_unknown_fields)]
 pub struct TextToImageInvokeRequest {
     pub exact_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub negative_prompt: Option<String>,
@@ -2744,6 +2810,7 @@ impl TextToImageInvokeRequest {
     pub fn new(exact_model: impl Into<String>, prompt: impl Into<String>) -> Self {
         Self {
             exact_model: exact_model.into(),
+            trace_id: None,
             prompt: prompt.into(),
             negative_prompt: None,
             n: None,
@@ -2774,6 +2841,8 @@ impl TextToImageInvokeRequest {
 #[serde(deny_unknown_fields)]
 pub struct TextToImageHelperRequest {
     pub logical_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     #[serde(default)]
     pub requirements: HelperModelRequirement,
     #[serde(default, skip_serializing_if = "is_default_model_disable")]
@@ -2809,6 +2878,7 @@ impl TextToImageHelperRequest {
     pub fn new(logical_model: impl Into<String>, prompt: impl Into<String>) -> Self {
         Self {
             logical_model: logical_model.into(),
+            trace_id: None,
             requirements: HelperModelRequirement::default(),
             disable: ModelDisable::default(),
             policy: None,
@@ -2890,6 +2960,8 @@ macro_rules! typed_request {
         #[serde(deny_unknown_fields)]
         pub struct $name {
             pub exact_model: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub trace_id: Option<String>,
             $(pub $required: $required_ty,)*
             $(
                 #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2905,6 +2977,7 @@ macro_rules! typed_request {
             pub fn new(exact_model: impl Into<String>, $($required: $required_ty),*) -> Self {
                 Self {
                     exact_model: exact_model.into(),
+                    trace_id: None,
                     $($required,)*
                     $($optional: None,)*
                     idempotency_key: None,
@@ -4194,6 +4267,37 @@ impl AiccCall {
             Self::VideoExtend(_) => ai_methods::VIDEO_EXTEND,
             Self::VideoUpscale(_) => ai_methods::VIDEO_UPSCALE,
             Self::ComputerUse(_) => ai_methods::AGENT_COMPUTER_USE,
+        }
+    }
+
+    pub fn trace_id(&self) -> Option<&str> {
+        match self {
+            Self::RouteResolve(request) => request.trace_id.as_deref(),
+            Self::ChatCompletionsCreate(request) => request.trace_id.as_deref(),
+            Self::ImagesGenerate(request) => request.trace_id.as_deref(),
+            Self::HelperLlmChat(request) => request.trace_id.as_deref(),
+            Self::HelperTextToImage(request) => request.trace_id.as_deref(),
+            Self::EmbeddingText(request) => request.trace_id.as_deref(),
+            Self::EmbeddingMultimodal(request) => request.trace_id.as_deref(),
+            Self::Rerank(request) => request.trace_id.as_deref(),
+            Self::ImageToImage(request) => request.trace_id.as_deref(),
+            Self::ImageInpaint(request) => request.trace_id.as_deref(),
+            Self::ImageUpscale(request) => request.trace_id.as_deref(),
+            Self::ImageBackgroundRemove(request) => request.trace_id.as_deref(),
+            Self::VisionOcr(request) => request.trace_id.as_deref(),
+            Self::VisionCaption(request) => request.trace_id.as_deref(),
+            Self::VisionDetect(request) => request.trace_id.as_deref(),
+            Self::VisionSegment(request) => request.trace_id.as_deref(),
+            Self::AudioTextToSpeech(request) => request.trace_id.as_deref(),
+            Self::AudioSpeechRecognition(request) => request.trace_id.as_deref(),
+            Self::AudioMusic(request) => request.trace_id.as_deref(),
+            Self::AudioEnhance(request) => request.trace_id.as_deref(),
+            Self::VideoTextToVideo(request) => request.trace_id.as_deref(),
+            Self::VideoImageToVideo(request) => request.trace_id.as_deref(),
+            Self::VideoToVideo(request) => request.trace_id.as_deref(),
+            Self::VideoExtend(request) => request.trace_id.as_deref(),
+            Self::VideoUpscale(request) => request.trace_id.as_deref(),
+            Self::ComputerUse(request) => request.trace_id.as_deref(),
         }
     }
 

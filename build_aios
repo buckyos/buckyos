@@ -29,8 +29,8 @@ INSTALL_WORKSPACE_TOOLS=1
 ENTRYPOINT_SOURCE="$ROOT_DIR/publish/aios/entrypoint.sh"
 BUCKYOS_AGENT_TOOLS_SOURCE="$SRC_DIR/tools/buckyos-agent"
 AICC_TOOL_LAUNCHER_SOURCE="$ROOT_DIR/publish/aios/aicc-tool"
-BUCKYOS_WEBSDK_REPO="https://github.com/buckyos/buckyos-websdk.git"
-BUCKYOS_WEBSDK_REF="${BUCKYOS_WEBSDK_REF:-main}"
+BUCKYOS_WEBSDK_REPO="https://github.com/streetycat/buckyos-websdk.git"
+BUCKYOS_WEBSDK_REF="${BUCKYOS_WEBSDK_REF:-refactor/aicc}"
 REUSE_CARGO_TARGET=0
 CARGO_TARGET_DIR_OVERRIDE="${AIOS_CARGO_TARGET_DIR:-}"
 AIOS_SOURCE_REVISION=""
@@ -65,7 +65,7 @@ Options:
 
 Env overrides:
   BUCKYOS_WEBSDK_REF
-                  buckyos-websdk Git ref packaged with buckyos-agent tools (default: main)
+                  buckyos-websdk Git ref packaged with buckyos-agent tools (default: refactor/aicc)
 EOF
 }
 

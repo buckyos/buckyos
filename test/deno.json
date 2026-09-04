@@ -1,5 +1,5 @@
 {
   "imports": {
-    "buckyos": "https://raw.githubusercontent.com/buckyos/buckyos-websdk/main/dist/node.mjs"
+    "buckyos": "https://raw.githubusercontent.com/streetycat/buckyos-websdk/refs/heads/refactor/aicc/dist/node.mjs"
   }
 }

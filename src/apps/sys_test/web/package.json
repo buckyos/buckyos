@@ -16,6 +16,6 @@
     "vite": "^5.4.8"
   },
   "dependencies": {
-    "buckyos": "latest"
+    "buckyos": "git+https://github.com/streetycat/buckyos-websdk#refactor/aicc"
   }
 }

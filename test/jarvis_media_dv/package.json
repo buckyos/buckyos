@@ -6,7 +6,7 @@
     "test": "deno task test"
   },
   "dependencies": {
-    "buckyos": "git+https://github.com/buckyos/buckyos-websdk#main",
+    "buckyos": "git+https://github.com/streetycat/buckyos-websdk#refactor/aicc",
     "deno": "^2.9.5",
     "telegram": "2.26.22"
   }
