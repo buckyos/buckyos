@@ -2007,8 +2007,72 @@ mod tests {
         let (engine, _, tasks, usage) = make_engine(providers);
         let receipt = engine.execute(request(call("primary"))).await.unwrap();
         assert_eq!(receipt.state, ExecutionState::Succeeded);
-        assert!(tasks.events.lock().unwrap().len() >= 4);
+        assert_eq!(receipt.output.as_ref().unwrap().value["text"], "ab");
+        let event_kinds = tasks
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(_, _, data)| data.pointer("/aicc/progress/kind")?.as_str())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert_eq!(event_kinds, ["submitted", "running", "delta", "progress"]);
         assert_eq!(usage.writes.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stream_provider_error_fails_without_usage_completion() {
+        let providers = Arc::new(FakeProviders::default());
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::Stream(
+                ProtocolStream {
+                    events: Box::pin(stream::iter(vec![
+                        Ok(ProtocolEvent::Delta(json!({"partial_text": "a"}))),
+                        Err(ProtocolError::new(
+                            ProtocolErrorKind::Authentication,
+                            "stream Provider rejected the request",
+                        )),
+                    ])),
+                },
+            )));
+        let (engine, _, tasks, usage) = make_engine(providers);
+        let receipt = engine.execute(request(call("primary"))).await.unwrap();
+        assert_eq!(receipt.state, ExecutionState::Failed);
+        let error = receipt.error.unwrap();
+        assert_eq!(error.code, AiccErrorCode::ProviderError);
+        assert_eq!(error.message, "stream Provider rejected the request");
+        assert!(usage.writes.lock().unwrap().is_empty());
+        assert_eq!(tasks.failed.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn interrupted_stream_without_final_fails_without_usage_completion() {
+        let providers = Arc::new(FakeProviders::default());
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::Stream(
+                ProtocolStream {
+                    events: Box::pin(stream::iter(vec![Ok(ProtocolEvent::Delta(json!({
+                        "partial_text": "incomplete"
+                    })))])),
+                },
+            )));
+        let (engine, _, tasks, usage) = make_engine(providers);
+        let receipt = engine.execute(request(call("primary"))).await.unwrap();
+        assert_eq!(receipt.state, ExecutionState::Failed);
+        let error = receipt.error.unwrap();
+        assert_eq!(error.code, AiccErrorCode::ProviderError);
+        assert_eq!(
+            error.message,
+            "Provider stream ended without a final result"
+        );
+        assert!(usage.writes.lock().unwrap().is_empty());
+        assert_eq!(tasks.failed.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
