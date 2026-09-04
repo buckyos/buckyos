@@ -1,6 +1,6 @@
-# AICC Beta 2.2 工程骨架
+# AICC Beta 2.2
 
-本 crate 当前只包含 Beta 2.2 目标模块的空骨架。旧 AICC 实现不属于本目录的依赖或参考实现。
+本 crate 包含 AICC Beta 2.2 的模块化实现。旧 AICC 实现不属于本目录的依赖或参考实现。
 
 ## 模块边界
 
@@ -27,7 +27,9 @@ cargo test -p aicc
 cargo check -p aicc --all-targets
 ```
 
-当前 smoke gate 只验证空模块树和二进制目标可以编译，不连接 BuckyOS runtime、system-config 或真实 Provider。各工作包引入真实 contract 和实现时同步增加本模块单元测试。
+`main.rs` 创建 Tokio runtime，并通过 crate 导出的 `run_service()` 启动 `/kapi/aicc`。服务使用 `KernelService` 身份登录 BuckyOS runtime，在 4040 端口注册 kRPC handler，并在退出时停止 metadata、Provider 和 runtime 后台任务。
+
+模块单元测试不连接真实 Provider。rootfs、settings、RBAC 和调用方联动由 WP-17 完成后再进入 T1/T1.5 集成验收。
 
 旧实现残留扫描：
 

@@ -14,3 +14,7 @@ pub(crate) mod runtime;
 pub(crate) mod service;
 pub(crate) mod settings;
 pub(crate) mod storage;
+
+pub async fn run_service() -> anyhow::Result<()> {
+    service::run_service().await
+}

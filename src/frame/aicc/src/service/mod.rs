@@ -185,14 +185,14 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
     let mut api_runtime = init_buckyos_api_runtime(
         buckyos_api::AICC_SERVICE_SERVICE_NAME,
         None,
-        BuckyOSRuntimeType::FrameService,
+        BuckyOSRuntimeType::KernelService,
     )
     .await
     .map_err(anyhow::Error::msg)?;
+    api_runtime.login().await.map_err(anyhow::Error::msg)?;
     api_runtime
         .set_main_service_port(buckyos_api::AICC_SERVICE_SERVICE_PORT)
         .await;
-    api_runtime.login().await.map_err(anyhow::Error::msg)?;
     let data_dir = api_runtime.get_data_folder().map_err(anyhow::Error::msg)?;
     let buckyos_root_dir = api_runtime.buckyos_root_dir.clone();
     let system_config_url = api_runtime.get_system_config_url();

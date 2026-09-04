@@ -571,21 +571,23 @@ Owner：Service Integration 小组
 
 依赖：WP-07、WP-09 至 WP-15
 
-- [ ] 重写进程启动、依赖装配、kRPC dispatch 和优雅退出；
+- [x] 重写进程启动、依赖装配、kRPC dispatch 和优雅退出；
 - [x] 只装配 WP-15 提供的生产 `RuntimeInputs`/`RuntimeSnapshot`，不传入或读取四层 metadata 来源；
-- [ ] 实现 `models.list`、`provider.catalog`、`protocol_adapter.list`；
-- [ ] 实现 `provider.validate/add/update/delete/refresh_models/list/health`；
-- [ ] 实现 `usage.query`、`trace.query` 和 `quota.query`；
-- [ ] 实现 `driver_metadata_update.get/set`；
-- [ ] 管理面只实现 `service.reload_settings`，同步更新 `buckyos-api` 和全部调用方，删除旧 `reload_settings` 及错误拼写；
-- [ ] 所有写操作使用当前 RPC token 调 system-config；
-- [ ] 所有 settings 写使用 `exec_tx` + revision CAS；
-- [ ] `provider.validate` 不落盘；
-- [ ] 写入后构建候选 snapshot，再原子发布；
-- [ ] 管理 API RBAC 和跨租户测试；
-- [ ] 所有响应和日志脱敏。
+- [x] 实现 `models.list`、`provider.catalog`、`protocol_adapter.list`；
+- [x] 实现 `provider.validate/add/update/delete/refresh_models/list/health`；
+- [x] 实现 `usage.query`、`trace.query` 和 `quota.query`；
+- [x] 实现 `driver_metadata_update.get/set`；
+- [x] 管理面只实现 `service.reload_settings`，同步更新 `buckyos-api` 和全部调用方，删除旧 `reload_settings` 及错误拼写；
+- [x] 所有写操作使用当前 RPC token 调 system-config；
+- [x] 所有 settings 写使用 `exec_tx` + revision CAS；
+- [x] `provider.validate` 不落盘；
+- [x] 写入后构建候选 snapshot，再原子发布；
+- [x] 管理 API RBAC 和跨租户测试；
+- [x] 所有响应和日志脱敏。
 
 完成标准：前端不直接读写 system-config，管理操作不会产生 settings 已写但 runtime 半生效的状态。
+
+实现记录：Service Integration 小组在 `src/frame/aicc/src/service/` 完成生产依赖装配、kRPC handler、settings CAS、Provider 管理、usage/trace/quota、metadata 更新和退出收敛；集成人从 `lib.rs` 导出唯一 `run_service()`，由 `main.rs` 创建 Tokio runtime 并调用该入口，同时将 node-daemon 原生服务身份固定为 `KernelService`，按 login 后注册 4040 端口的顺序启动 `/kapi/aicc`。现有 build/rootfs 映射、scheduler service spec/RDB 注册和初始化链已复核，无需重复修改。Service 定向 22 项测试及 AICC all-target check 通过；全量 AICC 单测当前受并行 Provider metadata 工作树的 8 项失败影响，rootfs 新 settings/RBAC 和实际启动验收属于 WP-17D/T1。
 
 ### WP-17：调用方联动
 
@@ -1078,7 +1080,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | WP-13 | TBD | Pending | WP-01 | Resource |
 | WP-14 | Storage/Observability 小组 | Done | WP-01 | Storage/Observability |
 | WP-15 | Runtime/Consistency 小组 | Done | WP-03/07/14 | RuntimeSnapshot |
-| WP-16 | TBD | Pending | WP-07/09-15 | Service/Admin |
+| WP-16 | Service Integration 小组 | Done | WP-07/09-15 | Service/Admin |
 | WP-17 | TBD | Pending | WP-01/16 | Callers |
 | WP-18 | TBD | Pending | Gate 0 | Acceptance |
 | T1/T1.5 Gate | TBD | Pending | WP-01 至 WP-18 Done、编码冻结 | 零真实调用的集成验收 |
