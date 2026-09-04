@@ -1178,13 +1178,22 @@ fn combine_quota(
             if !usage.finance_complete {
                 return Err(QuotaSourceError);
             }
-            if let Some(currency) = usage.finance_currency.as_deref() {
-                if currency != limit.currency {
+            let consumed = match usage.finance_totals.as_slice() {
+                [] => 0.0,
+                [subtotal]
+                    if subtotal.amount.is_finite()
+                        && subtotal.amount >= 0.0
+                        && !subtotal.currency.trim().is_empty()
+                        && subtotal.currency == limit.currency =>
+                {
+                    subtotal.amount
+                }
+                _ => {
                     return Err(QuotaSourceError);
                 }
-            }
+            };
             Some(buckyos_api::Money::new(
-                (limit.amount - usage.finance_amount).max(0.0),
+                (limit.amount - consumed).max(0.0),
                 limit.currency,
             ))
         }
@@ -3642,8 +3651,7 @@ mod tests {
     fn quota_combines_budget_usage_and_provider_minimum() {
         let usage = buckyos_api::UsageAggregate {
             consumed_request_units: 91,
-            finance_amount: 9.2,
-            finance_currency: Some("USD".to_string()),
+            finance_totals: vec![buckyos_api::Money::new(9.2, "USD")],
             ..Default::default()
         };
         let provider = ProviderQuotaObservation {
@@ -3673,6 +3681,32 @@ mod tests {
             ..Default::default()
         };
         assert!(combine_quota(quota_record(), &incomplete, None).is_err());
+
+        let mixed = buckyos_api::UsageAggregate {
+            finance_totals: vec![
+                buckyos_api::Money::new(1.0, "EUR"),
+                buckyos_api::Money::new(2.0, "USD"),
+            ],
+            ..Default::default()
+        };
+        assert!(combine_quota(quota_record(), &mixed, None).is_err());
+
+        let mismatched = buckyos_api::UsageAggregate {
+            finance_totals: vec![buckyos_api::Money::new(1.0, "EUR")],
+            ..Default::default()
+        };
+        assert!(combine_quota(quota_record(), &mismatched, None).is_err());
+
+        let empty = combine_quota(
+            quota_record(),
+            &buckyos_api::UsageAggregate::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            empty.remaining_cost,
+            Some(buckyos_api::Money::new(10.0, "USD"))
+        );
 
         let failed = ProviderQuotaObservation {
             state: ProviderQuotaObservationState::QueryFailed,
