@@ -11,6 +11,7 @@ use reqwest::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{Cursor, Read};
 use std::net::IpAddr;
@@ -168,6 +169,59 @@ pub(crate) enum ResourceKind {
     NamedObject,
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ResourceKey(String);
+
+impl ResourceKey {
+    pub fn from_ref(resource: &ResourceRef) -> Self {
+        match resource {
+            ResourceRef::Url { url, mime_hint } => {
+                Self::hashed("url", [Some(url.as_str()), mime_hint.as_deref()])
+            }
+            ResourceRef::Base64 { mime, data_base64 } => {
+                Self::hashed("base64", [Some(mime.as_str()), Some(data_base64.as_str())])
+            }
+            ResourceRef::NamedObject { obj_id } => {
+                let value = obj_id.to_string();
+                Self::hashed("named_object", [Some(value.as_str())])
+            }
+        }
+    }
+
+    fn hashed<'a>(kind: &str, fields: impl IntoIterator<Item = Option<&'a str>>) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"aicc-resource-key-v1\0");
+        update_key_part(&mut hasher, Some(kind));
+        for field in fields {
+            update_key_part(&mut hasher, field);
+        }
+        Self(format!(
+            "aicc-resource-v1:{kind}:{}",
+            hex_digest(hasher.finalize())
+        ))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Debug for ResourceKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_tuple("ResourceKey").field(&self.0).finish()
+    }
+}
+
+impl fmt::Display for ResourceKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct ResourceMetadata {
     pub kind: ResourceKind,
@@ -240,11 +294,16 @@ impl fmt::Debug for InspectedResourceBatch {
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct MaterializedResource {
+    key: ResourceKey,
     metadata: ResourceMetadata,
     bytes: Vec<u8>,
 }
 
 impl MaterializedResource {
+    pub fn key(&self) -> &ResourceKey {
+        &self.key
+    }
+
     pub fn metadata(&self) -> &ResourceMetadata {
         &self.metadata
     }
@@ -255,6 +314,22 @@ impl MaterializedResource {
 
     pub fn into_bytes(self) -> Vec<u8> {
         self.bytes
+    }
+
+    pub fn into_codec_parts(self) -> Result<CodecResourceParts, ResourceError> {
+        let mime = self.metadata.mime.ok_or_else(|| {
+            ResourceError::new(
+                ResourceFailure::MimeInvalid,
+                "materialized resource MIME is required by protocol codecs",
+            )
+        })?;
+        validate_resource_file_name(self.metadata.file_name.as_deref())?;
+        Ok(CodecResourceParts {
+            key: self.key,
+            bytes: self.bytes,
+            mime,
+            file_name: self.metadata.file_name,
+        })
     }
 
     pub fn multipart_part(&self) -> Result<reqwest::multipart::Part, ResourceError> {
@@ -275,10 +350,44 @@ impl fmt::Debug for MaterializedResource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("MaterializedResource")
+            .field("key", &self.key)
             .field("metadata", &self.metadata)
             .field("content", &"<redacted>")
             .finish()
     }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct CodecResourceParts {
+    pub key: ResourceKey,
+    pub bytes: Vec<u8>,
+    pub mime: String,
+    pub file_name: Option<String>,
+}
+
+impl fmt::Debug for CodecResourceParts {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CodecResourceParts")
+            .field("key", &self.key)
+            .field("byte_len", &self.bytes.len())
+            .field("mime", &self.mime)
+            .field("file_name", &self.file_name)
+            .finish()
+    }
+}
+
+pub(crate) fn require_materialized<'a, T>(
+    resources: &'a BTreeMap<String, T>,
+    resource: &ResourceRef,
+) -> Result<&'a T, ResourceError> {
+    let key = ResourceKey::from_ref(resource);
+    resources.get(key.as_str()).ok_or_else(|| {
+        ResourceError::new(
+            ResourceFailure::PhaseViolation,
+            "resource was not materialized before protocol encoding",
+        )
+    })
 }
 
 pub(crate) fn multipart_form(
@@ -722,6 +831,7 @@ impl ResourceManager {
         let mut materialized = Vec::with_capacity(inspected.resources.len());
         let mut total = 0u64;
         for inspected_resource in inspected.resources {
+            let key = ResourceKey::from_ref(&inspected_resource.source);
             let mut metadata = inspected_resource.metadata;
             let bytes = match inspected_resource.source {
                 ResourceRef::Url { url, .. } => {
@@ -791,7 +901,11 @@ impl ResourceManager {
                     "resource batch exceeds byte limit",
                 ));
             }
-            materialized.push(MaterializedResource { metadata, bytes });
+            materialized.push(MaterializedResource {
+                key,
+                metadata,
+                bytes,
+            });
         }
         Ok(materialized)
     }
@@ -881,6 +995,7 @@ impl ResourceManager {
             metadata.mime = detected_mime.map(str::to_string);
         }
         self.ensure_mime_allowed(metadata.mime.as_deref())?;
+        validate_resource_file_name(metadata.file_name.as_deref())?;
         metadata.size_bytes = Some(bytes.len() as u64);
         metadata.digest = Some(format!("sha256:{}", sha256_hex(bytes)));
         inspect_archive(bytes, metadata, &self.limits)?;
@@ -1123,6 +1238,35 @@ fn mime_matches(declared: &str, detected: &str) -> bool {
         )
 }
 
+fn validate_resource_file_name(file_name: Option<&str>) -> Result<(), ResourceError> {
+    if file_name.is_some_and(|name| {
+        name.trim().is_empty()
+            || name.len() > 255
+            || name == "."
+            || name == ".."
+            || name
+                .chars()
+                .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+    }) {
+        return Err(ResourceError::new(
+            ResourceFailure::InvalidReference,
+            "resource file name is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn update_key_part(hasher: &mut Sha256, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            hasher.update([1]);
+            hasher.update((value.len() as u64).to_be_bytes());
+            hasher.update(value.as_bytes());
+        }
+        None => hasher.update([0]),
+    }
+}
+
 fn decoded_base64_size(value: &str) -> Result<u64, ResourceError> {
     if value.is_empty() {
         return Ok(0);
@@ -1358,9 +1502,13 @@ fn validate_artifact_spec(spec: &ArtifactSpec) -> Result<(), ResourceError> {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut encoded = String::with_capacity(digest.len() * 2);
-    for byte in digest {
+    hex_digest(Sha256::digest(bytes))
+}
+
+fn hex_digest(bytes: impl IntoIterator<Item = u8>) -> String {
+    let bytes = bytes.into_iter();
+    let mut encoded = String::with_capacity(bytes.size_hint().0 * 2);
+    for byte in bytes {
         use std::fmt::Write;
         let _ = write!(&mut encoded, "{byte:02x}");
     }
@@ -1383,7 +1531,6 @@ fn store_error(error: ndn_lib::NdnError) -> ResourceError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use std::io::Write;
     use std::sync::Mutex;
     use zip::write::SimpleFileOptions;
@@ -1548,13 +1695,11 @@ mod tests {
         store.insert(stored, bytes.clone());
         let manager = manager(authorizer.clone(), store, ResourceLimits::default());
 
+        let source = ResourceRef::NamedObject {
+            obj_id: obj_id.clone(),
+        };
         let inspected = manager
-            .inspect(
-                &context(),
-                &[ResourceRef::NamedObject {
-                    obj_id: obj_id.clone(),
-                }],
-            )
+            .inspect(&context(), std::slice::from_ref(&source))
             .await
             .unwrap();
         assert_eq!(inspected.metadata()[0].size_bytes, Some(bytes.len() as u64));
@@ -1568,6 +1713,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(materialized[0].bytes(), bytes);
+        assert_eq!(materialized[0].key(), &ResourceKey::from_ref(&source));
+        let parts = materialized[0].clone().into_codec_parts().unwrap();
+        assert_eq!(parts.key, ResourceKey::from_ref(&source));
+        assert_eq!(parts.bytes, bytes);
+        assert_eq!(parts.mime, "image/png");
+        assert_eq!(parts.file_name.as_deref(), Some("input.bin"));
         assert_eq!(
             authorizer.operations.lock().unwrap().as_slice(),
             &[
@@ -1629,6 +1780,89 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.failure, ResourceFailure::MimeNotAllowed);
+    }
+
+    #[tokio::test]
+    async fn url_materialization_produces_safe_codec_handoff() {
+        let manager = manager(
+            Arc::new(RecordingAuthorizer::default()),
+            Arc::new(FakeStore::default()),
+            ResourceLimits {
+                allowed_mime_types: vec!["image/*".to_string()],
+                ..ResourceLimits::default()
+            },
+        );
+        let source = ResourceRef::url(
+            "https://assets.example/image.png".to_string(),
+            Some("image/png".to_string()),
+        );
+        let inspected = manager
+            .inspect(&context(), std::slice::from_ref(&source))
+            .await
+            .unwrap();
+        let materialized = manager
+            .materialize_after_provider_selected(&context(), "selected", inspected)
+            .await
+            .unwrap();
+        let parts = materialized
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_codec_parts()
+            .unwrap();
+        assert_eq!(parts.key, ResourceKey::from_ref(&source));
+        assert_eq!(parts.bytes, b"url-data");
+        assert_eq!(parts.mime, "image/png");
+        assert_eq!(parts.file_name.as_deref(), Some("image.png"));
+        assert!(!format!("{parts:?}").contains("url-data"));
+    }
+
+    #[test]
+    fn stable_keys_cover_all_refs_and_missing_resources_fail_closed_without_secrets() {
+        let credential = "credential-super-secret";
+        let base64_content = "YmFzZTY0LXN1cGVyLXNlY3JldA==";
+        let refs = [
+            ResourceRef::url(
+                "https://assets.example/private-name.png".to_string(),
+                Some("image/png".to_string()),
+            ),
+            ResourceRef::base64("image/png".to_string(), base64_content.to_string()),
+            ResourceRef::NamedObject {
+                obj_id: obj_id_for(&FileObject::new(
+                    "secret-name".to_string(),
+                    1,
+                    "sha256:content".to_string(),
+                )),
+            },
+        ];
+        assert_eq!(
+            ResourceKey::from_ref(&refs[0]).as_str(),
+            "aicc-resource-v1:url:6e4aeb88c12e7bdc80c938d118eab0de4980479b0bff852221cc250a9295c2ab"
+        );
+        assert_eq!(
+            ResourceKey::from_ref(&refs[1]).as_str(),
+            "aicc-resource-v1:base64:9b3239901c49146e7642a71a4d3f6686d969f98a563d57386686ad65844caf65"
+        );
+        for resource in &refs {
+            let key = ResourceKey::from_ref(resource);
+            assert_eq!(key, ResourceKey::from_ref(resource));
+            assert!(!key.as_str().contains(base64_content));
+            assert!(!key.as_str().contains("private-name"));
+            let error =
+                require_materialized::<CodecResourceParts>(&BTreeMap::new(), resource).unwrap_err();
+            let rendered = format!("{error:?} {error}");
+            assert_eq!(error.failure, ResourceFailure::PhaseViolation);
+            assert!(!rendered.contains(base64_content));
+            assert!(!rendered.contains(credential));
+        }
+        assert_ne!(
+            ResourceKey::from_ref(&refs[0]),
+            ResourceKey::from_ref(&refs[1])
+        );
+        assert_ne!(
+            ResourceKey::from_ref(&refs[1]),
+            ResourceKey::from_ref(&refs[2])
+        );
     }
 
     #[tokio::test]
@@ -1872,7 +2106,9 @@ mod tests {
 
     #[test]
     fn multipart_and_debug_never_expose_content() {
+        let source = ResourceRef::base64("text/plain".to_string(), "c3VwZXItc2VjcmV0".to_string());
         let resource = MaterializedResource {
+            key: ResourceKey::from_ref(&source),
             metadata: ResourceMetadata {
                 kind: ResourceKind::Base64,
                 obj_id: None,
