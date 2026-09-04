@@ -2,7 +2,7 @@ use crate::matching::{CompiledMatchRule, MatchContext, MatchRule, ROUTING_PROVID
 use async_trait::async_trait;
 use buckyos_api::{
     AiccPolicyConfig, AiccSchedulerProfile, AiccSchedulerProfileConfig, ApiType, Capability,
-    LockedValue, QuotaQueryRequest, QuotaQueryResponse, QuotaState, QuotaView,
+    LockedValue, Money, QuotaQueryRequest, QuotaQueryResponse, QuotaState, QuotaView,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -91,7 +91,7 @@ pub(crate) struct EffectiveRoutingPolicy {
     pub explain: EffectiveValue<bool>,
     pub blocked_provider_instances: EffectiveValue<Vec<String>>,
     pub allowed_provider_instances: EffectiveValue<Vec<String>>,
-    pub max_estimated_cost_usd: EffectiveValue<Option<f64>>,
+    pub max_estimated_cost: EffectiveValue<Option<Money>>,
     pub privacy: EffectiveValue<PrivacyRequirement>,
     pub minimum_provider_trust: EffectiveValue<ProviderTrustLevel>,
 }
@@ -108,7 +108,7 @@ impl Default for EffectiveRoutingPolicy {
             explain: EffectiveValue::new(false),
             blocked_provider_instances: EffectiveValue::new(Vec::new()),
             allowed_provider_instances: EffectiveValue::new(Vec::new()),
-            max_estimated_cost_usd: EffectiveValue::new(None),
+            max_estimated_cost: EffectiveValue::new(None),
             privacy: EffectiveValue::new(PrivacyRequirement::PublicAllowed),
             minimum_provider_trust: EffectiveValue::new(ProviderTrustLevel::Registered),
         }
@@ -130,12 +130,14 @@ impl EffectiveRoutingPolicy {
             }
         }
         if result
-            .max_estimated_cost_usd
+            .max_estimated_cost
             .value
-            .is_some_and(|value| !value.is_finite() || value < 0.0)
+            .as_ref()
+            .is_some_and(|value| !valid_money(value))
         {
             return Err(PolicyError::InvalidPolicy(
-                "max_estimated_cost_usd must be finite and non-negative".into(),
+                "max_estimated_cost must contain a finite non-negative amount and a non-empty currency"
+                    .into(),
             ));
         }
         Ok(result)
@@ -197,9 +199,9 @@ impl EffectiveRoutingPolicy {
             scope,
         )?;
         apply_optional(
-            "max_estimated_cost_usd",
-            &mut self.max_estimated_cost_usd,
-            patch.route.max_estimated_cost_usd.as_ref(),
+            "max_estimated_cost",
+            &mut self.max_estimated_cost,
+            patch.route.max_estimated_cost.as_ref(),
             scope,
         )?;
         apply("privacy", &mut self.privacy, patch.privacy.as_ref(), scope)?;
@@ -381,7 +383,7 @@ pub(crate) struct RequestPolicyInput<'a> {
     pub caller: &'a CallerIdentity,
     pub method: &'a str,
     pub capability: Capability,
-    pub estimated_cost_usd: Option<f64>,
+    pub estimated_cost: Option<Money>,
     pub request_units: u64,
 }
 
@@ -397,7 +399,7 @@ pub(crate) struct QuotaLookup {
 pub(crate) struct QuotaSnapshot {
     pub state: Option<QuotaState>,
     pub remaining_request_units: Option<u64>,
-    pub remaining_cost_usd: Option<f64>,
+    pub remaining_cost: Option<Money>,
     pub reset_at: Option<String>,
 }
 
@@ -534,6 +536,7 @@ pub(crate) enum PolicyReasonCode {
     PrivacyIncompatible,
     CredentialScopeMismatch,
     CostEstimateUnavailable,
+    CostCurrencyMismatch,
     CostCeilingExceeded,
     QuotaSourceUnavailable,
     QuotaExhausted,
@@ -553,6 +556,7 @@ impl PolicyReasonCode {
             Self::PrivacyIncompatible => "privacy_incompatible",
             Self::CredentialScopeMismatch => "credential_scope_mismatch",
             Self::CostEstimateUnavailable => "cost_estimate_unavailable",
+            Self::CostCurrencyMismatch => "cost_currency_mismatch",
             Self::CostCeilingExceeded => "cost_ceiling_exceeded",
             Self::QuotaSourceUnavailable => "quota_source_unavailable",
             Self::QuotaExhausted => "quota_exhausted",
@@ -717,16 +721,22 @@ impl<Q: QuotaSource> PolicyEngine<Q> {
         }
 
         let estimated_cost = request
-            .estimated_cost_usd
-            .filter(|cost| cost.is_finite() && *cost >= 0.0);
-        if let Some(ceiling) = self.policy.max_estimated_cost_usd.value {
+            .estimated_cost
+            .as_ref()
+            .filter(|cost| valid_money(cost));
+        if let Some(ceiling) = self.policy.max_estimated_cost.value.as_ref() {
             match estimated_cost {
                 None => reject(
                     &mut reasons,
                     PolicyReasonCode::CostEstimateUnavailable,
                     "cost ceiling cannot be enforced without a valid estimate",
                 ),
-                Some(cost) if cost > ceiling => reject(
+                Some(cost) if cost.currency != ceiling.currency => reject(
+                    &mut reasons,
+                    PolicyReasonCode::CostCurrencyMismatch,
+                    "estimated cost and cost ceiling use different currencies",
+                ),
+                Some(cost) if cost.amount > ceiling.amount => reject(
                     &mut reasons,
                     PolicyReasonCode::CostCeilingExceeded,
                     "estimated request cost exceeds the single-request ceiling",
@@ -794,8 +804,9 @@ fn validate_lookup_scope(
 fn validate_snapshot(snapshot: &QuotaSnapshot) -> Result<(), QuotaSourceError> {
     if snapshot.state.is_none()
         || snapshot
-            .remaining_cost_usd
-            .is_some_and(|value| !value.is_finite() || value < 0.0)
+            .remaining_cost
+            .as_ref()
+            .is_some_and(|value| !valid_money(value))
     {
         return Err(QuotaSourceError);
     }
@@ -808,7 +819,7 @@ fn quota_response(snapshot: QuotaSnapshot) -> Result<QuotaQueryResponse, PolicyE
         quota: QuotaView {
             state: snapshot.state.expect("validated quota state"),
             remaining_request_units: snapshot.remaining_request_units,
-            remaining_cost_usd: snapshot.remaining_cost_usd,
+            remaining_cost: snapshot.remaining_cost,
             reset_at: snapshot.reset_at,
         },
     })
@@ -872,7 +883,7 @@ fn apply_quota(
     reasons: &mut Vec<PolicyReason>,
     quota: &QuotaSnapshot,
     request_units: u64,
-    estimated_cost: Option<f64>,
+    estimated_cost: Option<&Money>,
 ) {
     match quota.state {
         None => reject(
@@ -897,15 +908,21 @@ fn apply_quota(
             "remaining request quota is insufficient",
         );
     }
-    if let Some(remaining) = quota.remaining_cost_usd {
-        if !remaining.is_finite() || remaining < 0.0 {
+    if let Some(remaining) = quota.remaining_cost.as_ref() {
+        if !valid_money(remaining) {
             reject(
                 reasons,
                 PolicyReasonCode::QuotaSourceUnavailable,
                 "budget truth source returned an invalid value",
             );
         } else if let Some(cost) = estimated_cost {
-            if cost > remaining {
+            if cost.currency != remaining.currency {
+                reject(
+                    reasons,
+                    PolicyReasonCode::CostCurrencyMismatch,
+                    "estimated cost and remaining budget use different currencies",
+                );
+            } else if cost.amount > remaining.amount {
                 reject(
                     reasons,
                     PolicyReasonCode::BudgetExceeded,
@@ -920,6 +937,13 @@ fn apply_quota(
             );
         }
     }
+}
+
+fn valid_money(value: &Money) -> bool {
+    value.amount.is_finite()
+        && value.amount >= 0.0
+        && !value.currency.is_empty()
+        && value.currency.trim() == value.currency
 }
 
 #[cfg(test)]
@@ -939,7 +963,7 @@ mod tests {
                 result: Ok(QuotaSnapshot {
                     state: Some(QuotaState::Normal),
                     remaining_request_units: Some(10),
-                    remaining_cost_usd: Some(10.0),
+                    remaining_cost: Some(Money::new(10.0, "USD")),
                     reset_at: None,
                 }),
                 seen: Arc::new(Mutex::new(Vec::new())),
@@ -997,7 +1021,7 @@ mod tests {
                 caller,
                 method: "chat.completions.create",
                 capability: Capability::Llm,
-                estimated_cost_usd: Some(0.25),
+                estimated_cost: Some(Money::new(0.25, "USD")),
                 request_units: 1,
             },
             &CandidatePolicyInput {
@@ -1192,7 +1216,7 @@ mod tests {
     fn cost_ceiling_quota_and_budget_each_reject() {
         let patch = RoutingPolicyPatch {
             route: AiccPolicyConfig {
-                max_estimated_cost_usd: Some(LockedValue::new(0.20)),
+                max_estimated_cost: Some(LockedValue::new(Money::new(0.20, "USD"))),
                 ..Default::default()
             },
             ..Default::default()
@@ -1201,7 +1225,7 @@ mod tests {
             result: Ok(QuotaSnapshot {
                 state: Some(QuotaState::NearLimit),
                 remaining_request_units: Some(0),
-                remaining_cost_usd: Some(0.10),
+                remaining_cost: Some(Money::new(0.10, "USD")),
                 reset_at: None,
             }),
             seen: Arc::new(Mutex::new(Vec::new())),
@@ -1232,6 +1256,88 @@ mod tests {
     }
 
     #[test]
+    fn cost_comparison_requires_matching_currency() {
+        let patch = RoutingPolicyPatch {
+            route: AiccPolicyConfig {
+                max_estimated_cost: Some(LockedValue::new(Money::new(1.0, "EUR"))),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let quota = FakeQuota {
+            result: Ok(QuotaSnapshot {
+                state: Some(QuotaState::Normal),
+                remaining_request_units: Some(10),
+                remaining_cost: Some(Money::new(10.0, "GBP")),
+                reset_at: None,
+            }),
+            seen: Arc::new(Mutex::new(Vec::new())),
+        };
+        let engine = engine(&patch, quota);
+        let caller = caller();
+        let scope = CredentialScope::Tenant {
+            tenant_id: "tenant-a".into(),
+        };
+        let cloud = trust(ProviderType::CloudApi);
+        let decision = evaluate(
+            &engine,
+            &caller,
+            Some(&cloud),
+            &scope,
+            ProviderPrivacy::PublicCloud,
+        );
+        assert_eq!(
+            decision
+                .reasons
+                .iter()
+                .filter(|reason| reason.code == PolicyReasonCode::CostCurrencyMismatch)
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_money_fails_closed() {
+        let invalid_policy = RoutingPolicyPatch {
+            route: AiccPolicyConfig {
+                max_estimated_cost: Some(LockedValue::new(Money::new(f64::NAN, "USD"))),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(matches!(
+            EffectiveRoutingPolicy::merge(RoutingPolicyLayers {
+                system: Some(&invalid_policy),
+                user: None,
+                app: None,
+                session: None,
+                request: None,
+            }),
+            Err(PolicyError::InvalidPolicy(_))
+        ));
+
+        let port = Arc::new(FakeTruthPort {
+            result: Ok(QuotaSnapshot {
+                state: Some(QuotaState::Normal),
+                remaining_request_units: None,
+                remaining_cost: Some(Money::new(1.0, " USD ")),
+                reset_at: None,
+            }),
+            seen: Arc::new(Mutex::new(Vec::new())),
+        });
+        let factory = QuotaSourceFactory::new(port);
+        assert!(matches!(
+            factory
+                .query_quota(
+                    &caller(),
+                    QuotaQueryRequest::new(Some(Capability::Llm), None),
+                )
+                .await,
+            Err(PolicyError::QuotaSourceUnavailable)
+        ));
+    }
+
+    #[test]
     fn budget_with_unknown_cost_fails_closed() {
         let patch = RoutingPolicyPatch::default();
         let engine = engine(&patch, FakeQuota::available());
@@ -1244,7 +1350,7 @@ mod tests {
             caller: &caller,
             method: "chat.completions.create",
             capability: Capability::Llm,
-            estimated_cost_usd: None,
+            estimated_cost: None,
             request_units: 1,
         };
         let candidate = CandidatePolicyInput {
@@ -1260,7 +1366,7 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.code == PolicyReasonCode::CostEstimateUnavailable));
-        request.estimated_cost_usd = Some(0.1);
+        request.estimated_cost = Some(Money::new(0.1, "USD"));
         assert!(engine.evaluate(&request, &candidate).allowed);
     }
 

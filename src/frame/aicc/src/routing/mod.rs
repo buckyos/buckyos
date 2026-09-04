@@ -9,6 +9,7 @@ use crate::model::{
 use buckyos_api::{
     features, AiccFallbackMode, AiccFallbackRule, AiccSchedulerProfile, AiccSchedulerProfileConfig,
     AiccSchedulerProfileWeights, ApiType, Capability, Feature, ModelDisable, ModelRequirement,
+    Money,
 };
 #[allow(unused_imports)]
 pub(crate) use policy::{
@@ -527,7 +528,9 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
                     caller: &request.caller,
                     method: &request.method,
                     capability: request.capability.clone(),
-                    estimated_cost_usd: state.estimated_cost_usd,
+                    estimated_cost: state
+                        .estimated_cost_usd
+                        .map(|amount| Money::new(amount, "USD")),
                     request_units: request.request_units,
                 };
                 let policy_candidate = CandidatePolicyInput {
@@ -1284,7 +1287,7 @@ mod tests {
             Ok(QuotaSnapshot {
                 state: Some(QuotaState::Normal),
                 remaining_request_units: Some(100),
-                remaining_cost_usd: None,
+                remaining_cost: None,
                 reset_at: None,
             })
         }
@@ -1607,7 +1610,7 @@ mod tests {
         let patch = RoutingPolicyPatch {
             route: AiccPolicyConfig {
                 blocked_provider_instances: Some(LockedValue::new(vec!["cloud-a".into()])),
-                max_estimated_cost_usd: Some(LockedValue::new(0.25)),
+                max_estimated_cost: Some(LockedValue::new(Money::new(0.25, "USD"))),
                 ..AiccPolicyConfig::default()
             },
             ..RoutingPolicyPatch::default()

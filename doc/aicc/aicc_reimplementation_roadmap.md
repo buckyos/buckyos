@@ -422,6 +422,8 @@ Owner：Policy/Security 小组
 
 补充 Service 集成契约：WP-09 提供对象安全的异步 `QuotaTruthPort` 和 `QuotaSourceFactory`。Service 负责实现该端口，按 `CallerIdentity + Capability + method + provider_instance_name` 组合 system-config 预算、WP-14 usage 聚合及 Provider quota 状态；路由前调用 `prepare_route` 一次性预取并校验全部候选，得到请求级 `PreparedQuotaSource` 后再构造 `PolicyEngine`/`Router`。预取结果严格绑定 tenant/user/app、capability、method 和 Provider，缺项、未知状态、非法预算或任一真相源失败均 fail closed；`quota.query` 由 Service 直接调用 factory 的异步查询入口。新增 2 个生产端口测试，覆盖 Provider 去重预取、作用域绑定、管理查询和端口失败关闭。
 
+多币种契约补充：WP-09 已随 WP-01 的正式 `Money { amount, currency }` DTO 移除策略上限、quota snapshot 和 `quota.query` 中的 USD 专用金额。单次 cost ceiling 与剩余 budget 只在币种标识完全一致时比较；金额非法、币种为空或不一致均作为 hard filter fail closed，不在 routing 内隐式换汇。新增测试覆盖不同币种的策略上限、Provider budget 和非法 Money。
+
 ### WP-10：Routing、Scheduler 与 Trace
 
 Owner：Model/Router 小组
