@@ -208,6 +208,10 @@ Model Driver 的 variant 只定义语义身份，例如 `reasoning.high`。配�
 
 Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固有能力。
 
+### 3.3 fal 的临时模型归属
+
+当前 `fal-ai/esrgan`、`fal-ai/imageutils/rembg`、`fal-ai/deepfilternet3` 和 `fal-ai/video-upscaler` 尚无对应原厂 Provider 接入，暂时统一归属 `fal` Model Driver。其它配置随 fal 官方事实调整。
+
 ## 4. Custom Provider 的最小规则
 
 ```json

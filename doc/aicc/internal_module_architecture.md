@@ -251,7 +251,7 @@ provider/
 | OpenAI | Responses + embeddings/images/audio/videos | `/v1/models`；价格由 Provider Rules，动态事实优先 |
 | Claude | Messages | Claude Models API；价格由 Provider Rules |
 | Gemini | Interactions + embeddings/files/gen-media | Gemini Models API；价格由 Provider Rules |
-| fal | Queue | catalog 给出 model endpoint；运行时探测可用性，schema 保持 model-specific |
+| fal | Queue | 四个暂未接入原厂 Provider 的 endpoint 临时归属 fal；其它配置随 fal 官方事实调整 |
 | OpenRouter | OpenRouter Chat dialect | Models API；使用动态模型、能力和实时价格 |
 | MiniMax | MiniMax Messages dialect + native media | Anthropic-compatible Models API；媒体由 catalog/rules 补充 |
 | Kimi | Kimi Chat dialect | Kimi Models API；价格由 Provider Rules |
