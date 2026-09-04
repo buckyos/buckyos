@@ -5,6 +5,8 @@ use super::{
     ProtocolResultValue, ProtocolStream, SseConfig, SseFrame, StreamingHttpResponse,
 };
 use async_trait::async_trait;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use buckyos_api::{
     features, AiContent, AiMessage, AiRole, AiToolCall, AiToolResultContent, AiUsage, AiccCall,
     ApiType, LlmChatInvokeRequest, LlmResponseFormatType, ResourceRef,
@@ -78,7 +80,7 @@ impl ClaudeMessagesCodec {
                 )
             })?;
 
-        let (system, messages) = encode_messages(&request.messages)?;
+        let (system, messages) = encode_messages(&request.messages, call.context)?;
         if messages.is_empty() {
             return Err(ProtocolError::invalid_request(
                 "Claude Messages requires at least one conversation message",
@@ -303,18 +305,21 @@ fn invalid_request_json(error: serde_json::Error) -> ProtocolError {
     ProtocolError::invalid_request(format!("failed to encode Claude request: {error}"))
 }
 
-fn encode_messages(messages: &[AiMessage]) -> ProtocolResultValue<(Vec<Value>, Vec<Value>)> {
+fn encode_messages(
+    messages: &[AiMessage],
+    context: &super::CodecContext,
+) -> ProtocolResultValue<(Vec<Value>, Vec<Value>)> {
     let mut system = Vec::new();
     let mut wire_messages = Vec::new();
     for message in messages {
         match message.role {
             AiRole::System | AiRole::Developer => {
                 for block in &message.content {
-                    system.push(encode_content(block, false)?);
+                    system.push(encode_content(block, false, context)?);
                 }
             }
             AiRole::User | AiRole::Assistant => {
-                let content = encode_message_content(&message.content)?;
+                let content = encode_message_content(&message.content, context)?;
                 if content.is_empty() {
                     return Err(ProtocolError::invalid_request(
                         "Claude message has no representable content blocks",
@@ -328,7 +333,7 @@ fn encode_messages(messages: &[AiMessage]) -> ProtocolResultValue<(Vec<Value>, V
             AiRole::Tool => wire_messages.push(json!({
                 "role": "user",
                 "content": message.content.iter()
-                    .map(|block| encode_content(block, true))
+                    .map(|block| encode_content(block, true, context))
                     .collect::<ProtocolResultValue<Vec<_>>>()?
             })),
         }
@@ -336,7 +341,10 @@ fn encode_messages(messages: &[AiMessage]) -> ProtocolResultValue<(Vec<Value>, V
     Ok((system, wire_messages))
 }
 
-fn encode_message_content(content: &[AiContent]) -> ProtocolResultValue<Vec<Value>> {
+fn encode_message_content(
+    content: &[AiContent],
+    context: &super::CodecContext,
+) -> ProtocolResultValue<Vec<Value>> {
     content
         .iter()
         .filter(|block| {
@@ -346,21 +354,25 @@ fn encode_message_content(content: &[AiContent]) -> ProtocolResultValue<Vec<Valu
                     if provider != CLAUDE_PROVIDER_NAMESPACE
             )
         })
-        .map(|block| encode_content(block, true))
+        .map(|block| encode_content(block, true, context))
         .collect()
 }
 
-fn encode_content(content: &AiContent, allow_provider_state: bool) -> ProtocolResultValue<Value> {
+fn encode_content(
+    content: &AiContent,
+    allow_provider_state: bool,
+    context: &super::CodecContext,
+) -> ProtocolResultValue<Value> {
     match content {
         AiContent::Text { text } => Ok(json!({"type": "text", "text": text})),
         AiContent::Image { source } => Ok(json!({
             "type": "image",
-            "source": encode_resource(source, false)?
+            "source": encode_resource(source, context)?
         })),
         AiContent::Document { source, title } => {
             let mut block = Map::from_iter([
                 ("type".to_string(), Value::String("document".to_string())),
-                ("source".to_string(), encode_resource(source, true)?),
+                ("source".to_string(), encode_resource(source, context)?),
             ]);
             if let Some(title) = title {
                 block.insert("title".to_string(), Value::String(title.clone()));
@@ -381,7 +393,7 @@ fn encode_content(content: &AiContent, allow_provider_state: bool) -> ProtocolRe
         } => Ok(json!({
             "type": "tool_result",
             "tool_use_id": call_id,
-            "content": content.iter().map(encode_tool_result_content)
+            "content": content.iter().map(|item| encode_tool_result_content(item, context))
                 .collect::<ProtocolResultValue<Vec<_>>>()?,
             "is_error": is_error
         })),
@@ -424,16 +436,19 @@ fn encode_content(content: &AiContent, allow_provider_state: bool) -> ProtocolRe
     }
 }
 
-fn encode_tool_result_content(content: &AiToolResultContent) -> ProtocolResultValue<Value> {
+fn encode_tool_result_content(
+    content: &AiToolResultContent,
+    context: &super::CodecContext,
+) -> ProtocolResultValue<Value> {
     match content {
         AiToolResultContent::Text { text } => Ok(json!({"type": "text", "text": text})),
         AiToolResultContent::Image { source } => Ok(json!({
-            "type": "image", "source": encode_resource(source, false)?
+            "type": "image", "source": encode_resource(source, context)?
         })),
         AiToolResultContent::Document { source, title } => {
             let mut block = Map::from_iter([
                 ("type".to_string(), Value::String("document".to_string())),
-                ("source".to_string(), encode_resource(source, true)?),
+                ("source".to_string(), encode_resource(source, context)?),
             ]);
             if let Some(title) = title {
                 block.insert("title".to_string(), Value::String(title.clone()));
@@ -443,16 +458,23 @@ fn encode_tool_result_content(content: &AiToolResultContent) -> ProtocolResultVa
     }
 }
 
-fn encode_resource(resource: &ResourceRef, document: bool) -> ProtocolResultValue<Value> {
+fn encode_resource(
+    resource: &ResourceRef,
+    context: &super::CodecContext,
+) -> ProtocolResultValue<Value> {
     match resource {
         ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
             "type": "base64", "media_type": mime, "data": data_base64
         })),
         ResourceRef::Url { url, .. } => Ok(json!({"type": "url", "url": url})),
-        ResourceRef::NamedObject { .. } => Err(ProtocolError::invalid_request(format!(
-            "Claude {} resource must be materialized before protocol encoding",
-            if document { "document" } else { "image" }
-        ))),
+        ResourceRef::NamedObject { .. } => {
+            let materialized = context.materialized_resource(resource)?;
+            Ok(json!({
+                "type": "base64",
+                "media_type": materialized.mime,
+                "data": STANDARD.encode(&materialized.bytes)
+            }))
+        }
     }
 }
 

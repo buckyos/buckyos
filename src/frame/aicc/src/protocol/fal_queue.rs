@@ -302,12 +302,8 @@ fn fal_resource(resource: &ResourceRef, context: &CodecContext) -> ProtocolResul
             })?;
             format!("data:{mime};base64,{data_base64}")
         }
-        ResourceRef::NamedObject { obj_id } => {
-            let materialized = context.resources.get(&obj_id.to_string()).ok_or_else(|| {
-                ProtocolError::invalid_request(format!(
-                    "resource `{obj_id}` was not materialized before fal encoding"
-                ))
-            })?;
+        ResourceRef::NamedObject { .. } => {
+            let materialized = context.materialized_resource(resource)?;
             format!(
                 "data:{};base64,{}",
                 materialized.mime,
@@ -796,15 +792,18 @@ mod tests {
     #[test]
     fn materialized_resource_is_encoded_as_data_url_without_debug_leak() {
         let mut context = context();
-        let obj_id = ndn_lib::ObjId::new("chunk:123456").unwrap();
+        let source = ResourceRef::named_object(ndn_lib::ObjId::new("chunk:123456").unwrap());
+        let missing = fal_resource(&source, &context).unwrap_err();
+        assert_eq!(missing.kind, ProtocolErrorKind::InvalidRequest);
+        assert!(!format!("{missing:?}").contains("chunk:123456"));
         context.resources.insert(
-            obj_id.to_string(),
+            crate::resource::ResourceKey::from_ref(&source).into_string(),
             MaterializedResource::new(Bytes::from_static(b"image"), "image/png", None).unwrap(),
         );
         let input = input(
             AiccCall::VideoImageToVideo(VideoImageToVideoRequest::new(
                 "fal-ai/video@fal-main",
-                ResourceRef::named_object(obj_id),
+                source,
                 "animate".to_string(),
             )),
             "fal-ai/video",

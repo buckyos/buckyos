@@ -1283,16 +1283,8 @@ fn resource_data_or_url(
                 .map_err(|_| ProtocolError::invalid_request("resource contains invalid base64"))?;
             Ok(format!("data:{mime};base64,{data_base64}"))
         }
-        PublicResourceRef::NamedObject { obj_id } => {
-            let resource = call
-                .context
-                .resources
-                .get(&obj_id.to_string())
-                .ok_or_else(|| {
-                    ProtocolError::invalid_request(format!(
-                        "resource `{obj_id}` was not materialized before OpenAI encoding"
-                    ))
-                })?;
+        PublicResourceRef::NamedObject { .. } => {
+            let resource = call.context.materialized_resource(source)?;
             Ok(format!(
                 "data:{};base64,{}",
                 resource.mime,
@@ -1304,28 +1296,14 @@ fn resource_data_or_url(
 
 fn multipart_resource(
     source: &PublicResourceRef,
-    resources: &BTreeMap<String, MaterializedResource>,
+    context: &super::CodecContext,
     default_name: &str,
 ) -> ProtocolResultValue<MaterializedResource> {
-    match source {
-        PublicResourceRef::Base64 { mime, data_base64 } => Ok(MaterializedResource::new(
-            STANDARD
-                .decode(data_base64)
-                .map_err(|_| ProtocolError::invalid_request("resource contains invalid base64"))?,
-            mime.clone(),
-            Some(default_name.to_string()),
-        )?),
-        PublicResourceRef::NamedObject { obj_id } => {
-            resources.get(&obj_id.to_string()).cloned().ok_or_else(|| {
-                ProtocolError::invalid_request(format!(
-                    "resource `{obj_id}` was not materialized before OpenAI encoding"
-                ))
-            })
-        }
-        PublicResourceRef::Url { .. } => Err(ProtocolError::invalid_request(
-            "OpenAI multipart resource must be materialized before protocol encoding",
-        )),
+    let mut resource = context.materialized_resource(source)?.clone();
+    if resource.file_name.is_none() {
+        resource.file_name = Some(default_name.to_string());
     }
+    Ok(resource)
 }
 
 fn image_format(media_type: &str) -> ProtocolResultValue<&'static str> {
@@ -1460,8 +1438,7 @@ fn embedding_input(item: &EmbeddingTextItem, call: &CodecCall<'_>) -> ProtocolRe
     match item {
         EmbeddingTextItem::Text { text, .. } => Ok(json!(text)),
         EmbeddingTextItem::Resource { resource, .. } => {
-            let materialized =
-                multipart_resource(resource, &call.context.resources, "embedding-input.txt")?;
+            let materialized = multipart_resource(resource, call.context, "embedding-input.txt")?;
             if !materialized.mime.starts_with("text/") && materialized.mime != "application/json" {
                 return Err(ProtocolError::new(
                     ProtocolErrorKind::UnsupportedOperation,
@@ -1627,12 +1604,12 @@ fn encode_image_edit(
                 "image[]"
             },
             source,
-            &call.context.resources,
+            call.context,
             &format!("image-{index}.bin"),
         )?;
     }
     if let Some(mask) = mask {
-        push_multipart_resource(&mut body, "mask", mask, &call.context.resources, "mask.png")?;
+        push_multipart_resource(&mut body, "mask", mask, call.context, "mask.png")?;
     }
     if let Some(output) = &request.output {
         if let Some(size) = &output.size {
@@ -1678,10 +1655,10 @@ fn push_multipart_resource(
     body: &mut MultipartBody,
     name: &str,
     source: &PublicResourceRef,
-    resources: &BTreeMap<String, MaterializedResource>,
+    context: &super::CodecContext,
     default_name: &str,
 ) -> ProtocolResultValue<()> {
-    let resource = multipart_resource(source, resources, default_name)?;
+    let resource = multipart_resource(source, context, default_name)?;
     body.push(MultipartPart::file(
         name,
         resource.bytes,
@@ -1916,7 +1893,7 @@ fn encode_audio_transcription(
             "OpenAI transcription codec only exposes its canonical JSON result",
         ));
     }
-    let resource = multipart_resource(&request.audio, &call.context.resources, "audio-input.bin")?;
+    let resource = multipart_resource(&request.audio, call.context, "audio-input.bin")?;
     let mut body = MultipartBody::new(16, call.context.limits.max_request_bytes)?;
     body.push(MultipartPart::file(
         "file",
@@ -2178,7 +2155,7 @@ fn encode_video_submit(
         body.push(MultipartPart::bytes("size", size))?;
     }
     if let Some(image) = image {
-        let resource = multipart_resource(image, &input.context.resources, "input-reference.bin")?;
+        let resource = multipart_resource(image, input.context, "input-reference.bin")?;
         body.push(MultipartPart::file(
             "input_reference",
             resource.bytes,
@@ -2332,6 +2309,25 @@ mod tests {
                 max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
             },
         }
+    }
+
+    fn context_with_resource(
+        source: &PublicResourceRef,
+        bytes: &'static [u8],
+        mime: &str,
+        file_name: Option<&str>,
+    ) -> CodecContext {
+        let mut context = context();
+        context.resources.insert(
+            crate::resource::ResourceKey::from_ref(source).into_string(),
+            MaterializedResource::new(
+                Bytes::from_static(bytes),
+                mime,
+                file_name.map(str::to_string),
+            )
+            .unwrap(),
+        );
+        context
     }
 
     fn input(call: AiccCall) -> CodecInput {
@@ -2809,6 +2805,8 @@ mod tests {
         assert_eq!(wire.url, "https://api.openai.com/v1/images/generations");
 
         let image = PublicResourceRef::base64("image/png".to_string(), "aW1hZ2U=".to_string());
+        let materialized_context =
+            context_with_resource(&image, b"image", "image/png", Some("input.png"));
         let edit = ImageToImageRequest::new(
             "ignored@instance",
             vec![image.clone()],
@@ -2820,7 +2818,7 @@ mod tests {
                 OPENAI_RESPONSES_OPERATION_ID,
                 ApiType::ImageImageToImage,
                 &input(AiccCall::ImageToImage(edit.clone())),
-                &context(),
+                &materialized_context,
             )
             .unwrap();
         let GoldenBody::Json(responses_body) = ProtocolContractHarness::default()
@@ -2842,7 +2840,7 @@ mod tests {
                 OPENAI_IMAGES_EDIT_OPERATION_ID,
                 ApiType::ImageImageToImage,
                 &input(AiccCall::ImageToImage(edit)),
-                &context(),
+                &materialized_context,
             )
             .unwrap();
         let GoldenBody::Multipart(parts) = ProtocolContractHarness::default()
@@ -2870,7 +2868,7 @@ mod tests {
                 OPENAI_IMAGES_EDIT_OPERATION_ID,
                 ApiType::ImageInpaint,
                 &input(AiccCall::ImageInpaint(inpaint)),
-                &context(),
+                &materialized_context,
             )
             .is_ok());
 
@@ -2899,7 +2897,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn audio_speech_and_transcription_map_binary_multipart_segments_and_usage() {
+    async fn audio_speech_and_materialized_url_transcription_map_multipart_and_usage() {
         let speech = AudioTextToSpeechRequest::new(
             "ignored@instance",
             "hello".to_string(),
@@ -2941,16 +2939,36 @@ mod tests {
         };
         assert_eq!(output.artifacts[0].mime.as_deref(), Some("audio/mpeg"));
 
-        let audio = PublicResourceRef::base64("audio/wav".to_string(), "YXVkaW8=".to_string());
-        let mut transcription = AudioSpeechRecognitionRequest::new("ignored@instance", audio);
+        let audio = PublicResourceRef::url(
+            "https://download.invalid/audio.wav?credential=must-not-leak".to_string(),
+            Some("audio/wav".to_string()),
+        );
+        let materialized_context =
+            context_with_resource(&audio, b"audio", "audio/wav", Some("audio.wav"));
+        let mut transcription =
+            AudioSpeechRecognitionRequest::new("ignored@instance", audio.clone());
         transcription.timestamps = Some("segment".to_string());
+        let error = registry()
+            .encode(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
+                ApiType::AudioSpeechRecognition,
+                &input(AiccCall::AudioSpeechRecognition(transcription.clone())),
+                &context(),
+            )
+            .unwrap_err();
+        assert_eq!(error.kind, ProtocolErrorKind::InvalidRequest);
+        let rendered_error = format!("{error:?}");
+        assert!(!rendered_error.contains("must-not-leak"));
+        assert!(!rendered_error.contains("audio"));
+        assert!(!rendered_error.contains("top-secret"));
         let wire = registry()
             .encode(
                 OPENAI_RESPONSES_ADAPTER_ID,
                 OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
                 ApiType::AudioSpeechRecognition,
                 &input(AiccCall::AudioSpeechRecognition(transcription)),
-                &context(),
+                &materialized_context,
             )
             .unwrap();
         let GoldenBody::Multipart(parts) = ProtocolContractHarness::default()
@@ -2961,9 +2979,16 @@ mod tests {
             panic!("expected multipart")
         };
         assert!(parts.iter().any(|part| part.name == "file"));
+        let file = parts.iter().find(|part| part.name == "file").unwrap();
+        assert_eq!(file.bytes, b"audio");
+        assert_eq!(file.mime.as_deref(), Some("audio/wav"));
+        assert_eq!(file.file_name.as_deref(), Some("audio.wav"));
         assert!(parts
             .iter()
             .any(|part| part.name == "response_format" && part.bytes == b"verbose_json"));
+        let rendered_request = format!("{wire:?}");
+        assert!(!rendered_request.contains("must-not-leak"));
+        assert!(!rendered_request.contains("top-secret"));
 
         let response = ProtocolContractHarness::default()
             .response(
@@ -2995,7 +3020,7 @@ mod tests {
     #[tokio::test]
     async fn videos_cover_submit_status_content_cancel_and_validate_task_ids() {
         let registry = registry();
-        let context = context();
+        let mut context = context();
         let parameters = BTreeMap::from([
             ("provider_model_id".to_string(), json!("sora-test")),
             ("seconds".to_string(), json!("8")),
@@ -3022,9 +3047,19 @@ mod tests {
             .unwrap();
         assert_eq!(request.url, "https://api.openai.com/v1/videos");
 
+        let image = PublicResourceRef::base64("image/png".to_string(), "aW1hZ2U=".to_string());
+        context.resources.insert(
+            crate::resource::ResourceKey::from_ref(&image).into_string(),
+            MaterializedResource::new(
+                Bytes::from_static(b"image"),
+                "image/png",
+                Some("input.png".to_string()),
+            )
+            .unwrap(),
+        );
         let image_codec_input = input(AiccCall::VideoImageToVideo(VideoImageToVideoRequest::new(
             "ignored@instance",
-            PublicResourceRef::base64("image/png".to_string(), "aW1hZ2U=".to_string()),
+            image,
             "animate the cat".to_string(),
         )));
         let image_submit = NativeTaskInput {

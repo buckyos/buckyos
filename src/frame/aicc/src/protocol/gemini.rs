@@ -661,12 +661,8 @@ fn encode_resource(
                 .map_err(|_| ProtocolError::invalid_request("resource contains invalid base64"))?;
             Ok(json!({"type":kind, "data":data_base64, "mime_type":mime}))
         }
-        ResourceRef::NamedObject { obj_id } => {
-            let resource = context.resources.get(&obj_id.to_string()).ok_or_else(|| {
-                ProtocolError::invalid_request(format!(
-                    "resource `{obj_id}` was not materialized before Gemini encoding"
-                ))
-            })?;
+        ResourceRef::NamedObject { .. } => {
+            let resource = context.materialized_resource(source)?;
             Ok(
                 json!({"type":kind, "data":STANDARD.encode(&resource.bytes), "mime_type":resource.mime}),
             )
@@ -850,12 +846,8 @@ fn embedding_resource_part(
             })?;
             Ok(json!({"inlineData":{"mimeType":mime,"data":data_base64}}))
         }
-        ResourceRef::NamedObject { obj_id } => {
-            let resource = context.resources.get(&obj_id.to_string()).ok_or_else(|| {
-                ProtocolError::invalid_request(format!(
-                    "resource `{obj_id}` was not materialized before Gemini embedding"
-                ))
-            })?;
+        ResourceRef::NamedObject { .. } => {
+            let resource = context.materialized_resource(resource)?;
             Ok(
                 json!({"inlineData":{"mimeType":resource.mime,"data":STANDARD.encode(&resource.bytes)}}),
             )
@@ -1520,12 +1512,8 @@ fn video_resource(resource: &ResourceRef, context: &CodecContext) -> ProtocolRes
             })?;
             Ok(json!({"bytesBase64Encoded":data_base64,"mimeType":mime}))
         }
-        ResourceRef::NamedObject { obj_id } => {
-            let resource = context.resources.get(&obj_id.to_string()).ok_or_else(|| {
-                ProtocolError::invalid_request(format!(
-                    "resource `{obj_id}` was not materialized before Gemini video encoding"
-                ))
-            })?;
+        ResourceRef::NamedObject { .. } => {
+            let resource = context.materialized_resource(resource)?;
             Ok(
                 json!({"bytesBase64Encoded":STANDARD.encode(&resource.bytes),"mimeType":resource.mime}),
             )

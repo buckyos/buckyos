@@ -1,11 +1,13 @@
 use super::{
-    sse_frame_stream, AdapterDescriptor, AdapterStatus, CodecCall, CodecRegistration,
+    sse_frame_stream, AdapterDescriptor, AdapterStatus, CodecCall, CodecContext, CodecRegistration,
     ExecutionMode, HttpBody, HttpRequest, HttpResponse, OperationBinding, OperationCodec,
     OperationDescriptor, ProtocolError, ProtocolErrorKind, ProtocolEvent, ProtocolExecution,
     ProtocolOutput, ProtocolResultValue, ProtocolStream, SseConfig, SseFrame,
     StreamingHttpResponse,
 };
 use async_trait::async_trait;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use buckyos_api::{
     features, AiContent, AiMessage, AiRole, AiToolResultContent, AiUsage, AiccCall, ApiType,
     LlmChatInvokeRequest, LlmResponseFormat, LlmResponseFormatType, ResourceRef,
@@ -155,7 +157,11 @@ impl OpenAiChatCompletionsCodec {
             ("model".to_string(), Value::String(provider_model_id)),
             (
                 "messages".to_string(),
-                Value::Array(encode_messages(&request.messages, self.dialect.as_ref())?),
+                Value::Array(encode_messages(
+                    &request.messages,
+                    self.dialect.as_ref(),
+                    call.context,
+                )?),
             ),
         ]);
         if !request.tools.is_empty() {
@@ -355,16 +361,18 @@ fn validate_request(request: &LlmChatInvokeRequest) -> ProtocolResultValue<()> {
 fn encode_messages(
     messages: &[AiMessage],
     dialect: &dyn OpenAiChatCompletionsDialect,
+    context: &CodecContext,
 ) -> ProtocolResultValue<Vec<Value>> {
     messages
         .iter()
-        .map(|message| encode_message(message, dialect))
+        .map(|message| encode_message(message, dialect, context))
         .collect()
 }
 
 fn encode_message(
     message: &AiMessage,
     dialect: &dyn OpenAiChatCompletionsDialect,
+    context: &CodecContext,
 ) -> ProtocolResultValue<Value> {
     match message.role {
         AiRole::System | AiRole::Developer => Ok(json!({
@@ -373,7 +381,7 @@ fn encode_message(
         })),
         AiRole::User => Ok(json!({
             "role": "user",
-            "content": encode_user_content(&message.content, dialect)?
+            "content": encode_user_content(&message.content, dialect, context)?
         })),
         AiRole::Assistant => encode_assistant_message(&message.content, dialect),
         AiRole::Tool => encode_tool_message(&message.content),
@@ -396,6 +404,7 @@ fn text_only_content(content: &[AiContent]) -> ProtocolResultValue<String> {
 fn encode_user_content(
     content: &[AiContent],
     dialect: &dyn OpenAiChatCompletionsDialect,
+    context: &CodecContext,
 ) -> ProtocolResultValue<Value> {
     if content
         .iter()
@@ -409,7 +418,7 @@ fn encode_user_content(
             AiContent::Text { text } => Ok(json!({"type": "text", "text": text})),
             AiContent::Image { source } => Ok(json!({
                 "type": "image_url",
-                "image_url": {"url": encode_image_url(source)?}
+                "image_url": {"url": encode_image_url(source, context)?}
             })),
             AiContent::Document { .. }
                 if dialect.allows_unmapped_message_content(AiRole::User, block) =>
@@ -433,15 +442,20 @@ fn encode_user_content(
     Ok(Value::Array(parts))
 }
 
-fn encode_image_url(source: &ResourceRef) -> ProtocolResultValue<String> {
+fn encode_image_url(source: &ResourceRef, context: &CodecContext) -> ProtocolResultValue<String> {
     match source {
         ResourceRef::Url { url, .. } => Ok(url.clone()),
         ResourceRef::Base64 { mime, data_base64 } => {
             Ok(format!("data:{mime};base64,{data_base64}"))
         }
-        ResourceRef::NamedObject { .. } => Err(ProtocolError::invalid_request(
-            "Chat Completions image resource must be materialized before protocol encoding",
-        )),
+        ResourceRef::NamedObject { .. } => {
+            let resource = context.materialized_resource(source)?;
+            Ok(format!(
+                "data:{};base64,{}",
+                resource.mime,
+                STANDARD.encode(&resource.bytes)
+            ))
+        }
     }
 }
 
@@ -1413,8 +1427,8 @@ fn required_u64(value: &Map<String, Value>, key: &str) -> ProtocolResultValue<u6
 mod tests {
     use super::*;
     use crate::protocol::{
-        CodecContext, CodecInput, CodecLimits, CodecRegistry, GoldenBody, ProtocolContractHarness,
-        ResolvedCredential,
+        CodecContext, CodecInput, CodecLimits, CodecRegistry, GoldenBody, MaterializedResource,
+        ProtocolContractHarness, ResolvedCredential,
     };
     use buckyos_api::{AiToolSpec, LlmChatInvokeRequest, LlmResponseFormat};
     use bytes::Bytes;
@@ -2202,6 +2216,24 @@ mod tests {
             };
             assert_eq!(output.value["message"]["content"][0]["text"], "ok");
         }
+    }
+
+    #[test]
+    fn named_object_uses_the_resource_manager_key_and_fails_closed() {
+        let source = ResourceRef::named_object(ndn_lib::ObjId::new("chunk:123456").unwrap());
+        let missing = encode_image_url(&source, &context("https://example.test/v1")).unwrap_err();
+        assert_eq!(missing.kind, ProtocolErrorKind::InvalidRequest);
+        assert!(!format!("{missing:?}").contains("chunk:123456"));
+
+        let mut context = context("https://example.test/v1");
+        context.resources.insert(
+            crate::resource::ResourceKey::from_ref(&source).into_string(),
+            MaterializedResource::new(Bytes::from_static(b"image"), "image/png", None).unwrap(),
+        );
+        assert_eq!(
+            encode_image_url(&source, &context).unwrap(),
+            "data:image/png;base64,aW1hZ2U="
+        );
     }
 
     #[test]

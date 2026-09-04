@@ -3,7 +3,7 @@ use super::{
     ProtocolOutput, ProtocolResultValue, ProtocolStream, ResolvedCredential, StreamingHttpResponse,
 };
 use async_trait::async_trait;
-use buckyos_api::{AiccCall, ApiType, Capability};
+use buckyos_api::{AiccCall, ApiType, Capability, ResourceRef};
 use bytes::Bytes;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -279,6 +279,16 @@ impl std::fmt::Debug for CodecContext {
 }
 
 impl CodecContext {
+    pub(crate) fn materialized_resource(
+        &self,
+        source: &ResourceRef,
+    ) -> ProtocolResultValue<&MaterializedResource> {
+        let key = crate::resource::ResourceKey::from_ref(source);
+        self.resources.get(key.as_str()).ok_or_else(|| {
+            ProtocolError::invalid_request("resource was not materialized before protocol encoding")
+        })
+    }
+
     pub(crate) fn validate(&self) -> ProtocolResultValue<()> {
         let parsed = reqwest::Url::parse(&self.base_url)
             .map_err(|_| ProtocolError::invalid_configuration("codec base URL is invalid"))?;
@@ -1366,8 +1376,13 @@ mod tests {
     #[test]
     fn materialized_resource_round_trips_through_multipart() {
         let mut call_context = context("https://upload.example", "secret");
+        let source = ResourceRef::base64(
+            "image/png".to_string(),
+            "c2Vuc2l0aXZlLWJhc2U2NC1jb250ZW50".to_string(),
+        );
+        let key = crate::resource::ResourceKey::from_ref(&source).into_string();
         call_context.resources.insert(
-            "source".to_string(),
+            key,
             MaterializedResource::new(
                 Bytes::from_static(b"image-bytes"),
                 "image/png",
@@ -1375,7 +1390,11 @@ mod tests {
             )
             .unwrap(),
         );
-        let resource = &call_context.resources["source"];
+        let resource = call_context.materialized_resource(&source).unwrap();
+        let rendered = format!("{call_context:?} {resource:?}");
+        assert!(!rendered.contains("c2Vuc2l0aXZlLWJhc2U2NC1jb250ZW50"));
+        assert!(!rendered.contains("image-bytes"));
+        assert!(!rendered.contains("secret"));
         let mut multipart = crate::protocol::MultipartBody::new(2, 1024).unwrap();
         multipart
             .push(crate::protocol::MultipartPart::file(
