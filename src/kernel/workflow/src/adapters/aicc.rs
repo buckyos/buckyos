@@ -25,7 +25,9 @@ use crate::error::{WorkflowError, WorkflowResult};
 use crate::executor_adapter::ExecutorAdapter;
 use crate::types::ExecutorRef;
 use async_trait::async_trait;
-use buckyos_api::{ai_methods, get_buckyos_api_runtime, AiccCall, AiccClient, Capability};
+use buckyos_api::{
+    ai_methods, get_buckyos_api_runtime, AiccCall, AiccClient, CancelRequest, Capability,
+};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -51,11 +53,19 @@ pub struct AiccMethodSchema {
     pub description: &'static str,
 }
 
+type AiccMethodDefinition = (
+    &'static str,
+    Option<Capability>,
+    Option<&'static str>,
+    bool,
+    &'static str,
+);
+
 /// 返回 workflow 一期支持的全部 aicc 方法 schema。
 pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
     use ai_methods::*;
 
-    let methods: &[(&str, Option<Capability>, Option<&str>, bool, &str)] = &[
+    let methods: &[AiccMethodDefinition] = &[
         (
             ROUTE_RESOLVE,
             None,
@@ -432,24 +442,15 @@ impl ExecutorAdapter for AiccAdapter {
 
 impl AiccAdapter {
     async fn invoke_cancel(&self, input: &Value) -> WorkflowResult<Value> {
-        let task_id = input
-            .get("task_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                WorkflowError::Dispatcher(
-                    "aicc cancel: missing required field `task_id`".to_string(),
-                )
-            })?;
+        let request = CancelRequest::from_json(input.clone())
+            .map_err(|err| WorkflowError::Dispatcher(err.to_string()))?;
         let resp = self
             .client()
             .await?
-            .cancel(task_id)
+            .cancel(&request.task_id)
             .await
             .map_err(|err| WorkflowError::Dispatcher(format!("aicc cancel failed: {}", err)))?;
-        Ok(json!({
-            "task_id": resp.task_id,
-            "accepted": resp.accepted,
-        }))
+        serde_json::to_value(resp).map_err(|err| WorkflowError::Dispatcher(err.to_string()))
     }
 }
 
@@ -482,4 +483,277 @@ fn flatten_typed_response(mut response: Value) -> Value {
         }
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use buckyos_api::{
+        AiContent, AiMessage, AiMethodStatus, AiRole, AiccHandler, CancelResponse,
+        LlmChatHelperRequest, LlmChatInvokeRequest, LlmChatInvokeResponse,
+        TextToImageHelperRequest, TextToImageInvokeResponse,
+    };
+    use kRPC::{RPCContext, RPCErrors};
+    use std::sync::Mutex;
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum SeenCall {
+        TypedChat(LlmChatInvokeRequest),
+        HelperChat(LlmChatHelperRequest),
+        HelperImage(TextToImageHelperRequest),
+        Cancel(String),
+    }
+
+    #[derive(Default)]
+    struct RecordingHandler {
+        calls: Arc<Mutex<Vec<SeenCall>>>,
+    }
+
+    #[async_trait]
+    impl AiccHandler for RecordingHandler {
+        async fn handle_cancel(
+            &self,
+            task_id: &str,
+            _ctx: RPCContext,
+        ) -> Result<CancelResponse, RPCErrors> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(SeenCall::Cancel(task_id.to_string()));
+            Ok(CancelResponse::new(task_id.to_string(), true))
+        }
+
+        async fn handle_chat_completions_create(
+            &self,
+            request: LlmChatInvokeRequest,
+            _ctx: RPCContext,
+        ) -> Result<LlmChatInvokeResponse, RPCErrors> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(SeenCall::TypedChat(request));
+            let mut response = LlmChatInvokeResponse {
+                task_id: "chat-task".to_string(),
+                status: AiMethodStatus::Succeeded,
+                message: Some(AiMessage::new(
+                    AiRole::Assistant,
+                    vec![
+                        AiContent::text("hello"),
+                        AiContent::tool_use("call-1", "lookup", Default::default()),
+                    ],
+                )),
+                tool_calls: Vec::new(),
+                usage: None,
+                cost: None,
+                finish_reason: Some("tool_use".to_string()),
+                provider_task_ref: None,
+                route_trace: None,
+                event_ref: Some("task://chat-task/events".to_string()),
+                error: None,
+            };
+            response.tool_calls = response.message.as_ref().unwrap().tool_calls();
+            Ok(response)
+        }
+
+        async fn handle_helper_llm_chat(
+            &self,
+            request: LlmChatHelperRequest,
+            _ctx: RPCContext,
+        ) -> Result<LlmChatInvokeResponse, RPCErrors> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(SeenCall::HelperChat(request));
+            Ok(LlmChatInvokeResponse {
+                task_id: "helper-task".to_string(),
+                status: AiMethodStatus::Succeeded,
+                message: Some(AiMessage::text(AiRole::Assistant, "helper result")),
+                tool_calls: Vec::new(),
+                usage: None,
+                cost: None,
+                finish_reason: Some("stop".to_string()),
+                provider_task_ref: None,
+                route_trace: None,
+                event_ref: Some("task://helper-task/events".to_string()),
+                error: None,
+            })
+        }
+
+        async fn handle_helper_text_to_image(
+            &self,
+            request: TextToImageHelperRequest,
+            _ctx: RPCContext,
+        ) -> Result<TextToImageInvokeResponse, RPCErrors> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(SeenCall::HelperImage(request));
+            Ok(TextToImageInvokeResponse {
+                task_id: "image-task".to_string(),
+                status: AiMethodStatus::Running,
+                images: Vec::new(),
+                provider_states: Vec::new(),
+                usage: None,
+                cost: None,
+                finish_reason: None,
+                provider_task_ref: Some("provider-job-1".to_string()),
+                route_trace: None,
+                event_ref: Some("task://image-task/events".to_string()),
+                error: None,
+            })
+        }
+    }
+
+    fn adapter() -> (AiccAdapter, Arc<Mutex<Vec<SeenCall>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let handler = RecordingHandler {
+            calls: calls.clone(),
+        };
+        (
+            AiccAdapter::new(Arc::new(AiccClient::new_in_process(Box::new(handler)))),
+            calls,
+        )
+    }
+
+    #[test]
+    fn exposes_only_canonical_core_and_cancel_methods() {
+        let schemas = aicc_method_schemas();
+        assert_eq!(schemas.len(), 27);
+        assert!(schemas
+            .iter()
+            .all(|schema| ai_methods::is_aicc_core_method(schema.method)
+                || schema.method == ai_methods::CANCEL));
+        assert!(aicc_method_schema(ai_methods::CHAT_COMPLETIONS_CREATE).is_some());
+        assert!(aicc_method_schema(ai_methods::IMAGES_GENERATE).is_some());
+        assert!(aicc_method_schema("llm.chat").is_none());
+        assert!(aicc_method_schema("image.txt2image").is_none());
+        assert!(aicc_method_schema(ai_methods::SERVICE_RELOAD_SETTINGS).is_none());
+    }
+
+    #[test]
+    fn supports_only_registered_aicc_executors() {
+        let (adapter, _) = adapter();
+        assert!(
+            adapter.supports(&ExecutorRef::parse("service::aicc.chat.completions.create").unwrap())
+        );
+        assert!(adapter.supports(&ExecutorRef::parse("service::aicc.cancel").unwrap()));
+        assert!(!adapter.supports(&ExecutorRef::parse("service::aicc.llm.chat").unwrap()));
+        assert!(!adapter.supports(&ExecutorRef::parse("service::aicc.provider.list").unwrap()));
+        assert!(!adapter.supports(&ExecutorRef::parse("service::msg-center.send").unwrap()));
+        assert!(!adapter.supports(&ExecutorRef::parse("/agent/jarvis").unwrap()));
+    }
+
+    #[tokio::test]
+    async fn typed_chat_uses_public_request_and_response_contracts() {
+        let (adapter, calls) = adapter();
+        let output = adapter
+            .invoke(
+                &ExecutorRef::parse("service::aicc.chat.completions.create").unwrap(),
+                &json!({
+                    "exact_model": "gpt-5@openai-main",
+                    "messages": [{
+                        "role": "user",
+                        "content": [{"type": "text", "text": "hi"}]
+                    }],
+                    "temperature": 0.2
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(output["task_id"], "chat-task");
+        assert_eq!(output["status"], "succeeded");
+        assert_eq!(output["text"], "hello");
+        assert_eq!(output["tool_calls"][0]["name"], "lookup");
+        assert_eq!(output["event_ref"], "task://chat-task/events");
+        let calls = calls.lock().unwrap();
+        let SeenCall::TypedChat(request) = &calls[0] else {
+            panic!("expected typed chat call");
+        };
+        assert_eq!(request.exact_model, "gpt-5@openai-main");
+        assert_eq!(request.messages[0].text_content(), "hi");
+        assert_eq!(request.temperature, Some(0.2));
+    }
+
+    #[tokio::test]
+    async fn helpers_keep_logical_models_and_running_task_envelopes() {
+        let (adapter, calls) = adapter();
+        let chat = adapter
+            .invoke(
+                &ExecutorRef::parse("service::aicc.helper.llm_chat").unwrap(),
+                &json!({
+                    "logical_model": "llm.chat",
+                    "messages": [{
+                        "role": "user",
+                        "content": [{"type": "text", "text": "plan"}]
+                    }]
+                }),
+            )
+            .await
+            .unwrap();
+        let image = adapter
+            .invoke(
+                &ExecutorRef::parse("service::aicc.helper.text_to_image").unwrap(),
+                &json!({"logical_model": "image.txt2img", "prompt": "a lighthouse"}),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(chat["text"], "helper result");
+        assert_eq!(image["task_id"], "image-task");
+        assert_eq!(image["status"], "running");
+        assert_eq!(image["event_ref"], "task://image-task/events");
+        let calls = calls.lock().unwrap();
+        assert!(matches!(
+            &calls[0],
+            SeenCall::HelperChat(request) if request.logical_model == "llm.chat"
+        ));
+        assert!(matches!(
+            &calls[1],
+            SeenCall::HelperImage(request) if request.logical_model == "image.txt2img"
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancel_uses_strict_public_request_and_response_contracts() {
+        let (adapter, calls) = adapter();
+        let executor = ExecutorRef::parse("service::aicc.cancel").unwrap();
+        let output = adapter
+            .invoke(&executor, &json!({"task_id": "image-task"}))
+            .await
+            .unwrap();
+        assert_eq!(output, json!({"task_id": "image-task", "accepted": true}));
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &[SeenCall::Cancel("image-task".to_string())]
+        );
+
+        let error = adapter
+            .invoke(
+                &executor,
+                &json!({"task_id": "image-task", "legacy_force": true}),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, WorkflowError::Dispatcher(_)));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn typed_request_rejects_all_in_one_payload_fields() {
+        let (adapter, calls) = adapter();
+        let error = adapter
+            .invoke(
+                &ExecutorRef::parse("service::aicc.chat.completions.create").unwrap(),
+                &json!({
+                    "exact_model": "gpt-5@openai-main",
+                    "messages": [],
+                    "payload": {"text": "legacy"}
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, WorkflowError::Dispatcher(_)));
+        assert!(calls.lock().unwrap().is_empty());
+    }
 }
