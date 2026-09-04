@@ -54,7 +54,10 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, Mutex};
 
-use crate::call::{CallResolver, ProviderCallTarget, ResolvedProviderCall};
+use crate::call::{
+    CallResolver, PricingSource as CallPricingSource, ProviderCallTarget, ResolvedPricing,
+    ResolvedProviderCall,
+};
 use crate::catalog::CatalogSnapshot;
 use crate::execution::{
     ExecutionEngine, ExecutionOutput, ExecutionState, NativeTaskPoll, NativeTaskResumeDescriptor,
@@ -65,8 +68,8 @@ use crate::execution::{
 use crate::model::{ModelRegistry, ProviderInventory as ModelProviderInventory, RegistryLayers};
 use crate::protocol::{
     AdapterStatus, CodecContext, CodecLimits, CodecRegistry, CredentialKind, ExecutionMode,
-    HttpTransport, HttpTransportConfig, NativeTaskInput, NativeTaskOperation, NativeTaskOutput,
-    ProtocolError, ProtocolErrorKind,
+    HttpTransport, HttpTransportConfig, MaterializedResource as CodecMaterializedResource,
+    NativeTaskInput, NativeTaskOperation, NativeTaskOutput, ProtocolError, ProtocolErrorKind,
 };
 use crate::provider::{
     builtin_provider_codecs, builtin_provider_registry, resolve_sn_provider_instance_with_config,
@@ -75,6 +78,11 @@ use crate::provider::{
     ProviderDraftValidationStage, ProviderHealthState, ProviderInstanceConfig,
     ProviderQuotaObservation, ProviderQuotaObservationState, ProviderRefreshEvent,
     ProviderRuntimeManager, SnCredentialBroker, SnProviderInstanceInput, StaticCredentialResolver,
+};
+use crate::resource::{
+    NamedDataMgrResourceStore, ReqwestUrlResourceFetcher, ResourceAccessContext,
+    ResourceAccessOperation, ResourceAuthorizer, ResourceError, ResourceFailure, ResourceLimits,
+    ResourceManager, ResourceStore, ResourceTarget, UrlResourceFetcher,
 };
 use crate::routing::policy::{
     CredentialScope, ProviderPrivacy, ProviderTrustLevel, ProviderTrustView, ProviderType,
@@ -226,6 +234,10 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         .get_task_mgr_client()
         .await
         .map_err(anyhow::Error::msg)?;
+    let named_store = api_runtime
+        .get_named_store()
+        .await
+        .context("open AICC named resource store")?;
     let client_version = api_runtime
         .device_config
         .as_ref()
@@ -321,6 +333,8 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         quota_factory.clone(),
         execution.clone(),
         storage.clone(),
+        Arc::new(NamedDataMgrResourceStore::new(named_store)),
+        Arc::new(ReqwestUrlResourceFetcher::new().context("initialize AICC URL resource fetcher")?),
     ));
     let service = AiccService::new(
         Arc::new(RuntimeAuthorizer),
@@ -448,6 +462,8 @@ pub(crate) struct RuntimeInferencePort {
     quota: Arc<QuotaSourceFactory>,
     execution: Arc<ExecutionEngine>,
     storage: Arc<AiccStorage>,
+    resource_store: Arc<dyn ResourceStore>,
+    url_fetcher: Arc<dyn UrlResourceFetcher>,
 }
 
 impl RuntimeInferencePort {
@@ -457,6 +473,8 @@ impl RuntimeInferencePort {
         quota: Arc<QuotaSourceFactory>,
         execution: Arc<ExecutionEngine>,
         storage: Arc<AiccStorage>,
+        resource_store: Arc<dyn ResourceStore>,
+        url_fetcher: Arc<dyn UrlResourceFetcher>,
     ) -> Self {
         Self {
             runtime,
@@ -464,6 +482,8 @@ impl RuntimeInferencePort {
             quota,
             execution,
             storage,
+            resource_store,
+            url_fetcher,
         }
     }
 
@@ -559,6 +579,27 @@ impl RuntimeInferencePort {
             )
         })?;
         let transport = HttpTransportConfig::default();
+        let pricing = provider
+            .inventory
+            .models
+            .iter()
+            .find(|model| {
+                model.provider_model_id == selected.provider_model_id
+                    && model.model_driver_id == selected.model_driver_id
+            })
+            .and_then(|model| model.pricing.as_ref())
+            .map(|pricing| ResolvedPricing {
+                source: match pricing.source {
+                    crate::provider::PricingSource::Discovery => CallPricingSource::Discovery,
+                    crate::provider::PricingSource::ProviderRules => {
+                        CallPricingSource::ProviderRules
+                    }
+                    crate::provider::PricingSource::ModelDriver => CallPricingSource::ModelDriver,
+                },
+                pricing: Some(pricing.value.clone()),
+                matched_amount: None,
+                estimated_cost_usd: selected.estimated_cost_usd,
+            });
         let mut match_dimensions = BTreeMap::new();
         for (name, value) in [
             ("region", provider.config.region.as_ref()),
@@ -582,12 +623,90 @@ impl RuntimeInferencePort {
                         max_request_bytes: transport.max_request_bytes,
                         max_response_bytes: transport.max_response_bytes,
                     },
-                    pricing: None,
+                    pricing,
                     match_dimensions,
                 },
             )
             .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))
     }
+
+    async fn materialize_resources(
+        &self,
+        caller: &AuthorizedCaller,
+        request_id: &str,
+        call: &mut ResolvedProviderCall,
+    ) -> Result<(), RPCErrors> {
+        if call.resource_requirements.is_empty() {
+            return Ok(());
+        }
+        let context = ResourceAccessContext::new(
+            caller.tenant_id.clone(),
+            caller.user_id.clone(),
+            request_id.to_string(),
+        )
+        .map_err(resource_rpc_error)?;
+        let manager = ResourceManager::new(
+            Arc::new(AuthenticatedResourceAuthorizer {
+                tenant_id: caller.tenant_id.clone(),
+                caller_id: caller.user_id.clone(),
+            }),
+            self.resource_store.clone(),
+            self.url_fetcher.clone(),
+            ResourceLimits::default(),
+        )
+        .map_err(resource_rpc_error)?;
+        let resources = call
+            .resource_requirements
+            .iter()
+            .map(|requirement| requirement.resource.clone())
+            .collect::<Vec<_>>();
+        let inspected = manager
+            .inspect(&context, &resources)
+            .await
+            .map_err(resource_rpc_error)?;
+        let materialized = manager
+            .materialize_after_provider_selected(&context, &call.exact_model, inspected)
+            .await
+            .map_err(resource_rpc_error)?;
+        for resource in materialized {
+            let parts = resource.into_codec_parts().map_err(resource_rpc_error)?;
+            call.context.resources.insert(
+                parts.key.into_string(),
+                CodecMaterializedResource::new(parts.bytes, parts.mime, parts.file_name).map_err(
+                    |error| inference_error(AiccErrorCode::ResourceInvalid, error.to_string()),
+                )?,
+            );
+        }
+        Ok(())
+    }
+}
+
+struct AuthenticatedResourceAuthorizer {
+    tenant_id: String,
+    caller_id: String,
+}
+
+#[async_trait]
+impl ResourceAuthorizer for AuthenticatedResourceAuthorizer {
+    async fn authorize(
+        &self,
+        context: &ResourceAccessContext,
+        _target: &ResourceTarget,
+        _operation: ResourceAccessOperation,
+    ) -> Result<(), ResourceError> {
+        if context.tenant_id == self.tenant_id && context.caller_id == self.caller_id {
+            Ok(())
+        } else {
+            Err(ResourceError::new(
+                ResourceFailure::Unauthorized,
+                "resource caller scope does not match the authenticated request",
+            ))
+        }
+    }
+}
+
+fn resource_rpc_error(error: ResourceError) -> RPCErrors {
+    error.to_aicc_error().to_krpc_error()
 }
 
 #[async_trait]
@@ -630,18 +749,21 @@ impl InferencePort for RuntimeInferencePort {
             .pointer("/task_options/parent_id")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let primary = self
+        let mut primary = self
             .lower_call(routed.snapshot.as_ref(), &routed.decision, &exact_call)
+            .await?;
+        self.materialize_resources(caller, &routed.request_id, &mut primary)
             .await?;
         let mut failover = Vec::new();
         for candidate in &routed.decision.fallback_candidates {
             let mut fallback_decision = routed.decision.clone();
             fallback_decision.selected = candidate.clone();
             let fallback_call = call_with_exact_model(&exact_call, &candidate.exact_model)?;
-            if let Ok(call) = self
+            if let Ok(mut call) = self
                 .lower_call(routed.snapshot.as_ref(), &fallback_decision, &fallback_call)
                 .await
             {
+                call.context.resources = primary.context.resources.clone();
                 failover.push(call);
             }
         }
