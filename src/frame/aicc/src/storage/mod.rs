@@ -69,10 +69,11 @@ CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_tenant_time ON aicc_route_
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_task_time ON aicc_route_trace_event(task_id, created_at_ms);
 CREATE TABLE IF NOT EXISTS aicc_audit_event (
  audit_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, caller_app_id TEXT, event_type TEXT NOT NULL,
- request_id TEXT, task_id TEXT, route_id TEXT, provider_trace_id TEXT,
+ trace_id TEXT, request_id TEXT, task_id TEXT, route_id TEXT, provider_trace_id TEXT,
  provider_instance_name TEXT, exact_model TEXT, data_json TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_time ON aicc_audit_event(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_tenant_time ON aicc_audit_event(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_trace_time ON aicc_audit_event(trace_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_task_time ON aicc_audit_event(task_id, created_at_ms);
 "#;
 
@@ -209,6 +210,7 @@ pub(crate) struct AuditEvent {
     pub tenant_id: String,
     pub caller_app_id: Option<String>,
     pub event_type: String,
+    pub trace_id: Option<String>,
     pub request_id: Option<String>,
     pub task_id: Option<String>,
     pub route_id: Option<String>,
@@ -223,6 +225,7 @@ pub(crate) struct AuditEvent {
 pub(crate) struct AuditQuery {
     pub tenant_id: String,
     pub event_types: Vec<String>,
+    pub trace_ids: Vec<String>,
     pub request_ids: Vec<String>,
     pub task_ids: Vec<String>,
     pub route_ids: Vec<String>,
@@ -401,6 +404,7 @@ impl AiccStorage {
         ]
         .iter()
         .any(|v| v.trim().is_empty())
+            || e.trace_id.as_ref().is_some_and(|v| v.trim().is_empty())
             || e.created_at_ms < 0
         {
             return Err(StorageError::InvalidRecord(
@@ -685,6 +689,7 @@ impl AiccStorage {
         if e.audit_id.trim().is_empty()
             || e.tenant_id.trim().is_empty()
             || e.event_type.trim().is_empty()
+            || e.trace_id.as_ref().is_some_and(|v| v.trim().is_empty())
             || e.created_at_ms < 0
         {
             return Err(StorageError::InvalidRecord(
@@ -692,14 +697,15 @@ impl AiccStorage {
             ));
         }
         let sql = self.sql("INSERT INTO aicc_audit_event
-          (audit_id,tenant_id,caller_app_id,event_type,request_id,task_id,route_id,provider_trace_id,
-           provider_instance_name,exact_model,data_json,created_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+          (audit_id,tenant_id,caller_app_id,event_type,trace_id,request_id,task_id,route_id,provider_trace_id,
+           provider_instance_name,exact_model,data_json,created_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(audit_id) DO NOTHING");
         sqlx::query(&sql)
             .bind(&e.audit_id)
             .bind(&e.tenant_id)
             .bind(&e.caller_app_id)
             .bind(&e.event_type)
+            .bind(&e.trace_id)
             .bind(&e.request_id)
             .bind(&e.task_id)
             .bind(&e.route_id)
@@ -1024,6 +1030,7 @@ fn audit_from_row(row: AnyRow) -> StorageResult<AuditEvent> {
         tenant_id: row.try_get("tenant_id")?,
         caller_app_id: row.try_get("caller_app_id")?,
         event_type: row.try_get("event_type")?,
+        trace_id: row.try_get("trace_id")?,
         request_id: row.try_get("request_id")?,
         task_id: row.try_get("task_id")?,
         route_id: row.try_get("route_id")?,
@@ -1219,6 +1226,7 @@ fn audit_matches(e: &AuditEvent, q: &AuditQuery) -> bool {
     q.start_time_ms.is_none_or(|v| e.created_at_ms >= v)
         && q.end_time_ms.is_none_or(|v| e.created_at_ms < v)
         && exact(&q.event_types, Some(&e.event_type))
+        && exact(&q.trace_ids, e.trace_id.as_deref())
         && exact(&q.request_ids, e.request_id.as_deref())
         && exact(&q.task_ids, e.task_id.as_deref())
         && exact(&q.route_ids, e.route_id.as_deref())
@@ -1823,6 +1831,9 @@ mod tests {
     #[tokio::test]
     async fn trace_audit_are_correlated_and_retained() {
         let db = db().await;
+        let mut usage = completion("usage-1", "task-1", "idem-1", 100);
+        usage.trace_id = Some("trace-1".into());
+        db.write_provider_completion(usage).await.unwrap();
         db.write_route_trace(&RouteTraceRecord {
             trace: AiccRouteTraceEvent {
                 trace_id: "trace-1".into(),
@@ -1849,6 +1860,7 @@ mod tests {
             tenant_id: "tenant-a".into(),
             caller_app_id: None,
             event_type: "provider.completed".into(),
+            trace_id: Some("trace-1".into()),
             request_id: Some("request-1".into()),
             task_id: Some("task-1".into()),
             route_id: Some("route-1".into()),
@@ -1860,6 +1872,12 @@ mod tests {
         })
         .await
         .unwrap();
+        let mut usage_query = QueryUsageRequest::new(UsageQueryTimeRange::Explicit {
+            start_time_ms: 100,
+            end_time_ms: 101,
+        });
+        usage_query.output_mode = UsageQueryOutputMode::Events;
+        let usages = db.query_usage(&usage_query, 101).await.unwrap();
         let traces = db
             .query_route_traces(
                 "tenant-a",
@@ -1884,12 +1902,20 @@ mod tests {
         let audits = db
             .query_audit(&AuditQuery {
                 tenant_id: "tenant-a".into(),
-                task_ids: vec!["task-1".into()],
+                trace_ids: vec!["trace-1".into()],
                 ..Default::default()
             })
             .await
             .unwrap();
+        assert_eq!(usages.events[0].trace_id.as_deref(), Some("trace-1"));
         assert_eq!(audits.events.len(), 1);
+        assert_eq!(audits.events[0].trace_id.as_deref(), Some("trace-1"));
+        assert_eq!(
+            traces.traces[0]
+                .pointer("/trace/trace_id")
+                .and_then(Value::as_str),
+            Some("trace-1")
+        );
         let deleted = db.enforce_diagnostic_retention(101).await.unwrap();
         assert_eq!(
             deleted,
