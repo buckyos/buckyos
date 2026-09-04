@@ -2,8 +2,8 @@
 
 use crate::call::ResolvedProviderCall;
 use crate::protocol::{
-    cancellation_pair, CancelHandle, Cancellation, NativeTaskState, ProtocolError,
-    ProtocolErrorKind, ProtocolEvent, ProtocolExecution, ProtocolOutput, ProtocolStream,
+    cancellation_pair, CancelHandle, Cancellation, NativeTaskHandle, NativeTaskState,
+    ProtocolError, ProtocolErrorKind, ProtocolEvent, ProtocolOutput, ProtocolStream,
 };
 use async_trait::async_trait;
 use buckyos_api::{AiArtifact, AiCost, AiUsage, AiccError, AiccErrorCode, ApiType, Capability};
@@ -87,6 +87,14 @@ fn hex_digest(bytes: &[u8]) -> String {
         .collect()
 }
 
+fn credential_reference_fingerprint(reference: &str) -> String {
+    let digest = Sha256::digest(reference.as_bytes());
+    digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ExecutionState {
@@ -165,6 +173,7 @@ pub(crate) struct PinnedProviderTask {
     pub api_type: ApiType,
     pub remote_task_id: Option<String>,
     pub cancel_supported: bool,
+    pub resume: Option<NativeTaskResumeDescriptor>,
 }
 
 impl PinnedProviderTask {
@@ -179,7 +188,94 @@ impl PinnedProviderTask {
             api_type: call.api_type,
             remote_task_id: None,
             cancel_supported: false,
+            resume: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ResumeCredentialKind {
+    Bearer,
+    NamedHeader,
+    FalKey,
+    GlmJwt,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ResumeCredential {
+    pub reference: String,
+    pub kind: ResumeCredentialKind,
+    pub header_name: Option<String>,
+    pub fingerprint: String,
+}
+
+impl std::fmt::Debug for ResumeCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResumeCredential")
+            .field("reference", &"[REFERENCE]")
+            .field("kind", &self.kind)
+            .field("header_name", &self.header_name)
+            .field("fingerprint", &self.fingerprint)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct NativeTaskResumeDescriptor {
+    pub base_url: String,
+    pub credential: Option<ResumeCredential>,
+    pub resolved_parameters: BTreeMap<String, Value>,
+    pub request_timeout_ms: u64,
+    pub max_request_bytes: u64,
+    pub max_response_bytes: u64,
+}
+
+impl NativeTaskResumeDescriptor {
+    fn validate(&self) -> Result<(), AiccError> {
+        let base_url = reqwest::Url::parse(&self.base_url).map_err(|_| {
+            aicc_error(
+                AiccErrorCode::InternalError,
+                "native task resume base URL is invalid",
+                false,
+            )
+        })?;
+        if !matches!(base_url.scheme(), "http" | "https")
+            || base_url.cannot_be_a_base()
+            || !base_url.username().is_empty()
+            || base_url.password().is_some()
+            || self.request_timeout_ms == 0
+            || self.max_request_bytes == 0
+            || self.max_response_bytes == 0
+        {
+            return Err(aicc_error(
+                AiccErrorCode::InternalError,
+                "native task resume context is invalid",
+                false,
+            ));
+        }
+        if let Some(credential) = &self.credential {
+            if credential.reference.trim().is_empty()
+                || credential.fingerprint != credential_reference_fingerprint(&credential.reference)
+            {
+                return Err(aicc_error(
+                    AiccErrorCode::InternalError,
+                    "native task resume credential reference is invalid",
+                    false,
+                ));
+            }
+            if credential.kind == ResumeCredentialKind::NamedHeader
+                && credential.header_name.as_deref().is_none_or(str::is_empty)
+            {
+                return Err(aicc_error(
+                    AiccErrorCode::InternalError,
+                    "native task resume named-header credential is incomplete",
+                    false,
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -311,21 +407,54 @@ pub(crate) enum NativeTaskPoll {
     Failed(ProtocolError),
 }
 
+#[derive(Debug)]
+pub(crate) enum ProviderExecution {
+    Immediate(ProtocolOutput),
+    Stream(ProtocolStream),
+    NativeTask {
+        handle: NativeTaskHandle,
+        resume: NativeTaskResumeDescriptor,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum NativeTaskResumeError {
+    CredentialUnavailable,
+    Protocol(ProtocolError),
+}
+
+impl NativeTaskResumeError {
+    fn into_aicc_error(self) -> AiccError {
+        match self {
+            Self::CredentialUnavailable => aicc_error(
+                AiccErrorCode::ProviderError,
+                "pinned native task credential can no longer be resolved",
+                false,
+            ),
+            Self::Protocol(error) => error.into(),
+        }
+    }
+}
+
 #[async_trait]
 pub(crate) trait ProviderExecutionPort: Send + Sync {
     async fn start(
         &self,
+        runtime_generation: u64,
         call: &ResolvedProviderCall,
         cancellation: Cancellation,
-    ) -> Result<ProtocolExecution, ProviderStartFailure>;
+    ) -> Result<ProviderExecution, ProviderStartFailure>;
 
     async fn poll_native(
         &self,
         binding: &PinnedProviderTask,
         cancellation: Cancellation,
-    ) -> Result<NativeTaskPoll, ProtocolError>;
+    ) -> Result<NativeTaskPoll, NativeTaskResumeError>;
 
-    async fn cancel_native(&self, binding: &PinnedProviderTask) -> Result<bool, ProtocolError>;
+    async fn cancel_native(
+        &self,
+        binding: &PinnedProviderTask,
+    ) -> Result<bool, NativeTaskResumeError>;
 
     fn completion_cost(
         &self,
@@ -520,9 +649,13 @@ impl ExecutionEngine {
                     .await;
             }
             let mut binding = PinnedProviderTask::from_call(request.runtime_generation, call);
-            match self.providers.start(call, cancellation.clone()).await {
+            match self
+                .providers
+                .start(request.runtime_generation, call, cancellation.clone())
+                .await
+            {
                 Ok(execution) => match execution {
-                    ProtocolExecution::Immediate(output) => {
+                    ProviderExecution::Immediate(output) => {
                         if !self
                             .store
                             .set_running(&record.task_id, ExecutionState::Running, binding.clone())
@@ -535,7 +668,7 @@ impl ExecutionEngine {
                             .finish_success(&record.task_id, &record.scope, binding, output)
                             .await;
                     }
-                    ProtocolExecution::Stream(stream) => {
+                    ProviderExecution::Stream(stream) => {
                         if !self
                             .store
                             .set_running(&record.task_id, ExecutionState::Running, binding.clone())
@@ -561,9 +694,13 @@ impl ExecutionEngine {
                             )
                             .await;
                     }
-                    ProtocolExecution::NativeTask(handle) => {
+                    ProviderExecution::NativeTask { handle, resume } => {
+                        if let Err(error) = resume.validate() {
+                            return self.finish_failure(&record.task_id, error).await;
+                        }
                         binding.remote_task_id = Some(handle.remote_task_id.clone());
                         binding.cancel_supported = handle.cancel_supported;
+                        binding.resume = Some(resume);
                         let state = ExecutionState::from(handle.state);
                         if !self
                             .store
@@ -654,6 +791,21 @@ impl ExecutionEngine {
                 )
                 .await;
         }
+        if binding.resume.is_none() {
+            return self
+                .finish_failure(
+                    task_id,
+                    aicc_error(
+                        AiccErrorCode::InternalError,
+                        "native task has no pinned resume descriptor",
+                        false,
+                    ),
+                )
+                .await;
+        }
+        if let Err(error) = binding.resume.as_ref().unwrap().validate() {
+            return self.finish_failure(task_id, error).await;
+        }
         let (cancel, cancellation) = cancellation_pair();
         self.active
             .lock()
@@ -699,8 +851,11 @@ impl ExecutionEngine {
                         .finish_success(task_id, &record.scope, binding, output)
                         .await;
                 }
-                Ok(NativeTaskPoll::Failed(error)) | Err(error) => {
+                Ok(NativeTaskPoll::Failed(error)) => {
                     return self.finish_failure(task_id, error.into()).await;
+                }
+                Err(error) => {
+                    return self.finish_failure(task_id, error.into_aicc_error()).await;
                 }
             }
         }
@@ -756,9 +911,16 @@ impl ExecutionEngine {
         else {
             return Ok(false);
         };
-        if !self.providers.cancel_native(binding).await.unwrap_or(false)
-            || !self.store.try_cancel(task_id).await?
-        {
+        let accepted = match self.providers.cancel_native(binding).await {
+            Ok(accepted) => accepted,
+            Err(NativeTaskResumeError::CredentialUnavailable) => {
+                let error = NativeTaskResumeError::CredentialUnavailable.into_aicc_error();
+                self.finish_failure(task_id, error.clone()).await?;
+                return Err(error);
+            }
+            Err(NativeTaskResumeError::Protocol(_)) => return Ok(false),
+        };
+        if !accepted || !self.store.try_cancel(task_id).await? {
             return Ok(false);
         }
         self.tasks.cancel_task(task_id).await?;
@@ -1211,16 +1373,19 @@ mod tests {
     }
 
     enum StartPlan {
-        Success(ProtocolExecution),
+        Success(ProviderExecution),
         Failure(ProviderStartFailure),
     }
 
     #[derive(Default)]
     struct FakeProviders {
         starts: Mutex<Vec<String>>,
+        start_generations: Mutex<Vec<u64>>,
         plans: Mutex<VecDeque<StartPlan>>,
         polls: Mutex<VecDeque<NativeTaskPoll>>,
+        poll_error: Mutex<Option<NativeTaskResumeError>>,
         cancel_result: Mutex<bool>,
+        cancel_error: Mutex<Option<NativeTaskResumeError>>,
         completion_cost: Mutex<Option<AiCost>>,
     }
 
@@ -1228,10 +1393,15 @@ mod tests {
     impl ProviderExecutionPort for FakeProviders {
         async fn start(
             &self,
+            runtime_generation: u64,
             call: &ResolvedProviderCall,
             _cancellation: Cancellation,
-        ) -> Result<ProtocolExecution, ProviderStartFailure> {
+        ) -> Result<ProviderExecution, ProviderStartFailure> {
             self.starts.lock().unwrap().push(call.exact_model.clone());
+            self.start_generations
+                .lock()
+                .unwrap()
+                .push(runtime_generation);
             match self.plans.lock().unwrap().pop_front().unwrap() {
                 StartPlan::Success(result) => Ok(result),
                 StartPlan::Failure(error) => Err(error),
@@ -1242,14 +1412,20 @@ mod tests {
             &self,
             _binding: &PinnedProviderTask,
             _cancellation: Cancellation,
-        ) -> Result<NativeTaskPoll, ProtocolError> {
+        ) -> Result<NativeTaskPoll, NativeTaskResumeError> {
+            if let Some(error) = self.poll_error.lock().unwrap().clone() {
+                return Err(error);
+            }
             Ok(self.polls.lock().unwrap().pop_front().unwrap())
         }
 
         async fn cancel_native(
             &self,
             _binding: &PinnedProviderTask,
-        ) -> Result<bool, ProtocolError> {
+        ) -> Result<bool, NativeTaskResumeError> {
+            if let Some(error) = self.cancel_error.lock().unwrap().clone() {
+                return Err(error);
+            }
             Ok(*self.cancel_result.lock().unwrap())
         }
 
@@ -1272,6 +1448,23 @@ mod tests {
                 request_units: None,
             }),
             artifacts: Vec::new(),
+        }
+    }
+
+    fn resume_descriptor() -> NativeTaskResumeDescriptor {
+        let reference = "system-config://secrets/aicc/fixed-provider".to_string();
+        NativeTaskResumeDescriptor {
+            base_url: "https://fixed-provider.invalid/v1".into(),
+            credential: Some(ResumeCredential {
+                fingerprint: credential_reference_fingerprint(&reference),
+                reference,
+                kind: ResumeCredentialKind::Bearer,
+                header_name: None,
+            }),
+            resolved_parameters: BTreeMap::from([("provider_model_id".into(), json!("model"))]),
+            request_timeout_ms: 10_000,
+            max_request_bytes: 1_024,
+            max_response_bytes: 2_048,
         }
     }
 
@@ -1408,7 +1601,7 @@ mod tests {
             .plans
             .lock()
             .unwrap()
-            .push_back(StartPlan::Success(ProtocolExecution::Immediate(output(
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(output(
                 "ok",
             ))));
         *providers.completion_cost.lock().unwrap() = Some(AiCost {
@@ -1454,7 +1647,7 @@ mod tests {
             .plans
             .lock()
             .unwrap()
-            .push_back(StartPlan::Success(ProtocolExecution::Immediate(output(
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(output(
                 "ok",
             ))));
         let (engine, _, _, usage) = make_engine(providers.clone());
@@ -1474,7 +1667,7 @@ mod tests {
             .plans
             .lock()
             .unwrap()
-            .push_back(StartPlan::Success(ProtocolExecution::Immediate(output(
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(output(
                 "ok",
             ))));
         let (engine, _, _, _) = make_engine(providers);
@@ -1521,7 +1714,7 @@ mod tests {
             .plans
             .lock()
             .unwrap()
-            .push_back(StartPlan::Success(ProtocolExecution::Stream(
+            .push_back(StartPlan::Success(ProviderExecution::Stream(
                 ProtocolStream {
                     events: Box::pin(stream::iter(events)),
                 },
@@ -1540,7 +1733,7 @@ mod tests {
             .plans
             .lock()
             .unwrap()
-            .push_back(StartPlan::Success(ProtocolExecution::Stream(
+            .push_back(StartPlan::Success(ProviderExecution::Stream(
                 ProtocolStream {
                     events: Box::pin(stream::pending()),
                 },
@@ -1577,7 +1770,7 @@ mod tests {
                 ProtocolError::new(ProtocolErrorKind::Transport, "unavailable"),
                 true,
             )),
-            StartPlan::Success(ProtocolExecution::Immediate(output("fallback"))),
+            StartPlan::Success(ProviderExecution::Immediate(output("fallback"))),
         ]);
         let (engine, _, _, _) = make_engine(providers.clone());
         let mut req = request(call("primary"));
@@ -1596,7 +1789,7 @@ mod tests {
                 ProtocolErrorKind::Transport,
                 "connection lost after submit",
             ))),
-            StartPlan::Success(ProtocolExecution::Immediate(output("must-not-run"))),
+            StartPlan::Success(ProviderExecution::Immediate(output("must-not-run"))),
         ]);
         let (engine, _, _, _) = make_engine(providers.clone());
         let mut req = request(call("primary"));
@@ -1620,7 +1813,10 @@ mod tests {
             .plans
             .lock()
             .unwrap()
-            .push_back(StartPlan::Success(ProtocolExecution::NativeTask(handle)));
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle,
+                resume: resume_descriptor(),
+            }));
         providers.polls.lock().unwrap().extend([
             NativeTaskPoll::Pending(
                 NativeTaskState::Running,
@@ -1640,6 +1836,13 @@ mod tests {
         assert_eq!(persisted.user_id, "user-1");
         assert_eq!(persisted.request_model, "smart-chat");
         assert_eq!(persisted.usage_event_id, usage_event_id(&started.task_id));
+        let binding = persisted.binding.as_ref().unwrap();
+        assert_eq!(binding.runtime_generation, 7);
+        assert_eq!(binding.resume.as_ref().unwrap(), &resume_descriptor());
+        let encoded = serde_json::to_string(binding).unwrap();
+        assert!(encoded.contains("system-config://secrets/aicc/fixed-provider"));
+        assert!(!encoded.contains("plaintext-secret"));
+        assert_eq!(providers.start_generations.lock().unwrap().as_slice(), [7]);
 
         let restarted = ExecutionEngine::new(store, tasks, providers, usage.clone());
         let recovered = restarted.recover().await.unwrap();
@@ -1663,6 +1866,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recovery_fails_terminally_when_pinned_credential_is_unavailable() {
+        let providers = Arc::new(FakeProviders::default());
+        let mut handle = NativeTaskHandle::new("remote-credential-lost").unwrap();
+        handle.state = NativeTaskState::Queued;
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle,
+                resume: resume_descriptor(),
+            }));
+        let (engine, store, tasks, usage) = make_engine(providers.clone());
+        let started = engine.execute(request(call("primary"))).await.unwrap();
+        *providers.poll_error.lock().unwrap() = Some(NativeTaskResumeError::CredentialUnavailable);
+
+        let restarted = ExecutionEngine::new(store.clone(), tasks.clone(), providers, usage);
+        let recovered = restarted.recover().await.unwrap();
+        assert_eq!(recovered[0].state, ExecutionState::Failed);
+        let error = recovered[0].error.as_ref().unwrap();
+        assert_eq!(error.code, AiccErrorCode::ProviderError);
+        assert!(!error.retriable);
+        assert_eq!(
+            tasks.failed.lock().unwrap().as_slice(),
+            [started.task_id.clone()]
+        );
+        assert_eq!(
+            store
+                .get_task(&started.task_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            ExecutionState::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_fails_task_when_pinned_credential_is_unavailable() {
+        let providers = Arc::new(FakeProviders::default());
+        let mut handle = NativeTaskHandle::new("remote-cancel-credential-lost").unwrap();
+        handle.state = NativeTaskState::Running;
+        handle.cancel_supported = true;
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle,
+                resume: resume_descriptor(),
+            }));
+        let (engine, store, tasks, _) = make_engine(providers.clone());
+        let started = engine.execute(request(call("primary"))).await.unwrap();
+        *providers.cancel_error.lock().unwrap() =
+            Some(NativeTaskResumeError::CredentialUnavailable);
+
+        let error = engine
+            .cancel("tenant-1", &started.task_id)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, AiccErrorCode::ProviderError);
+        assert!(!error.retriable);
+        assert_eq!(
+            tasks.failed.lock().unwrap().as_slice(),
+            [started.task_id.clone()]
+        );
+        assert_eq!(
+            store
+                .get_task(&started.task_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            ExecutionState::Failed
+        );
+    }
+
+    #[tokio::test]
     async fn cancel_is_tenant_scoped_and_blocks_late_completion() {
         let providers = Arc::new(FakeProviders::default());
         let mut handle = NativeTaskHandle::new("remote-1").unwrap();
@@ -1672,7 +1953,10 @@ mod tests {
             .plans
             .lock()
             .unwrap()
-            .push_back(StartPlan::Success(ProtocolExecution::NativeTask(handle)));
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle,
+                resume: resume_descriptor(),
+            }));
         *providers.cancel_result.lock().unwrap() = true;
         let (engine, store, tasks, usage) = make_engine(providers);
         let receipt = engine.execute(request(call("primary"))).await.unwrap();
@@ -1708,7 +1992,10 @@ mod tests {
             .plans
             .lock()
             .unwrap()
-            .push_back(StartPlan::Success(ProtocolExecution::NativeTask(handle)));
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle,
+                resume: resume_descriptor(),
+            }));
         let (engine, store, tasks, _) = make_engine(providers);
         let receipt = engine.execute(request(call("primary"))).await.unwrap();
         assert!(!engine.cancel("tenant-1", &receipt.task_id).await.unwrap());
@@ -1731,7 +2018,7 @@ mod tests {
             .plans
             .lock()
             .unwrap()
-            .push_back(StartPlan::Success(ProtocolExecution::Immediate(
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(
                 ProtocolOutput::new(json!({"text": "bad"})),
             )));
         let (engine, _, tasks, usage) = make_engine(providers);
@@ -1749,7 +2036,7 @@ mod tests {
             .plans
             .lock()
             .unwrap()
-            .push_back(StartPlan::Success(ProtocolExecution::Immediate(output(
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(output(
                 "invalid-cost",
             ))));
         *providers.completion_cost.lock().unwrap() = Some(AiCost {
