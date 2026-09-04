@@ -546,11 +546,14 @@ Owner：Runtime/Consistency 小组
 - [x] 单 Provider 失败保留旧 inventory 和旧 applied seq；
 - [x] 刷新过程中目标推进时只提交本轮捕获序列；
 - [x] 列表未变且 seq 相同只做 probe，不重写 inventory；
+- [x] 从已发布 RuntimeSnapshot 提供 Provider quota observation 只读查询；
 - [x] reload/delete/disable/replace/exit 无孤儿任务和迟到写。
 
 完成标准：并发请求只能观察到完整旧代或完整新代，不能看到半加入 Provider 或混合 catalog revision。
 
 实现记录：`src/frame/aicc/src/runtime/mod.rs` 已实现不可变快照、原子换代、请求级快照捕获、统一单执行者收敛、序列状态和 Provider 生命周期清理；`src/frame/aicc/src/settings/mod.rs` 已实现统一 `providers[]` settings 解析、按 `(catalog_kind, catalog_id)` 的来源优先级整文件选择，以及 local/system-config metadata 的生产加载端口：local 固定枚举 `models/`、`providers/`、`known-providers/` 三类目录，用双读和内容 SHA-256 revision 捕获一致快照；system-config 以单 key `services/aicc/driver_metadata` 和其 CAS revision 提供原子三类 catalog envelope。`src/frame/aicc/src/service/cloud_update.rs` 负责 NDN cloud catalog 下载、校验、激活与持久化，并在不可见候选构建时重新捕获 local/system-config revisions。原有 WP-15 定向验证已通过；本次补充在隔离工作树中通过 settings 9 个测试、cloud update 8 个测试及 AICC lib 全量 303 个测试，格式和 diff 检查通过；完整构建仍需补齐 SDK 工具链相关环境变量。
+
+补充收敛：`RuntimeProviderRegistry::quota_observation` 只从已发布 registry 查找指定 Provider，并委托该 generation 捕获的 executable 读取可信 quota，不向 Service 暴露 `ProviderRuntimeManager`。Runtime 定向测试 14 个通过。
 
 ### WP-16：Service 与管理 API
 
