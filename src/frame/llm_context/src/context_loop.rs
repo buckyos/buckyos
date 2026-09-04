@@ -655,6 +655,7 @@ impl LLMContext {
         };
 
         LlmInferenceRequest {
+            trace_id: self.request.trace.clone(),
             messages: self.state.accumulated.clone(),
             model_alias: self.request.model_policy.preferred.clone(),
             fallbacks: self.request.model_policy.fallbacks.clone(),

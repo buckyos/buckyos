@@ -228,6 +228,7 @@ pub async fn compress(
     ];
 
     let req = LlmInferenceRequest {
+        trace_id: None,
         messages: summarize_messages,
         model_alias: model_alias.to_string(),
         fallbacks: Vec::new(),

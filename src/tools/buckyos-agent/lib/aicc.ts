@@ -1,54 +1,70 @@
-// Thin wrapper over the aicc kRPC client + task-manager polling, copying the
-// flow proven out in test/aicc_test/aicc_smoke.ts.
+import { buckyos } from "buckyos";
 
-import {
-  AiccMethodResponse,
-  AiMessage,
-  AiResponse,
-  Capability,
-  JsonValue,
-  Profile,
-  ResourceRef,
-} from "./types.ts";
 import type { AiccRuntime } from "./runtime.ts";
+import type { AiccInferenceResponse, JsonValue, Profile } from "./types.ts";
 
-// deno-lint-ignore no-explicit-any
-type RpcClient = { call: (method: string, params: Record<string, unknown>) => Promise<any> };
+type AiccClient = ReturnType<typeof buckyos.getAiccClient>;
+type TaskManagerClient = ReturnType<typeof buckyos.getTaskManagerClient>;
+type RoutedRequest<T> = Omit<
+  T,
+  "exact_model" | "trace_id" | "idempotency_key" | "task_options"
+>;
 
-export type { Profile };
+export type TypedRequestMap = {
+  "image.img2img": RoutedRequest<Parameters<AiccClient["imageToImage"]>[0]>;
+  "image.inpaint": RoutedRequest<Parameters<AiccClient["imageInpaint"]>[0]>;
+  "image.upscale": RoutedRequest<Parameters<AiccClient["imageUpscale"]>[0]>;
+  "image.bg_remove": RoutedRequest<
+    Parameters<AiccClient["imageBackgroundRemove"]>[0]
+  >;
+  "vision.ocr": RoutedRequest<Parameters<AiccClient["visionOcr"]>[0]>;
+  "vision.caption": RoutedRequest<Parameters<AiccClient["visionCaption"]>[0]>;
+  "vision.detect": RoutedRequest<Parameters<AiccClient["visionDetect"]>[0]>;
+  "vision.segment": RoutedRequest<Parameters<AiccClient["visionSegment"]>[0]>;
+  "audio.tts": RoutedRequest<Parameters<AiccClient["audioTextToSpeech"]>[0]>;
+  "audio.asr": RoutedRequest<
+    Parameters<AiccClient["audioSpeechRecognition"]>[0]
+  >;
+  "audio.music": RoutedRequest<Parameters<AiccClient["audioMusic"]>[0]>;
+  "audio.enhance": RoutedRequest<Parameters<AiccClient["audioEnhance"]>[0]>;
+  "video.txt2video": RoutedRequest<
+    Parameters<AiccClient["videoTextToVideo"]>[0]
+  >;
+  "video.img2video": RoutedRequest<
+    Parameters<AiccClient["videoImageToVideo"]>[0]
+  >;
+  "video.video2video": RoutedRequest<Parameters<AiccClient["videoToVideo"]>[0]>;
+  "video.extend": RoutedRequest<Parameters<AiccClient["videoExtend"]>[0]>;
+  "video.upscale": RoutedRequest<Parameters<AiccClient["videoUpscale"]>[0]>;
+};
 
-export interface ModelRequirement {
-  streaming?: boolean;
-  tool_call?: boolean;
-  json_schema?: boolean;
-  web_search?: boolean;
-  vision?: boolean;
-  image_generation?: boolean;
-  min_context_tokens?: number;
-}
+export type TypedMethod = keyof TypedRequestMap;
 
-export interface ModelDisable {
-  streaming?: boolean;
-  tool_call?: boolean;
-  json_schema?: boolean;
-  web_search?: boolean;
-  vision?: boolean;
-  image_generation?: boolean;
-  min_context_tokens?: number;
-}
+const API_TYPE_BY_METHOD: {
+  [M in TypedMethod]: Parameters<AiccClient["routeResolve"]>[0]["api_type"];
+} = {
+  "image.img2img": "image.img2img",
+  "image.inpaint": "image.inpaint",
+  "image.upscale": "image.upscale",
+  "image.bg_remove": "image.bg_remove",
+  "vision.ocr": "vision.ocr",
+  "vision.caption": "vision.caption",
+  "vision.detect": "vision.detect",
+  "vision.segment": "vision.segment",
+  "audio.tts": "audio.tts",
+  "audio.asr": "audio.asr",
+  "audio.music": "audio.music",
+  "audio.enhance": "audio.enhance",
+  "video.txt2video": "video.txt2video",
+  "video.img2video": "video.img2video",
+  "video.video2video": "video.video2video",
+  "video.extend": "video.extend",
+  "video.upscale": "video.upscale",
+};
 
-export interface CallOptions {
-  capability: Capability;
-  method: string;
-  modelAlias?: string;
-  text?: string;
-  messages?: AiMessage[];
-  toolSpecs?: Record<string, unknown>[];
-  inputJson?: Record<string, unknown>;
-  resources?: ResourceRef[];
-  options?: Record<string, unknown>;
-  requirements?: ModelRequirement;
-  disable?: ModelDisable;
+export interface RouteOptions {
+  requirements?: Parameters<AiccClient["routeResolve"]>[0]["requirements"];
+  disable?: Parameters<AiccClient["routeResolve"]>[0]["disable"];
   profile?: Profile;
   allowFallback?: boolean;
   runtimeFailover?: boolean;
@@ -59,15 +75,20 @@ export interface CallOptions {
   maxLatencyMs?: number;
   idempotencyKey?: string;
   traceId?: string;
-  // Wait timeout for the polling phase (when status is "running"), ms.
   waitTimeoutMs?: number;
+}
+
+export interface TypedCallOptions<M extends TypedMethod> extends RouteOptions {
+  method: M;
+  model: string;
+  request: TypedRequestMap[M];
 }
 
 export interface CallResult {
   taskId: string;
   status: "succeeded" | "failed";
-  summary: AiResponse | null;
-  rawResponse: AiccMethodResponse;
+  summary: AiccInferenceResponse | null;
+  rawResponse: AiccInferenceResponse;
   finalTask?: TaskRecord;
 }
 
@@ -76,344 +97,322 @@ interface TaskRecord {
   phase: string;
   outcome?: string | null;
   message?: string | null;
-  updated_at?: number;
-  result?: {
-    request?: {
-      external_task_id?: string;
-    };
-    progress?: {
-      status?: string;
-    };
-    result?: {
-      output?: JsonValue;
-      provider_output?: JsonValue;
-    };
-    error?: JsonValue;
-  };
-  error?: JsonValue;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+  result?: unknown;
+  error?: unknown;
 }
 
 const AGENT_TOOL_PROGRESS_PREFIX = "__BUCKYOS_AGENT_PROGRESS__";
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function emitAiccProgress(
   method: string,
   stage: "running" | "finalizing",
-  externalTaskId: string,
+  taskId: string,
   elapsedMs: number,
 ): void {
-  console.error(`${AGENT_TOOL_PROGRESS_PREFIX}${JSON.stringify({
-    agent_tool_progress: "1",
-    kind: "aicc",
-    method,
-    stage,
-    task_id: externalTaskId,
-    elapsed_ms: elapsedMs,
-  })}`);
+  console.error(`${AGENT_TOOL_PROGRESS_PREFIX}${
+    JSON.stringify({
+      agent_tool_progress: "1",
+      kind: "aicc",
+      method,
+      stage,
+      task_id: taskId,
+      elapsed_ms: elapsedMs,
+    })
+  }`);
 }
 
 function envNumber(name: string, fallback: number): number {
   const raw = Deno.env.get(name);
   if (!raw) return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 function defaultProfile(): Profile {
   const raw = (Deno.env.get("AICC_DEFAULT_PROFILE") ?? "").toLowerCase();
-  if (raw === "cheap" || raw === "fast" || raw === "quality" || raw === "balanced") return raw;
-  return "balanced";
+  return raw === "cheap" || raw === "fast" || raw === "quality" ||
+      raw === "balanced"
+    ? raw
+    : "balanced";
 }
 
-function buildPolicy(opts: CallOptions): Record<string, unknown> {
-  const policy: Record<string, unknown> = {
+function buildPolicy(
+  opts: RouteOptions,
+): NonNullable<Parameters<AiccClient["routeResolve"]>[0]["policy"]> {
+  return {
     profile: opts.profile ?? defaultProfile(),
     allow_fallback: opts.allowFallback ?? true,
     runtime_failover: opts.runtimeFailover ?? true,
+    ...(opts.localOnly ? { local_only: true } : {}),
+    ...(opts.allowedProviderInstances?.length
+      ? { allowed_provider_instances: opts.allowedProviderInstances }
+      : {}),
+    ...(opts.blockedProviderInstances?.length
+      ? { blocked_provider_instances: opts.blockedProviderInstances }
+      : {}),
+    ...(typeof opts.maxCostUsd === "number"
+      ? { max_cost: { amount: opts.maxCostUsd, currency: "USD" } }
+      : {}),
+    ...(typeof opts.maxLatencyMs === "number"
+      ? { max_latency_ms: opts.maxLatencyMs }
+      : {}),
   };
-  if (opts.localOnly) policy.local_only = true;
-  if (opts.allowedProviderInstances?.length) {
-    policy.allowed_provider_instances = opts.allowedProviderInstances;
-  }
-  if (opts.blockedProviderInstances?.length) {
-    policy.blocked_provider_instances = opts.blockedProviderInstances;
-  }
-  if (typeof opts.maxCostUsd === "number") policy.max_cost_usd = opts.maxCostUsd;
-  if (typeof opts.maxLatencyMs === "number") policy.max_latency_ms = opts.maxLatencyMs;
-  return policy;
 }
 
-function buildRequest(opts: CallOptions): Record<string, unknown> {
-  const modelAlias = opts.modelAlias ?? opts.method;
-  if (opts.method === "helper.llm_chat") {
-    return {
-      logical_model: modelAlias,
-      requirements: opts.requirements ?? {},
-      disable: opts.disable ?? {},
-      policy: buildPolicy(opts),
-      messages: opts.messages ?? [],
-      tools: opts.toolSpecs ?? [],
-      ...(opts.inputJson?.response_format ? { response_format: opts.inputJson.response_format } : {}),
-      ...(typeof opts.options?.temperature === "number"
-        ? { temperature: opts.options.temperature }
-        : {}),
-      ...(typeof opts.options?.max_output_tokens === "number"
-        ? { max_output_tokens: opts.options.max_output_tokens }
-        : {}),
-      ...(opts.idempotencyKey ? { idempotency_key: opts.idempotencyKey } : {}),
-    };
-  }
-  if (opts.method === "helper.text_to_image") {
-    return {
-      logical_model: modelAlias,
-      requirements: opts.requirements ?? {},
-      disable: opts.disable ?? {},
-      policy: buildPolicy(opts),
-      prompt: opts.text ?? opts.inputJson?.prompt,
-      ...(opts.inputJson?.negative_prompt ? { negative_prompt: opts.inputJson.negative_prompt } : {}),
-      ...(typeof opts.inputJson?.n === "number" ? { n: opts.inputJson.n } : {}),
-      ...(opts.inputJson?.aspect_ratio ? { aspect_ratio: opts.inputJson.aspect_ratio } : {}),
-      ...(opts.inputJson?.size ? { size: opts.inputJson.size } : {}),
-      ...(opts.inputJson?.quality ? { quality: opts.inputJson.quality } : {}),
-      ...(opts.inputJson?.style ? { style: opts.inputJson.style } : {}),
-      ...(typeof opts.inputJson?.seed === "number" ? { seed: opts.inputJson.seed } : {}),
-      ...(opts.inputJson?.output ? { output: opts.inputJson.output } : {}),
-      ...(opts.idempotencyKey ? { idempotency_key: opts.idempotencyKey } : {}),
-    };
-  }
-  const req: Record<string, unknown> = {
-    capability: opts.capability,
-    model: { alias: modelAlias },
+async function resolveExactModel<M extends TypedMethod>(
+  client: AiccClient,
+  opts: TypedCallOptions<M>,
+): Promise<string> {
+  if (opts.model.includes("@")) return opts.model;
+  const resolved = await client.routeResolve({
+    ...(opts.traceId ? { trace_id: opts.traceId } : {}),
+    api_type: API_TYPE_BY_METHOD[opts.method],
+    logical_model: opts.model,
     requirements: opts.requirements ?? {},
     disable: opts.disable ?? {},
-    payload: {
-      text: opts.text,
-      messages: opts.messages ?? [],
-      tool_specs: opts.toolSpecs ?? [],
-      input_json: opts.inputJson ?? {},
-      resources: opts.resources ?? [],
-      options: opts.options ?? {},
-    },
     policy: buildPolicy(opts),
-  };
-  if (opts.idempotencyKey) req.idempotency_key = opts.idempotencyKey;
-  if (opts.traceId) req.trace_id = opts.traceId;
-  return req;
+  });
+  return resolved.selected_exact_model;
 }
 
-function normalizeTask(result: unknown): TaskRecord {
-  if (result && typeof result === "object" && "task" in result) {
-    return (result as { task: TaskRecord }).task;
+async function invokeTyped(
+  client: AiccClient,
+  method: TypedMethod,
+  request: Record<string, unknown>,
+): Promise<AiccInferenceResponse> {
+  switch (method) {
+    case "image.img2img":
+      return await client.imageToImage(
+        request as Parameters<AiccClient["imageToImage"]>[0],
+      );
+    case "image.inpaint":
+      return await client.imageInpaint(
+        request as Parameters<AiccClient["imageInpaint"]>[0],
+      );
+    case "image.upscale":
+      return await client.imageUpscale(
+        request as Parameters<AiccClient["imageUpscale"]>[0],
+      );
+    case "image.bg_remove":
+      return await client.imageBackgroundRemove(
+        request as Parameters<AiccClient["imageBackgroundRemove"]>[0],
+      );
+    case "vision.ocr":
+      return await client.visionOcr(
+        request as Parameters<AiccClient["visionOcr"]>[0],
+      );
+    case "vision.caption":
+      return await client.visionCaption(
+        request as Parameters<AiccClient["visionCaption"]>[0],
+      );
+    case "vision.detect":
+      return await client.visionDetect(
+        request as Parameters<AiccClient["visionDetect"]>[0],
+      );
+    case "vision.segment":
+      return await client.visionSegment(
+        request as Parameters<AiccClient["visionSegment"]>[0],
+      );
+    case "audio.tts":
+      return await client.audioTextToSpeech(
+        request as Parameters<AiccClient["audioTextToSpeech"]>[0],
+      );
+    case "audio.asr":
+      return await client.audioSpeechRecognition(
+        request as Parameters<AiccClient["audioSpeechRecognition"]>[0],
+      );
+    case "audio.music":
+      return await client.audioMusic(
+        request as Parameters<AiccClient["audioMusic"]>[0],
+      );
+    case "audio.enhance":
+      return await client.audioEnhance(
+        request as Parameters<AiccClient["audioEnhance"]>[0],
+      );
+    case "video.txt2video":
+      return await client.videoTextToVideo(
+        request as Parameters<AiccClient["videoTextToVideo"]>[0],
+      );
+    case "video.img2video":
+      return await client.videoImageToVideo(
+        request as Parameters<AiccClient["videoImageToVideo"]>[0],
+      );
+    case "video.video2video":
+      return await client.videoToVideo(
+        request as Parameters<AiccClient["videoToVideo"]>[0],
+      );
+    case "video.extend":
+      return await client.videoExtend(
+        request as Parameters<AiccClient["videoExtend"]>[0],
+      );
+    case "video.upscale":
+      return await client.videoUpscale(
+        request as Parameters<AiccClient["videoUpscale"]>[0],
+      );
   }
-  return result as TaskRecord;
 }
 
-function asAiResponse(value: unknown): AiResponse | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if ("message" in record) return record as unknown as AiResponse;
-  if (Array.isArray(record.artifacts) && record.artifacts.length > 0) {
-    return {
-      message: {
-        role: "assistant",
-        content: record.artifacts.flatMap((artifact) => {
-          if (!artifact || typeof artifact !== "object") return [];
-          const resource = (artifact as Record<string, unknown>).resource;
-          if (!resource || typeof resource !== "object") return [];
-          return [{ type: "image" as const, source: resource as ResourceRef }];
-        }),
-      },
-      usage: record.usage as JsonValue | null | undefined,
-      cost: record.cost as JsonValue | null | undefined,
-      provider_task_ref: typeof record.provider_task_ref === "string"
-        ? record.provider_task_ref
-        : null,
-      extra: record.route_trace
-        ? { route_trace: record.route_trace as JsonValue }
-        : null,
-    };
+function normalizeTask(value: unknown): TaskRecord {
+  if (
+    value && typeof value === "object" && !Array.isArray(value) &&
+    "task" in value
+  ) {
+    return (value as { task: TaskRecord }).task;
   }
-  return null;
+  return value as TaskRecord;
 }
 
 async function waitForFinalTask(
-  taskMgr: RpcClient,
+  taskMgr: TaskManagerClient,
   taskId: string,
   method: string,
   deadlineMs: number,
 ): Promise<TaskRecord> {
   const startedAt = Date.now();
   let lastProgressAt = 0;
-  const reportRunning = () => {
+  while (Date.now() < deadlineMs) {
     const now = Date.now();
     if (now - lastProgressAt >= 5_000) {
       emitAiccProgress(method, "running", taskId, now - startedAt);
       lastProgressAt = now;
     }
-  };
-  while (Date.now() < deadlineMs) {
-    reportRunning();
-    const next = normalizeTask(
-      await taskMgr.call("get_task", { task_id: taskId }),
-    );
+    const next = normalizeTask(await taskMgr.getTask(taskId));
     if (next.phase === "Terminal") {
       emitAiccProgress(method, "finalizing", taskId, Date.now() - startedAt);
       return next;
     }
-    await sleep(1000);
+    await sleep(1_000);
   }
   throw new Error(`timed out while waiting for AICC task ${taskId} to finish`);
 }
 
-export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise<CallResult> {
-  // deno-lint-ignore no-explicit-any
-  const aiccRpc = (runtime.buckyos as any).getServiceRpcClient("aicc") as RpcClient;
-  // deno-lint-ignore no-explicit-any
-  const taskMgr = (runtime.buckyos as any).getServiceRpcClient("task-manager") as RpcClient;
-
-  const request = buildRequest(opts);
-  const waitTimeoutMs = opts.waitTimeoutMs ?? envNumber("AICC_DEFAULT_TIMEOUT", 900_000);
-
-  let response: AiccMethodResponse;
-  try {
-    response = await aiccRpc.call(opts.method, request) as AiccMethodResponse;
-  } catch (err) {
-    throw err instanceof Error ? err : new Error(String(err));
+function taskOutput(task: TaskRecord): AiccInferenceResponse | null {
+  if (
+    !task.result || typeof task.result !== "object" ||
+    Array.isArray(task.result)
+  ) return null;
+  const data = task.result as Record<string, unknown>;
+  const nested = data.result;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    const output = (nested as Record<string, unknown>).output;
+    if (output && typeof output === "object" && !Array.isArray(output)) {
+      return output as AiccInferenceResponse;
+    }
   }
+  const output = data.output;
+  return output && typeof output === "object" && !Array.isArray(output)
+    ? output as AiccInferenceResponse
+    : null;
+}
 
-  if (!response?.task_id || !response?.status) {
-    throw new Error(`invalid AICC response: ${JSON.stringify(response)}`);
-  }
-
-  if (response.status === "succeeded") {
+async function finishCall(
+  taskMgr: TaskManagerClient,
+  method: string,
+  response: AiccInferenceResponse,
+  waitTimeoutMs: number,
+): Promise<CallResult> {
+  if (response.status === "succeeded" || response.status === "failed") {
     return {
       taskId: response.task_id,
-      status: "succeeded",
-      summary: asAiResponse(response.result ?? response),
+      status: response.status,
+      summary: response,
       rawResponse: response,
     };
   }
-  if (response.status === "failed") {
-    return {
-      taskId: response.task_id,
-      status: "failed",
-      summary: asAiResponse(response.result ?? response),
-      rawResponse: response,
-    };
-  }
-
-  // status === "running" — fall back to task-manager polling.
-  const deadline = Date.now() + waitTimeoutMs;
   const finalTask = await waitForFinalTask(
     taskMgr,
     response.task_id,
-    opts.method,
-    deadline,
+    method,
+    Date.now() + waitTimeoutMs,
   );
-  if (finalTask.outcome === "Succeeded") {
-    return {
-      taskId: response.task_id,
-      status: "succeeded",
-      summary: asAiResponse(finalTask.result?.result?.output ?? null),
-      rawResponse: response,
-      finalTask,
-    };
-  }
   return {
     taskId: response.task_id,
-    status: "failed",
-    summary: asAiResponse(finalTask.result?.result?.output ?? null),
+    status: finalTask.outcome === "Succeeded" ? "succeeded" : "failed",
+    summary: taskOutput(finalTask),
     rawResponse: response,
     finalTask,
   };
 }
 
-export interface LlmChatOptions extends Partial<CallOptions> {
-  modelAlias?: string;
-  messages: AiMessage[];
-  toolSpecs?: Record<string, unknown>[];
-  responseFormat?: "text" | "json";
-  temperature?: number;
-  maxOutputTokens?: number;
-}
-
-export function llmChat(runtime: AiccRuntime, opts: LlmChatOptions): Promise<CallResult> {
-  const options = {
-    ...(opts.options ?? {}),
-    ...(typeof opts.temperature === "number" ? { temperature: opts.temperature } : {}),
-    ...(typeof opts.maxOutputTokens === "number" ? { max_output_tokens: opts.maxOutputTokens } : {}),
+export async function callAicc<M extends TypedMethod>(
+  runtime: AiccRuntime,
+  opts: TypedCallOptions<M>,
+): Promise<CallResult> {
+  const client = runtime.buckyos.getAiccClient();
+  const exactModel = await resolveExactModel(client, opts);
+  const request = {
+    ...opts.request,
+    exact_model: exactModel,
+    ...(opts.traceId ? { trace_id: opts.traceId } : {}),
+    ...(opts.idempotencyKey ? { idempotency_key: opts.idempotencyKey } : {}),
   };
-  return callAicc(runtime, {
-    ...opts,
-    capability: "llm",
-    method: "helper.llm_chat",
-    modelAlias: opts.modelAlias ?? "llm.chat",
-    messages: opts.messages,
-    toolSpecs: opts.toolSpecs,
-    requirements: {
-      ...(opts.requirements ?? {}),
-      ...(opts.responseFormat === "json" ? { json_schema: true } : {}),
-    },
-    inputJson: {
-      ...(opts.inputJson ?? {}),
-      ...(opts.responseFormat === "json" ? { response_format: { type: "json_object" } } : {}),
-    },
-    options,
-  });
+  const response = await invokeTyped(client, opts.method, request);
+  return await finishCall(
+    runtime.buckyos.getTaskManagerClient(),
+    opts.method,
+    response,
+    opts.waitTimeoutMs ?? envNumber("AICC_DEFAULT_TIMEOUT", 900_000),
+  );
 }
 
-export interface TextToImageOptions extends Partial<CallOptions> {
-  modelAlias?: string;
-  prompt: string;
-  negativePrompt?: string;
-  size?: string;
-  quality?: string;
-  style?: string;
-  seed?: number;
-  output?: Record<string, unknown>;
+export interface TextToImageOptions extends RouteOptions {
+  model?: string;
+  request: Omit<
+    Parameters<AiccClient["helperTextToImage"]>[0],
+    | "logical_model"
+    | "requirements"
+    | "disable"
+    | "trace_id"
+    | "policy"
+    | "idempotency_key"
+    | "task_options"
+    | "session_overlay"
+  >;
 }
 
-export function textToImage(runtime: AiccRuntime, opts: TextToImageOptions): Promise<CallResult> {
-  return callAicc(runtime, {
-    ...opts,
-    capability: "image",
-    method: "helper.text_to_image",
-    modelAlias: opts.modelAlias ?? "image.txt2img",
-    text: opts.prompt,
-    inputJson: {
-      ...(opts.inputJson ?? {}),
-      prompt: opts.prompt,
-      ...(opts.negativePrompt ? { negative_prompt: opts.negativePrompt } : {}),
-      ...(opts.size ? { size: opts.size } : {}),
-      ...(opts.quality ? { quality: opts.quality } : {}),
-      ...(opts.style ? { style: opts.style } : {}),
-      ...(typeof opts.seed === "number" ? { seed: opts.seed } : {}),
-      ...(opts.output ? { output: opts.output } : {}),
-    },
+export async function textToImage(
+  runtime: AiccRuntime,
+  opts: TextToImageOptions,
+): Promise<CallResult> {
+  const response = await runtime.buckyos.getAiccClient().helperTextToImage({
+    ...opts.request,
+    logical_model: opts.model ?? "image.txt2img",
+    requirements: opts.requirements ?? {},
+    disable: opts.disable ?? {},
+    ...(opts.traceId ? { trace_id: opts.traceId } : {}),
+    policy: buildPolicy(opts),
+    ...(opts.idempotencyKey ? { idempotency_key: opts.idempotencyKey } : {}),
   });
+  return await finishCall(
+    runtime.buckyos.getTaskManagerClient(),
+    "helper.text_to_image",
+    response,
+    opts.waitTimeoutMs ?? envNumber("AICC_DEFAULT_TIMEOUT", 900_000),
+  );
 }
 
 export function describeFailure(result: CallResult): string {
   if (result.finalTask) {
-    const err = result.finalTask.error ?? result.finalTask.result?.error ??
+    const taskResult = result.finalTask.result;
+    const nestedError =
+      taskResult && typeof taskResult === "object" && !Array.isArray(taskResult)
+        ? (taskResult as Record<string, unknown>).error
+        : undefined;
+    const error = result.finalTask.error ?? nestedError ??
       result.finalTask.message;
-    if (err) return typeof err === "string" ? err : JSON.stringify(err);
-    return `task ended with ${result.finalTask.outcome ?? result.finalTask.phase}`;
+    if (error) return typeof error === "string" ? error : JSON.stringify(error);
+    return `task ended with ${
+      result.finalTask.outcome ?? result.finalTask.phase
+    }`;
   }
-  if (result.rawResponse?.result) {
-    return JSON.stringify(result.rawResponse.result);
-  }
-  return "aicc call failed";
+  const error = (result.rawResponse as unknown as { error?: JsonValue }).error;
+  return error ? JSON.stringify(error) : "aicc call failed";
 }
 
-// Map parsed CLI common flags (§2.2) onto callAicc options. Spread into your
-// CallOptions like:
-//   await callAicc(runtime, { method, capability, inputJson, ...commonPolicyOptions(parsed.common) })
-// Local definition (kept structural to avoid a runtime cycle with cli.ts).
-// Matches the public CommonFlags shape exported from lib/cli.ts.
 interface CommonFlagsShape {
   profile?: Profile;
   noFallback: boolean;
@@ -422,11 +421,9 @@ interface CommonFlagsShape {
   idempotencyKey?: string;
   traceId?: string;
   timeoutMs?: number;
-  model?: string;
-  json: boolean;
 }
 
-export function commonPolicyOptions(common: CommonFlagsShape): Partial<CallOptions> {
+export function commonPolicyOptions(common: CommonFlagsShape): RouteOptions {
   return {
     profile: common.profile,
     allowFallback: common.noFallback ? false : undefined,
@@ -436,23 +433,5 @@ export function commonPolicyOptions(common: CommonFlagsShape): Partial<CallOptio
     idempotencyKey: common.idempotencyKey,
     traceId: common.traceId,
     waitTimeoutMs: common.timeoutMs,
-  };
-}
-
-// Most artifact-producing AICC methods accept these hints to make the provider
-// return a named_object obj_id (preferred) rather than a base64 blob.
-export function requestNamedObjectOutput(
-  input: Record<string, unknown>,
-): Record<string, unknown> {
-  const output = (input.output && typeof input.output === "object" && !Array.isArray(input.output))
-    ? input.output as Record<string, unknown>
-    : {};
-  return {
-    ...input,
-    response_format: input.response_format ?? "object_id",
-    output: {
-      ...output,
-      resource_format: (output as Record<string, unknown>).resource_format ?? "named_object",
-    },
   };
 }

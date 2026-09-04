@@ -4,13 +4,34 @@
 
 import { ndm_proxy } from "buckyos";
 
-import { ArgError, bailArgError, COMMON_OPTIONS_HELP, flagBool, flagInt, parseArgvOrExit, requireString } from "../lib/cli.ts";
-import { initRuntime } from "../lib/runtime.ts";
-import { callAicc, commonPolicyOptions, describeFailure, requestNamedObjectOutput } from "../lib/aicc.ts";
-import { pickArtifact, saveArtifactToPath, suffixPathByMime } from "../lib/io.ts";
 import {
-  bailAiccError, bailAiccFailed, bailIoError, bailNoArtifact, bailRuntimeError,
-  emitAndExit, errorResult, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
+  ArgError,
+  bailArgError,
+  COMMON_OPTIONS_HELP,
+  flagBool,
+  flagInt,
+  parseArgvOrExit,
+  requireString,
+} from "../lib/cli.ts";
+import { initRuntime } from "../lib/runtime.ts";
+import { callAicc, commonPolicyOptions, describeFailure } from "../lib/aicc.ts";
+import type { TypedRequestMap } from "../lib/aicc.ts";
+import {
+  pickArtifact,
+  saveArtifactToPath,
+  suffixPathByMime,
+} from "../lib/io.ts";
+import {
+  bailAiccError,
+  bailAiccFailed,
+  bailIoError,
+  bailNoArtifact,
+  bailRuntimeError,
+  emitAndExit,
+  errorResult,
+  EXIT_ARG_ERROR,
+  EXIT_SUCCESS,
+  successResult,
 } from "../lib/result.ts";
 
 const TOOL = "gen_music";
@@ -48,38 +69,48 @@ async function resolveLyrics(value: string): Promise<string> {
 export async function run(argv: string[]): Promise<never> {
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
   if (parsed.positional.length < 2) {
-    emitAndExit(errorResult(TOOL, `${TOOL} => arg_error`, HELP, { error: "missing positional" }), EXIT_ARG_ERROR);
+    emitAndExit(
+      errorResult(TOOL, `${TOOL} => arg_error`, HELP, {
+        error: "missing positional",
+      }),
+      EXIT_ARG_ERROR,
+    );
   }
   const [prompt, outputPath] = parsed.positional;
 
-  const input: Record<string, unknown> = { prompt };
+  const request = { prompt } as TypedRequestMap[typeof METHOD];
   try {
     const duration = flagInt(parsed.flags, "duration");
-    if (duration !== undefined) input.duration = duration;
-    if (flagBool(parsed.flags, "instrumental")) input.instrumental = true;
+    if (duration !== undefined) request.duration_seconds = duration;
+    if (flagBool(parsed.flags, "instrumental")) request.instrumental = true;
     const lyrics = requireString(parsed.flags, "lyrics");
-    if (lyrics !== undefined) input.lyrics = await resolveLyrics(lyrics);
+    if (lyrics !== undefined) request.lyrics = await resolveLyrics(lyrics);
     const seed = flagInt(parsed.flags, "seed");
-    if (seed !== undefined) input.seed = seed;
+    if (seed !== undefined) request.seed = seed;
     const mime = formatToMime(requireString(parsed.flags, "format"));
-    if (mime) input.output = { media_type: mime };
+    if (mime) request.output = { media_type: mime };
   } catch (err) {
     if (err instanceof ArgError) bailArgError(TOOL, err);
     bailIoError(TOOL, undefined, err);
   }
 
   let runtime;
-  try { runtime = await initRuntime(); } catch (err) { bailRuntimeError(TOOL, err); }
+  try {
+    runtime = await initRuntime();
+  } catch (err) {
+    bailRuntimeError(TOOL, err);
+  }
   let call;
   try {
     call = await callAicc(runtime, {
-      capability: "audio",
       method: METHOD,
-      modelAlias: parsed.common.model ?? METHOD,
-      inputJson: requestNamedObjectOutput(input),
+      model: parsed.common.model ?? METHOD,
+      request,
       ...commonPolicyOptions(parsed.common),
     });
-  } catch (err) { bailAiccError(TOOL, METHOD, err); }
+  } catch (err) {
+    bailAiccError(TOOL, METHOD, err);
+  }
   if (call.status === "failed" || !call.summary) {
     bailAiccFailed(TOOL, METHOD, call.taskId, describeFailure(call));
   }
@@ -89,13 +120,27 @@ export async function run(argv: string[]): Promise<never> {
   // deno-lint-ignore no-explicit-any
   const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
   let saved;
-  try { saved = await saveArtifactToPath(artifact, suffixPathByMime(outputPath, "audio/mpeg"), ndmProxy); }
-  catch (err) { bailIoError(TOOL, call.taskId, err); }
+  try {
+    saved = await saveArtifactToPath(
+      artifact,
+      suffixPathByMime(outputPath, "audio/mpeg"),
+      ndmProxy,
+    );
+  } catch (err) {
+    bailIoError(TOOL, call.taskId, err);
+  }
 
   emitAndExit(
     successResult(TOOL, `${TOOL} => done`, `${TOOL} wrote ${saved.path}`, {
-      method: METHOD, capability: "audio", task_id: call.taskId,
-      files: [{ path: saved.path, mime: saved.mime ?? null, bytes: saved.bytes, source_kind: saved.source_kind }],
+      method: METHOD,
+      capability: "audio",
+      task_id: call.taskId,
+      files: [{
+        path: saved.path,
+        mime: saved.mime ?? null,
+        bytes: saved.bytes,
+        source_kind: saved.source_kind,
+      }],
     }),
     EXIT_SUCCESS,
   );

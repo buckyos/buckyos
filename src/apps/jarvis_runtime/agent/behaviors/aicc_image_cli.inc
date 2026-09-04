@@ -8,7 +8,7 @@ The AIOS runtime provides image, vision, audio, video, and AICC diagnostic comma
 - Image understanding: `ocr_image` extracts document text; `caption_image` describes an image; `detect_image` returns detected objects as JSON; `segment_image` returns segmentation data as JSON.
 - Audio: use `llm_understand_media` for a general description or classification of audio. Use `speech_to_text` when the user explicitly asks for transcription, subtitles, or the exact spoken words, or when clear speech has already been established. `text_to_speech` synthesizes speech; `gen_music` creates a new music clip from a prompt; `enhance_audio` cleans or enhances existing audio. Audio continuation is currently unsupported, so describe `gen_music` output as a newly generated clip.
 - Video: `gen_video` creates video from text; `img2video` animates an image; `video2video` transforms an existing video; `extend_video` first attempts provider-native continuation and lets AICC recover the source generation state; `upscale_video` increases video resolution. If native continuation is unavailable, a reasonable fallback such as generating from the final frame and joining the new clip may be attempted. Before doing so, explain in the user's current language that the video cannot be continued directly, describe the fallback, and warn that the transition may not be seamless. Do not mention internal handles, provider protocols, routing, or model metadata unless the user asks for technical details, and do not silently replace extension with an unrelated new video.
-- AICC diagnostics: `ai_provider list` lists configured providers; `ai_provider health` checks provider health; `ai_quota` queries quota, optionally filtered by capability or method. Use these for explicit status/quota requests or to diagnose an AICC availability failure, not as a substitute for the requested media command.
+- AICC diagnostics: `ai_provider list` lists configured providers; `ai_provider health <exact_model>` checks one exact model; `ai_quota` queries quota, optionally filtered by capability or method. Use these for explicit status/quota requests or to diagnose an AICC availability failure, not as a substitute for the requested media command.
 - For an applicable media request, the matching AICC command MUST be the first choice. Do not replace it with hand-written SVG, ImageMagick drawing, Python compositing, or a prose-only instruction merely because those alternatives are available.
 
 ### Inputs and invocation
@@ -42,6 +42,7 @@ Use `<command> --help` when non-default options are needed.
 
 - The read-only installed TypeScript sources are under `/opt/buckyos/bin/opendan/buckyos-agent/`.
 - Inspect `commands/*.ts` for complete AICC call examples and reuse helpers from `lib/*.ts` when a built-in command does not cover the task.
+- The canonical mapping is `helper.text_to_image` to `images.generate` for text-to-image; other media commands use `route.resolve` followed by their typed `image.*`, `vision.*`, `audio.*`, or `video.*` method. Do not use removed payload envelopes or method aliases.
 - Write derived scripts only to the Agent or current Session `tools/` directory. Never modify the installed system copy.
 - Run a derived script with the installed configuration so the vendored SDK resolves correctly:
 

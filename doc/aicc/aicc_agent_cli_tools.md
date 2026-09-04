@@ -1,7 +1,7 @@
 # AICC Agent CLI Tools
 
-版本：`v0.1-draft`
-更新基线：`2026-05-12`
+版本：`v0.2`
+更新基线：`2026-09-04`
 
 本文定义一组面向 Agent 的 AI 能力 CLI。CLI 是 AICC kRPC API 的薄封装，用于让 Agent 在 shell / workflow / task runner 中直接调用典型 AI 能力，例如：
 
@@ -38,7 +38,7 @@ CLI 不重新定义 AI 协议。每个命令只负责：
 3. 调用 `/kapi/aicc` 对应 method。
 4. 把 artifacts / 文本结果落到本地文件 / stdout。
 
-> 调用路径：CLI 默认走 helper 层（如文生图走 `helper.text_to_image`），由 helper 内部 `route.resolve` + typed inference（`images.generate`）完成；传入的是逻辑模型名。需要强制指定精确模型或调试两阶段时，可显式 `route.resolve` 再 `images.generate(exact_model=...)`。CLI 不构造已删除的 all-in-one `AiMethodRequest`。
+> 调用路径：文生图走 `helper.text_to_image`，由 Helper 完成路由和 `images.generate`；其余媒体命令在使用逻辑模型时先调用 `route.resolve`，再把返回的 `exact_model` 传给对应 typed inference。显式传入精确模型时跳过路由。CLI 不构造已删除的 all-in-one `AiMethodRequest`。
 
 ---
 
@@ -70,7 +70,7 @@ gen_video "prompt" result.mp4
 --no-fallback
 --idempotency-key <key>
 --trace-id <trace_id>
---json                       输出完整 AiMethodResponse JSON 到 stdout
+--json                       输出完整 typed response JSON 到 stdout
 --timeout <seconds>          当前 CLI 进程最长等待时间
 ```
 
@@ -124,7 +124,7 @@ URL 输入通过 `--url` 或参数值的 URL scheme 识别，转换为：
 1. 单文件输出命令把第一个匹配 artifact 下载到指定路径。
 2. 多文件输出命令要求输出目录。
 3. 结构化结果写 JSON 文件；如果未指定输出文件，则写 stdout。
-4. `--json` 时不做精简输出，直接输出完整 `AiMethodResponse`。
+4. `--json` 时不做精简输出，直接输出完整 canonical typed response。
 
 输出文件不存在时创建，存在时覆盖。CLI 不做交互确认，因为这些工具面向 Agent 自动化。
 
@@ -322,7 +322,7 @@ detect_image <image> <output_json>
   --classes <class1,class2,...>
   --threshold <float>
   --bbox-format <xywh>
-  --bbox-unit <px|ratio>
+  --bbox-unit <px|relative>
 ```
 
 ### 4.4 `segment_image`
@@ -540,7 +540,7 @@ Provider 查询。
 
 ```bash
 ai_provider list
-ai_provider health
+ai_provider health <exact_model>
 ```
 
 映射到：
@@ -548,7 +548,7 @@ ai_provider health
 | command | AICC method |
 |---|---|
 | `ai_provider list` | `provider.list` |
-| `ai_provider health` | `provider.health` |
+| `ai_provider health <exact_model>` | `provider.health` |
 
 ### 7.2 `ai_quota`
 
@@ -569,10 +569,10 @@ ai_quota --method images.generate
 | CLI | AICC method | capability | 默认 logical_model |
 |---|---|---|---|
 | `gen_image` | `helper.text_to_image` | `image` | `image.txt2img` |
-| `edit_image` | `helper.edit_image` | `image` | `image.img2img` |
-| `inpaint_image` | `helper.edit_image` | `image` | `image.inpaint` |
-| `upscale_image` | `helper.upscale_image` | `image` | `image.upscale` |
-| `remove_bg` | `helper.remove_background` | `image` | `image.bg_remove` |
+| `edit_image` | `image.img2img` | `image` | `image.img2img` |
+| `inpaint_image` | `image.inpaint` | `image` | `image.inpaint` |
+| `upscale_image` | `image.upscale` | `image` | `image.upscale` |
+| `remove_bg` | `image.bg_remove` | `image` | `image.bg_remove` |
 | `ocr_image` | `vision.ocr` | `vision` | `vision.ocr` |
 | `caption_image` | `vision.caption` | `vision` | `vision.caption` |
 | `detect_image` | `vision.detect` | `vision` | `vision.detect` |
@@ -598,9 +598,9 @@ ai_quota --method images.generate
   "method": "helper.text_to_image",
   "params": {
     "logical_model": "image.txt2img",
-    "requirements": {
-      "resp_format": "text"
-    },
+    "requirements": {},
+    "disable": {},
+    "trace_id": "<trace_id>",
     "prompt": "prompt",
     "n": 1,
     "aspect_ratio": "1:1",
@@ -613,12 +613,11 @@ ai_quota --method images.generate
       "allow_fallback": true,
       "runtime_failover": true
     }
-  },
-  "sys": [1001, "<session_token>", "<trace_id>"]
+  }
 }
 ```
 
-同步成功后，CLI 从 `result.artifacts[0].resource` 取生成图片并写入 `result.png`。
+同步成功后，CLI 从 typed response 的 `images[0]` 取生成图片并写入 `result.png`。异步成功时从 TaskMgr 2.0 `result.result.output.artifacts` 读取产物。
 
 ---
 
@@ -646,11 +645,12 @@ CLI 默认连接本机 NodeGateway：
 http://127.0.0.1:3180/kapi/aicc
 ```
 
-可通过环境变量覆盖：
+OpenDAN 使用 AppClient session token 并通过宿主机 NodeGateway 访问服务；本地模式使用 SDK 的标准登录流程。相关环境变量：
 
 ```text
-AICC_ENDPOINT
-BUCKYOS_SESSION_TOKEN
+BUCKYOS_APPCLIENT_SESSION_TOKEN
+BUCKYOS_HOST_GATEWAY
+BUCKYOS_NODE_GATEWAY_PORT
 AICC_DEFAULT_PROFILE
 AICC_DEFAULT_TIMEOUT  # milliseconds; default 900000
 ```
@@ -709,7 +709,7 @@ AICC_DEFAULT_TIMEOUT  # milliseconds; default 900000
 ## 11. 非目标
 
 1. 不设计新的 REST AI API。
-2. 不在 CLI 中实现 Provider 专有参数透传，除非放入 `--provider-extra <json>`。
+2. 不在 CLI 中实现 Provider 专有参数透传。
 3. 不实现 `chat`、`completion`、`ask`、`reason` 等原始 LLM 推理命令。
 4. 不在 CLI 内做复杂模型选择逻辑；路由决策属于 AICC。
 5. 不为每个 Provider 设计独立命令。

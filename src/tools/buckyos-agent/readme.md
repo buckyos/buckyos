@@ -28,10 +28,10 @@ Agent 应当能直接读 `commands/*.ts` 学到怎么调 AICC，然后自己写�
 
 ```
 1) 解析 argv → 位置参数 + 选项
-2) 构造 input_json（AICC payload.input_json 的字段）
+2) 按 SDK 类型构造 canonical method request
 3) initRuntime() 拿到登录后的 BuckyOS 会话
-4) callAicc() 同步调用 + 等待 task 完成（如果异步）
-5) 从 AiResponse.message 的派生视图把产物拉回本地（或读取文本）
+4) 逻辑模型先 route.resolve，再调用 typed inference；文生图直接调用 Helper
+5) 从 typed response 把产物拉回本地（或读取文本）
 6) emit() 一行 AgentToolResult JSON 给上游
 ```
 
@@ -43,14 +43,14 @@ Agent 应当能直接读 `commands/*.ts` 学到怎么调 AICC，然后自己写�
 | 文件 | 用途 |
 |---|---|
 | `lib/runtime.ts` | `initRuntime()` — 登录 BuckyOS |
-| `lib/aicc.ts` | `callAicc()` 同步调用 + task-manager 轮询；`commonPolicyOptions()`、`requestNamedObjectOutput()`、`describeFailure()` |
+| `lib/aicc.ts` | `callAicc()` canonical 路由与 typed inference + task-manager 轮询；`textToImage()`、`commonPolicyOptions()`、`describeFailure()` |
 | `lib/io.ts` | `resolveInputResource()` 把字符串映射成 ResourceRef；`pickArtifact()`、`saveArtifactToPath()` 落盘 artifact；`suffixPathByMime()` |
 | `lib/cli.ts` | `parseArgvOrExit()`、`requireString/flagInt/flagFloat/flagBool`、`COMMON_OPTIONS_HELP`、`bailArgError()` |
 | `lib/result.ts` | AgentToolResult builders + `emit/emitAndExit`、各种 `bail*` 错误收敛、退出码常量 |
-| `lib/types.ts` | 协议类型（`AgentToolResult`、`AiResponse`、`ResourceRef`、`Capability`、`Profile` 等）|
+| `lib/types.ts` | Agent 输出类型，以及从发布版 `buckyos` SDK 派生的 AICC response / `ResourceRef` 视图 |
 
 写一个新命令的最短模板：复制 `gen_image.ts`，把 `TOOL` / `METHOD` /
-`capability` / `HELP` / step 2 的 input_json builder / step 5 的产物处理换成
+`capability` / `HELP` / step 2 的 typed request builder / step 5 的产物处理换成
 你要的就行。
 
 
@@ -130,4 +130,4 @@ CLI 始终将 `AgentToolResult` JSON 写到 stdout（与 `src/frame/agent_tool` 
 - `BUCKYOS_ZONE_HOST`（默认 `test.buckyos.io`，兼容 `BUCKYOS_TEST_ZONE_HOST`）
 - `BUCKYOS_APP_CLIENT_DIR` / `BUCKYOS_TEST_APP_CLIENT_DIR`：额外私钥搜索目录
 - `AICC_DEFAULT_PROFILE`：`balanced|cheap|fast|quality`（默认 `balanced`）
-- `AICC_DEFAULT_TIMEOUT`：等待 task 完成的毫秒上限（默认 `180000`）
+- `AICC_DEFAULT_TIMEOUT`：等待 task 完成的毫秒上限（默认 `900000`）

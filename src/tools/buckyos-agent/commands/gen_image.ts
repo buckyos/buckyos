@@ -1,13 +1,13 @@
-// gen_image — image.txt2img
+// gen_image — helper.text_to_image → images.generate
 // Doc: aicc_agent_cli_tools.md §3.1
 //
 // 这个文件是 Agent 写自己的 AICC 工具的范本。结构上从上到下就是一份配方:
 //
 //   1) 解析 argv → 位置参数 + 选项
-//   2) 构造 input_json（AICC payload.input_json 里要送的字段）
+//   2) 构造 canonical helper request
 //   3) initRuntime() 拿到登录后的 BuckyOS 会话
 //   4) callAicc() 同步调用 + 等待 task 完成
-//   5) 从 AiResponse.message 的 artifact 派生视图把产物拉回本地
+//   5) 从 typed response 的 ResourceRef 派生视图把产物拉回本地
 //   6) emit() 一行 AgentToolResult JSON 给上游
 //
 // 改用途时，主要变化点只有 (1) (2) (5)；(3)(4)(6) 是机械的。
@@ -26,10 +26,14 @@ import { initRuntime } from "../lib/runtime.ts";
 import {
   commonPolicyOptions,
   describeFailure,
-  requestNamedObjectOutput,
   textToImage,
 } from "../lib/aicc.ts";
-import { pickArtifact, saveArtifactToPath, suffixPathByMime } from "../lib/io.ts";
+import type { TextToImageOptions } from "../lib/aicc.ts";
+import {
+  pickArtifact,
+  saveArtifactToPath,
+  suffixPathByMime,
+} from "../lib/io.ts";
 import {
   bailAiccError,
   bailAiccFailed,
@@ -79,50 +83,53 @@ export async function run(argv: string[]): Promise<never> {
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
   if (parsed.positional.length < 2) {
     emitAndExit(
-      errorResult(TOOL, `${TOOL} => arg_error`, HELP, { error: "missing positional arguments" }),
+      errorResult(TOOL, `${TOOL} => arg_error`, HELP, {
+        error: "missing positional arguments",
+      }),
       EXIT_ARG_ERROR,
     );
   }
   const [prompt, outputPath] = parsed.positional;
 
-  // ── 2. 构造 input_json ─────────────────────────────────────────────────
+  // ── 2. 构造 canonical helper request ──────────────────────────────────
   // 字段名 (prompt / negative_prompt / aspect_ratio / quality / seed / n /
   // output.media_type / output.size) 来自 aicc_api设计.md image capability
   // 那一节。每个 method 的可选字段需要查 doc。
-  const input: Record<string, unknown> = { prompt };
+  const request: TextToImageOptions["request"] = { prompt };
   try {
     const negative = requireString(parsed.flags, "negative");
-    if (negative !== undefined) input.negative_prompt = negative;
+    if (negative !== undefined) request.negative_prompt = negative;
     const n = flagInt(parsed.flags, "n");
-    if (n !== undefined) input.n = n;
+    if (n !== undefined) request.n = n;
     const aspect = requireString(parsed.flags, "aspect");
     if (aspect !== undefined) {
-      if (!ASPECT.has(aspect)) throw new ArgError(`--aspect invalid: ${aspect}`);
-      input.aspect_ratio = aspect;
+      if (!ASPECT.has(aspect)) {
+        throw new ArgError(`--aspect invalid: ${aspect}`);
+      }
+      request.aspect_ratio = aspect;
     }
     const size = requireString(parsed.flags, "size");
     if (size !== undefined) {
-      if (!/^\d+x\d+$/i.test(size)) throw new ArgError(`--size must be WxH, got ${size}`);
-      input.size = size;
+      if (!/^\d+x\d+$/i.test(size)) {
+        throw new ArgError(`--size must be WxH, got ${size}`);
+      }
+      request.size = size;
     }
     const quality = requireString(parsed.flags, "quality");
     if (quality !== undefined) {
-      if (!QUALITY.has(quality)) throw new ArgError(`--quality invalid: ${quality}`);
-      input.quality = quality;
+      if (!QUALITY.has(quality)) {
+        throw new ArgError(`--quality invalid: ${quality}`);
+      }
+      request.quality = quality;
     }
     const seed = flagInt(parsed.flags, "seed");
-    if (seed !== undefined) input.seed = seed;
+    if (seed !== undefined) request.seed = seed;
     const mime = formatToMime(requireString(parsed.flags, "format"));
-    if (mime) input.output = { media_type: mime };
+    if (mime) request.output = { media_type: mime };
   } catch (err) {
     if (err instanceof ArgError) bailArgError(TOOL, err);
     throw err;
   }
-
-  // requestNamedObjectOutput 给 input_json 加 response_format/object_id 提示，
-  // 让 provider 把产物存成 BuckyOS named_object 而不是塞 base64 回响应里。
-  // 大产物（image/audio/video）都应该这么调。
-  const inputJson = requestNamedObjectOutput(input);
 
   // ── 3. 拿到 BuckyOS 运行时 ────────────────────────────────────────────
   let runtime;
@@ -140,9 +147,8 @@ export async function run(argv: string[]): Promise<never> {
   let call;
   try {
     call = await textToImage(runtime, {
-      modelAlias: parsed.common.model ?? DEFAULT_LOGICAL_MODEL,
-      prompt,
-      inputJson,
+      model: parsed.common.model ?? DEFAULT_LOGICAL_MODEL,
+      request,
       ...commonPolicyOptions(parsed.common),
     });
   } catch (err) {

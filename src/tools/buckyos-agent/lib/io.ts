@@ -12,7 +12,12 @@
 //   - artifact.resource.url            → fetch
 //   - artifact.resource.base64         → decode
 
-import { AiArtifact, AiResponse, ResourceRef, aiResponseArtifacts } from "./types.ts";
+import {
+  AiArtifact,
+  AiccInferenceResponse,
+  aiResponseArtifacts,
+  ResourceRef,
+} from "./types.ts";
 
 const MIME_BY_EXT: Record<string, string> = {
   png: "image/png",
@@ -75,7 +80,9 @@ export function isNamedObjectRef(value: string): boolean {
 
 function base64FromBytes(bytes: Uint8Array): string {
   let binary = "";
-  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
   return btoa(binary);
 }
 
@@ -103,7 +110,9 @@ export async function resolveInputResource(
   // files small enough to fit in the request envelope.
   const bytes = await Deno.readFile(value);
   const inferredMime = mimeFromPath(value);
-  const mime = mimeHint?.endsWith("/*") ? inferredMime : mimeHint ?? inferredMime;
+  const mime = mimeHint?.endsWith("/*")
+    ? inferredMime
+    : mimeHint ?? inferredMime;
   return { kind: "base64", mime, data_base64: base64FromBytes(bytes) };
 }
 
@@ -167,13 +176,18 @@ export async function saveArtifactToPath(
 
   await ensureParentDir(destPath);
   await Deno.writeFile(destPath, bytes);
-  return { path: destPath, bytes: bytes.byteLength, mime, source_kind: sourceKind };
+  return {
+    path: destPath,
+    bytes: bytes.byteLength,
+    mime,
+    source_kind: sourceKind,
+  };
 }
 
 // Pick the first artifact whose mime matches the desired top-level family
 // ("image" / "audio" / "video"). Falls back to first artifact when no match.
 export function pickArtifact(
-  response: AiResponse,
+  response: AiccInferenceResponse,
   family?: "image" | "audio" | "video",
 ): AiArtifact | null {
   const arts = aiResponseArtifacts(response);
@@ -189,7 +203,10 @@ export function pickArtifact(
 // Append an extension to `path` (chosen by `mime`) if the path has none.
 // Used by single-file output commands so `gen_image foo bar` still produces
 // `bar.png` rather than an extension-less blob.
-export function suffixPathByMime(path: string, mime: string | undefined): string {
+export function suffixPathByMime(
+  path: string,
+  mime: string | undefined,
+): string {
   if (/\.[a-z0-9]{1,8}$/i.test(path)) return path;
   const ext = extFromMime(mime ?? "");
   return ext ? `${path}.${ext}` : path;

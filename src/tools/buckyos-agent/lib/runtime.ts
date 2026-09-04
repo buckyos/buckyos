@@ -5,8 +5,7 @@ import { buckyos, parseSessionTokenClaims, RuntimeType } from "buckyos";
 import { resolveRuntimeConnection } from "./runtime_config.ts";
 
 export interface AiccRuntime {
-  // deno-lint-ignore no-explicit-any
-  buckyos: any;
+  buckyos: typeof buckyos;
   userId: string;
   ownerUserId: string;
   zoneHost: string;
@@ -60,15 +59,22 @@ export async function initRuntime(): Promise<AiccRuntime> {
   if (!account?.session_token) {
     throw new Error("AppClient login failed to produce a session token");
   }
-  const claims =
-    (parseSessionTokenClaims(account.session_token) as Record<string, unknown> | null) ?? null;
+  const claims = (parseSessionTokenClaims(account.session_token) as
+    | Record<string, unknown>
+    | null) ?? null;
 
   const userId = account.user_id ?? (claims?.sub as string | undefined) ??
     (claims?.userid as string | undefined) ?? ownerUserId;
-  // deno-lint-ignore no-explicit-any
-  const runtimeOwnerUserId = (buckyos as any).getBuckyOSConfig?.()?.ownerUserId ?? ownerUserId;
+  const runtimeOwnerUserId = buckyos.getBuckyOSConfig()?.ownerUserId ??
+    ownerUserId;
 
-  cached = { buckyos, userId, ownerUserId: runtimeOwnerUserId, zoneHost, appId };
+  cached = {
+    buckyos,
+    userId,
+    ownerUserId: runtimeOwnerUserId,
+    zoneHost,
+    appId,
+  };
   return cached;
 }
 

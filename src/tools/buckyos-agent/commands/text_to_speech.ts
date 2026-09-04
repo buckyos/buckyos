@@ -5,15 +5,34 @@
 import { ndm_proxy } from "buckyos";
 
 import {
-  ArgError, bailArgError, COMMON_OPTIONS_HELP, flagBool, flagFloat, flagInt,
-  parseArgvOrExit, requireString,
+  ArgError,
+  bailArgError,
+  COMMON_OPTIONS_HELP,
+  flagBool,
+  flagFloat,
+  flagInt,
+  parseArgvOrExit,
+  requireString,
 } from "../lib/cli.ts";
 import { initRuntime } from "../lib/runtime.ts";
-import { callAicc, commonPolicyOptions, describeFailure, requestNamedObjectOutput } from "../lib/aicc.ts";
-import { pickArtifact, saveArtifactToPath, suffixPathByMime } from "../lib/io.ts";
+import { callAicc, commonPolicyOptions, describeFailure } from "../lib/aicc.ts";
+import type { TypedRequestMap } from "../lib/aicc.ts";
 import {
-  bailAiccError, bailAiccFailed, bailIoError, bailNoArtifact, bailRuntimeError,
-  emitAndExit, errorResult, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
+  pickArtifact,
+  saveArtifactToPath,
+  suffixPathByMime,
+} from "../lib/io.ts";
+import {
+  bailAiccError,
+  bailAiccFailed,
+  bailIoError,
+  bailNoArtifact,
+  bailRuntimeError,
+  emitAndExit,
+  errorResult,
+  EXIT_ARG_ERROR,
+  EXIT_SUCCESS,
+  successResult,
 } from "../lib/result.ts";
 
 const TOOL = "text_to_speech";
@@ -45,55 +64,72 @@ function formatToMime(f: string | undefined): string | undefined {
 export async function run(argv: string[]): Promise<never> {
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
   if (parsed.positional.length < 2) {
-    emitAndExit(errorResult(TOOL, `${TOOL} => arg_error`, HELP, { error: "missing positional" }), EXIT_ARG_ERROR);
+    emitAndExit(
+      errorResult(TOOL, `${TOOL} => arg_error`, HELP, {
+        error: "missing positional",
+      }),
+      EXIT_ARG_ERROR,
+    );
   }
   const [text, outputPath] = parsed.positional;
 
-  const input: Record<string, unknown> = { text };
+  const request = { text, voice: {} } as TypedRequestMap[typeof METHOD];
   // §5.1: 当用户既给了 --voice-id 又要求 --speaker-similarity-required，
   // 需要把路由策略设成 strict，避免跨 provider fallback 导致声音不一致。
-  let requirements: Record<string, unknown> | undefined;
+  let strictVoice = false;
   try {
     const voice = requireString(parsed.flags, "voice-id");
-    if (voice !== undefined) input.voice_id = voice;
+    if (voice !== undefined) request.voice.voice_id = voice;
     const lang = requireString(parsed.flags, "lang");
-    if (lang !== undefined) input.language = lang;
+    if (lang !== undefined) request.voice.language = lang;
     const gender = requireString(parsed.flags, "gender");
     if (gender !== undefined) {
-      if (!GENDER.has(gender)) throw new ArgError(`--gender invalid: ${gender}`);
-      input.gender = gender;
+      if (!GENDER.has(gender)) {
+        throw new ArgError(`--gender invalid: ${gender}`);
+      }
+      request.voice.gender = gender;
     }
     const style = requireString(parsed.flags, "style");
-    if (style !== undefined) input.style = style;
-    const strictVoice = flagBool(parsed.flags, "speaker-similarity-required");
-    if (strictVoice) input.speaker_similarity_required = true;
+    if (style !== undefined) request.voice.style = style;
+    strictVoice = flagBool(parsed.flags, "speaker-similarity-required");
+    if (strictVoice) request.voice.speaker_similarity_required = true;
     const speed = flagFloat(parsed.flags, "speed");
-    if (speed !== undefined) input.speed = speed;
+    if (speed !== undefined) request.speed = speed;
     const mime = formatToMime(requireString(parsed.flags, "format"));
     const sr = flagInt(parsed.flags, "sample-rate");
     const out: Record<string, unknown> = {};
     if (mime) out.media_type = mime;
     if (sr !== undefined) out.sample_rate = sr;
-    if (Object.keys(out).length > 0) input.output = out;
-    if (voice && strictVoice) requirements = { strict_route: true };
+    if (Object.keys(out).length > 0) request.output = out;
+    strictVoice = !!voice && strictVoice;
   } catch (err) {
     if (err instanceof ArgError) bailArgError(TOOL, err);
     throw err;
   }
 
   let runtime;
-  try { runtime = await initRuntime(); } catch (err) { bailRuntimeError(TOOL, err); }
+  try {
+    runtime = await initRuntime();
+  } catch (err) {
+    bailRuntimeError(TOOL, err);
+  }
   let call;
   try {
     call = await callAicc(runtime, {
-      capability: "audio",
       method: METHOD,
-      modelAlias: parsed.common.model ?? METHOD,
-      inputJson: requestNamedObjectOutput(input),
-      requirements,
       ...commonPolicyOptions(parsed.common),
+      allowFallback: strictVoice
+        ? false
+        : commonPolicyOptions(parsed.common).allowFallback,
+      runtimeFailover: strictVoice
+        ? false
+        : commonPolicyOptions(parsed.common).runtimeFailover,
+      model: parsed.common.model ?? METHOD,
+      request,
     });
-  } catch (err) { bailAiccError(TOOL, METHOD, err); }
+  } catch (err) {
+    bailAiccError(TOOL, METHOD, err);
+  }
   if (call.status === "failed" || !call.summary) {
     bailAiccFailed(TOOL, METHOD, call.taskId, describeFailure(call));
   }
@@ -103,13 +139,27 @@ export async function run(argv: string[]): Promise<never> {
   // deno-lint-ignore no-explicit-any
   const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
   let saved;
-  try { saved = await saveArtifactToPath(artifact, suffixPathByMime(outputPath, "audio/mpeg"), ndmProxy); }
-  catch (err) { bailIoError(TOOL, call.taskId, err); }
+  try {
+    saved = await saveArtifactToPath(
+      artifact,
+      suffixPathByMime(outputPath, "audio/mpeg"),
+      ndmProxy,
+    );
+  } catch (err) {
+    bailIoError(TOOL, call.taskId, err);
+  }
 
   emitAndExit(
     successResult(TOOL, `${TOOL} => done`, `${TOOL} wrote ${saved.path}`, {
-      method: METHOD, capability: "audio", task_id: call.taskId,
-      files: [{ path: saved.path, mime: saved.mime ?? null, bytes: saved.bytes, source_kind: saved.source_kind }],
+      method: METHOD,
+      capability: "audio",
+      task_id: call.taskId,
+      files: [{
+        path: saved.path,
+        mime: saved.mime ?? null,
+        bytes: saved.bytes,
+        source_kind: saved.source_kind,
+      }],
     }),
     EXIT_SUCCESS,
   );

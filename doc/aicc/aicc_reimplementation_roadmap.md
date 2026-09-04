@@ -642,11 +642,13 @@ Owner：四个并行集成小组
 
 依赖：WP-01TS 发布并在本仓锁定新版 `buckyos` SDK
 
-- [ ] 更新 `src/tools/buckyos-agent/lib/aicc.ts` 和各命令；
-- [ ] 更新图像、音频、视频 command-to-method 映射；
-- [ ] 更新 Jarvis behavior/include；
-- [ ] 保持 task event 进度链路；
-- [ ] 删除旧 payload 和 method alias。
+- [x] 更新 `src/tools/buckyos-agent/lib/aicc.ts` 和各命令；
+- [x] 更新图像、音频、视频 command-to-method 映射；
+- [x] 更新 Jarvis behavior/include；
+- [x] 保持 task event 进度链路；
+- [x] 删除旧 payload 和 method alias。
+
+实现记录：OpenDAN/Jarvis/CLI 小组将 `buckyos-agent` 调用层切换到发布版 `buckyos` SDK 的 canonical typed/helper API；文生图使用 `helper.text_to_image`，其它媒体命令使用 `route.resolve` 加 typed inference，显式精确模型直接调用 typed method。CLI 请求和响应类型从 SDK 派生，移除旧 all-in-one payload、`input_json` 和虚构 helper alias，并按 canonical DTO 透传 `trace_id`。TaskMgr 2.0 终态轮询及 `__BUCKYOS_AGENT_PROGRESS__` running/finalizing 心跳保持不变；OpenDAN/agent_tool 的 LLM 调用也把 context trace 传入 Helper DTO。Deno lint/check 和 9 项测试、`llm_context` 133 项、`agent_tool` 146 项、`opendan` 287 项测试通过；仓库构建脚本因环境未提供四个 `BUCKYOS_SDK_TOOL_*` 不可变输入而未执行。
 
 #### WP-17D Rootfs / Dev Config / RBAC
 
