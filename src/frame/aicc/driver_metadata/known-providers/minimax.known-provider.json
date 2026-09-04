@@ -11,6 +11,16 @@
       "base_url": "https://api.minimax.io/anthropic",
       "protocol_adapter_id": "minimax-messages",
       "provider_rules_id": "minimax",
+      "credential": { "kind": "named_header", "header_name": "x-api-key" },
+      "connection": {
+        "region": {
+          "mode": "optional",
+          "default_value": "global",
+          "allowed_values": ["china", "global"]
+        },
+        "workspace": { "mode": "unsupported" },
+        "account": { "mode": "unsupported" }
+      },
       "ui_hints": {
         "credential": {
           "kind": "named_header",

@@ -11,6 +11,22 @@
       "base_url": "https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1",
       "protocol_adapter_id": "qwen-responses",
       "provider_rules_id": "qwen",
+      "credential": { "kind": "bearer" },
+      "connection": {
+        "region": {
+          "mode": "optional",
+          "default_value": "cn-beijing",
+          "allowed_values": [
+            "cn-beijing",
+            "ap-southeast-1",
+            "us-east-1",
+            "eu-central-1",
+            "ap-northeast-1"
+          ]
+        },
+        "workspace": { "mode": "required" },
+        "account": { "mode": "unsupported" }
+      },
       "ui_hints": {
         "credential_label": "DashScope API key",
         "credential_type": "bearer",

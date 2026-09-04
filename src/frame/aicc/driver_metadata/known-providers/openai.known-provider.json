@@ -11,6 +11,12 @@
       "base_url": "https://api.openai.com/v1",
       "protocol_adapter_id": "openai-responses",
       "provider_rules_id": "openai",
+      "credential": { "kind": "bearer" },
+      "connection": {
+        "region": { "mode": "unsupported" },
+        "workspace": { "mode": "unsupported" },
+        "account": { "mode": "unsupported" }
+      },
       "ui_hints": {
         "credential": {
           "kind": "bearer",

@@ -11,6 +11,12 @@
       "base_url": "https://sn.buckyos.ai/api/v1/ai",
       "protocol_adapter_id": "sn-openai",
       "provider_rules_id": "sn",
+      "credential": { "kind": "bearer" },
+      "connection": {
+        "region": { "mode": "unsupported" },
+        "workspace": { "mode": "unsupported" },
+        "account": { "mode": "optional" }
+      },
       "ui_hints": {
         "credential": {
           "kind": "bearer",

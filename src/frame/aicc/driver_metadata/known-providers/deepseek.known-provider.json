@@ -11,6 +11,12 @@
       "base_url": "https://api.deepseek.com",
       "protocol_adapter_id": "deepseek-responses",
       "provider_rules_id": "deepseek",
+      "credential": { "kind": "bearer" },
+      "connection": {
+        "region": { "mode": "unsupported" },
+        "workspace": { "mode": "unsupported" },
+        "account": { "mode": "unsupported" }
+      },
       "ui_hints": {
         "credential_label": "API key",
         "credential_type": "bearer",

@@ -11,6 +11,12 @@
       "base_url": "https://api.anthropic.com/v1",
       "protocol_adapter_id": "claude-messages",
       "provider_rules_id": "claude",
+      "credential": { "kind": "named_header", "header_name": "x-api-key" },
+      "connection": {
+        "region": { "mode": "unsupported" },
+        "workspace": { "mode": "unsupported" },
+        "account": { "mode": "unsupported" }
+      },
       "ui_hints": {
         "credential": {
           "kind": "named_header",

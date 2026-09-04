@@ -11,6 +11,16 @@
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "protocol_adapter_id": "doubao-responses",
       "provider_rules_id": "doubao",
+      "credential": { "kind": "bearer" },
+      "connection": {
+        "region": {
+          "mode": "optional",
+          "default_value": "cn-beijing",
+          "allowed_values": ["cn-beijing"]
+        },
+        "workspace": { "mode": "unsupported" },
+        "account": { "mode": "unsupported" }
+      },
       "ui_hints": {
         "credential_label": "ARK API key",
         "credential_type": "bearer",

@@ -11,6 +11,12 @@
       "base_url": "https://api.moonshot.ai/v1",
       "protocol_adapter_id": "kimi-chat",
       "provider_rules_id": "kimi",
+      "credential": { "kind": "bearer" },
+      "connection": {
+        "region": { "mode": "unsupported" },
+        "workspace": { "mode": "unsupported" },
+        "account": { "mode": "unsupported" }
+      },
       "ui_hints": {
         "credential": {
           "kind": "bearer",

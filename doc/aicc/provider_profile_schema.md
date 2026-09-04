@@ -153,6 +153,12 @@ SN Provider 支持两种显式且互斥的认证模式：
 
 ## 3. Model Driver 与 Provider 配置边界
 
+### 3.0 Known Provider typed configuration
+
+Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯一 metadata 来源。每项必须直接包含 typed `credential` 与 `connection`，不得从 `ui_hints` 推断。`CatalogSnapshot::resolve_provider_configuration()` 同时解析 Known Provider 和其 `provider_rules_id`，校验 Rules 存在且 identity 一致后，返回生成 `ProviderProfile` 与 `ProviderConnectionContract` 所需的默认配置。
+
+行为 registry 只注册 discovery、refresh、default inventory、动态登录、可选 credential 和区域 URL 选择等可执行行为。GLM catalog 默认 credential 为 Bearer，JWT 是行为 registry 的显式可选变体；SN catalog 默认静态认证为 Bearer API key，dynamic login 及其 account 约束由 SN 行为按显式 auth mode 收窄。任何缺失或冲突均拒绝装配，不允许读取 `ui_hints`、按 Provider ID 猜测或静默 first-match。
+
 ### 3.1 Model Driver metadata 管理
 
 | 字段 | 说明 |

@@ -11,6 +11,12 @@
       "base_url": "https://generativelanguage.googleapis.com/v1beta",
       "protocol_adapter_id": "gemini-interactions",
       "provider_rules_id": "gemini",
+      "credential": { "kind": "named_header", "header_name": "x-goog-api-key" },
+      "connection": {
+        "region": { "mode": "unsupported" },
+        "workspace": { "mode": "unsupported" },
+        "account": { "mode": "unsupported" }
+      },
       "ui_hints": {
         "credential": {
           "kind": "named_header",

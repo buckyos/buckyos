@@ -11,6 +11,12 @@
       "base_url": "https://openrouter.ai/api/v1",
       "protocol_adapter_id": "openrouter-openai",
       "provider_rules_id": "openrouter",
+      "credential": { "kind": "bearer" },
+      "connection": {
+        "region": { "mode": "unsupported" },
+        "workspace": { "mode": "unsupported" },
+        "account": { "mode": "unsupported" }
+      },
       "ui_hints": {
         "credential": {
           "kind": "bearer",

@@ -14,7 +14,9 @@ use std::fmt;
 const MODEL_DRIVER_FORMAT: &str = "buckyos.aicc.model-driver-catalog";
 const PROVIDER_RULES_FORMAT: &str = "buckyos.aicc.provider-rules-catalog";
 const KNOWN_PROVIDER_FORMAT: &str = "buckyos.aicc.known-provider-catalog";
-const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+const MODEL_DRIVER_SCHEMA_VERSION: u32 = 1;
+const PROVIDER_RULES_SCHEMA_VERSION: u32 = 1;
+const KNOWN_PROVIDER_SCHEMA_VERSION: u32 = 1;
 const SUPPORTED_SCHEMA_REVISION: u32 = 0;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -487,8 +489,64 @@ pub(crate) struct KnownProvider {
     pub protocol_adapter_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_rules_id: Option<String>,
+    pub credential: ProviderCredentialDescriptor,
+    pub connection: ProviderConnectionSchema,
     #[serde(default)]
     pub ui_hints: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderCredentialKind {
+    Bearer,
+    NamedHeader,
+    FalKey,
+    GlmJwt,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderCredentialDescriptor {
+    pub kind: ProviderCredentialKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_name: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderFieldMode {
+    Unsupported,
+    Optional,
+    Required,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderFieldSchema {
+    pub mode: ProviderFieldMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_values: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderConnectionSchema {
+    pub region: ProviderFieldSchema,
+    pub workspace: ProviderFieldSchema,
+    pub account: ProviderFieldSchema,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedProviderConfiguration {
+    pub provider_profile_id: String,
+    pub display_name: String,
+    pub default_base_url: String,
+    pub credential: ProviderCredentialDescriptor,
+    pub connection: ProviderConnectionSchema,
+    pub protocol_adapter_id: String,
+    pub provider_rules_id: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -759,6 +817,43 @@ impl CatalogSnapshot {
                     .get(catalog_id)
                     .and_then(|catalog| catalog.providers.get(*position))
             })
+    }
+
+    pub(crate) fn resolve_provider_configuration(
+        &self,
+        provider_profile_id: &str,
+    ) -> Result<ResolvedProviderConfiguration, CatalogResolveError> {
+        let provider = self.known_provider(provider_profile_id).ok_or_else(|| {
+            CatalogResolveError::UnknownKnownProvider {
+                provider_profile_id: provider_profile_id.to_owned(),
+            }
+        })?;
+        let provider_rules_id = provider.provider_rules_id.as_ref().ok_or_else(|| {
+            CatalogResolveError::MissingProviderRulesReference {
+                provider_profile_id: provider_profile_id.to_owned(),
+            }
+        })?;
+        let rules = self.provider_rules(provider_rules_id).ok_or_else(|| {
+            CatalogResolveError::UnknownProviderRules {
+                provider_profile_id: provider_rules_id.clone(),
+            }
+        })?;
+        if rules.provider_profile_id != provider.provider_profile_id {
+            return Err(CatalogResolveError::ProviderRulesIdentityMismatch {
+                provider_profile_id: provider.provider_profile_id.clone(),
+                provider_rules_id: provider_rules_id.clone(),
+                rules_provider_profile_id: rules.provider_profile_id.clone(),
+            });
+        }
+        Ok(ResolvedProviderConfiguration {
+            provider_profile_id: provider.provider_profile_id.clone(),
+            display_name: provider.display_name.clone(),
+            default_base_url: provider.base_url.clone(),
+            credential: provider.credential.clone(),
+            connection: provider.connection.clone(),
+            protocol_adapter_id: provider.protocol_adapter_id.clone(),
+            provider_rules_id: provider_rules_id.clone(),
+        })
     }
 
     pub(crate) fn matching_model_variants(
@@ -1332,6 +1427,7 @@ fn validate_model_driver(
         &catalog.model_driver_id,
         &catalog.format,
         MODEL_DRIVER_FORMAT,
+        MODEL_DRIVER_SCHEMA_VERSION,
         catalog.schema_version,
         catalog.schema_revision,
     )?;
@@ -1465,6 +1561,7 @@ fn validate_provider_rules(catalog: &ProviderRulesCatalog) -> Result<(), Catalog
         &catalog.provider_profile_id,
         &catalog.format,
         PROVIDER_RULES_FORMAT,
+        PROVIDER_RULES_SCHEMA_VERSION,
         catalog.schema_version,
         catalog.schema_revision,
     )?;
@@ -1649,6 +1746,7 @@ fn validate_known_provider_catalog(
         &catalog.catalog_id,
         &catalog.format,
         KNOWN_PROVIDER_FORMAT,
+        KNOWN_PROVIDER_SCHEMA_VERSION,
         catalog.schema_version,
         catalog.schema_revision,
     )?;
@@ -1680,10 +1778,82 @@ fn validate_known_provider_catalog(
                 reason: "must use an http or https URL".to_owned(),
             });
         }
+        validate_provider_configuration(&catalog.catalog_id, provider)?;
         if !profiles.insert(provider.provider_profile_id.as_str()) {
             return Err(CatalogBuildError::DuplicateKnownProvider {
                 provider_profile_id: provider.provider_profile_id.clone(),
             });
+        }
+    }
+    Ok(())
+}
+
+fn validate_provider_configuration(
+    owner: &str,
+    provider: &KnownProvider,
+) -> Result<(), CatalogBuildError> {
+    match provider.credential.kind {
+        ProviderCredentialKind::NamedHeader => {
+            if provider
+                .credential
+                .header_name
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                return Err(CatalogBuildError::InvalidValue {
+                    owner: owner.to_owned(),
+                    field: "providers.credential.header_name",
+                    reason: "named_header credentials require a non-empty header name".to_owned(),
+                });
+            }
+        }
+        _ if provider.credential.header_name.is_some() => {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "providers.credential.header_name",
+                reason: "is only valid for named_header credentials".to_owned(),
+            });
+        }
+        _ => {}
+    }
+    for (field, schema) in [
+        ("providers.connection.region", &provider.connection.region),
+        (
+            "providers.connection.workspace",
+            &provider.connection.workspace,
+        ),
+        ("providers.connection.account", &provider.connection.account),
+    ] {
+        if schema.mode == ProviderFieldMode::Unsupported
+            && (schema.default_value.is_some() || !schema.allowed_values.is_empty())
+        {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field,
+                reason: "unsupported fields cannot define defaults or allowed values".to_owned(),
+            });
+        }
+        let mut values = BTreeSet::new();
+        for value in &schema.allowed_values {
+            if value.trim().is_empty() || !values.insert(value) {
+                return Err(CatalogBuildError::InvalidValue {
+                    owner: owner.to_owned(),
+                    field,
+                    reason: "allowed values must be unique and non-empty".to_owned(),
+                });
+            }
+        }
+        if let Some(default) = schema.default_value.as_deref() {
+            if default.trim().is_empty()
+                || (!schema.allowed_values.is_empty()
+                    && !schema.allowed_values.iter().any(|value| value == default))
+            {
+                return Err(CatalogBuildError::InvalidValue {
+                    owner: owner.to_owned(),
+                    field,
+                    reason: "default must be non-empty and belong to allowed_values".to_owned(),
+                });
+            }
         }
     }
     Ok(())
@@ -1694,6 +1864,7 @@ fn validate_header(
     id: &str,
     format: &str,
     expected_format: &'static str,
+    expected_schema_version: u32,
     schema_version: u32,
     schema_revision: u32,
 ) -> Result<(), CatalogBuildError> {
@@ -1706,7 +1877,7 @@ fn validate_header(
             actual: format.to_owned(),
         });
     }
-    if schema_version != SUPPORTED_SCHEMA_VERSION || schema_revision > SUPPORTED_SCHEMA_REVISION {
+    if schema_version != expected_schema_version || schema_revision > SUPPORTED_SCHEMA_REVISION {
         return Err(CatalogBuildError::UnsupportedSchema {
             kind,
             id: id.to_owned(),
@@ -2101,6 +2272,17 @@ impl Error for CatalogBuildError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CatalogResolveError {
+    UnknownKnownProvider {
+        provider_profile_id: String,
+    },
+    MissingProviderRulesReference {
+        provider_profile_id: String,
+    },
+    ProviderRulesIdentityMismatch {
+        provider_profile_id: String,
+        provider_rules_id: String,
+        rules_provider_profile_id: String,
+    },
     UnknownModelDriver {
         model_driver_id: String,
     },
@@ -2133,6 +2315,23 @@ pub(crate) enum CatalogResolveError {
 impl fmt::Display for CatalogResolveError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnknownKnownProvider {
+                provider_profile_id,
+            } => write!(formatter, "unknown Known Provider {provider_profile_id:?}"),
+            Self::MissingProviderRulesReference {
+                provider_profile_id,
+            } => write!(
+                formatter,
+                "Known Provider {provider_profile_id:?} has no Provider Rules reference"
+            ),
+            Self::ProviderRulesIdentityMismatch {
+                provider_profile_id,
+                provider_rules_id,
+                rules_provider_profile_id,
+            } => write!(
+                formatter,
+                "Known Provider {provider_profile_id:?} references Provider Rules {provider_rules_id:?} belonging to {rules_provider_profile_id:?}"
+            ),
             Self::UnknownModelDriver { model_driver_id } => {
                 write!(formatter, "unknown model driver {model_driver_id:?}")
             }
@@ -2312,6 +2511,12 @@ mod tests {
                 "base_url": "https://api.openai.com",
                 "protocol_adapter_id": "openai-responses",
                 "provider_rules_id": "openai",
+                "credential": {"kind": "bearer"},
+                "connection": {
+                    "region": {"mode": "unsupported"},
+                    "workspace": {"mode": "unsupported"},
+                    "account": {"mode": "unsupported"}
+                },
                 "ui_hints": {"credential_label": "API key"}
             }]
         })
@@ -2407,6 +2612,89 @@ mod tests {
     }
 
     #[test]
+    fn resolves_typed_provider_configuration_and_rules_identity() {
+        let snapshot = build(complete_files()).unwrap();
+        let resolved = snapshot.resolve_provider_configuration("openai").unwrap();
+
+        assert_eq!(resolved.provider_profile_id, "openai");
+        assert_eq!(resolved.display_name, "OpenAI");
+        assert_eq!(resolved.default_base_url, "https://api.openai.com");
+        assert_eq!(resolved.credential.kind, ProviderCredentialKind::Bearer);
+        assert_eq!(
+            resolved.connection.region.mode,
+            ProviderFieldMode::Unsupported
+        );
+        assert_eq!(resolved.protocol_adapter_id, "openai-responses");
+        assert_eq!(resolved.provider_rules_id, "openai");
+        assert_eq!(
+            snapshot
+                .provider_rules(&resolved.provider_rules_id)
+                .unwrap()
+                .provider_profile_id,
+            resolved.provider_profile_id
+        );
+    }
+
+    #[test]
+    fn provider_configuration_resolution_fails_closed() {
+        let snapshot = build(complete_files()).unwrap();
+        assert_eq!(
+            snapshot.resolve_provider_configuration("unknown"),
+            Err(CatalogResolveError::UnknownKnownProvider {
+                provider_profile_id: "unknown".to_owned(),
+            })
+        );
+
+        let mut missing_reference = known_providers();
+        missing_reference["providers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("provider_rules_id");
+        let snapshot = build(vec![file(CatalogKind::KnownProvider, missing_reference)]).unwrap();
+        assert_eq!(
+            snapshot.resolve_provider_configuration("openai"),
+            Err(CatalogResolveError::MissingProviderRulesReference {
+                provider_profile_id: "openai".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn invalid_typed_provider_configuration_is_rejected() {
+        let cases = [
+            ("credential", json!({"kind": "named_header"})),
+            (
+                "connection",
+                json!({
+                    "region": {"mode": "unsupported", "default_value": "global"},
+                    "workspace": {"mode": "unsupported"},
+                    "account": {"mode": "unsupported"}
+                }),
+            ),
+            (
+                "connection",
+                json!({
+                    "region": {
+                        "mode": "optional",
+                        "default_value": "global",
+                        "allowed_values": ["china"]
+                    },
+                    "workspace": {"mode": "unsupported"},
+                    "account": {"mode": "unsupported"}
+                }),
+            ),
+        ];
+        for (field, invalid) in cases {
+            let mut document = known_providers();
+            document["providers"][0][field] = invalid;
+            assert!(matches!(
+                build(vec![file(CatalogKind::KnownProvider, document)]),
+                Err(CatalogBuildError::InvalidValue { .. })
+            ));
+        }
+    }
+
+    #[test]
     fn known_provider_enumeration_is_read_only_and_sorted_by_profile_id() {
         let catalog = |catalog_id: &str, provider_profile_id: &str| {
             json!({
@@ -2419,7 +2707,13 @@ mod tests {
                     "provider_profile_id": provider_profile_id,
                     "display_name": provider_profile_id,
                     "base_url": format!("https://{provider_profile_id}.example"),
-                    "protocol_adapter_id": "test-adapter"
+                    "protocol_adapter_id": "test-adapter",
+                    "credential": {"kind": "bearer"},
+                    "connection": {
+                        "region": {"mode": "unsupported"},
+                        "workspace": {"mode": "unsupported"},
+                        "account": {"mode": "unsupported"}
+                    }
                 }]
             })
         };

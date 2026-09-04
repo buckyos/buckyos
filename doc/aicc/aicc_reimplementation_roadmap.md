@@ -228,10 +228,13 @@ Owner：Metadata 小组
 - [x] Provider Rules 只能收窄 Model Driver 能力；
 - [x] 从上游已按身份选择的完整文件集合构建不可变 `CatalogSnapshot`；
 - [x] 不重复实现 NDN 下载、验签、activation 或防回退。
+- [x] Known Provider schema 提供 typed credential/connection 配置与 fail-closed `resolve_provider_configuration()`。
 
 完成标准：给定同一 catalog 文件集合，总能生成确定且可校验的 snapshot 和索引。
 
 实现记录：Owner 为 Metadata 小组；三类 catalog DTO、加载期校验与 MatchRule 编译、exact/pattern 索引、跨 Model Driver 唯一匹配、conservative fallback、能力收窄和不可变 `CatalogSnapshot` 已落在 `src/frame/aicc/src/catalog/mod.rs`。输入边界只接收 NDN 已交付的当前文件内容，不实现下载、验签、activation、防回退或持久缓存。`cargo test -p aicc` 的 17 个测试、`cargo check -p aicc --all-targets`、AICC clippy `-D warnings` 和格式检查均通过，未新增依赖；完整系统构建和后续 RuntimeSnapshot 集成由对应工作包继续验证。
+
+补充实现记录：Known Provider catalog 新增 typed credential 与 region/workspace/account connection schema；`CatalogSnapshot::resolve_provider_configuration()` 返回默认 base URL、credential、connection、Adapter 和 Rules identity，并对未知 Provider、缺失 Rules、无效字段及引用不一致 fail closed。discovery、refresh、可选认证和动态 URL 行为继续由 Provider registry 注册，`ui_hints` 不再是运行配置来源。
 
 ### WP-04：Model Registry 与逻辑目录
 

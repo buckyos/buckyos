@@ -11,6 +11,12 @@
       "base_url": "https://queue.fal.run",
       "protocol_adapter_id": "fal-queue",
       "provider_rules_id": "fal",
+      "credential": { "kind": "fal_key" },
+      "connection": {
+        "region": { "mode": "unsupported" },
+        "workspace": { "mode": "unsupported" },
+        "account": { "mode": "unsupported" }
+      },
       "ui_hints": {
         "credential": {
           "kind": "fal_key",
