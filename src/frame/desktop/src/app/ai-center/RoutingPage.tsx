@@ -125,7 +125,7 @@ export function RoutingPage() {
           setDirectoryView(view)
         }
       } catch (error) {
-        console.error('aicc.models.list logical_path failed', error)
+        console.error('aicc.models.list directory failed', error)
         if (!cancelled) {
           setDirectoryView({
             routingView: {

@@ -28,7 +28,7 @@ Deno.test('Provider toggle mapping remains constant-time as provider data grows'
     const stores = Array.from({ length: count }, () => new MockDataStore('populated'))
     const start = performance.now()
     for (const store of stores) {
-      const provider = store.getProviders().find((item) => item.config.provider_driver === 'openai')
+      const provider = store.getProviders().find((item) => item.config.provider_profile_id === 'openai')
       assert(provider, 'populated scenario must contain OpenAI Provider')
       store.setProviderEnabled(provider.config.id, false)
     }

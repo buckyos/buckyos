@@ -263,7 +263,7 @@ function provider(
     balanceValue?: number
     estimatedCost?: number
     pricingMode?: 'per_token' | 'subscription' | 'free_quota' | 'unknown'
-    endpoint?: string
+    baseUrl?: string
     syncStatus?: 'ok' | 'syncing' | 'failed'
   } = {},
 ): ProviderView {
@@ -275,18 +275,21 @@ function provider(
       provider_type: providerType,
       provider_instance_name: instanceName,
       provider_runtime_type: 'cloud_api',
-      provider_driver: driver,
-      provider_origin: providerType === 'sn_router' ? 'system_config' : 'user_config',
-      auth_mode: providerType === 'sn_router' ? undefined : 'api_key',
-      endpoint: options.endpoint,
+      provider_profile_id: driver,
+      protocol_adapter_id: providerType === 'claude' ? 'claude-messages' : providerType === 'sn' ? 'sn-openai' : 'openai-responses',
+      provider_origin: providerType === 'sn' ? 'system_config' : 'user_config',
+      auth_mode: providerType === 'sn' ? 'dynamic_login' : 'api_key',
+      credential_configured: true,
+      base_url: options.baseUrl ?? '',
       auto_sync_models: true,
       created_at: '2026-05-20T08:00:00Z',
     },
     inventory: {
       provider_instance_name: instanceName,
       provider_type: 'cloud_api',
-      provider_driver: driver,
-      provider_origin: providerType === 'sn_router' ? 'system_config' : 'user_config',
+      provider_profile_id: driver,
+      protocol_adapter_id: providerType === 'claude' ? 'claude-messages' : providerType === 'sn' ? 'sn-openai' : 'openai-responses',
+      provider_origin: providerType === 'sn' ? 'system_config' : 'user_config',
       inventory_revision: `${instanceName}-rev-20260529`,
       version: '2026.05',
       models,
@@ -317,18 +320,18 @@ function provider(
 }
 
 const providers = [
-  provider('sn-router-1', 'SN Router', 'sn_router', 'sn-ai-provider-default', 'sn-ai-provider', snModels),
+  provider('sn-router-1', 'SN Router', 'sn', 'sn-ai-provider-default', 'sn', snModels),
   provider('openai-1', 'OpenAI Main Key', 'openai', 'openai-main', 'openai', openaiModels, {
     balanceUnit: 'usd',
     balanceValue: 38.25,
     estimatedCost: 12.84,
-    endpoint: 'https://api.openai.com',
+    baseUrl: 'https://api.openai.com/v1',
   }),
-  provider('anthropic-1', 'Anthropic Work', 'anthropic', 'anthropic-work', 'anthropic', anthropicModels, {
+  provider('anthropic-1', 'Claude Work', 'claude', 'anthropic-work', 'claude', anthropicModels, {
     connected: true,
     authStatus: 'ok',
     estimatedCost: 18.4,
-    endpoint: 'https://api.anthropic.com',
+    baseUrl: 'https://api.anthropic.com/v1',
     syncStatus: 'failed',
   }),
 ]
@@ -618,7 +621,7 @@ function generateUsageEvents(): UsageEvent[] {
       estimated_cost: estimatedCost,
       finance_snapshot: {
         amount: estimatedCost,
-        currency: 'USD',
+        currency: i % 9 === 0 ? 'CNY' : i % 7 === 0 ? 'EUR' : 'USD',
         provider_trace_id: `trace-${i.toString().padStart(3, '0')}`,
       },
       status: i % 23 === 0 ? 'failed' : 'success',

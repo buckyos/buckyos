@@ -1,20 +1,23 @@
 import { useEffect, useState, type FocusEvent } from 'react'
+import { useForm, useWatch } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
 import { ArrowLeft } from 'lucide-react'
 import { useI18n } from '../../../../../i18n/provider'
 import { useAICCStore, useProviders } from '../../../hooks/use-aicc-store'
-import type { ProviderType, ValidationResult, WizardDraft } from '../../../../../api/aicc_mgr'
+import type { ProviderSetupCatalog, ProviderType, ValidationResult, WizardDraft } from '../../../../../api/aicc_mgr'
 import { Stepper } from '../../shared/Stepper'
 import { StepChooseType } from './StepChooseType'
 import { StepConnection } from './StepConnection'
 import { StepValidation } from './StepValidation'
 import { StepReview } from './StepReview'
-import { isConnectionValid } from './connectionValidation'
+import { isConnectionValid, wizardDraftSchema } from './connectionValidation'
 
 const INITIAL_DRAFT: WizardDraft = {
-  provider_type: null,
-  name: '',
-  endpoint: '',
-  protocol_type: null,
+  provider_profile_id: null,
+  display_name: '',
+  base_url: '',
+  protocol_family_id: null,
+  auth_mode: 'api_key',
   api_key: '',
   auto_sync_models: true,
 }
@@ -28,14 +31,23 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   const { t } = useI18n()
   const store = useAICCStore()
   const providers = useProviders()
-  const hasManagedSnProvider = providers.some((provider) => provider.config.provider_driver === 'sn-ai-provider')
+  const hasManagedSnProvider = providers.some((provider) => provider.config.provider_profile_id === 'sn')
 
   const [step, setStep] = useState(0)
-  const [draft, setDraft] = useState<WizardDraft>(INITIAL_DRAFT)
+  const form = useForm<WizardDraft>({
+    resolver: zodResolver(wizardDraftSchema),
+    defaultValues: INITIAL_DRAFT,
+    mode: 'onChange',
+  })
+  const draft = useWatch({ control: form.control }) as WizardDraft
+  const [catalog, setCatalog] = useState<ProviderSetupCatalog | null>(null)
+  const [catalogLoading, setCatalogLoading] = useState(true)
+  const [catalogError, setCatalogError] = useState<string | null>(null)
   const [validation, setValidation] = useState<ValidationResult | null>(null)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [keyboardInset, setKeyboardInset] = useState(0)
+  const selectedProfile = catalog?.providers.find((item) => item.provider_profile_id === draft.provider_profile_id)
 
   const steps = [
     t('aiCenter.wizard.step.chooseType', 'Choose Type'),
@@ -46,16 +58,16 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
 
   const updateDraft = (partial: Partial<WizardDraft>) => {
     setCreateError(null)
-    setDraft((prev) => ({ ...prev, ...partial }))
+    for (const [key, value] of Object.entries(partial)) {
+      form.setValue(key as keyof WizardDraft, value as never, { shouldDirty: true, shouldValidate: true })
+    }
   }
 
   const canNext = () => {
     switch (step) {
-      case 0: return draft.provider_type !== null
-      case 1: return isConnectionValid(draft)
-      case 2: return validation !== null && !validation.errors.some((e) =>
-        !e.includes('balance') // allow balance errors
-      ) && validation.endpoint_reachable && validation.auth_valid
+      case 0: return draft.provider_profile_id !== null
+      case 1: return isConnectionValid(draft) && providerConnectionFieldsValid(draft, selectedProfile)
+      case 2: return validation !== null && validationCanProceed(validation)
       case 3: return true
       default: return false
     }
@@ -101,17 +113,35 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   }
 
   const handleTypeSelect = (type: ProviderType) => {
-    if (type === 'sn_router' && hasManagedSnProvider) {
+    if (type === 'sn' && hasManagedSnProvider) {
       onCreated()
       return
     }
+    const profile = catalog?.providers.find((item) => item.provider_profile_id === type)
     updateDraft({
-      provider_type: type,
-      name: '',
-      endpoint: '',
-      protocol_type: null,
+      provider_profile_id: type,
+      display_name: profile?.display_name ?? '',
+      base_url: profile?.base_url ?? '',
+      protocol_family_id: null,
+      protocol_adapter_id: profile?.protocol_adapter_id,
+      region: profile?.connection_fields.region?.default_value,
+      workspace: profile?.connection_fields.workspace?.default_value,
+      account: profile?.connection_fields.account?.default_value,
+      auth_mode: type === 'sn' ? 'dynamic_login' : 'api_key',
       api_key: '',
     })
+  }
+
+  const loadCatalog = async () => {
+    setCatalogLoading(true)
+    setCatalogError(null)
+    try {
+      setCatalog(await store.fetchProviderSetupCatalog())
+    } catch (error) {
+      setCatalogError(error instanceof Error ? error.message : 'provider_catalog_failed')
+    } finally {
+      setCatalogLoading(false)
+    }
   }
 
   const keepFocusedFieldVisible = (event: FocusEvent<HTMLDivElement>) => {
@@ -133,6 +163,21 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
     window.setTimeout(scrollFocusedTarget, 360)
     window.setTimeout(scrollFocusedTarget, 780)
   }
+
+  useEffect(() => {
+    let cancelled = false
+    void store.fetchProviderSetupCatalog()
+      .then((result) => {
+        if (!cancelled) setCatalog(result)
+      })
+      .catch((error) => {
+        if (!cancelled) setCatalogError(error instanceof Error ? error.message : 'provider_catalog_failed')
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [store])
 
   useEffect(() => {
     const viewport = window.visualViewport
@@ -186,13 +231,17 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
       >
         {step === 0 && (
           <StepChooseType
-            selected={draft.provider_type}
+            selected={draft.provider_profile_id}
             onSelect={handleTypeSelect}
             hasManagedSnProvider={hasManagedSnProvider}
+            catalog={catalog}
+            loading={catalogLoading}
+            error={catalogError}
+            onRetry={() => void loadCatalog()}
           />
         )}
         {step === 1 && (
-          <StepConnection draft={draft} onUpdate={updateDraft} />
+          <StepConnection draft={draft} catalog={catalog} onUpdate={updateDraft} />
         )}
         {step === 2 && (
           <StepValidation draft={draft} onResult={setValidation} />
@@ -264,4 +313,21 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
       </div>
     </div>
   )
+}
+
+function providerConnectionFieldsValid(
+  draft: WizardDraft,
+  profile: ProviderSetupCatalog['providers'][number] | undefined,
+): boolean {
+  if (!profile) return draft.provider_profile_id === 'custom'
+  return (['region', 'workspace', 'account'] as const).every((name) =>
+    profile.connection_fields[name]?.mode !== 'required' || Boolean(draft[name]?.trim()),
+  )
+}
+
+function validationCanProceed(validation: ValidationResult): boolean {
+  const blockingDetails = validation.error_details?.filter((error) => error.kind !== 'balance') ?? []
+  const hasBlockingError = blockingDetails.length > 0
+    || (!validation.error_details?.length && validation.errors.some((error) => !error.toLowerCase().includes('balance')))
+  return !hasBlockingError && validation.base_url_reachable && validation.auth_valid
 }

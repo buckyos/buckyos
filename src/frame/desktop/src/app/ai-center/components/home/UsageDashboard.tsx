@@ -8,7 +8,7 @@ import { SummaryCard } from '../shared/SummaryCard'
 import { PagedListFooter } from '../shared/paged-list'
 import { LongField } from '../shared/LongField'
 import { RouteTraceAuditPanel } from '../usage/RouteTraceAuditPanel'
-import type { RouteTrace, UsageEvent, UsageEventsPage, UsageTimeRange } from '../../../../api/aicc_mgr'
+import type { RouteTrace, UsageEvent, UsageEventsPage, UsageSummary, UsageTimeRange } from '../../../../api/aicc_mgr'
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -35,6 +35,11 @@ function formatWeight(weight: number): string {
 
 function usageFinanceAmount(event: UsageEvent): number {
   return event.finance_snapshot?.amount ?? 0
+}
+
+function formatUsageEventMoney(event: UsageEvent): string {
+  const currency = event.finance_snapshot?.currency
+  return currency ? formatMoney(usageFinanceAmount(event), currency) : '-'
 }
 
 function usageTokens(event: UsageEvent): number {
@@ -80,12 +85,20 @@ function usageProviderDisplayName(event: UsageEvent, providerNames: Map<string, 
   return providerNames.get(identifier) ?? identifier
 }
 
-function formatUsd(amount: number): string {
-  if (amount === 0) return '$0.0'
+function formatMoney(amount: number, currency: string): string {
   const abs = Math.abs(amount)
-  if (abs < 0.0001) return amount < 0 ? '-$<0.0001' : '$<0.0001'
-  if (abs < 0.01) return `$${amount.toFixed(4)}`
-  return `$${amount.toFixed(2)}`
+  const digits = abs > 0 && abs < 0.01 ? 4 : 2
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency, currencyDisplay: 'code', maximumFractionDigits: digits }).format(amount)
+  } catch {
+    return `${amount.toFixed(digits)} ${currency}`
+  }
+}
+
+function formatFinanceTotals(totals: UsageSummary['finance_totals'], expanded = false): string {
+  if (totals.length === 0) return '-'
+  const visible = expanded ? totals : totals.slice(0, 1)
+  return visible.map((money) => formatMoney(money.amount, money.currency)).join('\n')
 }
 
 function formatLocalTime(value: string): string {
@@ -215,12 +228,23 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
   const [filtersSheetOpen, setFiltersSheetOpen] = useState(false)
   const [usageTab, setUsageTab] = useState<'usage' | 'trace'>('usage')
   const [homeBreakdownKey, setHomeBreakdownKey] = useState<HomeBreakdownKey>('provider')
+  const [costExpanded, setCostExpanded] = useState(false)
   const detailRef = useRef<HTMLElement | null>(null)
   const linkedTraceRef = useRef<HTMLElement | null>(null)
   const isUsagePage = mode === 'usage'
   const pageLimit = isUsagePage ? PAGE_SIZE : HOME_USAGE_LIMIT
+  const hasMultipleCurrencies = summary.finance_totals.length > 1
+  const costValue = formatFinanceTotals(summary.finance_totals, costExpanded)
+  const currencyInteraction = hasMultipleCurrencies
+    ? costExpanded
+      ? t('aiCenter.home.collapseCurrencies', 'Click to collapse currencies')
+      : t('aiCenter.home.expandCurrencies', '{{count}} currencies · click to expand', { count: summary.finance_totals.length })
+    : t('aiCenter.home.costEstimated', 'Estimated from usage events')
+  const costSubtitle = summary.finance_complete
+    ? currencyInteraction
+    : `${currencyInteraction} · ${t('aiCenter.home.partialFinance', 'Partial financial total')}`
 
-  const snProvider = providers.find((p) => p.config.provider_type === 'sn_router')
+  const snProvider = providers.find((p) => p.config.provider_profile_id === 'sn')
   const snCredit = snProvider?.account.balance_value
   const balanceProviders = providers.filter((p) => p.account.balance_supported && p.account.balance_value != null)
   const usageOnlyProviders = providers.filter((p) => p.account.usage_supported && !p.account.balance_supported)
@@ -483,9 +507,10 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
             {
               icon: <DollarSign size={18} />,
               title: t('aiCenter.home.estimatedCost', 'Est. Cost'),
-              value: formatUsd(summary.total_estimated_cost),
-              subtitle: t('aiCenter.home.costEstimated', 'Estimated from usage events'),
-              tone: summary.total_estimated_cost > 0 ? 'warning' : 'default',
+              value: costValue,
+              subtitle: costSubtitle,
+              onClick: hasMultipleCurrencies ? () => setCostExpanded((value) => !value) : undefined,
+              tone: summary.finance_totals.some((money) => money.amount > 0) ? 'warning' : 'default',
             },
             {
               icon: <Wallet size={18} />,
@@ -514,7 +539,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
         <SummaryCard
           icon={<DollarSign size={18} />}
           title={t('aiCenter.home.estimatedCost', 'Est. Cost')}
-          value={formatUsd(summary.total_estimated_cost)}
+          value={costValue}
           subtitle={t('aiCenter.home.costEstimated', 'Estimated from usage events')}
         />
         <SummaryCard
@@ -540,7 +565,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
               <div key={point.timestamp} className="flex-1 flex flex-col items-center gap-1 min-w-0">
                 <div
                   className="w-full rounded-t-sm"
-                  title={`${point.timestamp}: ${formatTokens(point.tokens)} tokens / $${point.estimated_cost.toFixed(4)}`}
+                  title={`${point.timestamp}: ${formatTokens(point.tokens)} tokens / ${formatFinanceTotals(point.finance_totals, true)}`}
                   style={{
                     height: `${Math.max(4, (point.tokens / maxTrendTokens) * (isMobile ? 132 : 180))}px`,
                     background: point.tokens > 0 ? 'var(--cp-accent)' : 'var(--cp-border)',
@@ -563,7 +588,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
             <Stat label={t('aiCenter.home.today', 'Today')} value={`${formatTokens(summary.today_tokens)} tokens`} />
             <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={`${formatTokens(summary.this_month_tokens)} tokens`} />
             <Stat label={t('aiCenter.home.total', 'Total')} value={`${formatTokens(summary.total_tokens)} tokens`} />
-            <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatUsd(summary.total_estimated_cost)} />
+            <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatFinanceTotals(summary.finance_totals)} />
           </div>
         </section>
       </div>}
@@ -577,7 +602,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
           <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={`${formatTokens(summary.this_month_tokens)} tokens`} />
           <Stat label={t('aiCenter.home.total', 'Total')} value={`${formatTokens(summary.total_tokens)} tokens`} />
           <Stat label={t('aiCenter.home.requests', 'Requests')} value={summary.total_requests.toString()} />
-          <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatUsd(summary.total_estimated_cost)} />
+          <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatFinanceTotals(summary.finance_totals)} />
         </div>
       </section>}
 
@@ -818,7 +843,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
                       )}
                     </td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatTokens(tokens)}</td>
-                    <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatUsd(usageFinanceAmount(event))}</td>
+                    <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatUsageEventMoney(event)}</td>
                     <td className="px-4 py-2 text-xs" style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>{event.status}</td>
                   </tr>
                 )
@@ -1108,7 +1133,7 @@ function UsageEventCard({
     `provider: ${providerDisplayName}`,
     `model: ${event.exact_model}`,
     `tokens: ${formatTokens(tokens)}`,
-    `cost: ${formatUsd(usageFinanceAmount(event))}`,
+    `cost: ${formatUsageEventMoney(event)}`,
     `time: ${formatLocalTime(event.timestamp)}`,
     `status: ${event.status}`,
     event.session_id ? `task/session: ${event.session_id}` : '',
@@ -1147,7 +1172,7 @@ function UsageEventCard({
           </div>
         </div>
         <div className="text-right">
-          <div className="text-base font-semibold" style={{ color: 'var(--cp-text)' }}>{formatUsd(usageFinanceAmount(event))}</div>
+          <div className="text-base font-semibold" style={{ color: 'var(--cp-text)' }}>{formatUsageEventMoney(event)}</div>
           <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{formatTokens(tokens)} tokens</div>
         </div>
       </div>

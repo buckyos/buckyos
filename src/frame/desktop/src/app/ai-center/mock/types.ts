@@ -1,12 +1,12 @@
 // ========== Enums ==========
 
 export type ProviderType =
-  | 'sn_router' | 'openai' | 'anthropic' | 'google' | 'openrouter' | 'custom'
+  | 'sn' | 'openai' | 'claude' | 'gemini' | 'fal' | 'openrouter'
+  | 'minimax' | 'kimi' | 'glm' | 'deepseek' | 'doubao' | 'qwen' | 'custom'
 
 export type ProviderRuntimeType = 'local_inference' | 'cloud_api' | 'proxy_unknown'
 export type ProviderOrigin = 'system_config' | 'user_config' | 'builtin' | 'provider_claimed'
-export type AuthMode = 'api_key'
-export type ProtocolType = 'openai_compatible' | 'anthropic_compatible' | 'google_compatible'
+export type AuthMode = 'api_key' | 'dynamic_login'
 export type AuthStatus = 'ok' | 'expired' | 'invalid' | 'unknown'
 export type ModelSyncStatus = 'ok' | 'syncing' | 'failed'
 export type AISystemState = 'disabled' | 'single_provider' | 'multi_provider'
@@ -79,7 +79,8 @@ export interface ProviderInventory {
   provider_instance_name: string
   name?: string
   provider_type: ProviderRuntimeType
-  provider_driver: string
+  provider_profile_id: string
+  protocol_adapter_id: string
   provider_origin: ProviderOrigin
   version?: string
   inventory_revision?: string
@@ -95,11 +96,12 @@ export interface ProviderConfig {
   provider_type: ProviderType
   provider_instance_name: string
   provider_runtime_type: ProviderRuntimeType
-  provider_driver: string
+  provider_profile_id: string
+  protocol_adapter_id: string
   provider_origin: ProviderOrigin
   auth_mode?: AuthMode
-  endpoint?: string
-  protocol_type?: ProtocolType
+  credential_configured: boolean
+  base_url: string
   auto_sync_models: boolean
   created_at: string
 }
@@ -124,7 +126,7 @@ export interface ProviderAccountStatus {
   pricing_mode: PricingMode
   usage_value?: number
   estimated_cost?: number
-  balance_unit?: 'usd' | 'credit'
+  balance_unit?: string
   balance_value?: number
   topup_url?: string
 }
@@ -134,22 +136,6 @@ export interface ProviderView {
   inventory: ProviderInventory
   status: ProviderStatus
   account: ProviderAccountStatus
-}
-
-export type AiProviderCard = {
-  id: string
-  displayName: string
-  providerType: string
-  status: 'healthy' | 'needs_setup' | 'degraded' | 'planned' | 'disabled'
-  endpoint: string
-  authMode: string
-  credentialConfigured?: boolean
-  maskedApiKey?: string
-  availableModels?: string[]
-  capabilities: string[]
-  defaultModel: string
-  note: string
-  providerDriver?: string
 }
 
 // ========== Usage ==========
@@ -183,7 +169,8 @@ export interface UsageFinanceSnapshot {
 export interface UsageSummary {
   total_tokens: number
   total_requests: number
-  total_estimated_cost: number
+  finance_totals: Money[]
+  finance_complete: boolean
   today_tokens: number
   this_month_tokens: number
   by_api_namespace: Record<ApiNamespace, number>
@@ -195,7 +182,12 @@ export interface UsageSummary {
 export interface UsageTrendPoint {
   timestamp: string
   tokens: number
-  estimated_cost: number
+  finance_totals: Money[]
+}
+
+export interface Money {
+  amount: number
+  currency: string
 }
 
 // ========== Routing ==========
@@ -326,27 +318,58 @@ export interface AIStatus {
 
 export interface WizardDraft {
   provider_instance_name?: string
-  provider_type: ProviderType | null
-  name: string
-  endpoint: string
-  protocol_type: ProtocolType | null
+  provider_profile_id: ProviderType | null
+  display_name: string
+  base_url: string
+  protocol_family_id: string | null
+  protocol_adapter_id?: string
+  region?: string
+  workspace?: string
+  account?: string
+  auth_mode: AuthMode
   api_key: string
   auto_sync_models: boolean
 }
 
+export interface KnownProviderProfile {
+  provider_profile_id: ProviderType
+  display_name: string
+  base_url: string
+  protocol_adapter_id: string
+  provider_rules_id?: string
+  ui_hints: Record<string, unknown>
+  connection_fields: Partial<Record<'region' | 'workspace' | 'account', ProviderConnectionField>>
+}
+
+export interface ProviderConnectionField {
+  mode: 'optional' | 'required'
+  default_value?: string
+  allowed_values: string[]
+}
+
+export interface ProtocolFamilyOption {
+  protocol_family_id: string
+  display_name: string
+}
+
+export interface ProviderSetupCatalog {
+  catalog_revision: number
+  providers: KnownProviderProfile[]
+  protocol_families: ProtocolFamilyOption[]
+}
+
 export interface ValidationResult {
-  endpoint_reachable: boolean
+  base_url_reachable: boolean
   auth_valid: boolean
   models_discovered: string[]
   balance_available: boolean
   errors: string[]
   error_details?: ValidationErrorDetail[]
-  validation_fingerprint?: string
-  validation_ttl_ms?: number
+  resolved_protocol_adapter_id?: string
 }
 
 export interface ValidationErrorDetail {
-  kind: 'endpoint' | 'auth' | 'models'
+  kind: 'configuration' | 'base_url' | 'authentication' | 'protocol' | 'models' | 'balance'
   message: string
 }
 
@@ -359,4 +382,5 @@ export interface StoreSnapshot {
   routeTraces: RouteTrace[]
   localModels: LocalModel[]
   aiStatus: AIStatus
+  settingsRevision: number
 }

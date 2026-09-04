@@ -6,7 +6,7 @@ import { useAICCStore } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { LongField } from '../shared/LongField'
-import { isManagedSnProvider, type AuthStatus, type ModelMetadata, type ProviderView } from '../../../../api/aicc_mgr'
+import { isManagedSnProvider, isSettingsRevisionConflict, type AuthStatus, type ModelMetadata, type ProviderView } from '../../../../api/aicc_mgr'
 
 type TFn = (k: string, f: string) => string
 type FilterKey = 'apiType' | 'logicalMount' | 'health' | 'costClass' | 'latencyClass' | 'tier'
@@ -161,7 +161,9 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
     void store.setProviderRoutingWeight(config.provider_instance_name, parsedWeight)
       .catch((error) => {
         console.error('aicc.setProviderRoutingWeight failed', error)
-        setWeightError(t('aiCenter.providers.routingWeightSaveFailed', 'Could not save routing weight.'))
+        setWeightError(isSettingsRevisionConflict(error)
+          ? t('aiCenter.providers.settingsConflict', 'Settings changed elsewhere. The latest settings were loaded; please try again.')
+          : t('aiCenter.providers.routingWeightSaveFailed', 'Could not save routing weight.'))
       })
       .finally(() => setSavingWeight(false))
   }
@@ -182,7 +184,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
       setRefreshFeedback({ message: t('aiCenter.providers.modelsRefreshedNow', 'Provider models refreshed just now.'), at: new Date() })
     } catch (error) {
       console.error('aicc.updateProviderKey failed', error)
-      setKeyError(errorMessage(error, t('aiCenter.providers.updateKeyFailed', 'Could not update API key.')))
+      setKeyError(isSettingsRevisionConflict(error) ? t('aiCenter.providers.settingsConflict', 'Settings changed elsewhere. The latest settings were loaded; please try again.') : errorMessage(error, t('aiCenter.providers.updateKeyFailed', 'Could not update API key.')))
     } finally {
       setUpdatingKey(false)
     }
@@ -215,7 +217,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         : t('aiCenter.providers.disabledSuccess', 'Provider disabled and removed from routing.'))
     } catch (error) {
       console.error('aicc.setProviderEnabled failed', error)
-      setEnabledError(errorMessage(error, t('aiCenter.providers.toggleFailed', 'Could not update Provider status.')))
+      setEnabledError(isSettingsRevisionConflict(error) ? t('aiCenter.providers.settingsConflict', 'Settings changed elsewhere. The latest settings were loaded; please try again.') : errorMessage(error, t('aiCenter.providers.toggleFailed', 'Could not update Provider status.')))
     } finally {
       setUpdatingEnabled(false)
     }
@@ -459,11 +461,12 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         className="rounded-xl p-4 flex flex-col gap-3"
         style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
       >
-        <Row label={t('aiCenter.providers.driver', 'Driver')} value={config.provider_driver} copyValue={config.provider_driver} />
+        <Row label={t('aiCenter.providers.profile', 'Provider Profile')} value={config.provider_profile_id} copyValue={config.provider_profile_id} />
+        <Row label={t('aiCenter.providers.adapter', 'Protocol Adapter')} value={config.protocol_adapter_id} copyValue={config.protocol_adapter_id} />
         <Row label={t('aiCenter.providers.enabled', 'Enabled')} value={config.enabled ? t('common.on', 'On') : t('common.off', 'Off')} />
         <Row label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={`${formatWeight(routingWeight)} / ${routingWeightLabel}`} />
         <Row label={t('aiCenter.providers.runtimeType', 'Runtime Type')} value={config.provider_runtime_type} copyValue={config.provider_runtime_type} />
-        {!managedSn && <Row label={t('aiCenter.providers.endpoint', 'Endpoint')} value={config.endpoint || t('aiCenter.providers.default', 'Default')} copyValue={config.endpoint} expandable />}
+        {!managedSn && <Row label={t('aiCenter.providers.baseUrl', 'Base URL')} value={config.base_url || t('aiCenter.providers.default', 'Default')} copyValue={config.base_url} expandable />}
         <Row
           label={t('aiCenter.providers.auth', 'Authentication')}
           value={

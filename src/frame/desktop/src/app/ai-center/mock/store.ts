@@ -42,20 +42,27 @@ function usageFinanceAmount(event: UsageEvent): number {
 }
 
 const discoveredModelsByType: Record<string, string[]> = {
-  sn_router: ['sn-router-balanced@sn-router', 'sn-router-image@sn-router'],
+  sn: ['sn-router-balanced@sn-router', 'sn-router-image@sn-router'],
   openai: ['gpt-5.1@openai-main', 'gpt-5.1-mini@openai-main', 'text-embedding-3-large@openai-main'],
-  anthropic: ['claude-opus-4.7@anthropic-work', 'claude-sonnet-4.5@anthropic-work'],
-  google: ['gemini-2.5-pro@google-main', 'gemini-2.5-flash@google-main'],
+  claude: ['claude-opus-4.7@anthropic-work', 'claude-sonnet-4.5@anthropic-work'],
+  gemini: ['gemini-2.5-pro@google-main', 'gemini-2.5-flash@google-main'],
   openrouter: ['openrouter-auto@openrouter-main', 'deepseek-r1@openrouter-main'],
+  minimax: ['MiniMax-M2.1@minimax-main'],
+  kimi: ['kimi-k2@kimi-main'],
+  glm: ['glm-5@glm-main'],
+  deepseek: ['deepseek-chat@deepseek-main'],
+  doubao: ['doubao-seed-2.0@doubao-main'],
+  qwen: ['qwen3-max@qwen-main'],
+  fal: ['fal-ai/flux@fal-main'],
   custom: ['custom-chat-model@custom-provider', 'custom-embedding@custom-provider'],
 }
 
 function modelsForDraft(draft: WizardDraft, instanceName: string): ModelMetadata[] {
-  const names = discoveredModelsByType[draft.provider_type ?? 'custom'] ?? []
+  const names = discoveredModelsByType[draft.provider_profile_id ?? 'custom'] ?? []
   return names.map((exactName) => {
     const providerModelId = exactName.split('@')[0] ?? exactName
     const apiTypes = providerModelId.includes('embedding') ? ['embedding.text' as const] : ['llm' as const]
-    const mount = providerModelId.includes('embedding') ? 'embedding.large' : `llm.${draft.provider_type ?? 'custom'}`
+    const mount = providerModelId.includes('embedding') ? 'embedding.large' : `llm.${draft.provider_profile_id ?? 'custom'}`
     return model(providerModelId, instanceName, [mount], apiTypes)
   })
 }
@@ -112,6 +119,7 @@ export class MockDataStore {
       routeTraces: this.routeTraces,
       localModels: this.localModels,
       aiStatus: this.computeAIStatus(),
+      settingsRevision: this.snapshotVersion,
     }
   }
 
@@ -165,34 +173,36 @@ export class MockDataStore {
 
   addProvider(draft: WizardDraft): ProviderView {
     const id = `provider-${Date.now()}`
-    const providerType = draft.provider_type ?? 'custom'
+    const providerType = draft.provider_profile_id ?? 'custom'
     const instanceName = draft.provider_instance_name ?? `${providerType}-${Date.now().toString(36)}`
     const models = modelsForDraft(draft, instanceName)
-    const isSnRouter = providerType === 'sn_router'
+    const isSnRouter = providerType === 'sn'
     if (isSnRouter) {
-      throw new Error('sn_router_is_system_managed')
+      throw new Error('sn_provider_is_system_managed')
     }
 
     const view: ProviderView = {
       config: {
         id,
-        name: draft.name || providerType,
+        name: draft.display_name || providerType,
         enabled: true,
         provider_type: providerType,
         provider_instance_name: instanceName,
         provider_runtime_type: 'cloud_api',
-        provider_driver: providerType,
+        provider_profile_id: providerType,
+        protocol_adapter_id: draft.protocol_adapter_id ?? 'mock-adapter',
         provider_origin: 'user_config',
         auth_mode: draft.api_key ? 'api_key' : undefined,
-        endpoint: draft.endpoint || undefined,
-        protocol_type: draft.protocol_type ?? undefined,
+        credential_configured: Boolean(draft.api_key),
+        base_url: draft.base_url,
         auto_sync_models: draft.auto_sync_models,
         created_at: new Date().toISOString(),
       },
       inventory: {
         provider_instance_name: instanceName,
         provider_type: 'cloud_api',
-        provider_driver: providerType,
+        provider_profile_id: providerType,
+        protocol_adapter_id: draft.protocol_adapter_id ?? 'mock-adapter',
         provider_origin: 'user_config',
         inventory_revision: `${instanceName}-rev-now`,
         version: 'mock',
@@ -225,8 +235,8 @@ export class MockDataStore {
   }
 
   deleteProvider(id: string): void {
-    if (this.providers.get(id)?.config.provider_driver === 'sn-ai-provider') {
-      throw new Error('sn_router_is_system_managed')
+    if (this.providers.get(id)?.config.provider_profile_id === 'sn') {
+      throw new Error('sn_provider_is_system_managed')
     }
     this.providers.delete(id)
     this.notify()
@@ -292,33 +302,34 @@ export class MockDataStore {
   validateConnection(draft: WizardDraft): ValidationResult {
     const errors: string[] = []
     const errorDetails: ValidationResult['error_details'] = []
-    let endpointReachable = true
+    let baseUrlReachable = true
     let authValid = true
 
-    if (draft.provider_type === 'custom' && !draft.endpoint) {
-      endpointReachable = false
-      const message = 'Endpoint URL is required for custom providers'
+    if (draft.provider_profile_id === 'custom' && !draft.base_url) {
+      baseUrlReachable = false
+      const message = 'Base URL is required for custom providers'
       errors.push(message)
-      errorDetails.push({ kind: 'endpoint', message })
+      errorDetails.push({ kind: 'base_url', message })
     }
 
-    if (draft.provider_type !== 'sn_router' && !draft.api_key) {
+    if (draft.provider_profile_id !== 'sn' && !draft.api_key) {
       authValid = false
       const message = 'API Key is required'
       errors.push(message)
-      errorDetails.push({ kind: 'auth', message })
+      errorDetails.push({ kind: 'authentication', message })
     }
 
     const models =
-      endpointReachable && authValid
-        ? discoveredModelsByType[draft.provider_type ?? 'custom'] ?? []
+      baseUrlReachable && authValid
+        ? discoveredModelsByType[draft.provider_profile_id ?? 'custom'] ?? []
         : []
 
     return {
-      endpoint_reachable: endpointReachable,
+      base_url_reachable: baseUrlReachable,
       auth_valid: authValid,
       models_discovered: models,
-      balance_available: draft.provider_type !== 'custom' && authValid,
+      balance_available: draft.provider_profile_id !== 'custom' && authValid,
+      resolved_protocol_adapter_id: draft.protocol_adapter_id ?? `${draft.protocol_family_id ?? 'openai'}-mock`,
       errors,
       error_details: errorDetails,
     }
@@ -349,7 +360,7 @@ export class MockDataStore {
 
     let totalTokens = 0
     let totalRequests = 0
-    let totalCost = 0
+    const financeTotals = new Map<string, number>()
     let todayTokens = 0
     let monthTokens = 0
 
@@ -360,7 +371,8 @@ export class MockDataStore {
 
       totalTokens += tokens
       totalRequests++
-      totalCost += usageFinanceAmount(evt)
+      const currency = evt.finance_snapshot?.currency?.toUpperCase()
+      if (currency) financeTotals.set(currency, (financeTotals.get(currency) ?? 0) + usageFinanceAmount(evt))
 
       if (ts >= todayStart) todayTokens += tokens
       if (ts >= monthStart) monthTokens += tokens
@@ -374,7 +386,11 @@ export class MockDataStore {
     return {
       total_tokens: totalTokens,
       total_requests: totalRequests,
-      total_estimated_cost: Number(totalCost.toFixed(2)),
+      finance_totals: Array.from(financeTotals, ([currency, amount]) => ({
+        currency,
+        amount: Number(amount.toFixed(4)),
+      })).sort((left, right) => right.amount - left.amount),
+      finance_complete: true,
       today_tokens: todayTokens,
       this_month_tokens: monthTokens,
       by_api_namespace: byApiNamespace,
@@ -397,20 +413,24 @@ export class MockDataStore {
       const dayStart = now - (i + 1) * day
       const dayEnd = now - i * day
       let tokens = 0
-      let cost = 0
+      const financeTotals = new Map<string, number>()
 
       for (const evt of this.usageEvents) {
         const ts = new Date(evt.timestamp).getTime()
         if (ts >= dayStart && ts < dayEnd) {
           tokens += evt.token_equivalent ?? (evt.tokens_in ?? 0) + (evt.tokens_out ?? 0)
-          cost += usageFinanceAmount(evt)
+          const currency = evt.finance_snapshot?.currency?.toUpperCase()
+          if (currency) financeTotals.set(currency, (financeTotals.get(currency) ?? 0) + usageFinanceAmount(evt))
         }
       }
 
       points.push({
         timestamp: new Date(dayEnd).toISOString().slice(5, 10),
         tokens,
-        estimated_cost: Number(cost.toFixed(4)),
+        finance_totals: Array.from(financeTotals, ([currency, amount]) => ({
+          currency,
+          amount: Number(amount.toFixed(4)),
+        })).sort((left, right) => right.amount - left.amount),
       })
     }
     return points

@@ -622,12 +622,14 @@ Owner：四个并行集成小组
 
 #### WP-17A Desktop / AI Center
 
-- [ ] 更新 `src/frame/desktop/src/api/aicc_mgr.ts`；
-- [ ] Provider DataModel、表单和管理 RPC 请求/响应统一使用 `base_url`，删除 `endpoint` 字段及转换层；
-- [ ] Provider Wizard 使用 Profile/Instance/Adapter 新身份；
-- [ ] 普通用户不选择 API 代际；
-- [ ] 接入 catalog、validate、health、usage、trace 和 settings conflict；
-- [ ] 删除旧 control-panel AICC 辅助配置依赖。
+- [x] 更新 `src/frame/desktop/src/api/aicc_mgr.ts`；
+- [x] Provider DataModel、表单和管理 RPC 请求/响应统一使用 `base_url`，删除 `endpoint` 字段及转换层；
+- [x] Provider Wizard 使用 Profile/Instance/Adapter 新身份；
+- [x] 普通用户不选择 API 代际；
+- [x] 接入 catalog、validate、health、usage、trace 和 settings conflict；
+- [x] 删除旧 control-panel AICC 辅助配置依赖。
+
+实现记录：Desktop / AI Center 小组将管理面切换到 AICC 的 typed Provider 列表、Known Provider catalog、Protocol Adapter、routing、usage 和 trace contract，Provider Wizard 由 catalog 驱动展示 11 家内置 Provider、受管 SN 与 Custom，并按 `ui_hints` 动态呈现 region/workspace/account 连接字段；普通用户只选择 Provider Profile 或 Custom Protocol Family，不选择 API 代际。Provider 配置统一使用 Profile/Instance/Adapter 身份和 `base_url`，删除旧 `endpoint` 转换与 control-panel AICC 辅助配置依赖；Provider/routing 更新使用 `settings_revision` CAS，冲突时刷新最新快照。财务汇总保留 `Money.currency`，不跨币种换算或求和；多币种默认展示消耗金额最大的币种并支持点击展开，单币种直接展示，同时保留 `finance_complete` 的部分汇总语义。新增 UI DataModel、百万行多币种归并测试和 Playwright 页面用例；Desktop TypeScript check、定向 ESLint、11 项 DataModel 测试和 Vite production build 通过。Playwright 因当前宿主缺少 Chromium 的 `libatk`、`libcairo`、`libpango` 等动态库而在创建页面前退出，交互断言留待具备浏览器运行依赖的环境复验；全仓 ESLint 的剩余失败均位于 AI Center 之外的既有文件。
 
 #### WP-17B Workflow
 

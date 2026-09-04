@@ -1,27 +1,12 @@
 import { useState } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import { useI18n } from '../../../../../i18n/provider'
-import type { ProtocolType, WizardDraft } from '../../../../../api/aicc_mgr'
+import type { ProviderSetupCatalog, WizardDraft } from '../../../../../api/aicc_mgr'
 
 interface StepConnectionProps {
   draft: WizardDraft
+  catalog: ProviderSetupCatalog | null
   onUpdate: (partial: Partial<WizardDraft>) => void
-}
-
-const defaultNames: Record<string, string> = {
-  sn_router: 'SN Router',
-  openai: 'OpenAI',
-  anthropic: 'Anthropic',
-  google: 'Google AI',
-  openrouter: 'OpenRouter',
-  custom: '',
-}
-
-const defaultEndpoints: Record<string, string> = {
-  openai: 'https://api.openai.com/v1',
-  anthropic: 'https://api.anthropic.com/v1',
-  google: 'https://generativelanguage.googleapis.com/v1beta',
-  openrouter: 'https://openrouter.ai/api/v1',
 }
 
 function InputField({
@@ -79,25 +64,23 @@ function InputField({
   )
 }
 
-export function StepConnection({ draft, onUpdate }: StepConnectionProps) {
+export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps) {
   const { t } = useI18n()
-  const providerType = draft.provider_type
-
-  const name = draft.name || defaultNames[providerType ?? ''] || ''
+  const providerType = draft.provider_profile_id
+  const profile = catalog?.providers.find((item) => item.provider_profile_id === providerType)
 
   return (
     <div className="flex flex-col gap-4 max-w-lg">
       {/* Provider Name */}
       <InputField
-        label={t('aiCenter.wizard.providerName', 'Provider Name')}
-        value={name}
-        onChange={(v) => onUpdate({ name: v })}
-        placeholder={defaultNames[providerType ?? ''] || 'My Provider'}
-        required={providerType === 'custom'}
+        label={t('aiCenter.wizard.instanceName', 'Instance Name')}
+        value={draft.provider_instance_name ?? ''}
+        onChange={(v) => onUpdate({ provider_instance_name: v })}
+        placeholder={`${providerType ?? 'provider'}-main`}
       />
 
       {/* SN Router: just show status */}
-      {providerType === 'sn_router' && (
+      {providerType === 'sn' && (
         <div
           className="rounded-lg px-4 py-3 text-sm"
           style={{
@@ -109,8 +92,7 @@ export function StepConnection({ draft, onUpdate }: StepConnectionProps) {
         </div>
       )}
 
-      {/* API Key (not for sn_router) */}
-      {providerType !== 'sn_router' && (
+      {providerType !== 'sn' && draft.auth_mode === 'api_key' && (
         <InputField
           label={t('aiCenter.wizard.apiKey', 'API Key')}
           value={draft.api_key}
@@ -122,26 +104,52 @@ export function StepConnection({ draft, onUpdate }: StepConnectionProps) {
       )}
 
       {/* Endpoint */}
-      {(providerType === 'openai' || providerType === 'anthropic' || providerType === 'google' || providerType === 'openrouter' || providerType === 'custom') && (
+      {providerType !== 'sn' && (
         <InputField
-          label={t('aiCenter.wizard.endpoint', 'Endpoint')}
-          value={draft.endpoint}
-          onChange={(v) => onUpdate({ endpoint: v })}
-          placeholder={defaultEndpoints[providerType] ?? 'https://'}
-          required={providerType === 'custom'}
+          label={t('aiCenter.wizard.baseUrl', 'Base URL')}
+          value={draft.base_url}
+          onChange={(v) => onUpdate({ base_url: v })}
+          placeholder={profile?.base_url || 'https://'}
+          required
         />
       )}
+
+      {profile && (['region', 'workspace', 'account'] as const).map((name) => {
+        const field = profile.connection_fields[name]
+        if (!field) return null
+        const label = t(`aiCenter.wizard.${name}`, name)
+        const value = draft[name] ?? ''
+        if (field.allowed_values.length > 0) {
+          return (
+            <div key={name} className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
+                {label}{field.mode === 'required' && <span style={{ color: 'var(--cp-danger)' }}> *</span>}
+              </label>
+              <select
+                value={value}
+                onChange={(event) => onUpdate({ [name]: event.target.value } as Partial<WizardDraft>)}
+                className="w-full appearance-none rounded-lg px-3 py-2.5 text-sm outline-none"
+                style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)', color: 'var(--cp-text)', height: 44 }}
+              >
+                {field.mode === 'optional' && !field.default_value && <option value="">{t('common.default', 'Default')}</option>}
+                {field.allowed_values.map((option) => <option key={option} value={option}>{option}</option>)}
+              </select>
+            </div>
+          )
+        }
+        return <InputField key={name} label={label} value={value} onChange={(next) => onUpdate({ [name]: next } as Partial<WizardDraft>)} required={field.mode === 'required'} />
+      })}
 
       {/* Protocol Type (custom only) */}
       {providerType === 'custom' && (
         <div className="flex flex-col gap-1.5">
           <label className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
-            {t('aiCenter.wizard.protocolType', 'Protocol Type')}
+            {t('aiCenter.wizard.protocolFamily', 'Protocol Family')}
             <span style={{ color: 'var(--cp-danger)' }}> *</span>
           </label>
           <select
-            value={draft.protocol_type ?? ''}
-            onChange={(e) => onUpdate({ protocol_type: (e.target.value || null) as ProtocolType | null })}
+            value={draft.protocol_family_id ?? ''}
+            onChange={(e) => onUpdate({ protocol_family_id: e.target.value || null })}
             className="w-full rounded-lg px-3 py-2.5 text-sm outline-none appearance-none"
             style={{
               background: 'var(--cp-bg)',
@@ -150,10 +158,8 @@ export function StepConnection({ draft, onUpdate }: StepConnectionProps) {
               height: 44,
             }}
           >
-            <option value="">Select protocol...</option>
-            <option value="openai_compatible">OpenAI Compatible</option>
-            <option value="anthropic_compatible">Anthropic Compatible</option>
-            <option value="google_compatible">Google Compatible</option>
+            <option value="">{t('aiCenter.wizard.selectProtocolFamily', 'Select protocol family...')}</option>
+            {(catalog?.protocol_families ?? []).map((family) => <option key={family.protocol_family_id} value={family.protocol_family_id}>{family.display_name}</option>)}
           </select>
         </div>
       )}

@@ -9,26 +9,21 @@ interface StepReviewProps {
   onToggleAutoSync: (value: boolean) => void
 }
 
-const defaultNames: Record<string, string> = {
-  sn_router: 'SN Router',
-  openai: 'OpenAI',
-  anthropic: 'Anthropic',
-  google: 'Google AI',
-  openrouter: 'OpenRouter',
-  custom: '',
-}
-
 export function StepReview({ draft, validation, onToggleAutoSync }: StepReviewProps) {
   const { t } = useI18n()
-  const providerName = draft.name || defaultNames[draft.provider_type ?? ''] || draft.provider_instance_name || '-'
+  const providerName = draft.display_name || draft.provider_instance_name || '-'
 
   const rows = [
-    { label: t('aiCenter.providers.type', 'Type'), value: draft.provider_type ?? '-' },
+    { label: t('aiCenter.providers.profile', 'Profile'), value: draft.provider_profile_id ?? '-' },
     { label: t('aiCenter.wizard.providerName', 'Provider Name'), value: providerName },
-    { label: t('aiCenter.providers.endpoint', 'Endpoint'), value: draft.endpoint || t('aiCenter.providers.default', 'Default') },
-    { label: t('aiCenter.providers.auth', 'Authentication'), value: draft.api_key ? 'API Key' : '-' },
+    { label: t('aiCenter.providers.baseUrl', 'Base URL'), value: draft.base_url || t('aiCenter.providers.default', 'Default') },
+    { label: t('aiCenter.providers.adapter', 'Protocol Adapter'), value: validation?.resolved_protocol_adapter_id ?? draft.protocol_adapter_id ?? t('aiCenter.wizard.detectedOnValidation', 'Detected during validation') },
+    ...(['region', 'workspace', 'account'] as const)
+      .filter((name) => Boolean(draft[name]))
+      .map((name) => ({ label: t(`aiCenter.wizard.${name}`, name), value: draft[name] ?? '-' })),
+    { label: t('aiCenter.providers.auth', 'Authentication'), value: draft.auth_mode === 'api_key' ? t('aiCenter.wizard.apiKey', 'API Key') : t('aiCenter.providers.dynamicLogin', 'Dynamic login') },
     {
-      label: 'Connection',
+      label: t('aiCenter.providers.connection', 'Connection'),
       value: (
         <span className="inline-flex items-center gap-1">
           <Check size={14} style={{ color: 'var(--cp-success)' }} />
