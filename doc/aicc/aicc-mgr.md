@@ -27,6 +27,7 @@ Provider Instance、Provider Profile 和 Protocol Adapter 是不同身份：
 - `provider.refresh_models`
 - `provider.list` / `provider.health`
 - `usage.query` / `trace.query`
+- `routing.get` / `routing.update`
 - `driver_metadata_update.get` / `driver_metadata_update.set`
 - `service.reload_settings`
 
@@ -521,21 +522,24 @@ Rust 契约统一定义在 `buckyos-api::aicc_client` 的 `DriverMetadataUpdate*
 
 管理写接口默认在写成功后内部调用 reload。仍保留显式 reload，用于调试和外部工具修改 `services/aicc/settings` 后手动刷新。
 
-## 5. 暂不做的接口
+## 5. Routing 配置管理
 
-### 5.1 routing session 写接口
+### 5.1 `routing.get` / `routing.update`
 
-`aicc_mgr.ts` 当前只读取 `session_config`，没有写 routing policy 的方法。因此第一版不增加 routing 写接口。
+`routing.get` 返回当前 settings revision 和完整 `AiccRouteOverlay`。`routing.update` 使用调用方读取到的 revision 做 CAS，只替换 `session_config.provider_weights`，其它 session config 字段保持不变。
 
-后续如果 Routing 页面需要编辑，应新增：
+`routing.update` request：
 
-```text
-routing.session.get
-routing.session.set
-routing.session.patch_node
+```json
+{
+  "settings_revision": 12,
+  "provider_weights": {
+    "openai-main": 1.5
+  }
+}
 ```
 
-并先让 AICC 启动 / reload 从 `services/aicc/settings.session_config` 加载全局 session config。否则写入 system_config 不会影响当前内存 route。
+`provider_weights` 采用完整替换语义，不是 patch；空 map 表示清空全部 Provider 权重。revision 不匹配时返回 `settings_revision_conflict`，并在 `details.expected_revision`、`details.actual_revision` 中返回冲突双方版本。
 
 ## 6. system_config 事务模型
 

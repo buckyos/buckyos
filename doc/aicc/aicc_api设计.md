@@ -39,6 +39,7 @@ POST /kapi/aicc
 | `cancel` | 请求取消异步 task；返回值必须真实反映是否已触发上游取消或本地中止。 |
 | `service.reload_settings` | 从 `services/aicc/settings` 重新加载 Provider 配置；这是唯一有效的管理面 reload method。 |
 | `quota.query` | 查询调用方在 capability / method 维度的剩余额度和预算状态。 |
+| `routing.get` / `routing.update` | 读取路由 overlay，或以 settings revision CAS 完整替换 Provider 权重。 |
 | `provider.list` / `provider.health` | 查询 Provider inventory 和健康状态。 |
 
 不为核心调用另建 `/v1/invoke`、`/v1/jobs`、`/v1/objects`。如果未来需要 OpenAI-compatible 或 REST-compatible API，应放在 Gateway Adapter / SDK Facade 层，把请求转换成 AICC kRPC。
@@ -444,7 +445,35 @@ Response：
 }
 ```
 
-### 2.10 `service.reload_settings`
+### 2.10 `routing.get` / `routing.update`
+
+`routing.get` 的 request 是空对象，response 返回读取到的 settings revision 与完整 `AiccRouteOverlay`：
+
+```json
+{
+  "settings_revision": 12,
+  "routing": {
+    "provider_weights": {
+      "openai-main": 1.5
+    }
+  }
+}
+```
+
+`routing.update` request 携带读取时的 revision 与新的完整 Provider 权重表：
+
+```json
+{
+  "settings_revision": 12,
+  "provider_weights": {
+    "openai-main": 1.5
+  }
+}
+```
+
+`provider_weights` 是完整替换，不是 merge 或 patch；空对象表示清空。成功响应返回 `ok`、更新后的 revision 和完整 routing overlay。revision 冲突使用 `settings_revision_conflict`。
+
+### 2.11 `service.reload_settings`
 
 `service.reload_settings` 用于从 `services/aicc/settings` 重新加载 Provider Instance 配置，也是唯一有效的管理面 reload method。`buckyos-api::aicc_client` 直接更新为调用该 method；删除 `reload_settings`、`reaload_settings`、`service.reaload_settings` 等旧名称、兼容别名和错误拼写。
 

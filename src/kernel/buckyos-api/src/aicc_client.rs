@@ -49,6 +49,8 @@ pub mod ai_methods {
     pub const QUOTA_QUERY: &str = "quota.query";
     pub const USAGE_QUERY: &str = "usage.query";
     pub const TRACE_QUERY: &str = "trace.query";
+    pub const ROUTING_GET: &str = "routing.get";
+    pub const ROUTING_UPDATE: &str = "routing.update";
     pub const PROVIDER_CATALOG: &str = "provider.catalog";
     pub const PROTOCOL_ADAPTER_LIST: &str = "protocol_adapter.list";
     pub const PROVIDER_VALIDATE: &str = "provider.validate";
@@ -105,6 +107,8 @@ pub mod ai_methods {
                 | QUOTA_QUERY
                 | USAGE_QUERY
                 | TRACE_QUERY
+                | ROUTING_GET
+                | ROUTING_UPDATE
                 | PROVIDER_CATALOG
                 | PROTOCOL_ADAPTER_LIST
                 | PROVIDER_VALIDATE
@@ -359,6 +363,8 @@ mod canonical_contract_tests {
             ai_methods::PROVIDER_REFRESH_MODELS,
             ai_methods::USAGE_QUERY,
             ai_methods::TRACE_QUERY,
+            ai_methods::ROUTING_GET,
+            ai_methods::ROUTING_UPDATE,
         ] {
             assert!(ai_methods::is_management_method(method));
         }
@@ -387,6 +393,56 @@ mod canonical_contract_tests {
         }))
         .is_err());
         assert!(QueryRouteTraceRequest::from_json(json!({"unknown": true})).is_err());
+
+        let provider_weights = BTreeMap::from([("openai-main".to_string(), 1.5)]);
+        let request = RoutingUpdateRequest::new(12, provider_weights.clone());
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(RoutingUpdateRequest::from_json(value).unwrap(), request);
+        assert!(RoutingGetRequest::from_json(json!({"unknown": true})).is_err());
+        assert!(RoutingUpdateRequest::from_json(json!({
+            "settings_revision": 12,
+            "provider_weights": provider_weights,
+            "merge": true
+        }))
+        .is_err());
+
+        let clear_request = RoutingUpdateRequest::new(12, BTreeMap::new());
+        assert!(
+            RoutingUpdateRequest::from_json(serde_json::to_value(clear_request).unwrap())
+                .unwrap()
+                .provider_weights
+                .is_empty()
+        );
+
+        let response = RoutingGetResponse {
+            settings_revision: 12,
+            routing: AiccRouteOverlay::default(),
+        };
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(
+            serde_json::from_value::<RoutingGetResponse>(value).unwrap(),
+            response
+        );
+        assert!(serde_json::from_value::<RoutingGetResponse>(json!({
+            "settings_revision": 12,
+            "routing": {},
+            "unknown": true
+        }))
+        .is_err());
+
+        let response = RoutingUpdateResponse {
+            ok: true,
+            settings_revision: 13,
+            routing: AiccRouteOverlay {
+                provider_weights: BTreeMap::from([("openai-main".to_string(), 1.5)]),
+                ..Default::default()
+            },
+        };
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(
+            serde_json::from_value::<RoutingUpdateResponse>(value).unwrap(),
+            response
+        );
         assert!(serde_json::from_value::<ProviderDeleteResponse>(json!({
             "ok": false,
             "reason": "provider_not_found"
@@ -579,6 +635,32 @@ mod canonical_contract_tests {
             Ok(CancelResponse::new(task_id.to_string(), true))
         }
 
+        async fn handle_get_routing(
+            &self,
+            _request: RoutingGetRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<RoutingGetResponse, RPCErrors> {
+            Ok(RoutingGetResponse {
+                settings_revision: 12,
+                routing: AiccRouteOverlay::default(),
+            })
+        }
+
+        async fn handle_update_routing(
+            &self,
+            request: RoutingUpdateRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<RoutingUpdateResponse, RPCErrors> {
+            Ok(RoutingUpdateResponse {
+                ok: true,
+                settings_revision: request.settings_revision + 1,
+                routing: AiccRouteOverlay {
+                    provider_weights: request.provider_weights,
+                    ..Default::default()
+                },
+            })
+        }
+
         async fn handle_provider_catalog(
             &self,
             _request: ProviderCatalogRequest,
@@ -696,6 +778,14 @@ mod canonical_contract_tests {
     #[tokio::test]
     async fn management_client_and_server_dispatch_all_canonical_methods() {
         let client = AiccClient::new_in_process(Box::new(ManagementHandler));
+        let routing = client.get_routing(RoutingGetRequest::new()).await.unwrap();
+        assert_eq!(routing.settings_revision, 12);
+        let routing = client
+            .update_routing(RoutingUpdateRequest::new(12, BTreeMap::new()))
+            .await
+            .unwrap();
+        assert_eq!(routing.settings_revision, 13);
+        assert!(routing.routing.provider_weights.is_empty());
         client
             .provider_catalog(ProviderCatalogRequest::new())
             .await
@@ -733,6 +823,14 @@ mod canonical_contract_tests {
             .unwrap();
 
         let calls = [
+            (
+                ai_methods::ROUTING_GET,
+                serde_json::to_value(RoutingGetRequest::new()).unwrap(),
+            ),
+            (
+                ai_methods::ROUTING_UPDATE,
+                serde_json::to_value(RoutingUpdateRequest::new(12, BTreeMap::new())).unwrap(),
+            ),
             (
                 ai_methods::PROVIDER_CATALOG,
                 serde_json::to_value(ProviderCatalogRequest::new()).unwrap(),
@@ -3439,6 +3537,51 @@ pub struct ServiceReloadSettingsResponse {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct RoutingGetRequest {}
+
+impl_request_json!(RoutingGetRequest);
+
+impl RoutingGetRequest {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RoutingGetResponse {
+    pub settings_revision: u64,
+    pub routing: AiccRouteOverlay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RoutingUpdateRequest {
+    pub settings_revision: u64,
+    pub provider_weights: BTreeMap<String, f64>,
+}
+
+impl_request_json!(RoutingUpdateRequest);
+
+impl RoutingUpdateRequest {
+    pub fn new(settings_revision: u64, provider_weights: BTreeMap<String, f64>) -> Self {
+        Self {
+            settings_revision,
+            provider_weights,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RoutingUpdateResponse {
+    pub ok: bool,
+    pub settings_revision: u64,
+    pub routing: AiccRouteOverlay,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ListModelsRequest {}
 
 impl_request_json!(ListModelsRequest);
@@ -4775,6 +4918,20 @@ impl AiccClient {
         ServiceReloadSettingsResponse
     );
     client_typed_method!(
+        get_routing,
+        handle_get_routing,
+        ai_methods::ROUTING_GET,
+        RoutingGetRequest,
+        RoutingGetResponse
+    );
+    client_typed_method!(
+        update_routing,
+        handle_update_routing,
+        ai_methods::ROUTING_UPDATE,
+        RoutingUpdateRequest,
+        RoutingUpdateResponse
+    );
+    client_typed_method!(
         query_quota,
         handle_query_quota,
         ai_methods::QUOTA_QUERY,
@@ -5231,6 +5388,26 @@ pub trait AiccHandler: Send + Sync {
         ))
     }
 
+    async fn handle_get_routing(
+        &self,
+        _request: RoutingGetRequest,
+        _ctx: RPCContext,
+    ) -> std::result::Result<RoutingGetResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::ROUTING_GET.to_string(),
+        ))
+    }
+
+    async fn handle_update_routing(
+        &self,
+        _request: RoutingUpdateRequest,
+        _ctx: RPCContext,
+    ) -> std::result::Result<RoutingUpdateResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::ROUTING_UPDATE.to_string(),
+        ))
+    }
+
     async fn handle_query_quota(
         &self,
         _request: QuotaQueryRequest,
@@ -5584,6 +5761,16 @@ impl<T: AiccHandler> RPCHandler for AiccServerHandler<T> {
                         ServiceReloadSettingsRequest::from_json(req.params)?,
                         ctx
                     )
+                    .await?
+            )),
+            ai_methods::ROUTING_GET => RPCResult::Success(json!(
+                self.0
+                    .handle_get_routing(RoutingGetRequest::from_json(req.params)?, ctx)
+                    .await?
+            )),
+            ai_methods::ROUTING_UPDATE => RPCResult::Success(json!(
+                self.0
+                    .handle_update_routing(RoutingUpdateRequest::from_json(req.params)?, ctx)
                     .await?
             )),
             ai_methods::QUOTA_QUERY => RPCResult::Success(json!(
