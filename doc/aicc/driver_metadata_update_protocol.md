@@ -70,6 +70,8 @@ system-config > local > cloud > builtin
 
 同一身份只启用最高优先级来源中的完整 JSON 文件，不做字段、数组、规则或默认值合并。高优先级来源中没有某个身份时，继续使用低优先级来源中的该身份；因此 cloud 更新 OpenAI 不会使 builtin MiniMax 失效。最终生效集合是逐身份选择结果的并集，再对整个集合执行 schema、唯一性和跨 catalog 引用校验。
 
+来源选择是 metadata source manager 的内部职责。builtin 由该管理模块集中编译嵌入；cloud、local 和 system-config 的具体路径或 key 只对统一 loader 及负责改变相应来源的管理模块可见。Service、Provider、Routing、Execution 等消费者只能读取 metadata source manager 发布的有效 `CatalogSnapshot`，不得接收四层文件集合或自行执行来源选择。
+
 Known Provider 的选择身份是 `catalog_id`。一个文件内包含多个 `providers[]` 时，该文件整体是原子覆盖单元；需要独立更新的 Provider 应使用独立且稳定的 catalog ID/文件。
 
 ## 5. 发布文件内容

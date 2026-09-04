@@ -10,7 +10,7 @@
 
 | 数据项 | 所有者 | 生命周期 |
 | --- | --- | --- |
-| builtin metadata 文件 | BuckyOS 发布包 | `$BUCKYOS_ROOT/bin/aicc/driver_metadata/{models,providers,known-providers}/`；依据 [`../path_usage.md`](../path_usage.md) 的服务程序资源生命周期定义为 Durable/read-only，随 AICC 版本安装和更新，作为最低优先级来源 |
+| builtin metadata 文件 | AICC metadata source manager | 源文件位于 `src/frame/aicc/driver_metadata/{models,providers,known-providers}/`，由 metadata source manager 集中编译嵌入 AICC；没有生产运行时目录，随 AICC 二进制版本更新，作为最低优先级来源 |
 | 当前 cloud metadata 文件集合 | NDN | Durable；下载、校验、替换完成且新文件就绪后，才能推进云目标序列 |
 | local metadata 文件 | 本机管理员 | Durable；高于 cloud、低于 system-config |
 | system-config metadata 来源 | system-config | Durable；最高优先级，可由加载器物化为对应目录/文档 |
@@ -24,6 +24,8 @@
 | Provider 库存刷新定时任务、控制通道 | AICC | Memory，实例启动时创建，停止时发送 `Stop` 并等待循环退出 |
 
 不新增 AICC 专用 remote cache、candidate、activation、observed revision、回滚版本或对象 digest 文件。NDN 为兼容版本选择与防回退保存的数据不属于 AICC 持久化。
+
+四层来源的路径、key、枚举、revision 捕获、优先级选择和完整集合校验均由 metadata source manager 统一管理。云更新管理模块因负责更新 cloud 层，可以操作 cloud 文件及其序列；local/system-config 的管理入口可以操作各自来源。除此之外，Provider、Service、Routing、Execution 等模块只能消费 metadata source manager 发布的当前有效 `CatalogSnapshot`，不得读取来源路径、选择某一来源或重新实现优先级。
 
 ## 3. 序列字段语义
 

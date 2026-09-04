@@ -21,7 +21,7 @@ Metadata has four independent sources. From highest to lowest priority they are:
 1. system-config key `services/aicc/driver_metadata`
 2. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/`
 3. the current cloud source delivered and replaced by NDN
-4. builtin metadata under `$BUCKYOS_ROOT/bin/aicc/driver_metadata/`
+4. builtin metadata compiled into AICC by the metadata source manager
 
 Selection is performed independently for each `(catalog_kind, catalog_id)`.
 When the same identity exists in more than one source, the resolver selects the
@@ -39,27 +39,20 @@ overridable providers therefore need independently stable catalog IDs/files.
 
 ## Production source loading
 
-The builtin production root is defined as
-`$BUCKYOS_ROOT/bin/aicc/driver_metadata/` according to the BuckyOS service path
-and update lifecycle in [`../path_usage.md`](../path_usage.md): versioned,
-read-only service resources live with the service under `$BUCKYOS_ROOT/bin/`
-and are replaced with the service release, rather than being written into a
-mutable service data directory. Its development source is
-`src/frame/aicc/driver_metadata/`; the build/package step must install that
-tree through `src/rootfs/bin/aicc/driver_metadata/`.
-
-The builtin loader accepts the metadata root directory and enumerates direct
-`*.json` files from exactly these three directories:
+The builtin source has no production runtime path. Its source files are kept in
+exactly these three development directories and are compiled into AICC once by
+the metadata source manager using `include_bytes!` or `include_str!`:
 
 ```text
-$BUCKYOS_ROOT/bin/aicc/driver_metadata/models/
-$BUCKYOS_ROOT/bin/aicc/driver_metadata/providers/
-$BUCKYOS_ROOT/bin/aicc/driver_metadata/known-providers/
+src/frame/aicc/driver_metadata/models/
+src/frame/aicc/driver_metadata/providers/
+src/frame/aicc/driver_metadata/known-providers/
 ```
 
-All three directories are required. Each document is parsed and validated as
-`MetadataSource::Builtin`; malformed documents, duplicate catalog identities,
-nested directories, symlinks and non-JSON entries reject the complete load.
+The metadata source manager owns the complete embedded file list, parses every document as
+`MetadataSource::Builtin`, and rejects the complete builtin set when a document
+is malformed or a catalog identity is duplicated. Provider-specific modules
+must not embed, enumerate or expose their own copies of these files.
 
 The local source enumerates direct `*.json` files from exactly three directories:
 

@@ -44,6 +44,9 @@ Protocol Adapter 只执行已经解析好的 operation
 每个模型原厂都必须有独立 `.model.json`，每个官方支持的 Provider 厂商（包括内置专用 Provider）都必须有独立 `.provider.json`。内置 Provider 只把无法声明化的执行逻辑固定在代码中；常规模型事实、渠道规则及能够数据化的 dialect 差异仍由 catalog 管理并参与云更新。未被官方支持的 `custom` Provider 使用空规则 `{}`，按未改写的原始模型名搜索全部 Model Driver；协议族只决定调用协议，不决定模型原厂。
 
 三类 metadata/catalog 保持独立 schema 和 revision。同一 catalog 身份最多可同时有 builtin、cloud、local、system-config 四份当前候选，最终只启用其中一份；云端历史 revision 可以保留，但只有 NDN 当前选中的 cloud revision 参与候选。每个完整 cloud 发布使用严格递增、不可复用的 manifest `revision_seq` 并声明兼容客户端范围；云端可以按客户端版本、更新通道或灰度分组投放不同兼容版本。版本选择、下载、校验、防回退与 cloud 文件替换由 NDN 更新链路保证，AICC 不实现 manifest activation。文件替换后 NDN 令 `metadata_target_seq = manifest.revision_seq`；下一次推理前或任一 Provider Instance 定时库存刷新时，AICC 统一收敛所有 `metadata_applied_seq` 落后的 Provider 库存。
+
+四层来源的具体路径、key、枚举和优先级由 metadata source manager 统一管理。builtin 文件集中保存在 `src/frame/aicc/driver_metadata/` 并由该管理模块编译嵌入，不安装到运行时目录；云更新等管理模块只在改变自己负责的来源时接触该层。其它模块只消费 metadata source manager 发布的当前有效 `CatalogSnapshot`，不能接收或拼装四层候选文件。
+
 ## 3. 核心概念
 
 ### 3.1 物理模型与精确模型名

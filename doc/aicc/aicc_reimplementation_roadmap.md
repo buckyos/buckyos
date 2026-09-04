@@ -548,12 +548,17 @@ Owner：Runtime/Consistency 小组
 - [x] 列表未变且 seq 相同只做 probe，不重写 inventory；
 - [x] 从已发布 RuntimeSnapshot 提供 Provider quota observation 只读查询；
 - [x] reload/delete/disable/replace/exit 无孤儿任务和迟到写。
+- [ ] 由 WP-15 从 `src/frame/aicc/driver_metadata/` 集中编译嵌入完整 builtin 文件集，删除生产 builtin 运行时路径；
+- [ ] 四层来源的路径、key、枚举、revision、优先级和校验只封装在 WP-15 生产 `RuntimeInputs` 中；
+- [ ] Provider、Service、Routing、Execution 只消费当前有效 snapshot，不得分别装配或读取四层来源。
 
 完成标准：并发请求只能观察到完整旧代或完整新代，不能看到半加入 Provider 或混合 catalog revision。
 
 实现记录：`src/frame/aicc/src/runtime/mod.rs` 已实现不可变快照、原子换代、请求级快照捕获、统一单执行者收敛、序列状态和 Provider 生命周期清理；`src/frame/aicc/src/settings/mod.rs` 已实现统一 `providers[]` settings 解析、按 `(catalog_kind, catalog_id)` 的来源优先级整文件选择，以及 local/system-config metadata 的生产加载端口：local 固定枚举 `models/`、`providers/`、`known-providers/` 三类目录，用双读和内容 SHA-256 revision 捕获一致快照；system-config 以单 key `services/aicc/driver_metadata` 和其 CAS revision 提供原子三类 catalog envelope。`src/frame/aicc/src/service/cloud_update.rs` 负责 NDN cloud catalog 下载、校验、激活与持久化，并在不可见候选构建时重新捕获 local/system-config revisions。原有 WP-15 定向验证已通过；本次补充在隔离工作树中通过 settings 9 个测试、cloud update 8 个测试及 AICC lib 全量 303 个测试，格式和 diff 检查通过；完整构建仍需补齐 SDK 工具链相关环境变量。
 
 补充收敛：`RuntimeProviderRegistry::quota_observation` 只从已发布 registry 查找指定 Provider，并委托该 generation 捕获的 executable 读取可信 quota，不向 Service 暴露 `ProviderRuntimeManager`。Runtime 定向测试 14 个通过。
+
+边界修订：builtin metadata 继续采用编译嵌入，但只能由 WP-15 集中嵌入和解析；`$BUCKYOS_ROOT/bin/aicc/driver_metadata` 不再是生产路径。各 `provider/builtin` 模块需要删除独立 `include_*` 和 catalog 文件导出，并在当前 generation 中消费 WP-15 发布的有效 `CatalogSnapshot`。WP-16 只装配 WP-15 的生产输入和已收敛结果，不感知四层来源。该迁移需 WP-07/WP-08 Provider 接口更新后完成，因此以上三项保持未完成。
 
 ### WP-16：Service 与管理 API
 
@@ -562,6 +567,7 @@ Owner：Service Integration 小组
 依赖：WP-07、WP-09 至 WP-15
 
 - [ ] 重写进程启动、依赖装配、kRPC dispatch 和优雅退出；
+- [ ] 只装配 WP-15 提供的生产 `RuntimeInputs`/`RuntimeSnapshot`，不传入或读取四层 metadata 来源；
 - [ ] 实现 `models.list`、`provider.catalog`、`protocol_adapter.list`；
 - [ ] 实现 `provider.validate/add/update/delete/refresh_models/list/health`；
 - [ ] 实现 `usage.query`、`trace.query` 和 `quota.query`；

@@ -57,6 +57,8 @@ NDN 只管理当前 cloud metadata 文件集合，负责版本发现、下载、
 
 AICC 加载 `builtin`、`cloud`、`local`、`system-config` 四个独立来源，并按 `(catalog_kind, catalog_id)` 以 `system-config > local > cloud > builtin` 逐项选择。每个身份只启用最高优先级来源的完整文件，不跨来源合并字段、数组或规则。高优先级来源只遮蔽其中实际存在的身份，因此 cloud 只有 OpenAI 更新时，builtin MiniMax 仍参与最终有效集合。选择完成后才校验整个有效集合并构建不可变 snapshot。
 
+上述四层加载和选择全部属于 metadata source manager。builtin JSON 由该管理模块从 `src/frame/aicc/driver_metadata/` 统一编译嵌入，不存在生产运行时 builtin 目录；其它三层仅由其管理入口和统一 loader 接触具体路径或 key。Provider、Service、Routing 和 Execution 只能使用 metadata source manager 已发布的有效 snapshot，不得自行加载、缓存或选择来源。
+
 每个 metadata manifest 声明严格递增且不可复用的 `revision_seq`、兼容客户端版本范围和 required features。云更新服务可以给不同客户端版本配置不同发布版本；NDN 更新链路只接受与本机客户端兼容且序列高于已接受水位的发布，替换成功后令持久的 `metadata_target_seq = manifest.revision_seq`。回退必须把旧内容重新发布为更高序列的新版本，不能降低本机水位。
 
 每个 Provider inventory 保存 `metadata_applied_seq`；下一次推理前或任一 Provider Instance 定时库存刷新时，AICC 统一收敛所有序列不一致的 Provider，不能只处理当前请求或当前 Provider。每个 Provider 重建前临时捕获 `metadata_updating_seq`，成功提交 inventory 后才把 applied seq 更新为该值。
@@ -71,7 +73,7 @@ inventory LKGS 的生命周期与刷新任务分离。停止 Provider 不删除 
 
 ### 4.1 Metadata File Sources
 
-Cloud 来源的 index、manifest 和 catalog 路径由 [driver_metadata_update_protocol.md](driver_metadata_update_protocol.md) 定义；本节只展开各来源 catalog 文件被选择后的业务 schema。Cloud 文件版本、来源可信性、下载和替换由 NDN 保证；builtin 随发布包提供，local 由本机管理员管理，system-config 由配置服务管理。AICC 负责按身份整文件择优，并校验最终有效集合的 schema、唯一性和跨 catalog 引用。
+Cloud 来源的 index、manifest 和 catalog 路径由 [driver_metadata_update_protocol.md](driver_metadata_update_protocol.md) 定义；本节只展开各来源 catalog 文件被选择后的业务 schema。Cloud 文件版本、来源可信性、下载和替换由 NDN 保证；builtin 由 metadata source manager 编译进 AICC，local 由本机管理员管理，system-config 由配置服务管理。metadata source manager 负责按身份整文件择优，并校验最终有效集合的 schema、唯一性和跨 catalog 引用。
 
 ### 4.2 Object Type: Model Driver Catalog
 

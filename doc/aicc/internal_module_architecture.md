@@ -76,6 +76,10 @@ HTTP/SSE/JSON/异步轮询基础设施
 
 Catalog loader 对 `builtin`、`cloud`、`local`、`system-config` 四个来源按 `(catalog_kind, catalog_id)` 做整文件选择，优先级为 `system-config > local > cloud > builtin`。同一身份不做字段或规则 merge；某个高优先级来源未提供的其它身份仍从低优先级来源进入有效 snapshot。
 
+四层来源是 metadata source manager 的私有实现边界。该管理模块独占各来源的路径或 key、文件枚举、revision 捕获、整文件选择、校验及不可变 snapshot 发布。builtin 源文件统一保存在 `src/frame/aicc/driver_metadata/`，只由该管理模块集中编译嵌入；各 Provider builtin 模块不得分别 `include_*` metadata，也不得导出 catalog 文件集合。只有负责改变某一来源的管理模块可以接触该来源的写入位置，例如云更新模块驱动 cloud 文件更新；所有普通消费者只接收已发布的当前有效 `Arc<CatalogSnapshot>`。
+
+Service 启动模块是进程组合根，但不是 metadata 来源组合器。它只向 metadata source manager 提供平台能力和管理端口，并装配后者返回的生产 `RuntimeInputs`/`RuntimeSnapshot`；不得传入 builtin、cloud、local 或 system-config 文件集合。Provider 行为注册表只注册稳定 ID、credential/discovery 行为和 codec/dialect，并在当前 runtime generation 中消费有效 snapshot。
+
 ### 2.2 operation 是最小协议复用单位
 
 一个 Adapter 由若干 operation 组合，而不是一个文件包揽厂商全部 API。例如 OpenAI Provider 可以同时绑定：
