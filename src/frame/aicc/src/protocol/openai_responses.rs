@@ -1642,6 +1642,7 @@ fn encode_image_inpaint(
     let synthetic = ImageToImageRequest {
         exact_model: request.exact_model.clone(),
         trace_id: request.trace_id.clone(),
+        execution_mode: request.execution_mode,
         images: vec![request.image.clone()],
         prompt: request.prompt.clone(),
         strength: None,
@@ -2856,6 +2857,7 @@ mod tests {
         let inpaint = ImageInpaintRequest {
             exact_model: "ignored@instance".to_string(),
             trace_id: None,
+            execution_mode: Default::default(),
             image: image.clone(),
             mask: image,
             prompt: "replace sky".to_string(),

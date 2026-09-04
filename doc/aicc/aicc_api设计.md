@@ -286,7 +286,14 @@ Helper 使用与对应 typed inference 相同的业务字段，只把 `exact_mod
 Provider 原生扩展只允许放入带 Provider namespace 的 `ProviderState` 或明确定义的扩展字段。Provider adapter 必须保持 content block 顺序；无法归一但需要多轮恢复的原生 block 保存为 opaque ProviderState。
 ### 2.5 流式与进度观察
 
-AICC 不为 streaming 引入独立协议层，也不在 method schema 中定义 `stream: true`、token delta event、image step、video frame 等中间态字段。
+AICC 不为 streaming 引入独立协议层，也不在 method schema 中定义 Provider wire 字段 `stream: true`、token delta event、image step、video frame 等中间态字段。`route.resolve`、全部 typed inference request 和两个 Helper request 使用统一的 canonical `execution_mode`：
+
+| `execution_mode` | 语义 |
+|---|---|
+| `immediate` | 默认值；要求 Adapter 使用立即返回模式。字段缺失时严格按此值处理。 |
+| `stream` | 要求 Adapter 使用流式上游模式；增量仍通过 task-manager event/data 观察。 |
+
+调用方不能请求内部 `native_task` 模式。`execution_mode` 只接受上述两个精确小写值，未知值或其它 JSON 类型必须在 request 反序列化阶段拒绝。路由或选定 Adapter/operation 不支持请求模式时返回稳定错误 `unsupported_execution_mode`，不得静默降级到另一模式。`route.resolve` 必须把该模式纳入候选能力判断，显式两阶段调用应将相同值继续传给 typed inference。
 
 成功执行路径只有两类；失败仍使用 `status=failed` 错误态，不引入第三种 `streaming` 状态：
 
@@ -1823,6 +1830,7 @@ AICC 错误 payload schema：
 | `fallback_not_allowed` | fallback 被 policy 或 method 禁止。 |
 | `provider_start_failed` | Provider 启动或提交失败。 |
 | `provider_error` | Provider 原生错误。 |
+| `unsupported_execution_mode` | 路由或选定 Adapter/operation 不支持请求的 canonical execution mode；不得静默切换模式。 |
 | `timeout` | 超时。 |
 | `budget_exceeded` | 成本或配额限制。 |
 | `policy_denied` | 被 system/user/session policy 拒绝。 |

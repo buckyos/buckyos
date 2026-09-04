@@ -303,6 +303,80 @@ mod canonical_contract_tests {
     }
 
     #[test]
+    fn execution_mode_defaults_is_strict_and_round_trips_on_canonical_requests() {
+        let route = RouteResolveRequest::from_json(json!({
+            "api_type": "llm",
+            "logical_model": "llm.chat"
+        }))
+        .unwrap();
+        assert_eq!(route.execution_mode, AiccExecutionMode::Immediate);
+        assert_eq!(
+            serde_json::to_value(&route).unwrap()["execution_mode"],
+            "immediate"
+        );
+
+        let mut chat = LlmChatInvokeRequest::new("gpt@provider", Vec::new());
+        chat.execution_mode = AiccExecutionMode::Stream;
+        let chat = LlmChatInvokeRequest::from_json(serde_json::to_value(chat).unwrap()).unwrap();
+        assert_eq!(chat.execution_mode, AiccExecutionMode::Stream);
+
+        let embedding = EmbeddingTextRequest::from_json(json!({
+            "exact_model": "embedding@provider",
+            "items": []
+        }))
+        .unwrap();
+        assert_eq!(embedding.execution_mode, AiccExecutionMode::Immediate);
+
+        let mut chat_helper = LlmChatHelperRequest::new("llm.chat", Vec::new());
+        chat_helper.execution_mode = AiccExecutionMode::Stream;
+        assert_eq!(
+            LlmChatHelperRequest::from_json(serde_json::to_value(chat_helper).unwrap())
+                .unwrap()
+                .execution_mode,
+            AiccExecutionMode::Stream
+        );
+
+        let mut image_helper = TextToImageHelperRequest::new("image.generate", "fox");
+        image_helper.execution_mode = AiccExecutionMode::Stream;
+        assert_eq!(
+            TextToImageHelperRequest::from_json(serde_json::to_value(image_helper).unwrap())
+                .unwrap()
+                .execution_mode,
+            AiccExecutionMode::Stream
+        );
+
+        assert!(LlmChatInvokeRequest::from_json(json!({
+            "exact_model": "gpt@provider",
+            "messages": [],
+            "execution_mode": "native_task"
+        }))
+        .is_err());
+        assert!(RouteResolveRequest::from_json(json!({
+            "api_type": "llm",
+            "logical_model": "llm.chat",
+            "execution_mode": "streaming"
+        }))
+        .is_err());
+
+        assert_eq!(
+            AiccErrorCode::UnsupportedExecutionMode.as_str(),
+            "unsupported_execution_mode"
+        );
+        assert_eq!(
+            serde_json::to_value(AiccErrorCode::UnsupportedExecutionMode).unwrap(),
+            json!("unsupported_execution_mode")
+        );
+        let error = AiccError::new(
+            AiccErrorCode::UnsupportedExecutionMode,
+            "requested execution mode is unsupported",
+        );
+        assert_eq!(
+            AiccError::from_krpc_error(&error.to_krpc_error()),
+            Some(error)
+        );
+    }
+
+    #[test]
     fn stable_error_round_trips_across_task_boundary() {
         let error = AiccError {
             code: AiccErrorCode::ProviderError,
@@ -1198,6 +1272,7 @@ pub enum AiccErrorCode {
     FallbackNotAllowed,
     ProviderStartFailed,
     ProviderError,
+    UnsupportedExecutionMode,
     Timeout,
     BudgetExceeded,
     PolicyDenied,
@@ -1220,6 +1295,7 @@ impl AiccErrorCode {
             Self::FallbackNotAllowed => "fallback_not_allowed",
             Self::ProviderStartFailed => "provider_start_failed",
             Self::ProviderError => "provider_error",
+            Self::UnsupportedExecutionMode => "unsupported_execution_mode",
             Self::Timeout => "timeout",
             Self::BudgetExceeded => "budget_exceeded",
             Self::PolicyDenied => "policy_denied",
@@ -2511,11 +2587,21 @@ pub enum AiMethodStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AiccExecutionMode {
+    #[default]
+    Immediate,
+    Stream,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RouteResolveRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    #[serde(default)]
+    pub execution_mode: AiccExecutionMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     pub api_type: ApiType,
@@ -2538,6 +2624,7 @@ impl RouteResolveRequest {
     pub fn new(api_type: ApiType, logical_model: impl Into<String>) -> Self {
         Self {
             trace_id: None,
+            execution_mode: AiccExecutionMode::Immediate,
             request_id: None,
             api_type,
             logical_model: logical_model.into(),
@@ -2598,6 +2685,8 @@ pub struct LlmChatInvokeRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
     #[serde(default)]
+    pub execution_mode: AiccExecutionMode,
+    #[serde(default)]
     pub messages: Vec<AiMessage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<AiToolSpec>,
@@ -2627,6 +2716,8 @@ pub struct LlmChatHelperRequest {
     pub logical_model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    #[serde(default)]
+    pub execution_mode: AiccExecutionMode,
     #[serde(default)]
     pub requirements: HelperModelRequirement,
     #[serde(default, skip_serializing_if = "is_default_model_disable")]
@@ -2697,6 +2788,7 @@ impl LlmChatHelperRequest {
         Self {
             logical_model: logical_model.into(),
             trace_id: None,
+            execution_mode: AiccExecutionMode::Immediate,
             requirements: HelperModelRequirement::default(),
             disable: ModelDisable::default(),
             policy: None,
@@ -2730,6 +2822,7 @@ impl LlmChatInvokeRequest {
         Self {
             exact_model: exact_model.into(),
             trace_id: None,
+            execution_mode: AiccExecutionMode::Immediate,
             messages,
             tools: Vec::new(),
             response_format: None,
@@ -2783,6 +2876,8 @@ pub struct TextToImageInvokeRequest {
     pub exact_model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    #[serde(default)]
+    pub execution_mode: AiccExecutionMode,
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub negative_prompt: Option<String>,
@@ -2811,6 +2906,7 @@ impl TextToImageInvokeRequest {
         Self {
             exact_model: exact_model.into(),
             trace_id: None,
+            execution_mode: AiccExecutionMode::Immediate,
             prompt: prompt.into(),
             negative_prompt: None,
             n: None,
@@ -2843,6 +2939,8 @@ pub struct TextToImageHelperRequest {
     pub logical_model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    #[serde(default)]
+    pub execution_mode: AiccExecutionMode,
     #[serde(default)]
     pub requirements: HelperModelRequirement,
     #[serde(default, skip_serializing_if = "is_default_model_disable")]
@@ -2879,6 +2977,7 @@ impl TextToImageHelperRequest {
         Self {
             logical_model: logical_model.into(),
             trace_id: None,
+            execution_mode: AiccExecutionMode::Immediate,
             requirements: HelperModelRequirement::default(),
             disable: ModelDisable::default(),
             policy: None,
@@ -2962,6 +3061,8 @@ macro_rules! typed_request {
             pub exact_model: String,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             pub trace_id: Option<String>,
+            #[serde(default)]
+            pub execution_mode: AiccExecutionMode,
             $(pub $required: $required_ty,)*
             $(
                 #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2978,6 +3079,7 @@ macro_rules! typed_request {
                 Self {
                     exact_model: exact_model.into(),
                     trace_id: None,
+                    execution_mode: AiccExecutionMode::Immediate,
                     $($required,)*
                     $($optional: None,)*
                     idempotency_key: None,

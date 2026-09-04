@@ -1367,6 +1367,8 @@ impl ControlPanelServer {
 
         let request = LlmChatHelperRequest {
             logical_model: alias.to_string(),
+            trace_id: None,
+            execution_mode: Default::default(),
             requirements: HelperModelRequirement {
                 json_schema: true,
                 ..Default::default()
@@ -1536,6 +1538,8 @@ impl ControlPanelServer {
         let peer_did_string = peer_did.to_string();
         let request = LlmChatHelperRequest {
             logical_model: model_alias.clone(),
+            trace_id: None,
+            execution_mode: Default::default(),
             requirements: HelperModelRequirement::default(),
             disable: ModelDisable::default(),
             policy: None,
