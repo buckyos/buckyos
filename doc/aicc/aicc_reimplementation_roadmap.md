@@ -190,7 +190,29 @@ Owner：API 小组
 
 完成标准：Rust 服务端、Workflow 和其它 Rust 调用方不再手写协议字段或 method 字符串。
 
-实现记录：公共 API 已改为逐方法强类型 request/response，Canonical IR、稳定错误边界和 client/handler/server dispatch 已落地；Workflow、OpenDAN、Agent Tool、Control Panel 已迁移到类型化调用，管理面 wire method 只保留 `service.reload_settings`。WP-16 所需的 `provider.catalog`、`protocol_adapter.list`、`provider.validate/add/delete/refresh_models`、`usage.query` 和 `trace.query` 均提供 canonical request/response、Client、Handler 和 kRPC dispatch，不需要 service 层私建协议；`DriverMetadataUpdateView` 同时公开 NDN `metadata_target_seq` 和逐 Provider 的 `metadata_applied_seq`。WP-14 usage 契约要求事件显式携带 `user_id`、canonical typed `method` 和 `provider_instance_name`，查询可按三者过滤和分组，显式时间范围采用半开区间 `[start_time_ms, end_time_ms)`；usage RDB schema version 已提升为 5。WP-09 quota 与策略金额统一使用严格的 `Money { amount, currency }` DTO，wire 字段为 `remaining_cost`、`max_estimated_cost` 和 `max_cost`，不再用字段名隐含 USD。验收覆盖 `buckyos-api`/`aicc` 单测、受影响 crate 全 target check、workspace test compile、协议残留扫描和格式检查；AICC 严格 clippy 被仓库范围外的既有告警基线阻断。
+实现记录：公共 API 已改为逐方法强类型 request/response，Canonical IR、稳定错误边界和 client/handler/server dispatch 已落地；Workflow、OpenDAN、Agent Tool、Control Panel 已迁移到类型化调用，管理面 wire method 只保留 `service.reload_settings`。WP-16 所需的 `provider.catalog`、`protocol_adapter.list`、`provider.validate/add/delete/refresh_models`、`usage.query` 和 `trace.query` 均提供 canonical request/response、Client、Handler 和 kRPC dispatch，不需要 service 层私建协议；`provider.list` 返回带 `settings_revision` 的脱敏强类型 `ProviderInstanceView`，可明确表达 disabled/未加载的 inventory 与 health，settings CAS 冲突使用 `settings_revision_conflict` 和固定 revision details；`DriverMetadataUpdateView` 同时公开 NDN `metadata_target_seq` 和逐 Provider 的 `metadata_applied_seq`。WP-14 usage 契约要求事件显式携带 `user_id`、canonical typed `method` 和 `provider_instance_name`，查询可按三者过滤和分组，显式时间范围采用半开区间 `[start_time_ms, end_time_ms)`；usage RDB schema version 已提升为 5。WP-09 quota 与策略金额统一使用严格的 `Money { amount, currency }` DTO，wire 字段为 `remaining_cost`、`max_estimated_cost` 和 `max_cost`，不再用字段名隐含 USD。验收覆盖 `buckyos-api`/`aicc` 单测、受影响 crate 全 target check、workspace test compile、协议残留扫描和格式检查；AICC 严格 clippy 被仓库范围外的既有告警基线阻断。
+
+### WP-01TS：TypeScript SDK Canonical AICC Contract
+
+Owner：WebSDK/API SDK 小组
+
+主要路径：独立仓库 `buckyos/buckyos-websdk` 的 `src/aicc_client.ts`、测试和生成的 `dist/`；回接路径为本仓 `src/apps/sys_test/package.json` 与 `pnpm-lock.yaml`
+
+依赖：WP-01 Rust canonical contract
+
+- [ ] TypeScript `AiccClient`、method constants、request/response 与 Rust `buckyos-api::aicc_client` 逐项对齐；
+- [ ] 导出 `route.resolve`、`helper.llm_chat`、`helper.text_to_image`、cancel、管理 API 和全部 canonical typed inference 方法；
+- [ ] 为 chat、embedding、rerank、图像、视觉、音频、视频和 computer-use 导出独立 request/response 类型；
+- [ ] 同步 ResourceRef、AiMessage、usage/cost、route trace、Money、quota、provider list、usage query 和稳定 AiccError contract；
+- [ ] 删除 `AiccMethodRequest`、`AiccPayload.input_json`、all-in-one `callMethod` 以及 `llm.chat`、`llm.completion`、`image.txt2img` typed method 和 `reload_settings` 等旧 alias；
+- [ ] 仅保留 `service.reload_settings`，区分 typed method `images.generate` 与 `api_type=image.txt2img`；
+- [ ] 增加 method-to-schema、request/response round-trip、unknown-field、kRPC dispatch method、旧 alias 拒绝和 declarations/export 测试；
+- [ ] 在 WebSDK 仓库生成并提交 ESM/CJS/browser/type declarations，发布高于当前 `0.7.118` 的 npm `buckyos` 版本；
+- [ ] 本仓把 `buckyos: latest` 改为明确版本并更新 lockfile，重新构建 `sys_test/dist`，验证 `deno check src/tools/buckyos-agent/aicc-tool.ts`。
+
+完成标准：WP-17A/17C 等 TypeScript 调用方只从发布的 `buckyos` SDK 导入 canonical method 与 DTO，不在本仓手写重复协议；被忽略的 `sys_test/dist/node_modules` 不作为源码或独立交付物提交。
+
+拆包记录：2026-09-04 核验本仓只安装 npm `buckyos@0.7.118`，`src/apps/sys_test/dist/` 被 git 忽略，且本仓不存在 WebSDK 源码和发布配置；npm `latest` 仍为 `0.7.118`。因此 TS SDK 同步不能由 WP-01 在本仓内正规完成，必须在独立 WebSDK 仓库发布后再锁版本回接。
 
 ### WP-02：统一 MatchRule
 
@@ -593,7 +615,7 @@ Owner：Service Integration 小组
 
 Owner：四个并行集成小组
 
-依赖：WP-01 可开始 mock 对接；最终依赖 WP-16
+依赖：WP-01 可开始 mock 对接；TypeScript 调用方依赖 WP-01TS；最终依赖 WP-16
 
 #### WP-17A Desktop / AI Center
 
@@ -612,6 +634,8 @@ Owner：四个并行集成小组
 - [ ] 验证 Helper、typed inference、cancel 和 task response。
 
 #### WP-17C OpenDAN/Jarvis/CLI
+
+依赖：WP-01TS 发布并在本仓锁定新版 `buckyos` SDK
 
 - [ ] 更新 `src/tools/buckyos-agent/lib/aicc.ts` 和各命令；
 - [ ] 更新图像、音频、视频 command-to-method 映射；
@@ -1066,6 +1090,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | Gate 0 | Architecture/API/Metadata/E2E owners | Done | 无 | 契约冻结 |
 | WP-00 | 集成人（`@streetycat`） | Review | Gate 0 | 模块骨架 |
 | WP-01 | API 小组 | Done | Gate 0 | API/IR/Error |
+| WP-01TS | WebSDK/API SDK 小组 | Pending | WP-01 | TypeScript canonical SDK、npm 发布与本仓版本回接 |
 | WP-02 | Catalog/Matching 小组 | Done | Gate 0 | MatchRule（`a12b3e09`） |
 | WP-03 | Metadata 小组 | Done | WP-02 | CatalogSnapshot |
 | WP-04 | TBD | Pending | WP-01/02/03 | Model Registry |

@@ -30,6 +30,8 @@ Provider Instance、Provider Profile 和 Protocol Adapter 是不同身份：
 - `driver_metadata_update.get` / `driver_metadata_update.set`
 - `service.reload_settings`
 
+`provider.list` 返回带 `settings_revision` 的强类型 `ProviderInstanceView` 列表，包括 disabled 或尚未加载 runtime 的配置实例。view 中的 auth 只允许包含 `mode`、`credential_kind` 和 `configured` 状态，不得返回 secret 或 credential reference。Provider settings CAS 冲突统一返回 `settings_revision_conflict`，其 `details` 固定为 `expected_revision` 与 `actual_revision`。
+
 管理面只保留 `service.reload_settings`；`buckyos-api::aicc_client` 和全部调用方同步更新，不保留 `reload_settings` 旧接口、`service.*` 双入口、错误拼写或其它旧名称兼容别名。
 
 Provider Instance 的库存刷新定时任务是实例级运行时资源。`provider.update` 把实例从 enabled 改为 disabled、更新导致实例重建、`provider.delete`、reload 移除或替换实例，以及 AICC 服务停止时，管理层必须先把实例标记为 stopping，向其定时任务循环发送幂等 `Stop` 事件并等待循环优雅退出，再完成 registry 切换或资源清理。停止后不得接受新的定时刷新，也不得提交迟到的 inventory/health 结果。

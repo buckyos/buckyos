@@ -487,6 +487,86 @@ mod canonical_contract_tests {
         .is_err());
     }
 
+    fn provider_instance_view(enabled: bool) -> ProviderInstanceView {
+        ProviderInstanceView {
+            provider_instance_name: "openai-main".to_string(),
+            provider_type: "cloud_api".to_string(),
+            provider_profile_id: "openai".to_string(),
+            protocol_adapter_id: "openai-responses".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            enabled,
+            auth: ProviderInstanceAuthView {
+                mode: Some(ProviderInstanceAuthMode::ApiKey),
+                credential_kind: Some("bearer".to_string()),
+                configured: true,
+            },
+            inventory: ProviderInstanceInventoryView {
+                state: if enabled {
+                    ProviderInstanceInventoryState::Loaded
+                } else {
+                    ProviderInstanceInventoryState::Disabled
+                },
+                revision: enabled.then(|| "inventory-1".to_string()),
+                model_count: u64::from(enabled),
+                updated_at_ms: enabled.then_some(1_750_000_000_000),
+            },
+            health: ProviderInstanceHealthView {
+                state: if enabled {
+                    ProviderInstanceHealthState::Healthy
+                } else {
+                    ProviderInstanceHealthState::Disabled
+                },
+                checked_at_ms: enabled.then_some(1_750_000_000_000),
+            },
+        }
+    }
+
+    #[test]
+    fn provider_list_view_is_typed_revisioned_and_secret_free() {
+        let response = ProviderListResponse {
+            providers: vec![provider_instance_view(false)],
+            settings_revision: 12,
+            inventory_revision: "inventory-1".to_string(),
+        };
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["settings_revision"], 12);
+        assert_eq!(value["providers"][0]["inventory"]["state"], "disabled");
+        assert_eq!(value["providers"][0]["health"]["state"], "disabled");
+        let wire = serde_json::to_string(&value).unwrap();
+        assert!(!wire.contains("credential_ref"));
+        assert!(!wire.contains("secret"));
+        assert_eq!(
+            serde_json::from_value::<ProviderListResponse>(value).unwrap(),
+            response
+        );
+        assert!(serde_json::from_value::<ProviderListResponse>(json!({
+            "providers": [],
+            "inventory_revision": "inventory-1"
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn settings_revision_conflict_has_stable_code_and_details() {
+        let error = AiccError::settings_revision_conflict(12, 13);
+        assert_eq!(
+            serde_json::to_value(error.code).unwrap(),
+            "settings_revision_conflict"
+        );
+        assert_eq!(error.code.as_str(), "settings_revision_conflict");
+        assert_eq!(
+            error.details,
+            Some(json!({
+                "expected_revision": 12,
+                "actual_revision": 13
+            }))
+        );
+        assert_eq!(
+            AiccError::from_krpc_error(&error.to_krpc_error()),
+            Some(error)
+        );
+    }
+
     struct ManagementHandler;
 
     #[async_trait]
@@ -536,6 +616,18 @@ mod canonical_contract_tests {
                     ok: true,
                     providers_registered: 1,
                 },
+            })
+        }
+
+        async fn handle_list_providers(
+            &self,
+            _request: ProviderListRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<ProviderListResponse, RPCErrors> {
+            Ok(ProviderListResponse {
+                providers: vec![provider_instance_view(true)],
+                settings_revision: 12,
+                inventory_revision: "inventory-1".to_string(),
             })
         }
 
@@ -617,6 +709,12 @@ mod canonical_contract_tests {
             .await
             .unwrap();
         client.add_provider(provider_add_request()).await.unwrap();
+        let providers = client
+            .list_providers(ProviderListRequest::new(None))
+            .await
+            .unwrap();
+        assert_eq!(providers.settings_revision, 12);
+        assert_eq!(providers.providers[0].provider_instance_name, "openai-main");
         client
             .delete_provider(ProviderDeleteRequest::new("openai-main"))
             .await
@@ -650,6 +748,10 @@ mod canonical_contract_tests {
             (
                 ai_methods::PROVIDER_ADD,
                 serde_json::to_value(provider_add_request()).unwrap(),
+            ),
+            (
+                ai_methods::PROVIDER_LIST,
+                serde_json::to_value(ProviderListRequest::new(None)).unwrap(),
             ),
             (
                 ai_methods::PROVIDER_DELETE,
@@ -947,6 +1049,7 @@ pub enum AiccErrorCode {
     BudgetExceeded,
     PolicyDenied,
     IdempotencyConflict,
+    SettingsRevisionConflict,
     Cancelled,
     InternalError,
 }
@@ -968,6 +1071,7 @@ impl AiccErrorCode {
             Self::BudgetExceeded => "budget_exceeded",
             Self::PolicyDenied => "policy_denied",
             Self::IdempotencyConflict => "idempotency_conflict",
+            Self::SettingsRevisionConflict => "settings_revision_conflict",
             Self::Cancelled => "cancelled",
             Self::InternalError => "internal_error",
         }
@@ -987,6 +1091,13 @@ pub struct AiccError {
     pub details: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsRevisionConflictDetails {
+    pub expected_revision: u64,
+    pub actual_revision: u64,
+}
+
 impl AiccError {
     pub fn new(code: AiccErrorCode, message: impl Into<String>) -> Self {
         Self {
@@ -995,6 +1106,22 @@ impl AiccError {
             provider_code: None,
             retriable: false,
             details: None,
+        }
+    }
+
+    pub fn settings_revision_conflict(expected_revision: u64, actual_revision: u64) -> Self {
+        Self {
+            code: AiccErrorCode::SettingsRevisionConflict,
+            message: "settings revision conflict".to_string(),
+            provider_code: None,
+            retriable: false,
+            details: Some(
+                serde_json::to_value(SettingsRevisionConflictDetails {
+                    expected_revision,
+                    actual_revision,
+                })
+                .expect("settings revision conflict details are serializable"),
+            ),
         }
     }
 
@@ -3711,10 +3838,81 @@ impl ProviderListRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderListResponse {
     #[serde(default)]
-    pub providers: Vec<Value>,
+    pub providers: Vec<ProviderInstanceView>,
+    pub settings_revision: u64,
     pub inventory_revision: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderInstanceAuthMode {
+    ApiKey,
+    DynamicLogin,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderInstanceAuthView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ProviderInstanceAuthMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_kind: Option<String>,
+    pub configured: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderInstanceInventoryState {
+    Disabled,
+    NotLoaded,
+    Loaded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderInstanceInventoryView {
+    pub state: ProviderInstanceInventoryState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    pub model_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderInstanceHealthState {
+    Disabled,
+    NotLoaded,
+    Unknown,
+    Healthy,
+    Degraded,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderInstanceHealthView {
+    pub state: ProviderInstanceHealthState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderInstanceView {
+    pub provider_instance_name: String,
+    pub provider_type: String,
+    pub provider_profile_id: String,
+    pub protocol_adapter_id: String,
+    pub base_url: String,
+    pub enabled: bool,
+    pub auth: ProviderInstanceAuthView,
+    pub inventory: ProviderInstanceInventoryView,
+    pub health: ProviderInstanceHealthView,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

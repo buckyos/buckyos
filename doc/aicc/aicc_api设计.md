@@ -404,6 +404,35 @@ Response：
 }
 ```
 
+响应返回读取到的 settings revision，以及包含 disabled 实例在内的强类型 Provider Instance 列表。认证状态只暴露模式、credential kind 和是否已配置，不返回 secret 或 credential reference：
+
+```json
+{
+  "providers": [{
+    "provider_instance_name": "openai-main",
+    "provider_type": "cloud_api",
+    "provider_profile_id": "openai",
+    "protocol_adapter_id": "openai-responses",
+    "base_url": "https://api.openai.com/v1",
+    "enabled": false,
+    "auth": {
+      "mode": "api_key",
+      "credential_kind": "bearer",
+      "configured": true
+    },
+    "inventory": {
+      "state": "disabled",
+      "model_count": 0
+    },
+    "health": {
+      "state": "disabled"
+    }
+  }],
+  "settings_revision": 12,
+  "inventory_revision": "inventory-42"
+}
+```
+
 `provider.health`：
 
 ```json
@@ -1767,6 +1796,7 @@ AICC 错误 payload schema：
 | `budget_exceeded` | 成本或配额限制。 |
 | `policy_denied` | 被 system/user/session policy 拒绝。 |
 | `idempotency_conflict` | 同一幂等作用域内重复 key 对应的 canonical request body 不一致。 |
+| `settings_revision_conflict` | Provider settings CAS revision 冲突；`details` 固定包含 `expected_revision` 和 `actual_revision`。 |
 | `cancelled` | 请求或任务已取消。 |
 | `internal_error` | 内部错误。 |
 
