@@ -13,12 +13,13 @@ use buckyos_api::{
 };
 #[allow(unused_imports)]
 pub(crate) use policy::{
-    CallerIdentity, QuotaLookup, QuotaSnapshot, QuotaSourceError, QuotaSourceFactory,
-    QuotaTruthPort,
+    policy_engine_for_route, resolve_effective_routing_policy, scheduler_profile_for_route_profile,
+    CallerIdentity, EffectiveRoutingPolicy, PolicyEngine, PolicyError, QuotaLookup, QuotaSnapshot,
+    QuotaSourceError, QuotaSourceFactory, QuotaTruthPort,
 };
 use policy::{
-    CandidatePolicyInput, CredentialScope, LocalityPreference, PolicyEngine, PolicyReason,
-    ProviderPrivacy, ProviderTrustView, ProviderType, QuotaSource, RequestPolicyInput,
+    CandidatePolicyInput, CredentialScope, LocalityPreference, PolicyReason, ProviderPrivacy,
+    ProviderTrustView, ProviderType, QuotaSource, RequestPolicyInput,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -523,7 +524,11 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
             let mut reasons = hard_filter_model(request, &candidate.model, &directory_disable);
             let state = self.runtime.get(&exact_model);
             if let Some(state) = state {
-                hard_filter_runtime(state, &mut reasons);
+                hard_filter_runtime(
+                    state,
+                    self.policy.policy().max_latency_ms.value,
+                    &mut reasons,
+                );
                 let policy_request = RequestPolicyInput {
                     caller: &request.caller,
                     method: &request.method,
@@ -757,7 +762,11 @@ fn hard_filter_model(
     reasons
 }
 
-fn hard_filter_runtime(state: &CandidateRuntimeState, reasons: &mut Vec<FilterReasonTrace>) {
+fn hard_filter_runtime(
+    state: &CandidateRuntimeState,
+    max_latency_ms: Option<u64>,
+    reasons: &mut Vec<FilterReasonTrace>,
+) {
     if !state.enabled {
         reasons.push(filter_reason("provider_disabled", "provider is disabled"));
     }
@@ -783,6 +792,20 @@ fn hard_filter_runtime(state: &CandidateRuntimeState, reasons: &mut Vec<FilterRe
             "provider circuit breaker is open",
         )),
         ProviderHealthStatus::Available | ProviderHealthStatus::Degraded => {}
+    }
+    if let Some(max_latency_ms) = max_latency_ms {
+        match state.p95_latency_ms {
+            Some(latency)
+                if latency.is_finite() && latency >= 0.0 && latency <= max_latency_ms as f64 => {}
+            Some(latency) if latency.is_finite() && latency >= 0.0 => reasons.push(filter_reason(
+                "latency_ceiling_exceeded",
+                format!("provider p95 latency exceeds {max_latency_ms} ms"),
+            )),
+            _ => reasons.push(filter_reason(
+                "latency_unavailable",
+                "provider p95 latency is unavailable",
+            )),
+        }
     }
 }
 
@@ -1270,12 +1293,13 @@ mod tests {
         InventoryModel, LogicalModelDefinition, MountMode, ProviderInventory, RegistryLayers,
     };
     use buckyos_api::{
-        AiccLogicalNodeOverlay, AiccPolicyConfig, AiccRouteOverlay, LockedValue, ModelItem,
-        QuotaState,
+        AiccLogicalNodeOverlay, AiccLogicalTreeOverlay, AiccPolicyConfig, AiccRouteOverlay,
+        AiccSessionLogicalProfile, LockedValue, ModelItem, QuotaState, RoutePolicy,
+        RoutePolicyProfile,
     };
     use policy::{
-        EffectiveRoutingPolicy, ProviderTrustLevel, ProviderTypeSource, QuotaLookup, QuotaSnapshot,
-        QuotaSourceError, RoutingPolicyLayers, RoutingPolicyPatch,
+        EffectiveRoutingPolicy, PolicyError, ProviderTrustLevel, ProviderTypeSource, QuotaLookup,
+        QuotaSnapshot, QuotaSourceError, RoutingPolicyLayers, RoutingPolicyPatch,
     };
     use serde_json::json;
 
@@ -1385,6 +1409,13 @@ mod tests {
     }
 
     fn registry(profile: AiccSchedulerProfile) -> ModelRegistry {
+        registry_with_directory_policy(profile, AiccPolicyConfig::default())
+    }
+
+    fn registry_with_directory_policy(
+        profile: AiccSchedulerProfile,
+        route_policy: AiccPolicyConfig,
+    ) -> ModelRegistry {
         let inventories = vec![
             inventory("cloud-a", "cheap", true),
             inventory("cloud-b", "fast", false),
@@ -1420,25 +1451,31 @@ mod tests {
             ]),
             ..AiccRouteOverlay::default()
         };
+        let mut definitions = vec![
+            definition("llm", AiccFallbackMode::Strict, profile.clone()),
+            definition("llm.plan", AiccFallbackMode::Parent, profile.clone()),
+            definition("llm.family", AiccFallbackMode::Strict, profile.clone()),
+            definition("llm.special", AiccFallbackMode::Parent, profile.clone()),
+            definition(
+                "llm.all",
+                AiccFallbackMode::Strict,
+                AiccSchedulerProfile::Balanced,
+            ),
+            definition(
+                "llm.weighted",
+                AiccFallbackMode::Strict,
+                AiccSchedulerProfile::CostFirst,
+            ),
+        ];
+        definitions
+            .iter_mut()
+            .find(|definition| definition.path == "llm.family")
+            .unwrap()
+            .route_policy = route_policy;
         ModelRegistry::build(
             &catalog(),
             &inventories,
-            vec![
-                definition("llm", AiccFallbackMode::Strict, profile.clone()),
-                definition("llm.plan", AiccFallbackMode::Parent, profile.clone()),
-                definition("llm.family", AiccFallbackMode::Strict, profile.clone()),
-                definition("llm.special", AiccFallbackMode::Parent, profile.clone()),
-                definition(
-                    "llm.all",
-                    AiccFallbackMode::Strict,
-                    AiccSchedulerProfile::Balanced,
-                ),
-                definition(
-                    "llm.weighted",
-                    AiccFallbackMode::Strict,
-                    AiccSchedulerProfile::CostFirst,
-                ),
-            ],
+            definitions,
             RegistryLayers {
                 factory: Some(&factory),
                 ..RegistryLayers::default()
@@ -1780,5 +1817,149 @@ mod tests {
             ),
             Err(RoutingError::InvalidRequest(_))
         ));
+    }
+
+    #[test]
+    fn production_policy_resolver_merges_directory_session_and_request() {
+        let directory = AiccPolicyConfig {
+            profile: Some(LockedValue::new(AiccSchedulerProfile::CostFirst)),
+            allow_fallback: Some(LockedValue::new(false)),
+            ..AiccPolicyConfig::default()
+        };
+        let registry = registry_with_directory_policy(AiccSchedulerProfile::Balanced, directory);
+
+        let directory_only =
+            resolve_effective_routing_policy(&registry, "llm.family", None, None).unwrap();
+        assert_eq!(
+            directory_only.profile.value,
+            AiccSchedulerProfile::CostFirst
+        );
+        assert!(!directory_only.allow_fallback.value);
+
+        let session = AiccRouteOverlay {
+            policy: AiccPolicyConfig {
+                profile: Some(LockedValue::new(AiccSchedulerProfile::LatencyFirst)),
+                ..AiccPolicyConfig::default()
+            },
+            logical_profile: Some(AiccSessionLogicalProfile {
+                overlays: vec![AiccLogicalTreeOverlay {
+                    path: "llm.family".into(),
+                    route_policy_override: Some(AiccPolicyConfig {
+                        allow_fallback: Some(LockedValue::new(true)),
+                        ..AiccPolicyConfig::default()
+                    }),
+                    ..AiccLogicalTreeOverlay::default()
+                }],
+                ..AiccSessionLogicalProfile::default()
+            }),
+            ..AiccRouteOverlay::default()
+        };
+        let session_effective =
+            resolve_effective_routing_policy(&registry, "llm.family", Some(&session), None)
+                .unwrap();
+        assert_eq!(
+            session_effective.profile.value,
+            AiccSchedulerProfile::LatencyFirst
+        );
+        assert!(session_effective.allow_fallback.value);
+
+        let request = RoutePolicy {
+            profile: RoutePolicyProfile::Quality,
+            max_latency_ms: Some(250),
+            ..RoutePolicy::default()
+        };
+        let effective = resolve_effective_routing_policy(
+            &registry,
+            "llm.family",
+            Some(&session),
+            Some(&request),
+        )
+        .unwrap();
+        assert_eq!(effective.profile.value, AiccSchedulerProfile::QualityFirst);
+        assert_eq!(effective.profile.source, Some(policy::PolicyScope::Request));
+        assert_eq!(effective.max_latency_ms.value, Some(250));
+    }
+
+    #[test]
+    fn production_policy_resolver_preserves_locked_directory_values() {
+        let registry = registry_with_directory_policy(
+            AiccSchedulerProfile::Balanced,
+            AiccPolicyConfig {
+                local_only: Some(LockedValue::locked(true)),
+                ..AiccPolicyConfig::default()
+            },
+        );
+        let error = resolve_effective_routing_policy(
+            &registry,
+            "llm.family",
+            None,
+            Some(&RoutePolicy::default()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            PolicyError::LockedOverride {
+                field: "local_only",
+                locked_by: policy::PolicyScope::Directory,
+                attempted_by: policy::PolicyScope::Request,
+            }
+        );
+    }
+
+    #[test]
+    fn public_route_profiles_have_one_scheduler_mapping() {
+        for (profile, expected) in [
+            (RoutePolicyProfile::Cheap, AiccSchedulerProfile::CostFirst),
+            (RoutePolicyProfile::Fast, AiccSchedulerProfile::LatencyFirst),
+            (RoutePolicyProfile::Balanced, AiccSchedulerProfile::Balanced),
+            (
+                RoutePolicyProfile::Quality,
+                AiccSchedulerProfile::QualityFirst,
+            ),
+        ] {
+            assert_eq!(scheduler_profile_for_route_profile(&profile), expected);
+        }
+    }
+
+    #[test]
+    fn max_latency_rejects_unknown_and_slow_candidates() {
+        let registry = registry(AiccSchedulerProfile::Balanced);
+        let request_policy = RoutePolicy {
+            profile: RoutePolicyProfile::Fast,
+            max_latency_ms: Some(250),
+            ..RoutePolicy::default()
+        };
+        let engine = policy_engine_for_route(
+            &registry,
+            "llm.family",
+            None,
+            Some(&request_policy),
+            OpenQuota,
+        )
+        .unwrap();
+        let mut runtime = runtime();
+        runtime.get_mut("cheap@cloud-a").unwrap().p95_latency_ms = None;
+        let decision = Router::new(&registry, &engine, &runtime)
+            .route(&request("llm.family"))
+            .unwrap();
+        assert_eq!(decision.selected.exact_model, "fast@cloud-b");
+        assert_eq!(
+            decision.trace.filtered_candidates[0].reasons[0].code,
+            "latency_unavailable"
+        );
+
+        runtime.get_mut("fast@cloud-b").unwrap().p95_latency_ms = Some(300.0);
+        let error = Router::new(&registry, &engine, &runtime)
+            .route(&request("llm.family"))
+            .unwrap_err();
+        let RoutingError::NoCandidate { filtered, .. } = error else {
+            panic!("expected all candidates to be rejected by max latency");
+        };
+        let codes = filtered
+            .iter()
+            .flat_map(|candidate| candidate.reasons.iter().map(|reason| reason.code.as_str()))
+            .collect::<Vec<_>>();
+        assert!(codes.contains(&"latency_unavailable"));
+        assert!(codes.contains(&"latency_ceiling_exceeded"));
     }
 }

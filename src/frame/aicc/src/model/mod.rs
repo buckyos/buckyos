@@ -370,6 +370,13 @@ impl ModelRegistry {
         self.models.get(exact_model)
     }
 
+    pub(crate) fn logical_route_policy(&self, logical_path: &str) -> Option<&AiccPolicyConfig> {
+        self.logical_nodes
+            .get(logical_path)
+            .and_then(|node| node.definition.as_ref())
+            .map(|definition| &definition.route_policy)
+    }
+
     pub(crate) fn model_views(&self) -> Vec<ModelView> {
         self.models.values().map(ModelView::from).collect()
     }

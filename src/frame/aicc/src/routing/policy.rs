@@ -1,8 +1,10 @@
 use crate::matching::{CompiledMatchRule, MatchContext, MatchRule, ROUTING_PROVIDER_MATCH_SCHEMA};
+use crate::model::ModelRegistry;
 use async_trait::async_trait;
 use buckyos_api::{
-    AiccPolicyConfig, AiccSchedulerProfile, AiccSchedulerProfileConfig, ApiType, Capability,
-    LockedValue, Money, QuotaQueryRequest, QuotaQueryResponse, QuotaState, QuotaView,
+    AiccLogicalNodeOverlay, AiccPolicyConfig, AiccRouteOverlay, AiccSchedulerProfile,
+    AiccSchedulerProfileConfig, AiccSessionLogicalProfile, ApiType, Capability, LockedValue, Money,
+    QuotaQueryRequest, QuotaQueryResponse, QuotaState, QuotaView, RoutePolicy, RoutePolicyProfile,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,6 +13,7 @@ use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PolicyScope {
+    Directory,
     System,
     User,
     App,
@@ -21,6 +24,7 @@ pub(crate) enum PolicyScope {
 impl fmt::Display for PolicyScope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::Directory => "directory",
             Self::System => "system",
             Self::User => "user",
             Self::App => "app",
@@ -50,6 +54,7 @@ pub(crate) enum ProviderTrustLevel {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct RoutingPolicyPatch {
     pub route: AiccPolicyConfig,
+    pub max_latency_ms: Option<LockedValue<u64>>,
     pub privacy: Option<LockedValue<PrivacyRequirement>>,
     pub minimum_provider_trust: Option<LockedValue<ProviderTrustLevel>>,
 }
@@ -92,6 +97,7 @@ pub(crate) struct EffectiveRoutingPolicy {
     pub blocked_provider_instances: EffectiveValue<Vec<String>>,
     pub allowed_provider_instances: EffectiveValue<Vec<String>>,
     pub max_estimated_cost: EffectiveValue<Option<Money>>,
+    pub max_latency_ms: EffectiveValue<Option<u64>>,
     pub privacy: EffectiveValue<PrivacyRequirement>,
     pub minimum_provider_trust: EffectiveValue<ProviderTrustLevel>,
 }
@@ -109,6 +115,7 @@ impl Default for EffectiveRoutingPolicy {
             blocked_provider_instances: EffectiveValue::new(Vec::new()),
             allowed_provider_instances: EffectiveValue::new(Vec::new()),
             max_estimated_cost: EffectiveValue::new(None),
+            max_latency_ms: EffectiveValue::new(None),
             privacy: EffectiveValue::new(PrivacyRequirement::PublicAllowed),
             minimum_provider_trust: EffectiveValue::new(ProviderTrustLevel::Registered),
         }
@@ -117,17 +124,25 @@ impl Default for EffectiveRoutingPolicy {
 
 impl EffectiveRoutingPolicy {
     pub(crate) fn merge(layers: RoutingPolicyLayers<'_>) -> Result<Self, PolicyError> {
+        Self::merge_ordered(
+            [
+                (PolicyScope::System, layers.system),
+                (PolicyScope::User, layers.user),
+                (PolicyScope::App, layers.app),
+                (PolicyScope::Session, layers.session),
+                (PolicyScope::Request, layers.request),
+            ]
+            .into_iter()
+            .filter_map(|(scope, patch)| patch.map(|patch| (scope, patch))),
+        )
+    }
+
+    fn merge_ordered<'a>(
+        layers: impl IntoIterator<Item = (PolicyScope, &'a RoutingPolicyPatch)>,
+    ) -> Result<Self, PolicyError> {
         let mut result = Self::default();
-        for (scope, patch) in [
-            (PolicyScope::System, layers.system),
-            (PolicyScope::User, layers.user),
-            (PolicyScope::App, layers.app),
-            (PolicyScope::Session, layers.session),
-            (PolicyScope::Request, layers.request),
-        ] {
-            if let Some(patch) = patch {
-                result.apply(scope, patch)?;
-            }
+        for (scope, patch) in layers {
+            result.apply(scope, patch)?;
         }
         if result
             .max_estimated_cost
@@ -204,6 +219,12 @@ impl EffectiveRoutingPolicy {
             patch.route.max_estimated_cost.as_ref(),
             scope,
         )?;
+        apply_optional(
+            "max_latency_ms",
+            &mut self.max_latency_ms,
+            patch.max_latency_ms.as_ref(),
+            scope,
+        )?;
         apply("privacy", &mut self.privacy, patch.privacy.as_ref(), scope)?;
         apply(
             "minimum_provider_trust",
@@ -227,6 +248,150 @@ impl EffectiveRoutingPolicy {
         } else {
             LocalityPreference::Neutral
         }
+    }
+}
+
+pub(crate) fn scheduler_profile_for_route_profile(
+    profile: &RoutePolicyProfile,
+) -> AiccSchedulerProfile {
+    match profile {
+        RoutePolicyProfile::Cheap => AiccSchedulerProfile::CostFirst,
+        RoutePolicyProfile::Fast => AiccSchedulerProfile::LatencyFirst,
+        RoutePolicyProfile::Balanced => AiccSchedulerProfile::Balanced,
+        RoutePolicyProfile::Quality => AiccSchedulerProfile::QualityFirst,
+    }
+}
+
+pub(crate) fn resolve_effective_routing_policy(
+    registry: &ModelRegistry,
+    logical_model: &str,
+    session_overlay: Option<&AiccRouteOverlay>,
+    request_policy: Option<&RoutePolicy>,
+) -> Result<EffectiveRoutingPolicy, PolicyError> {
+    let mut patches = Vec::new();
+    if let Some(directory) = registry.logical_route_policy(logical_model) {
+        patches.push((
+            PolicyScope::Directory,
+            RoutingPolicyPatch {
+                route: directory.clone(),
+                ..RoutingPolicyPatch::default()
+            },
+        ));
+    }
+    if let Some(overlay) = session_overlay {
+        append_session_policy_patches(&mut patches, overlay, logical_model)?;
+    }
+    if let Some(policy) = request_policy {
+        patches.push((PolicyScope::Request, request_policy_patch(policy)));
+    }
+    EffectiveRoutingPolicy::merge_ordered(patches.iter().map(|(scope, patch)| (*scope, patch)))
+}
+
+pub(crate) fn policy_engine_for_route<Q: QuotaSource>(
+    registry: &ModelRegistry,
+    logical_model: &str,
+    session_overlay: Option<&AiccRouteOverlay>,
+    request_policy: Option<&RoutePolicy>,
+    quota_source: Q,
+) -> Result<PolicyEngine<Q>, PolicyError> {
+    PolicyEngine::new(
+        resolve_effective_routing_policy(registry, logical_model, session_overlay, request_policy)?,
+        quota_source,
+    )
+}
+
+fn request_policy_patch(policy: &RoutePolicy) -> RoutingPolicyPatch {
+    RoutingPolicyPatch {
+        route: AiccPolicyConfig {
+            profile: Some(LockedValue::new(scheduler_profile_for_route_profile(
+                &policy.profile,
+            ))),
+            local_only: Some(LockedValue::new(policy.local_only)),
+            allow_fallback: Some(LockedValue::new(policy.allow_fallback)),
+            runtime_failover: Some(LockedValue::new(policy.runtime_failover)),
+            explain: Some(LockedValue::new(policy.explain)),
+            blocked_provider_instances: Some(LockedValue::new(
+                policy.blocked_provider_instances.clone(),
+            )),
+            allowed_provider_instances: Some(LockedValue::new(
+                policy.allowed_provider_instances.clone(),
+            )),
+            max_estimated_cost: policy.max_cost.clone().map(LockedValue::new),
+            ..AiccPolicyConfig::default()
+        },
+        max_latency_ms: policy.max_latency_ms.map(LockedValue::new),
+        ..RoutingPolicyPatch::default()
+    }
+}
+
+fn append_session_policy_patches(
+    patches: &mut Vec<(PolicyScope, RoutingPolicyPatch)>,
+    overlay: &AiccRouteOverlay,
+    logical_model: &str,
+) -> Result<(), PolicyError> {
+    push_session_patch(patches, &overlay.policy);
+    append_node_policy_patches(patches, &overlay.logical_tree, None, logical_model);
+    if let Some(active) = &overlay.active_logical_profile {
+        let profile = overlay.logical_profiles.get(active).ok_or_else(|| {
+            PolicyError::InvalidPolicy(format!("unknown active logical profile `{active}`"))
+        })?;
+        append_profile_policy_patches(patches, profile, logical_model);
+    }
+    if let Some(profile) = &overlay.logical_profile {
+        append_profile_policy_patches(patches, profile, logical_model);
+    }
+    Ok(())
+}
+
+fn append_node_policy_patches(
+    patches: &mut Vec<(PolicyScope, RoutingPolicyPatch)>,
+    tree: &BTreeMap<String, AiccLogicalNodeOverlay>,
+    parent: Option<&str>,
+    logical_model: &str,
+) {
+    for (name, node) in tree {
+        let path = parent.map_or_else(|| name.clone(), |parent| format!("{parent}.{name}"));
+        if logical_model == path || logical_model.starts_with(&format!("{path}.")) {
+            if let Some(policy) = &node.policy {
+                push_session_patch(patches, policy);
+            }
+            if let Some(policy) = &node.route_policy_override {
+                push_session_patch(patches, policy);
+            }
+            append_node_policy_patches(patches, &node.children, Some(&path), logical_model);
+        }
+    }
+}
+
+fn append_profile_policy_patches(
+    patches: &mut Vec<(PolicyScope, RoutingPolicyPatch)>,
+    profile: &AiccSessionLogicalProfile,
+    logical_model: &str,
+) {
+    if let Some(policy) = &profile.route_policy_override {
+        push_session_patch(patches, policy);
+    }
+    for overlay in &profile.overlays {
+        if overlay.path == logical_model {
+            if let Some(policy) = &overlay.route_policy_override {
+                push_session_patch(patches, policy);
+            }
+        }
+    }
+}
+
+fn push_session_patch(
+    patches: &mut Vec<(PolicyScope, RoutingPolicyPatch)>,
+    policy: &AiccPolicyConfig,
+) {
+    if policy != &AiccPolicyConfig::default() {
+        patches.push((
+            PolicyScope::Session,
+            RoutingPolicyPatch {
+                route: policy.clone(),
+                ..RoutingPolicyPatch::default()
+            },
+        ));
     }
 }
 
