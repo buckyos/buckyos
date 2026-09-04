@@ -1,12 +1,16 @@
 use super::super::{
-    validate_discovery, CredentialDescriptor, DiscoveredModel, DiscoveryContext, DiscoveryMode,
-    ModelAvailability, ProviderConnectionContract, ProviderDiscovery, ProviderDiscoverySnapshot,
-    ProviderError, ProviderFieldSchema, ProviderHealthState, ProviderProfile, ProviderResult,
-    RefreshPolicy,
+    validate_discovery, DiscoveredModel, DiscoveryContext, ModelAvailability, ProviderDiscovery,
+    ProviderDiscoverySnapshot, ProviderError, ProviderFieldSchema, ProviderHealthState,
+    ProviderResult,
 };
+#[cfg(test)]
+use super::super::{
+    CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderProfile, RefreshPolicy,
+};
+use crate::catalog::KnownProvider;
+#[cfg(test)]
 use crate::catalog::{
-    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ModelDriverCatalog,
-    ProviderRulesCatalog,
+    CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ModelDriverCatalog, ProviderRulesCatalog,
 };
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, KIMI_CHAT_ADAPTER_ID,
@@ -24,14 +28,9 @@ use std::time::Duration;
 
 pub(crate) const KIMI_PROVIDER_PROFILE_ID: &str = "kimi";
 
-const KIMI_PROVIDER_RULES: &[u8] =
-    include_bytes!("../../../driver_metadata/providers/kimi.provider.json");
-const KIMI_KNOWN_PROVIDER: &[u8] =
-    include_bytes!("../../../driver_metadata/known-providers/kimi.known-provider.json");
-const KIMI_MODEL_DRIVER: &[u8] = include_bytes!("../../../driver_metadata/models/kimi.model.json");
-
 const MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 
+#[cfg(test)]
 pub(crate) fn kimi_profile() -> ProviderProfile {
     let known = kimi_known_provider();
     let credential: CredentialDeclaration = embedded_value(
@@ -55,6 +54,7 @@ pub(crate) fn kimi_profile() -> ProviderProfile {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn kimi_connection_contract() -> ProviderConnectionContract {
     let known = kimi_known_provider();
     let fields: InstanceFieldDeclarations = embedded_value(
@@ -70,34 +70,31 @@ pub(crate) fn kimi_connection_contract() -> ProviderConnectionContract {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn kimi_known_provider() -> KnownProvider {
-    embedded_json::<KnownProviderCatalog>(KIMI_KNOWN_PROVIDER, "Kimi Known Provider catalog")
-        .providers
-        .into_iter()
-        .find(|provider| provider.provider_profile_id == KIMI_PROVIDER_PROFILE_ID)
-        .expect("Kimi Known Provider catalog must contain the Kimi profile")
-}
-
-pub(crate) fn kimi_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    embedded_json(KIMI_PROVIDER_RULES, "Kimi Provider Rules catalog")
-}
-
-pub(crate) fn kimi_model_driver() -> ModelDriverCatalog {
-    embedded_json(KIMI_MODEL_DRIVER, "Kimi Model Driver catalog")
-}
-
-pub(crate) fn kimi_catalog_files() -> Vec<CurrentCatalogFile> {
-    [
-        (CatalogKind::KnownProvider, KIMI_KNOWN_PROVIDER),
-        (CatalogKind::ProviderRules, KIMI_PROVIDER_RULES),
-        (CatalogKind::ModelDriver, KIMI_MODEL_DRIVER),
-    ]
+    super::builtin_catalog_document::<KnownProviderCatalog>(
+        CatalogKind::KnownProvider,
+        KIMI_PROVIDER_PROFILE_ID,
+    )
+    .providers
     .into_iter()
-    .map(|(kind, contents)| CurrentCatalogFile {
-        kind,
-        contents: contents.to_vec(),
-    })
-    .collect()
+    .find(|provider| provider.provider_profile_id == KIMI_PROVIDER_PROFILE_ID)
+    .expect("Kimi Known Provider catalog must contain the Kimi profile")
+}
+
+#[cfg(test)]
+pub(crate) fn kimi_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
+    super::builtin_catalog_document(CatalogKind::ProviderRules, KIMI_PROVIDER_PROFILE_ID)
+}
+
+#[cfg(test)]
+pub(crate) fn kimi_model_driver() -> ModelDriverCatalog {
+    super::builtin_catalog_document(CatalogKind::ModelDriver, KIMI_PROVIDER_PROFILE_ID)
+}
+
+#[cfg(test)]
+pub(crate) fn kimi_catalog_files() -> Vec<CurrentCatalogFile> {
+    super::builtin_catalog_files(&[KIMI_PROVIDER_PROFILE_ID])
 }
 
 #[derive(Deserialize)]

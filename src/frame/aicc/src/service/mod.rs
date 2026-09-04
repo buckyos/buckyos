@@ -49,12 +49,12 @@ use crate::protocol::{
     ProtocolError, ProtocolErrorKind,
 };
 use crate::provider::{
-    builtin_provider_registry, resolve_sn_provider_instance, BuiltinProviderRequest,
-    CredentialReference, CredentialResolver, ProviderAuthConfig, ProviderDiscoverySnapshot,
-    ProviderDraftConfig, ProviderDraftValidationStage, ProviderInstanceConfig,
-    ProviderQuotaObservation, ProviderQuotaObservationState, ProviderRefreshEvent,
-    ProviderRuntimeManager, SnCredentialBroker, SnDynamicLoginResolver, SnProviderInstanceInput,
-    StaticCredentialResolver,
+    builtin_provider_codecs, builtin_provider_registry, resolve_sn_provider_instance_with_config,
+    BuiltinProviderRequest, CredentialReference, CredentialResolver, ProviderAuthConfig,
+    ProviderConnectionInput, ProviderDiscoverySnapshot, ProviderDraftConfig,
+    ProviderDraftValidationStage, ProviderInstanceConfig, ProviderQuotaObservation,
+    ProviderQuotaObservationState, ProviderRefreshEvent, ProviderRuntimeManager,
+    SnCredentialBroker, SnProviderInstanceInput, StaticCredentialResolver,
 };
 use crate::routing::{
     CallerIdentity, QuotaLookup, QuotaSnapshot, QuotaSourceError, QuotaSourceFactory,
@@ -66,7 +66,8 @@ use crate::runtime::{
 };
 use crate::runtime::{PreparedRuntimeMutation, RuntimeState};
 use crate::settings::{
-    AiccSettings, ProductionMetadataOverrideLoader, ProviderSettings, SettingsDocument,
+    AiccSettings, MetadataSourceManager, ProductionMetadataOverrideLoader, ProductionRuntimeInputs,
+    ProviderSettings, SettingsDocument,
 };
 use crate::storage::AiccStorage;
 use cloud_update::{
@@ -235,14 +236,15 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         Err(error) => return Err(anyhow::Error::msg(error.to_string())),
     };
 
-    let builtins = builtin_provider_registry().context("build builtin provider registry")?;
-    let codecs = builtins.codecs();
+    let codecs = builtin_provider_codecs().context("build builtin provider codecs")?;
     let metadata_overrides = Arc::new(ProductionMetadataOverrideLoader::new(
         buckyos_root_dir,
         system_config_url.clone(),
         service_token.clone(),
     ));
-    let cloud_update = CloudUpdateManager::new_with_override_loader(
+    let metadata_sources = MetadataSourceManager::new(metadata_overrides)
+        .context("initialize metadata source manager")?;
+    let cloud_update = CloudUpdateManager::new_with_source_manager(
         data_dir.join("driver_metadata").join("cloud"),
         Arc::new(NdnCloudObjectFetcher::new(service_token.clone())),
         CloudUpdateClientProfile {
@@ -254,7 +256,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
             supported_features: Default::default(),
         },
         cloud_config,
-        metadata_overrides,
+        metadata_sources.clone(),
     )
     .context("initialize cloud update manager")?;
     let storage = Arc::new(
@@ -265,18 +267,16 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
     let service_factory = Arc::new(ServiceRuntimeFactory::new(storage.clone()));
     let provider_events = service_factory.subscribe_provider_refreshes();
     let factory: Arc<dyn RuntimeFactory> = service_factory;
-    let runtime = RuntimeState::bootstrap(settings, cloud_update.clone(), factory)
+    let runtime_inputs = ProductionRuntimeInputs::new(metadata_sources, cloud_update.clone());
+    let runtime = RuntimeState::bootstrap(settings, runtime_inputs, factory)
         .await
         .context("bootstrap AICC runtime")?;
     let service_runtime: Arc<dyn ServiceRuntime> =
-        Arc::new(RuntimeServiceAdapter::new(runtime.clone(), codecs));
+        Arc::new(RuntimeServiceAdapter::new(runtime.clone(), codecs.clone()));
     let execution = Arc::new(ExecutionEngine::new(
         storage.clone(),
         Arc::new(TaskManagerExecutionPort::new(task_manager)),
-        Arc::new(RuntimeProviderExecutionPort::new(
-            runtime.clone(),
-            builtins.codecs(),
-        )),
+        Arc::new(RuntimeProviderExecutionPort::new(runtime.clone(), codecs)),
         storage.clone(),
     ));
     let recovery = execution.clone();
@@ -2214,14 +2214,14 @@ impl RuntimeFactory for ServiceRuntimeFactory {
         catalog: Arc<CatalogSnapshot>,
         target_seq: u64,
     ) -> Result<PreparedRuntime, crate::runtime::RuntimeError> {
-        let builtins = builtin_provider_registry()
+        let builtins = builtin_provider_registry(catalog.as_ref())
             .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?;
         let (resolver, auth) = settings_credentials(settings.as_ref())
             .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?;
         let static_resolver: Arc<dyn CredentialResolver> = Arc::new(resolver);
         let credential_broker = Arc::new(SnCredentialBroker::new(
             static_resolver,
-            Arc::new(SnDynamicLoginResolver::new(reqwest::Client::new())),
+            builtins.dynamic_login_resolver(),
         ));
         let manager = Arc::new(
             ProviderRuntimeManager::new(
@@ -2270,27 +2270,47 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                     configured_inventory,
                 })
                 .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?;
+            let connection = binding
+                .connection
+                .resolve(ProviderConnectionInput {
+                    base_url: Some(&provider.base_url),
+                    region: provider.region.as_deref(),
+                    workspace: provider.workspace.as_deref(),
+                    account: provider.account.as_deref(),
+                })
+                .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?;
+            let provider_rules_id = provider.provider_rules_id.clone().or_else(|| {
+                catalog
+                    .resolve_provider_configuration(&provider.provider_profile_id)
+                    .ok()
+                    .map(|configuration| configuration.provider_rules_id)
+            });
             let runtime_config = match provider_auth {
                 ProviderAuthConfig::ApiKey { credential_ref } => ProviderInstanceConfig {
                     provider_instance_name: provider.provider_instance_name.clone(),
                     provider_profile_id: provider.provider_profile_id.clone(),
                     protocol_adapter_id: provider.protocol_adapter_id.clone(),
-                    base_url: provider.base_url.clone(),
+                    base_url: connection.base_url,
                     credential: CredentialReference {
                         reference: credential_ref.clone(),
                     },
-                    provider_rules_id: provider.provider_rules_id.clone(),
-                    region: provider.region.clone(),
-                    workspace: provider.workspace.clone(),
-                    account: provider.account.clone(),
+                    provider_rules_id,
+                    region: connection.region,
+                    workspace: connection.workspace,
+                    account: connection.account,
                 },
                 ProviderAuthConfig::DynamicLogin { .. } => {
-                    let resolved = resolve_sn_provider_instance(SnProviderInstanceInput {
-                        provider_instance_name: &provider.provider_instance_name,
-                        base_url: Some(&provider.base_url),
-                        account: provider.account.as_deref(),
-                        auth: provider_auth.clone(),
-                    })
+                    let resolved = resolve_sn_provider_instance_with_config(
+                        &binding.profile,
+                        &binding.connection,
+                        provider_rules_id,
+                        SnProviderInstanceInput {
+                            provider_instance_name: &provider.provider_instance_name,
+                            base_url: Some(&provider.base_url),
+                            account: provider.account.as_deref(),
+                            auth: provider_auth.clone(),
+                        },
+                    )
                     .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?;
                     credential_broker
                         .register_dynamic_instance(resolved.clone())
@@ -2397,7 +2417,9 @@ impl ProviderValidator for RuntimeProviderValidator {
         &self,
         request: ProviderValidateRequest,
     ) -> Result<ProviderValidateResponse, RPCErrors> {
-        let builtins = builtin_provider_registry().map_err(to_rpc_error)?;
+        let snapshot = self.runtime.capture().await;
+        let builtins =
+            builtin_provider_registry(snapshot.catalog.as_ref()).map_err(to_rpc_error)?;
         let provider_name = request
             .provider_instance_name
             .clone()
@@ -2455,7 +2477,6 @@ impl ProviderValidator for RuntimeProviderValidator {
                 configured_inventory,
             })
             .map_err(to_rpc_error)?;
-        let snapshot = self.runtime.capture().await;
         let manager = ProviderRuntimeManager::new(
             builtins.profiles().cloned().collect::<Vec<_>>(),
             Arc::new(StaticCredentialResolver::new(credentials)),

@@ -10,14 +10,13 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{broadcast, watch, Mutex, Notify, RwLock};
 
-use crate::catalog::{CatalogBuildOptions, CatalogKind, CatalogSnapshot};
+use crate::catalog::CatalogKind;
 #[cfg(test)]
-use crate::catalog::CurrentCatalogFile;
+use crate::catalog::{CatalogSnapshot, CurrentCatalogFile};
 use crate::matching::{CompiledMatchRule, MatchContext, MatchRule, RELEASE_TRACK_MATCH_SCHEMA};
-use crate::runtime::{RuntimeError, RuntimeInputs};
 use crate::settings::{
-    load_builtin_metadata, MetadataFile, MetadataOverrideLoader, MetadataSource, MetadataSources,
-    StaticMetadataOverrideLoader,
+    CloudMetadataSource, MetadataFile, MetadataOverrideLoader, MetadataSource,
+    MetadataSourceManager, SettingsError, StaticMetadataOverrideLoader,
 };
 
 const INDEX_VERSION: u32 = 2;
@@ -298,7 +297,7 @@ pub(crate) struct CloudUpdateManager {
     wake: Notify,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     status: RwLock<CloudUpdateRuntimeStatus>,
-    overrides: Arc<dyn MetadataOverrideLoader>,
+    sources: Arc<MetadataSourceManager>,
 }
 
 impl CloudUpdateManager {
@@ -310,13 +309,12 @@ impl CloudUpdateManager {
         local: Vec<MetadataFile>,
         system_config: Vec<MetadataFile>,
     ) -> Result<Arc<Self>, CloudUpdateError> {
-        Self::new_with_override_loader(
-            cache_root,
-            fetcher,
-            profile,
-            config,
-            Arc::new(StaticMetadataOverrideLoader::new(local, system_config)),
-        )
+        let sources = MetadataSourceManager::new(Arc::new(StaticMetadataOverrideLoader::new(
+            local,
+            system_config,
+        )))
+        .map_err(|error| CloudUpdateError::Catalog(error.to_string()))?;
+        Self::new_with_source_manager(cache_root, fetcher, profile, config, sources)
     }
 
     pub(crate) fn new_with_override_loader(
@@ -326,15 +324,17 @@ impl CloudUpdateManager {
         config: CloudUpdateConfig,
         overrides: Arc<dyn MetadataOverrideLoader>,
     ) -> Result<Arc<Self>, CloudUpdateError> {
-        Self::new_with_managed_sources(cache_root, fetcher, profile, config, overrides)
+        let sources = MetadataSourceManager::new(overrides)
+            .map_err(|error| CloudUpdateError::Catalog(error.to_string()))?;
+        Self::new_with_source_manager(cache_root, fetcher, profile, config, sources)
     }
 
-    pub(crate) fn new_with_managed_sources(
+    pub(crate) fn new_with_source_manager(
         cache_root: impl Into<PathBuf>,
         fetcher: Arc<dyn CloudObjectFetcher>,
         profile: CloudUpdateClientProfile,
         config: CloudUpdateConfig,
-        overrides: Arc<dyn MetadataOverrideLoader>,
+        sources: Arc<MetadataSourceManager>,
     ) -> Result<Arc<Self>, CloudUpdateError> {
         config.validate()?;
         let (events, _) = broadcast::channel(16);
@@ -350,8 +350,30 @@ impl CloudUpdateManager {
             wake: Notify::new(),
             task: Mutex::new(None),
             status: RwLock::new(CloudUpdateRuntimeStatus::default()),
-            overrides,
+            sources,
         }))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_managed_sources(
+        cache_root: impl Into<PathBuf>,
+        fetcher: Arc<dyn CloudObjectFetcher>,
+        profile: CloudUpdateClientProfile,
+        config: CloudUpdateConfig,
+        overrides: Arc<dyn MetadataOverrideLoader>,
+    ) -> Result<Arc<Self>, CloudUpdateError> {
+        Self::new_with_override_loader(cache_root, fetcher, profile, config, overrides)
+    }
+
+    #[cfg(test)]
+    async fn metadata_target_seq(&self) -> Result<u64, SettingsError> {
+        self.target_seq().await
+    }
+
+    #[cfg(test)]
+    async fn load_catalog(&self, target_seq: u64) -> Result<Arc<CatalogSnapshot>, SettingsError> {
+        let cloud = self.load_files(target_seq).await?;
+        self.sources.build_snapshot(target_seq, cloud).await
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<CloudUpdateEvent> {
@@ -601,8 +623,6 @@ impl CloudUpdateManager {
         target_seq: u64,
         files: &[(ProviderCatalogManifestFile, Vec<u8>)],
     ) -> Result<(), CloudUpdateError> {
-        let builtin = load_builtin_metadata()
-            .map_err(|error| CloudUpdateError::Catalog(error.to_string()))?;
         let cloud = files
             .iter()
             .map(|(file, contents)| {
@@ -614,52 +634,27 @@ impl CloudUpdateManager {
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| CloudUpdateError::Catalog(error.to_string()))?;
-        let overrides = self
-            .overrides
-            .load()
+        self.sources
+            .build_snapshot(target_seq, cloud)
             .await
             .map_err(|error| CloudUpdateError::Catalog(error.to_string()))?;
-        MetadataSources {
-            builtin,
-            cloud,
-            local: overrides.local,
-            system_config: overrides.system_config,
-        }
-        .build_snapshot(target_seq, &CatalogBuildOptions::default())
-        .map_err(|error| CloudUpdateError::Catalog(error.to_string()))?;
         Ok(())
     }
 }
 
 #[async_trait]
-impl RuntimeInputs for CloudUpdateManager {
-    async fn metadata_target_seq(&self) -> Result<u64, RuntimeError> {
+impl CloudMetadataSource for CloudUpdateManager {
+    async fn target_seq(&self) -> Result<u64, SettingsError> {
         self.load_state()
             .await
             .map(|state| state.map_or(0, |state| state.target_seq))
-            .map_err(|error| RuntimeError::Backend(error.to_string()))
+            .map_err(|error| SettingsError::Cloud(error.to_string()))
     }
 
-    async fn load_catalog(&self, target_seq: u64) -> Result<Arc<CatalogSnapshot>, RuntimeError> {
-        let cloud = self
-            .load_cloud_files(target_seq)
+    async fn load_files(&self, target_seq: u64) -> Result<Vec<MetadataFile>, SettingsError> {
+        self.load_cloud_files(target_seq)
             .await
-            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-        let builtin =
-            load_builtin_metadata().map_err(|error| RuntimeError::Backend(error.to_string()))?;
-        let overrides = self
-            .overrides
-            .load()
-            .await
-            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-        MetadataSources {
-            builtin,
-            cloud,
-            local: overrides.local,
-            system_config: overrides.system_config,
-        }
-        .build_snapshot(target_seq, &CatalogBuildOptions::default())
-        .map_err(|error| RuntimeError::Backend(error.to_string()))
+            .map_err(|error| SettingsError::Cloud(error.to_string()))
     }
 }
 
@@ -1010,6 +1005,7 @@ async fn verify_cached_revision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::load_builtin_metadata;
 
     struct FakeFetcher {
         objects: BTreeMap<String, Vec<u8>>,

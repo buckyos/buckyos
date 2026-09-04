@@ -8,7 +8,7 @@ use crate::provider::{
     ProviderProfile, ProviderQuotaObservation, ProviderRefreshEvent, ProviderRefreshOutcome,
     ProviderRefreshTrigger, ProviderRegistry, ProviderResult, ProviderRuntimeManager,
 };
-use crate::settings::{AiccSettings, SettingsDocument, SettingsError};
+use crate::settings::{AiccSettings, RuntimeInputs, SettingsDocument, SettingsError};
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -285,13 +285,6 @@ pub(crate) trait RuntimeFactory: Send + Sync {
         catalog: Arc<CatalogSnapshot>,
         target_seq: u64,
     ) -> Result<PreparedRuntime, RuntimeError>;
-}
-
-#[async_trait]
-pub(crate) trait RuntimeInputs: Send + Sync {
-    async fn metadata_target_seq(&self) -> Result<u64, RuntimeError>;
-
-    async fn load_catalog(&self, target_seq: u64) -> Result<Arc<CatalogSnapshot>, RuntimeError>;
 }
 
 struct RuntimeGeneration {
@@ -832,14 +825,14 @@ mod tests {
 
     #[async_trait]
     impl RuntimeInputs for TestInputs {
-        async fn metadata_target_seq(&self) -> Result<u64, RuntimeError> {
+        async fn metadata_target_seq(&self) -> Result<u64, SettingsError> {
             Ok(self.target.load(Ordering::SeqCst))
         }
 
         async fn load_catalog(
             &self,
             target_seq: u64,
-        ) -> Result<Arc<CatalogSnapshot>, RuntimeError> {
+        ) -> Result<Arc<CatalogSnapshot>, SettingsError> {
             Ok(catalog(target_seq))
         }
     }

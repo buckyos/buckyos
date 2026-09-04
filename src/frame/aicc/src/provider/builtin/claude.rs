@@ -1,33 +1,30 @@
+use super::super::ProviderFieldSchema;
+#[cfg(test)]
 use super::super::{
-    CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderFieldSchema,
-    ProviderProfile, RefreshPolicy,
+    CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderProfile, RefreshPolicy,
 };
 use super::anthropic_models::{AnthropicModelsDiscovery, AnthropicModelsSpec};
+use crate::catalog::KnownProvider;
+#[cfg(test)]
 use crate::catalog::{
-    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ModelDriverCatalog,
-    ProviderRulesCatalog,
+    CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ModelDriverCatalog, ProviderRulesCatalog,
 };
-use crate::protocol::{ClaudeMessagesCodec, CodecRegistration, CredentialKind, HttpTransport};
+#[cfg(test)]
+use crate::protocol::CredentialKind;
+use crate::protocol::{ClaudeMessagesCodec, CodecRegistration, HttpTransport};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::sync::Arc;
 
 pub(crate) const CLAUDE_PROVIDER_PROFILE_ID: &str = "claude";
 
-const CLAUDE_PROVIDER_RULES: &[u8] =
-    include_bytes!("../../../driver_metadata/providers/claude.provider.json");
-const CLAUDE_KNOWN_PROVIDER: &[u8] =
-    include_bytes!("../../../driver_metadata/known-providers/claude.known-provider.json");
-const CLAUDE_MODEL_DRIVER: &[u8] =
-    include_bytes!("../../../driver_metadata/models/anthropic.model.json");
-
 pub(super) const CLAUDE_SPEC: AnthropicModelsSpec = AnthropicModelsSpec {
-    profile: claude_profile,
+    provider_profile_id: CLAUDE_PROVIDER_PROFILE_ID,
     version_header: true,
-    connection_contract: claude_connection_contract,
     label: "Claude",
 };
 
+#[cfg(test)]
 pub(crate) fn claude_profile() -> ProviderProfile {
     let known = claude_known_provider();
     let credential: CredentialDeclaration = embedded_value(
@@ -51,6 +48,7 @@ pub(crate) fn claude_profile() -> ProviderProfile {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn claude_connection_contract() -> ProviderConnectionContract {
     let known = claude_known_provider();
     let fields: InstanceFieldDeclarations = embedded_value(
@@ -66,34 +64,31 @@ pub(crate) fn claude_connection_contract() -> ProviderConnectionContract {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn claude_known_provider() -> KnownProvider {
-    embedded_json::<KnownProviderCatalog>(CLAUDE_KNOWN_PROVIDER, "Claude Known Provider catalog")
-        .providers
-        .into_iter()
-        .find(|provider| provider.provider_profile_id == CLAUDE_PROVIDER_PROFILE_ID)
-        .expect("Claude Known Provider catalog must contain the Claude profile")
-}
-
-pub(crate) fn claude_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    embedded_json(CLAUDE_PROVIDER_RULES, "Claude Provider Rules catalog")
-}
-
-pub(crate) fn claude_model_driver() -> ModelDriverCatalog {
-    embedded_json(CLAUDE_MODEL_DRIVER, "Claude Model Driver catalog")
-}
-
-pub(crate) fn claude_catalog_files() -> Vec<CurrentCatalogFile> {
-    [
-        (CatalogKind::KnownProvider, CLAUDE_KNOWN_PROVIDER),
-        (CatalogKind::ProviderRules, CLAUDE_PROVIDER_RULES),
-        (CatalogKind::ModelDriver, CLAUDE_MODEL_DRIVER),
-    ]
+    super::builtin_catalog_document::<KnownProviderCatalog>(
+        CatalogKind::KnownProvider,
+        CLAUDE_PROVIDER_PROFILE_ID,
+    )
+    .providers
     .into_iter()
-    .map(|(kind, contents)| CurrentCatalogFile {
-        kind,
-        contents: contents.to_vec(),
-    })
-    .collect()
+    .find(|provider| provider.provider_profile_id == CLAUDE_PROVIDER_PROFILE_ID)
+    .expect("Claude Known Provider catalog must contain the Claude profile")
+}
+
+#[cfg(test)]
+pub(crate) fn claude_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
+    super::builtin_catalog_document(CatalogKind::ProviderRules, CLAUDE_PROVIDER_PROFILE_ID)
+}
+
+#[cfg(test)]
+pub(crate) fn claude_model_driver() -> ModelDriverCatalog {
+    super::builtin_catalog_document(CatalogKind::ModelDriver, CLAUDE_PROVIDER_PROFILE_ID)
+}
+
+#[cfg(test)]
+pub(crate) fn claude_catalog_files() -> Vec<CurrentCatalogFile> {
+    super::builtin_catalog_files(&[CLAUDE_PROVIDER_PROFILE_ID])
 }
 
 #[derive(Deserialize)]

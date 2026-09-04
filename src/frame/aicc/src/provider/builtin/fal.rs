@@ -1,23 +1,23 @@
 use super::super::{
-    CatalogOnlyDiscovery, CredentialDescriptor, DiscoveryMode, ProviderConnectionContract,
-    ProviderDiscovery, ProviderDiscoverySnapshot, ProviderFieldSchema, ProviderProfile,
-    ProviderResult, RefreshPolicy, validate_discovery,
+    validate_discovery, CatalogOnlyDiscovery, ProviderDiscovery, ProviderDiscoverySnapshot,
+    ProviderFieldSchema, ProviderResult,
 };
-use crate::catalog::{
-    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ProviderRulesCatalog,
+#[cfg(test)]
+use super::super::{
+    CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderProfile, RefreshPolicy,
 };
+use crate::catalog::KnownProvider;
+#[cfg(test)]
+use crate::catalog::{CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ProviderRulesCatalog};
+#[cfg(test)]
 use crate::protocol::{CredentialKind, FAL_QUEUE_ADAPTER_ID};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use std::sync::Arc;
 
 pub(crate) const FAL_PROVIDER_PROFILE_ID: &str = "fal";
 
-const FAL_KNOWN_PROVIDER: &[u8] =
-    include_bytes!("../../../driver_metadata/known-providers/fal.known-provider.json");
-const FAL_PROVIDER_RULES: &[u8] =
-    include_bytes!("../../../driver_metadata/providers/fal.provider.json");
-
+#[cfg(test)]
 pub(crate) fn fal_profile() -> ProviderProfile {
     let known = fal_known_provider();
     let credential: CredentialDeclaration = embedded_value(
@@ -47,14 +47,19 @@ pub(crate) fn fal_profile() -> ProviderProfile {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn fal_known_provider() -> KnownProvider {
-    embedded_json::<KnownProviderCatalog>(FAL_KNOWN_PROVIDER, "fal Known Provider catalog")
-        .providers
-        .into_iter()
-        .find(|provider| provider.provider_profile_id == FAL_PROVIDER_PROFILE_ID)
-        .expect("fal Known Provider catalog must contain the fal profile")
+    super::builtin_catalog_document::<KnownProviderCatalog>(
+        CatalogKind::KnownProvider,
+        FAL_PROVIDER_PROFILE_ID,
+    )
+    .providers
+    .into_iter()
+    .find(|provider| provider.provider_profile_id == FAL_PROVIDER_PROFILE_ID)
+    .expect("fal Known Provider catalog must contain the fal profile")
 }
 
+#[cfg(test)]
 pub(crate) fn fal_connection_contract() -> ProviderConnectionContract {
     let known = fal_known_provider();
     let fields: InstanceFieldDeclarations = embedded_value(
@@ -70,21 +75,14 @@ pub(crate) fn fal_connection_contract() -> ProviderConnectionContract {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn fal_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    embedded_json(FAL_PROVIDER_RULES, "fal Provider Rules catalog")
+    super::builtin_catalog_document(CatalogKind::ProviderRules, FAL_PROVIDER_PROFILE_ID)
 }
 
+#[cfg(test)]
 pub(crate) fn fal_catalog_files() -> Vec<CurrentCatalogFile> {
-    [
-        (CatalogKind::KnownProvider, FAL_KNOWN_PROVIDER),
-        (CatalogKind::ProviderRules, FAL_PROVIDER_RULES),
-    ]
-    .into_iter()
-    .map(|(kind, contents)| CurrentCatalogFile {
-        kind,
-        contents: contents.to_vec(),
-    })
-    .collect()
+    super::builtin_catalog_files(&[FAL_PROVIDER_PROFILE_ID])
 }
 
 pub(crate) fn fal_discovery(
@@ -132,7 +130,7 @@ mod tests {
     use super::*;
     use crate::catalog::{CatalogBuildOptions, CatalogSnapshot, ModelDriverCatalog};
     use crate::protocol::{
-        CodecRegistry, FAL_QUEUE_OPERATION_ID, ResolvedCredential, fal_queue_adapter,
+        fal_queue_adapter, CodecRegistry, ResolvedCredential, FAL_QUEUE_OPERATION_ID,
     };
     use crate::provider::{
         CredentialReference, DiscoveredModel, DiscoveryContext, InventoryBuilder,
@@ -204,11 +202,9 @@ mod tests {
 
         let files = fal_catalog_files();
         assert_eq!(files.len(), 2);
-        assert!(
-            files
-                .iter()
-                .all(|file| file.kind != CatalogKind::ModelDriver)
-        );
+        assert!(files
+            .iter()
+            .all(|file| file.kind != CatalogKind::ModelDriver));
         let catalog =
             CatalogSnapshot::from_current_files(1, files, &CatalogBuildOptions::default()).unwrap();
         assert!(catalog.known_provider(FAL_PROVIDER_PROFILE_ID).is_some());

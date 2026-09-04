@@ -11,6 +11,33 @@ mod openrouter;
 mod registry;
 mod sn;
 
+#[cfg(test)]
+fn builtin_catalog_document<T: serde::de::DeserializeOwned>(
+    kind: crate::catalog::CatalogKind,
+    catalog_id: &str,
+) -> T {
+    let file = crate::settings::load_builtin_metadata()
+        .expect("WP-15 builtin metadata must load")
+        .into_iter()
+        .find(|file| file.kind == kind && file.catalog_id == catalog_id)
+        .unwrap_or_else(|| panic!("WP-15 builtin metadata is missing `{catalog_id}`"));
+    serde_json::from_slice(&file.contents)
+        .unwrap_or_else(|error| panic!("WP-15 builtin metadata `{catalog_id}` is invalid: {error}"))
+}
+
+#[cfg(test)]
+fn builtin_catalog_files(catalog_ids: &[&str]) -> Vec<crate::catalog::CurrentCatalogFile> {
+    crate::settings::load_builtin_metadata()
+        .expect("WP-15 builtin metadata must load")
+        .into_iter()
+        .filter(|file| catalog_ids.contains(&file.catalog_id.as_str()))
+        .map(|file| crate::catalog::CurrentCatalogFile {
+            kind: file.kind,
+            contents: file.contents,
+        })
+        .collect()
+}
+
 #[allow(unused_imports)]
 pub(crate) use claude::*;
 #[allow(unused_imports)]

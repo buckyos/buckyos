@@ -1,7 +1,6 @@
 use super::super::{
-    validate_discovery, DiscoveredModel, DiscoveryContext, ModelAvailability,
-    ProviderConnectionContract, ProviderConnectionInput, ProviderDiscovery,
-    ProviderDiscoverySnapshot, ProviderError, ProviderHealthState, ProviderProfile, ProviderResult,
+    validate_discovery, DiscoveredModel, DiscoveryContext, ModelAvailability, ProviderDiscovery,
+    ProviderDiscoverySnapshot, ProviderError, ProviderHealthState, ProviderResult,
 };
 use crate::protocol::{CredentialKind, HttpRequest, HttpResponse, HttpTransport};
 use async_trait::async_trait;
@@ -18,9 +17,8 @@ const MAX_DISCOVERY_PAGES: usize = 100;
 
 #[derive(Clone, Copy)]
 pub(super) struct AnthropicModelsSpec {
-    pub profile: fn() -> ProviderProfile,
+    pub provider_profile_id: &'static str,
     pub version_header: bool,
-    pub connection_contract: fn() -> ProviderConnectionContract,
     pub label: &'static str,
 }
 
@@ -164,11 +162,9 @@ fn validate_context(
     spec: AnthropicModelsSpec,
     context: &DiscoveryContext<'_>,
 ) -> ProviderResult<()> {
-    let configured = (spec.profile)();
-    if context.profile.provider_profile_id != configured.provider_profile_id
-        || context.profile.default_protocol_adapter_id != configured.default_protocol_adapter_id
-        || context.instance.provider_profile_id != configured.provider_profile_id
-        || context.instance.protocol_adapter_id != configured.default_protocol_adapter_id
+    if context.profile.provider_profile_id != spec.provider_profile_id
+        || context.instance.provider_profile_id != spec.provider_profile_id
+        || context.instance.protocol_adapter_id != context.profile.default_protocol_adapter_id
     {
         return Err(ProviderError::InvalidConfiguration(format!(
             "{} discovery requires its builtin profile and adapter",
@@ -181,11 +177,8 @@ fn validate_context(
             spec.label
         )));
     }
-    (spec.connection_contract)().resolve(ProviderConnectionInput {
-        base_url: Some(&context.instance.base_url),
-        region: context.instance.region.as_deref(),
-        workspace: None,
-        account: context.instance.account.as_deref(),
+    Url::parse(&context.instance.base_url).map_err(|_| {
+        ProviderError::InvalidConfiguration(format!("{} base_url is invalid", spec.label))
     })?;
     Ok(())
 }

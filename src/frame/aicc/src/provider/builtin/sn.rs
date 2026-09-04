@@ -1,14 +1,16 @@
 use super::super::{
     validate_discovery, CredentialDescriptor, CredentialReference, CredentialResolver,
-    DiscoveredModel, DiscoveryContext, DiscoveryMode, DynamicLoginContext,
-    DynamicLoginCredentialResolver, ModelAvailability, ProviderAuthConfig, ProviderAuthMode,
-    ProviderConnectionContract, ProviderConnectionInput, ProviderDiscovery,
-    ProviderDiscoverySnapshot, ProviderError, ProviderFieldSchema, ProviderHealthState,
-    ProviderInstanceConfig, ProviderProfile, ProviderResult, RefreshPolicy,
+    DiscoveredModel, DiscoveryContext, DynamicLoginContext, DynamicLoginCredentialResolver,
+    ModelAvailability, ProviderAuthConfig, ProviderAuthMode, ProviderConnectionContract,
+    ProviderConnectionInput, ProviderDiscovery, ProviderDiscoverySnapshot, ProviderError,
+    ProviderFieldSchema, ProviderHealthState, ProviderInstanceConfig, ProviderProfile,
+    ProviderResult,
 };
-use crate::catalog::{
-    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ProviderRulesCatalog,
-};
+#[cfg(test)]
+use super::super::{DiscoveryMode, RefreshPolicy};
+use crate::catalog::KnownProvider;
+#[cfg(test)]
+use crate::catalog::{CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ProviderRulesCatalog};
 use crate::protocol::{
     openai_responses_adapter, AdapterDescriptor, AdapterStatus, CodecRegistration, CodecRegistry,
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, ProtocolResultValue,
@@ -29,13 +31,9 @@ use tokio::sync::{Mutex, RwLock};
 pub(crate) const SN_PROVIDER_PROFILE_ID: &str = "sn";
 pub(crate) const SN_OPENAI_ADAPTER_ID: &str = "sn-openai";
 
-const SN_KNOWN_PROVIDER: &[u8] =
-    include_bytes!("../../../driver_metadata/known-providers/sn.known-provider.json");
-const SN_PROVIDER_RULES: &[u8] =
-    include_bytes!("../../../driver_metadata/providers/sn.provider.json");
-
 const SN_MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 
+#[cfg(test)]
 pub(crate) fn sn_profile() -> ProviderProfile {
     let known = sn_known_provider();
     let credential: CredentialDeclaration = embedded_value(
@@ -59,14 +57,19 @@ pub(crate) fn sn_profile() -> ProviderProfile {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn sn_known_provider() -> KnownProvider {
-    embedded_json::<KnownProviderCatalog>(SN_KNOWN_PROVIDER, "SN Known Provider catalog")
-        .providers
-        .into_iter()
-        .find(|provider| provider.provider_profile_id == SN_PROVIDER_PROFILE_ID)
-        .expect("SN Known Provider catalog must contain the SN profile")
+    super::builtin_catalog_document::<KnownProviderCatalog>(
+        CatalogKind::KnownProvider,
+        SN_PROVIDER_PROFILE_ID,
+    )
+    .providers
+    .into_iter()
+    .find(|provider| provider.provider_profile_id == SN_PROVIDER_PROFILE_ID)
+    .expect("SN Known Provider catalog must contain the SN profile")
 }
 
+#[cfg(test)]
 pub(crate) fn sn_connection_contract(auth_mode: ProviderAuthMode) -> ProviderConnectionContract {
     let known = sn_known_provider();
     let fields: InstanceFieldDeclarations = embedded_value(
@@ -99,18 +102,22 @@ pub(crate) struct ResolvedSnProviderInstance {
     pub auth: ProviderAuthConfig,
 }
 
-pub(crate) fn resolve_sn_provider_instance(
+pub(crate) fn resolve_sn_provider_instance_with_config(
+    profile: &ProviderProfile,
+    connection_contract: &ProviderConnectionContract,
+    provider_rules_id: Option<String>,
     input: SnProviderInstanceInput<'_>,
 ) -> ProviderResult<ResolvedSnProviderInstance> {
     input.auth.validate()?;
-    let profile = sn_profile();
-    let provider_rules_id = sn_known_provider().provider_rules_id;
-    let connection =
-        sn_connection_contract(input.auth.mode()).resolve(ProviderConnectionInput {
-            base_url: input.base_url,
-            account: input.account,
-            ..ProviderConnectionInput::default()
-        })?;
+    let mut connection_contract = connection_contract.clone();
+    if input.auth.mode() == ProviderAuthMode::DynamicLogin {
+        connection_contract.account = ProviderFieldSchema::required();
+    }
+    let connection = connection_contract.resolve(ProviderConnectionInput {
+        base_url: input.base_url,
+        account: input.account,
+        ..ProviderConnectionInput::default()
+    })?;
     let credential = input
         .auth
         .credential_reference()
@@ -120,8 +127,8 @@ pub(crate) fn resolve_sn_provider_instance(
     Ok(ResolvedSnProviderInstance {
         runtime: ProviderInstanceConfig {
             provider_instance_name: input.provider_instance_name.to_owned(),
-            provider_profile_id: profile.provider_profile_id,
-            protocol_adapter_id: profile.default_protocol_adapter_id,
+            provider_profile_id: profile.provider_profile_id.clone(),
+            protocol_adapter_id: profile.default_protocol_adapter_id.clone(),
             base_url: connection.base_url,
             credential,
             provider_rules_id,
@@ -133,23 +140,31 @@ pub(crate) fn resolve_sn_provider_instance(
     })
 }
 
+#[cfg(test)]
+pub(crate) fn resolve_sn_provider_instance(
+    input: SnProviderInstanceInput<'_>,
+) -> ProviderResult<ResolvedSnProviderInstance> {
+    let profile = sn_profile();
+    let connection = sn_connection_contract(input.auth.mode());
+    resolve_sn_provider_instance_with_config(
+        &profile,
+        &connection,
+        sn_known_provider().provider_rules_id,
+        input,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn sn_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    embedded_json(SN_PROVIDER_RULES, "SN Provider Rules catalog")
+    super::builtin_catalog_document(CatalogKind::ProviderRules, SN_PROVIDER_PROFILE_ID)
 }
 
+#[cfg(test)]
 pub(crate) fn sn_catalog_files() -> Vec<CurrentCatalogFile> {
-    [
-        (CatalogKind::KnownProvider, SN_KNOWN_PROVIDER),
-        (CatalogKind::ProviderRules, SN_PROVIDER_RULES),
-    ]
-    .into_iter()
-    .map(|(kind, contents)| CurrentCatalogFile {
-        kind,
-        contents: contents.to_vec(),
-    })
-    .collect()
+    super::builtin_catalog_files(&[SN_PROVIDER_PROFILE_ID])
 }
 
+#[cfg(test)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CredentialDeclaration {
@@ -158,6 +173,7 @@ struct CredentialDeclaration {
     secret: bool,
 }
 
+#[cfg(test)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthDeclaration {
@@ -166,6 +182,7 @@ struct AuthDeclaration {
     mutually_exclusive: bool,
 }
 
+#[cfg(test)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InstanceFieldDeclarations {
@@ -174,6 +191,7 @@ struct InstanceFieldDeclarations {
     account: AccountFieldDeclarations,
 }
 
+#[cfg(test)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AccountFieldDeclarations {
@@ -181,6 +199,7 @@ struct AccountFieldDeclarations {
     dynamic_login: ProviderFieldSchema,
 }
 
+#[cfg(test)]
 fn sn_dynamic_login_profile() -> String {
     let known = sn_known_provider();
     let auth: AuthDeclaration =
@@ -218,6 +237,7 @@ pub(crate) struct SnDialectContract {
     pub unsupported_api_types: BTreeSet<String>,
 }
 
+#[cfg(test)]
 pub(crate) fn sn_dialect_contract() -> SnDialectContract {
     SnDialectContract {
         base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
@@ -531,13 +551,7 @@ impl SnCredentialBroker {
                     )
                     .await
             }
-            ProviderAuthConfig::DynamicLogin { login_profile, .. } => {
-                let configured_profile = sn_dynamic_login_profile();
-                if login_profile != &configured_profile {
-                    return Err(ProviderError::InvalidConfiguration(format!(
-                        "SN dynamic login only supports login_profile={configured_profile}"
-                    )));
-                }
+            ProviderAuthConfig::DynamicLogin { .. } => {
                 let user_name = instance.runtime.account.as_deref().ok_or_else(|| {
                     ProviderError::InvalidConfiguration(
                         "SN dynamic login requires an account".to_owned(),
@@ -595,6 +609,7 @@ fn bearer_credential_descriptor() -> CredentialDescriptor {
 pub(crate) struct SnDynamicLoginResolver {
     client: Arc<dyn SnLoginClient>,
     clock: Arc<dyn SnClock>,
+    supported_login_profile: String,
     slots: CredentialSlots,
 }
 
@@ -602,17 +617,23 @@ type CredentialSlot = Arc<Mutex<Option<CachedCredential>>>;
 type CredentialSlots = Arc<Mutex<BTreeMap<String, CredentialSlot>>>;
 
 impl SnDynamicLoginResolver {
-    pub(crate) fn new(client: reqwest::Client) -> Self {
+    pub(crate) fn new(client: reqwest::Client, supported_login_profile: String) -> Self {
         Self::with_dependencies(
             Arc::new(SystemSnLoginClient { client }),
             Arc::new(SystemSnClock),
+            supported_login_profile,
         )
     }
 
-    fn with_dependencies(client: Arc<dyn SnLoginClient>, clock: Arc<dyn SnClock>) -> Self {
+    fn with_dependencies(
+        client: Arc<dyn SnLoginClient>,
+        clock: Arc<dyn SnClock>,
+        supported_login_profile: String,
+    ) -> Self {
         Self {
             client,
             clock,
+            supported_login_profile,
             slots: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
@@ -632,10 +653,10 @@ impl DynamicLoginCredentialResolver for SnDynamicLoginResolver {
         &self,
         context: &DynamicLoginContext,
     ) -> ProviderResult<ResolvedCredential> {
-        let configured_profile = sn_dynamic_login_profile();
-        if context.login_profile != configured_profile {
+        if context.login_profile != self.supported_login_profile {
             return Err(ProviderError::InvalidConfiguration(format!(
-                "SN dynamic login only supports login_profile={configured_profile}"
+                "SN dynamic login only supports login_profile={}",
+                self.supported_login_profile
             )));
         }
         let slot = self.slot(context.cache_key()).await;
@@ -1042,6 +1063,7 @@ mod tests {
         let resolver = Arc::new(SnDynamicLoginResolver::with_dependencies(
             client.clone(),
             clock.clone(),
+            sn_dynamic_login_profile(),
         ));
         let context = dynamic_instance()
             .auth
@@ -1082,6 +1104,7 @@ mod tests {
                 fail: true,
             }),
             Arc::new(FakeClock(AtomicU64::new(1_000))),
+            sn_dynamic_login_profile(),
         ));
         let broker = SnCredentialBroker::new(static_resolver, failing);
         let api_key = resolve_sn_provider_instance(SnProviderInstanceInput {

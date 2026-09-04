@@ -1,33 +1,32 @@
+use super::super::ProviderFieldSchema;
+#[cfg(test)]
 use super::super::{
     CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderConnectionInput,
-    ProviderFieldSchema, ProviderProfile, ProviderResult, RefreshPolicy,
+    ProviderProfile, ProviderResult, RefreshPolicy,
 };
 use super::anthropic_models::{AnthropicModelsDiscovery, AnthropicModelsSpec};
+use crate::catalog::KnownProvider;
+#[cfg(test)]
 use crate::catalog::{
-    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ModelDriverCatalog,
-    ProviderRulesCatalog,
+    CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ModelDriverCatalog, ProviderRulesCatalog,
 };
-use crate::protocol::{CredentialKind, HttpTransport};
+#[cfg(test)]
+use crate::protocol::CredentialKind;
+use crate::protocol::HttpTransport;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
+#[cfg(test)]
 use std::collections::BTreeMap;
 
 pub(crate) const MINIMAX_PROVIDER_PROFILE_ID: &str = "minimax";
 
-const MINIMAX_PROVIDER_RULES: &[u8] =
-    include_bytes!("../../../driver_metadata/providers/minimax.provider.json");
-const MINIMAX_KNOWN_PROVIDER: &[u8] =
-    include_bytes!("../../../driver_metadata/known-providers/minimax.known-provider.json");
-const MINIMAX_MODEL_DRIVER: &[u8] =
-    include_bytes!("../../../driver_metadata/models/minimax.model.json");
-
 pub(super) const MINIMAX_SPEC: AnthropicModelsSpec = AnthropicModelsSpec {
-    profile: minimax_profile,
+    provider_profile_id: MINIMAX_PROVIDER_PROFILE_ID,
     version_header: false,
-    connection_contract: minimax_connection_contract,
     label: "MiniMax",
 };
 
+#[cfg(test)]
 pub(crate) fn minimax_profile() -> ProviderProfile {
     let known = minimax_known_provider();
     let credential: CredentialDeclaration = embedded_value(
@@ -51,14 +50,19 @@ pub(crate) fn minimax_profile() -> ProviderProfile {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn minimax_known_provider() -> KnownProvider {
-    embedded_json::<KnownProviderCatalog>(MINIMAX_KNOWN_PROVIDER, "MiniMax Known Provider catalog")
-        .providers
-        .into_iter()
-        .find(|provider| provider.provider_profile_id == MINIMAX_PROVIDER_PROFILE_ID)
-        .expect("MiniMax Known Provider catalog must contain the MiniMax profile")
+    super::builtin_catalog_document::<KnownProviderCatalog>(
+        CatalogKind::KnownProvider,
+        MINIMAX_PROVIDER_PROFILE_ID,
+    )
+    .providers
+    .into_iter()
+    .find(|provider| provider.provider_profile_id == MINIMAX_PROVIDER_PROFILE_ID)
+    .expect("MiniMax Known Provider catalog must contain the MiniMax profile")
 }
 
+#[cfg(test)]
 pub(crate) fn minimax_connection_contract() -> ProviderConnectionContract {
     let known = minimax_known_provider();
     let fields: InstanceFieldDeclarations = embedded_value(
@@ -74,6 +78,7 @@ pub(crate) fn minimax_connection_contract() -> ProviderConnectionContract {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_minimax_connection(
     input: ProviderConnectionInput<'_>,
 ) -> ProviderResult<super::super::ResolvedProviderConnection> {
@@ -101,26 +106,19 @@ pub(crate) fn resolve_minimax_connection(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn minimax_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    embedded_json(MINIMAX_PROVIDER_RULES, "MiniMax Provider Rules catalog")
+    super::builtin_catalog_document(CatalogKind::ProviderRules, MINIMAX_PROVIDER_PROFILE_ID)
 }
 
+#[cfg(test)]
 pub(crate) fn minimax_model_driver() -> ModelDriverCatalog {
-    embedded_json(MINIMAX_MODEL_DRIVER, "MiniMax Model Driver catalog")
+    super::builtin_catalog_document(CatalogKind::ModelDriver, MINIMAX_PROVIDER_PROFILE_ID)
 }
 
+#[cfg(test)]
 pub(crate) fn minimax_catalog_files() -> Vec<CurrentCatalogFile> {
-    [
-        (CatalogKind::KnownProvider, MINIMAX_KNOWN_PROVIDER),
-        (CatalogKind::ProviderRules, MINIMAX_PROVIDER_RULES),
-        (CatalogKind::ModelDriver, MINIMAX_MODEL_DRIVER),
-    ]
-    .into_iter()
-    .map(|(kind, contents)| CurrentCatalogFile {
-        kind,
-        contents: contents.to_vec(),
-    })
-    .collect()
+    super::builtin_catalog_files(&[MINIMAX_PROVIDER_PROFILE_ID])
 }
 
 #[derive(Deserialize)]

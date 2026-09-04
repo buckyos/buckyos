@@ -1,22 +1,27 @@
 use super::super::{
-    validate_discovery, CatalogOnlyDiscovery, CredentialDescriptor, DiscoveredModel,
-    DiscoveryContext, DiscoveryMode, ModelAvailability, ProviderConnectionContract,
-    ProviderConnectionInput, ProviderDiscovery, ProviderDiscoverySnapshot, ProviderError,
-    ProviderHealthState, ProviderProfile, ProviderResult, RefreshPolicy,
+    validate_discovery, DiscoveredModel, DiscoveryContext, ModelAvailability, ProviderDiscovery,
+    ProviderDiscoverySnapshot, ProviderError, ProviderHealthState, ProviderResult,
 };
+#[cfg(test)]
+use super::super::{
+    CatalogOnlyDiscovery, CredentialDescriptor, DiscoveryMode, ProviderConnectionContract,
+    ProviderConnectionInput, ProviderProfile, RefreshPolicy,
+};
+#[cfg(test)]
 use crate::catalog::{
     CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ModelDriverCatalog,
     ProviderRulesCatalog,
 };
+#[cfg(test)]
+use crate::protocol::ResponsesDialectKind;
 use crate::protocol::{
-    CredentialKind, HttpRequest, HttpResponse, HttpTransport, ResponsesDialectKind,
-    DEEPSEEK_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID,
+    CredentialKind, HttpRequest, HttpResponse, HttpTransport, DEEPSEEK_RESPONSES_ADAPTER_ID,
+    OPENAI_RESPONSES_OPERATION_ID,
 };
 use async_trait::async_trait;
 use buckyos_api::ApiType;
 use reqwest::header::ETAG;
 use reqwest::Method;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -26,30 +31,14 @@ pub(crate) const DEEPSEEK_PROFILE_ID: &str = "deepseek";
 pub(crate) const DOUBAO_PROFILE_ID: &str = "doubao";
 pub(crate) const QWEN_PROFILE_ID: &str = "qwen";
 
-const DEEPSEEK_KNOWN_PROVIDER: &[u8] =
-    include_bytes!("../../../driver_metadata/known-providers/deepseek.known-provider.json");
-const DOUBAO_KNOWN_PROVIDER: &[u8] =
-    include_bytes!("../../../driver_metadata/known-providers/doubao.known-provider.json");
-const QWEN_KNOWN_PROVIDER: &[u8] =
-    include_bytes!("../../../driver_metadata/known-providers/qwen.known-provider.json");
-const DEEPSEEK_PROVIDER_RULES: &[u8] =
-    include_bytes!("../../../driver_metadata/providers/deepseek.provider.json");
-const DOUBAO_PROVIDER_RULES: &[u8] =
-    include_bytes!("../../../driver_metadata/providers/doubao.provider.json");
-const QWEN_PROVIDER_RULES: &[u8] =
-    include_bytes!("../../../driver_metadata/providers/qwen.provider.json");
-const DEEPSEEK_MODEL_DRIVER: &[u8] =
-    include_bytes!("../../../driver_metadata/models/deepseek.model.json");
-const DOUBAO_MODEL_DRIVER: &[u8] =
-    include_bytes!("../../../driver_metadata/models/doubao.model.json");
-const QWEN_MODEL_DRIVER: &[u8] = include_bytes!("../../../driver_metadata/models/qwen.model.json");
-
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum BuiltinDiscoveryKind {
     OpenAiModelsApi,
     CatalogOnly,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 pub(crate) struct BuiltinProviderDescriptor {
     pub profile: ProviderProfile,
@@ -60,6 +49,7 @@ pub(crate) struct BuiltinProviderDescriptor {
     provider_rules: ProviderRulesCatalog,
 }
 
+#[cfg(test)]
 impl BuiltinProviderDescriptor {
     pub(crate) fn known_provider(&self) -> KnownProvider {
         self.known_provider.clone()
@@ -115,16 +105,17 @@ impl BuiltinProviderDescriptor {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProviderDescriptor> {
     let known: [KnownProviderCatalog; 3] = [
-        decode_catalog(DEEPSEEK_KNOWN_PROVIDER, "DeepSeek Known Provider"),
-        decode_catalog(DOUBAO_KNOWN_PROVIDER, "Doubao Known Provider"),
-        decode_catalog(QWEN_KNOWN_PROVIDER, "Qwen Known Provider"),
+        super::builtin_catalog_document(CatalogKind::KnownProvider, DEEPSEEK_PROFILE_ID),
+        super::builtin_catalog_document(CatalogKind::KnownProvider, DOUBAO_PROFILE_ID),
+        super::builtin_catalog_document(CatalogKind::KnownProvider, QWEN_PROFILE_ID),
     ];
     let rules: [ProviderRulesCatalog; 3] = [
-        decode_catalog(DEEPSEEK_PROVIDER_RULES, "DeepSeek Provider Rules"),
-        decode_catalog(DOUBAO_PROVIDER_RULES, "Doubao Provider Rules"),
-        decode_catalog(QWEN_PROVIDER_RULES, "Qwen Provider Rules"),
+        super::builtin_catalog_document(CatalogKind::ProviderRules, DEEPSEEK_PROFILE_ID),
+        super::builtin_catalog_document(CatalogKind::ProviderRules, DOUBAO_PROFILE_ID),
+        super::builtin_catalog_document(CatalogKind::ProviderRules, QWEN_PROFILE_ID),
     ];
     [
         (
@@ -161,53 +152,39 @@ pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProv
     .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn openai_responses_compatible_catalog_files() -> Vec<CurrentCatalogFile> {
-    [
-        (CatalogKind::KnownProvider, DEEPSEEK_KNOWN_PROVIDER),
-        (CatalogKind::KnownProvider, DOUBAO_KNOWN_PROVIDER),
-        (CatalogKind::KnownProvider, QWEN_KNOWN_PROVIDER),
-        (CatalogKind::ProviderRules, DEEPSEEK_PROVIDER_RULES),
-        (CatalogKind::ProviderRules, DOUBAO_PROVIDER_RULES),
-        (CatalogKind::ProviderRules, QWEN_PROVIDER_RULES),
-        (CatalogKind::ModelDriver, DEEPSEEK_MODEL_DRIVER),
-        (CatalogKind::ModelDriver, DOUBAO_MODEL_DRIVER),
-        (CatalogKind::ModelDriver, QWEN_MODEL_DRIVER),
-    ]
-    .into_iter()
-    .map(|(kind, contents)| CurrentCatalogFile {
-        kind,
-        contents: contents.to_vec(),
-    })
-    .collect()
+    super::builtin_catalog_files(&[DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID])
 }
 
+#[cfg(test)]
 pub(crate) fn openai_responses_compatible_model_driver_catalogs() -> Vec<ModelDriverCatalog> {
-    [
-        (DEEPSEEK_MODEL_DRIVER, "DeepSeek Model Driver"),
-        (DOUBAO_MODEL_DRIVER, "Doubao Model Driver"),
-        (QWEN_MODEL_DRIVER, "Qwen Model Driver"),
-    ]
-    .into_iter()
-    .map(|(contents, label)| decode_catalog(contents, label))
-    .collect()
+    [DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID]
+        .into_iter()
+        .map(|id| super::builtin_catalog_document(CatalogKind::ModelDriver, id))
+        .collect()
 }
 
 pub(crate) fn deepseek_models_discovery(transport: HttpTransport) -> DeepSeekModelsDiscovery {
     DeepSeekModelsDiscovery::new(transport)
 }
 
+#[cfg(test)]
 fn deepseek() -> BuiltinProviderDescriptor {
     configured_provider(DEEPSEEK_PROFILE_ID)
 }
 
+#[cfg(test)]
 fn doubao() -> BuiltinProviderDescriptor {
     configured_provider(DOUBAO_PROFILE_ID)
 }
 
+#[cfg(test)]
 fn qwen() -> BuiltinProviderDescriptor {
     configured_provider(QWEN_PROFILE_ID)
 }
 
+#[cfg(test)]
 fn descriptor(
     known_provider: KnownProvider,
     provider_rules: ProviderRulesCatalog,
@@ -268,16 +245,12 @@ fn descriptor(
     }
 }
 
+#[cfg(test)]
 fn configured_provider(profile_id: &str) -> BuiltinProviderDescriptor {
     openai_responses_compatible_builtin_providers()
         .into_iter()
         .find(|provider| provider.profile.provider_profile_id == profile_id)
         .unwrap_or_else(|| panic!("Provider configuration is missing `{profile_id}`"))
-}
-
-fn decode_catalog<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
-    serde_json::from_slice(contents)
-        .unwrap_or_else(|error| panic!("{label} configuration is invalid: {error}"))
 }
 
 fn catalog_model(provider_model_id: String) -> DiscoveredModel {

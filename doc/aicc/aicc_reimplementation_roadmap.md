@@ -554,8 +554,8 @@ Owner：Runtime/Consistency 小组
 - [x] 从已发布 RuntimeSnapshot 提供 Provider quota observation 只读查询；
 - [x] reload/delete/disable/replace/exit 无孤儿任务和迟到写。
 - [x] 由 WP-15 从 `src/frame/aicc/driver_metadata/` 集中编译嵌入完整 builtin 文件集，删除生产 builtin 运行时路径；
-- [ ] 四层来源的路径、key、枚举、revision、优先级和校验只封装在 WP-15 生产 `RuntimeInputs` 中；
-- [ ] Provider、Service、Routing、Execution 只消费当前有效 snapshot，不得分别装配或读取四层来源。
+- [x] 四层来源的路径、key、枚举、revision、优先级和校验只封装在 WP-15 生产 `RuntimeInputs` 中；
+- [x] Provider、Service、Routing、Execution 只消费当前有效 snapshot，不得分别装配或读取四层来源。
 
 完成标准：并发请求只能观察到完整旧代或完整新代，不能看到半加入 Provider 或混合 catalog revision。
 
@@ -563,7 +563,7 @@ Owner：Runtime/Consistency 小组
 
 补充收敛：`RuntimeProviderRegistry::quota_observation` 只从已发布 registry 查找指定 Provider，并委托该 generation 捕获的 executable 读取可信 quota，不向 Service 暴露 `ProviderRuntimeManager`。Runtime 定向测试 14 个通过。
 
-边界修订：builtin metadata 继续采用编译嵌入，但只能由 WP-15 集中嵌入和解析；`$BUCKYOS_ROOT/bin/aicc/driver_metadata` 不再是生产路径。WP-15 已在 `settings/mod.rs` 集中嵌入并校验完整 builtin 文件集，`CloudUpdateManager::load_catalog` 由该入口与其它来源构造有效 `Arc<CatalogSnapshot>`，不再使用调用方提供的 builtin 内容。各 `provider/builtin` 模块仍需删除独立 `include_*` 和 catalog 文件导出，并在当前 generation 中消费 WP-15 发布的有效 snapshot；WP-16 仍需删除遗留 builtin 参数，只装配 WP-15 的生产输入和已收敛结果。剩余迁移需 WP-03 typed Provider configuration、WP-07/WP-08 Provider 接口更新后完成。
+边界修订：builtin metadata 继续采用编译嵌入，但只能由 WP-15 集中嵌入和解析；`$BUCKYOS_ROOT/bin/aicc/driver_metadata` 不再是生产路径。WP-15 已在 `settings/mod.rs` 集中嵌入并校验完整 builtin 文件集，`MetadataSourceManager` 独占 builtin/local/system-config 捕获、四层整文件选择和有效 snapshot 构建，`ProductionRuntimeInputs` 只通过 `CloudMetadataSource` 窄端口读取 cloud 目标序列及文件。`CloudUpdateManager` 只管理 cloud 缓存、更新与事件，并委托统一 source manager 校验候选，不再实现 RuntimeInputs 或装配其它来源。各 `provider/builtin` 模块已删除独立 `include_*` 和生产 catalog 文件导出；`BuiltinProviderRegistry` 只按当前 generation 的有效 `CatalogSnapshot` 生成 Profile 与连接契约，Service 仅组合 WP-15 生产输入和已收敛结果。定向测试覆盖 local 覆盖后 registry 读取有效配置，确认消费者不回读 builtin。
 
 ### WP-16：Service 与管理 API
 
@@ -572,7 +572,7 @@ Owner：Service Integration 小组
 依赖：WP-07、WP-09 至 WP-15
 
 - [ ] 重写进程启动、依赖装配、kRPC dispatch 和优雅退出；
-- [ ] 只装配 WP-15 提供的生产 `RuntimeInputs`/`RuntimeSnapshot`，不传入或读取四层 metadata 来源；
+- [x] 只装配 WP-15 提供的生产 `RuntimeInputs`/`RuntimeSnapshot`，不传入或读取四层 metadata 来源；
 - [ ] 实现 `models.list`、`provider.catalog`、`protocol_adapter.list`；
 - [ ] 实现 `provider.validate/add/update/delete/refresh_models/list/health`；
 - [ ] 实现 `usage.query`、`trace.query` 和 `quota.query`；

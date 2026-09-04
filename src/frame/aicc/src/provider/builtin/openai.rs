@@ -1,12 +1,16 @@
 use super::super::{
-    validate_discovery, CredentialDescriptor, DiscoveredModel, DiscoveryContext, DiscoveryMode,
-    ModelAvailability, ProviderConnectionContract, ProviderConnectionInput, ProviderDiscovery,
+    validate_discovery, DiscoveredModel, DiscoveryContext, ModelAvailability, ProviderDiscovery,
     ProviderDiscoverySnapshot, ProviderError, ProviderFieldSchema, ProviderHealthState,
-    ProviderProfile, ProviderResult, RefreshPolicy,
+    ProviderResult,
 };
+#[cfg(test)]
+use super::super::{
+    CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderProfile, RefreshPolicy,
+};
+use crate::catalog::KnownProvider;
+#[cfg(test)]
 use crate::catalog::{
-    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ModelDriverCatalog,
-    ProviderRulesCatalog,
+    CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ModelDriverCatalog, ProviderRulesCatalog,
 };
 use crate::protocol::{CredentialKind, HttpRequest, HttpResponse, HttpTransport};
 use async_trait::async_trait;
@@ -19,15 +23,9 @@ use std::time::Duration;
 
 pub(crate) const OPENAI_PROVIDER_PROFILE_ID: &str = "openai";
 
-const OPENAI_KNOWN_PROVIDER: &[u8] =
-    include_bytes!("../../../driver_metadata/known-providers/openai.known-provider.json");
-const OPENAI_PROVIDER_RULES: &[u8] =
-    include_bytes!("../../../driver_metadata/providers/openai.provider.json");
-const OPENAI_MODEL_DRIVER: &[u8] =
-    include_bytes!("../../../driver_metadata/models/openai.model.json");
-
 const MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 
+#[cfg(test)]
 pub(crate) fn openai_profile() -> ProviderProfile {
     let known = openai_known_provider();
     let credential: CredentialDeclaration = embedded_value(
@@ -54,14 +52,19 @@ pub(crate) fn openai_profile() -> ProviderProfile {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn openai_known_provider() -> KnownProvider {
-    decode_catalog::<KnownProviderCatalog>(OPENAI_KNOWN_PROVIDER, "OpenAI Known Provider catalog")
-        .providers
-        .into_iter()
-        .find(|provider| provider.provider_profile_id == OPENAI_PROVIDER_PROFILE_ID)
-        .expect("OpenAI Known Provider catalog must contain the OpenAI profile")
+    super::builtin_catalog_document::<KnownProviderCatalog>(
+        CatalogKind::KnownProvider,
+        OPENAI_PROVIDER_PROFILE_ID,
+    )
+    .providers
+    .into_iter()
+    .find(|provider| provider.provider_profile_id == OPENAI_PROVIDER_PROFILE_ID)
+    .expect("OpenAI Known Provider catalog must contain the OpenAI profile")
 }
 
+#[cfg(test)]
 pub(crate) fn openai_connection_contract() -> ProviderConnectionContract {
     let known = openai_known_provider();
     let fields: InstanceFieldDeclarations = embedded_value(
@@ -77,26 +80,19 @@ pub(crate) fn openai_connection_contract() -> ProviderConnectionContract {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn openai_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    decode_catalog(OPENAI_PROVIDER_RULES, "OpenAI Provider Rules catalog")
+    super::builtin_catalog_document(CatalogKind::ProviderRules, OPENAI_PROVIDER_PROFILE_ID)
 }
 
+#[cfg(test)]
 pub(crate) fn openai_model_driver() -> ModelDriverCatalog {
-    decode_catalog(OPENAI_MODEL_DRIVER, "OpenAI Model Driver catalog")
+    super::builtin_catalog_document(CatalogKind::ModelDriver, OPENAI_PROVIDER_PROFILE_ID)
 }
 
+#[cfg(test)]
 pub(crate) fn openai_catalog_files() -> Vec<CurrentCatalogFile> {
-    [
-        (CatalogKind::KnownProvider, OPENAI_KNOWN_PROVIDER),
-        (CatalogKind::ProviderRules, OPENAI_PROVIDER_RULES),
-        (CatalogKind::ModelDriver, OPENAI_MODEL_DRIVER),
-    ]
-    .into_iter()
-    .map(|(kind, contents)| CurrentCatalogFile {
-        kind,
-        contents: contents.to_vec(),
-    })
-    .collect()
+    super::builtin_catalog_files(&[OPENAI_PROVIDER_PROFILE_ID])
 }
 
 #[derive(Deserialize)]
@@ -240,11 +236,8 @@ fn validate_openai_context(context: &DiscoveryContext<'_>) -> ProviderResult<()>
             "OpenAI discovery requires a Bearer credential".to_owned(),
         ));
     }
-    openai_connection_contract().resolve(ProviderConnectionInput {
-        base_url: Some(&context.instance.base_url),
-        region: context.instance.region.as_deref(),
-        account: context.instance.account.as_deref(),
-        ..ProviderConnectionInput::default()
+    Url::parse(&context.instance.base_url).map_err(|_| {
+        ProviderError::InvalidConfiguration("OpenAI base_url is invalid".to_owned())
     })?;
     Ok(())
 }
@@ -525,17 +518,9 @@ mod tests {
         );
         let discovery = OpenAiDiscovery::with_transport(transport);
         let profile = openai_profile();
-        let mut instance = instance();
+        let instance = instance();
         let credential = ResolvedCredential::bearer("secret://openai/main", "secret").unwrap();
 
-        instance.region = Some("us".to_owned());
-        let error = discovery
-            .discover(&context(&profile, &instance, &credential))
-            .await
-            .unwrap_err();
-        assert!(matches!(error, ProviderError::InvalidConfiguration(_)));
-
-        instance.region = None;
         let error = discovery
             .discover(&context(&profile, &instance, &credential))
             .await

@@ -789,6 +789,79 @@ impl MetadataSources {
     }
 }
 
+#[async_trait]
+pub(crate) trait CloudMetadataSource: Send + Sync {
+    async fn target_seq(&self) -> Result<u64, SettingsError>;
+
+    async fn load_files(&self, target_seq: u64) -> Result<Vec<MetadataFile>, SettingsError>;
+}
+
+#[async_trait]
+pub(crate) trait RuntimeInputs: Send + Sync {
+    async fn metadata_target_seq(&self) -> Result<u64, SettingsError>;
+
+    async fn load_catalog(&self, target_seq: u64) -> Result<Arc<CatalogSnapshot>, SettingsError>;
+}
+
+pub(crate) struct MetadataSourceManager {
+    builtin: Vec<MetadataFile>,
+    overrides: Arc<dyn MetadataOverrideLoader>,
+    options: CatalogBuildOptions,
+}
+
+impl MetadataSourceManager {
+    pub(crate) fn new(
+        overrides: Arc<dyn MetadataOverrideLoader>,
+    ) -> Result<Arc<Self>, SettingsError> {
+        Ok(Arc::new(Self {
+            builtin: load_builtin_metadata()?,
+            overrides,
+            options: CatalogBuildOptions::default(),
+        }))
+    }
+
+    pub(crate) async fn build_snapshot(
+        &self,
+        target_seq: u64,
+        cloud: Vec<MetadataFile>,
+    ) -> Result<Arc<CatalogSnapshot>, SettingsError> {
+        let overrides = self.overrides.load().await?;
+        MetadataSources {
+            builtin: self.builtin.clone(),
+            cloud,
+            local: overrides.local,
+            system_config: overrides.system_config,
+        }
+        .build_snapshot(target_seq, &self.options)
+    }
+}
+
+pub(crate) struct ProductionRuntimeInputs {
+    sources: Arc<MetadataSourceManager>,
+    cloud: Arc<dyn CloudMetadataSource>,
+}
+
+impl ProductionRuntimeInputs {
+    pub(crate) fn new(
+        sources: Arc<MetadataSourceManager>,
+        cloud: Arc<dyn CloudMetadataSource>,
+    ) -> Arc<Self> {
+        Arc::new(Self { sources, cloud })
+    }
+}
+
+#[async_trait]
+impl RuntimeInputs for ProductionRuntimeInputs {
+    async fn metadata_target_seq(&self) -> Result<u64, SettingsError> {
+        self.cloud.target_seq().await
+    }
+
+    async fn load_catalog(&self, target_seq: u64) -> Result<Arc<CatalogSnapshot>, SettingsError> {
+        let cloud = self.cloud.load_files(target_seq).await?;
+        self.sources.build_snapshot(target_seq, cloud).await
+    }
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum SettingsError {
     #[error("invalid AICC settings JSON: {0}")]
@@ -823,6 +896,8 @@ pub(crate) enum SettingsError {
     UnsupportedMetadataSchema(u32),
     #[error("system-config metadata read failed: {0}")]
     SystemConfig(String),
+    #[error("cloud metadata read failed: {0}")]
+    Cloud(String),
 }
 
 #[cfg(test)]

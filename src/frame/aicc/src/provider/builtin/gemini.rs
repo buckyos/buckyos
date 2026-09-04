@@ -1,12 +1,17 @@
 use super::super::{
-    validate_discovery, CredentialDescriptor, DiscoveredModel, DiscoveryContext, DiscoveryMode,
-    ModelAvailability, ProviderConnectionContract, ProviderConnectionInput, ProviderDiscovery,
+    validate_discovery, DiscoveredModel, DiscoveryContext, ModelAvailability, ProviderDiscovery,
     ProviderDiscoverySnapshot, ProviderError, ProviderFieldSchema, ProviderHealthState,
-    ProviderProfile, ProviderResult, RefreshPolicy,
+    ProviderResult,
 };
+#[cfg(test)]
+use super::super::{
+    CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderConnectionInput,
+    ProviderProfile, RefreshPolicy,
+};
+use crate::catalog::KnownProvider;
+#[cfg(test)]
 use crate::catalog::{
-    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ModelDriverCatalog,
-    ProviderRulesCatalog,
+    CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ModelDriverCatalog, ProviderRulesCatalog,
 };
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, GEMINI_ADAPTER_ID,
@@ -23,17 +28,11 @@ use std::time::Duration;
 pub(crate) const GEMINI_PROVIDER_PROFILE_ID: &str = "gemini";
 pub(crate) const GEMINI_CREDENTIAL_HEADER: &str = "x-goog-api-key";
 
-const GEMINI_PROVIDER_RULES: &[u8] =
-    include_bytes!("../../../driver_metadata/providers/gemini.provider.json");
-const GEMINI_KNOWN_PROVIDER: &[u8] =
-    include_bytes!("../../../driver_metadata/known-providers/gemini.known-provider.json");
-const GEMINI_MODEL_DRIVER: &[u8] =
-    include_bytes!("../../../driver_metadata/models/gemini.model.json");
-
 const MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 const DISCOVERY_PAGE_SIZE: usize = 1000;
 const MAX_DISCOVERY_PAGES: usize = 100;
 
+#[cfg(test)]
 pub(crate) fn gemini_profile() -> ProviderProfile {
     let known = gemini_known_provider();
     let credential: CredentialDeclaration = embedded_value(
@@ -57,6 +56,7 @@ pub(crate) fn gemini_profile() -> ProviderProfile {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn gemini_connection_contract() -> ProviderConnectionContract {
     let known = gemini_known_provider();
     let fields: InstanceFieldDeclarations = embedded_value(
@@ -72,34 +72,31 @@ pub(crate) fn gemini_connection_contract() -> ProviderConnectionContract {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn gemini_known_provider() -> KnownProvider {
-    embedded_json::<KnownProviderCatalog>(GEMINI_KNOWN_PROVIDER, "Gemini Known Provider catalog")
-        .providers
-        .into_iter()
-        .find(|provider| provider.provider_profile_id == GEMINI_PROVIDER_PROFILE_ID)
-        .expect("Gemini Known Provider catalog must contain the Gemini profile")
-}
-
-pub(crate) fn gemini_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    embedded_json(GEMINI_PROVIDER_RULES, "Gemini Provider Rules catalog")
-}
-
-pub(crate) fn gemini_model_driver() -> ModelDriverCatalog {
-    embedded_json(GEMINI_MODEL_DRIVER, "Gemini Model Driver catalog")
-}
-
-pub(crate) fn gemini_catalog_files() -> Vec<CurrentCatalogFile> {
-    [
-        (CatalogKind::KnownProvider, GEMINI_KNOWN_PROVIDER),
-        (CatalogKind::ProviderRules, GEMINI_PROVIDER_RULES),
-        (CatalogKind::ModelDriver, GEMINI_MODEL_DRIVER),
-    ]
+    super::builtin_catalog_document::<KnownProviderCatalog>(
+        CatalogKind::KnownProvider,
+        GEMINI_PROVIDER_PROFILE_ID,
+    )
+    .providers
     .into_iter()
-    .map(|(kind, contents)| CurrentCatalogFile {
-        kind,
-        contents: contents.to_vec(),
-    })
-    .collect()
+    .find(|provider| provider.provider_profile_id == GEMINI_PROVIDER_PROFILE_ID)
+    .expect("Gemini Known Provider catalog must contain the Gemini profile")
+}
+
+#[cfg(test)]
+pub(crate) fn gemini_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
+    super::builtin_catalog_document(CatalogKind::ProviderRules, GEMINI_PROVIDER_PROFILE_ID)
+}
+
+#[cfg(test)]
+pub(crate) fn gemini_model_driver() -> ModelDriverCatalog {
+    super::builtin_catalog_document(CatalogKind::ModelDriver, GEMINI_PROVIDER_PROFILE_ID)
+}
+
+#[cfg(test)]
+pub(crate) fn gemini_catalog_files() -> Vec<CurrentCatalogFile> {
+    super::builtin_catalog_files(&[GEMINI_PROVIDER_PROFILE_ID])
 }
 
 #[derive(Deserialize)]
@@ -252,11 +249,8 @@ fn validate_gemini_context(context: &DiscoveryContext<'_>) -> ProviderResult<()>
             "Gemini discovery requires a named-header credential".to_owned(),
         ));
     }
-    gemini_connection_contract().resolve(ProviderConnectionInput {
-        base_url: Some(&context.instance.base_url),
-        region: context.instance.region.as_deref(),
-        workspace: None,
-        account: context.instance.account.as_deref(),
+    Url::parse(&context.instance.base_url).map_err(|_| {
+        ProviderError::InvalidConfiguration("Gemini base_url is invalid".to_owned())
     })?;
     Ok(())
 }
@@ -597,17 +591,9 @@ mod tests {
         ]);
         let discovery = GeminiDiscovery::with_transport(transport);
         let profile = gemini_profile();
-        let mut instance = instance();
+        let instance = instance();
         let credential = gemini_api_key("secret://gemini/main", "secret").unwrap();
 
-        instance.region = Some("us-central1".to_owned());
-        assert!(matches!(
-            discovery
-                .discover(&context(&profile, &instance, &credential))
-                .await,
-            Err(ProviderError::InvalidConfiguration(_))
-        ));
-        instance.region = None;
         assert!(discovery
             .discover(&context(&profile, &instance, &credential))
             .await

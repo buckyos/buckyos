@@ -1,13 +1,15 @@
 use super::super::{
-    validate_discovery, CredentialDescriptor, DiscoveredModel, DiscoveryContext, DiscoveryMode,
-    ModelAvailability, ProviderConnectionContract, ProviderDiscovery, ProviderDiscoverySnapshot,
-    ProviderError, ProviderFieldSchema, ProviderHealthState, ProviderProfile, ProviderResult,
-    RefreshPolicy,
+    validate_discovery, DiscoveredModel, DiscoveryContext, ModelAvailability, ProviderDiscovery,
+    ProviderDiscoverySnapshot, ProviderError, ProviderFieldSchema, ProviderHealthState,
+    ProviderResult,
 };
-use crate::catalog::{
-    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, Pricing,
-    ProviderRulesCatalog,
+#[cfg(test)]
+use super::super::{
+    CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderProfile, RefreshPolicy,
 };
+#[cfg(test)]
+use crate::catalog::{CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ProviderRulesCatalog};
+use crate::catalog::{KnownProvider, Pricing};
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
     OPENROUTER_CHAT_ADAPTER_ID,
@@ -25,13 +27,9 @@ use std::time::Duration;
 
 pub(crate) const OPENROUTER_PROVIDER_PROFILE_ID: &str = "openrouter";
 
-const OPENROUTER_PROVIDER_RULES: &[u8] =
-    include_bytes!("../../../driver_metadata/providers/openrouter.provider.json");
-const OPENROUTER_KNOWN_PROVIDER: &[u8] =
-    include_bytes!("../../../driver_metadata/known-providers/openrouter.known-provider.json");
-
 const MODELS_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
 
+#[cfg(test)]
 pub(crate) fn openrouter_profile() -> ProviderProfile {
     let known = openrouter_known_provider();
     let credential: CredentialDeclaration = embedded_value(
@@ -55,6 +53,7 @@ pub(crate) fn openrouter_profile() -> ProviderProfile {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn openrouter_connection_contract() -> ProviderConnectionContract {
     let known = openrouter_known_provider();
     let fields: InstanceFieldDeclarations = embedded_value(
@@ -70,10 +69,11 @@ pub(crate) fn openrouter_connection_contract() -> ProviderConnectionContract {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn openrouter_known_provider() -> KnownProvider {
-    embedded_json::<KnownProviderCatalog>(
-        OPENROUTER_KNOWN_PROVIDER,
-        "OpenRouter Known Provider catalog",
+    super::builtin_catalog_document::<KnownProviderCatalog>(
+        CatalogKind::KnownProvider,
+        OPENROUTER_PROVIDER_PROFILE_ID,
     )
     .providers
     .into_iter()
@@ -81,24 +81,14 @@ pub(crate) fn openrouter_known_provider() -> KnownProvider {
     .expect("OpenRouter Known Provider catalog must contain the OpenRouter profile")
 }
 
+#[cfg(test)]
 pub(crate) fn openrouter_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    embedded_json(
-        OPENROUTER_PROVIDER_RULES,
-        "OpenRouter Provider Rules catalog",
-    )
+    super::builtin_catalog_document(CatalogKind::ProviderRules, OPENROUTER_PROVIDER_PROFILE_ID)
 }
 
+#[cfg(test)]
 pub(crate) fn openrouter_catalog_files() -> Vec<CurrentCatalogFile> {
-    [
-        (CatalogKind::KnownProvider, OPENROUTER_KNOWN_PROVIDER),
-        (CatalogKind::ProviderRules, OPENROUTER_PROVIDER_RULES),
-    ]
-    .into_iter()
-    .map(|(kind, contents)| CurrentCatalogFile {
-        kind,
-        contents: contents.to_vec(),
-    })
-    .collect()
+    super::builtin_catalog_files(&[OPENROUTER_PROVIDER_PROFILE_ID])
 }
 
 #[derive(Deserialize)]
