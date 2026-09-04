@@ -6,7 +6,7 @@ use crate::protocol::{
     ProtocolErrorKind, ProtocolEvent, ProtocolExecution, ProtocolOutput, ProtocolStream,
 };
 use async_trait::async_trait;
-use buckyos_api::{AiArtifact, AiUsage, AiccError, AiccErrorCode, ApiType};
+use buckyos_api::{AiArtifact, AiUsage, AiccError, AiccErrorCode, ApiType, Capability};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -185,6 +185,7 @@ impl PinnedProviderTask {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ExecutionRecord {
     pub scope: IdempotencyScope,
+    pub user_id: String,
     pub caller_app_id: Option<String>,
     pub body_fingerprint: String,
     pub task_id: String,
@@ -224,6 +225,7 @@ pub(crate) trait ExecutionStore: Send + Sync {
 #[derive(Debug, Clone)]
 pub(crate) struct TaskSpec {
     pub tenant_id: String,
+    pub user_id: String,
     pub method: String,
     pub idempotency_key: String,
     pub parent_id: Option<String>,
@@ -251,16 +253,20 @@ pub(crate) trait TaskManagerPort: Send + Sync {
     async fn cancel_task(&self, task_id: &str) -> Result<(), AiccError>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct UsageCompletion {
     pub tenant_id: String,
+    pub user_id: String,
     pub caller_app_id: Option<String>,
     pub task_id: String,
     pub idempotency_key: String,
     pub method: String,
+    pub capability: String,
     pub exact_model: String,
+    pub provider_instance_name: String,
     pub provider_model: String,
     pub usage: AiUsage,
+    pub finance_snapshot: Option<Value>,
 }
 
 #[async_trait]
@@ -315,10 +321,19 @@ pub(crate) trait ProviderExecutionPort: Send + Sync {
     ) -> Result<NativeTaskPoll, ProtocolError>;
 
     async fn cancel_native(&self, binding: &PinnedProviderTask) -> Result<bool, ProtocolError>;
+
+    fn finance_snapshot(
+        &self,
+        _binding: &PinnedProviderTask,
+        _output: &ProtocolOutput,
+    ) -> Option<Value> {
+        None
+    }
 }
 
 pub(crate) struct ExecutionRequest {
     pub tenant_id: String,
+    pub user_id: String,
     pub caller_app_id: Option<String>,
     pub idempotency_key: String,
     pub canonical_body: Value,
@@ -398,6 +413,13 @@ impl ExecutionEngine {
                 false,
             ));
         }
+        if request.user_id.trim().is_empty() {
+            return Err(aicc_error(
+                AiccErrorCode::InvalidRequest,
+                "execution user ID must not be empty",
+                false,
+            ));
+        }
         let fingerprint = canonical_body_fingerprint(&request.canonical_body)?;
         let window = request
             .idempotency_window_ms
@@ -413,6 +435,7 @@ impl ExecutionEngine {
             .tasks
             .ensure_task(TaskSpec {
                 tenant_id: request.tenant_id.clone(),
+                user_id: request.user_id.clone(),
                 method: request.primary.method.clone(),
                 idempotency_key: request.idempotency_key.clone(),
                 parent_id: request.parent_task_id,
@@ -421,6 +444,7 @@ impl ExecutionEngine {
             .await?;
         let initial = ExecutionRecord {
             scope,
+            user_id: request.user_id,
             caller_app_id: request.caller_app_id,
             body_fingerprint: fingerprint,
             task_id: task.task_id,
@@ -800,25 +824,33 @@ impl ExecutionEngine {
         binding: PinnedProviderTask,
         output: ProtocolOutput,
     ) -> Result<ExecutionReceipt, AiccError> {
+        let finance_snapshot = self.providers.finance_snapshot(&binding, &output);
         let output = match ExecutionOutput::try_from(output) {
             Ok(output) => output,
             Err(error) => return self.finish_failure(task_id, error).await,
         };
+        let record = self.store.get_task(task_id).await?.ok_or_else(|| {
+            aicc_error(
+                AiccErrorCode::InternalError,
+                "execution state disappeared before usage completion",
+                false,
+            )
+        })?;
         if let Err(error) = self
             .usage
             .write_once(UsageCompletion {
                 tenant_id: scope.tenant_id.clone(),
-                caller_app_id: self
-                    .store
-                    .get_task(task_id)
-                    .await?
-                    .and_then(|record| record.caller_app_id),
+                user_id: record.user_id,
+                caller_app_id: record.caller_app_id,
                 task_id: task_id.to_string(),
                 idempotency_key: scope.key.clone(),
                 method: scope.method.clone(),
+                capability: capability_name(binding.api_type).to_string(),
                 exact_model: binding.exact_model,
+                provider_instance_name: binding.provider_instance_name,
                 provider_model: provider_model.to_string(),
                 usage: output.usage.clone(),
+                finance_snapshot,
             })
             .await
         {
@@ -884,6 +916,19 @@ fn aicc_error(code: AiccErrorCode, message: &str, retriable: bool) -> AiccError 
     let mut error = AiccError::new(code, message);
     error.retriable = retriable;
     error
+}
+
+fn capability_name(api_type: ApiType) -> &'static str {
+    match api_type.capability() {
+        Capability::Llm => "llm",
+        Capability::Embedding => "embedding",
+        Capability::Rerank => "rerank",
+        Capability::Image => "image",
+        Capability::Vision => "vision",
+        Capability::Audio => "audio",
+        Capability::Video => "video",
+        Capability::Agent => "agent",
+    }
 }
 
 impl From<ProtocolErrorKind> for ExecutionState {
@@ -1123,6 +1168,7 @@ mod tests {
         plans: Mutex<VecDeque<StartPlan>>,
         polls: Mutex<VecDeque<NativeTaskPoll>>,
         cancel_result: Mutex<bool>,
+        finance_snapshot: Mutex<Option<Value>>,
     }
 
     #[async_trait]
@@ -1152,6 +1198,14 @@ mod tests {
             _binding: &PinnedProviderTask,
         ) -> Result<bool, ProtocolError> {
             Ok(*self.cancel_result.lock().unwrap())
+        }
+
+        fn finance_snapshot(
+            &self,
+            _binding: &PinnedProviderTask,
+            _output: &ProtocolOutput,
+        ) -> Option<Value> {
+            self.finance_snapshot.lock().unwrap().clone()
         }
     }
 
@@ -1222,6 +1276,7 @@ mod tests {
     fn request(primary: ResolvedProviderCall) -> ExecutionRequest {
         ExecutionRequest {
             tenant_id: "tenant-1".into(),
+            user_id: "user-1".into(),
             caller_app_id: Some("app-1".into()),
             idempotency_key: "idem-1".into(),
             canonical_body: json!({"exact_model": primary.exact_model, "prompt": "hello", "idempotency_key": "idem-1"}),
@@ -1302,13 +1357,32 @@ mod tests {
             .push_back(StartPlan::Success(ProtocolExecution::Immediate(output(
                 "ok",
             ))));
+        *providers.finance_snapshot.lock().unwrap() =
+            Some(json!({"amount": 0.25, "currency": "USD"}));
         let (engine, _, tasks, usage) = make_engine(providers.clone());
         let first = engine.execute(request(call("primary"))).await.unwrap();
         let replay = engine.execute(request(call("primary"))).await.unwrap();
         assert_eq!(first, replay);
         assert_eq!(first.state, ExecutionState::Succeeded);
         assert_eq!(providers.starts.lock().unwrap().len(), 1);
-        assert_eq!(usage.writes.lock().unwrap().len(), 1);
+        let writes = usage.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        let completion = writes.values().next().unwrap();
+        assert_eq!(completion.tenant_id, "tenant-1");
+        assert_eq!(completion.user_id, "user-1");
+        assert_eq!(completion.caller_app_id.as_deref(), Some("app-1"));
+        assert_eq!(completion.method, "chat.completions.create");
+        assert_eq!(completion.capability, "llm");
+        assert_eq!(completion.exact_model, "model@primary");
+        assert_eq!(completion.provider_instance_name, "primary");
+        assert_eq!(completion.provider_model, "model");
+        assert_eq!(
+            completion.finance_snapshot,
+            Some(json!({"amount": 0.25, "currency": "USD"}))
+        );
+        let encoded = serde_json::to_value(completion).unwrap();
+        let decoded: UsageCompletion = serde_json::from_value(encoded).unwrap();
+        assert_eq!(&decoded, completion);
         assert_eq!(tasks.completed.lock().unwrap().len(), 1);
     }
 
@@ -1348,6 +1422,18 @@ mod tests {
         conflict.canonical_body["prompt"] = json!("different");
         let error = engine.execute(conflict).await.unwrap_err();
         assert_eq!(error.code, AiccErrorCode::IdempotencyConflict);
+    }
+
+    #[tokio::test]
+    async fn empty_user_is_rejected_before_task_or_provider_creation() {
+        let providers = Arc::new(FakeProviders::default());
+        let (engine, _, tasks, _) = make_engine(providers.clone());
+        let mut request = request(call("primary"));
+        request.user_id = " ".into();
+        let error = engine.execute(request).await.unwrap_err();
+        assert_eq!(error.code, AiccErrorCode::InvalidRequest);
+        assert!(tasks.by_key.lock().unwrap().is_empty());
+        assert!(providers.starts.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
