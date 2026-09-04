@@ -419,8 +419,11 @@ Response 直接复用 `buckyos_api::QueryUsageResponse`：
     "input_tokens": 1000,
     "output_tokens": 500,
     "total_tokens": 1500,
-    "request_units": 0,
-    "finance_amount": 0.0123
+    "consumed_request_units": 10,
+    "finance_totals": [
+      { "amount": 0.0123, "currency": "USD" }
+    ],
+    "finance_complete": true
   },
   "grouped": [],
   "buckets": [],

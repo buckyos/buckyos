@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::aicc_client::{ai_methods, AiUsage, RouteTrace};
+use crate::aicc_client::{ai_methods, AiUsage, Money, RouteTrace};
 use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 
 /// Logical name of the aicc usage-log rdb instance. The scheduler writes this
@@ -474,9 +474,11 @@ impl QueryUsageRequest {
 
 /// Aggregated counts and totals.
 ///
-/// `finance_complete` is true only when every event has a valid finance
-/// snapshot and all snapshots use the same normalized currency. Consumers
-/// must not treat `finance_amount` as a complete cost when it is false.
+/// `finance_totals` contains one subtotal per normalized currency, sorted by
+/// currency. `finance_complete` is true when every event has a valid finance
+/// snapshot; mixed currencies do not make an otherwise valid aggregate
+/// incomplete. Consumers may use valid subtotals from an incomplete aggregate,
+/// but must not treat them as the complete cost of all events.
 /// `consumed_request_units` counts every successful completion as at least one
 /// unit: `max(request_units.unwrap_or(1), 1)`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -487,8 +489,7 @@ pub struct UsageAggregate {
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub consumed_request_units: u64,
-    pub finance_amount: f64,
-    pub finance_currency: Option<String>,
+    pub finance_totals: Vec<Money>,
     pub finance_complete: bool,
 }
 
@@ -500,8 +501,7 @@ impl Default for UsageAggregate {
             output_tokens: 0,
             total_tokens: 0,
             consumed_request_units: 0,
-            finance_amount: 0.0,
-            finance_currency: None,
+            finance_totals: Vec::new(),
             finance_complete: true,
         }
     }
@@ -693,8 +693,7 @@ mod tests {
         let aggregate = UsageAggregate::default();
         assert_eq!(aggregate.total_requests, 0);
         assert_eq!(aggregate.consumed_request_units, 0);
-        assert_eq!(aggregate.finance_amount, 0.0);
-        assert_eq!(aggregate.finance_currency, None);
+        assert!(aggregate.finance_totals.is_empty());
         assert!(aggregate.finance_complete);
 
         let value = serde_json::to_value(&aggregate).expect("serialize aggregate");
@@ -706,8 +705,7 @@ mod tests {
                 "output_tokens": 0,
                 "total_tokens": 0,
                 "consumed_request_units": 0,
-                "finance_amount": 0.0,
-                "finance_currency": null,
+                "finance_totals": [],
                 "finance_complete": true
             })
         );
@@ -718,23 +716,30 @@ mod tests {
     }
 
     #[test]
-    fn usage_aggregate_exposes_complete_and_incomplete_finance_contracts() {
+    fn usage_aggregate_exposes_sorted_multi_currency_and_incomplete_contracts() {
         let complete = UsageAggregate {
             total_requests: 2,
             consumed_request_units: 2,
-            finance_amount: 0.75,
-            finance_currency: Some("USD".to_string()),
+            finance_totals: vec![Money::new(0.25, "EUR"), Money::new(0.5, "USD")],
             finance_complete: true,
             ..Default::default()
         };
         let incomplete = UsageAggregate {
             total_requests: 2,
             consumed_request_units: 3,
-            finance_amount: 0.5,
-            finance_currency: Some("USD".to_string()),
+            finance_totals: vec![Money::new(0.5, "USD")],
             finance_complete: false,
             ..Default::default()
         };
+
+        let complete_value = serde_json::to_value(&complete).expect("serialize aggregate");
+        assert_eq!(
+            complete_value["finance_totals"],
+            json!([
+                {"amount": 0.25, "currency": "EUR"},
+                {"amount": 0.5, "currency": "USD"}
+            ])
+        );
 
         for aggregate in [complete, incomplete] {
             let value = serde_json::to_value(&aggregate).expect("serialize aggregate");
@@ -750,7 +755,9 @@ mod tests {
             "output_tokens": 0,
             "total_tokens": 0,
             "request_units": 1,
-            "finance_amount": 0.5
+            "finance_amount": 0.5,
+            "finance_currency": "USD",
+            "finance_complete": true
         }))
         .is_err());
     }

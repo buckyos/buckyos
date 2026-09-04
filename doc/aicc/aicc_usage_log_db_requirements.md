@@ -131,12 +131,13 @@ Output:
 
 - `total_requests`
 - aggregated usage values
-- optional aggregated `finance_amount` when event `finance_snapshot_json.amount` is numeric and comparable
+- `finance_totals`: valid finance snapshots grouped by normalized currency and sorted by currency
+- `finance_complete`: false when any event lacks a valid finance snapshot or a currency subtotal overflows; valid subtotals remain available
 - grouped rows when grouping is set
 - bucketed rows when a time bucket is set
 - raw events when requested
 - `next_cursor` when more raw events are available
-- optional aggregated financial snapshot fields only when the data is numeric and comparable
+- zero events return an empty `finance_totals` with `finance_complete=true`
 
 Required common queries:
 
