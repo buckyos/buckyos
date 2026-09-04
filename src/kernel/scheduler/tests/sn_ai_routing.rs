@@ -13,6 +13,7 @@ fn managed_settings(enabled: bool, base_url: &str) -> Value {
         base_url.trim_end_matches("/api/v1/ai/")
     );
     json!({
+        "sn-ai-provider-activated": true,
         "sn-ai-provider": {
             "enabled": enabled,
             "instances": [
@@ -85,38 +86,30 @@ fn task009_patches_only_the_managed_sn_instance() {
 }
 
 #[test]
-fn task009_invalid_zone_disables_managed_provider_without_rewriting_its_url() {
+fn task009_invalid_zone_preserves_activated_provider_for_retry() {
     let current = managed_settings(true, "https://sn.buckyos.ai/api/v1/ai/");
     let invalid = anyhow!("invalid ZoneDocument.sn");
-    let next = reconcile_managed_sn_ai_provider(&current, Err(&invalid), None)
-        .unwrap()
-        .expect("managed provider should be disabled");
+    let next = reconcile_managed_sn_ai_provider(&current, Err(&invalid), None).unwrap();
 
-    assert_eq!(next["sn-ai-provider"]["enabled"], false);
-    assert_eq!(
-        next["sn-ai-provider"]["instances"][1]["base_url"],
-        "https://sn.buckyos.ai/api/v1/ai/"
-    );
+    assert!(next.is_none());
 }
 
 #[test]
-fn task009_valid_zone_reenables_a_disabled_managed_provider() {
+fn task009_valid_zone_preserves_explicitly_disabled_provider() {
     let current = managed_settings(false, "https://sn.buckyos.io/api/v1/ai/");
     let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.io")).unwrap();
-    let next = reconcile_managed_sn_ai_provider(&current, Ok(&endpoints), Some("alice"))
-        .unwrap()
-        .expect("managed provider should be enabled");
+    let next = reconcile_managed_sn_ai_provider(&current, Ok(&endpoints), Some("alice")).unwrap();
 
-    assert_eq!(next["sn-ai-provider"]["enabled"], true);
+    assert!(next.is_none());
 }
 
 #[test]
 fn task009_reconciliation_adds_missing_managed_provider() {
     let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.io")).unwrap();
     for current in [
-        json!({}),
-        json!({"sn-ai-provider": {"enabled": false}}),
+        json!({"sn-ai-provider-activated": true}),
         json!({
+            "sn-ai-provider-activated": true,
             "sn-ai-provider": {
                 "enabled": true,
                 "instances": [{
@@ -149,13 +142,14 @@ fn task009_reconciliation_adds_missing_managed_provider() {
 fn task009_reconciliation_does_not_add_without_relay_or_user() {
     let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.io")).unwrap();
     let invalid = anyhow!("ZoneDocument.sn is missing");
+    let activated = json!({"sn-ai-provider-activated": true});
     assert!(
-        reconcile_managed_sn_ai_provider(&json!({}), Err(&invalid), Some("alice"))
+        reconcile_managed_sn_ai_provider(&activated, Err(&invalid), Some("alice"))
             .unwrap()
             .is_none()
     );
     assert!(
-        reconcile_managed_sn_ai_provider(&json!({}), Ok(&endpoints), None)
+        reconcile_managed_sn_ai_provider(&activated, Ok(&endpoints), None)
             .unwrap()
             .is_none()
     );
