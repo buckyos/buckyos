@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::call::ResolvedProviderCall;
+use crate::catalog::PricingUnit;
 use crate::protocol::{
     cancellation_pair, CancelHandle, Cancellation, NativeTaskHandle, NativeTaskState,
     ProtocolError, ProtocolErrorKind, ProtocolEvent, ProtocolOutput, ProtocolStream,
@@ -162,7 +163,7 @@ impl TryFrom<ProtocolOutput> for ExecutionOutput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PinnedProviderTask {
     pub runtime_generation: u64,
     pub exact_model: String,
@@ -174,11 +175,12 @@ pub(crate) struct PinnedProviderTask {
     pub remote_task_id: Option<String>,
     pub cancel_supported: bool,
     pub resume: Option<NativeTaskResumeDescriptor>,
+    pub pricing: Option<PinnedPricingSnapshot>,
 }
 
 impl PinnedProviderTask {
-    fn from_call(runtime_generation: u64, call: &ResolvedProviderCall) -> Self {
-        Self {
+    fn from_call(runtime_generation: u64, call: &ResolvedProviderCall) -> Result<Self, AiccError> {
+        Ok(Self {
             runtime_generation,
             exact_model: call.exact_model.clone(),
             provider_model_id: call.provider_model_id.clone(),
@@ -189,8 +191,104 @@ impl PinnedProviderTask {
             remote_task_id: None,
             cancel_supported: false,
             resume: None,
-        }
+            pricing: PinnedPricingSnapshot::from_call(call)?,
+        })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PinnedPricingSnapshot {
+    pub currency: String,
+    pub basis: PinnedPricingBasis,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum PinnedPricingBasis {
+    Tokens {
+        input_token: Option<f64>,
+        cache_input_token: Option<f64>,
+        output_token: Option<f64>,
+    },
+    Units {
+        unit: PricingUnit,
+        amount: f64,
+    },
+}
+
+impl PinnedPricingSnapshot {
+    fn from_call(call: &ResolvedProviderCall) -> Result<Option<Self>, AiccError> {
+        let Some(pricing) = call.pricing.pricing.as_ref() else {
+            return Ok(None);
+        };
+        let currency = pricing.currency.trim().to_ascii_uppercase();
+        if currency.is_empty() {
+            return Err(invalid_pinned_pricing());
+        }
+        let has_token_price = pricing.input_token.is_some() || pricing.output_token.is_some();
+        let basis = if has_token_price {
+            if pricing.unit.is_some()
+                || pricing.input_token.is_some_and(invalid_price)
+                || pricing.cache_input_token.is_some_and(invalid_price)
+                || pricing.output_token.is_some_and(invalid_price)
+            {
+                return Err(invalid_pinned_pricing());
+            }
+            PinnedPricingBasis::Tokens {
+                input_token: pricing.input_token,
+                cache_input_token: pricing.cache_input_token,
+                output_token: pricing.output_token,
+            }
+        } else if let (Some(unit), Some(amount)) = (pricing.unit, call.pricing.matched_amount) {
+            if invalid_price(amount) {
+                return Err(invalid_pinned_pricing());
+            }
+            PinnedPricingBasis::Units { unit, amount }
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(Self { currency, basis }))
+    }
+
+    fn completion_cost(&self, usage: &AiUsage) -> Option<AiCost> {
+        let amount = match self.basis {
+            PinnedPricingBasis::Tokens {
+                input_token,
+                cache_input_token: _,
+                output_token,
+            } => {
+                let input = match input_token {
+                    Some(rate) => usage.input_tokens? as f64 * rate,
+                    None => 0.0,
+                };
+                let output = match output_token {
+                    Some(rate) => usage.output_tokens? as f64 * rate,
+                    None => 0.0,
+                };
+                input + output
+            }
+            PinnedPricingBasis::Units { amount, .. } => usage.request_units? as f64 * amount,
+        };
+        if invalid_price(amount) {
+            return None;
+        }
+        Some(AiCost {
+            amount,
+            currency: self.currency.clone(),
+        })
+    }
+}
+
+fn invalid_price(amount: f64) -> bool {
+    !amount.is_finite() || amount < 0.0
+}
+
+fn invalid_pinned_pricing() -> AiccError {
+    aicc_error(
+        AiccErrorCode::InternalError,
+        "resolved pricing cannot be pinned safely",
+        false,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -458,10 +556,13 @@ pub(crate) trait ProviderExecutionPort: Send + Sync {
 
     fn completion_cost(
         &self,
-        _binding: &PinnedProviderTask,
-        _output: &ProtocolOutput,
+        binding: &PinnedProviderTask,
+        output: &ProtocolOutput,
     ) -> Option<AiCost> {
-        None
+        binding
+            .pricing
+            .as_ref()?
+            .completion_cost(output.usage.as_ref()?)
     }
 }
 
@@ -648,7 +749,11 @@ impl ExecutionEngine {
                     )
                     .await;
             }
-            let mut binding = PinnedProviderTask::from_call(request.runtime_generation, call);
+            let mut binding = match PinnedProviderTask::from_call(request.runtime_generation, call)
+            {
+                Ok(binding) => binding,
+                Err(error) => return self.finish_failure(&record.task_id, error).await,
+            };
             match self
                 .providers
                 .start(request.runtime_generation, call, cancellation.clone())
@@ -1160,6 +1265,7 @@ impl From<ProtocolErrorKind> for ExecutionState {
 mod tests {
     use super::*;
     use crate::call::{LoweringRevisions, PricingSource, ResolvedPricing};
+    use crate::catalog::Pricing;
     use crate::protocol::{
         CodecContext, CodecInput, CodecLimits, CredentialAudit, CredentialKind, NativeTaskHandle,
         ResolvedCredential,
@@ -1431,10 +1537,15 @@ mod tests {
 
         fn completion_cost(
             &self,
-            _binding: &PinnedProviderTask,
-            _output: &ProtocolOutput,
+            binding: &PinnedProviderTask,
+            output: &ProtocolOutput,
         ) -> Option<AiCost> {
-            self.completion_cost.lock().unwrap().clone()
+            self.completion_cost.lock().unwrap().clone().or_else(|| {
+                binding
+                    .pricing
+                    .as_ref()
+                    .and_then(|pricing| pricing.completion_cost(output.usage.as_ref()?))
+            })
         }
     }
 
@@ -1517,6 +1628,30 @@ mod tests {
                 inventory_revision: "inv-1".into(),
             },
         }
+    }
+
+    fn token_priced_call(
+        instance: &str,
+        input_token: f64,
+        output_token: f64,
+    ) -> ResolvedProviderCall {
+        let mut call = call(instance);
+        call.pricing = ResolvedPricing {
+            source: PricingSource::ProviderRules,
+            pricing: Some(Pricing {
+                currency: "USD".into(),
+                input_token: Some(input_token),
+                output_token: Some(output_token),
+                cache_input_token: None,
+                estimated_cost: Some(999.0),
+                unit: None,
+                amount: None,
+                rules: Vec::new(),
+            }),
+            matched_amount: None,
+            estimated_cost_usd: Some(777.0),
+        };
+        call
     }
 
     fn request(primary: ResolvedProviderCall) -> ExecutionRequest {
@@ -1638,6 +1773,82 @@ mod tests {
         let decoded: UsageCompletion = serde_json::from_value(encoded).unwrap();
         assert_eq!(&decoded, completion);
         assert_eq!(tasks.completed.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn immediate_completion_uses_pinned_token_pricing() {
+        let providers = Arc::new(FakeProviders::default());
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(output(
+                "priced-immediate",
+            ))));
+        let (engine, store, _, usage) = make_engine(providers);
+        let receipt = engine
+            .execute(request(token_priced_call("primary", 0.1, 0.2)))
+            .await
+            .unwrap();
+        let completion = usage
+            .writes
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            completion.finance_snapshot,
+            Some(AiCost {
+                amount: 0.4,
+                currency: "USD".into(),
+            })
+        );
+        assert!(store
+            .get_task(&receipt.task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .binding
+            .unwrap()
+            .pricing
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn stream_completion_uses_pinned_token_pricing() {
+        let providers = Arc::new(FakeProviders::default());
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::Stream(
+                ProtocolStream {
+                    events: Box::pin(stream::iter(vec![Ok(ProtocolEvent::Final(output(
+                        "priced-stream",
+                    )))])),
+                },
+            )));
+        let (engine, _, _, usage) = make_engine(providers);
+        engine
+            .execute(request(token_priced_call("primary", 0.1, 0.2)))
+            .await
+            .unwrap();
+        assert_eq!(
+            usage
+                .writes
+                .lock()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()
+                .finance_snapshot,
+            Some(AiCost {
+                amount: 0.4,
+                currency: "USD".into(),
+            })
+        );
     }
 
     #[tokio::test]
@@ -1863,6 +2074,62 @@ mod tests {
             })
         );
         assert!(completion.completed_at_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn native_recovery_uses_original_pricing_after_catalog_price_changes() {
+        let providers = Arc::new(FakeProviders::default());
+        let mut handle = NativeTaskHandle::new("remote-priced").unwrap();
+        handle.state = NativeTaskState::Queued;
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle,
+                resume: resume_descriptor(),
+            }));
+        providers
+            .polls
+            .lock()
+            .unwrap()
+            .push_back(NativeTaskPoll::Complete(output("priced-native")));
+        let original_call = token_priced_call("primary", 0.1, 0.2);
+        let (engine, store, tasks, usage) = make_engine(providers.clone());
+        let started = engine.execute(request(original_call)).await.unwrap();
+        let pinned = store
+            .get_task(&started.task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .binding
+            .unwrap()
+            .pricing
+            .unwrap();
+        let updated_call = token_priced_call("primary", 10.0, 20.0);
+        assert_ne!(
+            pinned,
+            PinnedPricingSnapshot::from_call(&updated_call)
+                .unwrap()
+                .unwrap()
+        );
+
+        let restarted = ExecutionEngine::new(store, tasks, providers, usage.clone());
+        restarted.recover().await.unwrap();
+        assert_eq!(
+            usage
+                .writes
+                .lock()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()
+                .finance_snapshot,
+            Some(AiCost {
+                amount: 0.4,
+                currency: "USD".into(),
+            })
+        );
     }
 
     #[tokio::test]
