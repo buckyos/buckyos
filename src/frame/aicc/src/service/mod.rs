@@ -16,7 +16,8 @@ use buckyos_api::{
     ProviderRefreshModelsResponse, ProviderReloadResult, ProviderUpdateRequest,
     ProviderUpdateResponse, ProviderValidateRequest, ProviderValidateResponse,
     QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
-    QuotaQueryRequest, QuotaQueryResponse, QuotaState, ServiceReloadSettingsRequest,
+    QuotaQueryRequest, QuotaQueryResponse, QuotaState, RoutingGetRequest, RoutingGetResponse,
+    RoutingUpdateRequest, RoutingUpdateResponse, ServiceReloadSettingsRequest,
     ServiceReloadSettingsResponse, SystemConfigClient, SystemConfigError, TaskManagerClient,
     UsageQueryOutputMode, UsageQueryTimeRange, AICC_COMPUTE_TASK_SCHEMA_ID,
 };
@@ -359,6 +360,7 @@ pub(crate) struct RuntimeAdminSnapshot {
     pub provider_catalog: ProviderCatalogResponse,
     pub protocol_adapters: ProtocolAdapterListResponse,
     pub models: Value,
+    pub routing: buckyos_api::AiccRouteOverlay,
     pub providers: Vec<ProviderInstanceView>,
     pub inventory_revision: String,
     pub provider_health: BTreeMap<String, Value>,
@@ -569,6 +571,59 @@ impl AiccHandler for AiccService {
         Ok(ServiceReloadSettingsResponse {
             ok: true,
             settings_revision: snapshot.settings_revision,
+        })
+    }
+
+    async fn handle_get_routing(
+        &self,
+        _request: RoutingGetRequest,
+        ctx: RPCContext,
+    ) -> Result<RoutingGetResponse, RPCErrors> {
+        self.authorize(&ctx, "read", RESOURCE_INFO).await?;
+        let snapshot = self.runtime.capture().await?;
+        Ok(RoutingGetResponse {
+            settings_revision: snapshot.settings_revision,
+            routing: snapshot.routing,
+        })
+    }
+
+    async fn handle_update_routing(
+        &self,
+        request: RoutingUpdateRequest,
+        ctx: RPCContext,
+    ) -> Result<RoutingUpdateResponse, RPCErrors> {
+        let caller = self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
+        let expected_revision = request.settings_revision;
+        let provider_weights = request.provider_weights;
+        let snapshot = self
+            .mutate_settings(&caller, Some(expected_revision), move |settings| {
+                for (provider_instance_name, weight) in &provider_weights {
+                    if !weight.is_finite() || *weight < 0.0 {
+                        return Err(invalid_request(
+                            "provider weight must be finite and non-negative",
+                        ));
+                    }
+                    if !settings
+                        .providers
+                        .iter()
+                        .any(|provider| provider.provider_instance_name == *provider_instance_name)
+                    {
+                        return Err(invalid_request(
+                            "provider weight references an unknown provider",
+                        ));
+                    }
+                }
+                settings
+                    .session_config
+                    .get_or_insert_with(Default::default)
+                    .provider_weights = provider_weights;
+                Ok(())
+            })
+            .await?;
+        Ok(RoutingUpdateResponse {
+            ok: true,
+            settings_revision: snapshot.settings_revision,
+            routing: snapshot.routing,
         })
     }
 
@@ -790,6 +845,9 @@ impl AiccHandler for AiccService {
                         "provider instance was not found".into(),
                     ));
                 }
+                if let Some(routing) = settings.session_config.as_mut() {
+                    routing.provider_weights.remove(&name);
+                }
                 Ok(())
             })
             .await?;
@@ -981,6 +1039,10 @@ fn reload_result(snapshot: &RuntimeAdminSnapshot) -> ProviderReloadResult {
 
 fn conflict_error(expected: u64, actual: u64) -> RPCErrors {
     AiccError::settings_revision_conflict(expected, actual).to_krpc_error()
+}
+
+fn invalid_request(message: &'static str) -> RPCErrors {
+    AiccError::new(buckyos_api::AiccErrorCode::InvalidRequest, message).to_krpc_error()
 }
 
 fn to_rpc_error(error: impl std::fmt::Display) -> RPCErrors {
@@ -2723,6 +2785,7 @@ fn runtime_admin_snapshot(
             })).collect::<Vec<_>>(),
             "generation": snapshot.generation,
         }),
+        routing: snapshot.settings.session_config.clone().unwrap_or_default(),
         providers,
         inventory_revision,
         provider_health,
@@ -3002,6 +3065,7 @@ mod tests {
                 .iter()
                 .map(provider_public_view)
                 .collect();
+            candidate.routing = settings.settings.session_config.clone().unwrap_or_default();
             Ok(Box::new(FakePreparedRuntime {
                 runtime: Arc::new(Self {
                     snapshot: Mutex::new(self.snapshot.lock().await.clone()),
@@ -3041,6 +3105,7 @@ mod tests {
                 .iter()
                 .map(provider_public_view)
                 .collect();
+            candidate.routing = settings.settings.session_config.clone().unwrap_or_default();
             Ok(Box::new(FakePreparedRuntime {
                 runtime: self.0.clone(),
                 expected: settings.revision.saturating_sub(1),
@@ -3437,6 +3502,116 @@ mod tests {
         assert!(!wire.contains("must-not-leak"));
         assert!(!wire.contains("credential_ref"));
         assert!(!wire.contains("locked://"));
+    }
+
+    #[tokio::test]
+    async fn routing_update_validates_cas_weights_and_provider_references() {
+        let fixture = fixture(false);
+        fixture
+            .service
+            .handle_add_provider(provider_add(), RPCContext::default())
+            .await
+            .unwrap();
+        {
+            let current = fixture.settings.value.lock().await.clone();
+            let mut settings = current.settings.as_ref().clone();
+            settings.session_config = Some(buckyos_api::AiccRouteOverlay {
+                revision: Some("keep-me".to_string()),
+                ..Default::default()
+            });
+            *fixture.settings.value.lock().await =
+                SettingsDocument::new(current.revision, settings).unwrap();
+        }
+
+        let response = fixture
+            .service
+            .handle_update_routing(
+                RoutingUpdateRequest::new(5, BTreeMap::from([("primary".to_string(), 0.25)])),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.settings_revision, 6);
+        assert_eq!(response.routing.provider_weights["primary"], 0.25);
+        assert_eq!(response.routing.revision.as_deref(), Some("keep-me"));
+        assert_eq!(fixture.settings.writes.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.runtime.publishes.load(Ordering::SeqCst), 2);
+
+        let read = fixture
+            .service
+            .handle_get_routing(RoutingGetRequest::new(), RPCContext::default())
+            .await
+            .unwrap();
+        assert_eq!(read.settings_revision, 6);
+        assert_eq!(read.routing, response.routing);
+
+        let unknown = fixture
+            .service
+            .handle_update_routing(
+                RoutingUpdateRequest::new(6, BTreeMap::from([("missing".to_string(), 1.0)])),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            AiccError::from_krpc_error(&unknown).unwrap().code,
+            buckyos_api::AiccErrorCode::InvalidRequest
+        );
+
+        for weight in [-0.1, f64::NAN] {
+            let invalid = fixture
+                .service
+                .handle_update_routing(
+                    RoutingUpdateRequest::new(6, BTreeMap::from([("primary".to_string(), weight)])),
+                    RPCContext::default(),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                AiccError::from_krpc_error(&invalid).unwrap().code,
+                buckyos_api::AiccErrorCode::InvalidRequest
+            );
+        }
+
+        let conflict = fixture
+            .service
+            .handle_update_routing(
+                RoutingUpdateRequest::new(5, BTreeMap::new()),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap_err();
+        let conflict = AiccError::from_krpc_error(&conflict).unwrap();
+        assert_eq!(
+            conflict.code,
+            buckyos_api::AiccErrorCode::SettingsRevisionConflict
+        );
+        assert_eq!(
+            conflict.details,
+            Some(json!({
+                "expected_revision": 5,
+                "actual_revision": 6
+            }))
+        );
+        assert_eq!(fixture.settings.writes.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.runtime.publishes.load(Ordering::SeqCst), 2);
+
+        fixture
+            .service
+            .handle_delete_provider(ProviderDeleteRequest::new("primary"), RPCContext::default())
+            .await
+            .unwrap();
+        assert!(fixture
+            .settings
+            .value
+            .lock()
+            .await
+            .settings
+            .session_config
+            .as_ref()
+            .unwrap()
+            .provider_weights
+            .is_empty());
     }
 
     #[tokio::test]
