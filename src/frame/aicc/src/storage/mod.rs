@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use buckyos_api::{
     ai_methods, get_rdb_instance, AiUsage, AiccError, AiccErrorCode, AiccRouteTraceEvent,
-    AiccUsageEvent, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
+    AiccUsageEvent, Money, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
     QueryUsageResponse, RdbBackend, UsageAggregate, UsageBucketedRow, UsageGroupedRow,
     UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange, AICC_USAGE_LOG_RDB_INSTANCE_ID,
 };
@@ -1135,7 +1135,7 @@ fn group_values(e: &AiccUsageEvent, groups: &[UsageQueryGroup]) -> Vec<String> {
 
 fn aggregate<'a>(events: impl IntoIterator<Item = &'a AiccUsageEvent>) -> UsageAggregate {
     let mut a = UsageAggregate::default();
-    let mut mixed_currency = false;
+    let mut finance = BTreeMap::<String, Option<f64>>::new();
     for e in events {
         a.total_requests += 1;
         a.input_tokens += e.input_tokens.unwrap_or(0);
@@ -1143,32 +1143,25 @@ fn aggregate<'a>(events: impl IntoIterator<Item = &'a AiccUsageEvent>) -> UsageA
         a.total_tokens += e.total_tokens.unwrap_or(0);
         a.consumed_request_units += e.request_units.unwrap_or(1).max(1);
         match e.finance_snapshot_json.as_ref().and_then(valid_finance) {
-            Some((amount, currency)) if !mixed_currency => {
-                if a.finance_currency
-                    .as_ref()
-                    .is_some_and(|known| known != &currency)
-                {
-                    a.finance_amount = 0.0;
-                    a.finance_currency = None;
-                    a.finance_complete = false;
-                    mixed_currency = true;
-                } else {
-                    let total = a.finance_amount + amount;
-                    if total.is_finite() {
-                        a.finance_amount = total;
-                        a.finance_currency = Some(currency);
+            Some((amount, currency)) => {
+                let total = finance.entry(currency).or_insert(Some(0.0));
+                if let Some(current) = total {
+                    let next = *current + amount;
+                    if next.is_finite() {
+                        *current = next;
                     } else {
-                        a.finance_amount = 0.0;
-                        a.finance_currency = None;
+                        *total = None;
                         a.finance_complete = false;
-                        mixed_currency = true;
                     }
                 }
             }
-            Some(_) => {}
             None => a.finance_complete = false,
         }
     }
+    a.finance_totals = finance
+        .into_iter()
+        .filter_map(|(currency, amount)| amount.map(|amount| Money::new(amount, currency)))
+        .collect();
     a
 }
 
@@ -1610,8 +1603,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.total.total_requests, 1);
         assert_eq!(result.total.consumed_request_units, 1);
-        assert_eq!(result.total.finance_amount, 0.25);
-        assert_eq!(result.total.finance_currency.as_deref(), Some("EUR"));
+        assert_eq!(result.total.finance_totals, vec![Money::new(0.25, "EUR")]);
         assert!(result.total.finance_complete);
     }
 
@@ -1665,8 +1657,7 @@ mod tests {
         assert_eq!(first.total.total_requests, 2);
         assert_eq!(first.total.total_tokens, 30);
         assert_eq!(first.total.consumed_request_units, 2);
-        assert_eq!(first.total.finance_amount, 0.5);
-        assert_eq!(first.total.finance_currency.as_deref(), Some("USD"));
+        assert_eq!(first.total.finance_totals, vec![Money::new(0.5, "USD")]);
         assert!(first.total.finance_complete);
         assert_eq!(first.grouped.len(), 1);
         assert_eq!(first.grouped[0].group["user_id"], "user-a");
@@ -1712,8 +1703,7 @@ mod tests {
         ];
         let complete = aggregate(&complete);
         assert_eq!(complete.consumed_request_units, 5);
-        assert_eq!(complete.finance_amount, 0.75);
-        assert_eq!(complete.finance_currency.as_deref(), Some("USD"));
+        assert_eq!(complete.finance_totals, vec![Money::new(0.75, "USD")]);
         assert!(complete.finance_complete);
 
         let partial = [
@@ -1725,8 +1715,7 @@ mod tests {
             usage_event("missing", None, None),
         ];
         let partial = aggregate(&partial);
-        assert_eq!(partial.finance_amount, 0.25);
-        assert_eq!(partial.finance_currency.as_deref(), Some("USD"));
+        assert_eq!(partial.finance_totals, vec![Money::new(0.25, "USD")]);
         assert!(!partial.finance_complete);
 
         for (id, finance) in [
@@ -1738,8 +1727,7 @@ mod tests {
         ] {
             let event = usage_event(id, Some(finance), None);
             let invalid = aggregate([&event]);
-            assert_eq!(invalid.finance_amount, 0.0, "{id}");
-            assert_eq!(invalid.finance_currency, None, "{id}");
+            assert!(invalid.finance_totals.is_empty(), "{id}");
             assert!(!invalid.finance_complete, "{id}");
         }
 
@@ -1756,9 +1744,11 @@ mod tests {
             ),
         ];
         let mixed = aggregate(&mixed);
-        assert_eq!(mixed.finance_amount, 0.0);
-        assert_eq!(mixed.finance_currency, None);
-        assert!(!mixed.finance_complete);
+        assert_eq!(
+            mixed.finance_totals,
+            vec![Money::new(0.25, "EUR"), Money::new(0.25, "USD")]
+        );
+        assert!(mixed.finance_complete);
 
         let overflow = [
             usage_event(
@@ -1771,10 +1761,14 @@ mod tests {
                 Some(json!({"amount": 1.0e308, "currency": "JPY"})),
                 None,
             ),
+            usage_event(
+                "valid-dollars",
+                Some(json!({"amount": 0.5, "currency": "USD"})),
+                None,
+            ),
         ];
         let overflow = aggregate(&overflow);
-        assert_eq!(overflow.finance_amount, 0.0);
-        assert_eq!(overflow.finance_currency, None);
+        assert_eq!(overflow.finance_totals, vec![Money::new(0.5, "USD")]);
         assert!(!overflow.finance_complete);
     }
 
