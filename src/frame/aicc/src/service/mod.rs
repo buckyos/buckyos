@@ -74,12 +74,8 @@ use cloud_update::{
     CloudUpdateClientProfile, CloudUpdateConfig, CloudUpdateManager, NdnCloudObjectFetcher,
 };
 
-const RESOURCE_SERVICE: &str = "services/aicc";
-const RESOURCE_PROVIDERS: &str = "services/aicc/providers";
-const RESOURCE_USAGE: &str = "services/aicc/usage";
-const RESOURCE_TRACE: &str = "services/aicc/trace";
-const RESOURCE_QUOTA: &str = "services/aicc/quota";
-const RESOURCE_METADATA: &str = "services/aicc/driver-metadata-update";
+const RESOURCE_INFO: &str = "obj://config/services/aicc/info";
+const RESOURCE_SETTINGS: &str = "obj://config/services/aicc/settings";
 const CLOUD_UPDATE_CONFIG_KEY: &str = "services/aicc/driver_metadata_update";
 
 struct AiccHttpServer {
@@ -534,7 +530,7 @@ impl AiccHandler for AiccService {
         task_id: &str,
         ctx: RPCContext,
     ) -> Result<CancelResponse, RPCErrors> {
-        let caller = self.authorize(&ctx, "write", RESOURCE_SERVICE).await?;
+        let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
         let execution = self
             .execution
             .as_ref()
@@ -554,7 +550,7 @@ impl AiccHandler for AiccService {
         _request: ServiceReloadSettingsRequest,
         ctx: RPCContext,
     ) -> Result<ServiceReloadSettingsResponse, RPCErrors> {
-        let caller = self.authorize(&ctx, "write", RESOURCE_SERVICE).await?;
+        let caller = self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
         let _guard = self.settings_mutation.lock().await;
         let current = self.settings.load(&caller.token).await?;
         let prepared = self
@@ -579,7 +575,7 @@ impl AiccHandler for AiccService {
         request: QuotaQueryRequest,
         ctx: RPCContext,
     ) -> Result<QuotaQueryResponse, RPCErrors> {
-        let caller = self.authorize(&ctx, "read", RESOURCE_QUOTA).await?;
+        let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
         self.quota.query_quota(&caller, request).await
     }
 
@@ -588,7 +584,7 @@ impl AiccHandler for AiccService {
         mut request: QueryUsageRequest,
         ctx: RPCContext,
     ) -> Result<QueryUsageResponse, RPCErrors> {
-        let caller = self.authorize(&ctx, "read", RESOURCE_USAGE).await?;
+        let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
         if request.filters.tenant_ids.is_empty() {
             request.filters.tenant_ids.push(caller.tenant_id);
         } else if request.filters.tenant_ids != [caller.tenant_id.clone()] {
@@ -604,7 +600,7 @@ impl AiccHandler for AiccService {
         request: QueryRouteTraceRequest,
         ctx: RPCContext,
     ) -> Result<QueryRouteTraceResponse, RPCErrors> {
-        let caller = self.authorize(&ctx, "read", RESOURCE_TRACE).await?;
+        let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
         self.usage.query_trace(&caller.tenant_id, request).await
     }
 
@@ -613,7 +609,7 @@ impl AiccHandler for AiccService {
         _request: ProviderCatalogRequest,
         ctx: RPCContext,
     ) -> Result<ProviderCatalogResponse, RPCErrors> {
-        self.authorize(&ctx, "read", RESOURCE_PROVIDERS).await?;
+        self.authorize(&ctx, "read", RESOURCE_INFO).await?;
         Ok(self.runtime.capture().await?.provider_catalog)
     }
 
@@ -622,7 +618,7 @@ impl AiccHandler for AiccService {
         _request: ProtocolAdapterListRequest,
         ctx: RPCContext,
     ) -> Result<ProtocolAdapterListResponse, RPCErrors> {
-        self.authorize(&ctx, "read", RESOURCE_PROVIDERS).await?;
+        self.authorize(&ctx, "read", RESOURCE_INFO).await?;
         Ok(self.runtime.capture().await?.protocol_adapters)
     }
 
@@ -631,7 +627,7 @@ impl AiccHandler for AiccService {
         request: ProviderValidateRequest,
         ctx: RPCContext,
     ) -> Result<ProviderValidateResponse, RPCErrors> {
-        self.authorize(&ctx, "write", RESOURCE_PROVIDERS).await?;
+        self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
         self.validator.validate(request).await
     }
 
@@ -640,7 +636,7 @@ impl AiccHandler for AiccService {
         request: ProviderAddRequest,
         ctx: RPCContext,
     ) -> Result<ProviderAddResponse, RPCErrors> {
-        let caller = self.authorize(&ctx, "write", RESOURCE_PROVIDERS).await?;
+        let caller = self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
         let validation = self.validator.validate(validate_request(&request)).await?;
         if !validation.errors.is_empty() || !validation.error_details.is_empty() {
             return Err(RPCErrors::ReasonError(
@@ -678,7 +674,7 @@ impl AiccHandler for AiccService {
         request: ProviderListRequest,
         ctx: RPCContext,
     ) -> Result<ProviderListResponse, RPCErrors> {
-        self.authorize(&ctx, "read", RESOURCE_PROVIDERS).await?;
+        self.authorize(&ctx, "read", RESOURCE_INFO).await?;
         let snapshot = self.runtime.capture().await?;
         let providers = if let Some(method) = request.method {
             snapshot
@@ -700,7 +696,7 @@ impl AiccHandler for AiccService {
         request: ProviderHealthRequest,
         ctx: RPCContext,
     ) -> Result<ProviderHealthResponse, RPCErrors> {
-        self.authorize(&ctx, "read", RESOURCE_PROVIDERS).await?;
+        self.authorize(&ctx, "read", RESOURCE_INFO).await?;
         let snapshot = self.runtime.capture().await?;
         let health = snapshot
             .provider_health
@@ -715,7 +711,7 @@ impl AiccHandler for AiccService {
         request: ProviderUpdateRequest,
         ctx: RPCContext,
     ) -> Result<ProviderUpdateResponse, RPCErrors> {
-        let caller = self.authorize(&ctx, "write", RESOURCE_PROVIDERS).await?;
+        let caller = self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
         let current = self.settings.load(&caller.token).await?;
         if current.document.revision != request.settings_revision {
             return Err(conflict_error(
@@ -784,7 +780,7 @@ impl AiccHandler for AiccService {
         request: ProviderDeleteRequest,
         ctx: RPCContext,
     ) -> Result<ProviderDeleteResponse, RPCErrors> {
-        let caller = self.authorize(&ctx, "write", RESOURCE_PROVIDERS).await?;
+        let caller = self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
         let name = request.provider_instance_name;
         let response_name = name.clone();
         let snapshot = self
@@ -815,7 +811,7 @@ impl AiccHandler for AiccService {
         request: ProviderRefreshModelsRequest,
         ctx: RPCContext,
     ) -> Result<ProviderRefreshModelsResponse, RPCErrors> {
-        self.authorize(&ctx, "write", RESOURCE_PROVIDERS).await?;
+        self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
         let snapshot = self
             .runtime
             .refresh_provider(&request.provider_instance_name)
@@ -832,7 +828,7 @@ impl AiccHandler for AiccService {
         _request: ListModelsRequest,
         ctx: RPCContext,
     ) -> Result<Value, RPCErrors> {
-        self.authorize(&ctx, "read", RESOURCE_PROVIDERS).await?;
+        self.authorize(&ctx, "read", RESOURCE_INFO).await?;
         Ok(self.runtime.capture().await?.models)
     }
 
@@ -840,7 +836,7 @@ impl AiccHandler for AiccService {
         &self,
         ctx: RPCContext,
     ) -> Result<DriverMetadataUpdateView, RPCErrors> {
-        self.authorize(&ctx, "read", RESOURCE_METADATA).await?;
+        self.authorize(&ctx, "read", RESOURCE_INFO).await?;
         self.metadata.get().await
     }
 
@@ -849,7 +845,7 @@ impl AiccHandler for AiccService {
         request: DriverMetadataUpdateSetReq,
         ctx: RPCContext,
     ) -> Result<DriverMetadataUpdateSetResponse, RPCErrors> {
-        let caller = self.authorize(&ctx, "write", RESOURCE_METADATA).await?;
+        let caller = self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
         let _guard = self.settings_mutation.lock().await;
         let current = self.settings.load(&caller.token).await?;
         let next_revision = current.document.revision.saturating_add(1);
@@ -2267,6 +2263,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                     provider_profile_id: &provider.provider_profile_id,
                     protocol_adapter_id: &provider.protocol_adapter_id,
                     auth_mode: provider_auth.mode(),
+                    credential_kind: provider_auth.credential_kind(),
                     configured_inventory,
                 })
                 .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?;
@@ -2286,7 +2283,10 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                     .map(|configuration| configuration.provider_rules_id)
             });
             let runtime_config = match provider_auth {
-                ProviderAuthConfig::ApiKey { credential_ref } => ProviderInstanceConfig {
+                ProviderAuthConfig::ApiKey {
+                    credential_ref,
+                    credential_kind,
+                } => ProviderInstanceConfig {
                     provider_instance_name: provider.provider_instance_name.clone(),
                     provider_profile_id: provider.provider_profile_id.clone(),
                     protocol_adapter_id: provider.protocol_adapter_id.clone(),
@@ -2294,6 +2294,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                     credential: CredentialReference {
                         reference: credential_ref.clone(),
                     },
+                    credential_kind: *credential_kind,
                     provider_rules_id,
                     region: connection.region,
                     workspace: connection.workspace,
@@ -2358,7 +2359,7 @@ fn settings_credentials(
             .map_err(to_rpc_error)?;
         let parsed = match parsed {
             Some(value) => {
-                if let ProviderAuthConfig::ApiKey { credential_ref } = &value {
+                if let ProviderAuthConfig::ApiKey { credential_ref, .. } = &value {
                     let (_, secret) = first_locked_credential(
                         &provider.provider_instance_name,
                         &provider.credentials,
@@ -2375,6 +2376,7 @@ fn settings_credentials(
                 values.insert(reference.clone(), secret);
                 ProviderAuthConfig::ApiKey {
                     credential_ref: reference,
+                    credential_kind: None,
                 }
             }
         };
@@ -2446,7 +2448,7 @@ impl ProviderValidator for RuntimeProviderValidator {
             Some(auth @ ProviderAuthConfig::DynamicLogin { .. }) => (auth, BTreeMap::new()),
             Some(auth @ ProviderAuthConfig::ApiKey { .. }) => {
                 let credential_ref = match &auth {
-                    ProviderAuthConfig::ApiKey { credential_ref } => credential_ref.clone(),
+                    ProviderAuthConfig::ApiKey { credential_ref, .. } => credential_ref.clone(),
                     ProviderAuthConfig::DynamicLogin { .. } => unreachable!(),
                 };
                 let (_, secret) = first_locked_credential(&provider_name, &request.credentials)?;
@@ -2458,6 +2460,7 @@ impl ProviderValidator for RuntimeProviderValidator {
                 (
                     ProviderAuthConfig::ApiKey {
                         credential_ref: reference.clone(),
+                        credential_kind: None,
                     },
                     BTreeMap::from([(reference, secret)]),
                 )
@@ -2474,6 +2477,7 @@ impl ProviderValidator for RuntimeProviderValidator {
                 provider_profile_id: &request.provider_profile_id,
                 protocol_adapter_id: &adapter,
                 auth_mode: auth.mode(),
+                credential_kind: auth.credential_kind(),
                 configured_inventory,
             })
             .map_err(to_rpc_error)?;
@@ -2765,6 +2769,7 @@ mod tests {
     struct FakeAuthorizer {
         deny: bool,
         tenant: &'static str,
+        calls: Mutex<Vec<(&'static str, &'static str)>>,
     }
 
     #[async_trait]
@@ -2772,9 +2777,10 @@ mod tests {
         async fn authorize(
             &self,
             _context: &RPCContext,
-            _action: &'static str,
-            _resource: &'static str,
+            action: &'static str,
+            resource: &'static str,
         ) -> Result<AuthorizedCaller, RPCErrors> {
+            self.calls.lock().await.push((action, resource));
             if self.deny {
                 return Err(RPCErrors::NoPermission("denied".to_string()));
             }
@@ -3050,6 +3056,7 @@ mod tests {
         runtime: Arc<FakeRuntime>,
         validator: Arc<FakeValidator>,
         usage: Arc<FakeUsage>,
+        authorizer: Arc<FakeAuthorizer>,
     }
 
     fn fixture(deny: bool) -> Fixture {
@@ -3062,11 +3069,13 @@ mod tests {
             tenant: Mutex::new(None),
             usage_request: Mutex::new(None),
         });
+        let authorizer = Arc::new(FakeAuthorizer {
+            deny,
+            tenant: "tenant-a",
+            calls: Mutex::new(Vec::new()),
+        });
         let service = AiccService::new(
-            Arc::new(FakeAuthorizer {
-                deny,
-                tenant: "tenant-a",
-            }),
+            authorizer.clone(),
             settings.clone(),
             Arc::new(SharedFakeRuntime(runtime.clone())),
             validator.clone(),
@@ -3080,6 +3089,7 @@ mod tests {
             runtime,
             validator,
             usage,
+            authorizer,
         }
     }
 
@@ -3222,6 +3232,28 @@ mod tests {
                 .await,
             Err(RPCErrors::NoPermission(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn management_rbac_uses_platform_service_resources() {
+        let fixture = fixture(false);
+        fixture
+            .service
+            .handle_list_models(ListModelsRequest::new(), RPCContext::default())
+            .await
+            .unwrap();
+        fixture
+            .service
+            .handle_add_provider(provider_add(), RPCContext::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.authorizer.calls.lock().await.as_slice(),
+            [
+                ("read", "obj://config/services/aicc/info"),
+                ("write", "obj://config/services/aicc/settings"),
+            ]
+        );
     }
 
     #[tokio::test]
