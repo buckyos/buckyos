@@ -6,13 +6,14 @@ use crate::protocol::{
     ProtocolErrorKind, ProtocolEvent, ProtocolExecution, ProtocolOutput, ProtocolStream,
 };
 use async_trait::async_trait;
-use buckyos_api::{AiArtifact, AiUsage, AiccError, AiccErrorCode, ApiType, Capability};
+use buckyos_api::{AiArtifact, AiCost, AiUsage, AiccError, AiccErrorCode, ApiType, Capability};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_IDEMPOTENCY_WINDOW_MS: u64 = 24 * 60 * 60 * 1_000;
 
@@ -185,8 +186,10 @@ impl PinnedProviderTask {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ExecutionRecord {
     pub scope: IdempotencyScope,
+    pub usage_event_id: String,
     pub user_id: String,
     pub caller_app_id: Option<String>,
+    pub request_model: String,
     pub body_fingerprint: String,
     pub task_id: String,
     pub event_ref: String,
@@ -255,6 +258,7 @@ pub(crate) trait TaskManagerPort: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct UsageCompletion {
+    pub event_id: String,
     pub tenant_id: String,
     pub user_id: String,
     pub caller_app_id: Option<String>,
@@ -262,11 +266,12 @@ pub(crate) struct UsageCompletion {
     pub idempotency_key: String,
     pub method: String,
     pub capability: String,
-    pub exact_model: String,
+    pub request_model: String,
     pub provider_instance_name: String,
     pub provider_model: String,
     pub usage: AiUsage,
-    pub finance_snapshot: Option<Value>,
+    pub finance_snapshot: Option<AiCost>,
+    pub completed_at_ms: i64,
 }
 
 #[async_trait]
@@ -322,11 +327,11 @@ pub(crate) trait ProviderExecutionPort: Send + Sync {
 
     async fn cancel_native(&self, binding: &PinnedProviderTask) -> Result<bool, ProtocolError>;
 
-    fn finance_snapshot(
+    fn completion_cost(
         &self,
         _binding: &PinnedProviderTask,
         _output: &ProtocolOutput,
-    ) -> Option<Value> {
+    ) -> Option<AiCost> {
         None
     }
 }
@@ -335,6 +340,7 @@ pub(crate) struct ExecutionRequest {
     pub tenant_id: String,
     pub user_id: String,
     pub caller_app_id: Option<String>,
+    pub request_model: String,
     pub idempotency_key: String,
     pub canonical_body: Value,
     pub parent_task_id: Option<String>,
@@ -420,6 +426,13 @@ impl ExecutionEngine {
                 false,
             ));
         }
+        if request.request_model.trim().is_empty() {
+            return Err(aicc_error(
+                AiccErrorCode::InvalidRequest,
+                "execution request model must not be empty",
+                false,
+            ));
+        }
         let fingerprint = canonical_body_fingerprint(&request.canonical_body)?;
         let window = request
             .idempotency_window_ms
@@ -444,8 +457,10 @@ impl ExecutionEngine {
             .await?;
         let initial = ExecutionRecord {
             scope,
+            usage_event_id: usage_event_id(&task.task_id),
             user_id: request.user_id,
             caller_app_id: request.caller_app_id,
+            request_model: request.request_model,
             body_fingerprint: fingerprint,
             task_id: task.task_id,
             event_ref: task.event_ref,
@@ -517,13 +532,7 @@ impl ExecutionEngine {
                             return self.current_receipt(&record.task_id).await;
                         }
                         return self
-                            .finish_success(
-                                &record.task_id,
-                                &record.scope,
-                                &call.provider_model_id,
-                                binding,
-                                output,
-                            )
+                            .finish_success(&record.task_id, &record.scope, binding, output)
                             .await;
                     }
                     ProtocolExecution::Stream(stream) => {
@@ -546,7 +555,6 @@ impl ExecutionEngine {
                             .consume_stream(
                                 &record.task_id,
                                 &record.scope,
-                                &call.provider_model_id,
                                 binding,
                                 stream,
                                 cancellation.clone(),
@@ -687,9 +695,8 @@ impl ExecutionEngine {
                         .await?;
                 }
                 Ok(NativeTaskPoll::Complete(output)) => {
-                    let provider_model_id = binding.provider_model_id.clone();
                     return self
-                        .finish_success(task_id, &record.scope, &provider_model_id, binding, output)
+                        .finish_success(task_id, &record.scope, binding, output)
                         .await;
                 }
                 Ok(NativeTaskPoll::Failed(error)) | Err(error) => {
@@ -762,7 +769,6 @@ impl ExecutionEngine {
         &self,
         task_id: &str,
         scope: &IdempotencyScope,
-        provider_model: &str,
         binding: PinnedProviderTask,
         mut stream: ProtocolStream,
         cancellation: Cancellation,
@@ -798,9 +804,7 @@ impl ExecutionEngine {
                         .await?;
                 }
                 Ok(ProtocolEvent::Final(output)) => {
-                    return self
-                        .finish_success(task_id, scope, provider_model, binding, output)
-                        .await;
+                    return self.finish_success(task_id, scope, binding, output).await;
                 }
                 Err(error) => return self.finish_failure(task_id, error.into()).await,
             }
@@ -820,11 +824,22 @@ impl ExecutionEngine {
         &self,
         task_id: &str,
         scope: &IdempotencyScope,
-        provider_model: &str,
         binding: PinnedProviderTask,
         output: ProtocolOutput,
     ) -> Result<ExecutionReceipt, AiccError> {
-        let finance_snapshot = self.providers.finance_snapshot(&binding, &output);
+        let finance_snapshot = match self
+            .providers
+            .completion_cost(&binding, &output)
+            .map(validate_completion_cost)
+            .transpose()
+        {
+            Ok(cost) => cost,
+            Err(error) => return self.finish_failure(task_id, error).await,
+        };
+        let completed_at_ms = match current_time_ms() {
+            Ok(timestamp) => timestamp,
+            Err(error) => return self.finish_failure(task_id, error).await,
+        };
         let output = match ExecutionOutput::try_from(output) {
             Ok(output) => output,
             Err(error) => return self.finish_failure(task_id, error).await,
@@ -839,6 +854,7 @@ impl ExecutionEngine {
         if let Err(error) = self
             .usage
             .write_once(UsageCompletion {
+                event_id: record.usage_event_id,
                 tenant_id: scope.tenant_id.clone(),
                 user_id: record.user_id,
                 caller_app_id: record.caller_app_id,
@@ -846,11 +862,12 @@ impl ExecutionEngine {
                 idempotency_key: scope.key.clone(),
                 method: scope.method.clone(),
                 capability: capability_name(binding.api_type).to_string(),
-                exact_model: binding.exact_model,
+                request_model: record.request_model,
                 provider_instance_name: binding.provider_instance_name,
-                provider_model: provider_model.to_string(),
+                provider_model: binding.exact_model,
                 usage: output.usage.clone(),
                 finance_snapshot,
+                completed_at_ms,
             })
             .await
         {
@@ -916,6 +933,42 @@ fn aicc_error(code: AiccErrorCode, message: &str, retriable: bool) -> AiccError 
     let mut error = AiccError::new(code, message);
     error.retriable = retriable;
     error
+}
+
+fn usage_event_id(task_id: &str) -> String {
+    format!("aicc-usage-{}", hex_digest(task_id.as_bytes()))
+}
+
+fn current_time_ms() -> Result<i64, AiccError> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| {
+            aicc_error(
+                AiccErrorCode::InternalError,
+                "system clock is before the Unix epoch",
+                false,
+            )
+        })?
+        .as_millis();
+    i64::try_from(millis).map_err(|_| {
+        aicc_error(
+            AiccErrorCode::InternalError,
+            "completion timestamp exceeds the supported range",
+            false,
+        )
+    })
+}
+
+fn validate_completion_cost(mut cost: AiCost) -> Result<AiCost, AiccError> {
+    cost.currency = cost.currency.trim().to_ascii_uppercase();
+    if !cost.amount.is_finite() || cost.amount < 0.0 || cost.currency.is_empty() {
+        return Err(aicc_error(
+            AiccErrorCode::ProviderError,
+            "Provider completion returned an invalid final cost",
+            false,
+        ));
+    }
+    Ok(cost)
 }
 
 fn capability_name(api_type: ApiType) -> &'static str {
@@ -1151,7 +1204,7 @@ mod tests {
             self.writes
                 .lock()
                 .unwrap()
-                .entry(completion.task_id.clone())
+                .entry(completion.event_id.clone())
                 .or_insert(completion);
             Ok(())
         }
@@ -1168,7 +1221,7 @@ mod tests {
         plans: Mutex<VecDeque<StartPlan>>,
         polls: Mutex<VecDeque<NativeTaskPoll>>,
         cancel_result: Mutex<bool>,
-        finance_snapshot: Mutex<Option<Value>>,
+        completion_cost: Mutex<Option<AiCost>>,
     }
 
     #[async_trait]
@@ -1200,12 +1253,12 @@ mod tests {
             Ok(*self.cancel_result.lock().unwrap())
         }
 
-        fn finance_snapshot(
+        fn completion_cost(
             &self,
             _binding: &PinnedProviderTask,
             _output: &ProtocolOutput,
-        ) -> Option<Value> {
-            self.finance_snapshot.lock().unwrap().clone()
+        ) -> Option<AiCost> {
+            self.completion_cost.lock().unwrap().clone()
         }
     }
 
@@ -1278,6 +1331,7 @@ mod tests {
             tenant_id: "tenant-1".into(),
             user_id: "user-1".into(),
             caller_app_id: Some("app-1".into()),
+            request_model: "smart-chat".into(),
             idempotency_key: "idem-1".into(),
             canonical_body: json!({"exact_model": primary.exact_model, "prompt": "hello", "idempotency_key": "idem-1"}),
             parent_task_id: None,
@@ -1357,8 +1411,10 @@ mod tests {
             .push_back(StartPlan::Success(ProtocolExecution::Immediate(output(
                 "ok",
             ))));
-        *providers.finance_snapshot.lock().unwrap() =
-            Some(json!({"amount": 0.25, "currency": "USD"}));
+        *providers.completion_cost.lock().unwrap() = Some(AiCost {
+            amount: 0.25,
+            currency: "usd".into(),
+        });
         let (engine, _, tasks, usage) = make_engine(providers.clone());
         let first = engine.execute(request(call("primary"))).await.unwrap();
         let replay = engine.execute(request(call("primary"))).await.unwrap();
@@ -1368,18 +1424,23 @@ mod tests {
         let writes = usage.writes.lock().unwrap();
         assert_eq!(writes.len(), 1);
         let completion = writes.values().next().unwrap();
+        assert_eq!(completion.event_id, usage_event_id("task-1"));
         assert_eq!(completion.tenant_id, "tenant-1");
         assert_eq!(completion.user_id, "user-1");
         assert_eq!(completion.caller_app_id.as_deref(), Some("app-1"));
         assert_eq!(completion.method, "chat.completions.create");
         assert_eq!(completion.capability, "llm");
-        assert_eq!(completion.exact_model, "model@primary");
+        assert_eq!(completion.request_model, "smart-chat");
         assert_eq!(completion.provider_instance_name, "primary");
-        assert_eq!(completion.provider_model, "model");
+        assert_eq!(completion.provider_model, "model@primary");
         assert_eq!(
             completion.finance_snapshot,
-            Some(json!({"amount": 0.25, "currency": "USD"}))
+            Some(AiCost {
+                amount: 0.25,
+                currency: "USD".into(),
+            })
         );
+        assert!(completion.completed_at_ms > 0);
         let encoded = serde_json::to_value(completion).unwrap();
         let decoded: UsageCompletion = serde_json::from_value(encoded).unwrap();
         assert_eq!(&decoded, completion);
@@ -1430,6 +1491,18 @@ mod tests {
         let (engine, _, tasks, _) = make_engine(providers.clone());
         let mut request = request(call("primary"));
         request.user_id = " ".into();
+        let error = engine.execute(request).await.unwrap_err();
+        assert_eq!(error.code, AiccErrorCode::InvalidRequest);
+        assert!(tasks.by_key.lock().unwrap().is_empty());
+        assert!(providers.starts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_request_model_is_rejected_before_task_or_provider_creation() {
+        let providers = Arc::new(FakeProviders::default());
+        let (engine, _, tasks, _) = make_engine(providers.clone());
+        let mut request = request(call("primary"));
+        request.request_model = " ".into();
         let error = engine.execute(request).await.unwrap_err();
         assert_eq!(error.code, AiccErrorCode::InvalidRequest);
         assert!(tasks.by_key.lock().unwrap().is_empty());
@@ -1555,15 +1628,38 @@ mod tests {
             ),
             NativeTaskPoll::Complete(output("video")),
         ]);
+        *providers.completion_cost.lock().unwrap() = Some(AiCost {
+            amount: 1.5,
+            currency: "EUR".into(),
+        });
         let (engine, store, tasks, usage) = make_engine(providers.clone());
         let started = engine.execute(request(call("primary"))).await.unwrap();
         assert_eq!(started.state, ExecutionState::Queued);
         assert_eq!(started.provider_task_ref.as_deref(), Some("remote-1"));
+        let persisted = store.get_task(&started.task_id).await.unwrap().unwrap();
+        assert_eq!(persisted.user_id, "user-1");
+        assert_eq!(persisted.request_model, "smart-chat");
+        assert_eq!(persisted.usage_event_id, usage_event_id(&started.task_id));
 
         let restarted = ExecutionEngine::new(store, tasks, providers, usage.clone());
         let recovered = restarted.recover().await.unwrap();
         assert_eq!(recovered[0].state, ExecutionState::Succeeded);
-        assert_eq!(usage.writes.lock().unwrap().len(), 1);
+        let writes = usage.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        let completion = writes.values().next().unwrap();
+        assert_eq!(completion.event_id, usage_event_id(&started.task_id));
+        assert_eq!(completion.user_id, "user-1");
+        assert_eq!(completion.request_model, "smart-chat");
+        assert_eq!(completion.provider_instance_name, "primary");
+        assert_eq!(completion.provider_model, "model@primary");
+        assert_eq!(
+            completion.finance_snapshot,
+            Some(AiCost {
+                amount: 1.5,
+                currency: "EUR".into(),
+            })
+        );
+        assert!(completion.completed_at_ms > 0);
     }
 
     #[tokio::test]
@@ -1644,5 +1740,27 @@ mod tests {
         assert_eq!(receipt.error.unwrap().code, AiccErrorCode::ProviderError);
         assert!(usage.writes.lock().unwrap().is_empty());
         assert_eq!(tasks.failed.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn invalid_final_cost_turns_success_into_provider_failure() {
+        let providers = Arc::new(FakeProviders::default());
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProtocolExecution::Immediate(output(
+                "invalid-cost",
+            ))));
+        *providers.completion_cost.lock().unwrap() = Some(AiCost {
+            amount: -0.01,
+            currency: "USD".into(),
+        });
+        let (engine, _, tasks, usage) = make_engine(providers);
+        let receipt = engine.execute(request(call("primary"))).await.unwrap();
+        assert_eq!(receipt.state, ExecutionState::Failed);
+        assert_eq!(receipt.error.unwrap().code, AiccErrorCode::ProviderError);
+        assert!(usage.writes.lock().unwrap().is_empty());
+        assert_eq!(tasks.failed.lock().unwrap().as_slice(), ["task-1"]);
     }
 }
