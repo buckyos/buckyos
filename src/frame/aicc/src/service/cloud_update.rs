@@ -14,7 +14,7 @@ use crate::catalog::{CatalogBuildOptions, CatalogKind, CatalogSnapshot, CurrentC
 use crate::matching::{CompiledMatchRule, MatchContext, MatchRule, RELEASE_TRACK_MATCH_SCHEMA};
 use crate::runtime::{RuntimeError, RuntimeInputs};
 use crate::settings::{
-    MetadataFile, MetadataOverrideLoader, MetadataSource, MetadataSources,
+    load_builtin_metadata, MetadataFile, MetadataOverrideLoader, MetadataSource, MetadataSources,
     StaticMetadataOverrideLoader,
 };
 
@@ -296,7 +296,6 @@ pub(crate) struct CloudUpdateManager {
     wake: Notify,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     status: RwLock<CloudUpdateRuntimeStatus>,
-    builtin: Vec<CurrentCatalogFile>,
     overrides: Arc<dyn MetadataOverrideLoader>,
 }
 
@@ -306,7 +305,7 @@ impl CloudUpdateManager {
         fetcher: Arc<dyn CloudObjectFetcher>,
         profile: CloudUpdateClientProfile,
         config: CloudUpdateConfig,
-        builtin: Vec<CurrentCatalogFile>,
+        _builtin: Vec<CurrentCatalogFile>,
         local: Vec<MetadataFile>,
         system_config: Vec<MetadataFile>,
     ) -> Result<Arc<Self>, CloudUpdateError> {
@@ -315,7 +314,7 @@ impl CloudUpdateManager {
             fetcher,
             profile,
             config,
-            builtin,
+            Vec::new(),
             Arc::new(StaticMetadataOverrideLoader::new(local, system_config)),
         )
     }
@@ -325,7 +324,17 @@ impl CloudUpdateManager {
         fetcher: Arc<dyn CloudObjectFetcher>,
         profile: CloudUpdateClientProfile,
         config: CloudUpdateConfig,
-        builtin: Vec<CurrentCatalogFile>,
+        _builtin: Vec<CurrentCatalogFile>,
+        overrides: Arc<dyn MetadataOverrideLoader>,
+    ) -> Result<Arc<Self>, CloudUpdateError> {
+        Self::new_with_managed_sources(cache_root, fetcher, profile, config, overrides)
+    }
+
+    pub(crate) fn new_with_managed_sources(
+        cache_root: impl Into<PathBuf>,
+        fetcher: Arc<dyn CloudObjectFetcher>,
+        profile: CloudUpdateClientProfile,
+        config: CloudUpdateConfig,
         overrides: Arc<dyn MetadataOverrideLoader>,
     ) -> Result<Arc<Self>, CloudUpdateError> {
         config.validate()?;
@@ -342,7 +351,6 @@ impl CloudUpdateManager {
             wake: Notify::new(),
             task: Mutex::new(None),
             status: RwLock::new(CloudUpdateRuntimeStatus::default()),
-            builtin,
             overrides,
         }))
     }
@@ -594,13 +602,7 @@ impl CloudUpdateManager {
         target_seq: u64,
         files: &[(ProviderCatalogManifestFile, Vec<u8>)],
     ) -> Result<(), CloudUpdateError> {
-        let builtin = self
-            .builtin
-            .iter()
-            .map(|file| {
-                MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents.clone())
-            })
-            .collect::<Result<Vec<_>, _>>()
+        let builtin = load_builtin_metadata()
             .map_err(|error| CloudUpdateError::Catalog(error.to_string()))?;
         let cloud = files
             .iter()
@@ -644,14 +646,8 @@ impl RuntimeInputs for CloudUpdateManager {
             .load_cloud_files(target_seq)
             .await
             .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-        let builtin = self
-            .builtin
-            .iter()
-            .map(|file| {
-                MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents.clone())
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+        let builtin =
+            load_builtin_metadata().map_err(|error| RuntimeError::Backend(error.to_string()))?;
         let overrides = self
             .overrides
             .load()
@@ -1015,7 +1011,6 @@ async fn verify_cached_revision(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::builtin_provider_registry;
 
     struct FakeFetcher {
         objects: BTreeMap<String, Vec<u8>>,
@@ -1049,7 +1044,14 @@ mod tests {
         revision: u64,
         corrupt_first: bool,
     ) -> (FakeFetcher, Vec<CurrentCatalogFile>) {
-        let files = builtin_provider_registry().unwrap().catalog_files();
+        let files = load_builtin_metadata()
+            .unwrap()
+            .into_iter()
+            .map(|file| CurrentCatalogFile {
+                kind: file.kind,
+                contents: file.contents,
+            })
+            .collect::<Vec<_>>();
         let mut objects = BTreeMap::new();
         let mut manifest_files = Vec::new();
         for (position, file) in files.iter().enumerate() {
@@ -1110,7 +1112,7 @@ mod tests {
     }
 
     fn manager(root: &Path, source: &str, fetcher: FakeFetcher) -> Arc<CloudUpdateManager> {
-        CloudUpdateManager::new(
+        CloudUpdateManager::new_with_managed_sources(
             root,
             Arc::new(fetcher),
             profile(),
@@ -1119,9 +1121,7 @@ mod tests {
                 source_url: Some(source.to_string()),
                 interval_secs: 60,
             },
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            Arc::new(StaticMetadataOverrideLoader::new(Vec::new(), Vec::new())),
         )
         .unwrap()
     }

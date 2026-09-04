@@ -445,6 +445,8 @@ Owner：Model/Router 小组
 
 实现记录：Model/Router 小组在 `src/frame/aicc/src/routing/mod.rs` 实现 exact/logical 两类内部路由、method/api_type/capability/operation/feature 与 Provider runtime/policy 硬过滤、过滤后继续 fallback，以及按目录 item 权重、exact model 权重、profile 分数和 exact model 名依次排序的确定性 scheduler。六类 profile、动态成本/延迟/可靠性/质量/本地性评分、调用方传入的 session 历史 exact model 软偏好、完整有序 fallback candidates、结构化 route trace 和固定模板用户摘要均已落地；trace 类型不接收 prompt、资源、credential 或 provider option。新增 12 个单元测试覆盖正常、边界、拒绝、fallback、权重、六类 profile、历史偏好和脱敏；在干净 WP-09 基线叠加本模块后，AICC 98 个测试、all-target check 和 stable clippy `--no-deps -D warnings`（豁免仓库既有 Resource 新版本 lint）通过，当前并行集成工作区的 AICC 157 个测试与 all-target check 也已通过，未新增依赖。真实 Provider read view 到 `CandidateRuntimeState` 的装配由后续 RuntimeSnapshot/API 集成工作包完成。
 
+WP-16 生产编排契约补充：`ModelRegistry` 提供逻辑目录 `route_policy` 的只读入口，Router 侧新增 `resolve_effective_routing_policy` 与 `policy_engine_for_route`，按 logical directory < request `session_overlay` < request `RoutePolicy` 的固定顺序统一生成 `EffectiveRoutingPolicy`/`PolicyEngine`，所有字段继续经过 `LockedValue` 冲突检查，Service 不再需要复制合并逻辑。公共 `RoutePolicyProfile::{Cheap, Fast, Balanced, Quality}` 分别唯一映射为 scheduler 的 `CostFirst`、`LatencyFirst`、`Balanced`、`QualityFirst`；`RoutePolicy.max_latency_ms` 已进入 effective policy，并按候选 p95 latency 执行 fail-closed 硬过滤，延迟未知、非法或超限均拒绝。新增 4 个测试覆盖目录策略、global/profile session overlay、request policy、locked 拒绝、四类 profile 映射和 latency 上限；AICC 全量 336 个测试及 all-target check 通过，未新增依赖，未修改 WP-16 Service owner 文件。
+
 ### WP-11：Call Lowering
 
 Owner：Protocol/Router 联合小组
@@ -548,7 +550,7 @@ Owner：Runtime/Consistency 小组
 - [x] 列表未变且 seq 相同只做 probe，不重写 inventory；
 - [x] 从已发布 RuntimeSnapshot 提供 Provider quota observation 只读查询；
 - [x] reload/delete/disable/replace/exit 无孤儿任务和迟到写。
-- [ ] 由 WP-15 从 `src/frame/aicc/driver_metadata/` 集中编译嵌入完整 builtin 文件集，删除生产 builtin 运行时路径；
+- [x] 由 WP-15 从 `src/frame/aicc/driver_metadata/` 集中编译嵌入完整 builtin 文件集，删除生产 builtin 运行时路径；
 - [ ] 四层来源的路径、key、枚举、revision、优先级和校验只封装在 WP-15 生产 `RuntimeInputs` 中；
 - [ ] Provider、Service、Routing、Execution 只消费当前有效 snapshot，不得分别装配或读取四层来源。
 
@@ -558,7 +560,7 @@ Owner：Runtime/Consistency 小组
 
 补充收敛：`RuntimeProviderRegistry::quota_observation` 只从已发布 registry 查找指定 Provider，并委托该 generation 捕获的 executable 读取可信 quota，不向 Service 暴露 `ProviderRuntimeManager`。Runtime 定向测试 14 个通过。
 
-边界修订：builtin metadata 继续采用编译嵌入，但只能由 WP-15 集中嵌入和解析；`$BUCKYOS_ROOT/bin/aicc/driver_metadata` 不再是生产路径。各 `provider/builtin` 模块需要删除独立 `include_*` 和 catalog 文件导出，并在当前 generation 中消费 WP-15 发布的有效 `CatalogSnapshot`。WP-16 只装配 WP-15 的生产输入和已收敛结果，不感知四层来源。该迁移需 WP-07/WP-08 Provider 接口更新后完成，因此以上三项保持未完成。
+边界修订：builtin metadata 继续采用编译嵌入，但只能由 WP-15 集中嵌入和解析；`$BUCKYOS_ROOT/bin/aicc/driver_metadata` 不再是生产路径。WP-15 已在 `settings/mod.rs` 集中嵌入并校验完整 builtin 文件集，`CloudUpdateManager::load_catalog` 由该入口与其它来源构造有效 `Arc<CatalogSnapshot>`，不再使用调用方提供的 builtin 内容。各 `provider/builtin` 模块仍需删除独立 `include_*` 和 catalog 文件导出，并在当前 generation 中消费 WP-15 发布的有效 snapshot；WP-16 仍需删除遗留 builtin 参数，只装配 WP-15 的生产输入和已收敛结果。剩余迁移需 WP-03 typed Provider configuration、WP-07/WP-08 Provider 接口更新后完成。
 
 ### WP-16：Service 与管理 API
 

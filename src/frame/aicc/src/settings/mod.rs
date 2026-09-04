@@ -17,9 +17,143 @@ use thiserror::Error;
 
 pub(crate) const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
 pub(crate) const SYSTEM_CONFIG_METADATA_KEY: &str = "services/aicc/driver_metadata";
-pub(crate) const BUILTIN_METADATA_RELATIVE_DIR: &str = "bin/aicc/driver_metadata";
 pub(crate) const LOCAL_METADATA_RELATIVE_DIR: &str = "etc/aicc/driver_metadata/local";
 const SYSTEM_CONFIG_METADATA_SCHEMA_VERSION: u32 = 1;
+
+const BUILTIN_METADATA_DOCUMENTS: &[(CatalogKind, &[u8])] = &[
+    (
+        CatalogKind::ModelDriver,
+        include_bytes!("../../driver_metadata/models/anthropic.model.json"),
+    ),
+    (
+        CatalogKind::ModelDriver,
+        include_bytes!("../../driver_metadata/models/deepseek.model.json"),
+    ),
+    (
+        CatalogKind::ModelDriver,
+        include_bytes!("../../driver_metadata/models/doubao.model.json"),
+    ),
+    (
+        CatalogKind::ModelDriver,
+        include_bytes!("../../driver_metadata/models/gemini.model.json"),
+    ),
+    (
+        CatalogKind::ModelDriver,
+        include_bytes!("../../driver_metadata/models/glm.model.json"),
+    ),
+    (
+        CatalogKind::ModelDriver,
+        include_bytes!("../../driver_metadata/models/kimi.model.json"),
+    ),
+    (
+        CatalogKind::ModelDriver,
+        include_bytes!("../../driver_metadata/models/minimax.model.json"),
+    ),
+    (
+        CatalogKind::ModelDriver,
+        include_bytes!("../../driver_metadata/models/openai.model.json"),
+    ),
+    (
+        CatalogKind::ModelDriver,
+        include_bytes!("../../driver_metadata/models/qwen.model.json"),
+    ),
+    (
+        CatalogKind::ProviderRules,
+        include_bytes!("../../driver_metadata/providers/claude.provider.json"),
+    ),
+    (
+        CatalogKind::ProviderRules,
+        include_bytes!("../../driver_metadata/providers/deepseek.provider.json"),
+    ),
+    (
+        CatalogKind::ProviderRules,
+        include_bytes!("../../driver_metadata/providers/doubao.provider.json"),
+    ),
+    (
+        CatalogKind::ProviderRules,
+        include_bytes!("../../driver_metadata/providers/fal.provider.json"),
+    ),
+    (
+        CatalogKind::ProviderRules,
+        include_bytes!("../../driver_metadata/providers/gemini.provider.json"),
+    ),
+    (
+        CatalogKind::ProviderRules,
+        include_bytes!("../../driver_metadata/providers/glm.provider.json"),
+    ),
+    (
+        CatalogKind::ProviderRules,
+        include_bytes!("../../driver_metadata/providers/kimi.provider.json"),
+    ),
+    (
+        CatalogKind::ProviderRules,
+        include_bytes!("../../driver_metadata/providers/minimax.provider.json"),
+    ),
+    (
+        CatalogKind::ProviderRules,
+        include_bytes!("../../driver_metadata/providers/openai.provider.json"),
+    ),
+    (
+        CatalogKind::ProviderRules,
+        include_bytes!("../../driver_metadata/providers/openrouter.provider.json"),
+    ),
+    (
+        CatalogKind::ProviderRules,
+        include_bytes!("../../driver_metadata/providers/qwen.provider.json"),
+    ),
+    (
+        CatalogKind::ProviderRules,
+        include_bytes!("../../driver_metadata/providers/sn.provider.json"),
+    ),
+    (
+        CatalogKind::KnownProvider,
+        include_bytes!("../../driver_metadata/known-providers/claude.known-provider.json"),
+    ),
+    (
+        CatalogKind::KnownProvider,
+        include_bytes!("../../driver_metadata/known-providers/deepseek.known-provider.json"),
+    ),
+    (
+        CatalogKind::KnownProvider,
+        include_bytes!("../../driver_metadata/known-providers/doubao.known-provider.json"),
+    ),
+    (
+        CatalogKind::KnownProvider,
+        include_bytes!("../../driver_metadata/known-providers/fal.known-provider.json"),
+    ),
+    (
+        CatalogKind::KnownProvider,
+        include_bytes!("../../driver_metadata/known-providers/gemini.known-provider.json"),
+    ),
+    (
+        CatalogKind::KnownProvider,
+        include_bytes!("../../driver_metadata/known-providers/glm.known-provider.json"),
+    ),
+    (
+        CatalogKind::KnownProvider,
+        include_bytes!("../../driver_metadata/known-providers/kimi.known-provider.json"),
+    ),
+    (
+        CatalogKind::KnownProvider,
+        include_bytes!("../../driver_metadata/known-providers/minimax.known-provider.json"),
+    ),
+    (
+        CatalogKind::KnownProvider,
+        include_bytes!("../../driver_metadata/known-providers/openai.known-provider.json"),
+    ),
+    (
+        CatalogKind::KnownProvider,
+        include_bytes!("../../driver_metadata/known-providers/openrouter.known-provider.json"),
+    ),
+    (
+        CatalogKind::KnownProvider,
+        include_bytes!("../../driver_metadata/known-providers/qwen.known-provider.json"),
+    ),
+    (
+        CatalogKind::KnownProvider,
+        include_bytes!("../../driver_metadata/known-providers/sn.known-provider.json"),
+    ),
+];
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -439,11 +573,22 @@ struct DiskMetadataDocument {
     contents: Vec<u8>,
 }
 
-pub(crate) async fn load_builtin_metadata(
-    root: impl AsRef<Path>,
-) -> Result<Vec<MetadataFile>, SettingsError> {
-    let documents = read_metadata_directory(root.as_ref(), true).await?;
-    parse_disk_metadata(documents, MetadataSource::Builtin)
+pub(crate) fn load_builtin_metadata() -> Result<Vec<MetadataFile>, SettingsError> {
+    let mut identities = BTreeSet::new();
+    let mut files = Vec::with_capacity(BUILTIN_METADATA_DOCUMENTS.len());
+    for (kind, contents) in BUILTIN_METADATA_DOCUMENTS {
+        let file = MetadataFile::parse(MetadataSource::Builtin, *kind, contents.to_vec())?;
+        let identity = file.identity();
+        if !identities.insert(identity.clone()) {
+            return Err(SettingsError::DuplicateMetadataFile {
+                metadata_source: MetadataSource::Builtin,
+                kind: identity.0,
+                catalog_id: identity.1,
+            });
+        }
+        files.push(file);
+    }
+    Ok(files)
 }
 
 async fn read_metadata_directory(
@@ -887,11 +1032,34 @@ mod tests {
         assert_ne!(first_revision, second_revision);
     }
 
-    #[tokio::test]
-    async fn builtin_metadata_loader_reads_and_validates_packaged_layout() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("driver_metadata");
-        let files = load_builtin_metadata(&root).await.unwrap();
-        assert!(!files.is_empty());
+    #[test]
+    fn builtin_metadata_loader_reads_and_validates_embedded_catalogs() {
+        let files = load_builtin_metadata().unwrap();
+        assert_eq!(files.len(), BUILTIN_METADATA_DOCUMENTS.len());
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("driver_metadata");
+        let mut source_documents = BTreeSet::new();
+        for (directory, kind) in [
+            ("models", CatalogKind::ModelDriver),
+            ("providers", CatalogKind::ProviderRules),
+            ("known-providers", CatalogKind::KnownProvider),
+        ] {
+            for entry in std::fs::read_dir(source_root.join(directory)).unwrap() {
+                let path = entry.unwrap().path();
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
+                {
+                    source_documents.insert((kind, std::fs::read(path).unwrap()));
+                }
+            }
+        }
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| (file.kind, file.contents.clone()))
+                .collect::<BTreeSet<_>>(),
+            source_documents
+        );
         assert!(files
             .iter()
             .all(|file| file.source == MetadataSource::Builtin));
@@ -912,20 +1080,6 @@ mod tests {
         assert!(catalog.model_driver("openai").is_some());
         assert!(catalog.provider_rules("openai").is_some());
         assert!(catalog.known_provider("openai").is_some());
-    }
-
-    #[tokio::test]
-    async fn builtin_metadata_loader_requires_all_catalog_directories() {
-        let temp = tempfile::tempdir().unwrap();
-        tokio::fs::create_dir(temp.path().join("models"))
-            .await
-            .unwrap();
-        assert!(matches!(
-            load_builtin_metadata(temp.path()).await,
-            Err(SettingsError::InvalidMetadataPath { path, reason })
-                if path == temp.path().join("providers")
-                    && reason == "required metadata directory is missing"
-        ));
     }
 
     #[tokio::test]
