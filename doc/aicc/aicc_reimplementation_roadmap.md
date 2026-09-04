@@ -633,10 +633,12 @@ Owner：四个并行集成小组
 
 #### WP-17B Workflow
 
-- [ ] 更新 `src/kernel/workflow/src/adapters/aicc.rs`；
-- [ ] method schema 复用 `buckyos-api` 已导出的公共契约；
-- [ ] 删除内部重复 DTO 和 all-in-one payload；除已冻结的 reload method 更新外，不重命名或删除其它已导出的 RPC method/type；
-- [ ] 验证 Helper、typed inference、cancel 和 task response。
+- [x] 更新 `src/kernel/workflow/src/adapters/aicc.rs`；
+- [x] method schema 复用 `buckyos-api` 已导出的公共契约；
+- [x] 删除内部重复 DTO 和 all-in-one payload；除已冻结的 reload method 更新外，不重命名或删除其它已导出的 RPC method/type；
+- [x] 验证 Helper、typed inference、cancel 和 task response。
+
+实现记录：Workflow 小组将 `service::aicc.*` adapter 收敛到 `buckyos-api` 的 canonical method 常量、`AiccCall` typed request dispatch 和 typed response，cancel 同样复用公共 `CancelRequest`/`CancelResponse`，不再手工解析或拼装协议字段；保留 chat message 的 `text`/`tool_calls` Workflow 派生视图，并让 `status=running` 的异步 task envelope 原样携带 `task_id`、`event_ref` 和 Provider task reference。新增 6 项 adapter 单测，覆盖 canonical method、typed chat、LLM/图像 Helper、异步 task、cancel 严格 schema 和旧 all-in-one `payload` 拒绝；关联提交为 `9984215d`。`cargo test -p workflow` 的 49 项测试和 `cargo check -p workflow --all-targets` 均通过，定向 clippy 未发现 adapter 告警；严格全 crate clippy 仍被 Workflow 及其依赖中的既有告警基线阻断。
 
 #### WP-17C OpenDAN/Jarvis/CLI
 
