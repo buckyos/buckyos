@@ -9,7 +9,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use buckyos_api::{
     features, AiContent, AiMessage, AiRole, AiToolCall, AiToolResultContent, AiUsage, AiccCall,
-    ApiType, LlmChatInvokeRequest, LlmResponseFormatType, ResourceRef,
+    AiccExecutionMode, ApiType, LlmChatInvokeRequest, LlmResponseFormatType, ResourceRef,
 };
 use futures_util::{stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
@@ -115,6 +115,9 @@ impl ClaudeMessagesCodec {
                 "stop_sequences".to_string(),
                 serde_json::to_value(&request.stop).map_err(invalid_request_json)?,
             );
+        }
+        if request.execution_mode == AiccExecutionMode::Stream {
+            body.insert("stream".to_string(), Value::Bool(true));
         }
         apply_resolved_parameters(&mut body, &call.input.resolved_parameters)?;
 
@@ -524,7 +527,7 @@ fn apply_resolved_parameters(
         "top_k",
     ];
     for (name, value) in parameters {
-        if name == "provider_model_id" {
+        if matches!(name.as_str(), "provider_model_id" | "stream") {
             continue;
         }
         if !ALLOWED.contains(&name.as_str()) {
@@ -1304,6 +1307,7 @@ mod tests {
         request.temperature = Some(0.25);
         request.top_p = Some(0.9);
         request.stop = vec!["STOP".to_string()];
+        request.execution_mode = AiccExecutionMode::Stream;
         request.tools = vec![AiToolSpec {
             tool_type: "function".to_string(),
             name: "weather".to_string(),
@@ -1314,7 +1318,6 @@ mod tests {
         let input = input(
             request,
             &[
-                ("stream", json!(true)),
                 ("thinking", json!({"type": "enabled", "budget_tokens": 256})),
                 ("tool_choice", json!({"type": "auto"})),
             ],
@@ -1354,6 +1357,7 @@ mod tests {
         assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
         assert_eq!(body["thinking"]["budget_tokens"], 256);
         assert_eq!(body["stream"], true);
+        assert!(body.get("execution_mode").is_none());
     }
 
     #[tokio::test]

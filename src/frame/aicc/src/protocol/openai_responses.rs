@@ -10,10 +10,10 @@ use super::{
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use buckyos_api::{
-    AiArtifact, AiContent, AiMessage, AiRole, AiToolResultContent, AiUsage, AiccCall, ApiType,
-    AudioSpeechRecognitionRequest, AudioTextToSpeechRequest, EmbeddingTextItem,
-    ImageInpaintRequest, ImageToImageRequest, LlmChatInvokeRequest, LlmResponseFormatType,
-    ResourceRef as PublicResourceRef, TextToImageInvokeRequest,
+    AiArtifact, AiContent, AiMessage, AiRole, AiToolResultContent, AiUsage, AiccCall,
+    AiccExecutionMode, ApiType, AudioSpeechRecognitionRequest, AudioTextToSpeechRequest,
+    EmbeddingTextItem, ImageInpaintRequest, ImageToImageRequest, LlmChatInvokeRequest,
+    LlmResponseFormatType, ResourceRef as PublicResourceRef, TextToImageInvokeRequest,
 };
 use futures_util::{stream, StreamExt};
 use reqwest::header::{HeaderValue, CONTENT_TYPE};
@@ -394,6 +394,9 @@ fn encode_responses_llm(
         request.max_output_tokens.map(Value::from),
     );
     apply_responses_parameters(&mut body, &call.input.resolved_parameters)?;
+    if request.execution_mode == AiccExecutionMode::Stream {
+        body.insert("stream".to_string(), Value::Bool(true));
+    }
     Ok(Value::Object(body))
 }
 
@@ -534,7 +537,7 @@ fn apply_responses_parameters(
     parameters: &BTreeMap<String, Value>,
 ) -> ProtocolResultValue<()> {
     for (name, value) in parameters {
-        if name == "provider_model_id" {
+        if matches!(name.as_str(), "provider_model_id" | "stream") {
             continue;
         }
         let valid = match name.as_str() {
@@ -2446,14 +2449,12 @@ mod tests {
             Some(true),
         ));
         request.max_output_tokens = Some(256);
+        request.execution_mode = AiccExecutionMode::Stream;
         let mut input = input(AiccCall::ChatCompletionsCreate(request));
         input.resolved_parameters.insert(
             "reasoning".to_string(),
             json!({"effort":"high","summary":"auto"}),
         );
-        input
-            .resolved_parameters
-            .insert("stream".to_string(), json!(true));
         let request = registry()
             .encode(
                 OPENAI_RESPONSES_ADAPTER_ID,
@@ -2475,6 +2476,7 @@ mod tests {
         assert_eq!(body["text"]["format"]["type"], "json_schema");
         assert_eq!(body["reasoning"]["effort"], "high");
         assert_eq!(body["stream"], true);
+        assert!(body.get("execution_mode").is_none());
         let inputs = body["input"].as_array().unwrap();
         assert!(inputs.iter().any(|item| item["type"] == "reasoning"));
         assert!(inputs.iter().any(|item| item["type"] == "function_call"));

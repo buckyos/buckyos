@@ -307,6 +307,8 @@ Native-task submit 后续补充为必须携带并校验 canonical `CodecInput`�
 
 管理面后续补充 `CodecRegistry::adapters()` 只读枚举接口，直接按内部 `BTreeMap` 的 `protocol_adapter_id` 升序返回 descriptor 引用，不暴露 codec 或可变引用；空 registry 和逆序注册已有确定顺序测试覆盖。
 
+WP-12 集成反馈补充：所有声明 stream 的基础 codec 直接从 canonical `execution_mode=stream` 生成 Provider wire 参数，不再依赖或接受 rules 中的 `stream` 覆盖，也不会把内部 `execution_mode` 枚举原样序列化；OpenAI Chat Completions、OpenAI Responses、Claude Messages、Gemini Interactions 及其派生 Adapter 共享此约束。现有增量 decoder 覆盖 `Delta/Progress/Final`、提前 EOF、流内 Provider error、transport interruption、request ID、Retry-After 和响应大小限制。
+
 ### WP-06：基础 Protocol Codec
 
 Owner：四个并行协议小组

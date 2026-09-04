@@ -10,11 +10,11 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use buckyos_api::{
     features, AiArtifact, AiContent, AiMessage, AiRole, AiToolResultContent, AiUsage, AiccCall,
-    ApiType, AudioMusicRequest, AudioSpeechRecognitionRequest, AudioTextToSpeechRequest,
-    EmbeddingMultimodalRequest, EmbeddingTextItem, EmbeddingTextRequest, ImageToImageRequest,
-    LlmChatInvokeRequest, ResourceRef, TextToImageInvokeRequest, VideoExtendRequest,
-    VideoImageToVideoRequest, VideoTextToVideoRequest, VideoToVideoRequest, VisionCaptionRequest,
-    VisionDetectRequest, VisionOcrRequest, VisionSegmentRequest,
+    AiccExecutionMode, ApiType, AudioMusicRequest, AudioSpeechRecognitionRequest,
+    AudioTextToSpeechRequest, EmbeddingMultimodalRequest, EmbeddingTextItem, EmbeddingTextRequest,
+    ImageToImageRequest, LlmChatInvokeRequest, ResourceRef, TextToImageInvokeRequest,
+    VideoExtendRequest, VideoImageToVideoRequest, VideoTextToVideoRequest, VideoToVideoRequest,
+    VisionCaptionRequest, VisionDetectRequest, VisionOcrRequest, VisionSegmentRequest,
 };
 use bytes::Bytes;
 use futures_util::{stream, StreamExt};
@@ -389,6 +389,9 @@ fn encode_llm(
             })?,
         );
     }
+    if request.execution_mode == AiccExecutionMode::Stream {
+        body.insert("stream".to_string(), Value::Bool(true));
+    }
     Ok(())
 }
 
@@ -586,6 +589,9 @@ fn encode_tts(
             "style": request.voice.style, "speed": request.speed
         }}),
     );
+    if request.execution_mode == AiccExecutionMode::Stream {
+        body.insert("stream".to_string(), Value::Bool(true));
+    }
     Ok(())
 }
 
@@ -633,7 +639,7 @@ fn apply_interaction_parameters(
         "safety_settings",
     ];
     for (name, value) in parameters {
-        if name == "provider_model_id" {
+        if matches!(name.as_str(), "provider_model_id" | "stream") {
             continue;
         }
         if !ALLOWED.contains(&name.as_str()) {
@@ -2048,12 +2054,13 @@ mod tests {
             ],
         );
         request.max_output_tokens = Some(64);
+        request.execution_mode = AiccExecutionMode::Stream;
         let input = CodecInput {
             canonical_request: AiccCall::ChatCompletionsCreate(request),
-            resolved_parameters: BTreeMap::from([
-                ("provider_model_id".to_string(), json!("gemini-test")),
-                ("stream".to_string(), json!(true)),
-            ]),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".to_string(),
+                json!("gemini-test"),
+            )]),
         };
         let wire = registry
             .encode(
@@ -2075,12 +2082,47 @@ mod tests {
         assert_eq!(body["system_instruction"], "be concise");
         assert_eq!(body["generation_config"]["max_output_tokens"], 64);
         assert_eq!(body["stream"], true);
+        assert!(body.get("execution_mode").is_none());
         let golden = ProtocolContractHarness::default()
             .redact_header(HeaderName::from_static("x-goog-api-key"))
             .request(&wire)
             .unwrap();
         assert_eq!(golden.headers["x-goog-api-key"], "[REDACTED]");
         assert!(!format!("{wire:?}").contains("top-secret"));
+    }
+
+    #[test]
+    fn tts_stream_mode_is_lowered_without_internal_field() {
+        let (descriptor, registration) = gemini_interactions_adapter();
+        let mut registry = super::super::CodecRegistry::default();
+        registry.register_codecs(descriptor, registration).unwrap();
+        let mut request = AudioTextToSpeechRequest::new(
+            "gemini-tts@google",
+            "hello".to_string(),
+            buckyos_api::VoiceSpec::default(),
+        );
+        request.execution_mode = AiccExecutionMode::Stream;
+        let input = CodecInput {
+            canonical_request: AiccCall::AudioTextToSpeech(request),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".to_string(),
+                json!("gemini-tts"),
+            )]),
+        };
+        let wire = registry
+            .encode(
+                GEMINI_ADAPTER_ID,
+                GEMINI_INTERACTIONS_OPERATION_ID,
+                ApiType::AudioTextToSpeech,
+                &input,
+                &context(),
+            )
+            .unwrap();
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON body")
+        };
+        assert_eq!(body["stream"], true);
+        assert!(body.get("execution_mode").is_none());
     }
 
     #[tokio::test]

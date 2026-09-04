@@ -9,8 +9,9 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use buckyos_api::{
-    features, AiContent, AiMessage, AiRole, AiToolResultContent, AiUsage, AiccCall, ApiType,
-    LlmChatInvokeRequest, LlmResponseFormat, LlmResponseFormatType, ResourceRef,
+    features, AiContent, AiMessage, AiRole, AiToolResultContent, AiUsage, AiccCall,
+    AiccExecutionMode, ApiType, LlmChatInvokeRequest, LlmResponseFormat, LlmResponseFormatType,
+    ResourceRef,
 };
 use futures_util::{stream, StreamExt};
 use reqwest::header::{HeaderMap, CONTENT_TYPE};
@@ -204,6 +205,9 @@ impl OpenAiChatCompletionsCodec {
                 "stop".to_string(),
                 serde_json::to_value(&request.stop).map_err(invalid_request_json)?,
             );
+        }
+        if request.execution_mode == AiccExecutionMode::Stream {
+            body.insert("stream".to_string(), Value::Bool(true));
         }
         apply_resolved_parameters(
             &mut body,
@@ -637,7 +641,7 @@ fn apply_resolved_parameters(
     dialect: &dyn OpenAiChatCompletionsDialect,
 ) -> ProtocolResultValue<()> {
     for (name, value) in parameters {
-        if name == "provider_model_id" {
+        if matches!(name.as_str(), "provider_model_id" | "stream") {
             continue;
         }
         let (mapped, from_dialect) = match transform_base_resolved_parameter(name, value, dialect)?
@@ -1704,13 +1708,8 @@ mod tests {
             ],
         );
         request.max_output_tokens = Some(42);
-        let derived_input = input(
-            request,
-            &[
-                ("stream", json!(true)),
-                ("fake_routing", json!({"order": ["primary"]})),
-            ],
-        );
+        request.execution_mode = AiccExecutionMode::Stream;
+        let derived_input = input(request, &[("fake_routing", json!({"order": ["primary"]}))]);
         let wire = registry
             .encode(
                 FAKE_DERIVED_ADAPTER_ID,
@@ -1895,10 +1894,10 @@ mod tests {
         request.max_output_tokens = Some(256);
         request.seed = Some(7);
         request.stop = vec!["STOP".to_string()];
+        request.execution_mode = AiccExecutionMode::Stream;
         let input = input(
             request,
             &[
-                ("stream", json!(true)),
                 ("tool_choice", json!("auto")),
                 ("parallel_tool_calls", json!(true)),
             ],
@@ -1929,7 +1928,9 @@ mod tests {
         assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(body["max_completion_tokens"], 256);
+        assert_eq!(body["stream"], true);
         assert_eq!(body["stream_options"]["include_usage"], true);
+        assert!(body.get("execution_mode").is_none());
     }
 
     #[test]

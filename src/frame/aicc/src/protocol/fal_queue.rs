@@ -205,7 +205,13 @@ fn canonical_body(
             "canonical fal request must encode as an object",
         ));
     };
-    for name in ["exact_model", "idempotency_key", "task_options", "output"] {
+    for name in [
+        "exact_model",
+        "execution_mode",
+        "idempotency_key",
+        "task_options",
+        "output",
+    ] {
         body.remove(name);
     }
     match call {
