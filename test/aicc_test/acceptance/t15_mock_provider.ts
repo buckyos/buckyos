@@ -172,9 +172,14 @@ function streamFixture(contract: ProviderProtocolContract): string {
   switch (contract.stream_protocol) {
     case "openai_responses":
       return [
-        "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_mock_1\",\"object\":\"response\",\"status\":\"in_progress\",\"output\":[]}}",
-        "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_mock_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"BUCKYOS-AICC-4827\"}",
-        `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: contract.success_fixture })}`,
+        "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_mock_1\",\"object\":\"response\",\"status\":\"in_progress\",\"output\":[]}}",
+        "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"msg_mock_1\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}",
+        "event: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"sequence_number\":2,\"item_id\":\"msg_mock_1\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}",
+        "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":3,\"item_id\":\"msg_mock_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"BUCKYOS-AICC-4827\"}",
+        "event: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"sequence_number\":4,\"item_id\":\"msg_mock_1\",\"output_index\":0,\"content_index\":0,\"text\":\"BUCKYOS-AICC-4827\"}",
+        "event: response.content_part.done\ndata: {\"type\":\"response.content_part.done\",\"sequence_number\":5,\"item_id\":\"msg_mock_1\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"BUCKYOS-AICC-4827\",\"annotations\":[]}}",
+        "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"sequence_number\":6,\"output_index\":0,\"item\":{\"id\":\"msg_mock_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"BUCKYOS-AICC-4827\",\"annotations\":[]}]}}",
+        `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", sequence_number: 7, response: contract.success_fixture })}`,
       ].join("\n\n") + "\n\n";
     case "claude_messages":
       return [
@@ -187,9 +192,13 @@ function streamFixture(contract: ProviderProtocolContract): string {
       ].join("\n\n") + "\n\n";
     case "gemini_interactions":
       return [
-        "event: interaction.created\ndata: {\"event_type\":\"interaction.created\",\"interaction\":{\"id\":\"interaction_mock_1\",\"status\":\"in_progress\"}}",
-        "event: content.delta\ndata: {\"event_type\":\"content.delta\",\"delta\":{\"type\":\"text\",\"text\":\"BUCKYOS-AICC-4827\"}}",
+        "event: interaction.created\ndata: {\"event_id\":\"evt_mock_1\",\"event_type\":\"interaction.created\",\"interaction\":{\"id\":\"interaction_mock_1\",\"object\":\"interaction\",\"model\":\"mock-model\",\"status\":\"in_progress\"}}",
+        "event: interaction.status_update\ndata: {\"event_type\":\"interaction.status_update\",\"interaction_id\":\"interaction_mock_1\",\"status\":\"in_progress\"}",
+        "event: step.start\ndata: {\"event_type\":\"step.start\",\"index\":0,\"step\":{\"type\":\"model_output\"}}",
+        "event: step.delta\ndata: {\"event_type\":\"step.delta\",\"index\":0,\"delta\":{\"type\":\"text\",\"text\":\"BUCKYOS-AICC-4827\"}}",
+        "event: step.stop\ndata: {\"event_type\":\"step.stop\",\"index\":0}",
         `event: interaction.completed\ndata: ${JSON.stringify({ event_type: "interaction.completed", interaction: contract.success_fixture })}`,
+        "event: done\ndata: [DONE]",
       ].join("\n\n") + "\n\n";
     case "openai_chat":
     case "openrouter_chat":
@@ -340,7 +349,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           if (selection.scenario === "async_failed") {
             return json(response, 200, { status: "FAILED", request_id: "fal_mock_1", error: "mock inference failed" });
           }
-          return json(response, 200, { status: "COMPLETED", request_id: "fal_mock_1", response_url: url.href.replace(/\/status$/, ""), metrics: { inference_time: 0.01 } });
+          return json(response, 200, { status: "COMPLETED", request_id: "fal_mock_1", response_url: url.href.replace(/\/status$/, "/response"), metrics: { inference_time: 0.01 } });
         }
         if (/\/requests\/fal_mock_1(?:\/response)?$/.test(url.pathname) && request.method === "GET") {
           const errors = captureAuxiliary();
@@ -492,14 +501,14 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
       }
       if (selection.provider_driver === "google-gemini" &&
           contract.id === "gemini.interactions.v1beta" &&
-          Array.isArray(rawFixture.outputs)) {
+          Array.isArray(rawFixture.steps)) {
         const structuredText: Record<string, string> = {
           "vision.ocr": JSON.stringify({ text: "BUCKYOS-AICC-4827", pages: [{ page_index: 0, width: 1, height: 1, blocks: [] }] }),
           "vision.detect": JSON.stringify({ detections: [{ label: "marker", score: 1, bbox: { format: "xywh", unit: "relative", x: 0, y: 0, width: 1, height: 1 } }] }),
           "vision.segment": JSON.stringify({ masks: [{ id: "mask-1", score: 1, mask: { format: "polygon", points: [[0, 0], [1, 0], [1, 1]] } }] }),
         };
         const text = selection.api_type ? structuredText[selection.api_type] : undefined;
-        if (text) rawFixture.outputs = [{ type: "text", text }];
+        if (text) rawFixture.steps = [{ type: "model_output", content: [{ type: "text", text }] }];
       }
       const fixture = rewriteMockUrls(
         rawFixture,

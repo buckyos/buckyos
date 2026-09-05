@@ -58,6 +58,7 @@ import {
   validateProviderProtocolCatalog,
   validateProviderAuxiliaryRequest,
   validateProviderRequest,
+  validateProviderSuccessFixture,
 } from "./provider_protocol_contracts.ts";
 import { assertT15ResponseMapping, buildT15TypedParams, variantCells } from "./run_t15_gateway.ts";
 import { createT15MockHandler, T15_PROVIDER_DISCOVERY_CONTRACTS } from "./t15_mock_provider.ts";
@@ -88,8 +89,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 function t15FieldValue(field: string, contract: ProviderProtocolContract, model: string): unknown {
   if (field === "model") return model;
+  if (field === "messages") return [{ role: "user", content: "BUCKYOS-AICC-4827" }];
+  if (field === "instances") return [{ prompt: "BUCKYOS-AICC-4827" }];
+  if (field === "documents") return ["wrong", "BUCKYOS-AICC-4827"];
+  if (field === "content") return { parts: [{ text: "BUCKYOS-AICC-4827" }] };
+  if (field === "tools") return [{ type: "computer_preview" }];
   const type = contract.body_field_types[field]?.[0] ?? "string";
-  if (type === "array") return [];
+  if (type === "array") return [{ type: "message", role: "user", content: "BUCKYOS-AICC-4827" }];
   if (type === "object") return {};
   if (type === "number") return 1;
   if (type === "boolean") return true;
@@ -114,6 +120,7 @@ function t15ProviderRequest(
     field,
     t15FieldValue(field, contract, model),
   ]));
+  if (contract.id === "minimax.music-generation.v1") fields.is_instrumental = true;
   if (contract.content_type === "multipart/form-data") {
     const form = new FormData();
     for (const [field, value] of Object.entries({ ...fields, ...extraBody })) {
@@ -1525,7 +1532,7 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
       "x-api-key": "test-key",
       "anthropic-version": "2023-06-01",
     }),
-    body: { model: "claude-test", messages: [], max_tokens: 16 },
+    body: { model: "claude-test", messages: [{ role: "user", content: "hello" }], max_tokens: 16 },
   }), []);
   assert.deepEqual(validateProviderRequest(contract, {
     method: "POST",
@@ -1536,7 +1543,7 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
       "x-api-key": "test-key",
       "anthropic-version": "2023-06-01",
     }),
-    body: { model: "claude-test", messages: [], max_tokens: 16, invented_by_aicc: true },
+    body: { model: "claude-test", messages: [{ role: "user", content: "hello" }], max_tokens: 16, invented_by_aicc: true },
   }), ["unknown body field invented_by_aicc"]);
   assert.deepEqual(validateProviderRequest(contract, {
     method: "POST",
@@ -1549,6 +1556,17 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
     }),
     body: { model: "claude-test", messages: {}, max_tokens: "16" },
   }), ["body field messages has invalid type", "body field max_tokens has invalid type"]);
+  assert.deepEqual(validateProviderRequest(contract, {
+    method: "POST",
+    pathname: "/v1/messages",
+    query: new URLSearchParams(),
+    headers: new Headers({
+      "content-type": "application/json",
+      "x-api-key": "test-key",
+      "anthropic-version": "2023-06-01",
+    }),
+    body: { model: "claude-test", messages: [null], max_tokens: 16 },
+  }), ["body field messages[0] must be an object"]);
   assert.ok(contract.official_sources.every((source) => source.startsWith("https://")));
   const sn = protocolContract(catalog, "sn-ai-provider", "sn.openai-responses.v1");
   assert.equal(sn.path, "/api/v1/ai/responses");
@@ -1563,6 +1581,26 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
   const invalidCatalog = structuredClone(catalog);
   invalidCatalog.providers[0].contracts[0].official_sources = ["https://example.com/not-provider-evidence"];
   assert.throws(() => validateProviderProtocolCatalog(invalidCatalog), /Provider official domain/);
+  assert.ok(catalog.providers.flatMap((provider) => provider.contracts)
+    .every((candidate) => validateProviderSuccessFixture(candidate).length === 0));
+  const invalidGeminiFixture = structuredClone(protocolContract(catalog, "google-gemini", "gemini.interactions.v1beta"));
+  invalidGeminiFixture.success_fixture = { id: "wrong", outputs: [{ type: "text", text: "wrong" }] };
+  assert.deepEqual(validateProviderSuccessFixture(invalidGeminiFixture), [
+    "outputs is not an Interactions response field",
+    "steps must be a non-empty array",
+  ]);
+  const minimaxMusic = protocolContract(catalog, "minimax", "minimax.music-generation.v1");
+  const musicRequest = (body: Record<string, unknown>) => validateProviderRequest(minimaxMusic, {
+    method: "POST",
+    pathname: "/v1/music_generation",
+    query: new URLSearchParams(),
+    headers: new Headers({ "content-type": "application/json", authorization: "Bearer test-key" }),
+    body,
+  });
+  assert.deepEqual(musicRequest({ model: "music-3.0", prompt: "calm instrumental" }), [
+    "MiniMax non-instrumental music requires lyrics or lyrics_optimizer=true",
+  ]);
+  assert.deepEqual(musicRequest({ model: "music-3.0", prompt: "calm instrumental", is_instrumental: true }), []);
 });
 
 test("T1.5 Provider mock rejects non-official wire and redacts captured credentials", async (context) => {
@@ -1642,7 +1680,7 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
   const valid = await fetch(`${baseUrl}/v1/messages`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ model: "claude-test", messages: [], max_tokens: 16 }),
+    body: JSON.stringify({ model: "claude-test", messages: [{ role: "user", content: "hello" }], max_tokens: 16 }),
   });
   assert.equal(valid.status, 200);
   const audit = await (await fetch(`${baseUrl}/__mock/requests`)).json() as {
@@ -1654,7 +1692,7 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
   const invalid = await fetch(`${baseUrl}/v1/messages`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ model: "claude-test", messages: [], max_tokens: 16, invented: true }),
+    body: JSON.stringify({ model: "claude-test", messages: [{ role: "user", content: "hello" }], max_tokens: 16, invented: true }),
   });
   assert.equal(invalid.status, 400);
   assert.match(await invalid.text(), /unknown body field invented/);
@@ -1789,7 +1827,26 @@ test("T1.5 Provider mock serves every declared streaming and official error fixt
       const response = await fetch(providerRequest.url, providerRequest.init);
       assert.equal(response.status, 200, `${provider.provider_driver}/${contract.id} stream`);
       assert.match(response.headers.get("content-type") ?? "", /^text\/event-stream/);
-      assert.match(await response.text(), /BUCKYOS-AICC-4827/);
+      const streamBody = await response.text();
+      assert.match(streamBody, /BUCKYOS-AICC-4827/);
+      if (contract.stream_protocol === "gemini_interactions") {
+        assert.deepEqual(streamBody.split("\n").filter((line) => line.startsWith("event: ")), [
+          "event: interaction.created",
+          "event: interaction.status_update",
+          "event: step.start",
+          "event: step.delta",
+          "event: step.stop",
+          "event: interaction.completed",
+          "event: done",
+        ]);
+        assert.equal(streamBody.includes("content.delta"), false);
+        assert.match(streamBody, /data: \[DONE\]/);
+      }
+      if (contract.stream_protocol === "openai_responses") {
+        for (const event of ["response.output_item.added", "response.content_part.added", "response.output_text.done", "response.output_item.done"]) {
+          assert.match(streamBody, new RegExp(`event: ${event.replaceAll(".", "\\.")}`));
+        }
+      }
       assert.equal((await fetch(`${baseUrl}/__mock/select`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1852,10 +1909,11 @@ test("T1.5 async lifecycle validates and captures official poll/result wire", as
   const headers = { authorization: "Key test-key" };
   assert.equal((await fetch(`${baseUrl}/fal-ai/esrgan/requests/fal_mock_1/status`, { headers })).status, 200);
   assert.equal((await fetch(`${baseUrl}/fal-ai/esrgan/requests/fal_mock_1`, { headers })).status, 200);
+  assert.equal((await fetch(`${baseUrl}/fal-ai/esrgan/requests/fal_mock_1/response`, { headers })).status, 200);
   const audit = await (await fetch(`${baseUrl}/__mock/requests`)).json() as {
     requests: Array<{ async_step?: string; validation_errors: string[] }>;
   };
-  assert.deepEqual(audit.requests.map((request) => request.async_step), ["poll", "result"]);
+  assert.deepEqual(audit.requests.map((request) => request.async_step), ["poll", "result", "result"]);
   assert.ok(audit.requests.every((request) => request.validation_errors.length === 0));
 });
 

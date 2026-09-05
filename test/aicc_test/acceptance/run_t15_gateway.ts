@@ -378,7 +378,11 @@ export function buildT15TypedParams(
     case "vision.segment": return { ...common, image: resource("image/png"), prompt: { type: "text", text: "Segment objects" } };
     case "audio.tts": return { ...common, text: "BuckyOS 4827", voice: { voice_id: "alloy" } };
     case "audio.asr": return { ...common, audio: resource("audio/wav") };
-    case "audio.music": return { ...common, prompt: "A short calm instrumental" };
+    case "audio.music": return {
+      ...common,
+      prompt: "A short calm song",
+      lyrics: "[Verse]\nBUCKYOS-AICC-4827",
+    };
     case "audio.enhance": return { ...common, audio: resource("audio/wav"), task: "denoise" };
     case "video.txt2video": return { ...common, prompt: "A paper plane moves across a desk" };
     case "video.img2video": return { ...common, prompt: "Subtle motion", image: resource("image/png") };

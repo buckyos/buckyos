@@ -263,6 +263,10 @@ export function validateProviderProtocolCatalog(value: unknown): ProviderProtoco
       } else if (contract.async_steps !== undefined) {
         throw new Error(`${id}.async_steps requires async_protocol`);
       }
+      const fixtureErrors = validateProviderSuccessFixture(contract as unknown as ProviderProtocolContract);
+      if (fixtureErrors.length > 0) {
+        throw new Error(`${id}.success_fixture is invalid: ${fixtureErrors.join("; ")}`);
+      }
     }
   }
   for (const required of REQUIRED_T15_PROVIDER_DRIVERS) {
@@ -417,6 +421,165 @@ export function validateProviderRequest(
       Array.isArray(body[field]) ? "array" : body[field] !== null && typeof body[field] === "object" ? "object" : typeof body[field] as never,
     )) {
       errors.push(`body field ${field} has invalid type`);
+    }
+  }
+  validateNestedProviderBody(contract, body, errors);
+  return errors;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function validateNestedProviderBody(
+  contract: ProviderProtocolContract,
+  body: Record<string, unknown>,
+  errors: string[],
+): void {
+  for (const field of contract.required_body_fields) {
+    if (typeof body[field] === "string" && !(body[field] as string).trim()) {
+      errors.push(`body field ${field} must be a non-empty string`);
+    }
+    if (Array.isArray(body[field]) && body[field].length === 0) {
+      errors.push(`body field ${field} must be a non-empty array`);
+    }
+  }
+  for (const [field, value] of Object.entries(body)) {
+    if (typeof value === "number" && !Number.isFinite(value)) {
+      errors.push(`body field ${field} must be a finite number`);
+    }
+  }
+
+  if (body.messages !== undefined) {
+    if (Array.isArray(body.messages) && body.messages.length > 0) {
+      body.messages.forEach((value, index) => {
+        const message = recordValue(value);
+        if (!message) {
+          errors.push(`body field messages[${index}] must be an object`);
+          return;
+        }
+        if (typeof message.role !== "string" || !message.role) {
+          errors.push(`body field messages[${index}].role must be a non-empty string`);
+        }
+        if (message.content === undefined && message.tool_calls === undefined && message.tool_call_id === undefined) {
+          errors.push(`body field messages[${index}] must include content or tool call data`);
+        }
+        if (Array.isArray(message.content)) {
+          if (message.content.length === 0 || message.content.some((part) => !recordValue(part))) {
+            errors.push(`body field messages[${index}].content must contain content block objects`);
+          }
+        } else if (message.content !== undefined && message.content !== null && typeof message.content !== "string") {
+          errors.push(`body field messages[${index}].content has invalid type`);
+        }
+      });
+    }
+  }
+
+  if (body.tools !== undefined && (!Array.isArray(body.tools) || body.tools.some((tool) => !recordValue(tool)))) {
+    errors.push("body field tools must be an array of objects");
+  }
+  if (body.documents !== undefined) {
+    if (!Array.isArray(body.documents) || body.documents.length === 0 || body.documents.some((document) =>
+      typeof document !== "string" && !recordValue(document)
+    )) {
+      errors.push("body field documents must be a non-empty array of strings or objects");
+    }
+  }
+  if (body.instances !== undefined && (!Array.isArray(body.instances) || body.instances.length === 0 ||
+      body.instances.some((instance) => !recordValue(instance)))) {
+    errors.push("body field instances must be a non-empty array of objects");
+  }
+  if (contract.operation === "models.embedContent" && body.content !== undefined) {
+    const content = recordValue(body.content);
+    if (!content || !Array.isArray(content.parts) || content.parts.length === 0 ||
+        content.parts.some((part) => !recordValue(part))) {
+      errors.push("body field content.parts must be a non-empty array of objects");
+    }
+  }
+  if (contract.operation === "interactions.create" && Array.isArray(body.input) &&
+      (body.input.length === 0 || body.input.some((item) => typeof item !== "string" && !recordValue(item)))) {
+    errors.push("body field input must be a non-empty array of strings or objects");
+  }
+
+  for (const field of ["max_tokens", "max_completion_tokens", "max_output_tokens", "dimensions", "n", "top_n"]) {
+    if (typeof body[field] === "number" && (!Number.isInteger(body[field]) || body[field] <= 0)) {
+      errors.push(`body field ${field} must be a positive integer`);
+    }
+  }
+  if (contract.id === "minimax.music-generation.v1") {
+    const model = String(body.model ?? "");
+    const isCover = model === "music-cover" || model === "music-cover-free";
+    if (isCover) {
+      const references = [body.audio_url, body.audio_base64, body.cover_feature_id]
+        .filter((value) => typeof value === "string" && value.length > 0);
+      if (references.length !== 1) errors.push("MiniMax cover music requires exactly one audio reference");
+    } else if (body.is_instrumental !== true && body.lyrics_optimizer !== true &&
+        (typeof body.lyrics !== "string" || !body.lyrics.trim())) {
+      errors.push("MiniMax non-instrumental music requires lyrics or lyrics_optimizer=true");
+    }
+  }
+}
+
+export function validateProviderSuccessFixture(contract: ProviderProtocolContract): string[] {
+  if (contract.success_fixture_base64) return [];
+  const fixture = recordValue(contract.success_fixture);
+  if (!fixture) return ["fixture must be an object"];
+  const errors: string[] = [];
+  const requireArray = (field: string) => {
+    if (!Array.isArray(fixture[field]) || (fixture[field] as unknown[]).length === 0) {
+      errors.push(`${field} must be a non-empty array`);
+    }
+  };
+  switch (contract.operation) {
+    case "messages.create":
+      requireArray("content");
+      break;
+    case "chat.completions.create":
+      requireArray("choices");
+      break;
+    case "responses.create":
+      requireArray("output");
+      break;
+    case "embeddings.create":
+      requireArray("data");
+      break;
+    case "rerank.create":
+      requireArray("results");
+      break;
+    case "models.embedContent": {
+      const embedding = recordValue(fixture.embedding);
+      if (!embedding || !Array.isArray(embedding.values) || embedding.values.length === 0) {
+        errors.push("embedding.values must be a non-empty array");
+      }
+      break;
+    }
+    case "interactions.create": {
+      if (fixture.outputs !== undefined) errors.push("outputs is not an Interactions response field");
+      if (!Array.isArray(fixture.steps) || fixture.steps.length === 0) {
+        errors.push("steps must be a non-empty array");
+        break;
+      }
+      fixture.steps.forEach((value, index) => {
+        const step = recordValue(value);
+        if (!step || step.type !== "model_output" || !Array.isArray(step.content) || step.content.length === 0) {
+          errors.push(`steps[${index}] must be a model_output with content`);
+        }
+      });
+      break;
+    }
+    case "queue.submit":
+      if (typeof fixture.request_id !== "string" || !fixture.request_id) errors.push("request_id is required");
+      if (typeof fixture.response_url !== "string" || !fixture.response_url.endsWith("/response")) {
+        errors.push("response_url must end with /response");
+      }
+      break;
+  }
+  if (contract.id === "fal.deepfilternet3.queue-v1") {
+    const timings = recordValue(contract.async_result_fixture?.timings);
+    for (const field of ["preprocess", "inference", "postprocess"]) {
+      if (typeof timings?.[field] !== "number") errors.push(`async_result_fixture.timings.${field} is required`);
     }
   }
   return errors;

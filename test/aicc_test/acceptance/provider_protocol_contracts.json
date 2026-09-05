@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-09-05.1",
+  "revision": "official-provider-protocols-2026-09-05.2",
   "checked_at": "2026-09-05",
   "providers": [
     {
@@ -268,7 +268,7 @@
           "allowed_body_fields": ["model", "input", "background", "generation_config", "previous_interaction_id", "response_format", "store", "stream", "system_instruction", "tools"],
           "body_field_types": { "model": ["string"], "input": ["string", "array"] },
           "stream_protocol": "gemini_interactions",
-          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "mock-model", "outputs": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "mock-model", "steps": [{ "type": "model_output", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
           "official_sources": ["https://ai.google.dev/api/interactions-api", "https://ai.google.dev/gemini-api/docs/api-errors"],
           "evidence_summary": "Interactions create is the recommended Gemini primitive and uses POST /v1beta/interactions with model/input and x-goog-api-key."
         },
@@ -285,7 +285,7 @@
           "required_body_fields": ["model", "input", "generation_config"],
           "allowed_body_fields": ["model", "input", "generation_config", "store"],
           "body_field_types": { "model": ["string"], "input": ["string", "array"], "generation_config": ["object"] },
-          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.5-transcribe", "outputs": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.5-transcribe", "steps": [{ "type": "model_output", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
           "official_sources": ["https://ai.google.dev/gemini-api/docs/transcribe", "https://ai.google.dev/gemini-api/docs/api-errors"],
           "evidence_summary": "Gemini transcription uses POST /v1beta/interactions with an audio input and generation_config.transcription_config."
         },
@@ -302,7 +302,7 @@
           "required_body_fields": ["model", "input"],
           "allowed_body_fields": ["model", "input", "generation_config", "previous_interaction_id", "response_format", "store", "tools"],
           "body_field_types": { "model": ["string"], "input": ["string", "array"] },
-          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.1-flash-image", "outputs": [{ "type": "image", "mime_type": "image/png", "data": "iVBORw0KGgo=" }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.1-flash-image", "steps": [{ "type": "model_output", "content": [{ "type": "image", "mime_type": "image/png", "data": "iVBORw0KGgo=" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
           "official_sources": ["https://ai.google.dev/gemini-api/docs/image-generation", "https://ai.google.dev/gemini-api/docs/api-errors"],
           "evidence_summary": "Gemini image generation and editing use POST /v1beta/interactions with model/input and return image content blocks."
         },
@@ -319,7 +319,7 @@
           "required_body_fields": ["model", "input", "response_format", "generation_config"],
           "allowed_body_fields": ["model", "input", "response_format", "generation_config", "store", "stream"],
           "body_field_types": { "model": ["string"], "input": ["string", "array"], "response_format": ["object", "array"], "generation_config": ["object"] },
-          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.1-flash-tts-preview", "outputs": [{ "type": "audio", "mime_type": "audio/pcm", "data": "UklGRg==" }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.1-flash-tts-preview", "steps": [{ "type": "model_output", "content": [{ "type": "audio", "mime_type": "audio/pcm", "data": "UklGRg==" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
           "official_sources": ["https://ai.google.dev/gemini-api/docs/speech-generation", "https://ai.google.dev/gemini-api/docs/api-errors"],
           "evidence_summary": "Gemini TTS uses POST /v1beta/interactions with audio response_format and generation_config.speech_config."
         },
@@ -336,7 +336,7 @@
           "required_body_fields": ["model", "input"],
           "allowed_body_fields": ["model", "input", "response_format", "store"],
           "body_field_types": { "model": ["string"], "input": ["string", "array"] },
-          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "lyria-3-clip-preview", "outputs": [{ "type": "audio", "mime_type": "audio/mpeg", "data": "SUQz" }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "lyria-3-clip-preview", "steps": [{ "type": "model_output", "content": [{ "type": "audio", "mime_type": "audio/mpeg", "data": "SUQz" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
           "official_sources": ["https://ai.google.dev/gemini-api/docs/music-generation", "https://ai.google.dev/gemini-api/docs/api-errors"],
           "evidence_summary": "Lyria 3 music generation uses POST /v1beta/interactions with model/input and returns audio content."
         },
@@ -410,9 +410,10 @@
           "async_steps": [
             { "name": "poll", "http_method": "GET", "path": "/fal-ai/esrgan/requests/{request_id}/status" },
             { "name": "result", "http_method": "GET", "path": "/fal-ai/esrgan/requests/{request_id}" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/esrgan/requests/{request_id}/response" },
             { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/esrgan/requests/{request_id}/cancel" }
           ],
-          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
+          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
           "async_result_fixture": { "image": { "url": "http://mock/artifacts/result.png", "content_type": "image/png", "file_name": "result.png", "file_size": 1024, "width": 1024, "height": 1024 } },
           "official_sources": ["https://fal.ai/models/fal-ai/esrgan/api", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
           "evidence_summary": "ESRGAN queue submit requires image_url at /fal-ai/esrgan and returns an image result after queue completion."
@@ -434,9 +435,10 @@
           "async_steps": [
             { "name": "poll", "http_method": "GET", "path": "/fal-ai/imageutils/rembg/requests/{request_id}/status" },
             { "name": "result", "http_method": "GET", "path": "/fal-ai/imageutils/rembg/requests/{request_id}" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/imageutils/rembg/requests/{request_id}/response" },
             { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/imageutils/rembg/requests/{request_id}/cancel" }
           ],
-          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
+          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
           "async_result_fixture": { "image": { "url": "http://mock/artifacts/result.png", "content_type": "image/png", "file_name": "result.png", "file_size": 1024, "width": 512, "height": 512 } },
           "official_sources": ["https://fal.ai/docs/model-api-reference/image-generation-api/imageutils", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
           "evidence_summary": "Imageutils rembg queue submit requires image_url at /fal-ai/imageutils/rembg and returns an image result after queue completion."
@@ -458,10 +460,11 @@
           "async_steps": [
             { "name": "poll", "http_method": "GET", "path": "/fal-ai/deepfilternet3/requests/{request_id}/status" },
             { "name": "result", "http_method": "GET", "path": "/fal-ai/deepfilternet3/requests/{request_id}" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/deepfilternet3/requests/{request_id}/response" },
             { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/deepfilternet3/requests/{request_id}/cancel" }
           ],
-          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
-          "async_result_fixture": { "audio_file": { "url": "http://mock/artifacts/result.wav", "content_type": "audio/wav", "file_name": "result.wav", "file_size": 2048 }, "timings": { "inference": 0.01 } },
+          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
+          "async_result_fixture": { "audio_file": { "url": "http://mock/artifacts/result.wav", "content_type": "audio/wav", "file_name": "result.wav", "file_size": 2048 }, "timings": { "preprocess": 0.01, "inference": 0.01, "postprocess": 0.01 } },
           "official_sources": ["https://fal.ai/models/fal-ai/deepfilternet3/api", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
           "evidence_summary": "DeepFilterNet 3 queue submit requires audio_url at /fal-ai/deepfilternet3 and returns audio_file plus timings after completion."
         },
@@ -482,9 +485,10 @@
           "async_steps": [
             { "name": "poll", "http_method": "GET", "path": "/fal-ai/video-upscaler/requests/{request_id}/status" },
             { "name": "result", "http_method": "GET", "path": "/fal-ai/video-upscaler/requests/{request_id}" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/video-upscaler/requests/{request_id}/response" },
             { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/video-upscaler/requests/{request_id}/cancel" }
           ],
-          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
+          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
           "async_result_fixture": { "video": { "url": "http://mock/artifacts/result.mp4", "content_type": "video/mp4", "file_name": "result.mp4", "file_size": 4096 } },
           "official_sources": ["https://fal.ai/models/fal-ai/video-upscaler/api", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
           "evidence_summary": "Video Upscaler queue submit requires video_url at /fal-ai/video-upscaler, accepts scale, and returns a video result after completion."
@@ -496,7 +500,7 @@
       "provider_profile_id": "minimax",
       "endpoint_path": "/anthropic",
       "credential_type": "bearer",
-      "test_model_ids": { "llm": "MiniMax-M2.5", "audio.tts": "speech-2.8-hd", "image.txt2img": "image-01", "image.img2img": "image-01", "video.txt2video": "MiniMax-Hailuo-02", "video.img2video": "MiniMax-Hailuo-02", "audio.music": "music-2.0" },
+      "test_model_ids": { "llm": "MiniMax-M2.5", "audio.tts": "speech-2.8-hd", "image.txt2img": "image-01", "image.img2img": "image-01", "video.txt2video": "MiniMax-Hailuo-02", "video.img2video": "MiniMax-Hailuo-02", "audio.music": "music-3.0" },
       "contracts": [
         {
           "id": "minimax.anthropic.messages.v1",
@@ -527,8 +531,8 @@
           "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
           "content_type": "application/json",
           "required_body_fields": ["model", "text"],
-          "allowed_body_fields": ["model", "text", "stream", "language_boost", "output_format", "voice_setting", "pronunciation_dict", "audio_setting", "voice_modify"],
-          "body_field_types": { "model": ["string"], "text": ["string"] },
+          "allowed_body_fields": ["model", "text", "stream", "stream_options", "language_boost", "output_format", "voice_setting", "pronunciation_dict", "audio_setting", "voice_modify", "timbre_weights", "subtitle_enable", "subtitle_type"],
+          "body_field_types": { "model": ["string"], "text": ["string"], "stream": ["boolean"], "stream_options": ["object"], "output_format": ["string"], "voice_setting": ["object"], "pronunciation_dict": ["object"], "audio_setting": ["object"], "voice_modify": ["object"], "timbre_weights": ["array"], "subtitle_enable": ["boolean"], "subtitle_type": ["string"] },
           "success_fixture": { "data": { "audio": "494433", "status": 2 }, "extra_info": { "usage_characters": 12, "audio_format": "mp3" }, "trace_id": "minimax_mock_1", "base_resp": { "status_code": 0, "status_msg": "success" } },
           "official_sources": ["https://platform.minimax.io/docs/api-reference/speech-t2a-http"],
           "evidence_summary": "Synchronous T2A uses POST /v1/t2a_v2 with Bearer auth, model/text, and returns hex audio with base_resp."
@@ -583,8 +587,8 @@
           "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
           "content_type": "application/json",
           "required_body_fields": ["model", "prompt"],
-          "allowed_body_fields": ["model", "prompt", "lyrics", "audio_setting"],
-          "body_field_types": { "model": ["string"], "prompt": ["string"] },
+          "allowed_body_fields": ["model", "prompt", "lyrics", "stream", "output_format", "audio_setting", "lyrics_optimizer", "is_instrumental", "audio_url", "audio_base64", "cover_feature_id"],
+          "body_field_types": { "model": ["string"], "prompt": ["string"], "lyrics": ["string"], "stream": ["boolean"], "output_format": ["string"], "audio_setting": ["object"], "lyrics_optimizer": ["boolean"], "is_instrumental": ["boolean"], "audio_url": ["string"], "audio_base64": ["string"], "cover_feature_id": ["string"] },
           "success_fixture": { "data": { "audio": "494433", "status": 2 }, "trace_id": "minimax_music_mock_1", "base_resp": { "status_code": 0, "status_msg": "success" } },
           "official_sources": ["https://platform.minimax.io/docs/api-reference/music-generation"],
           "evidence_summary": "MiniMax music generation uses POST /v1/music_generation and returns audio/status with base_resp."
@@ -618,8 +622,8 @@
         "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
         "content_type": "application/json",
         "required_body_fields": ["model", "messages"],
-        "allowed_body_fields": ["model", "messages", "prompt", "response_format", "stop", "stream", "stream_options", "max_tokens", "max_completion_tokens", "temperature", "tools", "tool_choice", "top_p", "seed", "frequency_penalty", "presence_penalty", "repetition_penalty", "top_k", "min_p", "top_a", "logit_bias", "logprobs", "top_logprobs", "metadata", "models", "provider", "plugins", "reasoning", "reasoning_effort", "transforms", "user"],
-        "body_field_types": { "model": ["string"], "messages": ["array"] },
+        "allowed_body_fields": ["model", "messages", "prompt", "response_format", "stop", "stream", "stream_options", "max_tokens", "max_completion_tokens", "temperature", "tools", "tool_choice", "top_p", "seed", "frequency_penalty", "presence_penalty", "repetition_penalty", "top_k", "min_p", "top_a", "logit_bias", "logprobs", "top_logprobs", "metadata", "models", "provider", "plugins", "reasoning", "reasoning_effort", "transforms", "user", "cache_control", "debug", "image_config", "modalities", "parallel_tool_calls", "route", "service_tier", "session_id", "stop_server_tools_when", "trace"],
+        "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"], "stream_options": ["object"], "max_tokens": ["number"], "max_completion_tokens": ["number"], "temperature": ["number"], "tools": ["array"], "tool_choice": ["string", "object"], "top_p": ["number"], "seed": ["number"], "frequency_penalty": ["number"], "presence_penalty": ["number"], "reasoning": ["object"], "reasoning_effort": ["string"], "cache_control": ["object"], "debug": ["object"], "image_config": ["object"], "modalities": ["array"], "parallel_tool_calls": ["boolean"], "route": ["string"], "service_tier": ["string"], "session_id": ["string"], "stop_server_tools_when": ["boolean"], "trace": ["object"] },
         "stream_protocol": "openrouter_chat",
         "success_fixture": { "id": "gen_mock_1", "object": "chat.completion", "created": 1770000000, "model": "mock-model", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7 } },
         "official_sources": ["https://openrouter.ai/docs/api-reference/overview", "https://openrouter.ai/openapi.yaml"],
@@ -684,8 +688,8 @@
         "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
         "content_type": "application/json",
         "required_body_fields": ["model", "messages"],
-        "allowed_body_fields": ["model", "messages", "max_tokens", "max_completion_tokens", "response_format", "stop", "stream", "stream_options", "tools", "tool_choice", "thinking", "reasoning_effort", "prompt_cache_key"],
-        "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"] },
+        "allowed_body_fields": ["model", "messages", "max_tokens", "max_completion_tokens", "response_format", "stop", "stream", "stream_options", "tools", "tool_choice", "thinking", "reasoning_effort", "prompt_cache_key", "temperature", "top_p", "n", "presence_penalty", "frequency_penalty"],
+        "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"], "temperature": ["number"], "top_p": ["number"], "n": ["number"], "presence_penalty": ["number"], "frequency_penalty": ["number"] },
         "stream_protocol": "openai_chat",
         "success_fixture": { "id": "cmpl_mock_1", "object": "chat.completion", "created": 1770000000, "model": "kimi-k2.6", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cached_tokens": 0 } },
         "official_sources": ["https://platform.kimi.com/docs/api/chat", "https://platform.kimi.com/docs/api/errors"],
