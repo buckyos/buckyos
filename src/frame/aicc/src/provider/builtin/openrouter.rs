@@ -1,17 +1,12 @@
 use super::super::{
     validate_discovery, DiscoveredModel, DiscoveryContext, ModelAvailability, ProviderDiscovery,
-    ProviderDiscoverySnapshot, ProviderError, ProviderFieldSchema, ProviderHealthState,
-    ProviderResult,
+    ProviderDiscoverySnapshot, ProviderError, ProviderHealthState, ProviderResult,
 };
 #[cfg(test)]
-use super::super::{
-    CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderProfile, RefreshPolicy,
-};
-#[cfg(test)]
-use crate::catalog::KnownProvider;
+use super::super::{DiscoveryMode, ProviderConnectionContract, ProviderProfile};
 use crate::catalog::Pricing;
 #[cfg(test)]
-use crate::catalog::{CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ProviderRulesCatalog};
+use crate::catalog::{CurrentCatalogFile, ProviderRulesCatalog};
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
     OPENAI_EMBEDDINGS_OPERATION_ID, OPENROUTER_CHAT_ADAPTER_ID, OPENROUTER_RERANK_OPERATION_ID,
@@ -20,8 +15,6 @@ use async_trait::async_trait;
 use buckyos_api::{features, ApiType};
 use reqwest::header::ETAG;
 use reqwest::{Method, Url};
-#[cfg(test)]
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,99 +27,27 @@ const MODELS_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
 
 #[cfg(test)]
 pub(crate) fn openrouter_profile() -> ProviderProfile {
-    let known = openrouter_known_provider();
-    let credential: CredentialDeclaration = embedded_value(
-        &known,
-        "credential",
-        "OpenRouter Known Provider credential declaration",
-    );
-    assert_eq!(credential.kind, "bearer");
-    assert!(credential.required && credential.secret);
-    ProviderProfile {
-        provider_profile_id: OPENROUTER_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: known.display_name,
-        default_protocol_adapter_id: known.protocol_adapter_id,
-        credential: CredentialDescriptor {
-            kind: CredentialKind::Bearer,
-            header_name: None,
-        },
-        credential_variants: Vec::new(),
-        discovery_mode: DiscoveryMode::MachineApi,
-        refresh: RefreshPolicy::default(),
-        default_inventory: None,
-    }
+    super::builtin_profile(OPENROUTER_PROVIDER_PROFILE_ID, DiscoveryMode::MachineApi)
 }
 
 #[cfg(test)]
 pub(crate) fn openrouter_connection_contract() -> ProviderConnectionContract {
-    let known = openrouter_known_provider();
-    let fields: InstanceFieldDeclarations = embedded_value(
-        &known,
-        "instance_fields",
-        "OpenRouter Known Provider instance fields",
-    );
-    ProviderConnectionContract {
-        default_base_url: known.base_url,
-        region: fields.region,
-        workspace: fields.workspace,
-        account: fields.account,
-        region_base_urls: known.connection.region_base_urls,
-    }
+    super::builtin_connection_contract(OPENROUTER_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
-pub(crate) fn openrouter_known_provider() -> KnownProvider {
-    super::builtin_catalog_document::<KnownProviderCatalog>(
-        CatalogKind::KnownProvider,
-        OPENROUTER_PROVIDER_PROFILE_ID,
-    )
-    .providers
-    .into_iter()
-    .find(|provider| provider.provider_profile_id == OPENROUTER_PROVIDER_PROFILE_ID)
-    .expect("OpenRouter Known Provider catalog must contain the OpenRouter profile")
+pub(crate) fn openrouter_known_provider() -> crate::catalog::KnownProvider {
+    super::builtin_known_provider(OPENROUTER_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn openrouter_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    super::builtin_catalog_document(CatalogKind::ProviderRules, OPENROUTER_PROVIDER_PROFILE_ID)
+    super::builtin_provider_rules(OPENROUTER_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn openrouter_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[OPENROUTER_PROVIDER_PROFILE_ID])
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CredentialDeclaration {
-    kind: String,
-    required: bool,
-    secret: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InstanceFieldDeclarations {
-    region: ProviderFieldSchema,
-    workspace: ProviderFieldSchema,
-    account: ProviderFieldSchema,
-}
-
-#[cfg(test)]
-fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
-    serde_json::from_value(
-        known
-            .ui_hints
-            .get(key)
-            .unwrap_or_else(|| panic!("{label} is missing"))
-            .clone(),
-    )
-    .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
-}
-
-#[cfg(test)]
-fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
-    serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 #[async_trait]

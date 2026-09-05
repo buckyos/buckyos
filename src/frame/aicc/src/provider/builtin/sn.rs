@@ -7,11 +7,11 @@ use super::super::{
     ProviderResult,
 };
 #[cfg(test)]
-use super::super::{DiscoveryMode, RefreshPolicy};
+use super::super::DiscoveryMode;
 #[cfg(test)]
 use crate::catalog::KnownProvider;
 #[cfg(test)]
-use crate::catalog::{CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ProviderRulesCatalog};
+use crate::catalog::{CatalogKind, CurrentCatalogFile, ProviderRulesCatalog};
 use crate::protocol::{
     openai_responses_adapter, AdapterDescriptor, AdapterStatus, CodecRegistration, CodecRegistry,
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, ProtocolResultValue,
@@ -38,39 +38,12 @@ const SN_MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 
 #[cfg(test)]
 pub(crate) fn sn_profile() -> ProviderProfile {
-    let known = sn_known_provider();
-    let credential: CredentialDeclaration = embedded_value(
-        &known,
-        "credential",
-        "SN Known Provider credential declaration",
-    );
-    assert!(credential.required && credential.secret);
-    let credential = match credential.kind.as_str() {
-        "bearer" => bearer_credential_descriptor(),
-        kind => panic!("SN Known Provider uses unsupported credential kind `{kind}`"),
-    };
-    ProviderProfile {
-        provider_profile_id: SN_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: known.display_name,
-        default_protocol_adapter_id: known.protocol_adapter_id,
-        credential,
-        credential_variants: Vec::new(),
-        discovery_mode: DiscoveryMode::MachineApi,
-        refresh: RefreshPolicy::default(),
-        default_inventory: None,
-    }
+    super::builtin_profile(SN_PROVIDER_PROFILE_ID, DiscoveryMode::MachineApi)
 }
 
 #[cfg(test)]
 pub(crate) fn sn_known_provider() -> KnownProvider {
-    super::builtin_catalog_document::<KnownProviderCatalog>(
-        CatalogKind::KnownProvider,
-        SN_PROVIDER_PROFILE_ID,
-    )
-    .providers
-    .into_iter()
-    .find(|provider| provider.provider_profile_id == SN_PROVIDER_PROFILE_ID)
-    .expect("SN Known Provider catalog must contain the SN profile")
+    super::builtin_known_provider(SN_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
@@ -162,21 +135,12 @@ pub(crate) fn resolve_sn_provider_instance(
 
 #[cfg(test)]
 pub(crate) fn sn_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    super::builtin_catalog_document(CatalogKind::ProviderRules, SN_PROVIDER_PROFILE_ID)
+    super::builtin_provider_rules(SN_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn sn_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[SN_PROVIDER_PROFILE_ID])
-}
-
-#[cfg(test)]
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CredentialDeclaration {
-    kind: String,
-    required: bool,
-    secret: bool,
 }
 
 #[cfg(test)]

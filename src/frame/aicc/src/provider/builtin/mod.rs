@@ -26,6 +26,123 @@ fn builtin_catalog_document<T: serde::de::DeserializeOwned>(
 }
 
 #[cfg(test)]
+fn builtin_known_provider(profile_id: &str) -> crate::catalog::KnownProvider {
+    builtin_catalog_document::<crate::catalog::KnownProviderCatalog>(
+        crate::catalog::CatalogKind::KnownProvider,
+        profile_id,
+    )
+    .providers
+    .into_iter()
+    .find(|provider| provider.provider_profile_id == profile_id)
+    .unwrap_or_else(|| panic!("Known Provider catalog must contain `{profile_id}`"))
+}
+
+#[cfg(test)]
+fn builtin_provider_rules(profile_id: &str) -> crate::catalog::ProviderRulesCatalog {
+    builtin_catalog_document(crate::catalog::CatalogKind::ProviderRules, profile_id)
+}
+
+#[cfg(test)]
+fn builtin_model_driver(profile_id: &str) -> crate::catalog::ModelDriverCatalog {
+    builtin_catalog_document(crate::catalog::CatalogKind::ModelDriver, profile_id)
+}
+
+#[cfg(test)]
+fn builtin_profile(
+    profile_id: &str,
+    discovery_mode: crate::provider::DiscoveryMode,
+) -> crate::provider::ProviderProfile {
+    let known = builtin_known_provider(profile_id);
+    crate::provider::ProviderProfile {
+        provider_profile_id: profile_id.to_owned(),
+        display_name: known.display_name,
+        default_protocol_adapter_id: known.protocol_adapter_id,
+        credential: credential_from_catalog(&known.credential),
+        credential_variants: known
+            .credential_variants
+            .iter()
+            .map(credential_from_catalog)
+            .collect(),
+        discovery_mode,
+        refresh: crate::provider::RefreshPolicy::default(),
+        default_inventory: None,
+    }
+}
+
+#[cfg(test)]
+fn builtin_profile_with_credential(
+    profile_id: &str,
+    discovery_mode: crate::provider::DiscoveryMode,
+    kind: crate::protocol::CredentialKind,
+) -> crate::provider::ProviderProfile {
+    let mut profile = builtin_profile(profile_id, discovery_mode);
+    let credential = std::iter::once(&profile.credential)
+        .chain(&profile.credential_variants)
+        .find(|credential| credential.kind == kind)
+        .cloned()
+        .unwrap_or_else(|| panic!("Known Provider `{profile_id}` does not declare `{kind:?}`"));
+    profile.credential = credential;
+    profile.credential_variants.clear();
+    profile
+}
+
+#[cfg(test)]
+fn credential_from_catalog(
+    credential: &crate::catalog::ProviderCredentialDescriptor,
+) -> crate::provider::CredentialDescriptor {
+    crate::provider::CredentialDescriptor {
+        kind: match credential.kind {
+            crate::catalog::ProviderCredentialKind::Bearer => {
+                crate::protocol::CredentialKind::Bearer
+            }
+            crate::catalog::ProviderCredentialKind::NamedHeader => {
+                crate::protocol::CredentialKind::NamedHeader
+            }
+            crate::catalog::ProviderCredentialKind::FalKey => {
+                crate::protocol::CredentialKind::FalKey
+            }
+            crate::catalog::ProviderCredentialKind::GlmJwt => {
+                crate::protocol::CredentialKind::GlmJwt
+            }
+        },
+        header_name: credential.header_name.clone(),
+    }
+}
+
+#[cfg(test)]
+fn builtin_connection_contract(profile_id: &str) -> crate::provider::ProviderConnectionContract {
+    let known = builtin_known_provider(profile_id);
+    crate::provider::ProviderConnectionContract {
+        default_base_url: known.base_url,
+        region: field_from_catalog(&known.connection.region),
+        workspace: field_from_catalog(&known.connection.workspace),
+        account: field_from_catalog(&known.connection.account),
+        region_base_urls: known.connection.region_base_urls,
+    }
+}
+
+#[cfg(test)]
+fn field_from_catalog(
+    field: &crate::catalog::ProviderFieldSchema,
+) -> crate::provider::ProviderFieldSchema {
+    crate::provider::ProviderFieldSchema {
+        mode: match field.mode {
+            crate::catalog::ProviderFieldMode::Unsupported => {
+                crate::provider::ProviderFieldMode::Unsupported
+            }
+            crate::catalog::ProviderFieldMode::Optional => {
+                crate::provider::ProviderFieldMode::Optional
+            }
+            crate::catalog::ProviderFieldMode::Required => {
+                crate::provider::ProviderFieldMode::Required
+            }
+        },
+        default_value: field.default_value.clone(),
+        allowed_values: field.allowed_values.iter().cloned().collect(),
+    }
+}
+
+#[cfg(test)]
 fn builtin_catalog_files(catalog_ids: &[&str]) -> Vec<crate::catalog::CurrentCatalogFile> {
     crate::settings::load_builtin_metadata()
         .expect("WP-15 builtin metadata must load")

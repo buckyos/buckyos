@@ -1,21 +1,15 @@
-use super::super::ProviderFieldSchema;
 #[cfg(test)]
 use super::super::{
-    CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderProfile, RefreshPolicy,
+    DiscoveryMode, ProviderConnectionContract, ProviderProfile,
 };
 use super::anthropic_models::{AnthropicModelsDiscovery, AnthropicModelsSpec};
 #[cfg(test)]
-use crate::catalog::KnownProvider;
-#[cfg(test)]
-use crate::catalog::{
-    CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ModelDriverCatalog, ProviderRulesCatalog,
-};
+use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
 #[cfg(test)]
 use crate::protocol::CredentialKind;
 use crate::protocol::{ClaudeMessagesCodec, CodecRegistration, HttpTransport};
 #[cfg(test)]
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
 use std::sync::Arc;
 
 pub(crate) const CLAUDE_PROVIDER_PROFILE_ID: &str = "claude";
@@ -28,100 +22,32 @@ pub(super) const CLAUDE_SPEC: AnthropicModelsSpec = AnthropicModelsSpec {
 
 #[cfg(test)]
 pub(crate) fn claude_profile() -> ProviderProfile {
-    let known = claude_known_provider();
-    let credential: CredentialDeclaration = embedded_value(
-        &known,
-        "credential",
-        "Claude Known Provider credential declaration",
-    );
-    assert_eq!(credential.kind, "named_header");
-    assert!(credential.required && credential.secret);
-    ProviderProfile {
-        provider_profile_id: CLAUDE_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: known.display_name,
-        default_protocol_adapter_id: known.protocol_adapter_id,
-        credential: CredentialDescriptor {
-            kind: CredentialKind::NamedHeader,
-            header_name: Some(credential.header_name),
-        },
-        credential_variants: Vec::new(),
-        discovery_mode: DiscoveryMode::MachineApi,
-        refresh: RefreshPolicy::default(),
-        default_inventory: None,
-    }
+    super::builtin_profile(CLAUDE_PROVIDER_PROFILE_ID, DiscoveryMode::MachineApi)
 }
 
 #[cfg(test)]
 pub(crate) fn claude_connection_contract() -> ProviderConnectionContract {
-    let known = claude_known_provider();
-    let fields: InstanceFieldDeclarations = embedded_value(
-        &known,
-        "instance_fields",
-        "Claude Known Provider instance fields",
-    );
-    ProviderConnectionContract {
-        default_base_url: known.base_url,
-        region: fields.region,
-        workspace: fields.workspace,
-        account: fields.account,
-        region_base_urls: known.connection.region_base_urls,
-    }
+    super::builtin_connection_contract(CLAUDE_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
-pub(crate) fn claude_known_provider() -> KnownProvider {
-    super::builtin_catalog_document::<KnownProviderCatalog>(
-        CatalogKind::KnownProvider,
-        CLAUDE_PROVIDER_PROFILE_ID,
-    )
-    .providers
-    .into_iter()
-    .find(|provider| provider.provider_profile_id == CLAUDE_PROVIDER_PROFILE_ID)
-    .expect("Claude Known Provider catalog must contain the Claude profile")
+pub(crate) fn claude_known_provider() -> crate::catalog::KnownProvider {
+    super::builtin_known_provider(CLAUDE_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn claude_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    super::builtin_catalog_document(CatalogKind::ProviderRules, CLAUDE_PROVIDER_PROFILE_ID)
+    super::builtin_provider_rules(CLAUDE_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn claude_model_driver() -> ModelDriverCatalog {
-    super::builtin_catalog_document(CatalogKind::ModelDriver, CLAUDE_PROVIDER_PROFILE_ID)
+    super::builtin_model_driver(CLAUDE_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn claude_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[CLAUDE_PROVIDER_PROFILE_ID])
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CredentialDeclaration {
-    kind: String,
-    header_name: String,
-    required: bool,
-    secret: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InstanceFieldDeclarations {
-    region: ProviderFieldSchema,
-    workspace: ProviderFieldSchema,
-    account: ProviderFieldSchema,
-}
-
-#[cfg(test)]
-fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
-    serde_json::from_value(
-        known
-            .ui_hints
-            .get(key)
-            .unwrap_or_else(|| panic!("{label} is missing"))
-            .clone(),
-    )
-    .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 #[cfg(test)]

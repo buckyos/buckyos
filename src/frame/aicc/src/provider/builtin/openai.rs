@@ -1,24 +1,15 @@
 use super::super::{
     validate_discovery, DiscoveredModel, DiscoveryContext, ModelAvailability, ProviderDiscovery,
-    ProviderDiscoverySnapshot, ProviderError, ProviderFieldSchema, ProviderHealthState,
-    ProviderResult,
+    ProviderDiscoverySnapshot, ProviderError, ProviderHealthState, ProviderResult,
 };
 #[cfg(test)]
-use super::super::{
-    CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderProfile, RefreshPolicy,
-};
+use super::super::{DiscoveryMode, ProviderConnectionContract, ProviderProfile};
 #[cfg(test)]
-use crate::catalog::KnownProvider;
-#[cfg(test)]
-use crate::catalog::{
-    CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ModelDriverCatalog, ProviderRulesCatalog,
-};
+use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
 use crate::protocol::{CredentialKind, HttpRequest, HttpResponse, HttpTransport};
 use async_trait::async_trait;
 use reqwest::header::ETAG;
 use reqwest::{Method, Url};
-#[cfg(test)]
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,108 +20,32 @@ const MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 
 #[cfg(test)]
 pub(crate) fn openai_profile() -> ProviderProfile {
-    let known = openai_known_provider();
-    let credential: CredentialDeclaration = embedded_value(
-        &known,
-        "credential",
-        "OpenAI Known Provider credential declaration",
-    );
-    assert!(credential.required && credential.secret);
-    let credential = match credential.kind.as_str() {
-        "bearer" => CredentialDescriptor {
-            kind: CredentialKind::Bearer,
-            header_name: None,
-        },
-        kind => panic!("OpenAI Known Provider uses unsupported credential kind `{kind}`"),
-    };
-    ProviderProfile {
-        provider_profile_id: OPENAI_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: known.display_name,
-        default_protocol_adapter_id: known.protocol_adapter_id,
-        credential,
-        credential_variants: Vec::new(),
-        discovery_mode: DiscoveryMode::MachineApi,
-        refresh: RefreshPolicy::default(),
-        default_inventory: None,
-    }
+    super::builtin_profile(OPENAI_PROVIDER_PROFILE_ID, DiscoveryMode::MachineApi)
 }
 
 #[cfg(test)]
-pub(crate) fn openai_known_provider() -> KnownProvider {
-    super::builtin_catalog_document::<KnownProviderCatalog>(
-        CatalogKind::KnownProvider,
-        OPENAI_PROVIDER_PROFILE_ID,
-    )
-    .providers
-    .into_iter()
-    .find(|provider| provider.provider_profile_id == OPENAI_PROVIDER_PROFILE_ID)
-    .expect("OpenAI Known Provider catalog must contain the OpenAI profile")
+pub(crate) fn openai_known_provider() -> crate::catalog::KnownProvider {
+    super::builtin_known_provider(OPENAI_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn openai_connection_contract() -> ProviderConnectionContract {
-    let known = openai_known_provider();
-    let fields: InstanceFieldDeclarations = embedded_value(
-        &known,
-        "instance_fields",
-        "OpenAI Known Provider instance fields",
-    );
-    ProviderConnectionContract {
-        default_base_url: known.base_url,
-        region: fields.region,
-        workspace: fields.workspace,
-        account: fields.account,
-        region_base_urls: known.connection.region_base_urls,
-    }
+    super::builtin_connection_contract(OPENAI_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn openai_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    super::builtin_catalog_document(CatalogKind::ProviderRules, OPENAI_PROVIDER_PROFILE_ID)
+    super::builtin_provider_rules(OPENAI_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn openai_model_driver() -> ModelDriverCatalog {
-    super::builtin_catalog_document(CatalogKind::ModelDriver, OPENAI_PROVIDER_PROFILE_ID)
+    super::builtin_model_driver(OPENAI_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn openai_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[OPENAI_PROVIDER_PROFILE_ID])
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CredentialDeclaration {
-    kind: String,
-    required: bool,
-    secret: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InstanceFieldDeclarations {
-    region: ProviderFieldSchema,
-    workspace: ProviderFieldSchema,
-    account: ProviderFieldSchema,
-}
-
-#[cfg(test)]
-fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
-    serde_json::from_value(
-        known
-            .ui_hints
-            .get(key)
-            .unwrap_or_else(|| panic!("{label} is missing"))
-            .clone(),
-    )
-    .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
-}
-
-#[cfg(test)]
-fn decode_catalog<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
-    serde_json::from_slice(contents)
-        .unwrap_or_else(|error| panic!("{label} configuration is invalid: {error}"))
 }
 
 #[async_trait]

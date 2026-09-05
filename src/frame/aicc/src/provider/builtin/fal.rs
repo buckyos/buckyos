@@ -1,87 +1,37 @@
 use super::super::{
     validate_discovery, CatalogOnlyDiscovery, ProviderDiscovery, ProviderDiscoverySnapshot,
-    ProviderFieldSchema, ProviderResult,
+    ProviderResult,
 };
 #[cfg(test)]
-use super::super::{
-    CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderProfile, RefreshPolicy,
-};
+use super::super::{DiscoveryMode, ProviderConnectionContract, ProviderProfile};
 #[cfg(test)]
-use crate::catalog::KnownProvider;
-#[cfg(test)]
-use crate::catalog::{CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ProviderRulesCatalog};
+use crate::catalog::{CatalogKind, CurrentCatalogFile, ProviderRulesCatalog};
 #[cfg(test)]
 use crate::protocol::{CredentialKind, FAL_QUEUE_ADAPTER_ID};
 #[cfg(test)]
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
 use std::sync::Arc;
 
 pub(crate) const FAL_PROVIDER_PROFILE_ID: &str = "fal";
 
 #[cfg(test)]
 pub(crate) fn fal_profile() -> ProviderProfile {
-    let known = fal_known_provider();
-    let credential: CredentialDeclaration = embedded_value(
-        &known,
-        "credential",
-        "fal Known Provider credential declaration",
-    );
-    assert!(credential.required && credential.secret);
-    assert_eq!(credential.header_name, "Authorization");
-    assert_eq!(credential.prefix, "Key");
-    assert_eq!(known.protocol_adapter_id, FAL_QUEUE_ADAPTER_ID);
-    let credential = match credential.kind.as_str() {
-        "fal_key" => CredentialDescriptor {
-            kind: CredentialKind::FalKey,
-            header_name: None,
-        },
-        kind => panic!("fal Known Provider uses unsupported credential kind `{kind}`"),
-    };
-    ProviderProfile {
-        provider_profile_id: FAL_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: known.display_name,
-        default_protocol_adapter_id: known.protocol_adapter_id,
-        credential,
-        credential_variants: Vec::new(),
-        discovery_mode: DiscoveryMode::CatalogOnly,
-        refresh: RefreshPolicy::default(),
-        default_inventory: None,
-    }
+    super::builtin_profile(FAL_PROVIDER_PROFILE_ID, DiscoveryMode::CatalogOnly)
 }
 
 #[cfg(test)]
-pub(crate) fn fal_known_provider() -> KnownProvider {
-    super::builtin_catalog_document::<KnownProviderCatalog>(
-        CatalogKind::KnownProvider,
-        FAL_PROVIDER_PROFILE_ID,
-    )
-    .providers
-    .into_iter()
-    .find(|provider| provider.provider_profile_id == FAL_PROVIDER_PROFILE_ID)
-    .expect("fal Known Provider catalog must contain the fal profile")
+pub(crate) fn fal_known_provider() -> crate::catalog::KnownProvider {
+    super::builtin_known_provider(FAL_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn fal_connection_contract() -> ProviderConnectionContract {
-    let known = fal_known_provider();
-    let fields: InstanceFieldDeclarations = embedded_value(
-        &known,
-        "instance_fields",
-        "fal Known Provider instance fields",
-    );
-    ProviderConnectionContract {
-        default_base_url: known.base_url,
-        region: fields.region,
-        workspace: fields.workspace,
-        account: fields.account,
-        region_base_urls: known.connection.region_base_urls,
-    }
+    super::builtin_connection_contract(FAL_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn fal_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    super::builtin_catalog_document(CatalogKind::ProviderRules, FAL_PROVIDER_PROFILE_ID)
+    super::builtin_provider_rules(FAL_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
@@ -94,36 +44,6 @@ pub(crate) fn fal_discovery(
 ) -> ProviderResult<Arc<dyn ProviderDiscovery>> {
     validate_discovery(&configured_inventory)?;
     Ok(Arc::new(CatalogOnlyDiscovery::new(configured_inventory)))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CredentialDeclaration {
-    kind: String,
-    header_name: String,
-    prefix: String,
-    required: bool,
-    secret: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InstanceFieldDeclarations {
-    region: ProviderFieldSchema,
-    workspace: ProviderFieldSchema,
-    account: ProviderFieldSchema,
-}
-
-#[cfg(test)]
-fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
-    serde_json::from_value(
-        known
-            .ui_hints
-            .get(key)
-            .unwrap_or_else(|| panic!("{label} is missing"))
-            .clone(),
-    )
-    .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 #[cfg(test)]

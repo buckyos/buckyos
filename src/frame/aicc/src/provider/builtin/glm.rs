@@ -1,26 +1,18 @@
 use super::super::{
     CatalogOnlyDiscovery, DiscoveredModel, ModelAvailability, ProviderDiscoverySnapshot,
-    ProviderError, ProviderFieldSchema, ProviderHealthState, ProviderResult,
+    ProviderError, ProviderHealthState, ProviderResult,
 };
 #[cfg(test)]
 use super::super::{
-    CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderConnectionInput,
-    ProviderProfile, RefreshPolicy, ResolvedProviderConnection,
+    DiscoveryMode, ProviderConnectionContract, ProviderConnectionInput, ProviderProfile,
+    ResolvedProviderConnection,
 };
 #[cfg(test)]
-use crate::catalog::KnownProvider;
-#[cfg(test)]
-use crate::catalog::{
-    CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ModelDriverCatalog,
-    ProviderCredentialKind, ProviderRulesCatalog,
-};
+use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
 #[cfg(test)]
 use crate::protocol::CredentialKind;
 use crate::protocol::OPENAI_CHAT_COMPLETIONS_OPERATION_ID;
 use buckyos_api::ApiType;
-#[cfg(test)]
-use serde::de::DeserializeOwned;
-use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const GLM_PROVIDER_PROFILE_ID: &str = "glm";
@@ -37,45 +29,16 @@ pub(crate) fn glm_jwt_profile() -> ProviderProfile {
 
 #[cfg(test)]
 fn glm_profile_with_credential(kind: CredentialKind) -> ProviderProfile {
-    let known = glm_known_provider();
-    let declared_kind = match kind {
-        CredentialKind::Bearer => ProviderCredentialKind::Bearer,
-        CredentialKind::GlmJwt => ProviderCredentialKind::GlmJwt,
-        _ => panic!("GLM profile requested an unsupported credential kind"),
-    };
-    assert!(std::iter::once(&known.credential)
-        .chain(&known.credential_variants)
-        .any(|item| item.kind == declared_kind));
-    ProviderProfile {
-        provider_profile_id: GLM_PROVIDER_PROFILE_ID.to_owned(),
-        display_name: known.display_name,
-        default_protocol_adapter_id: known.protocol_adapter_id,
-        credential: CredentialDescriptor {
-            kind,
-            header_name: None,
-        },
-        credential_variants: Vec::new(),
-        discovery_mode: DiscoveryMode::CatalogOnly,
-        refresh: RefreshPolicy::default(),
-        default_inventory: None,
-    }
+    super::builtin_profile_with_credential(
+        GLM_PROVIDER_PROFILE_ID,
+        DiscoveryMode::CatalogOnly,
+        kind,
+    )
 }
 
 #[cfg(test)]
 pub(crate) fn glm_connection_contract() -> ProviderConnectionContract {
-    let known = glm_known_provider();
-    let fields: InstanceFieldDeclarations = embedded_value(
-        &known,
-        "instance_fields",
-        "GLM Known Provider instance fields",
-    );
-    ProviderConnectionContract {
-        default_base_url: known.base_url,
-        region: fields.region,
-        workspace: fields.workspace,
-        account: fields.account,
-        region_base_urls: known.connection.region_base_urls,
-    }
+    super::builtin_connection_contract(GLM_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
@@ -86,55 +49,23 @@ pub(crate) fn resolve_glm_connection(
 }
 
 #[cfg(test)]
-pub(crate) fn glm_known_provider() -> KnownProvider {
-    super::builtin_catalog_document::<KnownProviderCatalog>(
-        CatalogKind::KnownProvider,
-        GLM_PROVIDER_PROFILE_ID,
-    )
-    .providers
-    .into_iter()
-    .find(|provider| provider.provider_profile_id == GLM_PROVIDER_PROFILE_ID)
-    .expect("GLM Known Provider catalog must contain the GLM profile")
+pub(crate) fn glm_known_provider() -> crate::catalog::KnownProvider {
+    super::builtin_known_provider(GLM_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn glm_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
-    super::builtin_catalog_document(CatalogKind::ProviderRules, GLM_PROVIDER_PROFILE_ID)
+    super::builtin_provider_rules(GLM_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn glm_model_driver() -> ModelDriverCatalog {
-    super::builtin_catalog_document(CatalogKind::ModelDriver, GLM_PROVIDER_PROFILE_ID)
+    super::builtin_model_driver(GLM_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
 pub(crate) fn glm_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[GLM_PROVIDER_PROFILE_ID])
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InstanceFieldDeclarations {
-    region: ProviderFieldSchema,
-    workspace: ProviderFieldSchema,
-    account: ProviderFieldSchema,
-}
-
-#[cfg(test)]
-fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: &str) -> T {
-    serde_json::from_value(
-        known
-            .ui_hints
-            .get(key)
-            .unwrap_or_else(|| panic!("{label} is missing"))
-            .clone(),
-    )
-    .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
-}
-
-#[cfg(test)]
-fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
-    serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 pub(crate) fn glm_catalog_only_inventory(
