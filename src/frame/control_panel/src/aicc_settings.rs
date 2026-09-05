@@ -1390,6 +1390,7 @@ impl ControlPanelServer {
             idempotency_key: None,
             task_options: None,
             session_overlay: None,
+            session_id: None,
         };
         match aicc.helper_llm_chat(request).await {
             Ok(result) => Ok(RPCResponse::new(
@@ -1562,6 +1563,7 @@ impl ControlPanelServer {
             idempotency_key: None,
             task_options: None,
             session_overlay: None,
+            session_id: None,
         };
         let result = aicc
             .helper_llm_chat(request)

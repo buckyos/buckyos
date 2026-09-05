@@ -55,16 +55,24 @@ use crate::worklog::{WorklogAppendCtx, WorklogService};
 /// happens inside aicc, not here.
 pub struct AiccLlmClient {
     aicc: Option<Arc<AiccClient>>,
+    session_id: Option<String>,
 }
 
 impl AiccLlmClient {
     pub fn new(aicc: Arc<AiccClient>) -> Self {
-        Self { aicc: Some(aicc) }
+        Self {
+            aicc: Some(aicc),
+            session_id: None,
+        }
     }
 
-    pub fn from_runtime(aicc_override: Option<Arc<AiccClient>>) -> Self {
+    pub fn from_runtime(
+        aicc_override: Option<Arc<AiccClient>>,
+        session_id: Option<String>,
+    ) -> Self {
         Self {
             aicc: aicc_override,
+            session_id,
         }
     }
 
@@ -153,6 +161,7 @@ impl LlmClient for AiccLlmClient {
             idempotency_key: None,
             task_options: None,
             session_overlay: None,
+            session_id: self.session_id.clone(),
         };
 
         let aicc = self.client().await.map_err(provider_error_from_rpc)?;
@@ -1074,7 +1083,10 @@ pub fn build_session_deps(runtime: &AgentRuntime, input: SessionDepsInput) -> LL
         session_id: ctx.session_id.clone(),
     };
 
-    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::from_runtime(runtime.aicc.clone()));
+    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::from_runtime(
+        runtime.aicc.clone(),
+        Some(ctx.session_id.clone()),
+    ));
     let tools_adapter: Arc<dyn ToolManager> = Arc::new(OpendanToolAdapter::with_from_user_did(
         tools,
         ctx,
