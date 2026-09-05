@@ -7,18 +7,6 @@
   "required_features": [],
   "models": [
     {
-      "id": "glm-5.3",
-      "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 131072, "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true }
-    },
-    {
-      "id": "glm-5.2",
-      "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 131072, "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true }
-    },
-    {
       "id": "glm-5.1",
       "api_types": ["llm"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
@@ -63,6 +51,19 @@
       "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true }
     },
     {
+      "id": "glm-4.5",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-4.5-x",
+      "parameter_scale": "x",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
       "id": "glm-4.5-air",
       "parameter_scale": "air",
       "api_types": ["llm"],
@@ -84,15 +85,8 @@
       "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "reasoning": true }
     },
     {
-      "id": "glm-4-flash-250414",
-      "parameter_scale": "flash",
-      "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "streaming": true, "tool_call": true }
-    },
-    {
-      "id": "glm-4-flashx-250414",
-      "parameter_scale": "flashx",
+      "id": "glm-4-32b-0414-128k",
+      "parameter_scale": "32b",
       "api_types": ["llm"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
       "capabilities": { "streaming": true, "tool_call": true }
@@ -100,7 +94,10 @@
   ],
   "patterns": [],
   "defaults": { "version_rules": ["glm-standard", "glm-turbo", "glm-air", "glm-airx", "glm-flash", "glm-flashx"] },
-  "variants": [],
+  "variants": [
+    { "name": "thinking-enabled", "match": { "origin_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"] } },
+    { "name": "thinking-disabled", "match": { "origin_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"] } }
+  ],
   "version_rules": [
     { "id": "glm-standard", "family": "glm", "tier": "standard", "match": "glm-*", "exclude_tier_tokens": ["turbo", "air", "airx", "flash", "flashx"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm", "version_mount": "llm.glm.{model}" },
     { "id": "glm-turbo", "family": "glm", "tier": "turbo", "match": "glm-*-turbo*", "tier_tokens": ["turbo"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm-turbo", "version_mount": "llm.glm.{model}" },

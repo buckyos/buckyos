@@ -1748,7 +1748,7 @@ mod tests {
         }
         golden.sort();
         golden.dedup();
-        assert_eq!(golden.len(), 62);
+        assert_eq!(golden.len(), 63);
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(
             golden.contains(&"openai|openai-responses|agent.computer_use|responses.create".into())
@@ -1758,6 +1758,8 @@ mod tests {
             .contains(&"gemini|gemini-interactions|video.extend|models.predictLongRunning".into()));
         assert!(golden.contains(&"fal|fal-queue|image.upscale|queue.submit".into()));
         assert!(golden.contains(&"openrouter|openrouter-openai|rerank|rerank.create".into()));
+        assert!(golden
+            .contains(&"openrouter|openrouter-openai|embedding.text|embeddings.create".into()));
         assert!(golden
             .contains(&"minimax|minimax-messages|video.txt2video|video_generation.create".into()));
         assert!(golden.contains(&"qwen|qwen-responses|llm|responses.create".into()));

@@ -7,20 +7,6 @@
   "required_features": [],
   "models": [
     {
-      "id": "MiniMax-M3",
-      "parameter_scale": "m3",
-      "api_types": ["llm"],
-      "logical_mounts": ["llm.minimax", "llm.{driver}.{model}"],
-      "capabilities": {
-        "max_context_tokens": 1000000,
-        "max_output_tokens": 524288,
-        "streaming": true,
-        "tool_call": true,
-        "vision": true,
-        "reasoning": true
-      }
-    },
-    {
       "id": "MiniMax-M2.7",
       "parameter_scale": "m2.7",
       "api_types": ["llm"],

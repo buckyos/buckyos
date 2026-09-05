@@ -31,7 +31,7 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
   deepseek: new Set(["api-docs.deepseek.com"]),
   doubao: new Set(["www.volcengine.com", "docs.volcengine.com"]),
   qwen: new Set(["www.alibabacloud.com"]),
-  "sn-ai-provider": new Set(["github.com"]),
+  "sn-ai-provider": new Set(["github.com", "developers.openai.com"]),
 };
 
 export type ProtocolErrorFixture = {
@@ -83,6 +83,11 @@ export type ProviderProtocolCatalog = {
     credential_type: "api_key" | "bearer";
     instance_fields?: { region?: string; workspace?: string; account?: string };
     official_first_party_model_ids?: Record<string, string[]>;
+    official_variant_sources?: string[];
+    official_variant_rules?: Array<{
+      model_ids: string[];
+      variants: Record<string, Record<string, unknown>>;
+    }>;
     test_model_ids: Record<string, string>;
     contracts: ProviderProtocolContract[];
   }>;
@@ -170,6 +175,28 @@ export function validateProviderProtocolCatalog(value: unknown): ProviderProtoco
         );
         if (!pool.includes(String(modelId))) {
           throw new Error(`${driver}.test_model_ids.${apiType} is absent from its official model pool`);
+        }
+      }
+    }
+    if (provider.official_variant_rules !== undefined) {
+      const sources = stringArray(provider.official_variant_sources, `${driver}.official_variant_sources`);
+      if (sources.some((source) => !/^https:\/\//.test(source) ||
+          !OFFICIAL_PROTOCOL_SOURCE_HOSTS[driver]?.has(new URL(source).hostname))) {
+        throw new Error(`${driver}.official_variant_sources must use the Provider official domain`);
+      }
+      if (!Array.isArray(provider.official_variant_rules) || provider.official_variant_rules.length === 0) {
+        throw new Error(`${driver}.official_variant_rules must be a non-empty array`);
+      }
+      for (const [index, rawRule] of (provider.official_variant_rules as unknown[]).entries()) {
+        const rule = object(rawRule, `${driver}.official_variant_rules[${index}]`);
+        stringArray(rule.model_ids, `${driver}.official_variant_rules[${index}].model_ids`);
+        const variants = object(rule.variants, `${driver}.official_variant_rules[${index}].variants`);
+        if (Object.keys(variants).length === 0) {
+          throw new Error(`${driver}.official_variant_rules[${index}].variants must not be empty`);
+        }
+        for (const [variant, options] of Object.entries(variants)) {
+          nonEmptyString(variant, `${driver}.official_variant_rules[${index}].variants key`);
+          object(options, `${driver}.official_variant_rules[${index}].variants.${variant}`);
         }
       }
     }
@@ -424,6 +451,7 @@ type VariantCell = {
   contract_id: string;
   api_type: string;
   model: ProviderModel;
+  expected_provider_options?: Record<string, unknown>;
 };
 
 export function buildT15Manifest(
@@ -641,6 +669,7 @@ export function buildT15Manifest(
       provider_api_version: contract.api_version,
       expected_wire_fixture: `${contract.id}.request.variant.${variant.model.provider_model_id}`,
       response_fixture: `${contract.id}.success`,
+      expected_provider_options: variant.expected_provider_options,
     });
   }
   return cases;

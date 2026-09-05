@@ -14,7 +14,7 @@ use crate::catalog::Pricing;
 use crate::catalog::{CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ProviderRulesCatalog};
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
-    OPENROUTER_CHAT_ADAPTER_ID, OPENROUTER_RERANK_OPERATION_ID,
+    OPENAI_EMBEDDINGS_OPERATION_ID, OPENROUTER_CHAT_ADAPTER_ID, OPENROUTER_RERANK_OPERATION_ID,
 };
 use async_trait::async_trait;
 use buckyos_api::{features, ApiType};
@@ -229,13 +229,23 @@ impl ProviderDiscovery for OpenRouterDiscovery {
                     .iter()
                     .any(|item| item == "rerank")
             });
+            let embedding = model.architecture.as_ref().is_some_and(|architecture| {
+                architecture
+                    .output_modalities
+                    .iter()
+                    .any(|item| item == "embeddings")
+            });
             let api_type = if rerank {
                 ApiType::Rerank
+            } else if embedding {
+                ApiType::EmbeddingText
             } else {
                 ApiType::Llm
             };
             let operation = if rerank {
                 OPENROUTER_RERANK_OPERATION_ID
+            } else if embedding {
+                OPENAI_EMBEDDINGS_OPERATION_ID
             } else {
                 OPENAI_CHAT_COMPLETIONS_OPERATION_ID
             };
@@ -363,7 +373,7 @@ fn models_endpoint(base_url: &str) -> ProviderResult<String> {
         format!("{path}/api/v1")
     };
     url.set_path(&format!("{prefix}/models"));
-    url.set_query(None);
+    url.set_query(Some("output_modalities=all"));
     url.set_fragment(None);
     Ok(url.to_string())
 }
@@ -450,7 +460,7 @@ mod tests {
             response: Mutex::new(Some(Ok(HttpResponse {
                 status: StatusCode::OK,
                 headers: HeaderMap::new(),
-                body: Bytes::from_static(br#"{"data":[{"id":"openai/model-a","canonical_slug":"openai/model-a","supported_parameters":["tools","response_format"],"architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"pricing":{"prompt":"0.000001","completion":"0.000002"},"expiration_date":null},{"id":"cohere/rerank-v3.5","canonical_slug":"cohere/rerank-v3.5","supported_parameters":[],"architecture":{"input_modalities":["text"],"output_modalities":["rerank"]},"pricing":null,"expiration_date":null},{"id":"openai/model-a:free","canonical_slug":"openai/model-a","supported_parameters":[],"architecture":null,"pricing":null,"expiration_date":null},{"id":"openrouter/auto","canonical_slug":"openrouter/auto","supported_parameters":[],"architecture":null,"pricing":null,"expiration_date":null}]}"#),
+                body: Bytes::from_static(br#"{"data":[{"id":"openai/model-a","canonical_slug":"openai/model-a","supported_parameters":["tools","response_format"],"architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"pricing":{"prompt":"0.000001","completion":"0.000002"},"expiration_date":null},{"id":"openai/text-embedding-3-small","canonical_slug":"openai/text-embedding-3-small","supported_parameters":[],"architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]},"pricing":null,"expiration_date":null},{"id":"cohere/rerank-v3.5","canonical_slug":"cohere/rerank-v3.5","supported_parameters":[],"architecture":{"input_modalities":["text"],"output_modalities":["rerank"]},"pricing":null,"expiration_date":null},{"id":"openai/model-a:free","canonical_slug":"openai/model-a","supported_parameters":[],"architecture":null,"pricing":null,"expiration_date":null},{"id":"openrouter/auto","canonical_slug":"openrouter/auto","supported_parameters":[],"architecture":null,"pricing":null,"expiration_date":null}]}"#),
                 request_id: "request-1".to_owned(),
                 retry_after: None,
             }))),
@@ -480,7 +490,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(snapshot.models.len(), 2);
+        assert_eq!(snapshot.models.len(), 3);
         let language_model = snapshot
             .models
             .iter()
@@ -506,8 +516,21 @@ mod tests {
             reranker.remote_methods,
             Some(BTreeSet::from([OPENROUTER_RERANK_OPERATION_ID.to_owned()]))
         );
+        let embedding = snapshot
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "openai/text-embedding-3-small")
+            .unwrap();
+        assert_eq!(embedding.api_types, Some(vec![ApiType::EmbeddingText]));
+        assert_eq!(
+            embedding.remote_methods,
+            Some(BTreeSet::from([OPENAI_EMBEDDINGS_OPERATION_ID.to_owned()]))
+        );
         let request = transport.request.lock().unwrap().take().unwrap();
-        assert_eq!(request.url, "https://openrouter.ai/api/v1/models");
+        assert_eq!(
+            request.url,
+            "https://openrouter.ai/api/v1/models?output_modalities=all"
+        );
         assert_eq!(request.headers[AUTHORIZATION], "Bearer secret");
         assert_eq!(
             openrouter_known_provider().base_url,
@@ -530,7 +553,7 @@ mod tests {
     fn endpoint_and_pricing_reject_invalid_boundary_values() {
         assert_eq!(
             models_endpoint("https://openrouter.ai").unwrap(),
-            "https://openrouter.ai/api/v1/models"
+            "https://openrouter.ai/api/v1/models?output_modalities=all"
         );
         assert!(models_endpoint("file:///tmp/openrouter").is_err());
         assert!(parse_nonnegative_price("prompt", Some("-0.1")).is_err());

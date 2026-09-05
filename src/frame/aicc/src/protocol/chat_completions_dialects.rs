@@ -1,11 +1,11 @@
 use super::{
-    openai_chat_completions_operation_descriptor, AdapterDescriptor, AdapterStatus,
-    ChatCompletionsImmediateExtensions, ChatCompletionsStreamExtensions,
+    openai_chat_completions_operation_descriptor, openai_responses_adapter, AdapterDescriptor,
+    AdapterStatus, ChatCompletionsImmediateExtensions, ChatCompletionsStreamExtensions,
     ChatCompletionsTokenLimitParameter, CodecCall, CodecRegistration, ExecutionMode, HttpBody,
     HttpRequest, HttpResponse, OpenAiChatCompletionsCodec, OpenAiChatCompletionsDialect,
     OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolExecution,
     ProtocolOutput, ProtocolResultValue, OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-    OPENAI_PROTOCOL_FAMILY_ID,
+    OPENAI_EMBEDDINGS_OPERATION_ID, OPENAI_PROTOCOL_FAMILY_ID,
 };
 use async_trait::async_trait;
 use buckyos_api::{AiContent, AiRole, AiUsage, AiccCall, ApiType, LlmChatInvokeRequest};
@@ -80,6 +80,21 @@ pub(crate) fn glm_chat_contract() -> ChatCompletionsDialectContract {
 pub(crate) fn openrouter_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
     let (mut descriptor, mut registration) =
         derived_adapter(OPENROUTER_CHAT_ADAPTER_ID, Arc::new(OpenRouterDialect));
+    let (openai_descriptor, openai_registration) = openai_responses_adapter();
+    let embeddings = openai_descriptor
+        .operations
+        .get(OPENAI_EMBEDDINGS_OPERATION_ID)
+        .expect("OpenAI embeddings operation must exist")
+        .clone();
+    descriptor
+        .operations
+        .insert(embeddings.operation_id.clone(), embeddings);
+    registration.operation_codecs.extend(
+        openai_registration
+            .operation_codecs
+            .into_iter()
+            .filter(|codec| codec.descriptor().operation_id == OPENAI_EMBEDDINGS_OPERATION_ID),
+    );
     let rerank = openrouter_rerank_descriptor();
     descriptor
         .operations
@@ -247,7 +262,12 @@ fn openrouter_rerank_http_error(response: &HttpResponse) -> ProtocolError {
     let provider_code = parsed
         .as_ref()
         .and_then(|value| value.pointer("/error/code"))
-        .map(|value| value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string()));
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string())
+        });
     let provider_message = parsed
         .as_ref()
         .and_then(|value| value.pointer("/error/message"))
@@ -845,9 +865,18 @@ mod tests {
     async fn openrouter_rerank_maps_caller_errors_as_non_retriable() {
         let registry = registry_with(openrouter_chat_adapter());
         for (status, expected_kind) in [
-            (StatusCode::BAD_REQUEST, super::super::ProtocolErrorKind::InvalidRequest),
-            (StatusCode::UNAUTHORIZED, super::super::ProtocolErrorKind::Authentication),
-            (StatusCode::FORBIDDEN, super::super::ProtocolErrorKind::Authentication),
+            (
+                StatusCode::BAD_REQUEST,
+                super::super::ProtocolErrorKind::InvalidRequest,
+            ),
+            (
+                StatusCode::UNAUTHORIZED,
+                super::super::ProtocolErrorKind::Authentication,
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                super::super::ProtocolErrorKind::Authentication,
+            ),
         ] {
             let error = registry
                 .decode(

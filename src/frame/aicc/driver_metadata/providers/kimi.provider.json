@@ -5,27 +5,15 @@
   "revision_seq": 1,
   "provider_profile_id": "kimi",
   "metadata_drivers": ["kimi"],
-  "models": [
-    {
-      "id": "kimi-k3",
-      "operations": { "llm": "chat.completions.create" },
-      "request_rules": [
-        {
-          "remove": [
-            "/temperature",
-            "/top_p",
-            "/n",
-            "/presence_penalty",
-            "/frequency_penalty"
-          ]
-        }
-      ]
-    }
-  ],
+  "models": [],
   "patterns": [
     {
       "match": "*",
       "operations": { "llm": "chat.completions.create" }
     }
+  ],
+  "variants": [
+    { "model_driver": "kimi", "variant": "thinking-enabled", "match": { "provider_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "thinking-enabled" }, "provider_options": { "thinking": { "type": "enabled" } } },
+    { "model_driver": "kimi", "variant": "thinking-disabled", "match": { "provider_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "thinking-disabled" }, "provider_options": { "thinking": { "type": "disabled" } } }
   ]
 }

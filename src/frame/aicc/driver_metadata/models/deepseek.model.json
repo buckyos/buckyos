@@ -57,6 +57,7 @@
     "version_rules": ["deepseek-flash", "deepseek-pro"]
   },
   "variants": [
+    { "name": "reasoning-minimal", "match": "deepseek-v4-*" },
     { "name": "reasoning-none", "match": "deepseek-v4-*" },
     { "name": "reasoning-low", "match": "deepseek-v4-*" },
     { "name": "reasoning-medium", "match": "deepseek-v4-*" },

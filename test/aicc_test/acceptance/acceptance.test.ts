@@ -59,7 +59,7 @@ import {
   validateProviderAuxiliaryRequest,
   validateProviderRequest,
 } from "./provider_protocol_contracts.ts";
-import { assertT15ResponseMapping, buildT15TypedParams } from "./run_t15_gateway.ts";
+import { assertT15ResponseMapping, buildT15TypedParams, variantCells } from "./run_t15_gateway.ts";
 import { createT15MockHandler, T15_PROVIDER_DISCOVERY_CONTRACTS } from "./t15_mock_provider.ts";
 import {
   MOCK_PROVIDER_CONTRACT_VERSION,
@@ -1948,6 +1948,58 @@ test("T1.5 manifest owns Provider normal, streaming, async, error, and variant c
   assert.ok(manifest.some((item) => item.tags.includes("variant")));
   assert.ok(manifest.every((item) => item.layer === "T1.5" && item.semantic_rubric.length === 0));
   assert.ok(buildStaticManifest().every((item) => !item.case_id.startsWith("t1.protocol.")));
+});
+
+test("T1.5 variants are independently derived from official expectations", async () => {
+  const catalog = structuredClone(await loadProviderProtocolCatalog());
+  const provider = catalog.providers.find((candidate) => candidate.provider_driver === "openai");
+  assert.ok(provider);
+  provider.official_variant_rules = [{
+    model_ids: ["gpt-5.5"],
+    variants: {
+      "reasoning-none": { reasoning: { effort: "none" } },
+      "reasoning-low": { reasoning: { effort: "low" } },
+      "reasoning-medium": { reasoning: { effort: "medium" } },
+      "reasoning-high": { reasoning: { effort: "high" } },
+      "reasoning-xhigh": { reasoning: { effort: "xhigh" } },
+    },
+  }];
+  const inventory: ProviderInventory = {
+    provider_instance_name: "openai-t15",
+    provider_driver: "openai",
+    models: [
+      { exact_model: "gpt-5.5@openai-t15", provider_model_id: "gpt-5.5", api_types: ["llm"], logical_mounts: [] },
+      ...["none", "low", "medium", "high", "xhigh"].map((effort) => ({
+        exact_model: `gpt-5.5:reasoning-${effort}@openai-t15`,
+        provider_model_id: `gpt-5.5:reasoning-${effort}`,
+        provider_actual_model_id: "gpt-5.5",
+        provider_options: { reasoning: { effort } },
+        api_types: ["llm"],
+        logical_mounts: [],
+      })),
+    ],
+  };
+  const cells = variantCells(catalog, inventory);
+  assert.equal(cells.length, 5);
+  assert.deepEqual(
+    cells.find((cell) => cell.model.provider_model_id.endsWith("reasoning-high"))?.expected_provider_options,
+    { reasoning: { effort: "high" } },
+  );
+  assert.throws(
+    () => variantCells(catalog, { ...inventory, models: inventory.models.slice(0, -1) }),
+    /missing official metadata variant gpt-5\.5:reasoning-xhigh/,
+  );
+  assert.throws(
+    () => variantCells(catalog, { ...inventory, models: [...inventory.models, {
+      exact_model: "gpt-5.5:reasoning-max@openai-t15",
+      provider_model_id: "gpt-5.5:reasoning-max",
+      provider_actual_model_id: "gpt-5.5",
+      provider_options: { reasoning: { effort: "max" } },
+      api_types: ["llm"],
+      logical_mounts: [],
+    }] }),
+    /undocumented metadata variant gpt-5\.5:reasoning-max/,
+  );
 });
 
 test("T1.5 typed request fixtures use current provider-neutral methods without legacy envelopes", () => {

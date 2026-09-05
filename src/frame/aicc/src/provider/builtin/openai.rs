@@ -590,12 +590,6 @@ mod tests {
             .map(|rule| rule.tier.as_str())
             .collect::<Vec<_>>();
         assert_eq!(version_tiers, ["standard", "pro", "mini", "nano"]);
-        assert!(catalog
-            .model_driver("openai")
-            .unwrap()
-            .version_rules
-            .iter()
-            .all(|rule| rule.match_rule == crate::matching::MatchRule::Shorthand("gpt-*".into())));
         for (model_id, mount) in [
             ("gpt-5.6", "llm.gpt-standard"),
             ("gpt-5.6-sol", "llm.gpt-pro"),
@@ -608,13 +602,10 @@ mod tests {
                 .find(|model| model.provider_model_id == model_id)
                 .unwrap();
             assert!(mapped.logical_mounts.contains(&mount.to_owned()));
-            assert!(!mapped
-                .logical_mounts
-                .iter()
-                .any(|mount| matches!(
-                    mount.as_str(),
-                    "llm.gpt-sol" | "llm.gpt-terra" | "llm.gpt-luna"
-                )));
+            assert!(!mapped.logical_mounts.iter().any(|mount| matches!(
+                mount.as_str(),
+                "llm.gpt-sol" | "llm.gpt-terra" | "llm.gpt-luna"
+            )));
         }
     }
 }

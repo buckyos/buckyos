@@ -52,6 +52,10 @@ canonical api_type 值域、typed method 值域及其显式关联，并检查能
 协议契约中的 Profile/Adapter 身份一致；这些身份不会回退成 settings 中的
 `provider_driver`。
 
+T1.5 的 `official_variant_rules` 独立记录官方模型、variant 与预期下发参数。
+运行时 metadata 展开的每个 variant 都是独立协议单元；缺少官方期望、缺失或多出
+variant、没有对应 API contract、实际 wire 参数不一致都会使测试失败。
+
 ```bash
 cd test/aicc_test
 pnpm run acceptance:preflight

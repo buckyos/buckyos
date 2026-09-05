@@ -76,6 +76,7 @@ export type AcceptanceCase = {
   expected_aicc_error_code?: string;
   expected_provider_error_code?: string;
   expected_retriable?: boolean;
+  expected_provider_options?: Record<string, unknown>;
 };
 
 export type ProviderModel = {

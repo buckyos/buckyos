@@ -7,16 +7,6 @@
   "metadata_drivers": ["minimax"],
   "models": [
     {
-      "id": "MiniMax-M3",
-      "operations": { "llm": "messages.create" },
-      "request_rules": [
-        {
-          "defaults": { "temperature": 1.0, "top_p": 0.95 },
-          "remove": ["/stop"]
-        }
-      ]
-    },
-    {
       "id": "speech-2.8-hd",
       "operations": { "audio.tts": "t2a.create" }
     },

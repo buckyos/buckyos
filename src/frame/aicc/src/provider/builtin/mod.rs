@@ -192,13 +192,13 @@ mod wp08d_tests {
             (
                 kimi_profile(),
                 instance("kimi", KIMI_CHAT_ADAPTER_ID),
-                discovery("kimi-k3", None),
+                discovery("kimi-k2.6", None),
                 "kimi",
             ),
             (
                 glm_profile(),
                 instance("glm", GLM_CHAT_ADAPTER_ID),
-                discovery("glm-5.3", None),
+                discovery("glm-5.1", None),
                 "glm",
             ),
         ];

@@ -14,5 +14,7 @@
       "operations": { "llm": "responses.create" }
     }
   ],
-  "variants": []
+  "variants": [
+    { "model_driver": "doubao", "variant": "thinking-disabled", "match": { "provider_model_id": "doubao-seed-2-0-*", "variant": "thinking-disabled" }, "provider_options": { "thinking": { "type": "disabled" } } }
+  ]
 }

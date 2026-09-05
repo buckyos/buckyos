@@ -194,15 +194,15 @@ mod tests {
             Some(vec![MINIMAX_PROVIDER_PROFILE_ID.to_owned()])
         );
         assert_eq!(
-            rules.models[0].operations["llm"],
+            rules.patterns[0].operations["llm"],
             CLAUDE_MESSAGES_OPERATION_ID
         );
-        assert_eq!(rules.models[0].request_rules[0].defaults["top_p"], 0.95);
-        assert!(rules.models[0].request_rules[0]
+        assert_eq!(rules.patterns[0].request_rules[0].defaults["top_p"], 0.9);
+        assert!(rules.patterns[0].request_rules[0]
             .remove
             .contains(&"/stop".to_owned()));
         assert_eq!(models.model_driver_id, MINIMAX_PROVIDER_PROFILE_ID);
-        assert!(models.models.iter().any(|model| model.id == "MiniMax-M3"));
+        assert!(models.models.iter().any(|model| model.id == "MiniMax-M2.7"));
         assert_eq!(contract.base_adapter_id, CLAUDE_MESSAGES_ADAPTER_ID);
         assert_eq!(
             adapter.base_adapter_id.as_deref(),

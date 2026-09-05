@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-09-04.1",
-  "checked_at": "2026-09-04",
+  "revision": "official-provider-protocols-2026-09-05.1",
+  "checked_at": "2026-09-05",
   "providers": [
     {
       "provider_driver": "openai",
@@ -9,9 +9,9 @@
       "endpoint_path": "/v1",
       "credential_type": "bearer",
       "official_first_party_model_ids": {
-        "llm": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
-        "vision.ocr": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
-        "vision.caption": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+        "llm": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
+        "vision.ocr": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
+        "vision.caption": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
         "embedding.text": ["text-embedding-3-small", "text-embedding-3-large"],
         "image.txt2img": ["gpt-image-2"],
         "image.img2img": ["gpt-image-2"],
@@ -22,6 +22,22 @@
         "video.img2video": ["sora-2", "sora-2-pro"],
         "agent.computer_use": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
       },
+      "official_variant_sources": [
+        "https://developers.openai.com/api/docs/models/gpt-5.6",
+        "https://developers.openai.com/api/docs/models/gpt-5.5",
+        "https://developers.openai.com/api/docs/models/gpt-5.5-pro",
+        "https://developers.openai.com/api/docs/models/gpt-5.4",
+        "https://developers.openai.com/api/docs/models/gpt-5.4-pro",
+        "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+        "https://developers.openai.com/api/docs/models/gpt-5.4-nano",
+        "https://developers.openai.com/api/docs/models/gpt-5.3-codex"
+      ],
+      "official_variant_rules": [
+        { "model_ids": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"], "variants": { "reasoning-none": { "reasoning": { "effort": "none" } }, "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } }, "reasoning-max": { "reasoning": { "effort": "max" } } } },
+        { "model_ids": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"], "variants": { "reasoning-none": { "reasoning": { "effort": "none" } }, "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } },
+        { "model_ids": ["gpt-5.5-pro", "gpt-5.4-pro"], "variants": { "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } },
+        { "model_ids": ["gpt-5.3-codex"], "variants": { "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } }
+      ],
       "test_model_ids": { "llm": "gpt-5.6", "vision.ocr": "gpt-5.6", "vision.caption": "gpt-5.6", "embedding.text": "text-embedding-3-small", "image.txt2img": "gpt-image-2", "image.img2img": "gpt-image-2", "image.inpaint": "gpt-image-2", "audio.tts": "gpt-4o-mini-tts", "audio.asr": "gpt-transcribe", "video.txt2video": "sora-2", "video.img2video": "sora-2", "agent.computer_use": "gpt-5.6" },
       "contracts": [
         {
@@ -179,6 +195,10 @@
         "vision.ocr": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
         "vision.caption": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
       },
+      "official_variant_sources": ["https://platform.claude.com/docs/en/build-with-claude/effort"],
+      "official_variant_rules": [
+        { "model_ids": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"], "variants": { "effort-low": { "output_config": { "effort": "low" } }, "effort-medium": { "output_config": { "effort": "medium" } }, "effort-high": { "output_config": { "effort": "high" } }, "effort-xhigh": { "output_config": { "effort": "xhigh" } }, "effort-max": { "output_config": { "effort": "max" } } } }
+      ],
       "test_model_ids": { "llm": "claude-sonnet-5", "vision.ocr": "claude-sonnet-5", "vision.caption": "claude-sonnet-5" },
       "contracts": [{
         "id": "anthropic.messages.2023-06-01",
@@ -206,7 +226,7 @@
       "endpoint_path": "/v1beta",
       "credential_type": "api_key",
       "official_first_party_model_ids": {
-        "llm": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"],
+        "llm": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"],
         "vision.ocr": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
         "vision.caption": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
         "vision.detect": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
@@ -223,6 +243,15 @@
         "video.video2video": ["gemini-omni-1.1-flash"],
         "video.extend": ["gemini-omni-1.1-flash"]
       },
+      "official_variant_sources": ["https://ai.google.dev/gemini-api/docs/thinking"],
+      "official_variant_rules": [
+        { "model_ids": ["gemini-2.5-flash", "gemini-2.5-flash-lite"], "variants": { "reasoning-none": { "generation_config": { "thinking_budget": 0 } }, "reasoning-low": { "generation_config": { "thinking_budget": 1024 } }, "reasoning-medium": { "generation_config": { "thinking_budget": 8192 } }, "reasoning-high": { "generation_config": { "thinking_budget": 24576 } } } },
+        { "model_ids": ["gemini-2.5-pro"], "variants": { "reasoning-low": { "generation_config": { "thinking_budget": 1024 } }, "reasoning-medium": { "generation_config": { "thinking_budget": 8192 } }, "reasoning-high": { "generation_config": { "thinking_budget": 24576 } } } },
+        { "model_ids": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.1-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-3-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-3.1-flash-lite-image"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
+      ],
       "test_model_ids": { "llm": "gemini-3.5-flash", "vision.ocr": "gemini-3.5-flash", "vision.caption": "gemini-3.5-flash", "vision.detect": "gemini-3.5-flash", "vision.segment": "gemini-3.5-flash", "audio.asr": "gemini-3.5-transcribe", "embedding.text": "gemini-embedding-2", "embedding.multimodal": "gemini-embedding-2", "image.txt2img": "gemini-3.1-flash-image", "image.img2img": "gemini-3.1-flash-image", "audio.tts": "gemini-3.1-flash-tts-preview", "audio.music": "lyria-3-clip-preview", "video.txt2video": "veo-3.1-generate-preview", "video.img2video": "veo-3.1-generate-preview", "video.video2video": "gemini-omni-1.1-flash", "video.extend": "gemini-omni-1.1-flash" },
       "contracts": [
         {
@@ -567,7 +596,17 @@
       "provider_profile_id": "openrouter",
       "endpoint_path": "/api/v1",
       "credential_type": "bearer",
-      "test_model_ids": { "llm": "openai/gpt-5.6", "rerank": "cohere/rerank-v3.5" },
+      "official_first_party_model_ids": {
+        "llm": ["openai/gpt-5.6", "openai/gpt-5.5", "openai/gpt-5.4"],
+        "embedding.text": ["openai/text-embedding-3-small"],
+        "rerank": ["cohere/rerank-v3.5"]
+      },
+      "official_variant_sources": ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"],
+      "official_variant_rules": [
+        { "model_ids": ["openai/gpt-5.6"], "variants": { "reasoning-none": { "reasoning_effort": "none" }, "reasoning-low": { "reasoning_effort": "low" }, "reasoning-medium": { "reasoning_effort": "medium" }, "reasoning-high": { "reasoning_effort": "high" }, "reasoning-xhigh": { "reasoning_effort": "xhigh" }, "reasoning-max": { "reasoning_effort": "max" } } },
+        { "model_ids": ["openai/gpt-5.5", "openai/gpt-5.4"], "variants": { "reasoning-none": { "reasoning_effort": "none" }, "reasoning-low": { "reasoning_effort": "low" }, "reasoning-medium": { "reasoning_effort": "medium" }, "reasoning-high": { "reasoning_effort": "high" }, "reasoning-xhigh": { "reasoning_effort": "xhigh" } } }
+      ],
+      "test_model_ids": { "llm": "openai/gpt-5.6", "embedding.text": "openai/text-embedding-3-small", "rerank": "cohere/rerank-v3.5" },
       "contracts": [{
         "id": "openrouter.chat-completions.v1",
         "protocol_adapter_id": "openrouter-openai",
@@ -585,6 +624,22 @@
         "success_fixture": { "id": "gen_mock_1", "object": "chat.completion", "created": 1770000000, "model": "mock-model", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7 } },
         "official_sources": ["https://openrouter.ai/docs/api-reference/overview", "https://openrouter.ai/openapi.yaml"],
         "evidence_summary": "OpenRouter chat completions uses POST /api/v1/chat/completions with Bearer auth and OpenAI-compatible messages/choices."
+      }, {
+        "id": "openrouter.embeddings.v1",
+        "protocol_adapter_id": "openrouter-openai",
+        "api_version": "v1",
+        "api_types": ["embedding.text"],
+        "operation": "embeddings.create",
+        "http_method": "POST",
+        "path": "/api/v1/embeddings",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "dimensions", "encoding_format", "input_type", "provider", "user"],
+        "body_field_types": { "model": ["string"], "input": ["string", "array"] },
+        "success_fixture": { "object": "list", "data": [{ "object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3] }], "model": "openai/text-embedding-3-small", "usage": { "prompt_tokens": 2, "total_tokens": 2 } },
+        "official_sources": ["https://openrouter.ai/docs/api/api-reference/embeddings/submit-an-embedding-request"],
+        "evidence_summary": "OpenRouter embeddings uses POST /api/v1/embeddings with Bearer authentication and OpenAI-compatible model/input and embedding results."
       }, {
         "id": "openrouter.rerank.v1",
         "protocol_adapter_id": "openrouter-openai",
@@ -608,7 +663,16 @@
       "provider_profile_id": "kimi",
       "endpoint_path": "/v1",
       "credential_type": "bearer",
-      "test_model_ids": { "llm": "kimi-k3" },
+      "official_first_party_model_ids": { "llm": ["kimi-k2.6", "kimi-k2.5"] },
+      "official_variant_sources": ["https://platform.kimi.com/docs/api/models-overview"],
+      "official_variant_rules": [{
+        "model_ids": ["kimi-k2.6", "kimi-k2.5"],
+        "variants": {
+          "thinking-enabled": { "thinking": { "type": "enabled" } },
+          "thinking-disabled": { "thinking": { "type": "disabled" } }
+        }
+      }],
+      "test_model_ids": { "llm": "kimi-k2.6" },
       "contracts": [{
         "id": "kimi.chat-completions.v1",
         "protocol_adapter_id": "kimi-chat",
@@ -623,7 +687,7 @@
         "allowed_body_fields": ["model", "messages", "max_tokens", "max_completion_tokens", "response_format", "stop", "stream", "stream_options", "tools", "tool_choice", "thinking", "reasoning_effort", "prompt_cache_key"],
         "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"] },
         "stream_protocol": "openai_chat",
-        "success_fixture": { "id": "cmpl_mock_1", "object": "chat.completion", "created": 1770000000, "model": "kimi-k3", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cached_tokens": 0 } },
+        "success_fixture": { "id": "cmpl_mock_1", "object": "chat.completion", "created": 1770000000, "model": "kimi-k2.6", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cached_tokens": 0 } },
         "official_sources": ["https://platform.kimi.com/docs/api/chat", "https://platform.kimi.com/docs/api/errors"],
         "evidence_summary": "Kimi Chat Completions uses POST /v1/chat/completions with Bearer authentication, JSON model/messages, OpenAI-style choices and data-only SSE terminated by [DONE]."
       }]
@@ -634,7 +698,16 @@
       "endpoint_path": "/api/paas/v4",
       "credential_type": "bearer",
       "instance_fields": { "region": "global" },
-      "test_model_ids": { "llm": "glm-5.3" },
+      "official_first_party_model_ids": { "llm": ["glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash", "glm-4-32b-0414-128k"] },
+      "official_variant_sources": ["https://docs.z.ai/api-reference/llm/chat-completion"],
+      "official_variant_rules": [{
+        "model_ids": ["glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash"],
+        "variants": {
+          "thinking-enabled": { "thinking": { "type": "enabled" } },
+          "thinking-disabled": { "thinking": { "type": "disabled" } }
+        }
+      }],
+      "test_model_ids": { "llm": "glm-5.1" },
       "contracts": [{
         "id": "glm.chat-completions.v4",
         "protocol_adapter_id": "glm-chat",
@@ -649,7 +722,7 @@
         "allowed_body_fields": ["model", "messages", "request_id", "do_sample", "stream", "thinking", "reasoning_effort", "temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice", "response_format", "tool_stream", "user_id"],
         "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"], "thinking": ["object"] },
         "stream_protocol": "openai_chat",
-        "success_fixture": { "id": "glm_mock_1", "request_id": "req_mock_1", "created": 1770000000, "model": "glm-5.3", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827", "reasoning_content": "" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7 } },
+        "success_fixture": { "id": "glm_mock_1", "request_id": "req_mock_1", "created": 1770000000, "model": "glm-5.1", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827", "reasoning_content": "" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7 } },
         "official_sources": ["https://docs.z.ai/api-reference/llm/chat-completion", "https://docs.bigmodel.cn/cn/api/api-code"],
         "evidence_summary": "GLM Chat Completion uses POST /api/paas/v4/chat/completions with Bearer authentication and JSON model/messages; streaming is standard SSE terminated by [DONE]."
       }]
@@ -659,6 +732,20 @@
       "provider_profile_id": "deepseek",
       "endpoint_path": "",
       "credential_type": "bearer",
+      "official_first_party_model_ids": { "llm": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"] },
+      "official_variant_sources": ["https://api-docs.deepseek.com/api/create-response/"],
+      "official_variant_rules": [{
+        "model_ids": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"],
+        "variants": {
+          "reasoning-none": { "reasoning": { "effort": "none" } },
+          "reasoning-minimal": { "reasoning": { "effort": "minimal" } },
+          "reasoning-low": { "reasoning": { "effort": "low" } },
+          "reasoning-medium": { "reasoning": { "effort": "medium" } },
+          "reasoning-high": { "reasoning": { "effort": "high" } },
+          "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } },
+          "reasoning-max": { "reasoning": { "effort": "max" } }
+        }
+      }],
       "test_model_ids": { "llm": "deepseek-v4-flash" },
       "contracts": [{
         "id": "deepseek.responses.v1",
@@ -685,6 +772,12 @@
       "endpoint_path": "/api/v3",
       "credential_type": "bearer",
       "instance_fields": { "region": "cn-beijing" },
+      "official_first_party_model_ids": { "llm": ["doubao-seed-2-0-lite-260215"] },
+      "official_variant_sources": ["https://www.volcengine.com/docs/82379/1795150"],
+      "official_variant_rules": [{
+        "model_ids": ["doubao-seed-2-0-lite-260215"],
+        "variants": { "thinking-disabled": { "thinking": { "type": "disabled" } } }
+      }],
       "test_model_ids": { "llm": "doubao-seed-2-0-lite-260215" },
       "contracts": [{
         "id": "doubao.responses.v3",
@@ -711,6 +804,20 @@
       "endpoint_path": "/compatible-mode/v1",
       "credential_type": "bearer",
       "instance_fields": { "region": "cn-beijing", "workspace": "t15-workspace" },
+      "official_first_party_model_ids": { "llm": ["qwen3.6-max-preview", "qwen3.8-2.4t-a95b", "qwen3.8-27b", "qwen3.6-35b-a3b"] },
+      "official_variant_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses"],
+      "official_variant_rules": [{
+        "model_ids": ["qwen3.6-max-preview", "qwen3.8-2.4t-a95b", "qwen3.8-27b", "qwen3.6-35b-a3b"],
+        "variants": {
+          "reasoning-none": { "reasoning": { "effort": "none" } },
+          "reasoning-minimal": { "reasoning": { "effort": "minimal" } },
+          "reasoning-low": { "reasoning": { "effort": "low" } },
+          "reasoning-medium": { "reasoning": { "effort": "medium" } },
+          "reasoning-high": { "reasoning": { "effort": "high" } },
+          "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } },
+          "reasoning-max": { "reasoning": { "effort": "max" } }
+        }
+      }],
       "test_model_ids": { "llm": "qwen3.6-max-preview" },
       "contracts": [{
         "id": "qwen.responses.compatible-v1",
@@ -736,7 +843,27 @@
       "provider_profile_id": "sn",
       "endpoint_path": "/api/v1/ai",
       "credential_type": "bearer",
-      "test_model_ids": { "llm": "gpt-5.6", "vision.ocr": "gpt-5.6", "vision.caption": "gpt-5.6" },
+      "official_first_party_model_ids": {
+        "llm": ["gpt-5.5-pro", "gpt-5.5", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
+        "vision.ocr": ["gpt-5.5-pro", "gpt-5.5", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
+        "vision.caption": ["gpt-5.5-pro", "gpt-5.5", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"]
+      },
+      "official_variant_sources": [
+        "https://developers.openai.com/api/docs/models/gpt-5.5",
+        "https://developers.openai.com/api/docs/models/gpt-5.5-pro",
+        "https://developers.openai.com/api/docs/models/gpt-5.4",
+        "https://developers.openai.com/api/docs/models/gpt-5.4-pro",
+        "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+        "https://developers.openai.com/api/docs/models/gpt-5.4-nano",
+        "https://developers.openai.com/api/docs/models/gpt-5.3-codex",
+        "https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/CD/cluster_config/release/apps.ts"
+      ],
+      "official_variant_rules": [
+        { "model_ids": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"], "variants": { "reasoning-none": { "reasoning": { "effort": "none" } }, "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } },
+        { "model_ids": ["gpt-5.5-pro", "gpt-5.4-pro"], "variants": { "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } },
+        { "model_ids": ["gpt-5.3-codex"], "variants": { "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } }
+      ],
+      "test_model_ids": { "llm": "gpt-5.5", "vision.ocr": "gpt-5.5", "vision.caption": "gpt-5.5" },
       "contracts": [{
         "id": "sn.openai-responses.v1",
         "protocol_adapter_id": "sn-openai",

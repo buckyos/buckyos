@@ -102,6 +102,82 @@
   ],
   "patterns": [
     {
+      "match": { "origin_model_id": ["gpt-5.5", "gpt-5.5-20*", "gpt-5.4", "gpt-5.4-20*"] },
+      "parameter_scale": "standard",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+      "logical_mounts": ["llm.openai", "llm.gpt-standard", "llm.{driver}.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "reasoning": true,
+        "vision": true,
+        "image_generation": true
+      },
+      "version_rules": ["gpt-standard"]
+    },
+    {
+      "match": { "origin_model_id": ["gpt-5.5-pro*", "gpt-5.4-pro*"] },
+      "parameter_scale": "pro",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img"],
+      "logical_mounts": ["llm.openai", "llm.gpt-pro", "llm.{driver}.{model}"],
+      "capabilities": {
+        "streaming": false,
+        "tool_call": true,
+        "web_search": true,
+        "reasoning": true,
+        "vision": true,
+        "image_generation": true
+      },
+      "version_rules": ["gpt-pro"]
+    },
+    {
+      "match": "gpt-5.4-mini*",
+      "parameter_scale": "mini",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+      "logical_mounts": ["llm.openai", "llm.gpt-mini", "llm.{driver}.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "reasoning": true,
+        "vision": true,
+        "image_generation": true
+      },
+      "version_rules": ["gpt-mini"]
+    },
+    {
+      "match": "gpt-5.4-nano*",
+      "parameter_scale": "nano",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+      "logical_mounts": ["llm.openai", "llm.gpt-nano", "llm.{driver}.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "reasoning": true,
+        "vision": true,
+        "image_generation": true
+      },
+      "version_rules": ["gpt-nano"]
+    },
+    {
+      "match": "gpt-5.3-codex*",
+      "parameter_scale": "codex",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.openai", "llm.{driver}.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "vision": true
+      }
+    },
+    {
       "match": "gpt-5.6-sol*",
       "parameter_scale": "sol",
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
@@ -176,11 +252,11 @@
   ],
   "defaults": {},
   "variants": [
-    { "name": "reasoning-none", "match": "gpt-5.6*", "mount_suffix": "reasoning-none" },
-    { "name": "reasoning-low", "match": "gpt-5.6*", "mount_suffix": "reasoning-low" },
-    { "name": "reasoning-medium", "match": "gpt-5.6*", "mount_suffix": "reasoning-medium" },
-    { "name": "reasoning-high", "match": "gpt-5.6*", "mount_suffix": "reasoning-high" },
-    { "name": "reasoning-xhigh", "match": "gpt-5.6*", "mount_suffix": "reasoning-xhigh" },
+    { "name": "reasoning-none", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5", "gpt-5.5-20*", "gpt-5.4", "gpt-5.4-20*", "gpt-5.4-mini*", "gpt-5.4-nano*"] }, "mount_suffix": "reasoning-none" },
+    { "name": "reasoning-low", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5", "gpt-5.5-20*", "gpt-5.4", "gpt-5.4-20*", "gpt-5.4-mini*", "gpt-5.4-nano*", "gpt-5.3-codex*"] }, "mount_suffix": "reasoning-low" },
+    { "name": "reasoning-medium", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5*", "gpt-5.4*", "gpt-5.3-codex*"] }, "mount_suffix": "reasoning-medium" },
+    { "name": "reasoning-high", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5*", "gpt-5.4*", "gpt-5.3-codex*"] }, "mount_suffix": "reasoning-high" },
+    { "name": "reasoning-xhigh", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5*", "gpt-5.4*", "gpt-5.3-codex*"] }, "mount_suffix": "reasoning-xhigh" },
     { "name": "reasoning-max", "match": "gpt-5.6*", "mount_suffix": "reasoning-max" }
   ],
   "version_rules": [
@@ -189,7 +265,7 @@
       "family": "gpt",
       "tier": "standard",
       "match": "gpt-*",
-      "exclude_tier_tokens": ["pro", "mini", "nano", "nono", "sol", "terra", "luna"],
+      "exclude_tier_tokens": ["pro", "mini", "nano", "sol", "terra", "luna", "codex"],
       "version_rank": { "prefix": "gpt" },
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-standard",
@@ -199,8 +275,7 @@
       "id": "gpt-pro",
       "family": "gpt",
       "tier": "pro",
-      "match": "gpt-*",
-      "tier_tokens": ["sol"],
+      "match": { "origin_model_id": ["gpt-*-pro*", "gpt-*-sol*"] },
       "version_rank": { "prefix": "gpt" },
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-pro",
@@ -210,8 +285,7 @@
       "id": "gpt-mini",
       "family": "gpt",
       "tier": "mini",
-      "match": "gpt-*",
-      "tier_tokens": ["terra"],
+      "match": { "origin_model_id": ["gpt-*-mini*", "gpt-*-terra*"] },
       "version_rank": { "prefix": "gpt" },
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-mini",
@@ -221,8 +295,7 @@
       "id": "gpt-nano",
       "family": "gpt",
       "tier": "nano",
-      "match": "gpt-*",
-      "tier_tokens": ["luna"],
+      "match": { "origin_model_id": ["gpt-*-nano*", "gpt-*-luna*"] },
       "version_rank": { "prefix": "gpt" },
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-nano",

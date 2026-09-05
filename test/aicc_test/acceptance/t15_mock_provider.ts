@@ -7,7 +7,6 @@ import {
   type CapturedProviderRequest,
   type ProviderProtocolCatalog,
   type ProviderProtocolContract,
-  selectOfficialModels,
   validateProviderAuxiliaryRequest,
   validateProviderRequest,
 } from "./provider_protocol_contracts.ts";
@@ -43,7 +42,12 @@ export const T15_PROVIDER_DISCOVERY_CONTRACTS: Record<string, DiscoveryContract>
     required_query: { limit: "1000" },
     response_shape: "anthropic",
   },
-  openrouter: { mode: "machine_api", path: "/api/v1/models", response_shape: "openai" },
+  openrouter: {
+    mode: "machine_api",
+    path: "/api/v1/models",
+    required_query: { output_modalities: "all" },
+    response_shape: "openai",
+  },
   kimi: { mode: "machine_api", path: "/v1/models", response_shape: "openai" },
   glm: { mode: "catalog_only" },
   deepseek: { mode: "machine_api", path: "/models", response_shape: "openai" },
@@ -117,14 +121,8 @@ function discoveryFixture(
   shape: NonNullable<DiscoveryContract["response_shape"]>,
   selectionSeed?: string,
 ): unknown {
-  const randomModels = provider.official_first_party_model_ids && selectionSeed
-    ? Object.values(selectOfficialModels(
-      { schema_version: 1, revision: "selection", checked_at: "selection", providers: [provider], error_evidence: {}, error_fixtures: {} },
-      provider.provider_driver,
-      selectionSeed,
-    ))
-    : [];
-  const modelIds = [...new Set([...Object.values(provider.test_model_ids), ...randomModels])];
+  const officialModels = Object.values(provider.official_first_party_model_ids ?? {}).flat();
+  const modelIds = [...new Set([...Object.values(provider.test_model_ids), ...officialModels])];
   if (shape === "sn") {
     return {
       revision: "t15-mock-1",
@@ -158,7 +156,9 @@ function discoveryFixture(
           supported_parameters: id.startsWith("cohere/rerank-") ? ["top_n"] : [],
           architecture: {
             input_modalities: ["text"],
-            output_modalities: id.startsWith("cohere/rerank-") ? ["rerank"] : ["text"],
+            output_modalities: id.startsWith("cohere/rerank-")
+              ? ["rerank"]
+              : id.includes("embedding") ? ["embeddings"] : ["text"],
           },
           pricing: null,
           expiration_date: null,

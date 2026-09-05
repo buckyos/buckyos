@@ -5,20 +5,15 @@
   "revision_seq": 1,
   "provider_profile_id": "glm",
   "metadata_drivers": ["glm"],
-  "models": [
-    {
-      "id": "glm-5.3",
-      "operations": { "llm": "chat.completions.create" },
-      "provider_options": { "reasoning_effort": "max" },
-      "request_rules": [
-        { "set": { "thinking": { "type": "enabled" } } }
-      ]
-    }
-  ],
+  "models": [],
   "patterns": [
     {
       "match": "*",
       "operations": { "llm": "chat.completions.create" }
     }
+  ],
+  "variants": [
+    { "model_driver": "glm", "variant": "thinking-enabled", "match": { "provider_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"], "variant": "thinking-enabled" }, "provider_options": { "thinking": { "type": "enabled" } } },
+    { "model_driver": "glm", "variant": "thinking-disabled", "match": { "provider_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"], "variant": "thinking-disabled" }, "provider_options": { "thinking": { "type": "disabled" } } }
   ]
 }

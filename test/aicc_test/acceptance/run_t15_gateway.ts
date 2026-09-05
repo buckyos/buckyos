@@ -566,7 +566,7 @@ async function executeCase(
         !providerRequest?.pathname?.includes(encodeURIComponent(selectedModel.provider_actual_model_id))) {
       diagnostics.push(`variant model was not lowered to ${selectedModel.provider_actual_model_id}`);
     }
-    for (const [name, expected] of Object.entries(selectedModel.provider_options ?? {})) {
+    for (const [name, expected] of Object.entries(testCase.expected_provider_options ?? {})) {
       if (JSON.stringify(body[name]) !== JSON.stringify(expected)) {
         diagnostics.push(`variant Provider option ${name} was not lowered to ${JSON.stringify(expected)}`);
       }
@@ -616,10 +616,38 @@ async function executeCase(
   };
 }
 
-function variantCells(catalog: ProviderProtocolCatalog, inventory: ProviderInventory) {
-  return inventory.models.filter((model) =>
+export function variantCells(catalog: ProviderProtocolCatalog, inventory: ProviderInventory) {
+  const provider = catalog.providers.find((candidate) => candidate.provider_driver === inventory.provider_driver);
+  if (!provider) throw new Error(`missing protocol provider ${inventory.provider_driver}`);
+  const runtimeVariants = inventory.models.filter((model) =>
     Boolean(model.provider_actual_model_id) || model.provider_model_id.includes(":")
-  ).flatMap((model) => model.api_types.map((apiType) => {
+  );
+  const rules = provider.official_variant_rules ?? [];
+  if (runtimeVariants.length > 0 && rules.length === 0) {
+    throw new Error(`${inventory.provider_driver} exposes metadata variants without official T1.5 expectations`);
+  }
+  const expected = new Map<string, Record<string, unknown>>();
+  for (const rule of rules) {
+    for (const modelId of rule.model_ids) {
+      const baseExists = inventory.models.some((model) =>
+        model.provider_model_id === modelId || model.provider_actual_model_id === modelId
+      );
+      if (!baseExists) throw new Error(`${inventory.provider_driver} is missing official base model ${modelId}`);
+      for (const [variant, options] of Object.entries(rule.variants)) {
+        const key = `${modelId}:${variant}`;
+        if (expected.has(key)) throw new Error(`${inventory.provider_driver} has duplicate official variant expectation ${key}`);
+        expected.set(key, options);
+      }
+    }
+  }
+  const runtime = new Map(runtimeVariants.map((model) => [model.provider_model_id, model]));
+  for (const key of expected.keys()) {
+    if (!runtime.has(key)) throw new Error(`${inventory.provider_driver} is missing official metadata variant ${key}`);
+  }
+  for (const key of runtime.keys()) {
+    if (!expected.has(key)) throw new Error(`${inventory.provider_driver} exposes undocumented metadata variant ${key}`);
+  }
+  return runtimeVariants.flatMap((model) => model.api_types.map((apiType) => {
     const operation = inventory.provider_driver === "openai" &&
         model.provider_model_id.startsWith("gpt-5") &&
         ["image.txt2img", "image.img2img"].includes(apiType)
@@ -627,9 +655,17 @@ function variantCells(catalog: ProviderProtocolCatalog, inventory: ProviderInven
       : undefined;
     const contract = catalog.providers.find((provider) => provider.provider_driver === inventory.provider_driver)
       ?.contracts.find((candidate) => operation ? candidate.operation === operation : candidate.api_types.includes(apiType));
-    if (!contract) return undefined;
-    return { provider_driver: inventory.provider_driver, contract_id: contract.id, api_type: apiType, model };
-  })).filter((value): value is { provider_driver: string; contract_id: string; api_type: string; model: ProviderModel } => Boolean(value));
+    if (!contract) {
+      throw new Error(`${inventory.provider_driver} metadata variant ${model.provider_model_id} has no T1.5 contract for ${apiType}`);
+    }
+    return {
+      provider_driver: inventory.provider_driver,
+      contract_id: contract.id,
+      api_type: apiType,
+      model,
+      expected_provider_options: expected.get(model.provider_model_id),
+    };
+  }));
 }
 
 async function main(): Promise<void> {

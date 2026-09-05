@@ -68,7 +68,9 @@
     "capabilities": {},
     "version_rules": ["doubao-pro", "doubao-lite", "doubao-mini", "doubao-code"]
   },
-  "variants": [],
+  "variants": [
+    { "name": "thinking-disabled", "match": "doubao-seed-2-0-*" }
+  ],
   "version_rules": [
     { "id": "doubao-pro", "family": "doubao-seed", "tier": "pro", "match": "doubao-seed-*-pro-*", "tier_tokens": ["pro"], "version_rank": { "prefix": "doubao-seed" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.doubao-pro", "version_mount": "llm.doubao.{model}" },
     { "id": "doubao-lite", "family": "doubao-seed", "tier": "lite", "match": "doubao-seed-*-lite-*", "tier_tokens": ["lite"], "version_rank": { "prefix": "doubao-seed" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.doubao-lite", "version_mount": "llm.doubao.{model}" },
