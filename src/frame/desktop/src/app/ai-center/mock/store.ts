@@ -15,6 +15,11 @@ import type {
 } from './types'
 import { getEmptySeed, getPopulatedSeed, model } from './seed'
 
+function isManagedSnProvider(provider: ProviderView): boolean {
+  return provider.config.provider_profile_id === 'sn'
+    && (provider.config.auth_mode === 'dynamic_login' || provider.config.provider_origin === 'system_config')
+}
+
 function getScenarioFromURL(): 'empty' | 'populated' {
   const params = new URLSearchParams(globalThis.location?.search ?? '')
   return (params.get('aiccScenario') ?? params.get('scenario')) === 'populated' ? 'populated' : 'empty'
@@ -176,10 +181,6 @@ export class MockDataStore {
     const providerType = draft.provider_profile_id ?? 'custom'
     const instanceName = draft.provider_instance_name ?? `${providerType}-${Date.now().toString(36)}`
     const models = modelsForDraft(draft, instanceName)
-    const isSnRouter = providerType === 'sn'
-    if (isSnRouter) {
-      throw new Error('sn_provider_is_system_managed')
-    }
 
     const view: ProviderView = {
       config: {
@@ -235,7 +236,8 @@ export class MockDataStore {
   }
 
   deleteProvider(id: string): void {
-    if (this.providers.get(id)?.config.provider_profile_id === 'sn') {
+    const provider = this.providers.get(id)
+    if (provider && isManagedSnProvider(provider)) {
       throw new Error('sn_provider_is_system_managed')
     }
     this.providers.delete(id)

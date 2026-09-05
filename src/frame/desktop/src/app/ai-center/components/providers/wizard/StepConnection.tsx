@@ -68,6 +68,7 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
   const { t } = useI18n()
   const providerType = draft.provider_profile_id
   const profile = catalog?.providers.find((item) => item.provider_profile_id === providerType)
+  const isDynamicSn = providerType === 'sn' && draft.auth_mode === 'dynamic_login'
 
   return (
     <div className="flex flex-col gap-4 max-w-lg">
@@ -79,8 +80,7 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
         placeholder={`${providerType ?? 'provider'}-main`}
       />
 
-      {/* SN Router: just show status */}
-      {providerType === 'sn' && (
+      {isDynamicSn && (
         <div
           className="rounded-lg px-4 py-3 text-sm"
           style={{
@@ -92,7 +92,7 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
         </div>
       )}
 
-      {providerType !== 'sn' && draft.auth_mode === 'api_key' && (
+      {draft.auth_mode === 'api_key' && (
         <InputField
           label={t('aiCenter.wizard.apiKey', 'API Key')}
           value={draft.api_key}
@@ -103,8 +103,7 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
         />
       )}
 
-      {/* Endpoint */}
-      {providerType !== 'sn' && (
+      {!isDynamicSn && (
         <InputField
           label={t('aiCenter.wizard.baseUrl', 'Base URL')}
           value={draft.base_url}

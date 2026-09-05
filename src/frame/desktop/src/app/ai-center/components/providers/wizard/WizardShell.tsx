@@ -4,7 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { ArrowLeft } from 'lucide-react'
 import { useI18n } from '../../../../../i18n/provider'
 import { useAICCStore, useProviders } from '../../../hooks/use-aicc-store'
-import type { ProviderSetupCatalog, ProviderType, ValidationResult, WizardDraft } from '../../../../../api/aicc_mgr'
+import { isManagedSnProvider, type ProviderSetupCatalog, type ProviderType, type ValidationResult, type WizardDraft } from '../../../../../api/aicc_mgr'
 import { Stepper } from '../../shared/Stepper'
 import { StepChooseType } from './StepChooseType'
 import { StepConnection } from './StepConnection'
@@ -31,7 +31,9 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   const { t } = useI18n()
   const store = useAICCStore()
   const providers = useProviders()
-  const hasManagedSnProvider = providers.some((provider) => provider.config.provider_profile_id === 'sn')
+  const managedSnProvider = providers.find(isManagedSnProvider)
+  const hasManagedSnProvider = Boolean(managedSnProvider)
+  const managedSnProviderEnabled = managedSnProvider?.config.enabled ?? false
 
   const [step, setStep] = useState(0)
   const form = useForm<WizardDraft>({
@@ -112,22 +114,31 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
     }
   }
 
-  const handleTypeSelect = (type: ProviderType) => {
-    if (type === 'sn' && hasManagedSnProvider) {
-      onCreated()
+  const handleTypeSelect = async (type: ProviderType) => {
+    if (type === 'sn' && managedSnProvider && !managedSnProvider.config.enabled) {
+      setCreating(true)
+      setCreateError(null)
+      try {
+        await store.setProviderEnabled(managedSnProvider, true)
+        onCreated()
+      } catch (error) {
+        setCreateError(error instanceof Error ? error.message : t('aiCenter.wizard.enableSnFailed', 'Could not enable SN Router.'))
+      } finally {
+        setCreating(false)
+      }
       return
     }
     const profile = catalog?.providers.find((item) => item.provider_profile_id === type)
     updateDraft({
       provider_profile_id: type,
-      display_name: profile?.display_name ?? '',
+      display_name: type === 'sn' ? t('aiCenter.wizard.snRouter', 'SN Router') : profile?.display_name ?? '',
       base_url: profile?.base_url ?? '',
       protocol_family_id: null,
       protocol_adapter_id: profile?.protocol_adapter_id,
       region: profile?.connection_fields.region?.default_value,
       workspace: profile?.connection_fields.workspace?.default_value,
       account: profile?.connection_fields.account?.default_value,
-      auth_mode: type === 'sn' ? 'dynamic_login' : 'api_key',
+      auth_mode: 'api_key',
       api_key: '',
     })
   }
@@ -234,6 +245,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
             selected={draft.provider_profile_id}
             onSelect={handleTypeSelect}
             hasManagedSnProvider={hasManagedSnProvider}
+            managedSnProviderEnabled={managedSnProviderEnabled}
             catalog={catalog}
             loading={catalogLoading}
             error={catalogError}

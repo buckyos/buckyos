@@ -115,7 +115,7 @@ const BUILTIN_PROVIDER_NAMES: Array<[ProviderType, string, string, string]> = [
   ['deepseek', 'DeepSeek', 'https://api.deepseek.com', 'deepseek-responses'],
   ['doubao', '豆包（火山方舟）', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-responses'],
   ['qwen', 'Qwen（阿里云百炼）', 'https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1', 'qwen-responses'],
-  ['sn', 'BuckyOS SN', 'https://sn.buckyos.ai/api/v1/ai', 'sn-openai'],
+  ['sn', 'SN Router', 'https://sn.buckyos.ai/api/v1/ai', 'sn-openai'],
 ]
 
 const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
@@ -1065,9 +1065,6 @@ function slugify(value: string): string {
 
 function toProviderWritePayload(draft: WizardDraft): Record<string, unknown> {
   const providerType = draft.provider_profile_id ?? 'custom'
-  if (providerType === 'sn') {
-    throw new Error('sn_provider_is_system_managed')
-  }
   return {
     provider_instance_name: draft.provider_instance_name ?? defaultProviderInstanceName(providerType, draft.display_name),
     provider_type: 'cloud_api',
@@ -2116,6 +2113,7 @@ function providerDisplayName(providerType: ProviderType, instanceName: string): 
 
 export function isManagedSnProvider(provider: ProviderView): boolean {
   return provider.config.provider_profile_id === 'sn'
+    && (provider.config.auth_mode === 'dynamic_login' || provider.config.provider_origin === 'system_config')
 }
 
 function inferPricingMode(models: ModelMetadata[]): PricingMode {
