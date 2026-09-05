@@ -1672,6 +1672,25 @@ fn observation_from_task_event_ignores_non_terminal_status() {
 }
 
 #[test]
+fn system_event_round_errors_are_not_user_visible() {
+    let trigger = RoundTrigger::SystemEvent {
+        source: "worksession_report".to_string(),
+        event_kind: "worksession_report".to_string(),
+    };
+    assert!(!should_notify_user_on_round_error(Some(&trigger)));
+}
+
+#[test]
+fn user_message_round_errors_remain_user_visible() {
+    let trigger = RoundTrigger::UserMsg {
+        preview: "hello".to_string(),
+    };
+    assert!(should_notify_user_on_round_error(Some(&trigger)));
+    assert!(should_notify_user_on_round_error(Some(&RoundTrigger::Mixed)));
+    assert!(should_notify_user_on_round_error(None));
+}
+
+#[test]
 fn compress_messages_preserves_short_history_verbatim() {
     // Under the keep-tail threshold ⇒ no compression, output == input.
     let msgs = vec![
