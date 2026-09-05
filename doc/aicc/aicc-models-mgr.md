@@ -202,7 +202,7 @@ llm.long       # 长上下文
 llm.fallback   # 兜底
 ```
 
-用途目录里放的是 items。每个 item 指向一个家族目录、另一个逻辑目录或精确模型，并带有权重。
+用途目录里放的是 items。每个 item 指向一个家族目录、另一个逻辑目录或精确模型，并带有权重。用途树不是当前库存快照，而是模型挂载到逻辑目录树时的静态参照策略；它可以引用暂时没有库存的家族目录，这些分支在展开时自然为空，不会产生候选。后续 Provider inventory 把模型挂到该 family path 时，会自动继承用途目录中已经配置好的路径权重。
 
 例如：
 
@@ -538,7 +538,7 @@ gpt-5.2-mini -> llm.gpt-mini / llm.gpt / llm.openai.gpt-5-2-mini
 ```text
 llm.plan -> llm.opus / llm.gemini-pro / llm.qwen-max
 llm.chat -> auto admission 或 llm.gpt-standard
-llm.swift -> llm.haiku / llm.gemini-flash-lite / llm.qwen-small
+llm.swift -> llm.haiku / llm.gemini-flash-lite / llm.qwen-flash
 ```
 
 这样做的好处是：
@@ -562,6 +562,13 @@ llm.swift -> llm.haiku / llm.gemini-flash-lite / llm.qwen-small
 7. 对每个逻辑目录，Registry 根据模型的 `logical_mounts` 和目录 `min_line` 生成默认 items。
 8. 用户/session overlay 在 route 时叠加到默认 items 上。
 
+新版生产实现中，服务构建 `ModelRegistry` 时必须同时注入两类内置路由材料：
+
+1. 内置 `LogicalModelDefinition`：定义 `llm.chat`、`llm.plan`、`llm.code`、`image.txt2img`、`audio.asr` 等标准目录的 `api_type`、`min_line`、`mount_mode`、fallback 和调度 profile。
+2. 内置 factory logical tree：恢复旧版 `default_logical_tree` 的用途目录到家族目录链接，例如 `llm.chat -> llm.gpt-standard / llm.sonnet / llm.gemini-flash / llm.gpt-mini`。它表达默认用途偏好，不枚举当前支持模型集合；空 family 分支可以存在，家族目录里的 exact model 候选由 Provider inventory / Model Driver metadata 在 registry 构建时物化。
+
+因此 `services/aicc/settings.routing_config` 可以为空。它只用于覆盖默认策略，例如 provider 权重、exact model 权重或局部替换目录 items；不能要求用户手动配置后 `llm.chat` 才可用。
+
 如果某个 provider inventory 刷新或校验失败，保持该 provider 的原 inventory 和 `metadata_applied_seq`；其它 provider 只在各自真正完成刷新后推进自己的 applied seq。
 
 ### 5.5 空逻辑目录与 mini line 强制挂载
@@ -574,9 +581,13 @@ llm.swift -> llm.haiku / llm.gemini-flash-lite / llm.qwen-small
 -> 满足则临时挂入该逻辑目录
 ```
 
-当前实现已经具备这个能力的核心：当 `LogicalModelDefinition.mount_mode != manual` 时，`default_items_from_inventories()` 会对该 logical path 执行 `auto_admission`。
+当前实现已经具备这个能力的核心：当 `LogicalModelDefinition.mount_mode != manual` 时，`ModelRegistry` 会对该 logical path 执行 `auto_admission`。
 
 因此，一个目录即使没有 driver metadata 显式 `logical_mounts`，只要它有 `LogicalModelDefinition`，且 `mount_mode=auto/hybrid`，满足 `min_line` 的物理模型也可以被挂入。
+
+此外，Model Driver catalog 的 `version_rules[].auto_mounts` 会在 Provider inventory 构建阶段追加到匹配模型的 `logical_mounts`。这用于表达“某个版本/tier 的模型按能力事实默认应进入哪些目录”，例如旧版 OpenAI GPT 规则中的 `llm`、`llm.gpt`、`llm.gpt-standard`、`llm.plan`、`llm.code`。这些挂点仍会经过 api type namespace 和 logical definition 的 `min_line` 过滤，不能把 LLM 模型挂入 image/audio/video 目录，也不能让不满足 tool/json/context 要求的模型进入 `llm.plan` / `llm.code`。
+
+`auto_mounts` 不是路径权重策略；它只让匹配模型进入对应目录的候选集合，默认 item weight 仍是 `1.0`。用途目录里不同 family 的优先级仍由内置 factory logical tree 或 `routing_config` 的 items / item_overrides 决定。
 
 ## 6. 自动权重控制
 

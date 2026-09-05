@@ -99,6 +99,15 @@ Content Schema：
 
 ModelRule 只允许模型技术字段：`id/match`、`parameter_scale`、`api_types`、`logical_mounts`、`capabilities`、`quality_score`、`version_rules` 引用和可选保守默认价格。`match` 遵循 [match_rule.md](match_rule.md)，普通规则直接使用 wildcard 字符串。禁止 endpoint、认证、protocol adapter、operation、Provider 请求参数、availability、实例健康状态和对象内嵌签名。Catalog 文件真实性与完整性由 NDN 文件交付契约保证，AICC 不重复校验。
 
+`VersionRule` 用于从一组同 family/tier 模型中选出当前稳定挂点，并补充版本挂点：
+
+- `id/family/tier/match/tier_tokens/exclude_tier_tokens/version_rank/stability`
+- `current_mount`：该 family/tier 当前 winner 的稳定挂点，例如 `llm.gpt-standard`
+- `version_mount`：每个匹配版本的版本化挂点，例如 `llm.openai.{model}`
+- `auto_mounts`：每个匹配版本额外追加的默认逻辑挂点列表；Provider inventory 构建时展开 `{model}` 并按 api type namespace 过滤后写入模型 `logical_mounts`
+
+`auto_mounts` 只表达模型事实层面的默认挂载能力，不表达目录内路径权重。用途目录仍由 AICC 内置 logical definitions 定义 api type、`min_line`、fallback 和 scheduler profile；`auto_mounts` 追加的挂点还要经过这些能力线过滤。目录内 family 优先级由内置 factory logical tree 或 `routing_config` 的 items / item_overrides 决定。
+
 ### 4.3 Object Type: Provider Rules Catalog
 
 Description：连接 Provider 渠道模型 ID、Model Driver 和已注册 operation 的规则。

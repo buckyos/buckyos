@@ -1175,6 +1175,14 @@ fn apply_version_rules(
             if !model.logical_mounts.contains(&version_mount) {
                 model.logical_mounts.push(version_mount);
             }
+            for mount in &rule.auto_mounts {
+                let auto_mount = expand_version_mount(mount, &model.provider_model_id);
+                if logical_mount_matches_api_types(&auto_mount, &model.api_types)
+                    && !model.logical_mounts.contains(&auto_mount)
+                {
+                    model.logical_mounts.push(auto_mount);
+                }
+            }
             let rank = version_rank(&model.provider_model_id, rule);
             if rule
                 .stability
@@ -3467,7 +3475,8 @@ mod tests {
                 "current_requires_stable": true
             },
             "current_mount": "llm.gemini-flash-lite",
-            "version_mount": "llm.gemini.{model}"
+            "version_mount": "llm.gemini.{model}",
+            "auto_mounts": ["llm", "llm.gemini"]
         }))
         .unwrap();
 
@@ -3501,6 +3510,90 @@ mod tests {
             expand_version_mount(&rule.version_mount, "Gemini_3.5/Flash.Lite"),
             "llm.gemini.gemini-3-5-flash-lite"
         );
+        assert_eq!(rule.auto_mounts, vec!["llm", "llm.gemini"]);
+    }
+
+    #[test]
+    fn version_rule_auto_mounts_are_applied_to_inventory_models() {
+        let model_driver: ModelDriverCatalog = serde_json::from_value(serde_json::json!({
+            "format": "buckyos.aicc.model-driver-catalog",
+            "schema_version": 1,
+            "schema_revision": 0,
+            "model_driver_id": "openai",
+            "revision_seq": 9,
+            "models": [{
+                "id": "gpt-test",
+                "api_types": ["llm"],
+                "logical_mounts": [],
+                "capabilities": {
+                    "tool_call": true,
+                    "json_schema": true
+                },
+                "version_rules": ["gpt-test-tier"]
+            }],
+            "patterns": [],
+            "defaults": {},
+            "variants": [],
+            "version_rules": [{
+                "id": "gpt-test-tier",
+                "family": "gpt",
+                "tier": "standard",
+                "match": "gpt-*",
+                "tier_tokens": ["test"],
+                "current_mount": "llm.gpt-standard",
+                "version_mount": "llm.openai.{model}",
+                "auto_mounts": ["llm", "llm.gpt", "llm.plan", "image.txt2img"]
+            }]
+        }))
+        .unwrap();
+        let provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
+            "format": "buckyos.aicc.provider-rules-catalog",
+            "schema_version": 1,
+            "schema_revision": 0,
+            "revision_seq": 9,
+            "provider_profile_id": "openai",
+            "metadata_drivers": ["openai"],
+            "models": [{
+                "id": "gpt-test",
+                "operations": {"llm": "responses.create"}
+            }],
+            "patterns": [],
+            "variants": []
+        }))
+        .unwrap();
+        let catalog = CatalogSnapshot::build(
+            9,
+            CatalogDocuments {
+                model_drivers: vec![model_driver],
+                provider_rules: vec![provider_rules],
+                known_providers: vec![],
+            },
+            &CatalogBuildOptions::default(),
+        )
+        .unwrap();
+
+        let inventory = InventoryBuilder::build(
+            &profile(),
+            &instance("primary"),
+            discovery("gpt-test"),
+            &catalog,
+            &codecs(),
+        )
+        .unwrap();
+        let model = &inventory.models[0];
+
+        assert!(model.logical_mounts.contains(&"llm".to_string()));
+        assert!(model.logical_mounts.contains(&"llm.gpt".to_string()));
+        assert!(model.logical_mounts.contains(&"llm.plan".to_string()));
+        assert!(model
+            .logical_mounts
+            .contains(&"llm.gpt-standard".to_string()));
+        assert!(model
+            .logical_mounts
+            .contains(&"llm.openai.gpt-test".to_string()));
+        assert!(!model
+            .logical_mounts
+            .contains(&"image.txt2img".to_string()));
     }
 
     #[tokio::test]

@@ -244,6 +244,8 @@ pub(crate) struct VersionRule {
     pub stability: Option<VersionStability>,
     pub current_mount: String,
     pub version_mount: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto_mounts: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1548,6 +1550,14 @@ fn validate_model_driver(
             "version_rules.version_mount",
             &rule.version_mount,
         )?;
+        for mount in &rule.auto_mounts {
+            validate_nonempty_field(
+                CatalogKind::ModelDriver,
+                &catalog.model_driver_id,
+                "version_rules.auto_mounts",
+                mount,
+            )?;
+        }
     }
     Ok(())
 }

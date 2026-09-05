@@ -269,7 +269,8 @@
       "version_rank": { "prefix": "gpt" },
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-standard",
-      "version_mount": "llm.openai.{model}"
+      "version_mount": "llm.openai.{model}",
+      "auto_mounts": ["llm.gpt", "llm.gpt-standard", "llm.gpt-pro", "llm.gpt-mini", "llm.gpt-nano", "llm", "llm.summarize", "llm.swift", "llm.plan", "llm.reason", "llm.code"]
     },
     {
       "id": "gpt-pro",
@@ -279,7 +280,8 @@
       "version_rank": { "prefix": "gpt" },
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-pro",
-      "version_mount": "llm.openai.{model}"
+      "version_mount": "llm.openai.{model}",
+      "auto_mounts": ["llm.gpt", "llm.gpt-standard", "llm.gpt-pro", "llm.gpt-mini", "llm.gpt-nano", "llm", "llm.summarize", "llm.swift", "llm.plan", "llm.reason", "llm.code"]
     },
     {
       "id": "gpt-mini",
@@ -289,7 +291,8 @@
       "version_rank": { "prefix": "gpt" },
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-mini",
-      "version_mount": "llm.openai.{model}"
+      "version_mount": "llm.openai.{model}",
+      "auto_mounts": ["llm.gpt", "llm.gpt-standard", "llm.gpt-pro", "llm.gpt-mini", "llm.gpt-nano", "llm", "llm.summarize", "llm.swift", "llm.plan", "llm.reason", "llm.code"]
     },
     {
       "id": "gpt-nano",
@@ -299,7 +302,8 @@
       "version_rank": { "prefix": "gpt" },
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-nano",
-      "version_mount": "llm.openai.{model}"
+      "version_mount": "llm.openai.{model}",
+      "auto_mounts": ["llm.gpt", "llm.gpt-standard", "llm.gpt-pro", "llm.gpt-mini", "llm.gpt-nano", "llm", "llm.summarize", "llm.swift", "llm.plan", "llm.reason", "llm.code"]
     }
   ]
 }

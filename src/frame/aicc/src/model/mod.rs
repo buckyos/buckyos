@@ -796,7 +796,11 @@ impl ModelRegistry {
         validate_weight_map(&overlay.exact_model_weights, "exact_model_weights")?;
         let node = self.logical_nodes.entry(path.to_owned()).or_default();
         if let Some(items) = &overlay.items {
-            node.items = effective_items(items, source);
+            if source == LogicalItemSource::BuiltinDefinition {
+                node.items.extend(effective_items(items, source));
+            } else {
+                node.items = effective_items(items, source);
+            }
         }
         if let Some(patches) = &overlay.item_overrides {
             apply_item_patches(path, &mut node.items, patches, source)?;

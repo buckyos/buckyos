@@ -381,6 +381,8 @@ LogicalModelDefinition
 4. admission check 与 auto-mount 都在 Registry 层完成，Router 只看最终候选。
 5. route trace 会记录每个候选 item 的来源（builtin definition / driver metadata mount / auto admission / manual override / session overlay），并解释模型为何不满足 `min_line`、哪些能力被 `disable_line` 禁用。
 
+生产实现必须在构建 `ModelRegistry` 时装配内置 logical definitions 和内置 factory logical tree。内置树的职责和旧版 `default_logical_tree` 一致：`llm.chat`、`llm.plan`、`llm.code` 等用途目录先按权重链接到 `llm.gpt-standard`、`llm.sonnet`、`llm.gemini-flash` 等家族目录；家族目录再接收 Provider metadata / version rule 生成的挂点。内置树不是当前库存快照，而是模型挂载到逻辑目录树时的静态参照策略；没有库存的家族分支展开为空，后续 Provider inventory 把模型挂到该 family path 时会继承已有路径权重。用户自定义 Provider 的模型也可通过 `mount_mode=auto/hybrid` 和能力线直接进入用途目录。这样普通 Provider 不需要直接声明 `llm.chat`，Jarvis 等调用方仍可稳定请求 `llm.chat`。
+
 > 能力判断的真相源是 Model Driver 静态能力、Protocol Adapter operation 能力和 Provider discovery 动态能力的交集。请求只使用结构化 `ModelRequirement` / `ModelDisable`。
 
 ---
@@ -1387,6 +1389,7 @@ routing_config:
 说明：
 
 - 这段 `routing_config` 持久化在 `services/aicc/settings.routing_config`，默认可以为空；AICC 获取系统配置时返回“默认逻辑目录配置 + 这段 system_config 配置”的合并结果。
+- 默认逻辑目录配置由服务内置装配；`services/aicc/settings.routing_config` 只表达运营或用户覆盖，不应成为 `llm.chat` 等标准目录可用性的前提。
 - Provider inventory 声明中的 `logical_mounts` 可作为生成 default items 的输入；显式写在 system/session config 中的 `items` 会完整覆盖 default items，局部修改使用 `item_overrides`。
 - `global_exact_model_weights` 只对已经出现在当前候选集合中的精确模型生效，不会把模型加入候选集合。
 - `items.*.weight` 只在当前逻辑目录的同级 item 中比较；上例中 `llm.plan` 目录下 `llm.gpt5` 优先于 `llm.claude`，但 `llm.gpt5` 内部 Provider 权重不会乘到 `llm.plan` 权重上。
