@@ -16,6 +16,7 @@ T2 的模型库存基准来自 Runner 直接调用 `provider_capability_baseline
 - `provider_protocol_contracts.json`：T1.5 独立协议契约、官方证据 revision、测试用 Provider Profile/模型映射、请求字段类型、正常响应、异步 lifecycle 和 Provider 专属错误 fixture。Runner 不按模型名或厂商名选择协议分支。
 - `t15_mock_provider.ts`：T1.5 高保真 Mock；按所选官方契约严格校验 method、path、认证、content type、必需字段、字段类型和未知字段，并独立记录 submit、poll、result、cancel wire，然后返回对应 Provider 的正常、stream、异步或错误响应。
 - `run_t15_gateway.ts`：临时注册目标 Provider instance，用精确模型固定 adapter，经 Gateway 执行 T1.5 并审计 Mock capture；每个运行时可独立调用的 variant 形成独立协议单元。
+- `cloud_update_fixture_service.ts`：启动独立 `cyfs-gateway` `cyfs-dir` NDN 服务，以 process chain 将协议路径绑定到 Named Object，并为 T1/T1.5 发布 index、manifest、catalog 与 tombstone。
 - `run_gateway.ts`：经 Zone Gateway 登录真实 AICC；默认只生成 T2 计划，只有显式允许时才调用真实 Provider。
 - `provider_capability_baseline.json`：按 Provider 参数化的版本化能力证据基线。
 
@@ -69,6 +70,10 @@ pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml
 ```
 
 T1.5 可以用 `--start-local-mock` 启动本机 Mock；只有 AICC 服务也能访问 runner loopback 时才可将其作为 Provider endpoint。配置变更需要环境变量 `AICC_T15_ALLOW_CONFIG_MUTATION=true` 与命令行 `--allow-config-mutation` 同时授权。Runner 创建带 `run_id` 的临时 Provider instance，并在正常结束或异常退出时调用 `provider.delete`，等待运行时 inventory 中该实例消失，再重置 Mock。它顺序执行单元，固定全局和 Provider 并发为 1，并用 `--provider-min-interval-ms` 控制同 Provider 请求间隔。按 Provider 回归使用 `--provider <driver>`；目标重测可以重复传 `--case <case_id>`，未知或超出 Provider 范围的 case 会使执行失败。
+
+T1 的 `t1.config.cloud_update_dynamic_catalog` 通过 NDN 连续发布两个完整 cloud revision：修改已有 Model Driver 的逻辑挂载、删除并恢复已有模型项，并动态增加 Provider Rules 和 Known Provider 文件；断言 cache 原子提交、全局 metadata sequence 收敛、动态 Provider 路由和真实 Mock 访问。T1.5 的 `t1.5.openai.openai.responses.v1.llm.cloud-update` 覆盖云端 Provider Rules 更新，并从真实 Adapter 的捕获请求确认 `service_tier` 已生效。两者都在结束时发布更高 revision 的 tombstone、禁用更新并恢复原始 system-config。
+
+NDN fixture 默认使用 `/opt/buckyos`；临时 devtest root 可通过 `AICC_NDN_GATEWAY_BINARY`、`AICC_NDN_NAMED_STORE_CONFIG`、`AICC_NDN_GATEWAY_CONTROL_URL`、`AICC_NDN_SYSTEM_ROOT` 和 `AICC_CLOUD_CACHE_ROOT` 覆盖。T1 也可在 TOML `[fixtures]` 中配置对应的小写字段。fixture 使用当前 cyfs-gateway 文档定义的 `cyfs-dir` process chain 语义路径绑定，因此运行环境的 gateway binary 必须包含该契约。
 
 T1.5 与其它层共用 `schema_version=1` 的 acceptance report，输出到 `<report-dir>/<run-id>/`，包含 `summary.json`、Markdown 摘要、逐 case evidence 和零费用 finance 文件；即使初始化失败，也会记录 runner failure、未执行 manifest 单元和 cleanup 结果。
 

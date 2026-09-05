@@ -133,6 +133,7 @@ p, admin,obj://config/users/{admin}/apps/{app}/{key},read|write,allow
 p, admin,obj://config/users/{admin}/agents,list|query,allow
 p, admin,obj://config/users/{admin}/agents/{agent}/{key},read|write,allow
 p, admin,obj://config/services/aicc/settings,read|write,allow
+p, admin,obj://config/services/aicc/driver_metadata_update,read|write,allow
 p, admin,obj://config/services/msg-center/settings,read|write,allow
 p, admin,obj://config/services/{service}/instances/{node},write,allow
 p, admin,obj://config/services/*,read,allow
@@ -578,6 +579,16 @@ g, did:bns:jarvis, agent
                 "alice",
                 "system:control-panel",
                 "obj://config/services/aicc/settings",
+                "write",
+                None,
+            )
+            .await
+        );
+        assert!(
+            rbac::enforce(
+                "alice",
+                "system:control-panel",
+                "obj://config/services/aicc/driver_metadata_update",
                 "write",
                 None,
             )

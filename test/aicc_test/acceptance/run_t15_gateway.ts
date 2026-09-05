@@ -1,8 +1,17 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildFinancialReport } from "./finance.ts";
 import { loginGateway, loginSudoSystemConfig, type GatewaySession, type RpcClient } from "./gateway.ts";
+import { buildT15OpenAiRules, t15OpenAiTombstone } from "./cloud_update_cases.ts";
+import { CloudUpdateFixtureService } from "./cloud_update_fixture_service.ts";
+import {
+  backupCloudUpdateConfig,
+  disableCloudUpdate,
+  setCloudUpdateSource,
+  waitCloudUpdateConverged,
+} from "./cloud_update_transaction.ts";
 import { validateCaseManifest } from "./manifest.ts";
 import {
   buildT15Manifest,
@@ -34,6 +43,11 @@ type Options = {
   reportDir: string;
   timeoutMs: number;
   providerMinIntervalMs: number;
+  ndnGatewayBinary: string;
+  ndnNamedStoreConfigPath: string;
+  ndnGatewayControlUrl: string;
+  ndnSystemRoot: string;
+  cloudCacheRoot: string;
 };
 
 type CaseResult = {
@@ -91,10 +105,16 @@ function options(args: string[]): Options {
     reportDir: "reports/acceptance",
     timeoutMs: 120_000,
     providerMinIntervalMs: 50,
+    ndnGatewayBinary: process.env.AICC_NDN_GATEWAY_BINARY ?? "/opt/buckyos/bin/cyfs-gateway/cyfs_gateway",
+    ndnNamedStoreConfigPath: process.env.AICC_NDN_NAMED_STORE_CONFIG ?? "/opt/buckyos/etc/named_store.json",
+    ndnGatewayControlUrl: process.env.AICC_NDN_GATEWAY_CONTROL_URL ?? "http://127.0.0.1:13451",
+    ndnSystemRoot: process.env.AICC_NDN_SYSTEM_ROOT ?? "/opt/buckyos",
+    cloudCacheRoot: process.env.AICC_CLOUD_CACHE_ROOT ?? "/opt/buckyos/data/aicc/driver_metadata/cloud",
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--gateway-url") parsed.gatewayUrl = required(args, index++, arg);
+    if (arg === "--") continue;
+    else if (arg === "--gateway-url") parsed.gatewayUrl = required(args, index++, arg);
     else if (arg === "--session-token") parsed.sessionToken = required(args, index++, arg);
     else if (arg === "--username") parsed.username = required(args, index++, arg);
     else if (arg === "--password") parsed.password = required(args, index++, arg);
@@ -552,6 +572,15 @@ async function executeCase(
       }
     }
   }
+  if (testCase.tags.includes("cloud_update")) {
+    const body = requests.at(-1)?.body;
+    const record = body && typeof body === "object" && !Array.isArray(body)
+      ? body as Record<string, unknown>
+      : {};
+    if (record.service_tier !== "default") {
+      diagnostics.push(`cloud Provider Rules did not lower service_tier=default: ${JSON.stringify(record.service_tier)}`);
+    }
+  }
   if (expectsFailure && !failed) diagnostics.push("official Provider error fixture was not mapped to a failed AICC call/task");
   if (!expectsFailure && failed) diagnostics.push(String(failed));
   if (testCase.tags.includes("official_error") && failed) {
@@ -630,6 +659,16 @@ async function main(): Promise<void> {
   const unmatchedCaseIds = new Set(input.caseIds);
   let session: GatewaySession | undefined;
   let fatalError: unknown;
+  const cloudCaseId = "t1.5.openai.openai.responses.v1.llm.cloud-update";
+  const cloudCaseRequested = selectedProviders.has("openai") &&
+    (input.caseIds.length === 0 || input.caseIds.includes(cloudCaseId));
+  let cloudFixture: CloudUpdateFixtureService | undefined;
+  let cloudAdmin: RpcClient | undefined;
+  let cloudSystemConfig: RpcClient | undefined;
+  let restoreCloudConfig: ((refreshedSystemConfig?: RpcClient) => Promise<void>) | undefined;
+  let cloudRevision = 0;
+  let cloudCleanupRevision = 0;
+  let cloudActive = false;
   try {
     await waitMock(input.mockControlUrl);
     session = await loginGateway({
@@ -645,6 +684,24 @@ async function main(): Promise<void> {
       password: input.password,
       appId: input.appId,
     });
+    if (cloudCaseRequested) {
+      cloudAdmin = session.aicc;
+      cloudSystemConfig = sudoSystemConfig;
+      restoreCloudConfig = await backupCloudUpdateConfig(sudoSystemConfig);
+      const cloudView = await cloudAdmin.call("driver_metadata_update.get", {}) as { metadata_target_seq?: unknown };
+      const currentSeq = typeof cloudView.metadata_target_seq === "number" ? cloudView.metadata_target_seq : 1;
+      cloudRevision = Math.max(Date.now(), currentSeq + 10);
+      cloudCleanupRevision = cloudRevision + 1;
+      cloudFixture = await CloudUpdateFixtureService.start({
+        gatewayUrl: input.gatewayUrl,
+        sessionToken: session.sessionToken,
+        runId,
+        gatewayBinary: input.ndnGatewayBinary,
+        namedStoreConfigPath: input.ndnNamedStoreConfigPath,
+        gatewayControlUrl: input.ndnGatewayControlUrl,
+        systemRoot: input.ndnSystemRoot,
+      });
+    }
     process.stdout.write(`${JSON.stringify({
       layer: "T1.5",
       providers: [...selectedProviders],
@@ -696,7 +753,38 @@ async function main(): Promise<void> {
             }
             testCase.provider_instance = instance;
             testCase.expected_provider_instance = instance;
-            results.push(await executeCase(session!, catalog, testCase, inventory, input.mockControlUrl, runId, input.timeoutMs));
+            let effectiveInventory = inventory;
+            if (testCase.tags.includes("cloud_update")) {
+              if (!cloudFixture || !cloudAdmin) throw new Error("cloud update fixture was not initialized");
+              const release = await cloudFixture.publish({
+                revisionSeq: cloudRevision,
+                files: await buildT15OpenAiRules(cloudRevision),
+              });
+              await setCloudUpdateSource(cloudAdmin, release.sourceUrl);
+              await session!.aicc.call("provider.refresh_models", { provider_instance_name: instance });
+              await waitCloudUpdateConverged(cloudAdmin, cloudRevision, input.timeoutMs);
+              cloudActive = true;
+              const cacheState = JSON.parse(await readFile(
+                join(input.cloudCacheRoot, "revisions", String(cloudRevision), "state.json"),
+                "utf8",
+              )) as { target_seq?: unknown; files?: unknown[] };
+              if (cacheState.target_seq !== cloudRevision || cacheState.files?.length !== 1) {
+                throw new Error(`T1.5 cloud Provider Rules revision ${cloudRevision} was not committed to cache`);
+              }
+              effectiveInventory = await waitInventory(session!, instance, input.timeoutMs);
+            }
+            results.push(await executeCase(session!, catalog, testCase, effectiveInventory, input.mockControlUrl, runId, input.timeoutMs));
+            if (testCase.tags.includes("cloud_update")) {
+              const cleanup = await cloudFixture!.publish({
+                revisionSeq: cloudCleanupRevision,
+                files: [],
+                tombstones: t15OpenAiTombstone(cloudCleanupRevision),
+              });
+              await setCloudUpdateSource(cloudAdmin!, cleanup.sourceUrl);
+              await session!.aicc.call("provider.refresh_models", { provider_instance_name: instance });
+              await waitCloudUpdateConverged(cloudAdmin!, cloudCleanupRevision, input.timeoutMs);
+              cloudActive = false;
+            }
           }
         }
       });
@@ -790,6 +878,13 @@ async function main(): Promise<void> {
           password: input.password,
           appId: input.appId,
         });
+        cloudAdmin = session.aicc;
+        cloudSystemConfig = await loginSudoSystemConfig({
+          gatewayUrl: input.gatewayUrl,
+          username: input.username,
+          password: input.password,
+          appId: input.appId,
+        });
       } catch {
       }
     }
@@ -814,6 +909,72 @@ async function main(): Promise<void> {
         }
       }
     }
+    if (cloudFixture && cloudAdmin) {
+      let shouldRemoveCloudRules = cloudActive;
+      if (!shouldRemoveCloudRules) {
+        try {
+          const view = await cloudAdmin.call("driver_metadata_update.get", {}) as { active_revision?: unknown };
+          shouldRemoveCloudRules = view.active_revision === cloudRevision;
+        } catch {
+        }
+      }
+      if (shouldRemoveCloudRules) {
+        try {
+          const cleanup = await cloudFixture.publish({
+            revisionSeq: cloudCleanupRevision,
+            files: [],
+            tombstones: t15OpenAiTombstone(cloudCleanupRevision),
+          });
+          await setCloudUpdateSource(cloudAdmin, cleanup.sourceUrl);
+          await waitCloudUpdateConverged(cloudAdmin, cloudCleanupRevision, input.timeoutMs);
+        } catch (error) {
+          results.push({
+            case_id: "t1.5.cleanup.cloud-update",
+            provider_driver: null,
+            method: "driver_metadata_update.set",
+            scenario: null,
+            status: "failed",
+            diagnostic: String(error),
+            captured_requests: 0,
+            started_at: new Date().toISOString(),
+            elapsed_ms: 0,
+          });
+        }
+      }
+      await disableCloudUpdate(cloudAdmin).catch((error) => results.push({
+        case_id: "t1.5.cleanup.cloud-update-disable",
+        provider_driver: null,
+        method: "driver_metadata_update.set",
+        scenario: null,
+        status: "failed",
+        diagnostic: String(error),
+        captured_requests: 0,
+        started_at: new Date().toISOString(),
+        elapsed_ms: 0,
+      }));
+    }
+    await restoreCloudConfig?.(cloudSystemConfig).catch((error) => results.push({
+      case_id: "t1.5.cleanup.cloud-update-config",
+      provider_driver: null,
+      method: "sys_config_set",
+      scenario: null,
+      status: "failed",
+      diagnostic: String(error),
+      captured_requests: 0,
+      started_at: new Date().toISOString(),
+      elapsed_ms: 0,
+    }));
+    await cloudFixture?.stop().catch((error) => results.push({
+      case_id: "t1.5.cleanup.cloud-update-ndn",
+      provider_driver: null,
+      method: "cyfs-gateway.remove_router",
+      scenario: null,
+      status: "failed",
+      diagnostic: String(error),
+      captured_requests: 0,
+      started_at: new Date().toISOString(),
+      elapsed_ms: 0,
+    }));
     try {
       await resetMock(input.mockControlUrl);
     } catch (error) {

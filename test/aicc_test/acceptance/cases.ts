@@ -262,6 +262,7 @@ const CROSS_CUTTING_CASES: AcceptanceCase[] = [
   ["config.provider_validate_rejects_duplicate", "provider_validate_rejects_duplicate", null],
   ["config.provider_delete_isolation", "provider_delete_isolation", null],
   ["config.provider_update_rollback", "provider_update_rollback", null],
+  ["config.cloud_update_dynamic_catalog", "cloud_update_dynamic_catalog", null],
   ["config.restart_consistency", "restart_consistency", null],
   ["observability.correlation", "correlation", null],
   ["observability.redaction", "redaction", null],
@@ -270,7 +271,9 @@ const CROSS_CUTTING_CASES: AcceptanceCase[] = [
   layer: "T1",
   priority: "P0",
   tags: [String(suffix).split(".")[0]],
-  method: String(suffix).startsWith("config.")
+  method: String(suffix) === "config.cloud_update_dynamic_catalog"
+    ? "driver_metadata_update.set"
+    : String(suffix).startsWith("config.")
     ? "service.reload_settings"
     : ["task.running_succeeded", "task.running_failed", "task.cancelled", "task.terminal_idempotent", "task.reload_recovery", "task.restart_recovery"].includes(String(suffix))
     ? "video.txt2video"

@@ -687,6 +687,7 @@ Owner：E2E 小组
 - [x] T1.5 经 Zone Gateway 执行真实 AICC typed/helper method、真实 Adapter 和 Provider 专用高保真 Mock；
 - [x] T1.5 fixture 只依据 Provider 官方 API 文档、官方 schema、官方 SDK 协议定义和官方错误文档；
 - [x] T1.5 覆盖 Provider driver × Adapter/API version × API-Type × operation，以及每个可独立调用的 metadata variant；
+- [x] T1/T1.5 通过独立 cyfs-gateway NDN 服务覆盖 cloud catalog 已有条目的动态增删改、新增配置文件、缓存原子提交、runtime sequence 收敛、实际路由与 Adapter wire 生效；
 - [ ] T2 官方 inventory 双向 diff 和 `ProviderInstance × model × API-Type` 最小真实推理矩阵；
 - [ ] T3 message-tunnel/Jarvis 六类消息、多附件、多轮和入口矩阵；
 - [x] 全局/Provider 并发、最小间隔、重试、timeout 和预算门禁；
@@ -699,6 +700,8 @@ Owner：E2E 小组
 实现记录：E2E 小组已完成 WP-18 静态基础与四层 Runner/manifest：preflight 分别校验 canonical api_type、typed method 及显式关联，Provider baseline schema v3 固定 11 家 Provider 与 SN 的 Profile/Adapter/Model Driver 身份；fixture manifest、T1 Mock contract 和 acceptance report 均使用固定 schema。T1.5 manifest 显式携带 canonical `execution_mode`，流式用例只向 AICC 传 `execution_mode=stream`，禁止调用方传 Provider wire `stream`；高保真 Mock 独立要求 Adapter 产生 `stream=true`。12 家 Provider 的 Mock 按官方资料或 SN 固定源码实现逐合同请求校验、机器目录/静态目录边界、正常响应、SSE 正常与中断、官方错误，以及 OpenAI Video、Gemini LRO、Fal Queue、MiniMax Video 四类异步生命周期；T1.5 Runner 也写入统一版本化 acceptance report、逐 case evidence、manifest coverage、cleanup 与 targeted retest。AiccClient 集成测试覆盖 request/response、严格 serde、`unsupported_execution_mode` 与稳定错误映射；默认 CI 运行 Deno 类型检查、preflight/self-test，不开放真实模型调用。
 
 2026-09-05 集成 Gate 记录：本机 devtest Zone 已经 Zone Gateway 和真实认证链路完成零费用验收。T1 最终执行 129/129，129 passed、0 failed、0 skipped，需求分支 125/125，cleanup 通过；T1.5 最终执行 603/603，603 passed、0 failed，manifest coverage 100%，cleanup 通过。两层 `actual_real_calls=0`。集成修复包括 caller-provided overlay 与持久 session exact-model 历史、公开 immediate 到内部 native task 生命周期、重启恢复/取消、自动第二租户及跨租户资源授权、Provider health/quota Mock、OpenRouter 原生 rerank，以及 GPT-5.6 computer-use 和 reasoning variant 协议矩阵。T2/T3 仍需每次运行的人工授权。
+
+2026-09-05 cloud update Gate 记录：独立 cyfs-gateway `cyfs-dir` NDN fixture 连续发布 complete-set revision 与 tombstone。T1 最终执行 130/130，130 passed、0 failed，需求分支 126/126，覆盖已有 OpenAI Model Driver 条目新增逻辑挂载、删除后恢复模型、修改挂载，以及动态新增 Provider Rules/Known Provider 文件；断言 revision cache、普通管理员 API、动态 Provider 路由和真实 Mock 访问。T1.5 动态 manifest 最终执行 622/622，622 passed、0 failed，覆盖 cloud Provider Rules 经过真实 OpenAI Responses Adapter 后产生预期 `service_tier` wire；manifest coverage 与 cleanup 均为 100%，两层 `actual_real_calls=0`、`actual_cost_usd=0`。修复仅涉及 AICC acceptance fixture/runner、cloud cleanup 重新认证和 AICC cloud-update 管理资源 RBAC；未修改 BuckyOS 基础模块实现，也未更新 WebSDK。
 
 ## 6. 实施波次与并行关系
 
@@ -1131,7 +1134,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | WP-16 | Service Integration 小组 | Done | WP-07/09-15 | Service/Admin |
 | WP-17 | TBD | Pending | WP-01/16 | Callers |
 | WP-18 | E2E 小组 | In Progress | 本提交；待集成 Gate | Acceptance |
-| T1/T1.5 Gate | E2E 小组 | Done | WP-01 至 WP-18 已实现范围、2026-09-05 集成冻结 | T1 129/129、T1.5 603/603，零真实调用 |
+| T1/T1.5 Gate | E2E 小组 | Done | WP-01 至 WP-18 已实现范围、2026-09-05 cloud update Gate | T1 130/130、T1.5 622/622，零真实调用 |
 | T2/T3 Gate | TBD | Pending | T1/T1.5 Gate Done、当次授权 | 真实 Provider 与消息链路发布验收 |
 
 状态只允许：`Pending`、`In Progress`、`Blocked`、`Review`、`Done`。每次更新状态时应同时填写 owner、关联 PR/commit、剩余风险和目标验收 case。

@@ -37,6 +37,21 @@ import { buildT1Coverage } from "./coverage.ts";
 import { queryRouteTraces, queryUsageEvents } from "./usage_audit.ts";
 import { inventoriesFromModelsList } from "./inventory.ts";
 import { withMockQuotaTruth } from "./quota_transaction.ts";
+import { CloudUpdateFixtureService } from "./cloud_update_fixture_service.ts";
+import {
+  buildCloudUpdateFiles,
+  cloudUpdateTombstones,
+  CLOUD_TEST_MOUNT_V1,
+  CLOUD_TEST_MOUNT_V2,
+  CLOUD_TEST_PROFILE_ID,
+  CLOUD_TEST_RULES_ID,
+} from "./cloud_update_cases.ts";
+import {
+  backupCloudUpdateConfig,
+  disableCloudUpdate,
+  setCloudUpdateSource,
+  waitCloudUpdateConverged,
+} from "./cloud_update_transaction.ts";
 
 type Options = {
   configPath: string;
@@ -59,6 +74,11 @@ type Options = {
   providerMinIntervalMs: number;
   caseIds: string[];
   allowAiccRestart: boolean;
+  ndnGatewayBinary: string;
+  ndnNamedStoreConfigPath: string;
+  ndnGatewayControlUrl: string;
+  ndnSystemRoot: string;
+  cloudCacheRoot: string;
 };
 
 class SkipCase extends Error {
@@ -147,9 +167,20 @@ async function options(args: string[]): Promise<Options> {
     providerMinIntervalMs: tomlNumber(config, "runner.provider_min_interval_ms") ?? 50,
     caseIds: [],
     allowAiccRestart: tomlBoolean(config, "runner.allow_aicc_restart") ?? false,
+    ndnGatewayBinary: tomlString(config, "fixtures.ndn_gateway_binary") ??
+      env("AICC_NDN_GATEWAY_BINARY") ?? "/opt/buckyos/bin/cyfs-gateway/cyfs_gateway",
+    ndnNamedStoreConfigPath: tomlString(config, "fixtures.ndn_named_store_config") ??
+      env("AICC_NDN_NAMED_STORE_CONFIG") ?? "/opt/buckyos/storage/named_store.json",
+    ndnGatewayControlUrl: tomlString(config, "fixtures.ndn_gateway_control_url") ??
+      env("AICC_NDN_GATEWAY_CONTROL_URL") ?? "http://127.0.0.1:13451",
+    ndnSystemRoot: tomlString(config, "fixtures.ndn_system_root") ??
+      env("AICC_NDN_SYSTEM_ROOT") ?? "/opt/buckyos",
+    cloudCacheRoot: tomlString(config, "fixtures.aicc_cloud_cache_root") ??
+      env("AICC_CLOUD_CACHE_ROOT") ?? "/opt/buckyos/data/aicc/driver_metadata/cloud",
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === "--") continue;
     if (arg === "--config") index += 1;
     else if (arg === "--gateway-url") parsed.gatewayUrl = requiredArg(args, index++, arg);
     else if (arg === "--session-token") parsed.sessionToken = requiredArg(args, index++, arg);
@@ -2585,6 +2616,226 @@ async function runCases(
       input.timeoutMs,
     );
     return `${rejected ? "invalid update rejected" : "invalid update restored"}; original Provider remained callable after rollback`;
+  });
+
+  await pushProbe("t1.config.cloud_update_dynamic_catalog", "driver_metadata_update.set", "assertion_failed", async () => {
+    const cloudAdmin = session.aicc;
+    const restoreCloudConfig = await backupCloudUpdateConfig(adminSystemConfig);
+    const cloudView = await cloudAdmin.call("driver_metadata_update.get", {}) as Record<string, unknown>;
+    const currentSeq = typeof cloudView.metadata_target_seq === "number" ? cloudView.metadata_target_seq : 1;
+    const revisionV1 = Math.max(Date.now(), currentSeq + 10);
+    const revisionV2 = revisionV1 + 1;
+    const cleanupRevision = revisionV2 + 1;
+    const cloudProviderName = `dv-cloud-openai-${runId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+    let fixture: CloudUpdateFixtureService | undefined;
+    let providerAdded = false;
+    let cloudCatalogActive = false;
+    let cloudStage = "start_fixture";
+    let executionError: unknown;
+    const cleanupErrors: unknown[] = [];
+    try {
+      fixture = await CloudUpdateFixtureService.start({
+        gatewayUrl: input.gatewayUrl,
+        sessionToken: session.sessionToken,
+        runId,
+        gatewayBinary: input.ndnGatewayBinary,
+        namedStoreConfigPath: input.ndnNamedStoreConfigPath,
+        gatewayControlUrl: input.ndnGatewayControlUrl,
+        systemRoot: input.ndnSystemRoot,
+      });
+      cloudStage = "publish_v1";
+      const releaseV1 = await fixture.publish({
+        revisionSeq: revisionV1,
+        files: await buildCloudUpdateFiles(revisionV1, "v1"),
+      });
+      cloudStage = "converge_v1";
+      await setCloudUpdateSource(cloudAdmin, releaseV1.sourceUrl);
+      await waitCloudUpdateConverged(cloudAdmin, revisionV1, input.timeoutMs);
+      cloudCatalogActive = true;
+      const cachedV1 = JSON.parse(await Deno.readTextFile(
+        join(input.cloudCacheRoot, "revisions", String(revisionV1), "state.json"),
+      )) as { target_seq?: unknown; files?: unknown[] };
+      if (cachedV1.target_seq !== revisionV1 || cachedV1.files?.length !== 3) {
+        throw new Error(`cloud revision ${revisionV1} was not fully committed to cache`);
+      }
+      const catalogV1 = await session.aicc.call("provider.catalog", {}) as {
+        catalog_revision?: unknown;
+        providers?: Array<Record<string, unknown>>;
+      };
+      const dynamicV1 = catalogV1.providers?.find((provider) =>
+        provider.provider_profile_id === CLOUD_TEST_PROFILE_ID
+      );
+      if (catalogV1.catalog_revision !== revisionV1 || dynamicV1?.display_name !== "AICC Cloud Update V1") {
+        throw new Error("dynamically added Known Provider file did not enter the runtime catalog");
+      }
+      const openAiV1 = inventories(await session.aicc.call("models.list", {}))
+        .find((inventory) => inventory.provider_instance_name === mockInventories.find((item) =>
+          item.provider_driver === "openai"
+        )?.provider_instance_name);
+      if (!openAiV1?.models.some((model) => model.logical_mounts.includes(CLOUD_TEST_MOUNT_V1))) {
+        throw new Error("cloud model-driver modification did not add the V1 logical mount");
+      }
+      if (openAiV1.models.some((model) =>
+        model.provider_model_id === "text-embedding-3-small" && model.api_types.includes("embedding.text")
+      )) {
+        throw new Error("cloud model-driver deletion left text-embedding-3-small routable");
+      }
+
+      cloudStage = "add_dynamic_provider";
+      await session.aicc.call("provider.add", {
+        provider_instance_name: cloudProviderName,
+        provider_type: "cloud_api",
+        provider_profile_id: CLOUD_TEST_PROFILE_ID,
+        protocol_adapter_id: "openai-responses",
+        provider_rules_id: CLOUD_TEST_RULES_ID,
+        base_url: `${mockBaseUrl}/instance-a/v1`,
+        credentials: { api_token: { locked: `cloud-mock-${runId}` } },
+        auto_sync_models: true,
+      });
+      cloudStage = "wait_dynamic_provider";
+      providerAdded = true;
+      await waitForProvider(cloudProviderName, true);
+      const cloudInventoryV1 = inventories(await session.aicc.call("models.list", {}))
+        .find((inventory) => inventory.provider_instance_name === cloudProviderName);
+      if (!cloudInventoryV1?.models.some((model) => model.logical_mounts.includes(CLOUD_TEST_MOUNT_V1))) {
+        throw new Error("catalog-only Provider did not inherit the dynamically added model-driver mount");
+      }
+      await setScenario(input.mockControlUrl, "success");
+      const requestsBeforeV1 = await mockRequestCount(input.mockControlUrl);
+      cloudStage = "call_v1";
+      await withMockQuotaTruth({
+        systemConfig: adminSystemConfig,
+        userId: session.userId,
+        appId: "system:control-panel",
+        inventories: [cloudInventoryV1],
+        execute: async () => {
+          const routedV1 = await session.aicc.call("route.resolve", {
+            request_id: `${runId}:cloud-update-v1-route`,
+            api_type: "llm",
+            logical_model: CLOUD_TEST_MOUNT_V1,
+            requirements: {},
+            disable: {},
+            policy: { allowed_provider_instances: [cloudProviderName] },
+          }) as Record<string, unknown>;
+          if (routedV1.provider_instance_name !== cloudProviderName || typeof routedV1.selected_exact_model !== "string") {
+            throw new Error(`V1 cloud mount did not route to the dynamic Provider: ${JSON.stringify(routedV1)}`);
+          }
+          const initialV1 = await session.aicc.call("chat.completions.create", {
+            exact_model: routedV1.selected_exact_model,
+            messages: [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827." }] }],
+            max_output_tokens: 32,
+            idempotency_key: `${runId}:cloud-update-v1-call`,
+          }) as AiMethodResponse;
+          await terminal(session, initialV1, input.timeoutMs);
+        },
+      });
+      if (await mockRequestCount(input.mockControlUrl) <= requestsBeforeV1) {
+        throw new Error("V1 cloud-routed inference did not reach the Provider Mock");
+      }
+
+      const releaseV2 = await fixture.publish({
+        revisionSeq: revisionV2,
+        files: await buildCloudUpdateFiles(revisionV2, "v2"),
+      });
+      cloudStage = "converge_v2";
+      await setCloudUpdateSource(cloudAdmin, releaseV2.sourceUrl);
+      await waitCloudUpdateConverged(cloudAdmin, revisionV2, input.timeoutMs);
+      const cloudInventoryV2 = inventories(await session.aicc.call("models.list", {}))
+        .find((inventory) => inventory.provider_instance_name === cloudProviderName);
+      const gptV2 = cloudInventoryV2?.models.find((model) => model.provider_model_id === "gpt-5.6");
+      if (!gptV2?.logical_mounts.includes(CLOUD_TEST_MOUNT_V2) || gptV2.logical_mounts.includes(CLOUD_TEST_MOUNT_V1)) {
+        throw new Error("V2 cloud modification did not replace the V1 logical mount");
+      }
+      if (!cloudInventoryV2?.models.some((model) =>
+        model.provider_model_id === "text-embedding-3-small" && model.api_types.includes("embedding.text")
+      )) {
+        throw new Error("V2 cloud addition did not restore text-embedding-3-small");
+      }
+      const catalogV2 = await session.aicc.call("provider.catalog", {}) as {
+        providers?: Array<Record<string, unknown>>;
+      };
+      if (catalogV2.providers?.find((provider) =>
+        provider.provider_profile_id === CLOUD_TEST_PROFILE_ID
+      )?.display_name !== "AICC Cloud Update V2") {
+        throw new Error("V2 Known Provider modification did not become visible");
+      }
+      const requestsBeforeV2 = await mockRequestCount(input.mockControlUrl);
+      cloudStage = "call_v2";
+      await withMockQuotaTruth({
+        systemConfig: adminSystemConfig,
+        userId: session.userId,
+        appId: "system:control-panel",
+        inventories: [cloudInventoryV2],
+        execute: async () => {
+          const routedV2 = await session.aicc.call("route.resolve", {
+            request_id: `${runId}:cloud-update-v2-route`,
+            api_type: "llm",
+            logical_model: CLOUD_TEST_MOUNT_V2,
+            requirements: {},
+            disable: {},
+            policy: { allowed_provider_instances: [cloudProviderName] },
+          }) as Record<string, unknown>;
+          if (routedV2.provider_instance_name !== cloudProviderName || typeof routedV2.selected_exact_model !== "string") {
+            throw new Error(`V2 cloud mount did not route to the dynamic Provider: ${JSON.stringify(routedV2)}`);
+          }
+          const initialV2 = await session.aicc.call("chat.completions.create", {
+            exact_model: routedV2.selected_exact_model,
+            messages: [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827." }] }],
+            max_output_tokens: 32,
+            idempotency_key: `${runId}:cloud-update-v2-call`,
+          }) as AiMethodResponse;
+          await terminal(session, initialV2, input.timeoutMs);
+        },
+      });
+      if (await mockRequestCount(input.mockControlUrl) <= requestsBeforeV2) {
+        throw new Error("V2 cloud-routed inference did not reach the Provider Mock");
+      }
+      return `NDN revisions ${revisionV1}/${revisionV2} cached; existing entries added/deleted/modified; dynamic files routed and reached ${cloudProviderName}`;
+    } catch (error) {
+      executionError = new Error(`cloud stage ${cloudStage}: ${String(error)}`);
+      throw executionError;
+    } finally {
+      if (providerAdded) {
+        try {
+          await session.aicc.call("provider.delete", { provider_instance_name: cloudProviderName });
+          await waitForProvider(cloudProviderName, false);
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      if (fixture) {
+        try {
+          if (cloudCatalogActive) {
+            const cleanupRelease = await fixture.publish({
+              revisionSeq: cleanupRevision,
+              files: [],
+              tombstones: cloudUpdateTombstones(cleanupRevision),
+            });
+            await setCloudUpdateSource(cloudAdmin, cleanupRelease.sourceUrl);
+            await waitCloudUpdateConverged(cloudAdmin, cleanupRevision, input.timeoutMs);
+            const restoredCatalog = await session.aicc.call("provider.catalog", {}) as {
+              providers?: Array<Record<string, unknown>>;
+            };
+            if (restoredCatalog.providers?.some((provider) =>
+              provider.provider_profile_id === CLOUD_TEST_PROFILE_ID
+            )) {
+              throw new Error("cloud tombstones did not remove the dynamic Provider catalog");
+            }
+          }
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      await disableCloudUpdate(cloudAdmin).catch((error) => cleanupErrors.push(error));
+      await restoreCloudConfig().catch((error) => cleanupErrors.push(error));
+      await fixture?.stop().catch((error) => cleanupErrors.push(error));
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(
+          executionError ? [executionError, ...cleanupErrors] : cleanupErrors,
+          `cloud update acceptance cleanup failed: ${[executionError, ...cleanupErrors].filter(Boolean).map(String).join("; ")}`,
+        );
+      }
+    }
   });
 
   await pushProbe("t1.config.restart_consistency", "node-daemon.restart", "assertion_failed", async () => {

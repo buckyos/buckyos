@@ -572,10 +572,24 @@ export function buildT15Manifest(
       }
     }
   }
+  const cloudUpdateBase = cases.find((testCase) =>
+    testCase.provider_driver === "openai" &&
+    testCase.protocol_contract_id === "openai.responses.v1" &&
+    testCase.api_type === "llm" &&
+    testCase.mock_scenario === "success"
+  );
+  if (!cloudUpdateBase) throw new Error("OpenAI Responses LLM contract is required for the cloud update case");
+  cases.push({
+    ...cloudUpdateBase,
+    case_id: "t1.5.openai.openai.responses.v1.llm.cloud-update",
+    tags: [...cloudUpdateBase.tags, "cloud_update"],
+    cleanup: [...cloudUpdateBase.cleanup, "restore_cloud_provider_rules"],
+  });
   const customDrivers = new Set(["openai", "claude", "google-gemini", "fal"]);
   cases.push(...cases.filter((testCase) =>
     customDrivers.has(testCase.provider_driver ?? "") &&
     testCase.mock_scenario === "success" &&
+    !testCase.tags.includes("cloud_update") &&
     !testCase.tags.includes("custom_provider")
   ).map((testCase) => ({
     ...testCase,

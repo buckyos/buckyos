@@ -39,6 +39,13 @@ import { filterPhysicalModels } from "./model_coverage.ts";
 import { bindOfficialCatalogInstances, fetchOfficialModelIds } from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import { buildNdnGatewayConfig, gatewayRouterArgs } from "./ndn_fixture_service.ts";
+import {
+  buildCloudUpdateFiles,
+  cloudUpdateTombstones,
+  CLOUD_TEST_MOUNT_V1,
+  CLOUD_TEST_MOUNT_V2,
+} from "./cloud_update_cases.ts";
+import { backupCloudUpdateConfig } from "./cloud_update_transaction.ts";
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
 import { callInference, type RpcClient } from "./gateway.ts";
@@ -155,6 +162,53 @@ test("T2 fixture NDN service is isolated and routed only for the run lifetime", 
     "--server",
     "http://127.0.0.1:13451",
   ]);
+});
+
+test("cloud update fixtures replace complete catalog files and tombstone every cloud identity", async () => {
+  const first = await buildCloudUpdateFiles(42, "v1");
+  const second = await buildCloudUpdateFiles(43, "v2");
+  assert.deepEqual(first.map((file) => `${file.catalog_kind}:${file.catalog_id}`), [
+    "model_driver:openai",
+    "provider_rules:aicc-cloud-update-openai",
+    "known_provider:aicc-cloud-update-openai",
+  ]);
+  const firstModels = first[0].contents.models as Array<Record<string, unknown>>;
+  const secondModels = second[0].contents.models as Array<Record<string, unknown>>;
+  assert.equal(firstModels.some((model) => model.id === "text-embedding-3-small"), false);
+  assert.equal(secondModels.some((model) => model.id === "text-embedding-3-small"), true);
+  assert.ok((firstModels.find((model) => model.id === "gpt-5.6")?.logical_mounts as string[]).includes(CLOUD_TEST_MOUNT_V1));
+  assert.ok(!(firstModels.find((model) => model.id === "gpt-5.6")?.logical_mounts as string[]).includes(CLOUD_TEST_MOUNT_V2));
+  assert.ok((secondModels.find((model) => model.id === "gpt-5.6")?.logical_mounts as string[]).includes(CLOUD_TEST_MOUNT_V2));
+  assert.deepEqual(cloudUpdateTombstones(44).map((item) => `${item.catalog_kind}:${item.catalog_id}`), [
+    "model_driver:openai",
+    "provider_rules:aicc-cloud-update-openai",
+    "known_provider:aicc-cloud-update-openai",
+  ]);
+});
+
+test("cloud update config cleanup retries with refreshed authentication", async () => {
+  let expiredDeletes = 0;
+  let refreshedDeletes = 0;
+  const expired: RpcClient = {
+    call: async (method) => {
+      if (method === "sys_config_get") return null;
+      expiredDeletes += 1;
+      throw new Error("ExpiredSignature");
+    },
+  };
+  const refreshed: RpcClient = {
+    call: async (method) => {
+      assert.equal(method, "sys_config_delete");
+      refreshedDeletes += 1;
+      return null;
+    },
+  };
+  const restore = await backupCloudUpdateConfig(expired);
+  await assert.rejects(restore(), /ExpiredSignature/);
+  await restore(refreshed);
+  await restore(refreshed);
+  assert.equal(expiredDeletes, 1);
+  assert.equal(refreshedDeletes, 1);
 });
 
 test("judge model selection prefers current exact Gemini and honors overrides", () => {
