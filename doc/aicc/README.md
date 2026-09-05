@@ -23,6 +23,7 @@
 - `match_rule.md`：Model Driver、Provider Rules、请求/价格条件及发布 track 共用的统一匹配语义，采用字符串优先、多维对象按需展开的配置形式。
 - `internal_module_architecture.md`：AICC 重构后的内部模块职责、依赖方向、协议代际复用、运行时快照和生命周期边界。
 - `provider_architecture_durable_data_schema.md`：Issue #579 新 Provider 架构的持久数据边界，定义三类 catalog、Provider Instance 外部真相源和实例级 inventory LKGS。
+- `aicc_runtime_durable_data_schema.md`：AICC 运行时持久记录，定义幂等/重启恢复 execution、route trace、session exact-model 历史、artifact 租户归属和 audit 表。
 - `provider_ui_backend_mapping.md`：Provider catalog、Instance、inventory、trace 的前后端字段映射、状态和性能边界。
 - `aicc改进.md`：AICC 改进方案记录。
 - `aicc_log1.html`：AICC 设计讨论和历史记录。

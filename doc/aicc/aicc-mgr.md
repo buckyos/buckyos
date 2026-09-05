@@ -101,7 +101,7 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
 2. 写操作必须使用 `SystemConfigClient::exec_tx`，并用 `services/aicc/settings` 的 revision 作为 `main_key` 做 CAS。
 3. 写成功后默认触发内存 reload，保证 `models.list` 立即反映变更。
 4. 返回值优先使用现有 `models.list` 的 raw inventory 模型，UI 继续在 `aicc_mgr.ts` 内做 Raw -> StoreSnapshot 转换。
-5. 不引入新的持久依赖。usage 已经使用 AICC RDB，settings 继续使用 system_config。
+5. 不引入新的存储后端。settings 继续使用 system-config；usage、execution 恢复、route/audit、session exact-model 历史和 artifact 租户归属共用 AICC 现有平台 RDB instance。
 
 ## 4. kRPC 接口
 
@@ -526,7 +526,7 @@ Rust 契约统一定义在 `buckyos-api::aicc_client` 的 `DriverMetadataUpdate*
 
 ### 5.1 `routing.get` / `routing.update`
 
-`routing.get` 返回当前 settings revision 和完整 `AiccRouteOverlay`。`routing.update` 使用调用方读取到的 revision 做 CAS，只替换 `session_config.provider_weights`，其它 session config 字段保持不变。
+`routing.get` 返回当前 settings revision 和完整 `AiccRouteOverlay`。`routing.update` 使用调用方读取到的 revision 做 CAS，只替换 `session_config.provider_weights`，其它系统级 routing 字段保持不变。settings 中的内部字段名 `session_config` 不表示 AICC 保存应用 session overlay；请求级 `session_overlay` 始终由调用方传入。
 
 `routing.update` request：
 

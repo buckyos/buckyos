@@ -60,7 +60,7 @@ canonical `ApiType` 序列化值以协议 schema 为准：LLM chat 为 `llm`，c
 
 ### 1.5 Agent Runtime Support
 
-`agent.computer_use` 当前作为占位方向，不作为普通 AICC v0 模型调用的强制真实 Provider 验收项。Mock 阶段只验证 schema、路由目录和安全约束：
+`agent.computer_use` 已对 OpenAI GPT-5.6 通过 Responses `computer` tool 开放。T1/T1.5 必须验证 schema、路由目录、安全约束和官方 wire；真实桌面/浏览器环境的 T2/T3 仍只在当次授权并配置受控环境后执行：
 
 - screenshot resource。
 - viewport。

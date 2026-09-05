@@ -720,7 +720,9 @@ quota、budget、幂等计费和 fallback 归因在 T1 覆盖；Provider usage �
 - 外部 URL、文档和压缩包的大小、安全边界与恶意内容处理。
 - 文档中的 prompt injection 不得改变系统权限和测试环境边界。
 
-跨用户、跨 tenant、RBAC 和管理 method 授权用例只在 T1 执行。需要第二租户的用例必须始终保留在 manifest；未配置 `other_tenant_session_token` 时明确记为 `skipped`，不得使用同租户凭据伪造通过，也不得阻断其它 T1 用例。
+跨用户、跨 tenant、RBAC 和管理 method 授权用例只在 T1 执行。需要第二租户的用例必须始终保留在 manifest。Runner 优先使用已配置的 `other_tenant_session_token`；在明确允许配置变更且提供管理账号密码的本地 T1 环境中，应自动创建 run-scoped 第二 tenant、获取 token 并在 cleanup 删除。两种方式都不可用同租户凭据伪造。只有环境既无 token 也不允许安全创建第二 tenant 时，相关用例才可明确记为 `skipped`，且不阻断其它 T1 用例。`rbac_admin_method` 不依赖第二 tenant，不得因缺少该 token 而跳过。
+
+T1 的 `task.restart_recovery` 和 `config.restart_consistency` 必须通过受监督的 AICC 进程重启执行。Runner 只能在 `runner.allow_aicc_restart=true` 或显式 `--allow-aicc-restart` 时停止已核验身份的 AICC PID，必须等待 node-daemon 启动新 PID 并恢复 Gateway 可用后继续；不得通过直接重建内存对象伪造跨重启通过。
 
 ### 11.4 配置和维护
 

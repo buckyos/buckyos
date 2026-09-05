@@ -28,7 +28,7 @@ Kimi / GLM / DeepSeek / 豆包（火山方舟）/ Qwen（阿里云百炼）
 
 | Provider | 首版主接口 | 可复用协议模块 | 必须隔离的厂商差异 |
 | --- | --- | --- | --- |
-| OpenAI | Responses | `openai/responses` | 官方 endpoint、Bearer key、模型发现；专用 image/audio/video API 独立 operation |
+| OpenAI | Responses | `openai/responses` | 官方 endpoint、Bearer key、模型发现；专用 image/audio/video API 与 Responses computer tool 独立 operation |
 | Claude | Messages | `claude/messages` | `x-api-key`、`anthropic-version`、content block 与 SSE event |
 | Gemini | Interactions | `gemini/interactions` | `x-goog-api-key`、interaction/event 结构、Files/Gen Media/Live 等独立接口 |
 | fal | Queue API | `fal/queue` | `Authorization: Key`、endpoint 即模型、submit/status/result/cancel/webhook、模型特定输入输出 |
@@ -90,6 +90,7 @@ openai.embeddings.create
 openai.images.generate / edit
 openai.audio.transcribe / speech
 openai.videos.create / status / content / cancel
+openai.responses.computer
 ```
 
 只有 request、response、stream 和错误语义相同的 operation 才共享 codec。仅仅都使用 HTTP、JSON 或异步任务，不足以合并成同一个协议实现。
@@ -132,7 +133,7 @@ aicc
 ├── call             RouteDecision 到 ResolvedProviderCall 的唯一 lowering
 ├── execution        immediate/stream/task、取消、幂等、TaskMgr bridge
 ├── resource         ResourceRef 鉴权、限制和最后一跳物化
-├── storage          inventory LKGS、usage/audit/task 关联存储接口
+├── storage          inventory LKGS、usage/audit/task、session exact-model 历史与 AICC artifact 租户归属
 └── observability    metrics、trace、审计、诊断和脱敏
 ```
 

@@ -13,7 +13,7 @@ AICC 不是简单的 `model_name -> provider` 映射。一个调用方传入的 
 - session 或 agent 对逻辑目录的 overlay；
 - 用户对权重、provider、预算、本地优先等策略的配置；
 - provider 运行时状态、价格、延迟、错误率和配额；
-- session sticky binding。
+- tenant/user/app/session 隔离的上次 exact-model 路由历史。
 
 因此需要把概念分层，否则 provider、driver、逻辑目录、用户配置会互相假设彼此存在，导致路由结果不可解释。
 
@@ -310,13 +310,14 @@ strict_local
 
 ```text
 系统基础逻辑目录       # 随系统升级，不可直接修改
-用户自定义逻辑目录     # 用户可配置，作为 global/session parent
-Agent 默认逻辑目录     # Agent 配置，可作为 session 默认值
-Session 逻辑目录       # 保存到 session，用于本次会话
+系统级 routing config      # services/aicc/settings.session_config，名称保留但语义是 Zone 全局配置
+应用/Agent/会话配置    # 由调用方保存并合成
+Request session_overlay    # 调用方每次 RPC 传入，AICC 不持久化
 Request policy         # 单次请求附带的约束
+AICC session 路由历史  # 只保存上次 selected exact model，不是配置层
 ```
 
-当前 `SessionConfig` 支持：
+当前 `AiccRouteOverlay`（settings 内部字段仍名为 `session_config`）支持：
 
 - `logical_tree`：直接定义逻辑目录树；
 - `logical_profile` / `logical_profiles`：一组 overlay；
@@ -324,9 +325,11 @@ Request policy         # 单次请求附带的约束
 - `global_exact_model_weights`：全局精确模型权重；
 - `provider_weights`：全局 provider instance 权重，`1.0` 为默认，`0.0` 表示禁用该 provider 参与路由；
 - `policy`：全局路由策略；
-- `ttl_seconds` / `revision`：session 配置生命周期和冲突控制。
+- `ttl_seconds` / `revision`：调用方 overlay 元数据；AICC 不持久 request overlay，也不用它们管理 session 历史。
 
-长期持久化位置是 `services/aicc/settings.session_config.provider_weights`。该位置属于 AICC 全局 session parent 配置，不写入 provider inventory，也不修改 driver metadata。Control Panel 通过 `ai.provider.weight.list` / `ai.provider.weight.set` 读写该字段；保存时会校验 provider instance name、weight 非负有限，并触发 AICC `service.reload_settings` 使 `models.list.session_config` 立即反映新权重。
+系统级 Provider 权重的持久位置是 `services/aicc/settings.session_config.provider_weights`。该字段名是现有 settings schema 的内部命名，语义是 Zone 全局 routing config，不是某个应用 session。Control Panel 通过 `routing.get` / `routing.update` 读写 Provider 权重，使用 settings revision CAS，不再使用 `ai.provider.weight.*`。
+
+请求携带 `session_id` 时，AICC 另行在平台 RDB 中按 `(tenant_id, user_id, caller_app_id, session_id)` 持久上次已选 exact model。该记录只是硬约束之后的软优先级，不保存逻辑树、policy、overlay revision 或 TTL。
 
 `LogicalTreeOverlay` 支持：
 
@@ -373,7 +376,7 @@ Request policy         # 单次请求附带的约束
 - 我想把 `llm.chat` 的默认权重调成更便宜；
 - 我想降低某个 provider 的全局权重。
 
-这层应保存到用户配置或 system-config 中，并作为 session 的 parent 或 global config。
+系统级长期配置保存到 system-config；per-user 或 per-conversation 配置由应用保存，调用时合成一个 request `session_overlay`。AICC 不提供 per-user routing config store。
 
 ### 4.3 Agent 默认逻辑目录
 
@@ -384,20 +387,20 @@ Agent 可以定义自己的默认逻辑目录 profile。例如 Jarvis 可以默�
 - 某些 internal task 使用 `llm.summarize`；
 - 对某些工具调用强制要求 `tool_call`。
 
-Agent 默认逻辑目录应保存在 agent 配置中。创建 session 时，Agent 可以把这层配置注入 session。
+Agent 默认逻辑目录应保存在 agent 配置中。发起 AICC 请求前，Agent 把它与应用/会话配置合成最终 `session_overlay`。
 
 ### 4.4 Session 逻辑目录
 
-Session 逻辑目录是会话内临时配置，保存在 session 里。
+Session 逻辑目录是会话内临时配置，保存在调用方的 session store 里，不保存在 AICC。
 
 它适合表达：
 
 - 这个 session 临时使用 `quality_first`；
 - 这个 session 临时禁用某个 provider；
 - 这个 session 临时把 `llm.chat` 指向某个模型；
-- 这个 session 里已经选择的模型保持 sticky。
+- 这个 session 对某些模型或 Provider 的显式偏好。
 
-Session 配置有 revision 和 TTL，适合被 UI 或 Agent 动态更新。
+调用方可在自己的 session store 中实现 revision 和 TTL，并在每次 RPC 传入合成后的 overlay。AICC 只按 `session_id` 保留上次 exact model 软偏好，当前没有该历史的 TTL。
 
 ## 5. Provider 刷新与挂载流程
 
@@ -811,9 +814,8 @@ Router 读取：
 
 ```text
 系统基础逻辑目录
-用户自定义配置
-Agent 默认配置
-Session overlay
+系统级 routing config
+调用方合成的 request session_overlay
 Provider inventory default items
 ```
 
@@ -882,7 +884,7 @@ gpt-5.2@openai-backup  cost=0.008 latency=1500 quality=0.9
 
 在 `cost_first` 下可能选择 `openai-backup`。在 `latency_first` 下可能选择 `openai-primary`。
 
-如果 session sticky 已有绑定，且绑定模型仍在候选集合中，会优先使用 sticky binding。
+如果请求携带 `session_id`，且该 tenant/user/app/session 历史模型在通过全部硬过滤后仍在候选集合中，Scheduler 会把它作为软优先项。选路成功后使用本次 exact model upsert 该历史。
 
 ### 8.6 输出
 

@@ -924,6 +924,8 @@ factory/default route config < system global route config < request session_over
 
 1. AICC 只持久化 session 的 exact-model 路由历史，不持久化 session config/overlay；
 2. AICC 不提供 session config revision conflict 检查；并发合并由应用层或更上层的配置服务负责。
+3. 历史主键是 `(tenant_id, user_id, caller_app_id, session_id)`，相同 `session_id` 在不同租户、用户或应用间不共享；选路成功后以 upsert 更新 `selected_exact_model`。
+4. 当前 Beta 2.2 历史没有 TTL 或自动清理语义；`session_overlay.ttl_seconds/revision` 只是调用方 overlay 数据，不能解释为 AICC 持久历史的过期策略。表结构见 [aicc_runtime_durable_data_schema.md](aicc_runtime_durable_data_schema.md)。
 
 ### 11.3 Request Overlay 与能力类型
 
@@ -1546,7 +1548,7 @@ scheduler_profiles:
 1. Executor 记录运行时失败；
 2. 如果 `runtime_failover = true` 且 request 可重试，从同一优先级候选或 fallback 后候选中选择下一个；
 3. 如果 failover 导致 Provider 改变，trace 标记 `was_failover = true`；
-4. session binding 必须更新或标记为临时 failover，避免后续请求继续命中已耗尽 Provider。
+4. 该次路由已选 exact model 按 session 历史规则写入；后续请求仍会重新执行配额、健康和 policy 硬过滤，不允许历史偏好越过已耗尽 Provider。
 
 #### 精确模型显式指定
 

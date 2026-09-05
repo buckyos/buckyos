@@ -226,6 +226,10 @@ Response：
 }
 ```
 
+全部 typed inference request 都可携带可选 `session_id`，两个 Helper request 也同样支持。它与 `route.resolve.session_id` 共用一套语义：AICC 用 `(tenant_id, user_id, caller_app_id, session_id)` 读写上一次已选 exact model，仅作为下次路由在通过所有硬约束后的软优先级。`session_id` 必须为 1..512 bytes 的非空字符串；不携带时不读写 session 历史。typed request 本身已给出 exact model，因此历史不会覆盖该强制选择，只会记录本次已选值。
+
+`session_id` 不是 `session_overlay` 的服务端存储 key。`session_overlay` 始终由调用方在每次 Helper 或 `route.resolve` 请求中传入，AICC 不保存 overlay、revision 或 TTL。持久表契约见 [aicc_runtime_durable_data_schema.md](aicc_runtime_durable_data_schema.md)。
+
 `images.generate` 示例：
 
 ```json
@@ -945,7 +949,7 @@ Response：
 }
 ```
 
-Response mapping：结果放 `AiResponseSummary.extra.rerank`。
+Response mapping：结果直接放入 typed `RerankResponse.results`；每项保留输入 document 的 `id`、原始 `index`、`score` 及可选 `document`，不再经过通用 `AiResponseSummary.extra`。OpenRouter 使用官方 `POST /api/v1/rerank`，Provider 返回的 index 必须映射回原请求 document ID。
 
 Fallback：默认 strict。不同 reranker 分数不可直接比较，fallback 只允许在同一任务内重跑，不允许和旧分数混排。
 
@@ -1606,7 +1610,7 @@ Video fallback：
 
 ### 12.1 `agent.computer_use`
 
-`agent.computer_use` 是 `aicc 逻辑模型目录.md` 中的占位方向。它依赖外部环境状态，不建议作为 AICC v0 普通模型调用直接开放。推荐架构：
+`agent.computer_use` 已作为 typed inference method 开放，当前只对 metadata 明确声明该能力且 Adapter 已有合同测试的模型可路由。首个实现是 GPT-5.6 系列通过 OpenAI Responses `computer` tool 调用。AICC 只负责模型请求、动作解析、`allowed_actions` 校验和 task 生命周期；外部环境、安全沙箱、动作执行与下一帧 observation 仍由 Agent Runtime / OpenDAN 管理：
 
 ```text
 Agent Runtime / OpenDAN
@@ -1619,6 +1623,8 @@ Request：
 
 ```json
 {
+  "exact_model": "gpt-5.6@openai_primary",
+  "session_id": "aicc-route-session-001",
   "task": "Click the login button and enter the username.",
   "environment": {
     "environment_id": "sandbox-123",
@@ -1643,6 +1649,8 @@ Request：
   ]
 }
 ```
+
+顶层 `session_id` 是 AICC exact-model 路由历史 key；`environment.session_id` 是调用方管理的 computer environment 会话标识，两者不共享状态。每次响应只能返回 `allowed_actions` 允许的动作；需要继续操作时 `requires_next_observation=true`，调用方执行动作、更新 screenshot 后发起下一次请求。
 
 Response：
 

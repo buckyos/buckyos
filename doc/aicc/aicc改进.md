@@ -19,7 +19,7 @@ src/frame/aicc/src/model_router.rs
 
 src/frame/aicc/src/model_scheduler.rs
 只做候选评分和 sticky binding 判断，不调用 provider。
-单测覆盖：cost_first/latency_first/quality_first/local_first、session sticky 命中、绑定不可用后重新选择。
+单测覆盖：cost_first/latency_first/quality_first/local_first、session 历史 exact model 软优先、历史模型不可用时重新选择。
 
 
 阶段 2：provider 修改需求整理，review 后再改

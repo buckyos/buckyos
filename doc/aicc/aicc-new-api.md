@@ -124,7 +124,7 @@ RouteResolveRequest
   estimated_input_tokens
   estimated_output_tokens
   session_id
-  session_profile
+  session_overlay
 ```
 
 输出：
@@ -144,7 +144,6 @@ RouteResolveResponse
   fallback_attempts
   route_trace
   inventory_revision
-  session_config_revision
 ```
 
 其中：
@@ -155,6 +154,7 @@ RouteResolveResponse
 - `provider_model_id` 始终保存 Provider discovery 返回并用于真实调用的原始模型名。
 - `fallback_attempts` 是路由器建议的候选顺序，供 helper 或调用方在失败后自行决定是否重试。
 - `route_trace` 用于解释候选过滤、policy 命中、session overlay、成本/延迟/health 选择原因。
+- `session_overlay` 由调用方每次传入，AICC 不保存；`session_id` 只用于 tenant/user/app/session 隔离的上次 exact-model 路由历史，因此 response 不再包含 `session_config_revision`。
 
 #### TOCTOU 处理原则
 

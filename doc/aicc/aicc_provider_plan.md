@@ -21,7 +21,7 @@ Kimi / GLM / DeepSeek / 豆包（火山方舟）/ Qwen（阿里云百炼）
 5. fal Queue 及各家媒体/异步接口保留原生 codec，只复用任务生命周期基础设施；
 6. 同一历史接口只在首个真实需求出现时实现一次，后续 Provider 复用；
 7. “首版支持 Provider”不等于无条件开放该厂商所有 API。只有已经映射到 AICC ApiType、进入 metadata 且通过协议合同的 operation 才进入库存；
-8. 不使用本地模型，不纳入 `agent.computer_use`。
+8. 不使用本地模型；`agent.computer_use` 只对官方明确支持、metadata 已声明且协议合同已通过的模型开放，当前为 OpenAI GPT-5.6 系列。
 9. “内置”只表示内置行为实现和发布验收，不表示把渠道规则硬编码进 Rust。每个官方支持的 Provider 必须有独立 `.provider.json`，每个模型原厂必须有独立 `.model.json`。
 10. 特殊 dialect 优先通过 `.provider.json` 声明；只有无法安全声明化的 wire、认证、流式/任务状态机和错误语义才实现最小代码差异层。
 11. 未被官方支持的小型 Provider 或用户自建代理使用 `custom + 协议族 + {}` 接入；原始模型名必须直接匹配全部 Model Driver，系统不自动执行任何厂商前后缀或别名转换。
@@ -32,7 +32,7 @@ SN Provider 的既有 `sn-openai -> openai-responses` 设计保持不变，但�
 
 | Provider ID | 首版主 Adapter | 首版定位 | Credential |
 | --- | --- | --- | --- |
-| `openai` | `openai-responses` + 专用 operation | 通用 LLM、embedding、image、audio、video | Bearer API key |
+| `openai` | `openai-responses` + 专用 operation | 通用 LLM、embedding、image、audio、video，以及 GPT-5.6 computer-use | Bearer API key |
 | `claude` | `claude-messages` | LLM、视觉理解 | `x-api-key` |
 | `gemini` | `gemini-interactions` + Gen Media | 多模态、embedding、image/audio/video | `x-goog-api-key` |
 | `fal` | `fal-queue` | 图像、音频、视频生成或处理的长尾模型 | `Authorization: Key` |
@@ -155,4 +155,4 @@ MiniMax/GLM/豆包/Qwen 原生 operation
 - 不让用户配置 API 代际；
 - 不把 Provider 专属任意 JSON 暴露到 AICC 公共请求；
 - 不为每家 Provider 复制 HTTP、SSE、任务轮询、匹配器和 contract harness；
-- 不在第一版实现本地模型或 `agent.computer_use`。
+- 不在第一版实现本地模型；不对未经 metadata 和协议合同确认的模型泛化开放 `agent.computer_use`。

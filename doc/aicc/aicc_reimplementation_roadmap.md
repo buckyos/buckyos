@@ -202,19 +202,22 @@ Owner：WebSDK/API SDK 小组
 
 依赖：WP-01 Rust canonical contract
 
-- [ ] TypeScript `AiccClient`、method constants、request/response 与 Rust `buckyos-api::aicc_client` 逐项对齐；
-- [ ] 导出 `route.resolve`、`helper.llm_chat`、`helper.text_to_image`、cancel、管理 API 和全部 canonical typed inference 方法；
-- [ ] 为 chat、embedding、rerank、图像、视觉、音频、视频和 computer-use 导出独立 request/response 类型；
-- [ ] 同步 ResourceRef、AiMessage、usage/cost、route trace、Money、quota、provider list、usage query 和稳定 AiccError contract；
-- [ ] 删除 `AiccMethodRequest`、`AiccPayload.input_json`、all-in-one `callMethod` 以及 `llm.chat`、`llm.completion`、`image.txt2img` typed method 和 `reload_settings` 等旧 alias；
-- [ ] 仅保留 `service.reload_settings`，区分 typed method `images.generate` 与 `api_type=image.txt2img`；
-- [ ] 增加 method-to-schema、request/response round-trip、unknown-field、kRPC dispatch method、旧 alias 拒绝和 declarations/export 测试；
-- [ ] 在 WebSDK 仓库生成并提交 ESM/CJS/browser/type declarations，发布高于当前 `0.7.118` 的 npm `buckyos` 版本；
+- [x] TypeScript `AiccClient`、method constants、request/response 与 Rust `buckyos-api::aicc_client` 逐项对齐；
+- [x] 导出 `route.resolve`、`helper.llm_chat`、`helper.text_to_image`、cancel、管理 API 和全部 canonical typed inference 方法；
+- [x] 为 chat、embedding、rerank、图像、视觉、音频、视频和 computer-use 导出独立 request/response 类型；
+- [x] 同步 ResourceRef、AiMessage、usage/cost、route trace、Money、quota、provider list、usage query 和稳定 AiccError contract；
+- [x] 删除 `AiccMethodRequest`、`AiccPayload.input_json`、all-in-one `callMethod` 以及 `llm.chat`、`llm.completion`、`image.txt2img` typed method 和 `reload_settings` 等旧 alias；
+- [x] 仅保留 `service.reload_settings`，区分 typed method `images.generate` 与 `api_type=image.txt2img`；
+- [x] 增加 method-to-schema、request/response round-trip、unknown-field、kRPC dispatch method、旧 alias 拒绝和 declarations/export 测试；
+- [x] 在 WebSDK 仓库生成并提交 ESM/CJS/browser/type declarations；
+- [ ] 发布高于当前 npm `0.7.118` 的 `buckyos` 版本；
 - [ ] 本仓把 `buckyos: latest` 改为明确版本并更新 lockfile，重新构建 `sys_test/dist`，验证 `deno check src/tools/buckyos-agent/aicc-tool.ts`。
 
 完成标准：WP-17A/17C 等 TypeScript 调用方只从发布的 `buckyos` SDK 导入 canonical method 与 DTO，不在本仓手写重复协议；被忽略的 `sys_test/dist/node_modules` 不作为源码或独立交付物提交。
 
 拆包记录：2026-09-04 核验本仓只安装 npm `buckyos@0.7.118`，`src/apps/sys_test/dist/` 被 git 忽略，且本仓不存在 WebSDK 源码和发布配置；npm `latest` 仍为 `0.7.118`。因此 TS SDK 同步不能由 WP-01 在本仓内正规完成，必须在独立 WebSDK 仓库发布后再锁版本回接。
+
+同步记录：2026-09-05 已在 WebSDK `refactor/aicc` 分支提交并推送 `c4793d4`。除既有 canonical typed method、rerank 和 computer-use 契约外，本次补齐 `route.resolve`、全部 typed inference 和两个 Helper request 的可选 `session_id`，统一执行非空、UTF-8 长度不超过 512 bytes 的校验；构建产物和类型声明已同步提交。定向 Jest 9/9 和完整 `pnpm run build` 通过。npm 发布及本仓明确版本/lockfile 回接仍待完成，因此 WP-01TS 保持进行中。
 
 ### WP-02：统一 MatchRule
 
@@ -1110,7 +1113,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | Gate 0 | Architecture/API/Metadata/E2E owners | Done | 无 | 契约冻结 |
 | WP-00 | 集成人（`@streetycat`） | Review | Gate 0 | 模块骨架 |
 | WP-01 | API 小组 | Done | Gate 0 | API/IR/Error |
-| WP-01TS | WebSDK/API SDK 小组 | Pending | WP-01 | TypeScript canonical SDK、npm 发布与本仓版本回接 |
+| WP-01TS | WebSDK/API SDK 小组 | In Progress | WP-01 | TypeScript canonical SDK、npm 发布与本仓版本回接 |
 | WP-02 | Catalog/Matching 小组 | Done | Gate 0 | MatchRule（`a12b3e09`） |
 | WP-03 | Metadata 小组 | Done | WP-02 | CatalogSnapshot |
 | WP-04 | TBD | Pending | WP-01/02/03 | Model Registry |
