@@ -14,6 +14,7 @@
 - Provider discovery 产生的 availability、deprecated、remote methods、实时价格和 health 属于实例级动态事实，不写入静态 catalog。
 - 三类 catalog 使用独立文件和 revision，但通过同一个 manifest 发布为完整的云来源版本；该版本不需要重复 builtin、local 或 system-config 已有的其它 catalog。
 - 内置专用 Provider 也属于这套发布集合；其 Rust 实现不能替代或旁路对应的 Model Driver、Provider Rules、Known Provider 文件。
+- 新 Provider Profile 只要复用客户端已经注册的 `protocol_adapter_id`，并能由 Provider Rules `models[]` 或其明确引用的 Model Driver `models[]` 形成 catalog-only inventory，就可以仅通过 metadata 发布，不要求升级 AICC 客户端。只有新增或修改 wire protocol codec、特殊 discovery 状态机、签名认证或动态登录行为时才要求升级客户端实现。
 - 发布结构与文件交付由 NDN 更新链路负责；AICC 不重复实现文件下载、验签、完整性校验或 activation。
 
 ## 2. 发布路径
@@ -69,6 +70,8 @@ system-config > local > cloud > builtin
 ```
 
 同一身份只启用最高优先级来源中的完整 JSON 文件，不做字段、数组、规则或默认值合并。高优先级来源中没有某个身份时，继续使用低优先级来源中的该身份；因此 cloud 更新 OpenAI 不会使 builtin MiniMax 失效。最终生效集合是逐身份选择结果的并集，再对整个集合执行 schema、唯一性和跨 catalog 引用校验。
+
+Provider Profile ID 和 Model Driver ID 都是开放命名空间，不是客户端内置枚举。有效 snapshot 中新增的 Known Provider 必须进入 Provider catalog，并由运行时装配为配置型 Provider；不得因 ID 未出现在客户端源码中而忽略。配置型 Provider 使用 Known Provider 声明的已注册 Adapter，默认合并 Provider Rules `models[]` 与 `metadata_drivers` 明确引用的 Model Driver exact `models[]` 形成 catalog-only inventory；Provider Rules 的显式 `exclude` 优先。客户端中已有专用行为实现的 Profile 可以覆盖其 discovery、认证或任务状态机，但不能形成阻止其它 Profile 加载的白名单。
 
 来源选择是 metadata source manager 的内部职责。builtin 由该管理模块集中编译嵌入；cloud、local 和 system-config 的具体路径或 key 只对统一 loader 及负责改变相应来源的管理模块可见。Service、Provider、Routing、Execution 等消费者只能读取 metadata source manager 发布的有效 `CatalogSnapshot`，不得接收四层文件集合或自行执行来源选择。
 

@@ -2160,10 +2160,7 @@ function normalizeRuntimeType(value: unknown): ProviderRuntimeType {
 }
 
 function normalizeProviderType(value: unknown): ProviderType {
-  const profile = asOptionalString(value)
-  return profile && BUILTIN_PROVIDER_NAMES.some(([id]) => id === profile)
-    ? profile as ProviderType
-    : 'custom'
+  return asOptionalString(value) ?? 'custom'
 }
 
 function normalizeAuthMode(value: unknown): ProviderConfig['auth_mode'] {

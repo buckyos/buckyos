@@ -666,6 +666,14 @@ pub(crate) struct ProviderDiscoverySnapshot {
 
 #[async_trait]
 pub(crate) trait ProviderDiscovery: Send + Sync {
+    async fn refresh_catalog(
+        &self,
+        _catalog: &CatalogSnapshot,
+        _provider_profile_id: &str,
+    ) -> ProviderResult<()> {
+        Ok(())
+    }
+
     async fn discover(
         &self,
         context: &DiscoveryContext<'_>,
@@ -673,23 +681,104 @@ pub(crate) trait ProviderDiscovery: Send + Sync {
 }
 
 pub(crate) struct CatalogOnlyDiscovery {
-    snapshot: ProviderDiscoverySnapshot,
+    snapshot: RwLock<ProviderDiscoverySnapshot>,
+    catalog_managed: bool,
 }
 
 impl CatalogOnlyDiscovery {
     pub(crate) fn new(snapshot: ProviderDiscoverySnapshot) -> Self {
-        Self { snapshot }
+        Self {
+            snapshot: RwLock::new(snapshot),
+            catalog_managed: false,
+        }
+    }
+
+    pub(crate) fn catalog_managed(snapshot: ProviderDiscoverySnapshot) -> Self {
+        Self {
+            snapshot: RwLock::new(snapshot),
+            catalog_managed: true,
+        }
     }
 }
 
 #[async_trait]
 impl ProviderDiscovery for CatalogOnlyDiscovery {
+    async fn refresh_catalog(
+        &self,
+        catalog: &CatalogSnapshot,
+        provider_profile_id: &str,
+    ) -> ProviderResult<()> {
+        if self.catalog_managed {
+            *self.snapshot.write().await = catalog_only_inventory(catalog, provider_profile_id)
+                .ok_or_else(|| {
+                    ProviderError::Discovery(format!(
+                        "provider profile `{provider_profile_id}` has no catalog models"
+                    ))
+                })?;
+        }
+        Ok(())
+    }
+
     async fn discover(
         &self,
         _context: &DiscoveryContext<'_>,
     ) -> ProviderResult<ProviderDiscoverySnapshot> {
-        Ok(self.snapshot.clone())
+        Ok(self.snapshot.read().await.clone())
     }
+}
+
+pub(crate) fn catalog_only_inventory(
+    catalog: &CatalogSnapshot,
+    provider_profile_id: &str,
+) -> Option<ProviderDiscoverySnapshot> {
+    let rules = catalog.provider_rules(provider_profile_id)?;
+    let excluded = rules
+        .models
+        .iter()
+        .filter(|model| model.exclude)
+        .map(|model| model.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut model_ids = rules
+        .models
+        .iter()
+        .filter(|model| !model.exclude)
+        .map(|model| model.id.clone())
+        .collect::<BTreeSet<_>>();
+    if let Some(model_drivers) = &rules.metadata_drivers {
+        for model_driver_id in model_drivers {
+            if let Some(driver) = catalog.model_driver(model_driver_id) {
+                model_ids.extend(
+                    driver
+                        .models
+                        .iter()
+                        .map(|model| model.id.clone())
+                        .filter(|model_id| !excluded.contains(model_id.as_str())),
+                );
+            }
+        }
+    }
+    let models = model_ids
+        .into_iter()
+        .map(|provider_model_id| DiscoveredModel {
+            provider_model_id,
+            origin_model_id: None,
+            api_types: None,
+            supported_features: None,
+            remote_methods: None,
+            availability: ModelAvailability::Available,
+            deprecated: false,
+            pricing: None,
+        })
+        .collect::<Vec<_>>();
+    (!models.is_empty()).then(|| ProviderDiscoverySnapshot {
+        revision: Some(format!(
+            "catalog-{provider_profile_id}-{}",
+            rules.revision_seq
+        )),
+        discovered_at_ms: 0,
+        health: ProviderHealthState::Healthy,
+        models,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2248,14 +2337,23 @@ impl ProviderRuntimeManager {
         &self,
         catalog: Arc<CatalogSnapshot>,
     ) -> Vec<ProviderRefreshEvent> {
-        *self.catalog.write().await = catalog;
+        *self.catalog.write().await = catalog.clone();
         let runtimes: Vec<_> = self.runtimes.lock().await.values().cloned().collect();
         let mut results = Vec::with_capacity(runtimes.len());
         for runtime in runtimes {
-            let outcome = match runtime
-                .refresh_once(true, ProviderRefreshTrigger::Reconciliation, true)
+            let refreshed = match runtime
+                .discovery
+                .refresh_catalog(&catalog, &runtime.profile.provider_profile_id)
                 .await
             {
+                Ok(()) => {
+                    runtime
+                        .refresh_once(true, ProviderRefreshTrigger::Reconciliation, true)
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            let outcome = match refreshed {
                 Ok(inventory) => ProviderRefreshOutcome::Committed {
                     changed: true,
                     inventory_revision: inventory.inventory_revision.clone(),
@@ -3081,6 +3179,82 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    fn catalog_with_model_ids(revision_seq: u64, model_ids: &[&str]) -> Arc<CatalogSnapshot> {
+        let models = model_ids
+            .iter()
+            .map(|id| serde_json::json!({"id": id, "api_types": ["llm"]}))
+            .collect::<Vec<_>>();
+        let provider_models = model_ids
+            .iter()
+            .map(|id| {
+                serde_json::json!({
+                    "id": id,
+                    "operations": {"llm": "responses.create"}
+                })
+            })
+            .collect::<Vec<_>>();
+        let model_driver: ModelDriverCatalog = serde_json::from_value(serde_json::json!({
+            "format": "buckyos.aicc.model-driver-catalog",
+            "schema_version": 1,
+            "schema_revision": 0,
+            "model_driver_id": "vendor",
+            "revision_seq": revision_seq,
+            "models": models,
+            "patterns": [],
+            "defaults": {},
+            "variants": [],
+            "version_rules": []
+        }))
+        .unwrap();
+        let provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
+            "format": "buckyos.aicc.provider-rules-catalog",
+            "schema_version": 1,
+            "schema_revision": 0,
+            "revision_seq": revision_seq,
+            "provider_profile_id": "vendor",
+            "metadata_drivers": ["vendor"],
+            "models": provider_models,
+            "patterns": [],
+            "variants": []
+        }))
+        .unwrap();
+        Arc::new(
+            CatalogSnapshot::build(
+                revision_seq,
+                CatalogDocuments {
+                    model_drivers: vec![model_driver],
+                    provider_rules: vec![provider_rules],
+                    known_providers: vec![],
+                },
+                &CatalogBuildOptions::default(),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn catalog_managed_discovery_refreshes_model_ids_from_new_snapshot() {
+        let first = catalog_with_model_ids(1, &["vendor-model-a"]);
+        let discovery = CatalogOnlyDiscovery::catalog_managed(
+            catalog_only_inventory(&first, "vendor").unwrap(),
+        );
+        let second = catalog_with_model_ids(2, &["vendor-model-a", "vendor-model-b"]);
+
+        discovery.refresh_catalog(&second, "vendor").await.unwrap();
+
+        assert_eq!(
+            discovery
+                .snapshot
+                .read()
+                .await
+                .models
+                .iter()
+                .map(|model| model.provider_model_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["vendor-model-a", "vendor-model-b"]
+        );
     }
 
     fn routed_catalog() -> Arc<CatalogSnapshot> {

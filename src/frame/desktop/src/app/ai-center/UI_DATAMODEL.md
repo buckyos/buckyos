@@ -15,7 +15,7 @@ interface ProviderSetupCatalog {
 
 interface WizardDraft {
   provider_instance_name?: string
-  provider_profile_id: ProviderType | null
+  provider_profile_id: string | null
   display_name: string
   base_url: string
   protocol_family_id: string | null
@@ -30,6 +30,8 @@ interface WizardDraft {
 ```
 
 `provider_profile_id`, `protocol_adapter_id`, and `base_url` are frozen contract fields. `ui_hints` is extensible. `display_name` is UI-only. For built-in profiles the adapter and optional/required region, workspace, and account fields are selected by the catalog; custom providers expose only `protocol_family_id`, and the resolved adapter is read back from validation.
+
+`provider_profile_id` is an open catalog identity. The UI preserves IDs introduced after the desktop build and does not maintain a Provider allowlist. Only Protocol Adapter implementations remain client-version capabilities.
 
 Catalog loading has distinct loading, error/retry, empty, and success states. One Wizard open issues one catalog request and one adapter-registry request; it does not perform per-profile reads.
 

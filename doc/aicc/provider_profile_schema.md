@@ -5,7 +5,7 @@
 
 ## 1. Provider 分为两类
 
-AICC 不应把所有 Provider 都实现成同一种声明式配置。
+AICC 不应把所有 Provider 都实现成同一种声明式配置，但 Provider Profile ID 和 Model Driver ID 必须保持开放，不能成为客户端代码白名单。
 
 ### 1.1 内置专用 Provider
 
@@ -29,7 +29,7 @@ AICC 不应把所有 Provider 都实现成同一种声明式配置。
 
 ### 1.2 配置型 Provider
 
-未被 AICC 官方 catalog 收录、但用户明确知道其兼容某个已注册协议族的渠道，可以作为 `custom` Provider 接入。典型情况是小型 Provider 或用户自建代理。
+复用客户端现有 Protocol Adapter、且不需要专用 discovery、签名认证、动态登录或任务状态机的渠道，应作为配置型 Provider 接入。配置型 Provider 可以是云 catalog 正式发布的独立 Provider Profile，也可以是用户自行添加的 `custom` Provider。典型情况是兼容现有协议的厂商、小型 Provider 或用户自建代理。
 
 配置型 Provider 适合处理：
 
@@ -38,6 +38,8 @@ AICC 不应把所有 Provider 都实现成同一种声明式配置。
 - 只支持少量 Model Driver 的小型聚合平台；
 - 少量模型需要指定不同 operation；
 - Provider 无法查询实时价格，需要配置渠道默认价格。
+
+正式发布的配置型 Provider 由独立 Known Provider 和 Provider Rules 定义。运行时动态枚举有效 catalog 中的全部 Known Provider，为未注册专用行为的 Profile 装配通用 catalog-only 行为，并合并 Provider Rules `models[]` 与 `metadata_drivers` 明确引用的 Model Driver exact `models[]` 形成 inventory；Provider Rules 的显式 `exclude` 优先，pattern 因不能枚举具体模型而只参与匹配。metadata 更新后该 inventory 必须随新 snapshot 重建。Known Provider 引用的 `protocol_adapter_id` 必须已经存在于当前客户端的 runtime registry。
 
 `custom` Provider 的默认 Provider Rules 是 `{}`。它不获得任何厂商专用命名映射或参数特判：discovery 返回的 `provider_model_id` 同时作为待解析的 `origin_model_id`，按原名依次匹配系统当前安装的全部 Model Driver catalog。必须唯一命中才能取得对应原厂、默认参数和默认行为；多重命中按歧义拒绝，完全未命中进入统一 conservative fallback。标准名 `gpt-5.6-sol` 可以直接匹配，`openai/gpt-5.6-sol` 之类渠道前缀不会被自动去除。
 
@@ -169,7 +171,7 @@ GLM JWT 使用同一个 `api_key` 模式并显式选择 typed credential variant
 
 Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯一 metadata 来源。每项必须直接包含 typed `credential` 与 `connection`，不得从 `ui_hints` 推断。`CatalogSnapshot::resolve_provider_configuration()` 同时解析 Known Provider 和其 `provider_rules_id`，校验 Rules 存在且 identity 一致后，返回生成 `ProviderProfile` 与 `ProviderConnectionContract` 所需的默认配置。
 
-行为 registry 只注册 discovery、refresh、default inventory、动态登录、可选 credential 和区域 URL 选择等可执行行为。GLM catalog 默认 credential 为 Bearer，JWT 是行为 registry 的显式可选变体；SN catalog 默认静态认证为 Bearer API key，dynamic login 及其 account 约束由 SN 行为按显式 auth mode 收窄。任何缺失或冲突均拒绝装配，不允许读取 `ui_hints`、按 Provider ID 猜测或静默 first-match。
+行为 registry 只为确实需要代码的 Profile 注册 discovery、动态登录或其它不可声明执行行为；它是可选覆盖表，不是 Provider Profile 白名单。所有其它 Known Provider 都使用通用 catalog-only 行为，refresh 时从当前 Provider Rules 和明确引用的 Model Driver exact models 重建 default inventory。GLM catalog 默认 credential 为 Bearer，JWT 是行为 registry 的显式可选变体；SN catalog 默认静态认证为 Bearer API key，dynamic login 及其 account 约束由 SN 行为按显式 auth mode 收窄。任何缺失或冲突均拒绝装配，不允许读取 `ui_hints`、按 Provider ID 猜测或静默 first-match。
 
 可选 credential 由 typed `credential_variants[]` 声明，实例在 `auth.mode=api_key` 时用 `credential_kind` 显式选择；省略则使用 `credential` 默认值。区域入口由 typed `connection.region_base_urls` 声明，只有实例未显式提供 `base_url` 时才按解析后的 region 选择。GLM 的 `glm_jwt` 和 GLM/MiniMax 的区域入口均通过这两个 typed 字段进入 production registry。SN 的 `device_jwt` 是 SN 登录实现支持的稳定行为 ID，由显式 `auth.login_profile` 选择和校验，不从可选的 `ui_hints` 推断。
 

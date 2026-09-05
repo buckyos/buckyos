@@ -1,8 +1,6 @@
 // ========== Enums ==========
 
-export type ProviderType =
-  | 'sn' | 'openai' | 'claude' | 'gemini' | 'fal' | 'openrouter'
-  | 'minimax' | 'kimi' | 'glm' | 'deepseek' | 'doubao' | 'qwen' | 'custom'
+export type ProviderType = string
 
 export type ProviderRuntimeType = 'local_inference' | 'cloud_api' | 'proxy_unknown'
 export type ProviderOrigin = 'system_config' | 'user_config' | 'builtin' | 'provider_claimed'

@@ -2,6 +2,8 @@
 
 Provider Wizard 打开时通过 `provider.catalog` 一次性读取已知 Provider profile；保存时通过 `provider.add`、修改时通过 `provider.update` 写入 Provider Instance。UI 不把服务商清单、协议选择或默认 `base_url` 作为真相源。Provider Instance settings、管理 RPC 和 UI DataModel 统一使用 `base_url`，不接收或返回配置字段 `endpoint`。
 
+`provider_profile_id` 是 catalog 提供的开放字符串，不是前端枚举。前端必须原样保留和展示后端返回的未知新 ID；不得把它归一化为 `custom`、过滤或要求随客户端版本更新白名单。`custom` 只表示用户主动选择的自定义 Provider。
+
 | UI DataModel | Backend field | Durable owner | Notes |
 | --- | --- | --- | --- |
 | `KnownProviderProfile.provider_profile_id` | `provider_profile_id` | Provider catalog | 渠道规则与展示身份 |
@@ -24,6 +26,7 @@ Provider Wizard 打开时通过 `provider.catalog` 一次性读取已知 Provide
 ## Loading and errors
 
 - catalog 加载中显示 loading，不渲染本地硬编码列表。
+- catalog 中新增且引用现有 Adapter 的 Provider 必须立即作为普通选项展示；图标和本地化缺失时使用通用回退展示。
 - 请求失败显示可重试错误；空 catalog 与请求失败分开呈现。
 - 保存、连接测试和模型 refresh 失败后保留用户输入。
 - SN 表单根据 `auth.mode` 显示 API Key 或动态登录字段，不同时提交两套凭据；动态 token 永不返回 UI。

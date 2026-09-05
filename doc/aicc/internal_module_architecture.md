@@ -78,7 +78,7 @@ Catalog loader 对 `builtin`、`cloud`、`local`、`system-config` 四个来源�
 
 四层来源是 metadata source manager 的私有实现边界。该管理模块独占各来源的路径或 key、文件枚举、revision 捕获、整文件选择、校验及不可变 snapshot 发布。builtin 源文件统一保存在 `src/frame/aicc/driver_metadata/`，只由该管理模块集中编译嵌入；各 Provider builtin 模块不得分别 `include_*` metadata，也不得导出 catalog 文件集合。只有负责改变某一来源的管理模块可以接触该来源的写入位置，例如云更新模块驱动 cloud 文件更新；所有普通消费者只接收已发布的当前有效 `Arc<CatalogSnapshot>`。
 
-Service 启动模块是进程组合根，但不是 metadata 来源组合器。它只向 metadata source manager 提供平台能力和管理端口，并装配后者返回的生产 `RuntimeInputs`/`RuntimeSnapshot`；不得传入 builtin、cloud、local 或 system-config 文件集合。Provider 行为注册表只注册稳定 ID、credential/discovery 行为和 codec/dialect，并在当前 runtime generation 中消费有效 snapshot。
+Service 启动模块是进程组合根，但不是 metadata 来源组合器。它只向 metadata source manager 提供平台能力和管理端口，并装配后者返回的生产 `RuntimeInputs`/`RuntimeSnapshot`；不得传入 builtin、cloud、local 或 system-config 文件集合。Provider runtime 枚举有效 snapshot 中的全部 Known Provider，并为普通 Profile 装配通用 catalog-only 行为；行为注册表只覆盖必须由代码实现的 credential/discovery 行为和 codec/dialect，不得作为 Provider ID 白名单。
 
 ### 2.2 operation 是最小协议复用单位
 
@@ -242,7 +242,7 @@ provider/
     ├── doubao       └── qwen
 ```
 
-`builtin/<provider>` 是行为装配模块，不是协议实现或配置真相源。它只注册稳定 ID、无法声明化的 credential/discovery 行为、协议 codec 及必要 dialect/native module，并消费 catalog 解析结果。显示信息、默认 `base_url`、区域/workspace schema、credential 的声明信息、模型映射、operation/Adapter 选择、请求规则、能力收窄和静态价格等常规内容来自该 Provider 独立的 `.provider.json` 或 Known Provider catalog，不得在 Rust 中重复构造生产用 catalog。
+`builtin/<provider>` 是专用行为装配模块，不是协议实现、配置真相源或完整 Provider 清单。它只为需要代码的稳定 ID 注册无法声明化的 credential/discovery 行为、协议 codec 及必要 dialect/native module，并消费 catalog 解析结果；没有专用模块的新 Profile 由通用 catalog-only 路径装配。显示信息、默认 `base_url`、区域/workspace schema、credential 的声明信息、模型映射、operation/Adapter 选择、请求规则、能力收窄和静态价格等常规内容来自该 Provider 独立的 `.provider.json` 或 Known Provider catalog，不得在 Rust 中重复构造生产用 catalog。
 
 ### 5.2 首版装配矩阵
 

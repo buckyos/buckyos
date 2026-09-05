@@ -3,7 +3,7 @@ import type { WizardDraft } from '../../../../../api/aicc_mgr'
 
 export const wizardDraftSchema = z.object({
   provider_instance_name: z.string().trim().min(1).max(64).optional(),
-  provider_profile_id: z.enum(['sn', 'openai', 'claude', 'gemini', 'fal', 'openrouter', 'minimax', 'kimi', 'glm', 'deepseek', 'doubao', 'qwen', 'custom']).nullable(),
+  provider_profile_id: z.string().trim().min(1).max(64).nullable(),
   display_name: z.string().trim().max(80),
   base_url: z.string().trim(),
   protocol_family_id: z.string().nullable(),

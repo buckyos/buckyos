@@ -10,11 +10,10 @@ use crate::protocol::{
     HttpTransport, HttpTransportConfig,
 };
 use crate::provider::{
-    CatalogOnlyDiscovery, CredentialDescriptor, DiscoveredModel, DiscoveryMode,
-    DynamicLoginCredentialResolver, ModelAvailability, ProviderAuthMode,
-    ProviderConnectionContract, ProviderDiscovery, ProviderDiscoverySnapshot, ProviderError,
-    ProviderFieldMode, ProviderFieldSchema, ProviderHealthState, ProviderInstanceConfig,
-    ProviderProfile, ProviderResult, RefreshPolicy,
+    catalog_only_inventory, CatalogOnlyDiscovery, CredentialDescriptor, DiscoveryMode,
+    DynamicLoginCredentialResolver, ProviderAuthMode, ProviderConnectionContract,
+    ProviderDiscovery, ProviderDiscoverySnapshot, ProviderError, ProviderFieldMode,
+    ProviderFieldSchema, ProviderInstanceConfig, ProviderProfile, ProviderResult, RefreshPolicy,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -224,13 +223,17 @@ impl BuiltinProviderRegistry {
         default_inventory: Option<ProviderDiscoverySnapshot>,
     ) -> ProviderResult<Arc<dyn ProviderDiscovery>> {
         if factory == BuiltinDiscoveryFactory::CatalogOnly {
-            let inventory = configured_inventory.or(default_inventory).ok_or_else(|| {
+            if let Some(inventory) = configured_inventory {
+                super::super::validate_discovery(&inventory)?;
+                return Ok(Arc::new(CatalogOnlyDiscovery::new(inventory)));
+            }
+            let inventory = default_inventory.ok_or_else(|| {
                 ProviderError::InvalidConfiguration(
                     "catalog-only provider requires configured discovery inventory".to_owned(),
                 )
             })?;
             super::super::validate_discovery(&inventory)?;
-            return Ok(Arc::new(CatalogOnlyDiscovery::new(inventory)));
+            return Ok(Arc::new(CatalogOnlyDiscovery::catalog_managed(inventory)));
         }
         if configured_inventory.is_some() {
             return Err(ProviderError::InvalidConfiguration(
@@ -300,99 +303,34 @@ pub(crate) fn custom_profile_for_adapter(
 fn builtin_provider_registrations(
     catalog: &CatalogSnapshot,
 ) -> ProviderResult<Vec<BuiltinProviderRegistration>> {
-    let mut providers = vec![
-        Ok(custom_registration()),
-        catalog_registration(
+    let mut providers = vec![custom_registration()];
+    for known in catalog.known_providers() {
+        let (discovery, supports_dynamic_login) = match known.provider_profile_id.as_str() {
+            OPENAI_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::OpenAi, false),
+            CLAUDE_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Claude, false),
+            MINIMAX_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::MiniMax, false),
+            GEMINI_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Gemini, false),
+            OPENROUTER_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::OpenRouter, false),
+            KIMI_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Kimi, false),
+            DEEPSEEK_PROFILE_ID => (BuiltinDiscoveryFactory::DeepSeek, false),
+            SN_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Sn, true),
+            _ => (BuiltinDiscoveryFactory::CatalogOnly, false),
+        };
+        let mut registration = catalog_registration(
             catalog,
-            OPENAI_PROVIDER_PROFILE_ID,
-            BuiltinDiscoveryFactory::OpenAi,
+            &known.provider_profile_id,
+            discovery,
+            supports_dynamic_login,
             false,
-            false,
-        ),
-        catalog_registration(
-            catalog,
-            CLAUDE_PROVIDER_PROFILE_ID,
-            BuiltinDiscoveryFactory::Claude,
-            false,
-            false,
-        ),
-        catalog_registration(
-            catalog,
-            MINIMAX_PROVIDER_PROFILE_ID,
-            BuiltinDiscoveryFactory::MiniMax,
-            false,
-            false,
-        ),
-        catalog_registration(
-            catalog,
-            GEMINI_PROVIDER_PROFILE_ID,
-            BuiltinDiscoveryFactory::Gemini,
-            false,
-            false,
-        ),
-        catalog_registration(
-            catalog,
-            OPENROUTER_PROVIDER_PROFILE_ID,
-            BuiltinDiscoveryFactory::OpenRouter,
-            false,
-            false,
-        ),
-        catalog_registration(
-            catalog,
-            KIMI_PROVIDER_PROFILE_ID,
-            BuiltinDiscoveryFactory::Kimi,
-            false,
-            false,
-        ),
-        catalog_registration(
-            catalog,
-            GLM_PROVIDER_PROFILE_ID,
-            BuiltinDiscoveryFactory::CatalogOnly,
-            false,
-            false,
-        ),
-        catalog_registration(
-            catalog,
-            FAL_PROVIDER_PROFILE_ID,
-            BuiltinDiscoveryFactory::CatalogOnly,
-            false,
-            false,
-        ),
-        catalog_registration(
-            catalog,
-            DEEPSEEK_PROFILE_ID,
-            BuiltinDiscoveryFactory::DeepSeek,
-            false,
-            false,
-        ),
-        catalog_registration(
-            catalog,
-            DOUBAO_PROFILE_ID,
-            BuiltinDiscoveryFactory::CatalogOnly,
-            false,
-            false,
-        ),
-        catalog_registration(
-            catalog,
-            QWEN_PROFILE_ID,
-            BuiltinDiscoveryFactory::CatalogOnly,
-            false,
-            false,
-        ),
-    ];
-    let mut sn = catalog_registration(
-        catalog,
-        SN_PROVIDER_PROFILE_ID,
-        BuiltinDiscoveryFactory::Sn,
-        true,
-        false,
-    )?;
-    sn.connection = BuiltinConnectionFactory::Sn(match sn.connection {
-        BuiltinConnectionFactory::Configured(connection) => connection,
-        BuiltinConnectionFactory::Sn(_) => unreachable!(),
-    });
-    providers.push(Ok(sn));
-    let providers = providers.into_iter().collect::<ProviderResult<Vec<_>>>()?;
+        )?;
+        if known.provider_profile_id == SN_PROVIDER_PROFILE_ID {
+            registration.connection = BuiltinConnectionFactory::Sn(match registration.connection {
+                BuiltinConnectionFactory::Configured(connection) => connection,
+                BuiltinConnectionFactory::Sn(_) => unreachable!(),
+            });
+        }
+        providers.push(registration);
+    }
     let mut unique = BTreeMap::new();
     for provider in &providers {
         let id = provider.profile.provider_profile_id.clone();
@@ -416,8 +354,8 @@ fn catalog_registration(
         .resolve_provider_configuration(provider_profile_id)
         .map_err(|error| ProviderError::InvalidConfiguration(error.to_string()))?;
     let mut profile = profile_from_catalog(&configuration, discovery);
-    if provider_profile_id == FAL_PROVIDER_PROFILE_ID {
-        profile.default_inventory = catalog_default_inventory(catalog, provider_profile_id);
+    if discovery == BuiltinDiscoveryFactory::CatalogOnly {
+        profile.default_inventory = catalog_only_inventory(catalog, provider_profile_id);
     }
     Ok(BuiltinProviderRegistration {
         profile,
@@ -426,37 +364,6 @@ fn catalog_registration(
         supports_dynamic_login,
         supports_any_adapter,
         instance_rules: None,
-    })
-}
-
-fn catalog_default_inventory(
-    catalog: &CatalogSnapshot,
-    provider_profile_id: &str,
-) -> Option<ProviderDiscoverySnapshot> {
-    let rules = catalog.provider_rules(provider_profile_id)?;
-    let models = rules
-        .models
-        .iter()
-        .filter(|model| !model.exclude)
-        .map(|model| DiscoveredModel {
-            provider_model_id: model.id.clone(),
-            origin_model_id: None,
-            api_types: None,
-            supported_features: None,
-            remote_methods: None,
-            availability: ModelAvailability::Available,
-            deprecated: false,
-            pricing: None,
-        })
-        .collect::<Vec<_>>();
-    (!models.is_empty()).then(|| ProviderDiscoverySnapshot {
-        revision: Some(format!(
-            "catalog-{provider_profile_id}-{}",
-            rules.revision_seq
-        )),
-        discovered_at_ms: 0,
-        health: ProviderHealthState::Healthy,
-        models,
     })
 }
 
@@ -597,9 +504,12 @@ mod tests {
         MINIMAX_MESSAGES_ADAPTER_ID, OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
         OPENAI_RESPONSES_ADAPTER_ID, OPENROUTER_CHAT_ADAPTER_ID,
     };
-    use crate::provider::{CredentialReference, ProviderConnectionInput, ProviderHealthState};
+    use crate::provider::{
+        CredentialReference, ModelAvailability, ProviderConnectionInput, ProviderHealthState,
+    };
     use crate::settings::{load_builtin_metadata, MetadataFile, MetadataSource, MetadataSources};
     use buckyos_api::ApiType;
+    use serde_json::json;
     use std::collections::BTreeSet;
 
     fn configured_inventory() -> ProviderDiscoverySnapshot {
@@ -677,6 +587,102 @@ mod tests {
                 ApiType::ImageTextToImage,
             )
             .is_ok());
+    }
+
+    #[test]
+    fn catalog_registers_new_provider_profile_with_existing_adapter() {
+        let local = [
+            (
+                CatalogKind::ModelDriver,
+                json!({
+                    "format": "buckyos.aicc.model-driver-catalog",
+                    "schema_version": 1,
+                    "schema_revision": 0,
+                    "model_driver_id": "vendor",
+                    "revision_seq": 2,
+                    "models": [{"id": "vendor-model", "api_types": ["llm"]}],
+                    "patterns": [],
+                    "defaults": {},
+                    "variants": [],
+                    "version_rules": []
+                }),
+            ),
+            (
+                CatalogKind::ProviderRules,
+                json!({
+                    "format": "buckyos.aicc.provider-rules-catalog",
+                    "schema_version": 1,
+                    "schema_revision": 0,
+                    "revision_seq": 2,
+                    "provider_profile_id": "vendor",
+                    "metadata_drivers": ["vendor"],
+                    "models": [],
+                    "patterns": [{
+                        "match": "*",
+                        "operations": {"llm": "responses.create"}
+                    }],
+                    "variants": []
+                }),
+            ),
+            (
+                CatalogKind::KnownProvider,
+                json!({
+                    "format": "buckyos.aicc.known-provider-catalog",
+                    "schema_version": 1,
+                    "schema_revision": 0,
+                    "revision_seq": 2,
+                    "catalog_id": "vendor",
+                    "providers": [{
+                        "provider_profile_id": "vendor",
+                        "display_name": "Vendor",
+                        "base_url": "https://vendor.example/v1",
+                        "protocol_adapter_id": "openai-responses",
+                        "provider_rules_id": "vendor",
+                        "credential": {"kind": "bearer"},
+                        "connection": {
+                            "region": {"mode": "unsupported"},
+                            "workspace": {"mode": "unsupported"},
+                            "account": {"mode": "unsupported"}
+                        }
+                    }]
+                }),
+            ),
+        ]
+        .into_iter()
+        .map(|(kind, document)| {
+            MetadataFile::parse(
+                MetadataSource::Local,
+                kind,
+                serde_json::to_vec(&document).unwrap(),
+            )
+            .unwrap()
+        })
+        .collect();
+        let catalog = MetadataSources {
+            builtin: load_builtin_metadata().unwrap(),
+            local,
+            ..MetadataSources::default()
+        }
+        .build_snapshot(2, &crate::catalog::CatalogBuildOptions::default())
+        .unwrap();
+
+        let registry = builtin_provider_registry(catalog.as_ref()).unwrap();
+        let binding = registry
+            .resolve(BuiltinProviderRequest {
+                provider_profile_id: "vendor",
+                protocol_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
+                auth_mode: ProviderAuthMode::ApiKey,
+                credential_kind: None,
+                configured_inventory: None,
+            })
+            .unwrap();
+
+        assert_eq!(binding.profile.provider_profile_id, "vendor");
+        assert_eq!(binding.profile.discovery_mode, DiscoveryMode::CatalogOnly);
+        assert_eq!(
+            binding.profile.default_inventory.unwrap().models[0].provider_model_id,
+            "vendor-model"
+        );
     }
 
     #[test]

@@ -126,6 +126,8 @@ AICC 应允许系统接入多个 AI 服务来源，并对每个来源维护以�
 
 服务来源发生变化时，AICC 应能更新可用能力列表，不要求用户重启整个系统。
 
+Provider Profile 和 Model Driver 的身份是开放集合。新增服务来源如果复用客户端已有的 Protocol Adapter，且模型与渠道差异可由现有 metadata schema 表达，必须能够通过配置来源动态加入，不要求发布新的 AICC 客户端；只有新增 API wire protocol 或其它不可声明执行行为时才允许要求客户端升级。
+
 ### 6.4 自动选择与切换
 
 AICC 在选择 AI 服务来源时，应综合以下因素：
