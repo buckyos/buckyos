@@ -347,7 +347,12 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
             return json(response, 200, { status: "IN_PROGRESS", request_id: "fal_mock_1", logs: [] });
           }
           if (selection.scenario === "async_failed") {
-            return json(response, 200, { status: "FAILED", request_id: "fal_mock_1", error: "mock inference failed" });
+            return json(response, 200, {
+              status: "COMPLETED",
+              request_id: "fal_mock_1",
+              error: "mock inference failed",
+              error_type: "provider_error",
+            });
           }
           return json(response, 200, { status: "COMPLETED", request_id: "fal_mock_1", response_url: url.href.replace(/\/status$/, "/response"), metrics: { inference_time: 0.01 } });
         }

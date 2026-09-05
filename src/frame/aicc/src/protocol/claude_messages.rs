@@ -78,6 +78,7 @@ impl ClaudeMessagesCodec {
                 ProtocolError::invalid_request(format!("invalid canonical message: {error}"))
             })?;
         }
+        validate_message_sequence(&request.messages)?;
         validate_canonical_options(request)?;
 
         let provider_model_id =
@@ -415,11 +416,16 @@ fn encode_messages(
         match message.role {
             AiRole::System | AiRole::Developer => {
                 for block in &message.content {
-                    system.push(encode_content(block, false, context)?);
+                    let AiContent::Text { text } = block else {
+                        return Err(ProtocolError::invalid_request(
+                            "Claude system instructions only accept text content",
+                        ));
+                    };
+                    system.push(json!({"type": "text", "text": text}));
                 }
             }
             AiRole::User | AiRole::Assistant => {
-                let content = encode_message_content(&message.content, context)?;
+                let content = encode_message_content(message.role, &message.content, context)?;
                 if content.is_empty() {
                     return Err(ProtocolError::invalid_request(
                         "Claude message has no representable content blocks",
@@ -442,6 +448,7 @@ fn encode_messages(
 }
 
 fn encode_message_content(
+    role: AiRole,
     content: &[AiContent],
     context: &super::CodecContext,
 ) -> ProtocolResultValue<Vec<Value>> {
@@ -454,8 +461,95 @@ fn encode_message_content(
                     if provider != CLAUDE_PROVIDER_NAMESPACE
             )
         })
-        .map(|block| encode_content(block, true, context))
+        .map(|block| {
+            let allowed = match role {
+                AiRole::User => matches!(
+                    block,
+                    AiContent::Text { .. }
+                        | AiContent::Image { .. }
+                        | AiContent::Document { .. }
+                ),
+                AiRole::Assistant => matches!(
+                    block,
+                    AiContent::Text { .. }
+                        | AiContent::ToolUse { .. }
+                        | AiContent::Thinking { .. }
+                        | AiContent::ProviderState { .. }
+                ),
+                _ => false,
+            };
+            if !allowed {
+                return Err(ProtocolError::invalid_request(format!(
+                    "Claude {} message contains an invalid content block",
+                    role.as_str()
+                )));
+            }
+            encode_content(block, true, context)
+        })
         .collect()
+}
+
+fn validate_message_sequence(messages: &[AiMessage]) -> ProtocolResultValue<()> {
+    let mut saw_conversation = false;
+    let mut pending_tool_uses = BTreeSet::new();
+    for message in messages {
+        if matches!(message.role, AiRole::System | AiRole::Developer) {
+            if saw_conversation {
+                return Err(ProtocolError::invalid_request(
+                    "Claude system instructions must precede conversation messages",
+                ));
+            }
+            continue;
+        }
+        saw_conversation = true;
+        if !pending_tool_uses.is_empty() {
+            if message.role != AiRole::Tool {
+                return Err(ProtocolError::invalid_request(
+                    "Claude tool results must immediately follow assistant tool use",
+                ));
+            }
+            let result_ids = message
+                .content
+                .iter()
+                .map(|content| match content {
+                    AiContent::ToolResult { call_id, .. } => Ok(call_id.clone()),
+                    _ => Err(ProtocolError::invalid_request(
+                        "Claude tool message may contain only tool results",
+                    )),
+                })
+                .collect::<ProtocolResultValue<BTreeSet<_>>>()?;
+            if result_ids.len() != message.content.len() || result_ids != pending_tool_uses {
+                return Err(ProtocolError::invalid_request(
+                    "Claude tool results must match every immediately preceding tool use",
+                ));
+            }
+            pending_tool_uses.clear();
+            continue;
+        }
+        if message.role == AiRole::Tool {
+            return Err(ProtocolError::invalid_request(
+                "Claude tool result has no immediately preceding tool use",
+            ));
+        }
+        if message.role == AiRole::Assistant {
+            for call_id in message.content.iter().filter_map(|content| match content {
+                AiContent::ToolUse { call_id, .. } => Some(call_id),
+                _ => None,
+            }) {
+                if !pending_tool_uses.insert(call_id.clone()) {
+                    return Err(ProtocolError::invalid_request(
+                        "Claude assistant tool_use IDs must be unique",
+                    ));
+                }
+            }
+        }
+    }
+    if !pending_tool_uses.is_empty() {
+        return Err(ProtocolError::invalid_request(
+            "Claude assistant tool use is missing its following tool result",
+        ));
+    }
+    Ok(())
 }
 
 fn encode_content(
@@ -1479,6 +1573,34 @@ mod tests {
         assert_eq!(body["thinking"]["budget_tokens"], 256);
         assert_eq!(body["stream"], true);
         assert!(body.get("execution_mode").is_none());
+    }
+
+    #[test]
+    fn rejects_nonadjacent_or_unmatched_tool_results() {
+        let mut request = LlmChatInvokeRequest::new(
+            "ignored@instance",
+            vec![
+                AiMessage::new(
+                    AiRole::Assistant,
+                    vec![AiContent::ToolUse {
+                        call_id: "tool-1".to_string(),
+                        name: "weather".to_string(),
+                        args: HashMap::new(),
+                    }],
+                ),
+                AiMessage::text(AiRole::User, "skip the result"),
+            ],
+        );
+        request.max_output_tokens = Some(32);
+        let input = input(request, &[]);
+        let error = codec()
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &input,
+                context: &context(),
+            })
+            .unwrap_err();
+        assert!(error.message.contains("immediately follow"));
     }
 
     #[tokio::test]

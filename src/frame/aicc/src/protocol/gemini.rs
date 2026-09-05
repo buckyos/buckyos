@@ -12,7 +12,8 @@ use buckyos_api::{
     features, AiArtifact, AiContent, AiMessage, AiRole, AiToolResultContent, AiUsage, AiccCall,
     AiccExecutionMode, ApiType, AudioMusicRequest, AudioSpeechRecognitionRequest,
     AudioTextToSpeechRequest, EmbeddingMultimodalRequest, EmbeddingTextItem, EmbeddingTextRequest,
-    ImageToImageRequest, LlmChatInvokeRequest, ResourceRef, TextToImageInvokeRequest,
+    ImageToImageRequest, LlmChatInvokeRequest, LlmResponseFormat, LlmResponseFormatType,
+    ResourceRef, TextToImageInvokeRequest,
     VideoExtendRequest, VideoImageToVideoRequest, VideoTextToVideoRequest, VideoToVideoRequest,
     VisionCaptionRequest, VisionDetectRequest, VisionOcrRequest, VisionSegmentRequest,
 };
@@ -290,6 +291,7 @@ fn encode_interaction(call: &CodecCall<'_>, api_type: ApiType) -> ProtocolResult
         }
     }
     apply_interaction_parameters(&mut body, &call.input.resolved_parameters)?;
+    validate_interaction_body(&body)?;
     Ok(Value::Object(body))
 }
 
@@ -306,29 +308,34 @@ fn encode_llm(
         })?;
         match message.role {
             AiRole::System | AiRole::Developer => {
-                system.extend(message.content.iter().filter_map(|content| match content {
-                    AiContent::Text { text } => Some(text.clone()),
-                    _ => None,
-                }));
+                for content in &message.content {
+                    let AiContent::Text { text } = content else {
+                        return Err(ProtocolError::invalid_request(
+                            "Gemini system instructions only accept text content",
+                        ));
+                    };
+                    system.push(text.clone());
+                }
             }
-            AiRole::User | AiRole::Assistant => input.push(json!({
-                "type": if message.role == AiRole::User { "user_input" } else { "model_output" },
-                "content": encode_content_blocks(&message.content, call)?
+            AiRole::User => input.push(json!({
+                "type": "user_input",
+                "content": encode_interaction_content(&message.content, call)?
             })),
+            AiRole::Assistant => encode_assistant_steps(&message.content, call, &mut input)?,
             AiRole::Tool => {
-                let AiContent::ToolResult {
+                let [AiContent::ToolResult {
                     call_id,
                     content,
                     is_error,
-                } = &message.content[0]
+                }] = message.content.as_slice()
                 else {
                     return Err(ProtocolError::invalid_request(
-                        "Gemini tool message is invalid",
+                        "Gemini tool message must contain one tool result",
                     ));
                 };
                 input.push(json!({
                     "type": "function_result",
-                    "id": call_id,
+                    "call_id": call_id,
                     "result": encode_tool_result(content, call)?,
                     "is_error": is_error
                 }));
@@ -367,8 +374,12 @@ fn encode_llm(
         );
     }
     let mut generation = Map::new();
-    insert_number(&mut generation, "temperature", request.temperature)?;
-    insert_number(&mut generation, "top_p", request.top_p)?;
+    if request.temperature.is_some() || request.top_p.is_some() {
+        return Err(ProtocolError::new(
+            ProtocolErrorKind::UnsupportedOperation,
+            "Gemini Interactions v1beta does not define temperature or top_p",
+        ));
+    }
     if let Some(tokens) = request.max_output_tokens {
         generation.insert("max_output_tokens".to_string(), tokens.into());
     }
@@ -382,12 +393,7 @@ fn encode_llm(
         body.insert("generation_config".to_string(), Value::Object(generation));
     }
     if let Some(format) = &request.response_format {
-        body.insert(
-            "response_format".to_string(),
-            serde_json::to_value(format).map_err(|error| {
-                ProtocolError::invalid_request(format!("failed to encode response format: {error}"))
-            })?,
-        );
+        body.insert("response_format".to_string(), encode_text_response_format(format)?);
     }
     if request.execution_mode == AiccExecutionMode::Stream {
         body.insert("stream".to_string(), Value::Bool(true));
@@ -395,7 +401,32 @@ fn encode_llm(
     Ok(())
 }
 
-fn encode_content_blocks(
+fn encode_text_response_format(format: &LlmResponseFormat) -> ProtocolResultValue<Value> {
+    match format.format_type {
+        LlmResponseFormatType::Text => Ok(json!({"type":"text", "mime_type":"text/plain"})),
+        LlmResponseFormatType::Json | LlmResponseFormatType::JsonObject => {
+            if format.json_schema.is_some() {
+                return Err(ProtocolError::invalid_request(
+                    "Gemini JSON response format must not include json_schema",
+                ));
+            }
+            Ok(json!({"type":"text", "mime_type":"application/json"}))
+        }
+        LlmResponseFormatType::JsonSchema => {
+            let schema = format.json_schema.as_ref().ok_or_else(|| {
+                ProtocolError::invalid_request("Gemini json_schema response format requires a schema")
+            })?;
+            if !schema.schema.is_object() {
+                return Err(ProtocolError::invalid_request(
+                    "Gemini response json_schema must be an object",
+                ));
+            }
+            Ok(json!({"type":"text", "mime_type":"application/json", "schema":schema.schema}))
+        }
+    }
+}
+
+fn encode_interaction_content(
     content: &[AiContent],
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<Vec<Value>> {
@@ -411,25 +442,15 @@ fn encode_content_blocks(
                 }
                 Ok(value)
             }
-            AiContent::ToolUse {
-                call_id,
-                name,
-                args,
-            } => Ok(json!({
-                "type":"function_call", "id":call_id, "name":name, "arguments":args
-            })),
-            AiContent::Thinking {
-                summary,
-                text,
-                provider_metadata,
-            } => Ok(json!({
-                "type":"thought", "summary":summary, "text":text, "metadata":provider_metadata
-            })),
+            AiContent::ToolUse { .. } | AiContent::Thinking { .. } => Err(
+                ProtocolError::invalid_request(
+                    "Gemini user input cannot contain model-generated steps",
+                ),
+            ),
             AiContent::ProviderState { provider, value }
-                if provider == GEMINI_PROVIDER_NAMESPACE =>
-            {
-                Ok(value.clone())
-            }
+                if provider == GEMINI_PROVIDER_NAMESPACE => Err(ProtocolError::invalid_request(
+                    "Gemini provider state must be replayed in assistant history",
+                )),
             AiContent::ProviderState { .. } => Err(ProtocolError::new(
                 ProtocolErrorKind::UnsupportedOperation,
                 "Gemini cannot restore another provider's state",
@@ -439,6 +460,86 @@ fn encode_content_blocks(
             )),
         })
         .collect()
+}
+
+fn encode_assistant_steps(
+    content: &[AiContent],
+    call: &CodecCall<'_>,
+    input: &mut Vec<Value>,
+) -> ProtocolResultValue<()> {
+    let initial_len = input.len();
+    let mut model_content = Vec::new();
+    let flush_model_output = |model_content: &mut Vec<Value>, input: &mut Vec<Value>| {
+        if !model_content.is_empty() {
+            input.push(json!({
+                "type": "model_output",
+                "content": std::mem::take(model_content)
+            }));
+        }
+    };
+    for block in content {
+        match block {
+            AiContent::Text { text } => model_content.push(json!({"type":"text", "text":text})),
+            AiContent::Image { source } => {
+                model_content.push(encode_resource(source, "image", call.context)?);
+            }
+            AiContent::Document { source, title } => {
+                let mut value = encode_resource(source, "document", call.context)?;
+                if let (Some(title), Some(object)) = (title, value.as_object_mut()) {
+                    object.insert("display_name".to_string(), Value::String(title.clone()));
+                }
+                model_content.push(value);
+            }
+            AiContent::ToolUse { call_id, name, args } => {
+                flush_model_output(&mut model_content, input);
+                input.push(json!({
+                    "type":"function_call", "id":call_id, "name":name, "arguments":args
+                }));
+            }
+            AiContent::Thinking { summary, text, provider_metadata } => {
+                flush_model_output(&mut model_content, input);
+                let mut thought = Map::from_iter([(
+                    "type".to_string(),
+                    Value::String("thought".to_string()),
+                )]);
+                if let Some(summary) = summary.as_deref().or(text.as_deref()) {
+                    thought.insert("summary".to_string(), json!([{"type":"text", "text":summary}]));
+                }
+                if let Some(signature) = provider_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("signature"))
+                    .and_then(Value::as_str)
+                {
+                    thought.insert("signature".to_string(), Value::String(signature.to_string()));
+                }
+                input.push(Value::Object(thought));
+            }
+            AiContent::ProviderState { provider, value }
+                if provider == GEMINI_PROVIDER_NAMESPACE && value.is_object() =>
+            {
+                flush_model_output(&mut model_content, input);
+                input.push(value.clone());
+            }
+            AiContent::ProviderState { .. } => {
+                return Err(ProtocolError::new(
+                    ProtocolErrorKind::UnsupportedOperation,
+                    "Gemini cannot restore another provider's state",
+                ));
+            }
+            AiContent::ToolResult { .. } => {
+                return Err(ProtocolError::invalid_request(
+                    "Gemini tool results must use the canonical tool role",
+                ));
+            }
+        }
+    }
+    flush_model_output(&mut model_content, input);
+    if input.len() == initial_len {
+        return Err(ProtocolError::invalid_request(
+            "Gemini assistant history has no representable steps",
+        ));
+    }
+    Ok(())
 }
 
 fn encode_tool_result(
@@ -470,7 +571,7 @@ fn encode_vision_ocr(
         json!({"type":"text", "text":"Extract all text from this document and return structured OCR JSON."}),
         encode_resource(&request.document, resource_kind(&request.document, "document"), call.context)?,
     ]));
-    body.insert("response_format".to_string(), json!({"type":"json_object"}));
+    body.insert("response_format".to_string(), json!({"type":"text", "mime_type":"application/json"}));
     Ok(())
 }
 
@@ -495,7 +596,7 @@ fn encode_vision_detect(
         json!({"type":"text", "text":format!("Detect objects and return JSON. Classes: {:?}", request.classes)}),
         encode_resource(&request.image, "image", call.context)?,
     ]));
-    body.insert("response_format".to_string(), json!({"type":"json_object"}));
+    body.insert("response_format".to_string(), json!({"type":"text", "mime_type":"application/json"}));
     Ok(())
 }
 
@@ -508,7 +609,7 @@ fn encode_vision_segment(
         json!({"type":"text", "text":format!("Segment the requested subject and return mask JSON. Prompt: {:?}", request.prompt)}),
         encode_resource(&request.image, "image", call.context)?,
     ]));
-    body.insert("response_format".to_string(), json!({"type":"json_object"}));
+    body.insert("response_format".to_string(), json!({"type":"text", "mime_type":"application/json"}));
     Ok(())
 }
 
@@ -525,13 +626,33 @@ fn encode_asr(
             call.context,
         )?]),
     );
-    body.insert(
-        "generation_config".to_string(),
-        json!({"transcription_config": {
-            "language": request.language, "timestamps": request.timestamps,
-            "diarization": request.diarization, "output_formats": request.output_formats
-        }}),
-    );
+    if request.output_formats.as_ref().is_some_and(|formats| !formats.is_empty()) {
+        return Err(ProtocolError::new(
+            ProtocolErrorKind::UnsupportedOperation,
+            "Gemini Interactions transcription does not define output_formats",
+        ));
+    }
+    let mut transcription = Map::new();
+    if let Some(language) = &request.language {
+        transcription.insert("language_codes".to_string(), json!([language]));
+    }
+    if request.diarization == Some(true) || request.timestamps.is_some() {
+        let mut mode = Map::from_iter([("type".to_string(), json!("verbatim"))]);
+        if request.diarization == Some(true) {
+            mode.insert("diarization_mode".to_string(), json!("speaker"));
+        }
+        if let Some(timestamps) = &request.timestamps {
+            if timestamps != "word" {
+                return Err(ProtocolError::new(
+                    ProtocolErrorKind::UnsupportedOperation,
+                    "Gemini Interactions transcription only supports word timestamps",
+                ));
+            }
+            mode.insert("timestamp_granularities".to_string(), json!(["word"]));
+        }
+        transcription.insert("mode".to_string(), Value::Object(mode));
+    }
+    body.insert("generation_config".to_string(), json!({"transcription_config": transcription}));
     Ok(())
 }
 
@@ -540,17 +661,21 @@ fn encode_text_to_image(
     body: &mut Map<String, Value>,
 ) -> ProtocolResultValue<()> {
     body.insert("input".to_string(), Value::String(request.prompt.clone()));
-    body.insert("response_format".to_string(), json!({"type":"image", "mime_type": request.output.as_ref().and_then(|v| v.media_type.clone()).unwrap_or_else(|| "image/png".to_string())}));
+    let mut response_format = image_response_format(request.output.as_ref())?;
     let mut config = Map::new();
     if let Some(ratio) = &request.aspect_ratio {
-        config.insert("aspect_ratio".to_string(), ratio.clone().into());
+        response_format.insert("aspect_ratio".to_string(), ratio.clone().into());
     }
     if let Some(seed) = request.seed {
         config.insert("seed".to_string(), seed.into());
     }
-    if let Some(n) = request.n {
-        config.insert("candidate_count".to_string(), n.into());
+    if request.n.is_some_and(|n| n != 1) {
+        return Err(ProtocolError::new(
+            ProtocolErrorKind::UnsupportedOperation,
+            "Gemini Interactions image output does not define candidate_count",
+        ));
     }
+    body.insert("response_format".to_string(), Value::Object(response_format));
     if !config.is_empty() {
         body.insert("generation_config".to_string(), Value::Object(config));
     }
@@ -572,8 +697,29 @@ fn encode_image_to_image(
         input.push(encode_resource(image, "image", call.context)?);
     }
     body.insert("input".to_string(), Value::Array(input));
-    body.insert("response_format".to_string(), json!({"type":"image", "mime_type": request.output.as_ref().and_then(|v| v.media_type.clone()).unwrap_or_else(|| "image/png".to_string())}));
+    body.insert("response_format".to_string(), Value::Object(image_response_format(request.output.as_ref())?));
     Ok(())
+}
+
+fn image_response_format(
+    output: Option<&buckyos_api::AiOutputOptions>,
+) -> ProtocolResultValue<Map<String, Value>> {
+    let mut format = Map::from_iter([("type".to_string(), json!("image"))]);
+    if let Some(output) = output {
+        if let Some(mime) = &output.media_type {
+            if mime != "image/jpeg" {
+                return Err(ProtocolError::new(
+                    ProtocolErrorKind::UnsupportedOperation,
+                    "Gemini Interactions image response format only supports image/jpeg",
+                ));
+            }
+            format.insert("mime_type".to_string(), json!(mime));
+        }
+        if let Some(size) = &output.size {
+            format.insert("image_size".to_string(), json!(size));
+        }
+    }
+    Ok(format)
 }
 
 fn encode_tts(
@@ -581,14 +727,27 @@ fn encode_tts(
     body: &mut Map<String, Value>,
 ) -> ProtocolResultValue<()> {
     body.insert("input".to_string(), Value::String(request.text.clone()));
-    body.insert("response_format".to_string(), json!({"type":"audio", "mime_type": request.output.as_ref().and_then(|v| v.media_type.clone()).unwrap_or_else(|| "audio/pcm".to_string())}));
-    body.insert(
-        "generation_config".to_string(),
-        json!({"speech_config": {
-            "voice_name": request.voice.voice_id, "language_code": request.voice.language,
-            "style": request.voice.style, "speed": request.speed
-        }}),
-    );
+    if request.voice.gender.is_some()
+        || request.voice.style.is_some()
+        || request.voice.speaker_similarity_required
+        || request.speed.is_some()
+    {
+        return Err(ProtocolError::new(
+            ProtocolErrorKind::UnsupportedOperation,
+            "Gemini Interactions speech_config does not define gender, style, similarity, or speed",
+        ));
+    }
+    body.insert("response_format".to_string(), Value::Object(audio_response_format(request.output.as_ref())?));
+    let mut speech = Map::new();
+    if let Some(voice) = &request.voice.voice_id {
+        speech.insert("voice".to_string(), json!(voice));
+    }
+    if let Some(language) = &request.voice.language {
+        speech.insert("language".to_string(), json!(language));
+    }
+    if !speech.is_empty() {
+        body.insert("generation_config".to_string(), json!({"speech_config": [speech]}));
+    }
     if request.execution_mode == AiccExecutionMode::Stream {
         body.insert("stream".to_string(), Value::Bool(true));
     }
@@ -599,21 +758,25 @@ fn encode_music(
     request: &AudioMusicRequest,
     body: &mut Map<String, Value>,
 ) -> ProtocolResultValue<()> {
-    body.insert("input".to_string(), Value::String(request.prompt.clone()));
-    body.insert("response_format".to_string(), json!({"type":"audio", "mime_type": request.output.as_ref().and_then(|v| v.media_type.clone()).unwrap_or_else(|| "audio/mpeg".to_string())}));
-    let mut config = Map::new();
+    let mut prompt = request.prompt.clone();
     if let Some(duration) = request.duration_seconds {
-        config.insert(
-            "duration_seconds".to_string(),
-            finite_number("duration_seconds", duration)?,
-        );
+        let duration = finite_number("duration_seconds", duration)?;
+        prompt.push_str(&format!("\nTarget duration: {duration} seconds."));
     }
     if let Some(instrumental) = request.instrumental {
-        config.insert("instrumental".to_string(), instrumental.into());
+        prompt.push_str(if instrumental {
+            "\nInstrumental only, no vocals."
+        } else {
+            "\nInclude vocals."
+        });
     }
     if let Some(lyrics) = &request.lyrics {
-        config.insert("lyrics".to_string(), lyrics.clone().into());
+        prompt.push_str("\nUse the following lyrics:\n");
+        prompt.push_str(lyrics);
     }
+    body.insert("input".to_string(), Value::String(prompt));
+    body.insert("response_format".to_string(), Value::Object(audio_response_format(request.output.as_ref())?));
+    let mut config = Map::new();
     if let Some(seed) = request.seed {
         config.insert("seed".to_string(), seed.into());
     }
@@ -621,6 +784,29 @@ fn encode_music(
         body.insert("generation_config".to_string(), Value::Object(config));
     }
     Ok(())
+}
+
+fn audio_response_format(
+    output: Option<&buckyos_api::AiOutputOptions>,
+) -> ProtocolResultValue<Map<String, Value>> {
+    const MIMES: &[&str] = &["audio/mp3", "audio/ogg_opus", "audio/l16", "audio/wav", "audio/alaw", "audio/mulaw"];
+    let mut format = Map::from_iter([("type".to_string(), json!("audio"))]);
+    if let Some(output) = output {
+        if let Some(mime) = &output.media_type {
+            let mime = if mime == "audio/mpeg" { "audio/mp3" } else { mime };
+            if !MIMES.contains(&mime) {
+                return Err(ProtocolError::new(
+                    ProtocolErrorKind::UnsupportedOperation,
+                    format!("Gemini Interactions does not support audio response MIME `{mime}`"),
+                ));
+            }
+            format.insert("mime_type".to_string(), json!(mime));
+        }
+        if let Some(sample_rate) = output.sample_rate {
+            format.insert("sample_rate".to_string(), sample_rate.into());
+        }
+    }
+    Ok(format)
 }
 
 fn apply_interaction_parameters(
@@ -648,6 +834,60 @@ fn apply_interaction_parameters(
             )));
         }
         body.insert(name.clone(), value.clone());
+    }
+    Ok(())
+}
+
+fn validate_interaction_body(body: &Map<String, Value>) -> ProtocolResultValue<()> {
+    if let Some(generation) = body.get("generation_config") {
+        let generation = generation.as_object().ok_or_else(|| {
+            ProtocolError::invalid_request("Gemini generation_config must be an object")
+        })?;
+        const KEYS: &[&str] = &[
+            "image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences",
+            "thinking_level", "thinking_summaries", "tool_choice", "transcription_config",
+            "video_config",
+        ];
+        if let Some(key) = generation.keys().find(|key| !KEYS.contains(&key.as_str())) {
+            return Err(ProtocolError::invalid_request(format!(
+                "Gemini generation_config field `{key}` is not defined by the v1beta protocol"
+            )));
+        }
+    }
+    if let Some(format) = body.get("response_format") {
+        match format {
+            Value::Object(format) => validate_response_format(format)?,
+            Value::Array(formats) => {
+                for format in formats {
+                    validate_response_format(format.as_object().ok_or_else(|| {
+                        ProtocolError::invalid_request(
+                            "Gemini response_format array entries must be objects",
+                        )
+                    })?)?;
+                }
+            }
+            _ => return Err(ProtocolError::invalid_request(
+                "Gemini response_format must be an object or array",
+            )),
+        }
+    }
+    Ok(())
+}
+
+fn validate_response_format(format: &Map<String, Value>) -> ProtocolResultValue<()> {
+    let (kind, keys): (&str, &[&str]) = match format.get("type").and_then(Value::as_str) {
+        Some("text") => ("text", &["type", "mime_type", "schema"]),
+        Some("image") => ("image", &["type", "aspect_ratio", "delivery", "image_size", "mime_type"]),
+        Some("audio") => ("audio", &["type", "bit_rate", "delivery", "mime_type", "sample_rate"]),
+        Some("video") => ("video", &["type", "aspect_ratio", "delivery", "duration", "resolution"]),
+        _ => return Err(ProtocolError::invalid_request(
+            "Gemini response_format has an invalid type",
+        )),
+    };
+    if let Some(key) = format.keys().find(|key| !keys.contains(&key.as_str())) {
+        return Err(ProtocolError::invalid_request(format!(
+            "Gemini {kind} response_format field `{key}` is not defined by the v1beta protocol"
+        )));
     }
     Ok(())
 }
@@ -688,17 +928,6 @@ fn resource_kind<'a>(source: &ResourceRef, fallback: &'a str) -> &'a str {
         Some("video") => "video",
         _ => fallback,
     }
-}
-
-fn insert_number(
-    body: &mut Map<String, Value>,
-    name: &str,
-    value: Option<f64>,
-) -> ProtocolResultValue<()> {
-    if let Some(value) = value {
-        body.insert(name.to_string(), finite_number(name, value)?);
-    }
-    Ok(())
 }
 
 fn finite_number(name: &str, value: f64) -> ProtocolResultValue<Value> {
@@ -975,7 +1204,10 @@ fn interaction_outputs(value: &Value) -> ProtocolResultValue<Vec<Value>> {
                 if let Some(content) = step.get("content").and_then(Value::as_array) {
                     outputs.extend(content.iter().cloned());
                 }
-            } else if step.get("type").and_then(Value::as_str) == Some("function_call") {
+            } else if matches!(
+                step.get("type").and_then(Value::as_str),
+                Some("function_call" | "thought")
+            ) {
                 outputs.push(step.clone());
             }
         }
@@ -1014,17 +1246,29 @@ fn normalize_llm(
                     args: arguments.clone().into_iter().collect(),
                 });
             }
-            Some("thought") => content.push(AiContent::Thinking {
-                summary: output
+            Some("thought") => {
+                let summary = output
                     .get("summary")
+                    .and_then(Value::as_array)
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                            .filter_map(|part| part.get("text").and_then(Value::as_str))
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                    .filter(|summary| !summary.is_empty());
+                let provider_metadata = output
+                    .get("signature")
                     .and_then(Value::as_str)
-                    .map(str::to_string),
-                text: output
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                provider_metadata: output.get("metadata").cloned(),
-            }),
+                    .map(|signature| json!({"signature": signature}));
+                content.push(AiContent::Thinking {
+                    summary,
+                    text: None,
+                    provider_metadata,
+                });
+            }
             Some("image") => content.push(AiContent::Image {
                 source: decode_resource(output)?,
             }),
@@ -2083,6 +2327,25 @@ mod tests {
             vec![
                 AiMessage::text(AiRole::System, "be concise"),
                 AiMessage::text(AiRole::User, "hello"),
+                AiMessage::new(
+                    AiRole::Assistant,
+                    vec![
+                        AiContent::Text { text: "checking".to_string() },
+                        AiContent::ToolUse {
+                            call_id: "call-1".to_string(),
+                            name: "weather".to_string(),
+                            args: std::collections::HashMap::from([("city".to_string(), json!("Paris"))]),
+                        },
+                    ],
+                ),
+                AiMessage::new(
+                    AiRole::Tool,
+                    vec![AiContent::ToolResult {
+                        call_id: "call-1".to_string(),
+                        content: vec![AiToolResultContent::text("sunny")],
+                        is_error: false,
+                    }],
+                ),
             ],
         );
         request.max_output_tokens = Some(64);
@@ -2114,6 +2377,10 @@ mod tests {
         assert_eq!(body["system_instruction"], "be concise");
         assert_eq!(body["generation_config"]["max_output_tokens"], 64);
         assert_eq!(body["stream"], true);
+        assert_eq!(body["input"][1]["type"], "model_output");
+        assert_eq!(body["input"][2]["type"], "function_call");
+        assert_eq!(body["input"][3]["call_id"], "call-1");
+        assert!(body["input"][3].get("id").is_none());
         assert!(body.get("execution_mode").is_none());
         let golden = ProtocolContractHarness::default()
             .redact_header(HeaderName::from_static("x-goog-api-key"))
@@ -2121,6 +2388,66 @@ mod tests {
             .unwrap();
         assert_eq!(golden.headers["x-goog-api-key"], "[REDACTED]");
         assert!(!format!("{wire:?}").contains("top-secret"));
+    }
+
+    #[test]
+    fn interaction_uses_official_structured_output_and_image_fields() {
+        let mut request = LlmChatInvokeRequest::new(
+            "ignored@google",
+            vec![AiMessage::text(AiRole::User, "return JSON")],
+        );
+        request.response_format = Some(buckyos_api::LlmResponseFormat::json_schema(
+            Some("answer".to_string()),
+            json!({"type":"object"}),
+            Some(true),
+        ));
+        let input = CodecInput {
+            canonical_request: AiccCall::ChatCompletionsCreate(request),
+            resolved_parameters: BTreeMap::from([("provider_model_id".to_string(), json!("gemini-test"))]),
+        };
+        let value = encode_interaction(&CodecCall {
+            api_type: ApiType::Llm,
+            input: &input,
+            context: &context(),
+        }, ApiType::Llm).unwrap();
+        assert_eq!(value["response_format"]["type"], "text");
+        assert_eq!(value["response_format"]["mime_type"], "application/json");
+        assert_eq!(value["response_format"]["schema"]["type"], "object");
+
+        let mut image = TextToImageInvokeRequest::new("ignored@google", "draw a square");
+        image.aspect_ratio = Some("1:1".to_string());
+        image.seed = Some(7);
+        let input = CodecInput {
+            canonical_request: AiccCall::ImagesGenerate(image),
+            resolved_parameters: BTreeMap::from([("provider_model_id".to_string(), json!("gemini-image"))]),
+        };
+        let value = encode_interaction(&CodecCall {
+            api_type: ApiType::ImageTextToImage,
+            input: &input,
+            context: &context(),
+        }, ApiType::ImageTextToImage).unwrap();
+        assert_eq!(value["response_format"]["aspect_ratio"], "1:1");
+        assert_eq!(value["generation_config"]["seed"], 7);
+        assert!(value["generation_config"].get("aspect_ratio").is_none());
+    }
+
+    #[test]
+    fn interaction_rejects_fields_missing_from_v1beta_schema() {
+        let mut request = LlmChatInvokeRequest::new(
+            "ignored@google",
+            vec![AiMessage::text(AiRole::User, "hello")],
+        );
+        request.temperature = Some(0.7);
+        let input = CodecInput {
+            canonical_request: AiccCall::ChatCompletionsCreate(request),
+            resolved_parameters: BTreeMap::from([("provider_model_id".to_string(), json!("gemini-test"))]),
+        };
+        let error = encode_interaction(&CodecCall {
+            api_type: ApiType::Llm,
+            input: &input,
+            context: &context(),
+        }, ApiType::Llm).unwrap_err();
+        assert_eq!(error.kind, ProtocolErrorKind::UnsupportedOperation);
     }
 
     #[test]
@@ -2165,6 +2492,7 @@ mod tests {
         let value = json!({
             "id":"interaction-1","status":"requires_action",
             "steps":[
+                {"type":"thought","signature":"thought-sig","summary":[{"type":"text","text":"considering"}]},
                 {"type":"model_output","content":[{"type":"text","text":"checking"}]},
                 {"type":"function_call","id":"call-1","name":"weather","arguments":{"city":"Paris"}}
             ],
@@ -2178,7 +2506,9 @@ mod tests {
             panic!("expected immediate")
         };
         assert_eq!(output.usage.unwrap().total_tokens, Some(7));
-        assert_eq!(output.value["message"]["content"][0]["text"], "checking");
+        assert_eq!(output.value["message"]["content"][0]["summary"], "considering");
+        assert_eq!(output.value["message"]["content"][0]["provider_metadata"]["signature"], "thought-sig");
+        assert_eq!(output.value["message"]["content"][1]["text"], "checking");
         assert_eq!(output.value["tool_calls"][0]["call_id"], "call-1");
     }
 

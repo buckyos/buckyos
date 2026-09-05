@@ -94,6 +94,12 @@ function t15FieldValue(field: string, contract: ProviderProtocolContract, model:
   if (field === "documents") return ["wrong", "BUCKYOS-AICC-4827"];
   if (field === "content") return { parts: [{ text: "BUCKYOS-AICC-4827" }] };
   if (field === "tools") return [{ type: "computer_preview" }];
+  if (field === "response_format" && contract.id === "gemini.interactions.tts.v1beta") {
+    return { type: "audio", mime_type: "audio/l16" };
+  }
+  if (field === "generation_config" && contract.id === "gemini.interactions.tts.v1beta") {
+    return { speech_config: [{ voice: "Kore" }] };
+  }
   const type = contract.body_field_types[field]?.[0] ?? "string";
   if (type === "array") return [{ type: "message", role: "user", content: "BUCKYOS-AICC-4827" }];
   if (type === "object") return {};
@@ -1534,6 +1540,65 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
     }),
     body: { model: "claude-test", messages: [{ role: "user", content: "hello" }], max_tokens: 16 },
   }), []);
+  const claudeToolErrors = validateProviderRequest(contract, {
+    method: "POST",
+    pathname: "/v1/messages",
+    query: new URLSearchParams(),
+    headers: new Headers({
+      "content-type": "application/json",
+      "x-api-key": "test-key",
+      "anthropic-version": "2023-06-01",
+    }),
+    body: {
+      model: "claude-test",
+      max_tokens: 16,
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "call-1", name: "weather", input: {} }] },
+        { role: "user", content: [{ type: "text", text: "skip the result" }] },
+      ],
+    },
+  });
+  assert.ok(claudeToolErrors.some((error) => error.includes("immediately return every preceding Claude tool_use")));
+  const geminiInteractions = protocolContract(catalog, "google-gemini", "gemini.interactions.v1beta");
+  const geminiToolErrors = validateProviderRequest(geminiInteractions, {
+    method: "POST",
+    pathname: "/v1beta/interactions",
+    query: new URLSearchParams(),
+    headers: new Headers({ "content-type": "application/json", "x-goog-api-key": "test-key" }),
+    body: {
+      model: "gemini-test",
+      input: [
+        { type: "model_output", content: [{ type: "function_call", id: "call-1", name: "weather", arguments: {} }] },
+        { type: "function_result", id: "call-1", result: "sunny" },
+      ],
+    },
+  });
+  assert.ok(geminiToolErrors.some((error) => error.includes("content cannot contain Gemini interaction steps")));
+  assert.ok(geminiToolErrors.some((error) => error.includes("function_result requires call_id")));
+  const geminiConfigErrors = validateProviderRequest(geminiInteractions, {
+    method: "POST",
+    pathname: "/v1beta/interactions",
+    query: new URLSearchParams(),
+    headers: new Headers({ "content-type": "application/json", "x-goog-api-key": "test-key" }),
+    body: {
+      model: "gemini-test",
+      input: "hello",
+      generation_config: { temperature: 0.7, candidate_count: 2 },
+      response_format: { type: "json_object" },
+    },
+  });
+  assert.ok(geminiConfigErrors.some((error) => error.includes("generation_config.temperature")));
+  assert.ok(geminiConfigErrors.some((error) => error.includes("generation_config.candidate_count")));
+  assert.ok(geminiConfigErrors.some((error) => error.includes("typed Gemini response format")));
+  const openAiChat = protocolContract(catalog, "openrouter", "openrouter.chat-completions.v1");
+  const chatToolErrors = validateProviderRequest(openAiChat, {
+    method: "POST",
+    pathname: openAiChat.path,
+    query: new URLSearchParams(),
+    headers: new Headers({ "content-type": "application/json", authorization: "Bearer test-key" }),
+    body: { model: "chat-test", messages: [{ role: "tool", content: "sunny" }] },
+  });
+  assert.ok(chatToolErrors.some((error) => error.includes("tool_call_id must be a non-empty string")));
   assert.deepEqual(validateProviderRequest(contract, {
     method: "POST",
     pathname: "/v1/messages",
@@ -2036,6 +2101,10 @@ test("T1.5 manifest owns Provider normal, streaming, async, error, and variant c
   assert.ok(manifest.some((item) => item.mock_scenario === "async_failed"));
   assert.ok(manifest.some((item) => item.mock_scenario === "async_cancel"));
   assert.ok(manifest.some((item) => item.case_id === "t1.5.openai.openai.responses.v1.llm.history"));
+  assert.ok(manifest.some((item) => item.case_id === "t1.5.openai.openai.responses.v1.llm.tool-history"));
+  assert.ok(manifest.some((item) => item.case_id === "t1.5.openrouter.openrouter.chat-completions.v1.llm.tool-history"));
+  assert.ok(manifest.some((item) => item.case_id === "t1.5.claude.anthropic.messages.2023-06-01.llm.tool-history"));
+  assert.ok(manifest.some((item) => item.case_id === "t1.5.google-gemini.gemini.interactions.v1beta.llm.tool-history"));
   assert.ok(manifest.some((item) => item.expected_error_class === "provider_protocol_failed"));
   assert.ok(manifest.filter((item) => item.tags.includes("official_error"))
     .every((item) => typeof item.expected_retriable === "boolean" && !("expected_retryable" in item)));

@@ -364,17 +364,51 @@ export function buildT15TypedParams(
     idempotency_key: `${runId}:${requestKey}`,
   };
   switch (apiType) {
-    case "llm": return {
-      ...common,
-      messages: requestKey.endsWith(".history")
-        ? [
+    case "llm": {
+      const toolHistory = requestKey.endsWith(".tool-history");
+      return {
+        ...common,
+        messages: toolHistory
+          ? [
+            { role: "user", content: [{ type: "text", text: "What is the weather in Paris?" }] },
+            {
+              role: "assistant",
+              content: [
+                { type: "text", text: "I will check." },
+                { type: "tool_use", call_id: "weather-call-4827", name: "weather", args: { city: "Paris" } },
+              ],
+            },
+            {
+              role: "tool",
+              content: [{
+                type: "tool_result",
+                call_id: "weather-call-4827",
+                content: [{ type: "text", text: "sunny" }],
+              }],
+            },
+            { role: "user", content: [{ type: "text", text: "Summarize the result." }] },
+          ]
+          : requestKey.endsWith(".history") ? [
           { role: "user", content: [{ type: "text", text: "Remember marker BUCKYOS-AICC-4827." }] },
           { role: "assistant", content: [{ type: "text", text: "I will remember BUCKYOS-AICC-4827." }] },
           { role: "user", content: [{ type: "text", text: "Return the marker now." }] },
         ]
-        : [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827." }] }],
-      max_output_tokens: 32,
-    };
+          : [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827." }] }],
+        ...(toolHistory ? {
+          tools: [{
+            type: "function",
+            name: "weather",
+            description: "Look up weather",
+            args_json_schema: {
+              type: "object",
+              properties: { city: { type: "string" } },
+              required: ["city"],
+            },
+          }],
+        } : {}),
+        max_output_tokens: 32,
+      };
+    }
     case "embedding.text": return { ...common, items: [{ type: "text", id: "item-1", text: "BUCKYOS-AICC-4827" }] };
     case "embedding.multimodal": return { ...common, items: [{ id: "item-1", text: "marker", image: resource("image/png") }] };
     case "image.txt2img": return { ...common, prompt: "A blue square marked 4827" };

@@ -363,7 +363,6 @@ fn decode_status(response: HttpResponse) -> ProtocolResultValue<NativeTaskOutput
             NativeTaskState::Failed
         }
         "COMPLETED" => NativeTaskState::Succeeded,
-        "CANCELLED" | "CANCELED" => NativeTaskState::Cancelled,
         _ => {
             return Err(ProtocolError::invalid_response(
                 "fal Queue response contains an unknown status",
@@ -949,28 +948,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maps_failed_cancelled_and_unknown_statuses() {
+    async fn maps_failed_and_rejects_non_queue_statuses() {
         let codec = codec(ApiType::VideoTextToVideo);
-        for (wire, expected) in [
-            (
-                json!({"status":"COMPLETED","error":"failed"}),
-                NativeTaskState::Failed,
-            ),
-            (json!({"status":"CANCELLED"}), NativeTaskState::Cancelled),
-        ] {
-            let NativeTaskOutput::Status { state, .. } = codec
-                .decode_native(NativeTaskOperation::Status, response(StatusCode::OK, wire))
-                .await
-                .unwrap()
-            else {
-                panic!("expected status")
-            };
-            assert_eq!(state, expected);
-        }
+        let NativeTaskOutput::Status { state, .. } = codec
+            .decode_native(
+                NativeTaskOperation::Status,
+                response(StatusCode::OK, json!({"status":"COMPLETED","error":"failed"})),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected status")
+        };
+        assert_eq!(state, NativeTaskState::Failed);
         let error = codec
             .decode_native(
                 NativeTaskOperation::Status,
                 response(StatusCode::OK, json!({"status":"WAITING"})),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, ProtocolErrorKind::InvalidResponse);
+
+        let error = codec
+            .decode_native(
+                NativeTaskOperation::Status,
+                response(StatusCode::OK, json!({"status":"CANCELLED"})),
             )
             .await
             .unwrap_err();

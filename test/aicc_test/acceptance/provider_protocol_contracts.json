@@ -319,7 +319,7 @@
           "required_body_fields": ["model", "input", "response_format", "generation_config"],
           "allowed_body_fields": ["model", "input", "response_format", "generation_config", "store", "stream"],
           "body_field_types": { "model": ["string"], "input": ["string", "array"], "response_format": ["object", "array"], "generation_config": ["object"] },
-          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.1-flash-tts-preview", "steps": [{ "type": "model_output", "content": [{ "type": "audio", "mime_type": "audio/pcm", "data": "UklGRg==" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.1-flash-tts-preview", "steps": [{ "type": "model_output", "content": [{ "type": "audio", "mime_type": "audio/l16", "data": "UklGRg==" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
           "official_sources": ["https://ai.google.dev/gemini-api/docs/speech-generation", "https://ai.google.dev/gemini-api/docs/api-errors"],
           "evidence_summary": "Gemini TTS uses POST /v1beta/interactions with audio response_format and generation_config.speech_config."
         },

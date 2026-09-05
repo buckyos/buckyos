@@ -722,8 +722,20 @@ fn encode_response_input(
                     "type": if replays_output_message { "output_text" } else { "input_text" },
                     "text": text
                 })),
-                AiContent::Image { source } => content.push(encode_input_image(source, call)?),
+                AiContent::Image { source } if !replays_output_message => {
+                    content.push(encode_input_image(source, call)?)
+                }
+                AiContent::Image { .. } => {
+                    return Err(ProtocolError::invalid_request(
+                        "OpenAI Responses assistant history cannot contain input_image content",
+                    ))
+                }
                 AiContent::Document { source, title } => {
+                    if replays_output_message {
+                        return Err(ProtocolError::invalid_request(
+                            "OpenAI Responses assistant history cannot contain input_file content",
+                        ));
+                    }
                     content.push(encode_input_file(source, title.as_deref(), call)?)
                 }
                 AiContent::ToolUse {
@@ -2861,6 +2873,32 @@ mod tests {
         ProtocolContractHarness::default()
             .assert_no_secrets(&format!("{request:?} {golden:?}"), &["top-secret"])
             .unwrap();
+    }
+
+    #[test]
+    fn rejects_input_media_in_assistant_responses_history() {
+        let request = LlmChatInvokeRequest::new(
+            "ignored@instance",
+            vec![AiMessage::new(
+                AiRole::Assistant,
+                vec![AiContent::Image {
+                    source: PublicResourceRef::url(
+                        "https://example.test/image.png".to_string(),
+                        Some("image/png".to_string()),
+                    ),
+                }],
+            )],
+        );
+        let error = registry()
+            .encode(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_RESPONSES_OPERATION_ID,
+                ApiType::Llm,
+                &input(AiccCall::ChatCompletionsCreate(request)),
+                &context(),
+            )
+            .unwrap_err();
+        assert!(error.message.contains("assistant history"));
     }
 
     #[tokio::test]
