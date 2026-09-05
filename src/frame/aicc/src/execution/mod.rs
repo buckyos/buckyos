@@ -8,7 +8,7 @@ use crate::protocol::{
 };
 use async_trait::async_trait;
 use buckyos_api::{AiArtifact, AiCost, AiUsage, AiccError, AiccErrorCode, ApiType, Capability};
-use futures_util::StreamExt;
+use futures_util::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -1012,11 +1012,14 @@ impl ExecutionEngine {
 
     pub(crate) async fn recover(&self) -> Result<Vec<ExecutionReceipt>, AiccError> {
         let records = self.store.recoverable().await?;
-        let mut receipts = Vec::with_capacity(records.len());
-        for record in records {
-            receipts.push(self.drive_native(&record.task_id).await?);
-        }
-        Ok(receipts)
+        join_all(
+            records
+                .iter()
+                .map(|record| self.drive_native(&record.task_id)),
+        )
+        .await
+        .into_iter()
+        .collect()
     }
 
     pub(crate) async fn cancel(&self, tenant_id: &str, task_id: &str) -> Result<bool, AiccError> {

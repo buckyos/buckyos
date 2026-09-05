@@ -9,8 +9,8 @@
     {
       "id": "gpt-5.6",
       "parameter_scale": "sol",
-      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
-      "logical_mounts": ["llm.openai", "llm.gpt-standard", "llm.{driver}.{model}"],
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
+      "logical_mounts": ["llm.openai", "llm.gpt-standard", "llm.{driver}.{model}", "agent_runtime.computer_use"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
@@ -104,8 +104,8 @@
     {
       "match": "gpt-5.6-sol*",
       "parameter_scale": "sol",
-      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
-      "logical_mounts": ["llm.openai", "llm.gpt-pro", "llm.{driver}.{model}"],
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
+      "logical_mounts": ["llm.openai", "llm.gpt-pro", "llm.{driver}.{model}", "agent_runtime.computer_use"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
@@ -128,8 +128,8 @@
     {
       "match": "gpt-5.6-terra*",
       "parameter_scale": "terra",
-      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
-      "logical_mounts": ["llm.openai", "llm.gpt-mini", "llm.{driver}.{model}"],
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
+      "logical_mounts": ["llm.openai", "llm.gpt-mini", "llm.{driver}.{model}", "agent_runtime.computer_use"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
@@ -152,8 +152,8 @@
     {
       "match": "gpt-5.6-luna*",
       "parameter_scale": "luna",
-      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
-      "logical_mounts": ["llm.openai", "llm.gpt-nano", "llm.{driver}.{model}"],
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
+      "logical_mounts": ["llm.openai", "llm.gpt-nano", "llm.{driver}.{model}", "agent_runtime.computer_use"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,

@@ -67,6 +67,15 @@ CREATE TABLE IF NOT EXISTS aicc_route_trace_event (
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_time ON aicc_route_trace_event(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_tenant_time ON aicc_route_trace_event(tenant_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_task_time ON aicc_route_trace_event(task_id, created_at_ms);
+CREATE TABLE IF NOT EXISTS aicc_session_route_history (
+ tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, caller_app_id TEXT NOT NULL,
+ session_id TEXT NOT NULL, selected_exact_model TEXT NOT NULL, updated_at_ms BIGINT NOT NULL,
+ PRIMARY KEY (tenant_id, user_id, caller_app_id, session_id));
+CREATE INDEX IF NOT EXISTS idx_aicc_session_route_history_updated ON aicc_session_route_history(updated_at_ms);
+CREATE TABLE IF NOT EXISTS aicc_artifact_scope (
+ obj_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
+ caller_app_id TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_aicc_artifact_scope_tenant ON aicc_artifact_scope(tenant_id, created_at_ms);
 CREATE TABLE IF NOT EXISTS aicc_audit_event (
  audit_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, caller_app_id TEXT, event_type TEXT NOT NULL,
  trace_id TEXT, request_id TEXT, task_id TEXT, route_id TEXT, provider_trace_id TEXT,
@@ -276,6 +285,107 @@ impl AiccStorage {
             .await
             .map_err(|e| StorageError::InvalidRecord(e.to_string()))?;
         Self::open(&instance.connection, instance.backend).await
+    }
+
+    pub(crate) async fn session_exact_model(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        caller_app_id: Option<&str>,
+        session_id: &str,
+    ) -> StorageResult<Option<String>> {
+        let sql = self.sql(
+            "SELECT selected_exact_model FROM aicc_session_route_history
+             WHERE tenant_id=? AND user_id=? AND caller_app_id=? AND session_id=?",
+        );
+        Ok(sqlx::query(&sql)
+            .bind(tenant_id)
+            .bind(user_id)
+            .bind(caller_app_id.unwrap_or_default())
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| row.get("selected_exact_model")))
+    }
+
+    pub(crate) async fn remember_session_exact_model(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        caller_app_id: Option<&str>,
+        session_id: &str,
+        selected_exact_model: &str,
+        updated_at_ms: i64,
+    ) -> StorageResult<()> {
+        if [tenant_id, user_id, session_id, selected_exact_model]
+            .iter()
+            .any(|value| value.trim().is_empty())
+            || session_id.len() > 512
+            || updated_at_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "session route history is invalid".into(),
+            ));
+        }
+        let sql = self.sql(
+            "INSERT INTO aicc_session_route_history
+             (tenant_id,user_id,caller_app_id,session_id,selected_exact_model,updated_at_ms)
+             VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,user_id,caller_app_id,session_id)
+             DO UPDATE SET selected_exact_model=excluded.selected_exact_model,
+                           updated_at_ms=excluded.updated_at_ms",
+        );
+        sqlx::query(&sql)
+            .bind(tenant_id)
+            .bind(user_id)
+            .bind(caller_app_id.unwrap_or_default())
+            .bind(session_id)
+            .bind(selected_exact_model)
+            .bind(updated_at_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn remember_artifact_scope(
+        &self,
+        obj_id: &str,
+        tenant_id: &str,
+        user_id: &str,
+        caller_app_id: Option<&str>,
+        created_at_ms: i64,
+    ) -> StorageResult<()> {
+        if [obj_id, tenant_id, user_id]
+            .iter()
+            .any(|value| value.trim().is_empty())
+            || created_at_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "artifact scope fields are invalid".into(),
+            ));
+        }
+        let sql = self.sql(
+            "INSERT INTO aicc_artifact_scope
+             (obj_id,tenant_id,user_id,caller_app_id,created_at_ms) VALUES (?,?,?,?,?)
+             ON CONFLICT(obj_id) DO NOTHING",
+        );
+        sqlx::query(&sql)
+            .bind(obj_id)
+            .bind(tenant_id)
+            .bind(user_id)
+            .bind(caller_app_id.unwrap_or_default())
+            .bind(created_at_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn artifact_tenant(&self, obj_id: &str) -> StorageResult<Option<String>> {
+        let sql = self.sql("SELECT tenant_id FROM aicc_artifact_scope WHERE obj_id=?");
+        Ok(sqlx::query(&sql)
+            .bind(obj_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| row.get("tenant_id")))
     }
 
     pub(crate) async fn upsert_inventory(&self, record: &InventoryLkgsRecord) -> StorageResult<()> {
@@ -1316,6 +1426,77 @@ mod tests {
             .await
             .unwrap()
     }
+
+    #[tokio::test]
+    async fn session_route_history_is_durable_scoped_and_upserted() {
+        let db = db().await;
+        assert_eq!(
+            db.session_exact_model("tenant-a", "user-a", Some("app-a"), "session-1")
+                .await
+                .unwrap(),
+            None
+        );
+        db.remember_session_exact_model(
+            "tenant-a",
+            "user-a",
+            Some("app-a"),
+            "session-1",
+            "gpt-5.6@openai-a",
+            1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            db.session_exact_model("tenant-a", "user-a", Some("app-a"), "session-1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("gpt-5.6@openai-a")
+        );
+        assert_eq!(
+            db.session_exact_model("tenant-b", "user-a", Some("app-a"), "session-1")
+                .await
+                .unwrap(),
+            None
+        );
+        db.remember_session_exact_model(
+            "tenant-a",
+            "user-a",
+            Some("app-a"),
+            "session-1",
+            "gpt-5.6@openai-b",
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            db.session_exact_model("tenant-a", "user-a", Some("app-a"), "session-1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("gpt-5.6@openai-b")
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_scope_records_the_creating_tenant_once() {
+        let db = db().await;
+        db.remember_artifact_scope("cyfile:artifact", "tenant-a", "user-a", Some("app-a"), 1)
+            .await
+            .unwrap();
+        db.remember_artifact_scope("cyfile:artifact", "tenant-b", "user-b", Some("app-b"), 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.artifact_tenant("cyfile:artifact")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("tenant-a")
+        );
+        assert_eq!(db.artifact_tenant("cyfile:missing").await.unwrap(), None);
+    }
+
     fn completion(id: &str, task: &str, idem: &str, at: i64) -> ProviderCompletion {
         ProviderCompletion {
             event_id: id.into(),

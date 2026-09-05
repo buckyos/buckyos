@@ -213,7 +213,20 @@ function errorResponse(response: ServerResponse, scenario: Scenario): boolean {
 }
 
 function openAiResponse(body: Json | null, includeUsage: boolean, scenario: Scenario = "success"): Json {
-  const output: Json[] = requestsToolCall(body)
+  const bodyObject = object(body);
+  const computerUse = Array.isArray(bodyObject?.tools) && bodyObject.tools.some((tool) =>
+    object(tool)?.type === "computer"
+  );
+  const output: Json[] = computerUse
+    ? [{
+      type: "computer_call",
+      id: `computer_mock_${state.calls}`,
+      call_id: `computer_call_mock_${state.calls}`,
+      status: "completed",
+      action: { type: "click", button: "left", x: 640, y: 360 },
+      pending_safety_checks: [],
+    }]
+    : requestsToolCall(body)
     ? [{
       type: "function_call",
       id: `fc_mock_${state.calls}`,
@@ -446,6 +459,21 @@ async function providerResponse(
     return;
   }
   const includeUsage = scenario !== "missing_usage";
+  if (path === "/api/v1/models") {
+    json(response, 200, {
+      data: [
+        {
+          id: "cohere/rerank-v3.5",
+          canonical_slug: "cohere/rerank-v3.5",
+          supported_parameters: ["top_n"],
+          architecture: { input_modalities: ["text"], output_modalities: ["rerank"] },
+          pricing: null,
+          expiration_date: null,
+        },
+      ],
+    });
+    return;
+  }
   if (path === "/v1/models") {
     if (request.headers["anthropic-version"] || request.headers["x-api-key"]) {
       const minimax = !request.headers["anthropic-version"];
@@ -526,6 +554,23 @@ async function providerResponse(
   if (path === "/v1/responses") {
     if (scenario === "stream_success" || object(body)?.stream === true) streamOpenAi(response);
     else json(response, 200, openAiResponse(body, includeUsage, scenario));
+    return;
+  }
+  if (path === "/api/v1/rerank") {
+    const documents = Array.isArray(object(body)?.documents)
+      ? object(body)!.documents as Json[]
+      : [];
+    const results = documents.map((document, index) => ({
+      index,
+      document: { text: document },
+      relevance_score: index === 1 ? 0.99 : 0.01,
+    })).sort((left, right) => right.relevance_score - left.relevance_score);
+    json(response, 200, {
+      id: `rerank_mock_${state.calls}`,
+      model: model(body),
+      results,
+      usage: { search_units: 1, total_tokens: 12 },
+    });
     return;
   }
   if (path === "/v1beta/interactions" || path === "/interactions") {
@@ -733,7 +778,7 @@ const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const providerPath = url.pathname.replace(
-      /^\/instance-(?:a|b|custom-(?:openai|claude|gemini))(?=\/)/,
+      /^\/instance-(?:a|b|openrouter|custom-(?:openai|claude|gemini))(?=\/)/,
       "",
     );
     const body = request.method === "POST" ? await readJson(request) : null;

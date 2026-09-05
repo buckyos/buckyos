@@ -148,7 +148,23 @@ function discoveryFixture(
   }
   return {
     object: "list",
-    data: modelIds.map((id) => ({ id, object: "model", owned_by: provider.provider_driver })),
+    data: modelIds.map((id) => ({
+      id,
+      object: "model",
+      owned_by: provider.provider_driver,
+      ...(provider.provider_driver === "openrouter"
+        ? {
+          canonical_slug: id,
+          supported_parameters: id.startsWith("cohere/rerank-") ? ["top_n"] : [],
+          architecture: {
+            input_modalities: ["text"],
+            output_modalities: id.startsWith("cohere/rerank-") ? ["rerank"] : ["text"],
+          },
+          pricing: null,
+          expiration_date: null,
+        }
+        : {}),
+    })),
   };
 }
 

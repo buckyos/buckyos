@@ -2622,6 +2622,8 @@ pub struct RouteResolveRequest {
     pub estimated_output_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_overlay: Option<AiccRouteOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 impl RouteResolveRequest {
@@ -2638,6 +2640,7 @@ impl RouteResolveRequest {
             estimated_input_tokens: None,
             estimated_output_tokens: None,
             session_overlay: None,
+            session_id: None,
         }
     }
 
@@ -2712,6 +2715,8 @@ pub struct LlmChatInvokeRequest {
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_options: Option<AiTaskOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2752,6 +2757,8 @@ pub struct LlmChatHelperRequest {
     pub task_options: Option<AiTaskOptions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_overlay: Option<AiccRouteOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -2808,6 +2815,7 @@ impl LlmChatHelperRequest {
             idempotency_key: None,
             task_options: None,
             session_overlay: None,
+            session_id: None,
         }
     }
 
@@ -2838,6 +2846,7 @@ impl LlmChatInvokeRequest {
             output: None,
             idempotency_key: None,
             task_options: None,
+            session_id: None,
         }
     }
 
@@ -2903,6 +2912,8 @@ pub struct TextToImageInvokeRequest {
     pub idempotency_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_options: Option<AiTaskOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 impl TextToImageInvokeRequest {
@@ -2922,6 +2933,7 @@ impl TextToImageInvokeRequest {
             output: None,
             idempotency_key: None,
             task_options: None,
+            session_id: None,
         }
     }
 
@@ -2974,6 +2986,8 @@ pub struct TextToImageHelperRequest {
     pub task_options: Option<AiTaskOptions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_overlay: Option<AiccRouteOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 impl TextToImageHelperRequest {
@@ -2997,6 +3011,7 @@ impl TextToImageHelperRequest {
             idempotency_key: None,
             task_options: None,
             session_overlay: None,
+            session_id: None,
         }
     }
 
@@ -3076,6 +3091,8 @@ macro_rules! typed_request {
             pub idempotency_key: Option<String>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             pub task_options: Option<AiTaskOptions>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub session_id: Option<String>,
         }
 
         impl $name {
@@ -3088,6 +3105,7 @@ macro_rules! typed_request {
                     $($optional: None,)*
                     idempotency_key: None,
                     task_options: None,
+                    session_id: None,
                 }
             }
         }

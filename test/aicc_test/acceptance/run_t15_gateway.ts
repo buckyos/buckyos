@@ -13,7 +13,6 @@ import {
 } from "./provider_protocol_contracts.ts";
 import { defectFromFailure, writeReport } from "./report.ts";
 import { inventoriesFromModelsList } from "./inventory.ts";
-import { installFalTestMetadata } from "./metadata_transaction.ts";
 import { runPreflight } from "./preflight.ts";
 import { withMockQuotaTruth } from "./quota_transaction.ts";
 import type { AcceptanceCase, AcceptanceReport, CaseReport, ProviderInventory, ProviderModel } from "./types.ts";
@@ -366,7 +365,29 @@ export function buildT15TypedParams(
     case "video.video2video": return { ...common, video: resource("video/mp4"), prompt: "Preserve motion" };
     case "video.extend": return { ...common, video: resource("video/mp4"), prompt: "Continue the motion", duration_seconds: 2 };
     case "video.upscale": return { ...common, video: resource("video/mp4"), target_resolution: "1080p" };
-    case "agent.computer_use": return { ...common, task: "Read the page title", environment: "browser" };
+    case "rerank": return {
+      ...common,
+      query: "Which document contains marker 4827?",
+      documents: [
+        { id: "wrong", text: "This record has no marker." },
+        { id: "right", text: "The marker is BUCKYOS-AICC-4827." },
+      ],
+    };
+    case "agent.computer_use": return {
+      ...common,
+      task: "Read the page title",
+      environment: {
+        environment_id: "aicc-t15-browser",
+        session_id: `${runId}:computer`,
+        screenshot: {
+          kind: "base64",
+          mime: "image/png",
+          data_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        },
+        viewport: { width: 1280, height: 720 },
+      },
+      allowed_actions: ["left_click"],
+    };
     default: throw new Error(`no T1.5 typed request fixture for ${apiType}`);
   }
 }
@@ -608,7 +629,6 @@ async function main(): Promise<void> {
   );
   const unmatchedCaseIds = new Set(input.caseIds);
   let session: GatewaySession | undefined;
-  let restoreMetadata: ((clients?: { systemConfig: RpcClient; aicc: RpcClient }) => Promise<void>) | undefined;
   let fatalError: unknown;
   try {
     await waitMock(input.mockControlUrl);
@@ -624,10 +644,6 @@ async function main(): Promise<void> {
       username: input.username,
       password: input.password,
       appId: input.appId,
-    });
-    restoreMetadata = await installFalTestMetadata({
-      systemConfig: sudoSystemConfig,
-      aicc: session.aicc,
     });
     process.stdout.write(`${JSON.stringify({
       layer: "T1.5",
@@ -796,33 +812,6 @@ async function main(): Promise<void> {
             elapsed_ms: 0,
           });
         }
-      }
-    }
-    if (restoreMetadata) {
-      try {
-        const cleanupSystemConfig = input.username && input.password
-          ? await loginSudoSystemConfig({
-            gatewayUrl: input.gatewayUrl,
-            username: input.username,
-            password: input.password,
-            appId: input.appId,
-          })
-          : undefined;
-        await restoreMetadata(cleanupSystemConfig && session
-          ? { systemConfig: cleanupSystemConfig, aicc: session.aicc }
-          : undefined);
-      } catch (error) {
-        results.push({
-          case_id: "t1.5.cleanup.driver_metadata_restore",
-          provider_driver: null,
-          method: "sys_config_set/service.reload_settings",
-          scenario: null,
-          status: "failed",
-          diagnostic: String(error),
-          captured_requests: 0,
-          started_at: new Date().toISOString(),
-          elapsed_ms: 0,
-        });
       }
     }
     try {

@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-09-04.1",
+  "baseline_revision": "2026-09-04.2",
   "checked_at": "2026-09-04",
   "canonical_api_types": [
     "llm",
@@ -269,6 +269,18 @@
         }
       ],
       "rules": [
+        {
+          "model_pattern": "gpt-5.6*",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
+          "methods": ["chat.completions.create", "vision.ocr", "vision.caption", "images.generate", "image.img2img", "agent.computer_use"],
+          "input_kinds": ["text", "image", "document"],
+          "output_kinds": ["text", "json", "tool_call", "image", "computer_action"],
+          "document_formats": ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx", "html", "xml", "json", "yaml", "rtf", "source"],
+          "source_urls": ["https://developers.openai.com/api/docs/models/gpt-5.6-sol", "https://developers.openai.com/api/reference/resources/responses/methods/create"],
+          "evidence_summary": "GPT-5.6 supports the Responses computer tool and returns computer_call actions; its other typed capabilities inherit the documented GPT-5 Responses surface."
+        },
         {
           "model_pattern": "sora-2*",
           "status": "deprecated",
@@ -999,7 +1011,7 @@
       "provider_driver": "openrouter",
       "provider_profile_id": "openrouter",
       "protocol_adapter_ids": ["openrouter-openai"],
-      "model_driver_ids": ["openai", "claude", "google-gemini", "minimax", "deepseek", "kimi", "glm", "qwen"],
+      "model_driver_ids": ["openai", "claude", "google-gemini", "minimax", "deepseek", "kimi", "glm", "qwen", "cohere"],
       "discovery": "runtime_catalog",
       "official_catalog": {
         "endpoint": "https://openrouter.ai/api/v1/models?output_modalities=all",
@@ -1021,6 +1033,17 @@
         "preview_allowlist": "Private/preview models require account access and aliases are resolved before physical-model coverage."
       },
       "rules": [
+        {
+          "model_pattern": "cohere/rerank-*",
+          "status": "active",
+          "source_status": "openrouter_models_api_runtime_membership",
+          "api_types": ["rerank"],
+          "methods": ["rerank"],
+          "input_kinds": ["text", "document_chunk"],
+          "output_kinds": ["score"],
+          "source_urls": ["https://openrouter.ai/docs/api/api-reference/rerank/create-rerank"],
+          "evidence_summary": "OpenRouter exposes a native rerank endpoint whose results preserve document indices and relevance scores."
+        },
         {
           "model_pattern": "*",
           "status": "active",

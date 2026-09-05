@@ -900,7 +900,7 @@ interface CostEstimateOutput {
 
 ### 11.1 Request Overlay 分层
 
-AICC 的 RPC 边界只接收调用方传入的 `session_overlay`。这个 overlay 是应用层已经合成好的最终路由覆盖层；AICC 不读取业务 `session_id`，也不维护 `session_id -> session_config`、route binding、revision 或 TTL。
+AICC 的 RPC 边界接收调用方传入的 `session_overlay`，它是应用层已经合成好的最终路由覆盖层；AICC 不维护 `session_id -> session_config`、route binding、revision 或 TTL。请求可另行携带 `session_id`，AICC 仅用它在 tenant/user/app/session 隔离的持久表中记录上一次实际选中的 exact model，不从中派生或保存 overlay。
 
 系统看到的配置层次固定为：
 
@@ -916,13 +916,13 @@ factory/default route config < system global route config < request session_over
 
 应用层可以在自己内部维护任意层数的配置，例如 app config、agent config、conversation config、用户临时权重等。AICC 不关心这些层如何生成，只要求最终传入的 `session_overlay` 符合 route overlay schema。
 
-### 11.2 行为一致性由应用层表达
+### 11.2 行为一致性与历史软优先
 
-如果应用希望同一对话或同一 agent run 保持一致的 Provider 偏好，应在应用内部保存该偏好，并在后续 RPC 中继续传入相同或递进合成的 `session_overlay`。AICC 每次仍会基于当前 Provider 状态、配额、健康和 overlay 重新生成候选并调度。
+应用层通过 `session_overlay` 表达显式 Provider/policy 偏好。如果传入 `session_id`，AICC 还会把上一次实际选中的 exact model 作为本次调度的软优先级。AICC 每次仍先基于当前 Provider 状态、配额、健康和 policy/overlay 应用全部硬约束；历史模型不合格时必须改选或拒绝。
 
 这种边界带来两个约束：
 
-1. AICC 不提供 session sticky route cache；
+1. AICC 只持久化 session 的 exact-model 路由历史，不持久化 session config/overlay；
 2. AICC 不提供 session config revision conflict 检查；并发合并由应用层或更上层的配置服务负责。
 
 ### 11.3 Request Overlay 与能力类型
@@ -1003,7 +1003,7 @@ session_overlay:
 
 ### 12.3 Request 级策略覆盖
 
-标准 request 可携带 `session_overlay`。该 overlay 是调用方在应用内部合成好的最终覆盖层，AICC 只在本次 RPC 中使用，不保存、不按 `session_id` 复用。
+标准 request 可携带 `session_overlay`。该 overlay 是调用方在应用内部合成好的最终覆盖层，AICC 只在本次 RPC 中使用，不保存、不按 `session_id` 复用。这与可选 `session_id` 对应的 exact-model 路由历史是两类独立状态。
 
 Request 级配置不应发明独立的 override 语义，而应使用和系统全局 routing config overlay 兼容的 `AiccRouteOverlay` / `SessionConfig` schema。典型能力包括：
 
@@ -1089,7 +1089,7 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
 default logical directory config < system_config routing_config < request session_overlay
 ```
 
-`request session_overlay` 是调用方在 RPC 前合成好的最终 overlay。AICC 不维护 `session_id -> config` 的状态，也不关心调用方内部由几层 overlay 组成；应用可以自行把 app-level config、agent-level config、per-conversation config 合并成一个 overlay 后传给 AICC。安全策略、隐私策略、组织策略可以设置为不可被下级覆盖。
+`request session_overlay` 是调用方在 RPC 前合成好的最终 overlay。AICC 不维护 `session_id -> config` 的状态，也不关心调用方内部由几层 overlay 组成；应用可以自行把 app-level config、agent-level config、per-conversation config 合并成一个 overlay 后传给 AICC。`session_id` 只键入隔离的 exact-model 路由历史。安全策略、隐私策略、组织策略可以设置为不可被下级覆盖。
 
 不可覆盖策略使用字段级 lock 表达：
 
@@ -1819,8 +1819,8 @@ scheduler_profiles:
 | 全局兜底位置 | 使用 `llm.fallback` 或精确模型 | 避免 fallback 到用户无法预测的任意模型。 |
 | 本地/隐私是否作为目录 | 不作为默认目录，作为属性和策略 | 避免目录膨胀，增强策略组合能力。 |
 | 精确模型是否 fallback | 默认不 fallback | 精确模型表达强制 Provider 意图。 |
-| AICC session 状态 | 不维护 `session_id -> config` 或 sticky route cache | 应用层负责 session 与 overlay 的对应关系，AICC 只处理本次 RPC。 |
-| request overlay 并发 | AICC 无共享 session 状态，因此无 revision conflict | 并发合并由应用层或配置服务负责。 |
+| AICC session 状态 | 不维护 `session_id -> config`；持久化 tenant/user/app/session 隔离的上次 exact model | 应用层负责 session 与 overlay 的对应关系；AICC 历史只是硬约束后的软优先。 |
+| request overlay 并发 | AICC 不共享 session config，因此无 overlay revision conflict | 并发合并由应用层或配置服务负责；路由历史使用数据库 upsert。 |
 | 调度成本来源 | 动态 `CostEstimateOutput` 优先且唯一参与评分 | inventory pricing 只作展示或 fallback，避免静态/动态不一致。 |
 | 包月模型成本 | 不视为零成本，使用有效成本/成本地板值 | 避免调度器失控偏向。 |
 

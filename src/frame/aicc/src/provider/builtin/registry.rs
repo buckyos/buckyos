@@ -689,7 +689,7 @@ mod tests {
     fn metadata_source_manager_supplies_all_builtin_catalogs_to_registry() {
         let registry = registry();
         let files = load_builtin_metadata().unwrap();
-        assert_eq!(files.len(), 34);
+        assert_eq!(files.len(), 35);
         assert_eq!(
             files
                 .iter()
@@ -709,7 +709,7 @@ mod tests {
                 .iter()
                 .filter(|file| file.kind == CatalogKind::ModelDriver)
                 .count(),
-            10
+            11
         );
 
         let snapshot = MetadataSources {
@@ -990,7 +990,10 @@ mod tests {
             CUSTOM_PROVIDER_PROFILE_ID
         );
         assert_eq!(binding.profile.credential.kind, CredentialKind::NamedHeader);
-        assert_eq!(binding.profile.credential.header_name.as_deref(), Some("x-api-key"));
+        assert_eq!(
+            binding.profile.credential.header_name.as_deref(),
+            Some("x-api-key")
+        );
         assert_eq!(binding.instance_rules, Some(Value::Object(Map::new())));
         assert_eq!(
             binding

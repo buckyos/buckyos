@@ -114,6 +114,7 @@ export async function callChatCompletions(
     max_output_tokens: input?.max_output_tokens ?? options?.max_output_tokens,
     idempotency_key: request.idempotency_key,
     session_overlay: request.session_overlay,
+    session_id: options?.session_id,
   }) as Record<string, unknown>;
   return normalizeChatResponse(raw);
 }
@@ -137,6 +138,8 @@ export async function callLlmChatHelper(
     temperature: input?.temperature ?? options?.temperature,
     max_output_tokens: input?.max_output_tokens ?? options?.max_output_tokens,
     idempotency_key: request.idempotency_key,
+    session_overlay: request.session_overlay,
+    session_id: options?.session_id,
   }) as Record<string, unknown>;
   return normalizeChatResponse(raw);
 }
@@ -160,6 +163,7 @@ export async function callImagesGenerate(
     seed: input?.seed,
     output: input?.output,
     idempotency_key: request.idempotency_key,
+    session_id: (payload?.options as Record<string, unknown> | undefined)?.session_id,
   }) as Record<string, unknown>;
   if (raw.status !== "succeeded") return raw;
   const artifacts = Array.isArray(raw.artifacts) ? raw.artifacts : [];
@@ -202,6 +206,7 @@ export function callInference(
     exact_model: model?.alias,
     execution_mode: input.execution_mode ?? "immediate",
     idempotency_key: request.idempotency_key,
+    session_id: (payload?.options as Record<string, unknown> | undefined)?.session_id,
   };
   let params: Record<string, unknown>;
   switch (method) {
@@ -330,6 +335,19 @@ export async function loginGateway(
 export async function loginSudoSystemConfig(
   credentials: GatewayCredentials,
 ): Promise<RpcClient> {
+  const sessionToken = await loginSudoToken(credentials, "system-config");
+  const { buckyos } = await import("buckyos");
+  const gatewayUrl = credentials.gatewayUrl.replace(/\/+$/, "");
+  return new buckyos.kRPCClient(
+    `${gatewayUrl}/kapi/system_config`,
+    sessionToken,
+  ) as RpcClient;
+}
+
+export async function loginSudoToken(
+  credentials: GatewayCredentials,
+  audience?: string,
+): Promise<string> {
   if (!credentials.username || !credentials.password) {
     throw new Error("username and password are required for sudo system-config access");
   }
@@ -341,19 +359,17 @@ export async function loginSudoSystemConfig(
     null,
     nonce,
   ) as RpcClient;
-  const result = await verifyHub.call("sudo_by_password", {
+  const params: Record<string, unknown> = {
     username: credentials.username,
     password: buckyos.hashPassword(credentials.username, credentials.password, nonce),
     target: { kind: "system", service_id: "control-panel" },
-    aud: "system-config",
     login_nonce: nonce,
-  }) as { session_token?: unknown };
+  };
+  if (audience) params.aud = audience;
+  const result = await verifyHub.call("sudo_by_password", params) as { session_token?: unknown };
   const sessionToken = typeof result.session_token === "string"
     ? result.session_token.trim()
     : "";
   if (!sessionToken) throw new Error("sudo_by_password returned no session_token");
-  return new buckyos.kRPCClient(
-    `${gatewayUrl}/kapi/system_config`,
-    sessionToken,
-  ) as RpcClient;
+  return sessionToken;
 }

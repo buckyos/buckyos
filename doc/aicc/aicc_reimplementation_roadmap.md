@@ -61,7 +61,7 @@
 - 不提前实现没有真实 Provider 需求的历史 API 代际；
 - 不把任意 Provider JSON 暴露为公共 `extra_body`；
 - 不实现本地模型；
-- 不把 `agent.computer_use` 作为首版普通模型调用开放；
+- `agent.computer_use` 仅对官方明确支持的模型和 Adapter 开放；GPT-5.6 通过 OpenAI Responses `computer` tool 接入；
 - 不新增 workspace crate 或第三方依赖，除非单独评审并获得确认；
 - 不把 TaskMgr completed task 当作 usage 持久事实源。
 
@@ -466,13 +466,13 @@ Owner：Model/Router 小组
 - [x] exact model 默认不 fallback；
 - [x] balanced、cost、latency、quality、local 和 strict_local profile；
 - [x] item weight、exact model weight 和确定性 tie-break；
-- [x] session 历史 exact model 软优先，但 AICC 不维护 session cache；
+- [x] session 历史 exact model 在 tenant/user/app/session 作用域持久化并软优先，但 AICC 不维护 session config/overlay cache；
 - [x] 输出 RouteDecision、fallback candidates、完整 trace 和用户摘要；
 - [x] trace 不记录 prompt、资源内容、credential 或敏感 option。
 
 完成标准：T1 能确定性证明每个候选被选择或排除的原因。
 
-实现记录：Model/Router 小组在 `src/frame/aicc/src/routing/mod.rs` 实现 exact/logical 两类内部路由、method/api_type/capability/operation/feature 与 Provider runtime/policy 硬过滤、过滤后继续 fallback，以及按目录 item 权重、exact model 权重、profile 分数和 exact model 名依次排序的确定性 scheduler。六类 profile、动态成本/延迟/可靠性/质量/本地性评分、调用方传入的 session 历史 exact model 软偏好、完整有序 fallback candidates、结构化 route trace 和固定模板用户摘要均已落地；trace 类型不接收 prompt、资源、credential 或 provider option。新增 12 个单元测试覆盖正常、边界、拒绝、fallback、权重、六类 profile、历史偏好和脱敏；在干净 WP-09 基线叠加本模块后，AICC 98 个测试、all-target check 和 stable clippy `--no-deps -D warnings`（豁免仓库既有 Resource 新版本 lint）通过，当前并行集成工作区的 AICC 157 个测试与 all-target check 也已通过，未新增依赖。真实 Provider read view 到 `CandidateRuntimeState` 的装配由后续 RuntimeSnapshot/API 集成工作包完成。
+实现记录：Model/Router 小组在 `src/frame/aicc/src/routing/mod.rs` 实现 exact/logical 两类内部路由、method/api_type/capability/operation/feature 与 Provider runtime/policy 硬过滤、过滤后继续 fallback，以及按目录 item 权重、exact model 权重、profile 分数和 exact model 名依次排序的确定性 scheduler。六类 profile、动态成本/延迟/可靠性/质量/本地性评分、tenant/user/app/session 隔离的持久 exact-model 历史软偏好、完整有序 fallback candidates、结构化 route trace 和固定模板用户摘要均已落地；`session_overlay` 仍由调用方逐请求传入且不持久化，trace 类型不接收 prompt、资源、credential 或 provider option。新增 12 个单元测试覆盖正常、边界、拒绝、fallback、权重、六类 profile、历史偏好和脱敏；在干净 WP-09 基线叠加本模块后，AICC 98 个测试、all-target check 和 stable clippy `--no-deps -D warnings`（豁免仓库既有 Resource 新版本 lint）通过，当前并行集成工作区的 AICC 157 个测试与 all-target check 也已通过，未新增依赖。真实 Provider read view 到 `CandidateRuntimeState` 的装配由后续 RuntimeSnapshot/API 集成工作包完成。
 
 WP-16 生产编排契约补充：`ModelRegistry` 提供逻辑目录 `route_policy` 的只读入口，Router 侧新增 `resolve_effective_routing_policy` 与 `policy_engine_for_route`，按 logical directory < request `session_overlay` < request `RoutePolicy` 的固定顺序统一生成 `EffectiveRoutingPolicy`/`PolicyEngine`，所有字段继续经过 `LockedValue` 冲突检查，Service 不再需要复制合并逻辑。公共 `RoutePolicyProfile::{Cheap, Fast, Balanced, Quality}` 分别唯一映射为 scheduler 的 `CostFirst`、`LatencyFirst`、`Balanced`、`QualityFirst`；`RoutePolicy.max_latency_ms` 已进入 effective policy，并按候选 p95 latency 执行 fail-closed 硬过滤，延迟未知、非法或超限均拒绝。新增 4 个测试覆盖目录策略、global/profile session overlay、request policy、locked 拒绝、四类 profile 映射和 latency 上限；AICC 全量 336 个测试及 all-target check 通过，未新增依赖，未修改 WP-16 Service owner 文件。
 
@@ -680,8 +680,8 @@ Owner：E2E 小组
 - [x] 固定 fixture manifest、Mock Provider contract 和 report schema；
 - [x] 汇总 WP-01 至 WP-17 的模块单元测试入口和覆盖范围；
 - [x] AiccClient request/response、序列化和错误映射测试；
-- [ ] T1 经 Zone Gateway 执行真实 AICC 路由链路和多 Mock Provider；
-- [ ] T1.5 经 Zone Gateway 执行真实 AICC typed/helper method、真实 Adapter 和 Provider 专用高保真 Mock；
+- [x] T1 经 Zone Gateway 执行真实 AICC 路由链路和多 Mock Provider；
+- [x] T1.5 经 Zone Gateway 执行真实 AICC typed/helper method、真实 Adapter 和 Provider 专用高保真 Mock；
 - [x] T1.5 fixture 只依据 Provider 官方 API 文档、官方 schema、官方 SDK 协议定义和官方错误文档；
 - [x] T1.5 覆盖 Provider driver × Adapter/API version × API-Type × operation，以及每个可独立调用的 metadata variant；
 - [ ] T2 官方 inventory 双向 diff 和 `ProviderInstance × model × API-Type` 最小真实推理矩阵；
@@ -693,7 +693,9 @@ Owner：E2E 小组
 
 完成标准：每个需求、method、Provider、operation 和横切能力都能追踪到模块单测或稳定的 T1/T1.5/T2/T3 case ID，并能明确证明四层之间没有用后一层重复代替前一层。
 
-实现记录：E2E 小组已完成 WP-18 静态基础与四层 Runner/manifest：preflight 分别校验 canonical api_type、typed method 及显式关联，Provider baseline schema v3 固定 11 家 Provider 与 SN 的 Profile/Adapter/Model Driver 身份；fixture manifest、T1 Mock contract 和 acceptance report 均使用固定 schema。T1.5 manifest 显式携带 canonical `execution_mode`，流式用例只向 AICC 传 `execution_mode=stream`，禁止调用方传 Provider wire `stream`；高保真 Mock 独立要求 Adapter 产生 `stream=true`。12 家 Provider 的 Mock 按官方资料或 SN 固定源码实现逐合同请求校验、机器目录/静态目录边界、正常响应、SSE 正常与中断、官方错误，以及 OpenAI Video、Gemini LRO、Fal Queue、MiniMax Video 四类异步生命周期；T1.5 Runner 也写入统一版本化 acceptance report、逐 case evidence、manifest coverage、cleanup 与 targeted retest。AiccClient 集成测试覆盖 request/response、严格 serde、`unsupported_execution_mode` 与稳定错误映射；默认 CI 运行 Deno 类型检查、preflight/self-test，不开放真实模型调用。静态 preflight、自测 71 项、AICC 363 项单测和 `cargo test -p buckyos-api --test aicc_client_test` 4 项通过。当前本机 Zone 的 runtime check 报告 node-daemon 缺失，且没有可用的验收 session token/账号密码，因此 T1/T1.5 的真实 Zone Gateway 执行仍保持未完成；T2/T3 还需要每次运行的人工授权。
+实现记录：E2E 小组已完成 WP-18 静态基础与四层 Runner/manifest：preflight 分别校验 canonical api_type、typed method 及显式关联，Provider baseline schema v3 固定 11 家 Provider 与 SN 的 Profile/Adapter/Model Driver 身份；fixture manifest、T1 Mock contract 和 acceptance report 均使用固定 schema。T1.5 manifest 显式携带 canonical `execution_mode`，流式用例只向 AICC 传 `execution_mode=stream`，禁止调用方传 Provider wire `stream`；高保真 Mock 独立要求 Adapter 产生 `stream=true`。12 家 Provider 的 Mock 按官方资料或 SN 固定源码实现逐合同请求校验、机器目录/静态目录边界、正常响应、SSE 正常与中断、官方错误，以及 OpenAI Video、Gemini LRO、Fal Queue、MiniMax Video 四类异步生命周期；T1.5 Runner 也写入统一版本化 acceptance report、逐 case evidence、manifest coverage、cleanup 与 targeted retest。AiccClient 集成测试覆盖 request/response、严格 serde、`unsupported_execution_mode` 与稳定错误映射；默认 CI 运行 Deno 类型检查、preflight/self-test，不开放真实模型调用。
+
+2026-09-05 集成 Gate 记录：本机 devtest Zone 已经 Zone Gateway 和真实认证链路完成零费用验收。T1 最终执行 129/129，129 passed、0 failed、0 skipped，需求分支 125/125，cleanup 通过；T1.5 最终执行 603/603，603 passed、0 failed，manifest coverage 100%，cleanup 通过。两层 `actual_real_calls=0`。集成修复包括 caller-provided overlay 与持久 session exact-model 历史、公开 immediate 到内部 native task 生命周期、重启恢复/取消、自动第二租户及跨租户资源授权、Provider health/quota Mock、OpenRouter 原生 rerank，以及 GPT-5.6 computer-use 和 reasoning variant 协议矩阵。T2/T3 仍需每次运行的人工授权。
 
 ## 6. 实施波次与并行关系
 
@@ -814,14 +816,14 @@ Gate 0：契约冻结
 
 ### Wave 7：T1/T1.5 集成验收
 
-- [ ] 先执行 T1 全量，完成路由、fallback、多 instance、policy、task、usage、安全和错误注入验收；
-- [ ] 再执行 T1.5 全 Provider 协议契约矩阵；
-- [ ] T1.5 覆盖正常响应、streaming、异步状态、cancel、官方错误和 metadata variant lowering；
-- [ ] T1/T1.5 必须零真实 Provider 调用、零真实推理费用；
-- [ ] 对失败进行批量分类、集中修复、构建部署和同范围复测；
-- [ ] 实现发生变化后，重新执行受影响模块单测，再完整重跑受影响 T1/T1.5 范围；
-- [ ] 最终必须有一次在两次运行之间没有实现修改的完整通过；
-- [ ] T1/T1.5 未全部达到门禁时，不得进入 T2/T3。
+- [x] 先执行 T1 全量，完成路由、fallback、多 instance、policy、task、usage、安全和错误注入验收；
+- [x] 再执行 T1.5 全 Provider 协议契约矩阵；
+- [x] T1.5 覆盖正常响应、streaming、异步状态、cancel、官方错误和 metadata variant lowering；
+- [x] T1/T1.5 必须零真实 Provider 调用、零真实推理费用；
+- [x] 对失败进行批量分类、集中修复、构建部署和同范围复测；
+- [x] 实现发生变化后，重新执行受影响模块单测，再完整重跑受影响 T1/T1.5 范围；
+- [x] 最终必须有一次在两次运行之间没有实现修改的完整通过；
+- [x] T1/T1.5 未全部达到门禁时，不得进入 T2/T3。
 
 ### Wave 8：T2/T3 发布验收
 
@@ -1126,7 +1128,7 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | WP-16 | Service Integration 小组 | Done | WP-07/09-15 | Service/Admin |
 | WP-17 | TBD | Pending | WP-01/16 | Callers |
 | WP-18 | E2E 小组 | In Progress | 本提交；待集成 Gate | Acceptance |
-| T1/T1.5 Gate | TBD | Pending | WP-01 至 WP-18 Done、编码冻结 | 零真实调用的集成验收 |
+| T1/T1.5 Gate | E2E 小组 | Done | WP-01 至 WP-18 已实现范围、2026-09-05 集成冻结 | T1 129/129、T1.5 603/603，零真实调用 |
 | T2/T3 Gate | TBD | Pending | T1/T1.5 Gate Done、当次授权 | 真实 Provider 与消息链路发布验收 |
 
 状态只允许：`Pending`、`In Progress`、`Blocked`、`Review`、`Done`。每次更新状态时应同时填写 owner、关联 PR/commit、剩余风险和目标验收 case。

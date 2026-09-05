@@ -885,9 +885,11 @@ mod tests {
     fn wp15_loads_sn_provider_catalogs_with_the_referenced_openai_model_driver() {
         let builtin = sn_catalog_files()
             .into_iter()
-            .chain(openai_catalog_files().into_iter().filter(|file| {
-                file.kind == CatalogKind::ModelDriver
-            }))
+            .chain(
+                openai_catalog_files()
+                    .into_iter()
+                    .filter(|file| file.kind == CatalogKind::ModelDriver),
+            )
             .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))
             .collect::<Result<Vec<_>, _>>()
             .unwrap();

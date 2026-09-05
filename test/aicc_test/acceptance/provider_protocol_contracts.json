@@ -19,9 +19,10 @@
         "audio.tts": ["gpt-4o-mini-tts"],
         "audio.asr": ["gpt-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"],
         "video.txt2video": ["sora-2", "sora-2-pro"],
-        "video.img2video": ["sora-2", "sora-2-pro"]
+        "video.img2video": ["sora-2", "sora-2-pro"],
+        "agent.computer_use": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
       },
-      "test_model_ids": { "llm": "gpt-5.6", "vision.ocr": "gpt-5.6", "vision.caption": "gpt-5.6", "embedding.text": "text-embedding-3-small", "image.txt2img": "gpt-image-2", "image.img2img": "gpt-image-2", "image.inpaint": "gpt-image-2", "audio.tts": "gpt-4o-mini-tts", "audio.asr": "gpt-transcribe", "video.txt2video": "sora-2", "video.img2video": "sora-2" },
+      "test_model_ids": { "llm": "gpt-5.6", "vision.ocr": "gpt-5.6", "vision.caption": "gpt-5.6", "embedding.text": "text-embedding-3-small", "image.txt2img": "gpt-image-2", "image.img2img": "gpt-image-2", "image.inpaint": "gpt-image-2", "audio.tts": "gpt-4o-mini-tts", "audio.asr": "gpt-transcribe", "video.txt2video": "sora-2", "video.img2video": "sora-2", "agent.computer_use": "gpt-5.6" },
       "contracts": [
         {
           "id": "openai.responses.v1",
@@ -40,6 +41,23 @@
           "success_fixture": { "id": "resp_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
           "official_sources": ["https://platform.openai.com/docs/api-reference/responses/create", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
           "evidence_summary": "Responses create uses POST /v1/responses with Bearer authentication and JSON model/input; response objects contain output and usage."
+        },
+        {
+          "id": "openai.responses.computer.v1",
+          "protocol_adapter_id": "openai-responses",
+          "api_version": "v1",
+          "api_types": ["agent.computer_use"],
+          "operation": "responses.create",
+          "http_method": "POST",
+          "path": "/v1/responses",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "input", "tools"],
+          "allowed_body_fields": ["model", "input", "reasoning", "tools"],
+          "body_field_types": { "model": ["string"], "input": ["array"], "tools": ["array"] },
+          "success_fixture": { "id": "resp_computer_mock_1", "object": "response", "status": "completed", "model": "gpt-5.6", "output": [{ "type": "computer_call", "id": "computer_mock_1", "call_id": "computer_call_mock_1", "status": "completed", "action": { "type": "click", "button": "left", "x": 640, "y": 360 }, "pending_safety_checks": [] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+          "official_sources": ["https://developers.openai.com/api/reference/resources/responses/methods/create", "https://developers.openai.com/api/docs/models/gpt-5.6-sol"],
+          "evidence_summary": "GPT-5.6 computer use is exposed through Responses with the computer tool and computer_call action output."
         },
         {
           "id": "openai.embeddings.v1",
@@ -549,7 +567,7 @@
       "provider_profile_id": "openrouter",
       "endpoint_path": "/api/v1",
       "credential_type": "bearer",
-      "test_model_ids": { "llm": "openai/gpt-5.6" },
+      "test_model_ids": { "llm": "openai/gpt-5.6", "rerank": "cohere/rerank-v3.5" },
       "contracts": [{
         "id": "openrouter.chat-completions.v1",
         "protocol_adapter_id": "openrouter-openai",
@@ -567,6 +585,22 @@
         "success_fixture": { "id": "gen_mock_1", "object": "chat.completion", "created": 1770000000, "model": "mock-model", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7 } },
         "official_sources": ["https://openrouter.ai/docs/api-reference/overview", "https://openrouter.ai/openapi.yaml"],
         "evidence_summary": "OpenRouter chat completions uses POST /api/v1/chat/completions with Bearer auth and OpenAI-compatible messages/choices."
+      }, {
+        "id": "openrouter.rerank.v1",
+        "protocol_adapter_id": "openrouter-openai",
+        "api_version": "v1",
+        "api_types": ["rerank"],
+        "operation": "rerank.create",
+        "http_method": "POST",
+        "path": "/api/v1/rerank",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "query", "documents"],
+        "allowed_body_fields": ["model", "query", "documents", "provider", "top_n"],
+        "body_field_types": { "model": ["string"], "query": ["string"], "documents": ["array"], "top_n": ["number"] },
+        "success_fixture": { "id": "gen-rerank-mock", "model": "cohere/rerank-v3.5", "results": [{ "document": { "text": "BUCKYOS-AICC-4827" }, "index": 1, "relevance_score": 0.99 }, { "document": { "text": "wrong" }, "index": 0, "relevance_score": 0.01 }], "usage": { "search_units": 1, "total_tokens": 12 } },
+        "official_sources": ["https://openrouter.ai/docs/api/api-reference/rerank/create-rerank"],
+        "evidence_summary": "OpenRouter rerank uses POST /api/v1/rerank and returns ordered index/relevance_score results."
       }]
     },
     {

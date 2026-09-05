@@ -14,7 +14,7 @@ use crate::catalog::Pricing;
 use crate::catalog::{CatalogKind, CurrentCatalogFile, KnownProviderCatalog, ProviderRulesCatalog};
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
-    OPENROUTER_CHAT_ADAPTER_ID,
+    OPENROUTER_CHAT_ADAPTER_ID, OPENROUTER_RERANK_OPERATION_ID,
 };
 use async_trait::async_trait;
 use buckyos_api::{features, ApiType};
@@ -223,16 +223,30 @@ impl ProviderDiscovery for OpenRouterDiscovery {
             }) {
                 supported_features.insert(features::VISION.to_owned());
             }
+            let rerank = model.architecture.as_ref().is_some_and(|architecture| {
+                architecture
+                    .output_modalities
+                    .iter()
+                    .any(|item| item == "rerank")
+            });
+            let api_type = if rerank {
+                ApiType::Rerank
+            } else {
+                ApiType::Llm
+            };
+            let operation = if rerank {
+                OPENROUTER_RERANK_OPERATION_ID
+            } else {
+                OPENAI_CHAT_COMPLETIONS_OPERATION_ID
+            };
             models.insert(
                 model.id.clone(),
                 DiscoveredModel {
                     provider_model_id: model.id,
                     origin_model_id: Some(origin_model_id),
-                    api_types: Some(vec![ApiType::Llm]),
+                    api_types: Some(vec![api_type]),
                     supported_features: Some(supported_features),
-                    remote_methods: Some(BTreeSet::from([
-                        OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned()
-                    ])),
+                    remote_methods: Some(BTreeSet::from([operation.to_owned()])),
                     availability: ModelAvailability::Available,
                     deprecated: model.expiration_date.is_some(),
                     pricing: parse_pricing(model.pricing)?,
@@ -393,6 +407,8 @@ struct ModelObject {
 struct ModelArchitecture {
     #[serde(default)]
     input_modalities: Vec<String>,
+    #[serde(default)]
+    output_modalities: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -434,7 +450,7 @@ mod tests {
             response: Mutex::new(Some(Ok(HttpResponse {
                 status: StatusCode::OK,
                 headers: HeaderMap::new(),
-                body: Bytes::from_static(br#"{"data":[{"id":"openai/model-a","canonical_slug":"openai/model-a","supported_parameters":["tools","response_format"],"architecture":{"input_modalities":["text","image"]},"pricing":{"prompt":"0.000001","completion":"0.000002"},"expiration_date":null},{"id":"openai/model-a:free","canonical_slug":"openai/model-a","supported_parameters":[],"architecture":null,"pricing":null,"expiration_date":null},{"id":"openrouter/auto","canonical_slug":"openrouter/auto","supported_parameters":[],"architecture":null,"pricing":null,"expiration_date":null}]}"#),
+                body: Bytes::from_static(br#"{"data":[{"id":"openai/model-a","canonical_slug":"openai/model-a","supported_parameters":["tools","response_format"],"architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"pricing":{"prompt":"0.000001","completion":"0.000002"},"expiration_date":null},{"id":"cohere/rerank-v3.5","canonical_slug":"cohere/rerank-v3.5","supported_parameters":[],"architecture":{"input_modalities":["text"],"output_modalities":["rerank"]},"pricing":null,"expiration_date":null},{"id":"openai/model-a:free","canonical_slug":"openai/model-a","supported_parameters":[],"architecture":null,"pricing":null,"expiration_date":null},{"id":"openrouter/auto","canonical_slug":"openrouter/auto","supported_parameters":[],"architecture":null,"pricing":null,"expiration_date":null}]}"#),
                 request_id: "request-1".to_owned(),
                 retry_after: None,
             }))),
@@ -464,20 +480,32 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(snapshot.models.len(), 1);
+        assert_eq!(snapshot.models.len(), 2);
+        let language_model = snapshot
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "openai/model-a")
+            .unwrap();
+        assert_eq!(language_model.origin_model_id.as_deref(), Some("model-a"));
         assert_eq!(
-            snapshot.models[0].origin_model_id.as_deref(),
-            Some("model-a")
-        );
-        assert_eq!(
-            snapshot.models[0].pricing.as_ref().unwrap().input_token,
+            language_model.pricing.as_ref().unwrap().input_token,
             Some(0.000001)
         );
-        assert!(snapshot.models[0]
+        assert!(language_model
             .supported_features
             .as_ref()
             .unwrap()
             .contains(features::VISION));
+        let reranker = snapshot
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "cohere/rerank-v3.5")
+            .unwrap();
+        assert_eq!(reranker.api_types, Some(vec![ApiType::Rerank]));
+        assert_eq!(
+            reranker.remote_methods,
+            Some(BTreeSet::from([OPENROUTER_RERANK_OPERATION_ID.to_owned()]))
+        );
         let request = transport.request.lock().unwrap().take().unwrap();
         assert_eq!(request.url, "https://openrouter.ai/api/v1/models");
         assert_eq!(request.headers[AUTHORIZATION], "Bearer secret");
@@ -485,8 +513,14 @@ mod tests {
             openrouter_known_provider().base_url,
             "https://openrouter.ai/api/v1"
         );
+        let rules = openrouter_provider_rules(3);
+        let llm_pattern = rules
+            .patterns
+            .iter()
+            .find(|pattern| pattern.operations.contains_key("llm"))
+            .unwrap();
         assert_eq!(
-            openrouter_provider_rules(3).patterns[0].operations["llm"],
+            llm_pattern.operations["llm"],
             OPENAI_CHAT_COMPLETIONS_OPERATION_ID
         );
         assert_eq!(openrouter_provider_rules(3).origin_mappings.len(), 1);

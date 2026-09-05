@@ -29,6 +29,10 @@ const BUILTIN_METADATA_DOCUMENTS: &[(CatalogKind, &[u8])] = &[
     ),
     (
         CatalogKind::ModelDriver,
+        include_bytes!("../../driver_metadata/models/cohere.model.json"),
+    ),
+    (
+        CatalogKind::ModelDriver,
         include_bytes!("../../driver_metadata/models/deepseek.model.json"),
     ),
     (

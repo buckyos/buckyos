@@ -7,15 +7,15 @@ use crate::model::{
     ModelRegistryError, RegisteredModel, RegistryCandidate,
 };
 use buckyos_api::{
-    features, AiccFallbackMode, AiccFallbackRule, AiccSchedulerProfile, AiccSchedulerProfileConfig,
+    AiccFallbackMode, AiccFallbackRule, AiccSchedulerProfile, AiccSchedulerProfileConfig,
     AiccSchedulerProfileWeights, ApiType, Capability, Feature, ModelDisable, ModelRequirement,
-    Money,
+    Money, features,
 };
 #[allow(unused_imports)]
 pub(crate) use policy::{
-    policy_engine_for_route, resolve_effective_routing_policy, scheduler_profile_for_route_profile,
     CallerIdentity, EffectiveRoutingPolicy, PolicyEngine, PolicyError, QuotaLookup, QuotaSnapshot,
-    QuotaSourceError, QuotaSourceFactory, QuotaTruthPort,
+    QuotaSourceError, QuotaSourceFactory, QuotaTruthPort, policy_engine_for_route,
+    resolve_effective_routing_policy, scheduler_profile_for_route_profile,
 };
 use policy::{
     CandidatePolicyInput, CredentialScope, LocalityPreference, PolicyReason, ProviderPrivacy,
@@ -977,7 +977,7 @@ fn score_candidates(
                 .state
                 .error_rate_5m
                 .filter(|value| (0.0..=1.0).contains(value))
-                .unwrap_or(1.0);
+                .unwrap_or(0.0);
             reliability =
                 (reliability + f64::from(pending.state.recent_failures).min(10.0) / 10.0).min(1.0);
             if pending.state.health == ProviderHealthStatus::Degraded {
@@ -1026,19 +1026,11 @@ fn normalize(values: &[Option<f64>], invert: bool) -> Vec<f64> {
         .map(|value| match (value, min, max) {
             (Some(value), Some(min), Some(max)) if value.is_finite() && *value >= 0.0 => {
                 let normalized = if (max - min).abs() < EPSILON {
-                    if invert {
-                        1.0
-                    } else {
-                        0.0
-                    }
+                    if invert { 1.0 } else { 0.0 }
                 } else {
                     (*value - min) / (max - min)
                 };
-                if invert {
-                    1.0 - normalized
-                } else {
-                    normalized
-                }
+                if invert { 1.0 - normalized } else { normalized }
             }
             _ => 1.0,
         })
@@ -1744,6 +1736,34 @@ mod tests {
             .unwrap();
             assert_eq!(decision.selected.exact_model, expected);
         }
+    }
+
+    #[test]
+    fn degraded_provider_is_ranked_after_healthy_provider() {
+        let patch = RoutingPolicyPatch {
+            route: AiccPolicyConfig {
+                profile: Some(LockedValue::new(AiccSchedulerProfile::Balanced)),
+                scheduler_profiles: Some(LockedValue::new(AiccSchedulerProfileConfig {
+                    balanced: Some(AiccSchedulerProfileWeights {
+                        reliability: 1.0,
+                        ..AiccSchedulerProfileWeights::default()
+                    }),
+                    ..AiccSchedulerProfileConfig::default()
+                })),
+                ..AiccPolicyConfig::default()
+            },
+            ..RoutingPolicyPatch::default()
+        };
+        let mut runtime = runtime();
+        runtime.get_mut("cheap@cloud-a").unwrap().health = ProviderHealthStatus::Degraded;
+        let decision = route(
+            AiccSchedulerProfile::Balanced,
+            &patch,
+            &request("llm.family"),
+            &runtime,
+        )
+        .unwrap();
+        assert_eq!(decision.selected.exact_model, "fast@cloud-b");
     }
 
     #[test]

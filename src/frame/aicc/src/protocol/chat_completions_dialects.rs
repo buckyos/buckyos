@@ -1,17 +1,22 @@
 use super::{
     openai_chat_completions_operation_descriptor, AdapterDescriptor, AdapterStatus,
     ChatCompletionsImmediateExtensions, ChatCompletionsStreamExtensions,
-    ChatCompletionsTokenLimitParameter, CodecRegistration, OpenAiChatCompletionsCodec,
-    OpenAiChatCompletionsDialect, ProtocolError, ProtocolResultValue,
-    OPENAI_CHAT_COMPLETIONS_ADAPTER_ID, OPENAI_PROTOCOL_FAMILY_ID,
+    ChatCompletionsTokenLimitParameter, CodecCall, CodecRegistration, ExecutionMode, HttpBody,
+    HttpRequest, HttpResponse, OpenAiChatCompletionsCodec, OpenAiChatCompletionsDialect,
+    OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolExecution,
+    ProtocolOutput, ProtocolResultValue, OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+    OPENAI_PROTOCOL_FAMILY_ID,
 };
-use buckyos_api::{AiContent, AiRole, LlmChatInvokeRequest};
-use reqwest::header::HeaderMap;
+use async_trait::async_trait;
+use buckyos_api::{AiContent, AiRole, AiUsage, AiccCall, ApiType, LlmChatInvokeRequest};
+use reqwest::header::{HeaderMap, CONTENT_TYPE};
+use reqwest::{Method, Url};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub(crate) const OPENROUTER_CHAT_ADAPTER_ID: &str = "openrouter-openai";
+pub(crate) const OPENROUTER_RERANK_OPERATION_ID: &str = "rerank.create";
 pub(crate) const KIMI_CHAT_ADAPTER_ID: &str = "kimi-chat";
 pub(crate) const GLM_CHAT_ADAPTER_ID: &str = "glm-chat";
 
@@ -73,7 +78,198 @@ pub(crate) fn glm_chat_contract() -> ChatCompletionsDialectContract {
 }
 
 pub(crate) fn openrouter_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    derived_adapter(OPENROUTER_CHAT_ADAPTER_ID, Arc::new(OpenRouterDialect))
+    let (mut descriptor, mut registration) =
+        derived_adapter(OPENROUTER_CHAT_ADAPTER_ID, Arc::new(OpenRouterDialect));
+    let rerank = openrouter_rerank_descriptor();
+    descriptor
+        .operations
+        .insert(rerank.operation_id.clone(), rerank.clone());
+    registration
+        .operation_codecs
+        .push(Arc::new(OpenRouterRerankCodec { descriptor: rerank }));
+    (descriptor, registration)
+}
+
+fn openrouter_rerank_descriptor() -> OperationDescriptor {
+    OperationDescriptor {
+        operation_id: OPENROUTER_RERANK_OPERATION_ID.to_owned(),
+        bindings: vec![OperationBinding::new(
+            ApiType::Rerank,
+            [ExecutionMode::Immediate],
+        )],
+        supports_cancel: false,
+        supports_webhook: false,
+        max_request_bytes: 32 * 1024 * 1024,
+        max_response_bytes: 64 * 1024 * 1024,
+    }
+}
+
+#[derive(Clone)]
+struct OpenRouterRerankCodec {
+    descriptor: OperationDescriptor,
+}
+
+#[async_trait]
+impl OperationCodec for OpenRouterRerankCodec {
+    fn descriptor(&self) -> &OperationDescriptor {
+        &self.descriptor
+    }
+
+    fn api_type(&self) -> ApiType {
+        ApiType::Rerank
+    }
+
+    fn execution_modes(&self) -> BTreeSet<ExecutionMode> {
+        BTreeSet::from([ExecutionMode::Immediate])
+    }
+
+    fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
+        call.context.validate()?;
+        call.input
+            .validate_for(self.descriptor.binding(call.api_type)?)?;
+        let AiccCall::Rerank(request) = &call.input.canonical_request else {
+            return Err(ProtocolError::invalid_request(
+                "OpenRouter rerank codec received the wrong canonical request",
+            ));
+        };
+        let model = call
+            .input
+            .resolved_parameters
+            .get("provider_model_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| ProtocolError::invalid_request("missing resolved provider_model_id"))?;
+        let documents = request
+            .documents
+            .iter()
+            .map(|document| {
+                let text = document.text.as_deref().ok_or_else(|| {
+                    ProtocolError::new(
+                        super::ProtocolErrorKind::UnsupportedOperation,
+                        "OpenRouter text rerank requires inline document text",
+                    )
+                })?;
+                Ok(Value::String(text.to_owned()))
+            })
+            .collect::<ProtocolResultValue<Vec<_>>>()?;
+        let mut body = Map::from_iter([
+            ("model".to_owned(), Value::String(model.to_owned())),
+            ("query".to_owned(), Value::String(request.query.clone())),
+            ("documents".to_owned(), Value::Array(documents)),
+        ]);
+        if let Some(top_n) = request.n {
+            body.insert("top_n".to_owned(), Value::from(top_n));
+        }
+        let mut url = Url::parse(&call.context.base_url)
+            .map_err(|_| ProtocolError::invalid_configuration("OpenRouter base URL is invalid"))?;
+        let base = url.path().trim_end_matches('/');
+        let prefix = if base.ends_with("/api/v1") {
+            base.to_owned()
+        } else if base.is_empty() {
+            "/api/v1".to_owned()
+        } else {
+            format!("{base}/api/v1")
+        };
+        url.set_path(&format!("{prefix}/rerank"));
+        let mut wire = HttpRequest::new(Method::POST, url.to_string());
+        wire.headers
+            .insert(CONTENT_TYPE, "application/json".parse().unwrap());
+        call.context
+            .credential
+            .as_ref()
+            .ok_or_else(|| {
+                ProtocolError::new(
+                    super::ProtocolErrorKind::Authentication,
+                    "OpenRouter rerank requires a resolved credential",
+                )
+            })?
+            .apply(&mut wire.headers)?;
+        wire.body = HttpBody::Json(Value::Object(body));
+        wire.timeout = Some(call.context.limits.request_timeout);
+        wire.max_request_bytes = Some(self.descriptor.max_request_bytes);
+        wire.max_response_bytes = Some(self.descriptor.max_response_bytes);
+        Ok(wire)
+    }
+
+    async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
+        if !response.status.is_success() {
+            return Err(openrouter_rerank_http_error(&response));
+        }
+        let value: Value = response.json(self.descriptor.max_response_bytes)?;
+        let results = value
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                ProtocolError::invalid_response("OpenRouter rerank results are missing")
+            })?
+            .iter()
+            .map(|result| {
+                let index = result.get("index").and_then(Value::as_u64).ok_or_else(|| {
+                    ProtocolError::invalid_response("OpenRouter rerank index is missing")
+                })?;
+                let document = result
+                    .get("document")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| {
+                        ProtocolError::invalid_response("OpenRouter rerank document is missing")
+                    })?;
+                let score = result
+                    .get("relevance_score")
+                    .and_then(Value::as_f64)
+                    .filter(|score| score.is_finite())
+                    .ok_or_else(|| {
+                        ProtocolError::invalid_response("OpenRouter rerank score is invalid")
+                    })?;
+                Ok(json!({
+                    "index": index,
+                    "id": index.to_string(),
+                    "score": score,
+                    "document": {"id":index.to_string(),"text":document.get("text")}
+                }))
+            })
+            .collect::<ProtocolResultValue<Vec<_>>>()?;
+        let usage = value.get("usage").map(|usage| AiUsage {
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+            request_units: usage.get("search_units").and_then(Value::as_u64),
+        });
+        Ok(ProtocolExecution::Immediate(ProtocolOutput {
+            value: json!({"results":results}),
+            usage,
+            artifacts: Vec::new(),
+        }))
+    }
+}
+
+fn openrouter_rerank_http_error(response: &HttpResponse) -> ProtocolError {
+    let parsed: Option<Value> = serde_json::from_slice(&response.body).ok();
+    let provider_code = parsed
+        .as_ref()
+        .and_then(|value| value.pointer("/error/code"))
+        .map(|value| value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string()));
+    let provider_message = parsed
+        .as_ref()
+        .and_then(|value| value.pointer("/error/message"))
+        .and_then(Value::as_str)
+        .unwrap_or("OpenRouter rerank request failed");
+    let kind = match response.status {
+        reqwest::StatusCode::BAD_REQUEST
+        | reqwest::StatusCode::NOT_FOUND
+        | reqwest::StatusCode::METHOD_NOT_ALLOWED
+        | reqwest::StatusCode::UNPROCESSABLE_ENTITY => super::ProtocolErrorKind::InvalidRequest,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+            super::ProtocolErrorKind::Authentication
+        }
+        reqwest::StatusCode::REQUEST_TIMEOUT | reqwest::StatusCode::GATEWAY_TIMEOUT => {
+            super::ProtocolErrorKind::Timeout
+        }
+        _ => super::ProtocolErrorKind::Transport,
+    };
+    ProtocolError::new(kind, format!("OpenRouter rerank: {provider_message}"))
+        .with_provider_code(provider_code)
+        .with_request_id(Some(response.request_id.clone()))
+        .with_retry_after(response.retry_after)
 }
 
 pub(crate) fn kimi_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
@@ -486,9 +682,13 @@ mod tests {
     use super::*;
     use crate::protocol::{
         openai_chat_completions_adapter, CodecContext, CodecInput, CodecLimits, CodecRegistry,
-        HttpBody, ResolvedCredential, OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+        HttpBody, HttpResponse, ResolvedCredential, OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
     };
-    use buckyos_api::{AiMessage, AiccCall, ApiType, LlmChatInvokeRequest};
+    use buckyos_api::{
+        AiMessage, AiccCall, ApiType, LlmChatInvokeRequest, RerankDocument, RerankRequest,
+    };
+    use bytes::Bytes;
+    use reqwest::StatusCode;
     use std::time::Duration;
 
     fn registry_with(derived: (AdapterDescriptor, CodecRegistration)) -> CodecRegistry {
@@ -577,6 +777,99 @@ mod tests {
                 &context(),
             )
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn openrouter_rerank_uses_native_endpoint_and_official_result_shape() {
+        let registry = registry_with(openrouter_chat_adapter());
+        let mut rerank_context = context();
+        rerank_context.base_url = "https://openrouter.ai/api/v1".to_owned();
+        let input = CodecInput {
+            canonical_request: AiccCall::Rerank(RerankRequest::new(
+                "cohere/rerank-v3.5@openrouter-main",
+                "capital of France".to_owned(),
+                vec![RerankDocument {
+                    id: "doc-paris".to_owned(),
+                    text: Some("Paris is the capital of France.".to_owned()),
+                    resource: None,
+                    metadata: None,
+                }],
+            )),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".to_owned(),
+                json!("cohere/rerank-v3.5"),
+            )]),
+        };
+        let request = registry
+            .encode(
+                OPENROUTER_CHAT_ADAPTER_ID,
+                OPENROUTER_RERANK_OPERATION_ID,
+                ApiType::Rerank,
+                &input,
+                &rerank_context,
+            )
+            .unwrap();
+        assert_eq!(request.url, "https://openrouter.ai/api/v1/rerank");
+        let HttpBody::Json(body) = request.body else {
+            panic!("expected JSON body")
+        };
+        assert_eq!(
+            body["documents"],
+            json!(["Paris is the capital of France."])
+        );
+
+        let ProtocolExecution::Immediate(output) = registry
+            .decode(
+                OPENROUTER_CHAT_ADAPTER_ID,
+                OPENROUTER_RERANK_OPERATION_ID,
+                ApiType::Rerank,
+                HttpResponse {
+                    status: StatusCode::OK,
+                    headers: HeaderMap::new(),
+                    body: Bytes::from_static(br#"{"results":[{"document":{"text":"Paris is the capital of France."},"index":0,"relevance_score":0.98}],"usage":{"search_units":1,"total_tokens":8}}"#),
+                    request_id: "rerank-1".to_owned(),
+                    retry_after: None,
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected immediate rerank output")
+        };
+        assert_eq!(output.value["results"][0]["index"], 0);
+        assert_eq!(output.value["results"][0]["score"], 0.98);
+        assert_eq!(output.usage.unwrap().request_units, Some(1));
+    }
+
+    #[tokio::test]
+    async fn openrouter_rerank_maps_caller_errors_as_non_retriable() {
+        let registry = registry_with(openrouter_chat_adapter());
+        for (status, expected_kind) in [
+            (StatusCode::BAD_REQUEST, super::super::ProtocolErrorKind::InvalidRequest),
+            (StatusCode::UNAUTHORIZED, super::super::ProtocolErrorKind::Authentication),
+            (StatusCode::FORBIDDEN, super::super::ProtocolErrorKind::Authentication),
+        ] {
+            let error = registry
+                .decode(
+                    OPENROUTER_CHAT_ADAPTER_ID,
+                    OPENROUTER_RERANK_OPERATION_ID,
+                    ApiType::Rerank,
+                    HttpResponse {
+                        status,
+                        headers: HeaderMap::new(),
+                        body: Bytes::from_static(
+                            br#"{"error":{"code":400,"message":"request rejected"}}"#,
+                        ),
+                        request_id: "rerank-error".to_owned(),
+                        retry_after: None,
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind, expected_kind);
+            let mapped: buckyos_api::AiccError = error.into();
+            assert!(!mapped.retriable);
+        }
     }
 
     #[test]

@@ -16,7 +16,8 @@
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create",
         "image.txt2img": "responses.create",
-        "image.img2img": "responses.create"
+        "image.img2img": "responses.create",
+        "agent.computer_use": "responses.create"
       }
     },
     {

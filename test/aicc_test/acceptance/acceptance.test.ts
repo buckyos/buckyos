@@ -725,10 +725,10 @@ test("T1 mock settings append run-scoped instances without mutating backup", () 
     "dv-openai-a-run-one",
     "dv-openai-b-run-one",
   ]);
-  assert.equal(providers.length, 11);
+  assert.equal(providers.length, 12);
   assert.deepEqual(providers[1].credentials, { api_token: { locked: "mock-a-run-one" } });
   assert.deepEqual(
-    providers.slice(7).map((item) => [item.provider_profile_id, item.protocol_adapter_id]),
+    providers.slice(8).map((item) => [item.provider_profile_id, item.protocol_adapter_id]),
     [
       ["custom", "openai-responses"],
       ["custom", "claude-messages"],

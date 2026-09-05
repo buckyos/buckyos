@@ -12,9 +12,10 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use buckyos_api::{
     AiArtifact, AiContent, AiMessage, AiRole, AiToolResultContent, AiUsage, AiccCall,
     AiccExecutionMode, ApiType, AudioSpeechRecognitionRequest, AudioTextToSpeechRequest,
-    EmbeddingTextItem, ImageInpaintRequest, ImageToImageRequest, LlmChatInvokeRequest,
-    LlmResponseFormatType, ResourceRef as PublicResourceRef, TextToImageInvokeRequest,
-    VisionCaptionRequest, VisionOcrRequest,
+    ComputerAction, ComputerUseRequest, EmbeddingTextItem, ImageInpaintRequest,
+    ImageToImageRequest, LlmChatInvokeRequest, LlmResponseFormatType,
+    ResourceRef as PublicResourceRef, TextToImageInvokeRequest, VisionCaptionRequest,
+    VisionOcrRequest,
 };
 use futures_util::{stream, StreamExt};
 use reqwest::header::{HeaderValue, CONTENT_TYPE};
@@ -70,6 +71,11 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
                 ApiType::ImageImageToImage,
                 [ExecutionMode::Immediate, ExecutionMode::Stream],
                 ["image_generation"],
+            ),
+            binding(
+                ApiType::AgentComputerUse,
+                [ExecutionMode::Immediate],
+                std::iter::empty::<&str>(),
             ),
         ],
         false,
@@ -181,8 +187,12 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
             ApiType::ImageTextToImage,
         )),
         Arc::new(OpenAiResponsesCodec::new(
-            responses,
+            responses.clone(),
             ApiType::ImageImageToImage,
+        )),
+        Arc::new(OpenAiResponsesCodec::new(
+            responses,
+            ApiType::AgentComputerUse,
         )),
         Arc::new(OpenAiEmbeddingCodec::new(embeddings)),
         Arc::new(OpenAiImageCodec::new(
@@ -294,6 +304,9 @@ impl OperationCodec for OpenAiResponsesCodec {
             (AiccCall::ImageToImage(request), ApiType::ImageImageToImage) => {
                 encode_responses_image_edit(request, call)?
             }
+            (AiccCall::ComputerUse(request), ApiType::AgentComputerUse) => {
+                encode_responses_computer_use(request, call)?
+            }
             _ => {
                 return Err(ProtocolError::invalid_request(
                     "OpenAI Responses codec received the wrong canonical request",
@@ -309,11 +322,14 @@ impl OperationCodec for OpenAiResponsesCodec {
             return decode_buffered_responses_stream(response);
         }
         let value: Value = response.json(self.descriptor.max_response_bytes)?;
-        let output = decode_response_object(&value)?;
-        Ok(ProtocolExecution::Immediate(normalize_responses_api_output(
-            output,
-            self.api_type,
-        )))
+        let output = if self.api_type == ApiType::AgentComputerUse {
+            decode_computer_use_response(&value)?
+        } else {
+            decode_response_object(&value)?
+        };
+        Ok(ProtocolExecution::Immediate(
+            normalize_responses_api_output(output, self.api_type),
+        ))
     }
 
     async fn decode_stream(
@@ -439,9 +455,10 @@ fn encode_responses_ocr(
         PublicResourceRef::Base64 { mime, .. } if mime.starts_with("image/") => {
             encode_input_image(&request.document, call)?
         }
-        PublicResourceRef::Url { mime_hint: Some(mime), .. } if mime.starts_with("image/") => {
-            encode_input_image(&request.document, call)?
-        }
+        PublicResourceRef::Url {
+            mime_hint: Some(mime),
+            ..
+        } if mime.starts_with("image/") => encode_input_image(&request.document, call)?,
         _ => encode_input_file(&request.document, Some("document"), call)?,
     };
     encode_responses_vision(
@@ -482,6 +499,158 @@ fn encode_responses_vision(
         body.insert("stream".to_string(), Value::Bool(true));
     }
     Ok(Value::Object(body))
+}
+
+fn encode_responses_computer_use(
+    request: &ComputerUseRequest,
+    call: &CodecCall<'_>,
+) -> ProtocolResultValue<Value> {
+    if request.task.trim().is_empty() || request.allowed_actions.is_empty() {
+        return Err(ProtocolError::invalid_request(
+            "computer-use requires a task and at least one allowed action",
+        ));
+    }
+    const SUPPORTED_ACTIONS: [&str; 7] = [
+        "screenshot",
+        "left_click",
+        "right_click",
+        "type",
+        "key",
+        "scroll",
+        "wait",
+    ];
+    if request
+        .allowed_actions
+        .iter()
+        .any(|action| !SUPPORTED_ACTIONS.contains(&action.as_str()))
+    {
+        return Err(ProtocolError::invalid_request(
+            "computer-use allowed_actions contains an unsupported action",
+        ));
+    }
+    let instruction = format!(
+        "{}\nOnly return one of these allowed actions: {}.",
+        request.task,
+        request.allowed_actions.join(", ")
+    );
+    let screenshot = encode_input_image(&request.environment.screenshot, call)?;
+    let mut body = Map::from_iter([
+        ("model".to_string(), Value::String(provider_model_id(call)?)),
+        (
+            "input".to_string(),
+            json!([{"role":"user","content":[
+                {"type":"input_text","text":instruction},
+                screenshot
+            ]}]),
+        ),
+        ("tools".to_string(), json!([{"type":"computer"}])),
+    ]);
+    apply_responses_parameters(&mut body, &call.input.resolved_parameters)?;
+    Ok(Value::Object(body))
+}
+
+fn decode_computer_use_response(response: &Value) -> ProtocolResultValue<ProtocolOutput> {
+    if response.get("status").and_then(Value::as_str) == Some("failed") {
+        return Err(response_failure(response));
+    }
+    let output = response
+        .get("output")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ProtocolError::invalid_response("OpenAI response output is missing"))?;
+    let mut actions = Vec::new();
+    for item in output {
+        if item.get("type").and_then(Value::as_str) != Some("computer_call") {
+            continue;
+        }
+        let values = item
+            .get("actions")
+            .and_then(Value::as_array)
+            .cloned()
+            .or_else(|| item.get("action").cloned().map(|action| vec![action]))
+            .ok_or_else(|| ProtocolError::invalid_response("OpenAI computer call has no action"))?;
+        for action in values {
+            actions.push(decode_computer_action(&action)?);
+        }
+    }
+    if actions.is_empty() {
+        return Err(ProtocolError::invalid_response(
+            "OpenAI response has no computer action",
+        ));
+    }
+    Ok(ProtocolOutput {
+        value: json!({
+            "actions": actions,
+            "requires_next_observation": true
+        }),
+        usage: decode_usage(response.get("usage"))?,
+        artifacts: Vec::new(),
+    })
+}
+
+fn decode_computer_action(value: &Value) -> ProtocolResultValue<ComputerAction> {
+    let kind = value
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ProtocolError::invalid_response("OpenAI computer action is missing type"))?;
+    let number = |name: &str| {
+        value.get(name).and_then(Value::as_f64).ok_or_else(|| {
+            ProtocolError::invalid_response(format!(
+                "OpenAI computer action is missing numeric `{name}`"
+            ))
+        })
+    };
+    match kind {
+        "screenshot" => Ok(ComputerAction::Screenshot),
+        "click" => {
+            let action = match value
+                .get("button")
+                .and_then(Value::as_str)
+                .unwrap_or("left")
+            {
+                "left" => ComputerAction::LeftClick {
+                    x: number("x")?,
+                    y: number("y")?,
+                },
+                "right" => ComputerAction::RightClick {
+                    x: number("x")?,
+                    y: number("y")?,
+                },
+                _ => {
+                    return Err(ProtocolError::invalid_response(
+                        "OpenAI computer click uses an unsupported button",
+                    ))
+                }
+            };
+            Ok(action)
+        }
+        "type" => Ok(ComputerAction::Type {
+            text: required_string(value, "text", "OpenAI computer type action")?,
+        }),
+        "keypress" => Ok(ComputerAction::Key {
+            key: value
+                .get("keys")
+                .and_then(Value::as_array)
+                .map(|keys| {
+                    keys.iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("+")
+                })
+                .filter(|keys| !keys.is_empty())
+                .ok_or_else(|| {
+                    ProtocolError::invalid_response("OpenAI computer keypress action has no keys")
+                })?,
+        }),
+        "scroll" => Ok(ComputerAction::Scroll {
+            delta_x: number("scroll_x")?,
+            delta_y: number("scroll_y")?,
+        }),
+        "wait" => Ok(ComputerAction::Wait { duration_ms: 1_000 }),
+        _ => Err(ProtocolError::new(
+            ProtocolErrorKind::UnsupportedOperation,
+            format!("OpenAI computer action `{kind}` is not canonicalized"),
+        )),
+    }
 }
 
 fn normalize_responses_api_output(mut output: ProtocolOutput, api_type: ApiType) -> ProtocolOutput {
@@ -1493,11 +1662,15 @@ impl OperationCodec for OpenAiEmbeddingCodec {
                 "OpenAI embeddings received an unsupported canonical transform",
             ));
         }
-        if request.prefer_artifact.as_ref().is_some_and(|value| match value {
-            Value::Bool(_) => false,
-            Value::String(mode) if mode == "auto" => false,
-            _ => true,
-        }) {
+        if request
+            .prefer_artifact
+            .as_ref()
+            .is_some_and(|value| match value {
+                Value::Bool(_) => false,
+                Value::String(mode) if mode == "auto" => false,
+                _ => true,
+            })
+        {
             return Err(ProtocolError::invalid_request(
                 "prefer_artifact must be true, false, or auto",
             ));
@@ -1772,6 +1945,7 @@ fn encode_image_inpaint(
         output: request.output.clone(),
         idempotency_key: request.idempotency_key.clone(),
         task_options: request.task_options.clone(),
+        session_id: request.session_id.clone(),
     };
     encode_image_edit(&synthetic, Some(&request.mask), call)
 }
@@ -2420,8 +2594,8 @@ mod tests {
         ResolvedCredential,
     };
     use buckyos_api::{
-        AiOutputOptions, AiToolSpec, EmbeddingTextRequest, MaskSemantics, VideoImageToVideoRequest,
-        VideoTextToVideoRequest, VoiceSpec,
+        AiOutputOptions, AiToolSpec, ComputerEnvironment, ComputerUseRequest, EmbeddingTextRequest,
+        MaskSemantics, VideoImageToVideoRequest, VideoTextToVideoRequest, Viewport, VoiceSpec,
     };
     use bytes::Bytes;
     use futures_util::{stream, StreamExt};
@@ -2500,6 +2674,70 @@ mod tests {
                 ApiType::VideoTextToVideo,
             )
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn gpt_56_computer_use_maps_observation_and_action() {
+        let screenshot = PublicResourceRef::base64("image/png".to_owned(), "cG5n".to_owned());
+        let context = context_with_resource(&screenshot, b"png", "image/png", None);
+        let request = ComputerUseRequest::new(
+            "gpt-5.6@openai-main",
+            "Click the button".to_owned(),
+            ComputerEnvironment {
+                environment_id: "browser".to_owned(),
+                session_id: "session-1".to_owned(),
+                screenshot,
+                viewport: Viewport {
+                    width: 1280,
+                    height: 720,
+                },
+            },
+            vec!["left_click".to_owned()],
+        );
+        let registry = registry();
+        let wire = registry
+            .encode(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_RESPONSES_OPERATION_ID,
+                ApiType::AgentComputerUse,
+                &input(AiccCall::ComputerUse(request)),
+                &context,
+            )
+            .unwrap();
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON body")
+        };
+        assert_eq!(body["model"], "openai-test-model");
+        assert_eq!(body["tools"], json!([{"type":"computer"}]));
+        assert!(body["input"][0]["content"][1]["image_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+
+        let response = ProtocolContractHarness::default()
+            .response(
+                StatusCode::OK,
+                &[("content-type", "application/json")],
+                Bytes::from_static(br#"{"output":[{"type":"computer_call","action":{"type":"click","button":"left","x":640,"y":360}}],"usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7}}"#),
+                "computer-1",
+                UNIX_EPOCH,
+            )
+            .unwrap();
+        let ProtocolExecution::Immediate(output) = registry
+            .decode(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_RESPONSES_OPERATION_ID,
+                ApiType::AgentComputerUse,
+                response,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected immediate computer-use output")
+        };
+        assert_eq!(output.value["actions"][0]["type"], "left_click");
+        assert_eq!(output.value["actions"][0]["x"], 640.0);
+        assert_eq!(output.value["requires_next_observation"], true);
     }
 
     #[test]
@@ -2994,6 +3232,7 @@ mod tests {
             output: None,
             idempotency_key: None,
             task_options: None,
+            session_id: None,
         };
         assert!(registry()
             .encode(

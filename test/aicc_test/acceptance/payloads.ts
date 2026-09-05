@@ -199,7 +199,17 @@ function io(
       return {
         input_json: {
           task: "Report the title visible in the supplied test environment.",
-          environment: "browser",
+          environment: {
+            environment_id: "aicc-t1-browser",
+            session_id: "aicc-t1-computer-session",
+            screenshot: {
+              kind: "base64",
+              mime: "image/png",
+              data_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+            },
+            viewport: { width: 1280, height: 720 },
+          },
+          allowed_actions: ["left_click"],
         },
         resources: [],
       };
@@ -492,6 +502,18 @@ export function assertResponseShape(
     const first = results[0] as Record<string, unknown>;
     if (first.id !== "right" || typeof first.score !== "number" || !Number.isFinite(first.score)) {
       throw new Error("rerank must rank the marker document first with a finite score");
+    }
+    return;
+  }
+  if (cell.api_type === "agent.computer_use") {
+    const actions = response.actions;
+    if (!Array.isArray(actions) || actions.length !== 1) {
+      throw new Error("computer-use must return exactly one action");
+    }
+    const action = actions[0] as Record<string, unknown>;
+    if (action.type !== "left_click" || action.x !== 640 || action.y !== 360 ||
+      response.requires_next_observation !== true) {
+      throw new Error("computer-use did not return the allowed deterministic click action");
     }
     return;
   }

@@ -141,8 +141,12 @@ pub(crate) fn claude_messages_adapter() -> (crate::protocol::AdapterDescriptor, 
         CodecRegistration {
             operation_codecs: vec![
                 Arc::new(codec),
-                Arc::new(ClaudeMessagesCodec::new_for(buckyos_api::ApiType::VisionOcr)),
-                Arc::new(ClaudeMessagesCodec::new_for(buckyos_api::ApiType::VisionCaption)),
+                Arc::new(ClaudeMessagesCodec::new_for(
+                    buckyos_api::ApiType::VisionOcr,
+                )),
+                Arc::new(ClaudeMessagesCodec::new_for(
+                    buckyos_api::ApiType::VisionCaption,
+                )),
             ],
             native_task_codecs: Vec::new(),
         },

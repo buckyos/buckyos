@@ -1,0 +1,25 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "model_driver_id": "cohere",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "rerank-v3.5",
+      "api_types": ["rerank"],
+      "logical_mounts": ["rerank", "rerank.cohere", "rerank.{driver}.{model}"]
+    }
+  ],
+  "patterns": [
+    {
+      "match": "rerank-*",
+      "api_types": ["rerank"],
+      "logical_mounts": ["rerank", "rerank.cohere", "rerank.{driver}.{model}"]
+    }
+  ],
+  "defaults": {},
+  "variants": [],
+  "version_rules": []
+}

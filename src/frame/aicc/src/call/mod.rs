@@ -7,8 +7,8 @@ use crate::protocol::{
     CodecContext, CodecInput, CodecLimits, CodecRegistry, CredentialAudit, ExecutionMode,
     ResolvedCredential,
 };
-use crate::routing::{RouteDecision, SelectedRoute};
 use crate::resource::ResourceAccessContext;
+use crate::routing::{RouteDecision, SelectedRoute};
 use buckyos_api::{AiccCall, AiccErrorCode, AiccExecutionMode, ApiType, ResourceRef};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -441,10 +441,9 @@ impl<'a> CallResolver<'a> {
         let binding = descriptor
             .binding(api_type)
             .map_err(|error| CallLoweringError::UnsupportedOperation(error.to_string()))?;
-        let Some(execution_mode) = internal_execution_mode(
-            requested_execution_mode,
-            &binding.execution_modes,
-        ) else {
+        let Some(execution_mode) =
+            internal_execution_mode(requested_execution_mode, &binding.execution_modes)
+        else {
             return Err(CallLoweringError::UnsupportedExecutionMode {
                 adapter_id: decision.selected.protocol_adapter_id.clone(),
                 operation,
@@ -1749,15 +1748,18 @@ mod tests {
         }
         golden.sort();
         golden.dedup();
-        assert_eq!(golden.len(), 60);
+        assert_eq!(golden.len(), 62);
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
+        assert!(
+            golden.contains(&"openai|openai-responses|agent.computer_use|responses.create".into())
+        );
         assert!(golden.contains(&"claude|claude-messages|llm|messages.create".into()));
         assert!(golden
             .contains(&"gemini|gemini-interactions|video.extend|models.predictLongRunning".into()));
         assert!(golden.contains(&"fal|fal-queue|image.upscale|queue.submit".into()));
-        assert!(golden.contains(
-            &"minimax|minimax-messages|video.txt2video|video_generation.create".into()
-        ));
+        assert!(golden.contains(&"openrouter|openrouter-openai|rerank|rerank.create".into()));
+        assert!(golden
+            .contains(&"minimax|minimax-messages|video.txt2video|video_generation.create".into()));
         assert!(golden.contains(&"qwen|qwen-responses|llm|responses.create".into()));
         assert!(golden.contains(&"sn|sn-openai|llm|responses.create".into()));
     }

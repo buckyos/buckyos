@@ -38,7 +38,9 @@ pub(crate) fn minimax_messages_dialect_contract() -> MiniMaxMessagesDialectContr
 pub(crate) fn minimax_messages_adapter() -> (AdapterDescriptor, CodecRegistration) {
     let base = ClaudeMessagesCodec::new();
     let mut operation = base.descriptor().clone();
-    operation.bindings.retain(|binding| binding.api_type == ApiType::Llm);
+    operation
+        .bindings
+        .retain(|binding| binding.api_type == ApiType::Llm);
     let (media_operations, media_registration) = super::minimax_media_registration();
     let mut operations = BTreeMap::from([(operation.operation_id.clone(), operation.clone())]);
     operations.extend(
@@ -319,6 +321,7 @@ mod tests {
                 output: None,
                 idempotency_key: None,
                 task_options: None,
+                session_id: None,
             }),
             resolved_parameters: BTreeMap::from([(
                 "provider_model_id".to_owned(),

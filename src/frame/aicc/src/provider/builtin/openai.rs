@@ -577,13 +577,11 @@ mod tests {
             .unwrap();
         let operations = &model.operations;
         assert_eq!(operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
-        assert_eq!(
-            operations["image.txt2img"],
-            OPENAI_RESPONSES_OPERATION_ID
-        );
+        assert_eq!(operations["image.txt2img"], OPENAI_RESPONSES_OPERATION_ID);
         assert_eq!(operations["image.img2img"], OPENAI_RESPONSES_OPERATION_ID);
         assert_eq!(model.capabilities["tool_call"], true);
         assert_eq!(model.capabilities["json_schema"], true);
+        assert_eq!(model.capabilities["max_context_tokens"], 1_050_000);
         let version_tiers = catalog
             .model_driver("openai")
             .unwrap()
@@ -618,6 +616,5 @@ mod tests {
                     "llm.gpt-sol" | "llm.gpt-terra" | "llm.gpt-luna"
                 )));
         }
-        assert_eq!(model.capabilities["max_context_tokens"], 1_050_000);
     }
 }

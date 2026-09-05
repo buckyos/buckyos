@@ -58,6 +58,10 @@ impl RuntimeProvider {
     pub(crate) async fn quota_observation(&self) -> ProviderQuotaObservation {
         self.executable.quota_observation().await
     }
+
+    pub(crate) async fn health(&self) -> crate::provider::ProviderHealth {
+        self.executable.health().await
+    }
 }
 
 impl std::fmt::Debug for RuntimeProvider {

@@ -427,6 +427,7 @@ export function analyzeProviderMatrix(args: {
       }
       for (const apiType of official) {
         if (!declared.has(apiType)) {
+          if (profile.capability_source_provider) continue;
           errors.push(
             `official_supported_but_aicc_missing ${model.exact_model} ${apiType}`,
           );

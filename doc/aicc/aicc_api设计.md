@@ -150,6 +150,7 @@ Request：
     "policy": { "profile": "balanced" },
     "estimated_input_tokens": 1200,
     "estimated_output_tokens": 400,
+    "session_id": "agent-session-001",
     "session_overlay": {
       "logical_tree": {
         "llm": {
@@ -198,7 +199,7 @@ Response：
 说明：
 
 1. `selected_exact_model` 是 AICC 语义下的确定物理模型名，形如 `provider_model_id[:variant]@provider_instance_name`。
-2. `session_overlay` 是调用方已经合成好的本次请求 route overlay。AICC 不维护应用 session 状态，只把该 overlay 覆盖到系统级 route config 之上。
+2. `session_overlay` 是调用方已经合成好的本次请求 route overlay，AICC 不按 session 持久化它。可选 `session_id` 只用于在 tenant/user/app 作用域内持久化“上一次实际选中的 exact model”；该历史在全部硬约束之后作为软优先级，不是 policy/config cache。
 3. `provider_model_id` 是 Provider discovery 返回并用于 wire request 的原始模型名，不得替换为 `origin_model_id`。
 4. `operation` 由 Provider Rules 和 adapter 注册表解析；调用方不能指定任意 operation 或 URL。
 5. `enabled_capabilities` / `disabled_capabilities` 表达本次路由后实际启用 / 禁用的能力集合。
@@ -284,6 +285,8 @@ Helper 使用与对应 typed inference 相同的业务字段，只把 `exact_mod
 同步和异步结果必须使用相同的 typed result。Task Final event 中的业务结果必须精确保存；Base64、ProviderState 和 thinking signature 只能在日志、审计摘要和 provider I/O 观测副本中脱敏，不能改写业务结果。
 
 Provider 原生扩展只允许放入带 Provider namespace 的 `ProviderState` 或明确定义的扩展字段。Provider adapter 必须保持 content block 顺序；无法归一但需要多轮恢复的原生 block 保存为 opaque ProviderState。
+
+AICC 为 typed inference 生成并返回的 Named Object artifact 归当前认证 tenant 所有；AICC 在后续请求中解析这类 artifact 时必须校验 tenant 一致，跨 tenant 引用必须拒绝。这一约束不把调用方自有或全局内容寻址的 NDM 对象改成 AICC 私有对象；外部资源仍按 Resource 层的原有授权规则处理。
 ### 2.5 流式与进度观察
 
 AICC 不为 streaming 引入独立协议层，也不在 method schema 中定义 Provider wire 字段 `stream: true`、token delta event、image step、video frame 等中间态字段。`route.resolve`、全部 typed inference request 和两个 Helper request 使用统一的 canonical `execution_mode`：
