@@ -1,9 +1,9 @@
 use super::{
-    sse_frame_stream, AdapterDescriptor, AdapterStatus, CodecCall, CodecContext, CodecRegistration,
-    ExecutionMode, HttpBody, HttpRequest, HttpResponse, OperationBinding, OperationCodec,
-    OperationDescriptor, ProtocolError, ProtocolErrorKind, ProtocolEvent, ProtocolExecution,
-    ProtocolOutput, ProtocolResultValue, ProtocolStream, SseConfig, SseFrame,
-    StreamingHttpResponse,
+    foreign_provider_state_text, sse_frame_stream, AdapterDescriptor, AdapterStatus, CodecCall,
+    CodecContext, CodecRegistration, ExecutionMode, HttpBody, HttpRequest, HttpResponse,
+    OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolErrorKind,
+    ProtocolEvent, ProtocolExecution, ProtocolOutput, ProtocolResultValue, ProtocolStream,
+    SseConfig, SseFrame, StreamingHttpResponse,
 };
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD;
@@ -500,7 +500,14 @@ fn encode_assistant_message(
             {
                 refusal = Some(required_value_string(value, "refusal")?);
             }
-            AiContent::ProviderState { .. } => {}
+            AiContent::ProviderState { provider, value } => {
+                if let Some(part) = foreign_provider_state_text(provider, value) {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&part);
+                }
+            }
             _ if dialect.allows_unmapped_message_content(AiRole::Assistant, block) => {}
             _ => {
                 return Err(ProtocolError::invalid_request(

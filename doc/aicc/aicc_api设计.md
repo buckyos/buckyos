@@ -584,7 +584,7 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 1. `messages[].content` 是 `Vec<AiContent>` content-block 数组。最常见的纯文本消息用单个 `text` block 表达（`AiMessage::text(role, "...")`）。
 2. `role` 是 `AiRole` 枚举（snake_case 序列化）。`tool` 是 IR 内部承载 tool result 的角色，`developer` 是 OpenAI Responses 原生角色；Provider Adapter 在 lowering 时改写为各 provider 原生形态。
 3. `tool_use` / `tool_result` 用 `call_id` 关联；`tool_result.content` 只允许 `text` / `image` / `document` 三类子块。
-4. `thinking` 承载扩展思考；`provider_state` 承载无法跨 provider 抽象、但需要 round-trip 的 provider 原生项（OpenAI reasoning item、Claude server_tool_use 等），lowering 时只有 `provider` 匹配目标的块会被还原，其余丢弃。
+4. `thinking` 承载扩展思考；`provider_state` 承载无法跨 provider 抽象、但需要 round-trip 的 provider 原生项（OpenAI reasoning item、Claude server_tool_use 等）。lowering 时必须分三档处理：`provider` 匹配目标 Adapter namespace 的块原样还原；`provider` 不匹配但包含公开文本、摘要、拒绝说明或规范化内容的块降级为普通文本上下文；无法安全降级的 opaque 块跳过。Adapter 不得伪造目标 Provider 私有状态，也不得因 foreign `provider_state` 直接失败。
 5. 多模态内容直接进入 `content` 数组，不引入 `messages_v2` 等并行通道。
 
 ### 3.3 Generation Parameters
@@ -795,7 +795,7 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 
 Response mapping：
 
-`chat.completions.create` 返回 `LlmChatInvokeResponse`，assistant 输出使用 content-block `message: AiMessage`。`text`、`tool_use`、`thinking` 和 opaque `ProviderState` 必须保持原始顺序；存在匹配当前 adapter 的 ProviderState 时优先原样 replay，否则从 provider-neutral blocks lowering。foreign ProviderState 被忽略。
+`chat.completions.create` 返回 `LlmChatInvokeResponse`，assistant 输出使用 content-block `message: AiMessage`。`text`、`tool_use`、`thinking` 和 opaque `ProviderState` 必须保持原始顺序；存在匹配当前 adapter 的 ProviderState 时优先原样 replay，否则从 provider-neutral blocks lowering。foreign ProviderState 按三档策略处理：匹配目标 namespace 时还原，可安全抽取公开文本时降级为普通文本，无法降级时跳过。
 
 Fallback（逻辑路由层语义，由 `route.resolve` / helper / logical definition 承载，数据面 `chat.completions.create` 自身不 fallback）：
 

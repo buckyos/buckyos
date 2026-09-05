@@ -1,10 +1,11 @@
 use super::{
-    sse_frame_stream, AdapterDescriptor, AdapterStatus, CodecCall, CodecContext, CodecRegistration,
-    CredentialKind, ExecutionMode, HttpBody, HttpRequest, HttpResponse, NativeTaskCodec,
-    NativeTaskHandle, NativeTaskInput, NativeTaskOperation, NativeTaskOutput, NativeTaskState,
-    OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolErrorKind,
-    ProtocolEvent, ProtocolExecution, ProtocolOutput, ProtocolResultValue, ProtocolStream,
-    ResolvedCredential, SseConfig, SseFrame, StreamingHttpResponse,
+    foreign_provider_state_text, sse_frame_stream, AdapterDescriptor, AdapterStatus, CodecCall,
+    CodecContext, CodecRegistration, CredentialKind, ExecutionMode, HttpBody, HttpRequest,
+    HttpResponse, NativeTaskCodec, NativeTaskHandle, NativeTaskInput, NativeTaskOperation,
+    NativeTaskOutput, NativeTaskState, OperationBinding, OperationCodec, OperationDescriptor,
+    ProtocolError, ProtocolErrorKind, ProtocolEvent, ProtocolExecution, ProtocolOutput,
+    ProtocolResultValue, ProtocolStream, ResolvedCredential, SseConfig, SseFrame,
+    StreamingHttpResponse,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -448,16 +449,24 @@ fn encode_interaction_content(
                 ),
             ),
             AiContent::ProviderState { provider, value }
-                if provider == GEMINI_PROVIDER_NAMESPACE => Err(ProtocolError::invalid_request(
+                if provider == GEMINI_PROVIDER_NAMESPACE =>
+            {
+                Err(ProtocolError::invalid_request(
                     "Gemini provider state must be replayed in assistant history",
-                )),
-            AiContent::ProviderState { .. } => Err(ProtocolError::new(
-                ProtocolErrorKind::UnsupportedOperation,
-                "Gemini cannot restore another provider's state",
-            )),
+                ))
+            }
+            AiContent::ProviderState { provider, value } => {
+                Ok(foreign_provider_state_text(provider, value)
+                    .map(|text| json!({"type":"text", "text":text}))
+                    .unwrap_or(Value::Null))
+            }
             AiContent::ToolResult { .. } => Err(ProtocolError::invalid_request(
                 "Gemini tool results must use the canonical tool role",
             )),
+        })
+        .filter_map(|part| match part {
+            Ok(Value::Null) => None,
+            other => Some(other),
         })
         .collect()
 }
@@ -520,11 +529,10 @@ fn encode_assistant_steps(
                 flush_model_output(&mut model_content, input);
                 input.push(value.clone());
             }
-            AiContent::ProviderState { .. } => {
-                return Err(ProtocolError::new(
-                    ProtocolErrorKind::UnsupportedOperation,
-                    "Gemini cannot restore another provider's state",
-                ));
+            AiContent::ProviderState { provider, value } => {
+                if let Some(text) = foreign_provider_state_text(provider, value) {
+                    model_content.push(json!({"type":"text", "text":text}));
+                }
             }
             AiContent::ToolResult { .. } => {
                 return Err(ProtocolError::invalid_request(

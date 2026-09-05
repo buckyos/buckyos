@@ -187,6 +187,12 @@ AICC 应尽量把不同 AI 服务来源的结果整理成一致格式，使调�
 
 当某个服务来源返回额外信息时，AICC 可以保留摘要，但必须避免暴露密钥、原始敏感输入和过大的原始响应。
 
+跨服务来源切换时，历史消息中的 Provider 原生状态必须按三档处理：
+
+1. 属于目标 Provider namespace 的 `provider_state` 必须按目标 Adapter 的规则原样还原，用于保持多轮推理、工具调用或服务端状态连续性。
+2. 不属于目标 Provider namespace、但包含可公开表达文本的 `provider_state`，必须降级为目标 Provider 可接受的普通文本上下文；降级内容只能来自公开文本、摘要、拒绝说明或已规范化内容，不得读取或暴露加密状态、密钥、原始私有 payload。
+3. 不属于目标 Provider namespace、且无法安全降级的 opaque `provider_state` 必须跳过。AICC 不得伪造目标 Provider 的私有状态，也不得因为存在外部 namespace 的 `provider_state` 直接让本次请求失败。
+
 ### 6.9 使用量、成本和预算
 
 AICC 应记录每次成功完成的 AI 使用情况，用于后续账单、统计、预算控制和审计。

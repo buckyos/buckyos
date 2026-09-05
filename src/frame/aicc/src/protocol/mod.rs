@@ -13,6 +13,7 @@ mod minimax_messages;
 mod minimax_media;
 mod openai_chat_completions;
 mod openai_responses;
+mod provider_state;
 mod result;
 mod sse;
 mod task;
@@ -44,6 +45,8 @@ pub(crate) use minimax_media::*;
 pub(crate) use openai_chat_completions::*;
 #[allow(unused_imports)]
 pub(crate) use openai_responses::*;
+#[allow(unused_imports)]
+pub(crate) use provider_state::*;
 #[allow(unused_imports)]
 pub(crate) use result::*;
 #[allow(unused_imports)]

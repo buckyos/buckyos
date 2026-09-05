@@ -1,8 +1,9 @@
 use super::{
-    sse_frame_stream, AdapterDescriptor, AdapterStatus, CodecCall, CredentialKind, ExecutionMode,
-    HttpBody, HttpRequest, HttpResponse, OperationBinding, OperationCodec, OperationDescriptor,
-    ProtocolError, ProtocolErrorKind, ProtocolEvent, ProtocolExecution, ProtocolOutput,
-    ProtocolResultValue, ProtocolStream, SseConfig, SseFrame, StreamingHttpResponse,
+    foreign_provider_state_text, sse_frame_stream, AdapterDescriptor, AdapterStatus, CodecCall,
+    CredentialKind, ExecutionMode, HttpBody, HttpRequest, HttpResponse, OperationBinding,
+    OperationCodec, OperationDescriptor, ProtocolError, ProtocolErrorKind, ProtocolEvent,
+    ProtocolExecution, ProtocolOutput, ProtocolResultValue, ProtocolStream, SseConfig, SseFrame,
+    StreamingHttpResponse,
 };
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD;
@@ -452,41 +453,40 @@ fn encode_message_content(
     content: &[AiContent],
     context: &super::CodecContext,
 ) -> ProtocolResultValue<Vec<Value>> {
-    content
-        .iter()
-        .filter(|block| {
-            !matches!(
-                block,
-                AiContent::ProviderState { provider, .. }
-                    if provider != CLAUDE_PROVIDER_NAMESPACE
-            )
-        })
-        .map(|block| {
-            let allowed = match role {
-                AiRole::User => matches!(
-                    block,
-                    AiContent::Text { .. }
-                        | AiContent::Image { .. }
-                        | AiContent::Document { .. }
-                ),
-                AiRole::Assistant => matches!(
-                    block,
-                    AiContent::Text { .. }
-                        | AiContent::ToolUse { .. }
-                        | AiContent::Thinking { .. }
-                        | AiContent::ProviderState { .. }
-                ),
-                _ => false,
-            };
-            if !allowed {
-                return Err(ProtocolError::invalid_request(format!(
-                    "Claude {} message contains an invalid content block",
-                    role.as_str()
-                )));
+    let mut encoded = Vec::new();
+    for block in content {
+        if let AiContent::ProviderState { provider, value } = block {
+            if provider != CLAUDE_PROVIDER_NAMESPACE {
+                if let Some(text) = foreign_provider_state_text(provider, value) {
+                    encoded.push(encode_content(&AiContent::Text { text }, true, context)?);
+                }
+                continue;
             }
-            encode_content(block, true, context)
-        })
-        .collect()
+        }
+
+        let allowed = match role {
+            AiRole::User => matches!(
+                block,
+                AiContent::Text { .. } | AiContent::Image { .. } | AiContent::Document { .. }
+            ),
+            AiRole::Assistant => matches!(
+                block,
+                AiContent::Text { .. }
+                    | AiContent::ToolUse { .. }
+                    | AiContent::Thinking { .. }
+                    | AiContent::ProviderState { .. }
+            ),
+            _ => false,
+        };
+        if !allowed {
+            return Err(ProtocolError::invalid_request(format!(
+                "Claude {} message contains an invalid content block",
+                role.as_str()
+            )));
+        }
+        encoded.push(encode_content(block, true, context)?);
+    }
+    Ok(encoded)
 }
 
 fn validate_message_sequence(messages: &[AiMessage]) -> ProtocolResultValue<()> {

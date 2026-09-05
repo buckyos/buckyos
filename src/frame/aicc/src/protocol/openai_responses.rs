@@ -1,11 +1,11 @@
 use super::{
-    sse_frame_stream, AdapterDescriptor, AdapterStatus, CodecCall, CodecContext, CodecRegistration,
-    CredentialKind, ExecutionMode, HttpBody, HttpRequest, HttpResponse, MaterializedResource,
-    MultipartBody, MultipartPart, NativeTaskCodec, NativeTaskHandle, NativeTaskInput,
-    NativeTaskOperation, NativeTaskOutput, NativeTaskState, OperationBinding, OperationCodec,
-    OperationDescriptor, ProtocolError, ProtocolErrorKind, ProtocolEvent, ProtocolExecution,
-    ProtocolOutput, ProtocolResultValue, ProtocolStream, SseConfig, SseFrame, SseFramer,
-    SseStreamEnd, StreamingHttpResponse,
+    foreign_provider_state_text, sse_frame_stream, AdapterDescriptor, AdapterStatus, CodecCall,
+    CodecContext, CodecRegistration, CredentialKind, ExecutionMode, HttpBody, HttpRequest,
+    HttpResponse, MaterializedResource, MultipartBody, MultipartPart, NativeTaskCodec,
+    NativeTaskHandle, NativeTaskInput, NativeTaskOperation, NativeTaskOutput, NativeTaskState,
+    OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolErrorKind,
+    ProtocolEvent, ProtocolExecution, ProtocolOutput, ProtocolResultValue, ProtocolStream,
+    SseConfig, SseFrame, SseFramer, SseStreamEnd, StreamingHttpResponse,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -767,7 +767,14 @@ fn encode_response_input(
                         items.push(value.clone());
                     }
                 }
-                AiContent::ProviderState { .. } => {}
+                AiContent::ProviderState { provider, value } => {
+                    if let Some(text) = foreign_provider_state_text(provider, value) {
+                        content.push(json!({
+                            "type": if replays_output_message { "output_text" } else { "input_text" },
+                            "text": text
+                        }));
+                    }
+                }
                 AiContent::ToolResult { .. } => {
                     return Err(ProtocolError::invalid_request(
                         "tool result block must use the canonical tool role",
