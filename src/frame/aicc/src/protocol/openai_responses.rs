@@ -705,15 +705,7 @@ fn encode_response_input(
             }));
             continue;
         }
-        let replays_output_message = message.role == AiRole::Assistant
-            && message.content.iter().any(|block| {
-                matches!(
-                    block,
-                    AiContent::ProviderState { provider, value }
-                        if provider == OPENAI_PROVIDER_NAMESPACE
-                            && value.get("type").and_then(Value::as_str) == Some("refusal")
-                )
-            });
+        let replays_output_message = message.role == AiRole::Assistant;
         let mut content = Vec::new();
         let flush = |content: &mut Vec<Value>, items: &mut Vec<Value>| {
             if !content.is_empty() {
@@ -2768,6 +2760,9 @@ mod tests {
                             text: None,
                             provider_metadata: None,
                         },
+                        AiContent::Text {
+                            text: "checking weather".to_string(),
+                        },
                         AiContent::ProviderState {
                             provider: "openai".to_string(),
                             value: json!({"type":"reasoning","id":"rs_1","encrypted_content":"opaque"}),
@@ -2843,6 +2838,15 @@ mod tests {
         assert_eq!(body["stream"], true);
         assert!(body.get("execution_mode").is_none());
         let inputs = body["input"].as_array().unwrap();
+        assert!(inputs.iter().any(|item| {
+            item["type"] == "message"
+                && item["role"] == "assistant"
+                && item["content"].as_array().is_some_and(|content| {
+                    content
+                        .iter()
+                        .any(|part| part["type"] == "output_text" && part["text"] == "checking weather")
+                })
+        }));
         assert!(inputs.iter().any(|item| item["type"] == "reasoning"));
         assert!(inputs.iter().any(|item| item["type"] == "function_call"));
         assert!(inputs.iter().any(|item| {

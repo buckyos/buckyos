@@ -228,7 +228,7 @@ async fn drain_box(cfg: &PumpConfig, box_kind: MailboxKind) {
                     );
                     break;
                 }
-                if !deliver_record(cfg, record).await {
+                if !deliver_record(cfg, &box_kind, record).await {
                     // Either the receiver is closed (shutdown) or the
                     // record had nothing actionable — either way, stop
                     // draining; the outer loop handles shutdown.
@@ -263,7 +263,11 @@ async fn drain_box(cfg: &PumpConfig, box_kind: MailboxKind) {
 /// dispatcher does that after the session has durably parked the input,
 /// so a crash here leaves the record in `Reading` and msg-center's lease
 /// recovery will replay it on next boot.
-async fn deliver_record(cfg: &PumpConfig, record: MailboxRecordWithObject) -> bool {
+async fn deliver_record(
+    cfg: &PumpConfig,
+    box_kind: &MailboxKind,
+    record: MailboxRecordWithObject,
+) -> bool {
     let record_id = record.record.record_id.clone();
     let Some(msg) = record.msg.as_ref() else {
         debug!(
@@ -330,6 +334,7 @@ async fn deliver_record(cfg: &PumpConfig, record: MailboxRecordWithObject) -> bo
     let inbound = lower_inbound_message(
         msg, record_id, from, from_did, from_name, tunnel_did, session_id, group_id,
     );
+    log_inbound_delivery(cfg, box_kind, &inbound);
     if let Err(err) = cfg.inbox_tx.send(inbound).await {
         warn!(
             "opendan.msg_pump[{}]: inbox send failed (receiver closed): {err}",
@@ -338,6 +343,59 @@ async fn deliver_record(cfg: &PumpConfig, record: MailboxRecordWithObject) -> bo
         return false;
     }
     true
+}
+
+fn log_inbound_delivery(cfg: &PumpConfig, box_kind: &MailboxKind, inbound: &Inbound) {
+    match inbound {
+        Inbound::Msg {
+            record_id,
+            from,
+            from_did,
+            tunnel_did,
+            session_id,
+            text,
+            ..
+        } => info!(
+            "opendan.msg_pump[{}]: deliver inbound msg box={:?} record_id={} from={} from_did={} tunnel_did={} session_id={} text_len={} preview=`{}`",
+            cfg.agent_name,
+            box_kind,
+            record_id,
+            from,
+            from_did.as_deref().unwrap_or("-"),
+            tunnel_did.as_deref().unwrap_or("-"),
+            session_id.as_deref().unwrap_or("-"),
+            text.chars().count(),
+            inbound_text_preview(text)
+        ),
+        Inbound::Command {
+            record_id,
+            from,
+            from_did,
+            tunnel_did,
+            command,
+            ..
+        } => info!(
+            "opendan.msg_pump[{}]: deliver inbound command box={:?} record_id={} from={} from_did={} tunnel_did={} command=/{}",
+            cfg.agent_name,
+            box_kind,
+            record_id,
+            from,
+            from_did.as_deref().unwrap_or("-"),
+            tunnel_did.as_deref().unwrap_or("-"),
+            command
+        ),
+        Inbound::Event {
+            event_id,
+            target_session_id,
+            ..
+        } => info!(
+            "opendan.msg_pump[{}]: deliver inbound event box={:?} event_id={} target_session_id={}",
+            cfg.agent_name,
+            box_kind,
+            event_id,
+            target_session_id.as_deref().unwrap_or("-")
+        ),
+    }
 }
 
 fn lower_inbound_message(
@@ -371,6 +429,19 @@ fn lower_inbound_message(
             ai_message,
         },
     }
+}
+
+fn inbound_text_preview(text: &str) -> String {
+    const MAX_CHARS: usize = 100;
+    let mut out = String::new();
+    for (i, ch) in text.split_whitespace().collect::<Vec<_>>().join(" ").chars().enumerate() {
+        if i >= MAX_CHARS {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn append_all_inbox_boxes(target: &mut Vec<MailboxKind>) {
