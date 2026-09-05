@@ -2,6 +2,7 @@ import { buckyos, getActiveSessionToken } from 'buckyos'
 import { isMockRuntime } from '../runtime'
 import { MockDataStore } from '../app/ai-center/mock/store'
 import { normalizeFinanceTotals } from '../app/ai-center/datamodel/transforms'
+import { toAiccRpcCallOptions } from './aicc_rpc_options'
 import type {
   AIStatus,
   ApiNamespace,
@@ -147,7 +148,11 @@ type Listener = () => void
 type RawRecord = Record<string, unknown>
 
 interface AiccRpcClient {
-  call(method: string, params: Record<string, unknown>): Promise<unknown>
+  call(
+    method: string,
+    params: Record<string, unknown>,
+    options?: { sessionToken?: string | null },
+  ): Promise<unknown>
 }
 
 interface AccountInfo {
@@ -902,7 +907,8 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     params: Record<string, unknown>,
     options: { requireSession?: boolean } = {},
   ): Promise<T> {
-    const result = await this.getClient().call(method, await prepareSessionToken(params, options.requireSession === true))
+    const sessionToken = await prepareSessionToken(options.requireSession === true)
+    const result = await this.getClient().call(method, params, toAiccRpcCallOptions(sessionToken))
     if (!isRecord(result)) {
       throw new Error(`Invalid ${method} response`)
     }
@@ -969,10 +975,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
 
 }
 
-async function prepareSessionToken(params: Record<string, unknown>, requireSession: boolean): Promise<Record<string, unknown>> {
-  if (typeof params.session_token === 'string' && params.session_token.trim()) {
-    return params
-  }
+async function prepareSessionToken(requireSession: boolean): Promise<string | null> {
   const accountInfo = await buckyos.getAccountInfo() as AccountInfo | null
   let sessionToken = typeof accountInfo?.session_token === 'string'
     ? accountInfo.session_token.trim()
@@ -984,7 +987,7 @@ async function prepareSessionToken(params: Record<string, unknown>, requireSessi
   if (!sessionToken && requireSession) {
     throw new Error('Current login session expired. Please sign in again.')
   }
-  return sessionToken ? { ...params, session_token: sessionToken } : params
+  return sessionToken || null
 }
 
 function withProviderInstanceName(draft: WizardDraft, snapshot: StoreSnapshot): WizardDraft {
