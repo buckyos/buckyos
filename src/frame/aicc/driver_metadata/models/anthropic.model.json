@@ -115,11 +115,11 @@
   "patterns": [],
   "defaults": { "api_types": [], "capabilities": {} },
   "variants": [
-    { "name": "effort-low", "match": "claude-*-5*" },
-    { "name": "effort-medium", "match": "claude-*-5*" },
-    { "name": "effort-high", "match": "claude-*-5*" },
-    { "name": "effort-xhigh", "match": "claude-*-5*" },
-    { "name": "effort-max", "match": "claude-*-5*" }
+    { "name": "effort-low", "match": { "origin_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"] } },
+    { "name": "effort-medium", "match": { "origin_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"] } },
+    { "name": "effort-high", "match": { "origin_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"] } },
+    { "name": "effort-xhigh", "match": { "origin_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"] } },
+    { "name": "effort-max", "match": { "origin_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"] } }
   ],
   "version_rules": [
     { "id": "claude-fable", "family": "claude", "tier": "fable", "match": "claude-fable-*", "tier_tokens": ["fable"], "version_rank": { "prefix": "claude-fable" }, "stability": { "unstable_tokens": ["preview", "beta"], "current_requires_stable": true }, "current_mount": "llm.fable", "version_mount": "llm.claude.{model}" },

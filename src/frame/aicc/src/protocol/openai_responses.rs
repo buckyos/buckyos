@@ -1,5 +1,5 @@
 use super::{
-    sse_frame_stream, AdapterDescriptor, AdapterStatus, CodecCall, CodecRegistration,
+    sse_frame_stream, AdapterDescriptor, AdapterStatus, CodecCall, CodecContext, CodecRegistration,
     CredentialKind, ExecutionMode, HttpBody, HttpRequest, HttpResponse, MaterializedResource,
     MultipartBody, MultipartPart, NativeTaskCodec, NativeTaskHandle, NativeTaskInput,
     NativeTaskOperation, NativeTaskOutput, NativeTaskState, OperationBinding, OperationCodec,
@@ -830,7 +830,7 @@ fn apply_responses_parameters(
             "include" => value
                 .as_array()
                 .is_some_and(|items| items.iter().all(Value::is_string)),
-            "metadata" | "reasoning" => value.is_object(),
+            "metadata" | "reasoning" | "thinking" => value.is_object(),
             "service_tier" | "truncation" => value.is_string(),
             "tool_choice" => value.is_string() || value.is_object(),
             _ => false,
@@ -1451,26 +1451,14 @@ fn json_request(
 
 fn finish_request(
     request: &mut HttpRequest,
-    context: &super::CodecContext,
+    context: &CodecContext,
 ) -> ProtocolResultValue<HttpRequest> {
-    context.validate()?;
-    let credential = context.credential.as_ref().ok_or_else(|| {
-        ProtocolError::new(
-            ProtocolErrorKind::Authentication,
-            "OpenAI operation requires a resolved Bearer credential",
-        )
-    })?;
-    if credential.audit().kind != CredentialKind::Bearer {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::Authentication,
-            "OpenAI operation requires a Bearer credential",
-        ));
-    }
-    credential.apply(&mut request.headers)?;
-    request.timeout = Some(context.limits.request_timeout);
-    request.max_request_bytes = Some(context.limits.max_request_bytes);
-    request.max_response_bytes = Some(context.limits.max_response_bytes);
-    Ok(request.clone())
+    context.finalize_request(
+        request,
+        CredentialKind::Bearer,
+        "OpenAI operation requires a resolved Bearer credential",
+        "OpenAI operation requires a Bearer credential",
+    )
 }
 
 fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
@@ -1500,19 +1488,26 @@ fn openai_http_error(
         .as_ref()
         .and_then(|value| value.pointer("/error/code"))
         .or_else(|| value.as_ref().and_then(|value| value.get("code")))
-        .and_then(Value::as_str);
+        .and_then(|value| match value {
+            Value::String(value) => Some(value.clone()),
+            Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        });
     let message = value
         .as_ref()
         .and_then(|value| value.pointer("/error/message"))
         .or_else(|| value.as_ref().and_then(|value| value.get("message")))
         .and_then(Value::as_str)
         .unwrap_or("OpenAI request failed");
-    let label = provider_code.or(provider_type).unwrap_or("http_error");
+    let label = provider_code
+        .as_deref()
+        .or(provider_type)
+        .unwrap_or("http_error");
     ProtocolError::new(
         http_error_kind(status),
         format!("OpenAI {label}: {message}"),
     )
-    .with_provider_code(provider_code.map(str::to_owned))
+    .with_provider_code(provider_code)
     .with_request_id(Some(request_id.to_string()))
     .with_retry_after(retry_after)
 }
@@ -2680,6 +2675,17 @@ mod tests {
             .is_ok());
     }
 
+    #[test]
+    fn responses_accepts_typed_provider_thinking_extension() {
+        let mut body = Map::new();
+        apply_responses_parameters(
+            &mut body,
+            &BTreeMap::from([("thinking".to_string(), json!({"type": "disabled"}))]),
+        )
+        .unwrap();
+        assert_eq!(body["thinking"]["type"], "disabled");
+    }
+
     #[tokio::test]
     async fn gpt_56_computer_use_maps_observation_and_action() {
         let screenshot = PublicResourceRef::base64("image/png".to_owned(), "cG5n".to_owned());
@@ -3115,6 +3121,15 @@ mod tests {
         assert_eq!(error.kind, ProtocolErrorKind::InvalidRequest);
         assert_eq!(error.request_id.as_deref(), Some("request-context"));
         assert!(error.message.contains("context_length_exceeded"));
+
+        let numeric_error = openai_http_error(
+            StatusCode::BAD_GATEWAY,
+            br#"{"error":{"code":502,"message":"Provider error"}}"#,
+            "request-provider",
+            None,
+        );
+        assert_eq!(numeric_error.provider_code.as_deref(), Some("502"));
+        assert!(numeric_error.message.contains("502"));
     }
 
     #[tokio::test]

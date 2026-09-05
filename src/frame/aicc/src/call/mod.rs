@@ -38,6 +38,8 @@ pub(crate) struct ProviderCallTarget {
     pub provider_rules_id: Option<String>,
     pub base_url: String,
     pub credential: ResolvedCredential,
+    pub credential_reference: String,
+    pub credential_header_name: Option<String>,
     pub limits: CodecLimits,
     pub pricing: Option<ResolvedPricing>,
     pub match_dimensions: MatchContext,
@@ -91,6 +93,8 @@ pub(crate) struct ResolvedProviderCall {
     pub input: CodecInput,
     pub context: CodecContext,
     pub credential: CredentialAudit,
+    pub credential_reference: String,
+    pub credential_header_name: Option<String>,
     pub resource_requirements: Vec<ResourceRequirement>,
     pub resource_access_context: Option<ResourceAccessContext>,
     pub pricing: ResolvedPricing,
@@ -491,6 +495,8 @@ impl<'a> CallResolver<'a> {
             decision.selected.estimated_cost_usd,
         );
         let credential = target.credential.audit().clone();
+        let credential_reference = target.credential_reference;
+        let credential_header_name = target.credential_header_name;
         let context = CodecContext {
             base_url: target.base_url,
             credential: Some(target.credential),
@@ -516,6 +522,8 @@ impl<'a> CallResolver<'a> {
             input,
             context,
             credential,
+            credential_reference,
+            credential_header_name,
             resource_requirements: resources,
             resource_access_context: None,
             pricing,
@@ -687,36 +695,16 @@ fn validate_route(
 }
 
 fn call_api_type(call: &AiccCall) -> Result<ApiType, CallLoweringError> {
-    match call {
-        AiccCall::ChatCompletionsCreate(_) => Ok(ApiType::Llm),
-        AiccCall::ImagesGenerate(_) => Ok(ApiType::ImageTextToImage),
-        AiccCall::EmbeddingText(_) => Ok(ApiType::EmbeddingText),
-        AiccCall::EmbeddingMultimodal(_) => Ok(ApiType::EmbeddingMultimodal),
-        AiccCall::Rerank(_) => Ok(ApiType::Rerank),
-        AiccCall::ImageToImage(_) => Ok(ApiType::ImageImageToImage),
-        AiccCall::ImageInpaint(_) => Ok(ApiType::ImageInpaint),
-        AiccCall::ImageUpscale(_) => Ok(ApiType::ImageUpscale),
-        AiccCall::ImageBackgroundRemove(_) => Ok(ApiType::ImageBackgroundRemove),
-        AiccCall::VisionOcr(_) => Ok(ApiType::VisionOcr),
-        AiccCall::VisionCaption(_) => Ok(ApiType::VisionCaption),
-        AiccCall::VisionDetect(_) => Ok(ApiType::VisionDetect),
-        AiccCall::VisionSegment(_) => Ok(ApiType::VisionSegment),
-        AiccCall::AudioTextToSpeech(_) => Ok(ApiType::AudioTextToSpeech),
-        AiccCall::AudioSpeechRecognition(_) => Ok(ApiType::AudioSpeechRecognition),
-        AiccCall::AudioMusic(_) => Ok(ApiType::AudioMusic),
-        AiccCall::AudioEnhance(_) => Ok(ApiType::AudioEnhance),
-        AiccCall::VideoTextToVideo(_) => Ok(ApiType::VideoTextToVideo),
-        AiccCall::VideoImageToVideo(_) => Ok(ApiType::VideoImageToVideo),
-        AiccCall::VideoToVideo(_) => Ok(ApiType::VideoToVideo),
-        AiccCall::VideoExtend(_) => Ok(ApiType::VideoExtend),
-        AiccCall::VideoUpscale(_) => Ok(ApiType::VideoUpscale),
-        AiccCall::ComputerUse(_) => Ok(ApiType::AgentComputerUse),
-        AiccCall::RouteResolve(_) | AiccCall::HelperLlmChat(_) | AiccCall::HelperTextToImage(_) => {
-            Err(CallLoweringError::UnsupportedCanonicalCall(
-                call.method().into(),
-            ))
-        }
+    if matches!(
+        call,
+        AiccCall::RouteResolve(_) | AiccCall::HelperLlmChat(_) | AiccCall::HelperTextToImage(_)
+    ) {
+        return Err(CallLoweringError::UnsupportedCanonicalCall(
+            call.method().into(),
+        ));
     }
+    call.api_type()
+        .ok_or_else(|| CallLoweringError::UnsupportedCanonicalCall(call.method().into()))
 }
 
 fn execution_mode_name(mode: ExecutionMode) -> &'static str {
@@ -725,43 +713,6 @@ fn execution_mode_name(mode: ExecutionMode) -> &'static str {
         ExecutionMode::Stream => "stream",
         ExecutionMode::NativeTask => "native_task",
     }
-}
-
-macro_rules! call_request {
-    ($call:expr, $binding:ident => $value:expr) => {
-        match $call {
-            AiccCall::ChatCompletionsCreate($binding) => $value,
-            AiccCall::ImagesGenerate($binding) => $value,
-            AiccCall::EmbeddingText($binding) => $value,
-            AiccCall::EmbeddingMultimodal($binding) => $value,
-            AiccCall::Rerank($binding) => $value,
-            AiccCall::ImageToImage($binding) => $value,
-            AiccCall::ImageInpaint($binding) => $value,
-            AiccCall::ImageUpscale($binding) => $value,
-            AiccCall::ImageBackgroundRemove($binding) => $value,
-            AiccCall::VisionOcr($binding) => $value,
-            AiccCall::VisionCaption($binding) => $value,
-            AiccCall::VisionDetect($binding) => $value,
-            AiccCall::VisionSegment($binding) => $value,
-            AiccCall::AudioTextToSpeech($binding) => $value,
-            AiccCall::AudioSpeechRecognition($binding) => $value,
-            AiccCall::AudioMusic($binding) => $value,
-            AiccCall::AudioEnhance($binding) => $value,
-            AiccCall::VideoTextToVideo($binding) => $value,
-            AiccCall::VideoImageToVideo($binding) => $value,
-            AiccCall::VideoToVideo($binding) => $value,
-            AiccCall::VideoExtend($binding) => $value,
-            AiccCall::VideoUpscale($binding) => $value,
-            AiccCall::ComputerUse($binding) => $value,
-            AiccCall::RouteResolve(_)
-            | AiccCall::HelperLlmChat(_)
-            | AiccCall::HelperTextToImage(_) => {
-                return Err(CallLoweringError::UnsupportedCanonicalCall(
-                    $call.method().into(),
-                ));
-            }
-        }
-    };
 }
 
 fn call_execution_mode(call: &AiccCall) -> Result<ExecutionMode, CallLoweringError> {
@@ -787,12 +738,21 @@ fn internal_execution_mode(
 }
 
 fn serialize_call(call: &AiccCall) -> Result<Value, CallLoweringError> {
-    call_request!(call, request => serde_json::to_value(request))
+    if matches!(
+        call,
+        AiccCall::RouteResolve(_) | AiccCall::HelperLlmChat(_) | AiccCall::HelperTextToImage(_)
+    ) {
+        return Err(CallLoweringError::UnsupportedCanonicalCall(
+            call.method().into(),
+        ));
+    }
+    call.to_params()
         .map_err(|error| CallLoweringError::InvalidCanonicalRequest(error.to_string()))
 }
 
 fn call_exact_model(call: &AiccCall) -> Result<&str, CallLoweringError> {
-    Ok(call_request!(call, request => request.exact_model.as_str()))
+    call.exact_model()
+        .ok_or_else(|| CallLoweringError::UnsupportedCanonicalCall(call.method().into()))
 }
 
 fn canonical_option_keys(call: &AiccCall) -> Result<&'static [&'static str], CallLoweringError> {
@@ -1408,6 +1368,8 @@ mod tests {
             provider_rules_id: Some("openai".into()),
             base_url: "https://api.openai.test/v1".into(),
             credential: ResolvedCredential::bearer("secret://openai/main", secret).unwrap(),
+            credential_reference: "secret://openai/main".into(),
+            credential_header_name: None,
             limits: CodecLimits {
                 request_timeout: Duration::from_secs(30),
                 max_request_bytes: 1024 * 1024,
@@ -1446,6 +1408,8 @@ mod tests {
         assert_eq!(lowered.operation, "responses.create");
         assert_eq!(lowered.execution_mode, ExecutionMode::Immediate);
         assert_eq!(lowered.variant.as_deref(), Some("reasoning-high"));
+        assert_eq!(lowered.credential_reference, "secret://openai/main");
+        assert_eq!(lowered.credential_header_name, None);
         assert_eq!(
             lowered.input.resolved_parameters,
             BTreeMap::from([

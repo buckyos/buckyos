@@ -673,7 +673,7 @@ function validateGeminiInteractionInput(input: unknown[], errors: string[]): voi
 function validateGeminiInteractionConfig(body: Record<string, unknown>, errors: string[]): void {
   const generation = recordValue(body.generation_config);
   if (body.generation_config !== undefined && !generation) errors.push("body field generation_config must be an object");
-  const generationKeys = new Set(["image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences", "thinking_level", "thinking_summaries", "tool_choice", "transcription_config", "video_config"]);
+  const generationKeys = new Set(["image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences", "thinking_budget", "thinking_level", "thinking_summaries", "tool_choice", "transcription_config", "video_config"]);
   for (const key of Object.keys(generation ?? {})) {
     if (!generationKeys.has(key)) errors.push(`body field generation_config.${key} is not defined by Gemini v1beta`);
   }

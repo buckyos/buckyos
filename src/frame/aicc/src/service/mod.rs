@@ -682,6 +682,8 @@ impl RuntimeInferencePort {
                     provider_rules_id,
                     base_url: provider.config.base_url.clone(),
                     credential,
+                    credential_reference: provider.config.credential.reference.clone(),
+                    credential_header_name: provider.profile.credential.header_name.clone(),
                     limits: CodecLimits {
                         request_timeout: transport.request_timeout,
                         max_request_bytes: transport.max_request_bytes,
@@ -1088,7 +1090,9 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
                 trace_id: call.trace_id().map(str::to_owned),
                 request_id: None,
                 model,
-                api_type: api_type_for_method(call.method())?,
+                api_type: call.api_type().ok_or_else(|| {
+                    inference_error(AiccErrorCode::InvalidMethod, "unsupported inference method")
+                })?,
                 requirements: Default::default(),
                 disable: Default::default(),
                 policy: None,
@@ -1102,41 +1106,6 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
             })
         }
     }
-}
-
-fn api_type_for_method(method: &str) -> Result<buckyos_api::ApiType, RPCErrors> {
-    use buckyos_api::ai_methods;
-    Ok(match method {
-        ai_methods::CHAT_COMPLETIONS_CREATE => buckyos_api::ApiType::Llm,
-        ai_methods::IMAGES_GENERATE => buckyos_api::ApiType::ImageTextToImage,
-        ai_methods::EMBEDDING_TEXT => buckyos_api::ApiType::EmbeddingText,
-        ai_methods::EMBEDDING_MULTIMODAL => buckyos_api::ApiType::EmbeddingMultimodal,
-        ai_methods::RERANK => buckyos_api::ApiType::Rerank,
-        ai_methods::IMAGE_IMG2IMG => buckyos_api::ApiType::ImageImageToImage,
-        ai_methods::IMAGE_INPAINT => buckyos_api::ApiType::ImageInpaint,
-        ai_methods::IMAGE_UPSCALE => buckyos_api::ApiType::ImageUpscale,
-        ai_methods::IMAGE_BG_REMOVE => buckyos_api::ApiType::ImageBackgroundRemove,
-        ai_methods::VISION_OCR => buckyos_api::ApiType::VisionOcr,
-        ai_methods::VISION_CAPTION => buckyos_api::ApiType::VisionCaption,
-        ai_methods::VISION_DETECT => buckyos_api::ApiType::VisionDetect,
-        ai_methods::VISION_SEGMENT => buckyos_api::ApiType::VisionSegment,
-        ai_methods::AUDIO_TTS => buckyos_api::ApiType::AudioTextToSpeech,
-        ai_methods::AUDIO_ASR => buckyos_api::ApiType::AudioSpeechRecognition,
-        ai_methods::AUDIO_MUSIC => buckyos_api::ApiType::AudioMusic,
-        ai_methods::AUDIO_ENHANCE => buckyos_api::ApiType::AudioEnhance,
-        ai_methods::VIDEO_TXT2VIDEO => buckyos_api::ApiType::VideoTextToVideo,
-        ai_methods::VIDEO_IMG2VIDEO => buckyos_api::ApiType::VideoImageToVideo,
-        ai_methods::VIDEO_VIDEO2VIDEO => buckyos_api::ApiType::VideoToVideo,
-        ai_methods::VIDEO_EXTEND => buckyos_api::ApiType::VideoExtend,
-        ai_methods::VIDEO_UPSCALE => buckyos_api::ApiType::VideoUpscale,
-        ai_methods::AGENT_COMPUTER_USE => buckyos_api::ApiType::AgentComputerUse,
-        _ => {
-            return Err(inference_error(
-                AiccErrorCode::InvalidMethod,
-                "unsupported inference method",
-            ));
-        }
-    })
 }
 
 fn exact_call_for_route(call: AiccCall, exact_model: &str) -> Result<AiccCall, RPCErrors> {
@@ -1182,45 +1151,9 @@ fn call_with_exact_model(call: &AiccCall, exact_model: &str) -> Result<AiccCall,
     AiccCall::from_method_and_params(call.method(), params)
 }
 
-macro_rules! serialize_call_variants {
-    ($call:expr, $( $variant:ident ),+ $(,)?) => {
-        match $call {
-            $(AiccCall::$variant(request) => serde_json::to_value(request),)+
-        }
-    };
-}
-
 fn call_params(call: &AiccCall) -> Result<Value, RPCErrors> {
-    serialize_call_variants!(
-        call,
-        RouteResolve,
-        ChatCompletionsCreate,
-        ImagesGenerate,
-        HelperLlmChat,
-        HelperTextToImage,
-        EmbeddingText,
-        EmbeddingMultimodal,
-        Rerank,
-        ImageToImage,
-        ImageInpaint,
-        ImageUpscale,
-        ImageBackgroundRemove,
-        VisionOcr,
-        VisionCaption,
-        VisionDetect,
-        VisionSegment,
-        AudioTextToSpeech,
-        AudioSpeechRecognition,
-        AudioMusic,
-        AudioEnhance,
-        VideoTextToVideo,
-        VideoImageToVideo,
-        VideoToVideo,
-        VideoExtend,
-        VideoUpscale,
-        ComputerUse,
-    )
-    .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))
+    call.to_params()
+        .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))
 }
 
 fn route_response(decision: &RouteDecision) -> RouteResolveResponse {
@@ -3263,26 +3196,10 @@ impl RuntimeProviderExecutionPort {
 impl ProviderExecutionPort for RuntimeProviderExecutionPort {
     async fn start(
         &self,
-        runtime_generation: u64,
+        _runtime_generation: u64,
         call: &crate::call::ResolvedProviderCall,
         cancellation: crate::protocol::Cancellation,
     ) -> Result<ProviderExecution, ProviderStartFailure> {
-        let snapshot = self.runtime.capture().await;
-        if snapshot.generation != runtime_generation {
-            return Err(ProviderStartFailure::before_accept(
-                ProtocolError::invalid_configuration("captured runtime generation was retired"),
-                true,
-            ));
-        }
-        let provider = snapshot
-            .providers
-            .get(&call.provider_instance_name)
-            .ok_or_else(|| {
-                ProviderStartFailure::before_accept(
-                    ProtocolError::invalid_configuration("selected Provider is not published"),
-                    false,
-                )
-            })?;
         let descriptor = self
             .codecs
             .operation_descriptor(&call.protocol_adapter_id, &call.operation, call.api_type)
@@ -3408,12 +3325,10 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                         .credential
                         .as_ref()
                         .map(|credential| ResumeCredential {
-                            reference: provider.config.credential.reference.clone(),
+                            reference: call.credential_reference.clone(),
                             kind: resume_credential_kind(credential.audit().kind),
-                            header_name: provider.profile.credential.header_name.clone(),
-                            fingerprint: credential_fingerprint(
-                                &provider.config.credential.reference,
-                            ),
+                            header_name: call.credential_header_name.clone(),
+                            fingerprint: credential_fingerprint(&call.credential_reference),
                         });
                 Ok(ProviderExecution::NativeTask {
                     handle,
@@ -4944,7 +4859,8 @@ fn unique_values<T: PartialEq>(values: impl IntoIterator<Item = T>) -> Vec<T> {
     unique
 }
 
-pub(crate) fn disabled_metadata_view(settings_revision: u64) -> DriverMetadataUpdateSetResponse {
+#[cfg(test)]
+fn disabled_metadata_view(settings_revision: u64) -> DriverMetadataUpdateSetResponse {
     DriverMetadataUpdateSetResponse {
         ok: true,
         settings_revision,

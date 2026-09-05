@@ -15,9 +15,10 @@ use crate::catalog::CatalogKind;
 use crate::catalog::{CatalogSnapshot, CurrentCatalogFile};
 use crate::matching::{CompiledMatchRule, MatchContext, MatchRule, RELEASE_TRACK_MATCH_SCHEMA};
 use crate::settings::{
-    CloudMetadataSource, MetadataFile, MetadataOverrideLoader, MetadataSource,
-    MetadataSourceManager, SettingsError, StaticMetadataOverrideLoader,
+    CloudMetadataSource, MetadataFile, MetadataSource, MetadataSourceManager, SettingsError,
 };
+#[cfg(test)]
+use crate::settings::{MetadataOverrideLoader, StaticMetadataOverrideLoader};
 
 const INDEX_VERSION: u32 = 2;
 const PROTOCOL_VERSION: u32 = 2;
@@ -302,6 +303,7 @@ pub(crate) struct CloudUpdateManager {
 }
 
 impl CloudUpdateManager {
+    #[cfg(test)]
     pub(crate) fn new(
         cache_root: impl Into<PathBuf>,
         fetcher: Arc<dyn CloudObjectFetcher>,
@@ -318,7 +320,8 @@ impl CloudUpdateManager {
         Self::new_with_source_manager(cache_root, fetcher, profile, config, sources)
     }
 
-    pub(crate) fn new_with_override_loader(
+    #[cfg(test)]
+    fn new_with_override_loader(
         cache_root: impl Into<PathBuf>,
         fetcher: Arc<dyn CloudObjectFetcher>,
         profile: CloudUpdateClientProfile,

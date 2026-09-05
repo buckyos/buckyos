@@ -90,23 +90,7 @@ fn builtin_profile_with_credential(
 fn credential_from_catalog(
     credential: &crate::catalog::ProviderCredentialDescriptor,
 ) -> crate::provider::CredentialDescriptor {
-    crate::provider::CredentialDescriptor {
-        kind: match credential.kind {
-            crate::catalog::ProviderCredentialKind::Bearer => {
-                crate::protocol::CredentialKind::Bearer
-            }
-            crate::catalog::ProviderCredentialKind::NamedHeader => {
-                crate::protocol::CredentialKind::NamedHeader
-            }
-            crate::catalog::ProviderCredentialKind::FalKey => {
-                crate::protocol::CredentialKind::FalKey
-            }
-            crate::catalog::ProviderCredentialKind::GlmJwt => {
-                crate::protocol::CredentialKind::GlmJwt
-            }
-        },
-        header_name: credential.header_name.clone(),
-    }
+    registry::credential_from_catalog(credential)
 }
 
 #[cfg(test)]
@@ -125,21 +109,7 @@ fn builtin_connection_contract(profile_id: &str) -> crate::provider::ProviderCon
 fn field_from_catalog(
     field: &crate::catalog::ProviderFieldSchema,
 ) -> crate::provider::ProviderFieldSchema {
-    crate::provider::ProviderFieldSchema {
-        mode: match field.mode {
-            crate::catalog::ProviderFieldMode::Unsupported => {
-                crate::provider::ProviderFieldMode::Unsupported
-            }
-            crate::catalog::ProviderFieldMode::Optional => {
-                crate::provider::ProviderFieldMode::Optional
-            }
-            crate::catalog::ProviderFieldMode::Required => {
-                crate::provider::ProviderFieldMode::Required
-            }
-        },
-        default_value: field.default_value.clone(),
-        allowed_values: field.allowed_values.iter().cloned().collect(),
-    }
+    registry::field_from_catalog(field)
 }
 
 #[cfg(test)]

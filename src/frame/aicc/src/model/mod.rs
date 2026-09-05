@@ -800,6 +800,9 @@ impl ModelRegistry {
                 node.items.extend(effective_items(items, source));
             } else {
                 node.items = effective_items(items, source);
+                if overlay.fallback.is_none() {
+                    node.fallback = disabled_fallback();
+                }
             }
         }
         if let Some(patches) = &overlay.item_overrides {
@@ -929,7 +932,6 @@ impl ModelRegistry {
                     api_type,
                     requirements,
                     next_path,
-                    node,
                     candidates,
                     admissions,
                 );
@@ -961,7 +963,6 @@ impl ModelRegistry {
         api_type: ApiType,
         requirements: &[ModelRequirement],
         path: CandidatePath,
-        node: &EffectiveLogicalNode,
         candidates: &mut BTreeMap<String, RegistryCandidate>,
         admissions: &mut Vec<AdmissionRecord>,
     ) {
@@ -986,9 +987,14 @@ impl ModelRegistry {
         if !missing.is_empty() {
             return;
         }
-        let exact_model_weight = node
-            .exact_model_weights
-            .get(exact_model)
+        let exact_model_weight = path
+            .logical_paths
+            .iter()
+            .find_map(|path| {
+                self.logical_nodes
+                    .get(path)
+                    .and_then(|node| node.exact_model_weights.get(exact_model))
+            })
             .or_else(|| self.global_exact_model_weights.get(exact_model))
             .copied()
             .unwrap_or(1.0);
@@ -1932,6 +1938,78 @@ mod tests {
         assert_eq!(result.candidates[0].paths.len(), 2);
         assert_eq!(result.candidates[0].paths[0].priority, vec![2.0, 1.0]);
         assert_eq!(result.candidates[0].paths[1].priority, vec![1.0, 1.0]);
+    }
+
+    #[test]
+    fn parent_exact_model_weight_filters_candidates_reached_through_links() {
+        let overlay = AiccRouteOverlay {
+            logical_tree: BTreeMap::from([
+                (
+                    "llm.plan".to_owned(),
+                    AiccLogicalNodeOverlay {
+                        items: Some(LogicalItems::from([(
+                            "family".to_owned(),
+                            ModelItem::new("llm.family", 1.0),
+                        )])),
+                        exact_model_weights: BTreeMap::from([("gpt@primary".to_owned(), 0.0)]),
+                        ..AiccLogicalNodeOverlay::default()
+                    },
+                ),
+                (
+                    "llm.family".to_owned(),
+                    item_node(&[("model", "gpt@primary", 1.0)]),
+                ),
+            ]),
+            ..AiccRouteOverlay::default()
+        };
+        let registry = ModelRegistry::build(
+            &catalog(),
+            &[inventory("primary", vec![inventory_model("gpt", true)])],
+            vec![definition("llm.plan", false, MountMode::Manual)],
+            RegistryLayers {
+                session: Some(&overlay),
+                ..RegistryLayers::default()
+            },
+        )
+        .unwrap();
+
+        assert!(registry
+            .resolve_candidates("llm.plan", ApiType::Llm)
+            .unwrap()
+            .candidates
+            .is_empty());
+    }
+
+    #[test]
+    fn direct_items_replacement_disables_fallback_by_default() {
+        let factory = layer("llm", &[("default", "gpt@primary", 1.0)]);
+        let replacement = AiccRouteOverlay {
+            logical_tree: BTreeMap::from([(
+                "llm.manual".to_owned(),
+                AiccLogicalNodeOverlay {
+                    items: Some(LogicalItems::new()),
+                    ..AiccLogicalNodeOverlay::default()
+                },
+            )]),
+            ..AiccRouteOverlay::default()
+        };
+        let registry = ModelRegistry::build(
+            &catalog(),
+            &[inventory("primary", vec![inventory_model("gpt", true)])],
+            Vec::new(),
+            RegistryLayers {
+                factory: Some(&factory),
+                session: Some(&replacement),
+                ..RegistryLayers::default()
+            },
+        )
+        .unwrap();
+
+        let result = registry
+            .resolve_candidates("llm.manual", ApiType::Llm)
+            .unwrap();
+        assert!(result.candidates.is_empty());
+        assert!(result.fallback_chain.is_empty());
     }
 
     #[test]

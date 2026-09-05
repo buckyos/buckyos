@@ -1,6 +1,7 @@
 use super::{
-    HttpRequest, HttpResponse, NativeTaskHandle, NativeTaskState, ProtocolError, ProtocolExecution,
-    ProtocolOutput, ProtocolResultValue, ProtocolStream, ResolvedCredential, StreamingHttpResponse,
+    CredentialKind, HttpRequest, HttpResponse, NativeTaskHandle, NativeTaskState, ProtocolError,
+    ProtocolErrorKind, ProtocolExecution, ProtocolOutput, ProtocolResultValue, ProtocolStream,
+    ResolvedCredential, StreamingHttpResponse,
 };
 use async_trait::async_trait;
 use buckyos_api::{AiccCall, ApiType, Capability, ResourceRef};
@@ -304,6 +305,30 @@ impl CodecContext {
             ));
         }
         self.limits.validate()
+    }
+
+    pub(crate) fn finalize_request(
+        &self,
+        request: &mut HttpRequest,
+        expected_kind: CredentialKind,
+        missing_credential: &'static str,
+        wrong_credential: &'static str,
+    ) -> ProtocolResultValue<HttpRequest> {
+        self.validate()?;
+        let credential = self.credential.as_ref().ok_or_else(|| {
+            ProtocolError::new(ProtocolErrorKind::Authentication, missing_credential)
+        })?;
+        if credential.audit().kind != expected_kind {
+            return Err(ProtocolError::new(
+                ProtocolErrorKind::Authentication,
+                wrong_credential,
+            ));
+        }
+        credential.apply(&mut request.headers)?;
+        request.timeout = Some(self.limits.request_timeout);
+        request.max_request_bytes = Some(self.limits.max_request_bytes);
+        request.max_response_bytes = Some(self.limits.max_response_bytes);
+        Ok(request.clone())
     }
 }
 

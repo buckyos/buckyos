@@ -612,24 +612,12 @@ fn finish_request(
     request: &mut HttpRequest,
     context: &CodecContext,
 ) -> ProtocolResultValue<HttpRequest> {
-    context.validate()?;
-    let credential = context.credential.as_ref().ok_or_else(|| {
-        ProtocolError::new(
-            ProtocolErrorKind::Authentication,
-            "fal Queue requires a resolved Key credential",
-        )
-    })?;
-    if credential.audit().kind != CredentialKind::FalKey {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::Authentication,
-            "fal Queue requires an Authorization Key credential",
-        ));
-    }
-    credential.apply(&mut request.headers)?;
-    request.timeout = Some(context.limits.request_timeout);
-    request.max_request_bytes = Some(context.limits.max_request_bytes);
-    request.max_response_bytes = Some(context.limits.max_response_bytes);
-    Ok(request.clone())
+    context.finalize_request(
+        request,
+        CredentialKind::FalKey,
+        "fal Queue requires a resolved Key credential",
+        "fal Queue requires an Authorization Key credential",
+    )
 }
 
 fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {

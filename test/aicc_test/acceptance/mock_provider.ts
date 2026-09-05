@@ -498,6 +498,7 @@ async function providerResponse(
       data: [
         { id: "gpt-4o-mini", object: "model", owned_by: "mock" },
         { id: "gpt-5.6", object: "model", owned_by: "mock" },
+        { id: "gpt-5.3-codex", object: "model", owned_by: "mock" },
         { id: "text-embedding-3-small", object: "model", owned_by: "mock" },
         { id: "gpt-image-2", object: "model", owned_by: "mock" },
         { id: "gpt-transcribe", object: "model", owned_by: "mock" },

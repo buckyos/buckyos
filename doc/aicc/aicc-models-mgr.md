@@ -585,7 +585,7 @@ llm.swift -> llm.haiku / llm.gemini-flash-lite / llm.qwen-flash
 
 因此，一个目录即使没有 driver metadata 显式 `logical_mounts`，只要它有 `LogicalModelDefinition`，且 `mount_mode=auto/hybrid`，满足 `min_line` 的物理模型也可以被挂入。
 
-此外，Model Driver catalog 的 `version_rules[].auto_mounts` 会在 Provider inventory 构建阶段追加到匹配模型的 `logical_mounts`。这用于表达“某个版本/tier 的模型按能力事实默认应进入哪些目录”，例如旧版 OpenAI GPT 规则中的 `llm`、`llm.gpt`、`llm.gpt-standard`、`llm.plan`、`llm.code`。这些挂点仍会经过 api type namespace 和 logical definition 的 `min_line` 过滤，不能把 LLM 模型挂入 image/audio/video 目录，也不能让不满足 tool/json/context 要求的模型进入 `llm.plan` / `llm.code`。
+此外，Model Driver catalog 的 `version_rules[].auto_mounts` 会在 Provider inventory 构建阶段追加到匹配模型的 `logical_mounts`。这用于表达“某个版本/tier 的模型按能力事实默认应进入哪些用途目录”，例如 OpenAI GPT 规则中的 `llm`、`llm.gpt`、`llm.plan`、`llm.code`。`llm.gpt-standard`、`llm.gpt-pro`、`llm.gpt-mini`、`llm.gpt-nano` 这类 current family mount 只由对应 tier 的 `current_mount` 产生，不能通过 `auto_mounts` 交叉挂载。这些挂点仍会经过 api type namespace 和 logical definition 的 `min_line` 过滤，不能把 LLM 模型挂入 image/audio/video 目录，也不能让不满足 tool/json/context 要求的模型进入 `llm.plan` / `llm.code`。
 
 `auto_mounts` 不是路径权重策略；它只让匹配模型进入对应目录的候选集合，默认 item weight 仍是 `1.0`。用途目录里不同 family 的优先级仍由内置 factory logical tree 或 `routing_config` 的 items / item_overrides 决定。
 

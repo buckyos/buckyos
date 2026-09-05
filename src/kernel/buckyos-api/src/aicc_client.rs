@@ -151,6 +151,15 @@ mod canonical_contract_tests {
                 .as_str()
                 .unwrap()
         );
+
+        let route = AiccCall::RouteResolve(RouteResolveRequest::new(ApiType::Llm, "llm.chat"));
+        assert_eq!(route.api_type(), None);
+        let image = AiccCall::ImagesGenerate(TextToImageInvokeRequest::new(
+            "image-model@provider",
+            "draw a fox",
+        ));
+        assert_eq!(image.api_type(), Some(ApiType::ImageTextToImage));
+        assert_eq!(image.to_params().unwrap()["prompt"], "draw a fox");
     }
 
     #[test]
@@ -4333,217 +4342,103 @@ pub struct ProviderUpdateResponse {
     pub provider: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum AiccCall {
-    RouteResolve(RouteResolveRequest),
-    ChatCompletionsCreate(LlmChatInvokeRequest),
-    ImagesGenerate(TextToImageInvokeRequest),
-    HelperLlmChat(LlmChatHelperRequest),
-    HelperTextToImage(TextToImageHelperRequest),
-    EmbeddingText(EmbeddingTextRequest),
-    EmbeddingMultimodal(EmbeddingMultimodalRequest),
-    Rerank(RerankRequest),
-    ImageToImage(ImageToImageRequest),
-    ImageInpaint(ImageInpaintRequest),
-    ImageUpscale(ImageUpscaleRequest),
-    ImageBackgroundRemove(ImageBackgroundRemoveRequest),
-    VisionOcr(VisionOcrRequest),
-    VisionCaption(VisionCaptionRequest),
-    VisionDetect(VisionDetectRequest),
-    VisionSegment(VisionSegmentRequest),
-    AudioTextToSpeech(AudioTextToSpeechRequest),
-    AudioSpeechRecognition(AudioSpeechRecognitionRequest),
-    AudioMusic(AudioMusicRequest),
-    AudioEnhance(AudioEnhanceRequest),
-    VideoTextToVideo(VideoTextToVideoRequest),
-    VideoImageToVideo(VideoImageToVideoRequest),
-    VideoToVideo(VideoToVideoRequest),
-    VideoExtend(VideoExtendRequest),
-    VideoUpscale(VideoUpscaleRequest),
-    ComputerUse(ComputerUseRequest),
+macro_rules! define_aicc_calls {
+    ($( $variant:ident($request:ty) => $method:path, $api_type:expr, $model:ident; )+) => {
+        #[derive(Debug, Clone, PartialEq)]
+        pub enum AiccCall {
+            $( $variant($request), )+
+        }
+
+        impl AiccCall {
+            pub fn method(&self) -> &'static str {
+                match self {
+                    $( Self::$variant(_) => $method, )+
+                }
+            }
+
+            pub fn trace_id(&self) -> Option<&str> {
+                match self {
+                    $( Self::$variant(request) => request.trace_id.as_deref(), )+
+                }
+            }
+
+            pub fn execution_mode(&self) -> AiccExecutionMode {
+                match self {
+                    $( Self::$variant(request) => request.execution_mode, )+
+                }
+            }
+
+            pub fn api_type(&self) -> Option<ApiType> {
+                match self {
+                    $( Self::$variant(_) => $api_type, )+
+                }
+            }
+
+            pub fn exact_model(&self) -> Option<&str> {
+                match self {
+                    $( Self::$variant(request) => aicc_call_exact_model!(request, $model), )+
+                }
+            }
+
+            pub fn to_params(&self) -> std::result::Result<Value, serde_json::Error> {
+                match self {
+                    $( Self::$variant(request) => serde_json::to_value(request), )+
+                }
+            }
+
+            pub fn from_method_and_params(
+                method: &str,
+                params: Value,
+            ) -> std::result::Result<Self, RPCErrors> {
+                let parse = |error: serde_json::Error| {
+                    RPCErrors::ParseRequestError(format!("invalid {method} request: {error}"))
+                };
+                match method {
+                    $( $method => serde_json::from_value(params).map(Self::$variant).map_err(parse), )+
+                    _ => Err(RPCErrors::UnknownMethod(method.to_string())),
+                }
+            }
+        }
+    };
 }
 
-impl AiccCall {
-    pub fn method(&self) -> &'static str {
-        match self {
-            Self::RouteResolve(_) => ai_methods::ROUTE_RESOLVE,
-            Self::ChatCompletionsCreate(_) => ai_methods::CHAT_COMPLETIONS_CREATE,
-            Self::ImagesGenerate(_) => ai_methods::IMAGES_GENERATE,
-            Self::HelperLlmChat(_) => ai_methods::HELPER_LLM_CHAT,
-            Self::HelperTextToImage(_) => ai_methods::HELPER_TEXT_TO_IMAGE,
-            Self::EmbeddingText(_) => ai_methods::EMBEDDING_TEXT,
-            Self::EmbeddingMultimodal(_) => ai_methods::EMBEDDING_MULTIMODAL,
-            Self::Rerank(_) => ai_methods::RERANK,
-            Self::ImageToImage(_) => ai_methods::IMAGE_IMG2IMG,
-            Self::ImageInpaint(_) => ai_methods::IMAGE_INPAINT,
-            Self::ImageUpscale(_) => ai_methods::IMAGE_UPSCALE,
-            Self::ImageBackgroundRemove(_) => ai_methods::IMAGE_BG_REMOVE,
-            Self::VisionOcr(_) => ai_methods::VISION_OCR,
-            Self::VisionCaption(_) => ai_methods::VISION_CAPTION,
-            Self::VisionDetect(_) => ai_methods::VISION_DETECT,
-            Self::VisionSegment(_) => ai_methods::VISION_SEGMENT,
-            Self::AudioTextToSpeech(_) => ai_methods::AUDIO_TTS,
-            Self::AudioSpeechRecognition(_) => ai_methods::AUDIO_ASR,
-            Self::AudioMusic(_) => ai_methods::AUDIO_MUSIC,
-            Self::AudioEnhance(_) => ai_methods::AUDIO_ENHANCE,
-            Self::VideoTextToVideo(_) => ai_methods::VIDEO_TXT2VIDEO,
-            Self::VideoImageToVideo(_) => ai_methods::VIDEO_IMG2VIDEO,
-            Self::VideoToVideo(_) => ai_methods::VIDEO_VIDEO2VIDEO,
-            Self::VideoExtend(_) => ai_methods::VIDEO_EXTEND,
-            Self::VideoUpscale(_) => ai_methods::VIDEO_UPSCALE,
-            Self::ComputerUse(_) => ai_methods::AGENT_COMPUTER_USE,
-        }
-    }
+macro_rules! aicc_call_exact_model {
+    ($request:ident, exact) => {
+        Some($request.exact_model.as_str())
+    };
+    ($request:ident, none) => {{
+        let _ = $request;
+        None
+    }};
+}
 
-    pub fn trace_id(&self) -> Option<&str> {
-        match self {
-            Self::RouteResolve(request) => request.trace_id.as_deref(),
-            Self::ChatCompletionsCreate(request) => request.trace_id.as_deref(),
-            Self::ImagesGenerate(request) => request.trace_id.as_deref(),
-            Self::HelperLlmChat(request) => request.trace_id.as_deref(),
-            Self::HelperTextToImage(request) => request.trace_id.as_deref(),
-            Self::EmbeddingText(request) => request.trace_id.as_deref(),
-            Self::EmbeddingMultimodal(request) => request.trace_id.as_deref(),
-            Self::Rerank(request) => request.trace_id.as_deref(),
-            Self::ImageToImage(request) => request.trace_id.as_deref(),
-            Self::ImageInpaint(request) => request.trace_id.as_deref(),
-            Self::ImageUpscale(request) => request.trace_id.as_deref(),
-            Self::ImageBackgroundRemove(request) => request.trace_id.as_deref(),
-            Self::VisionOcr(request) => request.trace_id.as_deref(),
-            Self::VisionCaption(request) => request.trace_id.as_deref(),
-            Self::VisionDetect(request) => request.trace_id.as_deref(),
-            Self::VisionSegment(request) => request.trace_id.as_deref(),
-            Self::AudioTextToSpeech(request) => request.trace_id.as_deref(),
-            Self::AudioSpeechRecognition(request) => request.trace_id.as_deref(),
-            Self::AudioMusic(request) => request.trace_id.as_deref(),
-            Self::AudioEnhance(request) => request.trace_id.as_deref(),
-            Self::VideoTextToVideo(request) => request.trace_id.as_deref(),
-            Self::VideoImageToVideo(request) => request.trace_id.as_deref(),
-            Self::VideoToVideo(request) => request.trace_id.as_deref(),
-            Self::VideoExtend(request) => request.trace_id.as_deref(),
-            Self::VideoUpscale(request) => request.trace_id.as_deref(),
-            Self::ComputerUse(request) => request.trace_id.as_deref(),
-        }
-    }
-
-    pub fn execution_mode(&self) -> AiccExecutionMode {
-        match self {
-            Self::RouteResolve(request) => request.execution_mode,
-            Self::ChatCompletionsCreate(request) => request.execution_mode,
-            Self::ImagesGenerate(request) => request.execution_mode,
-            Self::HelperLlmChat(request) => request.execution_mode,
-            Self::HelperTextToImage(request) => request.execution_mode,
-            Self::EmbeddingText(request) => request.execution_mode,
-            Self::EmbeddingMultimodal(request) => request.execution_mode,
-            Self::Rerank(request) => request.execution_mode,
-            Self::ImageToImage(request) => request.execution_mode,
-            Self::ImageInpaint(request) => request.execution_mode,
-            Self::ImageUpscale(request) => request.execution_mode,
-            Self::ImageBackgroundRemove(request) => request.execution_mode,
-            Self::VisionOcr(request) => request.execution_mode,
-            Self::VisionCaption(request) => request.execution_mode,
-            Self::VisionDetect(request) => request.execution_mode,
-            Self::VisionSegment(request) => request.execution_mode,
-            Self::AudioTextToSpeech(request) => request.execution_mode,
-            Self::AudioSpeechRecognition(request) => request.execution_mode,
-            Self::AudioMusic(request) => request.execution_mode,
-            Self::AudioEnhance(request) => request.execution_mode,
-            Self::VideoTextToVideo(request) => request.execution_mode,
-            Self::VideoImageToVideo(request) => request.execution_mode,
-            Self::VideoToVideo(request) => request.execution_mode,
-            Self::VideoExtend(request) => request.execution_mode,
-            Self::VideoUpscale(request) => request.execution_mode,
-            Self::ComputerUse(request) => request.execution_mode,
-        }
-    }
-
-    pub fn from_method_and_params(
-        method: &str,
-        params: Value,
-    ) -> std::result::Result<Self, RPCErrors> {
-        let parse = |error: serde_json::Error| {
-            RPCErrors::ParseRequestError(format!("invalid {method} request: {error}"))
-        };
-        match method {
-            ai_methods::ROUTE_RESOLVE => Ok(Self::RouteResolve(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::CHAT_COMPLETIONS_CREATE => Ok(Self::ChatCompletionsCreate(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::IMAGES_GENERATE => Ok(Self::ImagesGenerate(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::HELPER_LLM_CHAT => Ok(Self::HelperLlmChat(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::HELPER_TEXT_TO_IMAGE => Ok(Self::HelperTextToImage(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::EMBEDDING_TEXT => Ok(Self::EmbeddingText(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::EMBEDDING_MULTIMODAL => Ok(Self::EmbeddingMultimodal(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::RERANK => Ok(Self::Rerank(serde_json::from_value(params).map_err(parse)?)),
-            ai_methods::IMAGE_IMG2IMG => Ok(Self::ImageToImage(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::IMAGE_INPAINT => Ok(Self::ImageInpaint(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::IMAGE_UPSCALE => Ok(Self::ImageUpscale(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::IMAGE_BG_REMOVE => Ok(Self::ImageBackgroundRemove(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::VISION_OCR => Ok(Self::VisionOcr(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::VISION_CAPTION => Ok(Self::VisionCaption(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::VISION_DETECT => Ok(Self::VisionDetect(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::VISION_SEGMENT => Ok(Self::VisionSegment(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::AUDIO_TTS => Ok(Self::AudioTextToSpeech(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::AUDIO_ASR => Ok(Self::AudioSpeechRecognition(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::AUDIO_MUSIC => Ok(Self::AudioMusic(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::AUDIO_ENHANCE => Ok(Self::AudioEnhance(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::VIDEO_TXT2VIDEO => Ok(Self::VideoTextToVideo(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::VIDEO_IMG2VIDEO => Ok(Self::VideoImageToVideo(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::VIDEO_VIDEO2VIDEO => Ok(Self::VideoToVideo(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::VIDEO_EXTEND => Ok(Self::VideoExtend(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::VIDEO_UPSCALE => Ok(Self::VideoUpscale(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            ai_methods::AGENT_COMPUTER_USE => Ok(Self::ComputerUse(
-                serde_json::from_value(params).map_err(parse)?,
-            )),
-            _ => Err(RPCErrors::UnknownMethod(method.to_string())),
-        }
-    }
+define_aicc_calls! {
+    RouteResolve(RouteResolveRequest) => ai_methods::ROUTE_RESOLVE, None, none;
+    ChatCompletionsCreate(LlmChatInvokeRequest) => ai_methods::CHAT_COMPLETIONS_CREATE, Some(ApiType::Llm), exact;
+    ImagesGenerate(TextToImageInvokeRequest) => ai_methods::IMAGES_GENERATE, Some(ApiType::ImageTextToImage), exact;
+    HelperLlmChat(LlmChatHelperRequest) => ai_methods::HELPER_LLM_CHAT, Some(ApiType::Llm), none;
+    HelperTextToImage(TextToImageHelperRequest) => ai_methods::HELPER_TEXT_TO_IMAGE, Some(ApiType::ImageTextToImage), none;
+    EmbeddingText(EmbeddingTextRequest) => ai_methods::EMBEDDING_TEXT, Some(ApiType::EmbeddingText), exact;
+    EmbeddingMultimodal(EmbeddingMultimodalRequest) => ai_methods::EMBEDDING_MULTIMODAL, Some(ApiType::EmbeddingMultimodal), exact;
+    Rerank(RerankRequest) => ai_methods::RERANK, Some(ApiType::Rerank), exact;
+    ImageToImage(ImageToImageRequest) => ai_methods::IMAGE_IMG2IMG, Some(ApiType::ImageImageToImage), exact;
+    ImageInpaint(ImageInpaintRequest) => ai_methods::IMAGE_INPAINT, Some(ApiType::ImageInpaint), exact;
+    ImageUpscale(ImageUpscaleRequest) => ai_methods::IMAGE_UPSCALE, Some(ApiType::ImageUpscale), exact;
+    ImageBackgroundRemove(ImageBackgroundRemoveRequest) => ai_methods::IMAGE_BG_REMOVE, Some(ApiType::ImageBackgroundRemove), exact;
+    VisionOcr(VisionOcrRequest) => ai_methods::VISION_OCR, Some(ApiType::VisionOcr), exact;
+    VisionCaption(VisionCaptionRequest) => ai_methods::VISION_CAPTION, Some(ApiType::VisionCaption), exact;
+    VisionDetect(VisionDetectRequest) => ai_methods::VISION_DETECT, Some(ApiType::VisionDetect), exact;
+    VisionSegment(VisionSegmentRequest) => ai_methods::VISION_SEGMENT, Some(ApiType::VisionSegment), exact;
+    AudioTextToSpeech(AudioTextToSpeechRequest) => ai_methods::AUDIO_TTS, Some(ApiType::AudioTextToSpeech), exact;
+    AudioSpeechRecognition(AudioSpeechRecognitionRequest) => ai_methods::AUDIO_ASR, Some(ApiType::AudioSpeechRecognition), exact;
+    AudioMusic(AudioMusicRequest) => ai_methods::AUDIO_MUSIC, Some(ApiType::AudioMusic), exact;
+    AudioEnhance(AudioEnhanceRequest) => ai_methods::AUDIO_ENHANCE, Some(ApiType::AudioEnhance), exact;
+    VideoTextToVideo(VideoTextToVideoRequest) => ai_methods::VIDEO_TXT2VIDEO, Some(ApiType::VideoTextToVideo), exact;
+    VideoImageToVideo(VideoImageToVideoRequest) => ai_methods::VIDEO_IMG2VIDEO, Some(ApiType::VideoImageToVideo), exact;
+    VideoToVideo(VideoToVideoRequest) => ai_methods::VIDEO_VIDEO2VIDEO, Some(ApiType::VideoToVideo), exact;
+    VideoExtend(VideoExtendRequest) => ai_methods::VIDEO_EXTEND, Some(ApiType::VideoExtend), exact;
+    VideoUpscale(VideoUpscaleRequest) => ai_methods::VIDEO_UPSCALE, Some(ApiType::VideoUpscale), exact;
+    ComputerUse(ComputerUseRequest) => ai_methods::AGENT_COMPUTER_USE, Some(ApiType::AgentComputerUse), exact;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

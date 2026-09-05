@@ -694,6 +694,7 @@ async function runRouteCases(
   const exactRuleModel = openaiA.models.find((item) => item.provider_model_id === "gpt-image-2");
   const patternRuleModel = openaiA.models.find((item) => item.provider_model_id === "gpt-5.6-luna-mock");
   const defaultRuleModel = openaiA.models.find((item) => item.provider_model_id === "gpt-5.6");
+  const basicModel = openaiA.models.find((item) => item.provider_model_id === "gpt-5.3-codex");
   const exactRuleMount = exactRuleModel?.logical_mounts.find((mount) => mount === "image.txt2img.openai");
   const patternRuleMount = patternRuleModel?.logical_mounts.find((mount) => mount === "llm.gpt-nano");
   const defaultRuleMount = defaultRuleModel?.logical_mounts.find((mount) => mount === "llm.gpt-standard");
@@ -1001,10 +1002,16 @@ async function runRouteCases(
     logical_model: "llm.dv_acceptance.manual",
     policy: { allowed_provider_instances: [openaiA.provider_instance_name] },
   })));
-  await pushRouteProbe("t1.route.min_line_admission", () => expectRouteRejected(routeRequest("t1.route.min_line_admission", {
-    logical_model: "llm.dv_acceptance.min_line",
-    policy: { allowed_provider_instances: [openaiA.provider_instance_name] },
-  })));
+  await pushRouteProbe("t1.route.min_line_admission", () => {
+    if (!basicModel) throw new Error("min-line test model is missing from OpenAI mock inventory");
+    return expectRouteRejected(routeRequest("t1.route.min_line_admission", {
+      logical_model: "llm.plan",
+      session_overlay: replacingOverlay("llm.plan", {
+        items: { basic: { target: basicModel.exact_model, weight: 1 } },
+      }),
+      policy: { allowed_provider_instances: [openaiA.provider_instance_name] },
+    }));
+  });
   await pushRouteProbe("t1.route.disable_line_applied", async () => {
     const response = await session.aicc.call("route.resolve", routeRequest("t1.route.disable_line_applied", {
       logical_model: "llm.dv_acceptance.disable_line",
@@ -1017,13 +1024,21 @@ async function runRouteCases(
     return "definition disable_line removed web_search";
   });
 
+  const exactWeights = Object.fromEntries([
+    ...openaiA.models
+      .filter((model) => model.api_types.includes("llm") && model.logical_mounts.includes(logicalModel))
+      .map((model) => [model.exact_model, 0]),
+    ...openaiB.models
+      .filter((model) => model.api_types.includes("llm") && model.logical_mounts.includes(logicalModel))
+      .map((model) => [model.exact_model, 1]),
+  ]);
   for (const [caseId, sessionOverlay] of [
     ["t1.route.global_exact_model_weight", {
-      global_exact_model_weights: { [modelA.exact_model]: 0, [modelB.exact_model]: 1 },
+      global_exact_model_weights: exactWeights,
     }],
     ["t1.route.logical_exact_model_weight", {
       logical_tree: overlayTree(logicalModel, {
-        exact_model_weights: { [modelA.exact_model]: 0, [modelB.exact_model]: 1 },
+        exact_model_weights: exactWeights,
       }),
     }],
     ["t1.route.provider_instance_weight", {
@@ -1623,10 +1638,28 @@ async function runCases(
     sessionId: string,
     caseId: string,
     overrides: Record<string, unknown> = {},
-  ): Promise<Record<string, unknown>> => await session.aicc.call("route.resolve", historyRouteRequest(caseId, {
-    session_id: sessionId,
-    ...overrides,
-  })) as Record<string, unknown>;
+  ): Promise<Record<string, unknown>> => {
+    const requestedOverlay = overrides.session_overlay && typeof overrides.session_overlay === "object"
+      ? overrides.session_overlay as Record<string, unknown>
+      : {};
+    return await session.aicc.call("route.resolve", historyRouteRequest(caseId, {
+      ...overrides,
+      session_id: sessionId,
+      session_overlay: {
+        logical_profile: {
+          overlays: [{
+            path: logicalModel,
+            merge_mode: "replace",
+            items: {
+              primary: { target: modelA.exact_model, weight: 1 },
+              secondary: { target: modelB.exact_model, weight: 1 },
+            },
+          }],
+        },
+        ...requestedOverlay,
+      },
+    })) as Record<string, unknown>;
+  };
   const seedSession = async (sessionId: string, caseId: string): Promise<void> => {
     const seeded = await sessionRoute(sessionId, `${caseId}.seed`, {
       session_overlay: {
@@ -2198,9 +2231,10 @@ async function runCases(
   await pushProbe("t1.usage.fallback_attempts_attributed", "helper.llm_chat", "usage_failed", async () => {
     const openaiA = mockInventories.find((item) => item.provider_instance_name.includes("dv-openai-a-"));
     const openaiB = mockInventories.find((item) => item.provider_instance_name.includes("dv-openai-b-"));
-    const modelA = openaiA?.models.find((item) =>
+    const baseModelsA = openaiA?.models.filter((item) =>
       item.api_types.includes("llm") && !item.exact_model.split("@")[0].includes(":")
-    );
+    ) ?? [];
+    const modelA = baseModelsA.find((item) => item.provider_model_id === "gpt-5.6") ?? baseModelsA[0];
     const modelB = modelA && openaiB?.models.find((item) =>
       item.provider_model_id === modelA.provider_model_id &&
       item.api_types.includes("llm") &&
@@ -2232,6 +2266,9 @@ async function runCases(
         allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name],
         runtime_failover: true,
       };
+      const payload = request.payload as Record<string, unknown>;
+      const requestInput = payload.input_json as Record<string, unknown>;
+      const requestOptions = payload.options as Record<string, unknown>;
       const route = await session.aicc.call("route.resolve", {
         request_id: `${runId}:t1.usage.fallback_attempts_attributed.route`,
         api_type: "llm",
@@ -2240,12 +2277,19 @@ async function runCases(
         disable: {},
         policy: { ...request.policy as Record<string, unknown>, explain: true },
         session_overlay: sessionOverlay,
+        session_id: requestOptions.session_id,
+        estimated_output_tokens: requestInput.max_output_tokens,
       }) as Record<string, unknown>;
       const fallbacks = Array.isArray(route.fallback_attempts) ? route.fallback_attempts : [];
       if (route.provider_instance_name !== openaiA.provider_instance_name || fallbacks.length < 1) {
         throw new Error(`failover route did not produce primary A plus backup: ${JSON.stringify(route)}`);
       }
-      const initial = await callLlmChatHelper(session.aicc, request) as AiMethodResponse;
+      let initial: AiMethodResponse;
+      try {
+        initial = await callLlmChatHelper(session.aicc, request) as AiMethodResponse;
+      } catch (error) {
+        throw new Error(`helper route diverged from route.resolve ${JSON.stringify(route)}: ${String(error)}`);
+      }
       let rejected = false;
       try {
         await terminal(session, initial, input.timeoutMs);

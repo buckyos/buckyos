@@ -500,7 +500,7 @@
       "provider_profile_id": "minimax",
       "endpoint_path": "/anthropic",
       "credential_type": "bearer",
-      "test_model_ids": { "llm": "MiniMax-M2.5", "audio.tts": "speech-2.8-hd", "image.txt2img": "image-01", "image.img2img": "image-01", "video.txt2video": "MiniMax-Hailuo-02", "video.img2video": "MiniMax-Hailuo-02", "audio.music": "music-3.0" },
+      "test_model_ids": { "llm": "MiniMax-M2.5", "audio.tts": "speech-2.8-hd", "image.txt2img": "image-01", "image.img2img": "image-01", "video.txt2video": "MiniMax-Hailuo-02", "video.img2video": "MiniMax-Hailuo-02", "audio.music": "music-2.6" },
       "contracts": [
         {
           "id": "minimax.anthropic.messages.v1",
@@ -794,12 +794,12 @@
         "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
         "content_type": "application/json",
         "required_body_fields": ["model", "input"],
-        "allowed_body_fields": ["model", "input", "instructions", "max_output_tokens", "previous_response_id", "reasoning", "store", "stream", "temperature", "text", "tool_choice", "tools", "top_p"],
-        "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "reasoning": ["object"] },
+        "allowed_body_fields": ["model", "input", "instructions", "max_output_tokens", "previous_response_id", "reasoning", "store", "stream", "temperature", "text", "thinking", "tool_choice", "tools", "top_p"],
+        "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "reasoning": ["object"], "thinking": ["object"] },
         "stream_protocol": "openai_responses",
         "success_fixture": { "created_at": 1770000000, "id": "resp_doubao_mock_1", "model": "doubao-seed-2-0-lite-260215", "object": "response", "output": [{ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }], "status": "completed", "id": "msg_mock_1" }], "status": "completed", "store": false, "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
-        "official_sources": ["https://www.volcengine.com/docs/82379/1958524?lang=zh", "https://www.volcengine.com/docs/82379/1783703?lang=zh"],
-        "evidence_summary": "Volcano Ark Responses uses POST /api/v3/responses with Bearer authentication and JSON model/input, returning an OpenAI-style response object."
+        "official_sources": ["https://www.volcengine.com/docs/82379/1958524?lang=zh", "https://www.volcengine.com/docs/82379/1783703?lang=zh", "https://www.volcengine.com/docs/82379/1795150"],
+        "evidence_summary": "Volcano Ark Responses uses POST /api/v3/responses with Bearer authentication and JSON model/input, accepts the object-valued thinking control, and returns an OpenAI-style response object."
       }]
     },
     {

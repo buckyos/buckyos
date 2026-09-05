@@ -375,27 +375,11 @@ fn profile_from_catalog(
         provider_profile_id: configuration.provider_profile_id.clone(),
         display_name: configuration.display_name.clone(),
         default_protocol_adapter_id: configuration.protocol_adapter_id.clone(),
-        credential: CredentialDescriptor {
-            kind: match configuration.credential.kind {
-                ProviderCredentialKind::Bearer => crate::protocol::CredentialKind::Bearer,
-                ProviderCredentialKind::NamedHeader => crate::protocol::CredentialKind::NamedHeader,
-                ProviderCredentialKind::FalKey => crate::protocol::CredentialKind::FalKey,
-                ProviderCredentialKind::GlmJwt => crate::protocol::CredentialKind::GlmJwt,
-            },
-            header_name: configuration.credential.header_name.clone(),
-        },
+        credential: credential_from_catalog(&configuration.credential),
         credential_variants: configuration
             .credential_variants
             .iter()
-            .map(|credential| CredentialDescriptor {
-                kind: match credential.kind {
-                    ProviderCredentialKind::Bearer => CredentialKind::Bearer,
-                    ProviderCredentialKind::NamedHeader => CredentialKind::NamedHeader,
-                    ProviderCredentialKind::FalKey => CredentialKind::FalKey,
-                    ProviderCredentialKind::GlmJwt => CredentialKind::GlmJwt,
-                },
-                header_name: credential.header_name.clone(),
-            })
+            .map(credential_from_catalog)
             .collect(),
         discovery_mode: if discovery == BuiltinDiscoveryFactory::CatalogOnly {
             DiscoveryMode::CatalogOnly
@@ -404,6 +388,20 @@ fn profile_from_catalog(
         },
         refresh: RefreshPolicy::default(),
         default_inventory: None,
+    }
+}
+
+pub(super) fn credential_from_catalog(
+    credential: &crate::catalog::ProviderCredentialDescriptor,
+) -> CredentialDescriptor {
+    CredentialDescriptor {
+        kind: match credential.kind {
+            ProviderCredentialKind::Bearer => CredentialKind::Bearer,
+            ProviderCredentialKind::NamedHeader => CredentialKind::NamedHeader,
+            ProviderCredentialKind::FalKey => CredentialKind::FalKey,
+            ProviderCredentialKind::GlmJwt => CredentialKind::GlmJwt,
+        },
+        header_name: credential.header_name.clone(),
     }
 }
 
@@ -419,7 +417,7 @@ fn connection_from_catalog(
     }
 }
 
-fn field_from_catalog(schema: &crate::catalog::ProviderFieldSchema) -> ProviderFieldSchema {
+pub(super) fn field_from_catalog(schema: &crate::catalog::ProviderFieldSchema) -> ProviderFieldSchema {
     ProviderFieldSchema {
         mode: match schema.mode {
             CatalogProviderFieldMode::Unsupported => ProviderFieldMode::Unsupported,

@@ -1719,6 +1719,8 @@ mod tests {
                 )
                 .unwrap(),
             },
+            credential_reference: "credential-1".into(),
+            credential_header_name: None,
             resource_requirements: Vec::new(),
             resource_access_context: None,
             pricing: ResolvedPricing {

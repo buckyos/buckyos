@@ -845,8 +845,8 @@ fn validate_interaction_body(body: &Map<String, Value>) -> ProtocolResultValue<(
         })?;
         const KEYS: &[&str] = &[
             "image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences",
-            "thinking_level", "thinking_summaries", "tool_choice", "transcription_config",
-            "video_config",
+            "thinking_budget", "thinking_level", "thinking_summaries", "tool_choice",
+            "transcription_config", "video_config",
         ];
         if let Some(key) = generation.keys().find(|key| !KEYS.contains(&key.as_str())) {
             return Err(ProtocolError::invalid_request(format!(
@@ -1973,23 +1973,12 @@ fn finish_request(
     request: &mut HttpRequest,
     context: &CodecContext,
 ) -> ProtocolResultValue<HttpRequest> {
-    let credential = context.credential.as_ref().ok_or_else(|| {
-        ProtocolError::new(
-            ProtocolErrorKind::Authentication,
-            "Gemini operation requires a resolved x-goog-api-key credential",
-        )
-    })?;
-    if credential.audit().kind != CredentialKind::NamedHeader {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::Authentication,
-            "Gemini operation requires a named-header credential",
-        ));
-    }
-    credential.apply(&mut request.headers)?;
-    request.timeout = Some(context.limits.request_timeout);
-    request.max_request_bytes = Some(context.limits.max_request_bytes);
-    request.max_response_bytes = Some(context.limits.max_response_bytes);
-    Ok(request.clone())
+    context.finalize_request(
+        request,
+        CredentialKind::NamedHeader,
+        "Gemini operation requires a resolved x-goog-api-key credential",
+        "Gemini operation requires a named-header credential",
+    )
 }
 
 fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
@@ -2448,6 +2437,12 @@ mod tests {
             context: &context(),
         }, ApiType::Llm).unwrap_err();
         assert_eq!(error.kind, ProtocolErrorKind::UnsupportedOperation);
+    }
+
+    #[test]
+    fn interaction_accepts_gemini_25_thinking_budget() {
+        let body = json!({"generation_config": {"thinking_budget": 1024}});
+        validate_interaction_body(body.as_object().unwrap()).unwrap();
     }
 
     #[test]

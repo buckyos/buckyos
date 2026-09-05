@@ -2649,6 +2649,53 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_effort_variants_exclude_unsupported_haiku() {
+        let snapshot = build(vec![
+            CurrentCatalogFile {
+                kind: CatalogKind::ModelDriver,
+                contents: include_bytes!("../../driver_metadata/models/anthropic.model.json").to_vec(),
+            },
+            CurrentCatalogFile {
+                kind: CatalogKind::ProviderRules,
+                contents: include_bytes!("../../driver_metadata/providers/claude.provider.json").to_vec(),
+            },
+        ])
+        .unwrap();
+        assert_eq!(snapshot.model_driver("claude").unwrap().revision_seq, 1);
+        let variants = |model: &str| {
+            let context = BTreeMap::from([("origin_model_id".to_owned(), json!(model))]);
+            snapshot
+                .matching_model_variants("claude", &context)
+                .unwrap()
+                .into_iter()
+                .map(|variant| variant.name.as_str())
+                .collect::<Vec<_>>()
+        };
+
+        assert!(variants("claude-haiku-4-5-20251001").is_empty());
+        assert_eq!(
+            variants("claude-sonnet-5"),
+            [
+                "effort-low",
+                "effort-medium",
+                "effort-high",
+                "effort-xhigh",
+                "effort-max",
+            ]
+        );
+        for model in ["claude-haiku-4-5-20251001", "claude-sonnet-5"] {
+            let context = BTreeMap::from([
+                ("provider_model_id".to_owned(), json!(model)),
+                ("variant".to_owned(), json!("effort-high")),
+            ]);
+            let matched = snapshot
+                .matching_provider_variants("claude", &context)
+                .unwrap();
+            assert_eq!(matched.len(), usize::from(model == "claude-sonnet-5"));
+        }
+    }
+
+    #[test]
     fn current_file_set_builds_immutable_indexes_and_deterministic_snapshot() {
         let first = build(complete_files()).unwrap();
         let mut reversed_files = complete_files();

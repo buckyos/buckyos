@@ -270,7 +270,7 @@
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-standard",
       "version_mount": "llm.openai.{model}",
-      "auto_mounts": ["llm.gpt", "llm.gpt-standard", "llm.gpt-pro", "llm.gpt-mini", "llm.gpt-nano", "llm", "llm.summarize", "llm.swift", "llm.plan", "llm.reason", "llm.code"]
+      "auto_mounts": ["llm.gpt", "llm", "llm.summarize", "llm.swift", "llm.plan", "llm.reason", "llm.code"]
     },
     {
       "id": "gpt-pro",
@@ -281,7 +281,7 @@
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-pro",
       "version_mount": "llm.openai.{model}",
-      "auto_mounts": ["llm.gpt", "llm.gpt-standard", "llm.gpt-pro", "llm.gpt-mini", "llm.gpt-nano", "llm", "llm.summarize", "llm.swift", "llm.plan", "llm.reason", "llm.code"]
+      "auto_mounts": ["llm.gpt", "llm", "llm.summarize", "llm.swift", "llm.plan", "llm.reason", "llm.code"]
     },
     {
       "id": "gpt-mini",
@@ -292,7 +292,7 @@
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-mini",
       "version_mount": "llm.openai.{model}",
-      "auto_mounts": ["llm.gpt", "llm.gpt-standard", "llm.gpt-pro", "llm.gpt-mini", "llm.gpt-nano", "llm", "llm.summarize", "llm.swift", "llm.plan", "llm.reason", "llm.code"]
+      "auto_mounts": ["llm.gpt", "llm", "llm.summarize", "llm.swift", "llm.plan", "llm.reason", "llm.code"]
     },
     {
       "id": "gpt-nano",
@@ -303,7 +303,7 @@
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-nano",
       "version_mount": "llm.openai.{model}",
-      "auto_mounts": ["llm.gpt", "llm.gpt-standard", "llm.gpt-pro", "llm.gpt-mini", "llm.gpt-nano", "llm", "llm.summarize", "llm.swift", "llm.plan", "llm.reason", "llm.code"]
+      "auto_mounts": ["llm.gpt", "llm", "llm.summarize", "llm.swift", "llm.plan", "llm.reason", "llm.code"]
     }
   ]
 }

@@ -16,10 +16,10 @@
     }
   ],
   "variants": [
-    { "model_driver": "claude", "variant": "effort-low", "match": { "provider_model_id": "claude-*-5*", "variant": "effort-low" }, "provider_options": { "output_config": { "effort": "low" } } },
-    { "model_driver": "claude", "variant": "effort-medium", "match": { "provider_model_id": "claude-*-5*", "variant": "effort-medium" }, "provider_options": { "output_config": { "effort": "medium" } } },
-    { "model_driver": "claude", "variant": "effort-high", "match": { "provider_model_id": "claude-*-5*", "variant": "effort-high" }, "provider_options": { "output_config": { "effort": "high" } } },
-    { "model_driver": "claude", "variant": "effort-xhigh", "match": { "provider_model_id": "claude-*-5*", "variant": "effort-xhigh" }, "provider_options": { "output_config": { "effort": "xhigh" } } },
-    { "model_driver": "claude", "variant": "effort-max", "match": { "provider_model_id": "claude-*-5*", "variant": "effort-max" }, "provider_options": { "output_config": { "effort": "max" } } }
+    { "model_driver": "claude", "variant": "effort-low", "match": { "provider_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"], "variant": "effort-low" }, "provider_options": { "output_config": { "effort": "low" } } },
+    { "model_driver": "claude", "variant": "effort-medium", "match": { "provider_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"], "variant": "effort-medium" }, "provider_options": { "output_config": { "effort": "medium" } } },
+    { "model_driver": "claude", "variant": "effort-high", "match": { "provider_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"], "variant": "effort-high" }, "provider_options": { "output_config": { "effort": "high" } } },
+    { "model_driver": "claude", "variant": "effort-xhigh", "match": { "provider_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"], "variant": "effort-xhigh" }, "provider_options": { "output_config": { "effort": "xhigh" } } },
+    { "model_driver": "claude", "variant": "effort-max", "match": { "provider_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"], "variant": "effort-max" }, "provider_options": { "output_config": { "effort": "max" } } }
   ]
 }
