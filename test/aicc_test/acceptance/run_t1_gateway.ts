@@ -564,8 +564,8 @@ async function runRouteCases(
   const patternRuleModel = openaiA.models.find((item) => item.provider_model_id === "gpt-5.6-luna-mock");
   const defaultRuleModel = openaiA.models.find((item) => item.provider_model_id === "gpt-5.6");
   const exactRuleMount = exactRuleModel?.logical_mounts.find((mount) => mount === "image.txt2img.openai");
-  const patternRuleMount = patternRuleModel?.logical_mounts.find((mount) => mount === "llm.gpt-luna");
-  const defaultRuleMount = defaultRuleModel?.logical_mounts.find((mount) => mount === "llm.gpt-sol");
+  const patternRuleMount = patternRuleModel?.logical_mounts.find((mount) => mount === "llm.gpt-nano");
+  const defaultRuleMount = defaultRuleModel?.logical_mounts.find((mount) => mount === "llm.gpt-standard");
   type RouteCase = {
     id: string;
     apiType: string;
@@ -852,7 +852,7 @@ async function runRouteCases(
 
   await pushRouteProbe("t1.route.auto_mount_admission", async () => {
     const response = await session.aicc.call("route.resolve", routeRequest("t1.route.auto_mount_admission", {
-      logical_model: "llm.gpt-sol",
+      logical_model: "llm.gpt-standard",
       policy: { allowed_provider_instances: [openaiA.provider_instance_name] },
     })) as Record<string, unknown>;
     if (response.provider_instance_name !== openaiA.provider_instance_name) {

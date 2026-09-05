@@ -549,16 +549,19 @@ mod tests {
                 revision: Some("models-v1".to_owned()),
                 discovered_at_ms: 1,
                 health: ProviderHealthState::Healthy,
-                models: vec![DiscoveredModel {
-                    provider_model_id: "gpt-5.6-sol".to_owned(),
-                    origin_model_id: None,
-                    api_types: None,
-                    supported_features: None,
-                    remote_methods: None,
-                    availability: ModelAvailability::Available,
-                    deprecated: false,
-                    pricing: None,
-                }],
+                models: ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+                    .into_iter()
+                    .map(|model_id| DiscoveredModel {
+                        provider_model_id: model_id.to_owned(),
+                        origin_model_id: None,
+                        api_types: None,
+                        supported_features: None,
+                        remote_methods: None,
+                        availability: ModelAvailability::Available,
+                        deprecated: false,
+                        pricing: None,
+                    })
+                    .collect(),
             },
             &catalog,
             &registry,
@@ -566,8 +569,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(inventory.protocol_adapter_id, OPENAI_RESPONSES_ADAPTER_ID);
-        assert_eq!(inventory.models.len(), 1);
-        let model = &inventory.models[0];
+        assert_eq!(inventory.models.len(), 4);
+        let model = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-5.6-sol")
+            .unwrap();
         let operations = &model.operations;
         assert_eq!(operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
         assert_eq!(
@@ -577,6 +584,40 @@ mod tests {
         assert_eq!(operations["image.img2img"], OPENAI_RESPONSES_OPERATION_ID);
         assert_eq!(model.capabilities["tool_call"], true);
         assert_eq!(model.capabilities["json_schema"], true);
+        let version_tiers = catalog
+            .model_driver("openai")
+            .unwrap()
+            .version_rules
+            .iter()
+            .map(|rule| rule.tier.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(version_tiers, ["standard", "pro", "mini", "nano"]);
+        assert!(catalog
+            .model_driver("openai")
+            .unwrap()
+            .version_rules
+            .iter()
+            .all(|rule| rule.match_rule == crate::matching::MatchRule::Shorthand("gpt-*".into())));
+        for (model_id, mount) in [
+            ("gpt-5.6", "llm.gpt-standard"),
+            ("gpt-5.6-sol", "llm.gpt-pro"),
+            ("gpt-5.6-terra", "llm.gpt-mini"),
+            ("gpt-5.6-luna", "llm.gpt-nano"),
+        ] {
+            let mapped = inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == model_id)
+                .unwrap();
+            assert!(mapped.logical_mounts.contains(&mount.to_owned()));
+            assert!(!mapped
+                .logical_mounts
+                .iter()
+                .any(|mount| matches!(
+                    mount.as_str(),
+                    "llm.gpt-sol" | "llm.gpt-terra" | "llm.gpt-luna"
+                )));
+        }
         assert_eq!(model.capabilities["max_context_tokens"], 1_050_000);
     }
 }
