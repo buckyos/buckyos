@@ -708,6 +708,7 @@ quota、budget、幂等计费和 fallback 归因在 T1 覆盖；Provider usage �
 - fallback 多次 Provider 调用分别记录，最终任务归因明确。
 - tenant、Provider instance、model、api_type 和 task 归因。
 - quota、budget、余额不足的路由拒绝。
+- 未配置 quota、Provider 不支持余额查询及单个 Provider quota 查询失败时返回 `unknown` 并继续路由；明确 `exhausted` 只过滤对应候选。
 - 估算成本与实际 usage/cost 的报告。
 
 ### 11.3 认证、安全和隔离

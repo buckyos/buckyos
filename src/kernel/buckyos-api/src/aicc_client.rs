@@ -4143,6 +4143,7 @@ pub enum QuotaState {
     Normal,
     NearLimit,
     Exhausted,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

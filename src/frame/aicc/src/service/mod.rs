@@ -509,17 +509,27 @@ impl RuntimeInferencePort {
         };
         let trace_id = input.trace_id.unwrap_or_else(next_inference_id);
         let request_id = input.request_id.unwrap_or_else(next_inference_id);
+        let route_models = input
+            .session_overlay
+            .as_ref()
+            .map(|overlay| snapshot.models.with_session_overlay(overlay))
+            .transpose()
+            .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))?;
+        let models = route_models.as_ref().unwrap_or(snapshot.models.as_ref());
         let provider_names = if input.model.contains('@') {
             vec![crate::model::ExactModelName::parse(&input.model)
                 .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))?
                 .provider_instance_name()
                 .to_owned()]
         } else {
-            snapshot
-                .models
-                .model_views()
+            models
+                .resolve_candidates(&input.model, input.api_type)
+                .map_err(|error| {
+                    inference_error(AiccErrorCode::NoCandidateModel, error.to_string())
+                })?
+                .candidates
                 .into_iter()
-                .map(|model| model.provider_instance_name)
+                .map(|candidate| candidate.model.identity.provider_instance_name)
                 .collect::<Vec<_>>()
         };
         let quota = self
@@ -532,16 +542,9 @@ impl RuntimeInferencePort {
             )
             .await
             .map_err(|_| {
-                inference_error(AiccErrorCode::PolicyDenied, "quota truth is unavailable")
+                inference_error(AiccErrorCode::PolicyDenied, "quota scope is invalid")
             })?;
         let runtime_states = candidate_runtime_states(snapshot.as_ref(), caller).await;
-        let route_models = input
-            .session_overlay
-            .as_ref()
-            .map(|overlay| snapshot.models.with_session_overlay(overlay))
-            .transpose()
-            .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))?;
-        let models = route_models.as_ref().unwrap_or(snapshot.models.as_ref());
         let session_overlay = input
             .session_overlay
             .as_ref()
@@ -2265,6 +2268,17 @@ impl SystemConfigQuotaTruthPort {
 #[async_trait]
 impl QuotaTruthPort for SystemConfigQuotaTruthPort {
     async fn query(&self, lookup: &QuotaLookup) -> Result<QuotaSnapshot, QuotaSourceError> {
+        let provider_observation = match lookup.provider_instance_name.as_deref() {
+            Some(name) => self
+                .runtime
+                .capture()
+                .await
+                .providers
+                .quota_observation(name)
+                .await
+                .ok(),
+            None => None,
+        };
         let capability = lookup
             .capability
             .as_ref()
@@ -2297,18 +2311,19 @@ impl QuotaTruthPort for SystemConfigQuotaTruthPort {
             "services/aicc/quota/{}/{}/{}/{}/{}/{}",
             lookup.caller.tenant_id, lookup.caller.user_id, app, capability, method, provider
         );
-        let value = self
-            .client()
-            .await?
-            .get(&key)
-            .await
-            .map_err(|_| QuotaSourceError)?;
-        let record: QuotaTruthRecord =
-            serde_json::from_str(&value.value).map_err(|_| QuotaSourceError)?;
-        validate_quota_record(&record)?;
+        let value = match self.client().await {
+            Ok(client) => client.get(&key).await.ok(),
+            Err(_) => None,
+        };
+        let Some(record) = value
+            .and_then(|value| serde_json::from_str::<QuotaTruthRecord>(&value.value).ok())
+            .filter(|record| validate_quota_record(record).is_ok())
+        else {
+            return Ok(provider_quota(provider_observation.as_ref()));
+        };
         let now_ms = current_time_ms()?;
         if now_ms < record.period_start_ms || now_ms >= record.period_end_ms {
-            return Err(QuotaSourceError);
+            return Ok(provider_quota(provider_observation.as_ref()));
         }
         let mut usage_request = QueryUsageRequest::new(UsageQueryTimeRange::Explicit {
             start_time_ms: record.period_start_ms,
@@ -2342,24 +2357,46 @@ impl QuotaTruthPort for SystemConfigQuotaTruthPort {
                 .provider_instance_names
                 .push(provider.clone());
         }
-        let usage = self
-            .storage
-            .query_usage(&usage_request, now_ms)
-            .await
-            .map_err(|_| QuotaSourceError)?;
-        let provider = match lookup.provider_instance_name.as_deref() {
-            Some(name) => Some(
-                self.runtime
-                    .capture()
-                    .await
-                    .providers
-                    .quota_observation(name)
-                    .await
-                    .map_err(|_| QuotaSourceError)?,
-            ),
-            None => None,
+        let usage = match self.storage.query_usage(&usage_request, now_ms).await {
+            Ok(usage) => usage,
+            Err(_) => return Ok(provider_quota(provider_observation.as_ref())),
         };
-        combine_quota(record, &usage.total, provider.as_ref())
+        Ok(combine_quota(record, &usage.total, provider_observation.as_ref())
+            .unwrap_or_else(|_| provider_quota(provider_observation.as_ref())))
+    }
+}
+
+fn provider_quota(provider: Option<&ProviderQuotaObservation>) -> QuotaSnapshot {
+    let Some(provider) = provider else {
+        return QuotaSnapshot {
+            state: Some(QuotaState::Unknown),
+            remaining_request_units: None,
+            remaining_cost: None,
+            reset_at: None,
+        };
+    };
+    let state = match provider.state {
+        ProviderQuotaObservationState::Normal => QuotaState::Normal,
+        ProviderQuotaObservationState::NearLimit => QuotaState::NearLimit,
+        ProviderQuotaObservationState::Exhausted => QuotaState::Exhausted,
+        ProviderQuotaObservationState::Unsupported | ProviderQuotaObservationState::QueryFailed => {
+            return QuotaSnapshot {
+                state: Some(QuotaState::Unknown),
+                remaining_request_units: None,
+                remaining_cost: None,
+                reset_at: None,
+            };
+        }
+    };
+    let remaining_cost = provider.remaining_cost_usd.as_ref().and_then(|cost| {
+        (cost.amount.is_finite() && cost.amount >= 0.0 && !cost.currency.trim().is_empty())
+            .then(|| buckyos_api::Money::new(cost.amount, cost.currency.clone()))
+    });
+    QuotaSnapshot {
+        state: Some(state),
+        remaining_request_units: provider.remaining_request_units,
+        remaining_cost,
+        reset_at: None,
     }
 }
 
@@ -2431,7 +2468,7 @@ fn combine_quota(
             ProviderQuotaObservationState::Exhausted => {
                 worst_quota_state(state, QuotaState::Exhausted)
             }
-            ProviderQuotaObservationState::QueryFailed => return Err(QuotaSourceError),
+            ProviderQuotaObservationState::QueryFailed => state,
         };
         remaining_units = minimum_option(remaining_units, provider.remaining_request_units);
         if let Some(provider_cost) = &provider.remaining_cost_usd {
@@ -2504,7 +2541,8 @@ fn worst_quota_state(left: QuotaState, right: QuotaState) -> QuotaState {
     match (left, right) {
         (QuotaState::Exhausted, _) | (_, QuotaState::Exhausted) => QuotaState::Exhausted,
         (QuotaState::NearLimit, _) | (_, QuotaState::NearLimit) => QuotaState::NearLimit,
-        _ => QuotaState::Normal,
+        (QuotaState::Normal, _) | (_, QuotaState::Normal) => QuotaState::Normal,
+        _ => QuotaState::Unknown,
     }
 }
 
@@ -5557,7 +5595,7 @@ mod tests {
     }
 
     #[test]
-    fn quota_fails_closed_for_incomplete_finance_or_provider_failure() {
+    fn quota_rejects_invalid_local_finance_but_ignores_provider_failure() {
         let incomplete = buckyos_api::UsageAggregate {
             finance_complete: false,
             ..Default::default()
@@ -5598,12 +5636,48 @@ mod tests {
             observed_at_ms: 1,
             source: "provider-api".to_string(),
         };
-        assert!(combine_quota(
+        let quota = combine_quota(
             quota_record(),
             &buckyos_api::UsageAggregate::default(),
-            Some(&failed)
+            Some(&failed),
         )
-        .is_err());
+        .unwrap();
+        assert_eq!(quota.state, Some(QuotaState::Normal));
+        assert_eq!(quota.remaining_request_units, Some(100));
+        assert_eq!(
+            quota.remaining_cost,
+            Some(buckyos_api::Money::new(10.0, "USD"))
+        );
+    }
+
+    #[test]
+    fn unavailable_provider_quota_is_unknown_and_exhausted_is_preserved() {
+        let unsupported = ProviderQuotaObservation {
+            state: ProviderQuotaObservationState::Unsupported,
+            remaining_request_units: None,
+            remaining_cost_usd: None,
+            reset_at_ms: None,
+            observed_at_ms: 1,
+            source: "unsupported".to_string(),
+        };
+        assert_eq!(
+            provider_quota(Some(&unsupported)).state,
+            Some(QuotaState::Unknown)
+        );
+        assert_eq!(provider_quota(None).state, Some(QuotaState::Unknown));
+
+        let exhausted = ProviderQuotaObservation {
+            state: ProviderQuotaObservationState::Exhausted,
+            remaining_request_units: Some(0),
+            remaining_cost_usd: None,
+            reset_at_ms: None,
+            observed_at_ms: 1,
+            source: "provider-api".to_string(),
+        };
+        assert_eq!(
+            provider_quota(Some(&exhausted)).state,
+            Some(QuotaState::Exhausted)
+        );
     }
 
     #[test]

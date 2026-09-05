@@ -76,7 +76,7 @@ canonical `ApiType` 序列化值以协议 schema 为准：LLM chat 为 `llm`，c
 | `service.reload_settings` | 空 params | reload 结果、Provider registry / ModelRegistry 重建摘要；被禁用、移除或替换的实例收到库存定时循环 `Stop` 并优雅退出 | settings 非法、凭据缺失、保留当前有效配置、孤儿定时器或迟到写入；`reload_settings` 和错误拼写必须被拒绝 |
 | `models.list` | 空 params、可选诊断过滤参数 | Provider inventory、完整模型/渠道身份、operations、逻辑目录、health 摘要 | registry 为空、敏感字段泄露、损坏 catalog 不应导致服务不可诊断 |
 | `usage.query` | 时间窗口、provider/model/method/api_type 过滤 | 聚合 usage、明细数量、成本/usage 字段、空结果 | 非法时间窗口、无权限、重复幂等记录不应重复计费 |
-| `quota.query` | capability / method、tenant/session 上下文 | 剩余额度、预算状态、限制来源 | 未配置 quota、跨 tenant 查询、非法 method |
+| `quota.query` | capability / method、tenant/session 上下文 | 剩余额度、预算状态、限制来源 | 未配置或不支持时返回 `unknown`、跨 tenant 查询、非法 method |
 | `provider.list` | 可选 instance/profile/adapter 过滤 | Provider 列表、inventory 摘要、health、capability、pricing 脱敏视图 | 无权限、凭据泄露、Provider 状态异常仍可诊断 |
 | `provider.health` | Provider Instance | health 状态、最近错误摘要、latency / quota / availability | Provider 不存在、health 过期、敏感错误未脱敏 |
 | `provider.validate` | Provider Instance 草案、base_url、Profile、Adapter、auth | schema 校验结果、可连接性 / mock 可达性、脱敏诊断 | 凭据缺失、base_url 非法、未知 Profile/Adapter、不得写入 system_config |

@@ -445,16 +445,16 @@ Owner：Policy/Security 小组
 - [x] 实现单次 cost ceiling、quota availability 和 budget rejection；
 - [x] 定义 `quota.query`；
 - [x] 只输出硬约束判定和可解释原因，不负责候选评分；
-- [x] fail closed 处理安全真相源读取失败；
+- [x] fail closed 处理 privacy、trust 和 credential 等安全真相源读取失败；quota 不可得保留为 `unknown`；
 - [x] 跨租户、跨应用和 credential scope 测试。
 
 完成标准：实现位于 routing 内部策略层而非独立顶层模块；Router 把策略判定作为确定的 hard filter 输入，不自行读取 quota 或安全配置。
 
-实现记录：Policy/Security 小组在 `src/frame/aicc/src/routing/policy.rs` 实现 system、user、app、session、request 五级字段合并和 locked 冲突拒绝，复用统一 MatchRule 编译 Provider allow/block 规则；策略引擎以只读 trust、credential scope 和 quota source 视图判定 trusted local、隐私、单次成本、请求额度与剩余预算，只返回 hard filter 原因和 local-first 偏好，不实现模型 admission 或候选评分。`quota.query` 通过已冻结公共 DTO 返回调用者作用域视图，安全事实源失败、未知状态和预算存在但成本不可估算均 fail closed。新增 9 个单元测试覆盖合并顺序、locked、local/privacy/trust、quota/budget、共享 matcher、跨租户/应用/credential scope 和查询隔离；基于干净 HEAD 叠加本模块的 AICC 86 个测试全部通过，stable clippy `--no-deps -D warnings` 在豁免仓库既有 Resource 新版本 lint 后通过。真实工作区全量编译暂受并行 Claude codec 与 OperationCodec 接口未同步阻断。
+实现记录：Policy/Security 小组在 `src/frame/aicc/src/routing/policy.rs` 实现 system、user、app、session、request 五级字段合并和 locked 冲突拒绝，复用统一 MatchRule 编译 Provider allow/block 规则；策略引擎以只读 trust、credential scope 和 quota source 视图判定 trusted local、隐私、单次成本、请求额度与剩余预算，只返回 hard filter 原因和 local-first 偏好，不实现模型 admission 或候选评分。`quota.query` 通过公共 DTO 返回调用者作用域视图；privacy、trust 和 credential 等安全真相源失败继续 fail closed，quota 缺失、不支持、查询失败或未知则返回 `unknown` 并保留候选，只有明确耗尽或超过明确配置的预算才拒绝对应候选。
 
-补充 Service 集成契约：WP-09 提供对象安全的异步 `QuotaTruthPort` 和 `QuotaSourceFactory`。Service 负责实现该端口，按 `CallerIdentity + Capability + method + provider_instance_name` 组合 system-config 预算、WP-14 usage 聚合及 Provider quota 状态；路由前调用 `prepare_route` 一次性预取并校验全部候选，得到请求级 `PreparedQuotaSource` 后再构造 `PolicyEngine`/`Router`。预取结果严格绑定 tenant/user/app、capability、method 和 Provider，缺项、未知状态、非法预算或任一真相源失败均 fail closed；`quota.query` 由 Service 直接调用 factory 的异步查询入口。新增 2 个生产端口测试，覆盖 Provider 去重预取、作用域绑定、管理查询和端口失败关闭。
+补充 Service 集成契约：WP-09 提供对象安全的异步 `QuotaTruthPort` 和 `QuotaSourceFactory`。Service 按 `CallerIdentity + Capability + method + provider_instance_name` 读取 Provider quota 状态，并可叠加 system-config 中明确配置的预算及 WP-14 usage 聚合。`prepare_route` 只负责形成请求级、作用域绑定的 quota 观察快照；各候选由 PolicyEngine 分别求值。某个 Provider 的额度不支持、缺失、查询失败或状态未知时，该候选使用 `unknown`，不得阻断其它候选或整个请求；明确的 `exhausted` 和明确超出预算仍是候选级硬过滤。`quota.query` 由 Service 调用 factory 的异步查询入口，额度不可得时返回 `unknown`。
 
-多币种契约补充：WP-09 已随 WP-01 的正式 `Money { amount, currency }` DTO 移除策略上限、quota snapshot 和 `quota.query` 中的 USD 专用金额。单次 cost ceiling 与剩余 budget 只在币种标识完全一致时比较；金额非法、币种为空或不一致均作为 hard filter fail closed，不在 routing 内隐式换汇。新增测试覆盖不同币种的策略上限、Provider budget 和非法 Money。
+多币种契约补充：WP-09 已随 WP-01 的正式 `Money { amount, currency }` DTO 移除策略上限、quota snapshot 和 `quota.query` 中的 USD 专用金额。明确配置的单次 cost ceiling 与剩余 budget 只在币种标识完全一致时比较，不在 routing 内隐式换汇；非法的显式策略配置 fail closed，Provider 返回的非法或不可比较额度观察退化为 `unknown`，不阻断候选。
 
 ### WP-10：Routing、Scheduler 与 Trace
 
@@ -928,7 +928,7 @@ Gate 0
 | Protocol Infra | HTTP/SSE/multipart、timeout、backoff、cancel、redaction |
 | Base Codec/Dialect | request/response/event/error golden、基础合同复用、差异点 |
 | Provider/Inventory | discovery、能力交集、LKGS、refresh、Stop、迟到写 |
-| Admission | quota、budget、privacy、trust、locked policy、fail closed |
+| Admission | quota/budget 候选级判定、privacy/trust/locked policy fail closed、quota unknown 保留候选 |
 | Call Lowering | operation、variant、参数优先级、set/remove、资源要求 |
 | Execution | immediate/stream/task、failover、idempotency、取消竞态、usage completion |
 | Resource | 权限、MIME、大小、压缩包安全、上传、artifact meta |

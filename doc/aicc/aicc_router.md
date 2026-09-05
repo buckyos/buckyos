@@ -572,7 +572,7 @@ function route(request: AICCRequest): RouteDecision {
 7. `local_only = true` 时候选不是本地 Provider；
 8. 隐私策略不允许将数据发送到云端；
 9. 预算硬限制会被明显突破；
-10. Provider 配额耗尽且不允许超额付费。
+10. Provider 明确报告配额耗尽且不允许超额付费。
 
 ---
 
@@ -736,6 +736,8 @@ logical_tree:
 
 模型是否有资格进入逻辑目录由 Registry admission 决定；quota、budget、privacy、trust 等请求级硬约束由 routing 内部策略层统一求值后交给 Router。它们不构成独立顶层模块，Router 也不直接读取 quota、安全配置或其它事实源。
 
+Quota 按候选求值。Provider inventory、动态 cost estimate 或 Provider quota 接口是额度状态的主要事实来源；管理员可以额外配置本地预算，并结合 usage 统计计算剩余额度。未配置本地预算、Provider 不支持额度查询、查询失败或返回 `unknown` 时保留候选；只有明确的 `exhausted`、请求额度不足或预计成本超过已配置预算时过滤该候选。一个候选的 quota 不可得不得阻断其它候选进入路由。
+
 示例评分公式：
 
 ```text
@@ -884,7 +886,7 @@ interface CostEstimateOutput {
 | `error_rate_5m` | 可靠性评分。 |
 | `recent_failures` | 临时降权或熔断。 |
 | `queue_depth` | 本地推理或共享服务排队评分。 |
-| `quota_state` | 配额耗尽时硬过滤或降权。 |
+| `quota_state` | `exhausted` 时硬过滤或降权；`unknown` 保留候选。 |
 
 ### 10.8 熔断与恢复
 

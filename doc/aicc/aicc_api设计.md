@@ -410,6 +410,8 @@ Response：
 }
 ```
 
+`quota.state` 的值为 `normal`、`near_limit`、`exhausted` 或 `unknown`。未配置本地额度、Provider 不支持余额查询或额度查询失败时返回 `unknown`，不因此拒绝推理；只有明确的 `exhausted` 或明确超过已配置预算时才限制对应候选。`quota.query` 是只读查询，不为调用方分配额度。
+
 `provider.list`：
 
 ```json

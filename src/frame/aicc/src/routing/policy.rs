@@ -568,6 +568,17 @@ pub(crate) struct QuotaSnapshot {
     pub reset_at: Option<String>,
 }
 
+impl QuotaSnapshot {
+    fn unknown() -> Self {
+        Self {
+            state: Some(QuotaState::Unknown),
+            remaining_request_units: None,
+            remaining_cost: None,
+            reset_at: None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct QuotaSourceError;
 
@@ -637,7 +648,7 @@ impl QuotaSourceFactory {
             .into_iter()
             .map(Into::into)
             .collect::<BTreeSet<_>>();
-        if provider_names.is_empty() || provider_names.iter().any(|name| name.trim().is_empty()) {
+        if provider_names.iter().any(|name| name.trim().is_empty()) {
             return Err(QuotaSourceError);
         }
         let mut providers = BTreeMap::new();
@@ -648,8 +659,13 @@ impl QuotaSourceFactory {
                 method: Some(method.to_owned()),
                 provider_instance_name: Some(provider_instance_name.clone()),
             };
-            let snapshot = self.truth.query(&lookup).await?;
-            validate_snapshot(&snapshot)?;
+            let snapshot = self
+                .truth
+                .query(&lookup)
+                .await
+                .ok()
+                .filter(valid_snapshot)
+                .unwrap_or_else(QuotaSnapshot::unknown);
             providers.insert(provider_instance_name, snapshot);
         }
         Ok(PreparedQuotaSource {
@@ -678,7 +694,9 @@ impl QuotaSourceFactory {
                 provider_instance_name: None,
             })
             .await
-            .map_err(|_| PolicyError::QuotaSourceUnavailable)?;
+            .ok()
+            .filter(valid_snapshot)
+            .unwrap_or_else(QuotaSnapshot::unknown);
         quota_response(snapshot)
     }
 }
@@ -921,11 +939,7 @@ impl<Q: QuotaSource> PolicyEngine<Q> {
             provider_instance_name: Some(candidate.provider_instance_name.into()),
         };
         match self.quota_source.query(&lookup) {
-            Err(_) => reject(
-                &mut reasons,
-                PolicyReasonCode::QuotaSourceUnavailable,
-                "quota truth source is unavailable",
-            ),
+            Err(_) => {}
             Ok(quota) => apply_quota(&mut reasons, &quota, request.request_units, estimated_cost),
         }
         PolicyDecision {
@@ -970,20 +984,20 @@ fn validate_lookup_scope(
     Ok(())
 }
 
-fn validate_snapshot(snapshot: &QuotaSnapshot) -> Result<(), QuotaSourceError> {
-    if snapshot.state.is_none()
-        || snapshot
+fn valid_snapshot(snapshot: &QuotaSnapshot) -> bool {
+    snapshot.state.is_some()
+        && !snapshot
             .remaining_cost
             .as_ref()
             .is_some_and(|value| !valid_money(value))
-    {
-        return Err(QuotaSourceError);
-    }
-    Ok(())
 }
 
 fn quota_response(snapshot: QuotaSnapshot) -> Result<QuotaQueryResponse, PolicyError> {
-    validate_snapshot(&snapshot).map_err(|_| PolicyError::QuotaSourceUnavailable)?;
+    let snapshot = if valid_snapshot(&snapshot) {
+        snapshot
+    } else {
+        QuotaSnapshot::unknown()
+    };
     Ok(QuotaQueryResponse {
         quota: QuotaView {
             state: snapshot.state.expect("validated quota state"),
@@ -1055,11 +1069,7 @@ fn apply_quota(
     estimated_cost: Option<&Money>,
 ) {
     match quota.state {
-        None => reject(
-            reasons,
-            PolicyReasonCode::QuotaSourceUnavailable,
-            "quota truth source returned an unknown state",
-        ),
+        None | Some(QuotaState::Unknown) => return,
         Some(QuotaState::Exhausted) => reject(
             reasons,
             PolicyReasonCode::QuotaExhausted,
@@ -1079,11 +1089,7 @@ fn apply_quota(
     }
     if let Some(remaining) = quota.remaining_cost.as_ref() {
         if !valid_money(remaining) {
-            reject(
-                reasons,
-                PolicyReasonCode::QuotaSourceUnavailable,
-                "budget truth source returned an invalid value",
-            );
+            return;
         } else if let Some(cost) = estimated_cost {
             if cost.currency != remaining.currency {
                 reject(
@@ -1098,12 +1104,6 @@ fn apply_quota(
                     "remaining budget is below estimated request cost",
                 );
             }
-        } else {
-            reject(
-                reasons,
-                PolicyReasonCode::CostEstimateUnavailable,
-                "budget cannot be enforced without a valid cost estimate",
-            );
         }
     }
 }
@@ -1474,7 +1474,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_money_fails_closed() {
+    async fn invalid_policy_is_rejected_and_invalid_quota_is_unknown() {
         let invalid_policy = RoutingPolicyPatch {
             route: AiccPolicyConfig {
                 max_estimated_cost: Some(LockedValue::new(Money::new(f64::NAN, "USD"))),
@@ -1503,19 +1503,18 @@ mod tests {
             seen: Arc::new(Mutex::new(Vec::new())),
         });
         let factory = QuotaSourceFactory::new(port);
-        assert!(matches!(
-            factory
-                .query_quota(
-                    &caller(),
-                    QuotaQueryRequest::new(Some(Capability::Llm), None),
-                )
-                .await,
-            Err(PolicyError::QuotaSourceUnavailable)
-        ));
+        let response = factory
+            .query_quota(
+                &caller(),
+                QuotaQueryRequest::new(Some(Capability::Llm), None),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.quota.state, QuotaState::Unknown);
     }
 
     #[test]
-    fn budget_with_unknown_cost_fails_closed() {
+    fn budget_with_unknown_cost_allows_candidate() {
         let patch = RoutingPolicyPatch::default();
         let engine = engine(&patch, FakeQuota::available());
         let caller = caller();
@@ -1539,18 +1538,13 @@ mod tests {
             credential_scope: &scope,
         };
         let decision = engine.evaluate(&request, &candidate);
-        assert!(
-            decision
-                .reasons
-                .iter()
-                .any(|reason| reason.code == PolicyReasonCode::CostEstimateUnavailable)
-        );
+        assert!(decision.allowed);
         request.estimated_cost = Some(Money::new(0.1, "USD"));
         assert!(engine.evaluate(&request, &candidate).allowed);
     }
 
     #[test]
-    fn security_truth_failures_fail_closed() {
+    fn trust_failure_rejects_while_quota_failure_does_not() {
         let quota = FakeQuota {
             result: Err(QuotaSourceError),
             seen: Arc::new(Mutex::new(Vec::new())),
@@ -1568,12 +1562,39 @@ mod tests {
                 .iter()
                 .any(|r| r.code == PolicyReasonCode::ProviderTrustUnavailable)
         );
-        assert!(
-            decision
-                .reasons
-                .iter()
-                .any(|r| r.code == PolicyReasonCode::QuotaSourceUnavailable)
-        );
+        assert!(!decision
+            .reasons
+            .iter()
+            .any(|r| r.code == PolicyReasonCode::QuotaSourceUnavailable));
+    }
+
+    #[test]
+    fn unknown_or_unavailable_quota_keeps_candidate() {
+        let caller = caller();
+        let scope = CredentialScope::Tenant {
+            tenant_id: "tenant-a".into(),
+        };
+        let cloud = trust(ProviderType::CloudApi);
+        for result in [
+            Ok(QuotaSnapshot::unknown()),
+            Err(QuotaSourceError),
+        ] {
+            let engine = engine(
+                &RoutingPolicyPatch::default(),
+                FakeQuota {
+                    result,
+                    seen: Arc::new(Mutex::new(Vec::new())),
+                },
+            );
+            assert!(evaluate(
+                &engine,
+                &caller,
+                Some(&cloud),
+                &scope,
+                ProviderPrivacy::PublicCloud,
+            )
+            .allowed);
+        }
     }
 
     #[test]
@@ -1692,7 +1713,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_factory_exposes_service_quota_query_and_fails_closed() {
+    async fn production_factory_exposes_service_quota_query_and_preserves_unknown() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let factory = QuotaSourceFactory::new(Arc::new(FakeTruthPort {
             result: FakeQuota::available().result,
@@ -1731,16 +1752,23 @@ mod tests {
             result: Err(QuotaSourceError),
             seen: Arc::new(Mutex::new(Vec::new())),
         }));
-        assert!(
-            failing
-                .prepare_route(
-                    &caller(),
-                    Capability::Llm,
-                    "chat.completions.create",
-                    ["openai_primary"],
-                )
-                .await
-                .is_err()
-        );
+        let source = failing
+            .prepare_route(
+                &caller(),
+                Capability::Llm,
+                "chat.completions.create",
+                ["openai_primary"],
+            )
+            .await
+            .unwrap();
+        let snapshot = source
+            .query(&QuotaLookup {
+                caller: caller(),
+                capability: Some(Capability::Llm),
+                method: Some("chat.completions.create".into()),
+                provider_instance_name: Some("openai_primary".into()),
+            })
+            .unwrap();
+        assert_eq!(snapshot.state, Some(QuotaState::Unknown));
     }
 }
