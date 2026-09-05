@@ -1567,6 +1567,41 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
     }),
     body: { model: "claude-test", messages: [null], max_tokens: 16 },
   }), ["body field messages[0] must be an object"]);
+  const openaiResponses = protocolContract(catalog, "openai", "openai.responses.v1");
+  assert.deepEqual(validateProviderRequest(openaiResponses, {
+    method: "POST",
+    pathname: "/v1/responses",
+    query: new URLSearchParams(),
+    headers: new Headers({
+      "content-type": "application/json",
+      authorization: "Bearer test-key",
+    }),
+    body: {
+      model: "gpt-test",
+      input: [{
+        type: "message",
+        role: "assistant",
+        content: [{ type: "input_text", text: "previous answer" }],
+      }],
+    },
+  }), ["body field input[0].content[0].type=input_text; assistant messages require output_text or refusal"]);
+  assert.deepEqual(validateProviderRequest(openaiResponses, {
+    method: "POST",
+    pathname: "/v1/responses",
+    query: new URLSearchParams(),
+    headers: new Headers({
+      "content-type": "application/json",
+      authorization: "Bearer test-key",
+    }),
+    body: {
+      model: "gpt-test",
+      input: [{
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "previous answer" }],
+      }],
+    },
+  }), []);
   assert.ok(contract.official_sources.every((source) => source.startsWith("https://")));
   const sn = protocolContract(catalog, "sn-ai-provider", "sn.openai-responses.v1");
   assert.equal(sn.path, "/api/v1/ai/responses");
@@ -2000,6 +2035,7 @@ test("T1.5 manifest owns Provider normal, streaming, async, error, and variant c
   assert.ok(manifest.some((item) => item.mock_scenario === "async_success"));
   assert.ok(manifest.some((item) => item.mock_scenario === "async_failed"));
   assert.ok(manifest.some((item) => item.mock_scenario === "async_cancel"));
+  assert.ok(manifest.some((item) => item.case_id === "t1.5.openai.openai.responses.v1.llm.history"));
   assert.ok(manifest.some((item) => item.expected_error_class === "provider_protocol_failed"));
   assert.ok(manifest.filter((item) => item.tags.includes("official_error"))
     .every((item) => typeof item.expected_retriable === "boolean" && !("expected_retryable" in item)));

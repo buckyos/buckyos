@@ -502,6 +502,9 @@ function validateNestedProviderBody(
       (body.input.length === 0 || body.input.some((item) => typeof item !== "string" && !recordValue(item)))) {
     errors.push("body field input must be a non-empty array of strings or objects");
   }
+  if (contract.id === "openai.responses.v1" && Array.isArray(body.input)) {
+    validateOpenAiResponsesInput(body.input, errors);
+  }
 
   for (const field of ["max_tokens", "max_completion_tokens", "max_output_tokens", "dimensions", "n", "top_n"]) {
     if (typeof body[field] === "number" && (!Number.isInteger(body[field]) || body[field] <= 0)) {
@@ -520,6 +523,30 @@ function validateNestedProviderBody(
       errors.push("MiniMax non-instrumental music requires lyrics or lyrics_optimizer=true");
     }
   }
+}
+
+function validateOpenAiResponsesInput(input: unknown[], errors: string[]): void {
+  input.forEach((item, index) => {
+    const message = recordValue(item);
+    if (!message || message.type !== "message") return;
+    const role = typeof message.role === "string" ? message.role : "";
+    if (!["user", "assistant", "system", "developer"].includes(role)) {
+      errors.push(`body field input[${index}].role is invalid for OpenAI Responses`);
+      return;
+    }
+    const content = Array.isArray(message.content) ? message.content : [];
+    content.forEach((part, partIndex) => {
+      const block = recordValue(part);
+      if (!block || typeof block.type !== "string") return;
+      const type = block.type;
+      if (role === "assistant" && !["output_text", "refusal"].includes(type)) {
+        errors.push(`body field input[${index}].content[${partIndex}].type=${type}; assistant messages require output_text or refusal`);
+      }
+      if (role !== "assistant" && type === "output_text") {
+        errors.push(`body field input[${index}].content[${partIndex}].type=output_text; ${role} messages require input content`);
+      }
+    });
+  });
 }
 
 export function validateProviderSuccessFixture(contract: ProviderProtocolContract): string[] {
@@ -776,11 +803,18 @@ export function buildT15Manifest(
     tags: [...cloudUpdateBase.tags, "cloud_update"],
     cleanup: [...cloudUpdateBase.cleanup, "restore_cloud_provider_rules"],
   });
+  cases.push({
+    ...cloudUpdateBase,
+    case_id: "t1.5.openai.openai.responses.v1.llm.history",
+    tags: [...cloudUpdateBase.tags, "history"],
+    expected_wire_fixture: "openai.responses.v1.request.history",
+  });
   const customDrivers = new Set(["openai", "claude", "google-gemini", "fal"]);
   cases.push(...cases.filter((testCase) =>
     customDrivers.has(testCase.provider_driver ?? "") &&
     testCase.mock_scenario === "success" &&
     !testCase.tags.includes("cloud_update") &&
+    !testCase.tags.includes("history") &&
     !testCase.tags.includes("custom_provider")
   ).map((testCase) => ({
     ...testCase,

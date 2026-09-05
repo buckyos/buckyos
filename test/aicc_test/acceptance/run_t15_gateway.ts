@@ -364,7 +364,17 @@ export function buildT15TypedParams(
     idempotency_key: `${runId}:${requestKey}`,
   };
   switch (apiType) {
-    case "llm": return { ...common, messages: [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827." }] }], max_output_tokens: 32 };
+    case "llm": return {
+      ...common,
+      messages: requestKey.endsWith(".history")
+        ? [
+          { role: "user", content: [{ type: "text", text: "Remember marker BUCKYOS-AICC-4827." }] },
+          { role: "assistant", content: [{ type: "text", text: "I will remember BUCKYOS-AICC-4827." }] },
+          { role: "user", content: [{ type: "text", text: "Return the marker now." }] },
+        ]
+        : [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827." }] }],
+      max_output_tokens: 32,
+    };
     case "embedding.text": return { ...common, items: [{ type: "text", id: "item-1", text: "BUCKYOS-AICC-4827" }] };
     case "embedding.multimodal": return { ...common, items: [{ id: "item-1", text: "marker", image: resource("image/png") }] };
     case "image.txt2img": return { ...common, prompt: "A blue square marked 4827" };
