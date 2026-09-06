@@ -63,8 +63,8 @@ BuckyOS currently depends on cyfs-gateway, so you need to build cyfs-gateway fro
 cd ~/
 git clone https://github.com/buckyos/cyfs-gateway.git
 cd cyfs-gateway/src
-uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" buckyos-build
-uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" buckyos-install --all
+uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main" buckyos-build
+uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main" buckyos-install --all
 ```
 
 ### Step 2. Build and update buckyos rootfs

@@ -21,7 +21,7 @@
 
 1. **安装 Multipass**：确保系统已安装 Multipass 且有权限创建/启动虚拟机。
 2. **Python 环境**：需要 Python 3,最好安装venv
-3. **buckyos-devkit**: 使用 `pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"` 安装
+3. **buckyos-devkit**: 使用 `pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main"` 安装
 4. **工作目录**：建议在项目src目录下执行命令。
 
 `ubuntu_sn` 模板会从 Node.js 官方发布目录安装并校验当前 Node.js 24 LTS，同时提供 npm。BNS 的 Hardhat 部署要求 Node.js 22.13 或更高版本。已有 SN VM 不会自动重新执行 cloud-init；模板更新后需要重建 VM，或先为现有 VM 补齐相同版本的 Node.js。

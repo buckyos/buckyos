@@ -203,7 +203,7 @@ jobs:
         run: choco install nsis -y --no-progress
 
       - name: Install buckyos devkit
-        run: python -m pip install -U "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
+        run: python -m pip install -U "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main"
 
       - name: Set runtime paths (Unix)
         if: ${{ runner.os != 'Windows' }}
@@ -240,11 +240,11 @@ jobs:
           New-Item -ItemType Directory -Path $env:BUCKYOS_ROOT -Force | Out-Null
 
       - name: Clone cyfs-gateway
-        run: git clone --depth 1 --branch beta2.2 https://github.com/buckyos/cyfs-gateway.git ../cyfs-gateway
+        run: git clone --depth 1 --branch main https://github.com/buckyos/cyfs-gateway.git ../cyfs-gateway
 
       - name: Clone BuckyOSApp
         if: ${{ matrix.needs_tauri }}
-        run: git clone --depth 1 --branch beta2.2 https://github.com/buckyos/BuckyOSApp.git ../BuckyOSApp
+        run: git clone --depth 1 --branch main https://github.com/buckyos/BuckyOSApp.git ../BuckyOSApp
 
       - name: Install BuckyOSApp dependencies (Unix)
         if: ${{ matrix.needs_tauri && runner.os != 'Windows' }}

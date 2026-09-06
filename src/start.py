@@ -8,7 +8,7 @@ import platform
 from pathlib import Path
 
 
-DEVKIT_SPEC = "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
+DEVKIT_SPEC = "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main"
 SCRIPT_DIR = Path(__file__).resolve().parent
 SDK_TOOL_DIR = SCRIPT_DIR / "rootfs" / "libexec" / "buckyos-tool"
 

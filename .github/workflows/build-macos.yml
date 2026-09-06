@@ -46,7 +46,7 @@ jobs:
       if: ${{ inputs.enable_tests }}
       run: cargo test -- --test-threads=1
     - name: Install BuckyOS devkit
-      run: pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
+      run: pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main"
     - name: Prepare SDK/Tool distribution
       working-directory: ./src
       env:

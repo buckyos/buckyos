@@ -13,7 +13,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 DEFAULT_VM_ROOTFS = Path("/opt/buckyosvm")
 DEFAULT_WEB3_GATEWAY_ROOT = Path("/opt/web3-gateway")
-DEVKIT_SPEC = "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
+DEVKIT_SPEC = "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main"
 
 
 def _command_names(command: str) -> list[str]:

@@ -334,7 +334,7 @@ def ensure_repos(args: argparse.Namespace) -> None:
 
         print(f"Cloning {name} into {path}", flush=True)
         path.parent.mkdir(parents=True, exist_ok=True)
-        run_command(["git", "clone", url, str(path)])
+        run_command(["git", "clone", "--branch", "main", url, str(path)])
 
 
 def build_current_repo() -> None:

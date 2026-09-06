@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 
-DEVKIT_SPEC = "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
+DEVKIT_SPEC = "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main"
 
 
 def _command_names(command: str) -> list[str]:

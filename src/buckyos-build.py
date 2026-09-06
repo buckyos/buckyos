@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 
-DEVKIT_SPEC = "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
+DEVKIT_SPEC = "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main"
 SDK_TOOL_INPUTS = {
     "BUCKYOS_SDK_TOOL_ARTIFACT": "--artifact",
     "BUCKYOS_SDK_TOOL_RELEASE_MANIFEST": "--release-manifest",
