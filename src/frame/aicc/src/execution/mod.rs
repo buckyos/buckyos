@@ -7,6 +7,7 @@ use crate::protocol::{
     cancellation_pair, CancelHandle, Cancellation, NativeTaskHandle, NativeTaskState,
     ProtocolError, ProtocolErrorKind, ProtocolEvent, ProtocolOutput, ProtocolStream,
 };
+use crate::resource::ResourceAccessContext;
 use async_trait::async_trait;
 use buckyos_api::{AiArtifact, AiCost, AiUsage, AiccError, AiccErrorCode, ApiType, Capability};
 use futures_util::{future::join_all, StreamExt};
@@ -327,6 +328,7 @@ impl std::fmt::Debug for ResumeCredential {
 pub(crate) struct NativeTaskResumeDescriptor {
     pub base_url: String,
     pub credential: Option<ResumeCredential>,
+    pub resource_access_context: ResourceAccessContext,
     pub resolved_parameters: BTreeMap<String, Value>,
     pub request_timeout_ms: u64,
     pub max_request_bytes: u64,
@@ -346,6 +348,9 @@ impl NativeTaskResumeDescriptor {
             || base_url.cannot_be_a_base()
             || !base_url.username().is_empty()
             || base_url.password().is_some()
+            || self.resource_access_context.tenant_id.trim().is_empty()
+            || self.resource_access_context.caller_id.trim().is_empty()
+            || self.resource_access_context.request_id.trim().is_empty()
             || self.request_timeout_ms == 0
             || self.max_request_bytes == 0
             || self.max_response_bytes == 0
@@ -1659,6 +1664,8 @@ mod tests {
                 header_name: None,
             }),
             resolved_parameters: BTreeMap::from([("provider_model_id".into(), json!("model"))]),
+            resource_access_context: ResourceAccessContext::new("tenant-a", "alice", "request-a")
+                .unwrap(),
             request_timeout_ms: 10_000,
             max_request_bytes: 1_024,
             max_response_bytes: 2_048,
@@ -1704,7 +1711,9 @@ mod tests {
             credential_reference: "credential-1".into(),
             credential_header_name: None,
             resource_requirements: Vec::new(),
-            resource_access_context: None,
+            resource_access_context: Some(
+                ResourceAccessContext::new("tenant-1", "user-1", "request-1").unwrap(),
+            ),
             pricing: ResolvedPricing {
                 source: PricingSource::RouteEstimate,
                 pricing: None,

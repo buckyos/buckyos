@@ -1424,8 +1424,6 @@ const TASK_RESULT_ARTIFACT_API_TYPES = new Set([
   "image.inpaint",
   "image.upscale",
   "image.bg_remove",
-  "vision.ocr",
-  "vision.segment",
   "audio.tts",
   "audio.music",
   "audio.enhance",

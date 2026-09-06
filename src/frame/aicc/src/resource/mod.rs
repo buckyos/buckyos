@@ -37,7 +37,7 @@ const RESERVED_ARTIFACT_META_KEYS: [&str; 6] = [
     "space",
 ];
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ResourceAccessContext {
     pub tenant_id: String,
     pub caller_id: String,

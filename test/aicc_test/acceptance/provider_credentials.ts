@@ -5,6 +5,7 @@ const SUPPORTED_TOKEN_DRIVERS = [
   "fal",
   "minimax",
   "openrouter",
+  "glm",
 ] as const;
 
 export type ProviderTokenDriver = (typeof SUPPORTED_TOKEN_DRIVERS)[number];
@@ -18,14 +19,8 @@ function object(value: unknown): JsonObject | undefined {
     : undefined;
 }
 
-function sectionKey(driver: ProviderTokenDriver): string {
-  if (driver === "google-gemini") return "google";
-  if (driver === "openrouter") return "openai";
-  return driver;
-}
-
-function sectionKeys(driver: ProviderTokenDriver): string[] {
-  return driver === "google-gemini" ? ["google", "gemini", "google_gemini"] : [sectionKey(driver)];
+function profileId(driver: ProviderTokenDriver): string {
+  return driver === "google-gemini" ? "gemini" : driver;
 }
 
 function defaultInstance(driver: ProviderTokenDriver, name: string, token: string): JsonObject {
@@ -33,24 +28,38 @@ function defaultInstance(driver: ProviderTokenDriver, name: string, token: strin
     openai: "https://api.openai.com/v1",
     claude: "https://api.anthropic.com/v1",
     "google-gemini": "https://generativelanguage.googleapis.com/v1beta",
-    fal: "https://fal.run",
-    minimax: "https://api.minimax.io/v1",
+    fal: "https://queue.fal.run",
+    minimax: "https://api.minimax.io/anthropic",
     openrouter: "https://openrouter.ai/api/v1",
+    glm: "https://api.z.ai/api/paas/v4",
   };
+  const adapters: Record<ProviderTokenDriver, string> = {
+    openai: "openai-responses",
+    claude: "claude-messages",
+    "google-gemini": "gemini-interactions",
+    fal: "fal-queue",
+    minimax: "minimax-messages",
+    openrouter: "openrouter-openai",
+    glm: "glm-chat",
+  };
+  const profile = profileId(driver);
   return {
     provider_instance_name: name,
     provider_type: "cloud_api",
-    provider_driver: driver,
-    api_token: token,
+    provider_profile_id: profile,
+    protocol_adapter_id: adapters[driver],
     base_url: endpoints[driver],
+    credentials: { api_token: { locked: token } },
+    provider_rules_id: profile,
+    enabled: true,
     timeout_ms: 300_000,
   };
 }
 
-function instanceDriver(instance: JsonObject, section: string): string {
-  const value = instance.provider_driver;
-  if (typeof value === "string" && value.trim()) return value.trim();
-  return section === "gemini" ? "google-gemini" : section;
+function instanceDriver(instance: JsonObject): string {
+  const value = instance.provider_profile_id;
+  if (value === "gemini") return "google-gemini";
+  return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
 export function configuredProviderTokens(
@@ -73,6 +82,10 @@ export function applyProviderTokens(
   selectedInstances: Record<string, string>,
 ): Record<string, unknown> {
   const settings = structuredClone(original);
+  const providers = Array.isArray(settings.providers)
+    ? settings.providers.flatMap((value) => object(value) ? [value as JsonObject] : [])
+    : [];
+  settings.providers = providers;
   for (const [rawDriver, rawToken] of Object.entries(tokens)) {
     const driver = rawDriver as ProviderTokenDriver;
     const token = rawToken?.trim();
@@ -80,22 +93,14 @@ export function applyProviderTokens(
     if (!SUPPORTED_TOKEN_DRIVERS.includes(driver)) {
       throw new Error(`provider credential driver ${driver} is not supported`);
     }
-    const existingKey = sectionKeys(driver).find((candidate) => object(settings[candidate]));
-    const key = existingKey ?? sectionKey(driver);
-    const section = object(settings[key]) ?? { enabled: true, instances: [] };
-    settings[key] = section;
-    section.enabled = true;
-    const instances = Array.isArray(section.instances)
-      ? section.instances.flatMap((value) => object(value) ? [value as JsonObject] : [])
-      : [];
-    const candidates = instances.filter((instance) => instanceDriver(instance, key) === driver);
+    const candidates = providers.filter((instance) => instanceDriver(instance) === driver);
     const selectedName = selectedInstances[driver]?.trim();
     if (selectedName) {
       const selected = candidates.find((instance) =>
-        instance.provider_instance_name === selectedName || instance.instance_id === selectedName
+        instance.provider_instance_name === selectedName
       );
       if (selected) {
-        selected.api_token = token;
+        selected.credentials = { api_token: { locked: token } };
         continue;
       }
       if (candidates.length > 0) {
@@ -103,7 +108,7 @@ export function applyProviderTokens(
       }
     }
     if (candidates.length === 1) {
-      candidates[0].api_token = token;
+      candidates[0].credentials = { api_token: { locked: token } };
       continue;
     }
     if (candidates.length === 0) {
@@ -114,13 +119,14 @@ export function applyProviderTokens(
         fal: "fal-main",
         minimax: "minimax-main",
         openrouter: "openrouter-main",
+        glm: "glm-main",
       };
       const created = defaultInstance(
         driver,
         selectedName || defaultNames[driver],
         token,
       );
-      section.instances = [...instances, created];
+      providers.push(created);
       continue;
     }
     if (candidates.length > 1) {

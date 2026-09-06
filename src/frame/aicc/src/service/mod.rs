@@ -2,6 +2,7 @@ mod cloud_update;
 
 use anyhow::Context;
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AckControlReq,
     ActorRef, AiMethodStatus, AiccCall, AiccError, AiccErrorCode, AiccFallbackMode,
@@ -19,10 +20,10 @@ use buckyos_api::{
     LlmChatInvokeRequest, LlmChatInvokeResponse, ModelDisable, ModelItem, ModelRequirement,
     ProtocolAdapterListRequest, ProtocolAdapterListResponse, ProviderAddRequest,
     ProviderAddResponse, ProviderCatalogRequest, ProviderCatalogResponse, ProviderDeleteRequest,
-    ProviderDeleteResponse, ProviderHealthRequest, ProviderHealthResponse, ProviderInstanceAuthMode,
-    ProviderInstanceAuthView, ProviderInstanceHealthState, ProviderInstanceHealthView,
-    ProviderInstanceInventoryState, ProviderInstanceInventoryView, ProviderInstanceView,
-    ProviderListRequest, ProviderListResponse, ProviderRefreshModelsRequest,
+    ProviderDeleteResponse, ProviderHealthRequest, ProviderHealthResponse,
+    ProviderInstanceAuthMode, ProviderInstanceAuthView, ProviderInstanceHealthState,
+    ProviderInstanceHealthView, ProviderInstanceInventoryState, ProviderInstanceInventoryView,
+    ProviderInstanceView, ProviderListRequest, ProviderListResponse, ProviderRefreshModelsRequest,
     ProviderRefreshModelsResponse, ProviderReloadResult, ProviderUpdateRequest,
     ProviderUpdateResponse, ProviderValidateRequest, ProviderValidateResponse,
     QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
@@ -546,9 +547,7 @@ impl RuntimeInferencePort {
                 provider_names,
             )
             .await
-            .map_err(|_| {
-                inference_error(AiccErrorCode::PolicyDenied, "quota scope is invalid")
-            })?;
+            .map_err(|_| inference_error(AiccErrorCode::PolicyDenied, "quota scope is invalid"))?;
         let runtime_states = candidate_runtime_states(snapshot.as_ref(), caller).await;
         let session_overlay = input
             .session_overlay
@@ -2299,8 +2298,10 @@ impl QuotaTruthPort for SystemConfigQuotaTruthPort {
             Ok(usage) => usage,
             Err(_) => return Ok(provider_quota(provider_observation.as_ref())),
         };
-        Ok(combine_quota(record, &usage.total, provider_observation.as_ref())
-            .unwrap_or_else(|_| provider_quota(provider_observation.as_ref())))
+        Ok(
+            combine_quota(record, &usage.total, provider_observation.as_ref())
+                .unwrap_or_else(|_| provider_quota(provider_observation.as_ref())),
+        )
     }
 }
 
@@ -2983,6 +2984,154 @@ impl RuntimeProviderExecutionPort {
         Ok(output)
     }
 
+    async fn materialize_inline_artifact_output(
+        &self,
+        call: &ResolvedProviderCall,
+        output: ProtocolOutput,
+    ) -> Result<ProtocolOutput, ProtocolError> {
+        let context = call.resource_access_context.as_ref().ok_or_else(|| {
+            ProtocolError::invalid_configuration("inline artifact context is missing")
+        })?;
+        self.materialize_inline_artifact_output_with_context(context, output)
+            .await
+    }
+
+    async fn materialize_inline_artifact_output_with_context(
+        &self,
+        context: &ResourceAccessContext,
+        mut output: ProtocolOutput,
+    ) -> Result<ProtocolOutput, ProtocolError> {
+        let mut value_resources = Vec::new();
+        collect_inline_base64_resource_refs(&output.value, &mut value_resources);
+        let has_sideband_resources = output
+            .artifacts
+            .iter()
+            .any(|artifact| matches!(artifact.resource, buckyos_api::ResourceRef::Base64 { .. }));
+        if !has_sideband_resources && value_resources.is_empty() {
+            return Ok(output);
+        }
+        let manager = ResourceManager::new(
+            Arc::new(AuthenticatedResourceAuthorizer {
+                tenant_id: context.tenant_id.clone(),
+                caller_id: context.caller_id.clone(),
+                storage: self.storage.clone(),
+            }),
+            self.resource_store.clone(),
+            self.url_fetcher.clone(),
+            ResourceLimits::default(),
+        )
+        .map_err(|_| ProtocolError::invalid_configuration("artifact writer is unavailable"))?;
+
+        for index in 0..output.artifacts.len() {
+            let (old_resource, name, mime, bytes) = match &output.artifacts[index].resource {
+                buckyos_api::ResourceRef::Base64 { mime, data_base64 } => {
+                    let bytes = BASE64_STANDARD.decode(data_base64).map_err(|_| {
+                        ProtocolError::invalid_response("inline artifact is not valid base64")
+                    })?;
+                    (
+                        output.artifacts[index].resource.clone(),
+                        output.artifacts[index].name.clone(),
+                        mime.clone(),
+                        bytes,
+                    )
+                }
+                _ => continue,
+            };
+            let mut artifact = manager
+                .write_artifact(
+                    context,
+                    &bytes,
+                    ArtifactSpec {
+                        name,
+                        mime: mime.clone(),
+                        attributes: Map::new(),
+                        embedding: None,
+                    },
+                )
+                .await
+                .map_err(|_| {
+                    ProtocolError::invalid_configuration("inline artifact write failed")
+                })?;
+            let buckyos_api::ResourceRef::NamedObject { obj_id } = &artifact.resource else {
+                return Err(ProtocolError::invalid_configuration(
+                    "inline artifact did not produce a Named Object",
+                ));
+            };
+            self.storage
+                .remember_artifact_scope(
+                    &obj_id.to_string(),
+                    &context.tenant_id,
+                    &context.caller_id,
+                    None,
+                    now_ms() as i64,
+                )
+                .await
+                .map_err(|_| {
+                    ProtocolError::invalid_configuration("inline artifact ownership write failed")
+                })?;
+            replace_resource_ref_value(&mut output.value, &old_resource, &artifact.resource)?;
+            if artifact.mime.is_none() {
+                artifact.mime = Some(mime);
+            }
+            append_materialized_artifact_metadata(
+                &mut output.value,
+                obj_id.to_string(),
+                artifact.name.clone(),
+                artifact.mime.clone(),
+            );
+            output.artifacts[index] = artifact;
+        }
+        for resource in value_resources {
+            let buckyos_api::ResourceRef::Base64 { mime, data_base64 } = &resource else {
+                continue;
+            };
+            let bytes = BASE64_STANDARD.decode(data_base64).map_err(|_| {
+                ProtocolError::invalid_response("inline artifact is not valid base64")
+            })?;
+            let artifact = manager
+                .write_artifact(
+                    context,
+                    &bytes,
+                    ArtifactSpec {
+                        name: format!("artifact-{}", output.artifacts.len() + 1),
+                        mime: mime.clone(),
+                        attributes: Map::new(),
+                        embedding: None,
+                    },
+                )
+                .await
+                .map_err(|_| {
+                    ProtocolError::invalid_configuration("inline artifact write failed")
+                })?;
+            let buckyos_api::ResourceRef::NamedObject { obj_id } = &artifact.resource else {
+                return Err(ProtocolError::invalid_configuration(
+                    "inline artifact did not produce a Named Object",
+                ));
+            };
+            self.storage
+                .remember_artifact_scope(
+                    &obj_id.to_string(),
+                    &context.tenant_id,
+                    &context.caller_id,
+                    None,
+                    now_ms() as i64,
+                )
+                .await
+                .map_err(|_| {
+                    ProtocolError::invalid_configuration("inline artifact ownership write failed")
+                })?;
+            replace_resource_ref_value(&mut output.value, &resource, &artifact.resource)?;
+            append_materialized_artifact_metadata(
+                &mut output.value,
+                obj_id.to_string(),
+                artifact.name.clone(),
+                artifact.mime.clone(),
+            );
+            output.artifacts.push(artifact);
+        }
+        Ok(output)
+    }
+
     fn map_rerank_output(
         call: &ResolvedProviderCall,
         mut output: ProtocolOutput,
@@ -3243,6 +3392,10 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                             .materialize_embedding_output(call, output)
                             .await
                             .map_err(ProviderStartFailure::after_accept)?;
+                        let output = self
+                            .materialize_inline_artifact_output(call, output)
+                            .await
+                            .map_err(ProviderStartFailure::after_accept)?;
                         let output = Self::map_rerank_output(call, output)
                             .map_err(ProviderStartFailure::after_accept)?;
                         let output = Self::validate_computer_output(call, output)
@@ -3334,6 +3487,15 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                     resume: NativeTaskResumeDescriptor {
                         base_url: call.context.base_url.clone(),
                         credential,
+                        resource_access_context: call.resource_access_context.clone().ok_or_else(
+                            || {
+                                ProviderStartFailure::after_accept(
+                                    ProtocolError::invalid_configuration(
+                                        "native task resource context is missing",
+                                    ),
+                                )
+                            },
+                        )?,
                         resolved_parameters: call.input.resolved_parameters.clone(),
                         request_timeout_ms: call.context.limits.request_timeout.as_millis() as u64,
                         max_request_bytes: call.context.limits.max_request_bytes as u64,
@@ -3368,7 +3530,20 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                     )
                     .await?
                 {
-                    NativeTaskOutput::Result(output) => Ok(NativeTaskPoll::Complete(output)),
+                    NativeTaskOutput::Result(output) => {
+                        let output = self
+                            .materialize_inline_artifact_output_with_context(
+                                &binding
+                                    .resume
+                                    .as_ref()
+                                    .ok_or(NativeTaskResumeError::CredentialUnavailable)?
+                                    .resource_access_context,
+                                output,
+                            )
+                            .await
+                            .map_err(NativeTaskResumeError::Protocol)?;
+                        Ok(NativeTaskPoll::Complete(output))
+                    }
                     _ => Err(NativeTaskResumeError::Protocol(
                         ProtocolError::invalid_response(
                             "native result returned an unexpected response",
@@ -3623,10 +3798,102 @@ fn task_manager_error(error: RPCErrors) -> buckyos_api::AiccError {
             "idempotency key was already used with a different canonical request body",
         );
     }
+    log::warn!("TaskMgr operation failed for AICC runner: {error}");
     buckyos_api::AiccError::new(
         buckyos_api::AiccErrorCode::InternalError,
         "TaskMgr operation failed",
     )
+}
+
+fn replace_resource_ref_value(
+    value: &mut Value,
+    old: &buckyos_api::ResourceRef,
+    new: &buckyos_api::ResourceRef,
+) -> Result<(), ProtocolError> {
+    let old = serde_json::to_value(old).map_err(|_| {
+        ProtocolError::invalid_configuration("inline artifact resource could not be serialized")
+    })?;
+    let new = serde_json::to_value(new).map_err(|_| {
+        ProtocolError::invalid_configuration("inline artifact resource could not be serialized")
+    })?;
+    replace_json_value(value, &old, &new);
+    Ok(())
+}
+
+fn append_materialized_artifact_metadata(
+    value: &mut Value,
+    obj_id: String,
+    name: String,
+    mime: Option<String>,
+) {
+    let Some(root) = value.as_object_mut() else {
+        return;
+    };
+    let extra = root
+        .entry("extra".to_owned())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Some(extra) = extra.as_object_mut() else {
+        return;
+    };
+    let materialized = extra
+        .entry("materialized_artifacts".to_owned())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(materialized) = materialized.as_array_mut() else {
+        return;
+    };
+    materialized.push(json!({
+        "obj_id": obj_id,
+        "name": name,
+        "mime": mime,
+    }));
+}
+
+fn collect_inline_base64_resource_refs(value: &Value, found: &mut Vec<buckyos_api::ResourceRef>) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_inline_base64_resource_refs(item, found);
+            }
+        }
+        Value::Object(object) => {
+            if object.get("kind").and_then(Value::as_str) == Some("base64") {
+                if let Ok(resource @ buckyos_api::ResourceRef::Base64 { .. }) =
+                    serde_json::from_value::<buckyos_api::ResourceRef>(Value::Object(
+                        object.clone(),
+                    ))
+                {
+                    if !found.contains(&resource) {
+                        found.push(resource);
+                    }
+                    return;
+                }
+            }
+            for item in object.values() {
+                collect_inline_base64_resource_refs(item, found);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn replace_json_value(value: &mut Value, old: &Value, new: &Value) {
+    if value == old {
+        *value = new.clone();
+        return;
+    }
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                replace_json_value(item, old, new);
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values_mut() {
+                replace_json_value(item, old, new);
+            }
+        }
+        _ => {}
+    }
 }
 
 struct ServiceModelAssembler {
@@ -4199,7 +4466,9 @@ fn logical_node(items: &[(&str, &str, f64)]) -> AiccLogicalNodeOverlay {
         items: Some(
             items
                 .iter()
-                .map(|(name, target, weight)| ((*name).to_string(), ModelItem::new(*target, *weight)))
+                .map(|(name, target, weight)| {
+                    ((*name).to_string(), ModelItem::new(*target, *weight))
+                })
                 .collect(),
         ),
         ..AiccLogicalNodeOverlay::default()
@@ -5834,8 +6103,7 @@ mod tests {
             1,
             [crate::catalog::CurrentCatalogFile {
                 kind: crate::catalog::CatalogKind::ModelDriver,
-                contents: include_bytes!("../../driver_metadata/models/openai.model.json")
-                    .to_vec(),
+                contents: include_bytes!("../../driver_metadata/models/openai.model.json").to_vec(),
             }],
             &crate::catalog::CatalogBuildOptions::default(),
         )
@@ -5888,8 +6156,7 @@ mod tests {
             1,
             [crate::catalog::CurrentCatalogFile {
                 kind: crate::catalog::CatalogKind::ModelDriver,
-                contents: include_bytes!("../../driver_metadata/models/openai.model.json")
-                    .to_vec(),
+                contents: include_bytes!("../../driver_metadata/models/openai.model.json").to_vec(),
             }],
             &crate::catalog::CatalogBuildOptions::default(),
         )
@@ -5943,8 +6210,7 @@ mod tests {
             1,
             [crate::catalog::CurrentCatalogFile {
                 kind: crate::catalog::CatalogKind::ModelDriver,
-                contents: include_bytes!("../../driver_metadata/models/openai.model.json")
-                    .to_vec(),
+                contents: include_bytes!("../../driver_metadata/models/openai.model.json").to_vec(),
             }],
             &crate::catalog::CatalogBuildOptions::default(),
         )
@@ -6005,7 +6271,9 @@ mod tests {
         let rejected = candidates
             .admissions
             .iter()
-            .find(|record| record.exact_model == "basic@primary" && record.logical_path == "llm.plan")
+            .find(|record| {
+                record.exact_model == "basic@primary" && record.logical_path == "llm.plan"
+            })
             .unwrap();
         assert!(!rejected.admitted);
         assert!(rejected
@@ -6019,8 +6287,7 @@ mod tests {
             1,
             [crate::catalog::CurrentCatalogFile {
                 kind: crate::catalog::CatalogKind::ModelDriver,
-                contents: include_bytes!("../../driver_metadata/models/openai.model.json")
-                    .to_vec(),
+                contents: include_bytes!("../../driver_metadata/models/openai.model.json").to_vec(),
             }],
             &crate::catalog::CatalogBuildOptions::default(),
         )
@@ -6281,6 +6548,44 @@ mod tests {
         ));
         assert_eq!(error.message, "TaskMgr operation failed");
         assert!(!format!("{error:?}").contains("top-secret"));
+    }
+
+    #[test]
+    fn inline_artifact_replacement_updates_nested_output_values() {
+        let old = buckyos_api::ResourceRef::base64("image/png".to_string(), "cG5n".to_string());
+        let new = buckyos_api::ResourceRef::url(
+            "https://example.invalid/image.png".to_string(),
+            Some("image/png".to_string()),
+        );
+        let mut value = json!({
+            "images": [old],
+            "nested": {
+                "resource": old
+            }
+        });
+
+        replace_resource_ref_value(&mut value, &old, &new).unwrap();
+
+        assert_eq!(value["images"][0]["kind"], "url");
+        assert_eq!(value["nested"]["resource"]["kind"], "url");
+        assert!(!value.to_string().contains("cG5n"));
+    }
+
+    #[test]
+    fn inline_artifact_collection_finds_nested_base64_resources() {
+        let mut found = Vec::new();
+        collect_inline_base64_resource_refs(
+            &json!({
+                "image": {"kind":"base64","mime":"image/png","data_base64":"cG5n"},
+                "text": "keep"
+            }),
+            &mut found,
+        );
+        assert_eq!(found.len(), 1);
+        assert!(matches!(
+            &found[0],
+            buckyos_api::ResourceRef::Base64 { mime, .. } if mime == "image/png"
+        ));
     }
 
     fn quota_record() -> QuotaTruthRecord {

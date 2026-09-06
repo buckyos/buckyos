@@ -1155,31 +1155,28 @@ test("settings transaction reauthenticates when the original cleanup session exp
 
 test("Provider credentials patch only the selected runtime instance without mutating input", () => {
   const original = {
-    openai: {
-      instances: [
-        {
-          provider_instance_name: "openai-one",
-          provider_driver: "openai",
-          api_token: "old-one",
-        },
-        {
-          provider_instance_name: "openai-two",
-          provider_driver: "openai",
-          api_token: "old-two",
-        },
-        {
-          provider_instance_name: "router",
-          provider_driver: "openrouter",
-          api_token: "old-router",
-        },
-      ],
-    },
-    gemini: {
-      instances: [{
+    providers: [
+      {
+        provider_instance_name: "openai-one",
+        provider_profile_id: "openai",
+        credentials: { api_token: { locked: "old-one" } },
+      },
+      {
+        provider_instance_name: "openai-two",
+        provider_profile_id: "openai",
+        credentials: { api_token: { locked: "old-two" } },
+      },
+      {
+        provider_instance_name: "router",
+        provider_profile_id: "openrouter",
+        credentials: { api_token: { locked: "old-router" } },
+      },
+      {
         provider_instance_name: "gemini",
-        api_token: "old-gemini",
-      }],
-    },
+        provider_profile_id: "gemini",
+        credentials: { api_token: { locked: "old-gemini" } },
+      },
+    ],
   };
   const patched = applyProviderTokens(original, {
     openai: "new-openai",
@@ -1190,11 +1187,11 @@ test("Provider credentials patch only the selected runtime instance without muta
     openrouter: "router",
     "google-gemini": "gemini",
   }) as typeof original;
-  assert.equal(original.openai.instances[1].api_token, "old-two");
-  assert.equal(patched.openai.instances[0].api_token, "old-one");
-  assert.equal(patched.openai.instances[1].api_token, "new-openai");
-  assert.equal(patched.openai.instances[2].api_token, "new-router");
-  assert.equal(patched.gemini.instances[0].api_token, "new-gemini");
+  assert.equal(original.providers[1].credentials.api_token.locked, "old-two");
+  assert.equal(patched.providers[0].credentials.api_token.locked, "old-one");
+  assert.equal(patched.providers[1].credentials.api_token.locked, "new-openai");
+  assert.equal(patched.providers[2].credentials.api_token.locked, "new-router");
+  assert.equal(patched.providers[3].credentials.api_token.locked, "new-gemini");
   assert.throws(
     () => applyProviderTokens(original, { openai: "secret" }, {}),
     /multiple configured instances/,
@@ -1204,34 +1201,36 @@ test("Provider credentials patch only the selected runtime instance without muta
 test("Provider credentials accept TOML values or provider-specific environment variables", () => {
   const tokens = configuredProviderTokens({
     "provider_credentials.openai.api_token": "toml-openai",
-  }, (name) => name === "AICC_CLAUDE_API_TOKEN" ? "env-claude" : undefined);
-  assert.deepEqual(tokens, { openai: "toml-openai", claude: "env-claude" });
+  }, (name) => {
+    if (name === "AICC_CLAUDE_API_TOKEN") return "env-claude";
+    if (name === "AICC_GLM_API_TOKEN") return "env-glm";
+    return undefined;
+  });
+  assert.deepEqual(tokens, { openai: "toml-openai", claude: "env-claude", glm: "env-glm" });
 });
 
 test("Provider credentials create one current-schema instance when the section is absent", () => {
-  const patched = applyProviderTokens({
-    "sn-ai-provider": { enabled: true, instances: [] },
-  }, {
+  const patched = applyProviderTokens({}, {
     openai: "openai-token",
     "google-gemini": "gemini-token",
     openrouter: "router-token",
-  }, {}) as Record<
-    string,
-    { enabled: boolean; instances: Array<Record<string, unknown>> }
-  >;
-  assert.equal(patched.openai.instances.length, 2);
+    glm: "glm-token",
+  }, {}) as { providers: Array<Record<string, unknown>> };
+  assert.equal(patched.providers.length, 4);
   assert.deepEqual(
-    patched.openai.instances.map((instance) => instance.provider_driver),
-    ["openai", "openrouter"],
+    patched.providers.map((instance) => instance.provider_profile_id),
+    ["openai", "gemini", "openrouter", "glm"],
   );
   assert.equal(
-    patched.google.instances[0].provider_instance_name,
+    patched.providers[1].provider_instance_name,
     "google-gemini-main",
   );
   assert.equal(
-    patched.google.instances[0].base_url,
+    patched.providers[1].base_url,
     "https://generativelanguage.googleapis.com/v1beta",
   );
+  assert.equal(patched.providers[3].provider_instance_name, "glm-main");
+  assert.equal(patched.providers[3].base_url, "https://api.z.ai/api/paas/v4");
 });
 
 test("provider scheduler runs sessions concurrently within global and provider limits", async () => {

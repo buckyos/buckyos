@@ -65,6 +65,7 @@ import {
 import { JudgeError, runJudge, selectJudgeModel } from "./judge.ts";
 import { bindOfficialCatalogInstances, fetchOfficialCatalogs } from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
+import { inventoriesFromModelsList } from "./inventory.ts";
 import {
   startNdnFixtureService,
   type NdnFixtureService,
@@ -380,6 +381,7 @@ async function parseOptions(args: string[]): Promise<Options> {
     "fal",
     "minimax",
     "openrouter",
+    "glm",
     "sn-ai-provider",
   ]) {
     const configured = tomlString(config, `official_catalog_credentials.${driver}.api_token`);
@@ -561,7 +563,7 @@ async function parseOptions(args: string[]): Promise<Options> {
 function normalizeInventories(raw: unknown): ProviderInventory[] {
   if (!raw || typeof raw !== "object") throw new Error("models.list returned non-object");
   const providers = (raw as { providers?: unknown }).providers;
-  if (!Array.isArray(providers)) throw new Error("models.list.providers must be an array");
+  if (!Array.isArray(providers)) return inventoriesFromModelsList(raw);
   return providers.map((value) => {
     const provider = value as ProviderInventory;
     if (!provider.provider_driver || !provider.provider_instance_name || !Array.isArray(provider.models)) {
@@ -781,6 +783,10 @@ function artifactSources(value: unknown, depth = 0): Array<Record<string, unknow
     ? [{ ...source, _content_type: record.type }]
     : [];
   return [...found, ...Object.values(record).flatMap((child) => artifactSources(child, depth + 1))];
+}
+
+function requiresUploadedFixtures(apiType: string): boolean {
+  return apiType !== "llm" && apiType !== "embedding";
 }
 
 function decodeBase64(value: string): Uint8Array {
@@ -1142,7 +1148,7 @@ async function executeAcceptance(input: {
       outbound_message_ids: [],
       artifact_ids: [],
       attempts: [{
-        attempt: 0,
+        attempt: 1,
         started_at: new Date().toISOString(),
         elapsed_ms: 0,
         status: "skipped",
@@ -1188,7 +1194,7 @@ async function executeAcceptance(input: {
         outbound_message_ids: [],
         artifact_ids: [],
         attempts: [{
-          attempt: 0,
+          attempt: 1,
           started_at: new Date().toISOString(),
           elapsed_ms: 0,
           status: "skipped",
@@ -1217,7 +1223,7 @@ async function executeAcceptance(input: {
         outbound_message_ids: [],
         artifact_ids: [],
         attempts: [{
-          attempt: 0,
+          attempt: 1,
           started_at: new Date().toISOString(),
           elapsed_ms: 0,
           status: "skipped",
@@ -1271,7 +1277,8 @@ async function executeAcceptance(input: {
   let executeRealModelCalls = options.allowRealModelCalls;
   if (executeRealModelCalls && plannedCalls > 0) {
     executeRealModelCalls = await confirmRealModelCalls(options.assumeYes);
-    if (executeRealModelCalls) {
+    const uploadFixtures = selectedCells.some((cell) => requiresUploadedFixtures(cell.api_type));
+    if (executeRealModelCalls && uploadFixtures) {
       ndnFixtureService = await startNdnFixtureService({
         gatewayUrl: options.gatewayUrl,
         runId,
@@ -1289,7 +1296,7 @@ async function executeAcceptance(input: {
         ndnFixtureService.publicBaseUrl,
         uploadedFixtureIds,
       );
-    } else {
+    } else if (!executeRealModelCalls) {
       console.log("[cancelled] real model calls were not started");
     }
   }
@@ -1619,7 +1626,7 @@ async function executeAcceptance(input: {
         outbound_message_ids: [],
         artifact_ids: [],
         attempts: [{
-          attempt: 0,
+          attempt: 1,
           started_at: new Date().toISOString(),
           elapsed_ms: 0,
           status: "skipped",

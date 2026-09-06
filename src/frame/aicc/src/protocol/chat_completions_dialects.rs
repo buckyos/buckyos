@@ -647,7 +647,7 @@ fn reasoning_from_response(
         content.push(AiContent::Thinking {
             summary: None,
             text,
-            provider_metadata,
+            provider_metadata: provider_metadata.clone(),
         });
     }
     if let Some(Value::Object(details)) = response.get_mut("usage") {
@@ -778,6 +778,7 @@ mod tests {
         AiMessage, AiccCall, ApiType, LlmChatInvokeRequest, RerankDocument, RerankRequest,
     };
     use bytes::Bytes;
+    use reqwest::header::HeaderValue;
     use reqwest::StatusCode;
     use std::time::Duration;
 
@@ -1199,5 +1200,80 @@ mod tests {
             AiContent::ProviderState { provider, value }
                 if provider == "openrouter" && value["value"][0]["data"] == "stream-opaque"
         ));
+    }
+
+    #[tokio::test]
+    async fn openrouter_decoded_reasoning_details_replay_without_modification() {
+        let registry = registry_with(openrouter_chat_adapter());
+        let decoded = registry
+            .decode(
+                OPENROUTER_CHAT_ADAPTER_ID,
+                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                ApiType::Llm,
+                HttpResponse {
+                    status: StatusCode::OK,
+                    headers: HeaderMap::from_iter([(
+                        CONTENT_TYPE,
+                        HeaderValue::from_static("application/json"),
+                    )]),
+                    body: Bytes::from(
+                        serde_json::to_vec(&json!({
+                            "object":"chat.completion",
+                            "created":1770000000,
+                            "model":"openai/gpt-5",
+                            "choices":[{
+                                "index":0,
+                                "message":{
+                                    "role":"assistant",
+                                    "content":"BUCKYOS-AICC-4827",
+                                    "reasoning_details":[{
+                                        "type":"reasoning.encrypted",
+                                        "id":"reason-t15-4827",
+                                        "data":"opaque-t15-reasoning"
+                                    }]
+                                },
+                                "finish_reason":"stop"
+                            }],
+                            "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+                        }))
+                        .unwrap(),
+                    ),
+                    request_id: "reasoning-replay".to_owned(),
+                    retry_after: None,
+                },
+            )
+            .await
+            .unwrap();
+        let ProtocolExecution::Immediate(decoded) = decoded else {
+            panic!("expected immediate output")
+        };
+        let message = serde_json::from_value(decoded.value["message"].clone()).unwrap();
+        let mut codec_input = input(BTreeMap::new());
+        if let AiccCall::ChatCompletionsCreate(request) = &mut codec_input.canonical_request {
+            request.messages.push(message);
+            request
+                .messages
+                .push(AiMessage::text(AiRole::User, "Continue."));
+        }
+        let request = registry
+            .encode(
+                OPENROUTER_CHAT_ADAPTER_ID,
+                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                ApiType::Llm,
+                &codec_input,
+                &context(),
+            )
+            .unwrap();
+        let HttpBody::Json(body) = request.body else {
+            panic!("expected JSON")
+        };
+        assert_eq!(
+            body["messages"][1]["reasoning_details"],
+            json!([{
+                "type":"reasoning.encrypted",
+                "id":"reason-t15-4827",
+                "data":"opaque-t15-reasoning"
+            }])
+        );
     }
 }

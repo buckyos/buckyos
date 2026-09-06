@@ -360,10 +360,14 @@ export function assertResponseShape(
   }
   if (response.status === "running") return;
   const typedArtifacts = [
-    ...(Array.isArray(response.images) ? response.images : []),
-    ...([response.image, response.audio, response.video].filter(Boolean)),
+    ...(Array.isArray(response.images)
+      ? response.images.map((source) => ({ type: "image", source }))
+      : []),
+    ...(response.image ? [{ type: "image", source: response.image }] : []),
+    ...(response.audio ? [{ type: "audio", source: response.audio }] : []),
+    ...(response.video ? [{ type: "video", source: response.video }] : []),
     ...(response.artifacts && typeof response.artifacts === "object"
-      ? Object.values(response.artifacts as Record<string, unknown>)
+      ? Object.values(response.artifacts as Record<string, unknown>).map((source) => ({ type: "document", source }))
       : []),
   ];
   const typedMessage = response.message && typeof response.message === "object"
@@ -378,11 +382,14 @@ export function assertResponseShape(
             text: String((caption as Record<string, unknown>).text ?? ""),
           }))
           : []),
-        ...typedArtifacts.map((source) => ({ type: "document", source })),
+        ...typedArtifacts,
       ],
     };
   const typedEmbeddingData = Array.isArray(response.data) ? response.data : [];
   const typedExtra = {
+    ...(response.extra && typeof response.extra === "object" && !Array.isArray(response.extra)
+      ? response.extra as Record<string, unknown>
+      : {}),
     ...(typedEmbeddingData.length > 0 || response.data_resource
       ? {
         embedding: {
@@ -396,6 +403,7 @@ export function assertResponseShape(
     ...(["pages", "detections", "masks"].some((field) => field in response)
       ? { vision: Object.fromEntries(["pages", "detections", "masks"].filter((field) => field in response).map((field) => [field, response[field]])) }
       : {}),
+    ...(Array.isArray(response.artifacts) ? { artifacts: response.artifacts } : {}),
   };
   const result = response.result ?? {
     message: typedMessage,
@@ -521,10 +529,14 @@ export function assertResponseShape(
   if (cell.output_kinds.some((kind) => artifactKinds.has(kind))) {
     const expectedPrefix = `${cell.output_kinds.find((kind) => artifactKinds.has(kind))}/`;
     const artifacts = content.filter((item) => item && typeof item === "object" &&
-      ["image", "document"].includes(String((item as Record<string, unknown>).type)));
+      ["image", "audio", "video", "document"].includes(String((item as Record<string, unknown>).type)));
     if (artifacts.length === 0) throw new Error(`expected ${expectedPrefix} artifact output`);
     const materialized = Array.isArray(extra.materialized_artifacts)
       ? extra.materialized_artifacts.filter((item): item is Record<string, unknown> =>
+        Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      : [];
+    const sidebandArtifacts = Array.isArray(extra.artifacts)
+      ? extra.artifacts.filter((item): item is Record<string, unknown> =>
         Boolean(item) && typeof item === "object" && !Array.isArray(item))
       : [];
     const hasMime = artifacts.some((item, index) => {
@@ -532,12 +544,33 @@ export function assertResponseShape(
       if (!source || typeof source !== "object") return false;
       const resource = source as Record<string, unknown>;
       const materializedMime = materialized.find((entry) => entry.content_index === index)?.mime;
-      const mime = resource.mime_hint ?? resource.mime ?? materializedMime;
+      const sidebandMime = sidebandArtifacts.find((entry) => {
+        const artifactResource = entry.resource;
+        return artifactResource && typeof artifactResource === "object" && !Array.isArray(artifactResource) &&
+          (artifactResource as Record<string, unknown>).obj_id === resource.obj_id;
+      })?.mime;
+      const mime = resource.mime_hint ?? resource.mime ?? materializedMime ?? sidebandMime;
+      const contentType = (item as Record<string, unknown>).type;
       const addressable = typeof resource.url === "string" || typeof resource.obj_id === "string" ||
         typeof resource.data_base64 === "string";
-      return addressable && typeof mime === "string" && mime.startsWith(expectedPrefix);
+      return addressable &&
+        ((typeof mime === "string" && mime.startsWith(expectedPrefix)) ||
+          contentType === expectedPrefix.replace(/\/$/, ""));
     });
-    if (!hasMime) throw new Error(`artifact must be addressable and use MIME ${expectedPrefix}*`);
+    if (!hasMime) {
+      const diagnostic = {
+        content: content.map((item) => {
+          if (!item || typeof item !== "object") return item;
+          const record = item as Record<string, unknown>;
+          return { type: record.type, source: record.source };
+        }),
+        materialized,
+        artifacts: sidebandArtifacts,
+      };
+      throw new Error(
+        `artifact must be addressable and use MIME ${expectedPrefix}*: ${JSON.stringify(diagnostic).slice(0, 1000)}`,
+      );
+    }
     return;
   }
   if (cell.api_type === "vision.detect" || cell.api_type === "vision.segment") {

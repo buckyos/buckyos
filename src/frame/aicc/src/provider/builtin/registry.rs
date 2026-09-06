@@ -28,8 +28,6 @@ enum BuiltinDiscoveryFactory {
     OpenRouter,
     Kimi,
     DeepSeek,
-    Doubao,
-    Qwen,
     Sn,
     CatalogOnly,
 }
@@ -258,16 +256,6 @@ impl BuiltinProviderRegistry {
                 crate::protocol::DEEPSEEK_RESPONSES_ADAPTER_ID,
                 transport()?,
             )),
-            BuiltinDiscoveryFactory::Doubao => Arc::new(openai_compatible_models_discovery(
-                DOUBAO_PROFILE_ID,
-                crate::protocol::DOUBAO_RESPONSES_ADAPTER_ID,
-                transport()?,
-            )),
-            BuiltinDiscoveryFactory::Qwen => Arc::new(openai_compatible_models_discovery(
-                QWEN_PROFILE_ID,
-                crate::protocol::QWEN_RESPONSES_ADAPTER_ID,
-                transport()?,
-            )),
             BuiltinDiscoveryFactory::Sn => Arc::new(SnDiscovery::new(transport()?)),
             BuiltinDiscoveryFactory::CatalogOnly => unreachable!(),
         })
@@ -329,8 +317,7 @@ fn builtin_provider_registrations(
             OPENROUTER_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::OpenRouter, false),
             KIMI_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Kimi, false),
             DEEPSEEK_PROFILE_ID => (BuiltinDiscoveryFactory::DeepSeek, false),
-            DOUBAO_PROFILE_ID => (BuiltinDiscoveryFactory::Doubao, false),
-            QWEN_PROFILE_ID => (BuiltinDiscoveryFactory::Qwen, false),
+            DOUBAO_PROFILE_ID | QWEN_PROFILE_ID => (BuiltinDiscoveryFactory::CatalogOnly, false),
             SN_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Sn, true),
             _ => (BuiltinDiscoveryFactory::CatalogOnly, false),
         };

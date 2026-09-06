@@ -465,6 +465,32 @@ async function waitInventoryAbsent(
   throw new Error(`deleted Provider inventory ${instance} is still present`);
 }
 
+async function refreshProviderInventory(
+  session: GatewaySession,
+  catalog: ProviderProtocolCatalog,
+  driver: string,
+  instance: string,
+  controlUrl: string,
+  runId: string,
+  timeoutMs: number,
+): Promise<ProviderInventory> {
+  const provider = catalog.providers.find((candidate) =>
+    candidate.provider_driver === driver
+  );
+  if (!provider) throw new Error(`unknown T1.5 Provider ${driver}`);
+  const bootstrap = buildT15Manifest(catalog).find((testCase) =>
+    testCase.provider_driver === driver &&
+    testCase.protocol_contract_id === provider.contracts[0].id &&
+    testCase.mock_scenario === "success"
+  );
+  if (!bootstrap) throw new Error(`missing T1.5 bootstrap case for ${driver}`);
+  await selectMock(controlUrl, bootstrap, `${runId}:inventory:${driver}`);
+  await session.aicc.call("provider.refresh_models", {
+    provider_instance_name: instance,
+  });
+  return await waitInventory(session, instance, timeoutMs);
+}
+
 async function refreshLogin(
   input: Options,
   session: GatewaySession,
@@ -973,6 +999,47 @@ function hasReferencedArtifact(
   );
 }
 
+function artifactResultSummary(value: unknown): string {
+  const record = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const result = record.result && typeof record.result === "object" && !Array.isArray(record.result)
+    ? record.result as Record<string, unknown>
+    : {};
+  const output = result.output && typeof result.output === "object" && !Array.isArray(result.output)
+    ? result.output as Record<string, unknown>
+    : {};
+  const artifacts = Array.isArray(output.artifacts) ? output.artifacts : [];
+  return JSON.stringify({
+    top_keys: Object.keys(record).sort(),
+    result_keys: Object.keys(result).sort(),
+    output_keys: Object.keys(output).sort(),
+    artifact_count: artifacts.length,
+    has_base64: containsBase64Resource(value),
+    has_reference: hasReferencedArtifact(value),
+  });
+}
+
+function taskResultPayload(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  return record.result ?? value;
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, canonicalJson(child)]),
+  );
+}
+
+function sameJsonSemantics(left: unknown, right: unknown): boolean {
+  return JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
+}
+
 export function assertT15ResponseMapping(
   apiType: string,
   value: unknown,
@@ -1121,14 +1188,19 @@ async function executeCase(
           ),
         );
         if (testCase.tags.includes("task_result_artifact")) {
-          if (containsBase64Resource(terminalValue)) {
+          const resultPayload = taskResultPayload(terminalValue);
+          if (containsBase64Resource(resultPayload)) {
             throw new Error(
-              "TaskMgr result retained inline base64 resource instead of a stable artifact reference",
+              `TaskMgr result retained inline base64 resource instead of a stable artifact reference: ${
+                artifactResultSummary(terminalValue)
+              }`,
             );
           }
-          if (!hasReferencedArtifact(terminalValue)) {
+          if (!hasReferencedArtifact(resultPayload)) {
             throw new Error(
-              "TaskMgr result did not expose a named object or URL artifact reference",
+              `TaskMgr result did not expose a named object or URL artifact reference: ${
+                artifactResultSummary(terminalValue)
+              }`,
             );
           }
         }
@@ -1179,15 +1251,16 @@ async function executeCase(
       item && typeof item === "object" &&
       (item as Record<string, unknown>).role === "assistant"
     ) as Record<string, unknown> | undefined;
-    if (
-      JSON.stringify(assistant?.reasoning_details) !== JSON.stringify([{
+    const expectedReasoningDetails = [{
         type: "reasoning.encrypted",
         id: "reason-t15-4827",
         data: "opaque-t15-reasoning",
-      }])
-    ) {
+      }];
+    if (!sameJsonSemantics(assistant?.reasoning_details, expectedReasoningDetails)) {
       diagnostics.push(
-        "OpenRouter reasoning_details were not replayed unchanged",
+        `OpenRouter reasoning_details were not replayed unchanged: ${
+          JSON.stringify(assistant?.reasoning_details ?? null)
+        }`,
       );
     }
   }
@@ -1378,6 +1451,24 @@ async function executeProviderSwitchCase(
   let targetRequests: Awaited<ReturnType<typeof capturedRequests>> = [];
   let terminalValue: unknown;
   try {
+    sourceInventory = await refreshProviderInventory(
+      session,
+      catalog,
+      sourceProvider,
+      sourceInventory.provider_instance_name,
+      controlUrl,
+      runId,
+      timeoutMs,
+    );
+    targetInventory = await refreshProviderInventory(
+      session,
+      catalog,
+      targetProvider,
+      targetInventory.provider_instance_name,
+      controlUrl,
+      runId,
+      timeoutMs,
+    );
     sourceExactModel = exactModel(catalog, sourceCase, sourceInventory);
     await selectMock(controlUrl, sourceCase, `${runId}:source`);
     const sourceResult = await session.aicc.call(
@@ -1653,6 +1744,7 @@ async function main(): Promise<void> {
   const unmatchedCaseIds = new Set(input.caseIds);
   let session: GatewaySession | undefined;
   let fatalError: unknown;
+  let phase = "startup";
   const cloudCaseId = "t1.5.openai.openai.responses.v1.llm.cloud-update";
   const cloudCaseRequested = selectedProviders.has("openai") &&
     (input.caseIds.length === 0 || input.caseIds.includes(cloudCaseId));
@@ -1719,6 +1811,7 @@ async function main(): Promise<void> {
       )
     }\n`);
     for (const driver of selectedProviders) {
+      phase = `provider:${driver}:setup`;
       if (input.username && input.password) {
         session = await loginGateway({
           gatewayUrl: input.gatewayUrl,
@@ -1736,18 +1829,21 @@ async function main(): Promise<void> {
       const provider = catalog.providers.find((candidate) =>
         candidate.provider_driver === driver
       )!;
+      phase = `provider:${driver}:select`;
       const bootstrap = buildT15Manifest(catalog).find((testCase) =>
         testCase.provider_driver === driver &&
         testCase.protocol_contract_id === provider.contracts[0].id &&
         testCase.mock_scenario === "success"
       )!;
       await selectMock(input.mockControlUrl, bootstrap, runId);
+      phase = `provider:${driver}:add`;
       const instance = `${runId}-${driver}`.toLowerCase().replace(
         /[^a-z0-9_-]+/g,
         "-",
       );
       await addProvider(session, catalog, driver, instance, input.mockBaseUrl);
       created.push(instance);
+      phase = `provider:${driver}:inventory`;
       const inventory = await waitInventory(session, instance, input.timeoutMs);
       providerInstances.set(driver, instance);
       providerInventories.set(driver, inventory);
@@ -1768,6 +1864,7 @@ async function main(): Promise<void> {
         appId: "system:control-panel",
         inventories: [inventory],
         execute: async () => {
+          phase = `provider:${driver}:cases`;
           for (const [index, testCase] of manifest.entries()) {
             if (index > 0 && input.providerMinIntervalMs > 0) {
               await new Promise((resolvePromise) =>
@@ -1846,6 +1943,18 @@ async function main(): Promise<void> {
                 cloudCleanupRevision,
                 input.timeoutMs,
               );
+              providerInventories.set(
+                driver,
+                await refreshProviderInventory(
+                  session!,
+                  catalog,
+                  driver,
+                  instance,
+                  input.mockControlUrl,
+                  runId,
+                  input.timeoutMs,
+                ),
+              );
               cloudActive = false;
             }
           }
@@ -1853,6 +1962,7 @@ async function main(): Promise<void> {
       });
       if (!switchProviderDrivers.has(driver)) {
         session = await refreshLogin(input, session);
+        phase = `provider:${driver}:delete`;
         await session.aicc.call("provider.delete", {
           provider_instance_name: instance,
         });
@@ -1889,6 +1999,7 @@ async function main(): Promise<void> {
                 `Provider switch case ${testCase.case_id} is missing source or target inventory`,
               );
             }
+            session = await refreshLogin(input, session!);
             results.push(
               await executeProviderSwitchCase(
                 session!,
@@ -1918,6 +2029,7 @@ async function main(): Promise<void> {
       }
     }
     for (const driver of ["openai", "claude", "google-gemini", "fal"]) {
+      phase = `custom:${driver}:setup`;
       if (driver === "openai") {
         session = await loginGateway({
           gatewayUrl: input.gatewayUrl,
@@ -1943,6 +2055,7 @@ async function main(): Promise<void> {
       if (customManifest.length === 0) continue;
       const bootstrap = customManifest[0];
       await selectMock(input.mockControlUrl, bootstrap, runId);
+      phase = `custom:${driver}:add`;
       const instance = `${runId}-custom-${driver}`.toLowerCase().replace(
         /[^a-z0-9_-]+/g,
         "-",
@@ -1956,6 +2069,7 @@ async function main(): Promise<void> {
         runId,
       );
       created.push(instance);
+      phase = `custom:${driver}:inventory`;
       const inventory = await waitInventory(session, instance, input.timeoutMs);
       await withMockQuotaTruth({
         systemConfig: sudoSystemConfig,
@@ -1963,6 +2077,7 @@ async function main(): Promise<void> {
         appId: "system:control-panel",
         inventories: [inventory],
         execute: async () => {
+          phase = `custom:${driver}:cases`;
           for (const testCase of customManifest) {
             plannedCaseIds.add(testCase.case_id);
             unmatchedCaseIds.delete(testCase.case_id);
@@ -1989,6 +2104,7 @@ async function main(): Promise<void> {
         },
       });
       session = await refreshLogin(input, session);
+      phase = `custom:${driver}:delete`;
       await session.aicc.call("provider.delete", {
         provider_instance_name: instance,
       });
@@ -2010,7 +2126,7 @@ async function main(): Promise<void> {
       method: "provider.add/models.list",
       scenario: null,
       status: "failed",
-      diagnostic: String(error),
+      diagnostic: `${phase}: ${String(error)}`,
       captured_requests: 0,
       started_at: new Date().toISOString(),
       elapsed_ms: 0,

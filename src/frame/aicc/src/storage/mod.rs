@@ -1589,6 +1589,12 @@ mod tests {
                     ("result_path".into(), json!("/tasks/{task_id}/result")),
                     ("cancel_path".into(), json!("/tasks/{task_id}/cancel")),
                 ]),
+                resource_access_context: crate::resource::ResourceAccessContext::new(
+                    "tenant-a",
+                    "alice",
+                    "request-a",
+                )
+                .unwrap(),
                 request_timeout_ms: 30_000,
                 max_request_bytes: 1_048_576,
                 max_response_bytes: 8_388_608,
