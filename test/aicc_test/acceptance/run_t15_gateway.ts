@@ -331,6 +331,16 @@ async function waitInventoryAbsent(session: GatewaySession, instance: string, ti
   throw new Error(`deleted Provider inventory ${instance} is still present`);
 }
 
+async function refreshLogin(input: Options, session: GatewaySession): Promise<GatewaySession> {
+  if (!input.username || !input.password) return session;
+  return await loginGateway({
+    gatewayUrl: input.gatewayUrl,
+    username: input.username,
+    password: input.password,
+    appId: input.appId,
+  });
+}
+
 function exactModel(
   catalog: ProviderProtocolCatalog,
   testCase: AcceptanceCase,
@@ -872,6 +882,7 @@ async function main(): Promise<void> {
           }
         }
       });
+      session = await refreshLogin(input, session);
       await session.aicc.call("provider.delete", { provider_instance_name: instance });
       await waitInventoryAbsent(session, instance, input.timeoutMs);
       created.splice(created.indexOf(instance), 1);
@@ -933,6 +944,7 @@ async function main(): Promise<void> {
           }
         },
       });
+      session = await refreshLogin(input, session);
       await session.aicc.call("provider.delete", { provider_instance_name: instance });
       await waitInventoryAbsent(session, instance, input.timeoutMs);
       created.splice(created.indexOf(instance), 1);

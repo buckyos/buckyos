@@ -313,6 +313,7 @@ fn builtin_provider_registrations(
             OPENROUTER_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::OpenRouter, false),
             KIMI_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Kimi, false),
             DEEPSEEK_PROFILE_ID => (BuiltinDiscoveryFactory::DeepSeek, false),
+            DOUBAO_PROFILE_ID | QWEN_PROFILE_ID => (BuiltinDiscoveryFactory::CatalogOnly, false),
             SN_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Sn, true),
             _ => (BuiltinDiscoveryFactory::CatalogOnly, false),
         };
@@ -924,6 +925,17 @@ mod tests {
     #[test]
     fn every_profile_resolves_through_the_same_instance_entrypoint() {
         let registry = registry();
+        for profile_id in [DOUBAO_PROFILE_ID, QWEN_PROFILE_ID] {
+            assert_eq!(
+                registry
+                    .providers
+                    .get(profile_id)
+                    .unwrap()
+                    .profile
+                    .discovery_mode,
+                crate::provider::DiscoveryMode::CatalogOnly
+            );
+        }
         for profile in registry.profiles() {
             let configured_inventory = (profile.discovery_mode
                 == crate::provider::DiscoveryMode::CatalogOnly)
