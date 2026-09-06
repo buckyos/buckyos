@@ -1,5 +1,20 @@
 # 源码的目录结构
 
+## 开发构建中的 SDK/CLI 更新
+
+在本目录执行 `uv run buckyos-build.py` 时，会先从同级仓库 `../../buckyos-websdk`
+安装锁定的依赖、重新构建 SDK/CLI、打包并生成校验清单，然后更新
+`rootfs/libexec/buckyos-tool/`。每次构建都会执行，包括 `--skip-web` 和 `-s` 指定模块的构建；
+SDK/CLI 构建失败时停止，不继续使用旧分发包构建其它模块。需要本机安装 Node.js、npm、pnpm 和 Deno。
+
+源码不在默认位置时，用 `BUCKYOS_SDK_TOOL_SOURCE` 指定本地 websdk 仓库路径；
+`BUCKYOS_SDK_TOOL_DENO` 可指定 Deno 可执行文件，默认从 PATH 查找。
+构建只更新 rootfs，执行 `uv run start.py` 后才会更新安装目录并重启系统。
+
+发布构建仍可显式设置 `BUCKYOS_SDK_TOOL_ARTIFACT`、`BUCKYOS_SDK_TOOL_RELEASE_MANIFEST`、
+`BUCKYOS_SDK_TOOL_DENO`、`BUCKYOS_SDK_TOOL_SBOM`，使用已生成的产物。
+设置任一产物路径即进入此模式，四项必须齐全，不会重新构建本地源码。
+
 - 依赖关系是 dapp->frame(services)->kernel services->kernel modules->components
 - 模块划分的思路：保持Kernel的简洁，能在上层完成的功能就不要在底层完成。
 

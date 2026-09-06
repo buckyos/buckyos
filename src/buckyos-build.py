@@ -4,6 +4,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 
 
@@ -37,7 +39,77 @@ def _find_command(command: str) -> str | None:
     return None
 
 
+def _build_local_sdk_tool_distribution(env: dict[str, str]) -> int:
+    import yaml
+
+    source = Path(env.get(
+        "BUCKYOS_SDK_TOOL_SOURCE",
+        str(Path(__file__).resolve().parents[2] / "buckyos-websdk"),
+    )).expanduser().resolve()
+    if not (source / "package.json").is_file():
+        print(f"SDK/Tool source not found: {source}")
+        print("Set BUCKYOS_SDK_TOOL_SOURCE to the local buckyos-websdk checkout.")
+        return 2
+
+    commands = {name: _find_command(name) for name in ("pnpm", "npm", "node")}
+    deno = env.get("BUCKYOS_SDK_TOOL_DENO") or _find_command("deno")
+    missing = [name for name, command in commands.items() if command is None]
+    if deno is None:
+        missing.append("deno")
+    if missing:
+        print("Missing SDK/Tool build commands: " + ", ".join(missing))
+        return 127
+    deno = str(Path(deno).expanduser().resolve())
+    project = yaml.safe_load(
+        (Path(__file__).parent / "bucky_project.yaml").read_text(encoding="utf-8")
+    )
+    print(f"Building SDK/Tool from local source: {source}", flush=True)
+    with tempfile.TemporaryDirectory(prefix="buckyos-sdk-tool-build-") as temporary:
+        output = Path(temporary)
+        sbom = output / "sbom.json"
+        manifest = output / "release.json"
+        steps = [
+            [commands["pnpm"], "install", "--frozen-lockfile"],
+            [commands["pnpm"], "run", "build"],
+            [commands["npm"], "pack", "--ignore-scripts", "--pack-destination", temporary],
+        ]
+        for command in steps:
+            result = subprocess.run(command, cwd=source, env=env).returncode
+            if result != 0:
+                return result
+        artifacts = list(output.glob("*.tgz"))
+        if len(artifacts) != 1:
+            print("SDK/Tool pack must produce exactly one npm tarball.")
+            return 2
+        steps = [
+            [commands["node"], "scripts/create-sbom.mjs",
+             "--tarball", str(artifacts[0]), "--deno", deno, "--output", str(sbom)],
+            [commands["node"], "scripts/create-release-manifest.mjs",
+             "--tarball", str(artifacts[0]), "--deno", deno, "--sbom", str(sbom),
+             "--output", str(manifest), "--buckyos-version", str(project["version"]),
+             "--build-id", f"dev-{uuid.uuid4()}"],
+        ]
+        for command in steps:
+            result = subprocess.run(command, cwd=source, env=env).returncode
+            if result != 0:
+                return result
+        return _build_sdk_tool_distribution({
+            **env,
+            "BUCKYOS_SDK_TOOL_ARTIFACT": str(artifacts[0]),
+            "BUCKYOS_SDK_TOOL_RELEASE_MANIFEST": str(manifest),
+            "BUCKYOS_SDK_TOOL_DENO": deno,
+            "BUCKYOS_SDK_TOOL_SBOM": str(sbom),
+        })
+
+
 def _prepare_sdk_tool_distribution(env: dict[str, str]) -> int:
+    artifact_inputs = set(SDK_TOOL_INPUTS) - {"BUCKYOS_SDK_TOOL_DENO"}
+    if any(env.get(name) for name in artifact_inputs):
+        return _build_sdk_tool_distribution(env)
+    return _build_local_sdk_tool_distribution(env)
+
+
+def _build_sdk_tool_distribution(env: dict[str, str]) -> int:
     missing = [name for name in SDK_TOOL_INPUTS if not env.get(name)]
     if missing:
         print(

@@ -88,8 +88,7 @@ def _sdk_tool_distribution_ready() -> bool:
     for path in missing:
         print(f"  - {path.relative_to(SCRIPT_DIR)}")
     print(
-        "Generate it first with `uv run buckyos-build.py` and the four "
-        "BUCKYOS_SDK_TOOL_* input paths."
+        "Generate it first from the local websdk source with `uv run buckyos-build.py`."
     )
     return False
 

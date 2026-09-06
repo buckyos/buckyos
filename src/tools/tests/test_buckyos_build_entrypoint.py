@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -72,10 +73,55 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
         module = _load_build_script()
 
         with patch.object(module.subprocess, "run") as run:
-            result = module._prepare_sdk_tool_distribution({})
+            result = module._prepare_sdk_tool_distribution({
+                "BUCKYOS_SDK_TOOL_ARTIFACT": "/inputs/buckyos.tgz",
+            })
 
         self.assertEqual(result, 2)
         run.assert_not_called()
+
+    def test_default_build_uses_local_source_even_with_deno_override(self) -> None:
+        module = _load_build_script()
+        for env in ({}, {"BUCKYOS_SDK_TOOL_DENO": "/inputs/deno"}):
+            with patch.object(module, "_build_local_sdk_tool_distribution", return_value=17) as build:
+                self.assertEqual(module._prepare_sdk_tool_distribution(env), 17)
+                build.assert_called_once_with(env)
+
+    def test_main_does_not_build_modules_when_sdk_build_fails(self) -> None:
+        module = _load_build_script()
+        with (
+            patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
+            patch.object(module, "_prepare_sdk_tool_distribution", return_value=17),
+            patch.object(module.subprocess, "run") as run,
+        ):
+            self.assertEqual(module.main([]), 17)
+        run.assert_not_called()
+
+    def test_local_build_failure_does_not_replace_distribution(self) -> None:
+        module = _load_build_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            (Path(temporary) / "package.json").write_text("{}", encoding="utf-8")
+            env = {"BUCKYOS_SDK_TOOL_SOURCE": temporary}
+            with (
+                patch.object(module, "_find_command", side_effect=lambda name: f"/runtime/{name}"),
+                patch.object(module.subprocess, "run", side_effect=[
+                    module.subprocess.CompletedProcess([], 0),
+                    module.subprocess.CompletedProcess([], 19),
+                ]) as run,
+                patch.object(module, "_build_sdk_tool_distribution") as install,
+            ):
+                self.assertEqual(module._prepare_sdk_tool_distribution(env), 19)
+                self.assertEqual(run.call_count, 2)
+                install.assert_not_called()
+
+    def test_missing_local_source_does_not_fall_back_to_old_distribution(self) -> None:
+        module = _load_build_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(module.subprocess, "run") as run:
+                self.assertEqual(module._prepare_sdk_tool_distribution({
+                    "BUCKYOS_SDK_TOOL_SOURCE": temporary,
+                }), 2)
+                run.assert_not_called()
 
     def test_main_reports_missing_devkit_build(self) -> None:
         module = _load_build_script()
