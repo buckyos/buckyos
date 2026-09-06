@@ -961,13 +961,14 @@ impl BuckyOSRuntime {
             deployment_error: None,
         };
 
+        let service_id = self.get_auth_target()?.canonical_id();
         let control_panel_client = self.get_control_panel_client().await?;
         control_panel_client
-            .update_service_instance_info(&self.app_id, &node_id, &service_instance_info)
+            .update_service_instance_info(&service_id, &node_id, &service_instance_info)
             .await?;
         let mut last_update_service_info_time = self.last_update_service_info_time.write().await;
         *last_update_service_info_time = now;
-        info!("update service instance info,app_id:{}", self.app_id);
+        info!("update service instance info,service_id:{}", service_id);
         Ok(())
     }
 
@@ -2563,6 +2564,120 @@ fn resolve_host_to_ipv4_literal(host: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn service_instance_reports_use_canonical_runtime_identity() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        for (app_id, owner, runtime_type, expected_service_id) in [
+            (
+                "jarvis.buckyos.bns.did",
+                Some("devtest"),
+                BuckyOSRuntimeType::AppService,
+                "jarvis.buckyos.bns.did@devtest",
+            ),
+            (
+                "jarvis.buckyos.bns.did",
+                Some("alice"),
+                BuckyOSRuntimeType::AppService,
+                "jarvis.buckyos.bns.did@alice",
+            ),
+            ("aicc", None, BuckyOSRuntimeType::FrameService, "aicc"),
+            (
+                "scheduler",
+                None,
+                BuckyOSRuntimeType::KernelService,
+                "scheduler",
+            ),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!(
+                "http://{}/kapi/system_config",
+                listener.local_addr().unwrap()
+            );
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut stream = BufReader::new(stream);
+                let mut content_length = None;
+                loop {
+                    let mut line = String::new();
+                    assert!(stream.read_line(&mut line).await.unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = Some(value.trim().parse::<usize>().unwrap());
+                        }
+                    }
+                }
+                let mut body = vec![0; content_length.unwrap()];
+                stream.read_exact(&mut body).await.unwrap();
+                let request: Value = serde_json::from_slice(&body).unwrap();
+                let response = serde_json::json!({
+                    "sys": [request["sys"][0]],
+                    "result": 0,
+                })
+                .to_string();
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            response.len(), response
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                request
+            });
+            let mut runtime = BuckyOSRuntime::new(app_id, owner.map(str::to_string), runtime_type);
+            runtime.device_config = Some(DeviceDocument::new("ood1", "test-key".to_string()));
+            *runtime.main_service_port.write().await = 10032;
+            assert!(runtime
+                .system_config_client
+                .set(Arc::new(SystemConfigClient::new(Some(&url), None)))
+                .is_ok());
+
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                runtime.update_service_instance_info(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let request = tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(request["method"], "sys_config_set");
+            assert_eq!(
+                request["params"]["key"],
+                format!("services/{expected_service_id}/instances/ood1")
+            );
+            let report: ServiceInstanceReportInfo =
+                serde_json::from_str(request["params"]["value"].as_str().unwrap()).unwrap();
+            assert_eq!(report.node_id, "ood1");
+            assert_eq!(report.service_ports["www"], 10032);
+            assert!(*runtime.last_update_service_info_time.read().await > 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn app_service_instance_report_requires_owner() {
+        let mut runtime = BuckyOSRuntime::new(
+            "jarvis.buckyos.bns.did",
+            None,
+            BuckyOSRuntimeType::AppService,
+        );
+        runtime.device_config = Some(DeviceDocument::new("ood1", "test-key".to_string()));
+
+        let error = runtime.update_service_instance_info().await.unwrap_err();
+        assert!(error.to_string().contains("owner_user_id is required"));
+        assert!(runtime.system_config_client.get().is_none());
+        assert_eq!(*runtime.last_update_service_info_time.read().await, 0);
+    }
 
     #[test]
     fn device_signed_login_subject_depends_on_runtime_type() {

@@ -107,7 +107,7 @@ p, app, obj://config/users/{user}/apps/{app}/settings,read|write,allow
 p, app, obj://config/users/{user}/apps/{app}/spec,read,allow
 p, app, obj://config/users/{user}/apps/{app}/info,read|write,allow
 p, app, obj://config/services/{service}/info,read,allow
-p, app, obj://config/services/{app}/instances/{node},write,allow
+p, app, obj://config/services/{app}@[^/@]+/instances/{node},write,allow
 
 # An App runtime is promoted to this role only when an AgentSpec binds to it.
 # AgentSpec is public runtime identity/configuration; the sibling private key
@@ -618,7 +618,7 @@ g, bob, users
             rbac::enforce(
                 "alice",
                 "app:jarvis.buckyos.bns.did",
-                "obj://config/services/jarvis.buckyos.bns.did/instances/ood1",
+                "obj://config/services/jarvis.buckyos.bns.did@alice/instances/ood1",
                 "write",
                 None,
             )
@@ -628,7 +628,7 @@ g, bob, users
             rbac::enforce(
                 "bob",
                 "app:jarvis.buckyos.bns.did",
-                "obj://config/services/jarvis.buckyos.bns.did/instances/ood1",
+                "obj://config/services/jarvis.buckyos.bns.did@bob/instances/ood1",
                 "write",
                 None,
             )
@@ -638,12 +638,29 @@ g, bob, users
             !rbac::enforce(
                 "alice",
                 "app:jarvis.buckyos.bns.did",
-                "obj://config/services/other-agent/instances/ood1",
+                "obj://config/services/other-agent.example@alice/instances/ood1",
                 "write",
                 None,
             )
             .await
         );
+        for service_id in [
+            "jarvis.buckyos.bns.did",
+            "jarvis.buckyos.bns.did@",
+            "jarvis.buckyos.bns.did@alice@bob",
+        ] {
+            assert!(
+                !rbac::enforce(
+                    "alice",
+                    "app:jarvis.buckyos.bns.did",
+                    &format!("obj://config/services/{service_id}/instances/ood1"),
+                    "write",
+                    None,
+                )
+                .await,
+                "unexpected write permission for {service_id}"
+            );
+        }
         assert!(
             !rbac::enforce(
                 "alice",
