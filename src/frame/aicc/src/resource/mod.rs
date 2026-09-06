@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::error::ResourceError;
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
@@ -17,7 +18,6 @@ use std::io::{Cursor, Read};
 use std::net::IpAddr;
 use std::path::Component;
 use std::sync::Arc;
-use thiserror::Error;
 use tokio::io::AsyncReadExt;
 
 const ZIP_MIME_TYPES: [&str; 2] = ["application/zip", "application/x-zip-compressed"];
@@ -1053,13 +1053,6 @@ pub(crate) enum ResourceFailure {
     ArchiveExpansionExceeded,
     ArtifactInvalid,
     PhaseViolation,
-}
-
-#[derive(Clone, Error, PartialEq, Eq)]
-#[error("resource_invalid: {message}")]
-pub(crate) struct ResourceError {
-    pub failure: ResourceFailure,
-    message: String,
 }
 
 impl ResourceError {

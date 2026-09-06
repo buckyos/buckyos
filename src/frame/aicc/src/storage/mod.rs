@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::error::{StorageError, StorageResult};
 use crate::execution::{
     ExecutionOutput, ExecutionRecord, ExecutionState, ExecutionStore, IdempotencyClaim,
     PinnedProviderTask, UsageCompletion, UsageCompletionPort,
@@ -19,7 +20,6 @@ use sqlx::any::{install_default_drivers, AnyPoolOptions, AnyRow};
 use sqlx::{AnyPool, Executor, Row};
 use std::collections::BTreeMap;
 use std::sync::Once;
-use thiserror::Error;
 
 const SERVICE_NAME: &str = "aicc";
 const INVENTORY_SCHEMA_VERSION: i64 = 1;
@@ -85,21 +85,6 @@ CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_tenant_time ON aicc_audit_event(
 CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_trace_time ON aicc_audit_event(trace_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_task_time ON aicc_audit_event(task_id, created_at_ms);
 "#;
-
-#[derive(Debug, Error)]
-pub(crate) enum StorageError {
-    #[error("database error: {0}")]
-    Database(#[from] sqlx::Error),
-    #[error("invalid storage record: {0}")]
-    InvalidRecord(String),
-    #[error("provider completion is missing usage")]
-    MissingUsage,
-    #[error("invalid cursor")]
-    InvalidCursor,
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
-}
-pub(crate) type StorageResult<T> = Result<T, StorageError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct InventoryLkgsRecord {

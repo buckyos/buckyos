@@ -4,7 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { ArrowLeft } from 'lucide-react'
 import { useI18n } from '../../../../../i18n/provider'
 import { useAICCStore, useProviders } from '../../../hooks/use-aicc-store'
-import { isManagedSnProvider, type ProviderSetupCatalog, type ProviderType, type ValidationResult, type WizardDraft } from '../../../../../api/aicc_mgr'
+import { type ProviderSetupCatalog, type ProviderType, type ValidationResult, type WizardDraft } from '../../../../../api/aicc_mgr'
 import { Stepper } from '../../shared/Stepper'
 import { StepChooseType } from './StepChooseType'
 import { StepConnection } from './StepConnection'
@@ -31,9 +31,6 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   const { t } = useI18n()
   const store = useAICCStore()
   const providers = useProviders()
-  const managedSnProvider = providers.find(isManagedSnProvider)
-  const hasManagedSnProvider = Boolean(managedSnProvider)
-  const managedSnProviderEnabled = managedSnProvider?.config.enabled ?? false
 
   const [step, setStep] = useState(0)
   const form = useForm<WizardDraft>({
@@ -114,24 +111,13 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
     }
   }
 
-  const handleTypeSelect = async (type: ProviderType) => {
-    if (type === 'sn' && managedSnProvider && !managedSnProvider.config.enabled) {
-      setCreating(true)
-      setCreateError(null)
-      try {
-        await store.setProviderEnabled(managedSnProvider, true)
-        onCreated()
-      } catch (error) {
-        setCreateError(error instanceof Error ? error.message : t('aiCenter.wizard.enableSnFailed', 'Could not enable SN Router.'))
-      } finally {
-        setCreating(false)
-      }
-      return
-    }
+  const handleTypeSelect = (type: ProviderType) => {
     const profile = catalog?.providers.find((item) => item.provider_profile_id === type)
+    const displayName = type === 'sn' ? t('aiCenter.wizard.snRouter', 'SN Router') : profile?.display_name ?? ''
     updateDraft({
       provider_profile_id: type,
-      display_name: type === 'sn' ? t('aiCenter.wizard.snRouter', 'SN Router') : profile?.display_name ?? '',
+      provider_instance_name: nextProviderInstanceName(type, displayName, providers.map((provider) => provider.config.provider_instance_name)),
+      display_name: displayName,
       base_url: profile?.base_url ?? '',
       protocol_family_id: null,
       protocol_adapter_id: profile?.protocol_adapter_id,
@@ -244,8 +230,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
           <StepChooseType
             selected={draft.provider_profile_id}
             onSelect={handleTypeSelect}
-            hasManagedSnProvider={hasManagedSnProvider}
-            managedSnProviderEnabled={managedSnProviderEnabled}
+            providers={providers}
             catalog={catalog}
             loading={catalogLoading}
             error={catalogError}
@@ -335,6 +320,38 @@ function providerConnectionFieldsValid(
   return (['region', 'workspace', 'account'] as const).every((name) =>
     profile.connection_fields[name]?.mode !== 'required' || Boolean(draft[name]?.trim()),
   )
+}
+
+function nextProviderInstanceName(providerType: ProviderType, name: string, existing: string[]): string {
+  const used = new Set(existing)
+  const base = defaultProviderInstanceName(providerType, name)
+  if (!used.has(base)) return base
+  for (let index = 2; index < 100; index += 1) {
+    const candidate = `${base}-${index}`
+    if (!used.has(candidate)) return candidate
+  }
+  return `${base}-${Date.now()}`
+}
+
+function defaultProviderInstanceName(providerType: ProviderType, name: string): string {
+  switch (providerType) {
+    case 'sn': return 'sn-ai-provider-main'
+    case 'openai': return 'openai-main'
+    case 'claude': return 'claude-main'
+    case 'gemini': return 'google-gemini-main'
+    case 'openrouter': return 'openrouter-main'
+    case 'custom': return `custom-${slugify(name || 'provider')}`
+    default: return `${slugify(providerType)}-main`
+  }
+}
+
+function slugify(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return slug || 'provider'
 }
 
 function validationCanProceed(validation: ValidationResult): boolean {

@@ -165,8 +165,12 @@ pub(crate) fn openai_responses_compatible_model_driver_catalogs() -> Vec<ModelDr
         .collect()
 }
 
-pub(crate) fn deepseek_models_discovery(transport: HttpTransport) -> DeepSeekModelsDiscovery {
-    DeepSeekModelsDiscovery::new(transport)
+pub(crate) fn openai_compatible_models_discovery(
+    provider_profile_id: &'static str,
+    protocol_adapter_id: &'static str,
+    transport: HttpTransport,
+) -> OpenAiCompatibleModelsDiscovery {
+    OpenAiCompatibleModelsDiscovery::new(provider_profile_id, protocol_adapter_id, transport)
 }
 
 #[cfg(test)]
@@ -283,7 +287,7 @@ fn validate_fixture_model_ids(models: &[DiscoveredModel]) -> ProviderResult<()> 
 }
 
 #[async_trait]
-trait DeepSeekModelsTransport: Send + Sync {
+trait OpenAiCompatibleModelsTransport: Send + Sync {
     async fn send(
         &self,
         request: HttpRequest,
@@ -291,7 +295,7 @@ trait DeepSeekModelsTransport: Send + Sync {
 }
 
 #[async_trait]
-impl DeepSeekModelsTransport for HttpTransport {
+impl OpenAiCompatibleModelsTransport for HttpTransport {
     async fn send(
         &self,
         request: HttpRequest,
@@ -301,20 +305,36 @@ impl DeepSeekModelsTransport for HttpTransport {
 }
 
 #[derive(Clone)]
-pub(crate) struct DeepSeekModelsDiscovery {
-    transport: Arc<dyn DeepSeekModelsTransport>,
+pub(crate) struct OpenAiCompatibleModelsDiscovery {
+    provider_profile_id: &'static str,
+    protocol_adapter_id: &'static str,
+    transport: Arc<dyn OpenAiCompatibleModelsTransport>,
 }
 
-impl DeepSeekModelsDiscovery {
-    pub(crate) fn new(transport: HttpTransport) -> Self {
+impl OpenAiCompatibleModelsDiscovery {
+    pub(crate) fn new(
+        provider_profile_id: &'static str,
+        protocol_adapter_id: &'static str,
+        transport: HttpTransport,
+    ) -> Self {
         Self {
+            provider_profile_id,
+            protocol_adapter_id,
             transport: Arc::new(transport),
         }
     }
 
     #[cfg(test)]
-    fn with_transport(transport: Arc<dyn DeepSeekModelsTransport>) -> Self {
-        Self { transport }
+    fn with_transport(
+        provider_profile_id: &'static str,
+        protocol_adapter_id: &'static str,
+        transport: Arc<dyn OpenAiCompatibleModelsTransport>,
+    ) -> Self {
+        Self {
+            provider_profile_id,
+            protocol_adapter_id,
+            transport,
+        }
     }
 }
 
@@ -337,19 +357,23 @@ struct ModelObject {
 }
 
 #[async_trait]
-impl ProviderDiscovery for DeepSeekModelsDiscovery {
+impl ProviderDiscovery for OpenAiCompatibleModelsDiscovery {
     async fn discover(
         &self,
         context: &DiscoveryContext<'_>,
     ) -> ProviderResult<ProviderDiscoverySnapshot> {
-        validate_deepseek_context(context)?;
-        let request = deepseek_models_request(context)?;
+        validate_openai_compatible_models_context(
+            context,
+            self.provider_profile_id,
+            self.protocol_adapter_id,
+        )?;
+        let request = openai_compatible_models_request(context, self.provider_profile_id)?;
         let response = self
             .transport
             .send(request)
             .await
             .map_err(|error| ProviderError::Discovery(error.to_string()))?;
-        ensure_deepseek_success(&response)?;
+        ensure_openai_compatible_models_success(&response, self.provider_profile_id)?;
         let revision = response
             .headers
             .get(ETAG)
@@ -358,42 +382,50 @@ impl ProviderDiscovery for DeepSeekModelsDiscovery {
         let envelope: ModelsEnvelope = response
             .json(1024 * 1024)
             .map_err(|error| ProviderError::Discovery(error.to_string()))?;
-        parse_deepseek_models(envelope, revision)
+        parse_openai_compatible_models(envelope, revision, self.provider_profile_id)
     }
 }
 
-fn validate_deepseek_context(context: &DiscoveryContext<'_>) -> ProviderResult<()> {
-    if context.profile.provider_profile_id != DEEPSEEK_PROFILE_ID
-        || context.profile.default_protocol_adapter_id != DEEPSEEK_RESPONSES_ADAPTER_ID
-        || context.instance.provider_profile_id != DEEPSEEK_PROFILE_ID
-        || context.instance.protocol_adapter_id != DEEPSEEK_RESPONSES_ADAPTER_ID
+fn validate_openai_compatible_models_context(
+    context: &DiscoveryContext<'_>,
+    provider_profile_id: &str,
+    protocol_adapter_id: &str,
+) -> ProviderResult<()> {
+    if context.profile.provider_profile_id != provider_profile_id
+        || context.profile.default_protocol_adapter_id != protocol_adapter_id
+        || context.instance.provider_profile_id != provider_profile_id
+        || context.instance.protocol_adapter_id != protocol_adapter_id
     {
-        return Err(ProviderError::InvalidConfiguration(
-            "DeepSeek discovery requires the DeepSeek profile and Responses dialect".to_owned(),
-        ));
+        return Err(ProviderError::InvalidConfiguration(format!(
+            "{provider_profile_id} discovery requires its Responses dialect"
+        )));
     }
     if context.credential.audit().kind != CredentialKind::Bearer {
-        return Err(ProviderError::Credential(
-            "DeepSeek discovery requires a Bearer credential".to_owned(),
-        ));
+        return Err(ProviderError::Credential(format!(
+            "{provider_profile_id} discovery requires a Bearer credential"
+        )));
     }
-    if context.instance.region.is_some() || context.instance.account.is_some() {
-        return Err(ProviderError::InvalidConfiguration(
-            "DeepSeek profile does not accept region or account fields".to_owned(),
-        ));
+    if context.instance.account.is_some() {
+        return Err(ProviderError::InvalidConfiguration(format!(
+            "{provider_profile_id} profile does not accept account fields"
+        )));
     }
     Ok(())
 }
 
-fn deepseek_models_request(context: &DiscoveryContext<'_>) -> ProviderResult<HttpRequest> {
-    let mut base = reqwest::Url::parse(&context.instance.base_url)
-        .map_err(|_| ProviderError::InvalidConfiguration("DeepSeek base_url is invalid".into()))?;
+fn openai_compatible_models_request(
+    context: &DiscoveryContext<'_>,
+    provider_profile_id: &str,
+) -> ProviderResult<HttpRequest> {
+    let mut base = reqwest::Url::parse(&context.instance.base_url).map_err(|_| {
+        ProviderError::InvalidConfiguration(format!("{provider_profile_id} base_url is invalid"))
+    })?;
     if !base.path().ends_with('/') {
         let path = format!("{}/", base.path());
         base.set_path(&path);
     }
     let url = base.join("models").map_err(|_| {
-        ProviderError::InvalidConfiguration("DeepSeek models URL is invalid".into())
+        ProviderError::InvalidConfiguration(format!("{provider_profile_id} models URL is invalid"))
     })?;
     let mut request = HttpRequest::new(Method::GET, url.to_string());
     context
@@ -405,12 +437,15 @@ fn deepseek_models_request(context: &DiscoveryContext<'_>) -> ProviderResult<Htt
     Ok(request)
 }
 
-fn ensure_deepseek_success(response: &HttpResponse) -> ProviderResult<()> {
+fn ensure_openai_compatible_models_success(
+    response: &HttpResponse,
+    provider_profile_id: &str,
+) -> ProviderResult<()> {
     if response.status.is_success() {
         return Ok(());
     }
     Err(ProviderError::Discovery(format!(
-        "DeepSeek Models API returned HTTP {} (request {})",
+        "{provider_profile_id} Models API returned HTTP {} (request {})",
         response.status.as_u16(),
         response.request_id
     )))
@@ -419,6 +454,14 @@ fn ensure_deepseek_success(response: &HttpResponse) -> ProviderResult<()> {
 fn parse_deepseek_models(
     envelope: ModelsEnvelope,
     revision: Option<String>,
+) -> ProviderResult<ProviderDiscoverySnapshot> {
+    parse_openai_compatible_models(envelope, revision, DEEPSEEK_PROFILE_ID)
+}
+
+fn parse_openai_compatible_models(
+    envelope: ModelsEnvelope,
+    revision: Option<String>,
+    _provider_profile_id: &str,
 ) -> ProviderResult<ProviderDiscoverySnapshot> {
     if envelope
         .object
@@ -448,6 +491,18 @@ fn parse_deepseek_models(
     };
     validate_discovery(&snapshot)?;
     Ok(snapshot)
+}
+
+fn validate_deepseek_context(context: &DiscoveryContext<'_>) -> ProviderResult<()> {
+    validate_openai_compatible_models_context(
+        context,
+        DEEPSEEK_PROFILE_ID,
+        DEEPSEEK_RESPONSES_ADAPTER_ID,
+    )
+}
+
+fn deepseek_models_request(context: &DiscoveryContext<'_>) -> ProviderResult<HttpRequest> {
+    openai_compatible_models_request(context, DEEPSEEK_PROFILE_ID)
 }
 
 #[cfg(test)]

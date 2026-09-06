@@ -63,11 +63,11 @@ use crate::call::{
     ResolvedProviderCall,
 };
 use crate::catalog::CatalogSnapshot;
+use crate::error::{NativeTaskResumeError, QuotaSourceError, ResourceError, RuntimeError};
 use crate::execution::{
     ExecutionEngine, ExecutionOutput, ExecutionState, NativeTaskPoll, NativeTaskResumeDescriptor,
-    NativeTaskResumeError, PinnedProviderTask, ProviderExecution, ProviderExecutionPort,
-    ProviderStartFailure, ResumeCredential, ResumeCredentialKind, TaskBinding, TaskManagerPort,
-    TaskSpec,
+    PinnedProviderTask, ProviderExecution, ProviderExecutionPort, ProviderStartFailure,
+    ResumeCredential, ResumeCredentialKind, TaskBinding, TaskManagerPort, TaskSpec,
 };
 use crate::model::{
     LogicalModelDefinition, ModelRegistry, MountMode, ProviderInventory as ModelProviderInventory,
@@ -89,9 +89,8 @@ use crate::provider::{
 };
 use crate::resource::{
     ArtifactSpec, EmbeddingArtifactMetadata, NamedDataMgrResourceStore, ReqwestUrlResourceFetcher,
-    ResourceAccessContext, ResourceAccessOperation, ResourceAuthorizer, ResourceError,
-    ResourceFailure, ResourceLimits, ResourceManager, ResourceStore, ResourceTarget,
-    UrlResourceFetcher,
+    ResourceAccessContext, ResourceAccessOperation, ResourceAuthorizer, ResourceFailure,
+    ResourceLimits, ResourceManager, ResourceStore, ResourceTarget, UrlResourceFetcher,
 };
 use crate::routing::policy::{
     CredentialScope, ProviderPrivacy, ProviderTrustLevel, ProviderTrustView, ProviderType,
@@ -99,8 +98,8 @@ use crate::routing::policy::{
 };
 use crate::routing::{
     policy_engine_for_route, CallerIdentity, CandidateRuntimeState, ProviderHealthStatus,
-    QuotaLookup, QuotaSnapshot, QuotaSourceError, QuotaSourceFactory, QuotaTruthPort,
-    RouteDecision, Router, RoutingRequest,
+    QuotaLookup, QuotaSnapshot, QuotaSourceFactory, QuotaTruthPort, RouteDecision, Router,
+    RoutingRequest,
 };
 use crate::runtime::{
     ConvergenceTrigger, ModelRegistryAssembler, PreparedRuntime, ProviderRuntimeBackend,
@@ -3640,7 +3639,7 @@ impl ModelRegistryAssembler for ServiceModelAssembler {
         &self,
         catalog: Arc<CatalogSnapshot>,
         inventories: Vec<ModelProviderInventory>,
-    ) -> Result<Arc<ModelRegistry>, crate::runtime::RuntimeError> {
+    ) -> Result<Arc<ModelRegistry>, RuntimeError> {
         ModelRegistry::build(
             catalog.as_ref(),
             &inventories,
@@ -3652,7 +3651,7 @@ impl ModelRegistryAssembler for ServiceModelAssembler {
             },
         )
         .map(Arc::new)
-        .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))
+        .map_err(|error| RuntimeError::Backend(error.to_string()))
     }
 }
 
@@ -4233,11 +4232,11 @@ impl RuntimeFactory for ServiceRuntimeFactory {
         settings: Arc<AiccSettings>,
         catalog: Arc<CatalogSnapshot>,
         target_seq: u64,
-    ) -> Result<PreparedRuntime, crate::runtime::RuntimeError> {
+    ) -> Result<PreparedRuntime, RuntimeError> {
         let builtins = builtin_provider_registry(catalog.as_ref())
-            .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?;
+            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
         let (resolver, auth) = settings_credentials(settings.as_ref())
-            .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?;
+            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
         let static_resolver: Arc<dyn CredentialResolver> = Arc::new(resolver);
         let credential_broker = Arc::new(SnCredentialBroker::new(
             static_resolver,
@@ -4251,7 +4250,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                 builtins.codecs(),
                 self.storage.clone(),
             )
-            .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?,
+            .map_err(|error| RuntimeError::Backend(error.to_string()))?,
         );
         let mut manager_events = manager.subscribe_refresh_events();
         let provider_refreshes = self.provider_refreshes.clone();
@@ -4272,16 +4271,14 @@ impl RuntimeFactory for ServiceRuntimeFactory {
             .filter(|provider| provider.enabled)
         {
             let provider_auth = auth.get(&provider.provider_instance_name).ok_or_else(|| {
-                crate::runtime::RuntimeError::Backend(
-                    "provider authentication was not prepared".to_string(),
-                )
+                RuntimeError::Backend("provider authentication was not prepared".to_string())
             })?;
             let configured_inventory = provider
                 .discovery
                 .clone()
                 .map(serde_json::from_value::<ProviderDiscoverySnapshot>)
                 .transpose()
-                .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?;
+                .map_err(|error| RuntimeError::Backend(error.to_string()))?;
             let binding = builtins
                 .resolve(BuiltinProviderRequest {
                     provider_profile_id: &provider.provider_profile_id,
@@ -4290,7 +4287,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                     credential_kind: provider_auth.credential_kind(),
                     configured_inventory,
                 })
-                .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?;
+                .map_err(|error| RuntimeError::Backend(error.to_string()))?;
             let connection = binding
                 .connection
                 .resolve(ProviderConnectionInput {
@@ -4299,7 +4296,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                     workspace: provider.workspace.as_deref(),
                     account: provider.account.as_deref(),
                 })
-                .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?;
+                .map_err(|error| RuntimeError::Backend(error.to_string()))?;
             let provider_rules_id = provider.provider_rules_id.clone().or_else(|| {
                 catalog
                     .resolve_provider_configuration(&provider.provider_profile_id)
@@ -4336,20 +4333,18 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                             auth: provider_auth.clone(),
                         },
                     )
-                    .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?;
+                    .map_err(|error| RuntimeError::Backend(error.to_string()))?;
                     credential_broker
                         .register_dynamic_instance(resolved.clone())
                         .await
-                        .map_err(|error| {
-                            crate::runtime::RuntimeError::Backend(error.to_string())
-                        })?;
+                        .map_err(|error| RuntimeError::Backend(error.to_string()))?;
                     resolved.runtime
                 }
             };
             manager
                 .start(runtime_config, binding.discovery)
                 .await
-                .map_err(|error| crate::runtime::RuntimeError::Backend(error.to_string()))?;
+                .map_err(|error| RuntimeError::Backend(error.to_string()))?;
         }
         let models: Arc<dyn ModelRegistryAssembler> = Arc::new(ServiceModelAssembler {
             session: settings.session_config.clone(),

@@ -1,19 +1,21 @@
 #![allow(dead_code)]
 
 use crate::catalog::CatalogSnapshot;
+#[cfg(test)]
+use crate::error::SettingsError;
+use crate::error::{ProviderError, ProviderResult, RuntimeError};
 use crate::model::{ModelRegistry, ProviderInventory as ModelProviderInventory};
 use crate::protocol::ResolvedCredential;
 use crate::provider::{
-    ExecutableProviderInstance, ProviderError, ProviderInstanceConfig, ProviderInventorySnapshot,
-    ProviderProfile, ProviderQuotaObservation, ProviderRefreshEvent, ProviderRefreshOutcome,
-    ProviderRefreshTrigger, ProviderRegistry, ProviderResult, ProviderRuntimeManager,
+    ExecutableProviderInstance, ProviderInstanceConfig, ProviderInventorySnapshot, ProviderProfile,
+    ProviderQuotaObservation, ProviderRefreshEvent, ProviderRefreshOutcome, ProviderRefreshTrigger,
+    ProviderRegistry, ProviderRuntimeManager,
 };
-use crate::settings::{AiccSettings, RuntimeInputs, SettingsDocument, SettingsError};
+use crate::settings::{AiccSettings, RuntimeInputs, SettingsDocument};
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
-use thiserror::Error;
 use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -695,42 +697,6 @@ fn build_snapshot(
         models: state.models,
         provider_metadata: state.provider_metadata,
     }))
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum RuntimeError {
-    #[error("AICC runtime has stopped")]
-    Stopped,
-    #[error(transparent)]
-    Settings(#[from] SettingsError),
-    #[error("runtime backend failed: {0}")]
-    Backend(String),
-    #[error("metadata target sequence moved backwards from {current} to {observed}")]
-    MetadataRollback { current: u64, observed: u64 },
-    #[error("candidate catalog sequence is {actual}, expected {expected}")]
-    CandidateCatalogMismatch { expected: u64, actual: u64 },
-    #[error("reload candidate reused the currently published runtime backend")]
-    CandidateReusesBackend,
-    #[error("candidate provider set differs from enabled settings")]
-    CandidateProviderSetMismatch {
-        expected: BTreeSet<String>,
-        actual: BTreeSet<String>,
-    },
-    #[error("candidate provider `{0}` still has metadata_updating_seq")]
-    CandidateStillUpdating(String),
-    #[error(
-        "candidate provider `{provider_instance_name}` is routable at applied seq {applied}, target is {target}"
-    )]
-    MixedCatalogRevision {
-        provider_instance_name: String,
-        applied: u64,
-        target: u64,
-    },
-    #[error("model `{exact_model}` references non-routable provider `{provider_instance_name}`")]
-    UnconvergedModel {
-        exact_model: String,
-        provider_instance_name: String,
-    },
 }
 
 #[cfg(test)]

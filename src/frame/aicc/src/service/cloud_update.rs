@@ -7,16 +7,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use thiserror::Error;
-use tokio::sync::{broadcast, watch, Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock, broadcast, watch};
 
 use crate::catalog::CatalogKind;
 #[cfg(test)]
 use crate::catalog::{CatalogSnapshot, CurrentCatalogFile};
+use crate::error::{CloudUpdateError, SettingsError};
 use crate::matching::{CompiledMatchRule, MatchContext, MatchRule, RELEASE_TRACK_MATCH_SCHEMA};
-use crate::settings::{
-    CloudMetadataSource, MetadataFile, MetadataSource, MetadataSourceManager, SettingsError,
-};
+use crate::settings::{CloudMetadataSource, MetadataFile, MetadataSource, MetadataSourceManager};
 #[cfg(test)]
 use crate::settings::{MetadataOverrideLoader, StaticMetadataOverrideLoader};
 
@@ -180,22 +178,6 @@ pub(crate) struct CloudUpdateRuntimeStatus {
     pub last_success_at_ms: Option<u64>,
     pub last_error: Option<String>,
     pub consecutive_failures: u32,
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum CloudUpdateError {
-    #[error("invalid cloud update config: {0}")]
-    InvalidConfig(String),
-    #[error("invalid cloud update protocol: {0}")]
-    InvalidProtocol(String),
-    #[error("cloud update download failed: {0}")]
-    Download(String),
-    #[error("cloud update cache I/O failed: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("cloud update JSON failed: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("cloud catalog is invalid: {0}")]
-    Catalog(String),
 }
 
 #[async_trait]

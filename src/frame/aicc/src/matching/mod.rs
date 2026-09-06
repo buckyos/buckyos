@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::error::{MatchCompileError, MatchCompileErrorKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -710,13 +711,6 @@ fn compare_prerelease(left: &[VersionIdentifier], right: &[VersionIdentifier]) -
     left.len().cmp(&right.len())
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct MatchCompileError {
-    pub schema: &'static str,
-    pub dimension: Option<String>,
-    pub kind: MatchCompileErrorKind,
-}
-
 impl MatchCompileError {
     fn new(schema: &MatchSchema, dimension: Option<String>, kind: MatchCompileErrorKind) -> Self {
         Self {
@@ -738,24 +732,6 @@ impl fmt::Display for MatchCompileError {
 }
 
 impl Error for MatchCompileError {}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MatchCompileErrorKind {
-    ShorthandNotAllowed,
-    EmptyObject,
-    UnknownDimension,
-    InvalidValueType,
-    InvalidOperator,
-    InvalidNotOperand,
-    InvalidExistsOperand,
-    RangeNotAllowed,
-    EmptyRange,
-    RangeFlagWithoutBound,
-    InvalidRangeFlag,
-    InvalidRangeBound,
-    ReversedRange,
-    InvalidEscape,
-}
 
 impl fmt::Display for MatchCompileErrorKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

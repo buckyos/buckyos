@@ -2,6 +2,7 @@
 
 use crate::call::ResolvedProviderCall;
 use crate::catalog::PricingUnit;
+use crate::error::NativeTaskResumeError;
 use crate::protocol::{
     cancellation_pair, CancelHandle, Cancellation, NativeTaskHandle, NativeTaskState,
     ProtocolError, ProtocolErrorKind, ProtocolEvent, ProtocolOutput, ProtocolStream,
@@ -524,25 +525,6 @@ pub(crate) enum ProviderExecution {
         handle: NativeTaskHandle,
         resume: NativeTaskResumeDescriptor,
     },
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum NativeTaskResumeError {
-    CredentialUnavailable,
-    Protocol(ProtocolError),
-}
-
-impl NativeTaskResumeError {
-    fn into_aicc_error(self) -> AiccError {
-        match self {
-            Self::CredentialUnavailable => aicc_error(
-                AiccErrorCode::ProviderError,
-                "pinned native task credential can no longer be resolved",
-                false,
-            ),
-            Self::Protocol(error) => error.into(),
-        }
-    }
 }
 
 #[async_trait]

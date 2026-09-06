@@ -6,6 +6,7 @@ mod builtin;
 pub(crate) use builtin::*;
 
 use crate::catalog::{CatalogSnapshot, Pricing, VersionRule};
+use crate::error::{ProviderDraftValidationError, ProviderError, ProviderResult};
 use crate::matching::MatchContext;
 use crate::model::{
     InventoryModel, InventoryModelVariant, ModelUid, ProviderInventory as ModelProviderInventory,
@@ -22,39 +23,10 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use thiserror::Error;
 use tokio::sync::{broadcast, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 const INVENTORY_SCHEMA_VERSION: u32 = 1;
-
-#[derive(Debug, Error)]
-pub(crate) enum ProviderError {
-    #[error("invalid provider configuration: {0}")]
-    InvalidConfiguration(String),
-    #[error("provider profile `{0}` is not registered")]
-    UnknownProfile(String),
-    #[error("protocol adapter `{0}` is not registered")]
-    UnknownAdapter(String),
-    #[error("provider instance `{0}` is already registered")]
-    DuplicateInstance(String),
-    #[error("provider instance `{0}` is not registered")]
-    UnknownInstance(String),
-    #[error("credential resolution failed: {0}")]
-    Credential(String),
-    #[error("provider discovery failed: {0}")]
-    Discovery(String),
-    #[error("inventory build failed: {0}")]
-    Inventory(String),
-    #[error("inventory storage failed: {0}")]
-    Storage(String),
-    #[error("provider instance stopped before refresh could commit")]
-    Stopped,
-    #[error("provider inventory candidate is stale")]
-    StaleCandidate,
-}
-
-pub(crate) type ProviderResult<T> = Result<T, ProviderError>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DiscoveryMode {
@@ -1018,14 +990,13 @@ impl InventoryBuilder {
             let mut adapter_features = BTreeSet::new();
             for api_type_name in static_api_types {
                 let api_type = parse_api_type(&api_type_name)?;
-                let operation_id =
-                    resolve_operation(
-                        adapter,
-                        operation_overrides,
-                        discovered.remote_methods.as_ref(),
-                        api_type,
-                        &api_type_name,
-                    )?;
+                let operation_id = resolve_operation(
+                    adapter,
+                    operation_overrides,
+                    discovered.remote_methods.as_ref(),
+                    api_type,
+                    &api_type_name,
+                )?;
                 let Some(operation_id) = operation_id else {
                     continue;
                 };
@@ -1192,10 +1163,7 @@ fn apply_version_rules(
                 continue;
             }
             let key = (model.model_driver_id.clone(), rule.id.clone());
-            if winners
-                .get(&key)
-                .is_none_or(|(_, current)| rank > *current)
-            {
+            if winners.get(&key).is_none_or(|(_, current)| rank > *current) {
                 winners.insert(key, (index, rank));
             }
         }
@@ -1216,8 +1184,11 @@ fn apply_version_rules(
             .map_err(|error| ProviderError::Inventory(error.to_string()))?
             .into_iter()
             .find(|rule| rule.id == rule_id)
-            .ok_or_else(|| ProviderError::Inventory(format!("version rule `{rule_id}` disappeared")))?;
-        let current_mount = expand_version_mount(&rule.current_mount, &models[index].provider_model_id);
+            .ok_or_else(|| {
+                ProviderError::Inventory(format!("version rule `{rule_id}` disappeared"))
+            })?;
+        let current_mount =
+            expand_version_mount(&rule.current_mount, &models[index].provider_model_id);
         if logical_mount_matches_api_types(&current_mount, &models[index].api_types)
             && !models[index].logical_mounts.contains(&current_mount)
         {
@@ -1256,7 +1227,11 @@ fn version_rank(model_id: &str, rule: &VersionRule) -> VersionRank {
     let offset = rule
         .version_rank
         .as_ref()
-        .and_then(|rank| normalized.find(&rank.prefix.to_ascii_lowercase()).map(|pos| pos + rank.prefix.len()))
+        .and_then(|rank| {
+            normalized
+                .find(&rank.prefix.to_ascii_lowercase())
+                .map(|pos| pos + rank.prefix.len())
+        })
         .unwrap_or_default();
     let version = normalized[offset..]
         .trim_start_matches(['-', '.'])
@@ -1437,12 +1412,6 @@ pub(crate) enum ProviderDraftValidationStage {
     Protocol,
     Discovery,
     Inventory,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ProviderDraftValidationError {
-    pub stage: ProviderDraftValidationStage,
-    pub kind: ProviderRefreshFailure,
 }
 
 impl ProviderDraftValidationError {
@@ -3591,9 +3560,7 @@ mod tests {
         assert!(model
             .logical_mounts
             .contains(&"llm.openai.gpt-test".to_string()));
-        assert!(!model
-            .logical_mounts
-            .contains(&"image.txt2img".to_string()));
+        assert!(!model.logical_mounts.contains(&"image.txt2img".to_string()));
     }
 
     #[tokio::test]

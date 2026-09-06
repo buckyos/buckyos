@@ -2,20 +2,21 @@
 
 pub(crate) mod policy;
 
+use crate::error::{ModelRegistryError, RoutingError};
 use crate::model::{
     AdmissionRecord, CandidatePath, ExactModelName, FallbackStep, LogicalItemSource, ModelRegistry,
-    ModelRegistryError, RegisteredModel, RegistryCandidate,
+    RegisteredModel, RegistryCandidate,
 };
 use buckyos_api::{
-    AiccFallbackMode, AiccFallbackRule, AiccSchedulerProfile, AiccSchedulerProfileConfig,
+    features, AiccFallbackMode, AiccFallbackRule, AiccSchedulerProfile, AiccSchedulerProfileConfig,
     AiccSchedulerProfileWeights, ApiType, Capability, Feature, ModelDisable, ModelRequirement,
-    Money, features,
+    Money,
 };
 #[allow(unused_imports)]
 pub(crate) use policy::{
-    CallerIdentity, EffectiveRoutingPolicy, PolicyEngine, PolicyError, QuotaLookup, QuotaSnapshot,
-    QuotaSourceError, QuotaSourceFactory, QuotaTruthPort, policy_engine_for_route,
-    resolve_effective_routing_policy, scheduler_profile_for_route_profile,
+    policy_engine_for_route, resolve_effective_routing_policy, scheduler_profile_for_route_profile,
+    CallerIdentity, EffectiveRoutingPolicy, PolicyEngine, QuotaLookup, QuotaSnapshot,
+    QuotaSourceFactory, QuotaTruthPort,
 };
 use policy::{
     CandidatePolicyInput, CredentialScope, LocalityPreference, PolicyReason, ProviderPrivacy,
@@ -254,25 +255,6 @@ pub(crate) struct UserFacingRouteSummary {
     pub reason_short: String,
     pub was_fallback: bool,
     pub was_failover: bool,
-}
-
-#[derive(Debug)]
-pub(crate) enum RoutingError {
-    InvalidRequest(String),
-    InvalidExactModel(String),
-    ExactModelUnavailable {
-        exact_model: String,
-        reasons: Vec<FilterReasonTrace>,
-    },
-    NoCandidate {
-        model: String,
-        filtered: Vec<FilteredCandidateTrace>,
-    },
-    FallbackNotAllowed(String),
-    InvalidFallback(String),
-    FallbackLoop(String),
-    FallbackDepthExceeded(usize),
-    Registry(ModelRegistryError),
 }
 
 impl fmt::Display for RoutingError {
@@ -1026,11 +1008,19 @@ fn normalize(values: &[Option<f64>], invert: bool) -> Vec<f64> {
         .map(|value| match (value, min, max) {
             (Some(value), Some(min), Some(max)) if value.is_finite() && *value >= 0.0 => {
                 let normalized = if (max - min).abs() < EPSILON {
-                    if invert { 1.0 } else { 0.0 }
+                    if invert {
+                        1.0
+                    } else {
+                        0.0
+                    }
                 } else {
                     (*value - min) / (max - min)
                 };
-                if invert { 1.0 - normalized } else { normalized }
+                if invert {
+                    1.0 - normalized
+                } else {
+                    normalized
+                }
             }
             _ => 1.0,
         })

@@ -1,3 +1,4 @@
+pub(crate) use crate::error::{PolicyError, QuotaSourceError};
 use crate::matching::{CompiledMatchRule, MatchContext, MatchRule, ROUTING_PROVIDER_MATCH_SCHEMA};
 use crate::model::ModelRegistry;
 use async_trait::async_trait;
@@ -579,9 +580,6 @@ impl QuotaSnapshot {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct QuotaSourceError;
-
 pub(crate) trait QuotaSource: Send + Sync {
     fn query(&self, lookup: &QuotaLookup) -> Result<QuotaSnapshot, QuotaSourceError>;
 }
@@ -766,17 +764,6 @@ pub(crate) struct PolicyDecision {
     pub allowed: bool,
     pub locality_preference: LocalityPreference,
     pub reasons: Vec<PolicyReason>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) enum PolicyError {
-    LockedOverride {
-        field: &'static str,
-        locked_by: PolicyScope,
-        attempted_by: PolicyScope,
-    },
-    InvalidPolicy(String),
-    QuotaSourceUnavailable,
 }
 
 impl fmt::Display for PolicyError {
@@ -1322,12 +1309,10 @@ mod tests {
             &scope,
             ProviderPrivacy::PublicCloud,
         );
-        assert!(
-            decision
-                .reasons
-                .iter()
-                .any(|r| r.code == PolicyReasonCode::LocalProviderRequired)
-        );
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|r| r.code == PolicyReasonCode::LocalProviderRequired));
 
         let mut fake_local = trust(ProviderType::LocalInference);
         fake_local.provider_type_source = ProviderTypeSource::ProviderInventory;
@@ -1338,18 +1323,14 @@ mod tests {
             &scope,
             ProviderPrivacy::Local,
         );
-        assert!(
-            decision
-                .reasons
-                .iter()
-                .any(|r| r.code == PolicyReasonCode::ProviderTypeSourceUntrusted)
-        );
-        assert!(
-            decision
-                .reasons
-                .iter()
-                .any(|r| r.code == PolicyReasonCode::LocalProviderRequired)
-        );
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|r| r.code == PolicyReasonCode::ProviderTypeSourceUntrusted));
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|r| r.code == PolicyReasonCode::LocalProviderRequired));
     }
 
     #[test]
@@ -1423,12 +1404,10 @@ mod tests {
             PolicyReasonCode::RequestQuotaExceeded,
             PolicyReasonCode::BudgetExceeded,
         ] {
-            assert!(
-                decision
-                    .reasons
-                    .iter()
-                    .any(|reason| reason.code == expected)
-            );
+            assert!(decision
+                .reasons
+                .iter()
+                .any(|reason| reason.code == expected));
         }
     }
 
@@ -1556,12 +1535,10 @@ mod tests {
             tenant_id: "tenant-a".into(),
         };
         let decision = evaluate(&engine, &caller, None, &scope, ProviderPrivacy::PublicCloud);
-        assert!(
-            decision
-                .reasons
-                .iter()
-                .any(|r| r.code == PolicyReasonCode::ProviderTrustUnavailable)
-        );
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|r| r.code == PolicyReasonCode::ProviderTrustUnavailable));
         assert!(!decision
             .reasons
             .iter()
@@ -1575,10 +1552,7 @@ mod tests {
             tenant_id: "tenant-a".into(),
         };
         let cloud = trust(ProviderType::CloudApi);
-        for result in [
-            Ok(QuotaSnapshot::unknown()),
-            Err(QuotaSourceError),
-        ] {
+        for result in [Ok(QuotaSnapshot::unknown()), Err(QuotaSourceError)] {
             let engine = engine(
                 &RoutingPolicyPatch::default(),
                 FakeQuota {
@@ -1586,14 +1560,16 @@ mod tests {
                     seen: Arc::new(Mutex::new(Vec::new())),
                 },
             );
-            assert!(evaluate(
-                &engine,
-                &caller,
-                Some(&cloud),
-                &scope,
-                ProviderPrivacy::PublicCloud,
-            )
-            .allowed);
+            assert!(
+                evaluate(
+                    &engine,
+                    &caller,
+                    Some(&cloud),
+                    &scope,
+                    ProviderPrivacy::PublicCloud,
+                )
+                .allowed
+            );
         }
     }
 
@@ -1617,12 +1593,10 @@ mod tests {
             &scope,
             ProviderPrivacy::PublicCloud,
         );
-        assert!(
-            decision
-                .reasons
-                .iter()
-                .any(|r| r.code == PolicyReasonCode::CredentialScopeMismatch)
-        );
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|r| r.code == PolicyReasonCode::CredentialScopeMismatch));
         let lookup = seen.lock().unwrap().pop().unwrap();
         assert_eq!(lookup.caller.tenant_id, "tenant-a");
         assert_eq!(lookup.caller.app_id.as_deref(), Some("app-a"));
@@ -1651,14 +1625,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(response.quota.state, QuotaState::Normal);
-        assert!(
-            seen.lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .provider_instance_name
-                .is_none()
-        );
+        assert!(seen
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .provider_instance_name
+            .is_none());
     }
 
     #[tokio::test]
@@ -1687,29 +1660,25 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["openai_backup", "openai_primary"]
         );
-        assert!(
-            source
-                .query(&QuotaLookup {
-                    caller: caller.clone(),
-                    capability: Some(Capability::Llm),
-                    method: Some("chat.completions.create".into()),
-                    provider_instance_name: Some("openai_primary".into()),
-                })
-                .is_ok()
-        );
-        assert!(
-            source
-                .query(&QuotaLookup {
-                    caller: CallerIdentity {
-                        tenant_id: "tenant-b".into(),
-                        ..caller
-                    },
-                    capability: Some(Capability::Llm),
-                    method: Some("chat.completions.create".into()),
-                    provider_instance_name: Some("openai_primary".into()),
-                })
-                .is_err()
-        );
+        assert!(source
+            .query(&QuotaLookup {
+                caller: caller.clone(),
+                capability: Some(Capability::Llm),
+                method: Some("chat.completions.create".into()),
+                provider_instance_name: Some("openai_primary".into()),
+            })
+            .is_ok());
+        assert!(source
+            .query(&QuotaLookup {
+                caller: CallerIdentity {
+                    tenant_id: "tenant-b".into(),
+                    ..caller
+                },
+                capability: Some(Capability::Llm),
+                method: Some("chat.completions.create".into()),
+                provider_instance_name: Some("openai_primary".into()),
+            })
+            .is_err());
     }
 
     #[tokio::test]
@@ -1730,23 +1699,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.quota.state, QuotaState::Normal);
-        assert!(
-            seen.lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .provider_instance_name
-                .is_none()
-        );
-        assert!(
-            factory
-                .query_quota(
-                    &caller(),
-                    QuotaQueryRequest::new(Some(Capability::Llm), None),
-                )
-                .await
-                .is_ok()
-        );
+        assert!(seen
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .provider_instance_name
+            .is_none());
+        assert!(factory
+            .query_quota(
+                &caller(),
+                QuotaQueryRequest::new(Some(Capability::Llm), None),
+            )
+            .await
+            .is_ok());
 
         let failing = QuotaSourceFactory::new(Arc::new(FakeTruthPort {
             result: Err(QuotaSourceError),

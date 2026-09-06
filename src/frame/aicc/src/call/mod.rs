@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 
-use crate::catalog::{CatalogResolveError, CatalogSnapshot, Pricing, ResolvedProviderRule};
+use crate::catalog::{CatalogSnapshot, Pricing, ResolvedProviderRule};
+use crate::error::{CallLoweringError, CatalogResolveError, ModelRegistryError};
 use crate::matching::MatchContext;
-use crate::model::{ExactModelName, ModelRegistryError};
+use crate::model::ExactModelName;
 use crate::protocol::{
     CodecContext, CodecInput, CodecLimits, CodecRegistry, CredentialAudit, ExecutionMode,
     ResolvedCredential,
@@ -183,52 +184,6 @@ impl ResolvedProviderCall {
             revisions: &self.revisions,
         }
     }
-}
-
-#[derive(Debug)]
-pub(crate) enum CallLoweringError {
-    UnsupportedCanonicalCall(String),
-    InvalidCanonicalRequest(String),
-    InvalidExactModel(ModelRegistryError),
-    RouteMismatch(String),
-    Catalog(CatalogResolveError),
-    MissingModelVariant {
-        model_driver_id: String,
-        variant: String,
-    },
-    AmbiguousModelVariant {
-        model_driver_id: String,
-        variant: String,
-    },
-    MissingProviderVariant {
-        provider_rules_id: String,
-        variant: String,
-    },
-    AmbiguousProviderVariant {
-        provider_rules_id: String,
-        variant: String,
-    },
-    UnknownAdapter(String),
-    MissingDefaultOperation {
-        adapter_id: String,
-        api_type: String,
-    },
-    AmbiguousDefaultOperation {
-        adapter_id: String,
-        api_type: String,
-    },
-    RouteOperationMismatch {
-        routed: String,
-        lowered: String,
-    },
-    UnsupportedOperation(String),
-    UnsupportedExecutionMode {
-        adapter_id: String,
-        operation: String,
-        api_type: String,
-        execution_mode: String,
-    },
-    InvalidRule(String),
 }
 
 impl CallLoweringError {

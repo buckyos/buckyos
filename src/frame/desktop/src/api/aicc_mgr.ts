@@ -104,6 +104,7 @@ const EMPTY_SNAPSHOT: StoreSnapshot = {
 }
 
 const BUILTIN_PROVIDER_NAMES: Array<[ProviderType, string, string, string]> = [
+  ['sn', 'SN Router', 'https://sn.buckyos.ai/api/v1/ai', 'sn-openai'],
   ['openai', 'OpenAI', 'https://api.openai.com/v1', 'openai-responses'],
   ['claude', 'Anthropic Claude', 'https://api.anthropic.com/v1', 'claude-messages'],
   ['gemini', 'Google Gemini', 'https://generativelanguage.googleapis.com/v1beta', 'gemini-interactions'],
@@ -115,8 +116,11 @@ const BUILTIN_PROVIDER_NAMES: Array<[ProviderType, string, string, string]> = [
   ['deepseek', 'DeepSeek', 'https://api.deepseek.com', 'deepseek-responses'],
   ['doubao', '豆包（火山方舟）', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-responses'],
   ['qwen', 'Qwen（阿里云百炼）', 'https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1', 'qwen-responses'],
-  ['sn', 'SN Router', 'https://sn.buckyos.ai/api/v1/ai', 'sn-openai'],
 ]
+
+const PROVIDER_INFLUENCE_ORDER = new Map<ProviderType, number>(
+  BUILTIN_PROVIDER_NAMES.map(([profile], index) => [profile, index]),
+)
 
 const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
   catalog_revision: 1,
@@ -2183,7 +2187,10 @@ function toProviderSetupCatalog(
       if (provider_profile_id === 'custom') return null
       return {
         provider_profile_id,
-        display_name: asNonEmptyString(entry.display_name, providerDisplayName(provider_profile_id, provider_profile_id)),
+        display_name: providerDisplayName(
+          provider_profile_id,
+          asNonEmptyString(entry.display_name, provider_profile_id),
+        ),
         base_url: asNonEmptyString(entry.base_url, ''),
         protocol_adapter_id: asNonEmptyString(entry.protocol_adapter_id, ''),
         provider_rules_id: asOptionalString(entry.provider_rules_id),
@@ -2199,12 +2206,20 @@ function toProviderSetupCatalog(
   }
   return {
     catalog_revision: asNumber(catalog.catalog_revision, 0),
-    providers,
+    providers: sortProviderProfiles(providers),
     protocol_families: Array.from(families).sort().map((protocol_family_id) => ({
       protocol_family_id,
       display_name: `${labelFromPath(protocol_family_id)} compatible`,
     })),
   }
+}
+
+function sortProviderProfiles<T extends { provider_profile_id: ProviderType; display_name: string }>(providers: T[]): T[] {
+  return [...providers].sort((left, right) => {
+    const leftRank = PROVIDER_INFLUENCE_ORDER.get(left.provider_profile_id) ?? Number.MAX_SAFE_INTEGER
+    const rightRank = PROVIDER_INFLUENCE_ORDER.get(right.provider_profile_id) ?? Number.MAX_SAFE_INTEGER
+    return leftRank - rightRank || left.display_name.localeCompare(right.display_name)
+  })
 }
 
 function toProviderConnectionFields(value: unknown): KnownProviderProfile['connection_fields'] {

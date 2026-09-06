@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 
+use crate::error::{CatalogBuildError, CatalogResolveError, MatchCompileError};
 use crate::matching::{
-    CompiledMatchRule, CompiledRuleSet, MatchCompileError, MatchContext, MatchRule, MatchTrace,
-    RuleEntry, MODEL_DRIVER_MATCH_SCHEMA, PRICING_RULE_MATCH_SCHEMA, PROVIDER_RULE_MATCH_SCHEMA,
+    CompiledMatchRule, CompiledRuleSet, MatchContext, MatchRule, MatchTrace, RuleEntry,
+    MODEL_DRIVER_MATCH_SCHEMA, PRICING_RULE_MATCH_SCHEMA, PROVIDER_RULE_MATCH_SCHEMA,
     REQUEST_RULE_MATCH_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
@@ -2195,70 +2196,6 @@ fn valid_json_pointer(value: &str) -> bool {
         })
 }
 
-#[derive(Debug)]
-pub(crate) enum CatalogBuildError {
-    InvalidJson {
-        kind: CatalogKind,
-        position: usize,
-        source: serde_json::Error,
-    },
-    InvalidFormat {
-        kind: CatalogKind,
-        id: String,
-        expected: &'static str,
-        actual: String,
-    },
-    UnsupportedSchema {
-        kind: CatalogKind,
-        id: String,
-        schema_version: u32,
-        schema_revision: u32,
-    },
-    UnsupportedFeature {
-        owner: String,
-        feature: String,
-    },
-    RevisionAheadOfSnapshot {
-        kind: CatalogKind,
-        id: String,
-        revision_seq: u64,
-        target_revision_seq: u64,
-    },
-    DuplicateCatalog {
-        kind: CatalogKind,
-        id: String,
-    },
-    DuplicateExactRule {
-        kind: CatalogKind,
-        catalog_id: String,
-        model_id: String,
-    },
-    DuplicateKnownProvider {
-        provider_profile_id: String,
-    },
-    UnknownReference {
-        owner: String,
-        field: &'static str,
-        target: String,
-    },
-    ReferenceMismatch {
-        owner: String,
-        field: &'static str,
-        target: String,
-        expected: String,
-    },
-    InvalidValue {
-        owner: String,
-        field: &'static str,
-        reason: String,
-    },
-    StaticDynamicBoundary {
-        owner: String,
-        field: String,
-    },
-    Match(MatchCompileError),
-}
-
 impl From<MatchCompileError> for CatalogBuildError {
     fn from(value: MatchCompileError) -> Self {
         Self::Match(value)
@@ -2365,48 +2302,6 @@ impl Error for CatalogBuildError {
             _ => None,
         }
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CatalogResolveError {
-    UnknownKnownProvider {
-        provider_profile_id: String,
-    },
-    MissingProviderRulesReference {
-        provider_profile_id: String,
-    },
-    ProviderRulesIdentityMismatch {
-        provider_profile_id: String,
-        provider_rules_id: String,
-        rules_provider_profile_id: String,
-    },
-    UnknownModelDriver {
-        model_driver_id: String,
-    },
-    UnknownProviderRules {
-        provider_profile_id: String,
-    },
-    AmbiguousModelDrivers {
-        origin_model_id: String,
-        model_driver_ids: Vec<String>,
-    },
-    OriginMappingNotFound {
-        provider_profile_id: String,
-        provider_model_id: String,
-    },
-    UnknownOriginProvider {
-        provider_profile_id: String,
-        origin_provider: String,
-    },
-    OriginDriverOutsideMetadataDrivers {
-        provider_profile_id: String,
-        model_driver_id: String,
-    },
-    ConflictingOriginMappings {
-        provider_profile_id: String,
-        provider_model_id: String,
-        resolved: Vec<ResolvedProviderOrigin>,
-    },
 }
 
 impl fmt::Display for CatalogResolveError {
@@ -2653,11 +2548,13 @@ mod tests {
         let snapshot = build(vec![
             CurrentCatalogFile {
                 kind: CatalogKind::ModelDriver,
-                contents: include_bytes!("../../driver_metadata/models/anthropic.model.json").to_vec(),
+                contents: include_bytes!("../../driver_metadata/models/anthropic.model.json")
+                    .to_vec(),
             },
             CurrentCatalogFile {
                 kind: CatalogKind::ProviderRules,
-                contents: include_bytes!("../../driver_metadata/providers/claude.provider.json").to_vec(),
+                contents: include_bytes!("../../driver_metadata/providers/claude.provider.json")
+                    .to_vec(),
             },
         ])
         .unwrap();

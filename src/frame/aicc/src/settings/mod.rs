@@ -1,9 +1,10 @@
 #![allow(dead_code)]
 
 use crate::catalog::{
-    CatalogBuildError, CatalogBuildOptions, CatalogKind, CatalogSnapshot, CurrentCatalogFile,
-    KnownProviderCatalog, ModelDriverCatalog, ProviderRulesCatalog,
+    CatalogBuildOptions, CatalogKind, CatalogSnapshot, CurrentCatalogFile, KnownProviderCatalog,
+    ModelDriverCatalog, ProviderRulesCatalog,
 };
+use crate::error::SettingsError;
 use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, AiccRouteOverlay, SystemConfigClient, SystemConfigError,
@@ -15,7 +16,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use thiserror::Error;
 
 pub(crate) const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
 pub(crate) const SYSTEM_CONFIG_METADATA_KEY: &str = "services/aicc/driver_metadata";
@@ -875,44 +875,6 @@ impl RuntimeInputs for ProductionRuntimeInputs {
         let cloud = self.cloud.load_files(target_seq).await?;
         self.sources.build_snapshot(target_seq, cloud).await
     }
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum SettingsError {
-    #[error("invalid AICC settings JSON: {0}")]
-    InvalidJson(#[from] serde_json::Error),
-    #[error("invalid settings field `{field}`: {reason}")]
-    InvalidField { field: &'static str, reason: String },
-    #[error("provider instance `{0}` appears more than once")]
-    DuplicateProvider(String),
-    #[error("duplicate {kind} catalog `{catalog_id}` in {metadata_source:?} metadata source")]
-    DuplicateMetadataFile {
-        metadata_source: MetadataSource,
-        kind: CatalogKind,
-        catalog_id: String,
-    },
-    #[error(
-        "metadata file `{catalog_id}` declares {actual:?} source but was placed in {expected:?}"
-    )]
-    MetadataSourceMismatch {
-        expected: MetadataSource,
-        actual: MetadataSource,
-        catalog_id: String,
-    },
-    #[error("effective catalog is invalid: {0}")]
-    InvalidCatalog(#[from] CatalogBuildError),
-    #[error("metadata filesystem I/O failed: {0}")]
-    MetadataIo(#[source] std::io::Error),
-    #[error("invalid metadata path `{path}`: {reason}")]
-    InvalidMetadataPath { path: PathBuf, reason: String },
-    #[error("{0:?} metadata changed while a reload snapshot was being captured")]
-    MetadataSourceChanged(MetadataSource),
-    #[error("unsupported system-config metadata schema version {0}")]
-    UnsupportedMetadataSchema(u32),
-    #[error("system-config metadata read failed: {0}")]
-    SystemConfig(String),
-    #[error("cloud metadata read failed: {0}")]
-    Cloud(String),
 }
 
 #[cfg(test)]

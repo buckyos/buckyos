@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::catalog::CatalogSnapshot;
+use crate::error::ModelRegistryError;
 use buckyos_api::{
     AiccFallbackMode, AiccFallbackRule, AiccLogicalNodeOverlay, AiccLogicalTreeOverlay,
     AiccPolicyConfig, AiccRouteOverlay, AiccSchedulerProfile, ApiType, ModelDisable, ModelItem,
@@ -1535,54 +1536,6 @@ fn normalize_admissions(admissions: &mut Vec<AdmissionRecord>) {
     });
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum ModelRegistryError {
-    InvalidIdentity {
-        field: &'static str,
-        value: String,
-    },
-    InvalidExactModelName(String),
-    InvalidVariant(String),
-    InvalidLogicalPath(String),
-    ApiNamespaceMismatch {
-        path: String,
-        api_type: String,
-    },
-    MountApiMismatch {
-        path: String,
-        provider_model_id: String,
-    },
-    CrossNamespaceLink {
-        from: String,
-        to: String,
-    },
-    DuplicateProviderInstance(String),
-    DuplicateExactModel(String),
-    DuplicateVariant {
-        provider_model_id: String,
-        variant: String,
-    },
-    UnknownModelDriver(String),
-    MissingApiTypes(String),
-    DuplicateLogicalDefinition(String),
-    DuplicateOverlayPath(String),
-    InvalidItemName(String),
-    InvalidWeight {
-        field: String,
-        weight: f64,
-    },
-    ItemsAndOverridesConflict(String),
-    UnknownItemOverride {
-        path: String,
-        item: String,
-    },
-    UnknownLogicalProfile(String),
-    InvalidFallbackRule(String),
-    LogicalTreeLoop(String),
-    FallbackLoop(String),
-    FallbackDepthExceeded(usize),
-}
-
 impl fmt::Display for ModelRegistryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1826,7 +1779,10 @@ mod tests {
         assert_eq!(variant.identity.model_driver_id, "openai");
         assert_eq!(variant.identity.origin_model_id, "gpt-5.2");
         assert_eq!(variant.identity.provider_model_id, "gpt-5.2");
-        assert_eq!(ModelView::from(variant).provider_model_id, "gpt-5.2:reasoning-high");
+        assert_eq!(
+            ModelView::from(variant).provider_model_id,
+            "gpt-5.2:reasoning-high"
+        );
         assert_eq!(
             registry
                 .resolve_candidates("llm.reason", ApiType::Llm)
