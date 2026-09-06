@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleAlert, Cloud, Loader2, PlusCircle, RefreshCw, Server } from 'lucide-react'
+import { CheckCircle2, CircleAlert, CircleDashed, Cloud, Loader2, RefreshCw, Server } from 'lucide-react'
 import { useI18n } from '../../../../../i18n/provider'
 import type { ProviderSetupCatalog, ProviderType, ProviderView } from '../../../../../api/aicc_mgr'
 
@@ -50,7 +50,7 @@ export function StepChooseType({ selected, onSelect, providers, catalog, loading
     const Icon = item.type === 'custom' ? Server : Cloud
     const counts = providerCounts(providers, item.type)
     const state = providerCardState(counts)
-    const StateIcon = state === 'working' ? CheckCircle2 : state === 'pending_enable' ? CircleAlert : PlusCircle
+    const StateIcon = state === 'working' ? CheckCircle2 : state === 'pending_enable' ? CircleAlert : CircleDashed
     const stateColor = state === 'working' ? 'var(--cp-success)' : state === 'pending_enable' ? 'var(--cp-warning)' : 'var(--cp-muted)'
     const stateLabel = state === 'working'
       ? t('aiCenter.wizard.providerWorking', '工作中')

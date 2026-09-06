@@ -1922,15 +1922,21 @@ impl AiccHandler for AiccService {
         let response_name = name.clone();
         let snapshot = self
             .mutate_settings(&caller, None, move |settings| {
-                let before = settings.providers.len();
+                let provider = settings
+                    .providers
+                    .iter()
+                    .find(|provider| provider.provider_instance_name == name)
+                    .ok_or_else(|| {
+                        RPCErrors::ReasonError("provider instance was not found".into())
+                    })?;
+                if is_dynamic_login_sn_provider(provider) {
+                    return Err(invalid_request(
+                        "dynamic login SN provider cannot be deleted",
+                    ));
+                }
                 settings
                     .providers
                     .retain(|provider| provider.provider_instance_name != name);
-                if settings.providers.len() == before {
-                    return Err(RPCErrors::ReasonError(
-                        "provider instance was not found".into(),
-                    ));
-                }
                 if let Some(routing) = settings.session_config.as_mut() {
                     routing.provider_weights.remove(&name);
                 }
@@ -2129,6 +2135,17 @@ fn conflict_error(expected: u64, actual: u64) -> RPCErrors {
 
 fn invalid_request(message: &'static str) -> RPCErrors {
     AiccError::new(buckyos_api::AiccErrorCode::InvalidRequest, message).to_krpc_error()
+}
+
+fn is_dynamic_login_sn_provider(provider: &ProviderSettings) -> bool {
+    if provider.provider_profile_id != "sn" {
+        return false;
+    }
+    provider
+        .auth
+        .as_ref()
+        .and_then(|auth| serde_json::from_value::<ProviderAuthConfig>(auth.clone()).ok())
+        .is_some_and(|auth| matches!(auth, ProviderAuthConfig::DynamicLogin { .. }))
 }
 
 fn to_rpc_error(error: impl std::fmt::Display) -> RPCErrors {
@@ -5563,6 +5580,27 @@ mod tests {
         request
     }
 
+    fn sn_provider(name: &str, auth: Value) -> ProviderSettings {
+        ProviderSettings {
+            provider_instance_name: name.to_string(),
+            provider_type: "cloud_api".to_string(),
+            provider_profile_id: "sn".to_string(),
+            protocol_adapter_id: "sn-openai".to_string(),
+            base_url: "https://sn.buckyos.ai/api/v1/ai".to_string(),
+            credentials: json!({"api_token": {"locked": "top-secret"}}),
+            enabled: true,
+            region: None,
+            workspace: None,
+            account: None,
+            provider_rules_id: None,
+            auth: Some(auth),
+            discovery: None,
+            instance_rules: None,
+            timeout_ms: None,
+            auto_sync_models: None,
+        }
+    }
+
     fn provider_public_view(provider: &ProviderSettings) -> ProviderInstanceView {
         ProviderInstanceView {
             provider_instance_name: provider.provider_instance_name.clone(),
@@ -6402,6 +6440,81 @@ mod tests {
             .unwrap();
         assert_eq!(deleted.settings_revision, Some(7));
         assert_eq!(fixture.settings.writes.load(Ordering::SeqCst), 3);
+        assert!(fixture
+            .settings
+            .value
+            .lock()
+            .await
+            .settings
+            .providers
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn dynamic_login_sn_provider_cannot_be_deleted() {
+        let fixture = fixture(false);
+        {
+            let current = fixture.settings.value.lock().await.clone();
+            let mut settings = current.settings.as_ref().clone();
+            settings.providers = vec![sn_provider(
+                "sn-ai-provider-default",
+                json!({
+                    "mode": "dynamic_login",
+                    "login_profile": "sn-router",
+                    "login_endpoint": "https://sn.buckyos.ai/kapi/sn"
+                }),
+            )];
+            *fixture.settings.value.lock().await =
+                SettingsDocument::new(current.revision, settings).unwrap();
+        }
+
+        let error = fixture
+            .service
+            .handle_delete_provider(
+                ProviderDeleteRequest::new("sn-ai-provider-default"),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            AiccError::from_krpc_error(&error).unwrap().code,
+            buckyos_api::AiccErrorCode::InvalidRequest
+        );
+        assert_eq!(fixture.settings.writes.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            fixture.settings.value.lock().await.settings.providers.len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn api_key_sn_provider_can_be_deleted() {
+        let fixture = fixture(false);
+        {
+            let current = fixture.settings.value.lock().await.clone();
+            let mut settings = current.settings.as_ref().clone();
+            settings.providers = vec![sn_provider(
+                "sn-router-api-key",
+                json!({
+                    "mode": "api_key",
+                    "credential_ref": "locked://sn-router-api-key/api_token",
+                    "credential_kind": "bearer"
+                }),
+            )];
+            *fixture.settings.value.lock().await =
+                SettingsDocument::new(current.revision, settings).unwrap();
+        }
+
+        let deleted = fixture
+            .service
+            .handle_delete_provider(
+                ProviderDeleteRequest::new("sn-router-api-key"),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.settings_revision, Some(5));
+        assert_eq!(fixture.settings.writes.load(Ordering::SeqCst), 1);
         assert!(fixture
             .settings
             .value

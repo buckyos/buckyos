@@ -17,7 +17,7 @@ import { getEmptySeed, getPopulatedSeed, model } from './seed'
 
 function isManagedSnProvider(provider: ProviderView): boolean {
   return provider.config.provider_profile_id === 'sn'
-    && (provider.config.auth_mode === 'dynamic_login' || provider.config.provider_origin === 'system_config')
+    && provider.config.auth_mode === 'dynamic_login'
 }
 
 function getScenarioFromURL(): 'empty' | 'populated' {
