@@ -1501,7 +1501,10 @@ pub fn build_install_status_snapshot(
             }
         }
     }
-    if !task_phase.is_terminal() {
+    if !task_phase.is_terminal()
+        && state.prepared.is_none()
+        && !state.is_stage_completed(InstallStage::Prepare)
+    {
         available_actions.push(InstallUserAction::Cancel);
     }
 

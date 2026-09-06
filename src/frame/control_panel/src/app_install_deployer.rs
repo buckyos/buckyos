@@ -2,10 +2,10 @@ use crate::app_install_driver::ProductionInstallDriver;
 use crate::app_install_engine::InstallTaskView;
 use buckyos_api::{
     get_buckyos_api_runtime, install_record_key, AppDoc, AppInstallTaskData, AppType, InstallError,
-    InstallErrorCode, InstallParams, InstallPlanCommitPoint, InstallPlanExecutionKey,
-    InstallPlanExecutionState, InstallStage, InstallTaskResult, MountPointConfig,
-    PreparedDeployment, ServiceEndpointConfig, ServiceExposeConfig, ServiceExposeRouteTips,
-    ServiceSpecConfig,
+    InstallErrorCode, InstallParams, InstallPlan, InstallPlanExecutionKey,
+    InstallPlanExecutionRecord, InstallPlanExecutionState, InstallStage, InstallTaskResult,
+    MountPointConfig, PreparedDeployment, SchedulerClient, ServiceEndpointConfig,
+    ServiceExposeConfig, ServiceExposeRouteTips, ServiceSpecConfig,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use std::collections::HashMap;
@@ -23,16 +23,107 @@ fn stage_error(
     InstallError::new(stage, code, retryable, message)
 }
 
-fn execution_key(data: &AppInstallTaskData) -> Result<InstallPlanExecutionKey, InstallError> {
-    let plan = data.state.plan.as_ref().ok_or_else(|| {
+fn install_plan(data: &AppInstallTaskData) -> Result<&InstallPlan, InstallError> {
+    data.state.plan.as_ref().ok_or_else(|| {
         stage_error(
             InstallStage::Prepare,
             InstallErrorCode::Internal,
             false,
             "install plan is missing",
         )
-    })?;
-    Ok(InstallPlanExecutionKey::from_plan(plan))
+    })
+}
+
+async fn scheduler_client(stage: InstallStage) -> Result<SchedulerClient, InstallError> {
+    get_buckyos_api_runtime()
+        .map_err(|error| stage_error(stage, InstallErrorCode::Internal, true, error.to_string()))?
+        .get_scheduler_client()
+        .await
+        .map_err(|error| {
+            stage_error(
+                stage,
+                InstallErrorCode::DeployFailed,
+                true,
+                error.to_string(),
+            )
+        })
+}
+
+async fn reconcile_execution(
+    scheduler: &SchedulerClient,
+    plan: &InstallPlan,
+    stage: InstallStage,
+    submit: bool,
+) -> Result<InstallPlanExecutionRecord, InstallError> {
+    let key = InstallPlanExecutionKey::from_plan(plan);
+    let result = if submit {
+        match scheduler.submit_install_plan(plan.clone()).await {
+            Ok(record) => Ok(record),
+            Err(_) => scheduler.get_install_plan_status(key.clone()).await,
+        }
+    } else {
+        scheduler.get_install_plan_status(key.clone()).await
+    };
+    let rpc_error = |error: kRPC::RPCErrors| {
+        stage_error(
+            stage,
+            InstallErrorCode::DeployFailed,
+            true,
+            format!("waiting to reconcile scheduler execution: {error}"),
+        )
+    };
+    let mut record = result.map_err(rpc_error)?;
+    for attempt in 0..2 {
+        if record.key != key || record.plan != *plan {
+            return Err(stage_error(
+                stage,
+                InstallErrorCode::Conflict,
+                false,
+                "scheduler execution does not match the approved plan",
+            ));
+        }
+        match record.state {
+            InstallPlanExecutionState::Completed => return Ok(record),
+            InstallPlanExecutionState::Canceled => {
+                return Err(stage_error(
+                    stage,
+                    InstallErrorCode::Canceled,
+                    false,
+                    "scheduler execution was canceled",
+                ));
+            }
+            InstallPlanExecutionState::Failed
+                if attempt == 1 || record.error.as_ref().is_some_and(|error| !error.retryable) =>
+            {
+                let mut error = record.error.unwrap_or_else(|| {
+                    stage_error(
+                        stage,
+                        InstallErrorCode::DeployFailed,
+                        true,
+                        "scheduler execution failed without a structured error",
+                    )
+                });
+                error.stage = stage;
+                return Err(error);
+            }
+            _ if attempt == 0 => {
+                record = scheduler
+                    .retry_install_plan(key.clone())
+                    .await
+                    .map_err(rpc_error)?;
+            }
+            _ => break,
+        }
+    }
+    if !record.commit_point.is_committed() {
+        return Err(stage_error(
+            stage,
+            InstallErrorCode::DeployFailed,
+            true,
+            "waiting for scheduler desired-state commit",
+        ));
+    }
+    Ok(record)
 }
 
 impl ProductionInstallDriver {
@@ -41,61 +132,20 @@ impl ProductionInstallDriver {
         _view: &InstallTaskView,
         data: &AppInstallTaskData,
     ) -> Result<PreparedDeployment, InstallError> {
-        self.materialize_candidate_pikg(data).await?;
-        let plan = data.state.plan.clone().ok_or_else(|| {
-            stage_error(
-                InstallStage::Prepare,
-                InstallErrorCode::Internal,
-                false,
-                "prepare requires an immutable install plan",
-            )
-        })?;
-        let runtime = get_buckyos_api_runtime().map_err(|error| {
-            stage_error(
-                InstallStage::Prepare,
-                InstallErrorCode::Internal,
-                true,
-                format!("runtime unavailable: {error}"),
-            )
-        })?;
-        let scheduler = runtime.get_scheduler_client().await.map_err(|error| {
-            stage_error(
-                InstallStage::Prepare,
-                InstallErrorCode::DeployFailed,
-                true,
-                format!("scheduler unavailable: {error}"),
-            )
-        })?;
-        let record = scheduler
-            .submit_install_plan(plan.clone())
+        let plan = install_plan(data)?;
+        let scheduler = scheduler_client(InstallStage::Prepare).await?;
+        let exists = scheduler
+            .get_install_plan_status(InstallPlanExecutionKey::from_plan(plan))
             .await
-            .map_err(|error| {
-                stage_error(
-                    InstallStage::Prepare,
-                    InstallErrorCode::DeployFailed,
-                    true,
-                    format!("scheduler rejected install plan: {error}"),
-                )
-            })?;
-        if record.key != InstallPlanExecutionKey::from_plan(&plan)
-            || matches!(
-                record.state,
-                InstallPlanExecutionState::Failed | InstallPlanExecutionState::Canceled
-            )
-        {
-            return Err(record.error.unwrap_or_else(|| {
-                stage_error(
-                    InstallStage::Prepare,
-                    InstallErrorCode::Conflict,
-                    false,
-                    "scheduler returned a mismatched or terminal execution record",
-                )
-            }));
+            .is_ok();
+        if !exists {
+            self.materialize_candidate_pikg(data).await?;
         }
+        reconcile_execution(&scheduler, plan, InstallStage::Prepare, !exists).await?;
         Ok(PreparedDeployment {
-            app_instance_id: plan.app_instance_id,
-            task_id: plan.task_id,
-            plan_fingerprint: plan.plan_fingerprint,
+            app_instance_id: plan.app_instance_id.clone(),
+            task_id: plan.task_id.clone(),
+            plan_fingerprint: plan.plan_fingerprint.clone(),
             submitted_at: buckyos_get_unix_timestamp(),
         })
     }
@@ -105,42 +155,8 @@ impl ProductionInstallDriver {
         _view: &InstallTaskView,
         data: &AppInstallTaskData,
     ) -> Result<(), InstallError> {
-        let key = execution_key(data)?;
-        let runtime = get_buckyos_api_runtime().map_err(|error| {
-            stage_error(
-                InstallStage::Deploy,
-                InstallErrorCode::Internal,
-                true,
-                error.to_string(),
-            )
-        })?;
-        let scheduler = runtime.get_scheduler_client().await.map_err(|error| {
-            stage_error(
-                InstallStage::Deploy,
-                InstallErrorCode::DeployFailed,
-                true,
-                error.to_string(),
-            )
-        })?;
-        let record = scheduler
-            .get_install_plan_status(key)
-            .await
-            .map_err(|error| {
-                stage_error(
-                    InstallStage::Deploy,
-                    InstallErrorCode::DeployFailed,
-                    true,
-                    error.to_string(),
-                )
-            })?;
-        if record.commit_point == InstallPlanCommitPoint::BeforeClaim {
-            return Err(stage_error(
-                InstallStage::Deploy,
-                InstallErrorCode::DeployFailed,
-                true,
-                "scheduler has not claimed the plan",
-            ));
-        }
+        let scheduler = scheduler_client(InstallStage::Deploy).await?;
+        reconcile_execution(&scheduler, install_plan(data)?, InstallStage::Deploy, false).await?;
         Ok(())
     }
 
@@ -149,76 +165,32 @@ impl ProductionInstallDriver {
         _view: &InstallTaskView,
         data: &AppInstallTaskData,
     ) -> Result<InstallTaskResult, InstallError> {
-        let plan = data.state.plan.as_ref().ok_or_else(|| {
-            stage_error(
-                InstallStage::Activate,
-                InstallErrorCode::Internal,
-                false,
-                "plan missing",
-            )
-        })?;
-        let key = InstallPlanExecutionKey::from_plan(plan);
-        let runtime = get_buckyos_api_runtime().map_err(|error| {
-            stage_error(
-                InstallStage::Activate,
-                InstallErrorCode::Internal,
-                true,
-                error.to_string(),
-            )
-        })?;
-        let scheduler = runtime.get_scheduler_client().await.map_err(|error| {
-            stage_error(
-                InstallStage::Activate,
-                InstallErrorCode::DeployFailed,
-                true,
-                error.to_string(),
-            )
-        })?;
+        let plan = install_plan(data)?;
+        let scheduler = scheduler_client(InstallStage::Activate).await?;
         let deadline = Instant::now() + Duration::from_secs(SCHEDULER_WAIT_TIMEOUT_SECS);
         loop {
-            let record = scheduler
-                .get_install_plan_status(key.clone())
-                .await
-                .map_err(|error| {
-                    stage_error(
-                        InstallStage::Activate,
-                        InstallErrorCode::DeployFailed,
-                        true,
-                        error.to_string(),
-                    )
-                })?;
-            match record.state {
-                InstallPlanExecutionState::Completed => {
-                    return Ok(InstallTaskResult {
-                        install_record_key: Some(install_record_key(
-                            &plan.owner_user_id,
-                            plan.app_instance_id.app_id(),
-                        )),
-                        proof_id: None,
-                        instance_node_id: None,
-                        completed_at: Some(buckyos_get_unix_timestamp()),
-                    });
-                }
-                InstallPlanExecutionState::Failed | InstallPlanExecutionState::Canceled => {
-                    return Err(record.error.unwrap_or_else(|| {
-                        stage_error(
-                            InstallStage::Activate,
-                            InstallErrorCode::DeployFailed,
-                            false,
-                            "scheduler execution ended without a structured error",
-                        )
-                    }));
-                }
-                _ if Instant::now() >= deadline => {
-                    return Err(stage_error(
-                        InstallStage::Activate,
-                        InstallErrorCode::DeployFailed,
-                        true,
-                        "scheduler execution did not complete before timeout",
-                    ));
-                }
-                _ => sleep(Duration::from_secs(2)).await,
+            let record =
+                reconcile_execution(&scheduler, plan, InstallStage::Activate, false).await?;
+            if record.state == InstallPlanExecutionState::Completed {
+                return Ok(InstallTaskResult {
+                    install_record_key: Some(install_record_key(
+                        &plan.owner_user_id,
+                        plan.app_instance_id.app_id(),
+                    )),
+                    proof_id: None,
+                    instance_node_id: None,
+                    completed_at: Some(buckyos_get_unix_timestamp()),
+                });
             }
+            if Instant::now() >= deadline {
+                return Err(stage_error(
+                    InstallStage::Activate,
+                    InstallErrorCode::DeployFailed,
+                    true,
+                    "waiting for scheduler execution to complete",
+                ));
+            }
+            sleep(Duration::from_secs(2)).await;
         }
     }
 
@@ -227,31 +199,31 @@ impl ProductionInstallDriver {
         _view: &InstallTaskView,
         data: &AppInstallTaskData,
     ) -> Result<(), InstallError> {
-        let key = execution_key(data)?;
-        let runtime = get_buckyos_api_runtime().map_err(|error| {
-            stage_error(
-                InstallStage::Deploy,
-                InstallErrorCode::Internal,
-                true,
-                error.to_string(),
-            )
-        })?;
-        let scheduler = runtime.get_scheduler_client().await.map_err(|error| {
-            stage_error(
-                InstallStage::Deploy,
-                InstallErrorCode::DeployFailed,
-                true,
-                error.to_string(),
-            )
-        })?;
-        scheduler.cancel_install_plan(key).await.map_err(|error| {
-            stage_error(
-                InstallStage::Deploy,
-                InstallErrorCode::DeployFailed,
-                true,
-                error.to_string(),
-            )
-        })?;
+        let scheduler = scheduler_client(InstallStage::Prepare).await?;
+        let plan = install_plan(data)?;
+        let record = scheduler
+            .cancel_install_plan(plan.clone())
+            .await
+            .map_err(|error| {
+                stage_error(
+                    InstallStage::Prepare,
+                    InstallErrorCode::Conflict,
+                    true,
+                    error.to_string(),
+                )
+            })?;
+        if record.key != InstallPlanExecutionKey::from_plan(plan)
+            || record.plan != *plan
+            || record.state != InstallPlanExecutionState::Canceled
+            || record.commit_point.is_committed()
+        {
+            return Err(stage_error(
+                InstallStage::Prepare,
+                InstallErrorCode::Conflict,
+                false,
+                "scheduler did not confirm cancellation before desired-state commit",
+            ));
+        }
         Ok(())
     }
 }
@@ -442,3 +414,7 @@ mod tests {
         assert!(issues[0].contains("instance_id=main"));
     }
 }
+
+#[cfg(test)]
+#[path = "app_install_recovery_tests.rs"]
+mod recovery_tests;

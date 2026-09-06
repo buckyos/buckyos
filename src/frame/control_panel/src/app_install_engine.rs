@@ -181,7 +181,6 @@ pub trait InstallStageDriver: Send + Sync {
         data: &AppInstallTaskData,
     ) -> Result<PreparedDeployment, InstallError>;
 
-    /// 写 spec（Deploy 的开始点）。
     async fn deploy(
         &self,
         view: &InstallTaskView,
@@ -194,7 +193,6 @@ pub trait InstallStageDriver: Send + Sync {
         data: &AppInstallTaskData,
     ) -> Result<ActivateOutcome, InstallError>;
 
-    /// spec 已写后的取消/失败回滚（恢复旧 spec 或清理新 spec）。
     async fn rollback_deploy(
         &self,
         view: &InstallTaskView,
@@ -246,16 +244,17 @@ pub struct InstallEngine {
     driver: Arc<dyn InstallStageDriver>,
     /// 进程内单任务执行守卫（防同进程重复推进；跨进程由 TaskManager 状态收敛）。
     running: Mutex<HashSet<String>>,
+    canceling: Mutex<HashSet<String>>,
 }
 
 struct RunGuard<'a> {
-    engine: &'a InstallEngine,
+    tasks: &'a Mutex<HashSet<String>>,
     task_id: String,
 }
 
 impl Drop for RunGuard<'_> {
     fn drop(&mut self) {
-        self.engine.running.lock().unwrap().remove(&self.task_id);
+        self.tasks.lock().unwrap().remove(&self.task_id);
     }
 }
 
@@ -265,6 +264,7 @@ impl InstallEngine {
             store,
             driver,
             running: Mutex::new(HashSet::new()),
+            canceling: Mutex::new(HashSet::new()),
         }
     }
 
@@ -536,7 +536,7 @@ impl InstallEngine {
             }
         }
         let _guard = RunGuard {
-            engine: self,
+            tasks: &self.running,
             task_id: task_id.to_string(),
         };
 
@@ -565,6 +565,19 @@ impl InstallEngine {
         let task_id = view.id.clone();
         let mut data = self.parse_data(&view)?;
 
+        if data.state.is_stage_completed(InstallStage::Activate) {
+            data.state.last_error = None;
+            self.persist(&task_id, &mut data).await?;
+            self.store
+                .set_status(
+                    &task_id,
+                    InstallTaskStatus::Completed,
+                    Some(100.0),
+                    Some("App installed".to_string()),
+                )
+                .await?;
+            return Ok(RunOutcome::Completed);
+        }
         if data.state.stage.is_none() {
             data.state.stage = Some(InstallStage::Resolve);
         }
@@ -574,6 +587,11 @@ impl InstallEngine {
             .await;
 
         loop {
+            if self.canceling.lock().unwrap().contains(&task_id)
+                || self.store.load(&task_id).await?.status.is_terminal()
+            {
+                return Ok(RunOutcome::NotRun);
+            }
             let stage = data
                 .state
                 .stage
@@ -792,54 +810,34 @@ impl InstallEngine {
                 }
                 InstallStage::Prepare => {
                     let prepared = self.driver.prepare(&view, &data).await?;
+                    data.state.last_error = None;
                     data.state.prepared = Some(prepared);
                     data.state.mark_stage_completed(InstallStage::Prepare);
                     self.persist(&task_id, &mut data).await?;
                 }
                 InstallStage::Deploy => {
                     self.driver.deploy(&view, &data).await?;
+                    data.state.last_error = None;
                     data.state.mark_stage_completed(InstallStage::Deploy);
                     self.persist(&task_id, &mut data).await?;
                 }
                 InstallStage::Activate => {
-                    let activate_result = self.driver.activate(&view, &data).await;
-                    let result = match activate_result {
-                        Ok(result) => result,
-                        Err(error) => {
-                            // 升级：新版本 Activate 失败恢复旧 spec/运行状态
-                            //（本机部署回滚，不改变 resolver 状态，P4.4）。
-                            if view.task_type == TASK_DATA_TYPE_APP_UPDATE {
-                                data.state.last_error = Some(error.clone());
-                                self.persist(&task_id, &mut data).await?;
-                                if let Err(rollback_err) =
-                                    self.driver.rollback_deploy(&view, &data).await
-                                {
-                                    warn!(
-                                        "rollback after failed activation also failed: {rollback_err}"
-                                    );
-                                } else {
-                                    // 旧 spec 已恢复：Deploy 输出失效，retry 时
-                                    // 必须重写新 spec 再 Activate。
-                                    data.state.invalidate_from(InstallStage::Deploy);
-                                    self.persist(&task_id, &mut data).await?;
-                                }
-                            }
-                            return Err(error);
-                        }
-                    };
+                    let result = self.driver.activate(&view, &data).await?;
+                    data.state.last_error = None;
                     data.state.result = Some(result);
                     data.state.mark_stage_completed(InstallStage::Activate);
                     self.persist(&task_id, &mut data).await?;
-                    self.driver.release_staging(&view, &data).await?;
-                    let _ = self
-                        .store
+                    if let Err(error) = self.driver.release_staging(&view, &data).await {
+                        warn!("release staging after completed installation: {error}");
+                    }
+                    self.store
                         .set_status(
                             &task_id,
                             InstallTaskStatus::Completed,
                             Some(100.0),
                             Some("App installed".to_string()),
                         )
-                        .await;
+                        .await?;
                     info!("install task {task_id} completed");
                     return Ok(RunOutcome::Completed);
                 }
@@ -947,6 +945,20 @@ impl InstallEngine {
     ) -> Result<String, InstallError> {
         let view = self.store.load(task_id).await?;
         self.ensure_task_owner(&view, requested_by, requester_is_admin)?;
+        let current_data = self.parse_data(&view)?;
+        if view.status == InstallTaskStatus::Running
+            && current_data
+                .state
+                .stage
+                .is_some_and(|stage| stage >= InstallStage::Prepare)
+            && current_data
+                .state
+                .last_error
+                .as_ref()
+                .is_some_and(|error| error.retryable)
+        {
+            return Ok(task_id.to_string());
+        }
         if !matches!(
             view.status,
             InstallTaskStatus::Failed | InstallTaskStatus::Paused
@@ -975,8 +987,6 @@ impl InstallEngine {
                 ));
             }
         }
-        // 失败 Stage 与当前指针取更早者：失败后的自动回滚可能已把指针
-        // 回退（如升级回滚后指回 Deploy），retry 不得跳过被作废的 Stage。
         let error_stage = data.state.last_error.as_ref().map(|error| error.stage);
         let pointer_stage = data.state.stage;
         let retry_stage = match (error_stage, pointer_stage) {
@@ -1021,7 +1031,6 @@ impl InstallEngine {
         Ok(new_task_id)
     }
 
-    /// 取消：Prepare 前直接取消；spec 已写（Deploy 开始）后先回滚再取消。
     pub async fn cancel(
         &self,
         task_id: &str,
@@ -1029,6 +1038,20 @@ impl InstallEngine {
         requester_app_id: &str,
         requester_is_admin: bool,
     ) -> Result<(), InstallError> {
+        {
+            if !self.canceling.lock().unwrap().insert(task_id.to_string()) {
+                return Err(InstallError::new(
+                    InstallStage::Prepare,
+                    InstallErrorCode::Conflict,
+                    true,
+                    "installation cancellation is already in progress",
+                ));
+            }
+        }
+        let _guard = RunGuard {
+            tasks: &self.canceling,
+            task_id: task_id.to_string(),
+        };
         let view = self.store.load(task_id).await?;
         self.ensure_task_owner(&view, requested_by, requester_is_admin)?;
         if view.status.is_terminal() {
@@ -1039,18 +1062,13 @@ impl InstallEngine {
                 format!("task {task_id} already terminal"),
             ));
         }
+        let mut data = self.parse_data(&view)?;
+        if data.state.plan.is_some() {
+            self.driver.rollback_deploy(&view, &data).await?;
+        }
         self.store
             .request_cancel(task_id, requested_by, requester_app_id)
             .await?;
-        let mut data = self.parse_data(&view)?;
-        let spec_written = data.state.is_stage_completed(InstallStage::Deploy)
-            || matches!(data.state.stage, Some(InstallStage::Deploy))
-            || matches!(data.state.stage, Some(InstallStage::Activate));
-
-        if spec_written {
-            // 只在安全边界生效：先回滚/停止收敛。
-            self.driver.rollback_deploy(&view, &data).await?;
-        }
         let error = InstallError::new(
             data.state.stage.unwrap_or(InstallStage::Resolve),
             InstallErrorCode::Canceled,
@@ -1128,24 +1146,51 @@ impl InstallEngine {
     }
 
     async fn record_failure(&self, task_id: &str, error: &InstallError) {
-        // 尽力持久化结构化错误；失败也要把任务状态标出去。
-        if let Ok(view) = self.store.load(task_id).await {
-            if let Ok(mut data) = self.parse_data(&view) {
-                data.state.last_error = Some(error.clone());
-                let _ = self.persist(&task_id, &mut data).await;
-                let _ = self.driver.release_staging(&view, &data).await;
-            }
+        let Ok(view) = self.store.load(task_id).await else {
+            return;
+        };
+        if view.status.is_terminal() || self.canceling.lock().unwrap().contains(task_id) {
+            return;
         }
-        let target_status = if error.code == InstallErrorCode::Canceled {
+        let Ok(mut data) = self.parse_data(&view) else {
+            return;
+        };
+        let recovering = (error.retryable
+            && data
+                .state
+                .stage
+                .is_some_and(|stage| stage >= InstallStage::Prepare))
+            || data.state.is_stage_completed(InstallStage::Activate);
+        data.state.last_error = Some(error.clone());
+        let _ = self.persist(task_id, &mut data).await;
+        let target_status = if recovering {
+            InstallTaskStatus::Running
+        } else if error.code == InstallErrorCode::Canceled {
+            if self
+                .store
+                .request_cancel(task_id, &view.user_id, &view.app_id)
+                .await
+                .is_err()
+            {
+                return;
+            }
             InstallTaskStatus::Canceled
         } else {
             InstallTaskStatus::Failed
         };
+        if !recovering {
+            let _ = self.driver.release_staging(&view, &data).await;
+        }
+        let message = if recovering {
+            format!("Waiting for installation recovery: {error}")
+        } else {
+            error.to_string()
+        };
         let _ = self
             .store
-            .set_status(&task_id, target_status, None, Some(error.to_string()))
+            .set_status(task_id, target_status, None, Some(message))
             .await;
-        warn!("install task {task_id} failed: {error}");
+        warn!("install task {task_id}: {error}");
     }
 
     fn ensure_task_owner(

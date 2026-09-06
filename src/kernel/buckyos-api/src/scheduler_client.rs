@@ -131,6 +131,15 @@ pub enum InstallPlanCommitPoint {
     NodeConfigPublished,
 }
 
+impl InstallPlanCommitPoint {
+    pub fn is_committed(self) -> bool {
+        matches!(
+            self,
+            Self::DesiredStateCommitted | Self::NodeConfigPublished
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstallPlanExecutionState {
@@ -161,6 +170,24 @@ pub struct InstallPlanExecutionRecord {
     pub error: Option<InstallError>,
     pub claimed_at: u64,
     pub updated_at: u64,
+}
+
+impl InstallPlanExecutionRecord {
+    pub fn new(plan: InstallPlan) -> Self {
+        Self {
+            schema_version: INSTALL_PLAN_EXECUTION_SCHEMA_VERSION,
+            key: InstallPlanExecutionKey::from_plan(&plan),
+            plan,
+            state: InstallPlanExecutionState::Pending,
+            commit_point: InstallPlanCommitPoint::BeforeClaim,
+            registry_revision: None,
+            app_spec_revision: None,
+            registry: None,
+            error: None,
+            claimed_at: 0,
+            updated_at: buckyos_kit::buckyos_get_unix_timestamp(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -299,7 +326,7 @@ pub trait SchedulerHandler: Send + Sync {
 
     async fn handle_cancel_install_plan(
         &self,
-        key: InstallPlanExecutionKey,
+        plan: InstallPlan,
         ctx: RPCContext,
     ) -> Result<InstallPlanExecutionRecord>;
 
@@ -408,19 +435,19 @@ impl SchedulerClient {
 
     pub async fn cancel_install_plan(
         &self,
-        key: InstallPlanExecutionKey,
+        plan: InstallPlan,
     ) -> Result<InstallPlanExecutionRecord> {
         match self {
             Self::InProcess(handler) => {
                 handler
-                    .handle_cancel_install_plan(key, RPCContext::default())
+                    .handle_cancel_install_plan(plan, RPCContext::default())
                     .await
             }
             Self::KRPC(client) => {
                 call_typed(
                     client,
                     "cancel_install_plan",
-                    &SchedulerInstallPlanKeyReq::new(key),
+                    &SchedulerSubmitInstallPlanReq::new(plan),
                 )
                 .await
             }
@@ -518,9 +545,9 @@ impl<T: SchedulerHandler> RPCHandler for SchedulerServerHandler<T> {
                 ))
             }
             "cancel_install_plan" => {
-                let request = SchedulerInstallPlanKeyReq::from_json(req.params)?;
+                let request = SchedulerSubmitInstallPlanReq::from_json(req.params)?;
                 RPCResult::Success(json!(
-                    self.0.handle_cancel_install_plan(request.key, ctx).await?
+                    self.0.handle_cancel_install_plan(request.plan, ctx).await?
                 ))
             }
             "retry_install_plan" => {

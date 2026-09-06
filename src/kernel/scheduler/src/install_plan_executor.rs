@@ -48,6 +48,21 @@ fn validate_install_target(
     }
 }
 
+fn execution_owns_installation(
+    execution: &InstallPlanExecutionRecord,
+    spec: &AppServiceSpec,
+    installed: &InstallRecord,
+) -> bool {
+    spec.is_installed()
+        && spec.app_instance_id == execution.key.app_instance_id
+        && spec.deployment.task_id == execution.key.task_id
+        && spec.deployment.app_doc_object_id == execution.plan.app.object_id
+        && installed.app_instance_id == execution.key.app_instance_id
+        && installed.task_id == execution.key.task_id
+        && installed.plan_fingerprint == execution.key.plan_fingerprint
+        && installed.target_deployment.as_ref() == Some(&spec.deployment)
+}
+
 fn serialize<T: serde::Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(rpc_error)
 }
@@ -249,6 +264,57 @@ impl SchedulerServer {
         Ok(())
     }
 
+    async fn load_current_deployment(
+        &self,
+        record: &InstallPlanExecutionRecord,
+    ) -> Result<Option<(String, u64, InstallRecord)>> {
+        let spec_path = user_app_spec_key(
+            record.key.app_instance_id.owner_user_id(),
+            record.key.app_instance_id.app_id(),
+        );
+        let spec_value = match self.system_config_client.get(&spec_path).await {
+            Ok(value) => value,
+            Err(SystemConfigError::KeyNotFound(_)) => return Ok(None),
+            Err(error) => return Err(rpc_error(error)),
+        };
+        let spec: AppServiceSpec = serde_json::from_str(&spec_value.value).map_err(rpc_error)?;
+        let installed_path = install_record_key(
+            record.key.app_instance_id.owner_user_id(),
+            record.key.app_instance_id.app_id(),
+        );
+        let value = match self.system_config_client.get(&installed_path).await {
+            Ok(value) => value,
+            Err(SystemConfigError::KeyNotFound(_)) => return Ok(None),
+            Err(error) => return Err(rpc_error(error)),
+        };
+        let installed: InstallRecord = serde_json::from_str(&value.value).map_err(rpc_error)?;
+        Ok(
+            execution_owns_installation(record, &spec, &installed).then_some((
+                spec_path,
+                spec_value.version,
+                installed,
+            )),
+        )
+    }
+
+    async fn fail_superseded_execution(
+        &self,
+        record: InstallPlanExecutionRecord,
+        revision: u64,
+    ) -> Result<InstallPlanExecutionRecord> {
+        self.fail_execution(
+            &record.key.storage_key(),
+            record,
+            revision,
+            install_error(
+                InstallErrorCode::PlanNotApplicable,
+                false,
+                "installation has been uninstalled or replaced by another deployment",
+            ),
+        )
+        .await
+    }
+
     async fn fail_execution(
         &self,
         path: &str,
@@ -256,9 +322,43 @@ impl SchedulerServer {
         revision: u64,
         error: InstallError,
     ) -> Result<InstallPlanExecutionRecord> {
+        if matches!(
+            record.state,
+            InstallPlanExecutionState::Completed | InstallPlanExecutionState::Canceled
+        ) {
+            return Ok(record);
+        }
         record.state = InstallPlanExecutionState::Failed;
         record.error = Some(error);
         record.updated_at = buckyos_get_unix_timestamp();
+        if record.commit_point.is_committed() {
+            if let Some((spec_path, spec_revision, mut installed)) =
+                self.load_current_deployment(&record).await?
+            {
+                let (current, current_revision) = self.load_execution(&record.key).await?;
+                if current_revision != revision {
+                    return Ok(current);
+                }
+                installed.state = InstallRecordState::DeployedButActivationFailed;
+                installed.last_error = record.error.clone();
+                installed.updated_at = record.updated_at;
+                let actions = HashMap::from([
+                    (path.to_string(), KVAction::Update(serialize(&record)?)),
+                    (
+                        install_record_key(
+                            &record.plan.owner_user_id,
+                            record.key.app_instance_id.app_id(),
+                        ),
+                        KVAction::Update(serialize(&installed)?),
+                    ),
+                ]);
+                self.system_config_client
+                    .exec_tx(actions, Some((spec_path, spec_revision)))
+                    .await
+                    .map_err(rpc_error)?;
+                return Ok(record);
+            }
+        }
         self.update_execution(path, &record, revision).await?;
         Ok(record)
     }
@@ -268,42 +368,13 @@ impl SchedulerServer {
         key: &InstallPlanExecutionKey,
     ) -> Result<InstallPlanExecutionRecord> {
         let path = key.storage_key();
-        // The desired AppServiceSpec is already committed at this point.  Bind
-        // any bootstrap Agent that targets it before publishing NodeConfig, so
-        // the runtime starts with its AgentSpec and gateway projection present.
+        let (record, revision) = self.load_execution(key).await?;
+        if self.load_current_deployment(&record).await?.is_none() {
+            return self.fail_superseded_execution(record, revision).await;
+        }
         self.recover_bootstrap_agent_provisions().await?;
         match schedule_loop(false, true).await {
-            Ok(_) => {
-                let (mut record, record_revision) = self.load_execution(key).await?;
-                let install_record_path = install_record_key(
-                    &record.plan.owner_user_id,
-                    record.plan.app_instance_id.app_id(),
-                );
-                let install_value = self
-                    .system_config_client
-                    .get(&install_record_path)
-                    .await
-                    .map_err(rpc_error)?;
-                let mut install_record: InstallRecord =
-                    serde_json::from_str(&install_value.value).map_err(rpc_error)?;
-                install_record.state = InstallRecordState::Installed;
-                install_record.updated_at = buckyos_get_unix_timestamp();
-                install_record.last_error = None;
-                record.state = InstallPlanExecutionState::Completed;
-                record.commit_point = InstallPlanCommitPoint::NodeConfigPublished;
-                record.updated_at = install_record.updated_at;
-                let mut actions = HashMap::new();
-                actions.insert(path.clone(), KVAction::Update(serialize(&record)?));
-                actions.insert(
-                    install_record_path,
-                    KVAction::Update(serialize(&install_record)?),
-                );
-                self.system_config_client
-                    .exec_tx(actions, Some((path, record_revision)))
-                    .await
-                    .map_err(rpc_error)?;
-                Ok(record)
-            }
+            Ok(_) => self.complete_install_execution(key).await,
             Err(error) => {
                 let (record, revision) = self.load_execution(key).await?;
                 self.fail_execution(
@@ -315,6 +386,52 @@ impl SchedulerServer {
                 .await
             }
         }
+    }
+
+    async fn complete_install_execution(
+        &self,
+        key: &InstallPlanExecutionKey,
+    ) -> Result<InstallPlanExecutionRecord> {
+        let path = key.storage_key();
+        let (mut record, record_revision) = self.load_execution(key).await?;
+        let install_record_path = install_record_key(
+            &record.plan.owner_user_id,
+            record.plan.app_instance_id.app_id(),
+        );
+        let Some((spec_path, spec_revision, mut install_record)) =
+            self.load_current_deployment(&record).await?
+        else {
+            return self
+                .fail_superseded_execution(record, record_revision)
+                .await;
+        };
+        let (current, current_revision) = self.load_execution(key).await?;
+        if current_revision != record_revision
+            || matches!(
+                current.state,
+                InstallPlanExecutionState::Completed | InstallPlanExecutionState::Canceled
+            )
+        {
+            return Ok(current);
+        }
+        install_record.state = InstallRecordState::Installed;
+        install_record.updated_at = buckyos_get_unix_timestamp();
+        install_record.last_error = None;
+        record.state = InstallPlanExecutionState::Completed;
+        record.error = None;
+        record.commit_point = InstallPlanCommitPoint::NodeConfigPublished;
+        record.updated_at = install_record.updated_at;
+        let mut actions = HashMap::new();
+        actions.insert(path.clone(), KVAction::Update(serialize(&record)?));
+        actions.insert(
+            install_record_path,
+            KVAction::Update(serialize(&install_record)?),
+        );
+        self.system_config_client
+            .exec_tx(actions, Some((spec_path, spec_revision)))
+            .await
+            .map_err(rpc_error)?;
+        Ok(record)
     }
 
     async fn execute_install_plan(
@@ -356,6 +473,11 @@ impl SchedulerServer {
         };
 
         for _ in 0..MAX_CAS_RETRIES {
+            let registry_value = self
+                .system_config_client
+                .get(APP_REGISTRY_KEY)
+                .await
+                .map_err(rpc_error)?;
             let loaded = self.load_execution(key).await?;
             record = loaded.0;
             record_revision = loaded.1;
@@ -364,11 +486,6 @@ impl SchedulerServer {
             {
                 return Ok(record);
             }
-            let registry_value = self
-                .system_config_client
-                .get(APP_REGISTRY_KEY)
-                .await
-                .map_err(rpc_error)?;
             let mut registry: AppRegistry =
                 serde_json::from_str(&registry_value.value).map_err(rpc_error)?;
             let (gateway_settings, _) = self.load_gateway_settings().await?;
@@ -613,7 +730,7 @@ impl SchedulerServer {
                 .await;
         }
 
-        self.publish_committed_install(key).await
+        Box::pin(self.publish_committed_install(key)).await
     }
 
     pub async fn recover_install_plan_executions(&self) -> Result<()> {
@@ -635,14 +752,15 @@ impl SchedulerServer {
                 record.state,
                 InstallPlanExecutionState::Pending | InstallPlanExecutionState::Claimed
             ) {
-                let _ = self.execute_install_plan(&record.key, true).await;
+                let _ = Box::pin(self.execute_install_plan(&record.key, true)).await;
             } else if record.commit_point == InstallPlanCommitPoint::DesiredStateCommitted
                 && matches!(
                     record.state,
                     InstallPlanExecutionState::Committed | InstallPlanExecutionState::Failed
                 )
+                && record.error.as_ref().is_none_or(|error| error.retryable)
             {
-                let _ = self.publish_committed_install(&record.key).await;
+                let _ = Box::pin(self.publish_committed_install(&record.key)).await;
             }
         }
         self.recover_bootstrap_agent_provisions().await?;
@@ -840,26 +958,13 @@ impl SchedulerHandler for SchedulerServer {
     ) -> Result<InstallPlanExecutionRecord> {
         let key = InstallPlanExecutionKey::from_plan(&plan);
         let path = key.storage_key();
-        let now = buckyos_get_unix_timestamp();
-        let record = InstallPlanExecutionRecord {
-            schema_version: INSTALL_PLAN_EXECUTION_SCHEMA_VERSION,
-            key: key.clone(),
-            plan,
-            state: InstallPlanExecutionState::Pending,
-            commit_point: InstallPlanCommitPoint::BeforeClaim,
-            registry_revision: None,
-            app_spec_revision: None,
-            registry: None,
-            error: None,
-            claimed_at: 0,
-            updated_at: now,
-        };
+        let record = InstallPlanExecutionRecord::new(plan);
         match self
             .system_config_client
             .create(&path, &serialize(&record)?)
             .await
         {
-            Ok(_) => self.execute_install_plan(&key, false).await,
+            Ok(_) => Box::pin(self.execute_install_plan(&key, false)).await,
             Err(_) => {
                 let (existing, _) = self.load_execution(&key).await?;
                 if existing.plan != record.plan {
@@ -880,56 +985,64 @@ impl SchedulerHandler for SchedulerServer {
 
     async fn handle_cancel_install_plan(
         &self,
-        key: InstallPlanExecutionKey,
+        plan: InstallPlan,
         _ctx: RPCContext,
     ) -> Result<InstallPlanExecutionRecord> {
-        let path = key.storage_key();
+        if plan.schema_version != APP_INSTALL_SCHEMA_VERSION || !plan.fingerprint_is_valid() {
+            return Err(rpc_error("invalid cancellation plan schema or fingerprint"));
+        }
+        let mut canceled = InstallPlanExecutionRecord::new(plan);
+        canceled.state = InstallPlanExecutionState::Canceled;
+        let path = canceled.key.storage_key();
+        if self
+            .system_config_client
+            .create(&path, &serialize(&canceled)?)
+            .await
+            .is_ok()
+        {
+            return Ok(canceled);
+        }
+        let (existing, _) = self.load_execution(&canceled.key).await?;
+        if existing.plan != canceled.plan {
+            return Err(rpc_error("InstallPlan idempotency key collision"));
+        }
+        if existing.state == InstallPlanExecutionState::Canceled {
+            return Ok(existing);
+        }
         for _ in 0..MAX_CAS_RETRIES {
-            let (mut record, revision) = self.load_execution(&key).await?;
-            if matches!(
-                record.commit_point,
-                InstallPlanCommitPoint::DesiredStateCommitted
-                    | InstallPlanCommitPoint::NodeConfigPublished
-            ) {
+            let registry_value = self
+                .system_config_client
+                .get(APP_REGISTRY_KEY)
+                .await
+                .map_err(rpc_error)?;
+            let (mut record, _) = self.load_execution(&canceled.key).await?;
+            if record.plan != canceled.plan {
+                return Err(rpc_error("InstallPlan idempotency key collision"));
+            }
+            if record.commit_point.is_committed() {
                 return Err(rpc_error(
                     "InstallPlan cannot be canceled after desired-state commit",
                 ));
             }
-            if matches!(
-                record.state,
-                InstallPlanExecutionState::Completed
-                    | InstallPlanExecutionState::Failed
-                    | InstallPlanExecutionState::Canceled
-            ) {
+            if record.state == InstallPlanExecutionState::Canceled {
                 return Ok(record);
             }
             record.state = InstallPlanExecutionState::Canceled;
+            record.error = None;
             record.updated_at = buckyos_get_unix_timestamp();
-            if record.commit_point == InstallPlanCommitPoint::Claimed {
-                let registry_value = self
-                    .system_config_client
-                    .get(APP_REGISTRY_KEY)
-                    .await
-                    .map_err(rpc_error)?;
-                let mut actions = HashMap::new();
-                actions.insert(
+            let actions = HashMap::from([
+                (
                     APP_REGISTRY_KEY.to_string(),
                     KVAction::Update(registry_value.value),
-                );
-                actions.insert(path.clone(), KVAction::Update(serialize(&record)?));
-                if self
-                    .system_config_client
-                    .exec_tx(
-                        actions,
-                        Some((APP_REGISTRY_KEY.to_string(), registry_value.version)),
-                    )
-                    .await
-                    .is_ok()
-                {
-                    return Ok(record);
-                }
-            } else if self
-                .update_execution(&path, &record, revision)
+                ),
+                (path.clone(), KVAction::Update(serialize(&record)?)),
+            ]);
+            if self
+                .system_config_client
+                .exec_tx(
+                    actions,
+                    Some((APP_REGISTRY_KEY.to_string(), registry_value.version)),
+                )
                 .await
                 .is_ok()
             {
@@ -948,22 +1061,29 @@ impl SchedulerHandler for SchedulerServer {
     ) -> Result<InstallPlanExecutionRecord> {
         let path = key.storage_key();
         let (mut record, revision) = self.load_execution(&key).await?;
-        if record.state != InstallPlanExecutionState::Failed {
-            return Err(rpc_error("only failed InstallPlans can be retried"));
+        match record.state {
+            InstallPlanExecutionState::Completed | InstallPlanExecutionState::Canceled => {
+                return Ok(record)
+            }
+            InstallPlanExecutionState::Pending | InstallPlanExecutionState::Claimed => {
+                return Box::pin(self.execute_install_plan(&key, true)).await;
+            }
+            InstallPlanExecutionState::Failed
+                if record.error.as_ref().is_some_and(|error| !error.retryable) =>
+            {
+                return Ok(record);
+            }
+            _ => {}
         }
         record.error = None;
         record.updated_at = buckyos_get_unix_timestamp();
-        if record.commit_point == InstallPlanCommitPoint::Claimed {
+        if !record.commit_point.is_committed() {
             record.state = InstallPlanExecutionState::Pending;
             record.commit_point = InstallPlanCommitPoint::BeforeClaim;
             self.update_execution(&path, &record, revision).await?;
-            self.execute_install_plan(&key, false).await
-        } else if record.commit_point == InstallPlanCommitPoint::DesiredStateCommitted {
-            record.state = InstallPlanExecutionState::Committed;
-            self.update_execution(&path, &record, revision).await?;
-            self.publish_committed_install(&key).await
+            Box::pin(self.execute_install_plan(&key, false)).await
         } else {
-            Err(rpc_error("InstallPlan commit point is not retryable"))
+            Box::pin(self.publish_committed_install(&key)).await
         }
     }
 
@@ -1129,3 +1249,7 @@ impl SchedulerHandler for SchedulerServer {
         Ok(record)
     }
 }
+
+#[cfg(test)]
+#[path = "install_plan_recovery_tests.rs"]
+mod recovery_tests;

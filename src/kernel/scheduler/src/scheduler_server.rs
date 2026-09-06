@@ -79,9 +79,9 @@ impl RPCHandler for SchedulerServer {
                 ))
             }
             "cancel_install_plan" => {
-                let request = SchedulerInstallPlanKeyReq::from_json(req.params)?;
+                let request = SchedulerSubmitInstallPlanReq::from_json(req.params)?;
                 RPCResult::Success(json!(
-                    self.handle_cancel_install_plan(request.key, ctx).await?
+                    self.handle_cancel_install_plan(request.plan, ctx).await?
                 ))
             }
             "retry_install_plan" => {

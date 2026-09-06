@@ -384,7 +384,7 @@ Control Panel 负责 Resolve、Inspect、用户批准并生成 immutable Install
 ```text
 submit_install_plan({ plan }) -> InstallPlanExecutionRecord
 get_install_plan_status({ key }) -> InstallPlanExecutionRecord
-cancel_install_plan({ key }) -> InstallPlanExecutionRecord
+cancel_install_plan({ plan }) -> InstallPlanExecutionRecord
 retry_install_plan({ key }) -> InstallPlanExecutionRecord
 ```
 
@@ -398,10 +398,14 @@ plan fingerprint 使用 schema、AppDoc snapshot/ObjectId、resolver snapshot、
 
 状态：`pending -> claimed -> committed -> scheduled -> completed`，失败为 `failed`，claim 前可 `canceled`。commit point：`before_claim -> claimed -> desired_state_committed -> node_config_published`。
 
-- 相同 key 重放返回同一 record，不重复分配 hostname/index。
+- 相同 key 重放返回同一 record，不重复分配 hostname/index。`retry_install_plan` 对 pending/claimed 恢复执行，对已提交记录恢复调度，对 completed/canceled 幂等返回。不可重试的失败保持原终态。
 - 同一 AppInstanceId 的不同 fingerprint 通过 Registry/AppSpec CAS 串行；冲突重试上限后返回明确冲突。
 - `desired_state_committed` 之前失败可以 retry 或 cancel；之后 Registry/AppSpec 已是 durable truth，cancel 必须拒绝，retry 只恢复后续调度。
 - Scheduler 重启扫描 pending/claimed/desired-state-committed/failed records；commit 前重新 claim，commit 后继续 schedule，不重新分配。
+- Control Panel 的 Prepare 已可能提交 desired state；RPC 失败或响应丢失必须用原 execution key 查询/重试，不能据本地 Stage 推断未提交。Prepare/Deploy/Activate 的可重试错误保留 Task Running 与 staging，由 runner sweep 或重启继续恢复；只有明确不可恢复的错误才写失败终态。恢复中手动 retry 唤醒原 Task，保持同一计划与 execution key；确认 Prepare 已提交后不再提供 Cancel 操作。
+- 取消携带完整原计划。Scheduler 可以在 submit 尚未到达时原子创建 canceled execution，后续迟到的同 key submit 只能重放 canceled。已有 execution 的取消与 desired-state 提交通过 Registry CAS 串行；提交后拒绝取消，不确认 Task canceled。
+- 提交后的调度失败同步标记 InstallRecord 为 deployed_but_activation_failed，并保存 last_error；恢复成功清除错误。恢复与最终写入都校验 AppInstanceId、task_id、plan fingerprint 和当前 deployment，并以当前 AppSpec revision 做 CAS；已卸载或被后续重装替换的旧 execution 标记为不可重试，不修改新 InstallRecord。
+- 卸载保留 state=Deleted 的 AppSpec 与历史 InstallRecord；Deleted 不计为已安装，同一 App ID 的 FreshInstall 可以覆盖这些记录。保留数据卸载后的重装继续复用 Registry allocation。
 - AppSpec、InstallRecord 和 Registry 在同一 SystemConfig transaction 内提交；NodeConfig 可在后续调度轮次从 desired state 完整重建。
 
 Shortcut 也提交 Scheduler：

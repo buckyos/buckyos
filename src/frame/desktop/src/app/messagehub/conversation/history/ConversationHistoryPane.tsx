@@ -128,11 +128,24 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
       cancelBottomAnchorRequest(bottomAnchorRequestIdRef)
     }
 
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaY >= 0) {
+        return
+      }
+
+      scrollModeRef.current = 'free-scroll'
+      bottomAnchorLockUntilRef.current = 0
+      cancelBottomAnchorRequest(bottomAnchorRequestIdRef)
+      setShowScrollToBottom(true)
+    }
+
     element.addEventListener('scroll', handleScroll, { passive: true })
+    element.addEventListener('wheel', handleWheel, { passive: true })
     handleScroll()
 
     return () => {
       element.removeEventListener('scroll', handleScroll)
+      element.removeEventListener('wheel', handleWheel)
     }
   }, [hasProjection])
 
@@ -144,6 +157,10 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
 
     const resizeObserver = new ResizeObserver(() => {
       if (scrollModeRef.current === 'bottom-anchored') {
+        bottomAnchorLockUntilRef.current = Math.max(
+          bottomAnchorLockUntilRef.current,
+          Date.now() + CONTENT_GROWTH_LOCK_MS,
+        )
         stickToBottom(scrollRef.current)
       }
     })
@@ -242,32 +259,26 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
     count: projection?.totalCount ?? 0,
     getScrollElement: () => scrollRef.current,
     getItemKey: (index) => projection?.entries[index]?.key ?? index,
-    estimateSize: (index) => {
-      const entry = projection?.entries[index]
-      return getListEntryEstimate(entry?.kind, itemsByIndex.get(index))
-    },
+    estimateSize: (index) => (
+      projection?.entries[index]?.kind === 'message' ? 180 : 52
+    ),
+    measureElement: (element, entry) => (
+      entry?.borderBoxSize[0]?.blockSize ?? element.getBoundingClientRect().height
+    ),
+    useAnimationFrameWithResizeObserver: true,
     overscan: isMobileViewport
       ? Math.max(visibleItemCount * 5, 72)
       : Math.max(visibleItemCount * 3, 36),
-    useFlushSync: false,
   })
 
   useEffect(() => {
-    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (_item, delta, instance) => {
-      if (Math.abs(delta) < 4) {
-        return false
-      }
-
-      if (instance.isScrolling) {
-        return false
-      }
-
-      return instance.scrollDirection === 'backward'
-    }
+    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => (
+      scrollModeRef.current === 'free-scroll'
+      && item.end <= (instance.scrollOffset ?? 0) + instance.scrollAdjustments
+    )
   }, [virtualizer])
 
   const virtualItems = virtualizer.getVirtualItems()
-  const firstVirtualItem = virtualItems[0]
 
   useImperativeHandle(ref, () => ({
     scrollToBottom() {
@@ -393,37 +404,36 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
             width: '100%',
           }}
         >
-          <div
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: '100%',
-              transform: `translateY(${firstVirtualItem?.start ?? 0}px)`,
-            }}
-          >
-            {virtualItems.map((virtualItem) => {
-              const item = itemsByIndex.get(virtualItem.index)
+          {virtualItems.map((virtualItem) => {
+            const item = itemsByIndex.get(virtualItem.index)
 
-              return (
-                <div
-                  key={item?.key ?? `placeholder:${virtualItem.index}`}
-                  ref={virtualizer.measureElement}
-                  data-index={virtualItem.index}
-                >
-                  {item ? (
-                    <ConversationListRow
-                      item={item}
-                      isGroup={isGroup}
-                      selfDid={selfDid}
-                    />
-                  ) : (
-                    <ListItemPlaceholder />
-                  )}
-                </div>
-              )
-            })}
-          </div>
+            return (
+              <div
+                key={virtualItem.key}
+                ref={item ? virtualizer.measureElement : undefined}
+                data-index={virtualItem.index}
+                className="flow-root"
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  transform: `translateY(${virtualItem.start}px)`,
+                  height: item ? undefined : virtualItem.size,
+                }}
+              >
+                {item ? (
+                  <ConversationListRow
+                    item={item}
+                    isGroup={isGroup}
+                    selfDid={selfDid}
+                  />
+                ) : (
+                  <ListItemPlaceholder />
+                )}
+              </div>
+            )
+          })}
         </div>
       </div>
       {showScrollToBottom && (
@@ -488,7 +498,7 @@ function requestBottomAnchor(
   bottomAnchorLockUntilRef: { current: number },
   bottomAnchorRequestIdRef: { current: number },
   scrollElement: HTMLDivElement | null,
-  lockMs = 0,
+  lockMs = EXPLICIT_SCROLL_LOCK_MS,
 ) {
   scrollModeRef.current = 'bottom-anchored'
   bottomAnchorLockUntilRef.current = lockMs > 0 ? Date.now() + lockMs : 0
@@ -571,35 +581,4 @@ function ListItemPlaceholder() {
       />
     </div>
   )
-}
-
-function getListEntryEstimate(
-  kind: ConversationListItem['kind'] | undefined,
-  item?: ConversationListItem,
-) {
-  switch (kind) {
-    case 'timestamp':
-      return 52
-    case 'status': {
-      if (item?.kind === 'status') {
-        return Math.min(72, 40 + Math.ceil(item.label.length / 32) * 12)
-      }
-      return 52
-    }
-    case 'message': {
-      if (item?.kind === 'message') {
-        const format = item.data.content.format ?? 'text/plain'
-        if (format.startsWith('image/')) {
-          return 280
-        }
-
-        const contentLength = item.data.content.content.length
-        return Math.min(420, Math.max(132, 96 + Math.ceil(contentLength / 90) * 24))
-      }
-
-      return 180
-    }
-    default:
-      return 180
-  }
 }
