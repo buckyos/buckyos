@@ -3,7 +3,7 @@ import { useWindowDialog } from '../desktop/windows/dialogs'
 import { useI18n } from '../i18n/provider'
 import {
   AppInstaller,
-  type AppInstallerLaunchParams,
+  type AppInstallerInternalParams,
 } from './AppInstaller'
 
 export {
@@ -11,12 +11,12 @@ export {
   parseAppInstallerLaunchQuery,
   type AppInstallerLaunchErrorCode,
   type AppInstallerLaunchOptions,
-  type AppInstallerLaunchParams,
+  type AppInstallerInternalParams,
 } from './AppInstaller'
 
 export const APP_INSTALLER_DIALOG_PATH = 'sysdlg/app_installer' as const
 
-export type AppInstallerDialogParams = AppInstallerLaunchParams
+export type AppInstallerDialogParams = AppInstallerInternalParams
 
 export type AppInstallerDialogResult =
   | { action: 'background' }

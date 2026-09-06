@@ -69,6 +69,7 @@ export interface SudoDialogOptions {
   reason?: string
   confirmLabel?: string
   cancelLabel?: string
+  requestPassword?: (params: SudoByPasswordParams) => Promise<SudoGrant>
 }
 
 interface SudoByPasswordResponse {
@@ -231,7 +232,9 @@ function SudoPasswordForm({
   controls,
   reason,
   username,
+  requestPassword = sudoByPassword,
 }: {
+  requestPassword?: (params: SudoByPasswordParams) => Promise<SudoGrant>
   appid: string
   appInstanceId?: string
   aud?: string
@@ -259,16 +262,19 @@ function SudoPasswordForm({
     setError(null)
 
     try {
-      const grant = await sudoByPassword({
+      const grant = await requestPassword({
         username,
         password,
         appid,
         appInstanceId,
         aud,
       })
+      setPassword('')
       controls.close(grant)
     } catch (submitError) {
-      setError(normalizeSudoError(submitError))
+      setPassword('')
+      const code = submitError instanceof Error ? submitError.message : 'request_failed'
+      setError(t(`app22.error.${code}`, normalizeSudoError(submitError)))
       setSubmitting(false)
     }
   }
@@ -373,7 +379,7 @@ export function useSudoByPassword() {
 
   return useCallback(
     async (options: SudoDialogOptions = {}): Promise<SudoGrant | null> => {
-      const accountInfo = await buckyos.getAccountInfo()
+      const accountInfo = options.username ? null : await buckyos.getAccountInfo()
       const username = resolveUsername(accountInfo, options.username)
       const appid = resolveAppId(options.appid)
       const appInstanceId = options.appInstanceId?.trim()
@@ -409,6 +415,7 @@ export function useSudoByPassword() {
             confirmLabel={confirmLabel}
             controls={controls}
             reason={options.reason}
+            requestPassword={options.requestPassword}
             username={username}
           />
         ),

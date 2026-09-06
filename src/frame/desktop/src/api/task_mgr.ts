@@ -17,6 +17,8 @@ import type {
   TaskWaitReason,
 } from 'buckyos'
 import { isMockRuntime } from '../runtime'
+import { getSharedAppServiceStore } from '../app/app-service/hooks/use-app-service-store'
+import type { InstallTask } from '../app/app-service/types'
 import { TaskCenterMockStore } from './task_mgr_mock.ts'
 
 // The 2.0 protocol vocabulary is the websdk's; re-exported so Task Center
@@ -636,8 +638,70 @@ class SubscribableModel {
   }
 }
 
-export class TaskCenterMockModel extends TaskCenterMockStore implements TaskCenterModel {
+function installationTaskView(task: InstallTask): Task {
+  const time = new Date(task.updated_at).toISOString()
+  return {
+    rootTaskId: task.task_id,
+    taskId: task.task_id,
+    parentTaskId: null,
+    source: 'system',
+    type: 'install',
+    status:
+      task.outcome === 'Succeeded'
+        ? 'completed'
+        : task.outcome === 'Failed'
+          ? 'failed'
+          : task.outcome === 'Canceled'
+            ? 'cancelled'
+            : task.phase === 'Waiting'
+              ? 'paused'
+              : task.phase === 'Unknown'
+                ? 'pending'
+                : 'running',
+    title: task.app.show_name,
+    summary: `${task.stage} · ${task.owner_user_id}`,
+    createdAt: new Date(task.plan.created_at).toISOString(),
+    updatedAt: time,
+    startedAt: time,
+    endedAt: task.phase === 'Terminal' ? time : null,
+    progress: task.progress,
+    schemaType: task.schema_id,
+    children: [],
+    payload: {
+      task_id: task.task_id,
+      app_instance_id: task.app_instance_id,
+      retry_of: task.retry_of,
+      phase: task.phase,
+      outcome: task.outcome,
+      desired_state_committed: task.desired_state_committed,
+    },
+  }
+}
+
+export class TaskCenterMockModel
+  extends TaskCenterMockStore
+  implements TaskCenterModel
+{
   private readonly subscription = new SubscribableModel()
+
+  constructor() {
+    super()
+    const store = getSharedAppServiceStore()
+    const update = () => {
+      this.tasks = [
+        ...this.tasks.filter(
+          (task) =>
+            !['app.install/v1', 'app.update/v1'].includes(
+              task.schemaType ?? '',
+            ),
+        ),
+        ...store.getTasks().map(installationTaskView),
+      ]
+      this.subscription.emitChange()
+    }
+    update()
+    store.subscribe(update)
+  }
 
   getSnapshot(): number {
     return this.subscription.getSnapshot()

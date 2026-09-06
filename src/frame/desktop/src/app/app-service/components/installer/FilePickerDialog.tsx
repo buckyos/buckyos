@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { Cloud, FileArchive, X } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
-import type { PickedPikgFile } from '../../mock/types'
+import type { PickedPikgFile } from '../../types'
 
 const personalServerFiles: PickedPikgFile[] = [
-  { location: 'personal-server', name: 'nextcloud-28.0.2-aarch64.pikg', sizeBytes: 1_204_289_536 },
-  { location: 'personal-server', name: 'paperless-2.9.0-aarch64.pikg', sizeBytes: 836_763_648 },
-  { location: 'personal-server', name: 'home-dashboard-0.8.4.pikg', sizeBytes: 214_958_080 },
+  { location: 'personal-server', name: 'nextcloud-28.0.2-aarch64.pikg', fixture: 'nextcloud', sizeBytes: 1_204_289_536 },
+  { location: 'personal-server', name: 'paperless-2.9.0-aarch64.pikg', fixture: 'paperless', sizeBytes: 836_763_648 },
+  { location: 'personal-server', name: 'home-dashboard-0.8.4.pikg', fixture: 'home-dashboard', sizeBytes: 214_958_080 },
 ]
 
 function formatBytes(bytes: number) {

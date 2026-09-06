@@ -7,11 +7,11 @@ import { DetailPage } from './pages/DetailPage'
 import { InstallWizard } from './pages/InstallWizard'
 import {
   AppServiceStoreProvider,
-  useAppServiceStore,
 } from './hooks/use-app-service-store'
 import {
   APP_INSTALLER_DIALOG_PATH,
   useSystemDialog,
+  type AppInstallerDialogParams,
 } from '../../sysdlg'
 
 function PageRouter({
@@ -21,13 +21,10 @@ function PageRouter({
   nav: AppServiceNav
   onNavigate: (nav: AppServiceNav) => void
 }) {
-  const store = useAppServiceStore()
   const systemDialog = useSystemDialog()
 
-  const openAppInstaller = async (taskId: string) => {
-    const result = await systemDialog.open(APP_INSTALLER_DIALOG_PATH, {
-      task_id: taskId,
-    })
+  const openAppInstaller = async (params: AppInstallerDialogParams) => {
+    const result = await systemDialog.open(APP_INSTALLER_DIALOG_PATH, params)
     if (!result) return
 
     switch (result.action) {
@@ -35,15 +32,12 @@ function PageRouter({
         onNavigate({ page: 'home' })
         return
       case 'change-source':
-        store.clearActiveTask()
         onNavigate({ page: 'install' })
         return
       case 'view-app':
-        store.clearActiveTask()
         onNavigate({ page: 'detail', serviceId: result.serviceId })
         return
       case 'close':
-        store.clearActiveTask()
         onNavigate({ page: 'home' })
     }
   }

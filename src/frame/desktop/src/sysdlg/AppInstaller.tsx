@@ -1,72 +1,54 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useFieldArray, useForm, useWatch } from 'react-hook-form'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { useMediaQuery } from '@mui/material'
 import { z } from 'zod'
-import {
-  AlertOctagon,
-  AlertTriangle,
-  ArrowLeft,
-  CheckCircle2,
-  ChevronDown,
-  CircleDashed,
-  Clipboard,
-  CloudDownload,
-  Container,
-  Database,
-  FileArchive,
-  FolderOpen,
-  KeyRound,
-  Loader2,
-  Minus,
-  Network,
-  PackageCheck,
-  Play,
-  Plus,
-  Server,
-  ShieldAlert,
-  ShieldCheck,
-  Trash2,
-  X,
-} from 'lucide-react'
+import { AlertTriangle, Loader2, PackageCheck, X } from 'lucide-react'
 import { useI18n } from '../i18n/provider'
 import { AppIcon } from '../components/DesktopVisuals'
-import { useSharedAppServiceStore } from '../app/app-service/hooks/use-app-service-store'
+import { useSudoByPassword } from '../components/sudo'
+import { WindowDialogProvider } from '../desktop/windows/dialogs'
 import {
-  installerApprovalSchema,
-  installerSudoSchema,
-  type InstallerApprovalInput,
-  type InstallerSudoInput,
+  AppServiceStoreProvider,
+  useSharedAppServiceStore,
+} from '../app/app-service/hooks/use-app-service-store'
+import {
+  createInstallInputSchema,
+  taskIdSchema,
+  type InstallInput,
 } from '../app/app-service/schemas'
+import { emptyRuntime, targets } from '../app/app-service/mock/fixtures'
 import type {
-  InstallAppInfo,
-  AppPrice,
-  InstallLaunchRequest,
-  InstallPermission,
-  InstallTargetNode,
+  InspectionDraft,
   InstallTask,
-  InstallTaskStage,
-  TrustCheck,
-} from '../app/app-service/mock/types'
+  PlanReadiness,
+} from '../app/app-service/types'
+import { DetailPage } from '../app/app-service/pages/DetailPage'
+import { RuntimeSummary } from '../app/app-service/components/RuntimeSummary'
 
-export interface AppInstallerLaunchOptions {
-  target?: {
-    node_did?: string
-    node_id?: string
-  }
-  install_params?: Record<string, unknown>
-  offline?: boolean
-}
-
+const targetSchema = z
+  .object({
+    node_id: z.string().min(1).max(256).optional(),
+    node_did: z.string().min(1).max(512).optional(),
+  })
+  .strict()
+  .refine((v) => Boolean(v.node_id || v.node_did))
+const launchOptionsSchema = z
+  .object({
+    target: targetSchema.optional(),
+    install_params: z.record(z.string(), z.unknown()).optional(),
+    offline: z.boolean().optional(),
+  })
+  .strict()
+export type AppInstallerLaunchOptions = z.infer<typeof launchOptionsSchema>
 export type AppInstallerLaunchParams =
   | { task_id: string }
-  | {
-      identifier: string
-      ref?: string
-      options?: AppInstallerLaunchOptions
-    }
-
+  | { identifier: string; ref?: string; options?: AppInstallerLaunchOptions }
+export type AppInstallerInternalParams =
+  | AppInstallerLaunchParams
+  | { draft_id: string }
 export type AppInstallerLaunchErrorCode =
   | 'duplicate_parameter'
   | 'unknown_parameter'
@@ -75,1523 +57,1112 @@ export type AppInstallerLaunchErrorCode =
   | 'invalid_identifier'
   | 'invalid_options'
   | 'invalid_target'
-  | 'source_unrecognized'
-
 export type AppInstallerLaunchQueryResult =
   | { ok: true; params: AppInstallerLaunchParams }
   | { ok: false; code: AppInstallerLaunchErrorCode }
-
-const maxTaskId = BigInt('9223372036854775807')
-const launchTargetSchema = z.object({
-  node_did: z.string().trim().min(1).max(512).optional(),
-  node_id: z.string().trim().min(1).max(256).optional(),
-}).strict().refine((target) => Boolean(target.node_did || target.node_id))
-const launchOptionsSchema = z.object({
-  target: launchTargetSchema.optional(),
-  install_params: z.record(z.string(), z.unknown()).optional(),
-  offline: z.boolean().optional(),
-}).strict()
-const taskIdSchema = z.string().regex(/^[1-9]\d*$/).refine((value) => BigInt(value) <= maxTaskId)
-const appInstallerLaunchParamsSchema = z.union([
-  z.object({ task_id: taskIdSchema }).strict(),
-  z.object({
-    identifier: z.string().trim().min(1).max(32_768),
-    ref: z.string().trim().min(1).max(2_048).optional(),
-    options: launchOptionsSchema.optional(),
-  }).strict(),
-])
-
-function validateTarget(target: AppInstallerLaunchOptions['target']):
-  | { ok: true; targetNode?: InstallTargetNode }
-  | { ok: false } {
-  if (!target) return { ok: true }
-
-  const nodeId = target.node_id as InstallTargetNode | undefined
-  if (nodeId && nodeId !== 'ood-primary' && nodeId !== 'ood-backup') {
-    return { ok: false }
+export function parseAppInstallerLaunchQuery(
+  search: string,
+): AppInstallerLaunchQueryResult {
+  const params = new URLSearchParams(search)
+  for (const key of params.keys()) {
+    if (!['task_id', 'identifier', 'ref', 'options'].includes(key))
+      return { ok: false, code: 'unknown_parameter' }
+    if (params.getAll(key).length !== 1)
+      return { ok: false, code: 'duplicate_parameter' }
   }
-
-  let didNode: InstallTargetNode | undefined
-  if (target.node_did) {
-    if (target.node_did.endsWith('ood-primary')) didNode = 'ood-primary'
-    if (target.node_did.endsWith('ood-backup')) didNode = 'ood-backup'
-    if (!didNode) return { ok: false }
+  const task = params.get('task_id')
+  if (task !== null) {
+    if (params.size !== 1) return { ok: false, code: 'conflicting_parameters' }
+    return taskIdSchema.safeParse(task).success
+      ? { ok: true, params: { task_id: task } }
+      : { ok: false, code: 'invalid_task_id' }
   }
-
-  if (nodeId && didNode && nodeId !== didNode) return { ok: false }
-  return { ok: true, targetNode: nodeId ?? didNode }
-}
-
-export function parseAppInstallerLaunchQuery(search: string): AppInstallerLaunchQueryResult {
-  const searchParams = new URLSearchParams(search)
-  const allowedKeys = new Set(['task_id', 'identifier', 'ref', 'options'])
-
-  for (const key of searchParams.keys()) {
-    if (!allowedKeys.has(key)) return { ok: false, code: 'unknown_parameter' }
-    if (searchParams.getAll(key).length !== 1) return { ok: false, code: 'duplicate_parameter' }
-  }
-
-  const taskId = searchParams.get('task_id')
-  const identifier = searchParams.get('identifier')
-  const ref = searchParams.get('ref')
-  const serializedOptions = searchParams.get('options')
-
-  if (taskId !== null) {
-    if (identifier !== null || ref !== null || serializedOptions !== null) {
-      return { ok: false, code: 'conflicting_parameters' }
-    }
-    if (!taskIdSchema.safeParse(taskId).success) {
-      return { ok: false, code: 'invalid_task_id' }
-    }
-    return { ok: true, params: { task_id: taskId } }
-  }
-
-  if (identifier === null || identifier.trim().length === 0) {
+  const identifier = params.get('identifier')?.trim()
+  if (
+    !identifier ||
+    identifier.length > 32768 ||
+    identifier.startsWith('{') ||
+    identifier.startsWith('pikg-stage-') ||
+    identifier.startsWith('/') ||
+    (identifier.split('.').length === 3 && identifier.startsWith('eyJ'))
+  )
     return { ok: false, code: 'invalid_identifier' }
-  }
-
+  const ref = params.get('ref')
+  if (ref !== null && (!ref.trim() || ref.length > 2048))
+    return { ok: false, code: 'invalid_identifier' }
   let options: AppInstallerLaunchOptions | undefined
-  if (serializedOptions !== null) {
-    if (serializedOptions.length > 16_384) return { ok: false, code: 'invalid_options' }
+  if (params.has('options')) {
+    const serialized = params.get('options')!
+    if (serialized.length > 16384) return { ok: false, code: 'invalid_options' }
     try {
-      const result = launchOptionsSchema.safeParse(JSON.parse(serializedOptions))
+      const result = launchOptionsSchema.safeParse(JSON.parse(serialized))
       if (!result.success) return { ok: false, code: 'invalid_options' }
       options = result.data
     } catch {
       return { ok: false, code: 'invalid_options' }
     }
   }
-
-  const parsed = appInstallerLaunchParamsSchema.safeParse({
-    identifier,
-    ...(ref !== null ? { ref } : {}),
-    ...(options ? { options } : {}),
-  })
-  if (!parsed.success || 'task_id' in parsed.data) {
-    return { ok: false, code: 'invalid_identifier' }
-  }
-
-  if (!validateTarget(parsed.data.options?.target).ok) {
-    return { ok: false, code: 'invalid_target' }
-  }
-  return { ok: true, params: parsed.data }
-}
-
-function validateAppInstallerLaunchParams(value: unknown): AppInstallerLaunchQueryResult {
-  const parsed = appInstallerLaunchParamsSchema.safeParse(value)
-  if (!parsed.success) {
-    if (value && typeof value === 'object' && 'task_id' in value) {
-      return { ok: false, code: 'invalid_task_id' }
-    }
-    return { ok: false, code: 'invalid_identifier' }
-  }
-  if ('options' in parsed.data && !validateTarget(parsed.data.options?.target).ok) {
-    return { ok: false, code: 'invalid_target' }
-  }
-  return { ok: true, params: parsed.data }
-}
-
-function sourceKindLabel(kind: InstallAppInfo['source']['kind'], t: ReturnType<typeof useI18n>['t']) {
-  return t(`appService.source.kind.${kind}`, kind)
-}
-
-function stageLabel(stage: InstallTaskStage, t: ReturnType<typeof useI18n>['t']) {
-  return t(`appService.install.stage.${stage}`, stage)
-}
-
-function formatBytes(bytes: number) {
-  if (bytes === 0) return '0 MB'
-  if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`
-  return `${Math.ceil(bytes / 1_048_576)} MB`
-}
-
-function formatPrice(
-  price: AppPrice | null,
-  locale: string,
-  t: ReturnType<typeof useI18n>['t'],
-) {
-  if (!price || price.amount === 0) return t('appService.install.free', 'Free')
-  return new Intl.NumberFormat(locale, {
-    style: 'currency',
-    currency: price.currency,
-  }).format(price.amount)
-}
-
-function formatPublishedAt(
-  publishedAt: string,
-  locale: string,
-  t: ReturnType<typeof useI18n>['t'],
-) {
-  const date = new Date(publishedAt)
-  if (Number.isNaN(date.getTime())) return publishedAt
-
-  const dayMs = 86_400_000
-  const relativeDays = Math.round((date.getTime() - Date.now()) / dayMs)
-  if (Math.abs(relativeDays) >= 365) {
-    return t('appService.install.publishedOn', 'Published {{date}}', {
-      date: new Intl.DateTimeFormat(locale, { dateStyle: 'long' }).format(date),
-    })
-  }
-
-  let value = relativeDays
-  let unit: Intl.RelativeTimeFormatUnit = 'day'
-  if (Math.abs(relativeDays) >= 30) {
-    value = Math.round(relativeDays / 30)
-    unit = 'month'
-  } else if (Math.abs(relativeDays) >= 7) {
-    value = Math.round(relativeDays / 7)
-    unit = 'week'
-  }
-  const relative = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(value, unit)
-  return t('appService.install.released', 'Released {{time}}', { time: relative })
-}
-
-type TrustLevel = 'strongest' | 'trusted' | 'caution' | 'unresolved' | 'untrusted'
-
-function getTrustLevel(checks: TrustCheck[]): TrustLevel {
-  if (checks.some((check) => check.status === 'failed')) return 'untrusted'
-  if (checks.some((check) => check.status === 'pending')) return 'unresolved'
-  if (checks.some((check) => check.status === 'unknown')) return 'caution'
-  if (checks.some((check) => check.status === 'warning')) return 'trusted'
-  return 'strongest'
-}
-
-function trustLevelColor(level: TrustLevel) {
-  switch (level) {
-    case 'strongest': return 'light-dark(oklch(42% 0.13 155), oklch(76% 0.14 155))'
-    case 'trusted': return 'light-dark(oklch(52% 0.15 145), oklch(79% 0.14 145))'
-    case 'caution': return 'light-dark(oklch(59% 0.15 90), oklch(84% 0.15 90))'
-    case 'unresolved': return 'light-dark(oklch(58% 0.18 48), oklch(79% 0.17 55))'
-    case 'untrusted': return 'light-dark(oklch(50% 0.2 27), oklch(75% 0.18 27))'
-  }
-}
-
-function trustColor(status: TrustCheck['status']) {
-  switch (status) {
-    case 'verified':
-      return 'var(--cp-success)'
-    case 'warning':
-    case 'pending':
-    case 'unknown':
-      return 'var(--cp-warning)'
-    case 'failed':
-      return 'var(--cp-danger)'
-  }
-}
-
-function TrustStateIcon({ status }: { status: TrustCheck['status'] }) {
-  const color = trustColor(status)
-  if (status === 'verified') return <CheckCircle2 size={15} style={{ color }} aria-hidden="true" />
-  if (status === 'pending') return <Loader2 size={15} className="animate-spin" style={{ color }} aria-hidden="true" />
-  if (status === 'failed') return <AlertOctagon size={15} style={{ color }} aria-hidden="true" />
-  return <AlertTriangle size={15} style={{ color }} aria-hidden="true" />
-}
-
-function InstallerFrame({
-  onClose,
-  children,
-}: {
-  onClose: () => void
-  children: React.ReactNode
-}) {
-  const { t } = useI18n()
-
-  return (
-    <div
-      className="relative mx-auto overflow-hidden rounded-[24px]"
-      data-testid="app-installer-dialog"
-      style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)', boxShadow: 'var(--cp-window-shadow)' }}
-    >
-      <header className="border-b px-5 py-4 sm:px-6" style={{ borderColor: 'var(--cp-border)' }}>
-        <div className="flex items-center justify-between gap-4">
-          <h1 className="font-display text-xl font-semibold sm:text-2xl" style={{ color: 'var(--cp-text)' }}>
-            {t('appService.install.installApp', 'Install application')}
-          </h1>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex size-11 shrink-0 items-center justify-center rounded-xl"
-            aria-label={t('appService.install.runInBackground', 'Run in background')}
-            style={{ color: 'var(--cp-muted)' }}
-          >
-            <X size={18} aria-hidden="true" />
-          </button>
-        </div>
-      </header>
-      {children}
-    </div>
-  )
-}
-
-function AppIdentity({ app }: { app: InstallAppInfo }) {
-  const { locale, t } = useI18n()
-  const ownerProfileUrl = `/userprofile?user=${encodeURIComponent(app.ownerDid)}`
-  return (
-    <div className="flex items-start gap-4">
-      <div
-        className="flex size-14 shrink-0 items-center justify-center rounded-[16px]"
-        style={{ background: 'var(--cp-surface-2)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-      >
-        <AppIcon iconKey={app.iconKey} className="!size-7" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <h2 className="font-display text-xl font-semibold" style={{ color: 'var(--cp-text)' }}>{app.name}</h2>
-        <div className="mt-2 flex flex-wrap items-start gap-x-6 gap-y-3">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm font-semibold tabular-nums" style={{ color: 'var(--cp-text)' }}>v{app.version}</span>
-              {app.isLatest && (
-                <span
-                  className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
-                  style={{ color: 'var(--cp-accent)', background: 'color-mix(in srgb, var(--cp-accent) 10%, var(--cp-surface))' }}
-                >
-                  {t('appService.install.latest', 'Latest')}
-                </span>
-              )}
-            </div>
-            <div className="mt-1 text-[11px]" style={{ color: 'var(--cp-muted)' }}>
-              {formatPublishedAt(app.publishedAt, locale, t)}
-            </div>
-          </div>
-          <a
-            href={ownerProfileUrl}
-            className="group/author min-w-0 text-xs leading-5"
-            aria-label={t('appService.install.viewAuthorProfile', 'View {{author}} public profile', { author: app.publisher })}
-            title={app.ownerDid}
-            style={{ color: 'var(--cp-muted)' }}
-          >
-            <span>{t('appService.install.byAuthor', 'By')} </span>
-            <span className="font-semibold underline decoration-transparent underline-offset-4 transition-colors group-hover/author:decoration-current" style={{ color: 'var(--cp-text)' }}>
-              {app.publisher}
-            </span>
-          </a>
-        </div>
-        <p className="mt-3 text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>{app.description}</p>
-        <div className="mt-2 text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-          {formatPrice(app.price, locale, t)}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function InfoRow({ label, value, code }: { label: string; value: string; code?: boolean }) {
-  return (
-    <div className="grid gap-1 py-2.5 first:pt-0 last:pb-0 sm:grid-cols-[150px_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-xs" style={{ color: 'var(--cp-muted)' }}>{label}</dt>
-      <dd className={`min-w-0 break-words text-xs font-medium sm:text-right ${code ? 'font-mono' : ''}`} style={{ color: 'var(--cp-text)' }}>{value}</dd>
-    </div>
-  )
-}
-
-function InstallReadiness({ app }: { app: InstallAppInfo }) {
-  const { t } = useI18n()
-  if (app.installReady) {
-    return (
-      <div
-        className="flex items-start gap-3 rounded-[16px] p-4"
-        data-testid="app-installer-install-readiness"
-        style={{ background: 'color-mix(in srgb, var(--cp-success) 7%, var(--cp-surface))', border: '1px solid color-mix(in srgb, var(--cp-success) 24%, var(--cp-border))' }}
-      >
-        <CheckCircle2 size={18} className="mt-0.5 shrink-0" aria-hidden="true" style={{ color: 'var(--cp-success)' }} />
-        <div>
-          <div className="text-xs font-semibold" style={{ color: 'var(--cp-success)' }}>
-            {t('appService.install.readyToInstall', 'Ready to install')}
-          </div>
-          <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-text)' }}>
-            {t('appService.install.readyToInstallBody', 'Trust, platform, and content checks allow this application to continue.')}
-          </p>
-        </div>
-      </div>
+  if (
+    options?.target &&
+    !targets.some(
+      (n) =>
+        (!options.target?.node_id || n.node_id === options.target.node_id) &&
+        (!options.target?.node_did || n.node_did === options.target.node_did),
     )
+  )
+    return { ok: false, code: 'invalid_target' }
+  return {
+    ok: true,
+    params: {
+      identifier,
+      ...(ref ? { ref } : {}),
+      ...(options ? { options } : {}),
+    },
   }
-
-  const reason = app.blockingReason
-  const label = reason
-    ? t(`appService.install.block.${reason}.title`, reason)
-    : t('appService.install.checksIncomplete', 'Required installation checks did not pass')
-  const body = reason
-    ? t(`appService.install.block.${reason}.body`, 'Resolve this issue before continuing installation.')
-    : t('appService.install.checksIncompleteBody', 'Review the application information or choose another source.')
+}
+function Button({
+  children,
+  onClick,
+  disabled,
+  primary,
+  testId,
+  type = 'button',
+}: {
+  children: ReactNode
+  onClick?: () => void
+  disabled?: boolean
+  primary?: boolean
+  testId?: string
+  type?: 'button' | 'submit'
+}) {
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      data-testid={testId}
+      className={`min-h-11 rounded-xl border border-[var(--cp-border)] px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40 ${primary ? 'bg-[var(--cp-accent)] text-[var(--cp-surface)]' : 'bg-[var(--cp-surface)] text-[var(--cp-text)]'}`}
+    >
+      {children}
+    </button>
+  )
+}
+function Row({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="grid gap-1 border-b border-[var(--cp-border)] py-3 text-sm sm:grid-cols-[160px_minmax(0,1fr)]">
+      <dt className="text-[var(--cp-muted)]">{label}</dt>
+      <dd className="min-w-0 break-all">{children}</dd>
+    </div>
+  )
+}
+function ErrorCard({ code }: { code: string }) {
+  const { t } = useI18n()
   return (
     <div
-      className="flex items-start gap-3 rounded-[16px] p-4"
-      data-testid="app-installer-blocking-reason"
-      style={{ background: 'color-mix(in srgb, var(--cp-danger) 7%, var(--cp-surface))', border: '1px solid color-mix(in srgb, var(--cp-danger) 24%, var(--cp-border))' }}
+      role="alert"
+      className="flex items-start gap-2 rounded-xl border border-[var(--cp-danger)] p-4 text-sm"
     >
-      <ShieldAlert size={18} className="mt-0.5 shrink-0" aria-hidden="true" style={{ color: 'var(--cp-danger)' }} />
+      <AlertTriangle className="shrink-0 text-[var(--cp-danger)]" size={18} />
       <div>
-        <div className="text-xs font-semibold" style={{ color: 'var(--cp-danger)' }}>
-          {t('appService.install.cannotInstall', 'This application cannot be installed')}
-        </div>
-        <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-text)' }}>
-          <span className="font-semibold">{label}.</span> {body}
-        </p>
+        <p>{t(`app22.error.${code}`, t('app22.error.UNKNOWN'))}</p>
+        <code className="mt-1 block break-all text-xs text-[var(--cp-muted)]">
+          {code}
+        </code>
       </div>
     </div>
   )
 }
-
-function LaunchRequestEvidence({ request }: { request: InstallLaunchRequest }) {
+function Readiness({ value }: { value: PlanReadiness }) {
   const { t } = useI18n()
   return (
-    <section className="rounded-[16px] p-4" style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
-      <h3 className="text-xs font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--cp-muted)' }}>
-        {t('appService.install.launchRequest', 'Launch request')}
-      </h3>
-      <dl className="mt-3">
-        <InfoRow
-          label={t('appService.install.requestedTarget', 'Requested target')}
-          value={request.targetNode ?? t('appService.install.systemSelectedTarget', 'System-selected node')}
-          code={Boolean(request.targetNode)}
-        />
-        <InfoRow
-          label={t('appService.install.networkAcquisition', 'Network acquisition')}
-          value={request.offline
-            ? t('appService.install.forbidden', 'Forbidden')
-            : t('appService.install.allowedWhenNeeded', 'Allowed when needed')}
-        />
-      </dl>
-      {request.installParams && (
-        <div className="mt-3 border-t pt-3" style={{ borderColor: 'var(--cp-border)' }}>
-          <div className="text-[11px] font-semibold" style={{ color: 'var(--cp-text)' }}>
-            {t('appService.install.installParams', 'Application install parameters')}
-          </div>
-          <pre className="desktop-scrollbar mt-2 max-h-36 overflow-auto rounded-xl p-3 text-[11px] leading-5" style={{ color: 'var(--cp-text)', background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-            {JSON.stringify(request.installParams, null, 2)}
-          </pre>
+    <section
+      data-testid="app-installer-install-readiness"
+      className="space-y-3"
+    >
+      <p className="text-sm font-semibold">
+        {t(`app22.readiness.${value.install}`)}
+      </p>
+      <details
+        data-testid="app-installer-trust-evidence"
+        className="rounded-xl border border-[var(--cp-border)] p-4"
+      >
+        <summary className="min-h-11 cursor-pointer py-3 text-sm font-semibold">
+          {t('app22.check.evidence')}
+        </summary>
+        <dl>
+          {(
+            [
+              'document',
+              'signature',
+              'owner',
+              'authority',
+              'content',
+              'target',
+              'config',
+            ] as const
+          ).map((key) => (
+            <Row key={key} label={t(`app22.check.${key}`)}>
+              {t(`app22.evidence.${value[key]}`)}
+            </Row>
+          ))}
+          <Row label={t('app22.check.publication')}>
+            {t(`app22.document.${value.document_status}`)}
+          </Row>
+        </dl>
+      </details>
+      {value.local_developer_authority && (
+        <p
+          data-testid="app-installer-developer-authority"
+          className="rounded-xl bg-[var(--cp-surface-2)] p-4 text-sm"
+        >
+          {t('app22.check.localAuthority')}
+        </p>
+      )}
+      {value.issues.length > 0 && (
+        <div data-testid="app-installer-blocking-reason" className="space-y-2">
+          {value.issues.map((issue, i) => (
+            <div key={`${issue.field}-${i}`}>
+              <ErrorCard code={issue.code} />
+              <p className="mt-1 break-all text-xs text-[var(--cp-muted)]">
+                {issue.field} · {t(`app22.fix.${issue.action}`)}
+              </p>
+            </div>
+          ))}
         </div>
       )}
     </section>
   )
 }
-
-function VerifyStep({
-  task,
-  onBack,
-  onContinue,
-  onEnd,
+function CheckStep({
+  draft,
+  onConfigure,
+  onViewApp,
+  onChangeSource,
 }: {
-  task: InstallTask
-  onBack: () => void
-  onContinue: () => void
-  onEnd: () => void
+  draft: InspectionDraft
+  onConfigure: () => void
+  onViewApp: (id: string) => void
+  onChangeSource: () => void
 }) {
-  const { t } = useI18n()
-  const { app } = task
-  const trustLevel = getTrustLevel(app.trustChecks)
-
-  return (
-    <div className="space-y-6 p-5 sm:p-6">
-      <AppIdentity app={app} />
-      <section
-        className="rounded-[16px] px-4 py-3.5"
-        style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-      >
-        <h3 className="text-xs font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--cp-muted)' }}>
-          {t('appService.install.details', 'Details')}
-        </h3>
-        <p className="mt-2 text-sm leading-6" style={{ color: 'var(--cp-text)' }}>{app.details}</p>
-      </section>
-
-      <section
-        className="flex flex-col gap-2 rounded-[16px] px-4 py-3"
-        style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-      >
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
-          <Server size={15} className="shrink-0" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
-          <span className="font-semibold" style={{ color: 'var(--cp-text)' }}>{t('appService.install.platform', 'Target platform')}</span>
-          <span style={{ color: 'var(--cp-muted)' }}>{t('appService.install.platformDetail', 'Linux · aarch64 · Docker 26+')}</span>
-          <span className="font-semibold" style={{ color: app.platformSupported ? 'var(--cp-success)' : 'var(--cp-danger)' }}>
-            {app.platformSupported ? t('appService.install.supported', 'Supported') : t('appService.install.unsupported', 'Unsupported')}
-          </span>
-        </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
-          <CloudDownload size={15} className="shrink-0" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
-          <span className="font-semibold" style={{ color: 'var(--cp-text)' }}>{t('appService.install.contentReadiness', 'Content readiness')}</span>
-          <span className="font-semibold" style={{ color: app.content.offlineReady ? 'var(--cp-success)' : 'var(--cp-warning)' }}>
-            {app.content.offlineReady ? t('appService.install.offlineReady', 'Offline ready') : t('appService.install.downloadRequired', 'Download required')}
-          </span>
-          <span style={{ color: 'var(--cp-muted)' }}>
-            {t('appService.install.packageSize', 'Package')} {formatBytes(app.content.packageBytes)} · {t('appService.install.downloadSize', 'Download')} {app.content.missingBytes > 0 ? formatBytes(app.content.missingBytes) : t('appService.install.notRequired', 'Not required')} · {t('appService.install.expectedInstallSize', 'Installed')} ~{formatBytes(app.content.expectedInstallBytes)}
-          </span>
-        </div>
-      </section>
-
-      <details
-        className="group overflow-hidden rounded-[16px]"
-        data-testid="app-installer-trust-evidence"
-        style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-      >
-        <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
-          <ShieldCheck size={16} className="shrink-0" aria-hidden="true" style={{ color: trustLevelColor(trustLevel) }} />
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-            <span className="font-semibold" style={{ color: 'var(--cp-text)' }}>{t('appService.install.trustEvidence', 'Trust evidence')}</span>
-            <span className="font-semibold" style={{ color: trustLevelColor(trustLevel) }}>
-              {t(`appService.install.trustLevel.${trustLevel}`, trustLevel)}
-            </span>
-            <span style={{ color: 'var(--cp-muted)' }}>{t(`appService.install.trustReason.${trustLevel}`, trustLevel)}</span>
-          </div>
-          <ChevronDown size={15} className="shrink-0 transition-transform duration-200 group-open:rotate-180" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
-        </summary>
-        <div style={{ borderTop: '1px solid var(--cp-border)' }}>
-          {app.trustChecks.map((check, index) => (
-            <div
-              key={check.code}
-              className="flex items-start gap-3 px-4 py-3"
-              style={{ borderTop: index === 0 ? undefined : '1px solid var(--cp-border)' }}
-            >
-              <TrustStateIcon status={check.status} />
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-                    {t(`appService.install.trust.${check.code}`, check.code)}
-                  </span>
-                  <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: trustColor(check.status) }}>
-                    {t(`appService.install.trustStatus.${check.status}`, check.status)}
-                  </span>
-                </div>
-                <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>{check.detail}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </details>
-
-      <details
-        className="group overflow-hidden rounded-[16px]"
-        data-testid="app-installer-source-identity"
-        style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-      >
-        <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
-          <FileArchive size={16} className="shrink-0" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-            <span className="font-semibold" style={{ color: 'var(--cp-text)' }}>{t('appService.install.sourceAndIdentity', 'Source and identity')}</span>
-            <span className="truncate" style={{ color: 'var(--cp-muted)' }}>{sourceKindLabel(app.source.kind, t)} · {app.publisher}</span>
-          </div>
-          <ChevronDown size={15} className="shrink-0 transition-transform duration-200 group-open:rotate-180" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
-        </summary>
-        <dl className="px-4 py-3" style={{ borderTop: '1px solid var(--cp-border)' }}>
-          <InfoRow label={t('appService.install.inputType', 'Input type')} value={sourceKindLabel(app.source.kind, t)} />
-          <InfoRow label={t('appService.install.source', 'Source')} value={app.source.displaySource} />
-          <InfoRow label={t('appService.install.appDid', 'App DID')} value={app.appDid} code />
-          <InfoRow label={t('appService.install.objectId', 'Document Object ID')} value={app.documentObjectId} code />
-          <InfoRow label={t('appService.install.publisher', 'Publisher')} value={app.publisher} />
-          <InfoRow label={t('appService.install.ownerDid', 'Owner DID')} value={app.ownerDid} code />
-          <InfoRow label={t('appService.install.referrer', 'Referrer')} value={app.referrer} />
-        </dl>
-      </details>
-
-      {task.launchRequest && <LaunchRequestEvidence request={task.launchRequest} />}
-
-      {app.source.warningCode === 'UNSIGNED_CANDIDATE' && !app.blockingReason && (
-        <div className="flex items-start gap-3 rounded-[16px] p-4" style={{ background: 'color-mix(in srgb, var(--cp-warning) 8%, var(--cp-surface))', border: '1px solid color-mix(in srgb, var(--cp-warning) 25%, var(--cp-border))' }}>
-          <AlertTriangle size={17} className="mt-0.5 shrink-0" aria-hidden="true" style={{ color: 'var(--cp-warning)' }} />
-          <p className="text-xs leading-5" style={{ color: 'var(--cp-text)' }}>
-            {t('appService.install.unsignedWarning', 'This App Meta JSON is unsigned. Installation is allowed only because its Object ID matches the document currently published by the App DID.')}
-          </p>
-        </div>
-      )}
-
-      <InstallReadiness app={app} />
-
-      <footer className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-between" style={{ borderColor: 'var(--cp-border)' }}>
-        <button
-          type="button"
-          onClick={onBack}
-          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold"
-          style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-        >
-          <ArrowLeft size={15} aria-hidden="true" />
-          {t('appService.install.changeSource', 'Change source')}
-        </button>
-        {app.installReady ? (
-          <button
-            type="button"
-            onClick={onContinue}
-            className="min-h-11 rounded-xl px-5 text-sm font-semibold"
-            style={{ color: 'var(--cp-surface)', background: 'var(--cp-accent)' }}
-          >
-            {t('appService.install.reviewPlan', 'Review installation plan')}
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={onEnd}
-            className="min-h-11 rounded-xl px-5 text-sm font-semibold"
-            style={{ color: 'var(--cp-surface)', background: 'var(--cp-text)' }}
-          >
-            {t('appService.install.end', 'End')}
-          </button>
-        )}
-      </footer>
-    </div>
-  )
-}
-
-function PermissionIcon({ kind }: { kind: InstallPermission['kind'] }) {
-  switch (kind) {
-    case 'files': return <FolderOpen size={15} aria-hidden="true" style={{ color: 'var(--cp-warning)' }} />
-    case 'network': return <Network size={15} aria-hidden="true" style={{ color: 'var(--cp-warning)' }} />
-    case 'database': return <Database size={15} aria-hidden="true" style={{ color: 'var(--cp-warning)' }} />
-    case 'system': return <Container size={15} aria-hidden="true" style={{ color: 'var(--cp-warning)' }} />
-  }
-}
-
-function SudoPasswordDialog({
-  appName,
-  onCancel,
-  onConfirm,
-}: {
-  appName: string
-  onCancel: () => void
-  onConfirm: () => void
-}) {
-  const { t } = useI18n()
-  const form = useForm<InstallerSudoInput>({
-    resolver: zodResolver(installerSudoSchema),
-    defaultValues: { password: '' },
-  })
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      data-testid="app-installer-sudo-dialog"
-    >
-      <div
-        className="absolute inset-0"
-        aria-hidden="true"
-        style={{ background: 'color-mix(in srgb, var(--cp-shadow) 30%, transparent)', backdropFilter: 'blur(2px)' }}
-      />
-      <section
-        aria-label={t('appService.install.sudoTitle', 'sudo authorization')}
-        aria-modal="true"
-        role="dialog"
-        className="relative w-full max-w-md overflow-hidden rounded-[22px]"
-        style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)', boxShadow: 'var(--cp-window-shadow)' }}
-      >
-        <header className="border-b px-5 py-4" style={{ borderColor: 'var(--cp-border)' }}>
-          <div className="flex items-center gap-3">
-            <span
-              className="flex size-10 shrink-0 items-center justify-center rounded-full"
-              style={{ color: 'var(--cp-accent)', background: 'color-mix(in srgb, var(--cp-accent) 10%, var(--cp-surface))' }}
-            >
-              <KeyRound size={18} aria-hidden="true" />
-            </span>
-            <div>
-              <h2 className="font-display text-base font-semibold" style={{ color: 'var(--cp-text)' }}>
-                {t('appService.install.sudoTitle', 'sudo authorization')}
-              </h2>
-              <p className="mt-0.5 text-xs" style={{ color: 'var(--cp-muted)' }}>
-                {t('appService.install.sudoDescription', 'Enter the administrator password to install {{name}}.', { name: appName })}
-              </p>
-            </div>
-          </div>
-        </header>
-        <form
-          className="space-y-4 p-5"
-          onSubmit={form.handleSubmit(() => onConfirm())}
-          noValidate
-        >
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.adminPassword', 'Administrator password')}
-            </span>
-            <input
-              autoComplete="current-password"
-              autoFocus
-              type="password"
-              {...form.register('password')}
-              className="aicc-password-input min-h-11 w-full rounded-xl px-3 text-sm outline-none"
-              aria-invalid={Boolean(form.formState.errors.password)}
-              style={{
-                color: 'var(--cp-text)',
-                background: 'var(--cp-surface-2)',
-                border: form.formState.errors.password
-                  ? '1px solid var(--cp-danger)'
-                  : '1px solid var(--cp-border)',
-              }}
-            />
-            <span className="mt-1.5 block text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>
-              {t('appService.install.adminPasswordHint', 'Used only for this sudo authorization and never stored in task history.')}
-            </span>
-            {form.formState.errors.password ? (
-              <span className="mt-1.5 block text-xs" style={{ color: 'var(--cp-danger)' }}>
-                {t('appService.install.passwordRequired', 'Enter the administrator password to continue.')}
-              </span>
-            ) : null}
-          </label>
-          <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
-            <button
-              type="button"
-              onClick={onCancel}
-              className="min-h-11 rounded-xl px-4 text-sm font-semibold"
-              style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-            >
-              {t('common.cancel', 'Cancel')}
-            </button>
-            <button
-              type="submit"
-              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-5 text-sm font-semibold"
-              style={{ color: 'var(--cp-surface)', background: 'var(--cp-accent)' }}
-            >
-              <ShieldCheck size={15} aria-hidden="true" />
-              {t('appService.install.confirmInstall', 'Authorize and install')}
-            </button>
-          </div>
-        </form>
-      </section>
-    </div>
-  )
-}
-
-function ApprovalStep({ task, onBack }: { task: InstallTask; onBack: () => void }) {
   const store = useSharedAppServiceStore()
   const { t } = useI18n()
-  const [pendingApproval, setPendingApproval] = useState<InstallerApprovalInput | null>(null)
-  const form = useForm<InstallerApprovalInput>({
-    resolver: zodResolver(installerApprovalSchema),
-    mode: 'onBlur',
-    defaultValues: structuredClone(task.plan.options),
-  })
-  const {
-    fields: mountFields,
-    append: appendMount,
-    remove: removeMount,
-  } = useFieldArray({ control: form.control, name: 'mounts' })
-  const {
-    fields: envFields,
-    append: appendEnv,
-    remove: removeEnv,
-  } = useFieldArray({ control: form.control, name: 'envVars' })
-  const serviceSettings = useWatch({ control: form.control, name: 'serviceSettings' })
-  const permissionGrants = useWatch({ control: form.control, name: 'permissionGrants' })
-  const launchRequest = task.launchRequest
-  const permissions = [...task.app.permissions].sort((left, right) => {
-    if (left.risk === right.risk) return left.kind.localeCompare(right.kind)
-    return left.risk === 'high' ? -1 : 1
-  })
-  const riskyParams = [
-    { name: 'start_param', value: task.app.startParam },
-    { name: 'container_param', value: task.app.containerParam },
-  ].filter((item): item is { name: string; value: string } => Boolean(item.value))
-
-  const registerPath = (path: string) => form.register(path as never)
-  const setValue = (path: string, value: unknown) => {
-    form.setValue(path as never, value as never, { shouldDirty: true, shouldValidate: true })
-  }
-
+  const app = draft.app
+  const local = ['local-pikg', 'personal-server-pikg'].includes(
+    draft.source.kind,
+  )
+  const satisfied =
+    draft.plan?.plan_use === 'SATISFIED' && draft.status === 'ready'
   return (
-    <>
-      <form
-        className="space-y-6 p-5 sm:p-6"
-        onSubmit={form.handleSubmit((values) => setPendingApproval(values))}
-        noValidate
-      >
-        <div>
-          <h2 className="font-display text-base font-semibold" style={{ color: 'var(--cp-text)' }}>
-            {t('appService.install.optionsTitle', 'Configure application')}
-          </h2>
-          <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
-            {t('appService.install.optionsBody', 'Review the important access, storage, environment, and permission settings. Defaults are ready to use.')}
+    <div className="space-y-5">
+      <div className="flex items-start gap-3">
+        <AppIcon iconKey={app.iconKey} className="!size-12 shrink-0" />
+        <div className="min-w-0">
+          <h2 className="text-xl font-semibold">{app.show_name}</h2>
+          <p className="mt-1 text-sm">
+            v{app.version} · {t(`app22.runtimeType.${app.runtime_type}`)}
+          </p>
+          <p className="mt-2 text-sm leading-6 text-[var(--cp-muted)]">
+            {t(app.description_key)}
           </p>
         </div>
-
-        <section
-          className="space-y-4 rounded-[18px] p-4"
-          data-testid="app-installer-access-settings"
-          style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-        >
-          <div>
-            <h3 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.accessSettings', 'Access settings')}
-            </h3>
-            <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>
-              {t('appService.install.accessSettingsHint', 'Choose how people and services reach this application.')}
-            </p>
-          </div>
-
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.fullAppHost', 'Full application host')}
-            </span>
-            <input
-              readOnly
-              value={task.app.appHost}
-              className="min-h-11 w-full rounded-xl px-3 font-mono text-sm outline-none"
-              style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-            />
-          </label>
-
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.shortcutDomain', 'Shortcut domain')}
-            </span>
-            <select
-              {...form.register('shortcutDomain')}
-              className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
-              style={{ color: 'var(--cp-text)', background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-            >
-              <option value="">{t('appService.install.noShortcutDomain', 'No shortcut')}</option>
-              {task.app.shortcutDomains.map((domain) => (
-                <option key={domain} value={domain}>{domain}</option>
-              ))}
-            </select>
-          </label>
-
-          <fieldset className="space-y-3">
-            <legend className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.portExposure', 'Port exposure')}
-            </legend>
-            {task.plan.options.serviceSettings.map((service, index) => {
-              const current = serviceSettings[index] ?? service
-              const route = current.expose.route
-              return (
-                <div
-                  key={service.serviceName}
-                  className="space-y-3 rounded-[14px] p-3"
-                  style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-                >
-                  <label className="flex min-h-11 items-center justify-between gap-4">
-                    <span className="min-w-0">
-                      <span className="block text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>{service.label}</span>
-                      <span className="mt-0.5 block text-[11px]" style={{ color: 'var(--cp-muted)' }}>
-                        {service.serviceName} · {service.protocol.toUpperCase()} · {t('appService.install.containerPort', 'container port')} {service.innerPort}
-                      </span>
-                    </span>
-                    <input
-                      type="checkbox"
-                      {...registerPath('serviceSettings.' + index + '.enabled')}
-                      className="size-4 shrink-0 accent-[var(--cp-accent)]"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
-                      {t('appService.install.exposureRoute', 'Exposure route')}
-                    </span>
-                    <select
-                      value={route.type}
-                      onChange={(event) => {
-                        setValue(
-                          'serviceSettings.' + index + '.expose.route',
-                          event.target.value === 'port'
-                            ? { type: 'port', exposePort: service.innerPort }
-                            : { type: 'web', subHostname: [] },
-                        )
-                      }}
-                      className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
-                      style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-                    >
-                      <option value="web">{t('appService.install.webRoute', 'Application HTTPS host')}</option>
-                      <option value="port">{t('appService.install.directPort', 'Direct Zone port')}</option>
-                    </select>
-                  </label>
-                  {route.type === 'port' ? (
-                    <label className="block">
-                      <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
-                        {t('appService.install.exposedPort', 'Exposed port')}
-                      </span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={65535}
-                        value={route.exposePort}
-                        onChange={(event) => {
-                          setValue(
-                            'serviceSettings.' + index + '.expose.route',
-                            { type: 'port', exposePort: Number(event.target.value) },
-                          )
-                        }}
-                        className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
-                        style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-                      />
-                    </label>
-                  ) : null}
-                  <label className="block">
-                    <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
-                      {t('appService.install.exposureScope', 'Scope')}
-                    </span>
-                    <input
-                      {...registerPath('serviceSettings.' + index + '.expose.scope')}
-                      placeholder={t('appService.install.zoneScope', 'Zone users')}
-                      className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
-                      style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-                    />
-                  </label>
-                  <label className="flex min-h-11 items-center justify-between gap-4">
-                    <span className="text-xs font-medium" style={{ color: 'var(--cp-text)' }}>
-                      {t('appService.install.allowGuest', 'Allow guest access')}
-                    </span>
-                    <input
-                      type="checkbox"
-                      {...registerPath('serviceSettings.' + index + '.expose.allowGuest')}
-                      className="size-4 shrink-0 accent-[var(--cp-accent)]"
-                    />
-                  </label>
-                </div>
-              )
-            })}
-          </fieldset>
-        </section>
-
-        <section
-          className="space-y-4 rounded-[18px] p-4"
-          data-testid="app-installer-mount-settings"
-          style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-        >
-          <div>
-            <h3 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.directoryMounts', 'Directory mounts')}
-            </h3>
-            <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>
-              {t('appService.install.directoryMountsHint', 'Choose declared data directories or add an explicit container mapping.')}
-            </p>
-          </div>
-          <div className="space-y-3">
-            {mountFields.map((field, index) => (
-              <div
-                key={field.id}
-                className="space-y-3 rounded-[14px] p-3"
-                style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-              >
-                <div className="flex min-h-8 items-start justify-between gap-3">
-                  {field.declared ? (
-                    <label className="flex min-w-0 items-start gap-3">
-                      <input
-                        type="checkbox"
-                        {...registerPath('mounts.' + index + '.enabled')}
-                        className="mt-0.5 size-4 shrink-0 accent-[var(--cp-accent)]"
-                      />
-                      <span className="min-w-0 text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-                        {field.name}
-                        <span className="ml-1 font-normal" style={{ color: 'var(--cp-muted)' }}>({field.containerPath})</span>
-                      </span>
-                    </label>
-                  ) : (
-                    <span className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-                      {t('appService.install.customMapping', 'Custom mapping')}
-                    </span>
-                  )}
-                  {!field.declared ? (
-                    <button
-                      type="button"
-                      onClick={() => removeMount(index)}
-                      className="flex size-10 shrink-0 items-center justify-center rounded-xl"
-                      aria-label={t('appService.install.removeMapping', 'Remove mapping')}
-                      style={{ color: 'var(--cp-danger)', border: '1px solid var(--cp-border)' }}
-                    >
-                      <Trash2 size={15} aria-hidden="true" />
-                    </button>
-                  ) : null}
-                </div>
-                {!field.declared ? (
-                  <label className="block">
-                    <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
-                      {t('appService.install.containerPath', 'Container path')}
-                    </span>
-                    <input
-                      {...registerPath('mounts.' + index + '.containerPath')}
-                      className="min-h-11 w-full rounded-xl px-3 font-mono text-sm outline-none"
-                      aria-invalid={Boolean(form.formState.errors.mounts?.[index]?.containerPath)}
-                      style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-                    />
-                  </label>
-                ) : null}
-                <label className="block">
-                  <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
-                    {t('appService.install.targetDirectory', 'Mapped directory')}
-                  </span>
-                  <input
-                    {...registerPath('mounts.' + index + '.targetPath')}
-                    className="min-h-11 w-full rounded-xl px-3 font-mono text-sm outline-none"
-                    aria-invalid={Boolean(form.formState.errors.mounts?.[index]?.targetPath)}
-                    style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-                  />
-                </label>
-                {!field.declared ? (
-                  <label className="block">
-                    <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
-                      {t('appService.install.mountAccess', 'Access')}
-                    </span>
-                    <select
-                      {...registerPath('mounts.' + index + '.access')}
-                      className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
-                      style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-                    >
-                      <option value="read_only">{t('appService.install.readOnly', 'Read only')}</option>
-                      <option value="read_write">{t('appService.install.readWrite', 'Read and write')}</option>
-                      <option value="read_write_append">{t('appService.install.readWriteAppend', 'Read, write, and append')}</option>
-                    </select>
-                  </label>
-                ) : null}
-                {form.formState.errors.mounts?.[index] ? (
-                  <p className="text-xs" style={{ color: 'var(--cp-danger)' }}>
-                    {t('appService.install.mountPathError', 'Both paths must be absolute and begin with /.')}
-                  </p>
-                ) : null}
-              </div>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={() => appendMount({
-              name: 'Custom mapping',
-              containerPath: '/container/path',
-              targetPath: '/data/path',
-              access: 'read_write',
-              enabled: true,
-              declared: false,
-            })}
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold"
-            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-          >
-            <Plus size={15} aria-hidden="true" />
-            {t('appService.install.addMapping', 'Add mapping')}
-          </button>
-        </section>
-
-        <section
-          className="space-y-4 rounded-[18px] p-4"
-          data-testid="app-installer-environment-settings"
-          style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-        >
-          <div>
-            <h3 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.environmentVariables', 'Environment variables')}
-            </h3>
-            <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>
-              {t('appService.install.environmentVariablesHint', 'Configure values declared by the application or add another variable.')}
-            </p>
-          </div>
-          <div className="space-y-3">
-            {envFields.map((field, index) => (
-              <div
-                key={field.id}
-                className="space-y-3 rounded-[14px] p-3"
-                style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  {field.declared ? (
-                    <div className="min-w-0">
-                      <div className="break-all font-mono text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-                        {field.name}
-                        {field.required ? (
-                          <span className="ml-2 font-sans text-[10px] uppercase tracking-wide" style={{ color: 'var(--cp-warning)' }}>
-                            {t('appService.install.required', 'Required')}
-                          </span>
-                        ) : null}
-                      </div>
-                      <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>{field.description}</p>
-                    </div>
-                  ) : (
-                    <label className="min-w-0 flex-1">
-                      <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
-                        {t('appService.install.variableName', 'Name')}
-                      </span>
-                      <input
-                        {...registerPath('envVars.' + index + '.name')}
-                        className="min-h-11 w-full rounded-xl px-3 font-mono text-sm outline-none"
-                        aria-invalid={Boolean(form.formState.errors.envVars?.[index]?.name)}
-                        style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-                      />
-                    </label>
-                  )}
-                  {!field.declared ? (
-                    <button
-                      type="button"
-                      onClick={() => removeEnv(index)}
-                      className="mt-[22px] flex size-10 shrink-0 items-center justify-center rounded-xl"
-                      aria-label={t('appService.install.removeVariable', 'Remove variable')}
-                      style={{ color: 'var(--cp-danger)', border: '1px solid var(--cp-border)' }}
-                    >
-                      <Trash2 size={15} aria-hidden="true" />
-                    </button>
-                  ) : null}
-                </div>
-                <label className="block">
-                  <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
-                    {t('appService.install.variableValue', 'Value')}
-                  </span>
-                  <input
-                    {...registerPath('envVars.' + index + '.value')}
-                    className="min-h-11 w-full rounded-xl px-3 font-mono text-sm outline-none"
-                    style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-                  />
-                </label>
-                {form.formState.errors.envVars?.[index] ? (
-                  <p className="text-xs" style={{ color: 'var(--cp-danger)' }}>
-                    {t('appService.install.environmentError', 'Use a valid environment variable name.')}
-                  </p>
-                ) : null}
-              </div>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={() => appendEnv({
-              name: '',
-              value: '',
-              description: '',
-              required: false,
-              declared: false,
-            })}
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold"
-            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
-          >
-            <Plus size={15} aria-hidden="true" />
-            {t('appService.install.addVariable', 'Add variable')}
-          </button>
-        </section>
-
-        {riskyParams.length > 0 ? (
-          <section
-            className="space-y-3 rounded-[18px] p-4"
-            data-testid="app-installer-risky-params"
-            style={{
-              background: 'color-mix(in srgb, var(--cp-danger) 7%, var(--cp-surface))',
-              border: '1px solid color-mix(in srgb, var(--cp-danger) 28%, var(--cp-border))',
-            }}
-          >
-            <div className="flex items-start gap-3">
-              <AlertOctagon size={18} className="mt-0.5 shrink-0" aria-hidden="true" style={{ color: 'var(--cp-danger)' }} />
-              <div>
-                <h3 className="text-sm font-semibold" style={{ color: 'var(--cp-danger)' }}>
-                  {t('appService.install.otherParameters', 'Other parameters')}
-                </h3>
-                <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-text)' }}>
-                  {t('appService.install.highRiskParametersWarning', 'High risk: these parameters can change the container process or runtime isolation. Continue only if you trust the application publisher.')}
-                </p>
-              </div>
-            </div>
-            <dl className="overflow-hidden rounded-[14px]" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-              {riskyParams.map((item, index) => (
-                <div
-                  key={item.name}
-                  className="space-y-1 px-3 py-3"
-                  style={{ borderTop: index === 0 ? undefined : '1px solid var(--cp-border)' }}
-                >
-                  <dt className="font-mono text-[11px] font-semibold" style={{ color: 'var(--cp-danger)' }}>{item.name}</dt>
-                  <dd className="break-all font-mono text-xs" style={{ color: 'var(--cp-text)' }}>{item.value}</dd>
-                </div>
-              ))}
-            </dl>
-          </section>
-        ) : null}
-
-        {(launchRequest?.offline || launchRequest?.installParams) ? (
-          <details
-            className="group overflow-hidden rounded-[16px]"
-            style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-          >
-            <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
-              <div className="min-w-0 flex-1">
-                <span className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-                  {t('appService.install.callerSuggestions', 'Caller-provided suggestions')}
-                </span>
-                <span className="ml-2 text-[11px]" style={{ color: 'var(--cp-muted)' }}>
-                  {t('appService.install.callerSuggestionsHint', 'Review before authorizing.')}
-                </span>
-              </div>
-              <ChevronDown size={15} className="shrink-0 transition-transform duration-200 group-open:rotate-180" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
-            </summary>
-            <div className="space-y-3 px-4 py-3" style={{ borderTop: '1px solid var(--cp-border)' }}>
-              {launchRequest.offline ? (
-                <div className="inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide" style={{ color: 'var(--cp-warning)', background: 'color-mix(in srgb, var(--cp-warning) 12%, transparent)' }}>
-                  {t('appService.install.offlineOnly', 'Offline acquisition only')}
-                </div>
-              ) : null}
-              {launchRequest.installParams ? (
-                <pre className="desktop-scrollbar max-h-36 overflow-auto rounded-xl p-3 text-[11px] leading-5" style={{ color: 'var(--cp-text)', background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-                  {JSON.stringify(launchRequest.installParams, null, 2)}
-                </pre>
-              ) : null}
-            </div>
-          </details>
-        ) : null}
-
-        <details
-          open
-          className="group overflow-hidden rounded-[18px]"
-          data-testid="app-installer-permissions"
-          style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
-        >
-          <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
-            <ShieldAlert size={17} className="shrink-0" aria-hidden="true" style={{ color: 'var(--cp-warning)' }} />
-            <div className="min-w-0 flex-1">
-              <span className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-                {t('appService.install.permissionRequests', 'Permission requests')}
-              </span>
-              <span className="ml-2 text-[11px]" style={{ color: 'var(--cp-muted)' }}>
-                {t('appService.install.permissionCount', '{{count}} requested', { count: permissions.length })}
-              </span>
-            </div>
-            <ChevronDown size={15} className="shrink-0 transition-transform duration-200 group-open:rotate-180" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
-          </summary>
-          <div style={{ borderTop: '1px solid var(--cp-border)' }}>
-            {permissions.map((permission, index) => {
-              const grantIndex = permissionGrants.findIndex((item) => item.scope === permission.scope)
-              return (
-                <div
-                  key={permission.scope}
-                  className="space-y-3 px-4 py-4"
-                  style={{ borderTop: index === 0 ? undefined : '1px solid var(--cp-border)' }}
-                >
-                  <div className="flex items-start gap-3">
-                    <PermissionIcon kind={permission.kind} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-                          {t('appService.install.permission.' + permission.kind, permission.kind)}
-                        </span>
-                        {permission.risk === 'high' ? (
-                          <span
-                            className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
-                            style={{ color: 'var(--cp-danger)', background: 'color-mix(in srgb, var(--cp-danger) 10%, transparent)' }}
-                          >
-                            {t('appService.install.highRisk', 'High risk')}
-                          </span>
-                        ) : null}
-                        {permission.required ? (
-                          <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: 'var(--cp-muted)' }}>
-                            {t('appService.install.required', 'Required')}
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="mt-1 break-all font-mono text-[11px]" style={{ color: 'var(--cp-muted)' }}>{permission.scope}</div>
-                      <p className="mt-2 text-xs leading-5" style={{ color: 'var(--cp-text)' }}>{permission.detail}</p>
-                    </div>
-                  </div>
-                  <label className="block">
-                    <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
-                      {t('appService.install.permissionGrant', 'Permission granted by you')}
-                    </span>
-                    <select
-                      {...registerPath('permissionGrants.' + Math.max(0, grantIndex) + '.grant')}
-                      className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
-                      style={{ color: 'var(--cp-text)', background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-                    >
-                      {permission.grantOptions.map((option) => (
-                        <option key={option} value={option}>
-                          {t('appService.install.permissionGrant.' + option, option)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-              )
-            })}
-          </div>
-        </details>
-
-        <footer className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-between" style={{ borderColor: 'var(--cp-border)' }}>
-          <button
-            type="button"
-            onClick={onBack}
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold"
-            style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-          >
-            <ArrowLeft size={15} aria-hidden="true" />
-            {t('appService.install.backToVerify', 'Back to verification')}
-          </button>
-          <button
-            type="submit"
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-5 text-sm font-semibold"
-            style={{ color: 'var(--cp-surface)', background: 'var(--cp-accent)' }}
-          >
-            {t('appService.install.next', 'Next')}
-          </button>
-        </footer>
-      </form>
-
-      {pendingApproval ? (
-        <SudoPasswordDialog
-          appName={task.app.name}
-          onCancel={() => setPendingApproval(null)}
-          onConfirm={() => {
-            store.approveTask(task.taskId, pendingApproval)
-            setPendingApproval(null)
-          }}
-        />
-      ) : null}
-    </>
-  )
-}
-
-const taskStages: InstallTaskStage[] = ['resolve', 'inspect', 'acquire', 'verify', 'prepare', 'deploy', 'activate']
-
-function ProgressStep({ task, onBackground }: { task: InstallTask; onBackground: () => void }) {
-  const { t } = useI18n()
-  return (
-    <div className="space-y-6 p-5 sm:p-6">
-      <div className="flex items-start gap-4">
-        <span className="flex size-12 shrink-0 items-center justify-center rounded-full" style={{ background: 'color-mix(in srgb, var(--cp-accent) 12%, var(--cp-surface))', color: 'var(--cp-accent)' }}>
-          <Loader2 size={22} className="animate-spin" aria-hidden="true" />
-        </span>
-        <div>
-          <h2 className="font-display text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
-            {t('appService.install.installingName', 'Installing {{name}}', { name: task.app.name })}
-          </h2>
-          <p className="mt-1 text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>{task.summary}</p>
-        </div>
       </div>
-
-      <section className="rounded-[18px] p-4" style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
-        <div className="flex items-center justify-between gap-4 text-xs">
-          <span style={{ color: 'var(--cp-muted)' }}>{t('appService.install.currentStage', 'Current stage')}</span>
-          <span className="font-semibold" style={{ color: 'var(--cp-text)' }}>{stageLabel(task.stage, t)}</span>
-        </div>
-        {task.progress !== null && (
-          <>
-            <div className="mt-3 h-2 overflow-hidden rounded-full" style={{ background: 'var(--cp-bg-strong)' }}>
-              <div className="h-full rounded-full transition-[width] duration-300" style={{ width: `${task.progress}%`, background: 'var(--cp-accent)' }} />
-            </div>
-            <div className="mt-1.5 text-right text-[11px] tabular-nums" style={{ color: 'var(--cp-muted)' }}>{task.progress}%</div>
-          </>
-        )}
-        {task.currentResource && (
-          <div className="mt-3 flex items-center gap-2 border-t pt-3 text-[11px]" style={{ borderColor: 'var(--cp-border)', color: 'var(--cp-muted)' }}>
-            <CloudDownload size={14} aria-hidden="true" />
-            <span className="truncate">{task.currentResource}</span>
-          </div>
-        )}
-      </section>
-
-      <ol className="grid gap-2 sm:grid-cols-2">
-        {taskStages.map((stage) => {
-          const history = task.history.find((item) => item.stage === stage)
-          const status = history?.status ?? 'pending'
-          return (
-            <li key={stage} className="flex min-h-11 items-center gap-3 rounded-xl px-3" style={{ background: 'var(--cp-surface-2)' }}>
-              {status === 'completed' && <CheckCircle2 size={15} aria-hidden="true" style={{ color: 'var(--cp-success)' }} />}
-              {status === 'current' && <Loader2 size={15} className="animate-spin" aria-hidden="true" style={{ color: 'var(--cp-accent)' }} />}
-              {status === 'skipped' && <Minus size={15} aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />}
-              {status === 'pending' && <CircleDashed size={15} aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />}
-              <span className="text-xs font-medium" style={{ color: status === 'pending' ? 'var(--cp-muted)' : 'var(--cp-text)' }}>{stageLabel(stage, t)}</span>
-              {status === 'skipped' && <span className="ml-auto text-[10px]" style={{ color: 'var(--cp-muted)' }}>{t('appService.install.skipped', 'Skipped')}</span>}
-            </li>
-          )
-        })}
-      </ol>
-
-      <div className="rounded-[16px] p-4 text-xs leading-5" style={{ background: 'var(--cp-surface-2)', color: 'var(--cp-muted)', border: '1px solid var(--cp-border)' }}>
-        {t('appService.install.taskManagerHint', 'This installation continues as a system task. Detailed activity remains available in Task Center under the same task ID.')}
-      </div>
-
-      <footer className="flex justify-end border-t pt-5" style={{ borderColor: 'var(--cp-border)' }}>
-        <button
-          type="button"
-          onClick={onBackground}
-          className="min-h-11 rounded-xl px-5 text-sm font-semibold"
-          style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+      <dl>
+        <Row label={t('app22.check.publisher')}>{app.publisher}</Row>
+        <Row label={t('app22.owner')}>{store.scope.user_id}</Row>
+        <Row label={t('app22.source.label')}>{draft.source.display_name}</Row>
+      </dl>
+      <details
+        data-testid="app-installer-source-identity"
+        className="rounded-xl border border-[var(--cp-border)] p-4"
+      >
+        <summary className="min-h-11 cursor-pointer py-3 text-sm font-semibold">
+          {t('app22.check.identity')}
+        </summary>
+        <dl>
+          <Row label="AppDID">{app.did}</Row>
+          <Row label="AppDoc Object ID">{app.object_id}</Row>
+          <Row label={t('app22.check.objectOwner')}>{app.owner}</Row>
+          <Row label="controller">{app.controller}</Row>
+          <Row label="author">{app.author}</Row>
+          {draft.source.referrer && (
+            <Row label={t('app22.referrer')}>{draft.source.referrer}</Row>
+          )}
+        </dl>
+        <p className="mt-3 text-xs leading-5 text-[var(--cp-muted)]">
+          {t('app22.check.envelope')}
+        </p>
+      </details>
+      {draft.suggestions && (
+        <p className="text-xs leading-5 text-[var(--cp-muted)]">
+          {t('app22.suggestions')}
+        </p>
+      )}
+      {draft.status === 'inspecting' && (
+        <p role="status" className="flex items-center gap-2">
+          <Loader2 className="animate-spin" size={17} />
+          {t('app22.check.inspecting')}
+        </p>
+      )}
+      {draft.readiness && <Readiness value={draft.readiness} />}
+      {draft.error && <ErrorCard code={draft.error} />}
+      {satisfied && (
+        <section
+          data-testid="app-installer-satisfied"
+          className="rounded-xl bg-[var(--cp-surface-2)] p-4"
         >
-          {t('appService.install.runInBackground', 'Run in background')}
-        </button>
+          <h3 className="font-semibold">{t('app22.satisfied')}</h3>
+          <p className="mt-2 text-sm">{t('app22.satisfiedBody')}</p>
+        </section>
+      )}
+      {draft.plan?.plan_use === 'UPGRADE' && (
+        <section
+          data-testid="app-installer-upgrade"
+          className="rounded-xl bg-[var(--cp-surface-2)] p-4"
+        >
+          <h3 className="font-semibold">{t('app22.upgrade')}</h3>
+          <p className="mt-2">
+            {draft.plan.previous_version} → {app.version}
+          </p>
+          <p className="mt-2 text-sm">{t('app22.upgradeImpact')}</p>
+        </section>
+      )}
+      <footer className="flex flex-wrap justify-end gap-2">
+        <Button onClick={onChangeSource}>{t('app22.changeSource')}</Button>
+        {satisfied ? (
+          <Button
+            primary
+            onClick={() => onViewApp(draft.plan!.app_instance_id)}
+          >
+            {t('app22.viewApp')}
+          </Button>
+        ) : (
+          <Button
+            primary
+            disabled={
+              draft.status === 'inspecting' ||
+              (!local &&
+                draft.status === 'blocked' &&
+                !draft.readiness?.issues.every(
+                  (issue) => issue.action === 'edit',
+                ))
+            }
+            onClick={onConfigure}
+          >
+            {t('app22.configure')}
+          </Button>
+        )}
+        {draft.status === 'blocked' &&
+          draft.readiness?.issues.some((i) => i.action === 'recheck') && (
+            <Button onClick={() => void store.inspectDraft(draft.draft_id)}>
+              {t('app22.recheck')}
+            </Button>
+          )}
       </footer>
     </div>
   )
 }
-
-function FailureStep({ task, onChangeSource }: { task: InstallTask; onChangeSource: () => void }) {
+function PlanStep({
+  draft,
+  onBack,
+  onSubmitted,
+  onViewApp,
+}: {
+  draft: InspectionDraft
+  onBack: () => void
+  onSubmitted: (id: string) => void
+  onViewApp: (id: string) => void
+}) {
+  const store = useSharedAppServiceStore()
+  const { t } = useI18n()
+  const requestSudo = useSudoByPassword()
+  const local = ['local-pikg', 'personal-server-pikg'].includes(
+    draft.source.kind,
+  )
+  const schema = useMemo(
+    () => createInstallInputSchema(draft.app, store.targets, local),
+    [draft.app, store.targets, local],
+  )
+  const form = useForm<InstallInput>({
+    resolver: zodResolver(schema),
+    defaultValues: draft.input,
+  })
+  const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
+  const [error, setError] = useState<string | null>(null)
+  const [validation, setValidation] = useState<
+    Array<{ field: string; code: string }>
+  >([])
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
+  const update = () => {
+    store.editDraft(draft.draft_id, form.getValues())
+    setError(null)
+    setValidation([])
+  }
+  const recheck = form.handleSubmit(
+    async (input) => {
+      store.editDraft(draft.draft_id, input)
+      setValidation([])
+      await store.inspectDraft(draft.draft_id)
+    },
+    () => {
+      const parsed = schema.safeParse(form.getValues())
+      if (!parsed.success)
+        setValidation(
+          parsed.error.issues.map((i) => ({
+            field: i.path.join('.'),
+            code: i.code === 'custom' ? i.message : 'INVALID_FIELD',
+          })),
+        )
+    },
+  )
+  const approve = async () => {
+    const plan = draft.plan
+    if (!plan || draft.status !== 'ready' || busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
+    setError(null)
+    try {
+      const grant = await requestSudo({
+        username: store.scope.user_id,
+        appid: 'control-panel',
+        appInstanceId: plan.app_instance_id,
+        aud: 'apps.submit',
+        title: t('app22.authorize'),
+        reason: t('app22.authReason', undefined, { name: draft.app.show_name }),
+        confirmLabel: t('app22.authConfirm'),
+        requestPassword: (params) => store.authorize(params, draft.draft_id),
+      })
+      if (!grant || !alive.current) return
+      const result = await store.submitDraft(
+        draft.draft_id,
+        plan.plan_fingerprint,
+        `${draft.draft_id}:${plan.plan_fingerprint}`,
+        grant,
+      )
+      if (result.action === 'submitted') onSubmitted(result.task_id)
+      else onViewApp(result.app_instance_id)
+    } catch (e) {
+      if (alive.current) setError(e instanceof Error ? e.message : 'UNKNOWN')
+    } finally {
+      busyRef.current = false
+      if (alive.current) setBusy(false)
+    }
+  }
+  const p = draft.input.install_params
+  return (
+    <div className="space-y-5">
+      <h2 className="text-lg font-semibold">
+        {t(
+          draft.plan?.plan_use === 'UPGRADE'
+            ? 'app22.upgradePlan'
+            : 'app22.installPlan',
+        )}
+      </h2>
+      <dl className="rounded-xl bg-[var(--cp-surface-2)] p-4">
+        <Row label={t('app22.owner')}>{store.scope.user_id}</Row>
+        <Row label={t('app22.target')}>
+          {store.targets.find((n) => n.node_id === draft.input.target_node_id)
+            ?.label ?? t('app22.unknown')}
+        </Row>
+        <Row label={t('app22.platform')}>
+          {
+            store.targets.find((n) => n.node_id === draft.input.target_node_id)
+              ?.os
+          }{' '}
+          /{' '}
+          {
+            store.targets.find((n) => n.node_id === draft.input.target_node_id)
+              ?.arch
+          }
+        </Row>
+        <Row label={t('app22.address')}>
+          {store.getById(`${draft.app.app_id}@${store.scope.user_id}`)?.record
+            ?.address ?? t('app22.assigned')}
+        </Row>
+      </dl>
+      <form
+        onSubmit={recheck}
+        noValidate
+        className="space-y-5"
+        onChange={update}
+      >
+        <fieldset
+          disabled={busy || draft.status === 'submitting'}
+          className="space-y-5 disabled:opacity-60"
+        >
+          <details>
+            <summary className="min-h-11 cursor-pointer py-3 text-sm font-semibold">
+              {t('app22.advancedTarget')}
+            </summary>
+            <label className="block text-sm">
+              {t('app22.target')}
+              <select
+                {...form.register('target_node_id')}
+                className="mt-2 min-h-11 w-full rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface)] px-3"
+              >
+                {store.targets.map((node) => (
+                  <option key={node.node_id} value={node.node_id}>
+                    {node.label} · {node.os}/{node.arch}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </details>
+          <label className="flex min-h-11 items-center gap-3 text-sm">
+            <input type="checkbox" {...form.register('offline')} />
+            {t('app22.offline')}
+          </label>
+          {local && (
+            <label className="block text-sm">
+              {t('app22.policy')}
+              <select
+                aria-label={t('app22.policy')}
+                {...form.register('policy')}
+                className="mt-2 min-h-11 w-full rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface)] px-3"
+              >
+                <option value="NORMAL">{t('app22.policy.NORMAL')}</option>
+                <option value="LOCAL_DEVELOPER">
+                  {t('app22.policy.LOCAL_DEVELOPER')}
+                </option>
+              </select>
+            </label>
+          )}
+          {draft.app.components.some((c) => !c.required) && (
+            <section>
+              <h3 className="text-sm font-semibold">{t('app22.components')}</h3>
+              {draft.app.components.map((component) => (
+                <label
+                  key={component.name}
+                  className="flex min-h-11 items-center gap-3 text-sm"
+                >
+                  <input
+                    type="checkbox"
+                    checked={p.selected_components.includes(component.name)}
+                    disabled={component.required}
+                    onChange={(e) => {
+                      const values = form.getValues(
+                        'install_params.selected_components',
+                      )
+                      form.setValue(
+                        'install_params.selected_components',
+                        e.target.checked
+                          ? [...values, component.name]
+                          : values.filter((v) => v !== component.name),
+                      )
+                      update()
+                    }}
+                  />
+                  {component.name}
+                  {component.required && ` · ${t('app22.required')}`}
+                </label>
+              ))}
+            </section>
+          )}
+          {draft.app.endpoints.length > 0 && (
+            <section
+              data-testid="app-installer-access-settings"
+              className="space-y-3"
+            >
+              <h3 className="text-sm font-semibold">{t('app22.services')}</h3>
+              {draft.app.endpoints.map((endpoint) => {
+                const service = p.service_settings.services[endpoint.name]
+                return (
+                  <div
+                    key={endpoint.name}
+                    className="space-y-3 rounded-xl border border-[var(--cp-border)] p-4"
+                  >
+                    <label className="flex min-h-11 items-center gap-3 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={service.enabled}
+                        disabled={endpoint.required}
+                        onChange={(e) => {
+                          form.setValue(
+                            `install_params.service_settings.services.${endpoint.name}.enabled`,
+                            e.target.checked,
+                          )
+                          update()
+                        }}
+                      />
+                      {endpoint.name} · {endpoint.protocol}:
+                      {endpoint.inner_port}
+                      {endpoint.required && ` · ${t('app22.required')}`}
+                    </label>
+                    <label className="block text-sm">
+                      {t('app22.exposure')}
+                      <select
+                        {...form.register(
+                          `install_params.service_settings.services.${endpoint.name}.expose.scope`,
+                        )}
+                        className="mt-2 min-h-11 w-full rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface)] px-3"
+                      >
+                        <option value="zone">{t('app22.zoneOnly')}</option>
+                        <option value="">{t('app22.public')}</option>
+                      </select>
+                    </label>
+                    {endpoint.route === 'port' && (
+                      <label className="block text-sm">
+                        {t('app22.port')}
+                        <input
+                          type="number"
+                          {...form.register(
+                            `install_params.service_settings.services.${endpoint.name}.expose.route.expose_port`,
+                            { valueAsNumber: true },
+                          )}
+                          className="mt-2 min-h-11 w-full rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface)] px-3"
+                        />
+                      </label>
+                    )}
+                    <label className="flex min-h-11 items-center gap-3 text-sm">
+                      <input
+                        type="checkbox"
+                        {...form.register(
+                          `install_params.service_settings.services.${endpoint.name}.expose.allow_guest`,
+                        )}
+                      />
+                      {t('app22.guest')}
+                    </label>
+                  </div>
+                )
+              })}
+              <p className="text-xs leading-5 text-[var(--cp-muted)]">
+                {t('app22.shortcutLater')}
+              </p>
+            </section>
+          )}
+          <section data-testid="app-installer-permissions">
+            <h3 className="text-sm font-semibold">{t('app22.permissions')}</h3>
+            {draft.app.permissions.map((permission) => (
+              <label
+                key={permission.scope_path}
+                className="flex min-h-14 items-center gap-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                  disabled={permission.required}
+                  checked={p.permissions.some(
+                    (v) => v.scope_path === permission.scope_path,
+                  )}
+                  onChange={(e) => {
+                    const values = form.getValues('install_params.permissions')
+                    form.setValue(
+                      'install_params.permissions',
+                      e.target.checked
+                        ? [...values, permission]
+                        : values.filter(
+                            (v) => v.scope_path !== permission.scope_path,
+                          ),
+                    )
+                    update()
+                  }}
+                />
+                <span className="min-w-0 break-all">
+                  {permission.scope_path} · {permission.actions.join(', ')} ·{' '}
+                  {t(permission.required ? 'app22.required' : 'app22.optional')}
+                </span>
+              </label>
+            ))}
+          </section>
+          <section
+            data-testid="app-installer-mount-settings"
+            className="space-y-3"
+          >
+            <h3 className="text-sm font-semibold">{t('app22.storage')}</h3>
+            {(['data', 'local_cache', 'external'] as const).map((kind) => (
+              <div
+                key={kind}
+                className="rounded-xl border border-[var(--cp-border)] p-4"
+              >
+                <h4 className="text-sm font-semibold">
+                  {t(`app22.mount.${kind}`)}
+                </h4>
+                <p className="mt-2 text-xs leading-5 text-[var(--cp-muted)]">
+                  {t(`app22.mount.${kind}Hint`)}
+                </p>
+                {draft.app.mounts
+                  .filter((m) => m.kind === kind)
+                  .map((mount) => (
+                    <label
+                      key={mount.path}
+                      className="mt-3 flex min-h-11 items-center gap-3 text-xs"
+                    >
+                      <input
+                        type="checkbox"
+                        disabled={mount.required}
+                        checked={Boolean(p[`${kind}_mount_points`][mount.path])}
+                        onChange={(e) => {
+                          const map = {
+                            ...form.getValues(
+                              `install_params.${kind}_mount_points`,
+                            ),
+                          }
+                          if (e.target.checked)
+                            map[mount.path] = {
+                              target_path: mount.target_path,
+                              access: mount.access,
+                            }
+                          else delete map[mount.path]
+                          form.setValue(
+                            `install_params.${kind}_mount_points`,
+                            map,
+                          )
+                          update()
+                        }}
+                      />
+                      <span className="break-all">
+                        {mount.path} → {mount.target_path} ·{' '}
+                        {t(`app22.access.${mount.access}`)}
+                      </span>
+                    </label>
+                  ))}
+              </div>
+            ))}
+          </section>
+          <section
+            data-testid="app-installer-environment-settings"
+            className="space-y-3"
+          >
+            <h3 className="text-sm font-semibold">{t('app22.environment')}</h3>
+            {draft.app.environment.map((env) =>
+              env.system ? (
+                <p
+                  key={env.name}
+                  className="break-all text-xs leading-5 text-[var(--cp-muted)]"
+                >
+                  {env.name} · {t('app22.systemInjected')}
+                </p>
+              ) : (
+                <label key={env.name} className="block text-sm">
+                  {env.name}
+                  {env.required && ` · ${t('app22.required')}`}
+                  <input
+                    type={env.sensitive ? 'password' : 'text'}
+                    autoComplete="off"
+                    {...form.register(`install_params.bash_envs.${env.name}`)}
+                    className="mt-2 min-h-11 w-full rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface)] px-3"
+                  />
+                </label>
+              ),
+            )}
+          </section>
+          {(draft.app.start_param || draft.app.container_param) && (
+            <details data-testid="app-installer-risky-params">
+              <summary className="min-h-11 cursor-pointer py-3 text-sm font-semibold">
+                {t('app22.risky')}
+              </summary>
+              <p className="text-xs leading-5 text-[var(--cp-muted)]">
+                {t('app22.riskyHint')}
+              </p>
+              <pre className="mt-2 whitespace-pre-wrap break-all text-xs">
+                {draft.app.start_param}
+                {'\n'}
+                {draft.app.container_param}
+              </pre>
+            </details>
+          )}
+          <label className="flex min-h-11 items-center gap-3 text-sm">
+            <input
+              type="checkbox"
+              {...form.register('install_params.auto_start')}
+            />
+            {t('app22.autoStart')}
+          </label>
+        </fieldset>
+        {validation.map((issue, i) => (
+          <div key={i}>
+            <ErrorCard code={issue.code} />
+            <p className="mt-1 break-all text-xs">{issue.field}</p>
+          </div>
+        ))}
+        {(draft.status === 'dirty' || draft.status === 'stale') && (
+          <p role="status" className="text-sm">
+            {t('app22.dirty')}
+          </p>
+        )}
+        <Button
+          type="submit"
+          disabled={
+            busy ||
+            draft.status === 'inspecting' ||
+            draft.status === 'submitting'
+          }
+          testId="app-installer-recheck"
+        >
+          {t(
+            draft.status === 'inspecting'
+              ? 'app22.rechecking'
+              : 'app22.recheck',
+          )}
+        </Button>
+      </form>
+      {draft.readiness && <Readiness value={draft.readiness} />}
+      {draft.plan && draft.status === 'ready' && (
+        <section
+          data-testid="app-installer-approved-summary"
+          className="rounded-xl bg-[var(--cp-surface-2)] p-4"
+        >
+          <h3 className="text-sm font-semibold">{t('app22.finalSummary')}</h3>
+          <dl>
+            <Row label={t('app22.target')}>
+              {draft.plan.target.label} · {draft.plan.target.os}/
+              {draft.plan.target.arch}
+            </Row>
+            <Row label={t('app22.version')}>
+              {draft.plan.previous_version
+                ? `${draft.plan.previous_version} → `
+                : ''}
+              {draft.app.version}
+            </Row>
+            <Row label={t('app22.download')}>
+              {draft.plan.download_bytes === null
+                ? t('app22.unknown')
+                : `${Math.ceil(draft.plan.download_bytes / 1048576)} MB`}
+            </Row>
+            <Row label={t('app22.components')}>
+              {p.selected_components.join(', ')}
+            </Row>
+            <Row label={t('app22.policy')}>
+              {t(`app22.policy.${draft.input.policy}`)} · {t('app22.offline')}:{' '}
+              {t(draft.input.offline ? 'app22.yes' : 'app22.no')}
+            </Row>
+            <Row label={t('app22.services')}>
+              {Object.entries(p.service_settings.services)
+                .map(
+                  ([name, service]) =>
+                    `${name}: ${t(service.enabled ? 'app22.yes' : 'app22.no')} · ${t(service.expose.scope === 'zone' ? 'app22.zoneOnly' : 'app22.public')} · ${t('app22.guest')}: ${t(service.expose.allow_guest ? 'app22.yes' : 'app22.no')}${service.expose.route.type === 'port' ? ` · ${service.expose.route.expose_port}` : ''}`,
+                )
+                .join('; ')}
+            </Row>
+            <Row label={t('app22.storage')}>
+              {(['data', 'local_cache', 'external'] as const)
+                .map(
+                  (kind) =>
+                    `${t(`app22.mount.${kind}`)}: ${
+                      Object.entries(p[`${kind}_mount_points`])
+                        .map(
+                          ([path, mount]) =>
+                            `${path} → ${mount.target_path} (${t(`app22.access.${mount.access}`)})`,
+                        )
+                        .join(', ') || '—'
+                    }`,
+                )
+                .join('; ')}
+            </Row>
+            <Row label={t('app22.permissions')}>
+              {p.permissions
+                .map((v) => `${v.scope_path} (${v.actions.join(', ')})`)
+                .join('; ')}
+            </Row>
+            <Row label={t('app22.autoStart')}>
+              {t(p.auto_start ? 'app22.yes' : 'app22.no')}
+            </Row>
+            <Row label={t('app22.environment')}>
+              {Object.keys(p.bash_envs)
+                .map(
+                  (name) =>
+                    `${name}=${draft.app.environment.find((e) => e.name === name)?.sensitive ? '••••••' : p.bash_envs[name]}`,
+                )
+                .join('; ')}
+            </Row>
+          </dl>
+          <p className="mt-3 text-sm">
+            {t(
+              draft.plan.plan_use === 'UPGRADE'
+                ? 'app22.upgradeImpact'
+                : 'app22.installImpact',
+            )}
+          </p>
+          <details className="mt-3">
+            <summary className="min-h-11 cursor-pointer py-3 text-xs">
+              {t('app22.diagnostics')}
+            </summary>
+            <code className="block break-all text-xs">
+              {draft.plan.plan_fingerprint}
+            </code>
+          </details>
+        </section>
+      )}
+      {error && <ErrorCard code={error} />}
+      <footer className="flex flex-wrap justify-between gap-3 border-t border-[var(--cp-border)] pt-4">
+        <Button disabled={busy} onClick={onBack}>
+          {t('common.back')}
+        </Button>
+        <Button
+          primary
+          testId="app-installer-submit"
+          disabled={
+            busy || draft.status !== 'ready' || store.scope.role !== 'admin'
+          }
+          onClick={() => void approve()}
+        >
+          {t(
+            busy
+              ? 'app22.submitting'
+              : draft.plan?.plan_use === 'UPGRADE'
+                ? 'app22.confirmUpgrade'
+                : 'app22.confirmInstall',
+          )}
+        </Button>
+      </footer>
+      {store.scope.role !== 'admin' && <ErrorCard code="ADMIN_REQUIRED" />}
+    </div>
+  )
+}
+function TaskStep({
+  task,
+  onFollowTask,
+  onViewApp,
+  onBackground,
+  onChangeSource,
+  onInspect,
+}: {
+  task: InstallTask
+  onInspect: (id: string) => void
+  onFollowTask: (id: string) => void
+  onViewApp: (id: string) => void
+  onBackground: () => void
+  onChangeSource: () => void
+}) {
   const store = useSharedAppServiceStore()
   const { t } = useI18n()
   const [copied, setCopied] = useState(false)
-  const failure = task.failure
-
-  const copyDetails = async () => {
-    if (!failure) return
-    try {
-      await navigator.clipboard.writeText(failure.technicalDetail)
-      setCopied(true)
-    } catch {
-      setCopied(false)
-    }
-  }
-
+  const currentService = store.getById(task.app_instance_id)
+  const service =
+    currentService &&
+    task.result?.deployment &&
+    currentService.runtime.expected_deployment?.task_id !== task.task_id
+      ? {
+          ...currentService,
+          runtime: {
+            ...emptyRuntime(task.app.runtime_type),
+            expected_deployment: task.result.deployment,
+            reason: 'STALE_EVIDENCE',
+          },
+        }
+      : currentService
   return (
-    <div className="space-y-6 p-5 sm:p-6">
-      <div className="flex items-start gap-4">
-        <span className="flex size-12 shrink-0 items-center justify-center rounded-full" style={{ background: 'color-mix(in srgb, var(--cp-danger) 11%, var(--cp-surface))', color: 'var(--cp-danger)' }}>
-          <AlertOctagon size={22} aria-hidden="true" />
-        </span>
+    <div className="space-y-5">
+      <div className="flex items-start gap-3">
+        {task.phase === 'Running' ? (
+          <Loader2 className="animate-spin" size={24} />
+        ) : (
+          <PackageCheck size={24} />
+        )}
         <div>
-          <h2 className="font-display text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
-            {t('appService.install.failedTitle', 'Installation stopped')}
+          <h2 className="text-lg font-semibold">
+            {t(
+              task.outcome === 'Succeeded'
+                ? 'app22.installComplete'
+                : task.outcome === 'Failed'
+                  ? 'app22.installFailed'
+                  : task.outcome === 'Canceled'
+                    ? 'app22.installCanceled'
+                    : task.phase === 'Waiting'
+                      ? 'app22.installWaiting'
+                      : task.phase === 'Unknown'
+                        ? 'app22.unknown'
+                        : 'app22.executing',
+            )}
           </h2>
-          <p className="mt-1 text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>
-            {failure?.message ?? t('appService.install.failedUnknown', 'The installation task could not continue.')}
+          <p className="mt-1 text-sm">
+            {task.app.show_name} · v{task.app.version}
           </p>
         </div>
       </div>
-
-      <dl className="rounded-[18px] p-4" style={{ background: 'color-mix(in srgb, var(--cp-danger) 6%, var(--cp-surface))', border: '1px solid color-mix(in srgb, var(--cp-danger) 24%, var(--cp-border))' }}>
-        <InfoRow label={t('appService.install.failedStage', 'Failed stage')} value={stageLabel(failure?.stage ?? task.stage, t)} />
-        <InfoRow label={t('appService.install.errorCategory', 'Error category')} value={failure?.code ?? 'UNKNOWN'} code />
-        <InfoRow label={t('appService.install.taskId', 'Task ID')} value={task.taskId} code />
-      </dl>
-
-      <div className="rounded-[16px] p-4" style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
-        <h3 className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>{t('appService.install.nextActions', 'What you can do')}</h3>
-        <p className="mt-2 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
-          {t('appService.install.failureNextAction', 'Retry the same task, change the target or settings, or return to the source if the package location is no longer valid.')}
+      <p
+        data-testid="app-installer-task-id"
+        className="break-all text-xs text-[var(--cp-muted)]"
+      >
+        {task.task_id}
+      </p>
+      {task.retry_of && (
+        <div className="text-sm">
+          {t('app22.previousAttempt')}
+          <Button onClick={() => onFollowTask(task.retry_of!)}>
+            {task.retry_of}
+          </Button>
+        </div>
+      )}
+      {task.phase !== 'Terminal' && (
+        <section
+          role="status"
+          className="rounded-xl bg-[var(--cp-surface-2)] p-4"
+        >
+          <p className="text-sm font-semibold">
+            {t(
+              task.phase === 'Waiting'
+                ? 'app22.waitingContent'
+                : `app22.stage.${task.stage}`,
+              t('app22.unknown'),
+            )}
+          </p>
+          {task.progress !== null && (
+            <progress
+              value={task.progress}
+              max={100}
+              aria-label={t('app22.progress')}
+            />
+          )}
+          <details className="mt-2">
+            <summary className="min-h-11 cursor-pointer py-3 text-xs">
+              {t('app22.diagnostics')}
+            </summary>
+            <p className="break-all text-xs">
+              {task.schema_id} · {task.phase} · {task.outcome ?? '—'} ·{' '}
+              {task.stage}
+            </p>
+          </details>
+        </section>
+      )}
+      {task.desired_state_committed && (
+        <p
+          data-testid="app-installer-commit-boundary"
+          className="rounded-xl border border-[var(--cp-border)] p-4 text-sm"
+        >
+          {t('app22.committed')}
         </p>
-      </div>
-
-      <footer className="flex flex-col gap-2 border-t pt-5 sm:flex-row sm:flex-wrap sm:justify-between" style={{ borderColor: 'var(--cp-border)' }}>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <button
-            type="button"
-            onClick={copyDetails}
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold"
-            style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+      )}
+      {task.error && <ErrorCard code={task.error.code} />}
+      {task.result && (
+        <section className="rounded-xl border border-[var(--cp-border)] p-4">
+          <h3 className="text-sm font-semibold">{t('app22.installResult')}</h3>
+          <dl>
+            <Row label={t('app22.version')}>{task.result.version}</Row>
+            <Row label={t('app22.owner')}>{task.owner_user_id}</Row>
+            <Row label="AppInstanceId">{task.app_instance_id}</Row>
+            <Row label={t('app22.address')}>
+              {task.result.address ?? t('app22.assigned')}
+            </Row>
+          </dl>
+          <details>
+            <summary className="min-h-11 cursor-pointer py-3 text-xs">
+              {t('app22.diagnostics')}
+            </summary>
+            <dl>
+              <Row label="AppName">
+                {task.result.app_name ?? t('app22.assigned')}
+              </Row>
+              <Row label="AppHostName">
+                {task.result.app_host_name ?? t('app22.assigned')}
+              </Row>
+              <Row label="AppIndex">
+                {task.result.app_index ?? t('app22.assigned')}
+              </Row>
+            </dl>
+          </details>
+        </section>
+      )}
+      {task.result && service && <RuntimeSummary service={service} />}
+      <details className="rounded-xl border border-[var(--cp-border)] p-4">
+        <summary className="min-h-11 cursor-pointer py-3 text-sm">
+          {t('app22.approvedPlan')}
+        </summary>
+        <dl>
+          <Row label={t('app22.target')}>
+            {task.plan.target.label} · {task.plan.target.os}/
+            {task.plan.target.arch}
+          </Row>
+          <Row label={t('app22.components')}>
+            {task.plan.input.install_params.selected_components.join(', ')}
+          </Row>
+          <Row label="AppDID">{task.app.did}</Row>
+          <Row label="AppDoc Object ID">{task.app.object_id}</Row>
+        </dl>
+      </details>
+      <footer className="flex flex-wrap gap-2 border-t border-[var(--cp-border)] pt-4">
+        {task.available_actions.includes('cancel') &&
+          !task.desired_state_committed && (
+            <Button
+              onClick={() => {
+                store.cancelTask(task.task_id)
+              }}
+            >
+              {t('app22.cancelTask')}
+            </Button>
+          )}
+        {task.available_actions.includes('inspect') && (
+          <Button
+            onClick={() => {
+              const id = store.inspectTask(task.task_id)
+              if (id) onInspect(id)
+            }}
           >
-            <Clipboard size={15} aria-hidden="true" />
-            {copied ? t('common.copied', 'Copied') : t('appService.install.copyDetails', 'Copy safe details')}
-          </button>
-          <button
-            type="button"
-            onClick={onChangeSource}
-            className="min-h-11 rounded-xl px-4 text-sm font-semibold"
-            style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+            {t('app22.recheck')}
+          </Button>
+        )}
+        {task.available_actions.includes('retry') && task.error?.retryable && (
+          <Button
+            primary
+            onClick={() => {
+              const id = store.retryTask(task.task_id)
+              if (id) onFollowTask(id)
+            }}
           >
-            {t('appService.install.changeSource', 'Change source')}
-          </button>
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <button
-            type="button"
-            onClick={() => store.returnTaskToApproval(task.taskId)}
-            className="min-h-11 rounded-xl px-4 text-sm font-semibold"
-            style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)' }}
+            {t('common.retry')}
+          </Button>
+        )}
+        {task.available_actions.includes('resume') && (
+          <Button
+            primary
+            onClick={() => {
+              const id = store.resumeTask(task.task_id)
+              if (id) onFollowTask(id)
+            }}
           >
-            {t('appService.install.modifyOptions', 'Modify options')}
-          </button>
-          <button
-            type="button"
-            onClick={() => store.retryTask(task.taskId)}
-            className="min-h-11 rounded-xl px-5 text-sm font-semibold"
-            style={{ color: 'var(--cp-surface)', background: 'var(--cp-accent)' }}
+            {t('app22.resume')}
+          </Button>
+        )}
+        {task.available_actions.includes('change-source') &&
+          !task.desired_state_committed && (
+            <Button onClick={onChangeSource}>{t('app22.changeSource')}</Button>
+          )}
+        {task.error && (
+          <Button
+            onClick={() => {
+              void navigator.clipboard
+                .writeText(store.safeDiagnostics(task))
+                .then(
+                  () => setCopied(true),
+                  () => setCopied(false),
+                )
+            }}
           >
-            {t('common.retry', 'Retry')}
-          </button>
-        </div>
+            {t(copied ? 'common.copied' : 'app22.copyDetails')}
+          </Button>
+        )}
+        <a
+          className="inline-flex min-h-11 items-center rounded-xl border border-[var(--cp-border)] px-4 text-sm"
+          href={`/taskcenter?taskid=${encodeURIComponent(task.task_id)}`}
+        >
+          {t('app22.taskCenter')}
+        </a>
+        <Button onClick={onBackground}>
+          {t(task.phase === 'Terminal' ? 'common.close' : 'app22.background')}
+        </Button>
+        {task.result && (
+          <Button primary onClick={() => onViewApp(task.app_instance_id)}>
+            {t('app22.viewApp')}
+          </Button>
+        )}
       </footer>
     </div>
   )
 }
-
-function ResultStep({ task, onClose, onViewApp }: { task: InstallTask; onClose: () => void; onViewApp: () => void }) {
-  const { t } = useI18n()
-  const activationFailed = task.result?.autoStart === 'failed'
-  return (
-    <div className="space-y-6 p-5 sm:p-6">
-      <div className="flex items-start gap-4">
-        <span className="flex size-12 shrink-0 items-center justify-center rounded-full" style={{ background: `color-mix(in srgb, ${activationFailed ? 'var(--cp-warning)' : 'var(--cp-success)'} 12%, var(--cp-surface))`, color: activationFailed ? 'var(--cp-warning)' : 'var(--cp-success)' }}>
-          {activationFailed ? <AlertTriangle size={22} aria-hidden="true" /> : <PackageCheck size={22} aria-hidden="true" />}
-        </span>
-        <div>
-          <h2 className="font-display text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
-            {activationFailed ? t('appService.install.installedStartFailed', 'Installed, but startup failed') : t('appService.install.successTitle', 'Installation complete')}
-          </h2>
-          <p className="mt-1 text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>
-            {activationFailed
-              ? t('appService.install.installedStartFailedBody', 'The installation result is preserved. Open the application to review its runtime diagnosis and try Start again.')
-              : t('appService.install.successBody', '{{name}} is installed and running.', { name: task.app.name })}
-          </p>
-        </div>
-      </div>
-
-      <dl className="rounded-[18px] p-4" style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
-        <InfoRow label={t('appService.install.installedVersion', 'Installed version')} value={task.result?.installedVersion ?? task.app.version} />
-        <InfoRow label={t('appService.install.targetNode', 'Target node')} value={task.result?.targetNode ?? task.plan.options.targetNode} />
-        <InfoRow
-          label={t('appService.install.autoStartResult', 'Automatic startup')}
-          value={task.result?.autoStart === 'running'
-            ? t('appService.stateLabel.running', 'Running')
-            : task.result?.autoStart === 'failed'
-              ? t('appService.stateLabel.error', 'Failed')
-              : t('appService.install.skipped', 'Skipped')}
-        />
-        <InfoRow label={t('appService.install.taskId', 'Task ID')} value={task.taskId} code />
-      </dl>
-
-      <footer className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-end" style={{ borderColor: 'var(--cp-border)' }}>
-        <button
-          type="button"
-          onClick={onClose}
-          className="min-h-11 rounded-xl px-4 text-sm font-semibold"
-          style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-        >
-          {t('common.close', 'Close')}
-        </button>
-        <button
-          type="button"
-          onClick={onViewApp}
-          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-5 text-sm font-semibold"
-          style={{ color: 'var(--cp-surface)', background: 'var(--cp-accent)' }}
-        >
-          <Play size={15} aria-hidden="true" />
-          {t('appService.install.viewApplication', 'View application')}
-        </button>
-      </footer>
-    </div>
-  )
-}
-
 export interface AppInstallerProps {
-  launchParams: AppInstallerLaunchParams
+  launchParams: AppInstallerInternalParams
   onBackground: () => void
   onChangeSource: () => void
   onClose: () => void
-  onViewApp: (serviceId: string) => void
-  onTaskCreated?: (taskId: string) => void
+  onViewApp: (id: string) => void
+  onTaskCreated?: (id: string) => void
 }
-
-function LaunchStateCard({
-  error,
-  onClose,
-}: {
-  error?: AppInstallerLaunchErrorCode
-  onClose: () => void
-}) {
-  const { t } = useI18n()
-
-  return (
-    <div
-      className="mx-auto w-full max-w-xl rounded-[22px] p-6"
-      data-testid={error ? 'app-installer-launch-error' : 'app-installer-launch-loading'}
-      role={error ? 'alert' : 'status'}
-      style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)', boxShadow: 'var(--cp-window-shadow)' }}
-    >
-      {error ? (
-        <AlertTriangle size={24} style={{ color: 'var(--cp-danger)' }} aria-hidden="true" />
-      ) : (
-        <Loader2 size={24} className="animate-spin" style={{ color: 'var(--cp-accent)' }} aria-hidden="true" />
-      )}
-      <h1 className="mt-4 font-display text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
-        {error
-          ? t('appService.install.launchErrorTitle', 'Cannot open App Installer')
-          : t('appService.install.resolvingSource', 'Resolving installation source')}
-      </h1>
-      <p className="mt-2 text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>
-        {error
-          ? t(`appService.install.launchError.${error}`, 'The launch parameters are invalid or unsupported.')
-          : t('appService.install.resolvingSourceBody', 'The source is being normalized before an installation task is created.')}
-      </p>
-      {error && (
-        <button
-          type="button"
-          onClick={onClose}
-          className="mt-5 min-h-11 rounded-xl px-4 text-sm font-semibold"
-          style={{ background: 'var(--cp-accent)', color: 'var(--cp-surface)' }}
-        >
-          {t('common.close', 'Close')}
-        </button>
-      )}
-    </div>
-  )
-}
-
-export function AppInstaller({
+function InstallerContent({
   launchParams,
   onBackground,
   onChangeSource,
@@ -1601,168 +1172,259 @@ export function AppInstaller({
 }: AppInstallerProps) {
   const store = useSharedAppServiceStore()
   const { t } = useI18n()
-  const [approvalOpen, setApprovalOpen] = useState(false)
-  const validatedLaunch = useMemo(
-    () => validateAppInstallerLaunchParams(launchParams),
-    [launchParams],
-  )
-  const [launchState, setLaunchState] = useState<
-    | { status: 'loading' }
-    | { status: 'ready'; taskId: string }
-    | { status: 'error'; code: AppInstallerLaunchErrorCode }
-  >(() => {
-    if (!validatedLaunch.ok) {
-      return { status: 'error', code: validatedLaunch.code }
-    }
-    if ('task_id' in validatedLaunch.params) {
-      return { status: 'ready', taskId: validatedLaunch.params.task_id }
-    }
-    return { status: 'loading' }
-  })
-
+  const [state, setState] = useState<{
+    draft_id?: string
+    task_id?: string
+    error?: string
+  }>({})
+  const [configure, setConfigure] = useState(false)
+  const launchKey = JSON.stringify(launchParams)
+  const scopeKey = `${store.scope.zone_id}:${store.scope.user_id}:${store.scope.role}`
   useEffect(() => {
-    if (!validatedLaunch.ok || 'task_id' in validatedLaunch.params) return
-    const identifierParams = validatedLaunch.params
-
-    let cancelled = false
-    const createTask = async () => {
-      const source = await store.analyzeInstallSource(identifierParams.identifier)
-      if (cancelled) return
-      if (!source.ok) {
-        setLaunchState({ status: 'error', code: 'source_unrecognized' })
+    let canceled = false
+    const controller = new AbortController()
+    const launch = JSON.parse(launchKey) as AppInstallerInternalParams
+    const resolve = async () => {
+      setState({})
+      setConfigure(false)
+      const keys = Object.keys(launch)
+      if ('task_id' in launch && keys.length !== 1) {
+        setState({ error: 'conflicting_parameters' })
         return
       }
-
-      const target = validateTarget(identifierParams.options?.target)
-      if (!target.ok) {
-        setLaunchState({ status: 'error', code: 'invalid_target' })
+      if (
+        'task_id' in launch &&
+        !taskIdSchema.safeParse(launch.task_id).success
+      ) {
+        setState({ error: 'invalid_task_id' })
         return
       }
-      const request: InstallLaunchRequest = {
-        identifier: identifierParams.identifier,
-        referrer: identifierParams.ref,
-        targetNode: target.targetNode,
-        offline: identifierParams.options?.offline ?? false,
-        installParams: identifierParams.options?.install_params,
+      if (
+        'draft_id' in launch &&
+        (keys.length !== 1 || typeof launch.draft_id !== 'string')
+      ) {
+        setState({ error: 'unknown_parameter' })
+        return
       }
-      const taskId = store.createInstallTask(source.source, request)
-      if (cancelled) return
-      setLaunchState({ status: 'ready', taskId })
-      onTaskCreated?.(taskId)
+      if (
+        'identifier' in launch &&
+        keys.some((key) => !['identifier', 'ref', 'options'].includes(key))
+      ) {
+        setState({ error: 'unknown_parameter' })
+        return
+      }
+      if ('task_id' in launch) {
+        setState({ task_id: launch.task_id })
+        return
+      }
+      if ('draft_id' in launch) {
+        setState({ draft_id: launch.draft_id })
+        await store.inspectDraft(launch.draft_id)
+        return
+      }
+      const query = new URLSearchParams({
+        identifier: launch.identifier,
+        ...(launch.ref ? { ref: launch.ref } : {}),
+        ...(launch.options ? { options: JSON.stringify(launch.options) } : {}),
+      })
+      const valid = parseAppInstallerLaunchQuery(query.toString())
+      if (!valid.ok) {
+        setState({ error: valid.code })
+        return
+      }
+      const result = await store.analyzeInstallSource(
+        launch.identifier,
+        undefined,
+        controller.signal,
+      )
+      if (canceled) return
+      if (!result.ok) {
+        setState({ error: result.code })
+        return
+      }
+      result.source.referrer = launch.ref
+      const node = targets.find(
+        (n) =>
+          n.node_id === launch.options?.target?.node_id ||
+          n.node_did === launch.options?.target?.node_did,
+      )
+      const autoStart = launch.options?.install_params?.auto_start
+      const existingDraft = Object.values(store.drafts).find(
+        (draft) =>
+          draft.source.kind === 'identifier' &&
+          draft.source.display_name === result.source.display_name,
+      )
+      const draft_id =
+        existingDraft?.draft_id ??
+        store.createDraft(
+          result.source,
+          launch.options
+            ? {
+                target_node_id: node?.node_id,
+                offline: launch.options.offline,
+                auto_start:
+                  typeof autoStart === 'boolean' ? autoStart : undefined,
+              }
+            : undefined,
+        )
+      setState({ draft_id })
+      await store.inspectDraft(draft_id)
     }
-
-    void createTask()
+    void resolve()
     return () => {
-      cancelled = true
+      canceled = true
+      controller.abort()
     }
-  }, [onTaskCreated, store, validatedLaunch])
-
-  if (launchState.status === 'loading') {
-    return <LaunchStateCard onClose={onClose} />
+  }, [launchKey, scopeKey, store])
+  const draft = state.draft_id ? store.getDraft(state.draft_id) : null
+  const task = state.task_id ? store.getTask(state.task_id) : null
+  const exit = (callback: () => void) => {
+    if (draft) store.releaseDraft(draft.draft_id)
+    callback()
   }
-  if (launchState.status === 'error') {
-    return <LaunchStateCard error={launchState.code} onClose={onClose} />
+  const followTask = (task_id: string) => {
+    setState({ task_id })
+    onTaskCreated?.(task_id)
   }
-
-  const task = store.getTask(launchState.taskId)
-
-  if (!task) {
-    return (
-      <div className="mx-auto max-w-xl rounded-[22px] p-6" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-        <AlertTriangle size={24} style={{ color: 'var(--cp-danger)' }} />
-        <h1 className="mt-4 font-display text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
-          {t('appService.install.taskNotFound', 'Installation task not found')}
-        </h1>
-        <p className="mt-2 text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>
-          {t('appService.install.taskNotFoundBody', 'The task ID is no longer available in this prototype session.')}
-        </p>
-        <button type="button" onClick={onClose} className="mt-5 min-h-11 rounded-xl px-4 text-sm font-semibold" style={{ background: 'var(--cp-accent)', color: 'var(--cp-surface)' }}>
-          {t('appService.detail.back', 'Back to applications')}
-        </button>
-      </div>
-    )
-  }
-
-  if (task.status === 'completed') {
-    return (
-      <InstallerFrame onClose={onBackground}>
-        <ResultStep task={task} onClose={onClose} onViewApp={() => onViewApp(task.app.id)} />
-      </InstallerFrame>
-    )
-  }
-
-  if (task.status === 'failed') {
-    return (
-      <InstallerFrame onClose={onBackground}>
-        <FailureStep task={task} onChangeSource={onChangeSource} />
-      </InstallerFrame>
-    )
-  }
-
-  if (task.status === 'running') {
-    return (
-      <InstallerFrame onClose={onBackground}>
-        <ProgressStep task={task} onBackground={onBackground} />
-      </InstallerFrame>
-    )
-  }
-
-  if (approvalOpen) {
-    return (
-      <InstallerFrame onClose={onBackground}>
-        <ApprovalStep task={task} onBack={() => setApprovalOpen(false)} />
-      </InstallerFrame>
-    )
-  }
-
+  const error =
+    state.error ??
+    (state.task_id && !task
+      ? store.taskReadError(state.task_id)
+      : state.draft_id && !draft
+        ? 'DRAFT_NOT_FOUND'
+        : null)
   return (
-    <InstallerFrame onClose={onBackground}>
-      <VerifyStep task={task} onBack={onChangeSource} onContinue={() => setApprovalOpen(true)} onEnd={onClose} />
-    </InstallerFrame>
+    <section
+      data-testid="app-installer-dialog"
+      className="min-w-0 rounded-[22px] border border-[var(--cp-border)] bg-[var(--cp-surface)] text-[var(--cp-text)] shadow-[var(--cp-window-shadow)]"
+    >
+      <header className="flex items-start justify-between gap-3 border-b border-[var(--cp-border)] p-5">
+        <div>
+          <h1 className="font-display text-lg font-semibold">
+            {t('app22.title')}
+          </h1>
+          <p className="mt-1 text-xs text-[var(--cp-muted)]">
+            {t(task ? 'app22.taskHint' : 'app22.draftHint')}
+          </p>
+        </div>
+        <button
+          type="button"
+          disabled={draft?.status === 'submitting'}
+          onClick={() => exit(task ? onBackground : onClose)}
+          aria-label={t('common.close')}
+          className="flex size-11 shrink-0 items-center justify-center rounded-xl"
+        >
+          <X size={19} />
+        </button>
+      </header>
+      <div className="space-y-5 p-5 sm:p-6">
+        {error ? (
+          <div data-testid="app-installer-launch-error">
+            <ErrorCard code={error} />
+            <div className="mt-4">
+              <Button onClick={() => exit(onClose)}>{t('common.close')}</Button>
+            </div>
+          </div>
+        ) : task ? (
+          <TaskStep
+            key={task.task_id}
+            task={task}
+            onInspect={(id) => {
+              setState({ draft_id: id })
+              setConfigure(false)
+              void store.inspectDraft(id)
+            }}
+            onFollowTask={followTask}
+            onViewApp={onViewApp}
+            onBackground={onBackground}
+            onChangeSource={onChangeSource}
+          />
+        ) : draft ? (
+          configure ? (
+            <PlanStep
+              key={draft.draft_id}
+              draft={draft}
+              onBack={() => setConfigure(false)}
+              onSubmitted={followTask}
+              onViewApp={(id) => exit(() => onViewApp(id))}
+            />
+          ) : (
+            <CheckStep
+              draft={draft}
+              onConfigure={() => setConfigure(true)}
+              onViewApp={(id) => exit(() => onViewApp(id))}
+              onChangeSource={() => exit(onChangeSource)}
+            />
+          )
+        ) : (
+          <p role="status" className="flex items-center gap-2">
+            <Loader2 className="animate-spin" size={17} />
+            {t('app22.check.inspecting')}
+          </p>
+        )}
+      </div>
+    </section>
   )
 }
-
+export function AppInstaller(props: AppInstallerProps) {
+  const mobile = useMediaQuery('(max-width: 767px)')
+  return (
+    <WindowDialogProvider
+      permissions={{ fullscreen: true }}
+      surface={mobile ? 'mobile' : 'desktop'}
+    >
+      <InstallerContent {...props} />
+    </WindowDialogProvider>
+  )
+}
 export function AppInstallerRoute() {
   const location = useLocation()
   const navigate = useNavigate()
+  const { t } = useI18n()
+  const [detailId, setDetailId] = useState<string | null>(null)
   const parsed = useMemo(
     () => parseAppInstallerLaunchQuery(location.search),
     [location.search],
   )
-
-  const closeStandalone = () => {
-    if (window.opener && !window.opener.closed) {
-      window.close()
-      return
-    }
+  const close = () => {
     void navigate('/')
   }
-
-  const normalizeTaskUrl = (taskId: string) => {
+  const normalize = (id: string) => {
     const url = new URL(window.location.href)
-    url.search = ''
-    url.searchParams.set('task_id', taskId)
-    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+    url.search = new URLSearchParams({ task_id: id }).toString()
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${url.pathname}${url.search}`,
+    )
   }
-
   return (
-    <main className="relative z-10 flex min-h-dvh items-center justify-center overflow-y-auto p-3 sm:p-6">
-      <div
-        className="fixed inset-0 bg-[color:color-mix(in_srgb,var(--cp-shadow)_24%,transparent)] backdrop-blur-[2px]"
-        aria-hidden="true"
-      />
-      <div className="relative z-10 w-full max-w-3xl">
-        {parsed.ok ? (
+    <main className="relative z-10 min-h-dvh overflow-x-hidden px-3 py-5 sm:p-6">
+      <div className="mx-auto w-full max-w-3xl">
+        {detailId ? (
+          <AppServiceStoreProvider>
+            <DetailPage
+              serviceId={detailId}
+              onNavigate={() => setDetailId(null)}
+            />
+          </AppServiceStoreProvider>
+        ) : parsed.ok ? (
           <AppInstaller
             launchParams={parsed.params}
-            onBackground={closeStandalone}
-            onChangeSource={closeStandalone}
-            onClose={closeStandalone}
-            onTaskCreated={normalizeTaskUrl}
-            onViewApp={closeStandalone}
+            onBackground={close}
+            onChangeSource={close}
+            onClose={close}
+            onViewApp={setDetailId}
+            onTaskCreated={normalize}
           />
         ) : (
-          <LaunchStateCard error={parsed.code} onClose={closeStandalone} />
+          <div
+            data-testid="app-installer-launch-error"
+            className="rounded-xl bg-[var(--cp-surface)] p-5"
+          >
+            <ErrorCard code={parsed.code} />
+            <Button onClick={close}>{t('common.close')}</Button>
+          </div>
         )}
       </div>
     </main>

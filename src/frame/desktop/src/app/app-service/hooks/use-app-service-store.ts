@@ -12,13 +12,13 @@ export const AppServiceStoreContext = createContext<AppServiceMockStore | null>(
 
 let sharedStore: AppServiceMockStore | null = null
 
-function getSharedStore() {
+export function getSharedAppServiceStore() {
   sharedStore ??= new AppServiceMockStore()
   return sharedStore
 }
 
 export function AppServiceStoreProvider({ children }: { children: ReactNode }) {
-  const [store] = useState(getSharedStore)
+  const [store] = useState(getSharedAppServiceStore)
 
   return createElement(AppServiceStoreContext.Provider, { value: store }, children)
 }
@@ -31,7 +31,7 @@ export function useAppServiceStore() {
 }
 
 export function useSharedAppServiceStore() {
-  const [store] = useState(getSharedStore)
+  const [store] = useState(getSharedAppServiceStore)
   useSyncExternalStore(store.subscribe, store.getRevision, store.getRevision)
   return store
 }
