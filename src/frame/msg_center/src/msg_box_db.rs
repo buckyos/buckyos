@@ -796,6 +796,7 @@ ON CONFLICT(delivery_id) DO UPDATE SET
     delivered_at_ms = excluded.delivered_at_ms,
     last_error_json = excluded.last_error_json,
     updated_at_ms = excluded.updated_at_ms
+WHERE delivery_records.state <> 'SENT' OR excluded.state = 'SENT'
 "#
         ));
 

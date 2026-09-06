@@ -83,6 +83,7 @@ pub struct MessageCenter {
     /// targets cannot be planned (post_send fails them with a clear reason
     /// instead of parking records in a queue nobody consumes).
     message_hub_did: Arc<OnceLock<DID>>,
+    pub(crate) cyfs_dispatch: Arc<RwLock<crate::cyfs_dispatch::CyfsDispatchSettings>>,
 }
 
 impl MessageCenter {
@@ -105,6 +106,7 @@ impl MessageCenter {
             tunnel_registry: Arc::new(RwLock::new(HashMap::new())),
             local_recipients: Arc::new(RwLock::new(HashSet::new())),
             message_hub_did: Arc::new(OnceLock::new()),
+            cyfs_dispatch: Arc::new(RwLock::new(Default::default())),
         })
     }
 
@@ -1025,13 +1027,61 @@ impl MessageCenter {
                 target_did.to_string()
             )
         })?;
+        let route = self
+            .cyfs_dispatch
+            .read()
+            .unwrap()
+            .outgoing
+            .get(&target_did.to_string())
+            .cloned();
+        let address = route.map(|route| DeliverySnapshot {
+            platform: Some("cyfs".into()),
+            account_id: None,
+            account_type: None,
+            chat_id: None,
+            address: Some(route.target),
+            ext_ids: HashMap::new(),
+            extra: None,
+        });
         Ok(DeliveryEnvelope {
             msg_id: msg_id.clone(),
             target_did,
             transport_did: hub_did,
             transport: TransportKind::Native,
-            address: None,
+            address,
         })
+    }
+
+    pub(crate) async fn dispatch_to_receiver(
+        &self,
+        msg: MsgObject,
+        receiver: DID,
+        target: String,
+    ) -> std::result::Result<DispatchResult, RPCErrors> {
+        if !self.is_local_recipient(&receiver)
+            || !msg.to.contains(&receiver)
+            || (Self::is_group_message(&msg) && Self::group_did_from_message(&msg)? != receiver)
+        {
+            return Err(RPCErrors::NoPermission(
+                "not a local message receiver".into(),
+            ));
+        }
+        let id = msg.gen_obj_id().0.to_string();
+        self.dispatch_internal(msg, None, Some(id), Some((receiver, target)))
+            .await
+    }
+
+    pub(crate) async fn query_cyfs_dispatch(
+        &self,
+        principal: &str,
+        target: &str,
+        obj_id: &ObjId,
+    ) -> std::result::Result<Option<DispatchResult>, RPCErrors> {
+        self.load_dispatch_idempotency(
+            &format!("cyfs:{}:{}", principal, target),
+            &obj_id.to_string(),
+        )
+        .await
     }
 
     async fn dispatch_internal(
@@ -1039,9 +1089,12 @@ impl MessageCenter {
         msg: MsgObject,
         ingress_ctx: Option<IngressContext>,
         idempotency_key: Option<String>,
+        receiver: Option<(DID, String)>,
     ) -> std::result::Result<DispatchResult, RPCErrors> {
-        let idempotency_owner_scope =
-            Self::dispatch_idempotency_owner_scope(&msg, ingress_ctx.as_ref());
+        let idempotency_owner_scope = match &receiver {
+            Some((_, target)) => format!("cyfs:{}:{}", msg.from.to_string(), target),
+            None => Self::dispatch_idempotency_owner_scope(&msg, ingress_ctx.as_ref()),
+        };
         if let Some(key) = idempotency_key.as_ref() {
             if let Some(cached) = self
                 .load_dispatch_idempotency(&idempotency_owner_scope, key)
@@ -1152,7 +1205,11 @@ impl MessageCenter {
                     reason: Some("blocked".to_string()),
                 };
                 let now_ms = Self::now_ms();
-                let expires_at_ms = Self::idempotency_expires_at(now_ms);
+                let expires_at_ms = if receiver.is_some() {
+                    None
+                } else {
+                    Self::idempotency_expires_at(now_ms)
+                };
                 match self
                     .msg_box_db
                     .commit_dispatch_records(
@@ -1235,7 +1292,10 @@ impl MessageCenter {
             result.delivered_group = Some(group_id);
             result.delivered_agents = readers;
         } else {
-            let recipients = Self::dedupe_dids(stored_msg.to.clone());
+            let recipients = match &receiver {
+                Some((recipient, _)) => vec![recipient.clone()],
+                None => Self::dedupe_dids(stored_msg.to.clone()),
+            };
             if recipients.is_empty() {
                 warn!(
                     "dispatch has no recipients, cannot write inbox: msg_id={}, sender={}, context_id={}",
@@ -1314,7 +1374,11 @@ impl MessageCenter {
         }
 
         let now_ms = Self::now_ms();
-        let expires_at_ms = Self::idempotency_expires_at(now_ms);
+        let expires_at_ms = if receiver.is_some() {
+            None
+        } else {
+            Self::idempotency_expires_at(now_ms)
+        };
         match self
             .msg_box_db
             .commit_dispatch_records(
@@ -1667,6 +1731,9 @@ impl MessageCenter {
                 RPCErrors::ReasonError(format!("delivery record {} not found", delivery_id))
             })?;
 
+        if record.state == DeliveryState::Sent {
+            return Ok(record);
+        }
         let now_ms = Self::now_ms();
         record.attempts = record.attempts.saturating_add(1);
 
@@ -1705,6 +1772,11 @@ impl MessageCenter {
 
         record.updated_at_ms = now_ms;
         self.msg_box_db.upsert_delivery(&record).await?;
+        let record = self
+            .msg_box_db
+            .get_delivery(&delivery_id)
+            .await?
+            .unwrap_or(record);
         Self::publish_delivery_changed_event(&record, "delivery");
         Ok(record)
     }
@@ -2228,7 +2300,7 @@ impl MsgCenterHandler for MessageCenter {
         idempotency_key: Option<String>,
         _ctx: RPCContext,
     ) -> std::result::Result<DispatchResult, RPCErrors> {
-        self.dispatch_internal(msg, ingress_ctx, idempotency_key)
+        self.dispatch_internal(msg, ingress_ctx, idempotency_key, None)
             .await
     }
 

@@ -1,4 +1,5 @@
 mod contact_mgr;
+mod cyfs_dispatch;
 mod group_mgr;
 mod message_hub;
 mod msg_box_db;
@@ -18,8 +19,7 @@ use buckyos_api::{
 };
 use buckyos_http_server::Runner;
 use buckyos_http_server::{
-    serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
-    StreamInfo,
+    serve_http_by_rpc_handler, HttpServer, ServerError, ServerResult, StreamInfo,
 };
 use buckyos_kit::{get_buckyos_service_data_dir, init_logging};
 use bytes::Bytes;
@@ -162,6 +162,9 @@ impl MsgCenterHttpServer {
             }
         };
 
+        let dispatch_settings = cyfs_dispatch::CyfsDispatchSettings::parse(&settings)
+            .map_err(|e| RPCErrors::ParseRequestError(e.to_string()))?;
+        *self.rpc_handler.0.cyfs_dispatch.write().unwrap() = dispatch_settings;
         let tunnel_result =
             apply_tg_tunnel_settings(&self.rpc_handler.0, self.executor_mgr.as_ref(), &settings)
                 .await
@@ -207,13 +210,16 @@ impl HttpServer for MsgCenterHttpServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         info: StreamInfo,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        if *req.method() == Method::POST {
+        if *req.method() == Method::POST
+            && (req.uri().path() == MSG_CENTER_HTTP_PATH
+                || req
+                    .uri()
+                    .path()
+                    .starts_with(&format!("{MSG_CENTER_HTTP_PATH}/")))
+        {
             return serve_http_by_rpc_handler(req, info, self).await;
         }
-        Err(server_err!(
-            ServerErrorCode::BadRequest,
-            "Method not allowed"
-        ))
+        Ok(cyfs_dispatch::serve(&self.rpc_handler.0, req).await)
     }
 
     fn id(&self) -> String {
@@ -1009,6 +1015,7 @@ pub async fn start_msg_center_service() -> Result<()> {
     let center = MessageCenter::open_from_service_spec()
         .await
         .map_err(|err| anyhow::anyhow!("create message center failed: {:?}", err))?;
+    *center.cyfs_dispatch.write().unwrap() = cyfs_dispatch::CyfsDispatchSettings::parse(&settings)?;
     center.start_idempotency_sweep();
 
     let executor_mgr = Arc::new(DeliveryExecutorMgr::new());
@@ -1024,16 +1031,19 @@ pub async fn start_msg_center_service() -> Result<()> {
         warn!("zone-user sync failed during startup: {}", error);
     }
     start_delivery_pump(center.clone(), executor_mgr.clone());
-    let server = MsgCenterHttpServer::new(center, executor_mgr);
+    let server = Arc::new(MsgCenterHttpServer::new(center, executor_mgr));
 
     let runner = Runner::new(MSG_CENTER_SERVICE_PORT);
-    if let Err(err) = runner.add_http_server(MSG_CENTER_HTTP_PATH.to_string(), Arc::new(server)) {
+    if let Err(err) = runner.add_http_server(MSG_CENTER_HTTP_PATH.to_string(), server.clone()) {
         error!("failed to add msg-center http server: {:?}", err);
         return Err(anyhow::anyhow!(
             "failed to add msg-center http server: {:?}",
             err
         ));
     }
+    runner
+        .add_http_server("/".into(), server)
+        .map_err(|e| anyhow::anyhow!("register CYFS adapter: {e}"))?;
     if let Err(err) = runner.run().await {
         error!("msg-center runner exited with error: {:?}", err);
         return Err(anyhow::anyhow!(

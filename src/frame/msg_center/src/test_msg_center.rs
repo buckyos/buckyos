@@ -52,6 +52,143 @@ fn ctx() -> RPCContext {
 }
 
 #[tokio::test]
+async fn cyfs_dispatch_confirms_only_the_current_receiver_and_survives_restart() {
+    let (center, tmp) = new_center("cyfs_dispatch").await;
+    let sender = DID::new("bns", "sender");
+    let alice = DID::new("bns", "alice");
+    let bob = DID::new("bns", "bob");
+    center.register_local_recipients([alice.clone(), bob.clone()]);
+    let msg = make_msg(
+        sender.clone(),
+        vec![alice.clone(), bob.clone()],
+        MsgObjKind::Chat,
+    );
+    let id = msg.gen_obj_id().0;
+    let target = "cyfs://alice.example/inbox";
+    let first = center
+        .dispatch_to_receiver(msg.clone(), alice.clone(), target.into())
+        .await
+        .unwrap();
+    assert_eq!(first.msg_id, id);
+    assert_eq!(first.delivered_recipients, vec![alice.clone()]);
+    assert!(!first.delivered_recipients.contains(&bob));
+    let duplicate = center
+        .dispatch_to_receiver(msg.clone(), alice.clone(), target.into())
+        .await
+        .unwrap();
+    assert_eq!(duplicate.delivered_recipients, first.delivered_recipients);
+    assert!(center
+        .query_cyfs_dispatch(&bob.to_string(), target, &id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(center
+        .query_cyfs_dispatch(&sender.to_string(), "cyfs://alice.example/other", &id)
+        .await
+        .unwrap()
+        .is_none());
+    drop(center);
+    let path = tmp
+        .path()
+        .join("msg-center.db")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let center = open_center_at(&format!("sqlite:///{path}?mode=rwc")).await;
+    center.register_local_recipients([alice.clone(), bob.clone()]);
+    assert_eq!(
+        center
+            .query_cyfs_dispatch(&sender.to_string(), target, &id)
+            .await
+            .unwrap()
+            .unwrap()
+            .msg_id,
+        id
+    );
+    let second = center
+        .dispatch_to_receiver(msg, bob.clone(), "cyfs://alice.example/second".into())
+        .await
+        .unwrap();
+    assert_eq!(second.delivered_recipients, vec![bob]);
+}
+
+#[tokio::test]
+async fn cyfs_dispatch_cached_reports_retry_and_late_failure_cannot_downgrade_accepted() {
+    let (center, _tmp) = new_center("cyfs_sender").await;
+    let hub = DID::new("bns", "hub");
+    center.set_message_hub_did(hub);
+    let recipient = DID::new("bns", "remote");
+    let msg = make_msg(DID::new("bns", "sender"), vec![recipient], MsgObjKind::Chat);
+    let (id, original) = msg.gen_obj_id();
+    let post = center.handle_post_send(msg, None, ctx()).await.unwrap();
+    let delivery_id = post.deliveries[0].delivery_id.clone();
+    let result = ndn_lib::CyfsDispatchResult::new(
+        Some(id.clone()),
+        "cyfs://remote.example/inbox".into(),
+        ndn_lib::CyfsDispatchStatus::Cached,
+    );
+    let report = crate::cyfs_dispatch::delivery_report(result);
+    assert!(!report.ok);
+    let pending = center
+        .handle_report_delivery(delivery_id.clone(), report.clone(), ctx())
+        .await
+        .unwrap();
+    assert_eq!(pending.state, DeliveryState::Wait);
+    assert!(pending.next_retry_at_ms.is_some());
+    assert_eq!(pending.envelope.msg_id, id);
+    let accepted = center
+        .handle_report_delivery(
+            delivery_id.clone(),
+            DeliveryReportResult {
+                ok: true,
+                ..Default::default()
+            },
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.state, DeliveryState::Sent);
+    let late = center
+        .handle_report_delivery(delivery_id, report, ctx())
+        .await
+        .unwrap();
+    assert_eq!(late.state, DeliveryState::Sent);
+    assert_eq!(late.delivered_at_ms, accepted.delivered_at_ms);
+    assert_eq!(
+        ndn_lib::validate_cyfs_dispatch_object(original.as_bytes(), Some(&id.to_string())).unwrap(),
+        id
+    );
+}
+
+#[tokio::test]
+async fn cyfs_dispatch_http_rejects_forged_identity_before_receiving() {
+    use http_body_util::{BodyExt, Full};
+    let (center, _tmp) = new_center("cyfs_auth").await;
+    let receiver = DID::new("bns", "alice");
+    center.register_local_recipients([receiver]);
+    *center.cyfs_dispatch.write().unwrap() = crate::cyfs_dispatch::CyfsDispatchSettings::parse(&json!({
+        "cyfs_dispatch": {"target_zone":"alice.example", "accepted_paths":{"/inbox":"did:bns:alice"}}
+    })).unwrap();
+    let req = http::Request::builder()
+        .method("PUT")
+        .uri("/inbox")
+        .header("host", "alice.example")
+        .header("cyfs-original-user", "did:bns:sender")
+        .header("content-type", ndn_lib::CYFS_CONTENT_TYPE_NAMED_OBJECT_JSON)
+        .body(
+            Full::new(bytes::Bytes::from_static(b"{}"))
+                .map_err(|e| match e {})
+                .boxed(),
+        )
+        .unwrap();
+    let response = crate::cyfs_dispatch::serve(&center, req).await;
+    assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers()[ndn_lib::CYFS_HEADER_DISPATCH_STATUS],
+        "rejected"
+    );
+}
+
+#[tokio::test]
 async fn dispatch_single_chat_goes_to_inbox_and_locking_moves_state() {
     let (center, _tmp) = new_center("dispatch_inbox").await;
     let sender = DID::new("bns", "sender-a");
