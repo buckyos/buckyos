@@ -327,6 +327,8 @@ Owner：四个并行协议小组
 
 实现记录：在 `src/frame/aicc/src/protocol/openai_responses.rs` 实现独立 `openai-responses` Adapter，覆盖 Responses 请求、即时响应、真正增量的 SSE event、OpenAI 错误体、function tool、JSON schema structured output、reasoning、usage 和可回放 ProviderState；GPT 主线图片能力通过 Responses `image_generation` tool lowering，completed 图片结果生成通用 artifact。另按官方 operation 独立注册 embeddings、Images generate/edit/inpaint、Audio speech/transcriptions 和 Videos submit/status/content/cancel，视频生命周期复用 WP-05 native-task contract。基础 codec 只消费已解析的模型、参数、base URL、Bearer credential 和已物化资源，不包含 OpenRouter、DeepSeek、豆包、Qwen、SN 或 Router/Model 分支。11 个定向合同测试随 AICC 全量 158 个测试通过，all-target check、格式检查及排除 resource 模块既有 `manual_is_multiple_of` lint 后的 clippy `-D warnings` 通过；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。
 
+2026-09-06 回归修复：Responses decoder 对每个原生 output item 同时产生 canonical 表示和 namespaced ProviderState；同 OpenAI 回放时完整原生 item 替代对应 canonical 表示，跨 Provider 时继续使用 canonical 内容。新增 decode-to-encode 单测和 T1.5 `native-history` cell，覆盖 reasoning、message、function call、image generation 与未知 item 的字段和顺序保留。
+
 #### WP-06B Claude Messages
 
 - [x] Messages request/response/content block；
@@ -335,6 +337,8 @@ Owner：四个并行协议小组
 
 实现记录：Claude Messages 小组已在 `src/frame/aicc/src/protocol/claude_messages.rs` 实现独立 `claude-messages / messages.create / llm` binding，覆盖 Messages 请求、响应、content block、`anthropic-version`、named-header credential、tool use/result、thinking/signature、ProviderState、usage、错误映射和真正增量的 SSE 归并；streaming 通过 WP-05 的 `StreamingHttpResponse -> SseFrameStream -> ProtocolStream` 接口逐块消费，不缓冲完整响应，且保留 request ID、Retry-After、断连和有界非 2xx 错误。基础 codec 只包含 Claude Messages wire 语义，不引用 MiniMax 或 Provider/Router/Model 模块。8 个 Claude 合同单测随 AICC 全量 158 个测试通过，all-target check、排除 Resource 模块既有 `manual_is_multiple_of` lint 后的 clippy `-D warnings` 和格式检查通过；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。
 
+2026-09-06 回归修复：canonical `json_schema` response format 由 codec 合并到 `output_config.format`，与 Provider Rules 提供的 effort 共存；Claude 5 收到遗留 `enabled + budget_tokens` 时在出站前转换为 adaptive thinking，并保留显式 effort。T1.5 新增 structured-output cell，严格拒绝 Claude 5 旧 thinking wire。
+
 #### WP-06C Gemini Interactions
 
 - [x] Interactions request/response/event；
@@ -342,6 +346,8 @@ Owner：四个并行协议小组
 - [x] 只有实际 Provider 需求确认后才增加 `generateContent` 历史 Adapter。
 
 实现记录：Gemini Interactions 小组已在 `src/frame/aicc/src/protocol/gemini.rs` 实现独立 `gemini-interactions` Adapter，覆盖 `interactions.create` 请求、即时响应、增量 SSE event、错误映射、tool、usage、ProviderState，以及 `x-goog-api-key` named-header credential；另按官方 operation 独立注册 `models.embedContent` 和 `models.predictLongRunning`，覆盖文本/多模态 embeddings、首版图片/语音/音乐生成与视频 native-task 生命周期，并实现 Gemini Files 可恢复上传、查询和删除。基础 codec 只消费 WP-05 提供的类型化上下文、已物化资源和 native-task contract，未加入尚无实际 Provider 需求的 `generateContent` 历史 Adapter。8 个 Gemini 合同单测随 AICC 全量 158 个测试通过，all-target check、排除 Resource 模块既有 `manual_is_multiple_of` lint 后的 clippy `-D warnings`、格式及 diff 检查通过；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。
+
+2026-09-06 回归修复：`function_result` 现在从 canonical tool history 恢复并发送与 `call_id` 匹配的函数名；completed interaction steps 在 canonical block 旁保存为 Gemini ProviderState，同 Provider 下一轮以原生 step 权威回放。单测执行完整 decode-to-encode 工具回合，T1.5 Mock 同时校验函数名、调用 ID、顶层顺序及 Gemini 3 thinking 字段。
 
 #### WP-06D OpenAI Chat Completions
 
@@ -353,6 +359,8 @@ Owner：四个并行协议小组
 完成标准：每个 API 代际独立注册、独立声明 operation，基础合同可被多个派生 Provider 复用。
 
 实现记录：在 `src/frame/aicc/src/protocol/openai_chat_completions.rs` 实现独立 `openai-chat-completions / chat.completions.create / llm` binding 和注册入口，覆盖 canonical messages、图片、function tools、structured output、参数校验、即时响应、usage、错误映射及真正增量的 SSE 文本与 tool-call 参数归并。基础 codec 只消费已解析的模型、参数、URL 和凭据，不包含 OpenRouter、Kimi、GLM 或 Provider/Router/Model 分支，并通过三家消费者共用 contract 验证与 Responses 无失败后 fallback。后续按 WP-08D 的实际复用需求增加窄化的 `pub(crate)` dialect 扩展：派生 Adapter 可转换请求 JSON/header、即时响应和单个 SSE delta，可选择 `max_completion_tokens` 或 `max_tokens`，并可在基础参数未匹配时严格验证和转换 dialect 专属 resolved parameter；基础参数仍由基础 codec 校验，标准 Adapter 继续拒绝未知参数，派生输出不得覆盖基础字段，且未开放任意 `extra_body`。fake derived-adapter 合同覆盖请求、即时响应、SSE、基础 Adapter 声明和专属 resolved parameter 的完整委托链。11 个定向测试及隔离工作树内 AICC 全量 165 个测试通过，all-target check、排除 Resource 模块既有 `manual_is_multiple_of` lint 后的 clippy `-D warnings`、格式和 diff 检查通过；完整 `buckyos-build.py --skip-web` 仍需提供四个 `BUCKYOS_SDK_TOOL_*` 不可变构建输入后复验。
+
+2026-09-06 OpenRouter 回归修复：派生 dialect 允许 assistant thinking history，并把响应中的完整 `reasoning_details` 保存在 canonical thinking metadata 中；下一轮恢复到 assistant message 时逐字段原样写回。新增单测和 T1.5 `reasoning-history` cell，避免只验证 reasoning 文本而遗漏加密或摘要块。
 
 ### WP-07：Provider Core、Discovery 与 Inventory
 

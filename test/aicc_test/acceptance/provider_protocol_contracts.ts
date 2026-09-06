@@ -961,6 +961,17 @@ function validateOpenAiChatMessages(
         }
       });
     }
+    if (message.reasoning_details !== undefined) {
+      if (
+        role !== "assistant" || !Array.isArray(message.reasoning_details) ||
+        message.reasoning_details.length === 0 ||
+        message.reasoning_details.some((detail) => !recordValue(detail))
+      ) {
+        errors.push(
+          `body field messages[${index}].reasoning_details must be a non-empty assistant array`,
+        );
+      }
+    }
   });
 }
 
@@ -1043,13 +1054,33 @@ function validateClaudeMessages(
       "Claude tool_use blocks are missing an immediate tool_result message",
     );
   }
+  const outputConfig = recordValue(body.output_config);
+  const format = recordValue(outputConfig?.format);
+  if (
+    format &&
+    (format.type !== "json_schema" || !recordValue(format.schema))
+  ) {
+    errors.push(
+      "body field output_config.format must contain type=json_schema and an object schema",
+    );
+  }
+  const thinking = recordValue(body.thinking);
+  if (
+    String(body.model ?? "").startsWith("claude-") &&
+    String(body.model ?? "").split("-").includes("5") &&
+    thinking?.type === "enabled"
+  ) {
+    errors.push(
+      "body field thinking.type=enabled is invalid for Claude 5; use adaptive thinking",
+    );
+  }
 }
 
 function validateGeminiInteractionInput(
   input: unknown[],
   errors: string[],
 ): void {
-  const pendingCalls = new Set<string>();
+  const pendingCalls = new Map<string, string>();
   input.forEach((value, index) => {
     const step = recordValue(value);
     if (!step || typeof step.type !== "string") return;
@@ -1076,24 +1107,34 @@ function validateGeminiInteractionInput(
       ) errors.push(`${path} is an invalid Gemini function_call step`);
       else if (pendingCalls.has(step.id)) {
         errors.push(`${path}.id duplicates a preceding Gemini function_call`);
-      } else pendingCalls.add(step.id);
+      } else pendingCalls.set(step.id, step.name);
       return;
     }
     if (step.type === "function_result") {
       if (
         typeof step.call_id !== "string" || !step.call_id ||
+        typeof step.name !== "string" || !step.name ||
         step.result === undefined
       ) errors.push(`${path} is an invalid Gemini function_result step`);
       if (step.id !== undefined) {
         errors.push(`${path}.id is invalid; function_result requires call_id`);
       }
       if (
-        typeof step.call_id === "string" && !pendingCalls.delete(step.call_id)
+        typeof step.call_id === "string" && !pendingCalls.has(step.call_id)
       ) {
         errors.push(
           `${path}.call_id does not match a preceding Gemini function_call`,
         );
       }
+      if (
+        typeof step.call_id === "string" && pendingCalls.has(step.call_id) &&
+        pendingCalls.get(step.call_id) !== step.name
+      ) {
+        errors.push(
+          `${path}.name does not match the preceding Gemini function_call`,
+        );
+      }
+      if (typeof step.call_id === "string") pendingCalls.delete(step.call_id);
       return;
     }
     if (
@@ -1652,6 +1693,39 @@ export function buildT15Manifest(
       expected_wire_fixture:
         `${base.protocol_contract_id}.request.tool-history`,
     });
+    if (base.provider_driver === "openai") {
+      cases.push({
+        ...base,
+        case_id: caseId(
+          `t1.5.${base.provider_driver}.${base.protocol_contract_id}.llm.native-history`,
+        ),
+        tags: [...base.tags, "history", "native_history"],
+        expected_wire_fixture:
+          `${base.protocol_contract_id}.request.native-history`,
+      });
+    }
+    if (base.provider_driver === "openrouter") {
+      cases.push({
+        ...base,
+        case_id: caseId(
+          `t1.5.${base.provider_driver}.${base.protocol_contract_id}.llm.reasoning-history`,
+        ),
+        tags: [...base.tags, "history", "reasoning_history"],
+        expected_wire_fixture:
+          `${base.protocol_contract_id}.request.reasoning-history`,
+      });
+    }
+    if (base.provider_driver === "claude") {
+      cases.push({
+        ...base,
+        case_id: caseId(
+          `t1.5.${base.provider_driver}.${base.protocol_contract_id}.llm.structured-output`,
+        ),
+        tags: [...base.tags, "structured_output"],
+        expected_wire_fixture:
+          `${base.protocol_contract_id}.request.structured-output`,
+      });
+    }
   }
   for (const source of historyBases) {
     for (const target of historyBases) {
@@ -1685,6 +1759,7 @@ export function buildT15Manifest(
       !testCase.tags.includes("cloud_update") &&
       !testCase.tags.includes("history") &&
       !testCase.tags.includes("tool_history") &&
+      !testCase.tags.includes("structured_output") &&
       !testCase.tags.includes("task_result_artifact") &&
       !testCase.tags.includes("custom_provider")
     ).map((testCase) => ({

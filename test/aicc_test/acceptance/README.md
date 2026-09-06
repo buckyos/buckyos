@@ -56,6 +56,7 @@ T1.5 的 `official_variant_rules` 独立记录官方模型、variant 与预期�
 运行时 metadata 展开的每个 variant 都是独立协议单元；缺少官方期望、缺失或多出
 variant、没有对应 API contract、实际 wire 参数不一致都会使测试失败。
 T1.5 还必须覆盖同一 session 内 `<source provider, source model> x <target provider, target model>` 切换矩阵，用第一轮 source 产生可回放历史，再强制第二轮 target 调用，验证旧 provider_state 按目标 Provider 降级策略处理且 target Mock 严格协议校验通过。当前 runner 对 OpenAI、OpenRouter、Claude 和 Gemini 的 LLM 历史回放单元派生跨 Provider switch case；执行时会保留参与矩阵的临时 Provider instance，同时采集 source 与 target 两轮 mock wire audit。
+同 Provider 的原生历史由专项 cell 验证：OpenAI `native-history` 和 OpenRouter `reasoning-history` 先消费 Mock 第一轮响应中的 typed assistant message，再把该 message 送入第二轮调用，分别断言完整 Responses output item 与 `reasoning_details` 无损回放；Gemini `tool-history` 严格关联 `function_call` / `function_result` 的 `call_id`、函数名和顶层顺序；Claude `structured-output` 验证 canonical JSON Schema lowering。
 T1.5 对所有会产生 artifact 的 Provider success 单元派生 `task-result-artifact` 回归用例，覆盖 Gemini、OpenAI、Fal、MiniMax 等 Provider 的图片、音频、视频和视觉 artifact 输出。该用例必须经 TaskMgr 读取最终 task result，断言任务进入成功终态、result 中没有 inline `base64` 资源残留，并保留 `named_object` 或 URL 等稳定 artifact 引用。
 本轮线上暴露过的中文 tag/topic、Gemini 3 旧 `thinking_budget` 参数和媒体 inline base64 提交 TaskMgr 失败，都必须作为 T1.5 覆盖不足的回归信号写入 manifest 或派生矩阵。
 

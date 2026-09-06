@@ -2206,6 +2206,59 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
       error.includes("function_result requires call_id")
     ),
   );
+  assert.deepEqual(
+    validateProviderRequest(geminiInteractions, {
+      method: "POST",
+      pathname: "/v1beta/interactions",
+      query: new URLSearchParams(),
+      headers: new Headers({
+        "content-type": "application/json",
+        "x-goog-api-key": "test-key",
+      }),
+      body: {
+        model: "gemini-test",
+        input: [
+          {
+            type: "function_call",
+            id: "call-1",
+            name: "weather",
+            arguments: {},
+          },
+          {
+            type: "function_result",
+            call_id: "call-1",
+            name: "weather",
+            result: [{ type: "text", text: "sunny" }],
+          },
+        ],
+      },
+    }),
+    [],
+  );
+  const geminiNameErrors = validateProviderRequest(geminiInteractions, {
+    method: "POST",
+    pathname: "/v1beta/interactions",
+    query: new URLSearchParams(),
+    headers: new Headers({
+      "content-type": "application/json",
+      "x-goog-api-key": "test-key",
+    }),
+    body: {
+      model: "gemini-test",
+      input: [
+        { type: "function_call", id: "call-1", name: "weather", arguments: {} },
+        {
+          type: "function_result",
+          call_id: "call-1",
+          name: "other",
+          result: [],
+        },
+      ],
+    },
+  });
+  assert.ok(
+    geminiNameErrors.some((error) => error.includes("name does not match")),
+  );
   const geminiConfigErrors = validateProviderRequest(geminiInteractions, {
     method: "POST",
     pathname: "/v1beta/interactions",
@@ -3132,6 +3185,15 @@ test("T1.5 manifest owns Provider normal, streaming, async, error, and variant c
         "t1.5.google-gemini.gemini.interactions.v1beta.llm.tool-history"
     ),
   );
+  for (
+    const caseId of [
+      "t1.5.openai.openai.responses.v1.llm.native-history",
+      "t1.5.openrouter.openrouter.chat-completions.v1.llm.reasoning-history",
+      "t1.5.claude.anthropic.messages.2023-06-01.llm.structured-output",
+    ]
+  ) {
+    assert.ok(manifest.some((item) => item.case_id === caseId), caseId);
+  }
   const switchCases = manifest.filter((item) =>
     item.tags.includes("provider_switch_matrix")
   );
@@ -3289,6 +3351,29 @@ test("T1.5 typed request fixtures use current provider-neutral methods without l
   );
   assert.equal(streamParams.execution_mode, "stream");
   assert.equal("stream" in streamParams, false);
+
+  const decodedMessage = {
+    role: "assistant",
+    content: [{ type: "text", text: "decoded" }],
+  };
+  const nativeHistory = buildT15TypedParams(
+    "llm",
+    "gpt-5.4@t15-openai",
+    "run",
+    "immediate",
+    "openai.responses.v1.native-history",
+    { historyMessage: decodedMessage },
+  );
+  assert.equal((nativeHistory.messages as unknown[])[1], decodedMessage);
+  const reasoningHistory = buildT15TypedParams(
+    "llm",
+    "openai/gpt-5.4@t15-openrouter",
+    "run",
+    "immediate",
+    "openrouter.chat-completions.v1.reasoning-history",
+    { historyMessage: decodedMessage },
+  );
+  assert.equal((reasoningHistory.messages as unknown[])[1], decodedMessage);
 });
 
 test("T1.5 success mapping requires canonical output, usage, and async attribution", async () => {

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-09-05.2",
-  "checked_at": "2026-09-05",
+  "revision": "official-provider-protocols-2026-09-06.1",
+  "checked_at": "2026-09-06",
   "providers": [
     {
       "provider_driver": "openai",
@@ -54,7 +54,7 @@
           "allowed_body_fields": ["model", "input", "include", "instructions", "max_output_tokens", "metadata", "parallel_tool_calls", "previous_response_id", "reasoning", "service_tier", "store", "stream", "temperature", "text", "tool_choice", "tools", "top_logprobs", "top_p", "truncation", "user"],
           "body_field_types": { "model": ["string"], "input": ["string", "array"] },
           "stream_protocol": "openai_responses",
-          "success_fixture": { "id": "resp_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+          "success_fixture": { "id": "resp_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "reasoning", "id": "rs_t15_4827", "summary": [{ "type": "summary_text", "text": "opaque reasoning" }], "encrypted_content": "opaque-t15-reasoning" }, { "type": "message", "id": "msg_t15_4827", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
           "official_sources": ["https://platform.openai.com/docs/api-reference/responses/create", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
           "evidence_summary": "Responses create uses POST /v1/responses with Bearer authentication and JSON model/input; response objects contain output and usage."
         },
@@ -216,8 +216,8 @@
         "body_field_types": { "model": ["string"], "messages": ["array"], "max_tokens": ["number"] },
         "stream_protocol": "claude_messages",
         "success_fixture": { "id": "msg_mock_1", "type": "message", "role": "assistant", "model": "mock-model", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }], "stop_reason": "end_turn", "stop_sequence": null, "usage": { "input_tokens": 4, "output_tokens": 3 } },
-        "official_sources": ["https://platform.claude.com/docs/en/api/messages/create", "https://platform.claude.com/docs/en/api/errors"],
-        "evidence_summary": "Messages create requires x-api-key, anthropic-version, model/messages/max_tokens and returns a message object with usage."
+        "official_sources": ["https://platform.claude.com/docs/en/api/messages/create", "https://platform.claude.com/docs/en/build-with-claude/structured-outputs", "https://platform.claude.com/docs/en/build-with-claude/extended-thinking", "https://platform.claude.com/docs/en/api/errors"],
+        "evidence_summary": "Messages create requires x-api-key, anthropic-version, model/messages/max_tokens; canonical JSON Schema lowers to output_config.format, and Claude 5 uses adaptive rather than budget-based thinking."
       }]
     },
     {
@@ -269,8 +269,8 @@
           "body_field_types": { "model": ["string"], "input": ["string", "array"] },
           "stream_protocol": "gemini_interactions",
           "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "mock-model", "steps": [{ "type": "model_output", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
-          "official_sources": ["https://ai.google.dev/api/interactions-api", "https://ai.google.dev/gemini-api/docs/api-errors"],
-          "evidence_summary": "Interactions create is the recommended Gemini primitive and uses POST /v1beta/interactions with model/input and x-goog-api-key."
+          "official_sources": ["https://ai.google.dev/api/interactions-api", "https://ai.google.dev/gemini-api/docs/function-calling", "https://ai.google.dev/gemini-api/docs/api-errors"],
+          "evidence_summary": "Interactions create uses POST /v1beta/interactions with model/input and x-goog-api-key; function_result requires name, call_id and result and must match its preceding function_call."
         },
         {
           "id": "gemini.interactions.transcription.v1beta",
@@ -625,9 +625,9 @@
         "allowed_body_fields": ["model", "messages", "prompt", "response_format", "stop", "stream", "stream_options", "max_tokens", "max_completion_tokens", "temperature", "tools", "tool_choice", "top_p", "seed", "frequency_penalty", "presence_penalty", "repetition_penalty", "top_k", "min_p", "top_a", "logit_bias", "logprobs", "top_logprobs", "metadata", "models", "provider", "plugins", "reasoning", "reasoning_effort", "transforms", "user", "cache_control", "debug", "image_config", "modalities", "parallel_tool_calls", "route", "service_tier", "session_id", "stop_server_tools_when", "trace"],
         "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"], "stream_options": ["object"], "max_tokens": ["number"], "max_completion_tokens": ["number"], "temperature": ["number"], "tools": ["array"], "tool_choice": ["string", "object"], "top_p": ["number"], "seed": ["number"], "frequency_penalty": ["number"], "presence_penalty": ["number"], "reasoning": ["object"], "reasoning_effort": ["string"], "cache_control": ["object"], "debug": ["object"], "image_config": ["object"], "modalities": ["array"], "parallel_tool_calls": ["boolean"], "route": ["string"], "service_tier": ["string"], "session_id": ["string"], "stop_server_tools_when": ["boolean"], "trace": ["object"] },
         "stream_protocol": "openrouter_chat",
-        "success_fixture": { "id": "gen_mock_1", "object": "chat.completion", "created": 1770000000, "model": "mock-model", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7 } },
-        "official_sources": ["https://openrouter.ai/docs/api-reference/overview", "https://openrouter.ai/openapi.yaml"],
-        "evidence_summary": "OpenRouter chat completions uses POST /api/v1/chat/completions with Bearer auth and OpenAI-compatible messages/choices."
+        "success_fixture": { "id": "gen_mock_1", "object": "chat.completion", "created": 1770000000, "model": "mock-model", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827", "reasoning_details": [{ "type": "reasoning.encrypted", "id": "reason-t15-4827", "data": "opaque-t15-reasoning" }] }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://openrouter.ai/docs/api-reference/overview", "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens", "https://openrouter.ai/openapi.yaml"],
+        "evidence_summary": "OpenRouter chat completions uses POST /api/v1/chat/completions with Bearer auth; assistant reasoning_details must be passed back unmodified for multi-turn reasoning and tool use."
       }, {
         "id": "openrouter.embeddings.v1",
         "protocol_adapter_id": "openrouter-openai",

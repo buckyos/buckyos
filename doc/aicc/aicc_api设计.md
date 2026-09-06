@@ -563,7 +563,7 @@ pub enum AiContent {
 ```
 
 `ProviderState.provider` 保存 opaque state 的稳定所有者/消费者 namespace（例如
-`openai`、`openrouter`、`anthropic` 或 `google`），由各 adapter 定义其可还原的
+`openai`、`openrouter`、`claude` 或 `gemini`），由各 adapter 定义其可还原的
 namespace；它不保存协议名或原生 item 类型。原生 item 类型继续由 `value` 自描述
 （例如 OpenAI Responses 的 `value.type`）。
 
@@ -586,6 +586,8 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 3. `tool_use` / `tool_result` 用 `call_id` 关联；`tool_result.content` 只允许 `text` / `image` / `document` 三类子块。
 4. `thinking` 承载扩展思考；`provider_state` 承载无法跨 provider 抽象、但需要 round-trip 的 provider 原生项（OpenAI reasoning item、Claude server_tool_use 等）。lowering 时必须分三档处理：`provider` 匹配目标 Adapter namespace 的块原样还原；`provider` 不匹配但包含公开文本、摘要、拒绝说明或规范化内容的块降级为普通文本上下文；无法安全降级的 opaque 块跳过。Adapter 不得伪造目标 Provider 私有状态，也不得因 foreign `provider_state` 直接失败。
 5. 多模态内容直接进入 `content` 数组，不引入 `messages_v2` 等并行通道。
+6. Provider 响应中的一个原生历史单元可以同时产生 provider-neutral block 和紧邻的 `ProviderState`。两者不是两份待发送内容：同 namespace 回放时原生 `ProviderState` 是权威表示并替代对应 canonical block；切换 Provider 时忽略该 opaque 表示并使用 canonical block。Adapter 必须保持原生单元的字段和顺序，不得因已识别 `text`、`tool_use` 或 `thinking` 就丢弃原生 ID、status、signature、annotations 或未来扩展字段。
+7. tool result 的 canonical `call_id` 必须能关联此前的 `tool_use`。若目标协议还要求函数名，Adapter 必须从同一历史中的 `tool_use` 恢复并校验名称，不能把内部生成的占位 ID 或缺失名称发送给 Provider。
 
 ### 3.3 Generation Parameters
 
@@ -795,7 +797,7 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 
 Response mapping：
 
-`chat.completions.create` 返回 `LlmChatInvokeResponse`，assistant 输出使用 content-block `message: AiMessage`。`text`、`tool_use`、`thinking` 和 opaque `ProviderState` 必须保持原始顺序；存在匹配当前 adapter 的 ProviderState 时优先原样 replay，否则从 provider-neutral blocks lowering。foreign ProviderState 按三档策略处理：匹配目标 namespace 时还原，可安全抽取公开文本时降级为普通文本，无法降级时跳过。
+`chat.completions.create` 返回 `LlmChatInvokeResponse`，assistant 输出使用 content-block `message: AiMessage`。`text`、`tool_use`、`thinking` 和 opaque `ProviderState` 必须保持原始顺序；存在匹配当前 adapter 的 ProviderState 时优先原样 replay，并替代其对应的 canonical 表示，不能重复发送；否则从 provider-neutral blocks lowering。foreign ProviderState 按三档策略处理：匹配目标 namespace 时还原，可安全抽取公开文本时降级为普通文本，无法降级时跳过。OpenAI Responses 的 completed output item、Gemini Interactions 的 completed step、OpenRouter 的 `reasoning_details` 都属于必须无损回放的原生历史。
 
 Fallback（逻辑路由层语义，由 `route.resolve` / helper / logical definition 承载，数据面 `chat.completions.create` 自身不 fallback）：
 

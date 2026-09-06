@@ -326,6 +326,15 @@ fn derived_adapter(
 struct OpenRouterDialect;
 
 impl OpenAiChatCompletionsDialect for OpenRouterDialect {
+    fn allows_unmapped_message_content(&self, role: AiRole, content: &AiContent) -> bool {
+        role == AiRole::Assistant
+            && (matches!(content, AiContent::Thinking { .. })
+                || matches!(
+                    content,
+                    AiContent::ProviderState { provider, .. } if provider == "openrouter"
+                ))
+    }
+
     fn transform_resolved_parameter(
         &self,
         name: &str,
@@ -366,11 +375,33 @@ impl OpenAiChatCompletionsDialect for OpenRouterDialect {
         Ok(extensions)
     }
 
+    fn transform_request(
+        &self,
+        request: &LlmChatInvokeRequest,
+        body: &mut Map<String, Value>,
+        _headers: &mut HeaderMap,
+    ) -> ProtocolResultValue<()> {
+        restore_assistant_state(request, body, "openrouter", false)
+    }
+
     fn transform_stream_chunk(
         &self,
         chunk: &mut Map<String, Value>,
     ) -> ProtocolResultValue<ChatCompletionsStreamExtensions> {
         let mut extensions = reasoning_from_stream(chunk)?;
+        if let Some(delta) = first_choice_part_mut(chunk, "delta")? {
+            if let Some(details) = delta.remove("reasoning_details") {
+                if !details.is_array() {
+                    return Err(ProtocolError::invalid_response(
+                        "OpenRouter streamed reasoning_details must be an array",
+                    ));
+                }
+                extensions.content.push(AiContent::ProviderState {
+                    provider: "openrouter".to_owned(),
+                    value: json!({"type":"reasoning_details", "value":details}),
+                });
+            }
+        }
         let mut metadata = Map::new();
         for field in ["openrouter_metadata", "provider"] {
             if let Some(value) = chunk.remove(field) {
@@ -533,15 +564,54 @@ fn restore_assistant_state(
         for content in &canonical.content {
             match content {
                 AiContent::Thinking {
-                    text: Some(text), ..
+                    text: Some(text),
+                    provider_metadata,
+                    ..
                 } if !text.is_empty() => {
                     wire.insert("reasoning_content".to_owned(), Value::String(text.clone()));
+                    if provider == "openrouter" {
+                        if let Some(details) = provider_metadata {
+                            wire.insert("reasoning_details".to_owned(), details.clone());
+                        }
+                    }
                 }
-                AiContent::Thinking { .. } => {}
+                AiContent::Thinking {
+                    provider_metadata, ..
+                } => {
+                    if provider == "openrouter" {
+                        if let Some(details) = provider_metadata {
+                            wire.insert("reasoning_details".to_owned(), details.clone());
+                        }
+                    }
+                }
                 AiContent::ProviderState {
                     provider: owner,
                     value,
                 } if owner == provider => {
+                    if provider == "openrouter"
+                        && value.get("type").and_then(Value::as_str) == Some("reasoning_details")
+                    {
+                        let details =
+                            value
+                                .get("value")
+                                .and_then(Value::as_array)
+                                .ok_or_else(|| {
+                                    ProtocolError::invalid_request(
+                                "OpenRouter reasoning_details ProviderState must contain an array",
+                            )
+                                })?;
+                        let target = wire
+                            .entry("reasoning_details".to_owned())
+                            .or_insert_with(|| Value::Array(Vec::new()))
+                            .as_array_mut()
+                            .ok_or_else(|| {
+                                ProtocolError::invalid_request(
+                                    "OpenRouter assistant reasoning_details must be an array",
+                                )
+                            })?;
+                        target.extend(details.iter().cloned());
+                        continue;
+                    }
                     if !allow_partial {
                         continue;
                     }
@@ -1069,6 +1139,65 @@ mod tests {
             &extensions.content[1],
             AiContent::ProviderState { provider, value }
                 if provider == "openrouter" && value["provider"] == "Anthropic"
+        ));
+    }
+
+    #[test]
+    fn openrouter_replays_reasoning_details_without_modification() {
+        let registry = registry_with(openrouter_chat_adapter());
+        let mut codec_input = input(BTreeMap::new());
+        if let AiccCall::ChatCompletionsCreate(request) = &mut codec_input.canonical_request {
+            request.messages.push(AiMessage::new(
+                AiRole::Assistant,
+                vec![
+                    AiContent::Text {
+                        text: "I will call the tool".to_owned(),
+                    },
+                    AiContent::Thinking {
+                        summary: None,
+                        text: None,
+                        provider_metadata: Some(json!([{
+                            "type": "reasoning.encrypted",
+                            "id": "reason-1",
+                            "data": "opaque"
+                        }])),
+                    },
+                ],
+            ));
+        }
+        let request = registry
+            .encode(
+                OPENROUTER_CHAT_ADAPTER_ID,
+                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                ApiType::Llm,
+                &codec_input,
+                &context(),
+            )
+            .unwrap();
+        let HttpBody::Json(body) = request.body else {
+            panic!("expected JSON")
+        };
+        assert_eq!(
+            body["messages"][1]["reasoning_details"],
+            json!([{"type":"reasoning.encrypted","id":"reason-1","data":"opaque"}])
+        );
+
+        let mut chunk = json!({
+            "object":"chat.completion.chunk",
+            "choices":[{"index":0,"delta":{"reasoning_details":[
+                {"type":"reasoning.encrypted","id":"reason-2","data":"stream-opaque"}
+            ]},"finish_reason":null}]
+        });
+        let extensions = OpenRouterDialect
+            .transform_stream_chunk(chunk.as_object_mut().unwrap())
+            .unwrap();
+        assert!(chunk["choices"][0]["delta"]
+            .get("reasoning_details")
+            .is_none());
+        assert!(matches!(
+            &extensions.content[0],
+            AiContent::ProviderState { provider, value }
+                if provider == "openrouter" && value["value"][0]["data"] == "stream-opaque"
         ));
     }
 }

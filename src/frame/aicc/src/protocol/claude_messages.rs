@@ -10,8 +10,8 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use buckyos_api::{
     features, AiContent, AiMessage, AiRole, AiToolCall, AiToolResultContent, AiUsage, AiccCall,
-    AiccExecutionMode, ApiType, LlmChatInvokeRequest, LlmResponseFormatType, ResourceRef,
-    VisionCaptionRequest, VisionOcrRequest,
+    AiccExecutionMode, ApiType, LlmChatInvokeRequest, LlmResponseFormat, LlmResponseFormatType,
+    ResourceRef, VisionCaptionRequest, VisionOcrRequest,
 };
 use futures_util::{stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
@@ -132,6 +132,8 @@ impl ClaudeMessagesCodec {
             body.insert("stream".to_string(), Value::Bool(true));
         }
         apply_resolved_parameters(&mut body, &call.input.resolved_parameters)?;
+        apply_response_format(&mut body, request.response_format.as_ref())?;
+        normalize_adaptive_thinking(&mut body);
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -302,7 +304,12 @@ fn vision_chat_request(
         exact_model,
         vec![AiMessage::new(
             AiRole::User,
-            vec![AiContent::Text { text: prompt.to_string() }, resource],
+            vec![
+                AiContent::Text {
+                    text: prompt.to_string(),
+                },
+                resource,
+            ],
         )],
     );
     request.execution_mode = execution_mode;
@@ -310,7 +317,10 @@ fn vision_chat_request(
     request
 }
 
-fn normalize_claude_api_output(execution: ProtocolExecution, api_type: ApiType) -> ProtocolExecution {
+fn normalize_claude_api_output(
+    execution: ProtocolExecution,
+    api_type: ApiType,
+) -> ProtocolExecution {
     let ProtocolExecution::Immediate(mut output) = execution else {
         return execution;
     };
@@ -343,7 +353,10 @@ fn normalize_claude_api_output(execution: ProtocolExecution, api_type: ApiType) 
 
 fn validate_canonical_options(request: &LlmChatInvokeRequest) -> ProtocolResultValue<()> {
     if let Some(format) = &request.response_format {
-        if !matches!(format.format_type, LlmResponseFormatType::Text) {
+        if !matches!(
+            format.format_type,
+            LlmResponseFormatType::Text | LlmResponseFormatType::JsonSchema
+        ) {
             return Err(ProtocolError::new(
                 ProtocolErrorKind::UnsupportedOperation,
                 "Claude Messages codec does not map canonical structured output",
@@ -363,6 +376,68 @@ fn validate_canonical_options(request: &LlmChatInvokeRequest) -> ProtocolResultV
         ));
     }
     Ok(())
+}
+
+fn apply_response_format(
+    body: &mut Map<String, Value>,
+    format: Option<&LlmResponseFormat>,
+) -> ProtocolResultValue<()> {
+    let Some(format) = format else {
+        return Ok(());
+    };
+    if matches!(format.format_type, LlmResponseFormatType::Text) {
+        return Ok(());
+    }
+    let schema = format.json_schema.as_ref().ok_or_else(|| {
+        ProtocolError::invalid_request("Claude json_schema response format requires a schema")
+    })?;
+    if !schema.schema.is_object() {
+        return Err(ProtocolError::invalid_request(
+            "Claude json_schema response format schema must be an object",
+        ));
+    }
+    let output_config = body
+        .entry("output_config".to_string())
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| ProtocolError::invalid_request("Claude output_config must be an object"))?;
+    if output_config.contains_key("format") {
+        return Err(ProtocolError::invalid_request(
+            "Claude output_config.format conflicts with canonical response_format",
+        ));
+    }
+    output_config.insert(
+        "format".to_string(),
+        json!({"type": "json_schema", "schema": schema.schema}),
+    );
+    Ok(())
+}
+
+fn normalize_adaptive_thinking(body: &mut Map<String, Value>) {
+    let is_claude_5 = body
+        .get("model")
+        .and_then(Value::as_str)
+        .and_then(|model| model.strip_prefix("claude-"))
+        .is_some_and(|model| model.split('-').nth(1) == Some("5"));
+    if !is_claude_5
+        || body
+            .get("thinking")
+            .and_then(Value::as_object)
+            .and_then(|thinking| thinking.get("type"))
+            .and_then(Value::as_str)
+            != Some("enabled")
+    {
+        return;
+    }
+    body.insert("thinking".to_string(), json!({"type": "adaptive"}));
+    let output_config = body
+        .entry("output_config".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Some(output_config) = output_config.as_object_mut() {
+        output_config
+            .entry("effort".to_string())
+            .or_insert_with(|| Value::String("medium".to_string()));
+    }
 }
 
 fn required_string(parameters: &BTreeMap<String, Value>, key: &str) -> ProtocolResultValue<String> {
@@ -1827,5 +1902,41 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(error.kind, ProtocolErrorKind::UnsupportedOperation);
+    }
+
+    #[test]
+    fn maps_structured_output_and_normalizes_claude_5_thinking() {
+        let mut request = LlmChatInvokeRequest::new(
+            "ignored@instance",
+            vec![AiMessage::text(AiRole::User, "return JSON")],
+        );
+        request.max_output_tokens = Some(2048);
+        request.response_format = Some(LlmResponseFormat::json_schema(
+            Some("answer".to_string()),
+            json!({"type":"object","properties":{"answer":{"type":"string"}}}),
+            Some(true),
+        ));
+        let input = input(
+            request,
+            &[
+                ("provider_model_id", json!("claude-sonnet-5")),
+                ("thinking", json!({"type":"enabled","budget_tokens":1024})),
+                ("output_config", json!({"effort":"high"})),
+            ],
+        );
+        let wire = codec()
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &input,
+                context: &context(),
+            })
+            .unwrap();
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON")
+        };
+        assert_eq!(body["thinking"], json!({"type":"adaptive"}));
+        assert_eq!(body["output_config"]["effort"], "high");
+        assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+        assert_eq!(body["output_config"]["format"]["schema"]["type"], "object");
     }
 }

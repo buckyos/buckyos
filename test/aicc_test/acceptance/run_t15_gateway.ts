@@ -82,6 +82,7 @@ type CaseResult = {
 
 type T15TypedOptions = {
   sessionId?: string;
+  historyMessage?: Record<string, unknown>;
   foreignProviderState?: {
     provider: string;
     value: Record<string, unknown>;
@@ -535,11 +536,82 @@ export function buildT15TypedParams(
   switch (apiType) {
     case "llm": {
       const toolHistory = requestKey.endsWith(".tool-history");
+      const nativeHistory = requestKey.endsWith(".native-history");
+      const reasoningHistory = requestKey.endsWith(".reasoning-history");
+      const structuredOutput = requestKey.endsWith(".structured-output");
       const providerSwitch = requestKey.endsWith(".provider-switch");
       const providerState = typedOptions.foreignProviderState;
       return {
         ...common,
-        messages: toolHistory
+        messages: nativeHistory
+          ? [
+            {
+              role: "user",
+              content: [{ type: "text", text: "Remember BUCKYOS-AICC-4827." }],
+            },
+            typedOptions.historyMessage ?? {
+              role: "assistant",
+              content: [
+                { type: "thinking", summary: "kept for other providers" },
+                { type: "text", text: "BUCKYOS-AICC-4827" },
+                {
+                  type: "provider_state",
+                  provider: "openai",
+                  value: {
+                    type: "reasoning",
+                    id: "rs_t15_4827",
+                    summary: [{
+                      type: "summary_text",
+                      text: "opaque reasoning",
+                    }],
+                    encrypted_content: "opaque-t15-reasoning",
+                  },
+                },
+                {
+                  type: "provider_state",
+                  provider: "openai",
+                  value: {
+                    type: "message",
+                    id: "msg_t15_4827",
+                    status: "completed",
+                    role: "assistant",
+                    content: [{
+                      type: "output_text",
+                      text: "BUCKYOS-AICC-4827",
+                      annotations: [],
+                    }],
+                  },
+                },
+              ],
+            },
+            {
+              role: "user",
+              content: [{ type: "text", text: "Return the marker." }],
+            },
+          ]
+          : reasoningHistory
+          ? [
+            {
+              role: "user",
+              content: [{ type: "text", text: "Think before answering." }],
+            },
+            typedOptions.historyMessage ?? {
+              role: "assistant",
+              content: [
+                { type: "text", text: "I considered the request." },
+                {
+                  type: "thinking",
+                  provider_metadata: [{
+                    type: "reasoning.encrypted",
+                    id: "reason-t15-4827",
+                    data: "opaque-t15-reasoning",
+                  }],
+                },
+              ],
+            },
+            { role: "user", content: [{ type: "text", text: "Continue." }] },
+          ]
+          : toolHistory
           ? [
             {
               role: "user",
@@ -644,6 +716,23 @@ export function buildT15TypedParams(
                 required: ["city"],
               },
             }],
+          }
+          : {}),
+        ...(structuredOutput
+          ? {
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: "answer",
+                strict: true,
+                schema: {
+                  type: "object",
+                  properties: { answer: { type: "string" } },
+                  required: ["answer"],
+                  additionalProperties: false,
+                },
+              },
+            },
           }
           : {}),
         max_output_tokens: 32,
@@ -822,6 +911,34 @@ function hasMappedField(
   );
 }
 
+function findRecordField(
+  value: unknown,
+  field: string,
+  seen = new Set<object>(),
+): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || seen.has(value)) return undefined;
+  seen.add(value);
+  if (!Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    const candidate = record[field];
+    if (
+      candidate && typeof candidate === "object" && !Array.isArray(candidate)
+    ) {
+      return candidate as Record<string, unknown>;
+    }
+    for (const child of Object.values(record)) {
+      const found = findRecordField(child, field, seen);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  for (const child of value) {
+    const found = findRecordField(child, field, seen);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 function containsBase64Resource(
   value: unknown,
   seen = new Set<object>(),
@@ -932,6 +1049,34 @@ async function executeCase(
   let terminalValue: unknown;
   try {
     selectedExactModel = exactModel(catalog, testCase, inventory);
+    let historyMessage: Record<string, unknown> | undefined;
+    if (
+      testCase.tags.includes("native_history") ||
+      testCase.tags.includes("reasoning_history")
+    ) {
+      const seedResult = await session.aicc.call(
+        testCase.method,
+        buildT15TypedParams(
+          testCase.api_type!,
+          selectedExactModel,
+          runId,
+          "immediate",
+          `${testCase.case_id}.seed`,
+        ),
+      ) as Record<string, unknown>;
+      const seedTerminal = await terminal(
+        session,
+        seedResult,
+        Math.min(timeoutMs, testCase.timeout_ms),
+      );
+      historyMessage = findRecordField(seedTerminal, "message");
+      if (!historyMessage) {
+        throw new Error(
+          "Provider history seed did not return a typed assistant message",
+        );
+      }
+      await selectMock(controlUrl, testCase, `${runId}:replay`);
+    }
     const result = await session.aicc.call(
       testCase.method,
       buildT15TypedParams(
@@ -940,6 +1085,7 @@ async function executeCase(
         runId,
         testCase.execution_mode,
         testCase.case_id,
+        { historyMessage },
       ),
     ) as Record<string, unknown>;
     if (testCase.mock_scenario === "async_cancel") {
@@ -1004,6 +1150,60 @@ async function executeCase(
     diagnostics.push(
       `wire contract violations: ${JSON.stringify(validationErrors)}`,
     );
+  }
+  const wireBody = requests.find((request) => request.body)?.body as
+    | Record<string, unknown>
+    | undefined;
+  if (testCase.tags.includes("native_history")) {
+    const input = Array.isArray(wireBody?.input) ? wireBody.input : [];
+    const reasoning = input.find((item) =>
+      item && typeof item === "object" &&
+      (item as Record<string, unknown>).id === "rs_t15_4827"
+    ) as Record<string, unknown> | undefined;
+    const message = input.find((item) =>
+      item && typeof item === "object" &&
+      (item as Record<string, unknown>).id === "msg_t15_4827"
+    ) as Record<string, unknown> | undefined;
+    if (
+      reasoning?.encrypted_content !== "opaque-t15-reasoning" ||
+      message?.status !== "completed"
+    ) {
+      diagnostics.push(
+        "OpenAI native output items were not replayed unchanged",
+      );
+    }
+  }
+  if (testCase.tags.includes("reasoning_history")) {
+    const messages = Array.isArray(wireBody?.messages) ? wireBody.messages : [];
+    const assistant = messages.find((item) =>
+      item && typeof item === "object" &&
+      (item as Record<string, unknown>).role === "assistant"
+    ) as Record<string, unknown> | undefined;
+    if (
+      JSON.stringify(assistant?.reasoning_details) !== JSON.stringify([{
+        type: "reasoning.encrypted",
+        id: "reason-t15-4827",
+        data: "opaque-t15-reasoning",
+      }])
+    ) {
+      diagnostics.push(
+        "OpenRouter reasoning_details were not replayed unchanged",
+      );
+    }
+  }
+  if (testCase.tags.includes("structured_output")) {
+    const outputConfig = wireBody?.output_config as
+      | Record<string, unknown>
+      | undefined;
+    const format = outputConfig?.format as Record<string, unknown> | undefined;
+    if (
+      format?.type !== "json_schema" ||
+      !format.schema || typeof format.schema !== "object"
+    ) {
+      diagnostics.push(
+        "Claude canonical JSON Schema was not lowered to output_config.format",
+      );
+    }
   }
   const contract = protocolContract(
     catalog,

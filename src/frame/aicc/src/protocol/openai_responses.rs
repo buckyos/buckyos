@@ -705,6 +705,51 @@ fn encode_response_input(
             }));
             continue;
         }
+        if message.role == AiRole::Assistant {
+            let native_items = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    AiContent::ProviderState { provider, value }
+                        if provider == OPENAI_PROVIDER_NAMESPACE
+                            && value.get("type").and_then(Value::as_str) != Some("refusal") =>
+                    {
+                        Some(value.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let canonical_item_count = usize::from(
+                message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, AiContent::Text { .. })),
+            ) + message
+                .content
+                .iter()
+                .filter(|block| {
+                    matches!(
+                        block,
+                        AiContent::ToolUse { .. }
+                            | AiContent::Thinking { .. }
+                            | AiContent::Image { .. }
+                            | AiContent::Document { .. }
+                    )
+                })
+                .count();
+            let has_native_message = native_items
+                .iter()
+                .any(|item| item.get("type").and_then(Value::as_str) == Some("message"));
+            if has_native_message
+                || (canonical_item_count > 0 && native_items.len() >= canonical_item_count)
+            {
+                for item in native_items {
+                    validate_provider_state(&item)?;
+                    items.push(item);
+                }
+                continue;
+            }
+        }
         let replays_output_message = message.role == AiRole::Assistant;
         let mut content = Vec::new();
         let flush = |content: &mut Vec<Value>, items: &mut Vec<Value>| {
@@ -980,6 +1025,7 @@ fn decode_response_object(response: &Value) -> ProtocolResultValue<ProtocolOutpu
     let mut images = Vec::new();
     for item in output {
         decode_response_item(item, &mut blocks, &mut artifacts, &mut images)?;
+        blocks.push(provider_state(item.clone()));
     }
     let message = AiMessage::new(AiRole::Assistant, blocks);
     message.validate().map_err(|error| {
@@ -1090,7 +1136,6 @@ fn decode_response_item(
                     "encrypted_content": item.get("encrypted_content").cloned().unwrap_or(Value::Null)
                 })),
             });
-            blocks.push(provider_state(item.clone()));
         }
         "image_generation_call" => {
             if matches!(
@@ -1140,9 +1185,8 @@ fn decode_response_item(
                 mime: Some(mime.to_string()),
                 metadata: item.get("id").cloned().map(|id| json!({"provider_id": id})),
             });
-            blocks.push(provider_state(item.clone()));
         }
-        _ => blocks.push(provider_state(item.clone())),
+        _ => {}
     }
     Ok(())
 }
@@ -2867,9 +2911,9 @@ mod tests {
             item["type"] == "message"
                 && item["role"] == "assistant"
                 && item["content"].as_array().is_some_and(|content| {
-                    content
-                        .iter()
-                        .any(|part| part["type"] == "output_text" && part["text"] == "checking weather")
+                    content.iter().any(|part| {
+                        part["type"] == "output_text" && part["text"] == "checking weather"
+                    })
                 })
         }));
         assert!(inputs.iter().any(|item| item["type"] == "reasoning"));
@@ -2954,6 +2998,37 @@ mod tests {
         assert_eq!(
             output.value["message"]["content"][1]["type"],
             "provider_state"
+        );
+
+        let assistant: AiMessage = serde_json::from_value(output.value["message"].clone()).unwrap();
+        let request = LlmChatInvokeRequest::new(
+            "ignored@instance",
+            vec![AiMessage::text(AiRole::User, "continue"), assistant],
+        );
+        let wire = registry()
+            .encode(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_RESPONSES_OPERATION_ID,
+                ApiType::Llm,
+                &input(AiccCall::ChatCompletionsCreate(request)),
+                &context(),
+            )
+            .unwrap();
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON")
+        };
+        let replay = body["input"].as_array().unwrap();
+        assert_eq!(
+            &replay[1..],
+            json!([
+                {"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"why"}],"encrypted_content":"opaque"},
+                {"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer","annotations":[]}]},
+                {"type":"function_call","call_id":"call_1","name":"weather","arguments":"{\"city\":\"Paris\"}"},
+                {"type":"image_generation_call","id":"ig_1","status":"completed","result":"aW1hZ2U=","output_format":"png"},
+                {"type":"web_search_call","id":"ws_1","status":"completed"}
+            ])
+            .as_array()
+            .unwrap()
         );
         assert_eq!(output.value["message"]["content"][2]["text"], "answer");
         assert_eq!(output.value["tool_calls"][0]["args"]["city"], "Paris");
