@@ -2072,9 +2072,16 @@ impl ControlPanelServer {
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
-        let source_raw = Self::require_param_str(&req, "source_obj_id")?;
-        let source = ObjId::new(&source_raw).map_err(|error| {
-            RPCErrors::ParseRequestError(format!("invalid source_obj_id: {error}"))
+        let source_raw = Self::param_str(&req, "source_obj_id");
+        let local_file_id = Self::param_str(&req, "local_file_id");
+        if source_raw.is_some() == local_file_id.is_some() {
+            return Err(RPCErrors::ParseRequestError(
+                "provide exactly one of source_obj_id (FileObject) or local_file_id".to_string(),
+            ));
+        }
+        let digest = Self::require_param_str(&req, "pikg_digest")?;
+        let size = req.params.get("size").and_then(Value::as_u64).ok_or_else(|| {
+            RPCErrors::ParseRequestError("size must be an unsigned integer".to_string())
         })?;
         let purpose = match Self::param_str(&req, "purpose").as_deref() {
             None | Some("inspect") => buckyos_api::PikgStagingPurpose::Inspect,
@@ -2086,16 +2093,34 @@ impl ControlPanelServer {
             }
         };
         let runtime = get_buckyos_api_runtime()?;
-        let metadata = self
-            .staging_store
-            .finalize_named_object(
-                &source,
-                principal.username.as_str(),
-                principal.authenticated_app_id.as_str(),
-                &runtime.zone_id,
-                purpose,
-            )
-            .await?;
+        let metadata = if let Some(file_id) = local_file_id {
+            self.staging_store
+                .finalize_local_file(
+                    &file_id,
+                    &digest,
+                    size,
+                    principal.username.as_str(),
+                    principal.authenticated_app_id.as_str(),
+                    &runtime.zone_id,
+                    purpose,
+                )
+                .await?
+        } else {
+            let source = ObjId::new(source_raw.as_deref().unwrap()).map_err(|error| {
+                RPCErrors::ParseRequestError(format!("invalid source_obj_id: {error}"))
+            })?;
+            self.staging_store
+                .finalize_named_object(
+                    &source,
+                    &digest,
+                    size,
+                    principal.username.as_str(),
+                    principal.authenticated_app_id.as_str(),
+                    &runtime.zone_id,
+                    purpose,
+                )
+                .await?
+        };
         Ok(RPCResponse::new(
             RPCResult::Success(serde_json::to_value(metadata).map_err(|error| {
                 RPCErrors::ReasonError(format!("serialize staging metadata failed: {error}"))

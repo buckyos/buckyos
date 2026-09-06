@@ -315,6 +315,15 @@ Golden fixture：
 
 `LocalPikg + LocalDeveloper` 是唯一公开的未发布例外。该组合显式选择受当前 Zone 安装权限和 staging lease 约束的 local developer authority，以 PIKG 内嵌 AppDoc 作为待安装 body，不要求 AppDoc 已签名或已发布到 BNS。它可在权威状态为 `Active/Missing/Expired/Unknown` 时进入 InstallPlan；`Migrated/Revoked/Tombstoned` 仍必须拒绝。解析快照必须保留 BNS 的原始 `document_status/app_doc_object_id`，并另行记录 `evidence=LocalDeveloperAuthority` 与 `local_authority_app_doc_object_id`；Scheduler 只在该 ObjectId 与 PIKG source identity 及计划 AppDoc 三者完全相等时接受。PIKG 结构、AppDID structural owner、canonical AppDoc ObjectId、PackageMeta、namespace、payload digest、目标、权限和路径安全校验不得省略。该例外不适用于 Catalog/Identifier 来源，也不会把 candidate 写入 BNS 或公开 resolver cache。
 
+PIKG 安装源在 Resolve 前必须成为 Installer staging 内完整、已校验的本地文件。系统版 Tool
+连接 OOD 本机回环地址时，可向 `cache/control_panel/pikg_staging/incoming` 写入私有文件，
+通过 `apps.staging.finalize(local_file_id, pikg_digest, size, purpose)` 纳入 staging；接口只解释
+32 位 hex 随机文件标识，不解释客户端路径。远端通过 FileObject 表示和传输 PIKG，内容可由
+多个不超过 32MiB 的 chunk 组成，以 `source_obj_id` 替代 `local_file_id` 调用 finalize。
+服务端核对 FileObject/流的长度、整文件摘要、PIKG 结构与内容后才签发原有 staging handle。
+32MiB 不限制整包或子包；Prepare 导入大子包时使用文件导入接口分块保存，以 SameAs
+保留 PackageMeta 中已有的内容 ChunkId。staging 配额、principal/Zone/purpose 绑定和租约继续生效。
+
 ## 3. Package namespace 与 exact 内容
 
 App 自有 namespace 固定为 `AppId`。允许的 unique name：

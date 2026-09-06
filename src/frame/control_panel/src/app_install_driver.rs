@@ -34,7 +34,8 @@ use buckyos_api::{
 };
 use log::warn;
 use name_lib::{DeviceInfo, DID};
-use ndn_lib::{build_named_object_by_json, ChunkId, ChunkReader, ObjId};
+use ndn_lib::{build_named_object_by_json, ChunkId, FileObject, NdnResult, ObjId, StoreMode};
+use ndn_toolkit::{cacl_file_object, CheckMode};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
@@ -228,29 +229,7 @@ impl ProductionInstallDriver {
                             ),
                         )
                     })?;
-                let file = tokio::fs::File::open(&temp_path).await.map_err(|error| {
-                    InstallError::new(
-                        InstallStage::Prepare,
-                        InstallErrorCode::AcquisitionFailed,
-                        true,
-                        format!("open materialized content failed: {error}"),
-                    )
-                })?;
-                let size = file
-                    .metadata()
-                    .await
-                    .map_err(|error| {
-                        InstallError::new(
-                            InstallStage::Prepare,
-                            InstallErrorCode::AcquisitionFailed,
-                            true,
-                            format!("stat materialized content failed: {error}"),
-                        )
-                    })?
-                    .len();
-                let chunk_reader: ChunkReader = Box::pin(file);
-                named_store
-                    .put_chunk_by_reader(&chunk_id, size, chunk_reader)
+                store_pikg_payload(&named_store, &temp_path, &chunk_id)
                     .await
                     .map_err(|error| {
                         InstallError::new(
@@ -1348,6 +1327,35 @@ impl InstallStageDriver for ProductionInstallDriver {
     ) -> Result<(), InstallError> {
         self.release_candidate_staging(view, data).await
     }
+}
+
+pub(crate) async fn store_pikg_payload(
+    named_store: &named_store::NamedDataMgr,
+    path: &Path,
+    expected_content: &ChunkId,
+) -> NdnResult<()> {
+    let (file, _, _) = cacl_file_object(
+        Some(named_store),
+        path,
+        &FileObject::default(),
+        true,
+        &CheckMode::ByFullHash,
+        StoreMode::StoreInNamedMgr,
+        None,
+    )
+    .await?;
+    let content = ObjId::new(&file.content)?;
+    if content.is_chunk_list() {
+        named_store
+            .add_chunk_by_same_as(expected_content, file.size, &content)
+            .await?;
+    } else if file.content != expected_content.to_string() {
+        let (reader, size) = named_store.open_reader(&content, None).await?;
+        named_store
+            .put_chunk_by_reader(expected_content, size, reader)
+            .await?;
+    }
+    Ok(())
 }
 
 fn valid_sha256_digest(raw: &str) -> bool {

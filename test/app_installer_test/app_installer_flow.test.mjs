@@ -523,10 +523,6 @@ async function buildAndStagePikg(projectDir) {
 
   const ctx = await getSdkContext()
   const pikgBytes = await readFile(result.pack.pikg_path)
-  const sourceObjId = ndn.ChunkId.fromMix256Result(
-    pikgBytes.byteLength,
-    ndn.sha256Bytes(pikgBytes),
-  ).toString()
   const ndmClient = ndm_proxy.createNdmProxyClient({
     endpoint: NODE_GATEWAY_URL,
     sessionToken: ctx.sessionToken,
@@ -537,9 +533,25 @@ async function buildAndStagePikg(projectDir) {
       return fetch(target, init)
     },
   })
-  await ndmClient.putChunk(sourceObjId, pikgBytes)
+  const chunks = new ndn.SimpleChunkList()
+  for (let offset = 0; offset < pikgBytes.length; offset += 32 * 1024 * 1024) {
+    const bytes = pikgBytes.subarray(offset, offset + 32 * 1024 * 1024)
+    const chunk = ndn.ChunkId.fromMix256Result(bytes.length, ndn.sha256Bytes(bytes))
+    await ndmClient.putChunk(chunk.toString(), bytes)
+    chunks.appendChunk(chunk)
+  }
+  let content = chunks.body[0].toString()
+  if (chunks.body.length > 1) {
+    const [id, body] = chunks.genObjId()
+    await ndmClient.putObject({ obj_id: id.toString(), obj_data: body })
+    content = id.toString()
+  }
+  const [fileId, fileBody] = new ndn.FileObject(`${digest}.pikg`, pikgBytes.length, content).genObjId()
+  await ndmClient.putObject({ obj_id: fileId.toString(), obj_data: fileBody })
   const staging = await callControlPanel('apps.staging.finalize', {
-    source_obj_id: sourceObjId,
+    source_obj_id: fileId.toString(),
+    pikg_digest: digest,
+    size: pikgBytes.length,
     purpose: 'install',
   })
   assert.equal(staging.pikg_digest, digest)

@@ -166,7 +166,7 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 | `apps.details` / `app.details` | typed details | 接受统一 selector（`selector/app_instance_id/app_did/identifier`），按可见 Owner 范围唯一选择；0 个返回 NotFound，多个返回 `AMBIGUOUS_APP_TARGET` 与脱敏候选 |
 | `apps.status` / `app.status` | `AppInstallationStatusSnapshot` | 聚合 install record、desired spec、active task、scheduled/runtime instance、目标/上次成功/回滚 deployment、typed deployment error 与 Static Web gateway generation evidence |
 | `apps.availability.get/set/check` | policy / decision | 个人 App 的用户组、精确用户、Guest 规则；`set` 仅允许 App Owner 的 Control Panel 用户 session，并以 revision/CAS 原子更新策略与审计；scheduler 单独把 policy 投影为 Gateway access mode，不回写 AppSpec |
-| `apps.staging.finalize/status/release` | `PikgStagingMetadata` | `finalize` 接受上传所得 `source_obj_id` 和 `purpose=inspect|install`，返回不可猜测 handle、digest、size、TTL；handle 绑定 principal、App、Zone 与租约，不包含路径或 digest |
+| `apps.staging.finalize/status/release` | `PikgStagingMetadata` | `finalize` 接受 FileObject 的 `source_obj_id` 或本机 incoming 文件的 `local_file_id`（二选一），以及必填 `pikg_digest/size` 和 `purpose=inspect|install`；完整落盘并校验后返回 handle、digest、size、TTL；handle 绑定 principal、App、Zone 与租约，不包含路径或 digest |
 | `apps.inspect` | `InstallInspection` | 对 Catalog 或 staged PIKG 做无安装副作用的首次安装/升级预检；`action=upgrade` 时生成升级 inspection |
 | `apps.plan.recompute` | `InstallInspection` | 接受旧 plan、同一 source 以及新的 target/InstallParams，权威重算 plan 与 fingerprint；source/scope 变化返回 `PLAN_STALE` |
 | `apps.submit` / `apps.install` | `{action, task_id?, app_instance_id, plan_fingerprint?}` | 权威动作矩阵。首次安装必须提交 `FreshInstall` plan，升级必须提交 `Upgrade` plan；相同发布返回同步 `satisfied`。提交时按 plan 内 canonical task ID 重新检查 source/scope/fingerprint，并以同一 ID 创建 TaskManager task。所有 mutation 必须提交 principal 稳定生成的 `idempotency_key` 与已展示 fingerprint |
