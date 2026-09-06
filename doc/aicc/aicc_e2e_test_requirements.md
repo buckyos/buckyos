@@ -398,6 +398,23 @@ Provider driver
 
 每个可独立调用的 variant 都增加 T1.5 矩阵单元。除此之外，只有会改变 wire 协议的模型族、区域 endpoint、同步/异步模式或内容传输方式才增加矩阵维度。相同协议的不同 Provider instance、逻辑模型、路由策略和调度组合不重复测试。
 
+T1.5 必须增加同一对话连续调用中的跨模型切换矩阵，覆盖：
+
+```text
+<source provider, source model>
+  x <target provider, target model>
+```
+
+矩阵中的 `provider` 按 Provider driver 或协议 namespace 归类，`model` 使用会影响 wire 协议、provider_state 语义、tool/result replay 或响应解析的 T1.5 模型单元；同协议且无差异的物理模型可合并为一个代表模型，但合并依据必须写入 manifest。每个矩阵 cell 至少构造两轮同一 session 的调用：第一轮由 source 单元产生可回放的 assistant/tool/provider_state 历史，第二轮强制切换到 target 单元并验证请求可被 target Mock 接受，历史中不属于 target provider namespace 的 provider_state 按目标 Provider 降级策略处理。source 与 target 相同的 cell 也必须保留，用于证明同 Provider/model 的原生 provider_state 续用仍然正确。
+
+当前 T1.5 runner 已对 OpenAI、OpenRouter、Claude 和 Gemini 的 LLM 历史回放单元派生不同 Provider 之间的 switch 矩阵；执行时同一 session 先调用 source exact model，再携带 source namespace 的 provider_state 强制调用 target exact model，并以 target 高保真 Mock 的严格协议检查作为通过条件。
+
+T1.5 必须把近期线上失败沉淀为跨 Provider 回归用例，而不能只补单个 Provider 的 happy path。至少包括：
+
+- 同一 session 历史中包含非 ASCII tag、中文 topic 或工具调用备注时，Jarvis/AICC 链路不得在 recall、history replay 或 Provider request 构造阶段产生 `invalid_tag`。
+- Gemini 3 等模型族废弃旧参数名时，metadata variant 或旧缓存中的 `thinking_budget` 必须在协议出站前按官方新参数降级/拒绝，Mock 要严格拒绝目标模型不支持的旧字段。
+- Provider 返回图片、音频、视频、OCR/segment 等媒体 artifact 时，不论 Provider driver 是 Gemini、OpenAI、Fal、MiniMax 还是其他实现，AICC 提交给 TaskMgr 的最终 result 必须使用 `NamedObject` 或 URL 等稳定资源引用，不得保留 inline base64 导致 TaskMgr result 提交失败或 task 停留在非终态。
+
 ### 8.5 正常请求与响应
 
 每个适用矩阵单元至少逐字段验证：
@@ -408,8 +425,11 @@ Provider driver
 - 文本、结构化内容、tool/schema、URL、base64、multipart、文件上传及官方支持的资源引用。
 - streaming event、异步 submit/poll/cancel、operation ID 和终态协议。
 - 官方正常响应到 AICC typed response、task、usage、finish reason、tool call 和 artifact 的映射。
+- TaskMgr 终态 result 的 artifact/resource 表示必须可追踪、可下载或可授权读取；T1.5 中所有产生 artifact 的成功用例都要断言 result 已提交成功且不包含 inline base64 资源。
 
 Mock Provider 必须先按官方 schema 校验请求，再返回官方格式响应。宽松接受未知字段、错误字段名、错误路径或错误 content type 的 Mock 不能作为通过证据。
+
+各 T1.5 Mock Provider 必须采用 fail-closed 的严格协议检查：未在官方契约中声明的 endpoint、method、header、query、body 字段、字段类型、枚举值、内容块顺序、tool call/result 关系、provider_state 归属或 streaming/async 事件顺序都必须失败，并在报告中记录精确违规路径。Mock 不得为了通过现有 AICC 实现而容忍额外字段、错误字段名、错误 namespace、错误 role/order 或缺失的官方必需字段；需要兼容 Provider 官方协议中的多个合法形态时，必须在独立契约中显式列出每种形态及官方证据。
 
 ### 8.6 错误覆盖
 
@@ -428,6 +448,7 @@ Mock Provider 必须先按官方 schema 校验请求，再返回官方格式响�
 
 - 每个启用 Provider driver 的全部已实现 adapter/API version 和 API type 都有明确结果。
 - 每个可独立调用的 metadata variant 都有独立协议结果。
+- 同一 session 的 `<source provider, source model> x <target provider, target model>` 切换矩阵有明确结果，并覆盖同 Provider/model、同 Provider 不同 model、不同 Provider 同能力、不同 Provider 不同协议四类代表路径。
 - 所有请求在独立高保真 Mock 中通过官方 schema 和逐字段断言。
 - 正常响应、streaming、异步任务及官方错误分支均正确映射。
 - 测试证据能追溯到 Provider 官方资料，且未以 AICC 文档或实现生成期望值。
@@ -650,8 +671,11 @@ Jarvis 必须限制解压目标路径、文件数、单文件大小、总大小�
 - `reply_to` 引用较早素材，不能误用最近附件。
 - 快速连续发送素材 A、B 后明确选择其中一个。
 - 同一 session 历史路由软优先及硬约束导致的重新路由。
+- 同一 session 内显式或由硬约束触发切换不同 Provider/model，并验证跨 Provider/model 历史回放不会因旧 provider_state、tool call/result 或响应块差异导致请求失败。
 
 “同 Provider 二次创作”必须验证 `provider_task_ref`、source task ID、Provider operation ID、exact model、Provider instance、continuation options 和输入 artifact 引用被保存和恢复；不支持原生续作时必须合理降级并向用户明确说明。
+
+T3 的跨 Provider/model 多轮场景只做代表性真实链路覆盖，完整组合矩阵由 T1.5 Mock 层承担。T3 必须至少覆盖一次从文本/工具调用型 LLM 切换到另一 Provider/model 继续对话，以及一次从生成媒体的 Provider/model 切换到另一个 Provider/model 消费历史生成物；报告必须能关联切换前后的 session、AICC task、exact model、Provider instance、provider_state 降级结果和用户可见输出。
 
 ### 10.7 消息与投递语义
 
@@ -810,8 +834,11 @@ run_id
 - 每次 attempt、耗时、错误码、failure class 和脱敏诊断。
 - T1 路由分支/组合覆盖率。
 - T1.5 按 Provider、adapter/API version、API type 的官方协议请求/响应/错误覆盖率及证据 revision。
+- T1.5 同一 session `<source provider, source model> x <target provider, target model>` 切换矩阵的 planned/passed/failed/skipped 明细、合并依据和 provider_state 降级证据。
+- T1.5 artifact task-result 回归用例的 planned/passed/failed/skipped 明细，覆盖 Provider driver、API type、资源表示、TaskMgr task 终态和 inline base64 清除证据。
 - T2 `ProviderInstance × model × API-Type` 矩阵结果和推理正确性结论。
 - T3 各入口入站、出站和多附件覆盖率。
+- T3 代表性跨 Provider/model 多轮场景的切换前后 exact model、Provider instance、历史回放、降级结果和用户可见输出证据。
 - 真实调用次数、usage 和预计/实际成本。
 - 清理结果和遗留资源。
 - 已确认产品缺陷的预期行为、实际行为、复现 case、脱敏诊断和证据路径。

@@ -13,9 +13,9 @@ T2 的模型库存基准来自 Runner 直接调用 `provider_capability_baseline
 - `preflight.ts`：从规范文档校验 23 个 canonical API，并检查静态 T1 case、T1.5 官方协议契约、Provider 能力基线和 fixture 完整性；不读取 AICC 实现代码或实现 metadata。
 - `mock_provider.ts`：T1 使用的通用确定性 Mock。
 - `mock_provider_contract.ts`：T1 Mock 的版本化 scenario 与管理接口契约；Mock 实现直接消费该契约，preflight 检查其完整性。
-- `provider_protocol_contracts.json`：T1.5 独立协议契约、官方证据 revision、测试用 Provider Profile/模型映射、请求字段类型、正常响应、异步 lifecycle 和 Provider 专属错误 fixture。Runner 不按模型名或厂商名选择协议分支。
-- `t15_mock_provider.ts`：T1.5 高保真 Mock；按所选官方契约严格校验 method、path、认证、content type、必需字段、字段类型和未知字段，并独立记录 submit、poll、result、cancel wire，然后返回对应 Provider 的正常、stream、异步或错误响应。
-- `run_t15_gateway.ts`：临时注册目标 Provider instance，用精确模型固定 adapter，经 Gateway 执行 T1.5 并审计 Mock capture；每个运行时可独立调用的 variant 形成独立协议单元。
+- `provider_protocol_contracts.json`：T1.5 独立协议契约、官方证据 revision、测试用 Provider Profile/模型映射、请求字段类型、正常响应、异步 lifecycle、Provider 专属错误 fixture，以及同一 session `<source provider, source model> x <target provider, target model>` 切换矩阵。Runner 不按模型名或厂商名选择协议分支。
+- `t15_mock_provider.ts`：T1.5 高保真 Mock；按所选官方契约严格校验 method、path、认证、content type、必需字段、字段类型、未知字段、provider_state namespace、tool call/result 关系和 streaming/async 事件顺序，并独立记录 submit、poll、result、cancel wire，然后返回对应 Provider 的正常、stream、异步或错误响应。
+- `run_t15_gateway.ts`：临时注册目标 Provider instance，用精确模型固定 adapter，经 Gateway 执行 T1.5 并审计 Mock capture；每个运行时可独立调用的 variant 形成独立协议单元，并执行同一对话内跨 Provider/model 切换矩阵。
 - `cloud_update_fixture_service.ts`：启动独立 `cyfs-gateway` `cyfs-dir` NDN 服务，以 process chain 将协议路径绑定到 Named Object，并为 T1/T1.5 发布 index、manifest、catalog 与 tombstone。
 - `run_gateway.ts`：经 Zone Gateway 登录真实 AICC；默认只生成 T2 计划，只有显式允许时才调用真实 Provider。
 - `provider_capability_baseline.json`：按 Provider 参数化的版本化能力证据基线。
@@ -55,6 +55,9 @@ canonical api_type 值域、typed method 值域及其显式关联，并检查能
 T1.5 的 `official_variant_rules` 独立记录官方模型、variant 与预期下发参数。
 运行时 metadata 展开的每个 variant 都是独立协议单元；缺少官方期望、缺失或多出
 variant、没有对应 API contract、实际 wire 参数不一致都会使测试失败。
+T1.5 还必须覆盖同一 session 内 `<source provider, source model> x <target provider, target model>` 切换矩阵，用第一轮 source 产生可回放历史，再强制第二轮 target 调用，验证旧 provider_state 按目标 Provider 降级策略处理且 target Mock 严格协议校验通过。当前 runner 对 OpenAI、OpenRouter、Claude 和 Gemini 的 LLM 历史回放单元派生跨 Provider switch case；执行时会保留参与矩阵的临时 Provider instance，同时采集 source 与 target 两轮 mock wire audit。
+T1.5 对所有会产生 artifact 的 Provider success 单元派生 `task-result-artifact` 回归用例，覆盖 Gemini、OpenAI、Fal、MiniMax 等 Provider 的图片、音频、视频和视觉 artifact 输出。该用例必须经 TaskMgr 读取最终 task result，断言任务进入成功终态、result 中没有 inline `base64` 资源残留，并保留 `named_object` 或 URL 等稳定 artifact 引用。
+本轮线上暴露过的中文 tag/topic、Gemini 3 旧 `thinking_budget` 参数和媒体 inline base64 提交 TaskMgr 失败，都必须作为 T1.5 覆盖不足的回归信号写入 manifest 或派生矩阵。
 
 ```bash
 cd test/aicc_test
