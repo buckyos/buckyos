@@ -713,7 +713,7 @@ impl NodeScheduler {
         }
 
         // Step2. 处理service_spec的实例化与反实例化
-        if self.is_spec_changed(last_snapshot) {
+        if self.is_spec_changed(last_snapshot) || self.has_app_instances_to_resume() {
             debug!("spec changed, schedule spec change");
             let spec_actions = self.schedule_spec_change()?;
             actions.extend(spec_actions);
@@ -1000,6 +1000,27 @@ impl NodeScheduler {
         false
     }
 
+    fn has_app_instances_to_resume(&self) -> bool {
+        self.specs.values().any(|spec| {
+            spec.spec_type.is_app_like()
+                && matches!(
+                    spec.state,
+                    ServiceSpecState::New | ServiceSpecState::Deployed
+                )
+                && self.replica_instances.values().any(|instance| {
+                    instance.spec_id == spec.id && instance.state == InstanceState::Suspended
+                })
+                && self
+                    .replica_instances
+                    .values()
+                    .filter(|instance| {
+                        instance.spec_id == spec.id && instance.state == InstanceState::Running
+                    })
+                    .count()
+                    < spec.best_instance_count as usize
+        })
+    }
+
     fn reconcile_spec_instances(
         &self,
         spec_snapshot: &ServiceSpec,
@@ -1015,12 +1036,33 @@ impl NodeScheduler {
             .collect();
         let existing_count = existing_instances.len() as u32;
         let desired_count = spec_snapshot.best_instance_count;
+        let mut reconciled_instances = Vec::new();
+        if spec_snapshot.spec_type.is_app_like() {
+            let running_count = existing_instances
+                .iter()
+                .filter(|instance| instance.state == InstanceState::Running)
+                .count() as u32;
+            let mut stopped_instances: Vec<_> = existing_instances
+                .iter()
+                .filter(|instance| instance.state == InstanceState::Suspended)
+                .cloned()
+                .collect();
+            stopped_instances.sort_by(|left, right| left.node_id.cmp(&right.node_id));
+            for mut instance in stopped_instances
+                .into_iter()
+                .take(desired_count.saturating_sub(running_count) as usize)
+            {
+                instance.state = InstanceState::Running;
+                instance.last_update_time = 0;
+                reconciled_instances.push(instance);
+            }
+        }
         if existing_count >= desired_count {
             info!(
                 "spec_id:{} state:{} placement already satisfied existing={} desired={}",
                 spec_snapshot.id, spec_snapshot.state, existing_count, desired_count
             );
-            return Ok(Vec::new());
+            return Ok(reconciled_instances);
         }
 
         let existing_node_ids: HashSet<String> = existing_instances
@@ -1059,7 +1101,8 @@ impl NodeScheduler {
             desired_count,
             new_instances.len()
         );
-        Ok(new_instances)
+        reconciled_instances.extend(new_instances);
+        Ok(reconciled_instances)
     }
 
     // 辅助函数

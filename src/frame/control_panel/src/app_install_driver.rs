@@ -762,6 +762,14 @@ impl InstallStageDriver for ProductionInstallDriver {
                         )
                     })
                 })?;
+            if !spec.is_installed() {
+                return Err(InstallError::new(
+                    InstallStage::Inspect,
+                    InstallErrorCode::PlanNotApplicable,
+                    false,
+                    "upgrade target has been deleted",
+                ));
+            }
             Some(inherit_upgrade_params(record.install_params, &spec))
         } else {
             None

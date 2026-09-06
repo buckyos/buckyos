@@ -140,6 +140,7 @@ pub fn create_scheduler_by_system_config(
 ) -> Result<(NodeScheduler, HashMap<String, DeviceInfo>)> {
     let mut scheduler_ctx = NodeScheduler::new_empty(1);
     let mut device_list: HashMap<String, DeviceInfo> = HashMap::new();
+    let mut reported_instances = Vec::new();
     for (key, value) in input_config.iter() {
         //add node
         if key.starts_with("devices/") && key.ends_with("/info") {
@@ -291,6 +292,18 @@ pub fn create_scheduler_by_system_config(
                 state: InstanceState::from(instance_info.state.clone()),
                 service_ports: instance_info.service_ports.clone(),
             };
+            reported_instances.push(instance);
+        }
+    }
+
+    for instance in reported_instances {
+        if instance.replica_key.app_instance_id().is_some() {
+            if let Some(target) = scheduler_ctx.replica_instances.get_mut(&instance.replica_key) {
+                if instance.state == InstanceState::Running {
+                    target.last_update_time = instance.last_update_time;
+                }
+            }
+        } else {
             scheduler_ctx.add_replica_instance(instance);
         }
     }
@@ -1629,6 +1642,210 @@ fn validate_beta22_app_state(input: &HashMap<String, String>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) mod app_lifecycle_tests {
+    use super::*;
+    use buckyos_api::{
+        AppDoc, AppServiceInstanceConfig, DeploymentIdentity, MountPointConfig,
+        ServiceInstanceState, ServiceSpecConfig, SubPkgDesc,
+    };
+    use name_lib::{DeviceDocument, DID};
+    use ndn_lib::NamedObject;
+
+    pub(crate) fn app_spec() -> AppServiceSpec {
+        let owner = DID::new("bns", "alice");
+        let app_doc = AppDoc::builder(AppType::AppService, "notes", "0.1.2", "alice", &owner)
+            .amd64_docker_image(
+                SubPkgDesc::new("all.image.notes.alice.bns.did#0.1.2")
+                    .package_meta_object_id(ndn_lib::ObjId::new_by_raw("pkg".into(), vec![1; 32]))
+                    .docker_image_name("notes:0.1.2"),
+            )
+            .build()
+            .unwrap();
+        let app_instance_id =
+            AppInstanceId::new(AppId::from_app_did(app_doc.app_did()).unwrap(), "alice").unwrap();
+        let mut spec_config = ServiceSpecConfig::default();
+        spec_config.data_mount_point.insert(
+            "/data".into(),
+            MountPointConfig {
+                target_path: "home/alice/.local/share/notes".into(),
+                access: "read_write".into(),
+            },
+        );
+        AppServiceSpec {
+            app_instance_id: app_instance_id.clone(),
+            app_did: app_doc.app_did().clone(),
+            deployment: DeploymentIdentity {
+                app_instance_id,
+                task_id: "install-1".into(),
+                app_doc_object_id: app_doc.gen_obj_id().0,
+                spec_generation: 1,
+                pikg_digest: Some("digest-1".into()),
+            },
+            app_doc,
+            app_name: "notes".into(),
+            app_host_name: "notes-alice".into(),
+            app_index: 11,
+            owner_user_id: "alice".into(),
+            permission: Vec::new(),
+            selected_components: Vec::new(),
+            packages: Vec::new(),
+            enable: true,
+            expected_instance_count: 1,
+            state: ServiceState::Running,
+            spec_config,
+        }
+    }
+
+    fn input_with_instance(
+        spec: &AppServiceSpec,
+        target_state: ServiceInstanceState,
+    ) -> HashMap<String, String> {
+        let mut config = AppServiceInstanceConfig::new("node1", spec).unwrap();
+        config.target_state = target_state;
+        config.service_ports_config.insert("www".into(), 23111);
+        let mut device = DeviceInfo::from_device_doc(&DeviceDocument::new(
+            "node1",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+        ));
+        device.arch = "amd64".into();
+        HashMap::from([
+            (
+                "devices/node1/info".into(),
+                serde_json::to_string(&device).unwrap(),
+            ),
+            (
+                buckyos_api::user_app_spec_key("alice", spec.app_id()),
+                serde_json::to_string(spec).unwrap(),
+            ),
+            (
+                "nodes/node1/config".into(),
+                json!({
+                    "node_id": "node1", "node_did": device.id,
+                    "kernel": {}, "frame_services": {}, "state": buckyos_api::NodeState::Running,
+                    "apps": {spec.app_instance_id.to_string(): config},
+                })
+                .to_string(),
+            ),
+        ])
+    }
+
+    fn apply_node_actions(input: &mut HashMap<String, String>, actions: HashMap<String, KVAction>) {
+        for (key, action) in actions {
+            let KVAction::SetByJsonPath(paths) = action else {
+                panic!("unexpected action")
+            };
+            let mut config: Value = serde_json::from_str(&input[&key]).unwrap();
+            for (path, value) in paths {
+                *config.pointer_mut(&path).expect("existing node allocation") = value.unwrap();
+            }
+            input.insert(key, config.to_string());
+        }
+    }
+
+    #[test]
+    fn stop_start_and_retained_uninstall_reinstall_reuse_node_and_volume() {
+        for reinstall in [false, true] {
+            let mut spec = app_spec();
+            let mut input = input_with_instance(&spec, ServiceInstanceState::Started);
+            let original: NodeConfig = serde_json::from_str(&input["nodes/node1/config"]).unwrap();
+            spec.state = ServiceState::Stopped;
+            let spec_key = buckyos_api::user_app_spec_key("alice", spec.app_id());
+            input.insert(spec_key.clone(), serde_json::to_string(&spec).unwrap());
+            let (mut scheduler, _) = create_scheduler_by_system_config(&input).unwrap();
+            let actions = scheduler.schedule_spec_change().unwrap();
+            assert_eq!(actions.len(), 1);
+            let SchedulerAction::UpdateInstance(_, instance) = &actions[0] else {
+                panic!("stop action missing")
+            };
+            apply_node_actions(&mut input, update_app_service_instance(instance).unwrap());
+
+            if reinstall {
+                spec.state = ServiceState::Deleted;
+                input.insert(spec_key.clone(), serde_json::to_string(&spec).unwrap());
+                let (mut scheduler, _) = create_scheduler_by_system_config(&input).unwrap();
+                let replica = scheduler.replica_instances.values().next().unwrap().clone();
+                let actions = scheduler.schedule_spec_change().unwrap();
+                assert!(actions
+                    .iter()
+                    .any(|action| matches!(action, SchedulerAction::RemoveInstance(..))));
+                apply_node_actions(&mut input, uninstance_app_service(&replica).unwrap());
+                spec.deployment.spec_generation += 1;
+                spec.deployment.task_id = "install-2".into();
+            }
+            spec.state = if reinstall {
+                ServiceState::New
+            } else {
+                ServiceState::Running
+            };
+            input.insert(spec_key, serde_json::to_string(&spec).unwrap());
+            let (mut scheduler, devices) = create_scheduler_by_system_config(&input).unwrap();
+            let last_snapshot = scheduler.clone();
+            let actions = scheduler.schedule(Some(&last_snapshot)).unwrap();
+            let instances: Vec<_> = actions
+                .iter()
+                .filter_map(|action| match action {
+                    SchedulerAction::InstanceReplica(instance) => Some(instance),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(instances.len(), 1);
+            assert_eq!(instances[0].node_id, "node1");
+            assert_eq!(instances[0].last_update_time, 0);
+            let node_actions = instance_app_service(instances[0], &devices, &input).unwrap();
+            apply_node_actions(&mut input, node_actions);
+            let restored: NodeConfig = serde_json::from_str(&input["nodes/node1/config"]).unwrap();
+            assert_eq!(restored.apps.len(), 1);
+            let restored = &restored.apps[&spec.app_instance_id];
+            let original = &original.apps[&spec.app_instance_id];
+            assert_eq!(restored.target_state, ServiceInstanceState::Started);
+            assert_eq!(restored.service_ports_config, original.service_ports_config);
+            assert_eq!(
+                restored.node_execution_spec.service_spec_config,
+                original.node_execution_spec.service_spec_config
+            );
+            assert_eq!(
+                restored.node_execution_spec.app_index,
+                original.node_execution_spec.app_index
+            );
+            assert_eq!(restored.deployment, spec.deployment);
+            assert_eq!(scheduler.replica_instances.len(), 1);
+            assert!(scheduler.schedule_spec_change().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn reports_preserve_node_targets_and_ports_and_do_not_create_placements() {
+        let spec = app_spec();
+        for target in [ServiceInstanceState::Started, ServiceInstanceState::Stopped] {
+            for reported in [ServiceInstanceState::Started, ServiceInstanceState::Stopped] {
+                let mut input = input_with_instance(&spec, target.clone());
+                input.insert(format!("services/{}/instances/node1", spec.app_instance_id), json!({
+                    "node_id": "node1", "node_did": "did:bns:node1", "state": reported,
+                    "service_ports": {"www": 80}, "last_update_time": 123, "start_time": 1, "pid": 1,
+                    "instance_epoch": "test", "node_session_id": "test", "observed_at": 123,
+                    "expires_at": 200, "health": buckyos_api::DeploymentHealth::Healthy,
+                }).to_string());
+                let (scheduler, _) = create_scheduler_by_system_config(&input).unwrap();
+                let instance = scheduler.replica_instances.values().next().unwrap();
+                assert_eq!(instance.state, InstanceState::from(target.clone()));
+                assert_eq!(instance.service_ports["www"], 23111);
+                assert_eq!(
+                    instance.last_update_time,
+                    if reported == ServiceInstanceState::Started {
+                        123
+                    } else {
+                        0
+                    }
+                );
+                input.remove("nodes/node1/config");
+                let (scheduler, _) = create_scheduler_by_system_config(&input).unwrap();
+                assert!(scheduler.replica_instances.is_empty());
+            }
+        }
+    }
 }
 
 #[cfg(test)]

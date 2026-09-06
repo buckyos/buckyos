@@ -28,6 +28,26 @@ fn rpc_error(error: impl ToString) -> RPCErrors {
     RPCErrors::ReasonError(error.to_string())
 }
 
+fn validate_install_target(
+    plan_use: InstallPlanUse,
+    current_spec: Option<&AppServiceSpec>,
+) -> std::result::Result<(), InstallError> {
+    let installed = current_spec.is_some_and(AppServiceSpec::is_installed);
+    match plan_use {
+        InstallPlanUse::FreshInstall if installed => Err(install_error(
+            InstallErrorCode::PlanNotApplicable,
+            false,
+            "FreshInstall cannot replace an existing AppSpec",
+        )),
+        InstallPlanUse::Upgrade if !installed => Err(install_error(
+            InstallErrorCode::PlanNotApplicable,
+            false,
+            "Upgrade requires an existing AppSpec",
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn serialize<T: serde::Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(rpc_error)
 }
@@ -390,34 +410,12 @@ impl SchedulerServer {
                 Err(SystemConfigError::KeyNotFound(_)) => None,
                 Err(error) => return Err(rpc_error(error)),
             };
-            if matches!(record.plan.plan_use, InstallPlanUse::FreshInstall)
-                && current_spec.is_some()
-            {
+            if let Err(error) = validate_install_target(
+                record.plan.plan_use,
+                current_spec.as_ref().map(|(spec, _)| spec),
+            ) {
                 return self
-                    .fail_execution(
-                        &path,
-                        record,
-                        record_revision,
-                        install_error(
-                            InstallErrorCode::PlanNotApplicable,
-                            false,
-                            "FreshInstall cannot replace an existing AppSpec",
-                        ),
-                    )
-                    .await;
-            }
-            if matches!(record.plan.plan_use, InstallPlanUse::Upgrade) && current_spec.is_none() {
-                return self
-                    .fail_execution(
-                        &path,
-                        record,
-                        record_revision,
-                        install_error(
-                            InstallErrorCode::PlanNotApplicable,
-                            false,
-                            "Upgrade requires an existing AppSpec",
-                        ),
-                    )
+                    .fail_execution(&path, record, record_revision, error)
                     .await;
             }
             if matches!(record.plan.plan_use, InstallPlanUse::Satisfied) {
@@ -738,6 +736,38 @@ impl SchedulerServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleted_installations_allow_fresh_install_but_not_upgrade() {
+        let mut spec = crate::system_config_agent::app_lifecycle_tests::app_spec();
+        for state in [
+            ServiceState::New,
+            ServiceState::Running,
+            ServiceState::Stopped,
+            ServiceState::Stopping,
+            ServiceState::Restarting,
+            ServiceState::Updating,
+        ] {
+            spec.state = state;
+            assert_eq!(
+                validate_install_target(InstallPlanUse::FreshInstall, Some(&spec))
+                    .unwrap_err()
+                    .code,
+                InstallErrorCode::PlanNotApplicable
+            );
+            assert!(validate_install_target(InstallPlanUse::Upgrade, Some(&spec)).is_ok());
+        }
+        spec.state = ServiceState::Deleted;
+        assert!(validate_install_target(InstallPlanUse::FreshInstall, Some(&spec)).is_ok());
+        assert_eq!(
+            validate_install_target(InstallPlanUse::Upgrade, Some(&spec))
+                .unwrap_err()
+                .code,
+            InstallErrorCode::PlanNotApplicable
+        );
+        assert!(validate_install_target(InstallPlanUse::FreshInstall, None).is_ok());
+        assert!(validate_install_target(InstallPlanUse::Upgrade, None).is_err());
+    }
 
     fn app_instance_id() -> AppInstanceId {
         AppInstanceId::new(AppId::parse("demo.buckyos.bns.did").unwrap(), "alice").unwrap()

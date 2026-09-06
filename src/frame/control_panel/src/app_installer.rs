@@ -83,6 +83,27 @@ enum AppSubmitAction {
     Satisfied,
 }
 
+fn parse_installed_spec(
+    key: &str,
+    raw: &str,
+    app_instance_id: &AppInstanceId,
+    app_did: &name_lib::DID,
+    owner_user_id: &str,
+) -> Result<Option<AppServiceSpec>, RPCErrors> {
+    let spec: AppServiceSpec = serde_json::from_str(raw).map_err(|error| {
+        RPCErrors::ReasonError(format!("invalid installed spec `{key}`: {error}"))
+    })?;
+    if spec.app_instance_id != *app_instance_id
+        || spec.app_did != *app_did
+        || spec.owner_user_id != owner_user_id
+    {
+        return Err(RPCErrors::ReasonError(format!(
+            "installed spec `{key}` does not match installation identity"
+        )));
+    }
+    Ok(Some(spec).filter(AppServiceSpec::is_installed))
+}
+
 fn decide_app_submit_action(
     submitted_plan_use: Option<buckyos_api::InstallPlanUse>,
     installed_object_id: Option<&ObjId>,
@@ -2943,30 +2964,17 @@ impl ControlPanelServer {
             plan.app_instance_id.owner_user_id(),
             plan.app_instance_id.app_id(),
         );
-        for key in [key] {
-            match client.get(&key).await {
-                Ok(value) => {
-                    let spec: AppServiceSpec =
-                        serde_json::from_str(&value.value).map_err(|error| {
-                            RPCErrors::ReasonError(format!(
-                                "invalid installed spec `{key}`: {error}"
-                            ))
-                        })?;
-                    if spec.app_instance_id != plan.app_instance_id
-                        || spec.app_did != plan.app.did
-                        || spec.owner_user_id != plan.owner_user_id
-                    {
-                        return Err(RPCErrors::ReasonError(format!(
-                            "installed spec `{key}` does not match installation identity"
-                        )));
-                    }
-                    return Ok(Some(spec));
-                }
-                Err(SystemConfigError::KeyNotFound(_)) => {}
-                Err(error) => return Err(RPCErrors::ReasonError(error.to_string())),
-            }
+        match client.get(&key).await {
+            Ok(value) => parse_installed_spec(
+                &key,
+                &value.value,
+                &plan.app_instance_id,
+                &plan.app.did,
+                &plan.owner_user_id,
+            ),
+            Err(SystemConfigError::KeyNotFound(_)) => Ok(None),
+            Err(error) => Err(RPCErrors::ReasonError(error.to_string())),
         }
-        Ok(None)
     }
 
     async fn acquire_app_mutation(
@@ -4095,6 +4103,92 @@ impl ControlPanelServer {
 #[cfg(test)]
 mod submit_action_tests {
     use super::*;
+
+    #[test]
+    fn uninstalled_specs_can_be_inspected_and_submitted_as_fresh_install() {
+        let owner = name_lib::DID::new("bns", "alice");
+        let app_doc = AppDoc::builder(AppType::Web, "notes", "0.1.2", "alice", &owner)
+            .web_pkg(
+                SubPkgDesc::new("all.web.notes.alice.bns.did#0.1.2")
+                    .package_meta_object_id(ObjId::new_by_raw("pkg".into(), vec![1; 32])),
+            )
+            .build()
+            .unwrap();
+        let app_instance_id =
+            AppInstanceId::new(AppId::from_app_did(app_doc.app_did()).unwrap(), "alice").unwrap();
+        let object_id = app_doc.gen_obj_id().0;
+        let mut spec = AppServiceSpec {
+            app_instance_id: app_instance_id.clone(),
+            app_did: app_doc.app_did().clone(),
+            deployment: buckyos_api::DeploymentIdentity {
+                app_instance_id: app_instance_id.clone(),
+                task_id: "install-1".into(),
+                app_doc_object_id: object_id.clone(),
+                spec_generation: 1,
+                pikg_digest: Some("digest-1".into()),
+            },
+            app_doc,
+            app_name: "notes".into(),
+            app_host_name: "notes".into(),
+            app_index: 11,
+            owner_user_id: "alice".into(),
+            permission: Vec::new(),
+            selected_components: Vec::new(),
+            packages: Vec::new(),
+            enable: true,
+            expected_instance_count: 1,
+            state: ServiceState::New,
+            spec_config: buckyos_api::ServiceSpecConfig::default(),
+        };
+        let key = buckyos_api::user_app_spec_key("alice", spec.app_id());
+        for state in [
+            ServiceState::New,
+            ServiceState::Running,
+            ServiceState::Stopped,
+            ServiceState::Stopping,
+            ServiceState::Restarting,
+            ServiceState::Updating,
+            ServiceState::Deleted,
+        ] {
+            spec.state = state;
+            let installed = parse_installed_spec(
+                &key,
+                &serde_json::to_string(&spec).unwrap(),
+                &app_instance_id,
+                &spec.app_did,
+                "alice",
+            )
+            .unwrap();
+            let action = decide_app_submit_action(
+                Some(buckyos_api::InstallPlanUse::FreshInstall),
+                installed
+                    .as_ref()
+                    .map(|spec| &spec.deployment.app_doc_object_id),
+                &object_id,
+                Some(1),
+                Some(1),
+            );
+            if spec.state == ServiceState::Deleted {
+                assert!(installed.is_none());
+                assert_eq!(action.unwrap(), AppSubmitAction::FreshInstall);
+            } else {
+                assert!(installed.is_some());
+                assert_eq!(
+                    action.unwrap_err().code,
+                    buckyos_api::InstallErrorCode::PlanNotApplicable
+                );
+            }
+        }
+        assert!(parse_installed_spec(
+            &key,
+            &serde_json::to_string(&spec).unwrap(),
+            &app_instance_id,
+            &spec.app_did,
+            "bob"
+        )
+        .is_err());
+        assert!(parse_installed_spec(&key, "{}", &app_instance_id, &spec.app_did, "alice").is_err());
+    }
 
     fn device_principal() -> RpcAuthPrincipal {
         RpcAuthPrincipal {

@@ -373,6 +373,10 @@ pub struct AppServiceSpec {
 }
 
 impl AppServiceSpec {
+    pub fn is_installed(&self) -> bool {
+        self.state != ServiceState::Deleted
+    }
+
     pub fn app_id(&self) -> &AppId {
         self.app_instance_id.app_id()
     }

@@ -1,5 +1,5 @@
 use crate::{
-    AppId, AppInstanceId, AppServiceSpec, AuthTarget, ServiceState, SystemConfigClient,
+    AppId, AppInstanceId, AppServiceSpec, AuthTarget, SystemConfigClient,
     SystemConfigError, SystemServiceId, UserSettings, UserState, UserType,
 };
 use ::kRPC::{RPCErrors, RPCSessionToken};
@@ -447,7 +447,7 @@ pub fn evaluate_app_availability(
         reason: reason.to_string(),
     };
 
-    if matches!(spec.state, ServiceState::Deleted) {
+    if !spec.is_installed() {
         return denied("app_deleted");
     }
     if !owner_settings.map(user_is_active).unwrap_or(false) {
@@ -596,6 +596,11 @@ impl AppAvailabilityResolver {
         {
             return Err(RPCErrors::ReasonError(format!(
                 "app spec does not match `{app_instance_id}`"
+            )));
+        }
+        if !spec.is_installed() {
+            return Err(RPCErrors::ReasonError(format!(
+                "APP_NOT_INSTALLED: app instance `{app_instance_id}` has been deleted"
             )));
         }
         Ok(ResolvedAppInstallation { spec, spec_path })
