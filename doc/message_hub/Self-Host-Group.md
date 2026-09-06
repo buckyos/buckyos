@@ -225,7 +225,9 @@ cyfs-proofs: <member_proof_or_session_proof>
 <body: MsgObject canonical JSON>
 ```
 
-host Zone 接受后只承诺把这个 `MsgObjectId` 纳入 group inbox 的当前目录视图。reader 后续读取 inbox 时先拿到 `ObjectId` 列表，再对缺失对象执行标准 `get_object_by_url`；看到附件引用后再按需 Pull。
+host Zone 的 upstream 返回 accepted 后，承诺已经接收该对象并把这个 `MsgObjectId` 纳入 group inbox 的当前目录视图。reader 后续读取 inbox 时先拿到 `ObjectId` 列表，再对缺失对象执行标准 `get_object_by_url`；看到附件引用后再按需 Pull。
+
+2026-09-05 设计补充（待实现）：公网 Gateway 在线而 group OOD 离线时，可按配置 fallback 到 NamedInboxCacheServer，成功写入只返回 cached。cached 是尽力暂存，仍可能丢失，并不表示对象已进入 group inbox，也不代表任何成员接收或已读。发送方继续保存对象并重试，只有 upstream accepted 才认定投递成功；Gateway 恢复转投后可删除缓存，不要求缓存保留终态回执。详见 [Message Center §4.5](<./Message Center.md>)。
 
 ### 2.8 成员资格双向确认
 

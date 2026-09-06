@@ -284,6 +284,8 @@ remote read           远端已读（平台 read receipt，若有）            
 
 `DeliveryState::SENT` 只承诺 **transport accepted**。remote delivered/read 由平台回执异步补充到 `DeliveryRecord`（或 per-reader receipt），可能永远不来（如 Email）。
 
+2026-09-05 原生 MessageHub 设计补充（待实现）：接收侧 CYFS Gateway 可在 upstream 失效时将小对象写入 NamedInboxCacheServer 并返回 cached。缓存是尽力而为的，之后仍可能丢对象；cached 不等于本节的成功 SENT。原生发送方保留原对象并重试，只有目标 upstream 返回 accepted 才回报投递成功。缓存满或写入失败不得返回 cached。无响应表示结果未知；明确拒绝按原因区分是否重试。正常 upstream 转发不经过缓存。完整契约与当前回报类型缺口见 [Message Center §4.5](<./Message Center.md>)。
+
 ### 6.4 UI 与状态的关系
 
 **UI 通过 SessionProjection 得到聚合投递状态，不直接读取 Delivery Queue。** 聚合规则见 MessageCenter 文档 §5.3。tunnel 与 UI 之间没有任何直接接口。

@@ -21,6 +21,8 @@ MessageTunnel = ingress producer + delivery executor
 
 MessageHub 不是 tunnel：它是原生跨 Zone transport，承载 shareable DID 投递；tunnel 承载 shadow DID 投递。二者复用 `DeliveryExecutor` 接口。
 
+2026-09-05 原生投递补充（设计，待实现）：使用 CYFS PUT dispatch；区分无响应、rejected、cached、accepted。Gateway 只在 upstream 失效时 fallback 到通用 NamedInboxCacheServer，按配置尽力排空。cached 仍可能丢对象，发送方继续保存原对象并重试，只有 upstream accepted 才成功；禁止将 cached 回报为 ok=true/SENT。详见 [Message Center §4.5](<./Message Center.md>)。这类接收侧缓存不改变发送目标，不是被禁止的 Contact/Tunnel 自动选路 fallback。
+
 ## 2. DID 规则（必须遵守）
 
 ```text

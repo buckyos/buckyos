@@ -95,7 +95,7 @@ pub struct DeliveryEnvelope {
 
 两条确定投递分支（也只有这两条）：
 
-- `target_did` 是 **shareable DID**（如 `did:bns:bob`、`did:bns:telegram.bob`）→ **MessageHub 原生投递**：解析 DID → 找到目标 Zone → POST MsgObject。Zone 解析发生在每次投递尝试时（如同 email 发送时才查 MX），但走的是确定性解析协议，不是策略选路。
+- `target_did` 是 **shareable DID**（如 `did:bns:bob`、`did:bns:telegram.bob`）→ **MessageHub 原生投递**：解析 DID → 找到目标 Zone 与语义接收点 → `PUT cyfs://<zone>/<semantic_path>`，body 为 MsgObject canonical JSON。Zone 解析发生在每次投递尝试时（如同 email 发送时才查 MX），但走的是确定性解析协议，不是策略选路。接收侧 Gateway 的尽力缓存与结果语义见 §4.5；当前代码尚未实现跨 Zone hop。
 - `target_did` 是 **local shadow endpoint DID**（`did:msgtunnel:*`）→ **MessageTunnel 投递**：从 DID 内嵌的 `tunnel_instance_id` 在注册表查出 tunnel 实例，平台地址由 DID 内嵌的 account 信息与 tunnel 配置确定。
 
 任何解析失败（未注册的 tunnel 实例、无法解析的 DID、非法格式）都返回错误。**禁止 default tunnel、default chat、last-active fallback。**
@@ -319,6 +319,27 @@ def report_delivery(delivery_id, result):
 ```
 
 处于 `SENDING` 超过租约时间的记录由定时 sweep 收回（→ `WAIT`，`attempts+1`，记录 duplicate risk），覆盖 executor 崩溃场景。
+
+### 4.5 跨 Zone 原生投递与 Gateway 尽力缓存（2026-09-05 设计补充，待实现）
+
+原生投递遵循 [CYFS dispatch 协议](<../../../cyfs-ndn/doc/CYFS Protocol/CYFS Protocol.md>)。Gateway 先执行 process-chain 安全过滤，再直接尝试 upstream；只有 upstream 失效才调用配置的 NamedInboxCacheServer。公网 VPS 上的 Gateway 可以因此在家庭 OOD 离线时暂存对象，并按配置后台转投。组件与实现入口见 [NamedInboxCacheServer 设计](../../../cyfs-gateway/doc/NamedInboxCacheServer设计.md)。
+
+| 原生 dispatch 结果 | 发送方含义与处理 |
+| --- | --- |
+| 无响应 | 对方是否已处理未知；保存原对象，退避后按同一目标与 ObjectId 重试 |
+| 明确拒绝 rejected | 按 reason/retryable 决定重试或失败；缓存满是可重试的暂时拒绝，不等同永久业务拒收 |
+| 已经缓存 cached | 仅表示响应时写入接收侧缓存成功，之后仍可能丢失；本地 DeliveryRecord 继续未完成，发送方保存对象并负责重试 |
+| 已经接收 accepted | 本次目标 upstream 已持久接收，或确认此前已经接收；只有此时原生投递才成功 |
+
+`cached` 不移交可靠投递责任。缓存不是 MsgBox，不进入 Session 历史；它只存小对象与必要转投上下文，不 Pull 附件，不依赖 BuckyOS 运行。upstream 正常时不以前置缓存读写为条件，缓存故障不得影响正常转发。缓存满则本次缓存写入失败，不谎报 cached。
+
+Gateway 排空按“取出但暂不删 → 投 upstream → accepted 后删除”执行；临时失败或无响应时尽力保留，永久拒绝可以清理。故障、过期清理或重建导致缓存丢失是允许的。发送方重试和 Gateway 排空可能重复或并发发生，接收适配必须按 `(target_zone, semantic_path, obj_id)` 幂等处理，并且只确认路径指定的本地接收点，不能因 MsgObject 带多个 to 就确认其他目标。
+
+当前 `DeliveryReportResult` 只有 ok 成功/失败回报，尚不能表达 cached。接入时应补原生 dispatch 结果处理分支：cached 保持待重试/待确认状态（例如 WAIT 并设置下次尝试时间），可保存最近的缓存提示；不得调用 `report_delivery(ok=true)` 提前进入 SENT，也不能把 cached 伪装成永久失败。发送方的重试次数/截止时间仍由自身策略决定，达到上限记录失败或放弃，不能标记成功。
+
+原生 executor 可以使用可选的 `GET cyfs://<zone>/<semantic_path>?dispatch-status=<ObjectId>` 查询减少重复传输，但查询不是基础投递的前置条件。查询不支持、失败或 unknown 时继续同对象 PUT；缓存中没有对象不证明已接收。只有查询得到有依据的 accepted 才结束本地投递。
+
+SessionProjection 可以展示“对方网关已暂存，等待接收”，仍属于未完成状态；原生 accepted 不代表远端用户已读、Agent 已处理或附件已下载。外部 Telegram/Email 等 tunnel 的 transport accepted 语义仍按 Message Tunnel Design §6.3 描述。
 
 ---
 
