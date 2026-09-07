@@ -1,721 +1,234 @@
-# MessageHub 当前 UI Model Data 整理
+# MessageHub 当前 UI Model Data
 
-- 文档版本：v0.1
-- 文档类型：实现对齐文档
-- 目标：整理当前 `MessageHub` 代码中实际使用到的 UI Model Data，而不是未来理想模型
-- 范围：`src/app/messagehub` 及其直接依赖的 `codeassistant/mockHistory`
+- 版本：v0.2，2026-09-06
+- 范围：MessageHub mock 原型、共享的 Conversation 组件、CodeAssistant 长历史 seed，以及 Agent 主页入口。
+- 实现依据：`src/frame/desktop/src/app/messagehub/`，本文件只描述已落地字段。权威服务设计见 [UI_DATAMODEL](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md)。
+- 本轮未接入真实消息服务、tunnel 平台 API、DDL、跨 owner 服务端授权或会话级物理删除。
 
----
+## 1. 数据流与入口
 
-## 1. 文档目的
+`mock/data.ts` 提供 DID 化的 Entity / Session seed；`mock/store.ts` 的 `MessageHubMockStore` 持有唯一可变业务状态。
+`mock/hooks.ts` 通过 `useSyncExternalStore` 订阅 store。`MessageHubView` 持有当前选择与布局，不再维护自己的 Session 或 reader 数组副本。
 
-当前 `MessageHub` 的界面数据并不是一个单一对象，而是由几层数据共同组成：
-
-1. 页面级实体数据：`Entity` / `Session` / `EntityDetail`
-2. 会话消息数据：协议层 `MessageObject`
-3. 输入区草稿数据：`ConversationComposerSubmitPayload` / `ComposerAttachmentItem`
-4. 页面本地状态：`MessageHubView` 内部的 React state
-
-这份文档只回答一个问题：
-
-`MessageHub` 当前界面到底在读哪些数据字段。
-
----
-
-## 2. 代码来源
-
-核心定义和消费点主要来自以下文件：
-
-- `src/app/messagehub/types.ts`
-- `src/app/messagehub/protocol/msgobj.ts`
-- `src/app/messagehub/mock/data.ts`
-- `src/app/messagehub/MessageHubView.tsx`
-- `src/app/messagehub/EntityList.tsx`
-- `src/app/messagehub/SessionSidebar.tsx`
-- `src/app/messagehub/ConversationView.tsx`
-- `src/app/messagehub/EntityDetails.tsx`
-- `src/app/messagehub/conversation/history/renderers.tsx`
-- `src/app/messagehub/conversation/input/ConversationComposer.tsx`
-- `src/app/messagehub/conversation/input/attachmentDraft.ts`
-
----
-
-## 3. 顶层结论
-
-### 3.1 当前实际存在的 4 层 UI Data
-
-#### A. Entity List / Header / Details 使用的页面级数据
-
-- `Entity`
-- `Session`
-- `EntityDetail`
-
-#### B. Conversation History 使用的消息数据
-
-- `MessageObject`
-- 少量 `ui_*` 扩展字段
-
-#### C. Composer 使用的草稿数据
-
-- `ConversationComposerSubmitPayload`
-- `ComposerAttachmentItem`
-
-#### D. MessageHub 页面本地视图状态
-
-- 当前保存在 `MessageHubView.tsx` 的多个 `useState`
-
-### 3.2 当前并不存在单一的统一状态对象
-
-虽然 `types.ts` 里定义了 `MessageHubState`，但当前代码没有真正使用这个接口作为页面的统一状态承载对象。
-
-也就是说，当前实现更接近：
-
-- 静态 UI 数据：`mockEntities` / `mockSessions` / `mockEntityDetails`
-- 动态消息数据：`localReaders`
-- 页面局部状态：多个分散的 React state
-
----
-
-## 4. 页面级 UI Model
-
-### 4.1 Entity
-
-定义位置：`src/app/messagehub/types.ts`
-
-```ts
-export interface Entity {
-  id: string
-  type: 'person' | 'agent' | 'group' | 'service'
-  name: string
-  avatar?: string
-  statusText?: string
-  isOnline?: boolean
-  isPinned?: boolean
-  isMuted?: boolean
-  unreadCount: number
-  tags: string[]
-  lastMessage?: {
-    senderName?: string
-    text: string
-    timestamp: number
-  }
-  lastActiveAt: number
-  children?: Entity[]
-  childrenMode?: 'inline' | 'drilldown'
-  childrenSections?: EntityChildrenSection[]
-  drilldownDescription?: string
-  source?: string
-}
+```text
+mock seed + IndexedDB 持久差量
+  → MessageHubMockStore
+    → Entity 聚合 / Session 排序 / 详情 / 能力投影
+    → 按 viewer + owner + Session 缓存的原始 reader
+      → ConversationProjection（Action 可见过滤）
+        → materialized window → 原有虚拟列表与 renderer
 ```
 
-#### 当前实际被 UI 使用的字段
+- `/messagehub` 默认用户视角，默认选中 CodeAssistant 实体；`entityId` 使用 DID。
+- 明确传 `mode=observe&ownerDid=...` 才进入 Agent 观察视角。允许的 mock owner 为 CodeAssistant 与 Users & Agents seed 中的 `did:bns:assistant.alice`。
+- 桌面 `MessageHubAppPanel` 消费 `launch.payload = { kind: 'messagehub', entityId, context }`，通过 Zod 校验；无效启动参数进入拒绝态。
+- `AgentDetailPage` 的“与 Agent 对话”进入用户 owner；“查看 Agent 的会话”进入 Agent owner。桌面通过 `openAppWindow` 传相同 context，独立页面通过 URL 传递。
+- 退出观察在当前模块内回到用户 owner，桌面窗口保持打开。紧凑移动桌面内嵌时，Panel 复用 shell 的状态栏高度与安全区，避免详情按钮被系统栏遮挡。
 
-- `id`
-  - 实体选择、树形查找、drilldown 路径、子项跳转都依赖它
-- `type`
-  - 决定头像图标、实体类型标签、Conversation header 图标
-- `name`
-  - 列表标题、详情标题、conversation header、breadcrumb
-- `statusText`
-  - 列表次级说明、drilldown 卡片状态、详情页状态、direct message 头部说明
-- `isOnline`
-  - 列表头像在线点、详情页在线状态
-- `isPinned`
-  - 列表 pin 图标、详情页 Pin / Unpin 动作文案
-- `isMuted`
-  - 列表 mute 图标、未读 badge 样式、详情页 Mute / Unmute 动作文案
-- `unreadCount`
-  - unread filter、列表 badge、子项 badge、drilldown unread 汇总
-- `tags`
-  - 详情页 tags 展示
-- `lastMessage.senderName`
-  - 列表摘要前缀
-- `lastMessage.text`
-  - 列表摘要、搜索匹配、drilldown 描述兜底
-- `lastMessage.timestamp`
-  - 列表时间、drilldown 行的时间信息
-- `children`
-  - inline children 和 drilldown children 的实际数据源
-- `childrenMode`
-  - 控制子实体是 inline 还是 drilldown
-- `childrenSections`
-  - drilldown 分组展示
-- `drilldownDescription`
-  - drilldown 总览卡片描述
+## 2. Entity 与 Session
 
-#### 当前已定义但基本未被 UI 使用的字段
+`types.ts` 的 `Entity.id` 是 DID，父实体与子实体有独立 DID。原有 type、name、avatar、statusText、isOnline、isPinned、isMuted、tags、children、childrenMode、childrenSections、drilldownDescription、source 继续服务列表与实体详情。
 
-- `avatar`
-  - 当前头像全部使用类型图标生成，没有实际渲染图片头像
-- `lastActiveAt`
-  - 当前列表时间取的是 `lastMessage.timestamp`，没有读这个字段
-- `source`
-  - `Entity` 上已定义，但当前 MessageHub UI 没直接读
+| Entity 字段 | 实际来源与语义 |
+|---|---|
+| `sessionCreation` | `{ policy: 'default' | 'allow' | 'deny', canCreate, unavailableReason? }`，按 owner / entity 策略与可用连接能力派生 |
+| `unreadCount` | 当前 owner 下该实体全部 Session 未读之和，包含归档；父子实体分别计数 |
+| `lastActiveAt` | 同 owner / entity 的 Session 有效消息活动时间最大值；零会话为 0 |
+| `lastMessage` | 最后活动 Session 的消息摘要，可为空；其 timestamp 不参与排序 |
+| `EntityDetail` 扩展 | 原有 bio、bindings、memberCount、note、createdAt；子实体无额外详情 seed 时仍可用 Entity 基础字段显示详情 |
 
-### 4.2 EntityChildrenSection
-
-定义位置：`src/app/messagehub/types.ts`
+实际 `Session` 使用下列字段，不再包含 `isActive`：
 
 ```ts
-export interface EntityChildrenSection {
+interface Session {
   id: string
-  title: string
-  description?: string
-  childIds: string[]
-}
-```
-
-#### 当前实际被 UI 使用的字段
-
-- `id`
-  - section key
-- `title`
-  - drilldown section 标题
-- `description`
-  - drilldown section 描述
-- `childIds`
-  - 用于把 section 配置映射到真实 `children`
-
-### 4.3 Session
-
-定义位置：`src/app/messagehub/types.ts`
-
-```ts
-export interface Session {
-  id: string
+  ownerDid: string
   entityId: string
-  title: string
+  binding: SessionBinding
+  origin: 'manual' | 'connection' | 'remote_context' | 'unknown'
+  lifecycle: 'active' | 'archived'
   type: 'chat' | 'task' | 'workspace'
+  title: string
   source?: string
-  isActive: boolean
+  createdAt: number
   lastActiveAt: number
   unreadCount: number
+  lastMessage?: { senderName?: string; text: string; timestamp: number }
+  shared: { title: string; description: string; updatedAt: number }
+  members: Record<string, { nickname: string; updatedAt: number }>
 }
 ```
 
-#### 当前实际被 UI 使用的字段
-
-- `id`
-  - session 选择、active session 查找、消息 reader 路由
-- `title`
-  - session list 标题、conversation header 次级标题
-- `type`
-  - session 图标类型，区分 `chat` / `task` / `workspace`
-- `source`
-  - 当前只用来识别 `telegram` 和 `linear` 的图标表现
-- `unreadCount`
-  - session list 未读数量
-
-#### 当前已定义但基本未被 UI 使用的字段
-
-- `entityId`
-  - 数据结构里有，但 UI 逻辑没有直接读取
-- `isActive`
-  - UI 自己根据 `activeSessionId` 判断活跃态，没有使用这个字段
-- `lastActiveAt`
-  - 当前 session list 没展示时间
-
-### 4.4 EntityDetail
-
-定义位置：`src/app/messagehub/types.ts`
+`title` 是派生标题回落值；当前显示标题由 `sessionTitle()` 按“个人覆盖 → shared.title → title”计算。
+创建标题只初始化 shared.title，不生成聊天消息，也不覆盖个人显示标题。
 
 ```ts
-export interface EntityDetail extends Entity {
-  bio?: string
-  bindings?: AccountBinding[]
-  memberCount?: number
-  note?: string
-  createdAt?: number
-}
+type SessionBinding =
+  | { kind: 'native'; targetDid: string }
+  | {
+      kind: 'tunnel'
+      tunnelInstanceId: string
+      endpointDid: string
+      remoteContextId?: string
+      connectionName: string
+      supportsMultipleSessions: boolean
+      canCreateRemoteSession: boolean
+      canSend: boolean
+      connected: boolean
+      revision?: number
+    }
+  | { kind: 'unknown' }
 ```
 
-#### 当前实际被 UI 使用的字段
+- 同一实体下的连接按实例与端点区分，同一实例多个远端上下文各有 Session。
+- Alice seed 包含 Telegram Personal、Telegram Work 两个实例，Work 中含 General / Design 两个会话。
+- 原生 Agent 可以直接创建。Person 默认禁止创建；显式允许仍需可用连接。多连接必须在表单中选择。
+- 创建 tunnel Session 还要求 `supportsMultipleSessions && canCreateRemoteSession`；Personal seed 不满足此条件，Work 满足。
+- `discoverConnection()` 按 owner、实例、端点和远端上下文幂等登记默认空 Session；重复发现和旧删除标记不会重新加载 seed。
+- 删除保留连接来源，不删除联系人、父子实体或对端记录。连接失效后保留历史，禁止改用其它 tunnel 发送。
 
-继承 `Entity` 后，详情页额外读到：
+## 3. 消息活动时间、状态与权限
 
-- `bio`
-- `bindings`
-- `memberCount`
-- `note`
+`sessionModel.ts` 集中实现活动类别判定、排序、标题、时间文案与有效权限。
 
-继承自 `Entity` 且在详情页中继续使用的字段：
+| 事件 | lastActiveAt | 归档 |
+|---|---|---|
+| 创建空 Session | 初始化为创建时间 | active |
+| 新 chat / group_msg | 与消息时间取 max | 恢复 active |
+| 有正文或 output 引用的 deliver 结果 | 与消息时间取 max | 恢复 active |
+| 迟到普通消息 | 不倒退；允许正常未读增长 | 恢复 active |
+| 同一消息重放、投递 / 已读状态更新 | 不变 | 不变 |
+| 共享 / 成员状态、对应 Action Log | 不变 | 不变 |
+| typing / processing / active / statusLine | 不变 | 不变 |
+| 个人标题、静音、归档 / 恢复、过滤、时钟 tick | 不变 | 仅显式生命周期动作改变 |
 
-- `name`
-- `type`
-- `isOnline`
-- `statusText`
-- `tags`
-- `isMuted`
-- `isPinned`
-
-#### 当前已定义但基本未被 UI 使用的字段
-
-- `createdAt`
-  - 详情页没有展示创建时间
-
-### 4.5 AccountBinding
-
-定义位置：`src/app/messagehub/types.ts`
+Session 排序为个人置顶优先、lastActiveAt 降序、稳定 ID 次序。Entity 使用其置顶和同口径聚合时间排序。
+相对时间小于一分钟为 now / 刚刚，之后向下取整显示 m / h / d；未来差值按 0，未知值为 `—`。
+相对时间订阅独立分钟时钟，不写业务 snapshot、不重建 reader。runtime 每秒检查到期，控制时钟注入可立即过期。
 
 ```ts
-export interface AccountBinding {
-  platform: string
-  accountId: string
-  displayId: string
+interface MessageHubContext {
+  viewerDid: string
+  ownerDid: string
+  mode: 'self' | 'observe'
+}
+interface RuntimeState {
+  memberDid: string
+  status: 'typing' | 'processing' | 'active'
+  statusLine?: string
+  expiresAt: number
+}
+interface SessionAccess {
+  mode: 'read_only' | 'read_write'
+  canManage: boolean
+  canEnableWrite: boolean
+  canEditPresentation: boolean
+  canEditSharedState: boolean
+  canEditOwnMemberState: boolean
+  readOnlyReason?: string
 }
 ```
 
-#### 当前实际被 UI 使用的字段
+原生用户会话可写。tunnel 默认只读；有能力时在 SessionDetails 明确确认历史不一致风险后启用写入。
+确认仅记录在视图内存，与当前绑定序列化值对应；连接 revision 变化、刷新和 owner 切换使旧确认失效。
+发送动作在提交执行时重新检查权限和 binding，风险确认不授予共享或成员状态编辑权限。
+所有输入、粘贴 / 拖拽文件、Enter 发送与失败重试共用可写 Composer 和 store 权限检查。
 
-- `platform`
-  - 详情页账号来源标签
-- `accountId`
-  - 当前只用于 React key
-- `displayId`
-  - 详情页展示值
+Agent 观察模式可看两种详情，不能创建、发送、归档 / 删除、改共享状态、昵称、Agent 草稿和个人标题等配置。
+观察者可以修改自己的 Action 可见性。拒绝态不返回其它 owner 的 reader。未读聚合始终按 owner，观察未读不进入用户聚合。
 
----
+## 4. 持久状态、草稿和生命周期
 
-## 5. 会话消息 UI Model
+`Snapshot` 实际保存以下字典，存放在 `messagehub-prototype-v1` IndexedDB 的 `state` object store 中。
+修改通过串行异步事务提交，成功后一次性发布 snapshot；失败不改变已发布数据。组件只持有输入与请求进度。
 
-### 5.1 当前消息区直接消费 `MessageObject`
-
-定义位置：`src/app/messagehub/protocol/msgobj.ts`
-
-这层不是传统意义上的“前端 ViewModel”。
-
-当前实现刻意让 UI 直接消费协议对象 `MessageObject`，只通过少量辅助函数读取 `ui_*` 元数据，而没有再映射成独立的 `ConversationMessageVM`。
-
-### 5.2 MessageObject 当前实际被 UI 使用的字段
+| 字典 | 键 | 值 |
+|---|---|---|
+| `sessions` | JSON `[ownerDid, sessionId]` | Session |
+| `deleted` | 同上 | 删除时间水位与已清理共享状态 / 摘要的来源元数据 |
+| `withoutSeed` | 同上 | 删除后新消息重现也不再加载旧 seed |
+| `messages` | 同上 | 本轮新增的原始 MsgObject 差量，包含 Action Log |
+| `delivery` | 同上 | 消息 ID → delivery status 的展示覆盖，不改变活动时间 |
+| `policies` | JSON `[ownerDid, entityDid]` | default / allow / deny |
+| `preferences` | JSON `[viewerDid, ownerDid, sessionId]` | SessionPreferences |
+| `drafts` | 同上 | 未发送正文 |
+| `draftAttachments` | 同上 | `{ file: File, relativePath?: string }[]`，通过 IndexedDB 结构化克隆保存 |
 
 ```ts
-export interface MsgObject {
-  from: DID
-  to: DID[]
-  kind: MsgObjKind
-  thread?: TopicThread
-  workspace?: DID
-  created_at_ms: number
-  expires_at_ms?: number
-  nonce?: number
-  content: MsgContent
-  proof?: string
-  [key: string]: unknown
+interface SessionPreferences {
+  title: string
+  pinned: boolean
+  muted: boolean
+  showActions: boolean
 }
 ```
 
-#### 当前实际被渲染层读取的协议字段
-
-- `from`
-  - 判断是否为自己发送的消息
-- `kind`
-  - 状态消息识别时会参与判断
-- `created_at_ms`
-  - 消息时间、稳定 key 兜底、时间分隔投影
-- `content.format`
-  - 选择文本渲染、图片引用渲染、fallback 渲染
-- `content.content`
-  - 文本正文、图片 caption、fallback 内容
-- `content.refs`
-  - 图片引用解析
-
-#### 当前实际被 UI 读取的扩展 meta 字段
-
-- `ui_message_id`
-  - 消息稳定 id
-- `ui_sender_name`
-  - sender 展示名
-- `ui_delivery_status`
-  - 发送状态图标
-- `ui_session_id`
-  - 用于 memory reader key 推导和消息归属
-- `ui_item_kind`
-  - 标记 status item
-- `ui_status_type`
-  - 标记 `typing` / `processing` / `disconnected` / `info`
-
-### 5.3 MsgContent 当前实际使用情况
-
-```ts
-export interface MsgContent {
-  title?: string
-  format?: MsgContentFormat
-  content: string
-  machine?: MachineContent
-  refs?: RefItem[]
-}
-```
-
-#### 当前实际使用的字段
-
-- `format`
-- `content`
-- `refs`
-
-#### 当前已定义但未被 UI 使用的字段
-
-- `title`
-- `machine`
-
-### 5.4 RefItem 当前实际使用情况
-
-`refs` 当前只支持一个很窄的 UI 路径：图片引用。
-
-#### 当前真正会被识别的结构
-
-```ts
-{
-  role: 'input' | ...
-  label?: string
-  target: {
-    type: 'data_obj'
-    obj_id: string
-    uri_hint?: string
-  }
-}
-```
-
-#### 当前实际被 UI 使用的字段
-
-- `target.type`
-  - 必须是 `data_obj`
-- `target.uri_hint`
-  - 必须是可识别的图片 URL
-- `label`
-  - 作为图片 alt 或链接文案
-
-#### 当前未被 UI 使用的字段
-
-- `role`
-- `target.obj_id`
-- `service_did` 型引用
-
-### 5.5 当前渲染层实际支持的消息类型
-
-#### 文本消息
-
-- `content.format` 为：
-  - `text/plain`
-  - `text/markdown`
-  - `text/html`
-
-注意：
-
-- 当前 markdown / html 只是按纯文本显示，没有做富文本渲染
-
-#### 图片引用消息
-
-- `content.refs` 中出现可识别图片 URL 时，会优先走图片渲染
-- `content.content` 作为 caption
-
-#### fallback 消息
-
-- 其他格式统一走 fallback，展示 `format` 和原始 `content`
-
-#### 状态消息
-
-- `kind === 'notify'` 或 `ui_item_kind === 'status'`
-- 展示为居中的状态 pill
-
----
-
-## 6. Composer 草稿模型
-
-### 6.1 发送 payload
-
-定义位置：`src/app/messagehub/conversation/input/ConversationComposer.tsx`
-
-```ts
-export interface ConversationComposerSubmitPayload {
-  attachments: ComposerAttachmentItem[]
-  content: string
-}
-```
-
-#### 当前实际语义
-
-- `content`
-  - 输入框中的文本内容，发送前会 `trim`
-- `attachments`
-  - 当前草稿中的文件或图片列表
-
-### 6.2 附件项模型
-
-定义位置：`src/app/messagehub/conversation/input/attachmentDraft.ts`
-
-```ts
-export interface ComposerAttachmentItem {
-  id: string
-  file: File
-  relativePath?: string
-  kind: 'image' | 'file'
-  previewUrl?: string
-}
-```
-
-#### 当前实际被 UI 使用的字段
-
-- `id`
-  - attachment card key、删除操作
-- `file`
-  - 文件名、大小、类型、预览图来源
-- `relativePath`
-  - 目录选择或拖拽目录时展示相对路径
-- `kind`
-  - 决定走图片卡片还是文件卡片
-- `previewUrl`
-  - 图片预览
-
-### 6.3 当前草稿到消息内容的转换方式
-
-当前 `MessageHubView` 并没有把附件真正编码进协议消息结构中。
-
-发送时会把附件信息拼成一行 mock 文本：
-
-- 无附件：只发送文本
-- 有附件：把附件名称摘要拼进 `content`
-
-这说明当前 composer 还停留在“UI 演示态”，未进入真实消息协议建模阶段。
-
----
-
-## 7. 页面本地视图状态
-
-### 7.1 `MessageHubState` 不是当前真实状态模型
-
-定义位置：`src/app/messagehub/types.ts`
-
-```ts
-export interface MessageHubState {
-  selectedEntityId: string | null
-  selectedSessionId: string | null
-  activeFilter: EntityFilter
-  searchQuery: string
-  mobileView: MobileView
-  showSessionSidebar: boolean
-  showDetails: boolean
-}
-```
-
-当前代码没有实际引用这个接口。
-
-### 7.2 当前 `MessageHubView` 真实维护的状态
-
-定义位置：`src/app/messagehub/MessageHubView.tsx`
-
-#### 业务状态
-
-- `selectedEntityId`
-- `selectedSessionId`
-- `filter`
-- `searchQuery`
-- `mobileView`
-- `showSessionSidebar`
-- `showDetails`
-- `entityListDrilldownPath`
-- `localReaders`
-
-#### 布局状态
-
-- `entityListWidth`
-- `sessionSidebarWidth`
-- `isEntityListCollapsed`
-- `isResizingEntityList`
-- `isResizingSessionSidebar`
-
-#### 结论
-
-如果要定义“当前真实页面状态模型”，它至少应该包含：
-
-- 选择态
-- 搜索与过滤态
-- mobile / desktop 视图态
-- drilldown 导航态
-- 分栏布局态
-- 会话 reader 数据态
-
-也就是说，当前 `MessageHubState` 只能覆盖一部分，不足以代表真实页面状态。
-
----
-
-## 8. 当前实际使用字段总表
-
-### 8.1 Entity
-
-#### 已使用
-
-- `id`
-- `type`
-- `name`
-- `statusText`
-- `isOnline`
-- `isPinned`
-- `isMuted`
-- `unreadCount`
-- `tags`
-- `lastMessage.senderName`
-- `lastMessage.text`
-- `lastMessage.timestamp`
-- `children`
-- `childrenMode`
-- `childrenSections`
-- `drilldownDescription`
-
-#### 暂未使用
-
-- `avatar`
-- `lastActiveAt`
-- `source`
-
-### 8.2 Session
-
-#### 已使用
-
-- `id`
-- `title`
-- `type`
-- `source`
-- `unreadCount`
-
-#### 暂未使用
-
-- `entityId`
-- `isActive`
-- `lastActiveAt`
-
-### 8.3 EntityDetail
-
-#### 已使用
-
-- `bio`
-- `bindings`
-- `memberCount`
-- `note`
-- 以及继承自 `Entity` 的常用展示字段
-
-#### 暂未使用
-
-- `createdAt`
-
-### 8.4 MessageObject
-
-#### 已使用
-
-- `from`
-- `kind`
-- `created_at_ms`
-- `content.format`
-- `content.content`
-- `content.refs`
-- `ui_message_id`
-- `ui_sender_name`
-- `ui_delivery_status`
-- `ui_session_id`
-- `ui_item_kind`
-- `ui_status_type`
-
-#### 暂未使用
-
-- `to`
-- `thread`
-- `workspace`
-- `expires_at_ms`
-- `nonce`
-- `proof`
-- `content.title`
-- `content.machine`
-
-### 8.5 ComposerAttachmentItem
-
-#### 已使用
-
-- `id`
-- `file`
-- `relativePath`
-- `kind`
-- `previewUrl`
-
----
-
-## 9. 当前模型存在的几个实现特征
-
-### 9.1 页面级数据和协议消息数据是分裂的
-
-当前列表和详情使用 `Entity` / `Session` / `EntityDetail`。
-
-消息区使用 `MessageObject`。
-
-两者之间没有统一的中间层。例如：
-
-- 列表摘要来自 `Entity.lastMessage`
-- 会话详情来自 `MessageObject[]`
-
-这意味着列表摘要和真实消息历史目前是两套并行数据，而不是单一来源派生。
-
-### 9.2 `MessageHubState` 落后于真实实现
-
-类型层面定义了一个较小的页面状态接口，但真实页面状态已经扩展到：
-
-- drilldown 导航
-- panel 宽度
-- panel 折叠
-- reader 缓存
-- resize 交互状态
-
-### 9.3 Composer 仍处于 UI 原型阶段
-
-附件在输入区里已经有独立数据结构，但发送时仍被降级为文本摘要，没有进入协议层 `MessageObject.content` 的规范建模。
-
-### 9.4 `Entity.avatar` 预留了，但 UI 还没有进入真实头像阶段
-
-当前所有头像都由 `type` 生成图标和颜色，说明头像字段仍是未来扩展位。
-
----
-
-## 10. 建议的后续整理方向
-
-如果后面要继续收敛 `MessageHub` 的 UI DataModel，建议优先做这 3 件事：
-
-### 10.1 区分“当前生效字段”和“预留字段”
-
-可以把 `Entity` / `Session` / `EntityDetail` 分成：
-
-- 当前必须字段
-- 当前可选但已消费字段
-- 预留未消费字段
-
-这样后续接后端时更容易知道哪些字段是真的接口契约。
-
-### 10.2 把页面状态模型补齐
-
-如果要保留 `MessageHubState`，建议把以下内容补进去，或者改名为更准确的页面状态类型：
-
-- `entityListDrilldownPath`
-- `entityListWidth`
-- `sessionSidebarWidth`
-- `isEntityListCollapsed`
-- `localReaders` 或其引用键
-
-### 10.3 明确消息附件的协议建模
-
-当前附件只是 composer 内部模型，还没有进入真实消息模型。
-
-如果后面要做真实发送，至少需要明确：
-
-- 图片是否进入 `content.refs`
-- 文件是否进入 `refs`
-- 文本与附件如何组合
-- 本地预览对象与协议对象如何映射
-
----
-
-## 11. 一句话总结
-
-当前 `MessageHub` 的“UI Model Data”本质上是一个分层组合模型：
-
-- 页面框架层用 `Entity / Session / EntityDetail`
-- 会话内容层直接用协议 `MessageObject`
-- 输入层单独维护 `ComposerAttachmentItem`
-- 页面状态层分散在 `MessageHubView` 的 React state 中
-
-它已经具备原型验证所需的数据结构，但还没有收敛成一个统一、严格的前端数据模型。
+个人偏好默认 `{ title: '', pinned: false, muted: false, showActions: true }`。
+长 seed 继续使用 `buckyos-mock-message-history` 中的原有 IndexedDB reader；不复制进 localStorage。
+当前 reader 将只读 seed 与本轮消息差量组合，按 viewer / owner / Session 缓存；标题、状态、时钟和偏好更新不会替换其原始历史。
+
+归档保留历史、未读和文本 / 附件草稿。恢复沿用原活动时间。彻底删除移除本 owner 的记录、差量历史引用、投递覆盖、草稿与各 viewer 的 Session 偏好。
+删除水位之前的历史消息和重复 seed 不能复活内容；连接仍可用时，水位之后的新普通消息可以重新建立可见 Session，但只能读到新历史。
+这是本地 mock 生命周期语义，不是对远端数据的物理删除承诺。
+
+## 5. 表单、详情与交互状态
+
+输入使用 react-hook-form 与 Zod；schema 是输入约束的源码依据。
+
+| Schema | 字段 / 约束 |
+|---|---|
+| `createSessionSchema` | entityId 非空；title trim 后最多 64 字符；connection 非空；提交时再检查策略与连接能力 |
+| `sharedStateSchema` | title trim 后最多 64 字符；description trim 后最多 500 字符；store 拒绝额外字段 |
+| `memberStateSchema` | nickname trim 后最多 64 字符；UI 只提交自己的昵称，store 拒绝角色等额外字段 |
+| `presentationSchema` | title trim 后最多 64 字符，pinned / muted 为 boolean；不生成共享日志 |
+| `policySchema` | EntityDetails 内 default / allow / deny 枚举 |
+| `messageHubLaunchSchema` | kind=messagehub，entityId 为 DID 或 null，context DID 与 mode 必须有效 |
+
+同名标题允许重复，每次创建使用独立 UUID。取消不创建；失败保留表单值。提交具有进度与重复提交锁。
+创建成功先登记空 Session / 空 reader，再选择并打开；发送第一条消息继续使用同一 ID。
+取消一个已经提交的慢请求时，该登记可在原 context 完成，但迟到结果不能更改当前实体 / owner / Session 选择。
+
+`MessageHubView` 选择和布局为 React state：selectedEntityId、selectedSessionId、filter、searchQuery、mobileView、showSessionSidebar、archived、detailsTarget、实体下钻路径、面板宽度与拖动状态。
+`detailsTarget` 明确区分 entity / session；SessionDetails 始终使用当前有效选择，没有会话时入口禁用。
+移动详情覆盖仍挂载的 Conversation，保留滚动与草稿。归档 / 删除当前会话后转入剩余有效会话或正常空态；处理其它行不切换当前会话。
+
+| 场景 | 显示状态 |
+|---|---|
+| 首次读取 | loading；失败显示错误与 retry |
+| 可写空会话 | 开始对话，Composer 可用 |
+| 只读空会话 | 暂无消息及原因 |
+| 无 Session | 尚无会话；保留 Sessions / 已归档 / 按能力创建入口 |
+| 保存 / 删除 / 创建 / 发送 | pending，阻止重复请求；失败保留原数据 / 表单 / 草稿，可重试 |
+| 保存成功 | 详情显示 Saved / 已保存；创建与管理关闭对话框并更新视图 |
+| 权限拒绝 | 独立拒绝态，没有历史缓存回落 |
+
+Session 行包含来源、截断标题、状态提示、未读、固定宽度时间与独立操作按钮；无右侧选中竖条，无嵌套 button。
+hover、focus-within 和触屏均能访问处理入口。对话框有 Tab 焦点约束与取消焦点恢复，删除不作为默认回车动作。
+
+## 6. Action Message 与历史投影
+
+原始 `MessageObject` 仍使用现有 `protocol/msgobj.ts`，本轮未改 Rust 协议镜像。
+
+类别判定只使用 `kind === 'event' && content.machine?.intent === 'buckyos.action_log'`，渲染与过滤共用同一函数。
+读取 data 前检查 schema_version；支持 title / shared state / member nickname 变化、加入、主动离开和被移除；actor 和 subject 分开，未知操作者不猜测。
+不支持的版本 / 动作回落为摘要，载荷不能执行。状态修改无变化或失败不生成日志；成功修改与日志在一个 mock snapshot 事务提交。
+
+`ConversationProjection` 在原字段外增加 `showActions`。`messageCount` 始终为 raw reader 消息数，entries 内 `messageIndex` 始终为原始索引。
+过滤只移除 Action entries，重新构建日期、可见 totalCount 和物化范围。普通 event 仍显示；全过滤显示专门提示。
+增量追加沿用此规则，不产生虚拟空行或孤立日期。过滤切换尽量保持仍可见的消息锚点，恢复显示不会丢失消息。
+
+## 7. mock 验证入口与后续集成
+
+仅开发环境暴露 `window.__messageHubMock`：
+
+- `configure({ delayMs, failNext, now })`：控制请求、单次失败与时钟。
+- `injectRuntime(owner, session, state)`：只接受已知 member，带 expiresAt；不产生 Action Log。
+- `injectState(owner, session, { shared?, member?, actorDid? })`：模拟远端共享 / 昵称更新与日志。
+- `injectMessage(owner, session, msg)`、`injectDelivery(owner, session, messageId, status)`：普通内容、日志和投递边界。
+- `discoverConnection(owner, entity, binding)`、`setConnection(owner, session, patch)`：连接发现、幂等、失效与 revision。
+- `denyOwner(owner)`：验证拒绝态；不会回落到用户历史。
+
+组件使用的 create、manage、updateState、updatePreferences、setPolicy、saveDraft、saveAttachments、send 全为 mock 方法，不冒充 KRPC。
+真实集成仍需独立消息活动时间和跨页排序游标、空会话登记、权威状态版本和可靠日志、Session 级归档 / 删除、共享对象引用处理、平台能力与服务端代理授权。
+
+验收命令、场景和截图入口见 [原型交付说明](../../proposals/messagehub-ui-prototype/IMPLEMENTATION.md)。

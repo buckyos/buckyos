@@ -1,3 +1,9 @@
+import { useState } from 'react'
+import { useForm } from 'react-hook-form'
+import { z } from 'zod'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { useMessageHubStore } from './mock/hooks'
+import { hubButtonClass, hubInputClass } from './SessionDialogs'
 import {
   X,
   Bot,
@@ -10,13 +16,13 @@ import {
   Tag,
   Link2,
   Edit3,
-  Trash2,
 } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
-import type { EntityDetail } from './types'
+import type { EntityDetail, MessageHubContext } from './types'
 
 interface EntityDetailsProps {
   entity: EntityDetail
+  context?: MessageHubContext
   onClose: () => void
 }
 
@@ -75,7 +81,7 @@ function InfoRow({
   )
 }
 
-export function EntityDetails({ entity, onClose }: EntityDetailsProps) {
+export function EntityDetails({ entity, context, onClose }: EntityDetailsProps) {
   const { t } = useI18n()
 
   const typeLabels: Record<string, string> = {
@@ -99,9 +105,10 @@ export function EntityDetails({ entity, onClose }: EntityDetailsProps) {
           className="text-sm font-semibold"
           style={{ color: 'var(--cp-text)' }}
         >
-          {t('messagehub.details', 'Details')}
+          {t('messagehub.entityDetails')}
         </h2>
         <button
+          aria-label={t('messagehub.close')}
           onClick={onClose}
           className="p-1 rounded-lg"
           style={{ color: 'var(--cp-muted)' }}
@@ -168,7 +175,7 @@ export function EntityDetails({ entity, onClose }: EntityDetailsProps) {
               <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>
                 {t('messagehub.note', 'Note')}
               </p>
-              <button style={{ color: 'var(--cp-muted)' }}>
+              <button disabled={context?.mode === 'observe'} style={{ color: 'var(--cp-muted)' }}>
                 <Edit3 size={12} />
               </button>
             </div>
@@ -252,6 +259,7 @@ export function EntityDetails({ entity, onClose }: EntityDetailsProps) {
           }}
         >
           <button
+            disabled={context?.mode === 'observe'}
             className="flex items-center gap-3 w-full px-3 py-2.5 text-sm text-left transition-colors"
             style={{ color: 'var(--cp-text)' }}
           >
@@ -268,6 +276,7 @@ export function EntityDetails({ entity, onClose }: EntityDetailsProps) {
             )}
           </button>
           <button
+            disabled={context?.mode === 'observe'}
             className="flex items-center gap-3 w-full px-3 py-2.5 text-sm text-left transition-colors"
             style={{ color: 'var(--cp-text)' }}
           >
@@ -285,19 +294,22 @@ export function EntityDetails({ entity, onClose }: EntityDetailsProps) {
           </button>
         </div>
 
-        {/* Danger zone */}
-        <button
-          className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm text-left"
-          style={{
-            color: 'var(--cp-danger)',
-            background:
-              'color-mix(in srgb, var(--cp-danger) 6%, transparent)',
-          }}
-        >
-          <Trash2 size={16} />
-          {t('messagehub.deleteChat', 'Delete Chat')}
-        </button>
+        {context && <CreationPolicyEditor key={entity.id} entity={entity} context={context} />}
       </div>
     </div>
   )
+}
+
+const policySchema = z.object({ policy: z.enum(['default', 'allow', 'deny']) })
+function CreationPolicyEditor({ entity, context }: { entity: EntityDetail; context: MessageHubContext }) {
+  const { t } = useI18n(), store = useMessageHubStore()
+  const form = useForm<z.infer<typeof policySchema>>({ resolver: zodResolver(policySchema), defaultValues: { policy: store.policy(context, entity.id) } })
+  const [status, setStatus] = useState('')
+  return <form className="space-y-3" onSubmit={form.handleSubmit(async ({ policy }) => { setStatus(''); try { await store.setPolicy(context, entity.id, policy); setStatus('saved') } catch { setStatus('operationFailed') } })}>
+    <label className="block text-sm">{t('messagehub.creationPolicy')}<select className={hubInputClass} disabled={context.mode === 'observe' || form.formState.isSubmitting} {...form.register('policy')}>{(['default', 'allow', 'deny'] as const).map(policy => <option key={policy} value={policy}>{t(`messagehub.policy.${policy}`)}</option>)}</select></label>
+    <p className="text-xs text-[color:var(--cp-muted)]">{t(entity.type === 'agent' ? 'messagehub.agentCreationDefault' : 'messagehub.otherCreationDefault')}</p>
+    {entity.sessionCreation?.unavailableReason && <p className="text-xs">{t(`messagehub.reason.${entity.sessionCreation.unavailableReason}`)}</p>}
+    <button className={hubButtonClass} type="submit" disabled={context.mode === 'observe' || form.formState.isSubmitting}>{t(form.formState.isSubmitting ? 'messagehub.saving' : 'messagehub.save')}</button>
+    {status && <p role={status === 'saved' ? 'status' : 'alert'}>{t(`messagehub.${status}`)}</p>}
+  </form>
 }

@@ -1,3 +1,7 @@
+import { useLocation, useNavigate } from 'react-router-dom'
+import { useI18n } from '../../../../i18n/provider'
+import { desktopUIStore } from '../../../../models/DesktopUIDataModel'
+import { defaultContext } from '../../../messagehub/mock/store'
 /* ── Agent detail page ── */
 
 import { Chip } from '@mui/material'
@@ -9,6 +13,16 @@ import { RuntimeInfoSection } from '../sections/RuntimeInfoSection'
 import type { AgentEntity } from '../../datamodel/types'
 
 export function AgentDetailPage({ agent }: { agent: AgentEntity }) {
+  const { t } = useI18n()
+  const location = useLocation(), navigate = useNavigate()
+  const openMessages = (observe: boolean) => {
+    const ownerDid = agent.did ?? agent.id
+    const context = observe ? { ...defaultContext, ownerDid, mode: 'observe' as const } : defaultContext
+    const entityId = observe ? 'did:buckyos:person:alice' : ownerDid
+    const payload = { kind: 'messagehub', entityId, context }
+    if (location.pathname === '/desktop' || location.pathname === '/') desktopUIStore.openAppWindow('messagehub', { launch: { requestId: crypto.randomUUID(), payload } })
+    else navigate(`/messagehub?${new URLSearchParams({ entityId, ownerDid: context.ownerDid, mode: context.mode })}`)
+  }
   return (
     <div className="space-y-4">
       <HeaderSection
@@ -27,6 +41,10 @@ export function AgentDetailPage({ agent }: { agent: AgentEntity }) {
         }
       />
 
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className="min-h-11 rounded-lg border border-[color:var(--cp-border)] px-4 text-sm" onClick={() => openMessages(false)}>{t('messagehub.chatWithAgent')}</button>
+        <button type="button" className="min-h-11 rounded-lg border border-[color:var(--cp-border)] px-4 text-sm" onClick={() => openMessages(true)}>{t('messagehub.viewAgentSessions')}</button>
+      </div>
       <RuntimeInfoSection runtime={agent.runtime} status={agent.status} />
 
       <InfoFieldsSection title="Profile" fields={agent.info} />

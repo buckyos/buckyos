@@ -1,3 +1,4 @@
+import { isActionMessage } from '../../sessionModel'
 import {
   getMessageStableId,
   getMessageStatusType,
@@ -368,6 +369,7 @@ async function seedIndexedDbConversationSession({
 export async function buildConversationProjection(
   reader: ConversationMessageReader,
   statusItems: readonly ConversationStatusDescriptor[] = [],
+  showActions = true,
 ): Promise<ConversationProjection> {
   const entries: ConversationListIndexEntry[] = []
   const { headStatuses, tailStatuses } = splitStatusItems(statusItems)
@@ -380,6 +382,7 @@ export async function buildConversationProjection(
 
     messages.forEach((message, offset) => {
       const messageIndex = startIndex + offset
+      if (!showActions && isActionMessage(message)) return
       previousMessage = appendMessageEntries(
         entries,
         message,
@@ -392,6 +395,7 @@ export async function buildConversationProjection(
   appendStatuses(entries, tailStatuses)
 
   return {
+    showActions,
     readerKey: reader.readerKey,
     messageCount: reader.totalCount,
     tailStatusCount: tailStatuses.length,
@@ -419,6 +423,7 @@ export function extendConversationProjection(
   let messageIndex = projection.messageCount
 
   appendedMessages.forEach((message) => {
+    if (!projection.showActions && isActionMessage(message)) { messageIndex += 1; return }
     previousMessage = appendMessageEntries(
       baseEntries,
       message,
@@ -431,6 +436,7 @@ export function extendConversationProjection(
   appendStatuses(baseEntries, tailStatuses)
 
   return {
+    showActions: projection.showActions,
     readerKey: projection.readerKey,
     messageCount: projection.messageCount + appendedMessages.length,
     tailStatusCount: tailStatuses.length,
@@ -543,7 +549,7 @@ function appendMessageEntries(
     })
   }
 
-  if (isStatusMessageObject(message)) {
+  if (!isActionMessage(message) && isStatusMessageObject(message)) {
     entries.push({
       kind: 'status',
       key: `message-status:${getMessageStableId(message, messageIndex)}`,

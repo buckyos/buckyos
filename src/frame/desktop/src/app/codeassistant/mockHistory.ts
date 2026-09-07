@@ -15,7 +15,7 @@ import {
   mockSessions,
 } from '../messagehub/mock/data'
 
-const codeAssistantEntityId = 'agent-coder'
+const codeAssistantEntityId = getMockEntityDid('agent-coder')
 const storageNamespace = 'buckyos.mock.codeassistant.history'
 const databaseName = 'buckyos-mock-message-history'
 const storageVersion = 'v4'

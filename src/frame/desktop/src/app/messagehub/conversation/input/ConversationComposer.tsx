@@ -41,19 +41,32 @@ interface ConversationComposerProps {
   placeholder: string
   /** Max height for the entire composer (in px). Used to compute inner constraints. */
   maxHeight?: number
-  onSendMessage: (payload: ConversationComposerSubmitPayload) => void
+  onSendMessage: (payload: ConversationComposerSubmitPayload) => void | Promise<void>
+  initialDraft?: string
+  initialAttachments?: ComposerAttachmentInput[]
+  onAttachmentsChange?: (attachments: ComposerAttachmentInput[]) => Promise<void> | undefined
+  onDraftChange?: (value: string) => Promise<void> | undefined
 }
 
 const ConversationComposerInner = forwardRef<
   ConversationComposerHandle,
   ConversationComposerProps
 >(function ConversationComposer(
-  { placeholder, maxHeight, onSendMessage },
+  { placeholder, maxHeight, onSendMessage, initialDraft = '', initialAttachments = [], onAttachmentsChange, onDraftChange },
   ref,
 ) {
   const { t } = useI18n()
-  const [attachments, setAttachments] = useState<ComposerAttachmentItem[]>([])
-  const [inputValue, setInputValue] = useState('')
+  const [attachments, setAttachments] = useState<ComposerAttachmentItem[]>(() => initialAttachments.map(createAttachmentItem))
+  const [inputValue, setInputValue] = useState(initialDraft)
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState(false)
+  const sendLock = useRef(false)
+  const attachmentsCallback = useRef(onAttachmentsChange)
+  useEffect(() => { attachmentsCallback.current = onAttachmentsChange }, [onAttachmentsChange])
+  useEffect(() => { if (attachmentsCallback.current) void attachmentsCallback.current(attachments.map(({ file, relativePath }) => ({ file, relativePath })))?.catch(() => setSendError(true)) }, [attachments])
+  const draftCallback = useRef(onDraftChange)
+  useEffect(() => { draftCallback.current = onDraftChange }, [onDraftChange])
+  useEffect(() => { if (draftCallback.current) void draftCallback.current(inputValue)?.catch(() => setSendError(true)) }, [inputValue])
   const [pickerOpen, setPickerOpen] = useState(false)
   const attachmentsRef = useRef<ComposerAttachmentItem[]>([])
   const composerRef = useRef<HTMLDivElement>(null)
@@ -178,26 +191,25 @@ const ConversationComposerInner = forwardRef<
     })
   }, [])
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
+    if (sendLock.current) return
     const text = inputValue.trim()
 
     if (!text && attachments.length === 0) {
       return
     }
 
-    onSendMessage({
-      attachments,
-      content: text,
-    })
-    setInputValue('')
-    clearAttachments()
-    inputRef.current?.focus()
+    sendLock.current = true; setSending(true); setSendError(false)
+    try {
+      await onSendMessage({ attachments, content: text })
+      setInputValue(''); clearAttachments(); inputRef.current?.focus()
+    } catch { setSendError(true) } finally { sendLock.current = false; setSending(false) }
   }, [attachments, clearAttachments, inputValue, onSendMessage])
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      handleSend()
+      void handleSend()
     }
 
     if (event.key === 'Escape') {
@@ -249,6 +261,8 @@ const ConversationComposerInner = forwardRef<
     <div
       ref={composerRef}
       data-testid="message-composer"
+      aria-busy={sending}
+      inert={sending}
       className="relative z-20 flex min-h-0 flex-shrink-0 flex-col"
       style={{
         borderTop: '1px solid var(--cp-border)',
@@ -271,6 +285,7 @@ const ConversationComposerInner = forwardRef<
         onChange={handleFileInputChange}
       />
 
+      {sendError && <p role="alert" className="px-3 pt-2 text-xs text-[color:var(--cp-danger)]">{t('messagehub.sendFailed')}</p>}
       {/* Anchored to the composer root: the message input area is overflow-hidden
           and would clip a menu popping upward from inside it. */}
       {pickerOpen ? (
@@ -336,8 +351,8 @@ const ConversationComposerInner = forwardRef<
             }}
           />
           <button
-            onClick={handleSend}
-            disabled={!hasDraft}
+            onClick={() => void handleSend()}
+            disabled={sending || !hasDraft}
             className="p-1.5 rounded-full flex-shrink-0 transition-colors"
             style={{
               background: hasDraft

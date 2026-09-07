@@ -1,3 +1,5 @@
+import { isActionMessage } from '../../sessionModel'
+import { useI18n } from '../../../../i18n/provider'
 import {
   forwardRef,
   memo,
@@ -43,13 +45,19 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
   reader: ConversationMessageReader
   selfDid: DID
   isGroup: boolean
+  showActions?: boolean
+  emptyLabel?: string
   statusItems?: readonly ConversationStatusDescriptor[]
 }>(function ConversationHistoryPane({
   reader,
   selfDid,
   isGroup,
   statusItems,
+  showActions = true,
+  emptyLabel,
 }, ref) {
+  const { t } = useI18n()
+  const filterAnchor = useRef<{ messageIndex: number; offset: number; targetIndex?: number } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const [viewportProfile, setViewportProfile] = useState<ViewportProfile>({
@@ -75,6 +83,9 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
 
     return map
   }, [windowState])
+
+  const windowItemsRef = useRef(itemsByIndex)
+  useEffect(() => { windowItemsRef.current = itemsByIndex }, [itemsByIndex])
 
   useEffect(() => {
     const element = scrollRef.current
@@ -111,6 +122,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
     }
 
     const handleScroll = () => {
+      if (filterAnchor.current) return
       const isAnchored = isNearBottom(element, BOTTOM_ANCHOR_THRESHOLD_PX)
 
       if (isAnchored) {
@@ -182,12 +194,14 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
     const statusItemsSignature = getStatusItemsSignature(statusItems)
     const isAppendOnlyUpdate = Boolean(
       currentProjection
+      && currentProjection.showActions === showActions
       && currentProjection.readerKey === reader.readerKey
       && currentProjection.statusItemsSignature === statusItemsSignature
       && reader.totalCount > currentProjection.messageCount
     )
 
     if (currentProjection
+      && currentProjection.showActions === showActions
       && currentProjection.readerKey === reader.readerKey
       && currentProjection.statusItemsSignature === statusItemsSignature
       && reader.totalCount === currentProjection.messageCount) {
@@ -233,18 +247,27 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
       }
     }
 
-    scrollModeRef.current = 'bottom-anchored'
+    const filterChanged = currentProjection?.readerKey === reader.readerKey && currentProjection.showActions !== showActions
+    if (filterChanged && scrollRef.current && scrollModeRef.current === 'free-scroll') {
+      const container = scrollRef.current
+      const row = [...container.querySelectorAll<HTMLElement>('[data-index]')].find(element => {
+        const item = windowItemsRef.current.get(Number(element.dataset.index))
+        return element.getBoundingClientRect().bottom > container.getBoundingClientRect().top && item?.kind === 'message' && !isActionMessage(item.data)
+      })
+      const entry = row ? currentProjection.entries[Number(row.dataset.index)] : undefined
+      if (entry?.kind === 'message' && row) filterAnchor.current = { messageIndex: entry.messageIndex, offset: row.getBoundingClientRect().top - container.getBoundingClientRect().top }
+    }
+    if (!filterChanged) { scrollModeRef.current = 'bottom-anchored'; setProjection(null) }
     bottomAnchorLockUntilRef.current = 0
     cancelBottomAnchorRequest(bottomAnchorRequestIdRef)
-    setProjection(null)
-    setWindowState(null)
 
-    void buildConversationProjection(reader, statusItems).then((nextProjection) => {
+    void buildConversationProjection(reader, statusItems, showActions).then((nextProjection) => {
       if (cancelled) {
         return
       }
 
       startTransition(() => {
+        setWindowState(null)
         setProjection(nextProjection)
       })
     })
@@ -252,7 +275,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
     return () => {
       cancelled = true
     }
-  }, [reader, statusItems])
+  }, [reader, statusItems, showActions])
 
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
@@ -273,7 +296,8 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
 
   useEffect(() => {
     virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => (
-      scrollModeRef.current === 'free-scroll'
+      !filterAnchor.current
+      && scrollModeRef.current === 'free-scroll'
       && item.end <= (instance.scrollOffset ?? 0) + instance.scrollAdjustments
     )
   }, [virtualizer])
@@ -339,6 +363,16 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
 
     previousTotalCountRef.current = projection.totalCount
 
+    if (filterAnchor.current) {
+      const anchor = filterAnchor.current
+      const index = projection.entries.findIndex(entry => entry.kind === 'message' && entry.messageIndex >= anchor.messageIndex)
+      if (index >= 0) {
+        anchor.targetIndex = index
+        const frame = requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: 'start' }))
+        return () => cancelAnimationFrame(frame)
+      } else filterAnchor.current = null
+      return
+    }
     if (previousTotalCount === 0) {
       requestBottomAnchor(
         scrollModeRef,
@@ -358,7 +392,22 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
         CONTENT_GROWTH_LOCK_MS,
       )
     }
-  }, [projection])
+  }, [projection, virtualizer])
+
+  useEffect(() => {
+    const anchor = filterAnchor.current, container = scrollRef.current
+    if (!anchor || anchor.targetIndex === undefined || !container) return
+    let frame = 0, remaining = 8
+    const restore = () => {
+      const row = container.querySelector<HTMLElement>(`[data-index="${anchor.targetIndex}"][data-message-index]`)
+      if (row) container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top - anchor.offset
+      remaining--
+      if (remaining > 0) frame = requestAnimationFrame(restore)
+      else { filterAnchor.current = null; scrollModeRef.current = 'free-scroll' }
+    }
+    frame = requestAnimationFrame(restore)
+    return () => cancelAnimationFrame(frame)
+  }, [windowState])
 
   const handleScrollToBottomClick = () => {
     setShowScrollToBottom(false)
@@ -386,7 +435,8 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
   }
 
   return (
-    <div className="relative h-full min-h-0 flex-1">
+    <div className="relative h-full min-h-0 flex-1" data-testid="conversation-history" data-raw-count={reader.totalCount} data-visible-count={projection.totalCount}>
+      {projection.totalCount === 0 && <p className="absolute inset-0 flex items-center justify-center text-sm text-[color:var(--cp-muted)]" role="status">{reader.totalCount ? t('messagehub.filteredMessages') : emptyLabel ?? t('messagehub.noMessages')}</p>}
       <div
         ref={scrollRef}
         className="h-full overflow-y-auto px-3 py-2 shell-scrollbar"
@@ -412,6 +462,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
                 key={virtualItem.key}
                 ref={item ? virtualizer.measureElement : undefined}
                 data-index={virtualItem.index}
+                data-message-index={item?.kind === 'message' ? item.messageIndex : undefined}
                 className="flow-root"
                 style={{
                   position: 'absolute',

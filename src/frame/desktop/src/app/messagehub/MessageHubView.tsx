@@ -1,23 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMediaQuery } from '@mui/material'
 import { ChevronLeft, ChevronRight, MessageSquare } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import { ConversationView } from './ConversationView'
 import { InMemoryConversationMessageReader } from './conversation/history/data-source'
-import type { AppendableConversationMessageReader } from './conversation/history/types'
 import type { ConversationComposerSubmitPayload } from './conversation/input/ConversationComposer'
 import { EntityDetails } from './EntityDetails'
 import { EntityList } from './EntityList'
-import {
-  createOutgoingMockMessage,
-  MOCK_SELF_DID,
-  mockEntities,
-  mockEntityDetails,
-  mockMessageReaders,
-  mockSessions,
-} from './mock/data'
+import { createOutgoingMockMessage, mockEntityDetails } from './mock/data'
+import { defaultContext, findEntity, messageHubStore } from './mock/store'
+import { useMessageHubStore, useMockReady, useMessageHubRuntime } from './mock/hooks'
+import { creationReason, sessionAccess, viewerSessionKey } from './sessionModel'
+import { WindowDialogProvider, useWindowDialog } from '../../desktop/windows/dialogs'
+import { SessionDetails } from './SessionDetails'
+import { CreateSessionForm, ManageSessionForm, hubButtonClass } from './SessionDialogs'
+import type { MessageHubContext, Session } from './types'
 import { SessionSidebar } from './SessionSidebar'
-import { createCodeAssistantMockReaders } from '../codeassistant/mockHistory'
 import {
   ENTITY_LIST_COLLAPSED_WIDTH,
   ENTITY_LIST_DEFAULT_WIDTH,
@@ -35,44 +33,34 @@ import type {
 
 const EMPTY_READER = InMemoryConversationMessageReader.empty()
 
-function findEntityById(id: string | null) {
-  if (!id) {
-    return null
-  }
-
-  const queue = [...mockEntities]
-
-  while (queue.length > 0) {
-    const current = queue.shift()
-
-    if (!current) {
-      continue
-    }
-
-    if (current.id === id) {
-      return current
-    }
-
-    if (current.children?.length) {
-      queue.push(...current.children)
-    }
-  }
-
-  return null
+export function MessageHubView({ initialEntityId = null, context: initialContext = defaultContext }: { initialEntityId?: string | null; context?: MessageHubContext }) {
+  const { t } = useI18n()
+  const [exitFrom, setExitFrom] = useState<string | null>(null)
+  const context = exitFrom === JSON.stringify(initialContext) ? defaultContext : initialContext
+  const { status, retry } = useMockReady()
+  const store = useMessageHubStore()
+  const isDesktop = useMediaQuery('(min-width: 769px)')
+  if (status !== 'ready') return <div className="flex h-full items-center justify-center"><p role="status">{t(status === 'loading' ? 'messagehub.loading' : 'messagehub.operationFailed')}</p>{status === 'error' && <button type="button" onClick={retry}>{t('messagehub.retry')}</button>}</div>
+  if (!store.canView(context)) return <div role="alert" className="p-6">{t('messagehub.reason.permission_denied')}</div>
+  return <div className="relative flex h-full min-h-0 flex-col text-[color:var(--cp-text)]">
+    {context.mode === 'observe' && <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[color:var(--cp-border)] p-2 text-xs" data-testid="owner-banner"><span>{t('messagehub.observing')} · {context.ownerDid.split(':').at(-1)} · {t('messagehub.readOnly')}</span><button type="button" className={hubButtonClass} onClick={() => setExitFrom(JSON.stringify(initialContext))}>{t('messagehub.exitObserver')}</button></div>}
+    <div className="relative min-h-0 flex-1"><WindowDialogProvider key={JSON.stringify(context)} surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}><MessageHubContent key={`${JSON.stringify(context)}:${initialEntityId}`} initialEntityId={initialEntityId} context={context} /></WindowDialogProvider></div>
+  </div>
 }
 
-function getDefaultSessionId(entityId: string | null) {
-  return entityId ? mockSessions[entityId]?.[0]?.id ?? null : null
-}
-
-export function MessageHubView({
-  initialEntityId = null,
-}: {
-  initialEntityId?: string | null
-}) {
+function MessageHubContent({ initialEntityId, context }: { initialEntityId: string | null; context: MessageHubContext }) {
   const { t } = useI18n()
   const isDesktop = useMediaQuery('(min-width: 769px)')
-  const resolvedInitialEntityId = findEntityById(initialEntityId)?.id ?? null
+  const store = useMessageHubStore()
+  const dialog = useWindowDialog()
+  useMessageHubRuntime()
+  const resolvedInitialEntityId = initialEntityId ? findEntity(initialEntityId)?.id ?? null : null
+  const getDefaultSessionId = (entityId: string | null) => entityId ? store.sessions(context, entityId, 'active')[0]?.id ?? null : null
+  const contextEpoch = useRef(0)
+  const ownerDid = context.ownerDid
+  useEffect(() => () => { contextEpoch.current++; messageHubStore.clearTransient(ownerDid) }, [ownerDid])
+  const [archived, setArchived] = useState(false)
+  const [writeConfirmations, setWriteConfirmations] = useState<Record<string, string>>({})
 
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(resolvedInitialEntityId)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
@@ -84,16 +72,14 @@ export function MessageHubView({
     () => (!isDesktop && resolvedInitialEntityId ? 'conversation' : 'entity-list'),
   )
   const [showSessionSidebar, setShowSessionSidebar] = useState(false)
-  const [showDetails, setShowDetails] = useState(false)
+  const [detailsTarget, setDetailsTarget] = useState<'entity' | 'session' | null>(null)
+  const showDetails = detailsTarget !== null
   const [entityListDrilldownPath, setEntityListDrilldownPath] = useState<string[]>([])
   const [entityListWidth, setEntityListWidth] = useState(ENTITY_LIST_DEFAULT_WIDTH)
   const [sessionSidebarWidth, setSessionSidebarWidth] = useState(SESSION_SIDEBAR_DEFAULT_WIDTH)
   const [isEntityListCollapsed, setIsEntityListCollapsed] = useState(false)
   const [isResizingEntityList, setIsResizingEntityList] = useState(false)
   const [isResizingSessionSidebar, setIsResizingSessionSidebar] = useState(false)
-  const [localReaders, setLocalReaders] = useState<Record<string, AppendableConversationMessageReader>>(
-    () => ({ ...mockMessageReaders }),
-  )
   const desktopLayoutRef = useRef<HTMLDivElement>(null)
   const entityListWidthRef = useRef(ENTITY_LIST_DEFAULT_WIDTH)
   const sessionSidebarWidthRef = useRef(SESSION_SIDEBAR_DEFAULT_WIDTH)
@@ -114,23 +100,6 @@ export function MessageHubView({
   const clampSessionSidebarWidth = useCallback((width: number) => (
     Math.min(Math.max(width, SESSION_SIDEBAR_MIN_WIDTH), SESSION_SIDEBAR_MAX_WIDTH)
   ), [])
-
-  useEffect(() => {
-    let cancelled = false
-
-    void createCodeAssistantMockReaders().then((readers) => {
-      if (!cancelled) {
-        setLocalReaders((prev) => ({
-          ...prev,
-          ...readers,
-        }))
-      }
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   useEffect(() => {
     entityListWidthRef.current = entityListWidth
@@ -159,75 +128,84 @@ export function MessageHubView({
     }
   }, [clampEntityListWidth, clampSessionSidebarWidth, isDesktop])
 
-  const selectedEntity = useMemo(
-    () => findEntityById(selectedEntityId),
-    [selectedEntityId],
-  )
+  const entities = store.entities(context)
+  const findProjectedEntity = (id: string | null) => {
+    const queue = [...entities]
+    while (queue.length) { const item = queue.shift()!; if (item.id === id) return item; queue.push(...(item.children ?? [])) }
+    return null
+  }
+  const selectedEntity = findProjectedEntity(selectedEntityId)
+  const sessions = store.sessions(context, selectedEntityId ?? '', archived ? 'archived' : 'active')
+  const activeSession = sessions.find(session => session.id === selectedSessionId) ?? sessions[0] ?? null
+  const messageReader = activeSession ? store.reader(context, activeSession.id) : EMPTY_READER
+  const entityDetail = selectedEntity ? { ...mockEntityDetails[selectedEntity.id], ...selectedEntity } : null
+  const confirmed = !!activeSession && writeConfirmations[activeSession.id] === JSON.stringify(activeSession.binding)
+  const access = activeSession ? sessionAccess(context, activeSession, confirmed) : null
+  const canManage = context.mode === 'self' && context.viewerDid === context.ownerDid
+  const createReason = selectedEntity ? (() => {
+    const choices = store.connections(context, selectedEntity.id)
+    return choices.some(choice => !creationReason(context, selectedEntity, store.policy(context, selectedEntity.id), choice.binding)) ? undefined : creationReason(context, selectedEntity, store.policy(context, selectedEntity.id), choices[0]?.binding)
+  })() : undefined
+  const openCreate = (entityId: string | null = selectedEntityId) => {
+    const epoch = ++contextEpoch.current, trigger = document.activeElement
+    void dialog.open({ title: t('messagehub.newSession'), size: 'sm', dismissible: false, renderBody: controls => <CreateSessionForm context={context} entityId={entityId} onCancel={() => { contextEpoch.current++; controls.close() }} onCreated={session => {
+      controls.close()
+      if (contextEpoch.current !== epoch) return
+      setSelectedEntityId(session.entityId); setSelectedSessionId(session.id); setArchived(false); setDetailsTarget(null); setMobileView('conversation')
+    }} /> }).then(() => { if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus() })
+  }
+  const openManage = (session: Session) => {
+    const epoch = contextEpoch.current, trigger = document.activeElement
+    void dialog.open({ title: `${t('messagehub.manageSession')}: ${store.title(context, session)}`, size: 'sm', dismissible: false, renderBody: controls => <ManageSessionForm context={context} session={session} onCancel={() => controls.close()} onDone={() => {
+      controls.close()
+      if (contextEpoch.current !== epoch) return
+      if (session.id === activeSession?.id) { setSelectedSessionId(store.sessions(context, session.entityId, 'active')[0]?.id ?? null); setArchived(false); setDetailsTarget(null); setMobileView('conversation') }
+    }} /> }).then(() => { if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus() })
+  }
+  const sidebarProps = {
+    onCreate: () => openCreate(), onManage: openManage, onToggleArchived: () => { setArchived(value => !value); setSelectedSessionId(null); setDetailsTarget(null) }, archived,
+    archivedCount: selectedEntityId ? store.sessions(context, selectedEntityId, 'archived').length : 0, canManage, creationReason: createReason, titleFor: (session: Session) => store.title(context, session),
+    statusFor: (session: Session) => store.runtimeFor(context, session.id).map(state => t(`messagehub.runtime.${state.status}`)).join(' · '),
+  }
 
-  const sessions = useMemo(
-    () => (selectedEntityId ? mockSessions[selectedEntityId] ?? [] : []),
-    [selectedEntityId],
-  )
-
-  const activeSession = useMemo(() => {
-    if (selectedSessionId) {
-      return sessions.find((session) => session.id === selectedSessionId) ?? null
-    }
-
-    return sessions[0] ?? null
-  }, [selectedSessionId, sessions])
-
-  const messageReader = useMemo(() => {
-    const sessionId = activeSession?.id
-    return sessionId ? localReaders[sessionId] ?? EMPTY_READER : EMPTY_READER
-  }, [activeSession, localReaders])
-
-  const entityDetail = useMemo(
-    () => (selectedEntityId ? mockEntityDetails[selectedEntityId] ?? null : null),
-    [selectedEntityId],
-  )
-
-  const handleSelectEntity = useCallback(
+  const handleSelectEntity = (
     (id: string) => {
+      contextEpoch.current++; setArchived(false)
       setSelectedEntityId(id)
       setSelectedSessionId(getDefaultSessionId(id))
-      setShowDetails(false)
+      setDetailsTarget(null)
       setShowSessionSidebar(false)
 
       if (!isDesktop) {
         setMobileView('conversation')
       }
-    },
-    [isDesktop],
+    }
   )
 
   const handleBack = useCallback(() => {
     setMobileView('entity-list')
-    setShowDetails(false)
+    setDetailsTarget(null)
     setShowSessionSidebar(false)
   }, [])
 
-  const handleOpenDetails = useCallback(() => {
-    if (isDesktop) {
-      setShowDetails((prev) => !prev)
-      return
-    }
-
-    setMobileView('details')
-  }, [isDesktop])
+  const handleOpenDetails = (target: 'entity' | 'session' = 'entity') => {
+    setDetailsTarget(target)
+    if (!isDesktop) setMobileView('details')
+  }
 
   const handleCloseDetails = useCallback(() => {
     if (isDesktop) {
-      setShowDetails(false)
+      setDetailsTarget(null)
       return
     }
 
     setMobileView('conversation')
   }, [isDesktop])
 
-  const handleSelectSession = useCallback((id: string) => {
-    setSelectedSessionId(id)
-  }, [])
+  const handleSelectSession = (id: string) => {
+    contextEpoch.current++; setSelectedSessionId(id)
+    if (!isDesktop) setShowSessionSidebar(false)
+  }
 
   const handleCollapseEntityList = useCallback(() => {
     setIsEntityListCollapsed(true)
@@ -320,26 +298,24 @@ export function MessageHubView({
     event.currentTarget.releasePointerCapture(event.pointerId)
   }, [])
 
-  const handleSendMessage = useCallback((payload: ConversationComposerSubmitPayload) => {
-    if (!activeSession || !selectedEntityId) {
-      return
-    }
+  const handleSendMessage = async (payload: ConversationComposerSubmitPayload) => {
+    if (!activeSession || !selectedEntityId) throw Error('session_missing')
+    const message = createOutgoingMockMessage({ sessionId: activeSession.id, entityId: selectedEntityId, content: buildOutgoingDraftContent(payload), createdAtMs: store.now() })
+    await store.send(context, activeSession.id, message, writeConfirmations[activeSession.id])
+  }
+  const conversationProps = {
+    context, access, title: activeSession ? store.title(context, activeSession) : '', onCreate: () => openCreate(), creationReason: createReason,
+    onOpenSessionDetails: () => handleOpenDetails('session'), onOpenDetails: () => handleOpenDetails('entity'),
+    draft: activeSession ? store.draft(context, activeSession.id) : '',
+    draftAttachments: activeSession ? store.attachments(context, activeSession.id) : [],
+    onAttachmentsChange: (attachments: import('./conversation/input/attachmentDraft').ComposerAttachmentInput[]) => activeSession ? store.saveAttachments(context, activeSession.id, attachments) : undefined,
+    onDraftChange: (value: string) => { if (activeSession) return store.saveDraft(context, activeSession.id, value) },
+    showActions: activeSession ? store.preferences(context, activeSession.id).showActions : true,
+    onShowActions: async (showActions: boolean) => { if (activeSession) await store.updatePreferences(context, activeSession.id, { showActions }) },
+  }
+  const detailsPane = detailsTarget === 'session' && activeSession && selectedEntity && access ? <SessionDetails key={viewerSessionKey(context, activeSession.id)} session={activeSession} entity={selectedEntity} context={context} access={access} onClose={handleCloseDetails} onManage={() => openManage(activeSession)} onWrite={enabled => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' }))} /> : detailsTarget === 'entity' && entityDetail ? <EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} /> : null
 
-    const content = buildOutgoingDraftContent(payload)
-    const newMessage = createOutgoingMockMessage({
-      sessionId: activeSession.id,
-      entityId: selectedEntityId,
-      content,
-      createdAtMs: Date.now(),
-    })
-
-    setLocalReaders((prev) => ({
-      ...prev,
-      [activeSession.id]: (prev[activeSession.id] ?? EMPTY_READER).append(newMessage),
-    }))
-  }, [activeSession, selectedEntityId])
-
-  const desktopSessionSidebarPane = showSessionSidebar && sessions.length > 1 ? (
+  const desktopSessionSidebarPane = showSessionSidebar ? (
     <>
       <div
         className="h-full flex-shrink-0"
@@ -352,6 +328,7 @@ export function MessageHubView({
         }}
       >
         <SessionSidebar
+          {...sidebarProps}
           sessions={sessions}
           activeSessionId={activeSession?.id ?? null}
           onSelectSession={handleSelectSession}
@@ -403,10 +380,11 @@ export function MessageHubView({
       <div className="relative h-full w-full" style={{ background: 'var(--cp-bg)', zIndex: 1 }}>
         {mobileView === 'entity-list' ? (
           <EntityList
-            entities={mockEntities}
+            entities={entities}
             selectedEntityId={selectedEntityId}
             filter={filter}
             searchQuery={searchQuery}
+            headerActions={<button type="button" disabled={!canManage} className={hubButtonClass} onClick={() => openCreate(null)}>{t('messagehub.newSession')}</button>}
             enableDrilldownNavigation
             useCompactInlineChildren
             childNavigationTrigger="icon"
@@ -418,16 +396,17 @@ export function MessageHubView({
           />
         ) : null}
 
-        {mobileView === 'conversation' && selectedEntity ? (
-          <div className="relative h-full">
+        {mobileView !== 'entity-list' && selectedEntity ? (
+          <div className="relative h-full" inert={mobileView === 'details' && !!detailsPane}>
             <ConversationView
+              {...conversationProps}
+              key={activeSession ? viewerSessionKey(context, activeSession.id) : selectedEntityId}
               entity={selectedEntity}
               session={activeSession}
               messageReader={messageReader}
-              selfDid={MOCK_SELF_DID}
+              selfDid={context.ownerDid}
               onBack={handleBack}
               onOpenSessionSidebar={() => setShowSessionSidebar(true)}
-              onOpenDetails={handleOpenDetails}
               onSendMessage={handleSendMessage}
               sessionCount={sessions.length}
             />
@@ -444,6 +423,7 @@ export function MessageHubView({
                   style={{ width: 280 }}
                 >
                   <SessionSidebar
+          {...sidebarProps}
                     sessions={sessions}
                     activeSessionId={activeSession?.id ?? null}
                     onSelectSession={handleSelectSession}
@@ -455,9 +435,9 @@ export function MessageHubView({
           </div>
         ) : null}
 
-        {mobileView === 'details' && entityDetail ? (
-          <div className="h-full">
-            <EntityDetails entity={entityDetail} onClose={handleCloseDetails} />
+        {mobileView === 'details' && detailsPane ? (
+          <div className="absolute inset-0 z-50 h-full">
+            {detailsPane}
           </div>
         ) : null}
       </div>
@@ -520,14 +500,14 @@ export function MessageHubView({
           </div>
         ) : (
           <EntityList
-            entities={mockEntities}
+            entities={entities}
             selectedEntityId={selectedEntityId}
             filter={filter}
             searchQuery={searchQuery}
             enableDrilldownNavigation
             useCompactInlineChildren
             headerActions={(
-              <button
+              <><button type="button" disabled={!canManage} className={hubButtonClass} onClick={() => openCreate(null)}>{t('messagehub.newSession')}</button><button
                 type="button"
                 onClick={handleCollapseEntityList}
                 className="flex h-9 w-9 items-center justify-center rounded-xl"
@@ -539,7 +519,7 @@ export function MessageHubView({
                 title={t('messagehub.collapseEntityList', 'Collapse entity list')}
               >
                 <ChevronLeft size={18} />
-              </button>
+              </button></>
             )}
             onSelectEntity={handleSelectEntity}
             onFilterChange={setFilter}
@@ -590,20 +570,21 @@ export function MessageHubView({
       <div className="h-full min-w-0 flex-1">
         {selectedEntity ? (
           <ConversationView
+              {...conversationProps}
+              key={activeSession ? viewerSessionKey(context, activeSession.id) : selectedEntityId}
             entity={selectedEntity}
             session={activeSession}
             messageReader={messageReader}
-            selfDid={MOCK_SELF_DID}
+            selfDid={context.ownerDid}
             onBack={handleBack}
             onOpenSessionSidebar={() => setShowSessionSidebar((prev) => !prev)}
-            onOpenDetails={handleOpenDetails}
             onSendMessage={handleSendMessage}
             sessionCount={sessions.length}
             leadingPane={desktopSessionSidebarPane}
-            isSessionSidebarOpen={showSessionSidebar && sessions.length > 1}
+            isSessionSidebarOpen={showSessionSidebar}
           />
         ) : (
-          <EmptyConversation />
+          <div className="h-full"><EmptyConversation /><button className={hubButtonClass} type="button" disabled={!canManage} onClick={() => openCreate(null)}>{t('messagehub.newSession')}</button></div>
         )}
       </div>
 
@@ -615,7 +596,7 @@ export function MessageHubView({
             borderLeft: '1px solid var(--cp-border)',
           }}
         >
-          <EntityDetails entity={entityDetail} onClose={handleCloseDetails} />
+          {detailsPane}
         </div>
       ) : null}
     </div>

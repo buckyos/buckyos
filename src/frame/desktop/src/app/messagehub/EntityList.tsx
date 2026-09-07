@@ -1,3 +1,5 @@
+import { useMessageHubClock } from './mock/hooks'
+import { relativeActivity } from './sessionModel'
 import { useMemo, useState, type ReactNode } from 'react'
 import {
   ArrowLeft,
@@ -91,17 +93,10 @@ function hasDrilldownChildren(entity: Entity): boolean {
   return Boolean(entity.children?.length) && entity.childrenMode === 'drilldown'
 }
 
-function formatTime(ts: number): string {
-  const now = Date.now()
-  const diff = now - ts
-  const mins = Math.floor(diff / 60_000)
-  if (mins < 1) return 'now'
-  if (mins < 60) return `${mins}m`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h`
-  const days = Math.floor(hours / 24)
-  if (days < 7) return `${days}d`
-  return new Date(ts).toLocaleDateString()
+function EntityActivityTime({ time }: { time: number }) {
+  const { t } = useI18n()
+  const now = useMessageHubClock()
+  return <time title={time ? new Date(time).toLocaleString() : undefined}>{relativeActivity(time, now, t('messagehub.now'))}</time>
 }
 
 function getEntityTypeLabel(type: EntityType, t: (key: string, fallback: string) => string) {
@@ -281,12 +276,12 @@ function TopLevelEntityItem({
               ) : null}
             </div>
             <div className="flex flex-shrink-0 items-center gap-1.5">
-              {entity.lastMessage ? (
+              {entity.lastActiveAt ? (
                 <span
                   className="text-xs"
                   style={{ color: 'var(--cp-muted)' }}
                 >
-                  {formatTime(entity.lastMessage.timestamp)}
+                  <EntityActivityTime time={entity.lastActiveAt} />
                 </span>
               ) : null}
             </div>
@@ -365,12 +360,12 @@ function TopLevelEntityItem({
             ) : null}
           </div>
           <div className="flex flex-shrink-0 items-center gap-1.5">
-            {entity.lastMessage ? (
+            {entity.lastActiveAt ? (
               <span
                 className="text-xs"
                 style={{ color: 'var(--cp-muted)' }}
               >
-                {formatTime(entity.lastMessage.timestamp)}
+                <EntityActivityTime time={entity.lastActiveAt} />
               </span>
             ) : null}
           </div>
@@ -490,9 +485,7 @@ function DrilldownEntityRow({
   onSelect: () => void
   typeLabel: string
 }) {
-  const metaText = entity.lastMessage
-    ? formatTime(entity.lastMessage.timestamp)
-    : entity.statusText
+  const metaText = <EntityActivityTime time={entity.lastActiveAt} />
 
   return (
     <button

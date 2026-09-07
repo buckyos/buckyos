@@ -1,12 +1,12 @@
 # MessageHub UI DataModel
 
-- 文档版本：v0.3（2026-09-06：补充共享 / 成员状态与 Action Log 数据契约）
+- 文档版本：v0.4（2026-09-06：可交互 mock 会话原型与消息活动时间口径）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/messagehub`
 - 上游文档：
   - PRD：`product/message_hub/MessageHub_Web_UI_PRD.md` v0.3
   - 状态与日志：`doc/message_hub/Session State and Action Log.md` v0.1（目标契约，待实现）
-  - 原型现状盘点：`product/message_hub/MessageHub_Current_UI_Model_Data.md` v0.1
+  - 原型现状盘点：`product/message_hub/MessageHub_Current_UI_Model_Data.md` v0.2
   - 后端数据模型：`src/kernel/buckyos-api/src/msg_center_client.rs`、`src/frame/msg_center/src/`
 - 下游用途：`integrate-ui-datamodel-with-backend`
 
@@ -17,14 +17,14 @@
 ### 1.1 本文档解决的问题
 
 MessageHub 原型已经收敛（Entity List / Conversation View / Details 三层结构 + 多 Session 切换 + 消息投影 + Composer 草稿），
-但原型的数据来自 `mock/data.ts`，其模型与 `msg-center` 的真实数据模型之间存在三处结构性错位：
+原型通过 `mock/store.ts` 统一管理 `mock/data.ts` seed、持久差量与历史 reader；其模型与 `msg-center` 的真实数据模型之间存在三处结构性错位：
 
 1. **后端 Session API 没有统一的 Entity 聚合模型。** `msg-center` 的会话读取面只有 `SessionSummary`（会话摘要）与 `SessionMessageItem`（会话时间线），
    两者都在 owner 范围内以 `session_id` 为键。UI 的「实体 → 会话」两级结构必须由投影得到。
 2. **当前 Session API 没有共享标题、置顶、静音等完整模型。** 个人展示属性走 `ui_session.*`；
    共享标题与成员会话昵称属于新增的持久业务状态，不能用个人显示标题或无约束 KV 代替（§3.3.5）。
-3. **原型的列表摘要与消息历史是两套并行数据。** `Entity.lastMessage` 与 `MessageObject[]` 各自独立，
-   接后端后必须收敛为「会话摘要是消息时间线的派生投影」。
+3. **消息活动时间与属性更新时间必须分开。** mock 已将摘要、历史追加和活动排序统一到 store；
+   接后端时仍不能将 `SessionSummary.updated_at_ms` 直接映射为消息活动时间。状态与 Action Log 不推进活动时间。
 
 本文档定义的就是这三层之间的稳定边界：**协议层 → UI DataModel 层 → 组件层**。
 
@@ -42,14 +42,14 @@ UI DataModel 层（本文档定义，UI 需求驱动）
         │
         ▼
 组件层
-  EntityList / SessionSidebar / ConversationView / ConversationHistoryPane / EntityDetails / ConversationComposer
+  EntityList / SessionSidebar / ConversationView / ConversationHistoryPane / EntityDetails / SessionDetails / ConversationComposer
 ```
 
 约束：
 
 - 协议镜像必须与真实后端一致；纯展示提示走 `ui_*` meta 或 `ui_session` KV。
   owner、稳定连接绑定、创建策略与授权能力属于业务契约，不能伪装为客户端 KV 权限开关。
-  本次新增的目标字段与能力尚未实现，须先补齐后端契约再更新协议镜像，缺口见 §9.3。
+  本次字段与交互已在 mock 中落地；真实能力仍须补齐后端契约再更新协议镜像，缺口见 §9.3。
 - UI DataModel 层 **不得** 1:1 镜像 KRPC 结构。`SessionSummary` 与 `EntitySession` 不是同一个东西。
 - 组件层 **不得** 直接调用 `datamodel/sessionApi.ts`，只消费 UI DataModel。
 
@@ -62,7 +62,48 @@ UI DataModel 层（本文档定义，UI 需求驱动）
 | Session 侧栏 | `SessionSidebar` | `EntitySession[]` |
 | Panel B 会话视图 | `ConversationView` / `ConversationHistoryPane` | `ConversationProjection` + `ConversationListItem[]` |
 | Panel B 输入区 | `ConversationComposer` | `ComposerDraft` |
-| Panel C 详情 | `EntityDetails` | `EntityDetail` |
+| Panel C 实体详情 | `EntityDetails` | `EntityDetail` + owner / entity 创建策略 |
+| Panel C 会话详情 | `SessionDetails` | `Session` + `SessionAccess` + `SessionPreferences` |
+| 创建 / 归档 / 删除 | `SessionDialogs` | Zod 输入模型 + WindowDialogProvider |
+
+### 1.4a 2026-09-06 已落地原型（本节时间口径优先）
+
+`mock/store.ts` 是本轮 MessageHub 的唯一可变业务数据源，组件通过 `useSyncExternalStore` 订阅。
+本文后续 `EntitySession`、权威状态引用和 KRPC DTO 仍包含集成目标；当前实现精确字段见
+[当前 UI Model Data](../../../../../../product/message_hub/MessageHub_Current_UI_Model_Data.md)。
+
+| 范畴 | 当前实现 |
+|---|---|
+| 引用 | Session 以 JSON 编码 `(ownerDid, sessionId)` 寻址；reader、文本 / 文件草稿和 UI 偏好再加 viewerDid |
+| 身份 | 默认 mock 登录用户；明确 `mode=observe` + ownerDid 才能观察允许的 Agent，拒绝时不回退用户缓存 |
+| 连接 | native / tunnel / unknown 稳定 binding；tunnel 区分实例、端点和远端上下文；删除不移除连接 |
+| 生命周期 | `active` / `archived`；删除保留时间水位与最小来源信息，移除本地历史引用、文本 / 文件草稿与偏好 |
+| 持久化 | `messagehub-prototype-v1` IndexedDB 保存小型 Session 元数据和 mock 消息差量；长 seed 沿用现有 IndexedDB reader |
+| 临时状态 | 带 member DID 与过期时间的运行态、绑定版本对应的写入确认均仅存在内存，刷新 / 切换 owner 清除 |
+| 详情目标 | `detailsTarget: 'entity' | 'session' | null`，会话详情跟随当前有效 Session；移动详情覆盖 Conversation，保持其挂载 |
+| 创建输入 | `createSessionSchema`: entityId、trim 后最多 64 字符 title、显式连接选择；当前只创建 chat |
+| 编辑输入 | `sharedStateSchema`（title / description 64 / 500 字符）、`memberStateSchema`（nickname 64 字符）、`presentationSchema`（title / pinned / muted） |
+| 操作状态 | 初始化 loading / error / retry；创建、编辑、管理和发送具有 pending / error，成功提交后才发布 store 结果 |
+| Action 过滤 | `SessionPreferences.showActions` 默认 true；只能在 projection 过滤，不删除原始消息，不改业务状态 |
+
+`lastActiveAt` 的唯一语义是最后有效消息活动时间：
+
+- 新建空会话使用创建时间，reader 长度为 0。
+- 普通 chat / group_msg，以及有正文或 output 引用的 deliver 结果，按 `max(旧时间, 消息时间)` 推进。
+- typing / processing / active / statusLine、共享 / 成员状态、个人标题、Action Log、已读与投递变化均不推进。
+- 归档 / 恢复 / 删除、偏好开关和分钟 tick 不推进；只有新的有效普通消息可自动解除归档。
+- 重放已处理的消息 ID 不重复算活动；删除水位之前的消息不能复活会话或历史。
+- 列表时间、排序和 Entity 聚合都使用此字段。摘要自己的 timestamp 不能反推活动时间。
+- 相对时间为 now / 刚刚、整数 m / h / d；未知为 `—`，未来时间按零时间差处理。完整本地时间置于 title。
+
+Action 类别严格使用 `kind === 'event' && content.machine?.intent === 'buckyos.action_log'`。
+渲染先验证 schema_version，再读取 action / actor / subject。未知动作或版本回落为摘要，不执行载荷。
+projection 保留 raw `messageIndex` 与 `messageCount`，重新生成可见 entries、日期和 totalCount；
+全过滤显示“当前消息已被过滤”。过滤偏好按 viewer / owner / session 持久化，观察者只能修改自己的此项偏好。
+
+原型开发环境通过 `window.__messageHubMock` 提供延迟 / 失败、时钟、runtime、共享 / 成员状态、
+普通消息、投递、连接发现与连接失效事件注入。该入口只在 Vite DEV 暴露，不进入产品操作界面。
+这些动作不是 KRPC，不代表真实服务完成了归档、物理删除、代理授权或远端线程创建。
 
 ### 1.4 产品不变量与术语
 
@@ -320,7 +361,7 @@ export interface EntitySession {
   source?: string
 
   unreadCount: number
-  /** = SessionSummary.updated_at_ms；目标空 Session 由登记时间提供初始值。 */
+  /** 最后有效消息活动时间；空会话初始化为创建时间。不得直接映射 SessionSummary.updated_at_ms。 */
   lastActiveAt: number
   /** 该会话最近一条消息摘要，供 Session 列表二行展示（当前原型未展示，字段为已定义可选项）。 */
   lastMessage?: MessagePreview
@@ -903,7 +944,8 @@ export interface MessageHubViewState {
 
   /* 面板可见性 */
   showSessionSidebar: boolean
-  showDetails: boolean
+  detailsTarget: 'entity' | 'session' | null
+  archived: boolean
 
   /* 布局态（仅桌面端有意义，应持久化到本地） */
   layout: MessageHubLayoutState
@@ -967,7 +1009,7 @@ export interface MessageHubLayoutState {
 
 ### 6.3 Session 列表
 
-一次性拉取，不分页。单实体 session 数预期 < 50。按 `lastActiveAt` 降序，置顶优先。
+一次性拉取，不分页。单实体 session 数预期 < 50。按个人置顶优先、`lastActiveAt` 降序、稳定 Session ID 升序排列。归档过滤先于活动列表排序。
 
 ### 6.4 未读聚合口径
 
@@ -1126,7 +1168,7 @@ Agent 视角仅展示 Agent 自己的未读聚合，不加入用户 App badge；
 | `Entity.id` | `contact.resolve_canonical_did` | 别名 DID 归一 |
 | `Entity.unreadCount` | `SessionSummary.unread_count` | Σ 聚合 |
 | `Entity.lastMessage` | `SessionSummary.last_record.msg` | 见 3.5.2 摘要规则 |
-| `Entity.lastActiveAt` | `SessionSummary.updated_at_ms` | max 聚合 |
+| `Entity.lastActiveAt` | 独立的有效消息活动时间（后端待补齐） | max(session.lastActiveAt)，不含状态 / Action Log |
 | `Entity.children`（群） | `group.list_subgroups` | `GroupSubgroup` → `Entity` |
 | `EntitySession[]` | `msg.list_sessions(owner=context.sessionOwnerDid)` | 按 3.2.1 分组；空 Session、绑定与能力需补齐登记契约 |
 | `EntitySession.title` | `ui_session.get_state('ui.title')` / 待实现共享状态读取 / `msg.thread.topic` | 见 3.3.1 |
@@ -1199,10 +1241,10 @@ Agent 视角仅展示 Agent 自己的未读聚合，不加入用户 App badge；
 |---|---|---|
 | 1 | `Entity.id` 从 mock 短 id 改为规范化 DID | 后端一切以 DID 寻址 |
 | 2 | `Entity.lastMessage` 由 session 摘要派生，不再独立 mock | 消除两套并行数据 |
-| 3 | `Entity.lastActiveAt` 启用为排序键（当前未消费） | 后端按 `updated_at_ms` 排序 |
+| 3 | mock 已消费 `Entity.lastActiveAt` 作为排序键 | 真实后端仍按通用 `updated_at_ms` 排序，必须新增活动时间及分页游标 |
 | 4 | `Entity.source: string` → `sources: string[]` | 一个实体可有多个平台绑定 |
 | 5 | 新增 `Entity.domain` / `sessionCount` / `lastActivitySessionId` | PRD §12.4/§15.1 权限差异与默认会话选择 |
-| 6 | `Session` 更名 `EntitySession`，删除 `isActive`，新增 `titleSource` / `lastDelivery` | `isActive` 无消费点；标题在后端不存在 |
+| 6 | mock 已删除 `isActive`，共享标题与个人覆盖分开；实际类型仍名 `Session` | `EntitySession` / `titleSource` / `lastDelivery` 为后端集成目标命名 |
 | 7 | `EntityDetail.bindings` 改为必填，新增 `accessLevel` / `isVerified` / `contactSource` | 权限区块需要 |
 | 8 | `AccountBinding` 新增 `endpointDid` / `accountType` | 回复外部平台消息的目标地址 |
 | 9 | 附件从「拼进文本」改为写入 `content.refs` | 当前是纯 UI 演示态 |

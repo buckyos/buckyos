@@ -1,3 +1,5 @@
+import { useI18n } from '../../../../i18n/provider'
+import { isActionMessage } from '../../sessionModel'
 import { memo } from 'react'
 import {
   AlertCircle,
@@ -26,6 +28,7 @@ type MessageRenderer = (
 ) => React.ReactNode | null
 
 const messageRenderers: readonly MessageRenderer[] = [
+  message => isActionMessage(message) ? <ActionMessage message={message} /> : null,
   renderImageMessage,
   renderTextMessage,
   renderFallbackMessage,
@@ -391,4 +394,17 @@ function formatDateSeparator(date: Date): string {
     day: 'numeric',
     year: date.getFullYear() !== today.getFullYear() ? 'numeric' : undefined,
   })
+}
+
+function ActionMessage({ message }: { message: MessageObject }) {
+  const { t } = useI18n()
+  const data = message.content.machine?.data
+  let summary = message.content.content || t('messagehub.action.unknown')
+  if (data?.schema_version === 1 && typeof data.action === 'string') {
+    const actor = typeof data.actor_did === 'string' ? data.actor_did : t('messagehub.action.unknownActor')
+    const subject = typeof data.subject_did === 'string' ? data.subject_did : t('messagehub.action.unknownMember')
+    const actions = ['entity.member_joined', 'entity.member_left', 'entity.member_removed', 'session.title_changed', 'session.member_state_changed', 'session.shared_state_changed']
+    if (actions.includes(data.action)) summary = t(`messagehub.action.${data.action}`, undefined, { actor, subject })
+  } else if (data?.schema_version !== 1) summary = `${t('messagehub.action.unsupported')} · ${summary}`
+  return <div data-testid="action-message" className="mx-auto my-2 max-w-xl rounded-lg bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)] px-3 py-2 text-center text-xs text-[color:var(--cp-muted)] break-words">{summary}</div>
 }

@@ -1,7 +1,8 @@
 # MessageHub UI 原型修改 TODO
 
 - 日期：2026-09-06
-- 状态：待实施；本文供后续 code agent 执行，当前仅编写任务清单。
+- 状态：已完成 T0–T8（2026-09-06），范围为可交互 mock 原型；真实后端集成仍按第 3 节跟进。
+- 交付与验收：[实现说明、检查结果与截图](IMPLEMENTATION.md)。
 - 目标：在现有 MessageHub 原型中完成 Session 列表、创建、详情、归档 / 删除、状态展示及 Action Message 的交互闭环。
 - 实施方式：先由可交互的 mock 数据层支撑全部流程；真实消息服务、平台 API、DDL 和跨 owner 后端授权按后续集成任务落地。
 - 依据：[产品 PRD](../../product/message_hub/MessageHub_Web_UI_PRD.md)、[UI DataModel](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md)、[Session State 与 Action Log](../../doc/message_hub/Session%20State%20and%20Action%20Log.md)。
@@ -43,19 +44,19 @@
 
 ## T0. 可交互 mock 数据层与状态边界
 
-- [ ] 将静态 `mockSessions` 作为 seed，引入 MessageHub 内可读写的 mock store / provider。
+- [x] 将静态 `mockSessions` 作为 seed，引入 MessageHub 内可读写的 mock store / provider。
   复用仓库现有 store 模式，不把创建、归档、删除、状态更新分散为组件里互不一致的数组副本。
-- [ ] 按 UI DataModel 补齐 Entity / Session 的 DID、`ownerDid`、稳定 binding、origin、创建策略与有效访问能力。
+- [x] 按 UI DataModel 补齐 Entity / Session 的 DID、`ownerDid`、稳定 binding、origin、创建策略与有效访问能力。
   更新相关 mock 引用和路由默认参数，父子实体均有独立 DID；不同 tunnel 的 Session 不因联系人聚合而合并。
-- [ ] store 提供创建、归档、恢复、删除本地会话、更新共享状态 / 自己的成员状态及读取详情等动作。
+- [x] store 提供创建、归档、恢复、删除本地会话、更新共享状态 / 自己的成员状态及读取详情等动作。
   这些是原型数据层方法，不冒充已经存在的新 KRPC；组件不直接调用尚未落地的后端 API。
-- [ ] 所有 Session 引用以 `(ownerDid, sessionId)` 为作用域；缓存、草稿、选择与 UI 偏好再按 viewer 隔离。
+- [x] 所有 Session 引用以 `(ownerDid, sessionId)` 为作用域；缓存、草稿、选择与 UI 偏好再按 viewer 隔离。
   当前选择由视图持有，废弃 Session 数据里的 `isActive`。
-- [ ] 区分普通消息活动时间、共享 / 成员状态的 updated_at、临时运行态与本地展示偏好，按 T1 更新。
+- [x] 区分普通消息活动时间、共享 / 成员状态的 updated_at、临时运行态与本地展示偏好，按 T1 更新。
   本地生命周期至少表达活动 / 已归档；彻底删除保留必要的 mock 删除标记，避免 seed 重新加载后复活。
-- [ ] 创建、归档、删除及持久字段修改在刷新后可恢复；typing / 临时写入风险确认不恢复。
+- [x] 创建、归档、删除及持久字段修改在刷新后可恢复；typing / 临时写入风险确认不恢复。
   小型元数据可持久化为 mock 差量，长历史沿用现有 reader / IndexedDB 能力；不要把数千条 seed 反复复制到 localStorage。
-- [ ] mock 动作支持可控加载与失败，以及可控时钟 / 状态事件注入，供 T8 验收；调试控制不进入产品正常流程。
+- [x] mock 动作支持可控加载与失败，以及可控时钟 / 状态事件注入，供 T8 验收；调试控制不进入产品正常流程。
 
 验收：同一操作的结果同时体现在 Session 列表、Conversation、详情与实体聚合中，刷新和切换身份不会串数据。
 
@@ -73,30 +74,30 @@
 | 已读、投递进度、失败重试状态更新 | 否 | 未读 / 投递图标更新；同一条消息不重复算活动 |
 | 归档 / 恢复、删除、切换显示过滤、纯时间刷新 | 否 | 生命周期 / 可见集合 / 相对时间文本更新 |
 
-- [ ] 提取统一的消息活动判定与排序逻辑，原型普通 chat / group_msg 和真实内容结果按上表推进。
+- [x] 提取统一的消息活动判定与排序逻辑，原型普通 chat / group_msg 和真实内容结果按上表推进。
   不能对所有 `MsgObject` 一律更新，也不能把整个 state.updated_at 或最后一条 Action Message 的时间拿来排序。
-- [ ] 活动列表置顶优先，其余按 lastActiveAt 降序；时间相同使用稳定 Session ID 次序。
+- [x] 活动列表置顶优先，其余按 lastActiveAt 降序；时间相同使用稳定 Session ID 次序。
   置顶是明确的用户排序操作，不属于状态自动重排。实体列表使用同口径聚合，typing 不使实体跳位。
-- [ ] 相对时间使用同一 lastActiveAt：`<1m` 显示 `now` / “刚刚”，其后取整为 `2m`、`4h`、`3d`。
+- [x] 相对时间使用同一 lastActiveAt：`<1m` 显示 `now` / “刚刚”，其后取整为 `2m`、`4h`、`3d`。
   悬浮时间文本可查看本地完整日期时间；未知时间显示 `—`，未来时间差按 0 处理。
-- [ ] 按分钟刷新相对时间文本；纯时钟 tick 不写 store、不改变 lastActiveAt、不重建消息历史。
-- [ ] 标题主文本继续遵守“个人显示覆盖 → 共享标题 → 派生标题”的优先级。
+- [x] 按分钟刷新相对时间文本；纯时钟 tick 不写 store、不改变 lastActiveAt、不重建消息历史。
+- [x] 标题主文本继续遵守“个人显示覆盖 → 共享标题 → 派生标题”的优先级。
   标题区域按当前 Session 的 member DID 展示 typing / processing 等状态，区分自己与对端，不读取其它 Session 的状态。
-- [ ] 明确摘要与排序的独立性：Action Log 可按已有摘要契约出现，但不能通过摘要 timestamp 反推 lastActiveAt。
+- [x] 明确摘要与排序的独立性：Action Log 可按已有摘要契约出现，但不能通过摘要 timestamp 反推 lastActiveAt。
 
 验收示例：A 最后活动为 2m、B 为 4h；B 开始 typing、修改标题并生成 Action Log 后，B 的标题区域更新，
 时间仍显示 4h、顺序仍在 A 后面；B 收到一条新的普通消息后才正常前移。
 
 ## T2. Session 行布局与可访问操作
 
-- [ ] 删除现有行右侧绝对定位的选中竖条及阴影；用文字字重 / 轻背景和恰当的选择态语义保持当前项可辨认。
-- [ ] 行结构为“来源图标 + 标题 / 状态 + 未读 + 相对时间”；长标题截断，相对时间保留固定空间。
+- [x] 删除现有行右侧绝对定位的选中竖条及阴影；用文字字重 / 轻背景和恰当的选择态语义保持当前项可辨认。
+- [x] 行结构为“来源图标 + 标题 / 状态 + 未读 + 相对时间”；长标题截断，相对时间保留固定空间。
   同平台多 tunnel 要能通过账号 / 连接名称分辨，不只显示两个相同 Telegram 图标。
-- [ ] 鼠标悬浮行时，在时间旁预留的操作位显示删除按钮，退出后隐藏按钮；时间保持可见，避免标题左右跳动。
+- [x] 鼠标悬浮行时，在时间旁预留的操作位显示删除按钮，退出后隐藏按钮；时间保持可见，避免标题左右跳动。
   键盘 focus-within 同样可见；触屏通过行操作菜单或等价可发现入口访问，不能依赖 hover。
-- [ ] 点击删除按钮只打开 T3 的处理对话框，不能先选中该 Session 或触发父行点击。
+- [x] 点击删除按钮只打开 T3 的处理对话框，不能先选中该 Session 或触发父行点击。
   当前整行是 button，改造时避免嵌套 button，确保 Tab / Enter / Space 操作正常。
-- [ ] 删除图标、来源和状态图标有可读标签；中英文文案走现有 i18n。
+- [x] 删除图标、来源和状态图标有可读标签；中英文文案走现有 i18n。
 
 验收：桌面 / 移动端均能选择 Session、识别时间并打开处理对话框；右侧选中竖条完全消失。
 
@@ -110,17 +111,17 @@
 | 归档 | 当前 owner 的 Session 移出活动列表，保留历史、状态与草稿 | 可在“已归档”入口查看与恢复；不自动标已读 |
 | 彻底删除 | 删除当前 owner 的该会话记录、本地历史引用、草稿与个人配置 | 不提供恢复；不删除对端 / 其它 owner 的记录，也不删除实体或断开 tunnel |
 
-- [ ] 对话框标题 / 描述明确目标 Session，提供“归档”“彻底删除”“取消”三个清晰动作；
+- [x] 对话框标题 / 描述明确目标 Session，提供“归档”“彻底删除”“取消”三个清晰动作；
   删除为危险样式，不设为回车默认动作；实际执行前的文案明确“删除此视角中的会话及本地历史，无法恢复”。
-- [ ] 成功后统一更新列表、计数、详情和 reader 引用；失败保留原数据与选择，显示错误并可重试，重复点击不能重复执行。
-- [ ] 处理当前选中 Session 后，选择同实体下排序后的下一条活动 Session；没有则进入正常“尚无会话”状态。
+- [x] 成功后统一更新列表、计数、详情和 reader 引用；失败保留原数据与选择，显示错误并可重试，重复点击不能重复执行。
+- [x] 处理当前选中 Session 后，选择同实体下排序后的下一条活动 Session；没有则进入正常“尚无会话”状态。
   非当前 Session 被处理时不打断当前历史和草稿；最后一个 Session 被删除不删除实体、不自动造一个替代会话。
-- [ ] 增加轻量“已归档”入口和恢复动作，即使活动 Session 为 0 / 1 条也可到达。
+- [x] 增加轻量“已归档”入口和恢复动作，即使活动 Session 为 0 / 1 条也可到达。
   恢复沿用原时间与历史；新普通消息可使归档会话恢复活动，typing / 状态变更日志不能解除归档。
   归档本身不改未读状态，App badge 沿用 owner 的原有统计口径。
-- [ ] mock 删除结果刷新后仍有效；重复 seed / 已有历史重放不能恢复已删除内容。
+- [x] mock 删除结果刷新后仍有效；重复 seed / 已有历史重放不能恢复已删除内容。
   tunnel 仍然连接时，后续真实新消息可以重新形成可见会话，但不能恢复已删除历史；提供可验证的 mock 场景。
-- [ ] 本地会话管理权限独立于 Composer 只读：用户自己的 tunnel Session 可以有归档 / 删除权限，
+- [x] 本地会话管理权限独立于 Composer 只读：用户自己的 tunnel Session 可以有归档 / 删除权限，
   Agent 只读观察视角不开放这些写动作。能力不可用时在详情中说明原因。
 
 注意：当前 `msg.update_record_state` 是单条记录状态修改，`DELETED` 也不等于会话级物理清除。
@@ -128,74 +129,74 @@
 
 ## T4. 新建 Session 从入口到第一条消息
 
-- [ ] 接通 SessionSidebar 的新建按钮；Conversation 标题操作区 / 零会话空态也提供同一入口。
+- [x] 接通 SessionSidebar 的新建按钮；Conversation 标题操作区 / 零会话空态也提供同一入口。
   侧栏在 0 / 1 个 Session 时可以隐藏，但新建和已归档入口不能一起消失。
-- [ ] 入口按当前 owner 与目标实体的 sessionCreation 策略和有效能力判断：默认 Agent 允许，其它实体关闭；
+- [x] 入口按当前 owner 与目标实体的 sessionCreation 策略和有效能力判断：默认 Agent 允许，其它实体关闭；
   显式配置可覆盖。Agent 只读观察禁止创建，能力不足要有原因。
-- [ ] 从实体上下文进入时预填目标；全局入口只展示允许创建的实体，默认可选 Agent。
+- [x] 从实体上下文进入时预填目标；全局入口只展示允许创建的实体，默认可选 Agent。
   简单表单包含目标实体、可选标题、必要时的连接选择；当前先创建 chat，不展示无法完成的 task / workspace 选项。
-- [ ] 标题 trim 后最多 64 字符，空标题按已有默认标题规则；相同标题允许共存，ID 必须稳定且唯一。
+- [x] 标题 trim 后最多 64 字符，空标题按已有默认标题规则；相同标题允许共存，ID 必须稳定且唯一。
   用户给定的创建标题初始化共享状态，个人显示覆盖保持独立。Session 的 owner 与 binding 不能从标题猜测。
-- [ ] 多连接时显式选定连接；在 tunnel 内创建还需 supportsMultipleSessions 与 canCreateRemoteSession。
+- [x] 多连接时显式选定连接；在 tunnel 内创建还需 supportsMultipleSessions 与 canCreateRemoteSession。
   原生 Agent 会话可直接创建；外部仅可读线程时，不能假装创建了远端线程。
-- [ ] 提交时显示进度并防重复，成功后登记空 Session、创建空 reader、更新实体计数、选中新会话并进入 Conversation。
+- [x] 提交时显示进度并防重复，成功后登记空 Session、创建空 reader、更新实体计数、选中新会话并进入 Conversation。
   不复制其它 Session 的历史、草稿或 typing，不生成假的“第一条聊天消息”。
-- [ ] 可写空会话显示“开始对话”并可输入；只读空会话显示“暂无消息”和只读原因。
+- [x] 可写空会话显示“开始对话”并可输入；只读空会话显示“暂无消息”和只读原因。
   第一条普通消息写入同一 Session ID，列表摘要 / lastActiveAt 随之更新；刷新、重新进入后仍可读取。
-- [ ] 取消不创建；失败保留表单值可重试；请求期间切换实体 / owner 或关闭入口后，迟到结果不能覆盖新上下文选择。
+- [x] 取消不创建；失败保留表单值可重试；请求期间切换实体 / owner 或关闭入口后，迟到结果不能覆盖新上下文选择。
 
 验收：默认 Agent 新建两次相同标题得到两个独立会话；Person 默认无法创建，策略显式允许且连接能力满足后可以完成流程。
 
 ## T5. 新增 Session 详情页
 
-- [ ] 新增模块内 `SessionDetails` 视图，复用现有详情面板 / 移动端详情页布局，不另建顶级管理 App。
-- [ ] 将“实体名 / 头像”与“Session 标题 / 详情”拆为独立入口；前者保留 EntityDetails，后者打开 SessionDetails。
+- [x] 新增模块内 `SessionDetails` 视图，复用现有详情面板 / 移动端详情页布局，不另建顶级管理 App。
+- [x] 将“实体名 / 头像”与“Session 标题 / 详情”拆为独立入口；前者保留 EntityDetails，后者打开 SessionDetails。
   更多菜单明确“会话详情”，不能继续所有入口共用 onOpenDetails。
-- [ ] 详情状态使用实体 / Session 可区分的目标；切换会话后更新到新目标，处理掉目标后关闭或进入有效空态。
+- [x] 详情状态使用实体 / Session 可区分的目标；切换会话后更新到新目标，处理掉目标后关闭或进入有效空态。
   返回 Conversation 时保留所选 Session、滚动位置与草稿；无 Session 时禁用会话详情入口。
-- [ ] 详情至少展示：会话标题、类型、对端实体、会话所属身份、来源 / 连接、读写模式及原因、创建时间、
+- [x] 详情至少展示：会话标题、类型、对端实体、会话所属身份、来源 / 连接、读写模式及原因、创建时间、
   最后消息活动时间、活动 / 归档状态。技术标识放可展开的来源信息中，不要求普通用户输入 DID 或 Session ID。
-- [ ] 分开呈现共享状态与“我在此会话中的状态”：共享标题 / 说明、自己的会话昵称；
+- [x] 分开呈现共享状态与“我在此会话中的状态”：共享标题 / 说明、自己的会话昵称；
   按能力编辑并显示保存中 / 失败 / 成功，修改后更新相关展示、生成对应 mock Action Message，遵守 T1 不重排。
-- [ ] 个人显示标题、置顶 / 静音等本地偏好与共享编辑分开；个人标题修改不生成共享日志。
+- [x] 个人显示标题、置顶 / 静音等本地偏好与共享编辑分开；个人标题修改不生成共享日志。
   其它成员状态可在可见范围内只读查看；不增加本轮无关的群角色 / 入群审批管理流程。
-- [ ] 详情提供 T3 的归档 / 删除 / 恢复入口；在 tunnel 会话提供按能力启用写入及恢复只读的入口。
+- [x] 详情提供 T3 的归档 / 删除 / 恢复入口；在 tunnel 会话提供按能力启用写入及恢复只读的入口。
   启用写入须确认“可能造成另一个软件中的会话历史记录错误或不一致”，确认不授予状态编辑权限。
-- [ ] EntityDetails 提供“允许手工创建到该实体的会话”简单配置，按 owner / entity 保存；
+- [x] EntityDetails 提供“允许手工创建到该实体的会话”简单配置，按 owner / entity 保存；
   默认值、显式覆盖与有效能力分开，不能通过此开关绕过平台限制。
 
 验收：打开两种详情可明确分辨正在查看实体还是会话；共享标题、个人显示标题、自己的昵称三个编辑结果互不覆盖。
 
 ## T6. Session 状态呈现与 Action Message
 
-- [ ] 原型能注入共享状态、成员昵称和带有效期的运行态；标题区域只展示当前会话相关的状态。
+- [x] 原型能注入共享状态、成员昵称和带有效期的运行态；标题区域只展示当前会话相关的状态。
   typing 结束 / 过期应恢复正常标题呈现；它不进入持久标题、lastActiveAt 或 Action Log。
-- [ ] 实现共用类别判断：`kind === 'event' && content.machine?.intent === 'buckyos.action_log'`。
+- [x] 实现共用类别判断：`kind === 'event' && content.machine?.intent === 'buckyos.action_log'`。
   读取结构前校验 schema_version；按 data.action 展示入群、主动退出、被移除、改标题 / 昵称等系统消息。
-- [ ] 增加 Action 专用展示分支，排在通用文本 / 图片渲染前；用系统事件行等轻量样式，保留完整消息数据。
+- [x] 增加 Action 专用展示分支，排在通用文本 / 图片渲染前；用系统事件行等轻量样式，保留完整消息数据。
   actor 与 subject 不混用，未知操作者 / 未知动作 / 不支持版本显示合理摘要，不能崩溃或执行载荷里的动作。
-- [ ] 增加“显示 Action Message”个人 UI 开关，默认显示；可按 viewer / owner / Session 记住选择。
+- [x] 增加“显示 Action Message”个人 UI 开关，默认显示；可按 viewer / owner / Session 记住选择。
   特殊展示与隐藏使用同一识别规则，不能按文案匹配，也不能把所有 event 一起隐藏。
-- [ ] 隐藏在 UI 可见投影层完成：原始 reader 和消息 ID / messageIndex 保留，重新计算可见 entries、
+- [x] 隐藏在 UI 可见投影层完成：原始 reader 和消息 ID / messageIndex 保留，重新计算可见 entries、
   时间分隔和 totalCount。不能靠 renderer 返回 null 隐藏，否则 fallback 仍可能重新显示。
-- [ ] 过滤本身不写后端、不改未读、归档、状态或 lastActiveAt；重新显示恢复历史。
+- [x] 过滤本身不写后端、不改未读、归档、状态或 lastActiveAt；重新显示恢复历史。
   避免空白虚拟行 / 孤立日期，保留可见锚点；全被过滤时提示“当前消息已被过滤”，不是“尚无历史”。
-- [ ] 模拟状态修改成功后生成一条对应日志；失败、无变化、重复请求不重复生成。
+- [x] 模拟状态修改成功后生成一条对应日志；失败、无变化、重复请求不重复生成。
   纯状态更新和它产生的日志都遵守 T1，不因 Action renderer / 过滤开关变化而重排 Session。
 
 ## T7. 承接之前的实体、tunnel 与 Agent 视角设计
 
-- [ ] mock 覆盖一个实体对应多个 tunnel、同一 tunnel 多 Session，以及父实体 / 独立子实体各自的会话。
+- [x] mock 覆盖一个实体对应多个 tunnel、同一 tunnel 多 Session，以及父实体 / 独立子实体各自的会话。
   建立连接自动添加默认空 Session，重复发现幂等；只有联系人资料时允许零会话。
-- [ ] tunnel Session 默认只读；有能力时通过 T5 风险确认启用当前会话写入，并持续显示来源与模式。
+- [x] tunnel Session 默认只读；有能力时通过 T5 风险确认启用当前会话写入，并持续显示来源与模式。
   刷新 / 切换 owner 清除临时确认；连接失效或绑定未知时禁用发送，不自动换 tunnel。
-- [ ] Composer 输入、粘贴 / 拖拽附件、快捷键发送和失败重试共用能力判断；新建入口与状态编辑分别判断权限。
-- [ ] 默认入口始终是登录用户视角；从 Agent 主页增加“查看 Agent 的会话”入口，进入 Agent owner 的只读原型视角。
+- [x] Composer 输入、粘贴 / 拖拽附件、快捷键发送和失败重试共用能力判断；新建入口与状态编辑分别判断权限。
+- [x] 默认入口始终是登录用户视角；从 Agent 主页增加“查看 Agent 的会话”入口，进入 Agent owner 的只读原型视角。
   与“用户和 Agent 对话”入口分开，路由和桌面 Panel 启动参数都传递明确 context。
-- [ ] Agent 观察显示清楚的 owner / 只读标识，允许查看 Session 和两种详情；
+- [x] Agent 观察显示清楚的 owner / 只读标识，允许查看 Session 和两种详情；
   禁止新建、发送、归档 / 删除、状态修改及修改 Agent 的已读 / 草稿 / 配置。
   允许观察者自己的纯 UI 展示过滤，不把偏好写进 Agent 状态。
-- [ ] 退出 / 切换视角后隔离选择、分页、reader、草稿、临时状态和迟到响应。
+- [x] 退出 / 切换视角后隔离选择、分页、reader、草稿、临时状态和迟到响应。
   Agent 未读不加入用户 badge；无查看权限显示拒绝态，不能回落到其它身份缓存。
 
 ## T8. 验收、回归与文档交付
@@ -217,11 +218,11 @@
 | 用户 / Agent owner 同名 Session ID、权限拒绝、迟到响应 | 数据隔离，观察无写入，纯 UI 偏好不污染 Agent |
 | `/messagehub` 独立页面与桌面内嵌窗口，1440px / 375px | 创建、处理对话框、两类详情和返回路径均可用 |
 
-- [ ] 扩展 `tests/e2e/pages/messagehub.spec.ts`；复用原有长历史滚动和 Composer 回归。
+- [x] 扩展 `tests/e2e/pages/messagehub.spec.ts`；复用原有长历史滚动和 Composer 回归。
   涉及 Agent 主页入口时扩展 `users-agents.spec.ts` 的相关流程。
-- [ ] 排序 / 活动判定等纯数据逻辑可按现有 `tests/datamodel/*.test.ts` 的 Deno 测试方式验证，
+- [x] 排序 / 活动判定等纯数据逻辑可按现有 `tests/datamodel/*.test.ts` 的 Deno 测试方式验证，
   时间边界使用可控时钟，避免真实等待几分钟。
-- [ ] 在 `src/frame/desktop` 执行与本改动相关的检查：
+- [x] 在 `src/frame/desktop` 执行与本改动相关的检查：
 
 ```bash
 pnpm run check
@@ -229,12 +230,12 @@ pnpm run build
 pnpm exec playwright test tests/e2e/pages/messagehub.spec.ts --project=chromium
 ```
 
-- [ ] 若修改 Agent 主页，补跑对应 `users-agents.spec.ts`；对变更的 TS / TSX 文件运行 ESLint。
+- [x] 若修改 Agent 主页，补跑对应 `users-agents.spec.ts`；对变更的 TS / TSX 文件运行 ESLint。
   Playwright 使用现有 config 的本地 dev server。不要把原型测试通过报告成真实 tunnel / 后端删除已经验证。
-- [ ] 保留桌面 / 移动端 Session 行、创建表单、归档 / 删除对话框、SessionDetails、Action 展示及 Agent 观察的截图证据。
-- [ ] 更新 `UI_DATAMODEL.md` 的时间口径、Session 生命周期 / 详情 / 过滤状态，更新
+- [x] 保留桌面 / 移动端 Session 行、创建表单、归档 / 删除对话框、SessionDetails、Action 展示及 Agent 观察的截图证据。
+- [x] 更新 `UI_DATAMODEL.md` 的时间口径、Session 生命周期 / 详情 / 过滤状态，更新
   `MessageHub_Current_UI_Model_Data.md` 为实际落地字段；后端依赖仍明确标为未接入。
-- [ ] 最终交付说明列出已完成 TODO、真实运行的检查、截图位置与未实现的后端能力，不以“按钮已出现”代替流程完成。
+- [x] 最终交付说明列出已完成 TODO、真实运行的检查、截图位置与未实现的后端能力，不以“按钮已出现”代替流程完成。
 
 ## 3. 后端集成边界（记录依赖，不阻塞本轮 mock 原型）
 

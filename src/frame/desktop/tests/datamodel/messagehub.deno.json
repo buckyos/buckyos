@@ -1,0 +1,5 @@
+{
+  "compilerOptions": { "lib": ["deno.ns", "esnext", "dom", "dom.iterable"] },
+  "nodeModulesDir": "manual",
+  "unstable": ["sloppy-imports"]
+}

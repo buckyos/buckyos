@@ -20,9 +20,11 @@ import {
   type ConversationComposerHandle,
   type ConversationComposerSubmitPayload,
 } from './conversation/input/ConversationComposer'
-import { isTransferWithFiles } from './conversation/input/attachmentDraft'
+import { isTransferWithFiles, type ComposerAttachmentInput } from './conversation/input/attachmentDraft'
 import type { DID } from './protocol/msgobj'
-import type { Entity, Session } from './types'
+import type { Entity, Session, SessionAccess, MessageHubContext } from './types'
+import { useMessageHubRuntime } from './mock/hooks'
+import { defaultContext, messageHubStore } from './mock/store'
 
 interface ConversationViewProps {
   entity: Entity
@@ -32,7 +34,19 @@ interface ConversationViewProps {
   onBack: () => void
   onOpenSessionSidebar: () => void
   onOpenDetails: () => void
-  onSendMessage: (payload: ConversationComposerSubmitPayload) => void
+  onSendMessage: (payload: ConversationComposerSubmitPayload) => void | Promise<void>
+  context?: MessageHubContext
+  access?: SessionAccess | null
+  title?: string
+  onOpenSessionDetails?: () => void
+  onCreate?: () => void
+  creationReason?: string
+  draft?: string
+  draftAttachments?: ComposerAttachmentInput[]
+  onAttachmentsChange?: (attachments: ComposerAttachmentInput[]) => Promise<void> | undefined
+  onDraftChange?: (value: string) => Promise<void> | undefined
+  showActions?: boolean
+  onShowActions?: (value: boolean) => Promise<void>
   sessionCount: number
   leadingPane?: ReactNode
   isSessionSidebarOpen?: boolean
@@ -49,11 +63,16 @@ export function ConversationView({
   onOpenSessionSidebar,
   onOpenDetails,
   onSendMessage,
-  sessionCount,
+  context = defaultContext, access, title = session?.title ?? '', onOpenSessionDetails, onCreate, creationReason, draft, draftAttachments, onAttachmentsChange, onDraftChange, showActions = true, onShowActions,
   leadingPane = null,
   isSessionSidebarOpen = false,
 }: ConversationViewProps) {
   const { t } = useI18n()
+  useMessageHubRuntime()
+  const runtime = session ? messageHubStore.runtimeFor(context, session.id) : []
+  const canSend = access === undefined || access?.mode === 'read_write'
+  const [filterError, setFilterError] = useState(false)
+  const [pendingFilter, setPendingFilter] = useState<boolean | null>(null)
   const isGroup = entity.type === 'group'
   const bodyRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<ConversationComposerHandle>(null)
@@ -82,13 +101,14 @@ export function ConversationView({
     }
   }, [])
 
-  const handleSendMessage = useCallback((payload: ConversationComposerSubmitPayload) => {
-    onSendMessage(payload)
+  const handleSendMessage = useCallback(async (payload: ConversationComposerSubmitPayload) => {
+    if (!canSend) throw Error('permission_denied')
+    await onSendMessage(payload)
     historyPaneRef.current?.scrollToBottom()
-  }, [onSendMessage])
+  }, [onSendMessage, canSend])
 
   const handleDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isTransferWithFiles(event.dataTransfer)) {
+    if (!canSend || !isTransferWithFiles(event.dataTransfer)) {
       return
     }
 
@@ -98,7 +118,7 @@ export function ConversationView({
   }
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isTransferWithFiles(event.dataTransfer)) {
+    if (!canSend || !isTransferWithFiles(event.dataTransfer)) {
       return
     }
 
@@ -108,7 +128,7 @@ export function ConversationView({
   }
 
   const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isTransferWithFiles(event.dataTransfer)) {
+    if (!canSend || !isTransferWithFiles(event.dataTransfer)) {
       return
     }
 
@@ -121,7 +141,7 @@ export function ConversationView({
   }
 
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!isTransferWithFiles(event.dataTransfer)) {
+    if (!canSend || !isTransferWithFiles(event.dataTransfer)) {
       return
     }
 
@@ -157,57 +177,20 @@ export function ConversationView({
           <ArrowLeft size={20} />
         </button>
 
-        {sessionCount > 1 ? (
-          <button
-            onClick={onOpenSessionSidebar}
-            className="p-1.5 rounded-lg"
-            style={{
-              color: isSessionSidebarOpen ? 'var(--cp-accent)' : 'var(--cp-muted)',
-              background: isSessionSidebarOpen
-                ? 'color-mix(in srgb, var(--cp-accent) 12%, transparent)'
-                : 'transparent',
-            }}
-            type="button"
-          >
-            <Menu size={18} />
-          </button>
-        ) : null}
-
-        <button
-          onClick={onOpenDetails}
-          className="flex items-center gap-2 flex-1 min-w-0 text-left"
-          type="button"
-        >
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <EntityTypeIcon type={entity.type} />
-              <span
-                className="font-semibold text-sm truncate"
-                style={{ color: 'var(--cp-text)' }}
-              >
-                {entity.name}
-              </span>
-            </div>
-            <p
-              className="text-xs truncate"
-              style={{ color: 'var(--cp-muted)' }}
-            >
-              {session?.title !== 'Direct Message'
-                ? session?.title
-                : entity.statusText}
-            </p>
-          </div>
-        </button>
-
-        <button
-          onClick={onOpenDetails}
-          className="p-1.5 rounded-lg"
-          style={{ color: 'var(--cp-muted)' }}
-          type="button"
-        >
-          <MoreVertical size={18} />
-        </button>
+        <button onClick={onOpenSessionSidebar} aria-label={t('messagehub.sessions')} className="p-2 min-h-11" style={{ color: isSessionSidebarOpen ? 'var(--cp-accent)' : 'var(--cp-muted)' }} type="button"><Menu size={18} /></button>
+        <div className="min-w-0 flex-1">
+          <button onClick={onOpenDetails} className="flex max-w-full items-center gap-1.5 text-left" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`}><EntityTypeIcon type={entity.type} /><span className="truncate text-sm font-semibold">{entity.name}</span></button>
+          <button onClick={onOpenSessionDetails} disabled={!session} type="button" className="block max-w-full truncate text-xs text-[color:var(--cp-muted)]" aria-label={t('messagehub.sessionDetails')}>{session ? title : t('messagehub.noSessions')}</button>
+          <div role="status" data-testid="session-runtime" className="truncate text-xs text-[color:var(--cp-accent)]">{runtime.map(state => `${state.memberDid === context.ownerDid ? t('messagehub.you') : session?.members[state.memberDid]?.nickname || entity.name} · ${t(`messagehub.runtime.${state.status}`)}${state.statusLine ? ` · ${state.statusLine}` : ''}`).join(' · ')}</div>
+        </div>
+        {onCreate && <button type="button" onClick={onCreate} disabled={!!creationReason} title={creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.newSession')} aria-label={t('messagehub.newSession')} className="min-h-11 min-w-11 text-lg disabled:opacity-40">+</button>}
+        <button onClick={onOpenSessionDetails} disabled={!session} aria-label={t('messagehub.sessionDetails')} className="min-h-11 p-2 disabled:opacity-40" type="button"><MoreVertical size={18} /></button>
       </div>
+      {session && onShowActions && <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-2 px-3 py-1 text-[11px] text-[color:var(--cp-muted)]">
+        <span>{session.binding.kind === 'tunnel' ? session.binding.connectionName : 'BuckyOS'} · {t(canSend ? 'messagehub.readWrite' : 'messagehub.readOnly')}</span>
+        <label className="flex min-h-8 items-center gap-1"><input type="checkbox" checked={pendingFilter ?? showActions} disabled={pendingFilter !== null} onChange={event => { const value = event.target.checked; setPendingFilter(value); setFilterError(false); void onShowActions?.(value).catch(() => setFilterError(true)).finally(() => setPendingFilter(null)) }} />{t('messagehub.showActions')}</label>
+        {filterError && <span role="alert">{t('messagehub.operationFailed')}</span>}
+      </div>}
 
       <div className="flex min-h-0 flex-1">
         {leadingPane}
@@ -223,17 +206,23 @@ export function ConversationView({
             <ConversationHistoryPane
               ref={historyPaneRef}
               reader={messageReader}
+              showActions={showActions}
+              emptyLabel={t(!session ? 'messagehub.noSessions' : canSend ? 'messagehub.startConversation' : 'messagehub.noMessages')}
               selfDid={selfDid}
               isGroup={isGroup}
             />
           </div>
 
-          <ConversationComposer
+          {canSend ? <ConversationComposer
+            initialDraft={draft}
+            initialAttachments={draftAttachments}
+            onAttachmentsChange={onAttachmentsChange}
+            onDraftChange={onDraftChange}
             ref={composerRef}
             placeholder={t('messagehub.inputPlaceholder', 'Message...')}
             maxHeight={composerMaxHeight}
             onSendMessage={handleSendMessage}
-          />
+          /> : <div className="p-4 text-center text-xs text-[color:var(--cp-muted)]">{access?.readOnlyReason ? t(`messagehub.reason.${access.readOnlyReason}`) : creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.noSessions')}</div>}
         </div>
       </div>
 

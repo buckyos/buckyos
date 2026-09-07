@@ -21,7 +21,7 @@ import {
 import type { AppContentLoaderProps } from '../types'
 import { createCodeAssistantMockReaders } from './mockHistory'
 
-const codeAssistantEntityId = 'agent-coder'
+const codeAssistantEntityId = 'did:buckyos:agent:codeassistant'
 const EMPTY_READER = InMemoryConversationMessageReader.empty()
 
 export function CodeAssistantAppPanel(props: AppContentLoaderProps) {

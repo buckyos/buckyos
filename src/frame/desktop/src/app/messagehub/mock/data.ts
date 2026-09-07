@@ -12,7 +12,7 @@ import type {
 
 /* ── Entities ── */
 
-export const mockEntities: Entity[] = [
+const seedEntities: Entity[] = [
   {
     id: 'agent-coder',
     type: 'agent',
@@ -373,14 +373,13 @@ export const mockEntities: Entity[] = [
 
 /* ── Sessions ── */
 
-export const mockSessions: Record<string, Session[]> = {
+const seedSessions: Record<string, Pick<Session, 'id' | 'entityId' | 'title' | 'type' | 'source' | 'lastActiveAt' | 'unreadCount'>[]> = {
   'agent-coder': [
     {
       id: 'session-coder-1',
       entityId: 'agent-coder',
       title: 'Auth Module Refactor',
       type: 'chat',
-      isActive: true,
       lastActiveAt: Date.now() - 2 * 60_000,
       unreadCount: 3,
     },
@@ -389,8 +388,7 @@ export const mockSessions: Record<string, Session[]> = {
       entityId: 'agent-coder',
       title: 'API Documentation',
       type: 'chat',
-      isActive: false,
-      lastActiveAt: Date.now() - 3600_000,
+      lastActiveAt: Date.now() - 4 * 3600_000,
       unreadCount: 0,
     },
     {
@@ -399,7 +397,6 @@ export const mockSessions: Record<string, Session[]> = {
       title: 'Bug Investigation #142',
       type: 'task',
       source: 'linear',
-      isActive: false,
       lastActiveAt: Date.now() - 2 * 3600_000,
       unreadCount: 0,
     },
@@ -410,7 +407,6 @@ export const mockSessions: Record<string, Session[]> = {
       entityId: 'person-alice',
       title: 'Direct Message',
       type: 'chat',
-      isActive: true,
       lastActiveAt: Date.now() - 15 * 60_000,
       unreadCount: 1,
     },
@@ -421,7 +417,6 @@ export const mockSessions: Record<string, Session[]> = {
       entityId: 'group-team',
       title: 'General',
       type: 'chat',
-      isActive: true,
       lastActiveAt: Date.now() - 30 * 60_000,
       unreadCount: 8,
     },
@@ -432,7 +427,6 @@ export const mockSessions: Record<string, Session[]> = {
       entityId: 'group-team-design',
       title: 'Design Discussion',
       type: 'chat',
-      isActive: true,
       lastActiveAt: Date.now() - 45 * 60_000,
       unreadCount: 2,
     },
@@ -443,7 +437,6 @@ export const mockSessions: Record<string, Session[]> = {
       entityId: 'group-team-backend',
       title: 'Backend Sync',
       type: 'chat',
-      isActive: true,
       lastActiveAt: Date.now() - 2 * 3600_000,
       unreadCount: 0,
     },
@@ -454,7 +447,6 @@ export const mockSessions: Record<string, Session[]> = {
       entityId: 'service-release-hub',
       title: 'Release Overview',
       type: 'workspace',
-      isActive: true,
       lastActiveAt: Date.now() - 22 * 60_000,
       unreadCount: 4,
     },
@@ -465,7 +457,6 @@ export const mockSessions: Record<string, Session[]> = {
       entityId: 'release-war-room',
       title: 'War Room',
       type: 'chat',
-      isActive: true,
       lastActiveAt: Date.now() - 12 * 60_000,
       unreadCount: 2,
     },
@@ -476,7 +467,6 @@ export const mockSessions: Record<string, Session[]> = {
       entityId: 'release-design-signoff',
       title: 'Design Sign-off',
       type: 'chat',
-      isActive: true,
       lastActiveAt: Date.now() - 35 * 60_000,
       unreadCount: 1,
     },
@@ -487,7 +477,6 @@ export const mockSessions: Record<string, Session[]> = {
       entityId: 'release-customer-watch',
       title: 'Customer Watch',
       type: 'chat',
-      isActive: true,
       lastActiveAt: Date.now() - 95 * 60_000,
       unreadCount: 0,
     },
@@ -498,7 +487,6 @@ export const mockSessions: Record<string, Session[]> = {
       entityId: 'release-build-bot',
       title: 'Build Bot',
       type: 'chat',
-      isActive: true,
       lastActiveAt: Date.now() - 22 * 60_000,
       unreadCount: 0,
     },
@@ -509,7 +497,6 @@ export const mockSessions: Record<string, Session[]> = {
       entityId: 'release-qa-bot',
       title: 'QA Sentinel',
       type: 'chat',
-      isActive: true,
       lastActiveAt: Date.now() - 8 * 60_000,
       unreadCount: 1,
     },
@@ -520,7 +507,6 @@ export const mockSessions: Record<string, Session[]> = {
       entityId: 'release-deploy-gate',
       title: 'Deploy Gate',
       type: 'workspace',
-      isActive: true,
       lastActiveAt: Date.now() - 18 * 60_000,
       unreadCount: 0,
     },
@@ -531,7 +517,6 @@ export const mockSessions: Record<string, Session[]> = {
       entityId: 'person-bob',
       title: 'Direct Message',
       type: 'chat',
-      isActive: true,
       lastActiveAt: Date.now() - 3600_000,
       unreadCount: 0,
     },
@@ -559,6 +544,7 @@ const participantDids = {
 } as const
 
 export function getMockEntityDid(entityId: string) {
+  if (entityId.startsWith('did:')) return entityId
   return mockEntityDids[entityId] ?? `did:buckyos:entity:${entityId}`
 }
 
@@ -574,7 +560,7 @@ export function createOutgoingMockMessage({
   createdAtMs?: number
 }): MessageObject {
   return createChatMessage({
-    id: `msg-local-${createdAtMs}`,
+    id: `msg-local-${crypto.randomUUID()}`,
     from: MOCK_SELF_DID,
     to: [getMockEntityDid(entityId)],
     senderName: 'You',
@@ -898,7 +884,7 @@ function createStatusMessage({
 
 /* ── Entity Details ── */
 
-export const mockEntityDetails: Record<string, EntityDetail> = {
+const seedEntityDetails: Record<string, EntityDetail> = {
   'agent-coder': {
     id: 'agent-coder',
     type: 'agent',
@@ -985,3 +971,28 @@ export const mockEntityDetails: Record<string, EntityDetail> = {
     createdAt: Date.now() - 45 * 24 * 3600_000,
   },
 }
+
+function normalizeEntity(entity: Entity): Entity {
+  return {
+    ...entity,
+    id: getMockEntityDid(entity.id),
+    children: entity.children?.map(normalizeEntity),
+    childrenSections: entity.childrenSections?.map(section => ({ ...section, childIds: section.childIds.map(getMockEntityDid) })),
+  }
+}
+
+export const mockEntities = [...seedEntities.map(normalizeEntity), { id: 'did:bns:assistant.alice', type: 'agent' as const, name: 'Bucky Assistant', tags: ['agent'], unreadCount: 0, lastActiveAt: 0 }]
+export const mockEntityDetails = Object.fromEntries(Object.entries(seedEntityDetails).map(([id, detail]) => [getMockEntityDid(id), { ...detail, ...normalizeEntity(detail) }]))
+export const mockSessions: Record<string, Session[]> = Object.fromEntries(Object.entries(seedSessions).map(([id, sessions]) => [getMockEntityDid(id), sessions.map(session => ({
+  ...session,
+  entityId: getMockEntityDid(id),
+  ownerDid: MOCK_SELF_DID,
+  binding: session.source && session.source !== 'buckyos'
+    ? { kind: 'tunnel' as const, tunnelInstanceId: `${session.source}-work`, endpointDid: `did:${session.source}:${id}`, connectionName: `${session.source} · Work`, supportsMultipleSessions: false, canCreateRemoteSession: false, canSend: true, connected: true }
+    : { kind: 'native' as const, targetDid: getMockEntityDid(id) },
+  origin: 'remote_context' as const,
+  lifecycle: 'active' as const,
+  createdAt: session.lastActiveAt - 86400000,
+  shared: { title: session.title, description: '', updatedAt: session.lastActiveAt },
+  members: { [MOCK_SELF_DID]: { nickname: 'Me', updatedAt: session.lastActiveAt }, [getMockEntityDid(id)]: { nickname: seedEntities.find(entity => entity.id === id)?.name ?? id, updatedAt: session.lastActiveAt } },
+}))]))

@@ -1,9 +1,11 @@
+import { messageHubEn, messageHubZh } from './messagehub'
 import { appServiceEn, appServiceZh } from './app-service'
 import type { SupportedLocale } from '../models/ui'
 
 type Dictionary = Record<string, string>
 
 const en: Dictionary = {
+  ...messageHubEn,
   'shell.title': 'BuckyOS Web Desktop',
   'shell.subtitle': 'Thin desktop layer for layout, launch, and in-place windows.',
   'shell.home': 'Home',
@@ -914,6 +916,7 @@ const en: Dictionary = {
 }
 
 const zhCN: Dictionary = {
+  ...messageHubZh,
   'shell.title': 'BuckyOS Web Desktop',
   'shell.subtitle': '用于布局、启动与同容器窗口承载的轻量桌面层。',
   'shell.home': '主页',

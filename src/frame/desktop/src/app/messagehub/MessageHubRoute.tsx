@@ -1,9 +1,11 @@
 import { useSearchParams } from 'react-router-dom'
+import { messageHubRouteContext } from './launch'
+import { getMockEntityDid } from './mock/data'
 import { MessageHubView } from './MessageHubView'
 
 export function MessageHubRoute() {
   const [searchParams] = useSearchParams()
-  const entityId = searchParams.get('entityId') ?? 'agent-coder'
+  const entityId = searchParams.get('entityId') ?? getMockEntityDid('agent-coder')
 
   return (
     <main className="min-h-dvh bg-[color:var(--cp-bg)] p-0 md:p-5">
@@ -16,7 +18,7 @@ export function MessageHubRoute() {
           backdropFilter: 'blur(20px)',
         }}
       >
-        <MessageHubView initialEntityId={entityId} />
+        <MessageHubView initialEntityId={entityId} context={messageHubRouteContext(searchParams)} />
       </div>
     </main>
   )

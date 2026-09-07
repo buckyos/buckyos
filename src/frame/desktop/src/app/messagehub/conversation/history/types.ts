@@ -67,6 +67,7 @@ export type ConversationListItem =
     }
 
 export interface ConversationProjection {
+  readonly showActions: boolean
   readonly readerKey: string
   readonly messageCount: number
   readonly tailStatusCount: number

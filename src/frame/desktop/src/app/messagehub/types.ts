@@ -13,6 +13,7 @@ export interface EntityChildrenSection {
 export interface Entity {
   id: string
   type: EntityType
+  sessionCreation?: { policy: CreationPolicy; canCreate: boolean; unavailableReason?: string }
   name: string
   avatar?: string
   /** Short status line, e.g. "online", "last seen 2h ago" */
@@ -52,11 +53,18 @@ export type SessionType = 'chat' | 'task' | 'workspace'
 export interface Session {
   id: string
   entityId: string
+  ownerDid: string
+  binding: SessionBinding
+  origin: 'manual' | 'connection' | 'remote_context' | 'unknown'
+  lifecycle: 'active' | 'archived'
+  createdAt: number
+  shared: { title: string; description: string; updatedAt: number }
+  members: Record<string, { nickname: string; updatedAt: number }>
+  lastMessage?: MessagePreview
   title: string
   type: SessionType
   /** Protocol/tunnel source label */
   source?: string
-  isActive: boolean
   lastActiveAt: number
   unreadCount: number
 }
@@ -95,5 +103,41 @@ export interface MessageHubState {
   searchQuery: string
   mobileView: MobileView
   showSessionSidebar: boolean
-  showDetails: boolean
+  detailsTarget: 'entity' | 'session' | null
+}
+
+export type CreationPolicy = 'default' | 'allow' | 'deny'
+export type SessionBinding =
+  | { kind: 'native'; targetDid: string }
+  | { kind: 'tunnel'; tunnelInstanceId: string; endpointDid: string; connectionName: string; remoteContextId?: string; supportsMultipleSessions: boolean; canCreateRemoteSession: boolean; canSend: boolean; connected: boolean; revision?: number }
+  | { kind: 'unknown' }
+
+export interface SessionAccess {
+  mode: 'read_only' | 'read_write'
+  canManage: boolean
+  canEnableWrite: boolean
+  canEditPresentation: boolean
+  canEditSharedState: boolean
+  canEditOwnMemberState: boolean
+  readOnlyReason?: string
+}
+
+export interface SessionPreferences {
+  title: string
+  pinned: boolean
+  muted: boolean
+  showActions: boolean
+}
+
+export interface MessageHubContext {
+  viewerDid: string
+  ownerDid: string
+  mode: 'self' | 'observe'
+}
+
+export interface RuntimeState {
+  memberDid: string
+  status: 'typing' | 'processing' | 'active'
+  statusLine?: string
+  expiresAt: number
 }
