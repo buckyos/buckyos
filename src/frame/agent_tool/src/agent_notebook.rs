@@ -120,7 +120,7 @@ impl NotebookKind {
             other => {
                 return Err(NotebookError::Storage(format!(
                     "bad notebook kind: {other}"
-                )))
+                )));
             }
         })
     }
@@ -143,7 +143,7 @@ impl NotebookStatus {
             other => {
                 return Err(NotebookError::Storage(format!(
                     "bad notebook status: {other}"
-                )))
+                )));
             }
         })
     }
@@ -584,7 +584,7 @@ impl NotebookItemRemarkStatus {
             other => {
                 return Err(NotebookError::Storage(format!(
                     "bad item remark status: {other}"
-                )))
+                )));
             }
         })
     }
@@ -2567,7 +2567,7 @@ fn default_kind_for_id(id: &str) -> NotebookKind {
 /// 1. trim leading/trailing whitespace,
 /// 2. collapse internal whitespace runs to a single space,
 /// 3. lowercase,
-/// 4. only ASCII [A-Za-z0-9 -], at least one alphanumeric,
+/// 4. only Unicode alphanumeric plus space/dash, at least one alphanumeric,
 /// 5. UTF-8 byte length 2–32,
 /// 6. de-dupe and sort (tag order is irrelevant per §2.6, so a canonical
 ///    sorted form gives us a stable read_scope_hash).
@@ -2602,14 +2602,14 @@ fn validate_tag(tag: &str) -> Result<()> {
     }
     let mut has_alnum = false;
     for c in tag.chars() {
-        let ok = matches!(c, 'a'..='z' | '0'..='9' | ' ' | '-');
+        let ok = c.is_alphanumeric() || matches!(c, ' ' | '-');
         if !ok {
             return Err(NotebookError::InvalidTag(format!(
                 "tag has forbidden character {:?}: {:?}",
                 c, tag
             )));
         }
-        if c.is_ascii_alphanumeric() {
+        if c.is_alphanumeric() {
             has_alnum = true;
         }
     }
@@ -3670,8 +3670,11 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(ok, vec!["phone case".to_string()]); // dedup + drop "*"
+        assert_eq!(
+            normalize_tags(&["绘画创作".to_string()]).unwrap(),
+            vec!["绘画创作".to_string()]
+        );
         assert!(normalize_tags(&["bad\"tag".to_string()]).is_err());
-        assert!(normalize_tags(&["中文".to_string()]).is_err());
         assert!(normalize_tags(&["x".to_string()]).is_err()); // too short
     }
 
@@ -4027,13 +4030,12 @@ mod tests {
                 detect_conflicts: true,
             })
             .unwrap();
-        assert!(r
-            .possible_conflicts
-            .iter()
-            .any(|c| c.reason == ConflictReason::TagOverlap
+        assert!(r.possible_conflicts.iter().any(|c| {
+            c.reason == ConflictReason::TagOverlap
                 && c.matched_tags
                     .as_ref()
-                    .is_some_and(|m| m.contains(&"tone".to_string()))));
+                    .is_some_and(|m| m.contains(&"tone".to_string()))
+        }));
     }
 
     #[test]

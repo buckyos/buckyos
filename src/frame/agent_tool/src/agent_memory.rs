@@ -2143,7 +2143,7 @@ fn apply_set_status(
             return Err(AgentMemoryError::Invalid(format!(
                 "unsupported target_kind {}",
                 op.target_kind
-            )))
+            )));
         }
     }
     Ok(())
@@ -2376,7 +2376,7 @@ fn normalize_key(raw: &str) -> Result<String> {
                 _ => {
                     return Err(AgentMemoryError::Invalid(format!(
                         "key segment is not a normal path component: {seg}"
-                    )))
+                    )));
                 }
             }
         }
@@ -2545,13 +2545,13 @@ fn validate_tag(tag: &str) -> Result<()> {
     }
     let mut has_alnum = false;
     for c in t.chars() {
-        let ok = matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | ' ' | '-');
+        let ok = c.is_alphanumeric() || matches!(c, ' ' | '-');
         if !ok {
             return Err(AgentMemoryError::Invalid(format!(
                 "tag has forbidden character {c:?}: {t:?}"
             )));
         }
-        if c.is_ascii_alphanumeric() {
+        if c.is_alphanumeric() {
             has_alnum = true;
         }
     }
@@ -3073,9 +3073,9 @@ mod tests {
     fn tag_validation_enforces_charset() {
         assert!(validate_tag("dental").is_ok());
         assert!(validate_tag("phone case").is_ok());
+        assert!(validate_tag("绘画创作").is_ok());
         assert!(validate_tag("a").is_err());
         assert!(validate_tag("with\"quote").is_err());
-        assert!(validate_tag("中文").is_err());
     }
 
     #[test]
