@@ -5,8 +5,9 @@ import { InMemoryConversationMessageReader } from '../conversation/history/data-
 import type { ConversationMessageReader } from '../conversation/history/types'
 import { getMessageStableId, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, isMessageActivity, memberStateSchema, presentationSchema, sessionAccess, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
-import type { CreationPolicy, Entity, MessageHubContext, RuntimeState, Session, SessionBinding, SessionPreferences } from '../types'
-import { getMockEntityDid, MOCK_SELF_DID, mockEntities, mockMessageReaders, mockSessions } from './data'
+import type { CreationPolicy, Entity, EntityDetail, MessageHubContext, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
+import { createOutgoingMockMessage, getMockEntityDid, MOCK_SELF_DID, mockEntities, mockEntityDetails, mockMessageReaders, mockSessions } from './data'
+import type { ConnectionChoice, EntityAdmission, MessageHubStore, OutgoingPayload, OwnerStatus } from '../store/types'
 
 type Snapshot = {
   sessions: Record<string, Session>
@@ -53,7 +54,8 @@ function openDatabase(): Promise<IDBDatabase> {
   })
 }
 
-export class MessageHubMockStore {
+export class MessageHubMockStore implements MessageHubStore {
+  readonly isMock = true
   private snapshot = seedSnapshot(Date.now())
   private listeners = new Set<() => void>()
   private readers = new Map<string, ConversationMessageReader>()
@@ -71,6 +73,27 @@ export class MessageHubMockStore {
   private delayMs = 0
   private failure?: string
   private revokedOwners = new Set<string>()
+  constructor() {
+    if (import.meta.env.DEV && typeof window !== 'undefined') Object.assign(window, { __messageHubMock: this })
+  }
+  defaultContext() { return defaultContext }
+  ownerStatus(context: MessageHubContext): OwnerStatus { return this.canView(context) ? { phase: 'ready' } : { phase: 'denied' } }
+  ensureOwner() { return this.initialize() }
+  startSync() { return () => {} }
+  findEntity(_context: MessageHubContext, id: string) { return findEntity(id) }
+  hasMoreEntities() { return false }
+  async loadMoreEntities() {}
+  entityDetail(context: MessageHubContext, id: string): EntityDetail | null {
+    const entity = this.entities(context).flatMap(item => [item, ...(item.children ?? [])]).find(item => item.id === id)
+    return entity ? { ...mockEntityDetails[id], ...entity } : null
+  }
+  admission(): EntityAdmission | null { return null }
+  async setAdmission(): Promise<void> { throw Error('backend_unavailable') }
+  historyStatus(): 'ready' { return 'ready' }
+  hasOlder() { return false }
+  async loadOlder() { return false }
+  async markRead() {}
+  access(context: MessageHubContext, session: Session, confirmed: boolean): SessionAccess { return sessionAccess(context, session, confirmed) }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   getSnapshot = () => this.snapshot
   subscribeTime = (listener: () => void) => { this.timeListeners.add(listener); return () => { this.timeListeners.delete(listener) } }
@@ -175,9 +198,9 @@ export class MessageHubMockStore {
     }
     return mockEntities.map(project).sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))
   }
-  connections(context: MessageHubContext, entityId: string) {
+  connections(context: MessageHubContext, entityId: string): ConnectionChoice[] {
     const entity = findEntity(entityId)
-    const choices = new Map<string, { id: string; binding: SessionBinding; label: string }>()
+    const choices = new Map<string, ConnectionChoice>()
     const known = [...Object.values(this.snapshot.sessions), ...Object.values(this.snapshot.deleted).map(deleted => deleted.session)].filter(session => session.ownerDid === context.ownerDid && session.entityId === entityId)
     if (entity && (entity.type === 'agent' || known.some(session => session.binding.kind === 'native'))) choices.set('native', { id: 'native', binding: { kind: 'native', targetDid: entityId }, label: 'BuckyOS' })
     for (const session of known) {
@@ -292,7 +315,12 @@ export class MessageHubMockStore {
     session.lifecycle = 'active'
     if (incoming) session.unreadCount++
   }
-  send(context: MessageHubContext, id: string, message: MessageObject, confirmation: string | undefined) {
+  send(context: MessageHubContext, id: string, payload: OutgoingPayload, confirmation: string | undefined) {
+    const session = this.snapshot.sessions[sessionKey(context.ownerDid, id)]
+    const message = createOutgoingMockMessage({ sessionId: id, entityId: session?.entityId ?? '', content: buildOutgoingDraftContent(payload), createdAtMs: this.now() })
+    return this.sendMessage(context, id, message, confirmation)
+  }
+  sendMessage(context: MessageHubContext, id: string, message: MessageObject, confirmation: string | undefined) {
     return this.mutate(next => {
       this.requireOwn(context)
       const session = this.requireSession(next, context, id)
@@ -368,5 +396,14 @@ export class MessageHubMockStore {
   title(context: MessageHubContext, session: Session) { return sessionTitle(session, this.preferences(context, session.id)) }
 }
 
-export const messageHubStore = new MessageHubMockStore()
-if (import.meta.env.DEV && typeof window !== 'undefined') Object.assign(window, { __messageHubMock: messageHubStore })
+function buildOutgoingDraftContent({ attachments, content }: OutgoingPayload): string {
+  const textContent = content.trim()
+  if (attachments.length === 0) return textContent
+  const names = attachments.map(attachment => attachment.relativePath || attachment.file.name)
+  const visibleNames = names.slice(0, 3).join(', ')
+  const remainingCount = names.length - 3
+  const attachmentLine = remainingCount > 0
+    ? `[Mock attachments] ${attachments.length} items: ${visibleNames}, +${remainingCount} more`
+    : `[Mock attachments] ${attachments.length} items: ${visibleNames}`
+  return textContent ? `${textContent}\n\n${attachmentLine}` : attachmentLine
+}

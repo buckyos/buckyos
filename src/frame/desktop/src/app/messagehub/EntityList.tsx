@@ -1,4 +1,4 @@
-import { useMessageHubClock } from './mock/hooks'
+import { useMessageHubClock } from './store'
 import { relativeActivity } from './sessionModel'
 import { useMemo, useState, type ReactNode } from 'react'
 import {
@@ -34,6 +34,9 @@ interface EntityListProps {
   onSelectEntity: (id: string) => void
   onFilterChange: (filter: EntityFilter) => void
   onSearchChange: (query: string) => void
+  /** More sessions exist on the backend beyond the loaded page. */
+  hasMore?: boolean
+  onLoadMore?: () => Promise<void>
 }
 
 const filters: { key: EntityFilter; labelKey: string }[] = [
@@ -42,6 +45,7 @@ const filters: { key: EntityFilter; labelKey: string }[] = [
   { key: 'people', labelKey: 'messagehub.filter.people' },
   { key: 'agents', labelKey: 'messagehub.filter.agents' },
   { key: 'groups', labelKey: 'messagehub.filter.groups' },
+  { key: 'requests', labelKey: 'messagehub.filter.requests' },
 ]
 
 function entityMatchesFilter(entity: Entity, filter: EntityFilter): boolean {
@@ -52,6 +56,7 @@ function entityMatchesFilter(entity: Entity, filter: EntityFilter): boolean {
     case 'agents': return entity.type === 'agent'
     case 'groups': return entity.type === 'group'
     case 'people': return entity.type === 'person'
+    case 'requests': return (entity.requestCount ?? 0) > 0 || (entity.children ?? []).some(child => (child.requestCount ?? 0) > 0)
   }
 }
 
@@ -684,8 +689,11 @@ export function EntityList({
   onSelectEntity,
   onFilterChange,
   onSearchChange,
+  hasMore = false,
+  onLoadMore,
 }: EntityListProps) {
   const { t } = useI18n()
+  const [loadingMore, setLoadingMore] = useState(false)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [internalDrilldownPath, setInternalDrilldownPath] = useState<string[]>([])
   const resolvedDrilldownPath = drilldownPath ?? internalDrilldownPath
@@ -911,6 +919,19 @@ export function EntityList({
                 )
               })
             )}
+            {hasMore && onLoadMore ? (
+              <div className="px-4 py-2">
+                <button
+                  type="button"
+                  disabled={loadingMore}
+                  className="min-h-11 w-full rounded-lg border border-[color:var(--cp-border)] text-sm disabled:opacity-40"
+                  data-testid="entity-load-more"
+                  onClick={() => { setLoadingMore(true); void onLoadMore().finally(() => setLoadingMore(false)) }}
+                >
+                  {t('messagehub.loadMore', 'Load more')}
+                </button>
+              </div>
+            ) : null}
           </div>
         </>
       )}

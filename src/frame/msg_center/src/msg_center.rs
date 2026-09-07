@@ -1,6 +1,7 @@
 use crate::contact_mgr::{ContactMgr, ZoneUserContactSeed};
 use crate::group_mgr::GroupMgr;
 use crate::msg_box_db::{IdempotencyCommitOutcome, IdempotencyStoredResult, MsgBoxDbMgr};
+use crate::owner_session::TokenVerifierSlot;
 use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, AccessDecision, AccessGroupLevel, AccountBinding, Contact,
@@ -14,11 +15,13 @@ use buckyos_api::{
     GroupSubmitMemberProofReq, GroupSummary, GroupUpdateAttributionPolicyReq,
     GroupUpdateCollectionPolicyReq, GroupUpdateMemberRoleReq, GroupUpdateProfileReq,
     GroupUpdateSubgroupReq, ImportContactEntry, ImportReport, IngressContext, KEventClient,
-    MailboxKind, MailboxRecord, MailboxRecordPage, MailboxRecordWithObject, MsgCenterHandler,
-    MsgReceiptObj, PostSendDelivery, PostSendResult, ReadReceiptState, RecipientState,
-    SessionDeliveryOverall, SessionDeliveryTarget, SessionDeliveryView, SessionMessageDirection,
-    SessionMessageItem, SessionMessagePage, SessionSummary, SessionSummaryPage,
-    SetGroupSubscribersResult, TransportKind, UiSessionStateEntry,
+    MailboxKind, MailboxRecord, MailboxRecordPage, MailboxRecordWithObject,
+    MsgCenterCreateSessionReq, MsgCenterHandler, MsgReceiptObj, OwnerSessionState,
+    PostSendDelivery, PostSendResult, ReadReceiptState, RecipientState, SessionDeliveryOverall,
+    SessionDeliveryTarget, SessionDeliveryView, SessionLifecycle, SessionListLifecycleFilter,
+    SessionListOrder, SessionMessageDirection, SessionMessageItem, SessionMessagePage,
+    SessionSummary, SessionSummaryPage, SetGroupSubscribersResult, TransportKind,
+    UiSessionStateEntry,
 };
 use kRPC::{RPCContext, RPCErrors};
 use log::{info, warn};
@@ -73,7 +76,7 @@ pub struct MessageCenter {
     state: Arc<RwLock<MessageCenterState>>,
     contact_mgr: ContactMgr,
     group_mgr: GroupMgr,
-    msg_box_db: MsgBoxDbMgr,
+    pub(crate) msg_box_db: MsgBoxDbMgr,
     /// tunnel_instance_id -> (transport_did, platform).
     tunnel_registry: Arc<RwLock<HashMap<String, TunnelRegistryEntry>>>,
     /// DIDs hosted by this zone (zone users / agents / hosted groups): the
@@ -84,6 +87,9 @@ pub struct MessageCenter {
     /// instead of parking records in a queue nobody consumes).
     message_hub_did: Arc<OnceLock<DID>>,
     pub(crate) cyfs_dispatch: Arc<RwLock<crate::cyfs_dispatch::CyfsDispatchSettings>>,
+    /// Session token verifier used to derive the caller identity for
+    /// owner-scoped authorization (see `owner_session.rs`).
+    pub(crate) token_verifier: Arc<TokenVerifierSlot>,
 }
 
 impl MessageCenter {
@@ -107,6 +113,7 @@ impl MessageCenter {
             local_recipients: Arc::new(RwLock::new(HashSet::new())),
             message_hub_did: Arc::new(OnceLock::new()),
             cyfs_dispatch: Arc::new(RwLock::new(Default::default())),
+            token_verifier: Arc::new(TokenVerifierSlot::default()),
         })
     }
 
@@ -220,7 +227,7 @@ impl MessageCenter {
             .await
     }
 
-    fn now_ms() -> u64 {
+    pub(crate) fn now_ms() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -863,7 +870,7 @@ impl MessageCenter {
             .collect()
     }
 
-    fn owner_from_record_id(record_id: &str) -> std::result::Result<DID, RPCErrors> {
+    pub(crate) fn owner_from_record_id(record_id: &str) -> std::result::Result<DID, RPCErrors> {
         let owner = record_id.split('|').next().ok_or_else(|| {
             RPCErrors::ReasonError(format!("invalid record id '{}': missing owner", record_id))
         })?;
@@ -875,7 +882,7 @@ impl MessageCenter {
         })
     }
 
-    async fn build_record_view(
+    pub(crate) async fn build_record_view(
         record: MailboxRecord,
         with_object: Option<bool>,
     ) -> std::result::Result<MailboxRecordWithObject, RPCErrors> {
@@ -1397,6 +1404,7 @@ impl MessageCenter {
         {
             IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
             IdempotencyCommitOutcome::Committed => {
+                self.note_records_committed(&mailbox_records).await;
                 for record in mailbox_records.iter() {
                     Self::publish_box_changed_event(record, "upsert");
                 }
@@ -1628,6 +1636,8 @@ impl MessageCenter {
         {
             IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
             IdempotencyCommitOutcome::Committed => {
+                self.note_records_committed(std::slice::from_ref(&sent_record))
+                    .await;
                 Self::publish_box_changed_event(&sent_record, "upsert");
                 for record in delivery_records.iter() {
                     Self::publish_delivery_changed_event(record, "enqueue");
@@ -1879,7 +1889,7 @@ impl MessageCenter {
         })
     }
 
-    async fn build_session_item(
+    pub(crate) async fn build_session_item(
         &self,
         record: MailboxRecord,
         with_object: bool,
@@ -1917,6 +1927,7 @@ impl MessageCenter {
         })
     }
 
+    #[allow(dead_code)]
     async fn list_sessions_internal(
         &self,
         owner: DID,
@@ -1958,6 +1969,10 @@ impl MessageCenter {
                 last_record,
                 unread_count: entry.unread_count,
                 updated_at_ms: entry.updated_at_ms,
+                last_activity_ms: 0,
+                request_count: 0,
+                lifecycle: SessionLifecycle::Active,
+                state: None,
             });
         }
 
@@ -1977,6 +1992,7 @@ impl MessageCenter {
         })
     }
 
+    #[allow(dead_code)]
     async fn list_session_internal(
         &self,
         owner: DID,
@@ -2308,8 +2324,9 @@ impl MsgCenterHandler for MessageCenter {
         &self,
         msg: MsgObject,
         idempotency_key: Option<String>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<PostSendResult, RPCErrors> {
+        self.authorize_owner_write(&ctx, &msg.from).await?;
         self.post_send_internal(msg, idempotency_key).await
     }
 
@@ -2320,8 +2337,10 @@ impl MsgCenterHandler for MessageCenter {
         state_filter: Option<Vec<RecipientState>>,
         lock_on_take: Option<bool>,
         with_object: Option<bool>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<Option<MailboxRecordWithObject>, RPCErrors> {
+        // Taking a record mutates its state: treat as a write of the owner.
+        self.authorize_owner_write(&ctx, &owner).await?;
         self.get_next_internal(owner, box_kind, state_filter, lock_on_take, with_object)
             .await
     }
@@ -2344,8 +2363,9 @@ impl MsgCenterHandler for MessageCenter {
         state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
         with_object: Option<bool>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<Vec<MailboxRecordWithObject>, RPCErrors> {
+        self.authorize_owner_read(&ctx, &owner).await?;
         self.peek_box_internal(owner, box_kind, state_filter, limit, with_object)
             .await
     }
@@ -2360,8 +2380,9 @@ impl MsgCenterHandler for MessageCenter {
         cursor_record_id: Option<String>,
         descending: Option<bool>,
         with_object: Option<bool>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<MailboxRecordPage, RPCErrors> {
+        self.authorize_owner_read(&ctx, &owner).await?;
         self.list_box_by_time_internal(
             owner,
             box_kind,
@@ -2382,14 +2403,19 @@ impl MsgCenterHandler for MessageCenter {
         cursor_updated_at_ms: Option<u64>,
         cursor_session_id: Option<String>,
         with_object: Option<bool>,
-        _ctx: RPCContext,
+        lifecycle: Option<SessionListLifecycleFilter>,
+        order_by: Option<SessionListOrder>,
+        ctx: RPCContext,
     ) -> std::result::Result<SessionSummaryPage, RPCErrors> {
-        self.list_sessions_internal(
+        self.authorize_owner_read(&ctx, &owner).await?;
+        self.list_sessions_scoped(
             owner,
             limit,
             cursor_updated_at_ms,
             cursor_session_id,
             with_object,
+            lifecycle,
+            order_by,
         )
         .await
     }
@@ -2403,9 +2429,10 @@ impl MsgCenterHandler for MessageCenter {
         cursor_record_id: Option<String>,
         descending: Option<bool>,
         with_object: Option<bool>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<SessionMessagePage, RPCErrors> {
-        self.list_session_internal(
+        self.authorize_owner_read(&ctx, &owner).await?;
+        self.list_session_scoped(
             owner,
             session_id,
             limit,
@@ -2417,13 +2444,102 @@ impl MsgCenterHandler for MessageCenter {
         .await
     }
 
+    async fn handle_create_session(
+        &self,
+        req: MsgCenterCreateSessionReq,
+        ctx: RPCContext,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        self.authorize_owner_write(&ctx, &req.owner).await?;
+        self.create_session_internal(req).await
+    }
+
+    async fn handle_archive_session(
+        &self,
+        owner: DID,
+        session_id: String,
+        ctx: RPCContext,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        self.authorize_owner_write(&ctx, &owner).await?;
+        self.set_session_lifecycle_internal(owner, session_id, SessionLifecycle::Archived)
+            .await
+    }
+
+    async fn handle_restore_session(
+        &self,
+        owner: DID,
+        session_id: String,
+        ctx: RPCContext,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        self.authorize_owner_write(&ctx, &owner).await?;
+        self.set_session_lifecycle_internal(owner, session_id, SessionLifecycle::Active)
+            .await
+    }
+
+    async fn handle_delete_session(
+        &self,
+        owner: DID,
+        session_id: String,
+        ctx: RPCContext,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        self.authorize_owner_write(&ctx, &owner).await?;
+        self.delete_session_internal(owner, session_id).await
+    }
+
+    async fn handle_get_session_state(
+        &self,
+        owner: DID,
+        session_id: String,
+        ctx: RPCContext,
+    ) -> std::result::Result<Option<OwnerSessionState>, RPCErrors> {
+        self.authorize_owner_read(&ctx, &owner).await?;
+        self.get_session_state_internal(owner, session_id).await
+    }
+
     async fn handle_update_record_state(
         &self,
         record_id: String,
         new_state: RecipientState,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<MailboxRecord, RPCErrors> {
+        let owner = Self::record_owner(&record_id)?;
+        self.authorize_owner_write(&ctx, &owner).await?;
         self.update_record_state_internal(record_id, new_state)
+            .await
+    }
+
+    async fn handle_update_owner_ui_session_state(
+        &self,
+        owner: DID,
+        session_id: String,
+        key: String,
+        value: Value,
+        ctx: RPCContext,
+    ) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
+        self.authorize_owner_write(&ctx, &owner).await?;
+        self.update_owner_ui_session_state_internal(owner, session_id, key, value)
+            .await
+    }
+
+    async fn handle_get_owner_ui_session_state(
+        &self,
+        owner: DID,
+        session_id: String,
+        key: String,
+        ctx: RPCContext,
+    ) -> std::result::Result<Option<UiSessionStateEntry>, RPCErrors> {
+        self.authorize_owner_read(&ctx, &owner).await?;
+        self.get_owner_ui_session_state_internal(owner, session_id, key)
+            .await
+    }
+
+    async fn handle_list_owner_ui_session_state(
+        &self,
+        owner: DID,
+        session_id: String,
+        ctx: RPCContext,
+    ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors> {
+        self.authorize_owner_read(&ctx, &owner).await?;
+        self.list_owner_ui_session_state_internal(owner, session_id)
             .await
     }
 
@@ -2455,8 +2571,9 @@ impl MsgCenterHandler for MessageCenter {
         status: ReadReceiptState,
         reason: Option<String>,
         at_ms: Option<u64>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<MsgReceiptObj, RPCErrors> {
+        self.authorize_owner_write(&ctx, &reader_did).await?;
         self.set_read_state_internal(group_id, msg_id, reader_did, status, reason, at_ms)
             .await
     }
@@ -2477,8 +2594,10 @@ impl MsgCenterHandler for MessageCenter {
         &self,
         record_id: String,
         with_object: Option<bool>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<Option<MailboxRecordWithObject>, RPCErrors> {
+        let owner = Self::record_owner(&record_id)?;
+        self.authorize_owner_read(&ctx, &owner).await?;
         self.get_record_internal(record_id, with_object).await
     }
 

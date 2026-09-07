@@ -1,14 +1,16 @@
 # MessageHub 当前 UI Model Data
 
-- 版本：v0.3，2026-09-07（补充重构后的服务接入差异，未修改原型代码）
-- 范围：MessageHub mock 原型、共享的 Conversation 组件、CodeAssistant 长历史 seed，以及 Agent 主页入口。
+- 版本：v0.4，2026-09-07（真实 msg-center store 落地；mock 原型保持不变）
+- 范围：MessageHub mock 原型与真实 store、共享的 Conversation 组件、CodeAssistant 长历史 seed，以及 Agent 主页入口。
 - 实现依据：`src/frame/desktop/src/app/messagehub/`，本文件只描述已落地字段。权威服务设计见 [UI_DATAMODEL](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md)。
-- 本轮未接入真实消息服务、tunnel 平台 API、DDL、跨 owner 服务端授权或会话级物理删除。
+- §1–§7 描述 mock 原型；§8 描述真实 store 的实际字段来源与仍未接入的服务能力。
 
 ## 1. 数据流与入口
 
-`mock/data.ts` 提供 DID 化的 Entity / Session seed；`mock/store.ts` 的 `MessageHubMockStore` 持有唯一可变业务状态。
-`mock/hooks.ts` 通过 `useSyncExternalStore` 订阅 store。`MessageHubView` 持有当前选择与布局，不再维护自己的 Session 或 reader 数组副本。
+组件通过 `store/index.ts` 的 `useMessageHubStore()` 取得 `MessageHubStore` 实现：`VITE_MESSAGEHUB_USE_MOCK`
+显式覆盖，否则跟随桌面的 `VITE_CP_USE_MOCK`。mock 模式下 `mock/data.ts` 提供 DID 化的 Entity / Session seed，
+`mock/store.ts` 的 `MessageHubMockStore` 持有唯一可变业务状态；真实模式见 §8。
+`MessageHubView` 持有当前选择与布局，不再维护自己的 Session 或 reader 数组副本。
 
 ```text
 mock seed + IndexedDB 持久差量
@@ -236,22 +238,31 @@ hover、focus-within 和触屏均能访问处理入口。对话框有 Tab 焦点
 组件使用的 create、manage、updateState、updatePreferences、setPolicy、saveDraft、saveAttachments、send 全为 mock 方法，不冒充 KRPC。
 真实集成仍需独立消息活动时间和跨页排序游标、空会话登记、权威状态版本和可靠日志、Session 级归档 / 删除、共享对象引用处理、平台能力与服务端代理授权。
 
-### 7.1 保留的真实 API 适配代码及缺口
+### 7.1 真实 API 适配（2026-09-07 起为 §8 的真实 store，原缺口表已作废）
 
-主视图当前未使用 `datamodel/sessionApi.ts` 与 `conversation/history/sessionApiReader.ts` 的真实读取 / 发送路径。
-这些文件虽已镜像重构后的主要类型，仍有以下限制，不能直接替换 mock provider：
+`datamodel/sessionApi.ts` 现覆盖 `msg.*`（含会话登记 / 生命周期）、`ui_session.*`（owner 范围）、`contact.*`、`group.*`；
+`conversation/history/sessionApiReader.ts` 已由 `api/reader.ts` 取代。
 
-| 入口 | 当前实现 |
+## 8. 真实 store（`api/store.ts`）实际字段来源
+
+| UI 字段 | 来源 |
 |---|---|
-| `postSendMessage` | 返回 `Promise<void>`，未保留 PostSendResult 的 ok、reason、msg_id 和 deliveries |
-| `sessionItemToMessageObject` | 仅附 record_id / session_id 与简化投递图标；丢弃 box_kind、sort_key、recipient_state、完整 delivery 等记录上下文；无 msg 时跳过 |
-| `SessionApiConversationMessageReader` | readerKey 只有 sessionId；全量顺序拉取历史，仅支持 append，不支持旧记录更新 / 删除 / 重新归类 |
-| `listAllSessions` | 跟随游标拉取全部会话；没有按需首屏或完整实体聚合能力 |
-| `renderers.tsx` | 图片只识别 HTTP(S) 图片 URL；不支持 Telegram 的 cyfs:// 文件对象引用，通用 fallback 没有附件入口 |
-| `types.ts` / EntityDetails | Session.entityId 必填；无请求处理模型。实体详情仍缺联系人准入、真实群操作能力与未归类入口 |
+| `Entity`（含 `sources` / `domain` / `sessionCount` / `requestCount`） | `msg.list_sessions(lifecycle: all, order_by: activity, with_object)` 归属出的对端 + `contact.list_contacts`（owner 作用域与系统作用域合并）+ `group.list_by_member` + `agent.list`；zone 托管 `did:web:*.<zone>` 识别为 Agent；无法归属的会话进入 `messagehub:unassigned` 容器（非 DID，不可发送） |
+| `Session.entityId` / `binding` / `origin` / `attributionEvidence` | `api/projection.ts::attributeSession`：登记 peer → `group:` tag / group_msg 目标 → `dm:` → 原始 msg 端点 → 记录字段；`did:msgtunnel:*` 解析为 tunnel 绑定（实例、端点、远端上下文），其余 native |
+| `Session.lifecycle` / `lastActiveAt` / `unreadCount` / `requestCount` / `createdAt` | `SessionSummary.lifecycle` / `last_activity_ms` / `unread_count` / `request_count` / `state.created_at_ms` |
+| `Session.title` / `shared.title` | 个人 `ui.title`（owner 范围）→ 登记标题 → `thread.topic` → 私聊 / 群名 / 连接名 → 未命名 |
+| `Session.members` / 共享说明 | 无后端契约，保持空；详情中的共享 / 成员编辑禁用并说明 |
+| `MessageObject.ui_record` | `SessionMessageItem` 的 owner / record_id / msg_id / direction / box_kind / sort_key / recipient_state / delivery；无对象时 `ui_unavailable` 占位 |
+| 已读 | 可见入站 UNREAD 记录 → `msg.update_record_state(READ)`，成功后本地减少并重读摘要 |
+| 发送 | `msg.post_send`，`to` 来自绑定，登记 / topic 会话带 `thread.topic`；附件经 NDM TUS 上传 + `put_object` 后写入 `refs[].target.data_obj` |
+| 附件读取 | `GET /kapi/msg-center/objects/{obj_id}[/content]`（Bearer 会话 token），Blob URL 缓存 |
+| 生命周期 | `msg.archive_session` / `msg.restore_session` / `msg.delete_session`（删除同时清本地草稿 / 偏好 / reader） |
+| 创建 | `msg.create_session`（native 绑定；tunnel 创建因无能力声明始终 `platform_read_only`） |
+| 偏好 | `ui.title` / `ui.pinned` / `ui.muted` → `ui_session.update_state(owner)`；`showActions`、草稿、创建策略为 viewer 本地 IndexedDB |
+| 运行态 | `ui_session.list_state(session_id)`（无 owner 的旧 KV）：typing 30s、status_line 10min 内有效，成员固定为 owner |
+| 权限 | 观察者全部只读；tunnel 默认只读 + 风险确认；群按 `group.check_access(group.post_message)`；native 由 `post_send` 校验 |
+| 刷新 | 20s 轮询摘要与当前会话尾页；kevent `/msg_center/<owner>/box_*_<owner>/changed` 作为额外信号 |
 
-本次文档修正了群归属不能取成员 INBOX 的 record.to、本地已读不能调用回执接口、
-Session 生命周期不能映射为单条 RecipientState 等目标规则；这些修正尚未落到代码。
-已确认的后端缺口、实现边界和真实接入验收见 [UI_DATAMODEL §9](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md#9-krpc-映射)。
-
-验收命令、场景和截图入口见 [原型交付说明](../../proposals/messagehub-ui-prototype/IMPLEMENTATION.md)。
+仍未接入：批量已读 / 回执持久化、接受后请求记录迁移、共享 / 成员状态权威与 Action Log 发布、tunnel 能力声明与代发、
+已加载尾页之外的旧记录变更游标、`ui_session` owner 范围批量读取。验收命令、场景和截图见
+[原型交付说明](../../proposals/messagehub-ui-prototype/IMPLEMENTATION.md)。

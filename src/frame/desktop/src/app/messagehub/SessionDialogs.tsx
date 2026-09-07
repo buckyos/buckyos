@@ -4,8 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import type { z } from 'zod'
 import { useI18n } from '../../i18n/provider'
 import { createSessionSchema, creationReason } from './sessionModel'
-import { findEntity } from './mock/store'
-import { useMessageHubStore } from './mock/hooks'
+import { useMessageHubStore } from './store'
 import type { MessageHubContext, Session } from './types'
 
 export const hubInputClass = 'mt-1 min-h-11 w-full rounded-lg border border-[color:var(--cp-border)] bg-[color:var(--cp-bg)] px-3 py-2 text-sm'
@@ -37,14 +36,14 @@ export function CreateSessionForm({ context, entityId, onCreated, onCancel }: { 
   const target = entityId ?? eligible[0]?.id ?? ''
   const form = useForm<z.infer<typeof createSessionSchema>>({ resolver: zodResolver(createSessionSchema), defaultValues: { entityId: target, title: '', connection: store.connections(context, target).length === 1 ? store.connections(context, target)[0].id : '' } })
   const [current, connection] = useWatch({ control: form.control, name: ['entityId', 'connection'] })
-  const choices = store.connections(context, current), entity = findEntity(current)
+  const choices = store.connections(context, current), entity = store.findEntity(context, current)
   const reason = entity ? creationReason(context, entity, store.policy(context, current), choices.find(choice => choice.id === connection)?.binding) : 'binding_unknown'
   const [error, setError] = useState('')
   const busy = useRef(false)
   const submit = (event: FormEvent<HTMLFormElement>) => { void form.handleSubmit(async values => {
     if (busy.current) return
     busy.current = true; setError('')
-    try { onCreated(await store.create(context, values)) } catch { setError(t('messagehub.operationFailed')) } finally { busy.current = false }
+    try { onCreated(await store.create(context, values)) } catch (failure) { setError(failure instanceof Error && failure.message.startsWith('rejected') ? failure.message : t('messagehub.operationFailed')) } finally { busy.current = false }
   })(event) }
   return <DialogFocus onCancel={onCancel}><form onSubmit={submit} className="space-y-4">
     <label className="block text-sm">{t('messagehub.targetEntity')}<select data-autofocus className={hubInputClass} {...form.register('entityId', { onChange: event => { const options = store.connections(context, event.target.value); form.setValue('connection', options.length === 1 ? options[0].id : '') } })}>{eligible.map(entity => <option value={entity.id} key={entity.id}>{entity.name}</option>)}</select></label>

@@ -69,7 +69,7 @@ struct MsgBoxDbInner {
     backend: RdbBackend,
 }
 
-const MAILBOX_COLUMNS: &str = r#"
+pub(crate) const MAILBOX_COLUMNS: &str = r#"
     owner,
     record_id,
     box_kind,
@@ -175,23 +175,35 @@ impl MsgBoxDbMgr {
     }
 
     async fn apply_schema(&self, override_ddl: Option<&str>) -> std::result::Result<(), RPCErrors> {
-        let ddl: &str =
-            override_ddl
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or(match self.backend() {
-                    RdbBackend::Sqlite => MSG_CENTER_RDB_SCHEMA_SQLITE,
-                    RdbBackend::Postgres => MSG_CENTER_RDB_SCHEMA_POSTGRES,
-                });
-        for statement in split_sql_statements(ddl) {
-            self.pool().execute(statement.as_str()).await.map_err(|e| {
-                RPCErrors::ReasonError(format!("apply msg-center schema failed: {}", e))
-            })?;
+        let compiled: &str = match self.backend() {
+            RdbBackend::Sqlite => MSG_CENTER_RDB_SCHEMA_SQLITE,
+            RdbBackend::Postgres => MSG_CENTER_RDB_SCHEMA_POSTGRES,
+        };
+        let override_ddl = override_ddl.filter(|s| !s.trim().is_empty());
+        // The service spec may still carry the DDL of an older schema version
+        // (it is written at install time). Every statement is idempotent
+        // (`CREATE ... IF NOT EXISTS`), so after the spec DDL we always apply
+        // the compiled-in DDL as well; new tables therefore appear on upgrade
+        // without a spec rewrite.
+        let mut ddls: Vec<&str> = Vec::new();
+        if let Some(ddl) = override_ddl {
+            ddls.push(ddl);
+        }
+        if !ddls.contains(&compiled) {
+            ddls.push(compiled);
+        }
+        for ddl in ddls {
+            for statement in split_sql_statements(ddl) {
+                self.pool().execute(statement.as_str()).await.map_err(|e| {
+                    RPCErrors::ReasonError(format!("apply msg-center schema failed: {}", e))
+                })?;
+            }
         }
         Ok(())
     }
 
     /// Translate `?` placeholders into `$N` form for postgres.
-    fn render_sql(&self, sql: &str) -> String {
+    pub(crate) fn render_sql(&self, sql: &str) -> String {
         match self.backend() {
             RdbBackend::Postgres => rewrite_placeholders_to_dollar(sql),
             RdbBackend::Sqlite => sql.to_string(),
@@ -1625,11 +1637,11 @@ ORDER BY state_key ASC
     }
 }
 
-fn decode_err(field: &str, err: &sqlx::Error) -> RPCErrors {
+pub(crate) fn decode_err(field: &str, err: &sqlx::Error) -> RPCErrors {
     RPCErrors::ReasonError(format!("failed to decode column {}: {}", field, err))
 }
 
-fn decode_ui_session_state_row(
+pub(crate) fn decode_ui_session_state_row(
     row: &AnyRow,
 ) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
     let session_id: String = row
@@ -1660,7 +1672,7 @@ fn decode_ui_session_state_row(
     })
 }
 
-fn row_to_mailbox_record(row: &AnyRow) -> std::result::Result<MailboxRecord, RPCErrors> {
+pub(crate) fn row_to_mailbox_record(row: &AnyRow) -> std::result::Result<MailboxRecord, RPCErrors> {
     let record_id: String = row
         .try_get("record_id")
         .map_err(|e| decode_err("record_id", &e))?;
@@ -1974,7 +1986,7 @@ fn recipient_state_matches(filter: Option<&[RecipientState]>, state: &RecipientS
     }
 }
 
-fn to_sql_i64(value: u64) -> i64 {
+pub(crate) fn to_sql_i64(value: u64) -> i64 {
     value.min(i64::MAX as u64) as i64
 }
 

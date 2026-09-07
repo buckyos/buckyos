@@ -69,3 +69,74 @@ Playwright 使用仓库原有 config 的本地 Vite server；测试通过不代�
 真实接入还需修正群实体归属、本地已读 / 回执调用、提交结果与逐目标投递信息，并补请求处理、
 native / 群权限、对象附件访问、非追加历史更新及断线对账。
 后续任务见 [TODO §3](TODO.md)，真实接入验收以 [UI_DATAMODEL §9.4](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md#94-接入验收条件本次未执行) 为准。
+
+## 2026-09-07 真实后端集成（TODO §3）
+
+本节记录 TODO §3 的真实接入结果；上文 mock 原型的记录保持不变。
+
+### 后端（msg-center）
+
+| 改动 | 位置 |
+|---|---|
+| schema v9：`owner_sessions`（登记 / 生命周期 / 删除水位）、`owner_ui_session_states`（owner 范围 UI 状态）；启动时在 spec DDL 之后再应用编译内 DDL，旧 zone 升级不需重写 spec | `msg_center_client.rs`、`msg_box_db.rs::apply_schema` |
+| `msg.create_session` / `msg.archive_session` / `msg.restore_session` / `msg.delete_session` / `msg.get_session_state`；`ui_session.*` 带 `owner` 时走 owner 范围表 | `msg_center_client.rs`（trait / client / 路由）、`owner_session.rs`、`owner_session_db.rs` |
+| `msg.list_sessions` 新增 `lifecycle` / `order_by: activity`，`SessionSummary` 新增 `last_activity_ms` / `request_count` / `lifecycle` / `state`；`list_session` 与摘要均应用删除水位 | `owner_session.rs::list_sessions_scoped` / `list_session_scoped` |
+| 新普通消息（chat / group_msg / deliver）提交后自动解除归档；事件与状态更新不会 | `msg_center.rs` 提交钩子 → `note_records_committed` |
+| 授权：从 verify-hub 用户 token 解析 viewer；读取限本人或 zone 托管非用户身份（Agent），写动作限本人；服务 / 设备 token 与无 token 调用保持原行为 | `owner_session.rs::authorize_owner_read/write`，接入 post_send、get_next、peek/list_box、list_sessions/session、update_record_state、set_read_state、get_record、会话 / owner UI 状态 RPC |
+| `GET /kapi/msg-center/objects/{obj_id}[/content]`：会话 token 鉴权的对象 JSON / FileObject 内容下载（64MB 上限） | `object_access.rs`、`main.rs::serve_request` |
+
+### 前端（`src/frame/desktop/src/app/messagehub`）
+
+- `store/`：`MessageHubStore` 接口与选择器（`VITE_MESSAGEHUB_USE_MOCK` 覆盖，否则跟随 `VITE_CP_USE_MOCK`）；组件只从 `./store` 取数据。
+- `api/store.ts`：真实 store（owner 数据按 owner 隔离、epoch 丢弃迟到响应、轮询 + kevent 刷新、发送 / 已读 / 生命周期 / 偏好 / 准入）；
+  `api/projection.ts`：实体归属、绑定、标题、摘要的纯投影；`api/reader.ts`：分页 reader 与 upsert / remove；
+  `api/objects.ts` / `api/upload.ts`：对象访问与 NDM 上传；`api/local.ts`：viewer 本地草稿 / 过滤 / 创建策略。
+- 组件：会话行请求标记、会话横幅与准入动作、实体详情准入区、逐条请求标记、投递详情、附件渲染与占位、
+  历史向上翻页 / 记录级重建保持锚点、可见记录标已读、发送失败原因、实体列表“加载更多”与“请求”过滤。
+- `mock/` 原型保持原行为并实现同一接口（mock Playwright 21 项仍全部通过）。
+- 开发环境接入：`VITE_ZONE_PROXY` / `VITE_ZONE_PROXY_IP` 使 Vite 代理 `/kapi`、`/sso_*`、`/ndm` 到真实 zone 根域，
+  `main.tsx` 在该模式下以开发源作为 zone host 初始化 SDK。
+
+### 验证（均已真实运行）
+
+```bash
+# Rust：msg_center 77 项通过（含 5 项新增：生命周期 / 水位、活动排序与游标、登记与首条消息、owner UI 状态隔离、token 授权）
+cd src && cargo test -p msg_center && cargo test -p buckyos-api msg_center
+
+# 真实 zone RPC 验收（devtest 用户 token；观察 jarvis、拒绝越权、登记 / 发送 / 幂等 / 归档 / 删除 / 重放 / 对象路由）
+cd test/test_msg_center && deno run --config ../deno.json --allow-net --allow-env --unsafely-ignore-certificate-errors test_messagehub_sessions.ts
+
+# 前端
+cd src/frame/desktop
+pnpm run check && pnpm run build
+pnpm exec eslint src/app/messagehub src/i18n/messagehub.ts src/main.tsx vite.config.ts tests/e2e/real tests/datamodel
+deno test -c tests/datamodel/messagehub.deno.json tests/datamodel/messagehub-session.test.ts tests/datamodel/messagehub-projection.test.ts   # 9 项
+pnpm exec playwright test tests/e2e/pages/messagehub.spec.ts tests/e2e/pages/users-agents.spec.ts --project=chromium --workers=4       # mock 21 项
+
+# 真实 zone UI（先起代理 dev server，再运行）
+VITE_CP_USE_MOCK=false VITE_ZONE_PROXY=https://test.buckyos.io VITE_ZONE_PROXY_IP=127.0.0.1 pnpm run dev --host 127.0.0.1 --port 4175 --strictPort
+MESSAGEHUB_REAL_E2E=1 pnpm exec playwright test --config=playwright.real.config.ts   # 4 项：观察只读 + 请求记录、登记→发送→刷新→个人标题→归档→恢复→删除、375px、附件上传 / 下载
+```
+
+- 部署：重建的 `msg_center` 已替换 `/opt/buckyos/bin/msg-center/msg_center`（原二进制保留为 `msg_center.bak-20260907`），
+  node_daemon 自动拉起，启动日志确认 `owner_sessions` / `owner_ui_session_states` 已创建，Telegram tunnel 正常重连。
+- 真实 zone 数据：observe `did:web:jarvis.test.buckyos.io` 得到 Telegram 会话（SENT + REQUEST_BOX 记录）；
+  devtest 自己的会话来自 Agent 回复（落入 REQUEST_BOX，UI 显示请求横幅与准入动作）。
+- 真实 zone UI 通过 API 登录注入刷新 cookie（control-panel 只向 zone 根域签发系统 token，开发端口无法完成 SSO 跳转），
+  与生产 SSO 回调留下的状态一致。
+
+### 截图（[screenshots](screenshots/)）
+
+mock 原型截图由 `messagehub.spec.ts` / `users-agents.spec.ts` 重新生成（19 张，文件名同上表）；真实 zone 截图：
+
+| 场景 | 文件 |
+|---|---|
+| 观察 Agent（只读、请求记录、Telegram 会话） | `real-observer-1440.png`、`real-observer-375.png` |
+| 登记会话后发送首条消息 | `real-session-1440.png` |
+| 附件上传后按对象访问渲染 | `real-attachment-1440.png` |
+
+### 仍未实现（见 TODO §3 末尾）
+
+批量已读 / 回执持久化、接受后的请求记录迁移、共享 / 成员状态权威与 GroupEvent → Action Log 发布、
+tunnel 能力声明与 Agent 代发授权、已加载尾页之外旧记录的变更游标、`ui_session` owner 范围批量读取。
+这些在 UI 中以只读、原因说明或按需读取呈现，不冒充已完成。

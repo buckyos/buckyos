@@ -1,6 +1,6 @@
 # MessageHub UI DataModel
 
-- 文档版本：v0.5（2026-09-07：对齐 msg_center 重构后的记录、投递与会话契约）
+- 文档版本：v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/messagehub`
 - 上游文档：
@@ -72,7 +72,11 @@ UI DataModel 层（本文档定义，UI 需求驱动）
 
 ### 1.4a 2026-09-06 已落地原型（本节时间口径优先）
 
-`mock/store.ts` 是本轮 MessageHub 的唯一可变业务数据源，组件通过 `useSyncExternalStore` 订阅。
+2026-09-07 起组件通过 `store/` 的 `MessageHubStore` 接口取数据：mock 模式仍是 `mock/store.ts`，
+真实模式是 `api/store.ts`（msg-center RPC）。本节描述的时间口径两种实现一致；真实模式的字段来源见
+[当前 UI Model Data §8](../../../../../../product/message_hub/MessageHub_Current_UI_Model_Data.md)。
+
+`mock/store.ts` 是 mock 原型的唯一可变业务数据源，组件通过 `useSyncExternalStore` 订阅。
 本文后续 `EntitySession`、权威状态引用和 KRPC DTO 仍包含集成目标；当前实现精确字段见
 [当前 UI Model Data](../../../../../../product/message_hub/MessageHub_Current_UI_Model_Data.md)。
 
@@ -899,7 +903,7 @@ export type UiSessionStateKey = keyof z.infer<typeof uiSessionStateSchema>
   保存与授权；浏览器草稿 / 选择态 / 缓存另按 viewer 隔离。接口补齐前不能向其中写 Agent 的会话状态。
 - `binding`、实体创建策略、授权能力不是此 KV 的展示键；tunnel 风险确认按 §3.3.4 仅保存在页面内存。
 
-### 4.5 owner 本地 Session 生命周期（后端待实现）
+### 4.5 owner 本地 Session 生命周期（2026-09-07 已实现：`owner_sessions`）
 
 沿用已落地 mock 的产品语义，生命周期独立于 `RecipientState`、共享标题及对端连接：
 
@@ -914,6 +918,9 @@ export type UiSessionStateKey = keyof z.infer<typeof uiSessionStateSchema>
 改写后不再计为 UNREAD，也没有恢复到普通阅读状态的迁移；`DELETED` 仅在会话查询中被过滤。
 因此批量写这些状态既不能保持归档语义，也不能兑现会话级删除承诺。
 
+已实现：`msg.archive_session` / `msg.restore_session` / `msg.delete_session` / `msg.get_session_state` 以 `owner_sessions`
+持久保存生命周期与删除水位 `(sort_key, record_id)`，`msg.list_sessions` / `msg.list_session` 与未读、请求计数均在水位之后统计；
+新 `chat` / `group_msg` / `deliver` 记录提交后自动解除归档。手工创建走 `msg.create_session`（registered 行，空历史可列出）。
 后端需持久保存 owner 范围的生命周期、删除水位与最小连接来源，提供幂等的会话级操作及并发新消息处理。
 删除的不可恢复范围是该 owner 的本地历史引用；不可变对象还可能被其它 mailbox/delivery 引用，
 对象回收必须单独按共享引用处理，不能承诺清除所有物理副本。操作成功后再清理本地缓存，
@@ -1306,7 +1313,9 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | `EntitySession[]` | `msg.list_sessions(owner=context.sessionOwnerDid)` | 按 3.2.1 分组；空 Session、绑定与能力需补齐登记契约 |
 | `EntitySession.title` | `ui_session.get_state('ui.title')` / 待实现共享状态读取 / `msg.thread.topic` | 见 3.3.1 |
 | `EntitySession.isPinned/isMuted` | `ui_session.get_state` | KV 反序列化 + schema 校验 |
-| `MessageObject[]` | `msg.list_session`（当前 owner，`with_object: true`） | `sessionItemToMessageObject`，方向相对 owner |
+| `EntitySession.lifecycle` / `lastActiveAt` / `requestCount` | `msg.list_sessions(lifecycle: 'all', order_by: 'activity')` 的 `lifecycle` / `last_activity_ms` / `request_count` | 服务端按活动时间排序并给出同口径游标 |
+| `MessageObject[]` | `msg.list_session`（当前 owner，`with_object: true`，最新页 + 向上分页） | `api/reader.ts::itemToMessage`，记录上下文置于 `ui_record` |
+| 附件对象 / 内容 | `GET /kapi/msg-center/objects/{obj_id}[/content]`（Bearer 会话 token） | `api/objects.ts`，按 `obj_id` 访问，`uri_hint` 只作提示 |
 | `ui_message_id` | `SessionMessageItem.record_id` | 直接 |
 | `ui_delivery_status` | `SessionMessageItem.delivery.overall` | 枚举映射，见 3.5 |
 | `ui_sender_name` | `MailboxRecord.from_name` | 缺失时回落 DID |
@@ -1326,8 +1335,9 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | 本地标记已读 | `msg.update_record_state` | `{ record_id, new_state: 'READ' }`，自己的已展示入站记录；批量水位待补，见 6.5 |
 | 写入群消息回执 | `msg.set_read_state` | group_id / msg_id / reader_did / status；不清除邮箱未读，当前仅内存保存 |
 | 单条记录状态变更 | `msg.update_record_state` | RecipientState；不能代替 Session 生命周期 |
-| 会话归档 / 恢复 / 彻底删除 | 待实现的 owner 范围会话级操作 | 保留阅读状态、删除水位和共享对象引用，见 4.5 |
-| 个人显示标题 / 置顶 / 静音 / 草稿 | `ui_session.update_state` | `{ session_id, key, value }`，key 见 4.4；不修改共享状态 |
+| 会话归档 / 恢复 / 彻底删除 | `msg.archive_session` / `msg.restore_session` / `msg.delete_session` | `{ owner, session_id }`；保留阅读状态、删除水位和共享对象引用，见 4.5 |
+| 手工创建空会话 | `msg.create_session` | `{ owner, peer_did, title?, binding?, session_id? }`；返回 `OwnerSessionState` |
+| 个人显示标题 / 置顶 / 静音 | `ui_session.update_state` | `{ owner, session_id, key, value }`，带 `owner` 走 owner 范围表；草稿仅存 viewer 本地 |
 | 编辑备注 / 标签 / 访问级别 | `contact.update_contact` | `ContactPatch` |
 | 拉黑 | `contact.block_contact` | |
 | 临时授权 | `contact.grant_temporary_access` | |
@@ -1336,6 +1346,10 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 所有写动作都校验当前 context；Agent 观察首期禁用整张写入表，而不只是隐藏 Composer。
 
 ### 9.3 后端集成依赖与实现边界
+
+2026-09-07 状态：#7、#10、#13、#15 已实现（会话登记、viewer → owner 授权、owner 范围 UI 状态、生命周期、活动排序与游标）；
+#5 已实现对象访问与上传通道；#4、#6、#14、#16 前端已按现有 RPC 接入，仍缺本节列出的后端契约；
+#1、#2、#3、#8、#9、#11、#12、#17 未实现，UI 以只读或按需读取呈现。
 
 1. **实体列表没有单一接口。** 目前需要 UI 端做三路合并 + N 次 `resolve_canonical_did`。
    集成应控制首屏请求数，并提供完整的计数与分页排序；优先复用现有读取和批量能力。
@@ -1382,25 +1396,29 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 本节列出真实接入依赖，不要求本次文档更新实现这些能力，也不把待实现能力当成新 RPC。
 共同设计边界见 [Message Center §5](../../../../../../doc/message_hub/Message%20Center.md)。
 
-### 9.4 接入验收条件（本次未执行）
+### 9.4 接入验收条件（2026-09-07 执行记录）
 
-| 场景 | 必须满足的结果 |
-|---|---|
-| 群 topic 会话交替出现成员 INBOX 副本与 SENT | 用原始群目标 / 权威绑定归属，实体不变成 owner；多目标不取第一人猜测 |
-| 阅读自己的入站消息 / 查看 Agent 会话 | 前者成功后 mailbox 未读减少；回执写入不代替该更新；后者无阅读或回执写入 |
-| post_send 正常返回 ok:false / 返回超时 | 展示真实拒绝原因；结果未知重用原对象及幂等键，不产生双消息 |
-| 多目标部分成功、后台重试、cyfs-cached | 展示逐目标事实与风险；暂存不算送达；不重新投递已成功目标 |
-| 归档 → 刷新 → 恢复，删除后并发新消息 / 旧消息重放 | 保留归档前阅读状态与活动时间；删除水位以前的本 owner 历史不复活，不影响其它 owner |
-| 陌生人请求、临时授权到期、拉黑 | 请求来源可辨；查看不授权；接受后的旧请求处理按服务契约反馈 |
-| native 无路由、群无发言权、共享字段无编辑权 | 对应能力关闭且有原因，不因 native 或本地托管开放按钮 |
-| Telegram 图片 / 文件、无 uri_hint、单附件不可用 | 按 obj_id 访问；保留文件入口与正文，错误局部展示 |
-| 不同 owner 使用同名 sessionId | API reader、缓存、偏好、游标和迟到响应隔离；服务端拒绝越权读取 |
-| 老消息投递变化、删除、重新归类，断线后恢复 | 按记录更新已加载列表、旧 / 新 Session 摘要，保持滚动锚点，无重复或陈旧条目 |
-| 大量会话 / 长历史、状态修改引起 updated_at 变化 | 首屏按需分页，有效消息活动排序跨页一致，不先拉全量数据 |
-| Action / 运行态 / 持久 notify | GroupEvent 日志按权威来源去重；运行态到期；持久消息不因类型被丢弃或漏计未读 |
+验证载体：R = `test/test_msg_center/test_messagehub_sessions.ts`（真实 zone RPC，用户 token）；
+E = `tests/e2e/real/messagehub.real.spec.ts`（真实 zone UI，1440 / 375）；U = `cargo test -p msg_center`；
+D = `tests/datamodel/messagehub-projection.test.ts`（投影夹具）。
 
-P1 先落实记录语义、提交结果、会话生命周期、请求准入和授权边界；随后完成附件、增量加载与性能验证。
-测试应使用真实 RPC / 数据夹具覆盖这些边界，原型 Playwright 通过不能替代此表。
+| 场景 | 必须满足的结果 | 状态 |
+|---|---|---|
+| 群 topic 会话交替出现成员 INBOX 副本与 SENT | 用原始群目标 / 权威绑定归属，实体不变成 owner；多目标不取第一人猜测 | D 通过（群 tag / group_msg 目标 / 多目标进入未归类）；真实 zone 无群数据，未在 R / E 覆盖 |
+| 阅读自己的入站消息 / 查看 Agent 会话 | 前者成功后 mailbox 未读减少；回执写入不代替该更新；后者无阅读或回执写入 | E（观察无 Composer、Manage / 偏好禁用）、R（观察者的 update_record_state / archive / ui_state 被服务端拒绝）；本地已读经 `update_record_state` 后再重读摘要 |
+| post_send 正常返回 ok:false / 返回超时 | 展示真实拒绝原因；结果未知重用原对象及幂等键，不产生双消息 | R（ok:false reason、同幂等键重放同 msg_id、删除后重放不复活）；超时路径按同幂等键重试，未在真实 zone 制造超时 |
+| 多目标部分成功、后台重试、cyfs-cached | 展示逐目标事实与风险；暂存不算送达；不重新投递已成功目标 | D（partial_failed / duplicate_risk 投影）+ 渲染器展开逐目标；真实 zone 单目标，未覆盖多目标 |
+| 归档 → 刷新 → 恢复，删除后并发新消息 / 旧消息重放 | 保留归档前阅读状态与活动时间；删除水位以前的本 owner 历史不复活，不影响其它 owner | U（含另一 owner 不受影响、水位后新消息重新可见）、R、E 通过 |
+| 陌生人请求、临时授权到期、拉黑 | 请求来源可辨；查看不授权；接受后的旧请求处理按服务契约反馈 | E（REQUEST_BOX 横幅 / 逐条标记、观察者无准入按钮）；准入动作复用 contact RPC，接受后的旧记录迁移契约未实现（明确提示保留在请求箱） |
+| native 无路由、群无发言权、共享字段无编辑权 | 对应能力关闭且有原因，不因 native 或本地托管开放按钮 | E（共享 / 成员编辑禁用并说明）；群走 `group.check_access`（真实 zone 无群，未覆盖）；native 无路由由 post_send 拒绝并展示原因（R 用未知 tunnel 验证） |
+| Telegram 图片 / 文件、无 uri_hint、单附件不可用 | 按 obj_id 访问；保留文件入口与正文，错误局部展示 | E（上传 → `cyfile:` 引用 → 对象路由 401 / 200）；对象缺失时局部“附件不可用 + 重试”；真实 Telegram 媒体消息未出现在测试数据中 |
+| 不同 owner 使用同名 sessionId | API reader、缓存、偏好、游标和迟到响应隔离；服务端拒绝越权读取 | U（owner UI 状态隔离、越权读写拒绝）、R（越权读取拒绝）；前端缓存按 `(viewer, owner, session)` 键 |
+| 老消息投递变化、删除、重新归类，断线后恢复 | 按记录更新已加载列表、旧 / 新 Session 摘要，保持滚动锚点，无重复或陈旧条目 | 已实现按 record_id upsert / remove 与锚点保持（D 覆盖 upsert 语义）；轮询 / kevent 只对账最新页，更早记录的变更游标未实现 |
+| 大量会话 / 长历史、状态修改引起 updated_at 变化 | 首屏按需分页，有效消息活动排序跨页一致，不先拉全量数据 | U（READ / event 不改活动顺序、limit=1 分页游标一致）；前端首页 50 条 + “加载更多”，历史最新 64 条 + 向上翻页 |
+| Action / 运行态 / 持久 notify | GroupEvent 日志按权威来源去重；运行态到期；持久消息不因类型被丢弃或漏计未读 | U（event 记录不解除归档、仍计未读）；运行态 typing 30s / status_line 10min 到期（E 中显示 processing）；GroupEvent → Action Log 发布未实现 |
+
+P1（记录语义、提交结果、会话生命周期、请求准入、授权边界）与附件通道、增量加载已执行；
+多目标投递、群权限、Telegram 媒体、老记录变更游标与 GroupEvent 日志仍待真实数据或后端契约。
 
 ---
 

@@ -1,7 +1,7 @@
 # MessageHub UI 原型修改 TODO
 
 - 日期：2026-09-06
-- 状态：已完成 T0–T8（2026-09-06），范围为可交互 mock 原型；真实后端集成仍按第 3 节跟进。
+- 状态：已完成 T0–T8（2026-09-06，mock 原型）；2026-09-07 完成第 3 节的真实后端集成主体，剩余项见第 3 节末尾。
 - 交付与验收：[实现说明、检查结果与截图](IMPLEMENTATION.md)。
 - 目标：在现有 MessageHub 原型中完成 Session 列表、创建、详情、归档 / 删除、状态展示及 Action Message 的交互闭环。
 - 实施方式：先由可交互的 mock 数据层支撑全部流程；真实消息服务、平台 API、DDL 和跨 owner 后端授权按后续集成任务落地。
@@ -237,37 +237,51 @@ pnpm exec playwright test tests/e2e/pages/messagehub.spec.ts --project=chromium
   `MessageHub_Current_UI_Model_Data.md` 为实际落地字段；后端依赖仍明确标为未接入。
 - [x] 最终交付说明列出已完成 TODO、真实运行的检查、截图位置与未实现的后端能力，不以“按钮已出现”代替流程完成。
 
-## 3. 后端集成边界（2026-09-07 Review 更新，未实现）
+## 3. 后端集成边界（2026-09-07 集成，已执行）
 
-- 当前 `msg_box_db.rs::list_session_index` 按 `MAX(updated_at_ms)` 聚合排序，不能直接满足 T1。
-  后续需提供独立的消息活动时间及同口径分页游标；UI 仅重排已经拉取的一页无法修正跨页次序。
-- 空会话持久登记、逻辑会话状态权威、成员状态版本、Action Log 可靠发布、tunnel 能力与代理授权仍按主设计落地。
-- 会话级归档 / 彻底删除的服务接口和本地历史引用处理需补齐；不将普通 `RecipientState.DELETED` 宣称为物理删除。
-- 真实 Agent 代发仍为后续能力；本轮 Agent 观察仅只读。mock 授权和平台成功回显不证明服务端已执行。
+2026-09-07 Review 时的四条边界及处理结果：
 
-以下为后续真实接入待办；上文已完成的 mock 项目不代表这些项目已通过：
+- `list_session_index` 只按 `MAX(updated_at_ms)` 聚合：已补 `order_by: activity`（`chat` / `group_msg` / `deliver` 记录的最大 `sort_key`）
+  与同口径游标 `(last_activity_ms, session_id)`，服务端排序跨页一致；旧 `updated` 排序保留为默认值。
+- 空会话登记、生命周期权威、Action Log 可靠发布、tunnel 能力与代理授权：登记与生命周期已落地（`owner_sessions`），
+  跨 owner 读取授权已落地；共享 / 成员状态权威、Action Log 发布、tunnel 能力声明与代发授权仍未实现。
+- 会话级归档 / 彻底删除：`msg.archive_session` / `msg.restore_session` / `msg.delete_session` 以 owner 范围的生命周期与删除水位实现，
+  不使用 `RecipientState.DELETED`，不清理其它 owner 引用或共享对象。
+- Agent 观察仍只读：服务端按 verify-hub 用户 token 校验 viewer → owner，写动作只允许 owner 自己。
 
-- [ ] 修正实体归属：群成员 INBOX 副本的 record.to 是 owner，须使用原始 msg.to / 权威登记；
-  同一 topic 的收发方向切换不改变实体，多目标歧义进入未归类分组。
-- [ ] 保留 owner / record_id / msg_id / direction / box_kind / sort_key / recipient_state / 完整 delivery；
-  UI 展示副本不回写原始 MsgObject；无消息对象保留错误占位，API 读取失败保留错误态。
-- [ ] 分离本地已读与回执：mailbox READ 更新影响未读；set_read_state 仅写回执。
-  补批量边界、回执持久性 / 私聊契约，观察 Agent 不触发任何写入。
-- [ ] 保留 PostSendResult 的 ok/reason/msg_id/deliveries；覆盖 ok:false 与提交结果未知，
-  原始对象和幂等键稳定，对账乐观项；partial_failed 展示逐目标详情，不整条重发。
-- [ ] 独立实现会话归档、恢复、删除水位与并发边界；归档保留阅读状态，
-  删除仅作用于本 owner 历史引用，不清理其它 owner 引用的对象。
-- [ ] 增加 REQUEST_BOX 入口、来源与准入动作；补接受后的历史处理、状态及完整计数 / 分页，
-  不把联系人权限改变伪装为旧消息迁移。
-- [ ] 接入 native 路由与群 action 权限；读取、发送、生命周期与字段编辑分别校验，
-  不按 native / 本地托管开放所有操作。
-- [ ] 接入对象附件上传 / 下载 / 预览，覆盖 cyfs://、无 uri_hint、非图片文件和局部失败。
-- [ ] API reader 补 viewer / owner / session 隔离、按需分页与 upsert / remove；
-  旧消息状态变化、删除 / 重新归类和断线恢复后对账历史及摘要，不仅 append 新消息。
-- [ ] 对齐运行态的可信来源、成员与到期规则；GroupEvent 持久发布为 Action Log 后再接真实日志，
-  持久 notify / Action 的未读不能被活动时间过滤规则吞掉。
-- [ ] 按 [UI_DATAMODEL §9.4](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md#94-接入验收条件本次未执行)
-  执行真实 RPC / 数据夹具验证；完成后再更新对应复选框，不沿用原型测试结果。
+真实接入完成项（前端 `api/` 真实 store + msg-center 后端，验证方式见 [IMPLEMENTATION.md](IMPLEMENTATION.md)）：
 
-本轮实现范围限于 MessageHub 原型、必要的 Agent 主页入口、mock、i18n 和相关测试 / 说明；
-不要求重做 EntityList 布局、长历史引擎、Agent Runtime 或消息域持久协议。
+- [x] 修正实体归属：`api/projection.ts` 按登记 peer → `group:` tag / group_msg 目标 → `dm:` → 原始 msg.from / msg.to（相对 owner）归属，
+  多目标歧义与无证据进入“未归类会话”容器；同一 topic 收发方向切换不改变实体。Deno `messagehub-projection.test.ts` 覆盖。
+- [x] 保留 owner / record_id / msg_id / direction / box_kind / sort_key / recipient_state / 完整 delivery（`ui_record`）；
+  展示副本不回写；无消息对象渲染“消息内容不可用”占位；owner 加载失败保留错误态与重试。
+- [x] 分离本地已读与回执：可见入站 UNREAD 记录调用 `msg.update_record_state(READ)` 后才减少本地未读并重读摘要；
+  UI 不写 `msg.set_read_state`；观察 Agent 不触发任何写入（服务端亦拒绝）。
+- [x] 保留 PostSendResult：`ok:false` 展示服务端 reason，提交结果未知时保留原对象与同一幂等键重试并对账，
+  乐观项在结果后移除；`partial_failed` / 失败按目标展示 state / attempts / error / duplicate_risk，不整条重发。
+- [x] 会话归档、恢复、删除水位与并发边界：后端 `owner_sessions` 表（schema v9）+ 三个 RPC；归档保留阅读状态与活动时间，
+  新普通消息自动解除归档而事件 / 状态更新不会；删除水位以前的记录（含重放）对该 owner 不可见，其它 owner 不受影响。Rust 测试覆盖。
+- [x] REQUEST_BOX 入口、来源与准入动作：`SessionSummary.request_count`（水位后完整计数）、实体列表“请求”过滤、会话横幅与逐条“请求”标记，
+  准入动作复用 `contact.update_contact(access_level=friend)` / `contact.block_contact`，只反馈本次权限变更。
+- [x] native 路由与群 action 权限：群会话按 `group.check_access(group.post_message)` 决定 Composer；native 路由由 `post_send` 校验并展示拒绝原因；
+  读取、发送、生命周期、字段编辑分别判断，共享 / 成员字段编辑在真实模式始终关闭并说明原因。
+- [x] 对象附件上传 / 下载 / 预览：上传经 NDM TUS + `put_object` 发布 FileObject；下载经新增 `GET /kapi/msg-center/objects/{obj_id}[/content]`
+  （需会话 token）按 `obj_id` 访问，覆盖 `cyfs://`、无 uri_hint、非图片文件与单附件失败局部展示。
+- [x] API reader：`msg-center:{viewer}:{owner}:{session}` 隔离、最新页 + 向上分页、按 record_id upsert / remove、
+  轮询 + kevent 信号触发尾部对账；不同 owner 同名 session 的缓存、偏好、游标与迟到响应隔离（epoch）。
+- [x] 运行态来源与到期：typing 30s、status_line 10min 内有效，成员固定为 owner（生产者为 owner 的 tunnel / Agent）；
+  真实 `event + buckyos.action_log` 消息沿用原型 renderer 与过滤，前端不再本地伪造日志。
+- [x] 按 UI_DATAMODEL §9.4 执行真实 RPC / 数据夹具验证：`test/test_msg_center/test_messagehub_sessions.ts`（Deno，真实 zone）、
+  `tests/e2e/real/messagehub.real.spec.ts`（Playwright，真实 zone，1440 / 375）；逐行状态见 §9.4。
+
+仍未实现的后端契约（不影响上述 UI 功能，UI 中以只读 / 原因说明呈现）：
+
+- [ ] 批量已读边界、回执持久化与私聊回执契约（当前 receipts 仅内存，UI 逐条 `update_record_state`）。
+- [ ] 接受联系人后 REQUEST_BOX 旧记录的迁移 / 处理状态契约；当前只反馈权限变更，请求记录保留在请求箱。
+- [ ] 共享标题 / 说明、成员昵称的权威状态（revision、幂等 patch）与 GroupEvent → Action Log 持久发布。
+- [ ] tunnel 能力声明（多会话 / 远端创建 / 出站能力）与 Agent 代发授权；tunnel 会话仍按默认只读 + 风险确认写入。
+- [ ] 已加载尾页之外的旧记录投递 / 删除 / 重新归类变更游标；当前只在重新打开会话或刷新时对账。
+- [ ] `ui_session` owner 范围批量读取；当前按会话按需读取，实体列表置顶只覆盖已加载偏好。
+
+本轮实现范围限于 MessageHub 前端真实 store、msg-center 的会话登记 / 生命周期 / 授权 / 对象访问、i18n 和相关测试 / 说明；
+不重做 EntityList 布局、长历史引擎、Agent Runtime 或消息域持久协议。

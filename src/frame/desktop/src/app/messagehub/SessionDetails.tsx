@@ -5,7 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import type { z } from 'zod'
 import { useI18n } from '../../i18n/provider'
 import { useWindowDialog } from '../../desktop/windows/dialogs'
-import { useMessageHubStore } from './mock/hooks'
+import { useMessageHubStore } from './store'
 import { DialogFocus, hubButtonClass, hubInputClass } from './SessionDialogs'
 import { memberStateSchema, presentationSchema, sharedStateSchema } from './sessionModel'
 import type { Entity, MessageHubContext, Session, SessionAccess } from './types'
@@ -24,7 +24,7 @@ export function SessionDetails({ session, entity, context, access, onClose, onMa
     [t('messagehub.owner'), context.ownerDid === context.viewerDid ? t('messagehub.you') : t('messagehub.agentOwner')],
     [t('messagehub.connection'), session.binding.kind === 'tunnel' ? session.binding.connectionName : session.source ?? 'BuckyOS'],
     [t('messagehub.mode'), t(access.mode === 'read_write' ? 'messagehub.readWrite' : 'messagehub.readOnly')],
-    [t('messagehub.createdAt'), new Date(session.createdAt).toLocaleString()],
+    [t('messagehub.createdAt'), session.createdAt ? new Date(session.createdAt).toLocaleString() : '—'],
     [t('messagehub.lastActivity'), session.lastActiveAt ? new Date(session.lastActiveAt).toLocaleString() : '—'],
     [t('messagehub.lifecycle'), t(session.lifecycle === 'active' ? 'messagehub.activeSessions' : 'messagehub.archived')],
   ]
@@ -35,11 +35,13 @@ export function SessionDetails({ session, entity, context, access, onClose, onMa
       <dl className="space-y-3">{rows.map(([label, value]) => <div key={label}><dt className="text-xs text-[color:var(--cp-muted)]">{label}</dt><dd>{value}</dd></div>)}</dl>
       {access.readOnlyReason && <p>{t(`messagehub.reason.${access.readOnlyReason}`)}</p>}
       {!access.canManage && <p>{t('messagehub.reason.agent_observer')}</p>}
+      {!store.isMock && <p className="text-xs text-[color:var(--cp-muted)]">{t('messagehub.sharedStateUnavailable')}</p>}
+      {(session.requestCount ?? 0) > 0 && <p className="text-xs">{t('messagehub.requestBanner', undefined, { count: session.requestCount ?? 0 })}</p>}
       <SharedEditor session={session} context={context} disabled={!access.canEditSharedState} />
       <MemberEditor session={session} context={context} disabled={!access.canEditOwnMemberState} />
       <div><h4 className="font-semibold">{t('messagehub.otherMembers')}</h4>{Object.entries(session.members).filter(([did]) => did !== context.ownerDid).map(([did, member]) => <p key={did} className="mt-1 break-words">{member.nickname || did}</p>)}</div>
       <PresentationEditor session={session} context={context} disabled={!access.canEditPresentation} />
-      <details><summary className="cursor-pointer">{t('messagehub.sourceInfo')}</summary><dl className="mt-2 break-all text-xs space-y-2">{Object.entries({ sessionId: session.id, ownerDid: session.ownerDid, entityDid: entity.id, origin: session.origin, ...session.binding }).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{String(value)}</dd></div>)}</dl></details>
+      <details><summary className="cursor-pointer">{t('messagehub.sourceInfo')}</summary><dl className="mt-2 break-all text-xs space-y-2">{Object.entries({ sessionId: session.id, ownerDid: session.ownerDid, entityDid: entity.id, origin: session.origin, attribution: session.attributionEvidence ?? 'seed', ...session.binding }).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{String(value)}</dd></div>)}</dl></details>
       <div className="flex flex-wrap gap-2">
         {access.canEnableWrite && <button type="button" className={hubButtonClass} onClick={() => void enableWrite()}>{t('messagehub.enableWrite')}</button>}
         {session.binding.kind === 'tunnel' && access.mode === 'read_write' && <button type="button" className={hubButtonClass} onClick={() => onWrite(false)}>{t('messagehub.restoreReadOnly')}</button>}

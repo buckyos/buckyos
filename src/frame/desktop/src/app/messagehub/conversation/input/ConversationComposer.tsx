@@ -59,14 +59,14 @@ const ConversationComposerInner = forwardRef<
   const [attachments, setAttachments] = useState<ComposerAttachmentItem[]>(() => initialAttachments.map(createAttachmentItem))
   const [inputValue, setInputValue] = useState(initialDraft)
   const [sending, setSending] = useState(false)
-  const [sendError, setSendError] = useState(false)
+  const [sendError, setSendError] = useState<string | false>(false)
   const sendLock = useRef(false)
   const attachmentsCallback = useRef(onAttachmentsChange)
   useEffect(() => { attachmentsCallback.current = onAttachmentsChange }, [onAttachmentsChange])
-  useEffect(() => { if (attachmentsCallback.current) void attachmentsCallback.current(attachments.map(({ file, relativePath }) => ({ file, relativePath })))?.catch(() => setSendError(true)) }, [attachments])
+  useEffect(() => { if (attachmentsCallback.current) void attachmentsCallback.current(attachments.map(({ file, relativePath }) => ({ file, relativePath })))?.catch(() => setSendError('true')) }, [attachments])
   const draftCallback = useRef(onDraftChange)
   useEffect(() => { draftCallback.current = onDraftChange }, [onDraftChange])
-  useEffect(() => { if (draftCallback.current) void draftCallback.current(inputValue)?.catch(() => setSendError(true)) }, [inputValue])
+  useEffect(() => { if (draftCallback.current) void draftCallback.current(inputValue)?.catch(() => setSendError('true')) }, [inputValue])
   const [pickerOpen, setPickerOpen] = useState(false)
   const attachmentsRef = useRef<ComposerAttachmentItem[]>([])
   const composerRef = useRef<HTMLDivElement>(null)
@@ -203,7 +203,7 @@ const ConversationComposerInner = forwardRef<
     try {
       await onSendMessage({ attachments, content: text })
       setInputValue(''); clearAttachments(); inputRef.current?.focus()
-    } catch { setSendError(true) } finally { sendLock.current = false; setSending(false) }
+    } catch (error) { setSendError(error instanceof Error && error.message ? error.message : 'true') } finally { sendLock.current = false; setSending(false) }
   }, [attachments, clearAttachments, inputValue, onSendMessage])
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -285,7 +285,7 @@ const ConversationComposerInner = forwardRef<
         onChange={handleFileInputChange}
       />
 
-      {sendError && <p role="alert" className="px-3 pt-2 text-xs text-[color:var(--cp-danger)]">{t('messagehub.sendFailed')}</p>}
+      {sendError && <p role="alert" className="px-3 pt-2 text-xs text-[color:var(--cp-danger)]">{t('messagehub.sendFailed')}{typeof sendError === 'string' && sendError !== 'true' ? ` ${describeSendError(sendError, t)}` : ''}</p>}
       {/* Anchored to the composer root: the message input area is overflow-hidden
           and would clip a menu popping upward from inside it. */}
       {pickerOpen ? (
@@ -413,6 +413,24 @@ const ConversationComposerInner = forwardRef<
 })
 
 ConversationComposerInner.displayName = 'ConversationComposer'
+
+/**
+ * Surface the backend's real rejection / unknown-result reason next to the
+ * generic retry hint. Reasons are prefixed by the store (`rejected: …`,
+ * `result_unknown: …`); other messages map to i18n keys when known.
+ */
+function describeSendError(message: string, t: (key: string, fallback?: string, variables?: Record<string, string | number>) => string): string {
+  const [prefix, ...rest] = message.split(':')
+  const detail = rest.join(':').trim()
+  switch (prefix.trim()) {
+    case 'rejected': return t('messagehub.sendRejected', undefined, { reason: detail || 'unknown' })
+    case 'result_unknown': return t('messagehub.sendResultUnknown')
+    case 'attachment_upload_unavailable': return t('messagehub.attachmentUploadUnavailable')
+    case 'attachment_upload_failed': return t('messagehub.attachmentUploadFailed')
+    case 'permission_denied': return t('messagehub.reason.permission_denied')
+    default: return ''
+  }
+}
 
 export const ConversationComposer = memo(ConversationComposerInner)
 

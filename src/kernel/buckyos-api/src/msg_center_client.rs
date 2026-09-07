@@ -20,7 +20,7 @@ pub const MSG_CENTER_SERVICE_PORT: u16 = 4050;
 pub const MSG_CENTER_RDB_INSTANCE_ID: &str = "msg-center-main";
 /// Version of the msg-center schema. Bump whenever the DDL below changes in a
 /// way that is not trivially re-idempotent.
-pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 8;
+pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 9;
 pub const UI_SESSION_STATE_ACTIVE_KEY: &str = "active";
 pub const UI_SESSION_STATE_TYPING_KEY: &str = "typing";
 pub const UI_SESSION_STATE_STATUS_LINE_KEY: &str = "status_line";
@@ -245,6 +245,35 @@ CREATE TABLE IF NOT EXISTS group_expansion_snapshots (
     created_at_ms  INTEGER NOT NULL,
     PRIMARY KEY (host_owner_key, group_did, operation_id)
 );
+
+CREATE TABLE IF NOT EXISTS owner_sessions (
+    owner                       TEXT NOT NULL,
+    session_id                  TEXT NOT NULL,
+    lifecycle                   TEXT NOT NULL,
+    registered                  INTEGER NOT NULL DEFAULT 0,
+    origin                      TEXT,
+    peer_did                    TEXT,
+    binding_json                TEXT,
+    title                       TEXT,
+    archived_at_ms              INTEGER,
+    delete_watermark_sort_key   INTEGER,
+    delete_watermark_record_id  TEXT,
+    deleted_at_ms               INTEGER,
+    created_at_ms               INTEGER NOT NULL,
+    updated_at_ms               INTEGER NOT NULL,
+    PRIMARY KEY (owner, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_owner_sessions_owner
+    ON owner_sessions(owner, lifecycle, registered);
+
+CREATE TABLE IF NOT EXISTS owner_ui_session_states (
+    owner         TEXT NOT NULL,
+    session_id    TEXT NOT NULL,
+    state_key     TEXT NOT NULL,
+    value_json    TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (owner, session_id, state_key)
+);
 "#;
 
 /// Postgres DDL mirroring the sqlite schema above.
@@ -432,6 +461,35 @@ CREATE TABLE IF NOT EXISTS group_expansion_snapshots (
     created_at_ms  BIGINT NOT NULL,
     PRIMARY KEY (host_owner_key, group_did, operation_id)
 );
+
+CREATE TABLE IF NOT EXISTS owner_sessions (
+    owner                       TEXT NOT NULL,
+    session_id                  TEXT NOT NULL,
+    lifecycle                   TEXT NOT NULL,
+    registered                  BIGINT NOT NULL DEFAULT 0,
+    origin                      TEXT,
+    peer_did                    TEXT,
+    binding_json                TEXT,
+    title                       TEXT,
+    archived_at_ms              BIGINT,
+    delete_watermark_sort_key   BIGINT,
+    delete_watermark_record_id  TEXT,
+    deleted_at_ms               BIGINT,
+    created_at_ms               BIGINT NOT NULL,
+    updated_at_ms               BIGINT NOT NULL,
+    PRIMARY KEY (owner, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_owner_sessions_owner
+    ON owner_sessions(owner, lifecycle, registered);
+
+CREATE TABLE IF NOT EXISTS owner_ui_session_states (
+    owner         TEXT NOT NULL,
+    session_id    TEXT NOT NULL,
+    state_key     TEXT NOT NULL,
+    value_json    TEXT NOT NULL,
+    updated_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (owner, session_id, state_key)
+);
 "#;
 
 /// Default rdb-instance config for the msg-center service. The scheduler drops
@@ -470,6 +528,11 @@ const METHOD_MSG_GET_MESSAGE: &str = "msg.get_message";
 const METHOD_UI_SESSION_UPDATE_STATE: &str = "ui_session.update_state";
 const METHOD_UI_SESSION_GET_STATE: &str = "ui_session.get_state";
 const METHOD_UI_SESSION_LIST_STATE: &str = "ui_session.list_state";
+const METHOD_MSG_CREATE_SESSION: &str = "msg.create_session";
+const METHOD_MSG_ARCHIVE_SESSION: &str = "msg.archive_session";
+const METHOD_MSG_RESTORE_SESSION: &str = "msg.restore_session";
+const METHOD_MSG_DELETE_SESSION: &str = "msg.delete_session";
+const METHOD_MSG_GET_SESSION_STATE: &str = "msg.get_session_state";
 
 const METHOD_CONTACT_RESOLVE_DID: &str = "contact.resolve_did";
 const METHOD_CONTACT_RESOLVE_ENDPOINT_DID: &str = "contact.resolve_endpoint_did";
@@ -748,6 +811,72 @@ pub struct UiSessionStateEntry {
     pub updated_at_ms: u64,
 }
 
+/// Owner-local lifecycle of one session projection (`Message Center.md` §5.8).
+/// Independent of `RecipientState`: archiving never rewrites per-record read
+/// state and deleting only moves the owner's visibility watermark.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionLifecycle {
+    #[default]
+    Active,
+    Archived,
+}
+
+/// Persisted owner-scoped session metadata: lifecycle, delete watermark and
+/// (for manually created sessions) the registration that makes an empty
+/// session visible before its first message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OwnerSessionState {
+    pub owner: DID,
+    pub session_id: String,
+    pub lifecycle: SessionLifecycle,
+    /// `true` when the session was explicitly registered (manual create) and
+    /// stays listed even with zero visible records.
+    #[serde(default)]
+    pub registered: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_did: Option<DID>,
+    /// Opaque binding description supplied at registration (UI contract).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at_ms: Option<u64>,
+    /// Records at or before this `(sort_key, record_id)` are hidden for this
+    /// owner (set by delete). Newer records rebuild a visible history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_watermark_sort_key: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_watermark_record_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at_ms: Option<u64>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionListLifecycleFilter {
+    #[default]
+    Active,
+    Archived,
+    All,
+}
+
+/// Sort key of `list_sessions`. `Updated` is the legacy `MAX(updated_at_ms)`
+/// (bumped by read-state changes); `Activity` orders by the last effective
+/// message activity (`chat` / `group_msg` / `deliver` records only).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionListOrder {
+    #[default]
+    Updated,
+    Activity,
+}
+
 async fn load_msg_from_named_store(msg_id: &ObjId) -> std::result::Result<MsgObject, RPCErrors> {
     let runtime = get_buckyos_api_runtime()?;
     let named_store = runtime.get_named_store().await?;
@@ -819,6 +948,19 @@ pub struct SessionSummary {
     #[serde(default)]
     pub unread_count: u64,
     pub updated_at_ms: u64,
+    /// Last effective message activity (`chat` / `group_msg` / `deliver`
+    /// records); 0 for sessions without any such record. For registered
+    /// empty sessions this is the registration time.
+    #[serde(default)]
+    pub last_activity_ms: u64,
+    /// Number of visible `REQUEST_BOX` records in the session.
+    #[serde(default)]
+    pub request_count: u64,
+    #[serde(default)]
+    pub lifecycle: SessionLifecycle,
+    /// Owner-scoped session metadata when a row exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<OwnerSessionState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1331,12 +1473,18 @@ pub struct MsgCenterListSessionsReq {
     pub owner: DID,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+    /// Cursor value of the selected `order_by` key (`updated_at_ms` or
+    /// `last_activity_ms` of the last item of the previous page).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor_updated_at_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub with_object: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<SessionListLifecycleFilter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_by: Option<SessionListOrder>,
 }
 
 impl MsgCenterListSessionsReq {
@@ -1353,6 +1501,8 @@ impl MsgCenterListSessionsReq {
             cursor_updated_at_ms,
             cursor_session_id,
             with_object,
+            lifecycle: None,
+            order_by: None,
         }
     }
 
@@ -1427,6 +1577,10 @@ pub struct MsgCenterUpdateUiSessionStateReq {
     pub session_id: String,
     pub key: String,
     pub value: Value,
+    /// When set, the state is stored in the owner-scoped table
+    /// `(owner, session_id, key)` and the caller must be that owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<DID>,
 }
 
 impl MsgCenterUpdateUiSessionStateReq {
@@ -1435,6 +1589,7 @@ impl MsgCenterUpdateUiSessionStateReq {
             session_id,
             key,
             value,
+            owner: None,
         }
     }
 
@@ -1447,11 +1602,17 @@ impl MsgCenterUpdateUiSessionStateReq {
 pub struct MsgCenterGetUiSessionStateReq {
     pub session_id: String,
     pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<DID>,
 }
 
 impl MsgCenterGetUiSessionStateReq {
     pub fn new(session_id: String, key: String) -> Self {
-        Self { session_id, key }
+        Self {
+            session_id,
+            key,
+            owner: None,
+        }
     }
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
@@ -1462,15 +1623,61 @@ impl MsgCenterGetUiSessionStateReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MsgCenterListUiSessionStateReq {
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<DID>,
 }
 
 impl MsgCenterListUiSessionStateReq {
     pub fn new(session_id: String) -> Self {
-        Self { session_id }
+        Self {
+            session_id,
+            owner: None,
+        }
     }
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         parse_from_json(value, "MsgCenterListUiSessionStateReq")
+    }
+}
+
+/// `msg.create_session`: register an empty owner-local session before its
+/// first message. `session_id` may be supplied by the caller for idempotent
+/// retries; otherwise the service allocates a random UUID.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterCreateSessionReq {
+    pub owner: DID,
+    pub peer_did: DID,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+}
+
+impl MsgCenterCreateSessionReq {
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterCreateSessionReq")
+    }
+}
+
+/// Owner-scoped session reference used by archive / restore / delete /
+/// get_session_state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterSessionRefReq {
+    pub owner: DID,
+    pub session_id: String,
+}
+
+impl MsgCenterSessionRefReq {
+    pub fn new(owner: DID, session_id: String) -> Self {
+        Self { owner, session_id }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterSessionRefReq")
     }
 }
 
@@ -2264,6 +2471,8 @@ impl MsgCenterClient {
                         cursor_updated_at_ms,
                         cursor_session_id,
                         with_object,
+                        None,
+                        None,
                         ctx,
                     )
                     .await
@@ -2279,6 +2488,133 @@ impl MsgCenterClient {
                 let req_json = serialize_to_json(&req, "MsgCenterListSessionsReq")?;
                 let result = client.call(METHOD_MSG_LIST_SESSIONS, req_json).await?;
                 parse_rpc_response(result, "SessionSummaryPage")
+            }
+        }
+    }
+
+    /// `list_sessions` with lifecycle filter and ordering (UI session list).
+    pub async fn list_sessions_with_options(
+        &self,
+        req: MsgCenterListSessionsReq,
+    ) -> std::result::Result<SessionSummaryPage, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_list_sessions(
+                        req.owner,
+                        req.limit,
+                        req.cursor_updated_at_ms,
+                        req.cursor_session_id,
+                        req.with_object,
+                        req.lifecycle,
+                        req.order_by,
+                        ctx,
+                    )
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "MsgCenterListSessionsReq")?;
+                let result = client.call(METHOD_MSG_LIST_SESSIONS, req_json).await?;
+                parse_rpc_response(result, "SessionSummaryPage")
+            }
+        }
+    }
+
+    pub async fn create_session(
+        &self,
+        req: MsgCenterCreateSessionReq,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_create_session(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "MsgCenterCreateSessionReq")?;
+                let result = client.call(METHOD_MSG_CREATE_SESSION, req_json).await?;
+                parse_rpc_response(result, "OwnerSessionState")
+            }
+        }
+    }
+
+    pub async fn archive_session(
+        &self,
+        owner: DID,
+        session_id: String,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_archive_session(owner, session_id, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterSessionRefReq::new(owner, session_id);
+                let req_json = serialize_to_json(&req, "MsgCenterSessionRefReq")?;
+                let result = client.call(METHOD_MSG_ARCHIVE_SESSION, req_json).await?;
+                parse_rpc_response(result, "OwnerSessionState")
+            }
+        }
+    }
+
+    pub async fn restore_session(
+        &self,
+        owner: DID,
+        session_id: String,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_restore_session(owner, session_id, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterSessionRefReq::new(owner, session_id);
+                let req_json = serialize_to_json(&req, "MsgCenterSessionRefReq")?;
+                let result = client.call(METHOD_MSG_RESTORE_SESSION, req_json).await?;
+                parse_rpc_response(result, "OwnerSessionState")
+            }
+        }
+    }
+
+    pub async fn delete_session(
+        &self,
+        owner: DID,
+        session_id: String,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_delete_session(owner, session_id, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterSessionRefReq::new(owner, session_id);
+                let req_json = serialize_to_json(&req, "MsgCenterSessionRefReq")?;
+                let result = client.call(METHOD_MSG_DELETE_SESSION, req_json).await?;
+                parse_rpc_response(result, "OwnerSessionState")
+            }
+        }
+    }
+
+    pub async fn get_session_state(
+        &self,
+        owner: DID,
+        session_id: String,
+    ) -> std::result::Result<Option<OwnerSessionState>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_get_session_state(owner, session_id, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterSessionRefReq::new(owner, session_id);
+                let req_json = serialize_to_json(&req, "MsgCenterSessionRefReq")?;
+                let result = client.call(METHOD_MSG_GET_SESSION_STATE, req_json).await?;
+                parse_rpc_response(result, "Option<OwnerSessionState>")
             }
         }
     }
@@ -3418,8 +3754,55 @@ pub trait MsgCenterHandler: Send + Sync {
         cursor_updated_at_ms: Option<u64>,
         cursor_session_id: Option<String>,
         with_object: Option<bool>,
+        lifecycle: Option<SessionListLifecycleFilter>,
+        order_by: Option<SessionListOrder>,
         ctx: RPCContext,
     ) -> std::result::Result<SessionSummaryPage, RPCErrors>;
+
+    /// Register an empty owner-local session (`Message Center.md` §5.5).
+    async fn handle_create_session(
+        &self,
+        _req: MsgCenterCreateSessionReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(METHOD_MSG_CREATE_SESSION.to_string()))
+    }
+
+    async fn handle_archive_session(
+        &self,
+        _owner: DID,
+        _session_id: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(METHOD_MSG_ARCHIVE_SESSION.to_string()))
+    }
+
+    async fn handle_restore_session(
+        &self,
+        _owner: DID,
+        _session_id: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(METHOD_MSG_RESTORE_SESSION.to_string()))
+    }
+
+    async fn handle_delete_session(
+        &self,
+        _owner: DID,
+        _session_id: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(METHOD_MSG_DELETE_SESSION.to_string()))
+    }
+
+    async fn handle_get_session_state(
+        &self,
+        _owner: DID,
+        _session_id: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Option<OwnerSessionState>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(METHOD_MSG_GET_SESSION_STATE.to_string()))
+    }
 
     async fn handle_list_session(
         &self,
@@ -3508,6 +3891,38 @@ pub trait MsgCenterHandler: Send + Sync {
         session_id: String,
         ctx: RPCContext,
     ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors>;
+
+    /// Owner-scoped UI session state `(owner, session_id, key)`; the caller
+    /// must be `owner`. Routed from `ui_session.*` when `owner` is present.
+    async fn handle_update_owner_ui_session_state(
+        &self,
+        _owner: DID,
+        _session_id: String,
+        _key: String,
+        _value: Value,
+        _ctx: RPCContext,
+    ) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(METHOD_UI_SESSION_UPDATE_STATE.to_string()))
+    }
+
+    async fn handle_get_owner_ui_session_state(
+        &self,
+        _owner: DID,
+        _session_id: String,
+        _key: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Option<UiSessionStateEntry>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(METHOD_UI_SESSION_GET_STATE.to_string()))
+    }
+
+    async fn handle_list_owner_ui_session_state(
+        &self,
+        _owner: DID,
+        _session_id: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(METHOD_UI_SESSION_LIST_STATE.to_string()))
+    }
 
     async fn handle_get_tunnel_cursor(
         &self,
@@ -3979,8 +4394,47 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                         list_req.cursor_updated_at_ms,
                         list_req.cursor_session_id,
                         list_req.with_object,
+                        list_req.lifecycle,
+                        list_req.order_by,
                         ctx,
                     )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_MSG_CREATE_SESSION | "create_session" => {
+                let create_req = MsgCenterCreateSessionReq::from_json(req.params)?;
+                let result = self.0.handle_create_session(create_req, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_MSG_ARCHIVE_SESSION | "archive_session" => {
+                let ref_req = MsgCenterSessionRefReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_archive_session(ref_req.owner, ref_req.session_id, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_MSG_RESTORE_SESSION | "restore_session" => {
+                let ref_req = MsgCenterSessionRefReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_restore_session(ref_req.owner, ref_req.session_id, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_MSG_DELETE_SESSION | "delete_session" => {
+                let ref_req = MsgCenterSessionRefReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_delete_session(ref_req.owner, ref_req.session_id, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_MSG_GET_SESSION_STATE | "get_session_state" => {
+                let ref_req = MsgCenterSessionRefReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_get_session_state(ref_req.owner, ref_req.session_id, ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }
@@ -4071,31 +4525,66 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
             }
             METHOD_UI_SESSION_UPDATE_STATE => {
                 let update_req = MsgCenterUpdateUiSessionStateReq::from_json(req.params)?;
-                let result = self
-                    .0
-                    .handle_update_ui_session_state(
-                        update_req.session_id,
-                        update_req.key,
-                        update_req.value,
-                        ctx,
-                    )
-                    .await?;
+                let result = match update_req.owner {
+                    Some(owner) => {
+                        self.0
+                            .handle_update_owner_ui_session_state(
+                                owner,
+                                update_req.session_id,
+                                update_req.key,
+                                update_req.value,
+                                ctx,
+                            )
+                            .await?
+                    }
+                    None => {
+                        self.0
+                            .handle_update_ui_session_state(
+                                update_req.session_id,
+                                update_req.key,
+                                update_req.value,
+                                ctx,
+                            )
+                            .await?
+                    }
+                };
                 RPCResult::Success(json!(result))
             }
             METHOD_UI_SESSION_GET_STATE => {
                 let get_req = MsgCenterGetUiSessionStateReq::from_json(req.params)?;
-                let result = self
-                    .0
-                    .handle_get_ui_session_state(get_req.session_id, get_req.key, ctx)
-                    .await?;
+                let result = match get_req.owner {
+                    Some(owner) => {
+                        self.0
+                            .handle_get_owner_ui_session_state(
+                                owner,
+                                get_req.session_id,
+                                get_req.key,
+                                ctx,
+                            )
+                            .await?
+                    }
+                    None => {
+                        self.0
+                            .handle_get_ui_session_state(get_req.session_id, get_req.key, ctx)
+                            .await?
+                    }
+                };
                 RPCResult::Success(json!(result))
             }
             METHOD_UI_SESSION_LIST_STATE => {
                 let list_req = MsgCenterListUiSessionStateReq::from_json(req.params)?;
-                let result = self
-                    .0
-                    .handle_list_ui_session_state(list_req.session_id, ctx)
-                    .await?;
+                let result = match list_req.owner {
+                    Some(owner) => {
+                        self.0
+                            .handle_list_owner_ui_session_state(owner, list_req.session_id, ctx)
+                            .await?
+                    }
+                    None => {
+                        self.0
+                            .handle_list_ui_session_state(list_req.session_id, ctx)
+                            .await?
+                    }
+                };
                 RPCResult::Success(json!(result))
             }
             METHOD_CONTACT_RESOLVE_DID | "resolve_did" => {
@@ -4490,13 +4979,15 @@ mod tests {
     }
 
     #[test]
-    fn schema_v8_scopes_idempotency_and_has_durable_tunnel_cursors() {
-        assert_eq!(MSG_CENTER_RDB_SCHEMA_VERSION, 8);
+    fn schema_v9_scopes_idempotency_and_has_owner_sessions() {
+        assert_eq!(MSG_CENTER_RDB_SCHEMA_VERSION, 9);
         for schema in [MSG_CENTER_RDB_SCHEMA_SQLITE, MSG_CENTER_RDB_SCHEMA_POSTGRES] {
             assert!(schema.contains("owner_scope     TEXT NOT NULL"));
             assert!(schema.contains("PRIMARY KEY (scope, owner_scope, idempotency_key)"));
             assert!(schema.contains("CREATE TABLE IF NOT EXISTS msg_tunnel_cursors"));
             assert!(schema.contains("PRIMARY KEY (tunnel_key, cursor_key)"));
+            assert!(schema.contains("CREATE TABLE IF NOT EXISTS owner_sessions"));
+            assert!(schema.contains("PRIMARY KEY (owner, session_id, state_key)"));
         }
     }
 }

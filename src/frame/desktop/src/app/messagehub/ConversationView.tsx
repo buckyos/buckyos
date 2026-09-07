@@ -23,8 +23,7 @@ import {
 import { isTransferWithFiles, type ComposerAttachmentInput } from './conversation/input/attachmentDraft'
 import type { DID } from './protocol/msgobj'
 import type { Entity, Session, SessionAccess, MessageHubContext } from './types'
-import { useMessageHubRuntime } from './mock/hooks'
-import { defaultContext, messageHubStore } from './mock/store'
+import { useMessageHubRuntime, useMessageHubStore, type EntityAdmission } from './store'
 
 interface ConversationViewProps {
   entity: Entity
@@ -50,6 +49,12 @@ interface ConversationViewProps {
   sessionCount: number
   leadingPane?: ReactNode
   isSessionSidebarOpen?: boolean
+  historyStatus?: 'idle' | 'loading' | 'ready' | 'error'
+  hasOlder?: boolean
+  onLoadOlder?: () => Promise<boolean>
+  onVisibleMessages?: (recordIds: string[]) => void
+  admission?: EntityAdmission | null
+  onAdmission?: (action: 'accept' | 'block') => Promise<void>
 }
 
 const MIN_HISTORY_PANE_HEIGHT = 180
@@ -63,13 +68,29 @@ export function ConversationView({
   onOpenSessionSidebar,
   onOpenDetails,
   onSendMessage,
-  context = defaultContext, access, title = session?.title ?? '', onOpenSessionDetails, onCreate, creationReason, draft, draftAttachments, onAttachmentsChange, onDraftChange, showActions = true, onShowActions,
+  context: contextProp, access, title = session?.title ?? '', onOpenSessionDetails, onCreate, creationReason, draft, draftAttachments, onAttachmentsChange, onDraftChange, showActions = true, onShowActions,
   leadingPane = null,
   isSessionSidebarOpen = false,
+  historyStatus = 'ready',
+  hasOlder = false,
+  onLoadOlder,
+  onVisibleMessages,
+  admission = null,
+  onAdmission,
 }: ConversationViewProps) {
   const { t } = useI18n()
+  const store = useMessageHubStore()
   useMessageHubRuntime()
-  const runtime = session ? messageHubStore.runtimeFor(context, session.id) : []
+  const context = contextProp ?? store.defaultContext()
+  const runtime = session ? store.runtimeFor(context, session.id) : []
+  const [admissionPending, setAdmissionPending] = useState(false)
+  const [admissionError, setAdmissionError] = useState(false)
+  const requestCount = session?.requestCount ?? 0
+  const runAdmission = async (action: 'accept' | 'block') => {
+    if (!onAdmission || admissionPending) return
+    setAdmissionPending(true); setAdmissionError(false)
+    try { await onAdmission(action) } catch { setAdmissionError(true) } finally { setAdmissionPending(false) }
+  }
   const canSend = access === undefined || access?.mode === 'read_write'
   const [filterError, setFilterError] = useState(false)
   const [pendingFilter, setPendingFilter] = useState<boolean | null>(null)
@@ -186,6 +207,12 @@ export function ConversationView({
         {onCreate && <button type="button" onClick={onCreate} disabled={!!creationReason} title={creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.newSession')} aria-label={t('messagehub.newSession')} className="min-h-11 min-w-11 text-lg disabled:opacity-40">+</button>}
         <button onClick={onOpenSessionDetails} disabled={!session} aria-label={t('messagehub.sessionDetails')} className="min-h-11 p-2 disabled:opacity-40" type="button"><MoreVertical size={18} /></button>
       </div>
+      {session && requestCount > 0 && <div role="note" data-testid="request-banner" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[color:var(--cp-border)] bg-[color:color-mix(in_srgb,var(--cp-warning)_10%,transparent)] px-3 py-2 text-xs">
+        <span className="flex-1">{t('messagehub.requestBanner', undefined, { count: requestCount })}{admission?.accessLevel ? ` · ${t(`messagehub.access.${admission.accessLevel}`)}` : ''}{admission?.temporaryExpiresAt ? ` · ${t('messagehub.temporaryUntil', undefined, { time: new Date(admission.temporaryExpiresAt).toLocaleString() })}` : ''}</span>
+        {admission?.canChange && admission.accessLevel !== 'friend' && <button type="button" disabled={admissionPending} className="min-h-8 rounded-lg border border-[color:var(--cp-border)] px-2" onClick={() => void runAdmission('accept')}>{t('messagehub.acceptContact')}</button>}
+        {admission?.canChange && admission.accessLevel !== 'block' && <button type="button" disabled={admissionPending} className="min-h-8 rounded-lg border border-[color:var(--cp-border)] px-2 text-[color:var(--cp-danger)]" onClick={() => void runAdmission('block')}>{t('messagehub.blockContact')}</button>}
+        {admissionError && <span role="alert">{t('messagehub.operationFailed')}</span>}
+      </div>}
       {session && onShowActions && <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-2 px-3 py-1 text-[11px] text-[color:var(--cp-muted)]">
         <span>{session.binding.kind === 'tunnel' ? session.binding.connectionName : 'BuckyOS'} · {t(canSend ? 'messagehub.readWrite' : 'messagehub.readOnly')}</span>
         <label className="flex min-h-8 items-center gap-1"><input type="checkbox" checked={pendingFilter ?? showActions} disabled={pendingFilter !== null} onChange={event => { const value = event.target.checked; setPendingFilter(value); setFilterError(false); void onShowActions?.(value).catch(() => setFilterError(true)).finally(() => setPendingFilter(null)) }} />{t('messagehub.showActions')}</label>
@@ -207,9 +234,12 @@ export function ConversationView({
               ref={historyPaneRef}
               reader={messageReader}
               showActions={showActions}
-              emptyLabel={t(!session ? 'messagehub.noSessions' : canSend ? 'messagehub.startConversation' : 'messagehub.noMessages')}
+              emptyLabel={t(!session ? 'messagehub.noSessions' : historyStatus === 'loading' ? 'messagehub.loadingHistory' : historyStatus === 'error' ? 'messagehub.historyFailed' : canSend ? 'messagehub.startConversation' : 'messagehub.noMessages')}
               selfDid={selfDid}
               isGroup={isGroup}
+              hasOlder={hasOlder}
+              onLoadOlder={onLoadOlder}
+              onVisibleMessages={onVisibleMessages}
             />
           </div>
 
@@ -222,7 +252,7 @@ export function ConversationView({
             placeholder={t('messagehub.inputPlaceholder', 'Message...')}
             maxHeight={composerMaxHeight}
             onSendMessage={handleSendMessage}
-          /> : <div className="p-4 text-center text-xs text-[color:var(--cp-muted)]">{access?.readOnlyReason ? t(`messagehub.reason.${access.readOnlyReason}`) : creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.noSessions')}</div>}
+          /> : <div className="p-4 text-center text-xs text-[color:var(--cp-muted)]" data-testid="composer-readonly">{access?.readOnlyReason ? t(`messagehub.reason.${access.readOnlyReason}`) : creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.noSessions')}</div>}
         </div>
       </div>
 

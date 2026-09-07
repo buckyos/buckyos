@@ -5,6 +5,9 @@ mod message_hub;
 mod msg_box_db;
 mod msg_center;
 mod msg_tunnel;
+mod object_access;
+mod owner_session;
+mod owner_session_db;
 #[cfg(test)]
 mod test_msg_center;
 mod tg_tunnel;
@@ -210,6 +213,9 @@ impl HttpServer for MsgCenterHttpServer {
         req: http::Request<BoxBody<Bytes, ServerError>>,
         info: StreamInfo,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        if let Some(response) = object_access::serve(&self.rpc_handler.0, &req).await {
+            return Ok(response);
+        }
         if *req.method() == Method::POST
             && (req.uri().path() == MSG_CENTER_HTTP_PATH
                 || req

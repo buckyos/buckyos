@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useMessageHubStore } from './mock/hooks'
+import { useMessageHubStore } from './store'
 import { hubButtonClass, hubInputClass } from './SessionDialogs'
 import {
   X,
@@ -294,10 +294,34 @@ export function EntityDetails({ entity, context, onClose }: EntityDetailsProps) 
           </button>
         </div>
 
+        {context && <AdmissionSection key={`admission:${entity.id}`} entity={entity} context={context} />}
         {context && <CreationPolicyEditor key={entity.id} entity={entity} context={context} />}
       </div>
     </div>
   )
+}
+
+function AdmissionSection({ entity, context }: { entity: EntityDetail; context: MessageHubContext }) {
+  const { t } = useI18n(), store = useMessageHubStore()
+  const admission = store.admission(context, entity.id)
+  const [pending, setPending] = useState(false), [status, setStatus] = useState('')
+  if (!admission) return null
+  const act = async (action: 'accept' | 'block') => {
+    if (pending) return
+    setPending(true); setStatus('')
+    try { await store.setAdmission(context, entity.id, action); setStatus('saved') } catch { setStatus('operationFailed') } finally { setPending(false) }
+  }
+  return <div className="mb-4 rounded-xl p-3" style={{ background: 'color-mix(in srgb, var(--cp-text) 4%, transparent)' }} data-testid="entity-admission">
+    <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.admission')}</p>
+    <p className="mt-1 text-sm">{t(`messagehub.access.${admission.accessLevel ?? 'stranger'}`)}{admission.temporaryExpiresAt ? ` · ${t('messagehub.temporaryUntil', undefined, { time: new Date(admission.temporaryExpiresAt).toLocaleString() })}` : ''}</p>
+    {(entity.requestCount ?? 0) > 0 && <p className="mt-1 text-xs">{t('messagehub.requestBanner', undefined, { count: entity.requestCount ?? 0 })}</p>}
+    <p className="mt-1 text-xs" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.admissionHint')}</p>
+    {admission.canChange && <div className="mt-2 flex flex-wrap gap-2">
+      {admission.accessLevel !== 'friend' && <button type="button" disabled={pending} className={hubButtonClass} onClick={() => void act('accept')}>{t('messagehub.acceptContact')}</button>}
+      {admission.accessLevel !== 'block' && <button type="button" disabled={pending} className={`${hubButtonClass} text-[color:var(--cp-danger)]`} onClick={() => void act('block')}>{t('messagehub.blockContact')}</button>}
+    </div>}
+    {status && <p role={status === 'saved' ? 'status' : 'alert'} className="mt-1 text-xs">{t(`messagehub.${status}`)}</p>}
+  </div>
 }
 
 const policySchema = z.object({ policy: z.enum(['default', 'allow', 'deny']) })

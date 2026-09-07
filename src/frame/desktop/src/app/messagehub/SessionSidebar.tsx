@@ -1,6 +1,6 @@
 import { Archive, MessageSquare, Send, SquarePen, Trash2, X } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
-import { useMessageHubClock } from './mock/hooks'
+import { useMessageHubClock } from './store'
 import { relativeActivity } from './sessionModel'
 import type { Session } from './types'
 
@@ -39,6 +39,7 @@ export function SessionSidebar({ sessions, activeSessionId, onSelectSession, onC
         <button type="button" onClick={() => onSelectSession(session.id)} aria-current={session.id === activeSessionId ? 'true' : undefined} className="flex min-h-11 min-w-0 flex-1 items-center gap-2 p-2 text-left">
           <span role="img" aria-label={session.source ?? 'BuckyOS'} className="shrink-0 text-[color:var(--cp-accent)]">{session.binding.kind === 'tunnel' ? <Send size={14} /> : <MessageSquare size={14} />}</span>
           <span className="min-w-0 flex-1"><span className={`block truncate text-sm ${session.id === activeSessionId ? 'font-semibold' : 'font-medium'}`}>{titleFor(session)}{statusFor?.(session) && <span role="img" aria-label={statusFor(session)} className="ml-1 text-[color:var(--cp-accent)]">•••</span>}</span>{session.binding.kind === 'tunnel' && <span className="block truncate text-[10px] text-[color:var(--cp-muted)]">{session.binding.connectionName}</span>}</span>
+          {(session.requestCount ?? 0) > 0 && <span className="rounded-full bg-[color:color-mix(in_srgb,var(--cp-warning)_18%,transparent)] px-1.5 text-[10px] text-[color:var(--cp-warning)]" title={t('messagehub.requests')}>{t('messagehub.requestShort')}</span>}
           {session.unreadCount > 0 && <span className="text-xs">{session.unreadCount}</span>}
         </button>
         <time className="w-8 shrink-0 text-right text-[11px] text-[color:var(--cp-muted)]" title={session.lastActiveAt ? new Date(session.lastActiveAt).toLocaleString() : undefined}>{relativeActivity(session.lastActiveAt, now, t('messagehub.now'))}</time>

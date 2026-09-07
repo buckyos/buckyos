@@ -7,10 +7,9 @@ import { InMemoryConversationMessageReader } from './conversation/history/data-s
 import type { ConversationComposerSubmitPayload } from './conversation/input/ConversationComposer'
 import { EntityDetails } from './EntityDetails'
 import { EntityList } from './EntityList'
-import { createOutgoingMockMessage, mockEntityDetails } from './mock/data'
-import { defaultContext, findEntity, messageHubStore } from './mock/store'
-import { useMessageHubStore, useMockReady, useMessageHubRuntime } from './mock/hooks'
-import { creationReason, sessionAccess, viewerSessionKey } from './sessionModel'
+import { resolveMessageHubContext, type MessageHubContextRequest } from './launch'
+import { useMessageHubStore, useMessageHubReady, useMessageHubRuntime } from './store'
+import { creationReason, viewerSessionKey } from './sessionModel'
 import { WindowDialogProvider, useWindowDialog } from '../../desktop/windows/dialogs'
 import { SessionDetails } from './SessionDetails'
 import { CreateSessionForm, ManageSessionForm, hubButtonClass } from './SessionDialogs'
@@ -33,17 +32,27 @@ import type {
 
 const EMPTY_READER = InMemoryConversationMessageReader.empty()
 
-export function MessageHubView({ initialEntityId = null, context: initialContext = defaultContext }: { initialEntityId?: string | null; context?: MessageHubContext }) {
+export function MessageHubView({ initialEntityId = null, contextRequest }: { initialEntityId?: string | null; contextRequest?: MessageHubContextRequest | MessageHubContext }) {
   const { t } = useI18n()
   const [exitFrom, setExitFrom] = useState<string | null>(null)
-  const context = exitFrom === JSON.stringify(initialContext) ? defaultContext : initialContext
-  const { status, retry } = useMockReady()
-  const store = useMessageHubStore()
+  const { status, retry } = useMessageHubReady()
   const isDesktop = useMediaQuery('(min-width: 769px)')
-  if (status !== 'ready') return <div className="flex h-full items-center justify-center"><p role="status">{t(status === 'loading' ? 'messagehub.loading' : 'messagehub.operationFailed')}</p>{status === 'error' && <button type="button" onClick={retry}>{t('messagehub.retry')}</button>}</div>
-  if (!store.canView(context)) return <div role="alert" className="p-6">{t('messagehub.reason.permission_denied')}</div>
+  if (status !== 'ready') return <div className="flex h-full items-center justify-center gap-3"><p role="status">{t(status === 'loading' ? 'messagehub.loading' : 'messagehub.loadFailed')}</p>{status === 'error' && <button type="button" className={hubButtonClass} onClick={retry}>{t('messagehub.retry')}</button>}</div>
+  return <MessageHubOwnerGate initialEntityId={initialEntityId} contextRequest={contextRequest} exitFrom={exitFrom} onExit={setExitFrom} isDesktop={isDesktop} />
+}
+
+function MessageHubOwnerGate({ initialEntityId, contextRequest, exitFrom, onExit, isDesktop }: { initialEntityId: string | null; contextRequest?: MessageHubContextRequest | MessageHubContext; exitFrom: string | null; onExit: (value: string | null) => void; isDesktop: boolean }) {
+  const { t } = useI18n()
+  const store = useMessageHubStore()
+  const requested = resolveMessageHubContext(store.defaultContext(), contextRequest)
+  const context = exitFrom === JSON.stringify(requested) ? store.defaultContext() : requested
+  const ownerStatus = store.ownerStatus(context)
+  useEffect(() => { if (store.canView(context)) void store.ensureOwner(context) }, [store, context.ownerDid, context.mode, context.viewerDid]) // eslint-disable-line react-hooks/exhaustive-deps
+  if (!store.canView(context)) return <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-6"><p>{t('messagehub.reason.permission_denied')}</p>{context.mode === 'observe' && <button type="button" className={hubButtonClass} onClick={() => onExit(JSON.stringify(requested))}>{t('messagehub.exitObserver')}</button>}</div>
+  if (ownerStatus.phase === 'loading' || ownerStatus.phase === 'idle') return <div className="flex h-full items-center justify-center"><p role="status">{t('messagehub.loading')}</p></div>
+  if (ownerStatus.phase === 'error') return <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-6"><p>{t('messagehub.loadFailed')}</p><p className="max-w-md break-words text-xs text-[color:var(--cp-muted)]">{ownerStatus.message}</p><button type="button" className={hubButtonClass} onClick={() => void store.ensureOwner(context, true)}>{t('messagehub.retry')}</button></div>
   return <div className="relative flex h-full min-h-0 flex-col text-[color:var(--cp-text)]">
-    {context.mode === 'observe' && <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[color:var(--cp-border)] p-2 text-xs" data-testid="owner-banner"><span>{t('messagehub.observing')} · {context.ownerDid.split(':').at(-1)} · {t('messagehub.readOnly')}</span><button type="button" className={hubButtonClass} onClick={() => setExitFrom(JSON.stringify(initialContext))}>{t('messagehub.exitObserver')}</button></div>}
+    {context.mode === 'observe' && <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[color:var(--cp-border)] p-2 text-xs" data-testid="owner-banner"><span>{t('messagehub.observing')} · {context.ownerDid.split(':').at(-1)} · {t('messagehub.readOnly')}</span><button type="button" className={hubButtonClass} onClick={() => onExit(JSON.stringify(requested))}>{t('messagehub.exitObserver')}</button></div>}
     <div className="relative min-h-0 flex-1"><WindowDialogProvider key={JSON.stringify(context)} surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}><MessageHubContent key={`${JSON.stringify(context)}:${initialEntityId}`} initialEntityId={initialEntityId} context={context} /></WindowDialogProvider></div>
   </div>
 }
@@ -54,11 +63,13 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
   const store = useMessageHubStore()
   const dialog = useWindowDialog()
   useMessageHubRuntime()
-  const resolvedInitialEntityId = initialEntityId ? findEntity(initialEntityId)?.id ?? null : null
+  // Without an explicit entity the most recent one opens (pinned first), which
+  // is what the mock route did with the CodeAssistant seed.
+  const resolvedInitialEntityId = initialEntityId ? store.findEntity(context, initialEntityId)?.id ?? null : store.entities(context)[0]?.id ?? null
   const getDefaultSessionId = (entityId: string | null) => entityId ? store.sessions(context, entityId, 'active')[0]?.id ?? null : null
   const contextEpoch = useRef(0)
   const ownerDid = context.ownerDid
-  useEffect(() => () => { contextEpoch.current++; messageHubStore.clearTransient(ownerDid) }, [ownerDid])
+  useEffect(() => () => { contextEpoch.current++; store.clearTransient(ownerDid) }, [ownerDid, store])
   const [archived, setArchived] = useState(false)
   const [writeConfirmations, setWriteConfirmations] = useState<Record<string, string>>({})
 
@@ -138,10 +149,12 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
   const sessions = store.sessions(context, selectedEntityId ?? '', archived ? 'archived' : 'active')
   const activeSession = sessions.find(session => session.id === selectedSessionId) ?? sessions[0] ?? null
   const messageReader = activeSession ? store.reader(context, activeSession.id) : EMPTY_READER
-  const entityDetail = selectedEntity ? { ...mockEntityDetails[selectedEntity.id], ...selectedEntity } : null
+  const entityDetail = selectedEntity ? store.entityDetail(context, selectedEntity.id) : null
   const confirmed = !!activeSession && writeConfirmations[activeSession.id] === JSON.stringify(activeSession.binding)
-  const access = activeSession ? sessionAccess(context, activeSession, confirmed) : null
+  const access = activeSession ? store.access(context, activeSession, confirmed) : null
   const canManage = context.mode === 'self' && context.viewerDid === context.ownerDid
+  const activeSessionId = activeSession?.id ?? null
+  useEffect(() => store.startSync(context, activeSessionId), [store, context.ownerDid, context.mode, context.viewerDid, activeSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
   const createReason = selectedEntity ? (() => {
     const choices = store.connections(context, selectedEntity.id)
     return choices.some(choice => !creationReason(context, selectedEntity, store.policy(context, selectedEntity.id), choice.binding)) ? undefined : creationReason(context, selectedEntity, store.policy(context, selectedEntity.id), choices[0]?.binding)
@@ -300,11 +313,16 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
 
   const handleSendMessage = async (payload: ConversationComposerSubmitPayload) => {
     if (!activeSession || !selectedEntityId) throw Error('session_missing')
-    const message = createOutgoingMockMessage({ sessionId: activeSession.id, entityId: selectedEntityId, content: buildOutgoingDraftContent(payload), createdAtMs: store.now() })
-    await store.send(context, activeSession.id, message, writeConfirmations[activeSession.id])
+    await store.send(context, activeSession.id, { content: payload.content, attachments: payload.attachments.map(({ file, relativePath }) => ({ file, relativePath })) }, writeConfirmations[activeSession.id])
   }
   const conversationProps = {
     context, access, title: activeSession ? store.title(context, activeSession) : '', onCreate: () => openCreate(), creationReason: createReason,
+    historyStatus: activeSession ? store.historyStatus(context, activeSession.id) : 'ready' as const,
+    hasOlder: activeSession ? store.hasOlder(context, activeSession.id) : false,
+    onLoadOlder: () => activeSession ? store.loadOlder(context, activeSession.id) : Promise.resolve(false),
+    onVisibleMessages: (recordIds: string[]) => { if (activeSession) void store.markRead(context, activeSession.id, recordIds) },
+    admission: selectedEntityId ? store.admission(context, selectedEntityId) : null,
+    onAdmission: (action: 'accept' | 'block') => selectedEntityId ? store.setAdmission(context, selectedEntityId, action) : Promise.resolve(),
     onOpenSessionDetails: () => handleOpenDetails('session'), onOpenDetails: () => handleOpenDetails('entity'),
     draft: activeSession ? store.draft(context, activeSession.id) : '',
     draftAttachments: activeSession ? store.attachments(context, activeSession.id) : [],
@@ -314,6 +332,7 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
     onShowActions: async (showActions: boolean) => { if (activeSession) await store.updatePreferences(context, activeSession.id, { showActions }) },
   }
   const detailsPane = detailsTarget === 'session' && activeSession && selectedEntity && access ? <SessionDetails key={viewerSessionKey(context, activeSession.id)} session={activeSession} entity={selectedEntity} context={context} access={access} onClose={handleCloseDetails} onManage={() => openManage(activeSession)} onWrite={enabled => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' }))} /> : detailsTarget === 'entity' && entityDetail ? <EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} /> : null
+  const entityListExtras = { hasMore: store.hasMoreEntities(context), onLoadMore: () => store.loadMoreEntities(context) }
 
   const desktopSessionSidebarPane = showSessionSidebar ? (
     <>
@@ -390,6 +409,7 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
             childNavigationTrigger="icon"
             drilldownPath={entityListDrilldownPath}
             onDrilldownPathChange={setEntityListDrilldownPath}
+            {...entityListExtras}
             onSelectEntity={handleSelectEntity}
             onFilterChange={setFilter}
             onSearchChange={setSearchQuery}
@@ -521,6 +541,7 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
                 <ChevronLeft size={18} />
               </button></>
             )}
+            {...entityListExtras}
             onSelectEntity={handleSelectEntity}
             onFilterChange={setFilter}
             onSearchChange={setSearchQuery}
@@ -601,32 +622,6 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
       ) : null}
     </div>
   )
-}
-
-function buildOutgoingDraftContent({
-  attachments,
-  content,
-}: ConversationComposerSubmitPayload): string {
-  const textContent = content.trim()
-
-  if (attachments.length === 0) {
-    return textContent
-  }
-
-  const names = attachments.map((attachment) => (
-    attachment.relativePath || attachment.file.name
-  ))
-  const visibleNames = names.slice(0, 3).join(', ')
-  const remainingCount = names.length - 3
-  const attachmentLine = remainingCount > 0
-    ? `[Mock attachments] ${attachments.length} items: ${visibleNames}, +${remainingCount} more`
-    : `[Mock attachments] ${attachments.length} items: ${visibleNames}`
-
-  if (!textContent) {
-    return attachmentLine
-  }
-
-  return `${textContent}\n\n${attachmentLine}`
 }
 
 function EmptyConversation() {

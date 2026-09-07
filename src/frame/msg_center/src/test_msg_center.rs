@@ -1028,7 +1028,7 @@ async fn session_projection_merges_directions_and_aggregates_delivery() {
     // Both directions land in the same peer-keyed session.
     let session_id = format!("dm:{}", peer.to_string());
     let sessions = center
-        .handle_list_sessions(owner.clone(), None, None, None, None, ctx())
+        .handle_list_sessions(owner.clone(), None, None, None, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(sessions.items.len(), 1);
@@ -1375,4 +1375,841 @@ fn telegram_retention_bucket_uses_bot_and_chat_not_sender() {
 
     assert_eq!(first, second);
     assert_ne!(first, other_bot);
+}
+
+// ---------------------------------------------------------------------------
+// Owner-scoped session lifecycle, activity ordering, registration, auth.
+// ---------------------------------------------------------------------------
+
+mod owner_session_tests {
+    use super::*;
+    use crate::owner_session::SessionTokenVerifier;
+    use buckyos_api::{
+        bind_token_principal_kind, bind_token_target, AuthTarget, MsgCenterCreateSessionReq,
+        SessionLifecycle, SessionListLifecycleFilter, SessionListOrder, SystemServiceId,
+        TokenPrincipalKind, TokenUse, VERIFY_HUB_UNIQUE_ID,
+    };
+    use jsonwebtoken::{DecodingKey, EncodingKey};
+    use kRPC::{RPCErrors, RPCSessionToken, RPCSessionTokenType};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn chat_at(from: &DID, to: Vec<DID>, text: &str, created_at_ms: u64) -> MsgObject {
+        let mut msg = make_msg(from.clone(), to, MsgObjKind::Chat);
+        msg.created_at_ms = created_at_ms;
+        msg.content.content = text.to_string();
+        msg
+    }
+
+    async fn grant(center: &MessageCenter, peer: &DID, owner: &DID, context: &str) {
+        center
+            .handle_grant_temporary_access(
+                vec![peer.clone()],
+                context.to_string(),
+                3600,
+                Some(owner.clone()),
+                ctx(),
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn inbound(center: &MessageCenter, msg: MsgObject, context: &str, key: &str) {
+        center
+            .handle_dispatch(
+                msg,
+                Some(IngressContext {
+                    context_id: Some(context.to_string()),
+                    ..Default::default()
+                }),
+                Some(key.to_string()),
+                ctx(),
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn list(
+        center: &MessageCenter,
+        owner: &DID,
+        lifecycle: SessionListLifecycleFilter,
+        order: SessionListOrder,
+        limit: Option<usize>,
+        cursor: Option<(u64, String)>,
+    ) -> buckyos_api::SessionSummaryPage {
+        let (cursor_value, cursor_session) = match cursor {
+            Some((value, id)) => (Some(value), Some(id)),
+            None => (None, None),
+        };
+        center
+            .handle_list_sessions(
+                owner.clone(),
+                limit,
+                cursor_value,
+                cursor_session,
+                Some(false),
+                Some(lifecycle),
+                Some(order),
+                ctx(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn timeline_len(center: &MessageCenter, owner: &DID, session_id: &str) -> usize {
+        center
+            .handle_list_session(
+                owner.clone(),
+                session_id.to_string(),
+                None,
+                None,
+                None,
+                Some(false),
+                Some(false),
+                ctx(),
+            )
+            .await
+            .unwrap()
+            .items
+            .len()
+    }
+
+    #[tokio::test]
+    async fn lifecycle_archive_restore_delete_and_watermark() {
+        let (center, _tmp) = new_center("lifecycle").await;
+        let owner = DID::new("bns", "lc-owner");
+        let other = DID::new("bns", "lc-other");
+        let peer = DID::new("bns", "lc-peer");
+        grant(&center, &peer, &owner, "lc").await;
+        grant(&center, &peer, &other, "lc").await;
+        let session_id = format!("dm:{}", peer.to_string());
+
+        let msg1 = chat_at(&peer, vec![owner.clone(), other.clone()], "one", 2_000_000);
+        inbound(&center, msg1.clone(), "lc", "lc-1").await;
+        let active = list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(active.items.len(), 1);
+        assert_eq!(active.items[0].session_id, session_id);
+        assert_eq!(active.items[0].unread_count, 1);
+        assert_eq!(active.items[0].last_activity_ms, 2_000_000);
+        assert_eq!(active.items[0].lifecycle, SessionLifecycle::Active);
+
+        // Archive keeps the per-record read state and the unread count.
+        let archived = center
+            .handle_archive_session(owner.clone(), session_id.clone(), ctx())
+            .await
+            .unwrap();
+        assert_eq!(archived.lifecycle, SessionLifecycle::Archived);
+        assert!(archived.archived_at_ms.is_some());
+        assert!(list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            None,
+            None
+        )
+        .await
+        .items
+        .is_empty());
+        let archived_list = list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Archived,
+            SessionListOrder::Activity,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(archived_list.items.len(), 1);
+        assert_eq!(archived_list.items[0].unread_count, 1);
+        assert_eq!(archived_list.items[0].lifecycle, SessionLifecycle::Archived);
+        // Idempotent repeat.
+        center
+            .handle_archive_session(owner.clone(), session_id.clone(), ctx())
+            .await
+            .unwrap();
+
+        // Restore keeps history and activity time.
+        let restored = center
+            .handle_restore_session(owner.clone(), session_id.clone(), ctx())
+            .await
+            .unwrap();
+        assert_eq!(restored.lifecycle, SessionLifecycle::Active);
+        let active = list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(active.items.len(), 1);
+        assert_eq!(active.items[0].last_activity_ms, 2_000_000);
+        assert_eq!(timeline_len(&center, &owner, &session_id).await, 1);
+
+        // Archive again: a read-state change must not re-activate, an event
+        // message must not re-activate, a new chat message must.
+        center
+            .handle_archive_session(owner.clone(), session_id.clone(), ctx())
+            .await
+            .unwrap();
+        let record_id = center
+            .handle_list_session(
+                owner.clone(),
+                session_id.clone(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                ctx(),
+            )
+            .await
+            .unwrap()
+            .items[0]
+            .record_id
+            .clone();
+        center
+            .handle_update_record_state(record_id, RecipientState::Read, ctx())
+            .await
+            .unwrap();
+        assert!(list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            None,
+            None
+        )
+        .await
+        .items
+        .is_empty());
+        let mut event = chat_at(&peer, vec![owner.clone()], "log", 2_000_500);
+        event.kind = MsgObjKind::Event;
+        event.thread.topic = Some(session_id.clone());
+        inbound(&center, event, "lc", "lc-event").await;
+        assert!(list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            None,
+            None
+        )
+        .await
+        .items
+        .is_empty());
+        let msg2 = chat_at(&peer, vec![owner.clone()], "two", 2_001_000);
+        inbound(&center, msg2, "lc", "lc-2").await;
+        let active = list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(active.items.len(), 1);
+        assert_eq!(active.items[0].lifecycle, SessionLifecycle::Active);
+        assert_eq!(active.items[0].unread_count, 2);
+        assert_eq!(active.items[0].last_activity_ms, 2_001_000);
+        assert_eq!(timeline_len(&center, &owner, &session_id).await, 3);
+
+        // Delete: only this owner's visibility changes.
+        let deleted = center
+            .handle_delete_session(owner.clone(), session_id.clone(), ctx())
+            .await
+            .unwrap();
+        assert!(deleted.delete_watermark_sort_key.unwrap() >= 2_001_000);
+        assert!(!deleted.registered);
+        assert!(list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::All,
+            SessionListOrder::Activity,
+            None,
+            None
+        )
+        .await
+        .items
+        .is_empty());
+        assert_eq!(timeline_len(&center, &owner, &session_id).await, 0);
+        let others = list(
+            &center,
+            &other,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(others.items.len(), 1);
+        assert_eq!(timeline_len(&center, &other, &session_id).await, 1);
+
+        // Replaying the deleted message does not resurrect it.
+        inbound(&center, msg1, "lc", "lc-replay").await;
+        assert!(list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::All,
+            SessionListOrder::Activity,
+            None,
+            None
+        )
+        .await
+        .items
+        .is_empty());
+        assert_eq!(timeline_len(&center, &owner, &session_id).await, 0);
+
+        // A genuinely new message forms a fresh visible history.
+        let watermark = deleted.delete_watermark_sort_key.unwrap();
+        let msg3 = chat_at(&peer, vec![owner.clone()], "three", watermark + 10);
+        inbound(&center, msg3, "lc", "lc-3").await;
+        let active = list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(active.items.len(), 1);
+        assert_eq!(active.items[0].unread_count, 1);
+        assert_eq!(active.items[0].last_activity_ms, watermark + 10);
+        assert_eq!(timeline_len(&center, &owner, &session_id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn activity_order_ignores_read_state_and_events_and_pages_consistently() {
+        let (center, _tmp) = new_center("activity").await;
+        let owner = DID::new("bns", "act-owner");
+        let peer = DID::new("bns", "act-peer");
+        grant(&center, &peer, &owner, "act").await;
+
+        let mut s1 = chat_at(&peer, vec![owner.clone()], "s1", 3_000_000);
+        s1.thread.topic = Some("s1".to_string());
+        let mut s2 = chat_at(&peer, vec![owner.clone()], "s2", 3_000_100);
+        s2.thread.topic = Some("s2".to_string());
+        inbound(&center, s1, "act", "act-1").await;
+        inbound(&center, s2, "act", "act-2").await;
+
+        let order = |page: &buckyos_api::SessionSummaryPage| {
+            page.items
+                .iter()
+                .map(|i| i.session_id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            order(
+                &list(
+                    &center,
+                    &owner,
+                    SessionListLifecycleFilter::Active,
+                    SessionListOrder::Activity,
+                    None,
+                    None
+                )
+                .await
+            ),
+            vec!["s2", "s1"]
+        );
+
+        // Reading s1 bumps updated_at_ms (legacy order) but not activity.
+        let record_id = center
+            .handle_list_session(
+                owner.clone(),
+                "s1".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                ctx(),
+            )
+            .await
+            .unwrap()
+            .items[0]
+            .record_id
+            .clone();
+        center
+            .handle_update_record_state(record_id, RecipientState::Read, ctx())
+            .await
+            .unwrap();
+        assert_eq!(
+            order(
+                &list(
+                    &center,
+                    &owner,
+                    SessionListLifecycleFilter::Active,
+                    SessionListOrder::Updated,
+                    None,
+                    None
+                )
+                .await
+            ),
+            vec!["s1", "s2"]
+        );
+        assert_eq!(
+            order(
+                &list(
+                    &center,
+                    &owner,
+                    SessionListLifecycleFilter::Active,
+                    SessionListOrder::Activity,
+                    None,
+                    None
+                )
+                .await
+            ),
+            vec!["s2", "s1"]
+        );
+
+        // An event (action log) in s1 does not move it either.
+        let mut event = chat_at(&peer, vec![owner.clone()], "log", 3_000_200);
+        event.kind = MsgObjKind::Event;
+        event.thread.topic = Some("s1".to_string());
+        inbound(&center, event, "act", "act-3").await;
+        let page = list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(order(&page), vec!["s2", "s1"]);
+        assert_eq!(page.items[1].last_activity_ms, 3_000_000);
+        assert_eq!(
+            page.items[1].unread_count, 1,
+            "persistent event still counts as unread"
+        );
+
+        // A new chat in s1 moves it first; paging with limit 1 is stable.
+        let mut chat = chat_at(&peer, vec![owner.clone()], "s1 again", 3_000_300);
+        chat.thread.topic = Some("s1".to_string());
+        inbound(&center, chat, "act", "act-4").await;
+        let first = list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            Some(1),
+            None,
+        )
+        .await;
+        assert_eq!(order(&first), vec!["s1"]);
+        assert_eq!(first.next_cursor_updated_at_ms, Some(3_000_300));
+        assert_eq!(first.next_cursor_session_id.as_deref(), Some("s1"));
+        let second = list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            Some(1),
+            Some((3_000_300, "s1".to_string())),
+        )
+        .await;
+        assert_eq!(order(&second), vec!["s2"]);
+        assert!(second.next_cursor_session_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn create_session_registers_empty_session_and_first_message_joins_it() {
+        let (center, _tmp) = new_center("create").await;
+        let hub = DID::new("bns", "hub-create");
+        center.set_message_hub_did(hub);
+        let owner = DID::new("bns", "cr-owner");
+        let agent = DID::new("bns", "cr-agent");
+        center.register_local_recipients([agent.clone()]);
+
+        let create = |title: &str| MsgCenterCreateSessionReq {
+            owner: owner.clone(),
+            peer_did: agent.clone(),
+            session_id: None,
+            title: Some(title.to_string()),
+            binding: Some(json!({ "kind": "native", "targetDid": agent.to_string() })),
+            origin: None,
+        };
+        let first = center
+            .handle_create_session(create("Plan"), ctx())
+            .await
+            .unwrap();
+        let second = center
+            .handle_create_session(create("Plan"), ctx())
+            .await
+            .unwrap();
+        assert_ne!(
+            first.session_id, second.session_id,
+            "same title, independent sessions"
+        );
+        assert!(first.registered);
+        assert_eq!(first.title.as_deref(), Some("Plan"));
+        assert_eq!(first.origin.as_deref(), Some("manual"));
+
+        let page = list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(page.items.len(), 2);
+        let empty = page
+            .items
+            .iter()
+            .find(|i| i.session_id == first.session_id)
+            .unwrap();
+        assert!(empty.last_record.is_none());
+        assert_eq!(empty.unread_count, 0);
+        assert_eq!(empty.last_activity_ms, first.created_at_ms);
+        assert_eq!(timeline_len(&center, &owner, &first.session_id).await, 0);
+
+        // Caller-chosen id is idempotent; a title over 64 chars is rejected.
+        let mut fixed = create("Fixed");
+        fixed.session_id = Some("fixed-id".to_string());
+        let a = center
+            .handle_create_session(fixed.clone(), ctx())
+            .await
+            .unwrap();
+        let b = center.handle_create_session(fixed, ctx()).await.unwrap();
+        assert_eq!(a, b);
+        assert!(center
+            .handle_create_session(create(&"x".repeat(65)), ctx())
+            .await
+            .is_err());
+
+        // The first message uses the session id as topic and lands there.
+        let mut msg = chat_at(&owner, vec![agent.clone()], "hello", 4_000_000);
+        msg.thread.topic = Some(first.session_id.clone());
+        let post = center.handle_post_send(msg, None, ctx()).await.unwrap();
+        assert!(post.ok, "{:?}", post.reason);
+        assert_eq!(timeline_len(&center, &owner, &first.session_id).await, 1);
+        let page = list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            None,
+            None,
+        )
+        .await;
+        let joined = page
+            .items
+            .iter()
+            .find(|i| i.session_id == first.session_id)
+            .unwrap();
+        assert_eq!(joined.last_activity_ms, 4_000_000);
+        assert_eq!(
+            joined.last_record.as_ref().unwrap().record.box_kind,
+            MailboxKind::Sent
+        );
+        assert!(joined.state.as_ref().unwrap().registered);
+
+        // Deleting a registered session drops the registration too.
+        center
+            .handle_delete_session(owner.clone(), first.session_id.clone(), ctx())
+            .await
+            .unwrap();
+        let page = list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::All,
+            SessionListOrder::Activity,
+            None,
+            None,
+        )
+        .await;
+        assert!(page.items.iter().all(|i| i.session_id != first.session_id));
+    }
+
+    #[tokio::test]
+    async fn owner_scoped_ui_state_is_isolated_and_cleared_by_delete() {
+        let (center, _tmp) = new_center("ui-state").await;
+        let a = DID::new("bns", "ui-a");
+        let b = DID::new("bns", "ui-b");
+        let peer = DID::new("bns", "ui-peer");
+        grant(&center, &peer, &a, "ui").await;
+        inbound(
+            &center,
+            chat_at(&peer, vec![a.clone()], "hi", 5_000_000),
+            "ui",
+            "ui-1",
+        )
+        .await;
+        let session_id = format!("dm:{}", peer.to_string());
+
+        center
+            .handle_update_owner_ui_session_state(
+                a.clone(),
+                session_id.clone(),
+                "ui.title".into(),
+                json!("Mine"),
+                ctx(),
+            )
+            .await
+            .unwrap();
+        let mine = center
+            .handle_get_owner_ui_session_state(
+                a.clone(),
+                session_id.clone(),
+                "ui.title".into(),
+                ctx(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(mine.value, json!("Mine"));
+        assert!(center
+            .handle_get_owner_ui_session_state(
+                b.clone(),
+                session_id.clone(),
+                "ui.title".into(),
+                ctx()
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert!(
+            center
+                .handle_get_ui_session_state(session_id.clone(), "ui.title".into(), ctx())
+                .await
+                .unwrap()
+                .is_none(),
+            "legacy session-only KV is untouched"
+        );
+        assert_eq!(
+            center
+                .handle_list_owner_ui_session_state(a.clone(), session_id.clone(), ctx())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        center
+            .handle_delete_session(a.clone(), session_id.clone(), ctx())
+            .await
+            .unwrap();
+        assert!(center
+            .handle_list_owner_ui_session_state(a.clone(), session_id.clone(), ctx())
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    // ---- authorization -------------------------------------------------
+
+    const TEST_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
+-----END PRIVATE KEY-----"#;
+    const TEST_PUBLIC_X: &str = "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8";
+
+    struct StaticKeyVerifier {
+        key: DecodingKey,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionTokenVerifier for StaticKeyVerifier {
+        async fn verify(&self, token: &str) -> std::result::Result<RPCSessionToken, RPCErrors> {
+            let mut parsed = RPCSessionToken::from_string(token)?;
+            parsed.verify_by_key(&self.key)?;
+            Ok(parsed)
+        }
+    }
+
+    fn signed_token(user_id: &str, principal_kind: TokenPrincipalKind) -> String {
+        let now = buckyos_kit::buckyos_get_unix_timestamp();
+        let mut token = RPCSessionToken {
+            token_type: RPCSessionTokenType::JWT,
+            token: None,
+            aud: None,
+            exp: Some(now + 3600),
+            iss: Some(VERIFY_HUB_UNIQUE_ID.to_string()),
+            jti: None,
+            sub: Some(user_id.to_string()),
+            appid: None,
+            sudo: false,
+            extra: HashMap::new(),
+        };
+        bind_token_principal_kind(&mut token, principal_kind);
+        bind_token_target(
+            &mut token,
+            &AuthTarget::system(SystemServiceId::parse("control-panel").unwrap()),
+            TokenUse::Session,
+        )
+        .unwrap();
+        token
+            .generate_jwt(
+                None,
+                &EncodingKey::from_ed_pem(TEST_PRIVATE_KEY.as_bytes()).unwrap(),
+            )
+            .unwrap()
+    }
+
+    fn user_ctx(user_id: &str) -> RPCContext {
+        RPCContext {
+            token: Some(signed_token(user_id, TokenPrincipalKind::User)),
+            ..Default::default()
+        }
+    }
+
+    fn is_denied<T: std::fmt::Debug>(result: std::result::Result<T, RPCErrors>) -> bool {
+        matches!(result, Err(RPCErrors::NoPermission(_)))
+    }
+
+    #[tokio::test]
+    async fn zone_user_tokens_scope_reads_and_writes_to_the_owner() {
+        let (center, _tmp) = new_center("auth").await;
+        center.set_token_verifier(Arc::new(StaticKeyVerifier {
+            key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
+        }));
+        let alice = DID::new("bns", "alice");
+        let bob = DID::new("bns", "bob");
+        let agent = DID::new("web", "jarvis.zone.example");
+        center.register_local_recipients([alice.clone(), bob.clone(), agent.clone()]);
+        let peer = DID::new("bns", "auth-peer");
+        for owner in [&alice, &bob, &agent] {
+            grant(&center, &peer, owner, "auth").await;
+        }
+        inbound(
+            &center,
+            chat_at(
+                &peer,
+                vec![alice.clone(), bob.clone(), agent.clone()],
+                "hi",
+                6_000_000,
+            ),
+            "auth",
+            "auth-1",
+        )
+        .await;
+        let session_id = format!("dm:{}", peer.to_string());
+
+        let list_as = |owner: DID, ctx: RPCContext| {
+            let center = center.clone();
+            async move {
+                center
+                    .handle_list_sessions(owner, None, None, None, None, None, None, ctx)
+                    .await
+            }
+        };
+        // Self and zone-hosted agent are readable, another user is not.
+        assert_eq!(
+            list_as(alice.clone(), user_ctx("alice"))
+                .await
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+        assert_eq!(
+            list_as(agent.clone(), user_ctx("alice"))
+                .await
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+        assert!(is_denied(list_as(bob.clone(), user_ctx("alice")).await));
+        assert!(is_denied(
+            center
+                .handle_list_session(
+                    bob.clone(),
+                    session_id.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    user_ctx("alice")
+                )
+                .await
+        ));
+        // Observation is read-only: no writes as the agent or as another user.
+        assert!(is_denied(
+            center
+                .handle_archive_session(agent.clone(), session_id.clone(), user_ctx("alice"))
+                .await
+        ));
+        assert!(is_denied(
+            center
+                .handle_update_owner_ui_session_state(
+                    agent.clone(),
+                    session_id.clone(),
+                    "ui.title".into(),
+                    json!("x"),
+                    user_ctx("alice")
+                )
+                .await
+        ));
+        let bob_record = center
+            .handle_list_session(
+                bob.clone(),
+                session_id.clone(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                user_ctx("bob"),
+            )
+            .await
+            .unwrap()
+            .items[0]
+            .record_id
+            .clone();
+        assert!(is_denied(
+            center
+                .handle_update_record_state(
+                    bob_record.clone(),
+                    RecipientState::Read,
+                    user_ctx("alice")
+                )
+                .await
+        ));
+        assert!(center
+            .handle_update_record_state(bob_record, RecipientState::Read, user_ctx("bob"))
+            .await
+            .is_ok());
+        assert!(is_denied(
+            center
+                .handle_post_send(
+                    chat_at(&bob, vec![peer.clone()], "as bob", 6_000_100),
+                    None,
+                    user_ctx("alice")
+                )
+                .await
+        ));
+        // Own writes succeed; a forged token is rejected; no token keeps the
+        // legacy in-process behaviour.
+        assert!(center
+            .handle_archive_session(alice.clone(), session_id.clone(), user_ctx("alice"))
+            .await
+            .is_ok());
+        let forged = RPCContext {
+            token: Some("eyJhbGciOiJFZERTQSJ9.e30.invalid".to_string()),
+            ..Default::default()
+        };
+        assert!(is_denied(list_as(alice.clone(), forged).await));
+        assert_eq!(list_as(bob.clone(), ctx()).await.unwrap().items.len(), 1);
+        // System principals keep their service-level access.
+        let system = RPCContext {
+            token: Some(signed_token("msg-center", TokenPrincipalKind::System)),
+            ..Default::default()
+        };
+        assert_eq!(list_as(bob.clone(), system).await.unwrap().items.len(), 1);
+    }
 }

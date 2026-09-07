@@ -11,7 +11,7 @@ import {
   useState,
 } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import type { DID } from '../../protocol/msgobj'
+import { getMessageStableId, type DID } from '../../protocol/msgobj'
 import {
   buildConversationProjection,
   extendConversationProjection,
@@ -24,6 +24,23 @@ import type {
   ConversationMessageReader,
   ConversationStatusDescriptor,
 } from './types'
+
+type PaneProjection = Awaited<ReturnType<typeof buildConversationProjection>> & { readerRevision: number }
+
+function getReaderRevision(reader: ConversationMessageReader): number {
+  const value = (reader as { revision?: unknown }).revision
+  return typeof value === 'number' ? value : 0
+}
+
+async function findMessageIndex(reader: ConversationMessageReader, messageId: string): Promise<number> {
+  const pageSize = 128
+  for (let start = 0; start < reader.totalCount; start += pageSize) {
+    const messages = await reader.readRange(start, pageSize)
+    const offset = messages.findIndex((message, index) => getMessageStableId(message, start + index) === messageId)
+    if (offset >= 0) return start + offset
+  }
+  return -1
+}
 
 const DEFAULT_VISIBLE_ITEM_COUNT = 12
 const BOTTOM_ANCHOR_THRESHOLD_PX = 24
@@ -48,6 +65,9 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
   showActions?: boolean
   emptyLabel?: string
   statusItems?: readonly ConversationStatusDescriptor[]
+  hasOlder?: boolean
+  onLoadOlder?: () => Promise<boolean>
+  onVisibleMessages?: (recordIds: string[]) => void
 }>(function ConversationHistoryPane({
   reader,
   selfDid,
@@ -55,19 +75,24 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
   statusItems,
   showActions = true,
   emptyLabel,
+  hasOlder = false,
+  onLoadOlder,
+  onVisibleMessages,
 }, ref) {
   const { t } = useI18n()
-  const filterAnchor = useRef<{ messageIndex: number; offset: number; targetIndex?: number } | null>(null)
+  const filterAnchor = useRef<{ messageIndex: number; messageId?: string; offset: number; targetIndex?: number } | null>(null)
+  const loadingOlderRef = useRef(false)
+  const visibleReportRef = useRef<string>('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const [viewportProfile, setViewportProfile] = useState<ViewportProfile>({
     isMobileViewport: false,
     visibleItemCount: DEFAULT_VISIBLE_ITEM_COUNT,
   })
-  const [projection, setProjection] = useState<Awaited<ReturnType<typeof buildConversationProjection>> | null>(null)
+  const [projection, setProjection] = useState<PaneProjection | null>(null)
   const [windowState, setWindowState] = useState<ConversationMaterializedWindow | null>(null)
   const previousTotalCountRef = useRef(0)
-  const projectionRef = useRef<Awaited<ReturnType<typeof buildConversationProjection>> | null>(null)
+  const projectionRef = useRef<PaneProjection | null>(null)
   const scrollModeRef = useRef<ScrollMode>('bottom-anchored')
   const bottomAnchorLockUntilRef = useRef(0)
   const bottomAnchorRequestIdRef = useRef(0)
@@ -192,8 +217,11 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
     let cancelled = false
     const currentProjection = projectionRef.current
     const statusItemsSignature = getStatusItemsSignature(statusItems)
+    const readerRevision = getReaderRevision(reader)
+    const revisionChanged = Boolean(currentProjection && currentProjection.readerKey === reader.readerKey && currentProjection.readerRevision !== readerRevision)
     const isAppendOnlyUpdate = Boolean(
       currentProjection
+      && !revisionChanged
       && currentProjection.showActions === showActions
       && currentProjection.readerKey === reader.readerKey
       && currentProjection.statusItemsSignature === statusItemsSignature
@@ -201,6 +229,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
     )
 
     if (currentProjection
+      && !revisionChanged
       && currentProjection.showActions === showActions
       && currentProjection.readerKey === reader.readerKey
       && currentProjection.statusItemsSignature === statusItemsSignature
@@ -237,7 +266,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
               return activeProjection
             }
 
-            return extendConversationProjection(activeProjection, remainingMessages, statusItems)
+            return { ...extendConversationProjection(activeProjection, remainingMessages, statusItems), readerRevision: activeProjection.readerRevision }
           })
         })
       })
@@ -248,27 +277,40 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
     }
 
     const filterChanged = currentProjection?.readerKey === reader.readerKey && currentProjection.showActions !== showActions
-    if (filterChanged && scrollRef.current && scrollModeRef.current === 'free-scroll') {
-      const container = scrollRef.current
+    // A same-reader rebuild (filter toggle, prepended older page, record
+    // update / removal) keeps the first visible message in place by its
+    // stable id instead of resetting to the bottom.
+    const keepAnchor = (filterChanged || revisionChanged) && scrollRef.current && scrollModeRef.current === 'free-scroll'
+    if (keepAnchor && currentProjection) {
+      const container = scrollRef.current!
       const row = [...container.querySelectorAll<HTMLElement>('[data-index]')].find(element => {
         const item = windowItemsRef.current.get(Number(element.dataset.index))
         return element.getBoundingClientRect().bottom > container.getBoundingClientRect().top && item?.kind === 'message' && !isActionMessage(item.data)
       })
       const entry = row ? currentProjection.entries[Number(row.dataset.index)] : undefined
-      if (entry?.kind === 'message' && row) filterAnchor.current = { messageIndex: entry.messageIndex, offset: row.getBoundingClientRect().top - container.getBoundingClientRect().top }
+      const item = row ? windowItemsRef.current.get(Number(row.dataset.index)) : undefined
+      if (entry?.kind === 'message' && row) filterAnchor.current = { messageIndex: entry.messageIndex, messageId: item?.kind === 'message' ? getMessageStableId(item.data, entry.messageIndex) : undefined, offset: row.getBoundingClientRect().top - container.getBoundingClientRect().top }
     }
-    if (!filterChanged) { scrollModeRef.current = 'bottom-anchored'; setProjection(null) }
+    if (!filterChanged && !revisionChanged) { scrollModeRef.current = 'bottom-anchored'; setProjection(null) }
     bottomAnchorLockUntilRef.current = 0
     cancelBottomAnchorRequest(bottomAnchorRequestIdRef)
 
-    void buildConversationProjection(reader, statusItems, showActions).then((nextProjection) => {
+    void buildConversationProjection(reader, statusItems, showActions).then(async (nextProjection) => {
       if (cancelled) {
         return
+      }
+      const anchor = filterAnchor.current
+      if (anchor?.messageId) {
+        // Resolve the anchored message's new raw index (older pages may have
+        // been prepended in front of it).
+        const index = await findMessageIndex(reader, anchor.messageId)
+        if (cancelled) return
+        if (index >= 0) anchor.messageIndex = index
       }
 
       startTransition(() => {
         setWindowState(null)
-        setProjection(nextProjection)
+        setProjection({ ...nextProjection, readerRevision })
       })
     })
 
@@ -351,6 +393,27 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
       cancelled = true
     }
   }, [projection, reader, virtualItems, visibleItemCount, windowState])
+
+  useEffect(() => {
+    if (!projection || virtualItems.length === 0) return
+    // Older history: request the previous page when the top of the loaded
+    // range comes into view. The anchor logic above keeps the viewport still.
+    if (hasOlder && onLoadOlder && !loadingOlderRef.current && virtualItems[0].index <= 4 && scrollModeRef.current === 'free-scroll') {
+      loadingOlderRef.current = true
+      void onLoadOlder().finally(() => { loadingOlderRef.current = false })
+    }
+    if (onVisibleMessages) {
+      const ids = virtualItems
+        .map((virtualItem) => itemsByIndex.get(virtualItem.index))
+        .filter((item): item is Extract<ConversationListItem, { kind: 'message' }> => item?.kind === 'message')
+        .map((item) => getMessageStableId(item.data, item.messageIndex))
+      const signature = ids.join('|')
+      if (signature && signature !== visibleReportRef.current) {
+        visibleReportRef.current = signature
+        onVisibleMessages(ids)
+      }
+    }
+  }, [projection, virtualItems, itemsByIndex, hasOlder, onLoadOlder, onVisibleMessages])
 
   useEffect(() => {
     if (!projection || projection.totalCount === 0) {

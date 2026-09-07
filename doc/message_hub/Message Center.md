@@ -499,7 +499,16 @@ UI 目标字段见 [UI DataModel §3.3](../../src/frame/desktop/src/app/messageh
 Telegram 的 active / typing / status_line KV 已有消费方，但缺少统一成员 DID、有效期与 owner 隔离；
 映射运行态时必须补齐可信来源和过期规则，不能据此推导实体在线状态。
 
-### 5.8 owner 本地会话生命周期（目标契约，待实现）
+### 5.8 owner 本地会话生命周期（2026-09-07 已实现）
+
+实现：`owner_sessions(owner, session_id, lifecycle, registered, origin, peer_did, binding_json, title,
+archived_at_ms, delete_watermark_sort_key, delete_watermark_record_id, deleted_at_ms, ...)`；
+RPC `msg.create_session` / `msg.archive_session` / `msg.restore_session` / `msg.delete_session` / `msg.get_session_state`。
+`list_sessions` 支持 `lifecycle` 过滤与 `order_by: activity`（按 chat / group_msg / deliver 记录的 `sort_key` 排序并给同口径游标），
+摘要新增 `last_activity_ms` / `request_count` / `lifecycle` / `state`；`list_session` 与摘要都只统计删除水位之后的记录。
+新普通消息提交后自动解除归档。`ui_session.*` 带 `owner` 时读写 `owner_ui_session_states`。
+读取按 verify-hub 用户 token 校验：本人或 zone 托管的非用户身份（Agent）可读，写动作只允许本人；
+服务 / 设备 token 与无 token 的进程内调用保持原行为。附件经 `GET /kapi/msg-center/objects/{obj_id}[/content]` 访问。
 
 归档只改变会话在活动列表中的可见性，保留历史、逐记录阅读状态、未读计数和草稿；恢复沿用原会话与活动时间。
 有效普通新消息可以解除归档，运行态与 Action Log 不解除归档。归档属于独立的持久 Session 元数据。

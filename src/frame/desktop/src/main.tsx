@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { buckyos, getActiveSessionToken } from 'buckyos'
+import { buckyos, getActiveSessionToken, RuntimeType } from 'buckyos'
 import 'swiper/css'
 import 'swiper/css/pagination'
 import 'react-grid-layout/css/styles.css'
@@ -42,7 +42,20 @@ async function bootstrap() {
 
   if (!isMockRuntime()) {
     console.log('[bootstrap] initBuckyOS starting...')
-    await buckyos.initBuckyOS('control-panel')
+    // Behind the Vite zone proxy (VITE_ZONE_PROXY) the dev origin *is* the
+    // zone host: every /kapi, /sso_* and /ndm call is forwarded to the real
+    // gateway. Passing the config skips the SDK's host discovery, which would
+    // otherwise probe unreachable parent hosts of 127.0.0.1.
+    if (import.meta.env.VITE_ZONE_PROXY) {
+      await buckyos.initBuckyOS('control-panel', {
+        appId: 'control-panel',
+        zoneHost: window.location.host,
+        defaultProtocol: `${window.location.protocol}//`,
+        runtimeType: RuntimeType.Browser,
+      })
+    } else {
+      await buckyos.initBuckyOS('control-panel')
+    }
     console.log('[bootstrap] initBuckyOS done')
     // Login-optional internal pages (see publicRoutes.ts) skip the account
     // gate so they remain reachable in a logged-out state.

@@ -38,6 +38,14 @@ export interface Entity {
   drilldownDescription?: string
   /** Platform/protocol source */
   source?: string
+  /** All protocol sources of the entity (`UI_DATAMODEL.md` §3.2). */
+  sources?: string[]
+  /** Managed (zone user / agent / hosted group) vs external identity. */
+  domain?: 'managed' | 'external'
+  /** Number of visible sessions under the entity. */
+  sessionCount?: number
+  /** Visible REQUEST_BOX records across the entity's sessions. */
+  requestCount?: number
 }
 
 export interface MessagePreview {
@@ -67,6 +75,12 @@ export interface Session {
   source?: string
   lastActiveAt: number
   unreadCount: number
+  /** Visible REQUEST_BOX records in this session (real backend only). */
+  requestCount?: number
+  /** Aggregated delivery state of the latest outbound message. */
+  lastDelivery?: 'sending' | 'delivered' | 'partial_failed' | 'failed'
+  /** How the entity attribution was derived (real backend only). */
+  attributionEvidence?: 'registered' | 'group_tag' | 'group_message' | 'direct' | 'message' | 'record' | 'none'
 }
 
 /* ── Entity Details ── */
@@ -80,6 +94,10 @@ export interface EntityDetail extends Entity {
   /** Notes added by user */
   note?: string
   createdAt?: number
+  /** Contact admission level of the current owner towards this entity. */
+  accessLevel?: 'block' | 'stranger' | 'temporary' | 'friend'
+  isVerified?: boolean
+  contactSource?: string
 }
 
 export interface AccountBinding {
@@ -90,7 +108,7 @@ export interface AccountBinding {
 
 /* ── Filter / Search ── */
 
-export type EntityFilter = 'all' | 'unread' | 'pinned' | 'agents' | 'groups' | 'people'
+export type EntityFilter = 'all' | 'unread' | 'pinned' | 'agents' | 'groups' | 'people' | 'requests'
 
 /* ── View State ── */
 
