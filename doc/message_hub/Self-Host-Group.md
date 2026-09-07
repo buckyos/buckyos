@@ -728,6 +728,14 @@ pub struct GroupEvent {
 * `SubgroupCreated`
 * `SubgroupUpdated`
 
+2026-09-06 数据层补充（待实现）：GroupEvent 到 MessageHub Action Log 的统一映射见
+[Session State and Action Log.md](<./Session State and Action Log.md>)。
+`MemberJoined` / `MemberLeft` / `MemberRemoved` 分别映射为 `entity.member_joined` /
+`entity.member_left` / `entity.member_removed`，target 为 group DID，subject 为受影响成员，actor 保留实际操作者。
+映射保留原 event_id / 对象引用并幂等发布，不把日志当成 GroupMemberProof，也不再次执行成员变化。
+SessionMemberState 的昵称是会话内覆盖，不替代 GroupMemberRecord 的成员资格 / 角色；
+群名修改属于实体状态变化，不等于修改某个 Session 的共享标题。本次不修改原型或 GroupMgr 实现。
+
 
 ### 4.7 GroupExpansionSnapshot
 

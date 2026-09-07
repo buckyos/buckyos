@@ -174,9 +174,13 @@ DeliveryState（属 DeliveryRecord，executor 驱动）:
                ↘ FAILED → WAIT   （可重试，带退避）
                         ↘ DEAD   （不可重试或超次数，可诊断、可人工重投）
 
-SessionState（易失，不落 mailbox/delivery）:
+SessionRuntimeState（本文旧称 SessionState；易失，不落 mailbox/delivery）:
   typing / active / status_line 等 UI 会话状态，独立通道，随时可丢
 ```
+
+这里的三类是既有消息处理状态机。新增的 Session 整体状态（`SessionSharedState`）和成员状态
+（`SessionMemberState`）是持久业务数据，不属于上述易失通道，也不替代 RecipientState / DeliveryState。
+字段、权限和 Action Log 契约见 §5.7。
 
 三个状态机互不迁移、互不共享取值。"收件人已读"不影响 DeliveryState；"投递失败"不产生 RecipientState；typing 永远不产生记录。
 
@@ -347,11 +351,14 @@ SessionProjection 可以展示“对方网关已暂存，等待接收”，仍�
 
 ### 5.1 Session 不是 MsgBox
 
-Session 是**投影**：为 UI/Agent 把分散在多个 mailbox 和 delivery queue 里的记录聚合成"一个会话"的只读视图。它不持有独立真相：
+Session 时间线是**投影**：为 UI/Agent 把分散在多个 mailbox 和 delivery queue 里的记录聚合成"一个会话"的只读视图。它不持有独立的消息真相：
 
 - 删除全部 session 索引，不丢任何消息，可从 MailboxRecord 全量重建。
 - 写操作（标已读、归档、删除）落到对应的 `MailboxRecord` 上，session 视图随之变化。
 - Session 里"这条消息发送中/失败"的角标来自 DeliveryRecord 聚合，UI 不直接读 DELIVERY_QUEUE。
+
+“只读投影”描述存储职责，不表示所有会话的 Composer 都只读；产品写入能力见 §5.6。
+尚无消息的已创建会话与稳定连接绑定需要独立的持久登记元数据（§5.5），不能仅靠消息索引重建。
 
 ### 5.2 定义
 
@@ -393,7 +400,70 @@ list_session(owner, session_id, cursor, limit, with_object)
 | 由谁定 | 消息作者 | 收/发方本地的 MessageCenter |
 | 可变性 | 永不可变 | 可由可信后端/Agent 重新归类 |
 
-MessageCenter 可以建立 `thread.topic → session_id` 的映射（同 topic 默认聚为同一会话），但**不能修改 MsgObject**。同一条消息在不同 owner 的视图中可以有不同 `session_id`。
+MessageCenter 可以在确定的 owner、对端与连接范围内建立 `thread.topic → session_id` 的映射，
+但不能跨连接仅凭 topic 同名合并，也**不能修改 MsgObject**。同一条消息在不同 owner 的视图中可以有不同 `session_id`。
+当前 `derive_session_id` 优先直接取 topic 的实现尚不满足这一隔离要求。
+
+### 5.5 会话登记与连接隔离（2026-09-06 目标契约，待实现）
+
+产品规则来自 [MessageHub PRD §6 / §9](../../product/message_hub/MessageHub_Web_UI_PRD.md)，
+UI 目标字段见 [UI DataModel §3.3](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md)。
+
+- 所有真实通信实体（包括 Agent、群与子群）均由 DID 标识，可进入 `MsgObject.from/to`。
+  父子关系、联系人别名归一只影响组织与展示，不自动合并其 Session 或改变消息端点。
+- 每条持久消息在每个 owner 的本地记录中必须有 Session 归属；不要求不同 owner 使用相同 Session ID。
+  完整引用键为 `(owner, session_id)`，每个 owner 与同一对端可有多个 Session。
+- 外部连接按 `(owner, tunnel_instance_id, peer/group endpoint DID)` 区分，建立连接即幂等登记至少一个默认 Session。
+  一个 tunnel 实例可连接多个实体；不能为整个实例只建一个共用会话。
+- tunnel 支持多个上下文时，再以稳定远端 thread / topic ID 建立 Session 映射；相同文本标题不是身份键。
+  不同连接的同名 topic 不合并，双向消息必须回到同一绑定。原生连接也有默认 Session，Agent 可另行手工创建。
+- 登记需保存 owner、对端 / 群、连接类型及确定目标、远端上下文关联、创建来源，
+  并在首条消息前可持久恢复；列表应合并登记与消息摘要，空会话的历史为空、未读为 0。
+  不允许通过伪造 MsgObject、`ui.title` 或可丢弃索引来代替登记。
+- 只有实体资料、尚未建立连接或创建会话时允许零 Session。连接断开 / 移除不删除已有消息与登记，
+  发送能力变为不可用；不得自动换 tunnel。
+- 本地 Session 与远端上下文的显式发送映射须在构造确定投递时完成。
+  `session_id` 不能直接冒充外部 thread ID，ContactMgr 归一结果和 ingress 元数据也不能成为隐式选路依据。
+
+登记是会话身份与连接关系的持久元数据，消息正文、收件状态与投递状态仍分别属于既有层。
+实现时须同步扩展 durable schema、Session API 与 UI 协议镜像；本节不宣称当前已存在登记 / 创建 RPC。
+当前 `MailboxRecord.session_id` 仍为可选，列表仅从消息索引读取，也需在实现阶段补齐上述约束。
+
+### 5.6 查看视角、创建与写入（2026-09-06 目标契约，待实现）
+
+- `viewer` 是实际登录 / 调用身份，`owner` 是被查看的会话所属实体。
+  默认查看自己的 Session；从 Agent 主页进入时，经授权以 Agent 为 owner 读取其通信对象与历史。
+  API 接受 owner 参数不等于调用者已经获得读取该 owner 的权限，服务端必须校验两者关系。
+- Agent 观察首期只读：不发送、新建、修改已读或配置，不写 Agent 的草稿和 UI 状态。
+  未来代 Agent 通信必须校验独立的发送授权，`MsgObject.from` 为 Agent，审计保留实际 viewer。
+- 默认仅允许手工创建与 Agent 的 Session；其它会话由连接建立 / 远端上下文发现产生。
+  支持 `(owner, entity)` 级“允许手工创建”配置，显式设置覆盖类型默认；
+  在 tunnel 内创建还需多 Session 与远端创建能力，配置不能授予平台能力或发送权限。
+- MessageHub UI 中外部 tunnel Session 通常默认只读；已有出站能力和发送权限时，
+  用户确认“可能造成另一个软件中的会话历史记录错误或不一致”后，可对当前 Session 启用写入。
+  此确认是 UI 的产品门槛，不授予服务端权限，也不限制已授权的 Agent / tunnel 正常收发。
+  原生会话按授权正常发送，不套用外部 tunnel 风险确认。
+- Session UI 状态至少按 `(owner, session_id, key)` 存储与授权；浏览器缓存、草稿和选择态再按 viewer 隔离。
+  Agent 的未读数不并入用户 badge，观察不自动标记 Agent 已读。
+
+当前 `list_sessions/list_session` 已有 owner 参数，但对应 handler 未使用 `RPCContext`，
+`ui_session` 接口也只有 Session ID 作用域。实现前需补齐 / 验证授权与隔离，不能只改前端传参。
+
+### 5.7 Session 状态与 Action Log（2026-09-06 数据层目标契约，待实现）
+
+主定义见 [Session State and Action Log.md](<./Session State and Action Log.md>)，本轮不修改原型或协议实现。
+
+- 持久状态分为会话整体状态与每个成员自己的会话状态：整体字段按权限修改，成员默认可修改自己的昵称等字段。
+  角色 / 群成员资格继续由原有权威管理，不能通过普通状态 patch 改写。
+- 本地 `(owner, session_id)` 关联稳定权威会话引用；共享状态与成员状态分别带 revision，
+  更新需要 expected_revision 与幂等键。旧 `ui_session` KV 不能承担共享状态、成员权限或日志真相。
+- Session / 实体实际变化以 `kind=event`、`machine.intent=buckyos.action_log` 记录，
+  区分 target、actor 与受影响成员 subject；入群、主动退出、被移除、会话标题修改有明确动作。
+- 权威状态提交与待发布日志登记保持事务一致，跨 named store / mailbox / 服务的发布通过持久任务幂等恢复。
+  同一 GroupEvent 或平台事件映射一次；失败、无变化和重复请求不生成新的成功日志。
+- 外部平台仍是外部状态权威；平台修改确认前不能记录成功事实，回显需关联去重，旧事件不能回滚快照。
+- Action Log 是历史事实，不是状态修改命令。普通 `post_send` 或入站 event 不能直接更新共享状态或群 ACL。
+  日志可见范围受源状态权限约束；个人显示标题、草稿、typing 不产生共享 Action Log。
 
 ---
 
@@ -405,7 +475,8 @@ MessageCenter 可以建立 `thread.topic → session_id` 的映射（同 topic �
 
 - `MsgObject` 存 named store（内容寻址，全系统一份）。**消息对象只存一份**，任意多个 `MailboxRecord` / `DeliveryRecord` 引用同一个 `msg_id`。
 - `MailboxRecord`、`DeliveryRecord` 与全部索引存本地 RDB（当前为 SQLite）。
-- SessionState（typing 等）存内存/易失存储，不进 RDB。
+- SessionRuntimeState（typing 等）按易失语义保存；当前实现借用 `ui_session_states` RDB KV 不改变其易失语义。
+  持久共享 / 成员状态与待发布 Action Log 另按 §5.7 的契约保存。
 
 ### 6.2 索引
 
@@ -521,7 +592,7 @@ report_delivery(delivery_id, result)               # executor 回报投递结果
 list_sessions(owner, cursor, limit)
 list_session(owner, session_id, cursor, limit, with_object)
 update_record_state(owner, record_id, recipient_state)   # 已读/归档/删除
-set_session_state(owner, session_id, key, value)         # 易失 SessionState
+set_session_state(owner, session_id, key, value)         # 此处指易失 SessionRuntimeState，不是共享状态修改
 
 # 队列（仅 executor / agent pump 使用，UI 不可见）
 get_next(owner, box_or_queue, state_filter, lock_on_take)

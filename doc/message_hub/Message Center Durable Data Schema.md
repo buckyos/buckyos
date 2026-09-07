@@ -27,9 +27,14 @@ named store. The corresponding behavior and RPC model are described in
 
 | Data item | Reason |
 |---|---|
-| `ui_session_states` | Typing, active state, and UI presentation hints may be rebuilt |
+| Runtime keys in `ui_session_states` | Typing, active, and status_line are disposable even though the current implementation uses RDB KV |
 | In-memory message/receipt caches | Named store or authoritative records remain available |
 | kevent notifications | Acceleration signals only |
+
+Persisted personal preferences such as a custom display title or draft are not
+reconstructible from messages; do not classify the entire mixed-use
+`ui_session_states` table as disposable. Shared/member business state and Action
+Log data follow the target contract below, independently of these runtime keys.
 
 ## 3. Storage Strategy
 
@@ -79,6 +84,29 @@ the public UI SessionState RPC cannot read or modify it.
 tables retain their schema defined by `MSG_CENTER_RDB_SCHEMA_SQLITE` and
 `MSG_CENTER_RDB_SCHEMA_POSTGRES`. Message objects retain their existing named
 store object schema.
+
+### Target logical records: Session state and Action Log (2026-09-06, not implemented)
+
+The canonical field and behavior definitions are in
+[Session State and Action Log.md](<./Session State and Action Log.md>).
+This supplement does not change DDL or the current schema version.
+
+| Logical record | Key / relationship | Durability |
+|---|---|---|
+| Session authority mapping | Local `(owner, session_id)` → `(authority_did, session_key)` | Durable session registration; not a disposable projection |
+| Shared state | `(authority_did, session_key)`; own revision | Durable title / description / schema-defined extensions |
+| Member state | `(authority_did, session_key, member_did)`; own revision | Durable session nickname and permitted member fields |
+| State mutation result | Authority + authenticated caller + idempotency key; request identity and result | Retry returns the same committed revision / event IDs |
+| Pending Action Log publication | `(producer_did, event_id)`; immutable payload and publication progress | Commit with authoritative state, recover publication after restart |
+| Published Action Log | Existing MsgObject / named store + mailbox references | Ordinary durable event history; no new MsgObjKind |
+
+Use the existing authority's transaction to commit state, revision, mutation
+result, and pending event together. Named-store publication and mailbox/delivery
+fan-out may occur later through idempotent recovery; they are not part of a
+cross-store atomic transaction. Reuse GroupEvent identity for group changes.
+External platform writes remain pending until confirmed and cannot join a local
+RDB transaction. A future implementation must define DDL, uniqueness rules,
+query indexes, and a schema-version bump before enabling these records.
 
 ## 5. Schema Version
 

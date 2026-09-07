@@ -21,6 +21,20 @@ MessageTunnel = ingress producer + delivery executor
 
 MessageHub 不是 tunnel：它是原生跨 Zone transport，承载 shareable DID 投递；tunnel 承载 shadow DID 投递。二者复用 `DeliveryExecutor` 接口。
 
+2026-09-06 UI Session 补充（目标契约，待实现；见 [Message Center §5.5–§5.6](<./Message Center.md>)
+与 [Message Tunnel Design §2.1](<./Message Tunnel Design.md>)）：
+
+- Session 属于 owner；引用必须带 `(owner, session_id)`。每条持久消息有本地会话归属。
+- 每条 `(owner, tunnel_instance_id, peer/group endpoint DID)` 连接至少登记一个独立 Session，
+  连接建立时即支持空历史；同名 topic、同平台或联系人合并不能跨连接合并会话。
+- 同一连接可按 tunnel 能力映射多个远端上下文；多 Session 与远端创建是独立能力，当前 capability 尚待扩展。
+  tunnel 提供事实与能力，MessageCenter 登记映射；tunnel 不管理 UI / Agent 会话。
+- UI 默认仅允许手工创建与 Agent 的 Session，其它由连接 / 远端上下文自动添加；实体级配置不能绕过权限或平台能力。
+- UI 的 tunnel 会话通常默认只读，符合能力与授权后确认外部软件历史风险才可启用当前会话写入。
+  这不关闭 tunnel 正常收发，也不授权模拟 Agent。原生 transport 不套用外部 tunnel 的风险提示。
+- Agent 主页可经授权切换到 Agent owner 的只读会话视角，不发送、新建或修改 Agent 已读 / 草稿 / 配置。
+  当前 owner 参数与 Session ID 级 UI KV 不足以保证跨 owner 授权和状态隔离，需补齐后端契约。
+
 2026-09-05 原生投递补充（设计，待实现）：使用 CYFS PUT dispatch；区分无响应、rejected、cached、accepted。Gateway 只在 upstream 失效时 fallback 到通用 NamedInboxCacheServer，按配置尽力排空。cached 仍可能丢对象，发送方继续保存原对象并重试，只有 upstream accepted 才成功；禁止将 cached 回报为 ok=true/SENT。详见 [Message Center §4.5](<./Message Center.md>)。这类接收侧缓存不改变发送目标，不是被禁止的 Contact/Tunnel 自动选路 fallback。
 
 ## 2. DID 规则（必须遵守）
@@ -87,7 +101,10 @@ MsgObject + exact source shadow DID (from) + exact recipient/group DID (to)
 
 - 1v1：`kind=Chat`，`from = sender shadow DID`，`to = [本地 owner/agent DID]`。
 - 群聊：`kind=GroupMsg`，`from = actor shadow DID`，`to = [group DID]`。
-- 会话状态、成员变更：`kind=Event`/`Notify`，结构化部分放 `content.machine`。
+- 已确认的整体 / 成员状态和实体成员变更：`kind=Event`、`machine.intent=buckyos.action_log`，
+  actor / subject / target / changes 与去重规则见 [Session State and Action Log.md](<./Session State and Action Log.md>)
+  （数据层目标契约，待实现）。个人展示偏好不广播，typing 等临时态不产生日志。
+- 外部状态写入必须等平台确认；确认与回显关联去重，旧事件不回滚快照，不猜缺失操作者 / 旧值。
 - typing/已读：SessionState 通道或 receipt，**不产生 MailboxRecord**。
 - 可操作消息（红包/投票/卡片）：`kind=Operation`，`machine.intent` 表达操作类型，raw payload 放 `meta`/`machine.data.raw`。
 - 附件：大对象写对象存储后用 `content.refs` 引用。

@@ -69,6 +69,28 @@ local shadow endpoint DID → MessageTunnel delivery
 其它 / 解析失败           → 错误（无 default tunnel、无 fallback）
 ```
 
+### 2.1 与 MessageHub UI Session 的关系（2026-09-06 目标契约，待实现）
+
+这里的 MessageHub 是原生 transport；同名的 MessageHub UI 是 Session 的消费方。
+产品上的“通信连接”包含原生连接与外部 tunnel，只有后者适用外部软件历史风险提示。
+完整会话登记与视角规则见 [Message Center §5.5–§5.6](<./Message Center.md>)，产品规则见
+[MessageHub PRD §9](../../product/message_hub/MessageHub_Web_UI_PRD.md)。
+
+- 每个 `(owner, tunnel_instance_id, peer/group endpoint DID)` 连接至少对应一个独立 Session；
+  同一实例可以承载多个对端，不能把整条 tunnel 的消息合并为一个 Session。
+- 支持多上下文的 tunnel 可以在同一连接映射多个 Session。能力声明需区分“支持多个 Session”与
+  “允许创建远端 Session”；只有读取 thread 的能力不等于可手工创建。
+  当前 §12 的 capability 尚未定义这两项，需在实现时补齐 registry / API 契约。
+- tunnel 提供稳定端点、远端上下文事实与能力；连接建立 / 上下文发现由 MessageCenter 侧登记会话。
+  tunnel 仍不管理 Agent Session，不读写 UI 历史；重启、重复发现、联系人合并和同名 topic 不应改变既有绑定。
+- 用户在当前 Session 中发送，目标由该 Session 的确定端点决定；平台 thread 由显式映射提供。
+  本地 Session ID、展示标题、最新 ingress 消息均不能替代确定目标与远端上下文契约。
+- UI 中 tunnel Session 通常默认只读。只有出站能力、权限与稳定绑定齐备，用户确认
+  “可能造成另一个软件中的会话历史记录错误或不一致”后才可启用当前 Session 写入。
+  该产品限制不关闭 tunnel 本身的收发，也不授予权限；Agent 观察模式首期不能据此写入。
+- 原生 Agent 会话默认可手工创建；其它默认由连接自动产生，可用 owner / 实体级配置开放创建入口，
+  但不能突破 tunnel 自身能力。连接失效后历史保留，禁止自动换路。
+
 ## 3. DID 分类（固定）
 
 本章替代旧文档的"Message Tunnel 二级 DID"，该术语废弃，统一改为 **local shadow endpoint DID**（简称 shadow DID）。
@@ -308,13 +330,29 @@ Tunnel 需要接收和发送的消息/事件类型及其标准表达：
 | 引用/回复 | `thread.reply_to` 或 `meta.platform_reply_to` | 能解析为 `ObjId` 时用 `reply_to` |
 | 附件、图片、音视频、文件 | `content.refs` 指向 `DataObj` | 大对象不塞 `content.content` |
 | @、mention | `content.content` 保留原文，结构化列表放 `machine.data.mentions` | |
-| 成员加入/退出、会话创建/关闭 | `kind=Event`，`machine.intent=session.member_changed` 等 | 变更前后状态放 `machine.data` |
+| 成员加入/退出、共享标题 / 成员会话昵称等变化 | `kind=Event`，`machine.intent=buckyos.action_log` | 已确认变化，具体 action / target / actor / subject / changes 见 §7.1 |
 | 上线/下线、禁言、屏蔽、授权 | `kind=Event` 或 `Notify` | 影响 ACL 的事件由可信组件处理 |
 | 已读、typing | SessionState / per-reader receipt | **不进入可靠消息投递**，不产生 MailboxRecord |
 | 红包、投票、小程序、审批卡片 | `kind=Operation` | 平台 payload 放 `machine.data.raw` 或 `meta` |
 | 第三方应用消息 | `kind=Operation` 或 `Event` | 保留原始 app id 和 action |
 | AI 流式消息 | 中间态走 SessionState/`Notify`，最终 `Chat/GroupMsg` | 见 §8 |
 | 未知平台消息 | `kind=Event` 或 `Operation` + raw payload | 必须可保留、可忽略、不可 panic |
+
+### 7.1 共享 / 成员状态与 Action Log（数据层目标契约，待实现）
+
+统一字段见 [Session State and Action Log.md](<./Session State and Action Log.md>)。
+当前 Telegram `TgUiSessionTracker` 已同步 active / typing / status_line；这属于临时运行态，
+尚不等于整体状态、每成员状态或统一 Action Log 已实现。
+
+- tunnel 需分别声明整体状态 / 成员状态的可读可写字段与事件来源能力，不能用 `egress=true` 代表可修改群资料。
+  本轮只定义要求，§12 的现有 capability 与代码待实现阶段扩展。
+- 原生状态按权威提交；外部状态先由平台确认，再更新快照与记录已生效日志。只支持读取的平台不接受修改。
+- 平台成员 / 标题事件携带稳定来源事件 ID、具体连接与远端上下文、真实 actor（若平台提供）、subject 和可知变更值。
+  缺失操作者 / 旧值不猜测，只有当前快照不能伪造完整变更历史。
+- API 确认与 webhook 回显关联为同一事件；乱序日志可保留历史，但最新状态需按可信版本 / 平台对账确认。
+  来源映射不改写历史 `from/to`，也不使收到日志本身成为执行改名或入群的命令。
+- 共享标题、会话成员昵称与个人 `ui.title` 分开；持久日志进入 Session 历史，typing 不产生日志。
+  MessageHub UI 原型的专用呈现后续实现。
 
 ## 8. 流式 AI 消息与易失状态
 
