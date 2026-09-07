@@ -64,3 +64,8 @@ Playwright 使用仓库原有 config 的本地 Vite server；测试通过不代�
 删除仅清理当前 owner 的 mock 会话与本地历史引用，不使用 `RecipientState.DELETED` 冒充物理删除；不可变 seed 夹具不作为恢复源。附件发送仍是原型摘要，不代表文件已上传到远端。
 
 精确字段与持久状态见 [当前 UI Model Data](../../product/message_hub/MessageHub_Current_UI_Model_Data.md)；集成目标和新的时间口径见 [UI_DATAMODEL](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md)。
+
+2026-09-07 源码 Review 后仅更新了文档，以上原型交付与测试记录没有新增代码验证。
+真实接入还需修正群实体归属、本地已读 / 回执调用、提交结果与逐目标投递信息，并补请求处理、
+native / 群权限、对象附件访问、非追加历史更新及断线对账。
+后续任务见 [TODO §3](TODO.md)，真实接入验收以 [UI_DATAMODEL §9.4](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md#94-接入验收条件本次未执行) 为准。

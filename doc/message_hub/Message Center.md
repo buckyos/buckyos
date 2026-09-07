@@ -1,5 +1,7 @@
 # MessageCenter 设计文档
 
+- 2026-09-07：按当前源码校正 Session UI 接入边界；新增约束为目标契约，未在本次修改中实现。
+
 > **MessageCenter is not an IM server. It is a DID-native, store-and-forward personal messaging system—email upgraded for Personal Servers and Agents.**
 
 本文档与 [Message Tunnel Design.md](<./Message Tunnel Design.md>) 共同构成消息域的两份主设计文档，共享同一定位、同一五层模型和同一术语表。任何与本文冲突的旧描述（包括代码注释和历史文档）以本文为准。
@@ -74,7 +76,9 @@ Email 没有做好而 BuckyOS 升级的部分：DID 原生身份与签名、群�
 - `thread`：`topic / reply_to / correlation_id` 语义线索。
 - `kind` / `created_at_ms` / `expires_at_ms` / `nonce` / `meta`。
 
-**永远不属于 MsgObject 的**：已读状态、投递状态、重试信息、外部平台 message id、归档/删除标记、会话归类。这些全部落在 record 层。投递失败、重试、回执只更新 `DeliveryRecord`，`MsgObject` 与投递结果彻底解耦。
+**永远不属于 MsgObject 的**：已读状态、投递状态、重试信息、外部平台 message id、归档/删除标记、会话归类。
+本地阅读状态属于 `MailboxRecord`；投递与重试属于 `DeliveryRecord`；回执由 `MsgReceiptObj` 单独表达。
+会话级生命周期需另有 owner 范围元数据（§5.8）。这些变化均不修改原始 MsgObject。
 
 > 注：`thread.tunnel_id` 是历史遗留字段，冻结设计中删除（transport 信息属于 DeliveryEnvelope 层，不属于消息语义）。`thread.topic` 是消息携带的**语义 hint**，与本地 `session_id` 的关系见 §5.4。
 
@@ -95,7 +99,7 @@ pub struct DeliveryEnvelope {
 
 两条确定投递分支（也只有这两条）：
 
-- `target_did` 是 **shareable DID**（如 `did:bns:bob`、`did:bns:telegram.bob`）→ **MessageHub 原生投递**：解析 DID → 找到目标 Zone 与语义接收点 → `PUT cyfs://<zone>/<semantic_path>`，body 为 MsgObject canonical JSON。Zone 解析发生在每次投递尝试时（如同 email 发送时才查 MX），但走的是确定性解析协议，不是策略选路。接收侧 Gateway 的尽力缓存与结果语义见 §4.5；当前代码尚未实现跨 Zone hop。
+- `target_did` 是 **shareable DID**（如 `did:bns:bob`、`did:bns:telegram.bob`）→ **MessageHub 原生投递**：目标设计为确定性解析 DID、Zone 与语义接收点，发送 MsgObject canonical JSON。当前代码已支持本地 dispatch 及显式配置的跨 Zone CYFS 路由；未配置路由返回 `native-route-not-configured`，配置与投递快照不一致返回 `native-route-changed`。不能仅凭 native DID 假设可达；自动解析能力不作已实现承诺。接收与缓存结果见 §4.5。
 - `target_did` 是 **local shadow endpoint DID**（`did:msgtunnel:*`）→ **MessageTunnel 投递**：从 DID 内嵌的 `tunnel_instance_id` 在注册表查出 tunnel 实例，平台地址由 DID 内嵌的 account 信息与 tunnel 配置确定。
 
 任何解析失败（未注册的 tunnel 实例、无法解析的 DID、非法格式）都返回错误。**禁止 default tunnel、default chat、last-active fallback。**
@@ -184,6 +188,11 @@ SessionRuntimeState（本文旧称 SessionState；易失，不落 mailbox/delive
 
 三个状态机互不迁移、互不共享取值。"收件人已读"不影响 DeliveryState；"投递失败"不产生 RecipientState；typing 永远不产生记录。
 
+`msg.update_record_state(record_id, READ)` 更新本地邮箱阅读状态，list_sessions 按记录的 UNREAD 计数。
+`msg.set_read_state(group_id, msg_id, reader_did, ...)` 写的是回执，不更新 mailbox；当前回执只保存在
+`MessageCenterState.receipts` 内存中，接口必填 group_id，尚无完整私聊回执、持久恢复及发布契约。
+UI 不能用它代替清除自己的未读，不能将投递 accepted / delivered 或 Agent 处理中当成 reader 已读。
+
 ---
 
 ## 3. 入站流程
@@ -234,6 +243,10 @@ def dispatch(msg_obj, ingress_meta, idempotency_key):
 | 低信任来源（ContactMgr 判为 Stranger 等） | 本地收件人 | `REQUEST_BOX` |
 
 群消息只写一条 `GROUP_INBOX` 权威记录；订阅该群的本地 reader（agent/user）的"未读视图"是 per-reader 的投影记录或 read receipt（见 Self-Host-Group 文档），**不是把 MsgObject 复制多份群消息**。
+
+当前实现为成员创建 INBOX 记录并附 `group:<did>` tag。`MailboxRecord.to` 在所有入站箱均为 owner，
+SENT 中仅取原始 msg.to 的第一项。UI 必须从原始 `MsgObject.to` 或权威会话登记识别群与多目标集合，
+不能用成员 INBOX 副本的 record.to 识别群，也不能因最后一条消息方向变化重新绑定会话。
 
 ### 3.3 入站身份：`from` 保持来源 endpoint DID
 
@@ -300,7 +313,12 @@ def post_send(msg_obj, idempotency_key=None):
 
 ### 4.3 多收件人语义
 
-**每个 `to` 生成独立的 `DeliveryRecord`，拥有独立的状态与结果。** 一个目标投递失败不污染其他目标：给 3 个人发消息，2 个 `SENT`、1 个 `FAILED` 是正常终态，UI 按目标分别展示。不存在"整条消息发送失败"这个聚合状态——只有创建期（阶段一）的整体失败和投递期的按目标结果。
+**每个 `to` 生成独立的 `DeliveryRecord`，拥有独立的状态与结果。** 一个目标投递失败不污染其他目标：
+给 3 个目标发消息，2 个 SENT、1 个 FAILED/DEAD 可同时存在。Session API 提供整体进度摘要，
+但 UI 必须保留逐目标结果，不能将 partial_failed 解释为所有目标失败或整条重发。
+创建期整体拒绝通过 `PostSendResult.ok=false/reason` 返回，RPC 成功不等于提交成功。
+`ok=true` 只确认发送历史和投递队列创建；后续是否送达以 delivery 为准。
+提交结果未知时重用原始对象与幂等键；人工重投需独立的目标范围、授权与去重契约，当前没有对应的 UI RPC。
 
 ### 4.4 投递执行与回报
 
@@ -324,7 +342,7 @@ def report_delivery(delivery_id, result):
 
 处于 `SENDING` 超过租约时间的记录由定时 sweep 收回（→ `WAIT`，`attempts+1`，记录 duplicate risk），覆盖 executor 崩溃场景。
 
-### 4.5 跨 Zone 原生投递与 Gateway 尽力缓存（2026-09-05 设计补充，待实现）
+### 4.5 跨 Zone 原生投递与 Gateway 尽力缓存（2026-09-07 实现边界校正）
 
 原生投递遵循 [CYFS dispatch 协议](<../../../cyfs-ndn/doc/CYFS Protocol/CYFS Protocol.md>)。Gateway 先执行 process-chain 安全过滤，再直接尝试 upstream；只有 upstream 失效才调用配置的 NamedInboxCacheServer。公网 VPS 上的 Gateway 可以因此在家庭 OOD 离线时暂存对象，并按配置后台转投。组件与实现入口见 [NamedInboxCacheServer 设计](../../../cyfs-gateway/doc/NamedInboxCacheServer设计.md)。
 
@@ -339,7 +357,10 @@ def report_delivery(delivery_id, result):
 
 Gateway 排空按“取出但暂不删 → 投 upstream → accepted 后删除”执行；临时失败或无响应时尽力保留，永久拒绝可以清理。故障、过期清理或重建导致缓存丢失是允许的。发送方重试和 Gateway 排空可能重复或并发发生，接收适配必须按 `(target_zone, semantic_path, obj_id)` 幂等处理，并且只确认路径指定的本地接收点，不能因 MsgObject 带多个 to 就确认其他目标。
 
-当前 `DeliveryReportResult` 只有 ok 成功/失败回报，尚不能表达 cached。接入时应补原生 dispatch 结果处理分支：cached 保持待重试/待确认状态（例如 WAIT 并设置下次尝试时间），可保存最近的缓存提示；不得调用 `report_delivery(ok=true)` 提前进入 SENT，也不能把 cached 伪装成永久失败。发送方的重试次数/截止时间仍由自身策略决定，达到上限记录失败或放弃，不能标记成功。
+当前 `cyfs_dispatch.rs::delivery_report` 已把 accepted 映射为 ok=true，把 cached 映射为
+ok=false、error_code=`cyfs-cached`、retryable=true、retry_after_ms=30000，交由既有投递重试机制处理。
+因此 cached 仍待接收确认；UI 应保留该提示，不能提前标成 delivered/read，也不能将其显示为永久拒绝。
+发送方的重试次数 / 截止时间仍由自身策略决定，达到上限记录失败，不能标记成功。
 
 原生 executor 可以使用可选的 `GET cyfs://<zone>/<semantic_path>?dispatch-status=<ObjectId>` 查询减少重复传输，但查询不是基础投递的前置条件。查询不支持、失败或 unknown 时继续同对象 PUT；缓存中没有对象不证明已接收。只有查询得到有依据的 accepted 才结束本地投递。
 
@@ -354,7 +375,7 @@ SessionProjection 可以展示“对方网关已暂存，等待接收”，仍�
 Session 时间线是**投影**：为 UI/Agent 把分散在多个 mailbox 和 delivery queue 里的记录聚合成"一个会话"的只读视图。它不持有独立的消息真相：
 
 - 删除全部 session 索引，不丢任何消息，可从 MailboxRecord 全量重建。
-- 写操作（标已读、归档、删除）落到对应的 `MailboxRecord` 上，session 视图随之变化。
+- 单条消息阅读 / 记录状态更新落到对应的 `MailboxRecord` 上；会话级归档、恢复和删除另见 §5.8，不能与记录状态混用。
 - Session 里"这条消息发送中/失败"的角标来自 DeliveryRecord 聚合，UI 不直接读 DELIVERY_QUEUE。
 
 “只读投影”描述存储职责，不表示所有会话的 Composer 都只读；产品写入能力见 §5.6。
@@ -373,23 +394,28 @@ SessionProjection(owner, session_id)
 ### 5.3 API
 
 ```text
-list_sessions(owner, cursor, limit)
-  -> [ { session_id, peer/group 摘要, last_msg 摘要, unread_count, updated_at } ]
+msg.list_sessions(owner, cursor_updated_at_ms?, cursor_session_id?, limit?, with_object?)
+  -> { items: [ { session_id, last_record?: { record, msg? }, unread_count, updated_at_ms } ],
+       next_cursor_updated_at_ms?, next_cursor_session_id? }
 
-list_session(owner, session_id, cursor, limit, with_object)
-  -> [ { record_id, msg_id, direction, sort_key,
+msg.list_session(owner, session_id, cursor_sort_key?, cursor_record_id?, limit?, descending?, with_object?)
+  -> { items: [ { record_id, msg_id, direction, box_kind, sort_key, from, to,
          recipient_state?,                  # 入站记录
          delivery: {                        # 出站记录：聚合视图
             overall: sending | delivered | partial_failed | failed,
             per_target: [ { target_did, state, attempts, last_error? } ]
          },
          msg?                               # with_object=true 时附带 MsgObject
-       } ]
+       } ], next_cursor_sort_key?, next_cursor_record_id? }
 ```
 
-聚合规则：全部 target `SENT` → `delivered`；存在 `WAIT/SENDING` → `sending`；部分 `DEAD/FAILED` → `partial_failed`；全部 `DEAD` → `failed`。
+实际聚合规则按优先级为：存在 WAIT/SENDING → sending；否则全部 SENT → delivered；
+否则部分 SENT、部分 FAILED/DEAD → partial_failed；否则 failed。没有 delivery 时不返回该字段。
 
-**一个传统私聊 UI 只需要调用一次 `list_session()`** 就能渲染完整会话（双向消息 + 已读状态 + 投递角标），不需要分别读取 Inbox、Sent、Delivery Queue——后两者对 UI 根本不可见。
+一次 list_session 返回一页双向历史、本地阅读状态和投递视图，无需 UI 拼接 Inbox/Sent 或读取 Delivery Queue。
+对端回执独立查询；长历史需分页。当前 list_sessions 没有独立 peer/group 字段、生命周期或最后投递摘要，
+并按 MAX(mailbox.updated_at_ms) 排序；UI 需要的有效消息活动时间及同口径游标仍待补齐。
+读取或修改旧消息状态不应推进产品 lastActiveAt，前端只重排一页不能修复跨页排序。
 
 ### 5.4 `thread.topic` 与 `session_id`
 
@@ -443,6 +469,9 @@ UI 目标字段见 [UI DataModel §3.3](../../src/frame/desktop/src/app/messageh
   用户确认“可能造成另一个软件中的会话历史记录错误或不一致”后，可对当前 Session 启用写入。
   此确认是 UI 的产品门槛，不授予服务端权限，也不限制已授权的 Agent / tunnel 正常收发。
   原生会话按授权正常发送，不套用外部 tunnel 风险确认。
+- 传输方式与操作能力分开：native 也需确认路由与发言权限；GroupMgr 的按 action 授权可用于
+  群历史、发言和管理能力。读取、发送、owner 本地生命周期、共享字段与成员字段编辑分别校验，
+  本地托管或存在 mailbox 记录不授予管理权。能力未知时不能按 native 默认开放写入。
 - Session UI 状态至少按 `(owner, session_id, key)` 存储与授权；浏览器缓存、草稿和选择态再按 viewer 隔离。
   Agent 的未读数不并入用户 badge，观察不自动标记 Agent 已读。
 
@@ -464,6 +493,39 @@ UI 目标字段见 [UI DataModel §3.3](../../src/frame/desktop/src/app/messageh
 - 外部平台仍是外部状态权威；平台修改确认前不能记录成功事实，回显需关联去重，旧事件不能回滚快照。
 - Action Log 是历史事实，不是状态修改命令。普通 `post_send` 或入站 event 不能直接更新共享状态或群 ACL。
   日志可见范围受源状态权限约束；个人显示标题、草稿、typing 不产生共享 Action Log。
+
+当前 GroupMgr 已把 GroupEvent 写入 group_events；它们尚未发布到 Session 消息时间线。
+前端已有 mock Action renderer 和共享 / 成员编辑交互，不能将这些 UI 交互视为后端状态契约已实现。
+Telegram 的 active / typing / status_line KV 已有消费方，但缺少统一成员 DID、有效期与 owner 隔离；
+映射运行态时必须补齐可信来源和过期规则，不能据此推导实体在线状态。
+
+### 5.8 owner 本地会话生命周期（目标契约，待实现）
+
+归档只改变会话在活动列表中的可见性，保留历史、逐记录阅读状态、未读计数和草稿；恢复沿用原会话与活动时间。
+有效普通新消息可以解除归档，运行态与 Action Log 不解除归档。归档属于独立的持久 Session 元数据。
+
+当前 RecipientState.ARCHIVED 会替换阅读状态，仍被 Session 查询纳入，且没有恢复到普通阅读状态的迁移。
+DELETED 仅被 Session 查询过滤。它们不能代替上述会话级操作。
+
+彻底删除的产品范围是当前 owner 的会话及本地历史引用、草稿和个人偏好；不删除其它 owner 的引用、联系人或连接。
+需保留最小连接来源与删除水位，阻止旧消息重放复活；水位后的有效新消息按连接规则形成新的可见历史。
+操作需有幂等结果、并发新消息边界、授权及重启恢复，不能用未完成的一串逐记录写入报告成功。
+共享 MsgObject 及附件仍可能被其它 mailbox/delivery 引用，对象物理回收另按引用规则处理，不承诺擦除所有副本。
+
+### 5.9 请求处理与 UI 同步边界
+
+- REQUEST_BOX 已存在，UI 需保留每条记录的 box_kind 并提供请求入口与准入操作。
+  同一 Session 可有请求与普通记录，不能从最后一条记录推导全部请求状态；筛选视图不重复增加未读。
+- 联系人临时授权 / 拉黑改变当前 owner 的准入规则，查看消息不改变该规则。
+  当前授权变化不迁移旧 REQUEST_BOX 记录；接受后的历史处理、处理状态及计数 / 分页需补显式契约。
+- mailbox changed 在提交后发布，delivery changed 按 transport/executor 组织；事件可丢失，只作刷新信号。
+  UI 需有权限的 owner/session 事件投影或受控轮询，通过 Session API 对账，不直接消费执行器队列。
+- 历史 reader 需支持记录更新、删除、重新归类和断线补拉。仅按时间游标追加新消息无法发现旧记录变化，
+  必须定向重读受影响记录 / 页面或提供变更游标；旧、新 Session 的摘要与未读均需刷新。
+- Telegram 附件已经通过 obj_id 与 cyfs:// hint 引用 FileObject。UI 应解析有权限的对象访问地址，
+  不依赖 HTTP URL 扩展名识别附件；无 hint、非图片及单附件失败均保留可读信息。
+
+具体 UI 投影与验收见 [UI DataModel §3.5、§4.5–§4.6、§6、§9.4](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md)。
 
 ---
 

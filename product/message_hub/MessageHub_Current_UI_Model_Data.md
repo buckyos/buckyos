@@ -1,6 +1,6 @@
 # MessageHub 当前 UI Model Data
 
-- 版本：v0.2，2026-09-06
+- 版本：v0.3，2026-09-07（补充重构后的服务接入差异，未修改原型代码）
 - 范围：MessageHub mock 原型、共享的 Conversation 组件、CodeAssistant 长历史 seed，以及 Agent 主页入口。
 - 实现依据：`src/frame/desktop/src/app/messagehub/`，本文件只描述已落地字段。权威服务设计见 [UI_DATAMODEL](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md)。
 - 本轮未接入真实消息服务、tunnel 平台 API、DDL、跨 owner 服务端授权或会话级物理删除。
@@ -130,12 +130,17 @@ interface SessionAccess {
 ```
 
 原生用户会话可写。tunnel 默认只读；有能力时在 SessionDetails 明确确认历史不一致风险后启用写入。
+这里的原生可写是当前 mock 规则：native 分支没有真实路由 / 群权限检查，且默认允许共享 / 自己成员状态编辑。
+实际 `SessionAccess` 没有 canRead/canSend 字段；目标能力见 UI_DATAMODEL §3.3.4，不能把 mock 判断用于真实授权。
 确认仅记录在视图内存，与当前绑定序列化值对应；连接 revision 变化、刷新和 owner 切换使旧确认失效。
 发送动作在提交执行时重新检查权限和 binding，风险确认不授予共享或成员状态编辑权限。
 所有输入、粘贴 / 拖拽文件、Enter 发送与失败重试共用可写 Composer 和 store 权限检查。
 
 Agent 观察模式可看两种详情，不能创建、发送、归档 / 删除、改共享状态、昵称、Agent 草稿和个人标题等配置。
 观察者可以修改自己的 Action 可见性。拒绝态不返回其它 owner 的 reader。未读聚合始终按 owner，观察未读不进入用户聚合。
+
+当前 store 仅在有效普通入站消息追加时增加未读，没有真实 mailbox 已读 / receipt 写入流程。
+因此上述 mock 时间和权限场景不能验证后端对所有 UNREAD 记录的统计，也不能验证跨端回执。
 
 ## 4. 持久状态、草稿和生命周期
 
@@ -230,5 +235,23 @@ hover、focus-within 和触屏均能访问处理入口。对话框有 Tab 焦点
 
 组件使用的 create、manage、updateState、updatePreferences、setPolicy、saveDraft、saveAttachments、send 全为 mock 方法，不冒充 KRPC。
 真实集成仍需独立消息活动时间和跨页排序游标、空会话登记、权威状态版本和可靠日志、Session 级归档 / 删除、共享对象引用处理、平台能力与服务端代理授权。
+
+### 7.1 保留的真实 API 适配代码及缺口
+
+主视图当前未使用 `datamodel/sessionApi.ts` 与 `conversation/history/sessionApiReader.ts` 的真实读取 / 发送路径。
+这些文件虽已镜像重构后的主要类型，仍有以下限制，不能直接替换 mock provider：
+
+| 入口 | 当前实现 |
+|---|---|
+| `postSendMessage` | 返回 Promise<void>，未保留 PostSendResult 的 ok、reason、msg_id 和 deliveries |
+| `sessionItemToMessageObject` | 仅附 record_id / session_id 与简化投递图标；丢弃 box_kind、sort_key、recipient_state、完整 delivery 等记录上下文；无 msg 时跳过 |
+| `SessionApiConversationMessageReader` | readerKey 只有 sessionId；全量顺序拉取历史，仅支持 append，不支持旧记录更新 / 删除 / 重新归类 |
+| `listAllSessions` | 跟随游标拉取全部会话；没有按需首屏或完整实体聚合能力 |
+| `renderers.tsx` | 图片只识别 HTTP(S) 图片 URL；不支持 Telegram 的 cyfs:// 文件对象引用，通用 fallback 没有附件入口 |
+| `types.ts` / EntityDetails | Session.entityId 必填；无请求处理模型。实体详情仍缺联系人准入、真实群操作能力与未归类入口 |
+
+本次文档修正了群归属不能取成员 INBOX 的 record.to、本地已读不能调用回执接口、
+Session 生命周期不能映射为单条 RecipientState 等目标规则；这些修正尚未落到代码。
+已确认的后端缺口、实现边界和真实接入验收见 [UI_DATAMODEL §9](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md#9-krpc-映射)。
 
 验收命令、场景和截图入口见 [原型交付说明](../../proposals/messagehub-ui-prototype/IMPLEMENTATION.md)。

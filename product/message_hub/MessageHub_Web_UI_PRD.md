@@ -1000,7 +1000,7 @@ Agent 主页 -> 查看 Agent 的会话 -> 校验当前用户的查看权限
 
 §6 / §9 / §15 已确定实体寻址、连接隔离、创建策略、只读和查看身份的产品规则。
 空 Session 持久化、稳定连接绑定、能力接口及 owner 授权的实现缺口见
-[UI DataModel §9.3](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md#93-需要后端确认的点)。
+[UI DataModel §9.3](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md#93-后端集成依赖与实现边界)。
 
 ---
 
