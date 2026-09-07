@@ -197,7 +197,7 @@
       },
       "official_variant_sources": ["https://platform.claude.com/docs/en/build-with-claude/effort"],
       "official_variant_rules": [
-        { "model_ids": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"], "variants": { "effort-low": { "output_config": { "effort": "low" } }, "effort-medium": { "output_config": { "effort": "medium" } }, "effort-high": { "output_config": { "effort": "high" } }, "effort-xhigh": { "output_config": { "effort": "xhigh" } }, "effort-max": { "output_config": { "effort": "max" } } } }
+        { "model_ids": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"], "variants": { "effort-low": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "low" } }, "effort-medium": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "medium" } }, "effort-high": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "high" } }, "effort-xhigh": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "xhigh" } }, "effort-max": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "max" } } } }
       ],
       "test_model_ids": { "llm": "claude-sonnet-5", "vision.ocr": "claude-sonnet-5", "vision.caption": "claude-sonnet-5" },
       "contracts": [{
@@ -214,6 +214,7 @@
         "required_body_fields": ["model", "messages", "max_tokens"],
         "allowed_body_fields": ["model", "messages", "max_tokens", "metadata", "output_config", "service_tier", "stop_sequences", "stream", "system", "temperature", "thinking", "tool_choice", "tools", "top_k", "top_p"],
         "body_field_types": { "model": ["string"], "messages": ["array"], "max_tokens": ["number"] },
+        "thinking": { "allowed_types": ["adaptive"] },
         "stream_protocol": "claude_messages",
         "success_fixture": { "id": "msg_mock_1", "type": "message", "role": "assistant", "model": "mock-model", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }], "stop_reason": "end_turn", "stop_sequence": null, "usage": { "input_tokens": 4, "output_tokens": 3 } },
         "official_sources": ["https://platform.claude.com/docs/en/api/messages/create", "https://platform.claude.com/docs/en/build-with-claude/structured-outputs", "https://platform.claude.com/docs/en/build-with-claude/extended-thinking", "https://platform.claude.com/docs/en/api/errors"],
@@ -267,6 +268,10 @@
           "required_body_fields": ["model", "input"],
           "allowed_body_fields": ["model", "input", "background", "generation_config", "previous_interaction_id", "response_format", "store", "stream", "system_instruction", "tools"],
           "body_field_types": { "model": ["string"], "input": ["string", "array"] },
+          "generation_config": {
+            "allowed_fields": ["image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences", "thinking_level", "thinking_summaries", "tool_choice", "transcription_config", "video_config"],
+            "thinking_level_values": ["minimal", "low", "medium", "high"]
+          },
           "stream_protocol": "gemini_interactions",
           "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "mock-model", "steps": [{ "type": "model_output", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
           "official_sources": ["https://ai.google.dev/api/interactions-api", "https://ai.google.dev/gemini-api/docs/function-calling", "https://ai.google.dev/gemini-api/docs/api-errors"],
@@ -285,6 +290,10 @@
           "required_body_fields": ["model", "input", "generation_config"],
           "allowed_body_fields": ["model", "input", "generation_config", "store"],
           "body_field_types": { "model": ["string"], "input": ["string", "array"], "generation_config": ["object"] },
+          "generation_config": {
+            "allowed_fields": ["image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences", "thinking_level", "thinking_summaries", "tool_choice", "transcription_config", "video_config"],
+            "thinking_level_values": ["minimal", "low", "medium", "high"]
+          },
           "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.5-transcribe", "steps": [{ "type": "model_output", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
           "official_sources": ["https://ai.google.dev/gemini-api/docs/transcribe", "https://ai.google.dev/gemini-api/docs/api-errors"],
           "evidence_summary": "Gemini transcription uses POST /v1beta/interactions with an audio input and generation_config.transcription_config."
@@ -302,6 +311,10 @@
           "required_body_fields": ["model", "input"],
           "allowed_body_fields": ["model", "input", "generation_config", "previous_interaction_id", "response_format", "store", "tools"],
           "body_field_types": { "model": ["string"], "input": ["string", "array"] },
+          "generation_config": {
+            "allowed_fields": ["image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences", "thinking_level", "thinking_summaries", "tool_choice", "transcription_config", "video_config"],
+            "thinking_level_values": ["minimal", "low", "medium", "high"]
+          },
           "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.1-flash-image", "steps": [{ "type": "model_output", "content": [{ "type": "image", "mime_type": "image/png", "data": "iVBORw0KGgo=" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
           "official_sources": ["https://ai.google.dev/gemini-api/docs/image-generation", "https://ai.google.dev/gemini-api/docs/api-errors"],
           "evidence_summary": "Gemini image generation and editing use POST /v1beta/interactions with model/input and return image content blocks."
@@ -319,6 +332,10 @@
           "required_body_fields": ["model", "input", "response_format", "generation_config"],
           "allowed_body_fields": ["model", "input", "response_format", "generation_config", "store", "stream"],
           "body_field_types": { "model": ["string"], "input": ["string", "array"], "response_format": ["object", "array"], "generation_config": ["object"] },
+          "generation_config": {
+            "allowed_fields": ["image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences", "thinking_level", "thinking_summaries", "tool_choice", "transcription_config", "video_config"],
+            "thinking_level_values": ["minimal", "low", "medium", "high"]
+          },
           "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.1-flash-tts-preview", "steps": [{ "type": "model_output", "content": [{ "type": "audio", "mime_type": "audio/l16", "data": "UklGRg==" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
           "official_sources": ["https://ai.google.dev/gemini-api/docs/speech-generation", "https://ai.google.dev/gemini-api/docs/api-errors"],
           "evidence_summary": "Gemini TTS uses POST /v1beta/interactions with audio response_format and generation_config.speech_config."
@@ -589,6 +606,11 @@
           "required_body_fields": ["model", "prompt"],
           "allowed_body_fields": ["model", "prompt", "lyrics", "stream", "output_format", "audio_setting", "lyrics_optimizer", "is_instrumental", "audio_url", "audio_base64", "cover_feature_id"],
           "body_field_types": { "model": ["string"], "prompt": ["string"], "lyrics": ["string"], "stream": ["boolean"], "output_format": ["string"], "audio_setting": ["object"], "lyrics_optimizer": ["boolean"], "is_instrumental": ["boolean"], "audio_url": ["string"], "audio_base64": ["string"], "cover_feature_id": ["string"] },
+          "minimax_music": {
+            "cover_model_ids": ["music-cover", "music-cover-free"],
+            "cover_reference_fields": ["audio_url", "audio_base64", "cover_feature_id"],
+            "non_instrumental_requires_lyrics_or_optimizer": true
+          },
           "success_fixture": { "data": { "audio": "494433", "status": 2 }, "trace_id": "minimax_music_mock_1", "base_resp": { "status_code": 0, "status_msg": "success" } },
           "official_sources": ["https://platform.minimax.io/docs/api-reference/music-generation"],
           "evidence_summary": "MiniMax music generation uses POST /v1/music_generation and returns audio/status with base_resp."

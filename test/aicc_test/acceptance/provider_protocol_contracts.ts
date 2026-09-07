@@ -59,6 +59,18 @@ export type ProviderProtocolContract = {
     string,
     Array<"string" | "number" | "boolean" | "array" | "object">
   >;
+  generation_config?: {
+    allowed_fields: string[];
+    thinking_level_values?: string[];
+  };
+  thinking?: {
+    allowed_types: string[];
+  };
+  minimax_music?: {
+    cover_model_ids: string[];
+    cover_reference_fields: string[];
+    non_instrumental_requires_lyrics_or_optimizer: boolean;
+  };
   stream_protocol?:
     | "openai_responses"
     | "openai_chat"
@@ -333,6 +345,62 @@ export function validateProviderProtocolCatalog(
         ) {
           throw new Error(
             `${id}.body_field_types.${field} contains invalid type`,
+          );
+        }
+      }
+      if (contract.generation_config !== undefined) {
+        if (!allowed.has("generation_config")) {
+          throw new Error(
+            `${id}.generation_config is declared but generation_config is not an allowed body field`,
+          );
+        }
+        const generationConfig = object(
+          contract.generation_config,
+          `${id}.generation_config`,
+        );
+        stringArray(
+          generationConfig.allowed_fields,
+          `${id}.generation_config.allowed_fields`,
+        );
+        if (generationConfig.thinking_level_values !== undefined) {
+          stringArray(
+            generationConfig.thinking_level_values,
+            `${id}.generation_config.thinking_level_values`,
+          );
+        }
+      }
+      if (contract.thinking !== undefined) {
+        if (!allowed.has("thinking")) {
+          throw new Error(
+            `${id}.thinking is declared but thinking is not an allowed body field`,
+          );
+        }
+        const thinking = object(contract.thinking, `${id}.thinking`);
+        stringArray(thinking.allowed_types, `${id}.thinking.allowed_types`);
+      }
+      if (contract.minimax_music !== undefined) {
+        const music = object(contract.minimax_music, `${id}.minimax_music`);
+        stringArray(
+          music.cover_model_ids,
+          `${id}.minimax_music.cover_model_ids`,
+        );
+        const referenceFields = stringArray(
+          music.cover_reference_fields,
+          `${id}.minimax_music.cover_reference_fields`,
+        );
+        for (const field of referenceFields) {
+          if (!allowed.has(field)) {
+            throw new Error(
+              `${id}.minimax_music cover reference field ${field} is not allowed`,
+            );
+          }
+        }
+        if (
+          typeof music.non_instrumental_requires_lyrics_or_optimizer !==
+            "boolean"
+        ) {
+          throw new Error(
+            `${id}.minimax_music.non_instrumental_requires_lyrics_or_optimizer must be a boolean`,
           );
         }
       }
@@ -776,13 +844,13 @@ function validateNestedProviderBody(
   if (
     contract.operation === "messages.create" && Array.isArray(body.messages)
   ) {
-    validateClaudeMessages(body, errors);
+    validateClaudeMessages(contract, body, errors);
   }
   if (contract.operation === "interactions.create") {
     if (Array.isArray(body.input)) {
       validateGeminiInteractionInput(body.input, errors);
     }
-    validateGeminiInteractionConfig(body, errors);
+    validateGeminiInteractionConfig(contract, body, errors);
   }
 
   for (
@@ -802,20 +870,18 @@ function validateNestedProviderBody(
       errors.push(`body field ${field} must be a positive integer`);
     }
   }
-  if (contract.id === "minimax.music-generation.v1") {
+  if (contract.minimax_music) {
     const model = String(body.model ?? "");
-    const isCover = model === "music-cover" || model === "music-cover-free";
+    const isCover = contract.minimax_music.cover_model_ids.includes(model);
     if (isCover) {
-      const references = [
-        body.audio_url,
-        body.audio_base64,
-        body.cover_feature_id,
-      ]
+      const references = contract.minimax_music.cover_reference_fields
+        .map((field) => body[field])
         .filter((value) => typeof value === "string" && value.length > 0);
       if (references.length !== 1) {
         errors.push("MiniMax cover music requires exactly one audio reference");
       }
     } else if (
+      contract.minimax_music.non_instrumental_requires_lyrics_or_optimizer &&
       body.is_instrumental !== true && body.lyrics_optimizer !== true &&
       (typeof body.lyrics !== "string" || !body.lyrics.trim())
     ) {
@@ -976,6 +1042,7 @@ function validateOpenAiChatMessages(
 }
 
 function validateClaudeMessages(
+  contract: ProviderProtocolContract,
   body: Record<string, unknown>,
   errors: string[],
 ): void {
@@ -1065,13 +1132,16 @@ function validateClaudeMessages(
     );
   }
   const thinking = recordValue(body.thinking);
+  const allowedThinkingTypes = contract.thinking?.allowed_types;
   if (
-    String(body.model ?? "").startsWith("claude-") &&
-    String(body.model ?? "").split("-").includes("5") &&
-    thinking?.type === "enabled"
+    thinking?.type !== undefined &&
+    allowedThinkingTypes !== undefined &&
+    !allowedThinkingTypes.includes(String(thinking.type))
   ) {
     errors.push(
-      "body field thinking.type=enabled is invalid for Claude 5; use adaptive thinking",
+      `body field thinking.type=${thinking.type} is invalid for ${contract.id}; expected ${
+        allowedThinkingTypes.join("|")
+      }`,
     );
   }
 }
@@ -1151,6 +1221,7 @@ function validateGeminiInteractionInput(
 }
 
 function validateGeminiInteractionConfig(
+  contract: ProviderProtocolContract,
   body: Record<string, unknown>,
   errors: string[],
 ): void {
@@ -1158,19 +1229,7 @@ function validateGeminiInteractionConfig(
   if (body.generation_config !== undefined && !generation) {
     errors.push("body field generation_config must be an object");
   }
-  const generationKeys = new Set([
-    "image_config",
-    "max_output_tokens",
-    "seed",
-    "speech_config",
-    "stop_sequences",
-    "thinking_budget",
-    "thinking_level",
-    "thinking_summaries",
-    "tool_choice",
-    "transcription_config",
-    "video_config",
-  ]);
+  const generationKeys = new Set(contract.generation_config?.allowed_fields);
   for (const key of Object.keys(generation ?? {})) {
     if (!generationKeys.has(key)) {
       errors.push(
@@ -1178,32 +1237,15 @@ function validateGeminiInteractionConfig(
       );
     }
   }
-  const model = String(body.model ?? "");
-  if (
-    model.startsWith("gemini-3") && generation?.thinking_budget !== undefined
-  ) {
-    errors.push(
-      "body field generation_config.thinking_budget is invalid for Gemini 3; use thinking_level",
-    );
-  }
-  if (
-    model.startsWith("gemini-3") && generation?.thinking_level !== undefined
-  ) {
-    const allowed = gemini3ThinkingLevels(model);
+  if (generation?.thinking_level !== undefined) {
+    const allowed = new Set(contract.generation_config?.thinking_level_values);
     if (!allowed.has(String(generation.thinking_level))) {
       errors.push(
-        `body field generation_config.thinking_level=${generation.thinking_level}; ${model} supports ${
+        `body field generation_config.thinking_level=${generation.thinking_level}; contract ${contract.id} supports ${
           [...allowed].join("|")
         }`,
       );
     }
-  }
-  if (
-    model.startsWith("gemini-2.5") && generation?.thinking_level !== undefined
-  ) {
-    errors.push(
-      "body field generation_config.thinking_level is invalid for Gemini 2.5; use thinking_budget",
-    );
   }
   const formats = Array.isArray(body.response_format)
     ? body.response_format
@@ -1271,21 +1313,6 @@ function validateGeminiInteractionConfig(
       ].includes(String(format.mime_type))
     ) errors.push(`${path}.mime_type is invalid for Gemini audio output`);
   });
-}
-
-function gemini3ThinkingLevels(model: string): Set<string> {
-  if (model === "gemini-3-pro-preview") return new Set(["low", "high"]);
-  if (model === "gemini-3.1-flash-lite-image") {
-    return new Set(["minimal", "high"]);
-  }
-  if (
-    ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.1-pro-preview"].includes(
-      model,
-    )
-  ) {
-    return new Set(["low", "medium", "high"]);
-  }
-  return new Set(["minimal", "low", "medium", "high"]);
 }
 
 export function validateProviderSuccessFixture(

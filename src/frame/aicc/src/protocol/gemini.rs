@@ -935,7 +935,7 @@ fn apply_interaction_parameters(
             )));
         }
         let value = if name == "generation_config" {
-            normalize_generation_config(body.get("model").and_then(Value::as_str), value)?
+            normalize_generation_config(value)?
         } else {
             value.clone()
         };
@@ -944,10 +944,7 @@ fn apply_interaction_parameters(
     Ok(())
 }
 
-fn normalize_generation_config(model: Option<&str>, value: &Value) -> ProtocolResultValue<Value> {
-    if !is_gemini3_model(model) {
-        return Ok(value.clone());
-    }
+fn normalize_generation_config(value: &Value) -> ProtocolResultValue<Value> {
     let mut generation = value
         .as_object()
         .ok_or_else(|| {
@@ -958,20 +955,14 @@ fn normalize_generation_config(model: Option<&str>, value: &Value) -> ProtocolRe
         if !generation.contains_key("thinking_level") {
             generation.insert(
                 "thinking_level".to_string(),
-                Value::String(gemini3_thinking_level_from_budget(&budget)?),
+                Value::String(gemini_thinking_level_from_budget(&budget)?),
             );
         }
     }
     Ok(Value::Object(generation))
 }
 
-fn is_gemini3_model(model: Option<&str>) -> bool {
-    model
-        .map(|model| model.to_ascii_lowercase().starts_with("gemini-3"))
-        .unwrap_or(false)
-}
-
-fn gemini3_thinking_level_from_budget(value: &Value) -> ProtocolResultValue<String> {
+fn gemini_thinking_level_from_budget(value: &Value) -> ProtocolResultValue<String> {
     let budget = value.as_i64().ok_or_else(|| {
         ProtocolError::invalid_request("Gemini thinking_budget must be an integer")
     })?;
@@ -996,7 +987,6 @@ fn validate_interaction_body(body: &Map<String, Value>) -> ProtocolResultValue<(
             "seed",
             "speech_config",
             "stop_sequences",
-            "thinking_budget",
             "thinking_level",
             "thinking_summaries",
             "tool_choice",
@@ -1007,13 +997,6 @@ fn validate_interaction_body(body: &Map<String, Value>) -> ProtocolResultValue<(
             return Err(ProtocolError::invalid_request(format!(
                 "Gemini generation_config field `{key}` is not defined by the v1beta protocol"
             )));
-        }
-        if is_gemini3_model(body.get("model").and_then(Value::as_str))
-            && generation.contains_key("thinking_budget")
-        {
-            return Err(ProtocolError::invalid_request(
-                "Gemini 3 generation_config must use thinking_level instead of thinking_budget",
-            ));
         }
     }
     if let Some(format) = body.get("response_format") {
@@ -2692,14 +2675,39 @@ mod tests {
     }
 
     #[test]
-    fn interaction_accepts_gemini_25_thinking_budget() {
-        let body =
-            json!({"model": "gemini-2.5-flash", "generation_config": {"thinking_budget": 1024}});
-        validate_interaction_body(body.as_object().unwrap()).unwrap();
+    fn interaction_lowers_gemini_25_thinking_budget() {
+        let request = LlmChatInvokeRequest::new(
+            "ignored@google",
+            vec![AiMessage::text(AiRole::User, "think")],
+        );
+        let input = CodecInput {
+            canonical_request: AiccCall::ChatCompletionsCreate(request),
+            resolved_parameters: BTreeMap::from([
+                (
+                    "provider_model_id".to_string(),
+                    json!("gemini-2.5-flash-lite"),
+                ),
+                (
+                    "generation_config".to_string(),
+                    json!({"thinking_budget": 24576}),
+                ),
+            ]),
+        };
+        let value = encode_interaction(
+            &CodecCall {
+                api_type: ApiType::Llm,
+                input: &input,
+                context: &context(),
+            },
+            ApiType::Llm,
+        )
+        .unwrap();
+        assert_eq!(value["generation_config"]["thinking_level"], "high");
+        assert!(value["generation_config"].get("thinking_budget").is_none());
     }
 
     #[test]
-    fn interaction_lowers_legacy_gemini3_thinking_budget() {
+    fn interaction_lowers_legacy_thinking_budget() {
         let request = LlmChatInvokeRequest::new(
             "ignored@google",
             vec![AiMessage::text(AiRole::User, "think")],

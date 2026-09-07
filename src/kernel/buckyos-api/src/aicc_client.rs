@@ -535,6 +535,12 @@ mod canonical_contract_tests {
         }))
         .is_err());
         assert!(QueryRouteTraceRequest::from_json(json!({"unknown": true})).is_err());
+        let trace_query = QueryRouteTraceRequest::from_json(json!({
+            "api_type": "llm",
+            "limit": 5
+        }))
+        .unwrap();
+        assert_eq!(trace_query.api_types, vec!["llm"]);
 
         let provider_weights = BTreeMap::from([("openai-main".to_string(), 1.5)]);
         let request = RoutingUpdateRequest::new(12, provider_weights.clone());
@@ -4127,7 +4133,37 @@ pub struct ProviderRefreshModelsResponse {
 }
 
 impl_request_json!(QueryUsageRequest);
-impl_request_json!(QueryRouteTraceRequest);
+
+impl QueryRouteTraceRequest {
+    pub fn from_json(mut value: Value) -> std::result::Result<Self, RPCErrors> {
+        if let Value::Object(object) = &mut value {
+            if let Some(api_type) = object.remove("api_type") {
+                let api_types = object
+                    .entry("api_types")
+                    .or_insert_with(|| Value::Array(Vec::new()));
+                match (api_types, api_type) {
+                    (Value::Array(api_types), Value::String(api_type)) => {
+                        api_types.push(Value::String(api_type));
+                    }
+                    (Value::Array(api_types), Value::Array(values)) => {
+                        api_types.extend(values);
+                    }
+                    _ => {
+                        return Err(RPCErrors::ParseRequestError(
+                            "Failed to parse QueryRouteTraceRequest: api_type must be a string or array when used as legacy alias".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        serde_json::from_value(value).map_err(|error| {
+            RPCErrors::ParseRequestError(format!(
+                "Failed to parse QueryRouteTraceRequest: {}",
+                error
+            ))
+        })
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

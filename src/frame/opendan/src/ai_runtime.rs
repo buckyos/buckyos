@@ -22,10 +22,10 @@ use std::sync::Arc;
 use ::kRPC::RPCErrors;
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, AiccClient, AiccExecutionMode, AiMethodStatus, AiResponse, AiToolCall,
-    AiToolSpec, HelperModelRequirement, KEventClient, LlmChatHelperRequest, LlmResponseFormat,
-    ModelDisable, MsgCenterClient, TaskDispatcherClient, TaskManagerClient, TaskOutcome,
-    TypedTaskData,
+    get_buckyos_api_runtime, AiMethodStatus, AiResponse, AiToolCall, AiToolSpec, AiccClient,
+    AiccExecutionMode, HelperModelRequirement, KEventClient, LlmChatHelperRequest,
+    LlmResponseFormat, ModelDisable, MsgCenterClient, TaskDispatcherClient, TaskManagerClient,
+    TaskOutcome, TypedTaskData,
 };
 use log::warn;
 use serde_json::{json, Value};
@@ -93,7 +93,7 @@ impl LlmClient for AiccLlmClient {
             messages,
             model_alias,
             fallbacks,
-            temperature,
+            temperature: _,
             max_completion_tokens,
             force_json,
             json_schema,
@@ -152,7 +152,7 @@ impl LlmClient for AiccLlmClient {
             messages,
             tools: advertised_tools,
             response_format,
-            temperature: temperature.map(f64::from),
+            temperature: None,
             top_p: None,
             max_output_tokens: max_completion_tokens.map(u64::from),
             seed: None,

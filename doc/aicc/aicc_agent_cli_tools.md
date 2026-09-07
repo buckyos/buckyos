@@ -38,7 +38,7 @@ CLI 不重新定义 AI 协议。每个命令只负责：
 3. 调用 `/kapi/aicc` 对应 method。
 4. 把 artifacts / 文本结果落到本地文件 / stdout。
 
-> 调用路径：文生图走 `helper.text_to_image`，由 Helper 完成路由和 `images.generate`；其余媒体命令在使用逻辑模型时先调用 `route.resolve`，再把返回的 `exact_model` 传给对应 typed inference。显式传入精确模型时跳过路由。CLI 不构造已删除的 all-in-one `AiMethodRequest`。
+> 调用路径：CLI 默认走 helper 层（如文生图走 `helper.text_to_image`），由 helper 内部 `route.resolve` + typed inference（`images.generate`）完成；传入的是逻辑模型名。需要强制指定精确模型或调试两阶段时，可显式 `route.resolve` 再 `images.generate(exact_model=...)`。CLI 不构造已删除的 all-in-one `AiMethodRequest`。
 
 ---
 

@@ -133,7 +133,6 @@ impl ClaudeMessagesCodec {
         }
         apply_resolved_parameters(&mut body, &call.input.resolved_parameters)?;
         apply_response_format(&mut body, request.response_format.as_ref())?;
-        normalize_adaptive_thinking(&mut body);
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -411,33 +410,6 @@ fn apply_response_format(
         json!({"type": "json_schema", "schema": schema.schema}),
     );
     Ok(())
-}
-
-fn normalize_adaptive_thinking(body: &mut Map<String, Value>) {
-    let is_claude_5 = body
-        .get("model")
-        .and_then(Value::as_str)
-        .and_then(|model| model.strip_prefix("claude-"))
-        .is_some_and(|model| model.split('-').nth(1) == Some("5"));
-    if !is_claude_5
-        || body
-            .get("thinking")
-            .and_then(Value::as_object)
-            .and_then(|thinking| thinking.get("type"))
-            .and_then(Value::as_str)
-            != Some("enabled")
-    {
-        return;
-    }
-    body.insert("thinking".to_string(), json!({"type": "adaptive"}));
-    let output_config = body
-        .entry("output_config".to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    if let Some(output_config) = output_config.as_object_mut() {
-        output_config
-            .entry("effort".to_string())
-            .or_insert_with(|| Value::String("medium".to_string()));
-    }
 }
 
 fn required_string(parameters: &BTreeMap<String, Value>, key: &str) -> ProtocolResultValue<String> {
@@ -1905,7 +1877,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_structured_output_and_normalizes_claude_5_thinking() {
+    fn maps_structured_output_and_configured_adaptive_thinking() {
         let mut request = LlmChatInvokeRequest::new(
             "ignored@instance",
             vec![AiMessage::text(AiRole::User, "return JSON")],
@@ -1920,7 +1892,7 @@ mod tests {
             request,
             &[
                 ("provider_model_id", json!("claude-sonnet-5")),
-                ("thinking", json!({"type":"enabled","budget_tokens":1024})),
+                ("thinking", json!({"type":"adaptive"})),
                 ("output_config", json!({"effort":"high"})),
             ],
         );

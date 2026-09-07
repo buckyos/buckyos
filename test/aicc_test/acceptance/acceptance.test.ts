@@ -2463,6 +2463,56 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
     "outputs is not an Interactions response field",
     "steps must be a non-empty array",
   ]);
+  const geminiInteraction = protocolContract(
+    catalog,
+    "google-gemini",
+    "gemini.interactions.v1beta",
+  );
+  const geminiRequest = (generation_config: Record<string, unknown>) =>
+    validateProviderRequest(geminiInteraction, {
+      method: "POST",
+      pathname: "/v1beta/interactions",
+      query: new URLSearchParams(),
+      headers: new Headers({
+        "content-type": "application/json",
+        "x-goog-api-key": "test-key",
+      }),
+      body: {
+        model: "gemini-2.5-flash",
+        input: ["hello"],
+        generation_config,
+      },
+    });
+  assert.deepEqual(geminiRequest({ thinking_level: "high" }), []);
+  assert.deepEqual(geminiRequest({ thinking_budget: 24576 }), [
+    "body field generation_config.thinking_budget is not defined by Gemini v1beta",
+  ]);
+  const claudeMessages = protocolContract(
+    catalog,
+    "claude",
+    "anthropic.messages.2023-06-01",
+  );
+  const claudeRequest = (thinking: Record<string, unknown>) =>
+    validateProviderRequest(claudeMessages, {
+      method: "POST",
+      pathname: "/v1/messages",
+      query: new URLSearchParams(),
+      headers: new Headers({
+        "content-type": "application/json",
+        "x-api-key": "test-key",
+        "anthropic-version": "2023-06-01",
+      }),
+      body: {
+        model: "claude-sonnet-5",
+        max_tokens: 256,
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        thinking,
+      },
+    });
+  assert.deepEqual(claudeRequest({ type: "adaptive" }), []);
+  assert.deepEqual(claudeRequest({ type: "enabled", budget_tokens: 1024 }), [
+    "body field thinking.type=enabled is invalid for anthropic.messages.2023-06-01; expected adaptive",
+  ]);
   const minimaxMusic = protocolContract(
     catalog,
     "minimax",
@@ -2490,6 +2540,18 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
       model: "music-3.0",
       prompt: "calm instrumental",
       is_instrumental: true,
+    }),
+    [],
+  );
+  assert.deepEqual(
+    musicRequest({ model: "music-cover", prompt: "cover this" }),
+    ["MiniMax cover music requires exactly one audio reference"],
+  );
+  assert.deepEqual(
+    musicRequest({
+      model: "music-cover",
+      prompt: "cover this",
+      audio_url: "https://example.invalid/source.mp3",
     }),
     [],
   );

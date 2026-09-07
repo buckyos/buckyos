@@ -97,7 +97,7 @@ Deno.test("callAicc resolves a logical model then sends a canonical typed reques
   assertEquals(aiResponseArtifacts(result.summary!).length, 1);
 });
 
-Deno.test("callAicc preserves TaskMgr 2.0 async completion", async () => {
+Deno.test("callAicc preserves exact model debug override", async () => {
   let routeCalled = false;
   const runtime = runtimeWithClients({
     routeResolve: () => {
