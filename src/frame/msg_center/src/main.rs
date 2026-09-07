@@ -649,9 +649,23 @@ async fn load_zone_user_contact_seeds() -> Result<Vec<ZoneUserContactSeed>> {
 
 async fn sync_zone_user_contacts_once(center: &MessageCenter, raw_settings: &Value) -> Result<()> {
     let contacts = load_zone_user_contact_seeds().await?;
+    sync_zone_user_contacts(center, contacts, raw_settings).await
+}
+
+async fn sync_zone_user_contacts(
+    center: &MessageCenter,
+    contacts: Vec<ZoneUserContactSeed>,
+    raw_settings: &Value,
+) -> Result<()> {
     let mut owner_scopes: Vec<Option<DID>> = vec![None];
-    for owner in collect_sync_owner_dids(raw_settings) {
-        owner_scopes.push(Some(owner));
+    for owner in contacts
+        .iter()
+        .map(|contact| contact.did.clone())
+        .chain(collect_sync_owner_dids(raw_settings))
+    {
+        if !owner_scopes.contains(&Some(owner.clone())) {
+            owner_scopes.push(Some(owner));
+        }
     }
 
     for owner in owner_scopes {

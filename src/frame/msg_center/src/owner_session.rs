@@ -14,11 +14,11 @@ use buckyos_api::{
     get_buckyos_api_runtime, validate_verify_hub_token_claims, MailboxRecord,
     MsgCenterCreateSessionReq, OwnerSessionState, SessionLifecycle, SessionListLifecycleFilter,
     SessionListOrder, SessionMessagePage, SessionSummary, SessionSummaryPage, TokenPrincipalKind,
-    TokenUse, UiSessionStateEntry,
+    TokenUse, UiSessionStateEntry, UserPrivateProfile,
 };
 use kRPC::{RPCContext, RPCErrors, RPCSessionToken};
 use log::warn;
-use name_lib::DID;
+use name_lib::{AgentDocument, DID};
 use ndn_lib::MsgObjKind;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -36,6 +36,8 @@ const MAX_SESSION_ID_CHARS: usize = 200;
 #[async_trait]
 pub trait SessionTokenVerifier: Send + Sync {
     async fn verify(&self, token: &str) -> std::result::Result<RPCSessionToken, RPCErrors>;
+    async fn resolve_user_did(&self, user_id: &str) -> std::result::Result<DID, RPCErrors>;
+    async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors>;
 }
 
 pub struct RuntimeSessionTokenVerifier;
@@ -46,6 +48,48 @@ impl SessionTokenVerifier for RuntimeSessionTokenVerifier {
         get_buckyos_api_runtime()?
             .verify_trusted_session_token(token)
             .await
+    }
+
+    async fn resolve_user_did(&self, user_id: &str) -> std::result::Result<DID, RPCErrors> {
+        let client = get_buckyos_api_runtime()?
+            .get_system_config_client()
+            .await?;
+        let value = client
+            .get(&format!("users/{}/profile", user_id))
+            .await
+            .map_err(|error| permission_denied(error.to_string()))?;
+        let profile: UserPrivateProfile = serde_json::from_str(&value.value)
+            .map_err(|error| permission_denied(format!("invalid user profile: {}", error)))?;
+        Ok(profile.did)
+    }
+
+    async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors> {
+        let client = get_buckyos_api_runtime()?
+            .get_system_config_client()
+            .await?;
+        for agent_id in client
+            .list("agents")
+            .await
+            .map_err(|error| permission_denied(error.to_string()))?
+        {
+            let value = client
+                .get(&format!("agents/{}/doc", agent_id))
+                .await
+                .map_err(|error| permission_denied(error.to_string()))?;
+            let doc: AgentDocument = serde_json::from_str(&value.value)
+                .map_err(|error| permission_denied(format!("invalid agent document: {}", error)))?;
+            if &doc.id == did {
+                let settings = client
+                    .get(&format!("agents/{}/settings", agent_id))
+                    .await
+                    .map_err(|error| permission_denied(error.to_string()))?;
+                let settings: Value = serde_json::from_str(&settings.value).map_err(|error| {
+                    permission_denied(format!("invalid agent settings: {}", error))
+                })?;
+                return Ok(settings.get("state").and_then(Value::as_str) != Some("deleted"));
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -85,13 +129,7 @@ impl Default for TokenVerifierSlot {
 pub struct CallerIdentity {
     pub user_id: String,
     pub principal_kind: TokenPrincipalKind,
-}
-
-impl CallerIdentity {
-    /// The DID a zone user acts as: `did:bns:{user_id}`.
-    pub fn user_did(&self) -> DID {
-        DID::new("bns", &self.user_id)
-    }
+    pub user_did: Option<DID>,
 }
 
 fn permission_denied(reason: impl Into<String>) -> RPCErrors {
@@ -178,17 +216,34 @@ impl MessageCenter {
             .clone()
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| permission_denied("session token has no subject"))?;
+        let user_did = if claims.principal_kind == TokenPrincipalKind::User {
+            Some(
+                self.token_verifier
+                    .get()
+                    .resolve_user_did(&user_id)
+                    .await
+                    .map_err(|error| {
+                        permission_denied(format!("cannot resolve user identity: {}", error))
+                    })?,
+            )
+        } else {
+            None
+        };
         Ok(Some(CallerIdentity {
             user_id,
             principal_kind: claims.principal_kind,
+            user_did,
         }))
     }
 
     /// A zone user may observe a mailbox owner other than themselves only when
     /// the owner is a zone-hosted non-user identity (an agent such as
     /// `did:web:jarvis.<zone>`). Other users' mailboxes are never readable.
-    fn user_may_observe(&self, owner: &DID) -> bool {
-        owner.method != "bns" && self.is_local_recipient(owner)
+    async fn user_may_observe(&self, owner: &DID) -> std::result::Result<bool, RPCErrors> {
+        if !self.is_local_recipient(owner) {
+            return Ok(false);
+        }
+        self.token_verifier.get().is_zone_agent(owner).await
     }
 
     /// Read access of the caller to `owner`'s mailbox / sessions.
@@ -201,7 +256,9 @@ impl MessageCenter {
             None => Ok(()),
             Some(caller) => match caller.principal_kind {
                 TokenPrincipalKind::User => {
-                    if &caller.user_did() == owner || self.user_may_observe(owner) {
+                    if caller.user_did.as_ref() == Some(owner)
+                        || self.user_may_observe(owner).await?
+                    {
                         Ok(())
                     } else {
                         Err(permission_denied(format!(
@@ -227,7 +284,7 @@ impl MessageCenter {
             None => Ok(()),
             Some(caller) => match caller.principal_kind {
                 TokenPrincipalKind::User => {
-                    if &caller.user_did() == owner {
+                    if caller.user_did.as_ref() == Some(owner) {
                         Ok(())
                     } else {
                         Err(permission_denied(format!(

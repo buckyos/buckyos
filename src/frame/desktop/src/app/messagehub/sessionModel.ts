@@ -12,7 +12,7 @@ export const viewerSessionKey = (context: MessageHubContext, sessionId: string) 
 export const isActionMessage = (message: MessageObject) => message.kind === 'event' && message.content.machine?.intent === 'buckyos.action_log'
 export function isMessageActivity(message: MessageObject) {
   if (isActionMessage(message) || message.ui_item_kind === 'status') return false
-  return message.kind === 'chat' || message.kind === 'group_msg' || (message.kind === 'deliver' && Boolean(message.content.content.trim() || message.content.refs?.some(ref => ref.role === 'output')))
+  return message.kind === 'chat' || message.kind === 'group_msg' || (message.kind === 'deliver' && Boolean(message.content.content?.trim() || message.content.refs?.some(ref => ref.role === 'output')))
 }
 export function relativeActivity(time: number | undefined, now: number, justNow: string) {
   if (!time || !Number.isFinite(time)) return '—'

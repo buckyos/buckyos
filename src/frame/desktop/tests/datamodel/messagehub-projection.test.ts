@@ -34,7 +34,7 @@ Deno.test('tunnel endpoints canonicalize through contact bindings and keep a tun
   equal(parseTunnelDid(peerEndpoint), { accountId: '5397330802', accountType: 'user', tunnelInstanceId: 'tg-main-tunnel' })
   equal(canonicalizeDid(peerEndpoint, contacts), peerEndpoint)
   const tg = summary('tg:lzc_jarvis:5397330802', { box_kind: 'REQUEST_BOX', from: peerEndpoint, to: owner, msg: chat(peerEndpoint, [owner], 'hello', 20) }, { request_count: 1, last_activity_ms: 20 })
-  const projected = projectOwner({ ownerDid: owner, summaries: [tg], contacts, groups: [], agentDids: [], zoneHost: 'test.buckyos.io', personalTitles: {}, policies: {}, labels })
+  const projected = projectOwner({ ownerDid: owner, summaries: [tg], contacts, groups: [], agentDids: [], personalTitles: {}, policies: {}, labels })
   const session = projected.sessions[0]
   equal(session.entityId, peerEndpoint)
   equal(session.binding.kind, 'tunnel')
@@ -55,7 +55,7 @@ Deno.test('zone agents, unassigned sessions and previews follow the data model r
   const dm = summary(`dm:${agent}`, { box_kind: 'INBOX', from: agent, to: owner, msg: chat(agent, [owner], 'line one\nline two', 30) }, { last_activity_ms: 30, unread_count: 2 })
   const orphan = summary('mystery', { box_kind: 'SENT', from: owner, to: 'did:bns:a', msg: chat(owner, ['did:bns:a', 'did:bns:b'], 'x', 12) })
   const empty = summary('uuid-2', null, { last_activity_ms: 0, state: { owner, session_id: 'uuid-2', lifecycle: 'active', registered: true, peer_did: agent, title: 'Plan', created_at_ms: 40, updated_at_ms: 40 } })
-  const projected = projectOwner({ ownerDid: owner, summaries: [dm, orphan, empty], contacts, groups: [], agentDids: [], zoneHost: 'test.buckyos.io', personalTitles: {}, policies: {}, labels })
+  const projected = projectOwner({ ownerDid: owner, summaries: [dm, orphan, empty], contacts, groups: [], agentDids: [agent], personalTitles: {}, policies: {}, labels })
   const agentEntity = projected.entities.find(item => item.id === agent)!
   equal(agentEntity.type, 'agent')
   equal(agentEntity.unreadCount, 2)
@@ -99,4 +99,36 @@ Deno.test('timeline items keep record context, placeholders and upsert / remove 
   equal(recordMeta(read.messages[1])?.recipientState, 'READ')
   equal(removeMessage(read, 'r0').messages.length, 2)
   equal(removeMessage(read, 'nope') === read, true)
+})
+
+Deno.test('attachment-only protocol objects survive timeline loading and session previews', () => {
+  const message = chat(owner, [peerEndpoint], '', 10, {
+    content: { format: 'text/plain', refs: [{ role: 'input', label: 'photo.png', target: { type: 'data_obj', obj_id: 'cyfile:photo' } }] },
+  })
+  const restored: MessageObject = JSON.parse(JSON.stringify(message))
+  const item: SessionMessageItem = { record_id: 'photo-record', msg_id: 'photo-message', direction: 'out', box_kind: 'SENT', sort_key: 10, from: owner, to: peerEndpoint, msg: restored }
+  const projectedMessage = itemToMessage(item, owner, 'photo-session', 'You', 'Unavailable')
+  equal(projectedMessage.content.content, undefined)
+  equal(projectedMessage.content.refs, message.content.refs)
+  equal(summarizeMessage(projectedMessage, labels), '[Attachment] photo.png')
+  equal(summarizeMessage({ ...restored, content: { ...restored.content, format: 'image/png' } }, labels), '[Image] photo.png')
+  equal(summarizeMessage({ ...restored, content: { ...restored.content, content: '  Caption\nmore text' } }, labels), 'Caption')
+  equal(summarizeMessage({ ...restored, content: {} }, labels), '')
+  const projected = projectOwner({ ownerDid: owner, summaries: [summary('photo-session', { box_kind: 'SENT', from: owner, to: peerEndpoint, msg: restored })], contacts, groups: [], agentDids: [], personalTitles: {}, policies: {}, labels })
+  equal(projected.sessions[0].lastMessage?.text, '[Attachment] photo.png')
+})
+
+Deno.test('web DID zone users are people and unknown local DIDs do not become agents', () => {
+  const lucy = 'did:web:lucy.test.buckyos.io'
+  const unknown = 'did:web:unregistered.test.buckyos.io'
+  const agent = 'did:web:jarvis.test.buckyos.io'
+  const userContact: Contact = { ...contacts[1], did: lucy, name: 'Lucy' }
+  const projected = projectOwner({ ownerDid: owner, summaries: [summary('unknown-session', { box_kind: 'SENT', from: owner, to: unknown, msg: chat(owner, [unknown], 'hi', 1) })], contacts: [...contacts, userContact], groups: [], agentDids: [agent], personalTitles: {}, policies: {}, labels })
+  const entity = projected.entities.find(item => item.id === lucy)!
+  equal(entity.type, 'person')
+  equal(entity.domain, 'managed')
+  equal(projected.entities.find(item => item.id === agent)?.type, 'agent')
+  equal(projected.entities.find(item => item.id === unknown)?.type, 'person')
+  const own = projectOwner({ ownerDid: lucy, summaries: [], contacts: [userContact], groups: [], agentDids: [], personalTitles: {}, policies: {}, labels })
+  equal(own.entities.some(item => item.id === lucy), false)
 })

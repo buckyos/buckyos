@@ -2019,6 +2019,8 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 
     struct StaticKeyVerifier {
         key: DecodingKey,
+        users: HashMap<String, DID>,
+        agents: Vec<DID>,
     }
 
     #[async_trait::async_trait]
@@ -2027,6 +2029,17 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             let mut parsed = RPCSessionToken::from_string(token)?;
             parsed.verify_by_key(&self.key)?;
             Ok(parsed)
+        }
+
+        async fn resolve_user_did(&self, user_id: &str) -> std::result::Result<DID, RPCErrors> {
+            self.users
+                .get(user_id)
+                .cloned()
+                .ok_or_else(|| RPCErrors::KeyNotExist(format!("users/{}/profile", user_id)))
+        }
+
+        async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors> {
+            Ok(self.agents.contains(did))
         }
     }
 
@@ -2071,14 +2084,230 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     }
 
     #[tokio::test]
-    async fn zone_user_tokens_scope_reads_and_writes_to_the_owner() {
-        let (center, _tmp) = new_center("auth").await;
+    async fn web_did_user_can_read_existing_requests_mark_read_and_reply_as_self() {
+        let (center, _tmp) = new_center("web-user-auth").await;
+        let devtest = DID::new("bns", "devtest");
+        let lucy = DID::new("web", "lucy.test.buckyos.io");
+        let wrong_lucy = DID::new("bns", "lucy");
+        let group = DID::new("web", "team.test.buckyos.io");
         center.set_token_verifier(Arc::new(StaticKeyVerifier {
             key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
+            users: HashMap::from([
+                ("devtest".into(), devtest.clone()),
+                ("lucy".into(), lucy.clone()),
+            ]),
+            agents: vec![],
         }));
+        center.register_local_recipients([devtest.clone(), lucy.clone(), group.clone()]);
+        center.set_message_hub_did(DID::new("web", "msg-hub.test.buckyos.io"));
+        let mut message = chat_at(&devtest, vec![lucy.clone()], "Hello Lucy", 7_000_000);
+        message.thread.topic = Some("lucy-session".into());
+        let message_id = message.gen_obj_id().0;
+        inbound(&center, message, "lucy-session", "hello-lucy").await;
+
+        let page = center
+            .handle_list_sessions(
+                lucy.clone(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                user_ctx("lucy"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].request_count, 1);
+        let session_id = page.items[0].session_id.clone();
+        let timeline = center
+            .handle_list_session(
+                lucy.clone(),
+                session_id.clone(),
+                None,
+                None,
+                None,
+                None,
+                Some(false),
+                user_ctx("lucy"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(timeline.items.len(), 1);
+        assert_eq!(timeline.items[0].msg_id, message_id);
+        assert_eq!(timeline.items[0].from, devtest);
+        let record_id = timeline.items[0].record_id.clone();
+        assert!(is_denied(
+            center
+                .handle_update_record_state(
+                    record_id.clone(),
+                    RecipientState::Read,
+                    user_ctx("devtest")
+                )
+                .await
+        ));
+        let record = center
+            .handle_update_record_state(record_id, RecipientState::Read, user_ctx("lucy"))
+            .await
+            .unwrap();
+        assert_eq!(record.state, RecipientState::Read);
+        assert_eq!(record.owner, lucy);
+
+        assert!(is_denied(
+            center
+                .handle_list_sessions(
+                    lucy.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    user_ctx("devtest")
+                )
+                .await
+        ));
+        assert!(is_denied(
+            center
+                .handle_list_sessions(
+                    wrong_lucy.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    user_ctx("lucy")
+                )
+                .await
+        ));
+        assert!(is_denied(
+            center
+                .handle_list_sessions(group, None, None, None, None, None, None, user_ctx("lucy"))
+                .await
+        ));
+        assert!(is_denied(
+            center
+                .handle_list_sessions(
+                    lucy.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    user_ctx("missing-profile")
+                )
+                .await
+        ));
+
+        let mut reply = chat_at(&lucy, vec![devtest.clone()], "Hello devtest", 7_000_100);
+        reply.thread.topic = Some(session_id.clone());
+        assert!(
+            center
+                .handle_post_send(reply.clone(), None, user_ctx("lucy"))
+                .await
+                .unwrap()
+                .ok
+        );
+        reply.from = wrong_lucy;
+        assert!(is_denied(
+            center.handle_post_send(reply, None, user_ctx("lucy")).await
+        ));
+        let timeline = center
+            .handle_list_session(
+                lucy.clone(),
+                session_id,
+                None,
+                None,
+                None,
+                None,
+                Some(false),
+                user_ctx("lucy"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(timeline.items.len(), 2);
+        assert!(timeline
+            .items
+            .iter()
+            .any(|item| item.direction == SessionMessageDirection::Out && item.from == lucy));
+    }
+
+    #[tokio::test]
+    async fn zone_user_sync_delivers_to_user_inbox_and_preserves_blocks() {
+        let (center, _tmp) = new_center("zone-user-sync").await;
+        let devtest = DID::new("bns", "devtest");
+        let lucy = DID::new("web", "lucy.test.buckyos.io");
+        let contacts: Vec<_> = [devtest.clone(), lucy.clone()]
+            .into_iter()
+            .map(|did| crate::contact_mgr::ZoneUserContactSeed {
+                name: did.id.clone(),
+                did,
+                note: None,
+                bindings: vec![],
+                groups: vec![],
+                tags: vec![],
+            })
+            .collect();
+        crate::sync_zone_user_contacts(&center, contacts.clone(), &json!({}))
+            .await
+            .unwrap();
+        inbound(
+            &center,
+            chat_at(&devtest, vec![lucy.clone()], "New message", 8_000_000),
+            "sync",
+            "sync-1",
+        )
+        .await;
+        let inbox = center
+            .handle_peek_box(lucy.clone(), MailboxKind::Inbox, None, None, None, ctx())
+            .await
+            .unwrap();
+        assert_eq!(inbox.len(), 1);
+        let contact = center
+            .handle_get_contact(lucy.clone(), Some(devtest.clone()), ctx())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(contact.access_level, buckyos_api::AccessGroupLevel::Friend);
+
+        center
+            .handle_block_contact(devtest.clone(), None, Some(lucy.clone()), ctx())
+            .await
+            .unwrap();
+        crate::sync_zone_user_contacts(&center, contacts, &json!({}))
+            .await
+            .unwrap();
+        let result = center
+            .handle_dispatch(
+                chat_at(&devtest, vec![lucy.clone()], "Blocked message", 8_000_100),
+                None,
+                None,
+                ctx(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.dropped_recipients, vec![lucy.clone()]);
+        let inbox = center
+            .handle_peek_box(lucy, MailboxKind::Inbox, None, None, None, ctx())
+            .await
+            .unwrap();
+        assert_eq!(inbox.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn zone_user_tokens_scope_reads_and_writes_to_the_owner() {
+        let (center, _tmp) = new_center("auth").await;
         let alice = DID::new("bns", "alice");
         let bob = DID::new("bns", "bob");
         let agent = DID::new("web", "jarvis.zone.example");
+        center.set_token_verifier(Arc::new(StaticKeyVerifier {
+            key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
+            users: HashMap::from([("alice".into(), alice.clone()), ("bob".into(), bob.clone())]),
+            agents: vec![agent.clone()],
+        }));
         center.register_local_recipients([alice.clone(), bob.clone(), agent.clone()]);
         let peer = DID::new("bns", "auth-peer");
         for owner in [&alice, &bob, &agent] {

@@ -129,7 +129,7 @@ export class MessageHubMockStore implements MessageHubStore {
         const messages = await reader.readRange(start, 128)
         messages.forEach((message, offset) => {
           ids.add(getMessageStableId(message, start + offset))
-          if (!stored && session && isMessageActivity(message) && (!session.lastMessage || message.created_at_ms >= session.lastMessage.timestamp)) session.lastMessage = { text: message.content.content, timestamp: message.created_at_ms }
+          if (!stored && session && isMessageActivity(message) && (!session.lastMessage || message.created_at_ms >= session.lastMessage.timestamp)) session.lastMessage = { text: message.content.content ?? '', timestamp: message.created_at_ms }
         })
       }
       this.seedIds.set(id, ids)
@@ -310,7 +310,7 @@ export class MessageHubMockStore implements MessageHubStore {
     if (messages.some(item => getMessageStableId(item, 0) === getMessageStableId(message, 0))) return
     next.messages[key] = [...messages, message]
     if (!isMessageActivity(message)) return
-    if (message.created_at_ms >= session.lastActiveAt) session.lastMessage = { text: message.content.content, timestamp: message.created_at_ms }
+    if (message.created_at_ms >= session.lastActiveAt) session.lastMessage = { text: message.content.content ?? '', timestamp: message.created_at_ms }
     session.lastActiveAt = Math.max(session.lastActiveAt, message.created_at_ms)
     session.lifecycle = 'active'
     if (incoming) session.unreadCount++

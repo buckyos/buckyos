@@ -11,7 +11,7 @@
  */
 import { buckyos } from 'buckyos'
 import type { z } from 'zod'
-import { fetchAgentList, fetchUserDetail } from '../../../api/user_mgr'
+import { fetchAgentList } from '../../../api/user_mgr'
 import { dictionaries } from '../../../i18n/dictionaries'
 import type { ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
 import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
@@ -85,27 +85,6 @@ function labels(): ProjectionLabels {
   }
 }
 
-/**
- * Zone host used to recognise zone-hosted agents (`did:web:<agent>.<zone>`).
- * Behind the dev proxy the SDK's zone host is the dev origin, so the user's
- * DID document (`binded_zone_list`) is the authoritative source; the env
- * override and the SDK value are fallbacks.
- */
-async function resolveZoneHost(): Promise<string | undefined> {
-  const override = String(import.meta.env.VITE_ZONE_HOST ?? '').trim()
-  if (override) return override.replace(/^sys\./, '')
-  try {
-    const detail = await fetchUserDetail()
-    const document = detail.data?.did_document as { binded_zone_list?: unknown } | undefined
-    const zone = Array.isArray(document?.binded_zone_list) ? document?.binded_zone_list.find((item): item is string => typeof item === 'string' && item.startsWith('did:web:')) : undefined
-    if (zone) return zone.slice('did:web:'.length)
-  } catch {
-    /* fall through */
-  }
-  const sdk = buckyos.getZoneHostName()?.trim()
-  return sdk && !/^(localhost|127\.|\[?::1)/.test(sdk) ? sdk : undefined
-}
-
 function ownerToken(did: string): string {
   const parts = did.split(':')
   const method = parts[1] ?? ''
@@ -131,7 +110,6 @@ async function hashKey(input: string): Promise<string> {
 export class MessageHubApiStore implements MessageHubStore {
   readonly isMock = false
   private selfDid = ''
-  private zoneHost: string | undefined
   private owners = new Map<string, OwnerData>()
   private listeners = new Set<() => void>()
   private timeListeners = new Set<() => void>()
@@ -177,7 +155,6 @@ export class MessageHubApiStore implements MessageHubStore {
     const selfDid = await fetchOwnerDid()
     if (!selfDid) throw new MessageHubApiError('not logged in', 'permission_denied')
     this.selfDid = selfDid
-    this.zoneHost = await resolveZoneHost()
     registerObjectAccess(apiObjectAccess)
     await this.ensureOwner(this.defaultContext())
     this.notify()
@@ -324,7 +301,6 @@ export class MessageHubApiStore implements MessageHubStore {
       contacts: data.contacts,
       groups: data.groups,
       agentDids: data.agentDids,
-      zoneHost: this.zoneHost,
       personalTitles: Object.fromEntries(Object.entries(data.prefs).map(([id, prefs]) => [id, prefs.title])),
       policies: {},
       labels: labels(),

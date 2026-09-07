@@ -1,4 +1,5 @@
 import { buckyos } from 'buckyos'
+import { fetchUserDetail } from '../../../api/user_mgr'
 import type { DID, MsgObject } from '../protocol/msgobj'
 
 /**
@@ -264,11 +265,17 @@ async function call<TResult>(method: string, params: Record<string, unknown>): P
   }
 }
 
-/** Resolve the current account's owner DID (`did:bns:{user_id}`). */
 export async function fetchOwnerDid(): Promise<string | null> {
   const accountInfo = await buckyos.getAccountInfo()
   const userId = accountInfo?.user_id
-  return userId ? `did:bns:${userId}` : null
+  if (!userId) return null
+  const { data, error } = await fetchUserDetail({ userId })
+  if (error) throw classifyError(error)
+  const did = data?.local_profile?.did ?? data?.profile?.did
+  if (typeof did !== 'string' || !did.startsWith('did:')) {
+    throw new MessageHubApiError('user profile has no owner DID', 'permission_denied')
+  }
+  return did
 }
 
 export async function currentSessionToken(): Promise<string | null> {

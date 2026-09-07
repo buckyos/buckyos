@@ -15,6 +15,8 @@ ContactMgr 是 MessageCenter 消息系统的核心组件，负责管理 **身份
 4. **身份聚合**：处理多渠道账号的合并（Merge），解决数据冲突。
 5. **动态访问控制（ACL）**：基于关系（好友）或上下文（临时会话）决定入站消息进入 `INBOX / REQUEST_BOX / DROP`。
 
+启动或重载设置时，Zone 用户联系人同步到系统作用域、每个有效 Zone 用户的实际 DID 作用域，以及 tunnel 配置中的 owner 作用域。同 Zone 用户默认作为好友进入 `INBOX`，已有 `Block` 设置保持不变。同步不会迁移历史 `REQUEST_BOX` 记录。
+
 ### 非职责（冻结）
 
 - **ContactMgr 不参与出站选路。** 发送目标由调用方在构造 `MsgObject` 之前显式确定（用户点选或 Agent 沿用会话中的 endpoint DID）；`post_send` 不查询 ContactMgr。**ContactMgr 的关联结果不得自动成为发送目的地。**

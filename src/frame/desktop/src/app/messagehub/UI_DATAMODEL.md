@@ -660,6 +660,10 @@ export type ConversationStatusType =
 
 Entity / Session 列表的摘要必须由消息对象派生，不得由后端另发一份文本：
 
+协议序列化会省略空正文的 `content.content` 字段；前端类型将其声明为可选，渲染、摘要和消息活动判断均按空字符串处理。纯附件消息通过 `content.refs` 展示，不要求正文存在。
+
+登录身份使用 `user.get` 返回的用户档案 DID，不按用户名生成 DID。带 `zone_user` 标签的联系人是普通用户；Agent 类型取自 Agent 列表或明确的 Agent 标签，不根据 `did:web` 域名推断。
+
 | 消息形态 | 摘要 |
 |---|---|
 | 文本类 | `content.content` 首行，截断至 120 字符 |

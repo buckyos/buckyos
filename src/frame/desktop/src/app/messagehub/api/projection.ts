@@ -29,7 +29,6 @@ export interface ProjectionInput {
   groups: GroupSummary[]
   /** Zone agent DIDs from the control panel (may be empty). */
   agentDids: string[]
-  zoneHost?: string
   /** Owner-scoped `ui.title` overrides by session id. */
   personalTitles: Record<string, string>
   policies: Record<string, CreationPolicy>
@@ -135,26 +134,21 @@ export function attributeSession(summary: SessionSummary, ownerDid: string): Ses
 
 export function summarizeMessage(msg: MessageObject | null | undefined, labels: ProjectionLabels): string {
   if (!msg) return labels.previewUnavailable
-  if (isActionMessage(msg)) return msg.content.content || labels.previewUnavailable
+  const content = msg.content.content ?? ''
+  if (isActionMessage(msg)) return content || labels.previewUnavailable
   const refs = msg.content.refs ?? []
   const dataRef = refs.find(ref => ref.target.type === 'data_obj')
   const format = msg.content.format ?? 'text/plain'
   const isText = format.startsWith('text/')
-  if (dataRef && !msg.content.content.trim()) {
+  if (dataRef && !content.trim()) {
     const label = dataRef.label ? ` ${dataRef.label}` : ''
     return `${format.startsWith('image/') ? labels.previewImage : labels.previewAttachment}${label}`
   }
-  if (isText || msg.content.content.trim()) {
-    const line = msg.content.content.split('\n').find(item => item.trim())?.trim() ?? ''
+  if (isText || content.trim()) {
+    const line = content.split('\n').find(item => item.trim())?.trim() ?? ''
     return line.length > 120 ? `${line.slice(0, 120)}…` : line
   }
   return `${labels.previewAttachment} ${format}`
-}
-
-export function isZoneAgentDid(did: string, zoneHost: string | undefined): boolean {
-  if (!zoneHost || !did.startsWith('did:web:')) return false
-  const host = did.slice('did:web:'.length)
-  return host !== zoneHost && host.endsWith(`.${zoneHost}`) && !host.startsWith('msg-hub.')
 }
 
 interface EntitySeed {
@@ -208,9 +202,10 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
     const group = groupByDid.get(did)
     const tunnel = parseTunnelDid(did)
     const isGroup = Boolean(group) || hint?.isGroup === true || tunnel?.accountType === 'group' || tunnel?.accountType === 'channel'
-    const isAgent = !isGroup && (agentSet.has(did) || contact?.tags?.includes('agent') === true || isZoneAgentDid(did, input.zoneHost))
+    const isZoneUser = contact?.tags?.includes('zone_user') === true
+    const isAgent = !isGroup && !isZoneUser && (agentSet.has(did) || contact?.tags?.includes('agent') === true)
     const type: Entity['type'] = isGroup ? 'group' : isAgent ? 'agent' : 'person'
-    const domain: EntitySeed['domain'] = tunnel ? 'external' : group ? (group.is_hosted_by_self ? 'managed' : 'external') : did.startsWith('did:bns:') || isAgent ? 'managed' : 'external'
+    const domain: EntitySeed['domain'] = tunnel ? 'external' : group ? (group.is_hosted_by_self ? 'managed' : 'external') : isZoneUser || did.startsWith('did:bns:') || isAgent ? 'managed' : 'external'
     const name = contact?.name?.trim() || group?.name?.trim() || hint?.fromName?.trim() || shortDid(did)
     const seed: EntitySeed = { id: did, type, name, domain, contact, group, sources: new Set() }
     if (tunnel) seed.sources.add(platformOfInstance(tunnel.tunnelInstanceId))

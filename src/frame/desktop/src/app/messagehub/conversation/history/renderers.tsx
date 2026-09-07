@@ -217,7 +217,7 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   const isSelf = message.from === context.selfDid
   const senderName = getMessageSenderName(message)
   const deliveryStatus = getMessageDeliveryStatus(message)
-  const caption = message.content.content.trim()
+  const caption = message.content.content?.trim() ?? ''
   const refs = message.content.refs ?? []
   return (
     <div className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-1`}>
@@ -323,7 +323,7 @@ function renderImageMessage(
   const isSelf = message.from === selfDid
   const senderName = getMessageSenderName(message)
   const deliveryStatus = getMessageDeliveryStatus(message)
-  const caption = message.content.content.trim()
+  const caption = message.content.content?.trim() ?? ''
 
   return (
     <div

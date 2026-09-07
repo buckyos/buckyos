@@ -554,7 +554,7 @@ function appendMessageEntries(
       kind: 'status',
       key: `message-status:${getMessageStableId(message, messageIndex)}`,
       status: getMessageStatusType(message) ?? 'info',
-      label: message.content.content,
+      label: message.content.content ?? '',
       anchorMessageIndex: messageIndex,
       createdAtMs: message.created_at_ms,
     })

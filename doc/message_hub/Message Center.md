@@ -460,6 +460,7 @@ UI 目标字段见 [UI DataModel §3.3](../../src/frame/desktop/src/app/messageh
 - `viewer` 是实际登录 / 调用身份，`owner` 是被查看的会话所属实体。
   默认查看自己的 Session；从 Agent 主页进入时，经授权以 Agent 为 owner 读取其通信对象与历史。
   API 接受 owner 参数不等于调用者已经获得读取该 owner 的权限，服务端必须校验两者关系。
+  用户 DID 取自 `users/{user_id}/profile.did`；前端通过 `user.get` 获取，服务端在验证 token 后读取同一档案，缺失时拒绝访问，不能由用户名拼接 `did:bns`。Agent 观察权限依据本地 Agent 注册文档和未删除状态判断，不能将 Zone 域下的所有 `did:web` 当成 Agent。
 - Agent 观察首期只读：不发送、新建、修改已读或配置，不写 Agent 的草稿和 UI 状态。
   未来代 Agent 通信必须校验独立的发送授权，`MsgObject.from` 为 Agent，审计保留实际 viewer。
 - 默认仅允许手工创建与 Agent 的 Session；其它会话由连接建立 / 远端上下文发现产生。

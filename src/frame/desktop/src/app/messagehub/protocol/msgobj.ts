@@ -103,7 +103,7 @@ export interface RefItem {
 export interface MsgContent {
   title?: string
   format?: MsgContentFormat
-  content: string
+  content?: string
   machine?: MachineContent
   refs?: RefItem[]
 }

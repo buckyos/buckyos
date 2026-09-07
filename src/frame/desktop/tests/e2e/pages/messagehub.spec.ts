@@ -458,6 +458,49 @@ test('draft attachments survive refresh and failed send retries once in the same
   expect(reader[0].ui_session_id).toBe(id)
 })
 
+for (const source of ['object', 'http'] as const) {
+  test(`attachment-only messages render without a caption (${source})`, async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    page.on('console', message => {
+      if (message.type() === 'error' && message.text().includes('ErrorBoundary')) errors.push(message.text())
+    })
+    await page.route('https://upload.wikimedia.org/**', route => route.fulfill({
+      contentType: 'image/svg+xml',
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="60"><rect width="80" height="60" fill="lightblue"/></svg>',
+    }))
+    await openHub(page)
+    const id = await createSession(page, 'Photo without caption')
+    if (source === 'object') {
+      await page.evaluate(async () => {
+        const modulePath = '/src/app/messagehub/conversation/history/objectAccess.ts'
+        const { registerObjectAccess } = await import(modulePath)
+        registerObjectAccess({
+          describe: async (objId: string) => ({ objId, name: 'photo.png', mimeType: 'image/png', size: 100, isFile: true }),
+          contentUrl: async () => 'https://upload.wikimedia.org/photo.png',
+        })
+      })
+    }
+    await page.evaluate(async ({ context, id, source }) => {
+      await window.__messageHubMock.injectMessage(context.ownerDid, id, {
+        kind: 'chat', from: context.ownerDid, to: ['did:buckyos:agent:codeassistant'],
+        created_at_ms: window.__messageHubMock.now(), ui_message_id: 'photo-no-caption',
+        content: { format: 'text/plain', refs: [{ role: 'input', label: 'photo.png', target: { type: 'data_obj', obj_id: 'cyfile:photo', uri_hint: source === 'object' ? 'cyfs://cyfile:photo' : 'https://upload.wikimedia.org/photo.png' } }] },
+      })
+    }, { context: OWN, id, source })
+    const history = page.getByTestId('conversation-history')
+    await expect(history.getByRole('img', { name: 'photo.png', exact: true })).toBeVisible()
+    if (source === 'object') await expect(history.getByTestId('attachment-ready')).toBeVisible()
+    if (source === 'http') {
+      await page.reload()
+      await expect(history.getByRole('img', { name: 'photo.png', exact: true })).toBeVisible()
+      await expect(page.locator('textarea')).toBeVisible()
+      await expect(history).toHaveAttribute('data-raw-count', '1')
+    }
+    expect(errors).toEqual([])
+  })
+}
+
 test('unknown Action schemas and actors are safe; ordinary events remain when filtering', async ({ page }) => {
   await openHub(page)
   const id = await createSession(page, 'Action edge cases')
