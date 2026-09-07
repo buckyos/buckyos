@@ -31,6 +31,8 @@ runner 的 `--yes` 选项仅用于已经获得授权的自动化；它本身不�
 - 每个 T1.5 Provider Mock 及其预期 wire fixture，只能依据该 Provider 的官方 API 文档、官方 schema、官方 SDK 协议定义和官方错误文档构建。不得根据 AICC 设计文档、metadata、实现代码、现有请求日志或现有 Mock 推导预期协议行为。
 - T2 必须限制在用户选定的 Provider 和 instance 范围内。T3 必须限制在已获授权的 Provider 和消息入口范围内；配置的 T3 instance 用于凭证注入和审计，不用于强制路由。
 - T1.5 必须将每个可独立调用的 metadata variant 作为独立协议 cell 覆盖，包括 Provider 模型/选项 lowering 和响应解析。
+- T1.5 必须覆盖同一 session 内 `<source provider, source model> x <target provider, target model>` 切换矩阵；各 Mock Provider 必须 fail-closed 地严格校验官方协议、provider_state namespace、tool call/result 关系和事件顺序，不能宽松接受未知字段或错误协议形态。
+- T1.5 对所有会产生 artifact 的 Provider success cell 必须派生 task-result artifact 回归用例；断言 TaskMgr 进入成功终态，result 中没有 inline base64 资源残留，并保留可追踪的 NamedObject 或 URL artifact 引用。
 - T2 覆盖范围限制为 `ProviderInstance x model x API-Type` 矩阵。必须包含范围内每个活跃的基础物理模型，但不得为 metadata variant 增加真实推理 cell。除非明确的 rubric 要求最小限度的补充，否则每个 cell 只运行一个最小正确性用例。T2 不得重复同一物理模型的逻辑别名、T1 路由组合或 T1.5 wire/error 覆盖。
 - 真实调用前，打印并强制执行调用次数、重试、超时和预算限制。T1/T1.5/T2 还必须强制执行全局及每个 Provider 的并发限制和最小请求间隔；T3 只强制执行场景并发限制。
 - 机密信息只能保存在本地且被忽略的 TOML 文件中，并且必须从命令、日志和报告中脱敏。
