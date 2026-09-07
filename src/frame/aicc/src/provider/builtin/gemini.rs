@@ -83,19 +83,39 @@ impl GeminiModelsTransport for HttpTransport {
 
 #[derive(Clone)]
 pub(crate) struct GeminiDiscovery {
+    provider_profile_id: String,
+    protocol_adapter_id: String,
     transport: Arc<dyn GeminiModelsTransport>,
 }
 
 impl GeminiDiscovery {
     pub(crate) fn new(transport: HttpTransport) -> Self {
         Self {
+            provider_profile_id: GEMINI_PROVIDER_PROFILE_ID.to_owned(),
+            protocol_adapter_id: GEMINI_ADAPTER_ID.to_owned(),
+            transport: Arc::new(transport),
+        }
+    }
+
+    pub(crate) fn for_profile(
+        provider_profile_id: impl Into<String>,
+        protocol_adapter_id: impl Into<String>,
+        transport: HttpTransport,
+    ) -> Self {
+        Self {
+            provider_profile_id: provider_profile_id.into(),
+            protocol_adapter_id: protocol_adapter_id.into(),
             transport: Arc::new(transport),
         }
     }
 
     #[cfg(test)]
     fn with_transport(transport: Arc<dyn GeminiModelsTransport>) -> Self {
-        Self { transport }
+        Self {
+            provider_profile_id: GEMINI_PROVIDER_PROFILE_ID.to_owned(),
+            protocol_adapter_id: GEMINI_ADAPTER_ID.to_owned(),
+            transport,
+        }
     }
 }
 
@@ -105,7 +125,11 @@ impl ProviderDiscovery for GeminiDiscovery {
         &self,
         context: &DiscoveryContext<'_>,
     ) -> ProviderResult<ProviderDiscoverySnapshot> {
-        validate_gemini_context(context)?;
+        validate_gemini_context(
+            &self.provider_profile_id,
+            &self.protocol_adapter_id,
+            context,
+        )?;
         let mut models = BTreeMap::<String, DiscoveredModel>::new();
         let mut page_token = None;
         let mut seen_page_tokens = BTreeSet::new();
@@ -166,11 +190,15 @@ impl ProviderDiscovery for GeminiDiscovery {
     }
 }
 
-fn validate_gemini_context(context: &DiscoveryContext<'_>) -> ProviderResult<()> {
-    if context.profile.provider_profile_id != GEMINI_PROVIDER_PROFILE_ID
-        || context.profile.default_protocol_adapter_id != GEMINI_ADAPTER_ID
-        || context.instance.provider_profile_id != GEMINI_PROVIDER_PROFILE_ID
-        || context.instance.protocol_adapter_id != GEMINI_ADAPTER_ID
+fn validate_gemini_context(
+    provider_profile_id: &str,
+    protocol_adapter_id: &str,
+    context: &DiscoveryContext<'_>,
+) -> ProviderResult<()> {
+    if context.profile.provider_profile_id != provider_profile_id
+        || context.profile.default_protocol_adapter_id != protocol_adapter_id
+        || context.instance.provider_profile_id != provider_profile_id
+        || context.instance.protocol_adapter_id != protocol_adapter_id
     {
         return Err(ProviderError::InvalidConfiguration(
             "Gemini discovery requires the Gemini profile and Interactions adapter".to_owned(),

@@ -13,9 +13,11 @@ use crate::catalog::{
     ProviderRulesCatalog,
 };
 #[cfg(test)]
+use crate::protocol::CredentialKind;
+#[cfg(test)]
 use crate::protocol::ResponsesDialectKind;
 use crate::protocol::{
-    CredentialKind, HttpRequest, HttpResponse, HttpTransport, DEEPSEEK_RESPONSES_ADAPTER_ID,
+    HttpRequest, HttpResponse, HttpTransport, DEEPSEEK_RESPONSES_ADAPTER_ID,
     OPENAI_RESPONSES_OPERATION_ID,
 };
 use async_trait::async_trait;
@@ -166,8 +168,8 @@ pub(crate) fn openai_responses_compatible_model_driver_catalogs() -> Vec<ModelDr
 }
 
 pub(crate) fn openai_compatible_models_discovery(
-    provider_profile_id: &'static str,
-    protocol_adapter_id: &'static str,
+    provider_profile_id: impl Into<String>,
+    protocol_adapter_id: impl Into<String>,
     transport: HttpTransport,
 ) -> OpenAiCompatibleModelsDiscovery {
     OpenAiCompatibleModelsDiscovery::new(provider_profile_id, protocol_adapter_id, transport)
@@ -306,20 +308,20 @@ impl OpenAiCompatibleModelsTransport for HttpTransport {
 
 #[derive(Clone)]
 pub(crate) struct OpenAiCompatibleModelsDiscovery {
-    provider_profile_id: &'static str,
-    protocol_adapter_id: &'static str,
+    provider_profile_id: String,
+    protocol_adapter_id: String,
     transport: Arc<dyn OpenAiCompatibleModelsTransport>,
 }
 
 impl OpenAiCompatibleModelsDiscovery {
     pub(crate) fn new(
-        provider_profile_id: &'static str,
-        protocol_adapter_id: &'static str,
+        provider_profile_id: impl Into<String>,
+        protocol_adapter_id: impl Into<String>,
         transport: HttpTransport,
     ) -> Self {
         Self {
-            provider_profile_id,
-            protocol_adapter_id,
+            provider_profile_id: provider_profile_id.into(),
+            protocol_adapter_id: protocol_adapter_id.into(),
             transport: Arc::new(transport),
         }
     }
@@ -331,8 +333,8 @@ impl OpenAiCompatibleModelsDiscovery {
         transport: Arc<dyn OpenAiCompatibleModelsTransport>,
     ) -> Self {
         Self {
-            provider_profile_id,
-            protocol_adapter_id,
+            provider_profile_id: provider_profile_id.to_owned(),
+            protocol_adapter_id: protocol_adapter_id.to_owned(),
             transport,
         }
     }
@@ -364,16 +366,16 @@ impl ProviderDiscovery for OpenAiCompatibleModelsDiscovery {
     ) -> ProviderResult<ProviderDiscoverySnapshot> {
         validate_openai_compatible_models_context(
             context,
-            self.provider_profile_id,
-            self.protocol_adapter_id,
+            &self.provider_profile_id,
+            &self.protocol_adapter_id,
         )?;
-        let request = openai_compatible_models_request(context, self.provider_profile_id)?;
+        let request = openai_compatible_models_request(context, &self.provider_profile_id)?;
         let response = self
             .transport
             .send(request)
             .await
             .map_err(|error| ProviderError::Discovery(error.to_string()))?;
-        ensure_openai_compatible_models_success(&response, self.provider_profile_id)?;
+        ensure_openai_compatible_models_success(&response, &self.provider_profile_id)?;
         let revision = response
             .headers
             .get(ETAG)
@@ -382,7 +384,7 @@ impl ProviderDiscovery for OpenAiCompatibleModelsDiscovery {
         let envelope: ModelsEnvelope = response
             .json(1024 * 1024)
             .map_err(|error| ProviderError::Discovery(error.to_string()))?;
-        parse_openai_compatible_models(envelope, revision, self.provider_profile_id)
+        parse_openai_compatible_models(envelope, revision, &self.provider_profile_id)
     }
 }
 
@@ -398,11 +400,6 @@ fn validate_openai_compatible_models_context(
     {
         return Err(ProviderError::InvalidConfiguration(format!(
             "{provider_profile_id} discovery requires its Responses dialect"
-        )));
-    }
-    if context.credential.audit().kind != CredentialKind::Bearer {
-        return Err(ProviderError::Credential(format!(
-            "{provider_profile_id} discovery requires a Bearer credential"
         )));
     }
     if context.instance.account.is_some() {

@@ -472,6 +472,8 @@ Provider 应支持 AICC 定期或按需刷新自身模型列表与动态状态�
 9. 每次成功刷新生成新的 `inventory_revision`，Registry 在事务中切换到新 revision；刷新失败时继续使用上一版可用 inventory 并记录 warning；
 10. Registry 应记录元数据更新时间、来源和 `inventory_revision`，避免使用过期状态进行调度。
 
+所有 Provider（包括 GLM、豆包、FAL、Qwen 和 custom Provider）都必须先执行其 `protocol_adapter_id` 所属协议族的标准模型发现流程。内置 Provider 只有在厂商接口存在协议细节差异时才能重载相应差异；custom Provider 不允许按 Provider 名称选择私有发现实现。只有模型发现请求失败或响应不合法时，Registry 才可使用 Provider instance 显式配置的静态 inventory；未配置时可使用当前有效 Provider Rules 与其明确引用的 Model Driver 构造的静态 inventory。静态兜底结果必须标记为 `degraded`，后续刷新仍应优先重试机器发现接口；机器发现成功后必须以其全量结果替换静态兜底。
+
 ### 7.4 Provider 注册冲突处理
 
 1. 同一 Provider instance 内不得重复注册同一精确模型名；
@@ -599,6 +601,14 @@ Fallback 分为解析期 fallback 和运行时 failover。
 4. Provider 返回模型临时不可用；
 5. 调用失败且 request 可重试；
 6. 调用失败且 policy 允许 failover 到下一个候选。
+
+执行重试分为两个有固定顺序的维度：
+
+1. **同一精确模型重试**：连接中断、timeout、5xx、无效或不完整响应等可能由偶发抖动造成的可重试错误，先对当前 exact model 重试 1 次；存在合法 `Retry-After` 时遵循它，但单次等待最多 2 秒；
+2. **候选切换**：同一模型重试仍失败，且 `runtime_failover = true` 时，切换到路由阶段已经产生的下一个合格候选。模型不存在或已下线、模型临时不可用、quota exhausted 等确定继续调用当前模型无效的错误，不进行同模型重试，直接切换候选；
+3. 400 参数或 schema 错误、401 认证错误、403 权限或内容策略拒绝、409 幂等冲突、取消，以及明确不可重试的 Provider 错误立即终止，不得换模型掩盖调用方或配置错误；
+4. 是否允许切换由路由语义和 effective policy 决定。显式 exact model 默认没有其它候选，因此默认不发生隐式 fallback；只有显式启用 exact-model fallback 并实际解析出候选时才可切换；
+5. Provider 是否已经接收 HTTP 请求不改变上述错误分类。只要 Provider 明确返回 timeout、5xx、quota exhausted、模型不可用等可 failover 错误，就按本节执行；异步 Provider task 已成功提交并取得 remote task ID 后保持 pinned binding，不跨 Provider 重提。
 
 ### 9.2 Fallback 模式
 
@@ -890,12 +900,14 @@ interface CostEstimateOutput {
 | `queue_depth` | 本地推理或共享服务排队评分。 |
 | `quota_state` | `exhausted` 时硬过滤或降权；`unknown` 保留候选。 |
 
+运行时调用结果必须回写到 exact model 和 Provider instance 两级健康窗口。`p50_latency_ms`、`p95_latency_ms`、`error_rate_5m` 使用最近 5 分钟样本计算；延迟评分使用 p50 与 p95 的均值，只有一项可用时使用该项；`recent_failures` 记录连续的可重试失败，成功后清零。调用方参数、认证、权限、策略、幂等冲突等永久错误不得污染 Provider 健康度。模型不存在只将对应 exact model 标记为临时不可用，不应把同一 Provider 的其它模型一并下线。Router 在每次生成候选时读取最新快照：模型不可用、Provider unavailable 和 circuit open 硬过滤；degraded、错误率、连续失败和延迟参与评分降权；动态健康数据缺失时保留候选，除非 request 设置了必须满足的延迟上限。
+
 ### 10.8 熔断与恢复
 
-1. Provider 连续失败达到阈值后进入短期熔断；
+1. Provider instance 或 exact model 连续发生 3 次可重试失败后进入 30 秒短期熔断；
 2. 熔断期间候选应被硬过滤或高额降权；
-3. 熔断到期后允许少量探测流量；
-4. 恢复成功后逐步恢复权重；
+3. 熔断到期后以 degraded 状态恢复探测流量；模型不存在使用 5 分钟 negative cache，到期后同样重新探测；
+4. 一次成功会关闭熔断并清零连续失败；5 分钟窗口内残留的错误率继续参与降权，随旧样本淘汰逐步恢复权重；
 5. 熔断状态必须写入 metrics 和 trace。
 
 ---

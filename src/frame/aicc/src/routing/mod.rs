@@ -57,6 +57,7 @@ pub(crate) struct CandidateRuntimeState {
     pub trust: Option<ProviderTrustView>,
     pub credential_scope: CredentialScope,
     pub estimated_cost_usd: Option<f64>,
+    pub p50_latency_ms: Option<f64>,
     pub p95_latency_ms: Option<f64>,
     pub error_rate_5m: Option<f64>,
     pub recent_failures: u32,
@@ -926,7 +927,16 @@ fn score_candidates(
         .collect::<Vec<_>>();
     let latencies = candidates
         .iter()
-        .map(|candidate| candidate.state.p95_latency_ms)
+        .map(|candidate| {
+            match (
+                candidate.state.p50_latency_ms,
+                candidate.state.p95_latency_ms,
+            ) {
+                (Some(p50), Some(p95)) => Some((p50 + p95) / 2.0),
+                (Some(value), None) | (None, Some(value)) => Some(value),
+                (None, None) => None,
+            }
+        })
         .collect::<Vec<_>>();
     let qualities = candidates
         .iter()
@@ -1537,6 +1547,7 @@ mod tests {
                 tenant_id: "tenant".into(),
             },
             estimated_cost_usd: Some(cost),
+            p50_latency_ms: Some(latency),
             p95_latency_ms: Some(latency),
             error_rate_5m: Some(0.0),
             recent_failures: 0,

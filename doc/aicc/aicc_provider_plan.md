@@ -90,8 +90,8 @@ Provider 实时 discovery
 
 - OpenRouter Models API 的模型、能力和实时价格应进入动态 discovery；
 - OpenAI、Claude、Gemini、MiniMax、Kimi 等存在官方模型机器接口时，复用相应 discovery parser；
-- 其它 Provider 如果没有稳定的官方机器接口，使用 Known Provider/Provider Rules/Model Driver 构建 catalog-only inventory；
-- 运行时枚举合并后 catalog 中的全部 Known Provider；没有专用行为覆盖的新 Profile 自动合并 Provider Rules exact models 与明确引用的 Model Driver exact models 构造 catalog-only inventory，并可复用任一已注册 Protocol Adapter，不维护厂商 ID 白名单；
+- 所有 Provider 都先按其 Protocol Adapter 所属协议族执行标准机器 discovery；如果厂商没有对应接口，该请求失败后才使用 Known Provider/Provider Rules/Model Driver 构建的静态 inventory；
+- 运行时枚举合并后 catalog 中的全部 Known Provider；没有专用差异行为的新 Profile 复用已注册 Protocol Adapter 的标准 discovery，并自动合并 Provider Rules exact models 与明确引用的 Model Driver exact models 作为失败兜底，不维护厂商 ID 白名单；
 - 禁止抓取官方文档网页、控制台页面或读取 SDK 私有列表模拟 discovery；
 - Provider 实时价格属于实例动态事实，不写回静态 catalog；静态价格直接位于 Provider Rules，不单独建立 Pricing Catalog。
 

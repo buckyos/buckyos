@@ -318,7 +318,7 @@ Mock Provider 必须位于 Provider HTTP/远端协议边界，不能只替换 AI
 - `rerank` 默认 strict；fallback 重跑不能把不同 reranker 的分数混排。
 - fallback loop 和最大深度。
 - 首选 Provider 429、5xx、连接失败、timeout 后的切换。
-- 400 参数/schema 错误、401 认证错误、403 权限或内容策略拒绝、404 模型不存在、409 幂等冲突及明确标记为不可重试的 Provider 错误必须停止。
+- 400 参数/schema 错误、401 认证错误、403 权限或内容策略拒绝、409 幂等冲突及明确标记为不可重试的 Provider 错误必须停止。404 模型不存在不得重试同一 exact model；exact 调用默认停止，逻辑模型或显式允许 exact-model fallback 的调用应切换到下一候选。
 - fallback 后 task、usage、trace 和 Provider 归因。
 - 多 instance 间 failover。
 

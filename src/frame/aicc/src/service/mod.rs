@@ -46,6 +46,7 @@ use buckyos_http_server::{
 };
 use buckyos_kit::KVAction;
 use bytes::Bytes;
+use futures_util::{stream, StreamExt};
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use kRPC::{RPCContext, RPCErrors, RPCRequest};
@@ -56,7 +57,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, Mutex};
 
 use crate::call::{
@@ -70,6 +71,7 @@ use crate::execution::{
     PinnedProviderTask, ProviderExecution, ProviderExecutionPort, ProviderStartFailure,
     ResumeCredential, ResumeCredentialKind, TaskBinding, TaskManagerPort, TaskSpec,
 };
+use crate::health::{HealthFailureKind, ModelHealthRegistry};
 use crate::model::{
     LogicalModelDefinition, ModelRegistry, MountMode, ProviderInventory as ModelProviderInventory,
     RegistryLayers,
@@ -78,7 +80,7 @@ use crate::protocol::{
     AdapterStatus, CodecContext, CodecLimits, CodecRegistry, CredentialKind, ExecutionMode,
     HttpTransport, HttpTransportConfig, MaterializedResource as CodecMaterializedResource,
     NativeTaskInput, NativeTaskOperation, NativeTaskOutput, ProtocolError, ProtocolErrorKind,
-    ProtocolOutput,
+    ProtocolEvent, ProtocolOutput, ProtocolStream,
 };
 use crate::provider::{
     builtin_provider_codecs, builtin_provider_registry, resolve_sn_provider_instance_with_config,
@@ -318,6 +320,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         Arc::new(ReqwestUrlResourceFetcher::new().context("initialize AICC URL resource fetcher")?);
     let service_runtime: Arc<dyn ServiceRuntime> =
         Arc::new(RuntimeServiceAdapter::new(runtime.clone(), codecs.clone()));
+    let model_health = Arc::new(ModelHealthRegistry::default());
     let execution = Arc::new(ExecutionEngine::new(
         storage.clone(),
         Arc::new(TaskManagerExecutionPort::new()),
@@ -327,6 +330,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
             resource_store.clone(),
             url_fetcher.clone(),
             storage.clone(),
+            model_health.clone(),
         )),
         storage.clone(),
     ));
@@ -347,6 +351,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         storage.clone(),
         resource_store,
         url_fetcher,
+        model_health,
     ));
     let service = AiccService::new(
         Arc::new(RuntimeAuthorizer),
@@ -479,6 +484,7 @@ pub(crate) struct RuntimeInferencePort {
     storage: Arc<AiccStorage>,
     resource_store: Arc<dyn ResourceStore>,
     url_fetcher: Arc<dyn UrlResourceFetcher>,
+    model_health: Arc<ModelHealthRegistry>,
 }
 
 impl RuntimeInferencePort {
@@ -490,6 +496,7 @@ impl RuntimeInferencePort {
         storage: Arc<AiccStorage>,
         resource_store: Arc<dyn ResourceStore>,
         url_fetcher: Arc<dyn UrlResourceFetcher>,
+        model_health: Arc<ModelHealthRegistry>,
     ) -> Self {
         Self {
             runtime,
@@ -499,6 +506,7 @@ impl RuntimeInferencePort {
             storage,
             resource_store,
             url_fetcher,
+            model_health,
         }
     }
 
@@ -548,7 +556,8 @@ impl RuntimeInferencePort {
             )
             .await
             .map_err(|_| inference_error(AiccErrorCode::PolicyDenied, "quota scope is invalid"))?;
-        let runtime_states = candidate_runtime_states(snapshot.as_ref(), caller).await;
+        let runtime_states =
+            candidate_runtime_states(snapshot.as_ref(), caller, self.model_health.as_ref()).await;
         let session_overlay = input
             .session_overlay
             .as_ref()
@@ -970,6 +979,7 @@ fn inference_error(code: AiccErrorCode, message: impl Into<String>) -> RPCErrors
 async fn candidate_runtime_states(
     snapshot: &crate::runtime::RuntimeSnapshot,
     caller: &AuthorizedCaller,
+    model_health: &ModelHealthRegistry,
 ) -> BTreeMap<String, CandidateRuntimeState> {
     let mut credentials = BTreeMap::new();
     let mut health_states = BTreeMap::new();
@@ -1004,13 +1014,22 @@ async fn candidate_runtime_states(
                 .get(&model.provider_instance_name)
                 .is_none_or(|metadata| metadata.routable);
             let enabled = settings.is_some_and(|provider| provider.enabled) && metadata_routable;
+            let observed =
+                model_health.snapshot(&model.exact_model, &model.provider_instance_name, now_ms());
+            let health = if observed.circuit_open {
+                ProviderHealthStatus::CircuitOpen
+            } else if health == ProviderHealthStatus::Available && observed.degraded {
+                ProviderHealthStatus::Degraded
+            } else {
+                health
+            };
             let state = CandidateRuntimeState {
                 enabled,
                 credential_available: credentials
                     .get(&model.provider_instance_name)
                     .copied()
                     .unwrap_or(false),
-                model_available: runtime.is_some(),
+                model_available: runtime.is_some() && observed.model_available,
                 health,
                 provider_privacy: if local {
                     ProviderPrivacy::Local
@@ -1032,9 +1051,10 @@ async fn candidate_runtime_states(
                     tenant_id: caller.tenant_id.clone(),
                 },
                 estimated_cost_usd: None,
-                p95_latency_ms: None,
-                error_rate_5m: None,
-                recent_failures: 0,
+                p50_latency_ms: observed.p50_latency_ms,
+                p95_latency_ms: observed.p95_latency_ms,
+                error_rate_5m: observed.error_rate_5m,
+                recent_failures: observed.recent_failures,
                 quality_score: None,
                 cache_hit_probability: None,
             };
@@ -2875,6 +2895,7 @@ pub(crate) struct RuntimeProviderExecutionPort {
     resource_store: Arc<dyn ResourceStore>,
     url_fetcher: Arc<dyn UrlResourceFetcher>,
     storage: Arc<AiccStorage>,
+    model_health: Arc<ModelHealthRegistry>,
 }
 
 impl RuntimeProviderExecutionPort {
@@ -2884,6 +2905,7 @@ impl RuntimeProviderExecutionPort {
         resource_store: Arc<dyn ResourceStore>,
         url_fetcher: Arc<dyn UrlResourceFetcher>,
         storage: Arc<AiccStorage>,
+        model_health: Arc<ModelHealthRegistry>,
     ) -> Self {
         Self {
             runtime,
@@ -2891,6 +2913,7 @@ impl RuntimeProviderExecutionPort {
             resource_store,
             url_fetcher,
             storage,
+            model_health,
         }
     }
 
@@ -3365,162 +3388,201 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
         call: &crate::call::ResolvedProviderCall,
         cancellation: crate::protocol::Cancellation,
     ) -> Result<ProviderExecution, ProviderStartFailure> {
-        let descriptor = self
-            .codecs
-            .operation_descriptor(&call.protocol_adapter_id, &call.operation, call.api_type)
-            .and_then(|operation| {
-                operation
-                    .binding(call.api_type)
-                    .map(|binding| (operation.supports_cancel, binding.execution_modes.clone()))
-            })
-            .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-        let execution_mode = Self::execution_mode(call.execution_mode, &descriptor.1)
-            .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-        let transport = Self::transport(&call.context.limits)
-            .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-        match execution_mode {
-            ExecutionMode::Immediate => {
-                let request = self
-                    .codecs
-                    .encode(
-                        &call.protocol_adapter_id,
-                        &call.operation,
-                        call.api_type,
-                        &call.input,
-                        &call.context,
-                    )
-                    .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-                let response = Self::send_cancelable(&cancellation, transport.send(request))
-                    .await
-                    .map_err(ProviderStartFailure::after_accept)?;
-                let decoded = self
-                    .codecs
-                    .decode(
-                        &call.protocol_adapter_id,
-                        &call.operation,
-                        call.api_type,
-                        response,
-                    )
-                    .await
-                    .map_err(ProviderStartFailure::after_accept)?;
-                match decoded {
-                    crate::protocol::ProtocolExecution::Immediate(output) => {
-                        let output = self
-                            .materialize_embedding_output(call, output)
-                            .await
-                            .map_err(ProviderStartFailure::after_accept)?;
-                        let output = self
-                            .materialize_inline_artifact_output(call, output)
-                            .await
-                            .map_err(ProviderStartFailure::after_accept)?;
-                        let output = Self::map_rerank_output(call, output)
-                            .map_err(ProviderStartFailure::after_accept)?;
-                        let output = Self::validate_computer_output(call, output)
-                            .map_err(ProviderStartFailure::after_accept)?;
-                        Ok(ProviderExecution::Immediate(output))
-                    }
-                    _ => Err(ProviderStartFailure::after_accept(
-                        ProtocolError::invalid_response(
-                            "buffered Provider response returned an unexpected execution mode",
-                        ),
-                    )),
-                }
-            }
-            ExecutionMode::Stream => {
-                let request = self
-                    .codecs
-                    .encode(
-                        &call.protocol_adapter_id,
-                        &call.operation,
-                        call.api_type,
-                        &call.input,
-                        &call.context,
-                    )
-                    .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-                let response =
-                    Self::send_cancelable(&cancellation, transport.send_streaming(request))
+        let started = Instant::now();
+        let result = async {
+            let descriptor = self
+                .codecs
+                .operation_descriptor(&call.protocol_adapter_id, &call.operation, call.api_type)
+                .and_then(|operation| {
+                    operation
+                        .binding(call.api_type)
+                        .map(|binding| (operation.supports_cancel, binding.execution_modes.clone()))
+                })
+                .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+            let execution_mode = Self::execution_mode(call.execution_mode, &descriptor.1)
+                .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+            let transport = Self::transport(&call.context.limits)
+                .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+            match execution_mode {
+                ExecutionMode::Immediate => {
+                    let request = self
+                        .codecs
+                        .encode(
+                            &call.protocol_adapter_id,
+                            &call.operation,
+                            call.api_type,
+                            &call.input,
+                            &call.context,
+                        )
+                        .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+                    let response = Self::send_cancelable(&cancellation, transport.send(request))
                         .await
                         .map_err(ProviderStartFailure::after_accept)?;
-                self.codecs
-                    .decode_stream(
-                        &call.protocol_adapter_id,
-                        &call.operation,
-                        call.api_type,
-                        response,
-                    )
-                    .await
-                    .map(ProviderExecution::Stream)
-                    .map_err(ProviderStartFailure::after_accept)
-            }
-            ExecutionMode::NativeTask => {
-                let request = self
-                    .codecs
-                    .encode_native(
-                        &call.protocol_adapter_id,
-                        &call.operation,
-                        call.api_type,
-                        &NativeTaskInput {
-                            operation: NativeTaskOperation::Submit,
-                            remote_task_id: None,
-                            codec_input: Some(&call.input),
-                            resolved_parameters: &call.input.resolved_parameters,
-                            context: &call.context,
-                        },
-                    )
-                    .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-                let response = Self::send_cancelable(&cancellation, transport.send(request))
-                    .await
-                    .map_err(ProviderStartFailure::after_accept)?;
-                let output = self
-                    .codecs
-                    .decode_native(
-                        &call.protocol_adapter_id,
-                        &call.operation,
-                        call.api_type,
-                        NativeTaskOperation::Submit,
-                        response,
-                    )
-                    .await
-                    .map_err(ProviderStartFailure::after_accept)?;
-                let NativeTaskOutput::Submitted(handle) = output else {
-                    return Err(ProviderStartFailure::after_accept(
-                        ProtocolError::invalid_response(
-                            "native submit returned a non-submit result",
-                        ),
-                    ));
-                };
-                let credential =
-                    call.context
-                        .credential
-                        .as_ref()
-                        .map(|credential| ResumeCredential {
-                            reference: call.credential_reference.clone(),
-                            kind: resume_credential_kind(credential.audit().kind),
-                            header_name: call.credential_header_name.clone(),
-                            fingerprint: credential_fingerprint(&call.credential_reference),
-                        });
-                Ok(ProviderExecution::NativeTask {
-                    handle,
-                    resume: NativeTaskResumeDescriptor {
-                        base_url: call.context.base_url.clone(),
-                        credential,
-                        resource_access_context: call.resource_access_context.clone().ok_or_else(
-                            || {
-                                ProviderStartFailure::after_accept(
-                                    ProtocolError::invalid_configuration(
-                                        "native task resource context is missing",
-                                    ),
-                                )
+                    let decoded = self
+                        .codecs
+                        .decode(
+                            &call.protocol_adapter_id,
+                            &call.operation,
+                            call.api_type,
+                            response,
+                        )
+                        .await
+                        .map_err(ProviderStartFailure::after_accept)?;
+                    match decoded {
+                        crate::protocol::ProtocolExecution::Immediate(output) => {
+                            let output = self
+                                .materialize_embedding_output(call, output)
+                                .await
+                                .map_err(ProviderStartFailure::after_accept)?;
+                            let output = self
+                                .materialize_inline_artifact_output(call, output)
+                                .await
+                                .map_err(ProviderStartFailure::after_accept)?;
+                            let output = Self::map_rerank_output(call, output)
+                                .map_err(ProviderStartFailure::after_accept)?;
+                            let output = Self::validate_computer_output(call, output)
+                                .map_err(ProviderStartFailure::after_accept)?;
+                            Ok(ProviderExecution::Immediate(output))
+                        }
+                        _ => Err(ProviderStartFailure::after_accept(
+                            ProtocolError::invalid_response(
+                                "buffered Provider response returned an unexpected execution mode",
+                            ),
+                        )),
+                    }
+                }
+                ExecutionMode::Stream => {
+                    let request = self
+                        .codecs
+                        .encode(
+                            &call.protocol_adapter_id,
+                            &call.operation,
+                            call.api_type,
+                            &call.input,
+                            &call.context,
+                        )
+                        .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+                    let response =
+                        Self::send_cancelable(&cancellation, transport.send_streaming(request))
+                            .await
+                            .map_err(ProviderStartFailure::after_accept)?;
+                    self.codecs
+                        .decode_stream(
+                            &call.protocol_adapter_id,
+                            &call.operation,
+                            call.api_type,
+                            response,
+                        )
+                        .await
+                        .map(ProviderExecution::Stream)
+                        .map_err(ProviderStartFailure::after_accept)
+                }
+                ExecutionMode::NativeTask => {
+                    let request = self
+                        .codecs
+                        .encode_native(
+                            &call.protocol_adapter_id,
+                            &call.operation,
+                            call.api_type,
+                            &NativeTaskInput {
+                                operation: NativeTaskOperation::Submit,
+                                remote_task_id: None,
+                                codec_input: Some(&call.input),
+                                resolved_parameters: &call.input.resolved_parameters,
+                                context: &call.context,
                             },
-                        )?,
-                        resolved_parameters: call.input.resolved_parameters.clone(),
-                        request_timeout_ms: call.context.limits.request_timeout.as_millis() as u64,
-                        max_request_bytes: call.context.limits.max_request_bytes as u64,
-                        max_response_bytes: call.context.limits.max_response_bytes as u64,
-                    },
-                })
+                        )
+                        .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+                    let response = Self::send_cancelable(&cancellation, transport.send(request))
+                        .await
+                        .map_err(ProviderStartFailure::after_accept)?;
+                    let output = self
+                        .codecs
+                        .decode_native(
+                            &call.protocol_adapter_id,
+                            &call.operation,
+                            call.api_type,
+                            NativeTaskOperation::Submit,
+                            response,
+                        )
+                        .await
+                        .map_err(ProviderStartFailure::after_accept)?;
+                    let NativeTaskOutput::Submitted(handle) = output else {
+                        return Err(ProviderStartFailure::after_accept(
+                            ProtocolError::invalid_response(
+                                "native submit returned a non-submit result",
+                            ),
+                        ));
+                    };
+                    let credential =
+                        call.context
+                            .credential
+                            .as_ref()
+                            .map(|credential| ResumeCredential {
+                                reference: call.credential_reference.clone(),
+                                kind: resume_credential_kind(credential.audit().kind),
+                                header_name: call.credential_header_name.clone(),
+                                fingerprint: credential_fingerprint(&call.credential_reference),
+                            });
+                    Ok(ProviderExecution::NativeTask {
+                        handle,
+                        resume: NativeTaskResumeDescriptor {
+                            base_url: call.context.base_url.clone(),
+                            credential,
+                            resource_access_context: call
+                                .resource_access_context
+                                .clone()
+                                .ok_or_else(|| {
+                                    ProviderStartFailure::after_accept(
+                                        ProtocolError::invalid_configuration(
+                                            "native task resource context is missing",
+                                        ),
+                                    )
+                                })?,
+                            resolved_parameters: call.input.resolved_parameters.clone(),
+                            request_timeout_ms: call.context.limits.request_timeout.as_millis()
+                                as u64,
+                            max_request_bytes: call.context.limits.max_request_bytes as u64,
+                            max_response_bytes: call.context.limits.max_response_bytes as u64,
+                        },
+                    })
+                }
             }
         }
+        .await;
+        let result = match result {
+            Ok(ProviderExecution::Stream(stream)) => {
+                Ok(ProviderExecution::Stream(observed_protocol_stream(
+                    stream,
+                    self.model_health.clone(),
+                    call.exact_model.clone(),
+                    call.provider_instance_name.clone(),
+                    started,
+                )))
+            }
+            result => result,
+        };
+        let latency_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        match &result {
+            Ok(ProviderExecution::Stream(_)) => {}
+            Ok(_) => self.model_health.record_success(
+                &call.exact_model,
+                &call.provider_instance_name,
+                latency_ms,
+                now_ms(),
+            ),
+            Err(failure) => {
+                let kind = health_failure_kind(&failure.error);
+                self.model_health.record_failure(
+                    &call.exact_model,
+                    &call.provider_instance_name,
+                    latency_ms,
+                    kind,
+                    now_ms(),
+                );
+            }
+        }
+        result
     }
 
     async fn poll_native(
@@ -3610,6 +3672,64 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                 ),
             )),
         }
+    }
+}
+
+fn observed_protocol_stream(
+    stream: ProtocolStream,
+    health: Arc<ModelHealthRegistry>,
+    exact_model: String,
+    provider_instance_name: String,
+    started: Instant,
+) -> ProtocolStream {
+    let events = stream::unfold((stream.events, false), move |(mut events, terminal)| {
+        let health = health.clone();
+        let exact_model = exact_model.clone();
+        let provider_instance_name = provider_instance_name.clone();
+        async move {
+            let event = events.next().await;
+            let latency_ms = started.elapsed().as_secs_f64() * 1_000.0;
+            match &event {
+                Some(Ok(ProtocolEvent::Final(_))) => health.record_success(
+                    &exact_model,
+                    &provider_instance_name,
+                    latency_ms,
+                    now_ms(),
+                ),
+                Some(Err(error)) => health.record_failure(
+                    &exact_model,
+                    &provider_instance_name,
+                    latency_ms,
+                    health_failure_kind(error),
+                    now_ms(),
+                ),
+                None if !terminal => health.record_failure(
+                    &exact_model,
+                    &provider_instance_name,
+                    latency_ms,
+                    HealthFailureKind::Transient,
+                    now_ms(),
+                ),
+                _ => {}
+            }
+            event.map(|event| {
+                let terminal = terminal || matches!(event, Ok(ProtocolEvent::Final(_)) | Err(_));
+                (event, (events, terminal))
+            })
+        }
+    });
+    ProtocolStream {
+        events: Box::pin(events),
+    }
+}
+
+fn health_failure_kind(error: &ProtocolError) -> HealthFailureKind {
+    if error.is_model_unavailable() {
+        HealthFailureKind::ModelUnavailable
+    } else if error.allows_model_failover() {
+        HealthFailureKind::Transient
+    } else {
+        HealthFailureKind::Permanent
     }
 }
 

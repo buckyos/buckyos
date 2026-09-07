@@ -1,3 +1,4 @@
+use super::anthropic_models::AnthropicModelsDiscovery;
 use super::*;
 use crate::catalog::{
     CatalogSnapshot, ProviderCredentialKind, ProviderFieldMode as CatalogProviderFieldMode,
@@ -11,9 +12,10 @@ use crate::protocol::{
 };
 use crate::provider::{
     catalog_only_inventory, CatalogOnlyDiscovery, CredentialDescriptor, DiscoveryMode,
-    DynamicLoginCredentialResolver, ProviderAuthMode, ProviderConnectionContract,
-    ProviderDiscovery, ProviderDiscoverySnapshot, ProviderError, ProviderFieldMode,
-    ProviderFieldSchema, ProviderInstanceConfig, ProviderProfile, ProviderResult, RefreshPolicy,
+    DynamicLoginCredentialResolver, FallbackDiscovery, ProviderAuthMode,
+    ProviderConnectionContract, ProviderDiscovery, ProviderDiscoverySnapshot, ProviderError,
+    ProviderFieldMode, ProviderFieldSchema, ProviderInstanceConfig, ProviderProfile,
+    ProviderResult, RefreshPolicy,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -29,7 +31,7 @@ enum BuiltinDiscoveryFactory {
     Kimi,
     DeepSeek,
     Sn,
-    CatalogOnly,
+    Standard,
 }
 
 #[derive(Clone)]
@@ -188,6 +190,8 @@ impl BuiltinProviderRegistry {
         };
         let discovery = self.discovery(
             registration.discovery,
+            request.provider_profile_id,
+            request.protocol_adapter_id,
             request.configured_inventory,
             registration.profile.default_inventory.clone(),
         )?;
@@ -219,32 +223,16 @@ impl BuiltinProviderRegistry {
     fn discovery(
         &self,
         factory: BuiltinDiscoveryFactory,
+        provider_profile_id: &str,
+        protocol_adapter_id: &str,
         configured_inventory: Option<ProviderDiscoverySnapshot>,
         default_inventory: Option<ProviderDiscoverySnapshot>,
     ) -> ProviderResult<Arc<dyn ProviderDiscovery>> {
-        if factory == BuiltinDiscoveryFactory::CatalogOnly {
-            if let Some(inventory) = configured_inventory {
-                super::super::validate_discovery(&inventory)?;
-                return Ok(Arc::new(CatalogOnlyDiscovery::new(inventory)));
-            }
-            let inventory = default_inventory.ok_or_else(|| {
-                ProviderError::InvalidConfiguration(
-                    "catalog-only provider requires configured discovery inventory".to_owned(),
-                )
-            })?;
-            super::super::validate_discovery(&inventory)?;
-            return Ok(Arc::new(CatalogOnlyDiscovery::catalog_managed(inventory)));
-        }
-        if configured_inventory.is_some() {
-            return Err(ProviderError::InvalidConfiguration(
-                "machine-API provider does not accept configured discovery inventory".to_owned(),
-            ));
-        }
         let transport = || {
             HttpTransport::new(self.transport_config.clone())
                 .map_err(|error| ProviderError::InvalidConfiguration(error.to_string()))
         };
-        Ok(match factory {
+        let primary: Arc<dyn ProviderDiscovery> = match factory {
             BuiltinDiscoveryFactory::OpenAi => Arc::new(OpenAiDiscovery::new(transport()?)),
             BuiltinDiscoveryFactory::Claude => Arc::new(claude_discovery(transport()?)),
             BuiltinDiscoveryFactory::MiniMax => Arc::new(minimax_discovery(transport()?)),
@@ -257,8 +245,41 @@ impl BuiltinProviderRegistry {
                 transport()?,
             )),
             BuiltinDiscoveryFactory::Sn => Arc::new(SnDiscovery::new(transport()?)),
-            BuiltinDiscoveryFactory::CatalogOnly => unreachable!(),
-        })
+            BuiltinDiscoveryFactory::Standard => match self
+                .codecs
+                .adapter(protocol_adapter_id)
+                .map(|adapter| adapter.protocol_family_id.as_str())
+            {
+                Some("claude") => Arc::new(AnthropicModelsDiscovery::for_profile(
+                    CLAUDE_SPEC,
+                    provider_profile_id,
+                    protocol_adapter_id,
+                    transport()?,
+                )),
+                Some("gemini") => Arc::new(GeminiDiscovery::for_profile(
+                    provider_profile_id,
+                    protocol_adapter_id,
+                    transport()?,
+                )),
+                _ => Arc::new(openai_compatible_models_discovery(
+                    provider_profile_id,
+                    protocol_adapter_id,
+                    transport()?,
+                )),
+            },
+        };
+        let configured_fallback = configured_inventory.is_some();
+        let fallback_inventory = configured_inventory.or(default_inventory);
+        let Some(inventory) = fallback_inventory else {
+            return Ok(primary);
+        };
+        super::super::validate_discovery(&inventory)?;
+        let fallback: Arc<dyn ProviderDiscovery> = if configured_fallback {
+            Arc::new(CatalogOnlyDiscovery::new(inventory))
+        } else {
+            Arc::new(CatalogOnlyDiscovery::catalog_managed(inventory))
+        };
+        Ok(Arc::new(FallbackDiscovery::new(primary, fallback)))
     }
 }
 
@@ -317,9 +338,9 @@ fn builtin_provider_registrations(
             OPENROUTER_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::OpenRouter, false),
             KIMI_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Kimi, false),
             DEEPSEEK_PROFILE_ID => (BuiltinDiscoveryFactory::DeepSeek, false),
-            DOUBAO_PROFILE_ID | QWEN_PROFILE_ID => (BuiltinDiscoveryFactory::CatalogOnly, false),
+            DOUBAO_PROFILE_ID | QWEN_PROFILE_ID => (BuiltinDiscoveryFactory::Standard, false),
             SN_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Sn, true),
-            _ => (BuiltinDiscoveryFactory::CatalogOnly, false),
+            _ => (BuiltinDiscoveryFactory::Standard, false),
         };
         let mut registration = catalog_registration(
             catalog,
@@ -359,9 +380,7 @@ fn catalog_registration(
         .resolve_provider_configuration(provider_profile_id)
         .map_err(|error| ProviderError::InvalidConfiguration(error.to_string()))?;
     let mut profile = profile_from_catalog(&configuration, discovery);
-    if discovery == BuiltinDiscoveryFactory::CatalogOnly {
-        profile.default_inventory = catalog_only_inventory(catalog, provider_profile_id);
-    }
+    profile.default_inventory = catalog_only_inventory(catalog, provider_profile_id);
     Ok(BuiltinProviderRegistration {
         profile,
         connection: BuiltinConnectionFactory::Configured(connection_from_catalog(&configuration)),
@@ -374,7 +393,7 @@ fn catalog_registration(
 
 fn profile_from_catalog(
     configuration: &ResolvedProviderConfiguration,
-    discovery: BuiltinDiscoveryFactory,
+    _discovery: BuiltinDiscoveryFactory,
 ) -> ProviderProfile {
     ProviderProfile {
         provider_profile_id: configuration.provider_profile_id.clone(),
@@ -386,11 +405,7 @@ fn profile_from_catalog(
             .iter()
             .map(credential_from_catalog)
             .collect(),
-        discovery_mode: if discovery == BuiltinDiscoveryFactory::CatalogOnly {
-            DiscoveryMode::CatalogOnly
-        } else {
-            DiscoveryMode::MachineApi
-        },
+        discovery_mode: DiscoveryMode::MachineApi,
         refresh: RefreshPolicy::default(),
         default_inventory: None,
     }
@@ -447,7 +462,7 @@ fn custom_registration() -> BuiltinProviderRegistration {
                 header_name: None,
             },
             credential_variants: Vec::new(),
-            discovery_mode: DiscoveryMode::CatalogOnly,
+            discovery_mode: DiscoveryMode::MachineApi,
             refresh: RefreshPolicy::default(),
             default_inventory: None,
         },
@@ -458,7 +473,7 @@ fn custom_registration() -> BuiltinProviderRegistration {
             account: ProviderFieldSchema::optional(),
             region_base_urls: BTreeMap::new(),
         }),
-        discovery: BuiltinDiscoveryFactory::CatalogOnly,
+        discovery: BuiltinDiscoveryFactory::Standard,
         supports_dynamic_login: false,
         supports_any_adapter: true,
         instance_rules: Some(Value::Object(Map::new())),
@@ -683,7 +698,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(binding.profile.provider_profile_id, "vendor");
-        assert_eq!(binding.profile.discovery_mode, DiscoveryMode::CatalogOnly);
+        assert_eq!(binding.profile.discovery_mode, DiscoveryMode::MachineApi);
         assert_eq!(
             binding.profile.default_inventory.unwrap().models[0].provider_model_id,
             "vendor-model"
@@ -939,7 +954,7 @@ mod tests {
                     .unwrap()
                     .profile
                     .discovery_mode,
-                crate::provider::DiscoveryMode::CatalogOnly
+                crate::provider::DiscoveryMode::MachineApi
             );
         }
         for profile in registry.profiles() {
@@ -1027,18 +1042,19 @@ mod tests {
             .resolve(ProviderConnectionInput::default())
             .is_err());
 
-        let missing_inventory = registry.resolve(BuiltinProviderRequest {
-            provider_profile_id: CUSTOM_PROVIDER_PROFILE_ID,
-            protocol_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
-            auth_mode: ProviderAuthMode::ApiKey,
-            credential_kind: None,
-            configured_inventory: None,
-        });
-        assert!(matches!(
-            missing_inventory,
-            Err(ProviderError::InvalidConfiguration(message))
-                if message == "catalog-only provider requires configured discovery inventory"
-        ));
+        let missing_inventory = registry
+            .resolve(BuiltinProviderRequest {
+                provider_profile_id: CUSTOM_PROVIDER_PROFILE_ID,
+                protocol_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
+                auth_mode: ProviderAuthMode::ApiKey,
+                credential_kind: None,
+                configured_inventory: None,
+            })
+            .unwrap();
+        assert_eq!(
+            missing_inventory.profile.discovery_mode,
+            DiscoveryMode::MachineApi
+        );
 
         let dynamic_login = registry.resolve(BuiltinProviderRequest {
             provider_profile_id: CUSTOM_PROVIDER_PROFILE_ID,

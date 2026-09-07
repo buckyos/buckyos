@@ -19,6 +19,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_IDEMPOTENCY_WINDOW_MS: u64 = 24 * 60 * 60 * 1_000;
+const MAX_SAME_MODEL_ATTEMPTS: usize = 2;
+const DEFAULT_SAME_MODEL_RETRY_DELAY: Duration = Duration::from_millis(100);
+const MAX_SAME_MODEL_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) struct IdempotencyScope {
@@ -495,6 +498,7 @@ pub(crate) struct ProviderStartFailure {
     pub error: ProtocolError,
     pub provider_accepted: bool,
     pub retryable: bool,
+    pub retry_same_model: bool,
 }
 
 impl ProviderStartFailure {
@@ -503,14 +507,18 @@ impl ProviderStartFailure {
             error,
             provider_accepted: false,
             retryable,
+            retry_same_model: retryable,
         }
     }
 
     pub(crate) fn after_accept(error: ProtocolError) -> Self {
+        let retryable = error.allows_model_failover();
+        let retry_same_model = error.retry_same_model();
         Self {
             error,
             provider_accepted: true,
-            retryable: false,
+            retryable,
+            retry_same_model,
         }
     }
 }
@@ -767,11 +775,41 @@ impl ExecutionEngine {
                 Ok(binding) => binding,
                 Err(error) => return self.finish_failure(&record.task_id, error).await,
             };
-            match self
-                .providers
-                .start(request.runtime_generation, call, cancellation.clone())
-                .await
-            {
+            let mut same_model_attempt = 0;
+            let execution = loop {
+                same_model_attempt += 1;
+                match self
+                    .providers
+                    .start(request.runtime_generation, call, cancellation.clone())
+                    .await
+                {
+                    Ok(execution) => break Ok(execution),
+                    Err(failure)
+                        if failure.retry_same_model
+                            && same_model_attempt < MAX_SAME_MODEL_ATTEMPTS =>
+                    {
+                        self.tasks
+                            .report_state(
+                                &record.task_id,
+                                ExecutionState::Submitted,
+                                json_state(
+                                    "same_model_retry",
+                                    Some(Value::String(call.exact_model.clone())),
+                                    record.trace_id.as_deref(),
+                                ),
+                            )
+                            .await?;
+                        let delay = failure
+                            .error
+                            .retry_after
+                            .unwrap_or(DEFAULT_SAME_MODEL_RETRY_DELAY)
+                            .min(MAX_SAME_MODEL_RETRY_DELAY);
+                        tokio::time::sleep(delay).await;
+                    }
+                    Err(failure) => break Err(failure),
+                }
+            };
+            match execution {
                 Ok(execution) => match execution {
                     ProviderExecution::Immediate(output) => {
                         if !self
@@ -848,10 +886,8 @@ impl ExecutionEngine {
                     }
                 },
                 Err(failure) => {
-                    let can_failover = !failure.provider_accepted
-                        && failure.retryable
-                        && request.runtime_failover
-                        && index + 1 < calls.len();
+                    let can_failover =
+                        failure.retryable && request.runtime_failover && index + 1 < calls.len();
                     let mut error: AiccError = failure.error.into();
                     if failure.provider_accepted {
                         error.code = AiccErrorCode::ProviderError;
@@ -2160,11 +2196,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_failover_stops_after_provider_acceptance() {
+    async fn transient_failure_retries_same_model_then_fails_over() {
         let providers = Arc::new(FakeProviders::default());
         providers.plans.lock().unwrap().extend([
             StartPlan::Failure(ProviderStartFailure::before_accept(
                 ProtocolError::new(ProtocolErrorKind::Transport, "unavailable"),
+                true,
+            )),
+            StartPlan::Failure(ProviderStartFailure::before_accept(
+                ProtocolError::new(ProtocolErrorKind::Transport, "still unavailable"),
                 true,
             )),
             StartPlan::Success(ProviderExecution::Immediate(output("fallback"))),
@@ -2177,7 +2217,7 @@ mod tests {
         assert_eq!(receipt.state, ExecutionState::Succeeded);
         assert_eq!(
             providers.starts.lock().unwrap().as_slice(),
-            ["model@primary", "model@backup"]
+            ["model@primary", "model@primary", "model@backup"]
         );
 
         let providers = Arc::new(FakeProviders::default());
@@ -2186,7 +2226,11 @@ mod tests {
                 ProtocolErrorKind::Transport,
                 "connection lost after submit",
             ))),
-            StartPlan::Success(ProviderExecution::Immediate(output("must-not-run"))),
+            StartPlan::Failure(ProviderStartFailure::after_accept(ProtocolError::new(
+                ProtocolErrorKind::Transport,
+                "connection still unavailable",
+            ))),
+            StartPlan::Success(ProviderExecution::Immediate(output("fallback"))),
         ]);
         let (engine, _, _, _) = make_engine(providers.clone());
         let mut req = request(call("primary"));
@@ -2195,9 +2239,37 @@ mod tests {
         req.runtime_failover = true;
         assert_eq!(
             engine.execute(req).await.unwrap().state,
-            ExecutionState::Failed
+            ExecutionState::Succeeded
         );
-        assert_eq!(providers.starts.lock().unwrap().len(), 1);
+        assert_eq!(
+            providers.starts.lock().unwrap().as_slice(),
+            ["model@primary", "model@primary", "model@backup"]
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_model_skips_same_model_retry_and_fails_over() {
+        let providers = Arc::new(FakeProviders::default());
+        providers.plans.lock().unwrap().extend([
+            StartPlan::Failure(ProviderStartFailure::after_accept(
+                ProtocolError::new(ProtocolErrorKind::InvalidRequest, "model does not exist")
+                    .with_provider_code(Some("1211".to_owned())),
+            )),
+            StartPlan::Success(ProviderExecution::Immediate(output("fallback"))),
+        ]);
+        let (engine, _, _, _) = make_engine(providers.clone());
+        let mut req = request(call("primary"));
+        req.failover.push(call("backup"));
+        req.runtime_failover = true;
+
+        assert_eq!(
+            engine.execute(req).await.unwrap().state,
+            ExecutionState::Succeeded
+        );
+        assert_eq!(
+            providers.starts.lock().unwrap().as_slice(),
+            ["model@primary", "model@backup"]
+        );
     }
 
     #[tokio::test]

@@ -657,6 +657,51 @@ pub(crate) struct CatalogOnlyDiscovery {
     catalog_managed: bool,
 }
 
+pub(crate) struct FallbackDiscovery {
+    primary: Arc<dyn ProviderDiscovery>,
+    fallback: Arc<dyn ProviderDiscovery>,
+}
+
+impl FallbackDiscovery {
+    pub(crate) fn new(
+        primary: Arc<dyn ProviderDiscovery>,
+        fallback: Arc<dyn ProviderDiscovery>,
+    ) -> Self {
+        Self { primary, fallback }
+    }
+}
+
+#[async_trait]
+impl ProviderDiscovery for FallbackDiscovery {
+    async fn refresh_catalog(
+        &self,
+        catalog: &CatalogSnapshot,
+        provider_profile_id: &str,
+    ) -> ProviderResult<()> {
+        self.primary
+            .refresh_catalog(catalog, provider_profile_id)
+            .await?;
+        self.fallback
+            .refresh_catalog(catalog, provider_profile_id)
+            .await
+    }
+
+    async fn discover(
+        &self,
+        context: &DiscoveryContext<'_>,
+    ) -> ProviderResult<ProviderDiscoverySnapshot> {
+        match self.primary.discover(context).await {
+            Ok(snapshot) => Ok(snapshot),
+            Err(ProviderError::Discovery(_)) => {
+                let mut snapshot = self.fallback.discover(context).await?;
+                snapshot.health = ProviderHealthState::Degraded;
+                Ok(snapshot)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
 impl CatalogOnlyDiscovery {
     pub(crate) fn new(snapshot: ProviderDiscoverySnapshot) -> Self {
         Self {
@@ -3232,6 +3277,29 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["vendor-model-a", "vendor-model-b"]
         );
+    }
+
+    #[tokio::test]
+    async fn machine_discovery_failure_uses_static_fallback_as_degraded() {
+        let primary = Arc::new(ScriptedDiscovery::new(
+            [Err("models API unavailable".to_owned())],
+            discovery("remote-model"),
+        ));
+        let fallback = Arc::new(CatalogOnlyDiscovery::new(discovery("configured-model")));
+        let combined = FallbackDiscovery::new(primary.clone(), fallback);
+        let credential = ResolvedCredential::bearer("secret://provider", "secret").unwrap();
+        let snapshot = combined
+            .discover(&DiscoveryContext {
+                profile: &profile(),
+                instance: &instance("primary"),
+                credential: &credential,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(primary.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(snapshot.health, ProviderHealthState::Degraded);
+        assert_eq!(snapshot.models[0].provider_model_id, "configured-model");
     }
 
     fn routed_catalog() -> Arc<CatalogSnapshot> {

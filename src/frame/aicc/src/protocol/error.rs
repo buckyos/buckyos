@@ -65,6 +65,48 @@ impl ProtocolError {
     pub(crate) fn invalid_response(message: impl Into<String>) -> Self {
         Self::new(ProtocolErrorKind::InvalidResponse, message)
     }
+
+    pub(crate) fn is_model_unavailable(&self) -> bool {
+        self.provider_code.as_deref() == Some("1211")
+            || contains_any(
+                &self.message,
+                &["model does not exist", "model not found", "unknown model"],
+            )
+    }
+
+    pub(crate) fn retry_same_model(&self) -> bool {
+        !self.requires_candidate_change()
+            && (matches!(
+                self.kind,
+                ProtocolErrorKind::Transport
+                    | ProtocolErrorKind::Timeout
+                    | ProtocolErrorKind::DeadlineExceeded
+                    | ProtocolErrorKind::InvalidResponse
+            ) || self.retry_after.is_some())
+    }
+
+    pub(crate) fn allows_model_failover(&self) -> bool {
+        self.requires_candidate_change() || self.retry_same_model()
+    }
+
+    fn requires_candidate_change(&self) -> bool {
+        self.is_model_unavailable()
+            || contains_any(
+                &self.message,
+                &[
+                    "quota exhausted",
+                    "quota exceeded",
+                    "insufficient quota",
+                    "insufficient balance",
+                    "model temporarily unavailable",
+                ],
+            )
+    }
+}
+
+fn contains_any(value: &str, needles: &[&str]) -> bool {
+    let value = value.to_ascii_lowercase();
+    needles.iter().any(|needle| value.contains(needle))
 }
 
 impl std::fmt::Display for ProtocolError {
@@ -131,5 +173,26 @@ mod tests {
 
         let configuration: AiccError = ProtocolError::invalid_configuration("bad adapter").into();
         assert_eq!(configuration.code, AiccErrorCode::InternalError);
+    }
+
+    #[test]
+    fn retry_classification_separates_jitter_from_candidate_change() {
+        let timeout = ProtocolError::new(ProtocolErrorKind::Timeout, "timed out");
+        assert!(timeout.retry_same_model());
+        assert!(timeout.allows_model_failover());
+
+        for error in [
+            ProtocolError::new(ProtocolErrorKind::InvalidRequest, "model does not exist")
+                .with_provider_code(Some("1211".to_owned())),
+            ProtocolError::new(ProtocolErrorKind::ProviderRejected, "quota exhausted"),
+        ] {
+            assert!(!error.retry_same_model());
+            assert!(error.allows_model_failover());
+        }
+
+        let authentication =
+            ProtocolError::new(ProtocolErrorKind::Authentication, "invalid API key");
+        assert!(!authentication.retry_same_model());
+        assert!(!authentication.allows_model_failover());
     }
 }

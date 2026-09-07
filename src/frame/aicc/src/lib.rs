@@ -3,6 +3,7 @@ pub(crate) mod call;
 pub(crate) mod catalog;
 pub(crate) mod error;
 pub(crate) mod execution;
+pub(crate) mod health;
 pub(crate) mod matching;
 pub(crate) mod model;
 pub(crate) mod observability;

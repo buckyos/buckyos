@@ -43,6 +43,8 @@ impl AnthropicModelsTransport for HttpTransport {
 #[derive(Clone)]
 pub(crate) struct AnthropicModelsDiscovery {
     spec: AnthropicModelsSpec,
+    provider_profile_id: String,
+    protocol_adapter_id: Option<String>,
     transport: Arc<dyn AnthropicModelsTransport>,
 }
 
@@ -50,6 +52,22 @@ impl AnthropicModelsDiscovery {
     pub(super) fn new(spec: AnthropicModelsSpec, transport: HttpTransport) -> Self {
         Self {
             spec,
+            provider_profile_id: spec.provider_profile_id.to_owned(),
+            protocol_adapter_id: None,
+            transport: Arc::new(transport),
+        }
+    }
+
+    pub(super) fn for_profile(
+        spec: AnthropicModelsSpec,
+        provider_profile_id: impl Into<String>,
+        protocol_adapter_id: impl Into<String>,
+        transport: HttpTransport,
+    ) -> Self {
+        Self {
+            spec,
+            provider_profile_id: provider_profile_id.into(),
+            protocol_adapter_id: Some(protocol_adapter_id.into()),
             transport: Arc::new(transport),
         }
     }
@@ -59,7 +77,12 @@ impl AnthropicModelsDiscovery {
         spec: AnthropicModelsSpec,
         transport: Arc<dyn AnthropicModelsTransport>,
     ) -> Self {
-        Self { spec, transport }
+        Self {
+            spec,
+            provider_profile_id: spec.provider_profile_id.to_owned(),
+            protocol_adapter_id: None,
+            transport,
+        }
     }
 }
 
@@ -69,7 +92,12 @@ impl ProviderDiscovery for AnthropicModelsDiscovery {
         &self,
         context: &DiscoveryContext<'_>,
     ) -> ProviderResult<ProviderDiscoverySnapshot> {
-        validate_context(self.spec, context)?;
+        validate_context(
+            self.spec,
+            &self.provider_profile_id,
+            self.protocol_adapter_id.as_deref(),
+            context,
+        )?;
         let mut models = BTreeMap::<String, DiscoveredModel>::new();
         let mut after_id = None;
         let mut seen_cursors = BTreeSet::new();
@@ -160,11 +188,15 @@ impl ProviderDiscovery for AnthropicModelsDiscovery {
 
 fn validate_context(
     spec: AnthropicModelsSpec,
+    provider_profile_id: &str,
+    protocol_adapter_id: Option<&str>,
     context: &DiscoveryContext<'_>,
 ) -> ProviderResult<()> {
-    if context.profile.provider_profile_id != spec.provider_profile_id
-        || context.instance.provider_profile_id != spec.provider_profile_id
+    if context.profile.provider_profile_id != provider_profile_id
+        || context.instance.provider_profile_id != provider_profile_id
         || context.instance.protocol_adapter_id != context.profile.default_protocol_adapter_id
+        || protocol_adapter_id
+            .is_some_and(|adapter| context.instance.protocol_adapter_id != adapter)
     {
         return Err(ProviderError::InvalidConfiguration(format!(
             "{} discovery requires its builtin profile and adapter",
