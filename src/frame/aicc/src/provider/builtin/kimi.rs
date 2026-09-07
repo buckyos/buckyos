@@ -141,8 +141,9 @@ impl ProviderDiscovery for KimiDiscovery {
                 features::TOOL_CALL.to_owned(),
                 features::JSON_SCHEMA.to_owned(),
             ]);
-            if model.supports_image_in.unwrap_or(false) || model.supports_video_in.unwrap_or(false)
-            {
+            let supports_vision = model.supports_image_in.unwrap_or(false)
+                || model.supports_video_in.unwrap_or(false);
+            if supports_vision {
                 supported_features.insert(features::VISION.to_owned());
             }
             if model.supports_reasoning.unwrap_or(false) {
@@ -153,7 +154,11 @@ impl ProviderDiscovery for KimiDiscovery {
                 DiscoveredModel {
                     provider_model_id: model.id,
                     origin_model_id: None,
-                    api_types: Some(vec![ApiType::Llm]),
+                    api_types: Some(if supports_vision {
+                        vec![ApiType::Llm, ApiType::VisionOcr, ApiType::VisionCaption]
+                    } else {
+                        vec![ApiType::Llm]
+                    }),
                     supported_features: Some(supported_features),
                     remote_methods: Some(BTreeSet::from([
                         OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned()

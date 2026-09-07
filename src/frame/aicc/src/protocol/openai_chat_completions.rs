@@ -11,7 +11,7 @@ use base64::Engine;
 use buckyos_api::{
     features, AiContent, AiMessage, AiRole, AiToolResultContent, AiUsage, AiccCall,
     AiccExecutionMode, ApiType, LlmChatInvokeRequest, LlmResponseFormat, LlmResponseFormatType,
-    ResourceRef,
+    ResourceRef, VisionCaptionRequest, VisionOcrRequest,
 };
 use futures_util::{stream, StreamExt};
 use reqwest::header::{HeaderMap, CONTENT_TYPE};
@@ -104,11 +104,23 @@ struct StandardChatCompletionsDialect;
 impl OpenAiChatCompletionsDialect for StandardChatCompletionsDialect {}
 
 pub(crate) fn openai_chat_completions_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    let codec = OpenAiChatCompletionsCodec::new();
+    let dialect: Arc<dyn OpenAiChatCompletionsDialect> = Arc::new(StandardChatCompletionsDialect);
+    let llm_codec =
+        OpenAiChatCompletionsCodec::with_dialect_and_api_type(Arc::clone(&dialect), ApiType::Llm);
+    let vision_ocr_codec = OpenAiChatCompletionsCodec::with_dialect_and_api_type(
+        Arc::clone(&dialect),
+        ApiType::VisionOcr,
+    );
+    let vision_caption_codec =
+        OpenAiChatCompletionsCodec::with_dialect_and_api_type(dialect, ApiType::VisionCaption);
     (
-        codec.adapter_descriptor(),
+        llm_codec.adapter_descriptor(),
         CodecRegistration {
-            operation_codecs: vec![Arc::new(codec)],
+            operation_codecs: vec![
+                Arc::new(llm_codec),
+                Arc::new(vision_ocr_codec),
+                Arc::new(vision_caption_codec),
+            ],
             native_task_codecs: Vec::new(),
         },
     )
@@ -118,6 +130,7 @@ pub(crate) fn openai_chat_completions_adapter() -> (AdapterDescriptor, CodecRegi
 pub(crate) struct OpenAiChatCompletionsCodec {
     descriptor: OperationDescriptor,
     dialect: Arc<dyn OpenAiChatCompletionsDialect>,
+    api_type: ApiType,
 }
 
 impl OpenAiChatCompletionsCodec {
@@ -126,9 +139,17 @@ impl OpenAiChatCompletionsCodec {
     }
 
     pub(crate) fn with_dialect(dialect: Arc<dyn OpenAiChatCompletionsDialect>) -> Self {
+        Self::with_dialect_and_api_type(dialect, ApiType::Llm)
+    }
+
+    pub(crate) fn with_dialect_and_api_type(
+        dialect: Arc<dyn OpenAiChatCompletionsDialect>,
+        api_type: ApiType,
+    ) -> Self {
         Self {
             descriptor: openai_chat_completions_operation_descriptor(),
             dialect,
+            api_type,
         }
     }
 
@@ -262,19 +283,31 @@ impl OperationCodec for OpenAiChatCompletionsCodec {
     }
 
     fn api_type(&self) -> ApiType {
-        ApiType::Llm
+        self.api_type
     }
 
     fn execution_modes(&self) -> BTreeSet<ExecutionMode> {
-        BTreeSet::from([ExecutionMode::Immediate, ExecutionMode::Stream])
+        self.descriptor
+            .binding(self.api_type)
+            .expect("Chat Completions codec binding")
+            .execution_modes
+            .clone()
     }
 
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
         call.context.validate()?;
         call.input
             .validate_for(self.descriptor.binding(call.api_type)?)?;
-        match &call.input.canonical_request {
-            AiccCall::ChatCompletionsCreate(request) => self.encode_chat(request, call),
+        match (&call.input.canonical_request, self.api_type) {
+            (AiccCall::ChatCompletionsCreate(request), ApiType::Llm) => {
+                self.encode_chat(request, call)
+            }
+            (AiccCall::VisionOcr(request), ApiType::VisionOcr) => {
+                self.encode_chat(&vision_ocr_as_chat(request), call)
+            }
+            (AiccCall::VisionCaption(request), ApiType::VisionCaption) => {
+                self.encode_chat(&vision_caption_as_chat(request), call)
+            }
             _ => Err(ProtocolError::invalid_request(
                 "OpenAI Chat Completions only accepts chat.completions.create",
             )),
@@ -291,8 +324,9 @@ impl OperationCodec for OpenAiChatCompletionsCodec {
             ProtocolError::invalid_response("Chat Completions response must be an object")
         })?;
         let extensions = self.dialect.transform_immediate_response(object)?;
-        let output = normalize_completion(&value, extensions)
+        let mut output = normalize_completion(&value, extensions)
             .map_err(|error| error.with_request_id(Some(request_id)))?;
+        normalize_vision_output(&mut output, self.api_type);
         Ok(ProtocolExecution::Immediate(output))
     }
 
@@ -319,14 +353,45 @@ pub(crate) fn openai_chat_completions_operation_descriptor() -> OperationDescrip
         features::JSON_SCHEMA.to_string(),
         features::VISION.to_string(),
     ]);
+    let mut vision_ocr = OperationBinding::new(ApiType::VisionOcr, [ExecutionMode::Immediate]);
+    vision_ocr.supported_features = BTreeSet::from([features::VISION.to_string()]);
+    let mut vision_caption =
+        OperationBinding::new(ApiType::VisionCaption, [ExecutionMode::Immediate]);
+    vision_caption.supported_features = BTreeSet::from([features::VISION.to_string()]);
     OperationDescriptor {
         operation_id: OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_string(),
-        bindings: vec![binding],
+        bindings: vec![binding, vision_ocr, vision_caption],
         supports_cancel: false,
         supports_webhook: false,
         max_request_bytes: MAX_REQUEST_BYTES,
         max_response_bytes: MAX_RESPONSE_BYTES,
     }
+}
+
+fn vision_ocr_as_chat(request: &VisionOcrRequest) -> LlmChatInvokeRequest {
+    LlmChatInvokeRequest::new(
+        request.exact_model.clone(),
+        vec![AiMessage::new(
+            AiRole::User,
+            vec![
+                AiContent::text("Extract all visible text from this image."),
+                AiContent::image(request.document.clone()),
+            ],
+        )],
+    )
+}
+
+fn vision_caption_as_chat(request: &VisionCaptionRequest) -> LlmChatInvokeRequest {
+    LlmChatInvokeRequest::new(
+        request.exact_model.clone(),
+        vec![AiMessage::new(
+            AiRole::User,
+            vec![
+                AiContent::text("Describe this image accurately."),
+                AiContent::image(request.image.clone()),
+            ],
+        )],
+    )
 }
 
 fn chat_completions_endpoint(base_url: &str) -> ProtocolResultValue<String> {
@@ -971,6 +1036,33 @@ fn normalized_output(
         usage,
         artifacts: Vec::new(),
     })
+}
+
+fn normalize_vision_output(output: &mut ProtocolOutput, api_type: ApiType) {
+    if !matches!(api_type, ApiType::VisionOcr | ApiType::VisionCaption) {
+        return;
+    }
+    let text = output
+        .value
+        .get("message")
+        .and_then(|value| serde_json::from_value::<AiMessage>(value.clone()).ok())
+        .map(|message| {
+            message
+                .content
+                .into_iter()
+                .filter_map(|content| match content {
+                    AiContent::Text { text } => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+    output.value = match api_type {
+        ApiType::VisionOcr => json!({"text":text,"pages":[],"artifacts":{}}),
+        ApiType::VisionCaption => json!({"captions":[{"text":text,"confidence":null}]}),
+        _ => unreachable!(),
+    };
 }
 
 fn decode_error_response(response: HttpResponse) -> ProtocolError {
@@ -1654,7 +1746,7 @@ mod tests {
     }
 
     #[test]
-    fn registers_one_protocol_family_operation_without_responses_fallback() {
+    fn registers_chat_completion_bindings_without_responses_fallback() {
         let (descriptor, codecs) = openai_chat_completions_adapter();
         descriptor.validate().unwrap();
         assert_eq!(descriptor.protocol_family_id, "openai");
@@ -1665,11 +1757,21 @@ mod tests {
         assert_eq!(descriptor.base_adapter_id, None);
         assert_eq!(descriptor.operations.len(), 1);
         let operation = &descriptor.operations[OPENAI_CHAT_COMPLETIONS_OPERATION_ID];
-        assert_eq!(operation.bindings.len(), 1);
+        assert_eq!(operation.bindings.len(), 3);
         assert_eq!(operation.bindings[0].api_type, ApiType::Llm);
         assert_eq!(
             operation.bindings[0].execution_modes,
             BTreeSet::from([ExecutionMode::Immediate, ExecutionMode::Stream])
+        );
+        assert_eq!(operation.bindings[1].api_type, ApiType::VisionOcr);
+        assert_eq!(
+            operation.bindings[1].execution_modes,
+            BTreeSet::from([ExecutionMode::Immediate])
+        );
+        assert_eq!(operation.bindings[2].api_type, ApiType::VisionCaption);
+        assert_eq!(
+            operation.bindings[2].execution_modes,
+            BTreeSet::from([ExecutionMode::Immediate])
         );
 
         let mut registry = CodecRegistry::default();

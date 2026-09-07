@@ -1667,12 +1667,16 @@ mod tests {
         }
         golden.sort();
         golden.dedup();
-        assert_eq!(golden.len(), 63);
+        assert_eq!(golden.len(), 71);
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(
             golden.contains(&"openai|openai-responses|agent.computer_use|responses.create".into())
         );
         assert!(golden.contains(&"claude|claude-messages|llm|messages.create".into()));
+        assert!(golden.contains(&"glm|glm-chat|vision.ocr|chat.completions.create".into()));
+        assert!(golden.contains(&"kimi|kimi-chat|vision.caption|chat.completions.create".into()));
+        assert!(golden.contains(&"deepseek|deepseek-responses|vision.ocr|responses.create".into()));
+        assert!(golden.contains(&"doubao|doubao-responses|vision.caption|responses.create".into()));
         assert!(golden
             .contains(&"gemini|gemini-interactions|video.extend|models.predictLongRunning".into()));
         assert!(golden.contains(&"fal|fal-queue|image.upscale|queue.submit".into()));

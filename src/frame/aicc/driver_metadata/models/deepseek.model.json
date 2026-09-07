@@ -37,7 +37,8 @@
     {
       "id": "deepseek-v4-flash-vision-exp",
       "parameter_scale": "flash",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.deepseek", "llm.{driver}.{model}", "vision.ocr.deepseek", "vision.ocr.{model}", "vision.caption.deepseek", "vision.caption.{model}"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,

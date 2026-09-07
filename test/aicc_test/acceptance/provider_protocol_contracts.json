@@ -689,8 +689,12 @@
       "provider_profile_id": "kimi",
       "endpoint_path": "/v1",
       "credential_type": "bearer",
-      "official_first_party_model_ids": { "llm": ["kimi-k2.6", "kimi-k2.5"] },
-      "official_variant_sources": ["https://platform.kimi.com/docs/api/models-overview"],
+      "official_first_party_model_ids": {
+        "llm": ["kimi-k2.6", "kimi-k2.5"],
+        "vision.ocr": ["kimi-k2.6", "kimi-k2.5"],
+        "vision.caption": ["kimi-k2.6", "kimi-k2.5"]
+      },
+      "official_variant_sources": ["https://platform.kimi.com/docs/api/models-overview", "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"],
       "official_variant_rules": [{
         "model_ids": ["kimi-k2.6", "kimi-k2.5"],
         "variants": {
@@ -698,12 +702,12 @@
           "thinking-disabled": { "thinking": { "type": "disabled" } }
         }
       }],
-      "test_model_ids": { "llm": "kimi-k2.6" },
+      "test_model_ids": { "llm": "kimi-k2.6", "vision.ocr": "kimi-k2.6", "vision.caption": "kimi-k2.6" },
       "contracts": [{
         "id": "kimi.chat-completions.v1",
         "protocol_adapter_id": "kimi-chat",
         "api_version": "v1",
-        "api_types": ["llm"],
+        "api_types": ["llm", "vision.ocr", "vision.caption"],
         "operation": "chat.completions.create",
         "http_method": "POST",
         "path": "/v1/chat/completions",
@@ -724,21 +728,25 @@
       "endpoint_path": "/api/paas/v4",
       "credential_type": "bearer",
       "instance_fields": { "region": "global" },
-      "official_first_party_model_ids": { "llm": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash", "glm-4-32b-0414-128k"] },
-      "official_variant_sources": ["https://docs.z.ai/api-reference/llm/chat-completion"],
+      "official_first_party_model_ids": {
+        "llm": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash", "glm-4.5v", "glm-4-32b-0414-128k"],
+        "vision.ocr": ["glm-5.3-flash", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5v"],
+        "vision.caption": ["glm-5.3-flash", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5v"]
+      },
+      "official_variant_sources": ["https://docs.z.ai/api-reference/llm/chat-completion", "https://docs.z.ai/guides/vlm/glm-5.3-flash", "https://docs.z.ai/guides/vlm/glm-4.6v"],
       "official_variant_rules": [{
-        "model_ids": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash"],
+        "model_ids": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash", "glm-4.5v"],
         "variants": {
           "thinking-enabled": { "thinking": { "type": "enabled" } },
           "thinking-disabled": { "thinking": { "type": "disabled" } }
         }
       }],
-      "test_model_ids": { "llm": "glm-5.1" },
+      "test_model_ids": { "llm": "glm-5.1", "vision.ocr": "glm-5.3-flash", "vision.caption": "glm-5.3-flash" },
       "contracts": [{
         "id": "glm.chat-completions.v4",
         "protocol_adapter_id": "glm-chat",
         "api_version": "v4",
-        "api_types": ["llm"],
+        "api_types": ["llm", "vision.ocr", "vision.caption"],
         "operation": "chat.completions.create",
         "http_method": "POST",
         "path": "/api/paas/v4/chat/completions",
@@ -758,7 +766,11 @@
       "provider_profile_id": "deepseek",
       "endpoint_path": "",
       "credential_type": "bearer",
-      "official_first_party_model_ids": { "llm": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"] },
+      "official_first_party_model_ids": {
+        "llm": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"],
+        "vision.ocr": ["deepseek-v4-flash-vision-exp"],
+        "vision.caption": ["deepseek-v4-flash-vision-exp"]
+      },
       "official_variant_sources": ["https://api-docs.deepseek.com/api/create-response/"],
       "official_variant_rules": [{
         "model_ids": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"],
@@ -772,12 +784,12 @@
           "reasoning-max": { "reasoning": { "effort": "max" } }
         }
       }],
-      "test_model_ids": { "llm": "deepseek-v4-flash" },
+      "test_model_ids": { "llm": "deepseek-v4-flash", "vision.ocr": "deepseek-v4-flash-vision-exp", "vision.caption": "deepseek-v4-flash-vision-exp" },
       "contracts": [{
         "id": "deepseek.responses.v1",
         "protocol_adapter_id": "deepseek-responses",
         "api_version": "v1",
-        "api_types": ["llm"],
+        "api_types": ["llm", "vision.ocr", "vision.caption"],
         "operation": "responses.create",
         "http_method": "POST",
         "path": "/responses",
@@ -798,18 +810,22 @@
       "endpoint_path": "/api/v3",
       "credential_type": "bearer",
       "instance_fields": { "region": "cn-beijing" },
-      "official_first_party_model_ids": { "llm": ["doubao-seed-2-0-lite-260215"] },
+      "official_first_party_model_ids": {
+        "llm": ["doubao-seed-2-0-lite-260215"],
+        "vision.ocr": ["doubao-seed-2-0-lite-260215"],
+        "vision.caption": ["doubao-seed-2-0-lite-260215"]
+      },
       "official_variant_sources": ["https://www.volcengine.com/docs/82379/1795150"],
       "official_variant_rules": [{
         "model_ids": ["doubao-seed-2-0-lite-260215"],
         "variants": { "thinking-disabled": { "thinking": { "type": "disabled" } } }
       }],
-      "test_model_ids": { "llm": "doubao-seed-2-0-lite-260215" },
+      "test_model_ids": { "llm": "doubao-seed-2-0-lite-260215", "vision.ocr": "doubao-seed-2-0-lite-260215", "vision.caption": "doubao-seed-2-0-lite-260215" },
       "contracts": [{
         "id": "doubao.responses.v3",
         "protocol_adapter_id": "doubao-responses",
         "api_version": "v3",
-        "api_types": ["llm"],
+        "api_types": ["llm", "vision.ocr", "vision.caption"],
         "operation": "responses.create",
         "http_method": "POST",
         "path": "/api/v3/responses",

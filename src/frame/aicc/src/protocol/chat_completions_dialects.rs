@@ -305,7 +305,14 @@ fn derived_adapter(
     dialect: Arc<dyn OpenAiChatCompletionsDialect>,
 ) -> (AdapterDescriptor, CodecRegistration) {
     let operation = openai_chat_completions_operation_descriptor();
-    let codec = OpenAiChatCompletionsCodec::with_dialect(dialect);
+    let llm_codec =
+        OpenAiChatCompletionsCodec::with_dialect_and_api_type(Arc::clone(&dialect), ApiType::Llm);
+    let vision_ocr_codec = OpenAiChatCompletionsCodec::with_dialect_and_api_type(
+        Arc::clone(&dialect),
+        ApiType::VisionOcr,
+    );
+    let vision_caption_codec =
+        OpenAiChatCompletionsCodec::with_dialect_and_api_type(dialect, ApiType::VisionCaption);
     (
         AdapterDescriptor {
             protocol_family_id: OPENAI_PROTOCOL_FAMILY_ID.to_owned(),
@@ -316,7 +323,11 @@ fn derived_adapter(
             operations: BTreeMap::from([(operation.operation_id.clone(), operation)]),
         },
         CodecRegistration {
-            operation_codecs: vec![Arc::new(codec)],
+            operation_codecs: vec![
+                Arc::new(llm_codec),
+                Arc::new(vision_ocr_codec),
+                Arc::new(vision_caption_codec),
+            ],
             native_task_codecs: Vec::new(),
         },
     )

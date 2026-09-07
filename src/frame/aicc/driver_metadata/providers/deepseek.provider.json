@@ -11,7 +11,7 @@
   "patterns": [
     {
       "match": "*",
-      "operations": { "llm": "responses.create" },
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" },
       "request_rules": [
         {
           "remove": [

@@ -9,7 +9,7 @@
   "patterns": [
     {
       "match": "*",
-      "operations": { "llm": "chat.completions.create" }
+      "operations": { "llm": "chat.completions.create", "vision.ocr": "chat.completions.create", "vision.caption": "chat.completions.create" }
     }
   ],
   "variants": [

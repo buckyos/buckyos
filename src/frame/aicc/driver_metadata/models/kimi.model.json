@@ -8,8 +8,8 @@
   "models": [
     {
       "id": "kimi-k2.5",
-      "api_types": ["llm"],
-      "logical_mounts": ["llm.kimi", "llm.{driver}.{model}"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.kimi", "llm.{driver}.{model}", "vision.ocr.kimi", "vision.ocr.{model}", "vision.caption.kimi", "vision.caption.{model}"],
       "capabilities": {
         "max_context_tokens": 262144,
         "streaming": true,
@@ -21,8 +21,8 @@
     },
     {
       "id": "kimi-k2.6",
-      "api_types": ["llm"],
-      "logical_mounts": ["llm.kimi", "llm.{driver}.{model}"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.kimi", "llm.{driver}.{model}", "vision.ocr.kimi", "vision.ocr.{model}", "vision.caption.kimi", "vision.caption.{model}"],
       "capabilities": {
         "max_context_tokens": 262144,
         "streaming": true,
