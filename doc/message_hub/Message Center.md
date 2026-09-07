@@ -401,9 +401,9 @@ msg.list_sessions(owner, cursor_updated_at_ms?, cursor_session_id?, limit?, with
 msg.list_session(owner, session_id, cursor_sort_key?, cursor_record_id?, limit?, descending?, with_object?)
   -> { items: [ { record_id, msg_id, direction, box_kind, sort_key, from, to,
          recipient_state?,                  # 入站记录
-         delivery: {                        # 出站记录：聚合视图
+         delivery?: {                       # 出站记录：聚合视图
             overall: sending | delivered | partial_failed | failed,
-            per_target: [ { target_did, state, attempts, last_error? } ]
+            per_target: [ { target_did, state, attempts, external_msg_id?, last_error? } ]
          },
          msg?                               # with_object=true 时附带 MsgObject
        } ], next_cursor_sort_key?, next_cursor_record_id? }

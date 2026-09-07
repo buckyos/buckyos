@@ -243,7 +243,7 @@ hover、focus-within 和触屏均能访问处理入口。对话框有 Tab 焦点
 
 | 入口 | 当前实现 |
 |---|---|
-| `postSendMessage` | 返回 Promise<void>，未保留 PostSendResult 的 ok、reason、msg_id 和 deliveries |
+| `postSendMessage` | 返回 `Promise<void>`，未保留 PostSendResult 的 ok、reason、msg_id 和 deliveries |
 | `sessionItemToMessageObject` | 仅附 record_id / session_id 与简化投递图标；丢弃 box_kind、sort_key、recipient_state、完整 delivery 等记录上下文；无 msg 时跳过 |
 | `SessionApiConversationMessageReader` | readerKey 只有 sessionId；全量顺序拉取历史，仅支持 append，不支持旧记录更新 / 删除 / 重新归类 |
 | `listAllSessions` | 跟随游标拉取全部会话；没有按需首屏或完整实体聚合能力 |
