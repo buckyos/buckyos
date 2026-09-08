@@ -173,13 +173,13 @@ test('FB-08: dropped files upload to the target and conflicts keep both', async 
   await expect(win.getByTestId('transfer-success')).toHaveCount(3)
 })
 
-test('FB-10/11: zero and unknown metadata, disabled copy and sorting', async ({ page }) => {
+test('FB-10/11: zero and unknown metadata, copy capability and sorting', async ({ page }) => {
   const win = await openFiles(page)
   await fixture(page, [{ id: 'zero', name: 'zero.txt', path: '/home/Documents/zero.txt', sizeBytes: 0 }, { id: 'unknown', name: 'unknown.txt', path: '/home/Documents/unknown.txt' }])
   await documents(page)
   await expect(win.getByRole('row').filter({ has: page.getByRole('cell', { name: 'zero.txt', exact: true }) })).toContainText('0 B')
   await win.getByRole('cell', { name: 'unknown.txt', exact: true }).click({ button: 'right' })
-  await expect(page.getByRole('menuitem', { name: 'Copy files', exact: true })).toBeDisabled()
+  await expect(page.getByRole('menuitem', { name: 'Copy files', exact: true })).toBeEnabled()
   await page.getByRole('menuitem', { name: 'Details', exact: true }).click()
   await win.getByRole('tab', { name: 'AI', exact: true }).click()
   await expect(win.getByText('AI processing status is unknown.', { exact: false })).toBeVisible()

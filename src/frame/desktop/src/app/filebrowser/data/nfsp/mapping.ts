@@ -142,6 +142,8 @@ export function mapEntryToItem(entry: Entry, context: EntryMapContext): FileItem
     target.kind === 'dir' || target.kind === 'collection' || target.kind === 'group'
   const fileEntry: FileEntry = {
     id: refIdOf(target.ref),
+    copyRef: target.copy_ref ? JSON.stringify(target.copy_ref) : undefined,
+    operations: { copy: !broken && !!target.copy_ref && ['dir', 'file', 'symlink'].includes(target.kind) && path.startsWith('/') && !(context.containerDfsPath !== undefined && entry.binding === 'reference') ? 'available' : 'unsupported' },
     name: entry.name,
     kind: isContainer ? 'folder' : target.kind === 'file' ? classifyFileKind(entry.name) : 'other',
     path,

@@ -256,7 +256,7 @@ impl AppState {
                 e
             }
         })?;
-        if h.i != 0 && meta.id.ino != 0 && meta.id.ino != h.i {
+        if h.i != meta.id.ino || h.d != meta.id.dev || h.b.is_some_and(|birth| Some(birth) != meta.birth) {
             return Err(stale(format!(
                 "native id changed at '{}'; re-resolve from a trusted locator",
                 h.p
@@ -382,6 +382,8 @@ impl AppState {
                     r: root.clone(),
                     p: rel.clone(),
                     i: meta.id.ino,
+                    d: meta.id.dev,
+                    b: meta.birth,
                     k: match meta.kind {
                         "dir" => "d",
                         "symlink" => "l",
@@ -397,6 +399,16 @@ impl AppState {
             Node::CollectionGroup { entity, .. } => {
                 WireRef::live(format!("n_{}", entity.node_id), entity.gen)
             }
+        }
+    }
+
+    pub fn copy_ref(&self, node: &Node) -> Option<WireRef> {
+        if let Node::Native { root, rel, meta, .. } = node {
+            Some(self.node_ref(&Node::Native {
+                root: root.clone(), rel: rel.clone(), meta: meta.clone(), anchored: None,
+            }))
+        } else {
+            None
         }
     }
 
@@ -426,6 +438,7 @@ impl AppState {
             "kind": kind,
             "state": "live",
             "ref": self.node_ref(node),
+            "copy_ref": self.copy_ref(node),
             "capabilities": Capabilities::for_kind(kind, writable),
         });
         if let Some(rev) = self.node_revision(node) {
@@ -877,6 +890,7 @@ impl AppState {
         }
         Ok(json!({
             "ref": self.node_ref(node),
+            "copy_ref": self.copy_ref(node),
             "kind": node.kind(),
             "attrs": Value::Object(attrs),
         }))

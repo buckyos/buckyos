@@ -13,6 +13,7 @@ export interface TargetRequest {
   entries: FileEntry[]
   initial: string
   references?: boolean
+  copy?: boolean
   submit: (path: string, entries?: FileEntry[]) => void
 }
 export function MoveTargetDialog({ request, onClose }: { request: TargetRequest; onClose: () => void }) {
@@ -33,7 +34,7 @@ export function MoveTargetDialog({ request, onClose }: { request: TargetRequest;
     request.submit(path, [...selected.values()])
   }
   return <Dialog open onClose={onClose} maxWidth="sm" fullWidth data-testid="target-dialog">
-    <DialogTitle>{request.references ? t('filebrowser.operation.addExisting', 'Add existing files') : t('filebrowser.actions.moveTo', 'Move to')} · {request.entries.length || selected.size}</DialogTitle>
+    <DialogTitle>{request.references ? t('filebrowser.operation.addExisting', 'Add existing files') : request.copy ? t('filebrowser.actions.copyTo', 'Copy to') : t('filebrowser.actions.moveTo', 'Move to')} · {request.entries.length || selected.size}</DialogTitle>
     <DialogContent>
       {request.entries.length > 0 && <p className="mb-2 max-h-16 overflow-auto text-sm">{request.entries.map((entry) => entry.name).join(', ')}</p>}
       <form onSubmit={(event) => { event.preventDefault(); navigate(draft) }} className="flex gap-2"><input aria-label={t('filebrowser.operation.destination', 'Destination')} value={draft} onChange={(event) => setDraft(event.target.value)} className="min-w-0 flex-1 rounded border bg-transparent p-2" /><Button type="submit">{t('filebrowser.operation.go', 'Go')}</Button></form>
@@ -51,6 +52,6 @@ export function MoveTargetDialog({ request, onClose }: { request: TargetRequest;
       {list.capabilities.acceptsContent && <Button onClick={() => setCreating(true)}>{t('filebrowser.operation.createHere', 'New folder here')}</Button>}
       <NamePromptDialog request={creating ? { title: t('filebrowser.actions.newFolder', 'New folder'), label: t('filebrowser.prompt.folderName', 'Folder name'), submitLabel: t('filebrowser.actions.create', 'Create'), schema: entryNameSchema, onSubmit: async (name) => { try { await folderOps().createFolder(path!, name) } catch (err) { throw new Error(toUiError(err).fallback) } } } : null} onClose={() => setCreating(false)} />
     </DialogContent>
-    <DialogActions><Button onClick={onClose}>{t('common.cancel', 'Cancel')}</Button><Button disabled={invalid || list.status !== 'ready' || (request.references && !selected.size)} onClick={submit} variant="contained">{request.references ? t('filebrowser.operation.addReferences', 'Add references') : t('filebrowser.operation.moveHere', 'Move here')}</Button></DialogActions>
+    <DialogActions><Button onClick={onClose}>{t('common.cancel', 'Cancel')}</Button><Button disabled={invalid || list.status !== 'ready' || (request.references && !selected.size)} onClick={submit} variant="contained">{request.references ? t('filebrowser.operation.addReferences', 'Add references') : request.copy ? t('filebrowser.operation.copyHere', 'Copy here') : t('filebrowser.operation.moveHere', 'Move here')}</Button></DialogActions>
   </Dialog>
 }

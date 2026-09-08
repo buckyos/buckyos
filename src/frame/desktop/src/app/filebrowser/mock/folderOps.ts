@@ -1,3 +1,4 @@
+import { mockCopyEntries } from './copy'
 import type { FileEntry } from '../types'
 import { registerFolderOps, runEntryBatch, operationError } from '../data/folderOps'
 import { invalidateMockPath, mockDelay } from '../data/mockReader'
@@ -22,7 +23,8 @@ function requireFolder(path: string) {
 }
 export function registerMockFolderOps() {
   return registerFolderOps({
-    supportsCopy: false,
+    supportsCopy: true,
+    copyEntries: mockCopyEntries,
     async nameExists(parent, name) { requireFolder(parent); return mockNameExists(parent, name) },
     async statEntry(parent, name) { requireFolder(parent); const item = mockEntryByPath(`${parent === '/' ? '' : parent}/${name}`); return item ? { ...item } : null },
     async createFolder(parent, name) {

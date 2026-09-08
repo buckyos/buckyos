@@ -9,7 +9,9 @@ export interface OperationConflict {
   target: FileEntry
   targetPath: string
 }
+export interface OperationCounts { success: number; failed: number; skipped: number; cancelled: number; pending: number; bytes: number }
 export interface OperationResult {
+  resultId?: number
   itemKey?: string
   entry: FileEntry
   targetPath?: string
@@ -17,12 +19,20 @@ export interface OperationResult {
   error?: UiError
 }
 export interface BatchOptions {
+  requestKey?: string
+  retryOf?: string
+  onTask?: (task: { taskId: string; total: number; cancelling: boolean; summary?: OperationCounts; loadMore?: () => Promise<void> }) => void
+  onCopyConflict?: (conflict: OperationConflict) => Promise<{ choice: ConflictChoice; apply: boolean }>
   signal?: AbortSignal
   onProgress?: (results: OperationResult[]) => void
   onConflict?: (conflict: OperationConflict) => Promise<ConflictChoice>
 }
 export interface FolderWriteOps {
   readonly supportsCopy: boolean
+  readonly copyUnavailableReason?: string
+  copyEntries(entries: FileEntry[], toParentPath: string, options?: BatchOptions): Promise<OperationResult[]>
+  resumeCopy?: (taskId: string, options?: BatchOptions) => Promise<OperationResult[]>
+  listCopies?: () => Promise<{ task_id: string; name: string; phase: string }[]>
   nameExists(parentPath: string, name: string): Promise<boolean>
   statEntry(parentPath: string, name: string): Promise<FileEntry | null>
   createFolder(parentPath: string, name: string): Promise<void>
@@ -55,6 +65,7 @@ export async function runEntryBatch(
   mutate: (entry: FileEntry, name: string) => Promise<void>,
   target?: string,
   options: BatchOptions = {},
+  mode: 'move' | 'copy' = 'move',
 ): Promise<OperationResult[]> {
   const results: OperationResult[] = []
   let cancelled = false
@@ -66,9 +77,9 @@ export async function runEntryBatch(
       let name = entry.name
       if (target) {
         const parent = entry.path.slice(0, entry.path.lastIndexOf('/')) || '/'
-        if (parent === target) { result.status = 'skipped'; result.error = operationError('SAME_FOLDER', 'Already in this folder') }
+        if (parent === target && mode === 'move') { result.status = 'skipped'; result.error = operationError('SAME_FOLDER', 'Already in this folder') }
         else {
-          if (entry.kind === 'folder' && (target === entry.path || target.startsWith(`${entry.path}/`))) throw operationError('DESCENDANT', 'A folder cannot be moved into itself or its descendants')
+          if (entry.kind === 'folder' && (target === entry.path || target.startsWith(`${entry.path}/`))) throw operationError('DESCENDANT', `A folder cannot be ${mode === 'copy' ? 'copied' : 'moved'} into itself or its descendants`)
           const existing = await folderOps().statEntry(target, name)
           if (existing) {
             if (!options.onConflict) throw operationError('CONFLICT', 'This name already exists in the destination')
@@ -95,7 +106,7 @@ const unsupported = () => Promise.reject(operationError('UNSUPPORTED', 'File ope
 const noOps: FolderWriteOps = {
   supportsCopy: false,
   nameExists: unsupported, statEntry: unsupported, createFolder: unsupported,
-  renameEntry: unsupported, deleteEntries: unsupported, moveEntries: unsupported, downloadUrl: () => null,
+  renameEntry: unsupported, deleteEntries: unsupported, moveEntries: unsupported, copyEntries: unsupported, downloadUrl: () => null,
 }
 let active: FolderWriteOps = noOps
 export function registerFolderOps(ops: FolderWriteOps): () => void {

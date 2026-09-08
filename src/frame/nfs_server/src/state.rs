@@ -21,6 +21,7 @@ pub struct AppState {
     pub revisions: RevisionMgr,
     pub bus: EventBus,
     pub uploads: UploadMgr,
+    pub copies: crate::copy::CopyJournal,
     /// Reconciler's per-dir fingerprints from the previous scan (see reconciler.rs).
     pub scan_state: std::sync::Mutex<crate::reconciler::ScanState>,
 }
@@ -42,6 +43,7 @@ impl AppState {
         let db = FileDb::open(&config.db_path())?;
         let handle_key = db.handle_key()?;
         let uploads = UploadMgr::new(config.staging_dir())?;
+        let copies = crate::copy::CopyJournal::open(&config.data_dir)?;
         Ok(Arc::new(AppState {
             handles: HandleCodec::new(handle_key),
             watch_key: rand::random(),
@@ -50,6 +52,7 @@ impl AppState {
             revisions: RevisionMgr::new(),
             bus: EventBus::new(),
             uploads,
+            copies,
             scan_state: std::sync::Mutex::new(Default::default()),
             db,
             config,

@@ -24,6 +24,7 @@ pub struct ServerConfig {
     pub max_batch: usize,
     pub replay_window: u64,
     pub lease_ttl_secs: u64,
+    pub copy_test: Option<buckyos_api::NfsCopyTestConfig>,
 }
 
 impl ServerConfig {
@@ -38,6 +39,7 @@ impl ServerConfig {
             max_batch: 64,
             replay_window: 128,
             lease_ttl_secs: 600,
+            copy_test: None,
         }
     }
 

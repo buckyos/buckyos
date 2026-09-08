@@ -21,7 +21,7 @@ KernelService 身份 login(含心跳),读取 `services/nfs-server/settings`
 - 监听 `127.0.0.1:4110`(`NFS_SERVER_SERVICE_PORT`)。NFSP 是跨 zone 通用协议,
   网关把 zone 级根路径 `/nfs/v1/*` 原样转发到本服务(boot_gateway.yaml,
   与 /ndn 同级),不使用 `/kapi/<service>` 形态。
-- 暂无按请求鉴权(目录全部可见);SSO/cap 校验在 auth 里程碑接入。
+- `copy_*` 方法验证实际用户 Bearer session token；其他 NFSP 方法尚未接入完整 SSO/cap 校验。
 
 集成点:`buckyos-api/src/nfs_server_client.rs`(常量 + Settings)、
 `scheduler/system_config_builder.rs::add_nfs_server()`、
@@ -42,12 +42,12 @@ nfs_server --listen 127.0.0.1:3260 \
 ```
 
 - `--export name=/abs/path`(可重复):每个 export root 成为当前 Zone 的 `cyfs:///` 命名空间一级子目录。
-- `--data-dir`:存放 `filedb.sqlite` 与上传暂存区(暂存区每次启动清空)。
+- `--data-dir`:存放 `filedb.sqlite`、`copy.sqlite`、`copy-locks/` 与上传暂存区。复制日志及目标目录中的复制临时文件保留用于恢复；上传暂存区每次启动清空。
 - `--scan-interval-secs`:Reconciler 扫描周期,0 = 关闭。
 - `--debug-api`:开启 `POST /nfs/v1/debug/{reconcile|create_view}`(仅测试/开发)。
 
 ```bash
-cargo test -p nfs_server        # 39 单元 + 17 集成测试,不需要任何外部服务
+cargo test -p nfs_server        # 单元与集成测试，不需要外部服务
 ```
 
 ## 协议覆盖(nfs_server.md §4.1 对照)
@@ -57,6 +57,7 @@ cargo test -p nfs_server        # 39 单元 + 17 集成测试,不需要任何外
 | 会话 | `hello` / `bye` | ✅ feature 协商、limits、realms;session 由 hello 返回 |
 | 解析 | `resolve` / `stat` / `list` / `batch` | ✅ 统一信封;list 接受 Dir/View/Collection/Group Ref;无状态游标(D10 不重置,返回 `revision_changed`);batch 共享游标 walk/stat/list |
 | 写入 | `mkdir` / `move` / `delete` / `open_write` / `commit_file` | ✅ revision CAS + 内存租约 + 旁路写 commit 复检(size/mtime) |
+| 本地复制 | `copy_capabilities` / `copy_submit` / `copy_list` / `copy_get` / `copy_decide` / `copy_cancel` | ✅ 可信用户、TaskMgr 任务、逐项日志、恢复/取消/失败项重试；详见产品文档 §10 |
 | 引用绑定 | `bind_ref` / `unlink` | ✅ sidecar merge、同名冲突 `conflicts[]`、unlink 只解引用 |
 | 上传 | `probe` + tus 续传 + `commit_file` | ✅ 内嵌最小 tus(N1 采纳内嵌方案);probe/秒传基于 filedb `content_index` 缓存表 |
 | 元数据 | `get_meta` / `set_meta`(user ns) | ✅ 锚定 `live:n_<id>` + `obj:sha256:*`;写 meta 触发惰性锚定 |
@@ -123,7 +124,33 @@ v1 用**扫描循环 + 访问时校验**替代平台 watcher(inotify/USN/FSEvent
 
 ## 后续接入(不在 v1)
 
-1. SSO 鉴权 + cap 校验(grant 数据面放行)。runtime/login/心跳/调度已接入;按请求鉴权未开。
+1. SSO 鉴权 + cap 校验(grant 数据面放行)。runtime/login/心跳/调度已接入;完整 NFSP 按请求鉴权未开；复制方法已验证用户。
 2. NamedStore link 模式(`add_chunk_by_link_to_local_file` / qcid 阶梯)替换 `content_index`。
 3. `repr` 缩略图、`view_patch`、`get_tree`、`publish_dir`/Frozen、referral 设备视图。
 4. NativeTree trait 冻结(M7):第二个实现(fs_meta)落地时从 `namespace.rs` 提取。
+
+## 文件复制真实 E2E
+
+从仓库 `src/` 执行（已有 Rust/Node/pnpm/Chromium 环境）：
+
+```bash
+cargo build -p nfs_server
+cargo build -p task_manager --example nfs_copy_fixture
+FB_NFSP_E2E=1 FB_COPY_AUTO=1 VITE_NFS_PROXY=http://127.0.0.1:3262 \
+  pnpm --dir frame/desktop exec playwright test \
+  tests/e2e/pages/filebrowser.copy.nfsp.spec.ts \
+  tests/e2e/pages/filebrowser.nfsp.spec.ts --workers=1 --reporter=list
+```
+
+`CARGO_TARGET_DIR` 如果有自定义，构建与 E2E 必须使用同一环境值。fixture 自动启动
+3262 端口 NFSP、3382 端口真实 TaskManagerService 及其 SQLite RDB 用户/系统分区，
+使用独立临时导出目录。root 下以 uid/gid 65534 运行服务，测试真实文件系统权限拒绝。
+固定测试密钥仅供该 fixture；NFSP 的 `--copy-test-config FILE` 只接受独立模式、
+loopback 监听且显式开启 `--debug-api`。测试仍执行 JWT 签名及标准用户 claims 校验。
+`NFS_COPY_TEST_SLOW` / `NFS_COPY_TEST_FAULT=after-commit` 仅在该测试配置下生效。
+服务结束后清理本次目录，不接触开发 Zone 的运行服务。
+
+部署时同时更新 Desktop、nfs-server 和 task-manager 的内置 `nfs.copy/v1` schema。
+生产模式通过现有 runtime 验证 Verify Hub 用户 token，并用 nfs-server 服务身份代理
+该用户创建/控制 Task；hello 的随机 session 不是 Task creator。详细 Input、恢复状态、
+文件元数据和平台边界见 [产品协议 §10](../../../product/bucky_file/nfs_server.md#10-本地文件复制扩展fb-04-copy)。

@@ -42,6 +42,7 @@ import { asCollectionReader } from './data/CollectionModel'
 import { collectionDirectory, useCollections } from './data/collectionDirectory'
 import { availableName, folderOps } from './data/folderOps'
 import type { OperationResult, OperationConflict, ConflictChoice } from './data/folderOps'
+import { CopyTasks } from './dialogs/CopyTasks'
 import { DeleteDialog, ConflictDialog, BatchResults } from './dialogs/OperationDialogs'
 import type { DeleteRequest } from './dialogs/OperationDialogs'
 import { operationFeedback, useOperationFeedback } from './data/operationFeedback'
@@ -120,6 +121,8 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
   const right = useBrowserPane([], windowId ? `${windowId}:right` : undefined)
   const livePanes = useRef([left, right])
   useEffect(() => { livePanes.current = [left, right] }, [left, right])
+  const [, refreshCopyCapability] = useState(0)
+  useEffect(() => { const refresh = () => refreshCopyCapability((n) => n + 1); window.addEventListener('files-copy-capability', refresh); return () => window.removeEventListener('files-copy-capability', refresh) }, [])
   const [closedTabs, setClosedTabs] = useState<BrowserTab[]>([])
   const [focusedSide, setFocusedSide] = useState<'left' | 'right'>('left')
 
@@ -135,7 +138,7 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
   })
   const [toast, setToast] = useState<string | null>(null)
   const [previewCollapsed, setPreviewCollapsed] = useState(true)
-  /** Toolbar cut/copy clipboard, shared by both panes (mock — entries only). */
+  /** Toolbar clipboard, shared by both panes. */
   const [clipboard, setClipboard] = useState<ClipboardState | null>(null)
   /** Active form dialog (new collection/group, rename, new folder). */
   const [namePrompt, setNamePrompt] = useState<NamePromptRequest | null>(null)
@@ -239,6 +242,7 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
   const copyText = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text)
+      setClipboard({ entries: [], mode: 'text', text, token: crypto.randomUUID() })
       showToast(t('filebrowser.toast.copied', 'Copied to clipboard'))
     } catch {
       showToast(t('filebrowser.toast.copyFailed', 'Copy failed'))
@@ -579,29 +583,38 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
     showToast(t('filebrowser.toast.cut', 'Cut {{count}} item(s)', { count: entries.length }))
   }
 
-  const copyEntries = (entries: FileEntry[]) => {
+  const copyEntries = (entries: FileEntry[], mode: 'copy' | 'references' = 'copy') => {
     if (!entries.length) return
-    setClipboard({ entries, mode: 'copy', token: crypto.randomUUID() })
+    setClipboard({ entries, mode, token: crypto.randomUUID() })
     showToast(
       t('filebrowser.toast.copyItems', 'Copied {{count}} item(s)', { count: entries.length }),
     )
   }
 
-  const runBatch = async (pane: BrowserPane, items: FileItem[], kind: 'move' | 'delete' | 'remove-ref' | 'add-ref', target?: string, cutClipboard?: ClipboardState | null, previousResults: OperationResult[] = []) => {
+  const runBatch = async (pane: BrowserPane, items: FileItem[], kind: 'copy' | 'move' | 'delete' | 'remove-ref' | 'add-ref', target?: string, cutClipboard?: ClipboardState | null, previousResults: OperationResult[] = [], retryOf?: string, requestKey = crypto.randomUUID(), resumeTaskId?: string) => {
     if (operationFeedback.isRunning() || !items.length) return
     busyRef.current = true
     const selectedAtStart = [...pane.selectedItemsMap.values()]
     const reconcileSources = livePanes.current.map((source) => source.reconcileMovedEntries)
     const captured = items.map((item) => ({ ...item, entry: { ...item.entry } }))
     const controller = new AbortController()
-    const title = `${kind === 'move' ? t('filebrowser.actions.moveTo', 'Move to') : kind === 'delete' ? t('filebrowser.operation.permanentDelete', 'Permanently delete') : kind === 'add-ref' ? t('filebrowser.operation.addReferences', 'Add references') : t('filebrowser.actions.removeFromCollection', 'Remove from collection')} · ${target ?? displayPath(pane.currentUrl)}`
-    const initial: BatchTask = { ownerId: windowId, title, total: items.length + previousResults.length, results: previousResults, running: true, cancel: () => controller.abort(), retry: () => {} }
+    const title = `${kind === 'copy' ? t('filebrowser.actions.copyTo', 'Copy to') : kind === 'move' ? t('filebrowser.actions.moveTo', 'Move to') : kind === 'delete' ? t('filebrowser.operation.permanentDelete', 'Permanently delete') : kind === 'add-ref' ? t('filebrowser.operation.addReferences', 'Add references') : t('filebrowser.actions.removeFromCollection', 'Remove from collection')} · ${target ?? displayPath(pane.currentUrl)}`
+    const initial: BatchTask = { operationKey: requestKey, ownerId: windowId, reveal: (path) => livePanes.current[0].revealOriginal(path), title, total: items.length + previousResults.length, results: previousResults, running: true, cancel: () => { controller.abort(); setBatchTask((current) => current ? { ...current, cancelling: true } : current) }, retry: () => {} }
     setBatchTask(initial)
     let results: OperationResult[] = []
-    const onProgress = (results: OperationResult[]) => setBatchTask((prev) => prev ? { ...prev, results: [...previousResults, ...results] } : prev)
-    const options = { signal: controller.signal, onProgress, onConflict: conflictResolver() }
+    const onProgress = (results: OperationResult[]) => setBatchTask((prev) => prev?.operationKey === requestKey ? { ...prev, results: [...previousResults, ...results] } : prev)
+    let monitorFailed = false
+    let copyTaskId = resumeTaskId
+    const options = { signal: controller.signal, onProgress, onConflict: conflictResolver(), retryOf, requestKey,
+      onCopyConflict: (conflict: OperationConflict) => operationFeedback.requestConflict(conflict, windowId),
+      onTask: (task: { taskId: string; total: number; cancelling: boolean; loadMore?: () => Promise<void> }) => {
+        copyTaskId = task.taskId
+        setBatchTask((current) => current?.operationKey === requestKey ? { ...current, ...task } : current)
+      },
+    }
     try {
-      if (kind === 'move') results = await folderOps().moveEntries(captured.map((item) => item.entry), target!, options)
+      if (kind === 'copy') results = resumeTaskId && folderOps().resumeCopy ? await folderOps().resumeCopy!(resumeTaskId, options) : await folderOps().copyEntries(captured.map((item) => item.entry), target!, options)
+      else if (kind === 'move') results = await folderOps().moveEntries(captured.map((item) => item.entry), target!, options)
       else if (kind === 'delete') results = await folderOps().deleteEntries(captured.map((item) => item.entry), options)
       else {
         for (const item of captured) {
@@ -612,26 +625,29 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
         }
       }
     } catch (err) {
+      monitorFailed = true
       results = captured.map((item) => ({ entry: item.entry, status: 'failed', error: toUiError(err) }))
     } finally { busyRef.current = false }
     results = [...previousResults, ...results.map((result, i) => ({ ...result, itemKey: captured[i]?.key }))]
     const successfulKeys = new Set(results.filter((result) => result.status === 'success').map((result) => result.itemKey))
     const succeeded = new Set(results.filter((result) => result.status === 'success').map((result) => result.entry.id))
     if (kind === 'move' || kind === 'delete') reconcileSources.forEach((reconcile) => reconcile(succeeded))
-    pane.reconcileSelection(selectedAtStart.filter((item) => !successfulKeys.has(item.key)))
+    if (kind !== 'copy') pane.reconcileSelection(selectedAtStart.filter((item) => !successfulKeys.has(item.key)))
     if (kind === 'move' && cutClipboard) setClipboard((current) => {
       if (!current || current.token !== cutClipboard.token) return current
       const entries = current.entries.filter((entry) => !succeeded.has(entry.id))
       return entries.length ? { ...current, entries } : null
     })
-    setBatchTask({ ...initial, results, running: false, retry: () => {
+    setBatchTask((current) => ({ ...initial, ...current, taskId: copyTaskId, summary: monitorFailed ? undefined : current?.summary, results, running: false, cancelling: false, retry: () => {
+      if (kind === 'copy') { void runBatch(pane, captured, kind, target, undefined, [], monitorFailed ? undefined : copyTaskId, monitorFailed ? requestKey : undefined, monitorFailed ? copyTaskId : undefined); return }
       const failed = new Set(results.filter((result) => result.status === 'failed').map((result) => result.entry.id))
       const current = livePanes.current.find((current) => current.activeTabId === pane.activeTabId && current.currentUrl === pane.currentUrl && [...current.selectedItemsMap.values()].every((item) => failed.has(item.entry.id)))
       void runBatch(current ?? pane, captured.filter((item) => failed.has(item.entry.id)), kind, target, cutClipboard, results.filter((result) => result.status !== 'failed'))
-    } })
+    } }))
   }
 
   const moveSelected = (pane: BrowserPane, entries: FileEntry[], target: string, clip?: ClipboardState | null) => runBatch(pane, entries.map(itemOf), 'move', target, clip)
+  const requestCopy = (pane: BrowserPane, entries: FileEntry[]) => setTargetRequest({ entries, copy: true, initial: dfsPathOf(pane.currentUrl) ?? '/home', submit: (path) => void runBatch(pane, entries.map(itemOf), 'copy', path) })
   const requestMove = (pane: BrowserPane, entries: FileEntry[]) => setTargetRequest({ entries, initial: dfsPathOf(pane.currentUrl) ?? '/home', submit: (path) => void moveSelected(pane, entries, path) })
   const requestExisting = (pane: BrowserPane) => {
     const url = pane.currentUrl
@@ -641,11 +657,12 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
   }
   const pasteInto = (pane: BrowserPane) => {
     if (!clipboard) return
-    if (pane.list.capabilities.acceptsReferences && clipboard.mode === 'copy') {
+    if (pane.list.capabilities.acceptsReferences && clipboard.mode === 'references') {
       void runBatch(pane, clipboard.entries.map(itemOf), 'add-ref', pane.currentUrl)
       return
     }
     const target = dfsPathOf(pane.currentUrl)
+    if (target && pane.list.capabilities.acceptsContent && clipboard.mode === 'copy') void runBatch(pane, clipboard.entries.map(itemOf), 'copy', target)
     if (target && pane.list.capabilities.acceptsContent && clipboard.mode === 'cut') void moveSelected(pane, clipboard.entries, target, clipboard)
   }
   const removeFromCollection = (pane: BrowserPane, keys: string[]) => {
@@ -703,6 +720,9 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
       onDetails: () => setPreviewCollapsed((value) => !value),
       onPlaces: () => { if (splitActive && width < 1300) { setNavOverlayOpen(!navOverlayOpen); return }; const next = !navCollapsed; setNavCollapsed(next); localStorage.setItem('files.navCollapsed', String(next)) },
       onMoveTo: () => requestMove(pane, ctx.entries),
+      onCopy: commandState('copy', ctx).state === 'available' ? () => copyEntries(ctx.entries.map((entry) => ({ ...entry }))) : undefined,
+      onPaste: commandState('paste', ctx).state === 'available' ? () => pasteInto(pane) : undefined,
+      onCopyTo: commandState('copy-to', ctx).state === 'available' ? () => requestCopy(pane, ctx.entries) : undefined,
       sortKey: pane.sortKey, sortDir: pane.sortDir,
       onSortChange: (key: SortKey, dir: SortDir) => { pane.setSortKey(key); pane.setSortDir(dir) },
       onUpload: commandState('upload', ctx).state === 'available' ? () => triggerUpload(pane) : undefined,
@@ -787,7 +807,14 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
         }
         break
       case 'cut': cutEntries(entries.map((entry) => ({ ...entry }))); break
-      case 'copy-references': copyEntries(entries.map((entry) => ({ ...entry }))); break
+      case 'copy': copyEntries(entries.map((entry) => ({ ...entry }))); break
+      case 'copy-references': copyEntries(entries.map((entry) => ({ ...entry })), 'references'); break
+      case 'copy-to': requestCopy(pane, entries); break
+      case 'copy-other': {
+        const path = String(action.args?.path ?? context.otherPath ?? '')
+        if (path) void runBatch(pane, items, 'copy', path)
+        break
+      }
       case 'paste': pasteInto(pane); break
       case 'details':
         if (first) pane.applySelection([first.key], new Map([[first.key, first]]))
@@ -1010,12 +1037,12 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
         if (!source || source.token !== event.dataTransfer.getData(FILE_DRAG_TYPE) || !source.pane.isCurrent()) { showToast(t('filebrowser.operation.contextChanged', 'The selection changed. Open the menu again.')); return }
         if (pane.searchQuery) { showToast(t('filebrowser.operation.invalidDestination', 'Choose a writable folder outside the selected folders.')); return }
         if (pane.list.capabilities.acceptsReferences) { void runBatch(source.pane, source.items, 'add-ref', pane.currentUrl); return }
-        if (event.ctrlKey || event.altKey) { showToast(t('filebrowser.operation.copyUnsupported', 'File content copying is not supported')); return }
-        const state = commandState('move-to', contextFor(source.pane, source.items))
+        const copying = event.ctrlKey || event.altKey
+        const state = commandState(copying ? 'copy-to' : 'move-to', contextFor(source.pane, source.items))
         if (state.state !== 'available') { showToast(t(`filebrowser.commandReason.${state.reason}`, state.reason ?? 'This action is unavailable')); return }
         const target = dfsPathOf(pane.currentUrl)
         if (!target || !pane.list.capabilities.acceptsContent) { showToast(t('filebrowser.operation.invalidDestination', 'Choose a writable folder outside the selected folders.')); return }
-        void runBatch(source.pane, source.items, 'move', target)
+        void runBatch(source.pane, source.items, copying ? 'copy' : 'move', target)
         return
       }
       if (!pane.list.capabilities.acceptsContent || pane.searchQuery) { showToast(t('filebrowser.operation.localUploadUnsupported', 'Local files can only be uploaded to a writable folder')); return }
@@ -1026,6 +1053,7 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
   const dialogs = <>
     <DeleteDialog request={deleteRequest} onClose={() => setDeleteRequest(null)} />
     <ConflictDialog request={conflictRequest?.ownerId === windowId ? conflictRequest : null} />
+    <CopyTasks ownerId={windowId} reveal={(path) => livePanes.current[0].revealOriginal(path)} />
     {targetRequest && <MoveTargetDialog request={targetRequest} onClose={() => setTargetRequest(null)} />}
     <BatchResults task={batchTask?.ownerId === windowId ? batchTask : null} onClose={() => setBatchTask(null)} />
     {dragTarget && <div className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-[color:var(--cp-accent)] bg-[color:var(--cp-surface)]/90 p-6">{t('filebrowser.operation.dropDestination', 'Drop into {{path}}', { path: displayPath(dragTarget) })}</div>}
@@ -1155,6 +1183,10 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
 
         {mobileSelectMode && <div className="flex flex-wrap gap-1 px-3 text-xs">{[
           { command: 'download', label: t('filebrowser.menu.download', 'Download') },
+          { command: 'copy', label: t('filebrowser.menu.copyFiles', 'Copy files') },
+          { command: 'paste', label: t('filebrowser.menu.paste', 'Paste') },
+          { command: 'copy-to', label: t('filebrowser.actions.copyTo', 'Copy to') },
+          { command: 'copy-other', label: t('filebrowser.menu.copyOther', 'Copy to other pane') },
           { command: 'move-to', label: t('filebrowser.actions.moveTo', 'Move to') },
           { command: 'copy-references', label: t('filebrowser.menu.copyReferences', 'Copy references for a collection') },
         ].map(({ command, label }) => <button key={command} className="rounded-lg border border-[color:var(--cp-border)] px-2 disabled:opacity-40" disabled={commandState(command, contextFor(left, leftSelectedItems)).state !== 'available'} onClick={() => runMenuAction(left, contextFor(left, leftSelectedItems), { type: 'action', id: command, command, label: { key: '', fallback: label } })}>{label}</button>)}</div>}
@@ -1418,7 +1450,7 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
       </aside>}
 
       <main
-        data-pane="left"
+        data-pane="left" data-list-status={left.list.status} data-location={left.currentUrl}
         data-active={!focusedIsRight}
         {...dropProps(left)}
         className="fb-pane flex min-w-0 flex-1 flex-col"
@@ -1495,7 +1527,7 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
 
       {splitActive ? (
         <section
-          data-pane="right"
+          data-pane="right" data-list-status={right.list.status} data-location={right.currentUrl}
           data-active={focusedIsRight}
           {...dropProps(right)}
           className="fb-pane flex min-w-0 flex-1 flex-col border-l border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)]"

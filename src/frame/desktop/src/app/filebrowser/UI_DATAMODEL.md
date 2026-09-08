@@ -1,7 +1,7 @@
 # File Browser UI DataModel
 
-> Status: v1.3 — records the 2026-09-07 File Browser UI review implementation,
-> including tab-owned context, per-item operations, capability states and transfer outcomes.
+> Status: v1.4 — records the 2026-09-07 File Browser UI review implementation,
+> including authenticated, durable local copy tasks, tab-owned context and per-item outcomes.
 > Scope: <code>src/frame/desktop/src/app/filebrowser/</code>
 > Last reviewed: 2026-09-07
 
@@ -200,6 +200,7 @@ export interface StoryEntry {
  * UI projection for one underlying file/folder-like target.
  */
 export interface FileEntry {
+  copyRef?: string
   id: FileEntryId
   name: string
   kind: FileKind
@@ -666,7 +667,8 @@ interface TabState {
 }
 export interface ClipboardState {
   entries: FileEntry[]
-  mode: 'cut' | 'copy'
+  mode: 'cut' | 'copy' | 'references' | 'text'
+  text?: string
   token: string
 }
 ~~~
@@ -680,7 +682,7 @@ those IDs from unchanged source-tab selections, without clearing newer selection
 
 Clipboard tokens prevent an older operation from clearing newer clipboard contents. Successful
 moves remove only their own entries; skipped, failed and cancelled entries remain pending.
-Content copy is unavailable in both adapters; copying references is a separate command.
+Copy records the signed local identity in `FileEntry.copyRef`; Paste creates a task. Successful copies retain the clipboard. Reference and text intents cannot be pasted as file content; native input shortcuts retain text editing behavior.
 
 In-memory session snapshots (bounded to twenty pane sessions) retain tabs, history and scroll when
 the mobile shell unmounts Files to show Preview. Remount clears captured selections. Preview carries
@@ -1043,8 +1045,7 @@ The store in <code>data/transfers.ts</code> tracks executor work and preflight s
 outcomes. UI preflight checks target names through the operation adapter and uses the same conflict
 dialog as moves. Native folder selection preserves <code>webkitRelativePath</code> by creating/checking
 parent folders. External local-file drops upload to the highlighted writable folder; unsupported
-folder drops and local uploads into Collections/Views show an explicit explanation. Internal dragging uses a session token and captured source context, moves into the receiving pane's writable folder, and adds references into a Collection. Modifier-copy into a folder reports
-unsupported content copy. Dragging never creates a content upload from a system reference.
+folder drops and local uploads into Collections/Views show an explicit explanation. Internal dragging uses a session token and captured source context, moves into the receiving pane's writable folder, and adds references into a Collection. Modifier-copy into a folder submits the same copy task used by Paste. Dragging never creates a content upload from a system reference.
 
 Retry callbacks are held outside the shared task DTO and re-run destination preparation and
 conflict checks. A late NFSP name conflict never overwrites; retry returns through preflight.
@@ -1058,10 +1059,11 @@ NFSP still hashes the entire file in memory; real large-file behavior and resuma
 
 <code>FolderWriteOps</code> exposes <code>supportsCopy</code>, <code>nameExists</code>,
 <code>statEntry</code>, <code>createFolder</code>, <code>renameEntry</code>, <code>deleteEntries</code>,
-<code>moveEntries</code> and <code>downloadUrl</code>. Batch mutations return the following contract:
+<code>moveEntries</code>, <code>copyEntries</code>, optional <code>resumeCopy/listCopies</code> and <code>downloadUrl</code>. Batch mutations return the following contract:
 
 ~~~ts
 export interface OperationResult {
+  resultId?: number
   itemKey?: ListItemKey
   entry: FileEntry
   targetPath?: string
@@ -1075,6 +1077,10 @@ export interface OperationConflict {
   targetPath: string
 }
 export interface BatchOptions {
+  requestKey?: string
+  retryOf?: string
+  onTask?: (task: { taskId: string; total: number; cancelling: boolean; summary?: OperationCounts; loadMore?: () => Promise<void> }) => void
+  onCopyConflict?: (conflict: OperationConflict) => Promise<{ choice: ConflictChoice; apply: boolean }>
   signal?: AbortSignal
   onProgress?: (results: OperationResult[]) => void
   onConflict?: (conflict: OperationConflict) => Promise<ConflictChoice>
@@ -1092,7 +1098,7 @@ while mobile Preview replaces Files; it is shown by the originating Files window
 batch runs at a time. Moving/renaming rechecks actual backend names, blocks moving into self or
 descendants, skips same-folder moves, and supports extension-preserving names within the 255-byte
 UTF-8 limit. Conflict decisions can apply to later conflicts with the same source/target folder
-classification. Replace, directory merge and content copy remain unavailable.
+classification. Copy allows the same source/target directory and uses Keep both; it never skips solely because the parent paths match. Replace and directory merge remain unavailable.
 
 Mock validates captured ID/path/name before mutation. NFSP reads source-parent revision before
 checking current source identity and supplies expected revisions to delete/move/rename (both
@@ -1102,9 +1108,60 @@ never permission or network failure. There is no batch atomicity promise.
 Permanent deletion uses an in-app confirmation listing names/count/location and recursive-folder
 consequences. No trash, restore or undo affordance is exposed without backend support. Downloads
 report each browser handoff or unsupported item; folder archives and verified disk completion are
-not available. Service placeholders (content copy, share, settings, camera, new text) are hidden or
+not available. Service placeholders (share, settings, camera, new text) are hidden or
 disabled with a reason. <code>menu/commands.ts</code> supplies the same availability rule to menus,
 mobile sheets, toolbar actions and shortcuts.
+
+### 4.9 Durable local copy tasks (FB-04-COPY)
+
+The shared Rust contract is `buckyos-api/src/nfs_copy.rs`; the wire TypeScript contract is
+`src/api/nfs_copy.ts`. `data/nfsp/copy.ts` owns submission, immutable retry input, monitoring,
+conflict decisions and cancellation; `data/copyResult.ts` maps paged results to UI rows.
+`OperationCounts` contains `success/failed/skipped/cancelled/pending/bytes`. Counts include
+recursive children and directories, including partial directories, rather than only selected roots.
+
+| Wire field / source | UI projection | Rule |
+|---|---|---|
+| Native `stat/list.target.copy_ref` | `FileEntry.copyRef` | Serialized signed identity, separate from a collection's long-lived Ref; no file bytes |
+| `copy_capabilities.supported` plus authenticated schema probe | `FolderWriteOps.supportsCopy/copyUnavailableReason` | Open commands only after the service and TaskMgr schema are ready |
+| `copy_submit.task_id` | `BatchTask.taskId` | Returned immediately; the task outlives the NFSP hello session and browser page |
+| Task progress `{journal:{version,task_id},summary}` | Aggregate counts, copied bytes, progress | Durable summary/checkpoint; detailed records remain server-side |
+| `copy_get.items/next` | Completed `OperationResult[]`, Load more | 100 records per keyset page; never derive global totals from visible rows |
+| `copy_get.conflict` | Shared conflict dialog | Keep both, skip, cancel; apply by source/target folder classification |
+| `Task.pending_control` | `BatchTask.cancelling` | Show cancelling until the executor acknowledges; completed children remain |
+| Terminal retry | New Task with `retry_of` | Preserve completed children; verify previously created directory identities |
+| Submission response loss | Same request key and cached Input | Three automatic submit attempts; manual submit retry retains the same identity and options |
+
+Each deliberate Paste has a new key. Copy-to, Copy-to-other-pane, toolbar actions, shortcuts,
+modifier drag and mobile commands all capture their source context and call `copyEntries`.
+Copy never clears source selection. Operation keys prevent late page/progress callbacks from
+replacing newer feedback. Copy tasks can be reopened after refresh from the same user's task list.
+A monitoring failure resumes the original task; it does not turn a nonterminal task into a new retry.
+The list currently exposes the latest 50 tasks; the protocol also supplies a cursor for older tasks.
+
+The executor copies local ordinary files with a 1 MiB buffer, recurses over the actual filesystem
+(including unloaded entries and empty directories), copies symlink text without following it,
+and refuses devices/FIFOs/sockets. Bindings inside entity directories are reported skipped.
+Collection members may copy their local entity; virtual containers/groups and named objects
+cannot be copied. Preserve ordinary permissions and mtime, but not filedb tags, ACL/owner,
+sharing grants or collection membership. There is no tree-wide snapshot promise. Changes before
+execution are allowed for the same identity; detected replacement or in-flight changes fail.
+
+Model tradeoff authorized by FB-04-COPY: add copy identity, task ID/summary and paged result
+callbacks to the shared UI model instead of enumerating every child in browser state or Task Input.
+A poll performs one browser RPC; task status plus journal aggregation occur server-side. There is
+no RPC per result row. Polling is 250 ms while active; transient monitor failures retry for 30 seconds.
+The UI stores only requested pages. CopyTasks does not recover an unsubmitted clipboard.
+Native input and path-copy text stay separate from file-content and collection-reference intents.
+
+`tests/e2e/data/copy-model.spec.ts` measures pure mapping for 1, 10, 1000 and 1,000,000 synthetic
+records, first/70th/random pages, bounded Map windows and modeled RPC latency. These are mapping
+measurements, not a million-file storage benchmark. Real filesystem size/time/hash evidence is
+recorded separately by `filebrowser.copy.nfsp.spec.ts` (128 MiB plus recursive entries).
+Journal summaries currently aggregate persisted rows; very large trees incur linear SQL summary
+work per checkpoint. No latency guarantee is claimed for million-file copies. See the product
+[copy acceptance record](../../../../../../product/bucky_file/filebrowser_copy_TODO.md) for commands,
+real service results and screenshots.
 
 ## 5. Pagination, sorting, filtering, and aggregation
 

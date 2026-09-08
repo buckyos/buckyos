@@ -367,3 +367,111 @@ Node/Entry/list 报文也不得退回 Folder-only 形态。
 | N5 | search 索引落 filedb 缓存表 vs 独立引擎 | v1 落 filedb(名字索引),语义检索阶段二再议 |
 | N6 | Windows 服务器支持是否进 v1 | 【待决策】影响 Reconciler 的 watcher 选型(USN vs inotify) |
 | N7 | `reference-binding` 写能力是否随首版开放 | 报文、schema、list 消费能力必须首版固定;若排期不足可不在 hello 广告,后续只开 feature |
+
+## 10. 本地文件复制扩展（FB-04-COPY）
+
+2026-09-07 实现。本节描述当前本地 FS 实现；named object 内容复制仍待真正 DFS 接入。
+共享协议以 `src/kernel/buckyos-api/src/nfs_copy.rs` 为准；执行器为
+`src/frame/nfs_server/src/copy.rs`，客户端为 `src/frame/desktop/src/api/nfs_copy.ts`。
+
+### 10.1 身份、认证及协议
+
+所有方法为 `POST /nfs/v1/<method>`，沿用 NFSP `{session,args}` 与 `{ok,result/error}`
+信封。`Authorization: Bearer <Verify Hub user session token>` 必填，服务端通过已有
+runtime 可信 token 验证入口校验签名、issuer、有效期、TokenUse、主体类型及目标。
+Task creator 为该用户及 token 中的规范 app target；查询/控制同时核对这两个字段。
+NFSP hello session 不参与创建者推断。Web SDK token 只发向当前页面同源的 NFSP 地址。
+完整 NFSP 数据面权限/cap 授权不由此扩展实现；文件访问仍按 nfs-server 的 OS 权限执行。
+
+普通浏览的 `ref` 保持原有长期锚点语义。Native `stat/resolve` 和 `list.target` 另返回
+`copy_ref: WireRef | null`，是带 HMAC 签名的原生文件身份，锚定实体也返回独立 copy_ref。
+其 `nh_*` payload 为 `{r,p,i,d,b,k}`：export、相对路径、inode、device、可用 birth time、
+kind。Copy 必须保存 copy_ref，Paste 不能重新仅按路径取得源，也不能使用会按编辑器
+覆盖规则重绑的 `n_*` 引用替代。不存在稳定原生身份的平台不开放复制。
+
+| 方法 | args | result / 行为 |
+|---|---|---|
+| `copy_capabilities` | `{}` | 验证用户及 TaskMgr schema 可用后返回 `{supported,schema_id}`；Unix 本地 FS 支持 |
+| `copy_submit` | `{idempotency_key,input}` | 立即返回 `{task_id}`；每次主动 Paste 新键，同次提交重试同键同 Input |
+| `copy_list` | `{cursor?}` | TaskMgr `ListTasksResp`，同 creator 的本 schema 任务；每页 50 项及 `next_cursor` |
+| `copy_get` | `{task_id,after?}` | `{task,summary,items,next,conflict}`；明细按递增 id 分页，每页至多 100 项 |
+| `copy_decide` | `{task_id,item_id,choice,apply?}` | choice 为 `keep-both/skip/cancel`；apply 仅作用于相同源/目标文件夹分类 |
+| `copy_cancel` | `{task_id,request_id}` | `{requested:true}`；真实 TaskMgr control 请求，执行器清理/对账后 ack |
+
+Input：
+
+```json
+{
+  "sources": [{"source_ref": {"type":"live","node_id":"nh_<signed identity>","gen":0}, "source_path":"/home/Documents/a.txt", "name":"a.txt"}],
+  "destination_ref": {"type":"live","node_id":"nh_<signed directory identity>","gen":0},
+  "conflict": "ask",
+  "retry_of": null
+}
+```
+
+每任务最多 256 个选中源，目录的递归子项不占该上限。源与目标 Ref 必须为签名本地身份。
+Input 在任务创建后不可变。服务先查询相同 creator/key 的已有 Task，核对完整 Input 后
+返回原 task_id；即使目标后来变化，合法重放也不会变成第二次复制。TaskMgr 负责并发
+创建去重、runner epoch/revision CAS 及一次性 Result，nfs-server 负责文件副作用。
+使用内置 `nfs.copy/v1` schema（version 1，system storage，App executor，非 user-creatable），
+由 nfs-server 代理用户创建并执行，无额外 Task Dispatch Center 协议。
+
+`summary` 包含 `success/failed/skipped/cancelled/pending/bytes`。每条 item 包含
+`id/source_index/source_path/target_path/kind/status/size/mtime/error/identity`。
+mtime 为可用 Unix 秒数，未知元数据为空；identity 为已创建副本的原生身份。
+冲突附 `target_kind/target_size/target_mtime`。目录与子项分别计数，部分失败目录不会
+报整目录成功。`next` 是最后 id，客户端按需加载；恰好整页时可能再读到空尾页。
+
+### 10.2 持久执行与故障窗口
+
+Task progress 为 `{journal:{version:1,task_id},summary}`。Task Input/Result/progress
+均不承载无界子项清单；`data_dir/copy.sqlite` 用 SQLite WAL + synchronous FULL 持久化
+copy_job 与分页 copy_item。每项记录源/目标父目录身份、所选名称、临时路径、读取基线、
+已写字节、副本身份及状态。数据库和 copy-locks 必须与任务运行数据一起保留；缺失旧
+任务日志时报告需人工核对，不把已有目录当成可合并目标。每任务用 OS 文件锁串行执行，
+防止同进程恢复扫描和多个进程同时执行；进程退出释放锁。恢复扫描间隔 2 秒。
+
+| 持久状态 | 执行/恢复规则 |
+|---|---|
+| pending / conflict | 校验源与目标父身份，选择名称；冲突进入同一 Task 的 Waiting |
+| creating | 创建目标目录或同目录 `.bucky-copy-<task>-<item>` 临时文件；身份未记下的中断明确失败待核对 |
+| creating + 已记录临时身份 | 复检源基线，核验并清理未提交临时文件，重新读取；不产生第二份已提交副本 |
+| prepared | 字节、普通权限/mtime、临时文件及父目录已同步；记录副本身份后执行原子不覆盖提交 |
+| prepared + 目标同身份 | 证明文件已提交，仅清理临时名并记 success，覆盖“落盘后进度未写入”的窗口 |
+| prepared + 目标异身份 | 保留当前目标，记录 STALE / manual reconciliation required，不再猜测生成副本 |
+| committed / directory_wait | 核验新目录身份后流式枚举真实源目录，子项与 expanded 标记事务落库，最后恢复目录元数据 |
+| success / failed / skipped / cancelled | 终态逐项结果保留；失败目录仍披露已成功子项 |
+
+普通文件读取使用 1 MiB buffer，不经浏览器下载再上传。Linux 读取使用
+O_NOFOLLOW/O_NONBLOCK，读取前核对 open/fstat 与 lstat，提交前复检 inode/device/birth、
+size、mtime 及 Unix 纳秒 ctime。目录复制没有树级快照；允许 Copy 后同一文件内容更新，
+读取执行时内容；检测到替换、移动或读取中变化时报失败。祖先路径禁止软链接。
+不承诺检测所有本机进程并发修改，目录元数据只表示各目录执行时捕获的状态。
+
+提交用 `hard_link(新建临时文件,目标)` 实现不覆盖的原子名称创建，再同步父目录并删除
+临时名；绝不把源文件硬链接到目标。源硬链接分别读写成独立普通文件。EEXIST 回到冲突
+处理，不覆盖目标。目录用原子 create_dir，不合并已有目录。保留两者保持扩展名，并按
+UTF-8 边界截断到 255 字节。目标目录是自身或源的后代时拒绝。
+
+取消通过 TaskMgr 请求/ack 完成，读取循环约每 100 ms 检查控制，约每 500 ms 更新
+大文件字节进度。停止新工作、对账 prepared 项、清理已识别的未提交临时文件；保留
+已提交子项。无法核验/清理的项明确记失败，Task 仍确认取消，UI 可查看原因。
+非终态重启继续原 Task。终态“重试失败项”创建新 Task、新键并填 `retry_of`；只重置
+失败/取消且可安全重试的项，成功项原样保留；部分目录只复用原日志记录且身份核验通过
+的副本目录。源/目标不可借重试改变，也不修改原 Task 的终态。
+
+### 10.3 元数据与范围
+
+- 普通文件独立内容；保留目录层级、空目录、普通权限位（0777）和文件/目录 mtime。
+  不复制属主、ACL、filedb 元数据、标签、分享授权、集合关系；创建身份/ACL 按目标 FS 规则。
+- 软链接复制链接文本（含失效、相对、绝对链接），不跟随、不套用普通文件内容独立性。
+  链接的相对解析由新位置决定；软链接权限/mtime 不做普通文件式设置。
+- 设备、FIFO、socket 显式 UNSUPPORTED；非 UTF-8 名称无法进入协议，目录项枚举失败会
+  披露部分目录结果，不将其读为普通字节流。
+- 实体目录中的 filedb binding 逐项 skipped，不递归跟随。集合成员可通过实体 copy_ref
+  复制本地目标；Collection/View/Group 及 named object 不支持内容复制。
+- 成功创建触发目录 revision/watch 及前端 reader 失效，可立即查看或定位副本。
+
+复现命令、实际验证数量、128 MiB 内容/身份及恢复证据见
+[FB-04-COPY 验收记录](./filebrowser_copy_TODO.md)。完整网关 SSO、非 Unix 平台、整仓部署、
+百万实体磁盘性能与断电硬件故障不由该独立服务 E2E 证明。

@@ -1,4 +1,14 @@
 export const fileBrowserReviewEn: Record<string, string> = {
+  "filebrowser.menu.copyTo": "Copy to…",
+  "filebrowser.menu.copyOther": "Copy to other pane",
+  "filebrowser.actions.copyTo": "Copy to",
+  "filebrowser.operation.copyHere": "Copy here",
+  "filebrowser.operation.copyTasks": "Copy tasks",
+  "filebrowser.operation.noCopyTasks": "No submitted copy tasks",
+  "filebrowser.operation.viewTask": "View task",
+  "filebrowser.operation.cancelling": "Cancelling…",
+  "filebrowser.operation.locateCopy": "Locate copy",
+  "filebrowser.operation.copiedBytes": "{{bytes}} copied",
   "filebrowser.collection.itemCount": "{{count}} items · originals stay in place",
   "filebrowser.operation.dropDestination": "Drop into {{path}}",
   "filebrowser.operation.copyUnsupported": "File content copying is not supported",
@@ -145,6 +155,16 @@ export const fileBrowserReviewEn: Record<string, string> = {
 }
 
 export const fileBrowserReviewZh: Record<string, string> = {
+  "filebrowser.menu.copyTo": "复制到…",
+  "filebrowser.menu.copyOther": "复制到另一栏",
+  "filebrowser.actions.copyTo": "复制到",
+  "filebrowser.operation.copyHere": "复制到此处",
+  "filebrowser.operation.copyTasks": "复制任务",
+  "filebrowser.operation.noCopyTasks": "暂无已提交的复制任务",
+  "filebrowser.operation.viewTask": "查看任务",
+  "filebrowser.operation.cancelling": "正在取消…",
+  "filebrowser.operation.locateCopy": "定位副本",
+  "filebrowser.operation.copiedBytes": "已复制 {{bytes}}",
   "filebrowser.collection.itemCount": "{{count}} 项 · 原文件保留在原位置",
   "filebrowser.operation.dropDestination": "放入 {{path}}",
   "filebrowser.operation.copyUnsupported": "此服务暂不支持复制文件内容",

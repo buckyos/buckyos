@@ -187,6 +187,7 @@ impl AppState {
                 Ok((
                     json!({
                         "ref": self.node_ref(&node),
+                        "copy_ref": self.copy_ref(&node),
                         "kind": node.kind(),
                         "attrs": Value::Object(attrs),
                     }),

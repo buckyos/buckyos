@@ -13,7 +13,7 @@
  * File Browser data layer onto the NFSP adapter.
  */
 
-import { expect, test } from '@playwright/test'
+import { expect, test } from '../fixtures/nfs-copy'
 
 test.describe('File browser on real nfs_server', () => {
   test.skip(!process.env.FB_NFSP_E2E, 'set FB_NFSP_E2E=1 with a running nfs_server + proxy')
@@ -41,10 +41,7 @@ test.describe('File browser on real nfs_server', () => {
     // mkdir through the schema dialog → server mkdir → listing invalidates.
     const dialog = page.getByTestId('name-prompt-dialog')
     const folderName = `e2e-folder-${stamp}`
-    await win
-      .locator('div.overflow-y-auto')
-      .filter({ has: page.locator('[role="table"]') })
-      .click({ button: 'right', position: { x: 420, y: 420 } })
+    await win.getByRole('button', { name: 'New', exact: true }).click()
     await page.getByRole('menuitem', { name: 'New folder' }).click()
     await dialog.getByRole('textbox').fill(folderName)
     await dialog.getByRole('button', { name: 'Create' }).click()
