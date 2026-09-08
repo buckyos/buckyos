@@ -147,6 +147,7 @@ class NfspCollectionReader extends NfspContainerReader implements CollectionRead
             id: refIdOf(entry.target.ref),
             name: entry.name,
             kind: 'folder',
+            operations: { copy: 'unsupported' },
             // Groups are collection structure, not real folders: their path
             // *is* the collection URL, so "open" naturally navigates there.
             path,

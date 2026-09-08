@@ -49,12 +49,15 @@ export function BatchResults({ task, onClose }: { task: BatchTask | null; onClos
   const { t } = useI18n()
   const [expanded, setExpanded] = useState(true)
   if (!task) return null
-  const count = (status: OperationResult['status']) => task.results.filter((result) => result.status === status).length
+  const count = (status: OperationResult['status']) => task.summary?.[status] ?? task.results.filter((result) => result.status === status).length
   const failed = count('failed')
   return <div data-testid="batch-results" className="absolute bottom-10 left-3 z-30 max-h-[55%] w-[min(430px,calc(100%-24px))] overflow-auto rounded-xl border border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] p-3 text-xs shadow-xl" aria-live="polite">
-    <div className="flex items-center gap-2"><button className="min-h-8 flex-1 text-left font-semibold" onClick={() => setExpanded(!expanded)}>{task.title} · {task.results.length}/{task.total}</button><button onClick={task.running ? task.cancel : onClose} className="min-h-8 px-2">{task.running ? t('filebrowser.operation.cancelRemaining', 'Cancel remaining') : t('common.close', 'Close')}</button></div>
+    <div className="flex items-center gap-2"><button className="min-h-8 flex-1 text-left font-semibold" onClick={() => setExpanded(!expanded)}>{task.title} · {task.summary ? task.total - task.summary.pending : task.results.length}/{task.total}</button><button onClick={task.running ? task.cancel : onClose} className="min-h-8 px-2">{task.cancelling ? t('filebrowser.operation.cancelling', 'Cancelling…') : task.running ? t('filebrowser.operation.cancelRemaining', 'Cancel remaining') : t('common.close', 'Close')}</button></div>
     <p>{t('filebrowser.operation.counts', '{{success}} succeeded · {{failed}} failed · {{skipped}} skipped · {{cancelled}} cancelled', { success: count('success'), failed, skipped: count('skipped'), cancelled: count('cancelled') })}</p>
-    {expanded && <ul className="mt-2 max-h-48 overflow-auto">{task.results.map((result, i) => <li key={i} className="break-all border-t border-[color:var(--cp-border)] py-2" data-status={result.status}><strong>{result.entry.name}</strong> · {t(`filebrowser.operation.${result.status}`, result.status)}<p>{result.entry.path}{result.targetPath ? ` → ${result.targetPath}` : ''}</p>{result.error && <p>{t(result.error.messageKey, result.error.fallback)}</p>}</li>)}</ul>}
-    {!task.running && failed > 0 && <Button size="small" onClick={task.retry}>{t('filebrowser.operation.retryFailed', 'Retry failed items')}</Button>}
+    {expanded && <ul className="mt-2 max-h-48 overflow-auto">{task.results.map((result, i) => <li key={i} className="break-all border-t border-[color:var(--cp-border)] py-2" data-status={result.status}><strong>{result.entry.name}</strong> · {t(`filebrowser.operation.${result.status}`, result.status)}<p>{result.entry.path}{result.targetPath ? ` → ${result.targetPath}` : ''}</p>{result.error && <p>{t(result.error.messageKey, result.error.fallback)}</p>}{result.targetPath && task.reveal && result.status === 'success' && <button className="min-h-8 underline" onClick={() => task.reveal?.(result.targetPath!)}>{t('filebrowser.operation.locateCopy', 'Locate copy')}</button>}</li>)}</ul>}
+    {task.summary && task.summary.bytes > 0 && <p>{t('filebrowser.operation.copiedBytes', '{{bytes}} copied', { bytes: formatBytes(task.summary.bytes) })}</p>}
+    {task.taskId && <p className="break-all" data-testid="copy-task-id">{task.taskId}</p>}
+    {task.loadMore && <Button size="small" onClick={() => void task.loadMore?.()}>{t('filebrowser.operation.loadMore', 'Load more')}</Button>}
+    {!task.running && (failed > 0 || count('cancelled') > 0) && <Button size="small" onClick={task.retry}>{t('filebrowser.operation.retryFailed', 'Retry failed items')}</Button>}
   </div>
 }

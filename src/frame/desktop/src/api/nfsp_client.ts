@@ -77,6 +77,7 @@ export interface NodeInfo {
   kind: NodeKind
   state: string
   ref: WireRef
+  copy_ref?: WireRef | null
   capabilities: Capabilities
   revision?: string
   locations?: unknown[]
@@ -108,6 +109,7 @@ export type EntryBinding = 'native' | 'reference' | 'member' | 'derived'
 /** Compact target of a listing entry (not a full NodeInfo). */
 export interface EntryTarget {
   ref: WireRef
+  copy_ref?: WireRef | null
   kind: NodeKind
   /** Attribute groups per the `want` mask: base → size/mtime/flags, ident → etag/obj_id, access → access_urls. */
   attrs?: {
@@ -192,6 +194,7 @@ export interface MetaRecord {
 }
 
 export interface SearchHit {
+  copy_ref?: WireRef | null
   match_source: string
   canonical_path: string
   explain?: Record<string, unknown>
@@ -258,8 +261,7 @@ export class NfspError extends Error {
     this.name = 'NfspError'
     this.code = body.code
     this.httpStatus = httpStatus
-    const { code: _c, message: _m, ...rest } = body
-    this.details = rest
+    this.details = Object.fromEntries(Object.entries(body).filter(([key]) => key !== 'code' && key !== 'message'))
   }
 }
 
@@ -268,6 +270,7 @@ export class NfspError extends Error {
 // ---------------------------------------------------------------------------
 
 export interface NfspClientOptions {
+  sessionToken?: () => Promise<string | null>
   /** e.g. `http://127.0.0.1:3260` — no trailing slash needed. */
   baseUrl: string
   /** Override fetch (tests, custom auth wrappers). Defaults to global fetch. */
@@ -283,6 +286,7 @@ interface EnvelopeExtras {
 }
 
 export class NfspClient {
+  private readonly sessionToken?: () => Promise<string | null>
   readonly baseUrl: string
   private readonly fetchFn: typeof fetch
   private readonly chunkSize: number
@@ -291,9 +295,10 @@ export class NfspClient {
   private helloResult: HelloResult | null = null
 
   constructor(opts: NfspClientOptions) {
+    this.sessionToken = opts.sessionToken
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '')
     // Bind to globalThis: an unbound fetch throws "Illegal invocation".
-    this.fetchFn = opts.fetch ?? ((...a) => globalThis.fetch(...a))
+    this.fetchFn = opts.fetch ?? ((input, init) => globalThis.fetch(input, init))
     this.chunkSize = opts.uploadChunkSize ?? 8 * 1024 * 1024
   }
 
@@ -764,9 +769,10 @@ export class NfspClient {
   }
 
   private async post(method: string, body: Record<string, unknown>): Promise<unknown> {
+    const token = method.startsWith('copy_') ? await this.sessionToken?.() : null
     const resp = await this.fetchFn(`${this.baseUrl}/nfs/v1/${method}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify(body),
     })
     let parsed: { ok?: boolean; result?: unknown; error?: NfspErrorBody }

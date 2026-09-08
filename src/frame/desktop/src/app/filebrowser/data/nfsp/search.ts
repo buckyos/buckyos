@@ -42,6 +42,8 @@ function mapHit(hit: SearchHit, query: string): SearchResultItem | null {
   const item: SearchResultItem = {
     entry: {
       id: refIdOf(ref),
+      copyRef: hit.copy_ref ? JSON.stringify(hit.copy_ref) : undefined,
+      operations: { copy: hit.copy_ref && ['dir', 'file', 'symlink'].includes(kind ?? '') ? 'available' : 'unsupported' },
       name,
       kind: isFolder ? 'folder' : kind === 'file' ? classifyFileKind(name) : 'other',
       path,

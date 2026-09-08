@@ -2,10 +2,10 @@
 //! plus entry_ref derivation and the stateless list cursor codec.
 //!
 //! Handle scheme (classic NFS filehandle): `nh_<b64url(payload)>.<b64url(mac16)>`
-//! where payload = JSON `{r: root_id, p: rel_path, i: ino, k: kind}` and
+//! where payload = JSON `{r: root_id, p: rel_path, i: ino, d: device, b: birth, k: kind}` and
 //! mac16 = first 16 bytes of HMAC-SHA256(key, payload). The key persists in
 //! filedb so handles survive restarts; a resolve must still verify that the
-//! native file id at the path matches `i`, otherwise the handle is STALE.
+//! native file id at the path matches `i`, `d` and available `b`, otherwise the handle is STALE.
 
 use crate::error::{invalid, stale, NfsResult};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
@@ -24,6 +24,8 @@ pub struct NativeHandle {
     pub p: String,
     /// native file id (inode); 0 on platforms without one
     pub i: u64,
+    pub d: u64,
+    pub b: Option<std::time::SystemTime>,
     /// "f" | "d" | "l"
     pub k: String,
 }
@@ -159,7 +161,7 @@ mod tests {
     #[test]
     fn handle_roundtrip() {
         let c = codec();
-        let h = NativeHandle { r: "home".into(), p: "a/b.txt".into(), i: 42, k: "f".into() };
+        let h = NativeHandle { r: "home".into(), p: "a/b.txt".into(), i: 42, d: 1, b: None, k: "f".into() };
         let s = c.encode(&h);
         assert!(s.starts_with("nh_"));
         assert_eq!(c.decode(&s).unwrap(), h);
@@ -168,7 +170,7 @@ mod tests {
     #[test]
     fn tampered_handle_is_stale() {
         let c = codec();
-        let h = NativeHandle { r: "home".into(), p: "x".into(), i: 1, k: "d".into() };
+        let h = NativeHandle { r: "home".into(), p: "x".into(), i: 1, d: 1, b: None, k: "d".into() };
         let s = c.encode(&h);
         // Flip a payload char.
         let mut bytes = s.into_bytes();

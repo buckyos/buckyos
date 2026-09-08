@@ -6,6 +6,12 @@ export interface ConflictRequest extends OperationConflict {
   resolve: (choice: ConflictChoice, apply: boolean) => void
 }
 export interface BatchTask {
+  operationKey?: string
+  summary?: import('./folderOps').OperationCounts
+  reveal?: (path: string) => void
+  taskId?: string
+  cancelling?: boolean
+  loadMore?: () => Promise<void>
   ownerId?: string
   title: string
   total: number

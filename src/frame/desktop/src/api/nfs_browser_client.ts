@@ -644,7 +644,7 @@ export class NfsBrowserClient {
   }
 
   /** 直写失效:按容器定位符(canon + ref 两种 scope)删除全部条目。 */
-  private async invalidateContainer(at: LocatorLike): Promise<void> {
+  async invalidateContainer(at: LocatorLike): Promise<void> {
     const loc = toLocator(at)
     await this.invalidateScope(`c:${canonLocator(at)}`)
     if (loc.ref) await this.invalidateScope(`r:${refId(loc.ref)}`)
@@ -796,6 +796,10 @@ export class NfsBrowserClient {
    * 会话过期(PERMISSION_DENIED 且 message 提到 session)时自动重新 hello
    * 并重放该次调用一次。业务性的权限拒绝(如受限 meta ns)原样抛出。
    */
+  async copyCall<T>(method: string, args: Record<string, unknown>): Promise<T> {
+    return this.withSession(() => this.raw.call(method, { args })) as Promise<T>
+  }
+
   private async withSession<T>(fn: () => Promise<T>): Promise<T> {
     try {
       return await fn()

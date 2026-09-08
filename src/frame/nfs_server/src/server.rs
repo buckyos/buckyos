@@ -52,6 +52,7 @@ pub fn build_router(state: SharedState) -> Router {
 async fn control_handler(
     State(state): State<SharedState>,
     AxPath(method): AxPath<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let mut env: Envelope = match serde_json::from_slice(&body) {
@@ -96,6 +97,13 @@ async fn control_handler(
             )
         }
     };
+    if method.starts_with("copy_") {
+        let token = headers.get(header::AUTHORIZATION).and_then(|h| h.to_str().ok()).and_then(|h| h.strip_prefix("Bearer "));
+        return match crate::copy::dispatch(&state, &method, &env.args, token).await {
+            Ok(value) => envelope_ok(&state, value),
+            Err(error) => envelope_error(&state, error),
+        };
+    }
     // Exactly-once for write ops (NFSP §6.3).
     let is_write = WRITE_METHODS.contains(&method.as_str());
     if is_write {

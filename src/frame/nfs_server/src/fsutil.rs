@@ -100,6 +100,7 @@ pub struct NodeMeta {
     pub mtime: i64,
     pub ctime: i64,
     pub id: FileId,
+    pub birth: Option<std::time::SystemTime>,
 }
 
 pub fn node_meta(meta: &Metadata) -> NodeMeta {
@@ -122,7 +123,7 @@ pub fn node_meta(meta: &Metadata) -> NodeMeta {
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(mtime);
-    NodeMeta { kind, size: meta.len(), mtime, ctime, id: file_id(meta) }
+    NodeMeta { kind, size: meta.len(), mtime, ctime, id: file_id(meta), birth: meta.created().ok() }
 }
 
 /// lstat: does not follow a final symlink (list semantics).

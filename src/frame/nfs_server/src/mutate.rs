@@ -63,7 +63,7 @@ impl AppState {
     }
 
     /// Bumps a dir's revision and emits container_changed. Returns the revision.
-    fn bump_dir(&self, node: &Node, reason: &str, hint: Option<Value>) -> String {
+    pub(crate) fn bump_dir(&self, node: &Node, reason: &str, hint: Option<Value>) -> String {
         let key = match node.container_key() {
             Some(k) => k,
             None => return String::new(),

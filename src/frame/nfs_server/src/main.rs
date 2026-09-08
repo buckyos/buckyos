@@ -56,6 +56,11 @@ fn main() {
                 .help("Enable POST /nfs/v1/debug/* (dev/test only)"),
         )
         .arg(
+            Arg::new("copy-test-config")
+                .long("copy-test-config")
+                .help("Signed test identity and TaskMgr endpoint JSON; standalone loopback + --debug-api only"),
+        )
+        .arg(
             Arg::new("log-level")
                 .long("log-level")
                 .default_value("info")
@@ -106,6 +111,10 @@ fn standalone_config(matches: &clap::ArgMatches) -> ServerConfig {
     }
     config.scan_interval_secs = parse_scan_interval(matches).unwrap_or(0);
     config.debug_api = matches.get_flag("debug-api");
+    if let Some(path) = matches.get_one::<String>("copy-test-config") {
+        assert!(config.debug_api && config.listen.parse::<std::net::SocketAddr>().is_ok_and(|a| a.ip().is_loopback()), "copy test config requires standalone loopback and --debug-api");
+        config.copy_test = Some(serde_json::from_slice(&std::fs::read(path).expect("copy test config")).expect("copy test config JSON"));
+    }
     config
 }
 
@@ -199,6 +208,7 @@ async fn serve(config: ServerConfig) {
     } else {
         log::info!("reconciler scan loop disabled (scan interval 0)");
     }
+    tokio::spawn(nfs_server::copy::recovery_loop(state.clone()));
     let app = nfs_server::server::build_router(state);
     let listener = match tokio::net::TcpListener::bind(&listen).await {
         Ok(l) => l,

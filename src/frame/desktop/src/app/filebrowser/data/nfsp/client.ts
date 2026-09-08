@@ -11,6 +11,8 @@
  */
 
 import { NfsBrowserClient } from '../../../../api/nfs_browser_client'
+import { NfspClient } from '../../../../api/nfsp_client'
+import { getActiveSessionToken } from 'buckyos'
 import type { HelloResult } from '../../../../api/nfsp_client'
 
 let client: NfsBrowserClient | null = null
@@ -28,7 +30,10 @@ export function nfspBaseUrl(): string {
 
 export function nfspClient(): NfsBrowserClient {
   if (!client) {
-    client = new NfsBrowserClient({ baseUrl: nfspBaseUrl() })
+    client = new NfsBrowserClient({ baseUrl: nfspBaseUrl(), client: new NfspClient({ baseUrl: nfspBaseUrl(), sessionToken: async () => {
+      if (new URL(nfspBaseUrl()).origin !== window.location.origin) return null
+      try { return await getActiveSessionToken() ?? null } catch { return null }
+    } }) })
   }
   return client
 }

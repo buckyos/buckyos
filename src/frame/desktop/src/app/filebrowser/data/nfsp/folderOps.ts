@@ -1,3 +1,4 @@
+import { copyEntries, resumeCopy, listCopies, copyCapability } from './copy'
 import type { NodeInfo } from '../../../../api/nfsp_client'
 import type { FileEntry } from '../../types'
 import { registerFolderOps, runEntryBatch, operationError } from '../folderOps'
@@ -23,7 +24,7 @@ async function statEntry(parent: string, name: string): Promise<FileEntry | null
     try {
       const info = await nfspClient().stat(parent, { name, cache: 'no-cache', want: ['base'] })
       if (!info) return null
-      return { id: refIdOf(info.ref), name, path: `${parent === '/' ? '' : parent}/${name}`, kind: info.kind === 'dir' ? 'folder' : classifyFileKind(name), modifiedAt: unixToIso(info.mtime), sizeBytes: info.size }
+      return { id: refIdOf(info.ref), copyRef: info.copy_ref ? JSON.stringify(info.copy_ref) : undefined, name, path: `${parent === '/' ? '' : parent}/${name}`, kind: info.kind === 'dir' ? 'folder' : classifyFileKind(name), modifiedAt: unixToIso(info.mtime), sizeBytes: info.size }
     } catch (err) {
       if (nfspToUiError(err).code === 'NOT_FOUND') return null
       throw err
@@ -38,8 +39,13 @@ async function validate(entry: FileEntry) {
   return parent
 }
 export function registerNfspFolderOps() {
+  let supportsCopy = false
+  let copyUnavailableReason = 'Copy capability is loading'
+  void copyCapability().then((supported) => { supportsCopy = supported; copyUnavailableReason = supported ? '' : 'Server does not support local file copying' }).catch((error: unknown) => { copyUnavailableReason = nfspToUiError(error).fallback }).finally(() => window.dispatchEvent(new Event('files-copy-capability')))
   return registerFolderOps({
-    supportsCopy: false,
+    get supportsCopy() { return supportsCopy },
+    get copyUnavailableReason() { return copyUnavailableReason },
+    copyEntries, resumeCopy, listCopies,
     nameExists: async (parent, name) => (await statEntry(parent, name)) !== null,
     statEntry,
     createFolder(parent, name) {

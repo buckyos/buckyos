@@ -17,6 +17,8 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  ClipboardPaste,
+  FolderInput,
   FilePlus,
   FolderPlus,
   LayoutGrid,
@@ -77,6 +79,9 @@ interface TopBarProps {
   onDetails: () => void
   onPlaces: () => void
   onMoveTo: () => void
+  onCopy?: () => void
+  onPaste?: () => void
+  onCopyTo?: () => void
   onAddExisting?: () => void
   onFolderUpload?: () => void
   pathEditSignal?: number
@@ -189,7 +194,7 @@ export function TopBar({
   onNewFile,
   selectedCount = 0,
   capabilities,
-  onMore, onDetails, onPlaces, onAddExisting, onFolderUpload, pathEditSignal, listPreferences, onListPreferences,
+  onCopy, onPaste, onCopyTo, onMore, onDetails, onPlaces, onAddExisting, onFolderUpload, pathEditSignal, listPreferences, onListPreferences,
   sortKey = 'name',
   sortDir = 'asc',
   onSortChange,
@@ -250,6 +255,7 @@ export function TopBar({
     const next = pathDraft.trim()
     setPathEditing(false)
     if (next) onNavigate(next)
+    pathInputRef.current?.closest<HTMLElement>('[data-testid="filebrowser"]')?.focus()
   }
 
   const closeSearch = () => {
@@ -584,6 +590,9 @@ export function TopBar({
           </>
         ) : null}
 
+        {onCopy && <ToolbarIconButton title={t('filebrowser.menu.copyFiles', 'Copy files')} onClick={onCopy}><Copy size={16} /></ToolbarIconButton>}
+        {onPaste && <ToolbarIconButton title={t('filebrowser.menu.paste', 'Paste')} onClick={onPaste}><ClipboardPaste size={16} /></ToolbarIconButton>}
+        {onCopyTo && <ToolbarIconButton title={t('filebrowser.actions.copyTo', 'Copy to')} onClick={onCopyTo}><FolderInput size={16} /></ToolbarIconButton>}
         {onAddExisting && <button className="min-h-7 px-2 text-xs" onClick={onAddExisting}>{t('filebrowser.operation.addExisting', 'Add existing files')}</button>}
         <ToolbarIconButton title={t('filebrowser.mobile.moreActions', 'More actions')} onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); onMore({ left: box.left, top: box.bottom }) }}><MoreHorizontal size={16} /></ToolbarIconButton>
         <ToolbarIconButton title={t('filebrowser.menu.details', 'Details')} onClick={onDetails}><PanelRightOpen size={16} /></ToolbarIconButton>

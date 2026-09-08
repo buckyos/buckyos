@@ -467,12 +467,21 @@ impl ActiveServer {
         if req.prepared.names.use_self_domain {
             wait_for_device_authority(&req).await?;
         }
+        let bns_client = BnsIndexerClient::new_bns_server_url(req.sn.bns_url.as_str(), None);
+        let projected = bns_client
+            .resolve_document(req.prepared.names.bns_publish_name.as_str(), "owner")
+            .await
+            .map_err(|error| RPCErrors::ReasonError(format!("BNS owner read failed: {error}")))?;
+        let projected_owner: OwnerDocument =
+            serde_json::from_slice(projected.document_state.document.inline_document.as_slice())
+                .map_err(|error| {
+                    RPCErrors::ReasonError(format!("invalid projected OwnerDocument: {error}"))
+                })?;
         let (effective_owner, needs_owner_publish) = prepare_owner_binding_for_activation(
             &req.owner_document,
+            &projected_owner,
             &req.prepared.names.zone_did,
         )?;
-
-        let bns_client = BnsIndexerClient::new_bns_server_url(req.sn.bns_url.as_str(), None);
         let sn_client =
             SnClient::new_krpc(req.sn.sn_url.as_str(), Some(req.sn.access_token.clone()));
 
@@ -601,6 +610,21 @@ impl ActiveServer {
         let zone_info = sn_client.get_zone_info().await?;
         validate_sn_zone_info(&req, &zone_info)?;
 
+        let owner_value = serde_json::to_value(&effective_owner)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        if !projection_matches_json(
+            &bns_client,
+            req.prepared.names.bns_publish_name.as_str(),
+            "owner",
+            &owner_value,
+        )
+        .await?
+        {
+            return Err(RPCErrors::ReasonError(
+                "OwnerDocument changed during activation; retry activation".to_string(),
+            ));
+        }
+
         persist_activation(&req, &effective_owner, &zone_info)?;
 
         if let Some(name_client) = GLOBAL_NAME_CLIENT.get() {
@@ -695,12 +719,23 @@ async fn check_device_authority(
 
 fn prepare_owner_binding_for_activation(
     owner_document: &OwnerDocument,
+    projected_owner: &OwnerDocument,
     zone_did: &DID,
 ) -> Result<(OwnerDocument, bool), RPCErrors> {
-    let mut effective_owner = owner_document.clone();
+    validate_owner_document(projected_owner)?;
+    if projected_owner.id != owner_document.id
+        || projected_owner.name != owner_document.name
+        || projected_owner.get_default_key() != owner_document.get_default_key()
+        || projected_owner.wallets != owner_document.wallets
+    {
+        return Err(RPCErrors::ReasonError(
+            "OwnerDocument identity changed; reload owner before activation".to_string(),
+        ));
+    }
+    let mut effective_owner = projected_owner.clone();
     effective_owner.set_default_zone_did(zone_did.clone());
     validate_owner_document(&effective_owner)?;
-    let needs_owner_publish = effective_owner != *owner_document;
+    let needs_owner_publish = effective_owner != *projected_owner;
     Ok((effective_owner, needs_owner_publish))
 }
 
@@ -1871,7 +1906,7 @@ mod tests {
         let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         let owner = owner_document(mnemonic);
         let (effective, needs_publish) =
-            prepare_owner_binding_for_activation(&owner, &owner.id).unwrap();
+            prepare_owner_binding_for_activation(&owner, &owner, &owner.id).unwrap();
 
         assert!(needs_publish);
         let value = serde_json::to_value(&effective).unwrap();
@@ -1894,7 +1929,7 @@ mod tests {
         owner.set_default_zone_did(first);
 
         let (effective, needs_publish) =
-            prepare_owner_binding_for_activation(&owner, &selected).unwrap();
+            prepare_owner_binding_for_activation(&owner, &owner, &selected).unwrap();
         assert!(needs_publish);
         assert_eq!(
             effective
@@ -1909,32 +1944,50 @@ mod tests {
         );
 
         let (unchanged, needs_publish) =
-            prepare_owner_binding_for_activation(&effective, &selected).unwrap();
+            prepare_owner_binding_for_activation(&effective, &effective, &selected).unwrap();
         assert!(!needs_publish);
         assert_eq!(unchanged, effective);
     }
 
     #[test]
+    fn activation_rebind_uses_projected_owner_instead_of_stale_input() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mut projected = owner_document(mnemonic);
+        let mut stale = projected.clone();
+        stale.set_default_zone_did(stale.id.clone());
+        projected.set_default_zone_did(DID::new("web", "other.example.com"));
+        projected.display_name = "Updated remote profile".to_string();
+        let (effective, needs_publish) =
+            prepare_owner_binding_for_activation(&stale, &projected, &stale.id).unwrap();
+        assert!(needs_publish);
+        assert_eq!(effective.display_name, projected.display_name);
+        assert_eq!(
+            effective.binded_zone_list,
+            vec![stale.id.clone(), DID::new("web", "other.example.com")]
+        );
+        let (unchanged, needs_publish) =
+            prepare_owner_binding_for_activation(&stale, &effective, &stale.id).unwrap();
+        assert!(!needs_publish);
+        assert_eq!(unchanged, effective);
+
+        let unbound = owner_document(mnemonic);
+        let (rebound, needs_publish) =
+            prepare_owner_binding_for_activation(&stale, &unbound, &stale.id).unwrap();
+        assert!(needs_publish);
+        assert_eq!(rebound.binded_zone_list, vec![stale.id.clone()]);
+        projected.id = DID::new("bns", "other");
+        assert!(prepare_owner_binding_for_activation(&stale, &projected, &stale.id).is_err());
+    }
+
+    #[test]
     fn owner_publish_request_id_is_stable_per_attempt_but_fresh_for_rebind() {
         let owner = br#"{"id":"did:bns:alice","binded_zone_list":["did:bns:alice"]}"#;
-        let first_attempt = content_request_id_with_context(
-            "owner",
-            "alice",
-            owner,
-            b"first-zone-document-jwt",
-        );
-        let first_retry = content_request_id_with_context(
-            "owner",
-            "alice",
-            owner,
-            b"first-zone-document-jwt",
-        );
-        let rebind_attempt = content_request_id_with_context(
-            "owner",
-            "alice",
-            owner,
-            b"second-zone-document-jwt",
-        );
+        let first_attempt =
+            content_request_id_with_context("owner", "alice", owner, b"first-zone-document-jwt");
+        let first_retry =
+            content_request_id_with_context("owner", "alice", owner, b"first-zone-document-jwt");
+        let rebind_attempt =
+            content_request_id_with_context("owner", "alice", owner, b"second-zone-document-jwt");
 
         assert_eq!(first_attempt, first_retry);
         assert_ne!(first_attempt, rebind_attempt);

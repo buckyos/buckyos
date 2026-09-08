@@ -16,6 +16,7 @@
 //! single resync (watch is lossy by contract, D11).
 
 use crate::error::NfsResult;
+use crate::fsutil::{join_root, lstat};
 use crate::handle::NativeHandle;
 use crate::state::{AppState, SharedState};
 use crate::watch::ContainerKey;
@@ -90,10 +91,13 @@ impl AppState {
             for (root, rel, ino) in &changed_dirs {
                 let key = ContainerKey::Dir { root: root.clone(), rel: rel.clone() };
                 let revision = self.revisions.bump(&key);
+                let metadata = self.config.root(root).and_then(|r| lstat(&join_root(&r.path, rel)).ok());
                 let handle = NativeHandle {
                     r: root.clone(),
                     p: rel.clone(),
                     i: *ino,
+                    d: metadata.as_ref().map(|m| m.id.dev).unwrap_or(0),
+                    b: metadata.and_then(|m| m.birth),
                     k: "d".to_string(),
                 };
                 self.bus.emit_container_changed(

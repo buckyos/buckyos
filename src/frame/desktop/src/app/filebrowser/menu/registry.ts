@@ -188,6 +188,8 @@ const clipboardProvider: FileMenuProvider = {
         }),
       )
     }
+    section.push(action('copy-to', label('copyTo', 'Copy to…'), { icon: 'copy' }))
+    if (ctx.otherPath) section.push(action('copy-other', label('copyOther', 'Copy to other pane'), { icon: 'copy', args: { path: ctx.otherPath } }))
     section.push(action('details', label('details', 'Details'), { icon: 'preview' }))
     return [section]
   },

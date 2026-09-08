@@ -1236,6 +1236,7 @@ pub fn builtin_task_schemas() -> Vec<TaskSchemaDefinition> {
             created_at: 0,
         },
     ));
+    schemas.push(crate::nfs_copy_task_schema());
     schemas
 }
 

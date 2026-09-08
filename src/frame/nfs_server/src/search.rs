@@ -176,6 +176,7 @@ impl AppState {
                 };
                 let mut hit = json!({
                     "ref": self.node_ref(&node),
+                    "copy_ref": self.copy_ref(&node),
                     "kind": meta.kind,
                     "name": name,
                     "canonical_path": canonical_path(root_id, &child_rel),

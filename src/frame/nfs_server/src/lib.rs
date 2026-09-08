@@ -8,6 +8,7 @@
 //! run it.
 
 pub mod config;
+pub mod copy;
 pub mod containers;
 pub mod error;
 pub mod filedb;

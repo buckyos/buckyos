@@ -307,6 +307,7 @@ export function registerNfspReaders() {
         binding: 'native',
         target: {
           ref: info.ref,
+          copy_ref: info.copy_ref,
           kind: info.kind,
           attrs: {
             size: info.size,

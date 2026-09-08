@@ -95,6 +95,7 @@ export interface StoryEntry {
  * fabricate empty strings, zero sizes, or false metadata to satisfy rendering.
  */
 export interface FileEntry {
+  copyRef?: string
   id: FileEntryId
   operations?: import('./data/schemas').EntryOperations
   thumbnailUrl?: string
@@ -237,5 +238,6 @@ export interface HistoryState {
 export interface ClipboardState {
   token: string
   entries: FileEntry[]
-  mode: 'cut' | 'copy'
+  mode: 'cut' | 'copy' | 'references' | 'text'
+  text?: string
 }
