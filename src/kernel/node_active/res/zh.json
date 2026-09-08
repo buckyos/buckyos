@@ -1,4 +1,9 @@
 {
+    "device_publication_intro": "激活前，请将签名后的设备身份文档发布到下方 HTTPS 地址。节点离线时，此地址也必须可访问，不能依赖本节点的中继隧道。",
+    "device_publication_content": "请通过独立站点或代理提供此 HTTPS 文档路径，将下载文件原样发布，内容类型为 application/jwt。同时保留设备域名和端口的 RTCP 路由。激活时会检查文档与签名原文完全一致。",
+    "prepare_device_publication": "生成签名文档",
+    "download_device_publication": "下载 did.json",
+    "verify_publication_and_activate": "验证发布并激活",
     "active_title": "Active Your PI",
     "active_subtitle": "通过向导快速激活 Personal Intelligence",
     "step_indicator": "步骤 {{current}} / {{total}} · {{title}}",

@@ -1,4 +1,9 @@
 {
+    "device_publication_intro": "啟用前，請將簽署後的裝置身分文件發布至下方 HTTPS 位址。節點離線時，此位址也必須能存取，不能依賴本節點的中繼通道。",
+    "device_publication_content": "請透過獨立網站或代理提供此 HTTPS 文件路徑，將下載的檔案原樣發布，內容類型為 application/jwt。同時保留裝置網域與連接埠的 RTCP 路由。啟用時會檢查文件與簽署原文完全一致。",
+    "prepare_device_publication": "產生簽署文件",
+    "download_device_publication": "下載 did.json",
+    "verify_publication_and_activate": "驗證發布並啟用",
     "active_title": "啟用你的 PI",
     "active_subtitle": "透過精靈快速啟用 Personal Intelligence",
     "step_indicator": "步驟 {{current}} / {{total}} · {{title}}",
