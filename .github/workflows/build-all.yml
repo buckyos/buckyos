@@ -1,6 +1,8 @@
 name: Build All BuckyOS Artifacts
 
 on:
+  push:
+    branches: ["main"]
   workflow_dispatch:
     inputs:
       enable_tests:
@@ -18,7 +20,7 @@ jobs:
     uses: ./.github/workflows/build-windows.yml
     with:
       arch: ${{ matrix.arch }}
-      enable_tests: ${{ inputs.enable_tests }}
+      enable_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_tests }}
   build-linux:
     strategy:
       fail-fast: false
@@ -27,7 +29,7 @@ jobs:
     uses: ./.github/workflows/build-linux.yml
     with:
       arch: ${{ matrix.arch }}
-      enable_tests: ${{ inputs.enable_tests }}
+      enable_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_tests }}
   build-macos:
     strategy:
       fail-fast: false
@@ -36,4 +38,4 @@ jobs:
     uses: ./.github/workflows/build-macos.yml
     with:
       arch: ${{ matrix.arch }}
-      enable_tests: ${{ inputs.enable_tests }}
+      enable_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_tests }}

@@ -1,0 +1,4 @@
+[submodule "src/publish"]
+	path = src/publish
+	url = https://github.com/buckyos/buckyos-pack-installer.git
+	branch = main
