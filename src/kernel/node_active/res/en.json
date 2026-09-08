@@ -1,4 +1,9 @@
 {
+    "device_publication_intro": "Before activation, host the signed device identity document at the HTTPS address below. This address must remain available while this node is offline; it cannot depend on this node's relay tunnel.",
+    "device_publication_content": "Publish this HTTPS document path through an independent host or proxy, and serve the file unchanged as application/jwt. Preserve RTCP routing for the device hostname and port. Activation will verify the exact signed document.",
+    "prepare_device_publication": "Prepare signed document",
+    "download_device_publication": "Download did.json",
+    "verify_publication_and_activate": "Verify publication and activate",
     "active_title": "Active Your PI",
     "active_subtitle": "Quickly activate Personal Intelligence with the guided wizard.",
     "step_indicator": "Step {{current}} / {{total}} · {{title}}",

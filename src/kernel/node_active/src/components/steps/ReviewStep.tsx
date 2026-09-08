@@ -1,8 +1,8 @@
-import { CheckCircleRounded } from "@mui/icons-material";
+import { CheckCircleRounded, DownloadRounded } from "@mui/icons-material";
 import { Alert, Button, CircularProgress, Divider, Stack, Typography } from "@mui/material";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { activateNode, deriveActiveNames, deriveGatewayTopology } from "../../../active_lib";
+import { activateNode, customDomainPublication, deriveActiveNames, deriveGatewayTopology, prepareSignedActivation } from "../../../active_lib";
 import { WizardData } from "../../types";
 
 type Props = {
@@ -19,6 +19,37 @@ const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime
   const [error, setError] = useState("");
   const names = wizardData.owner_document ? deriveActiveNames(wizardData) : null;
   const topology = deriveGatewayTopology(wizardData);
+
+  const preparePublication = async () => {
+    setError("");
+    setLoading(true);
+    try {
+      const result = await prepareSignedActivation(wizardData);
+      onUpdate({
+        prepared_documents: result.prepared,
+        signed_documents: result.signed,
+        admin_password_hash: result.adminPasswordHash,
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const downloadPublication = () => {
+    try {
+      const publication = customDomainPublication(wizardData);
+      const url = URL.createObjectURL(new Blob([publication.content], { type: "application/jwt" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "did.json";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
 
   const activate = async () => {
     setError("");
@@ -90,6 +121,29 @@ const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime
           <Typography>{names.bns_publish_name}</Typography>
         </Stack>
       </Stack>
+      {wizardData.use_self_domain && (
+        <Alert severity="info">
+          <Stack spacing={1.5}>
+            <Typography>
+              {t("device_publication_intro", "Before activation, host the signed device identity document at the HTTPS address below. This address must remain available while this node is offline; it cannot depend on this node's relay tunnel.")}
+            </Typography>
+            <Typography sx={{ wordBreak: "break-all" }}>
+              {`https://ood1.${names.access_hostname}/.well-known/did.json`}
+            </Typography>
+            <Typography variant="body2">
+              {t("device_publication_content", "Publish this HTTPS document path through an independent host or proxy, and serve the file unchanged as application/jwt. Preserve RTCP routing for the device hostname and port. Activation will verify the exact signed document.")}
+            </Typography>
+            <Stack direction="row" spacing={2}>
+              <Button onClick={preparePublication} disabled={loading || Boolean(wizardData.signed_documents)}>
+                {t("prepare_device_publication", "Prepare signed document")}
+              </Button>
+              <Button onClick={downloadPublication} disabled={loading || !wizardData.signed_documents} startIcon={<DownloadRounded />}>
+                {t("download_device_publication", "Download did.json")}
+              </Button>
+            </Stack>
+          </Stack>
+        </Alert>
+      )}
       {error && <Alert severity="error">{error}</Alert>}
       <Stack direction="row" justifyContent="space-between" spacing={2}>
         <Button onClick={onBack} disabled={loading}>
@@ -99,10 +153,14 @@ const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime
           variant="contained"
           size="large"
           onClick={activate}
-          disabled={loading}
+          disabled={loading || (wizardData.use_self_domain && !wizardData.signed_documents)}
           startIcon={loading ? <CircularProgress size={18} /> : <CheckCircleRounded />}
         >
-          {loading ? t("activating", "Activating…") : t("activate_button", "Activate")}
+          {loading
+            ? t("activating", "Activating…")
+            : wizardData.use_self_domain
+              ? t("verify_publication_and_activate", "Verify publication and activate")
+              : t("activate_button", "Activate")}
         </Button>
       </Stack>
     </Stack>

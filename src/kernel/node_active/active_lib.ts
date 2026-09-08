@@ -501,10 +501,10 @@ async function signWalletDocuments(prepared: PreparedActiveDocuments): Promise<{
   };
 }
 
-export async function activateNode(data: ActiveWizzardData): Promise<{
-  accessHostname: string;
+export async function prepareSignedActivation(data: ActiveWizzardData): Promise<{
   prepared: PreparedActiveDocuments;
   signed: SignedActiveDocuments;
+  adminPasswordHash: string;
 }> {
   if (!data.owner_document) throw new Error("OwnerDocument is missing");
   if (data.use_self_domain && data.domain_binding.state !== "verified") {
@@ -527,6 +527,47 @@ export async function activateNode(data: ActiveWizzardData): Promise<{
   const adminPasswordHash = data.is_wallet_runtime
     ? walletPwdHash || ""
     : data.admin_password_hash;
+  return { prepared, signed, adminPasswordHash };
+}
+
+export function customDomainPublication(data: ActiveWizzardData) {
+  const prepared = data.prepared_documents;
+  const signed = data.signed_documents;
+  if (!data.use_self_domain || !prepared || !signed) {
+    throw new Error("Prepare and publish the custom-domain device document first");
+  }
+  const names = deriveActiveNames(data);
+  const topology = deriveGatewayTopology(data);
+  if (
+    !Object.entries(names).every(([key, value]) => prepared.names[key as keyof ActiveNameMapping] === value) ||
+    !Object.entries(topology).every(([key, value]) => prepared.topology[key as keyof GatewayTopology] === value) ||
+    !sameJwk(prepared.device_document.verificationMethod?.[0]?.publicKeyJwk, data.device_public_key) ||
+    prepared.owner_document.id !== data.owner_document?.id ||
+    !sameJwk(prepared.owner_document.verificationMethod?.[0]?.publicKeyJwk, data.owner_document?.verificationMethod?.[0]?.publicKeyJwk)
+  ) {
+    throw new Error("Activation settings changed; prepare and publish the device document again");
+  }
+  return {
+    prepared,
+    signed,
+    adminPasswordHash: data.admin_password_hash,
+    url: `https://${prepared.device_document.id.slice("did:web:".length)}/.well-known/did.json`,
+    content: signed.device_document_jwt,
+  };
+}
+
+export async function activateNode(data: ActiveWizzardData): Promise<{
+  accessHostname: string;
+  prepared: PreparedActiveDocuments;
+  signed: SignedActiveDocuments;
+}> {
+  if (!data.owner_document) throw new Error("OwnerDocument is missing");
+  if (data.use_self_domain && data.domain_binding.state !== "verified") {
+    throw new Error("Custom domain has not been verified");
+  }
+  const { prepared, signed, adminPasswordHash } = data.use_self_domain
+    ? customDomainPublication(data)
+    : await prepareSignedActivation(data);
   const accessToken = await acquireSnAccessToken(data, adminPasswordHash);
   const result = (await activeRpc().call("commit_active", {
     owner_document: data.owner_document,

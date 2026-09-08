@@ -18,7 +18,7 @@ use http_body_util::{BodyExt, Full};
 use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
 use log::*;
-use name_client::GLOBAL_NAME_CLIENT;
+use name_client::{BodyEvidence, NameClient, ResolvePolicy, ResolveSourcePolicy, GLOBAL_NAME_CLIENT};
 use name_lib::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -464,6 +464,9 @@ impl ActiveServer {
 
     async fn commit_active(&self, req: CommitActiveReq) -> Result<CommitActiveResp, RPCErrors> {
         validate_commit_request(&req, &self.config)?;
+        if req.prepared.names.use_self_domain {
+            wait_for_device_authority(&req).await?;
+        }
         let (effective_owner, needs_owner_publish) = prepare_owner_binding_for_activation(
             &req.owner_document,
             &req.prepared.names.zone_did,
@@ -585,6 +588,8 @@ impl ActiveServer {
             .await?;
         }
 
+        wait_for_device_authority(&req).await?;
+
         let device_key_did = device_key_did_from_doc(&req.prepared.device_document)?;
         sn_client
             .register_device_online(build_sn_device_online_report(
@@ -635,6 +640,57 @@ impl ActiveServer {
             ))
             .map_err(|error| server_err!(ServerErrorCode::InvalidData, "{}", error))?)
     }
+}
+
+async fn wait_for_device_authority(req: &CommitActiveReq) -> Result<(), RPCErrors> {
+    let client = GLOBAL_NAME_CLIENT.get().ok_or_else(|| {
+        RPCErrors::ReasonError("Device authority validation requires NameClient".into())
+    })?;
+    let deadline = Instant::now() + PROJECTION_DEADLINE;
+    loop {
+        let check = check_device_authority(
+            client,
+            &req.prepared.device_document,
+            &req.signed_documents.device_document_jwt,
+        );
+        let error =
+            match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), check).await {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(error)) => error,
+                Err(_) => "Device authority resolution timed out".to_string(),
+            };
+        if Instant::now() >= deadline {
+            return Err(RPCErrors::ReasonError(format!(
+                "Activation is not complete: Relay AuthorityCurrent validation failed for {}: {}",
+                req.prepared.device_document.id.to_string(),
+                error
+            )));
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn check_device_authority(
+    client: &NameClient,
+    device: &DeviceDocument,
+    expected_jwt: &str,
+) -> Result<(), String> {
+    let mut policy = ResolvePolicy::default();
+    policy.source = ResolveSourcePolicy::RemoteAuthority;
+    policy.allow_self_signed_when_missing = false;
+    policy.allow_unverified_cache_when_unavailable = false;
+    policy.allow_stale_cache = false;
+    let resolved = client
+        .resolve_did_ex(&device.id, None, policy)
+        .await
+        .map_err(|error| error.to_string())?;
+    if device.exp <= buckyos_get_unix_timestamp()
+        || resolved.resolution_metadata.evidence != Some(BodyEvidence::Anchored)
+        || resolved.document != EncodedDocument::Jwt(expected_jwt.to_string())
+    {
+        return Err("Device authority did not return the current published DeviceDocument JWT".into());
+    }
+    Ok(())
 }
 
 fn prepare_owner_binding_for_activation(
@@ -1109,6 +1165,7 @@ fn assemble_zone_document_internal(
         owner_jwk,
     );
     zone_document.init_by_boot_document(&prepared.boot_document, &boot_document_jwt.to_string());
+    zone_document.owner = prepared.names.owner_did.clone();
     zone_document.iat = next_document_iat("DeviceDocument", prepared.device_document.iat)?;
     zone_document.hostname = prepared.names.access_hostname.clone();
     zone_document.devices.insert(
@@ -1678,6 +1735,105 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    #[ignore = "cross-repository BNS/Relay integration fixture export"]
+    async fn export_node_active_authority_fixture() {
+        let path = std::env::var("BUCKYOS_ACTIVE_FIXTURE").expect("fixture output path");
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let owner = owner_document(mnemonic);
+        let names = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
+        let (_, device_public_key) = generate_ed25519_key_pair();
+        let server = ActiveServer::new(active_service_config());
+        let prepared = server
+            .prepare_active_documents(PrepareActiveDocumentsReq {
+                owner_document: owner,
+                names,
+                topology: topology(),
+                device_public_key,
+            })
+            .await
+            .unwrap();
+        let signed = server
+            .sign_web_active_documents(SignWebActiveDocumentsReq {
+                mnemonic_words: mnemonic
+                    .split_whitespace()
+                    .map(ToString::to_string)
+                    .collect(),
+                prepared: prepared.clone(),
+            })
+            .unwrap();
+        verify_signed_documents(&prepared, &signed).unwrap();
+        std::fs::write(
+            path,
+            serde_json::to_vec(&json!({
+                "owner": prepared.owner_document,
+                "zone_jwt": signed.zone_document_jwt,
+                "device_jwt": signed.device_document_jwt,
+                "device": prepared.device_document
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+
+    #[tokio::test]
+    async fn custom_web_authority_is_available_before_node_boot_and_rejects_stale_artifacts() {
+        use name_client::{CacheBackend, NameClientConfig, WebProvider};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::sync::RwLock;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (pem, public) = generate_ed25519_key_pair();
+        let key = EncodingKey::from_ed_pem(pem.as_bytes()).unwrap();
+        let device_did = DID::new("web", &format!("127.0.0.1%3A{port}"));
+        let mut device = new_device_config_by_jwk_with_did(
+            "ood1", serde_json::from_value(public).unwrap(), &device_did,
+        ).unwrap();
+        device.owner = DID::new("bns", "alice");
+        device.zone_did = Some(DID::new("web", "home.example.com"));
+        let jwt = device.encode(Some(&key)).unwrap().to_string();
+        let published = Arc::new(RwLock::new(Some(jwt.clone())));
+        let state = published.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 8192];
+                let len = stream.read(&mut request).await.unwrap();
+                assert!(String::from_utf8_lossy(&request[..len]).starts_with("GET /.well-known/did.json "));
+                let body = state.read().await.clone();
+                let status = if body.is_some() { "200 OK" } else { "404 Not Found" };
+                let body = body.unwrap_or_default();
+                let response = format!("HTTP/1.1 {status}\r\nContent-Type: application/jwt\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = NameClient::new(NameClientConfig {
+            cache_backend: CacheBackend::Memory, enable_zone_resolver: false, ..Default::default()
+        });
+        client.set_method_authority("web", Box::new(WebProvider::new_with_scheme("http"))).await;
+        check_device_authority(&client, &device, &jwt).await.unwrap();
+        *published.write().await = None;
+        assert!(check_device_authority(&client, &device, &jwt).await.is_err());
+        *published.write().await = Some(device.encode(Some(&key)).unwrap().to_json_value().unwrap().to_string());
+        assert!(check_device_authority(&client, &device, &jwt).await.is_err());
+        let mut replaced = device.clone();
+        replaced.iat += 1;
+        let replacement = replaced.encode(Some(&key)).unwrap().to_string();
+        *published.write().await = Some(replacement.clone());
+        assert!(check_device_authority(&client, &device, &jwt).await.is_err());
+        check_device_authority(&client, &replaced, &replacement).await.unwrap();
+        replaced.exp = buckyos_get_unix_timestamp() - 1;
+        let expired = replaced.encode(Some(&key)).unwrap().to_string();
+        *published.write().await = Some(expired.clone());
+        assert!(check_device_authority(&client, &replaced, &expired).await.is_err());
+        *published.write().await = Some(jwt.clone());
+        check_device_authority(&client, &device, &jwt).await.unwrap();
+        task.abort();
+        let _ = task.await;
+    }
+
     #[test]
     fn every_request_struct_has_strict_parsing() {
         assert!(GenerateWebOwnerMaterialReq::from_json(json!({})).is_ok());
@@ -1822,6 +1978,7 @@ mod tests {
             })
             .unwrap();
         verify_signed_documents(&prepared, &signed).unwrap();
+        assert_eq!(signed.zone_document.owner, prepared.names.owner_did);
         assert_eq!(signed.zone_document.iat, prepared.device_document.iat + 1);
         assert_eq!(signed.zone_document.boot_jwt, signed.boot_document_jwt);
         assert_eq!(
