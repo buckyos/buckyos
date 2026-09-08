@@ -13,7 +13,7 @@
 
 import type { FileEntry } from '../types'
 import type { TransferControls, TransferExecutor } from '../data/transfers'
-import { registerTransferExecutor, TransferCancelledError } from '../data/transfers'
+import { registerTransferExecutor, takeLocalFile, TransferCancelledError } from '../data/transfers'
 import type { TransferTask } from '../data/state'
 import { classifyFileKind } from '../data/fileKinds'
 import { dfsPathOf } from '../data/urls'
@@ -24,13 +24,14 @@ function checkCancelled(controls: TransferControls) {
   if (controls.isCancelled()) throw new TransferCancelledError()
 }
 
-const failedOnce = new Set<string>()
+const failedOnce = new WeakSet<object>()
 
 async function runMockTransfer(
   task: TransferTask,
   controls: TransferControls,
 ): Promise<FileEntry> {
   const parentPath = dfsPathOf(task.targetUrl)
+  const failureKey = takeLocalFile(task.candidate.localId) ?? task
   if (parentPath === null) {
     throw {
       code: 'UNSUPPORTED',
@@ -53,7 +54,7 @@ async function runMockTransfer(
       code: 'NAMESPACE_CONFLICT',
       messageKey: 'filebrowser.transfer.conflict',
       fallback: `"${task.candidate.name}" already exists here`,
-      retryable: false,
+      retryable: true,
     }
   }
 
@@ -66,9 +67,9 @@ async function runMockTransfer(
     if (
       i === 3 &&
       task.candidate.name.toLowerCase().includes('fail') &&
-      !failedOnce.has(task.id)
+      !failedOnce.has(failureKey)
     ) {
-      failedOnce.add(task.id)
+      failedOnce.add(failureKey)
       throw new Error('Mock upload interrupted — retry succeeds')
     }
   }

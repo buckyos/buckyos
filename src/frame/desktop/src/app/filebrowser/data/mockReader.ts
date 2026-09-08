@@ -86,7 +86,11 @@ function pageOf(sorted: FileEntry[], query: ListQuery): FileItemPage {
 }
 
 class MockDfsFolderReader implements FolderReader {
-  readonly capabilities = FOLDER_CAPABILITIES
+  get capabilities(): LocationCapabilities {
+    const mode = new URLSearchParams(location.search).get('fbCapabilities')
+    return mode === 'loading' ? { ...FOLDER_CAPABILITIES, availability: 'loading', acceptsContent: false, removal: null }
+      : mode === 'readonly' ? { ...FOLDER_CAPABILITIES, acceptsContent: false, removal: null } : FOLDER_CAPABILITIES
+  }
   readonly url: string
   private readonly path: string
 
@@ -97,7 +101,8 @@ class MockDfsFolderReader implements FolderReader {
 
   async list(query: ListQuery): Promise<FileItemPage> {
     await mockDelay()
-    const entries = mockEntriesAtPath(this.path) ?? []
+    const entries = mockEntriesAtPath(this.path)
+    if (!entries) throw new Error('This folder no longer exists')
     const sorted = sortEntriesForQuery(entries, query.sortKey, query.sortDir, query.foldersFirst)
     return pageOf(sorted, query)
   }

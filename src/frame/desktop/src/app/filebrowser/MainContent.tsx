@@ -11,13 +11,13 @@ import {
   Upload,
   Wand2,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '../../i18n/provider'
 import type { FileItemList } from './data/FileItemList'
 import type { FileItem } from './data/FolderReader'
 import { COLLECTION_SCHEME, displayPath } from './data/urls'
 import { formatBytes, formatDate, kindIcon } from './fileDisplay'
-import type { ViewMode } from './types'
+import type { ViewMode, SortKey, SortDir } from './types'
 
 /** A list item is a reference when it's a link entry or a collection member (not a group). */
 function isReferenceItem(item: FileItem): boolean {
@@ -52,7 +52,23 @@ export interface MenuPosition {
   left: number
 }
 
-interface MainContentProps {
+interface PresentationProps {
+  fullColumns?: boolean
+  density?: 'compact' | 'comfortable'
+  nameWidth?: number
+  onNameWidthChange?: (width: number) => void
+  onClearSelection?: () => void
+  scroll?: number
+  onScroll?: (scroll: number) => void
+  revealIndex?: number | null
+  cutIds?: ReadonlySet<string>
+  onSelectLoaded?: () => void
+  onSelectAll?: () => void
+  sortKey?: SortKey
+  sortDir?: SortDir
+  onSortChange?: (key: SortKey, dir: SortDir) => void
+}
+interface MainContentProps extends PresentationProps {
   list: FileItemList
   viewMode: ViewMode
   selectedKeys: ReadonlySet<string>
@@ -180,6 +196,7 @@ export function MainContent({
   onItemMenu,
   onLongPress,
   onUpload,
+  ...presentation
 }: MainContentProps) {
   const { t } = useI18n()
 
@@ -233,7 +250,7 @@ export function MainContent({
         </div>
         <span className="rounded-full bg-[color:color-mix(in_srgb,var(--cp-surface)_86%,transparent)] px-2 py-0.5 text-[11px] font-semibold text-[color:var(--cp-muted)]">
           {capabilities.kind === 'collection'
-            ? t('filebrowser.collection.refCount', '{{count}} references · zero disk', {
+            ? t('filebrowser.collection.itemCount', '{{count}} items · originals stay in place', {
                 count: list.totalCount ?? '…',
               })
             : t('filebrowser.topic.aggregation', 'Aggregated · not copied')}
@@ -320,6 +337,7 @@ export function MainContent({
   } else if (viewMode === 'list' && isMobile) {
     body = (
       <MobileListView
+        presentation={{ ...presentation, onClearSelection }}
         list={list}
         selectedKeys={selectedKeys}
         onSelect={onSelect}
@@ -332,6 +350,7 @@ export function MainContent({
   } else if (viewMode === 'list') {
     body = (
       <DesktopListView
+        presentation={{ ...presentation, onClearSelection }}
         list={list}
         selectedKeys={selectedKeys}
         onSelect={onSelect}
@@ -345,6 +364,7 @@ export function MainContent({
   } else {
     body = (
       <IconGridView
+        presentation={{ ...presentation, onClearSelection }}
         list={list}
         selectedKeys={selectedKeys}
         onSelect={onSelect}
@@ -360,8 +380,10 @@ export function MainContent({
   }
 
   return (
-    <div className="flex h-full w-full flex-col">
+    <div className="fb-content flex h-full w-full flex-col">
       {banner}
+      {list.capabilities.availability === 'loading' && <p role="status" className="px-3 py-1 text-xs">{t('filebrowser.operation.permissionsLoading', 'Permissions are loading')}</p>}
+      {list.capabilities.kind === 'folder' && !list.capabilities.acceptsContent && list.capabilities.availability !== 'loading' && <p className="px-3 py-1 text-xs">{t('filebrowser.operation.readOnly', 'Read-only folder')}</p>}
       {body}
     </div>
   )
@@ -369,9 +391,30 @@ export function MainContent({
 
 // ─── Desktop list (virtualized div-grid table — <table> doesn't virtualize) ───
 
+function useScrollState(parent: React.RefObject<HTMLDivElement | null>, settings: PresentationProps, revealTop: number | null) {
+  const onScroll = useRef(settings.onScroll)
+  const [initialScroll] = useState(settings.scroll ?? 0)
+  useLayoutEffect(() => { onScroll.current = settings.onScroll })
+  useLayoutEffect(() => {
+    const el = parent.current
+    if (!el) return
+    el.scrollTo({ top: initialScroll })
+    const listener = () => onScroll.current?.(el.scrollTop)
+    el.addEventListener('scroll', listener)
+    return () => el.removeEventListener('scroll', listener)
+  }, [parent, initialScroll])
+  useEffect(() => { if (revealTop !== null && parent.current) parent.current.scrollTo({ top: revealTop }) }, [parent, revealTop])
+}
+
+function EntryThumbnail({ entry, size }: { entry: FileItem['entry']; size: number }) {
+  const [failed, setFailed] = useState(false)
+  return entry.thumbnailUrl && !failed ? <img src={entry.thumbnailUrl} loading="lazy" alt="" className="h-full w-full rounded-xl object-cover" onError={() => setFailed(true)} /> : kindIcon(entry.kind, size)
+}
+
 const LIST_ROW_HEIGHT = 37
 
 function DesktopListView({
+  presentation,
   list,
   selectedKeys,
   onSelect,
@@ -381,6 +424,7 @@ function DesktopListView({
   handleViewContextMenu,
   handleBlankClick,
 }: {
+  presentation: PresentationProps
   list: FileItemList
   selectedKeys: ReadonlySet<string>
   onSelect: (item: FileItem, modifiers?: SelectModifiers) => void
@@ -393,25 +437,36 @@ function DesktopListView({
   const { t } = useI18n()
   const parentRef = useRef<HTMLDivElement>(null)
   const count = virtualCountOf(list)
+  const rowHeight = presentation.density === 'comfortable' ? 48 : LIST_ROW_HEIGHT
+  const resizeStart = useRef<{ x: number; width: number } | null>(null)
 
   const virtualizer = useVirtualizer({
     count,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => LIST_ROW_HEIGHT,
+    estimateSize: () => rowHeight,
     overscan: 12,
   })
+  useEffect(() => virtualizer.measure(), [rowHeight, virtualizer])
   const virtualItems = virtualizer.getVirtualItems()
   const first = virtualItems[0]?.index ?? 0
   const last = virtualItems[virtualItems.length - 1]?.index ?? 0
   useEnsureRange(list, first, last, count > 0)
 
-  const gridTemplateColumns = `minmax(240px, 2fr) 110px 90px 150px minmax(120px, 1fr)${
-    isPublic ? ' minmax(160px, 1fr)' : ''
-  }`
-
-  const headerCell = (label: string) => (
-    <div role="columnheader" className="px-2 py-2 font-medium">
-      {label}
+  useScrollState(parentRef, presentation, presentation.revealIndex != null ? presentation.revealIndex * rowHeight : null)
+  const [focusIndex, setFocusIndex] = useState<number | null>(null)
+  const pendingModifiers = useRef<SelectModifiers>({})
+  useEffect(() => {
+    if (focusIndex === null) return
+    const item = list.itemAt(focusIndex)
+    if (!item) { list.ensureRange(focusIndex, focusIndex); return }
+    onSelect(item, pendingModifiers.current)
+    parentRef.current?.querySelector<HTMLElement>(`[data-row-index="${focusIndex}"]`)?.focus({ preventScroll: true })
+    setFocusIndex(null)
+  }, [focusIndex, list, list.snapshot, onSelect])
+  const gridTemplateColumns = undefined
+  const headerCell = (label: string, column: string, key?: SortKey) => (
+    <div role="columnheader" className={`fb-column-${column} px-2 py-2 font-medium`} aria-sort={key && presentation.sortKey === key ? presentation.sortDir === 'desc' ? 'descending' : 'ascending' : undefined}>
+      {key ? <button disabled={!list.capabilities.sortKeys.includes(key)} onClick={() => presentation.onSortChange?.(key, presentation.sortKey === key && presentation.sortDir === 'asc' && (list.capabilities.sortDirs?.includes('desc') ?? true) ? 'desc' : 'asc')}>{label}{presentation.sortKey === key ? presentation.sortDir === 'desc' ? ' ↓' : ' ↑' : ''}</button> : label}
     </div>
   )
 
@@ -422,20 +477,22 @@ function DesktopListView({
       onContextMenu={handleViewContextMenu}
       onClick={handleBlankClick}
     >
-      <div role="table" className="w-full select-none text-sm">
+      <div role="table" className={clsx("fb-table w-full select-none text-sm", isPublic && "fb-public", presentation.fullColumns && "fb-full")} style={presentation.fullColumns ? { minWidth: (presentation.nameWidth ?? 260) + 459 + (isPublic ? 160 : 0), '--fb-name-width': `${presentation.nameWidth ?? 260}px` } as React.CSSProperties : undefined}>
         <div
           role="row"
-          className="sticky top-0 z-10 grid bg-[color:color-mix(in_srgb,var(--cp-surface)_92%,transparent)] text-left text-[11px] uppercase tracking-wider text-[color:var(--cp-muted)] backdrop-blur"
+          className="fb-list-row sticky top-0 z-10 grid bg-[color:color-mix(in_srgb,var(--cp-surface)_92%,transparent)] text-left text-[11px] uppercase tracking-wider text-[color:var(--cp-muted)] backdrop-blur"
           style={{ gridTemplateColumns }}
         >
-          <div role="columnheader" className="py-2 pl-4 pr-2 font-medium">
-            {t('filebrowser.column.name', 'Name')}
+          <div role="columnheader" className="relative flex items-center gap-2 py-2 pl-3 pr-2 font-medium" aria-sort={presentation.sortKey === 'name' ? presentation.sortDir === 'desc' ? 'descending' : 'ascending' : undefined}>
+            <input type="checkbox" aria-label={t('filebrowser.menu.selectLoaded', 'Select loaded {{count}} items', { count: list.loadedKeys().length })} checked={list.loadedKeys().length > 0 && list.loadedKeys().every((key) => selectedKeys.has(key))} ref={(el) => { if (el) el.indeterminate = selectedKeys.size > 0 && !list.loadedKeys().every((key) => selectedKeys.has(key)) }} onChange={(event) => event.target.checked ? presentation.onSelectLoaded?.() : presentation.onClearSelection?.()} />
+            <button disabled={!list.capabilities.sortKeys.includes('name')} onClick={() => presentation.onSortChange?.('name', presentation.sortKey === 'name' && presentation.sortDir === 'asc' && (list.capabilities.sortDirs?.includes('desc') ?? true) ? 'desc' : 'asc')}>{t('filebrowser.column.name', 'Name')}{presentation.sortKey === 'name' ? presentation.sortDir === 'desc' ? ' ↓' : ' ↑' : ''}</button>
+            {presentation.fullColumns && <span role="separator" aria-label={t('filebrowser.view.resizeName', 'Resize name column')} aria-orientation="vertical" tabIndex={0} className="absolute inset-y-0 right-0 w-2 cursor-col-resize touch-none border-r border-[color:var(--cp-border)]" onPointerDown={(event) => { resizeStart.current = { x: event.clientX, width: presentation.nameWidth ?? 260 }; event.currentTarget.setPointerCapture(event.pointerId) }} onPointerMove={(event) => { if (resizeStart.current) presentation.onNameWidthChange?.(Math.max(160, Math.min(600, resizeStart.current.width + event.clientX - resizeStart.current.x))) }} onPointerUp={() => { resizeStart.current = null }} onPointerCancel={() => { resizeStart.current = null }} onKeyDown={(event) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); event.stopPropagation(); presentation.onNameWidthChange?.(Math.max(160, Math.min(600, (presentation.nameWidth ?? 260) + (event.key === 'ArrowLeft' ? -20 : 20)))) } }} />}
           </div>
-          {headerCell(t('filebrowser.column.kind', 'Kind'))}
-          {headerCell(t('filebrowser.column.size', 'Size'))}
-          {headerCell(t('filebrowser.column.modified', 'Modified'))}
-          {headerCell(t('filebrowser.column.tags', 'Tags'))}
-          {isPublic ? headerCell(t('filebrowser.column.publicUrl', 'Public URL')) : null}
+          {headerCell(t('filebrowser.column.kind', 'Kind'), 'kind', 'kind')}
+          {headerCell(t('filebrowser.column.size', 'Size'), 'size', 'size')}
+          {headerCell(t('filebrowser.column.modified', 'Modified'), 'modified', 'modified')}
+          {headerCell(t('filebrowser.column.tags', 'Tags'), 'tags')}
+          {isPublic ? headerCell(t('filebrowser.column.publicUrl', 'Public URL'), 'url') : null}
         </div>
 
         <div
@@ -487,19 +544,36 @@ function DesktopListView({
                 key={item.key}
                 role="row"
                 className={clsx(
-                  'grid cursor-pointer items-center border-b border-[color:color-mix(in_srgb,var(--cp-border)_40%,transparent)] transition',
+                  'fb-list-row grid cursor-pointer items-center border-b border-[color:color-mix(in_srgb,var(--cp-border)_40%,transparent)] transition',
                   selected
                     ? 'bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))]'
                     : 'hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_10%,transparent)]',
-                  broken && 'opacity-50',
+                  (broken || presentation.cutIds?.has(entry.id)) && 'opacity-50',
                 )}
                 style={rowStyle}
-                onClick={(event) => onSelect(item, modifiersFromEvent(event))}
+                tabIndex={selected || (selectedKeys.size === 0 && virtualRow.index === 0) ? 0 : -1}
+                aria-selected={selected}
+                data-entry-id={entry.id}
+                data-item-key={item.key}
+                draggable={!broken}
+                data-row-index={virtualRow.index}
+                onClick={(event) => { event.currentTarget.focus(); onSelect(item, modifiersFromEvent(event)) }}
+                onKeyDown={(event) => {
+                  if (event.target instanceof HTMLInputElement) return
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Home' || event.key === 'End') {
+                    event.preventDefault(); event.stopPropagation()
+                    const next = event.key === 'Home' ? 0 : event.key === 'End' ? count - 1 : Math.max(0, Math.min(count - 1, virtualRow.index + (event.key === 'ArrowDown' ? 1 : -1)))
+                    pendingModifiers.current = { shift: event.shiftKey }
+                    virtualizer.scrollToIndex(next)
+                    setFocusIndex(next)
+                  } else if (event.key === ' ') { event.preventDefault(); onSelect(item, { toggle: true }) }
+                }}
                 onDoubleClick={() => openItem(item)}
                 onContextMenu={handleItemContextMenu(item)}
               >
-                <div role="cell" className="min-w-0 py-2 pl-4 pr-2">
+                <div role="cell" aria-label={entry.name} className="min-w-0 py-2 pl-4 pr-2">
                   <div className="flex items-center gap-2">
+                    <input type="checkbox" aria-label={t('filebrowser.operation.selectName', 'Select {{name}}', { name: entry.name })} checked={selected} onClick={(event) => event.stopPropagation()} onChange={() => onSelect(item, { toggle: true })} />
                     <span className="relative inline-flex shrink-0">
                       {kindIcon(entry.kind, 16)}
                       {isReferenceItem(item) ? <LinkBadge size={8} /> : null}
@@ -509,7 +583,7 @@ function DesktopListView({
                     </span>
                     {entry.triggersActive ? (
                       <span
-                        title="AI pipeline active"
+                        title={t('filebrowser.status.aiActive', 'AI pipeline active')}
                         className="inline-flex items-center rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))] px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--cp-accent)]"
                       >
                         <Wand2 size={10} className="mr-1" /> AI
@@ -517,21 +591,21 @@ function DesktopListView({
                     ) : null}
                   </div>
                 </div>
-                <div role="cell" className="px-2 py-2 capitalize text-[color:var(--cp-muted)]">
-                  {entry.kind}
+                <div role="cell" className="fb-column-kind px-2 py-2 capitalize text-[color:var(--cp-muted)]">
+                  {t(`filebrowser.kind.${entry.kind}`, entry.kind)}
                 </div>
-                <div role="cell" className="px-2 py-2 text-[color:var(--cp-muted)]">
-                  {entry.kind === 'folder' ? '—' : formatBytes(entry.sizeBytes)}
+                <div role="cell" className="fb-column-size px-2 py-2 text-[color:var(--cp-muted)]">
+                  {entry.kind === 'folder' ? t('filebrowser.meta.notCalculated', 'Not calculated') : formatBytes(entry.sizeBytes)}
                 </div>
-                <div role="cell" className="px-2 py-2 text-[color:var(--cp-muted)]">
+                <div role="cell" className="fb-column-modified truncate px-2 py-2 text-[color:var(--cp-muted)]">
                   {formatDate(entry.modifiedAt)}
                 </div>
-                <div role="cell" className="min-w-0 px-2 py-2">
-                  <div className="flex flex-wrap gap-1 overflow-hidden">
+                <div role="cell" className="fb-column-tags min-w-0 px-2 py-2">
+                  <div className="flex min-w-0 gap-1 overflow-hidden">
                     {entry.tags?.slice(0, 2).map((tag) => (
                       <span
                         key={tag}
-                        className="rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_16%,var(--cp-surface))] px-2 py-0.5 text-[10px] text-[color:var(--cp-muted)]"
+                        className="min-w-0 truncate rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_16%,var(--cp-surface))] px-2 py-0.5 text-[10px] text-[color:var(--cp-muted)]"
                       >
                         #{tag}
                       </span>
@@ -561,6 +635,7 @@ const GRID_CELL_WIDTH = 172
 const GRID_ROW_HEIGHT = 152
 
 function IconGridView({
+  presentation,
   list,
   selectedKeys,
   onSelect,
@@ -572,6 +647,7 @@ function IconGridView({
   onItemMenu,
   onLongPress,
 }: {
+  presentation: PresentationProps
   list: FileItemList
   selectedKeys: ReadonlySet<string>
   onSelect: (item: FileItem, modifiers?: SelectModifiers) => void
@@ -599,6 +675,7 @@ function IconGridView({
 
   const count = virtualCountOf(list)
   const rowCount = Math.ceil(count / columns)
+  useScrollState(parentRef, presentation, presentation.revealIndex != null ? Math.floor(presentation.revealIndex / columns) * GRID_ROW_HEIGHT : null)
 
   const virtualizer = useVirtualizer({
     count: rowCount,
@@ -657,6 +734,7 @@ function IconGridView({
                   <IconGridCell
                     key={item.key}
                     item={item}
+                    cut={presentation.cutIds?.has(item.entry.id)}
                     selected={selectedKeys.has(item.key)}
                     selectionMode={selectionMode}
                     onSelect={onSelect}
@@ -676,7 +754,7 @@ function IconGridView({
 }
 
 function IconGridCell({
-  item,
+  item, cut,
   selected,
   selectionMode,
   onSelect,
@@ -685,6 +763,7 @@ function IconGridCell({
   onMenu,
   onLongPress,
 }: {
+  cut?: boolean
   item: FileItem
   selected: boolean
   selectionMode: boolean
@@ -703,6 +782,8 @@ function IconGridCell({
       <button
         type="button"
         {...handlers}
+        data-item-key={item.key}
+        draggable={!onLongPress && !broken}
         onClick={(event) => {
           if (consumeLongPress()) return
           onSelect(item, modifiersFromEvent(event))
@@ -721,18 +802,18 @@ function IconGridCell({
           selected
             ? 'border-[color:var(--cp-accent)] bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))]'
             : 'hover:border-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)] hover:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_8%,transparent)]',
-          broken && 'opacity-50',
+          (broken || cut) && 'opacity-50',
         )}
       >
         <div className="relative flex h-16 w-16 items-center justify-center rounded-[16px] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)]">
-          {kindIcon(entry.kind, 28)}
+          <EntryThumbnail entry={entry} size={28} />
           {isReferenceItem(item) ? <LinkBadge /> : null}
         </div>
         <span className="line-clamp-2 text-[12px] font-medium text-[color:var(--cp-text)]">
           {entry.name}
         </span>
         <span className="text-[10px] text-[color:var(--cp-muted)]">
-          {entry.kind === 'folder' ? '—' : formatBytes(entry.sizeBytes)}
+          {entry.kind === 'folder' ? t('filebrowser.meta.notCalculated', 'Not calculated') : formatBytes(entry.sizeBytes)}
         </span>
       </button>
       {selectionMode ? (
@@ -752,7 +833,7 @@ function IconGridCell({
             event.stopPropagation()
             onMenu()
           }}
-          className="absolute right-0.5 top-0.5 flex h-8 w-8 items-center justify-center rounded-full text-[color:var(--cp-muted)] active:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,transparent)]"
+          className="absolute right-0.5 top-0.5 flex h-11 w-11 items-center justify-center rounded-full text-[color:var(--cp-muted)] active:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,transparent)]"
         >
           <MoreVertical size={16} />
         </button>
@@ -766,6 +847,7 @@ function IconGridCell({
 const MOBILE_ROW_HEIGHT = 64
 
 function MobileListView({
+  presentation,
   list,
   selectedKeys,
   onSelect,
@@ -774,6 +856,7 @@ function MobileListView({
   onItemMenu,
   onLongPress,
 }: {
+  presentation: PresentationProps
   list: FileItemList
   selectedKeys: ReadonlySet<string>
   onSelect: (item: FileItem, modifiers?: SelectModifiers) => void
@@ -783,6 +866,7 @@ function MobileListView({
   onLongPress?: (item: FileItem) => void
 }) {
   const parentRef = useRef<HTMLDivElement>(null)
+  useScrollState(parentRef, presentation, presentation.revealIndex != null ? presentation.revealIndex * MOBILE_ROW_HEIGHT : null)
   const count = virtualCountOf(list)
 
   const virtualizer = useVirtualizer({
@@ -906,7 +990,7 @@ function MobileListRow({
           </span>
           {entry.triggersActive ? (
             <span
-              title="AI pipeline active"
+              title={t('filebrowser.status.aiActive', 'AI pipeline active')}
               className="inline-flex shrink-0 items-center rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_26%,var(--cp-surface))] px-1.5 py-0.5 text-[9px] font-semibold text-[color:var(--cp-accent)]"
             >
               <Wand2 size={9} className="mr-1" /> AI
@@ -925,7 +1009,7 @@ function MobileListRow({
       {selectionMode ? (
         <span
           className={clsx(
-            'flex h-9 w-9 shrink-0 items-center justify-center',
+            'flex h-11 w-11 shrink-0 items-center justify-center',
             selected ? 'text-[color:var(--cp-accent)]' : 'text-[color:var(--cp-muted)]',
           )}
         >
@@ -939,7 +1023,7 @@ function MobileListRow({
             event.stopPropagation()
             onMenu()
           }}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[color:var(--cp-muted)] active:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,transparent)]"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[color:var(--cp-muted)] active:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_18%,transparent)]"
         >
           <MoreVertical size={18} />
         </button>

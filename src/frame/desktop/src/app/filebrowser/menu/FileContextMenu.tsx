@@ -48,6 +48,7 @@ export function FileContextMenu({ position, sections, onInvoke, onClose }: FileC
         key={item.id}
         dense
         disabled={item.disabled}
+        aria-label={resolve(item.label)}
         onClick={() => invoke(item)}
         sx={item.danger ? { color: 'var(--cp-danger)' } : undefined}
       >
@@ -56,7 +57,7 @@ export function FileContextMenu({ position, sections, onInvoke, onClose }: FileC
             <Icon size={15} />
           </ListItemIcon>
         ) : null}
-        <ListItemText primary={resolve(item.label)} primaryTypographyProps={{ fontSize: 13 }} />
+        <ListItemText primary={resolve(item.label)} secondary={item.disabledReason ? t(`filebrowser.commandReason.${item.disabledReason}`, item.disabledReason) : undefined} primaryTypographyProps={{ fontSize: 13 }} />
         {item.shortcut ? (
           <Typography variant="caption" sx={{ ml: 2, color: 'var(--cp-muted)' }}>
             {item.shortcut}

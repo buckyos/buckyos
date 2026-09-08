@@ -58,6 +58,7 @@ export function MobileMenuSheet({
         key={item.id}
         type="button"
         disabled={item.disabled}
+        aria-label={resolve(item.label)}
         onClick={() => invoke(item)}
         className={clsx(
           'flex w-full items-center gap-3 px-5 py-3 text-left text-[14px] transition active:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_14%,transparent)] disabled:opacity-40',
@@ -72,7 +73,7 @@ export function MobileMenuSheet({
         >
           {Icon ? <Icon size={17} /> : null}
         </span>
-        <span className="min-w-0 flex-1 truncate">{resolve(item.label)}</span>
+        <span className="min-w-0 flex-1 truncate">{resolve(item.label)}{item.disabledReason && <small className="block whitespace-normal text-xs">{t(`filebrowser.commandReason.${item.disabledReason}`, item.disabledReason)}</small>}</span>
       </button>
     )
   }

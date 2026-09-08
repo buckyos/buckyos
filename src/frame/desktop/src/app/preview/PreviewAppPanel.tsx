@@ -1,3 +1,5 @@
+import { useMediaQuery } from '@mui/material'
+import { useMobileBackHandler, useMobileTitleOverride } from '../../desktop/windows/MobileNavContext'
 /**
  * Preview App — the system's standalone content viewer (PRD §13).
  *
@@ -35,6 +37,7 @@ function nextLocalRequestId() {
 
 export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
   const { t } = useI18n()
+  const isMobile = useMediaQuery('(max-width: 900px)')
   const settings = usePreviewSettings()
   const launchPayload = launch && isPreviewLaunchPayload(launch.payload) ? launch.payload : null
   const launchId = launch?.requestId ?? null
@@ -47,6 +50,8 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
   // Keyed by request so a re-targeted window never shows a stale sheet.
   const [openWithState, setOpenWithState] = useState<{ requestId: string; request: PreviewOpenWithRequest } | null>(null)
   const previewRef = useRef<ContentPreviewHandle | null>(null)
+  const [mobileTitle, setMobileTitle] = useState<{ requestId: string; title: string } | null>(null)
+  useMobileTitleOverride(isMobile && mobileTitle?.requestId === payload?.requestId && mobileTitle ? { title: mobileTitle.title } : null)
 
   useEffect(() => {
     if (windowId && payload) previewWindowManager.register(windowId, payload)
@@ -70,9 +75,13 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
   )
 
   const exit = useCallback(() => {
-    if (windowId) desktopUIStore.closeWindow(windowId)
+    if (windowId) {
+      desktopUIStore.closeWindow(windowId)
+      if (isMobile && payload?.origin?.windowId) desktopUIStore.focusWindow(payload.origin.windowId)
+    }
     else setOverride({ base: launchId, payload: null })
-  }, [launchId, windowId])
+  }, [launchId, windowId, isMobile, payload])
+  useMobileBackHandler(isMobile && payload?.origin?.app === 'files' ? exit : null)
 
   const togglePin = useCallback(() => {
     setPinned((prev) => {
@@ -150,6 +159,7 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
         onRequestExit={exit}
         onRequestOpenWith={(request) => setOpenWithState({ requestId: payload.requestId, request })}
         onItemChanged={(item) => {
+          setMobileTitle({ requestId: payload.requestId, title: item.title })
           if (!windowId) return
           desktopUIStore.updateWindow(windowId, { title: pinned ? `📌 ${item.title}` : item.title })
           previewWindowManager.touch(windowId, { currentKey: refIdentity(item.source) })

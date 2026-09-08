@@ -21,6 +21,7 @@ export const PAGE_SIZE = 200
 export type FileItemListStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 export interface FileItemList {
+  subscribe(listener: () => void): () => void
   readonly url: string
   /** Monotonic change counter (useSyncExternalStore snapshot / effect dep). */
   readonly snapshot: number
@@ -42,6 +43,8 @@ export interface FileItemList {
   loadedItemByKey(key: string): FileItem | undefined
   /** Ordered keys of currently loaded items (shift range selection). */
   loadedKeys(): string[]
+  enumerate(signal: AbortSignal): Promise<FileItem[]>
+  findPath(path: string, signal: AbortSignal): Promise<{ item: FileItem; index: number } | null>
   reload(): void
 }
 
@@ -73,7 +76,10 @@ export class FileItemListImpl implements FileItemList {
   status: FileItemListStatus = 'idle'
   error: Error | null = null
 
-  constructor(url: string) {
+  readonly contextId: string
+
+  constructor(url: string, contextId = url) {
+    this.contextId = contextId
     this.url = url
   }
 
@@ -302,6 +308,44 @@ export class FileItemListImpl implements FileItemList {
         this.error = err instanceof Error ? err : new Error(String(err))
         this.emit()
       })
+  }
+
+  private async scan(signal: AbortSignal, path?: string) {
+    const token = this.versionToken
+    const items: FileItem[] = []
+    const seen = new Set<string>()
+    let offset = 0
+    while (true) {
+      signal.throwIfAborted()
+      if (token !== this.versionToken) throw new Error('The folder changed. Please try again.')
+      const page = await this.ensureReader().list(this.listQueryAt(offset))
+      signal.throwIfAborted()
+      if (token !== this.versionToken) throw new Error('The folder changed. Please try again.')
+      for (let i = 0; i < page.items.length; i++) {
+        const item = page.items[i]
+        if (seen.has(item.key)) throw new Error('The folder changed. Please try again.')
+        seen.add(item.key)
+        items.push(item)
+        if (path && item.entry.path === path) {
+          this.items.set(offset + i, item)
+          this.byKey.set(item.key, item)
+          this.orderedKeysCache = null
+          this.emit()
+          return { items, found: { item, index: offset + i } }
+        }
+      }
+      offset += page.items.length
+      if (!page.hasMore) return { items, found: null }
+      if (!page.items.length) throw new Error('The server returned an empty continuation page')
+    }
+  }
+
+  async enumerate(signal: AbortSignal) {
+    return (await this.scan(signal)).items
+  }
+
+  async findPath(path: string, signal: AbortSignal) {
+    return (await this.scan(signal, path)).found
   }
 
   /**

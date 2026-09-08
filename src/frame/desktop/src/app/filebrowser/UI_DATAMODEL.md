@@ -1,12 +1,9 @@
 # File Browser UI DataModel
 
-> Status: v1.2 — v1 extracted from the converged mock-first prototype; v1.1
-> recorded the frontend-side deltas of §9 (items 1–5 and 11); v1.2 records the
-> NFSP backend-integration stage: the adapter in <code>data/nfsp/</code> is
-> implemented (§9 items 6–9 done, 10/12 still gated) and installation switches
-> by runtime (<code>data/install.ts</code>)  
-> Scope: <code>src/frame/desktop/src/app/filebrowser/</code>  
-> Last reviewed: 2026-09-02
+> Status: v1.3 — records the 2026-09-07 File Browser UI review implementation,
+> including tab-owned context, per-item operations, capability states and transfer outcomes.
+> Scope: <code>src/frame/desktop/src/app/filebrowser/</code>
+> Last reviewed: 2026-09-07
 
 ## 1. Overview
 
@@ -25,8 +22,9 @@ Sources, in order of authority:
    <code>src/frame/desktop/src/api/nfsp_client.ts</code>, and
    <code>src/frame/desktop/src/api/nfs_browser_client.ts</code>.
 
-The prototype currently installs mock readers only. The existing NFSP clients are protocol
-references for the integration stage; their wire types are not the UI DataModel.
+Runtime installation selects Mock or NFSP providers in <code>data/install.ts</code>. NFSP wire
+types remain behind the adapter boundary. The 2026-09-07 review regression uses Mock and stubbed
+NFSP calls; it does not establish real-server permission, upload or persistence correctness.
 
 ### 1.1 Covered views
 
@@ -44,7 +42,8 @@ references for the integration stage; their wire types are not the UI DataModel.
 
 ~~~
 Browser session state
-  └─ Pane state: tabs, location, sort, selection, search, view mode
+  └─ Pane state: tabs and active tab
+       └─ Tab state: location/history, sort, selection, search, scroll and view mode
        └─ FileItemList: sparse loaded window for virtualized rendering
             └─ FolderReader: one reader for any browsable location
                  ├─ mock readers today
@@ -210,6 +209,9 @@ export interface FileEntry {
   devicePath?: string
   /** Externally usable URL supplied by access metadata. */
   publicUrl?: string
+  thumbnailUrl?: string
+  operations?: Partial<Record<'rename' | 'move' | 'delete' | 'download' | 'share' | 'copy',
+    'available' | 'denied' | 'unsupported' | 'loading'>>
   /** Omitted for folders and when the source did not request base attributes. */
   sizeBytes?: number
   modifiedAt: ISODateTime
@@ -227,6 +229,12 @@ export interface FileEntry {
   link?: FileLink
 }
 ~~~
+
+The operation-state projection is validated by <code>entryOperationsSchema</code>. Missing entry
+operation fields defer to the location/service capability; they do not prove authorization. The
+NFSP adapter currently projects location capabilities and revalidates writes against the server.
+<code>thumbnailUrl</code> is optional and supplied only by an explicit thumbnail access URL; images
+load lazily and fall back to the type icon on failure.
 
 Optional enrichment fields MUST remain absent when unknown. The adapter MUST NOT fabricate empty
 strings, zero sizes, or false metadata merely to satisfy rendering.
@@ -295,6 +303,7 @@ a stable integration contract. The rendered stable field is currently
 
 ~~~ts
 export interface LocationCapabilities {
+  availability?: 'ready' | 'loading'
   kind: LocationKind
   /** Real content can be uploaded/created/pasted here. */
   acceptsContent: boolean
@@ -314,6 +323,10 @@ export interface LocationMeta {
   description?: string
 }
 ~~~
+
+The matrix below describes writable, resolved locations. Read-only folders set
+<code>acceptsContent: false</code> and <code>removal: null</code>. While resolving capabilities,
+adapters expose <code>availability: loading</code> with mutation affordances disabled.
 
 The required capability matrix is:
 
@@ -414,6 +427,9 @@ export interface FileItemList {
   loadedItemByKey(key: ListItemKey): FileItem | undefined
   loadedKeys(): ListItemKey[]
   reload(): void
+  subscribe(listener: () => void): () => void
+  enumerate(signal: AbortSignal): Promise<FileItem[]>
+  findPath(path: string, signal: AbortSignal): Promise<{ item: FileItem; index: number } | null>
 }
 ~~~
 
@@ -424,7 +440,11 @@ window and request-deduplication details are Volatile; the observable behavior i
 - stale responses after reload/query changes are ignored;
 - changing sort restarts the logical result;
 - invalidation reloads the last visible window;
-- selection restoration uses listing keys, never a global mock index.
+- selection restoration uses listing keys, never a global mock index;
+- full-folder enumeration and path lookup traverse reader pages independently of scrolling,
+  honor cancellation and reject changed listing versions or invalid continuation;
+- lookup adds the matching item at its true index in the sparse cache for scroll/reveal;
+- a tab context ID distinguishes readers opened at the same URL.
 
 ### 2.8 Collection model and operations
 
@@ -503,8 +523,18 @@ Presentation grouping is derived:
 - AI-enhanced: <code>ai_semantic</code>, <code>ai_topic</code>;
 - unknown reasons: an additional generic section or the traditional section, never dropped.
 
-Search results do not change <code>entry.path</code>. Selecting a folder leaves search and
-navigates to its original location; selecting a file opens its preview context.
+Search results do not change <code>entry.path</code>. Desktop click selects; double-click/Enter
+opens the folder or Preview. Mobile tap opens content. Context actions can download, inspect or
+open/reveal the original location. Destructive changes require opening that location first, so
+search never inherits the prior folder's write permission.
+
+<code>SearchRequest</code> carries <code>query</code>, optional <code>scope</code>/<code>cursor</code>,
+<code>kind</code> and <code>modifiedSince</code>. Current-folder scope includes descendants; all scope
+omits the scope field. Unsupported Collection/Topic-local search returns an explicit unsupported
+state and offers all accessible files. Mock filters its full fixture before paging. NFSP passes
+the DFS scope and filters each returned backend page by type/date while retaining its cursor; the
+UI explains this limit and allows loading additional pages. No backend search wire fields were
+invented for the UI filters.
 
 ### 2.10 Menu extension model
 
@@ -606,62 +636,71 @@ extensible registries rather than closed backend enums.
 
 ### 2.11 Browser runtime state
 
+The runtime implementation is <code>data/useBrowserPane.ts</code>. Each tab owns a complete
+context; moving a tab between panes carries that context.
+
 ~~~ts
-export interface BrowserTab {
-  id: string
-  title: string
-  /** Canonical location URL after adoption into a pane. */
+export interface PaneLocation {
   path: LocationUrl
+  query: string
+  scope: 'current' | 'all'
+  kind: string
+  modified: string
+  scroll: number
 }
-
 export interface HistoryState {
-  back: LocationUrl[]
-  forward: LocationUrl[]
+  back: PaneLocation[]
+  forward: PaneLocation[]
 }
-
-export interface BrowserSelectionState {
-  selectedKeys: ReadonlySet<ListItemKey>
-  /** Captured items preserve details after a virtual row leaves the DOM. */
-  selectedItems: ReadonlyMap<ListItemKey, FileItem>
-  anchorKey: ListItemKey | null
-}
-
-export interface BrowserPaneState {
-  tabs: BrowserTab[]
-  activeTabId: string
-  historyByTabId: Record<string, HistoryState>
+interface TabState {
+  tab: BrowserTab
+  location: PaneLocation
+  history: HistoryState
   viewMode: ViewMode
   sortKey: SortKey
   sortDir: SortDir
-  searchQuery: string
-  selection: BrowserSelectionState
+  selected: Map<ListItemKey, FileItem>
+  anchor: ListItemKey | null
+  revision: number
+  locationKind?: LocationKind
 }
-
 export interface ClipboardState {
   entries: FileEntry[]
   mode: 'cut' | 'copy'
-}
-
-export interface FileBrowserUiState {
-  left: BrowserPaneState
-  right: BrowserPaneState
-  focusedSide: 'left' | 'right'
-  closedTabs: BrowserTab[]
-  advancedMode: boolean
-  previewCollapsed: boolean
-  clipboard: ClipboardState | null
+  token: string
 }
 ~~~
 
-This state is session-local. The prototype does not persist it. If persistence is added, Sets,
-Maps, transient menu anchors, toast text, pending promises, and captured <code>File</code> objects
-MUST be excluded or normalized first. Recently closed tabs retain at most ten items.
+Switching tabs restores that tab's selection/search. Navigating to another location clears its
+selection/search and pushes the previous location, search filters and scroll offset to history.
+Back/forward restores the snapshot. Selection/context changes advance the tab revision. Commands
+capture entries, listing keys and context, then revalidate the context before submission. Late
+completion reconciles only captured tab revisions; successful entity moves/deletions also remove
+those IDs from unchanged source-tab selections, without clearing newer selections.
+
+Clipboard tokens prevent an older operation from clearing newer clipboard contents. Successful
+moves remove only their own entries; skipped, failed and cancelled entries remain pending.
+Content copy is unavailable in both adapters; copying references is a separate command.
+
+In-memory session snapshots (bounded to twenty pane sessions) retain tabs, history and scroll when
+the mobile shell unmounts Files to show Preview. Remount clears captured selections. Preview carries
+<code>origin.windowId</code> and returns focus to that window. This is not persistence across a
+browser reload. Browser-local preferences store view mode, responsive/full columns, name-column
+width, density, navigation width/collapse, pins, sidebar group expansion and recent destinations.
+These preferences are local to the browser profile, not synchronized account settings. Transient
+menus, dialogs, promises and browser <code>File</code> objects are never serialized.
+
+Desktop shortcuts are attached to the Files root. Input/editable elements and dialogs retain their
+own keyboard behavior. The active split pane is visually marked. At widths below 700px the second
+pane's tabs are transferred into the first; metadata opens on demand and becomes an overlay when
+there is insufficient room for an inline panel.
 
 ### 2.12 Derived presentation rules
 
 No duplicate persisted “preview DTO” is required. The following projections are derived:
 
-- A preview target exists only when exactly one item is selected.
+- A single selection supplies file metadata; multiple selections show counts, type distribution
+  and known-size coverage. Consuming file contents opens the separate Preview App.
 - Reference path = <code>item.ref.refPath</code> when it differs from
   <code>item.entry.path</code>.
 - Original path = <code>entry.link.targetUrl</code> for a link, otherwise
@@ -673,9 +712,15 @@ No duplicate persisted “preview DTO” is required. The following projections 
   unknown topic IDs are ignored without failing the preview.
 - Multi-selection bytes = sum of known <code>sizeBytes</code>; unknown sizes contribute zero and
   MUST NOT be presented as proof of a complete total.
-- “Select all” currently means all loaded keys. When selected count is less than a known total,
-  status displays “selected N of total”.
-- Collection reference count recursively counts ref nodes and excludes group nodes.
+- “Select loaded N items” uses the current loaded/result window. “Select all in this folder”
+  enumerates the reader with cancellation, then commits the complete selection atomically. Search
+  selection currently covers returned results only. Shift ranges cover loaded rows and display
+  that limitation. Counts remain visible and virtual rows are not expanded into a 10k-row DOM.
+- Zero bytes displays <code>0 B</code>; absent size displays Unknown; folder recursive size displays
+  Not calculated. AI metadata distinguishes enabled, disabled and unknown without asserting
+  unverified knowledge-base exclusion.
+- Sidebar Collection reference count recursively counts ref nodes and excludes group nodes. The
+  listing banner uses the reader's top-level item count and labels it as items, including groups.
 - Breadcrumbs derive from the canonical URL and optional reader title; breadcrumbs are not stored.
 
 ## 3. Input models and validation
@@ -916,7 +961,11 @@ export type SearchViewState = DataState<SearchResultPage>
 | Progress | Additional cursor page or slower sources loading; show completed sources and partial indicator |
 
 When <code>partial</code> is true or any source is degraded, results remain usable and the UI shows
-that coverage is incomplete.
+that coverage is incomplete. Query, scope and filters form a request key. Rendered state is matched
+to that key immediately; run tokens reject late responses, including those arriving during the
+debounce interval. A per-hook bounded cache retains up to twenty accumulated result pages for
+history navigation. Retry starts a new search. Search status counts returned results and reports
+whether more results remain; technical source timings are behind expandable details.
 
 ### 4.5 Preview, Meta, and Story state
 
@@ -967,6 +1016,7 @@ export type TransferStatus =
   | 'success'
   | 'error'
   | 'cancelled'
+  | 'skipped'
 
 export interface TransferTask {
   id: string
@@ -976,6 +1026,8 @@ export interface TransferTask {
   bytesSent: number
   totalBytes: number
   error: UiError | null
+  committedAt?: ISODateTime
+  committedEntry?: FileEntry
 }
 ~~~
 
@@ -984,14 +1036,75 @@ export interface TransferTask {
 | Empty | No active or recent transfers |
 | Queued/loading | Local placeholder exists outside the committed namespace |
 | Progress | Stage plus determinate bytes when known |
-| Success | Remove placeholder after the destination reader exposes the committed entry |
+| Success | Destination exposes the committed entry; task remains until explicitly cleared |
 | Error | Keep retry/cancel context; collision and commit conflicts require a user decision |
 
-The prototype implements this contract: uploads run through the transfer store
-(<code>data/transfers.ts</code>) with a mock executor that walks the stages, supports
-cancel/retry, surfaces name collisions as conflicts, and commits into the mock index so the
-destination reader exposes the entry. The real <code>probe → upload → commit</code> integration
-replaces the executor only.
+The store in <code>data/transfers.ts</code> tracks executor work and preflight skipped/cancelled/error
+outcomes. UI preflight checks target names through the operation adapter and uses the same conflict
+dialog as moves. Native folder selection preserves <code>webkitRelativePath</code> by creating/checking
+parent folders. External local-file drops upload to the highlighted writable folder; unsupported
+folder drops and local uploads into Collections/Views show an explicit explanation. Internal dragging uses a session token and captured source context, moves into the receiving pane's writable folder, and adds references into a Collection. Modifier-copy into a folder reports
+unsupported content copy. Dragging never creates a content upload from a system reference.
+
+Retry callbacks are held outside the shared task DTO and re-run destination preparation and
+conflict checks. A late NFSP name conflict never overwrites; retry returns through preflight.
+Clearing terminal tasks releases retry callbacks and local file data. Successful tasks release
+file data immediately. The panel collapses to a task-count button, lists target locations, supports
+failed-item retry/clearing completed tasks, and locates committed entries. Mobile starts collapsed.
+Preparing/checking/uploading/saving are stages; rate and remaining-time estimates are not fabricated.
+NFSP still hashes the entire file in memory; real large-file behavior and resumability are unverified.
+
+### 4.8 File mutation results and conflict contract
+
+<code>FolderWriteOps</code> exposes <code>supportsCopy</code>, <code>nameExists</code>,
+<code>statEntry</code>, <code>createFolder</code>, <code>renameEntry</code>, <code>deleteEntries</code>,
+<code>moveEntries</code> and <code>downloadUrl</code>. Batch mutations return the following contract:
+
+~~~ts
+export interface OperationResult {
+  itemKey?: ListItemKey
+  entry: FileEntry
+  targetPath?: string
+  status: 'success' | 'failed' | 'skipped' | 'cancelled'
+  error?: UiError
+}
+export type ConflictChoice = 'keep-both' | 'skip' | 'cancel'
+export interface OperationConflict {
+  source: FileEntry
+  target: FileEntry
+  targetPath: string
+}
+export interface BatchOptions {
+  signal?: AbortSignal
+  onProgress?: (results: OperationResult[]) => void
+  onConflict?: (conflict: OperationConflict) => Promise<ConflictChoice>
+}
+~~~
+
+Each input receives a terminal result. Progress contains completed results, and each successful
+mutation invalidates affected source/destination readers immediately. Cancellation stops remaining
+work; committed changes remain successful. Retry uses only failed items and retains earlier
+outcomes. Collection add/remove executes one reference occurrence at a time, retaining listing
+keys even when several references point to the same entity. Removing references preserves originals.
+
+The shared batch/queued-conflict feedback in <code>data/operationFeedback.ts</code> stays in memory
+while mobile Preview replaces Files; it is shown by the originating Files window. Only one mutation
+batch runs at a time. Moving/renaming rechecks actual backend names, blocks moving into self or
+descendants, skips same-folder moves, and supports extension-preserving names within the 255-byte
+UTF-8 limit. Conflict decisions can apply to later conflicts with the same source/target folder
+classification. Replace, directory merge and content copy remain unavailable.
+
+Mock validates captured ID/path/name before mutation. NFSP reads source-parent revision before
+checking current source identity and supplies expected revisions to delete/move/rename (both
+parents for moves); stale identity is a per-item error. Name lookup treats only NOT_FOUND as absent,
+never permission or network failure. There is no batch atomicity promise.
+
+Permanent deletion uses an in-app confirmation listing names/count/location and recursive-folder
+consequences. No trash, restore or undo affordance is exposed without backend support. Downloads
+report each browser handoff or unsupported item; folder archives and verified disk completion are
+not available. Service placeholders (content copy, share, settings, camera, new text) are hidden or
+disabled with a reason. <code>menu/commands.ts</code> supplies the same availability rule to menus,
+mobile sheets, toolbar actions and shortcuts.
 
 ## 5. Pagination, sorting, filtering, and aggregation
 

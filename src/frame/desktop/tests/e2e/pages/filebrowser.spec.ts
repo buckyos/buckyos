@@ -38,12 +38,13 @@ test.describe('File browser app panel', () => {
 
     // Select Kyoto Trip Plan → preview panel renders AI summary.
     await page.getByText('Kyoto Trip Plan.md').click()
+    await page.getByTestId('window-files').getByRole('button', { name: 'Details', exact: true }).click()
     await expect(
       page.getByText('Day-by-day itinerary', { exact: false }),
     ).toBeVisible()
     // Status bar surfaces the selected file path.
     await expect(
-      page.getByText('/home/Documents/Kyoto Trip Plan.md').first(),
+      page.getByText('/home/Documents/Kyoto Trip Plan.md').last(),
     ).toBeVisible()
 
     // Click a Topic in the sidebar — main content shows the generic view banner.
@@ -62,6 +63,7 @@ test.describe('File browser app panel', () => {
       .getByRole('button', { name: 'Search', exact: true })
       .click()
     await page.getByPlaceholder(/Search across files/).fill('trip')
+    await page.getByRole('combobox', { name: 'Search in' }).selectOption('all')
     await expect(page.getByText('Search results')).toBeVisible()
     await expect(page.getByText(/AI-enhanced matches/)).toBeVisible()
 
@@ -137,6 +139,7 @@ test.describe('File browser app panel', () => {
     // Removing drops only the reference…
     await reviewRow.click({ button: 'right' })
     await page.getByRole('menuitem', { name: 'Remove from collection' }).click()
+    await page.getByTestId('delete-dialog').getByRole('button', { name: 'Remove from collection' }).click()
     await expect(reviewRow).toHaveCount(0)
 
     // …the original file is untouched in its folder.

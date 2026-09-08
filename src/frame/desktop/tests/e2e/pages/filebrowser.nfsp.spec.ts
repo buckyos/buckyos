@@ -95,6 +95,7 @@ test.describe('File browser on real nfs_server', () => {
     // Search rides the server's name mode.
     await win.getByRole('button', { name: 'Search', exact: true }).click()
     await page.getByPlaceholder(/Search across files/).fill('notes')
+    await win.getByRole('combobox', { name: 'Search in' }).selectOption('all')
     await expect(page.getByText('Search results')).toBeVisible()
     await expect(page.getByText(/Traditional matches/)).toBeVisible({ timeout: 15000 })
     // Blank input leaves search and restores the listing (§4.4 idle).
@@ -102,11 +103,11 @@ test.describe('File browser on real nfs_server', () => {
 
     // Destroy-semantics delete (confirm dialog) removes the created folder.
     await sidebar.getByRole('button', { name: /Documents/ }).first().click()
-    page.once('dialog', (confirm) => void confirm.accept())
     await win
       .getByRole('cell', { name: new RegExp(`^${folderName}-v2`) })
       .click({ button: 'right' })
     await page.getByRole('menuitem', { name: /^Delete/ }).click()
+    await page.getByTestId('delete-dialog').getByRole('button', { name: 'Permanently delete', exact: true }).click()
     await expect(win.getByRole('cell', { name: new RegExp(`^${folderName}-v2`) })).toHaveCount(
       0,
       { timeout: 15000 },

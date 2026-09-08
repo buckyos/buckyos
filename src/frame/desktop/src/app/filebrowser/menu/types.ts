@@ -63,6 +63,7 @@ export interface FileMenuAction {
   icon?: FileMenuIcon
   danger?: boolean
   disabled?: boolean
+  disabledReason?: string
   /** Display-only hint, e.g. '⌘C'. */
   shortcut?: string
 }
@@ -81,6 +82,13 @@ export type FileMenuEntryItem = FileMenuAction | FileMenuSubmenu
 export type FileMenuSection = FileMenuEntryItem[]
 
 export interface FileMenuContext {
+  clipboard?: import('../types').ClipboardState | null
+  busy?: boolean
+  contextToken?: string
+  searching?: boolean
+  loadedCount?: number
+  otherPath?: string
+
   target: FileMenuTarget
   /** Exactly 1 item for 'item', 2+ for 'selection', 0 for 'view'. */
   items: FileItem[]

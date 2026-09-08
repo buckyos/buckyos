@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react'
+import type { MenuPosition, SelectModifiers } from './MainContent'
 /**
  * Search results view (UI_DATAMODEL.md §2.9/§4.4).
  *
@@ -25,9 +27,22 @@ import { groupSearchItems } from './data/search'
 interface SearchResultsProps {
   state: SearchViewState
   query: string
-  onSelect: (item: SearchResultItem) => void
+  onSelect: (item: SearchResultItem, modifiers?: SelectModifiers) => void
   onRetry: () => void
   onLoadMore: () => void
+  selectedKeys: ReadonlySet<string>
+  mobile?: boolean
+  onOpen: (item: SearchResultItem) => void
+  onMenu: (item: SearchResultItem, position: MenuPosition) => void
+  scope: 'current' | 'all'
+  currentUrl: string
+  onScopeChange: (scope: 'current' | 'all') => void
+  kind: string
+  modified: string
+  onFilterChange: (kind: string, modified: string) => void
+  onExit: () => void
+  scroll: number
+  onScroll: (scroll: number) => void
 }
 
 const reasonMeta: Record<
@@ -80,22 +95,33 @@ function metaFor(reason: string) {
 
 function HitButton({
   item,
-  onSelect,
+  onSelect, onOpen, onMenu, selected, mobile,
 }: {
   item: SearchResultItem
-  onSelect: (item: SearchResultItem) => void
+  selected: boolean
+  mobile?: boolean
+  onOpen: (item: SearchResultItem) => void
+  onMenu: (item: SearchResultItem, position: MenuPosition) => void
+  onSelect: (item: SearchResultItem, modifiers?: SelectModifiers) => void
 }) {
   const { t } = useI18n()
   const meta = metaFor(item.reason)
   const { entry } = item
   return (
-    <button
+    <div className="relative"><button
       type="button"
-      onClick={() => onSelect(item)}
+      data-testid="search-hit"
+      data-entry-id={entry.id}
+      aria-pressed={selected}
+      onClick={(event) => onSelect(item, { toggle: event.ctrlKey || event.metaKey, shift: event.shiftKey })}
+      onDoubleClick={() => onOpen(item)}
+      onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); onOpen(item) } }}
+      onContextMenu={(event) => { event.preventDefault(); onMenu(item, { top: event.clientY, left: event.clientX }) }}
+      style={selected ? { borderColor: 'var(--cp-accent)', background: 'var(--cp-accent-soft)' } : undefined}
       className="flex w-full items-start gap-3 rounded-[16px] border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] p-3 text-left hover:border-[color:var(--cp-accent)]"
     >
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-[color:color-mix(in_srgb,var(--cp-surface)_88%,transparent)]">
-        {entry.kind === 'folder' ? (
+        {selected ? <span aria-hidden>✓</span> : entry.kind === 'folder' ? (
           <FolderClosed size={16} className="text-[color:var(--cp-accent)]" />
         ) : (
           <FileText size={16} className="text-[color:var(--cp-muted)]" />
@@ -120,7 +146,7 @@ function HitButton({
           ) : null}
         </div>
       </div>
-    </button>
+    </button>{mobile && <button className="absolute right-1 top-1 flex h-11 w-11 items-center justify-center rounded-full bg-[color:var(--cp-surface)]" aria-label={t('filebrowser.mobile.moreActions', 'More actions')} onClick={(event) => onMenu(item, { left: event.clientX, top: event.clientY })}>⋮</button>}</div>
   )
 }
 
@@ -154,12 +180,16 @@ export function SearchResultsPanel({
   query,
   onSelect,
   onRetry,
-  onLoadMore,
+  onLoadMore, mobile, selectedKeys, onOpen, onMenu, scope, currentUrl, onScopeChange, kind, modified, onFilterChange, onExit, scroll, onScroll,
 }: SearchResultsProps) {
   const { t } = useI18n()
 
+  const scroller = useRef<HTMLDivElement>(null)
+  const restored = useRef(false)
+  useEffect(() => { restored.current = false }, [query, scope, kind, modified])
+  useEffect(() => { if (state.status === 'success' && !restored.current && scroller.current) { scroller.current.scrollTop = scroll; restored.current = true } }, [state.status, query, scope, scroll])
   const page = state.data
-  const items = page?.items ?? []
+  const items = (page?.items ?? []).filter((hit) => (!kind || hit.entry.kind === kind) && (!modified || Date.parse(hit.entry.modifiedAt) >= Date.parse(modified)))
   const loading = state.status === 'loading'
   const degradedSources = page?.sources.filter((source) => source.state !== 'ok') ?? []
   const incomplete = !!page && (page.partial || degradedSources.length > 0)
@@ -223,6 +253,10 @@ export function SearchResultsPanel({
                     key={`${item.reason}-${item.entry.id}`}
                     item={item}
                     onSelect={onSelect}
+                    onOpen={onOpen}
+                    onMenu={onMenu}
+                    selected={selectedKeys.has(item.entry.id)}
+                    mobile={mobile}
                   />
                 ))}
               </div>
@@ -251,7 +285,17 @@ export function SearchResultsPanel({
   }
 
   return (
-    <div className="flex h-full w-full flex-col overflow-y-auto">
+    <div ref={scroller} onScroll={(event) => onScroll(event.currentTarget.scrollTop)} className="flex h-full w-full flex-col overflow-y-auto">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[color:var(--cp-border)] p-3 text-xs">
+        <label>{t('filebrowser.search.scope', 'Search in')} <select aria-label={t('filebrowser.search.scope', 'Search in')} value={scope} onChange={(event) => onScopeChange(event.target.value as 'current' | 'all')} className="max-w-52 rounded border bg-[color:var(--cp-surface)] p-2">
+          <option value="current">{t('filebrowser.search.currentScope', 'Current folder and subfolders')} · {currentUrl}</option><option value="all">{t('filebrowser.search.allScope', 'All accessible files')}</option>
+        </select></label>
+        <label>{t('filebrowser.column.kind', 'Kind')} <select aria-label={t('filebrowser.column.kind', 'Kind')} value={kind} onChange={(event) => onFilterChange(event.target.value, modified)} className="rounded border bg-[color:var(--cp-surface)] p-2"><option value="">{t('filebrowser.search.allKinds', 'All types')}</option>{['folder','document','image','video','audio','archive','code','other'].map((kind) => <option key={kind} value={kind}>{t(`filebrowser.kind.${kind}`, kind)}</option>)}</select></label>
+        <label>{t('filebrowser.search.modifiedSince', 'Modified since')} <input aria-label={t('filebrowser.search.modifiedSince', 'Modified since')} type="date" value={modified} onChange={(event) => onFilterChange(kind, event.target.value)} className="min-h-9 rounded border bg-transparent px-2" /></label>
+        {(kind || modified) && <button className="min-h-9 underline" onClick={() => onFilterChange('', '')}>{t('filebrowser.search.clearFilters', 'Clear filters')}</button>}
+        <button className="min-h-9 underline" onClick={onExit}>{t('filebrowser.search.exit', 'Exit search')}</button>
+        {(kind || modified) && <p className="w-full">{t('filebrowser.search.loadedFilters', 'Filters apply to returned results. Load more to check the remaining results.')}</p>}
+      </div>
       <div className="border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-5 py-3">
         <div className="shell-kicker">{t('filebrowser.search.title', 'Search results')}</div>
         <div className="mt-1 text-sm text-[color:var(--cp-text)]">
@@ -263,7 +307,7 @@ export function SearchResultsPanel({
           </span>
         </div>
         {page?.sources.length ? (
-          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px] text-[color:var(--cp-muted)]">
+          <details className="mt-1.5 text-xs text-[color:var(--cp-muted)]"><summary>{t('filebrowser.search.sourceDetails', 'Search source details')}</summary><div className="flex flex-wrap gap-1.5">
             {page.sources.map((source) => (
               <span
                 key={source.mode}
@@ -280,7 +324,7 @@ export function SearchResultsPanel({
                 {source.tookMs !== undefined ? ` · ${source.tookMs}ms` : ''}
               </span>
             ))}
-          </div>
+          </div></details>
         ) : null}
         {incomplete ? (
           <div
@@ -296,6 +340,7 @@ export function SearchResultsPanel({
         ) : null}
       </div>
       {body}
+      {!items.length && page?.nextCursor && <button className="min-h-11 underline" onClick={onLoadMore} disabled={loading}>{t('filebrowser.search.loadMore', 'Load more results')}</button>}
     </div>
   )
 }

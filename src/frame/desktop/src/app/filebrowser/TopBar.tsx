@@ -16,20 +16,17 @@ import {
   ArrowUpDown,
   ChevronDown,
   ChevronRight,
-  ClipboardPaste,
   Copy,
   FilePlus,
-  FolderInput,
   FolderPlus,
   LayoutGrid,
   List,
-  PenLine,
   Plus,
-  Scissors,
   Search,
   SearchX,
-  Settings,
-  Trash2,
+  MoreHorizontal,
+  PanelRightOpen,
+  Menu as PlacesIcon,
   Upload,
   X,
 } from 'lucide-react'
@@ -74,19 +71,17 @@ interface TopBarProps {
   onUpload?: () => void
   onNewFolder?: () => void
   onNewFile?: () => void
-  /** Number of selected entries in the pane — drives the clipboard ops. */
   selectedCount?: number
-  /** Location capabilities — every toolbar affordance trims itself by these. */
   capabilities?: LocationCapabilities
-  canPaste?: boolean
-  onCut?: () => void
-  onCopy?: () => void
-  onPaste?: () => void
-  onRename?: () => void
-  onDelete?: () => void
-  onSettings?: () => void
-  moveTargets?: { label: string; path: string }[]
-  onMoveTo?: (path: string) => void
+  onMore: (position: { top: number; left: number }) => void
+  onDetails: () => void
+  onPlaces: () => void
+  onMoveTo: () => void
+  onAddExisting?: () => void
+  onFolderUpload?: () => void
+  pathEditSignal?: number
+  listPreferences: { fullColumns: boolean; density: 'compact' | 'comfortable'; nameWidth: number }
+  onListPreferences: (patch: Partial<TopBarProps['listPreferences']>) => void
   sortKey?: SortKey
   sortDir?: SortDir
   onSortChange?: (key: SortKey, dir: SortDir) => void
@@ -124,12 +119,6 @@ function ToolbarIconButton({
         </button>
       </span>
     </Tooltip>
-  )
-}
-
-function ToolbarDivider() {
-  return (
-    <div className="mx-1 h-4 w-px shrink-0 bg-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)]" />
   )
 }
 
@@ -200,15 +189,7 @@ export function TopBar({
   onNewFile,
   selectedCount = 0,
   capabilities,
-  canPaste = false,
-  onCut,
-  onCopy,
-  onPaste,
-  onRename,
-  onDelete,
-  onSettings,
-  moveTargets = [],
-  onMoveTo,
+  onMore, onDetails, onPlaces, onAddExisting, onFolderUpload, pathEditSignal, listPreferences, onListPreferences,
   sortKey = 'name',
   sortDir = 'asc',
   onSortChange,
@@ -217,7 +198,6 @@ export function TopBar({
   const [searchOpen, setSearchOpen] = useState(false)
   const [tabMenuAnchor, setTabMenuAnchor] = useState<HTMLElement | null>(null)
   const [newMenuAnchor, setNewMenuAnchor] = useState<HTMLElement | null>(null)
-  const [moveMenuAnchor, setMoveMenuAnchor] = useState<HTMLElement | null>(null)
   const [viewMenuAnchor, setViewMenuAnchor] = useState<HTMLElement | null>(null)
   const [sortMenuAnchor, setSortMenuAnchor] = useState<HTMLElement | null>(null)
   const [tabContextMenu, setTabContextMenu] = useState<
@@ -227,7 +207,7 @@ export function TopBar({
   const [pathDraft, setPathDraft] = useState(currentPath)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const pathInputRef = useRef<HTMLInputElement | null>(null)
-  const searchVisible = searchOpen || !!searchQuery
+  const searchVisible = !pathEditing && (searchOpen || !!searchQuery)
   const canCloseTab = tabs.length > 1 || allowCloseLast
   const sortLabels: Record<SortKey, string> = {
     manual: t('filebrowser.sort.manual', 'Custom order'),
@@ -238,16 +218,16 @@ export function TopBar({
   }
   // Capability-derived affordances (default to plain-folder behaviour).
   const acceptsContent = capabilities?.acceptsContent ?? true
-  const acceptsReferences = capabilities?.acceptsReferences ?? false
-  const removal = capabilities ? capabilities.removal : 'destroy'
   const sortKeys = capabilities?.sortKeys ?? (['name', 'size', 'modified', 'kind'] as SortKey[])
-  // Directions are capability-negotiated like sortKeys (absent = both).
   const sortDirs = capabilities?.sortDirs ?? (['asc', 'desc'] as SortDir[])
-  const pasteEnabled = canPaste && (acceptsContent || acceptsReferences)
-  const deleteLabel =
-    removal === 'remove-ref'
-      ? t('filebrowser.actions.removeFromCollection', 'Remove from collection')
-      : t('filebrowser.actions.delete', 'Delete')
+
+  const [previousContext, setPreviousContext] = useState({ activeTabId, currentPath, pathEditSignal })
+  if (previousContext.activeTabId !== activeTabId || previousContext.currentPath !== currentPath || previousContext.pathEditSignal !== pathEditSignal) {
+    setPreviousContext({ activeTabId, currentPath, pathEditSignal })
+    setSearchOpen(false)
+    setPathEditing(!!pathEditSignal && previousContext.pathEditSignal !== pathEditSignal)
+    setPathDraft(displayPath(currentPath))
+  }
 
   useEffect(() => {
     if (searchVisible) searchInputRef.current?.focus()
@@ -269,7 +249,7 @@ export function TopBar({
   const commitPathEdit = () => {
     const next = pathDraft.trim()
     setPathEditing(false)
-    if (next && next !== displayPath(currentPath)) onNavigate(next)
+    if (next) onNavigate(next)
   }
 
   const closeSearch = () => {
@@ -541,7 +521,8 @@ export function TopBar({
       </div>
 
       {/* Toolbar row: upload / new | clipboard ops | settings ··· view mode / sort / search */}
-      <div className="flex items-center gap-0.5 overflow-x-auto">
+      <div data-testid="files-toolbar" className="flex flex-wrap items-center gap-1">
+        <ToolbarIconButton title={t('filebrowser.mobile.places', 'Places')} onClick={onPlaces}><PlacesIcon size={16} /></ToolbarIconButton>
         {onUpload ? (
           <button
             type="button"
@@ -585,6 +566,7 @@ export function TopBar({
                   <ListItemText primary={t('filebrowser.actions.newFolder', 'New folder')} />
                 </MenuItem>
               ) : null}
+              {onFolderUpload && <MenuItem onClick={() => { setNewMenuAnchor(null); onFolderUpload() }}>{t('filebrowser.operation.uploadFolder', 'Upload folder')}</MenuItem>}
               {onNewFile ? (
                 <MenuItem
                   onClick={() => {
@@ -602,86 +584,10 @@ export function TopBar({
           </>
         ) : null}
 
-        <ToolbarDivider />
-
-        <ToolbarIconButton
-          title={t('filebrowser.actions.cut', 'Cut')}
-          disabled={!acceptsContent || !selectedCount || !onCut}
-          onClick={onCut}
-        >
-          <Scissors size={14} />
-        </ToolbarIconButton>
-        <ToolbarIconButton
-          title={t('filebrowser.actions.copy', 'Copy')}
-          disabled={!selectedCount || !onCopy}
-          onClick={onCopy}
-        >
-          <Copy size={14} />
-        </ToolbarIconButton>
-        <ToolbarIconButton
-          title={
-            acceptsReferences
-              ? t('filebrowser.actions.pasteAsRef', 'Paste as references')
-              : t('filebrowser.actions.paste', 'Paste')
-          }
-          disabled={!pasteEnabled || !onPaste}
-          onClick={onPaste}
-        >
-          <ClipboardPaste size={14} />
-        </ToolbarIconButton>
-        <ToolbarIconButton
-          title={t('filebrowser.actions.rename', 'Rename')}
-          disabled={!acceptsContent || selectedCount !== 1 || !onRename}
-          onClick={onRename}
-        >
-          <PenLine size={14} />
-        </ToolbarIconButton>
-        <ToolbarIconButton
-          title={t('filebrowser.actions.moveTo', 'Move to')}
-          disabled={!acceptsContent || !selectedCount || !moveTargets.length || !onMoveTo}
-          active={Boolean(moveMenuAnchor)}
-          onClick={(event) => setMoveMenuAnchor(event.currentTarget)}
-        >
-          <FolderInput size={14} />
-        </ToolbarIconButton>
-        <Menu
-          anchorEl={moveMenuAnchor}
-          open={Boolean(moveMenuAnchor)}
-          onClose={() => setMoveMenuAnchor(null)}
-          slotProps={{ paper: { sx: { minWidth: 200, maxHeight: 320 } } }}
-        >
-          {moveTargets.map((target) => (
-            <MenuItem
-              key={target.path}
-              onClick={() => {
-                setMoveMenuAnchor(null)
-                onMoveTo?.(target.path)
-              }}
-            >
-              <ListItemText primary={target.label} primaryTypographyProps={{ noWrap: true, fontSize: 13 }} />
-            </MenuItem>
-          ))}
-        </Menu>
-        {removal !== null ? (
-          <ToolbarIconButton
-            title={deleteLabel}
-            disabled={!selectedCount || !onDelete}
-            onClick={onDelete}
-          >
-            <Trash2 size={14} />
-          </ToolbarIconButton>
-        ) : null}
-
-        <ToolbarDivider />
-
-        <ToolbarIconButton
-          title={t('filebrowser.actions.settings', 'Settings')}
-          disabled={!onSettings}
-          onClick={onSettings}
-        >
-          <Settings size={14} />
-        </ToolbarIconButton>
-
+        {onAddExisting && <button className="min-h-7 px-2 text-xs" onClick={onAddExisting}>{t('filebrowser.operation.addExisting', 'Add existing files')}</button>}
+        <ToolbarIconButton title={t('filebrowser.mobile.moreActions', 'More actions')} onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); onMore({ left: box.left, top: box.bottom }) }}><MoreHorizontal size={16} /></ToolbarIconButton>
+        <ToolbarIconButton title={t('filebrowser.menu.details', 'Details')} onClick={onDetails}><PanelRightOpen size={16} /></ToolbarIconButton>
+        {selectedCount > 0 && <span className="text-xs text-[color:var(--cp-accent)]">{selectedCount}</span>}
         <div className="min-w-2 flex-1" />
 
         <ToolbarIconButton
@@ -724,6 +630,12 @@ export function TopBar({
             </ListItemIcon>
             <ListItemText primary={t('filebrowser.view.icon', 'Icon view')} />
           </MenuItem>
+          <Divider />
+          <MenuItem selected={!listPreferences.fullColumns} onClick={() => onListPreferences({ fullColumns: false })}>{t('filebrowser.view.responsiveColumns', 'Responsive columns')}</MenuItem>
+          <MenuItem selected={listPreferences.fullColumns} onClick={() => onListPreferences({ fullColumns: true })}>{t('filebrowser.view.fullColumns', 'All columns (horizontal scroll)')}</MenuItem>
+          <Divider />
+          <MenuItem selected={listPreferences.density === 'compact'} onClick={() => onListPreferences({ density: 'compact' })}>{t('filebrowser.view.compactRows', 'Compact rows')}</MenuItem>
+          <MenuItem selected={listPreferences.density === 'comfortable'} onClick={() => onListPreferences({ density: 'comfortable' })}>{t('filebrowser.view.comfortableRows', 'Comfortable rows')}</MenuItem>
         </Menu>
 
         <button
@@ -739,7 +651,7 @@ export function TopBar({
           aria-expanded={Boolean(sortMenuAnchor)}
         >
           <ArrowUpDown size={13} />
-          {sortLabels[sortKey]}
+          <span className="fb-sort-label">{sortLabels[sortKey]}</span>
           <ChevronDown size={10} />
         </button>
         <Menu

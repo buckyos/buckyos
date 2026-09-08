@@ -30,17 +30,18 @@ export function kindIcon(kind: FileEntry['kind'], size = 18) {
   }
 }
 
-export function formatBytes(bytes?: number) {
-  if (!bytes) return '—'
+export function formatBytes(bytes?: number, locale = document.documentElement.lang || 'en') {
+  if (bytes === undefined || !Number.isFinite(bytes)) return locale.startsWith('zh') ? '未知' : 'Unknown'
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
 }
 
-export function formatDate(iso: string) {
+export function formatDate(iso: string, locale = document.documentElement.lang || 'en') {
   const date = new Date(iso)
-  return date.toLocaleString('en-CA', {
+  if (!Number.isFinite(date.getTime())) return locale.startsWith('zh') ? '未知' : 'Unknown'
+  return date.toLocaleString(locale, {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',

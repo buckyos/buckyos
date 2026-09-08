@@ -77,13 +77,13 @@ async function runNfspTransfer(
     checkCancelled(controls)
     controls.setStatus('probing')
     // Collision requires a user decision (§4.7) before any bytes move.
-    const existing = await client.stat(parentPath, { name, cache: 'no-cache' }).catch(() => null)
+    const existing = await client.stat(parentPath, { name, cache: 'no-cache' }).catch((err: unknown) => { if (nfspToUiError(err).code === 'NOT_FOUND') return null; throw err })
     if (existing) {
       throw {
         code: 'NAMESPACE_CONFLICT',
         messageKey: 'filebrowser.transfer.conflict',
         fallback: `"${name}" already exists here`,
-        retryable: false,
+        retryable: true,
       }
     }
     const parentInfo = await client.resolve(parentPath)

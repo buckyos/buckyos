@@ -9,8 +9,8 @@ import type { SortDir, SortKey } from '../types'
 import type { FileItemList } from './FileItemList'
 import { FileItemListImpl } from './FileItemList'
 
-export function useFolderList(url: string, sortKey: SortKey, sortDir: SortDir): FileItemList {
-  const list = useMemo(() => new FileItemListImpl(url), [url])
+export function useFolderList(url: string, sortKey: SortKey, sortDir: SortDir, contextId = url): FileItemList {
+  const list = useMemo(() => new FileItemListImpl(url, contextId), [url, contextId])
 
   useEffect(() => () => list.dispose(), [list])
 

@@ -141,6 +141,7 @@ export type TransferStatus =
   | 'success'
   | 'error'
   | 'cancelled'
+  | 'skipped'
 
 export interface TransferTask {
   id: string

@@ -11,6 +11,7 @@ import { mockDelay } from '../data/mockReader'
 import { fileBrowserSnapshot } from './data'
 
 const failedOnce = new Set<string>()
+const pending = new Map<string, Promise<unknown>>()
 
 function failRequested(source: string): boolean {
   try {
@@ -21,13 +22,18 @@ function failRequested(source: string): boolean {
   }
 }
 
-async function load<T>(source: string, data: T): Promise<T> {
-  await mockDelay(60, 140)
-  if (failRequested(source) && !failedOnce.has(source)) {
-    failedOnce.add(source)
-    throw new Error(`Mock ${source} source failure (?fbFail=${source}) — retry succeeds`)
-  }
-  return data
+function load<T>(source: string, data: T): Promise<T> {
+  const existing = pending.get(source)
+  if (existing) return existing as Promise<T>
+  const attempt = mockDelay(60, 140).then(() => {
+    if (failRequested(source) && !failedOnce.has(source)) {
+      failedOnce.add(source)
+      throw new Error(`Mock ${source} source failure (?fbFail=${source}) — retry succeeds`)
+    }
+    return data
+  }).finally(() => pending.delete(source))
+  pending.set(source, attempt)
+  return attempt
 }
 
 export function registerMockSidebarSources() {

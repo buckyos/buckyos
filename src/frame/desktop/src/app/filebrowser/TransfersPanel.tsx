@@ -4,7 +4,7 @@
  * settled tasks stay dismissable until cleared.
  */
 
-import { useSyncExternalStore } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { CheckCircle2, RotateCcw, Upload, X, XCircle } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import type { TransferStatus, TransferTask } from './data/state'
@@ -13,18 +13,19 @@ import { formatBytes } from './fileDisplay'
 
 const STAGE_LABEL: Record<TransferStatus, { key: string; fallback: string }> = {
   queued: { key: 'filebrowser.transfer.stage.queued', fallback: 'Queued' },
-  hashing: { key: 'filebrowser.transfer.stage.hashing', fallback: 'Hashing' },
+  hashing: { key: 'filebrowser.transfer.stage.hashing', fallback: 'Preparing' },
   probing: { key: 'filebrowser.transfer.stage.probing', fallback: 'Checking destination' },
   uploading: { key: 'filebrowser.transfer.stage.uploading', fallback: 'Uploading' },
-  committing: { key: 'filebrowser.transfer.stage.committing', fallback: 'Committing' },
+  committing: { key: 'filebrowser.transfer.stage.committing', fallback: 'Saving' },
   success: { key: 'filebrowser.transfer.stage.success', fallback: 'Done' },
   error: { key: 'filebrowser.transfer.stage.error', fallback: 'Failed' },
   cancelled: { key: 'filebrowser.transfer.stage.cancelled', fallback: 'Cancelled' },
+  skipped: { key: 'filebrowser.operation.skipped', fallback: 'Skipped' },
 }
 
 const RUNNING: TransferStatus[] = ['queued', 'hashing', 'probing', 'uploading', 'committing']
 
-function TaskRow({ task }: { task: TransferTask }) {
+function TaskRow({ task, onOpenTarget }: { task: TransferTask; onOpenTarget?: (path: string) => void }) {
   const { t } = useI18n()
   const stage = STAGE_LABEL[task.status] ?? STAGE_LABEL.queued
   const running = RUNNING.includes(task.status)
@@ -79,6 +80,7 @@ function TaskRow({ task }: { task: TransferTask }) {
           </button>
         )}
       </div>
+      <button className="mt-1 block min-h-8 max-w-full truncate text-left text-xs underline" onClick={() => onOpenTarget?.(task.committedEntry?.path ?? `${task.targetUrl}/${task.candidate.name}`)}>{task.targetUrl}{task.status === 'success' ? ` · ${t('filebrowser.operation.openLocation', 'Open location')}` : ''}</button>
       {running ? (
         <div className="mt-1.5 flex items-center gap-2">
           <div className="h-1 flex-1 overflow-hidden rounded-full bg-[color:color-mix(in_srgb,var(--cp-border)_55%,transparent)]">
@@ -101,9 +103,10 @@ function TaskRow({ task }: { task: TransferTask }) {
   )
 }
 
-export function TransfersPanel() {
+export function TransfersPanel({ onOpenTarget, mobile = false }: { onOpenTarget?: (path: string) => void; mobile?: boolean }) {
   const { t } = useI18n()
   useSyncExternalStore(transferStore.subscribe, transferStore.snapshot)
+  const [collapsed, setCollapsed] = useState(mobile)
   const tasks = transferStore.tasks()
   if (!tasks.length) return null
 
@@ -111,7 +114,7 @@ export function TransfersPanel() {
 
   return (
     <div
-      className="absolute bottom-10 right-4 z-30 w-[300px] overflow-hidden rounded-[18px] border border-[color:var(--cp-border)] shadow-[0_14px_40px_rgba(0,0,0,0.24)]"
+      className="absolute bottom-20 right-3 z-30 w-[min(300px,calc(100%-24px))] overflow-hidden rounded-[18px] border border-[color:var(--cp-border)] shadow-[0_14px_40px_rgba(0,0,0,0.24)]"
       style={{ background: 'var(--cp-surface)' }}
       data-testid="transfers-panel"
     >
@@ -125,11 +128,13 @@ export function TransfersPanel() {
             : t('filebrowser.transfer.idle', 'idle')}
         </span>
       </div>
-      <div className="max-h-[40vh] divide-y divide-[color:color-mix(in_srgb,var(--cp-border)_40%,transparent)] overflow-y-auto">
+      <button className="min-h-9 w-full px-3 text-left text-xs" onClick={() => setCollapsed(!collapsed)}>{collapsed ? t('filebrowser.transfer.showTasks', 'Show {{count}} tasks', { count: tasks.length }) : t('filebrowser.transfer.collapse', 'Collapse tasks')}</button>
+      {!collapsed && <div className="flex gap-2 px-3 text-xs"><button className="min-h-9 underline" onClick={() => tasks.filter((task) => task.status === 'error' && task.error?.retryable !== false).forEach((task) => transferStore.retry(task.id))}>{t('filebrowser.operation.retryFailed', 'Retry failed items')}</button><button className="min-h-9 underline" onClick={() => tasks.filter((task) => task.status === 'success').forEach((task) => transferStore.dismiss(task.id))}>{t('filebrowser.transfer.clearCompleted', 'Clear completed')}</button></div>}
+      {!collapsed && <div className="max-h-[40vh] divide-y divide-[color:color-mix(in_srgb,var(--cp-border)_40%,transparent)] overflow-y-auto">
         {tasks.map((task) => (
-          <TaskRow key={task.id} task={task} />
+          <TaskRow key={task.id} task={task} onOpenTarget={onOpenTarget} />
         ))}
-      </div>
+      </div>}
     </div>
   )
 }

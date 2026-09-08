@@ -17,6 +17,8 @@ export interface SearchRequest {
   scope?: string
   /** Continuation from a previous page's `nextCursor`. */
   cursor?: string
+  kind?: string
+  modifiedSince?: string
 }
 
 export interface SearchProvider {
@@ -58,11 +60,13 @@ const DEBOUNCE_MS = 200
  * Blank input never reaches the provider (§3). Stale responses are discarded
  * by run token; cursor pages append to the accumulated items.
  */
-export function useSearch(query: string, scope?: string): SearchController {
-  const [state, setState] = useState<SearchViewState>(dataIdle<SearchResultPage>)
+export function useSearch(query: string, scope?: string, kind = '', modifiedSince = ''): SearchController {
+  const [state, setState] = useState<SearchViewState & { requestKey?: string }>(dataIdle<SearchResultPage>)
   const stateRef = useRef(state)
   const runToken = useRef(0)
+  const cache = useRef(new Map<string, SearchResultPage>())
   const trimmed = query.trim()
+  const requestKey = JSON.stringify([trimmed, scope, kind, modifiedSince])
 
   useEffect(() => {
     stateRef.current = state
@@ -72,34 +76,36 @@ export function useSearch(query: string, scope?: string): SearchController {
     (cursor?: string, previous?: SearchResultPage | null) => {
       if (!trimmed) return
       const token = ++runToken.current
-      setState(dataLoading(previous ?? null))
+      setState({ ...dataLoading(previous ?? null), requestKey })
       const provider = activeProvider
       if (!provider) {
         setState(
-          dataError({
+          { ...dataError<SearchResultPage>({
             code: 'UNSUPPORTED',
             messageKey: 'filebrowser.search.noProvider',
             fallback: 'Search is not available',
             retryable: false,
-          }),
+          }), requestKey },
         )
         return
       }
       provider
-        .search({ query: trimmed, scope, cursor })
+        .search({ query: trimmed, scope, cursor, kind, modifiedSince })
         .then((page) => {
           if (runToken.current !== token) return
           const merged: SearchResultPage = previous
             ? { ...page, items: [...previous.items, ...page.items] }
             : page
-          setState(dataSuccess(merged))
+          cache.current.set(requestKey, merged)
+          if (cache.current.size > 20) cache.current.delete(cache.current.keys().next().value!)
+          setState({ ...dataSuccess(merged), requestKey })
         })
         .catch((err: unknown) => {
           if (runToken.current !== token) return
-          setState(dataError(toUiError(err), previous ?? null))
+          setState({ ...dataError(toUiError(err), previous ?? null), requestKey })
         })
     },
-    [trimmed, scope],
+    [trimmed, scope, kind, modifiedSince, requestKey],
   )
 
   useEffect(() => {
@@ -109,9 +115,13 @@ export function useSearch(query: string, scope?: string): SearchController {
       setState(dataIdle())
       return
     }
+    runToken.current += 1
+    const cached = cache.current.get(requestKey)
+    if (cached) { setState({ ...dataSuccess(cached), requestKey }); return () => { runToken.current += 1 } }
+    setState({ ...dataLoading(), requestKey })
     const timer = window.setTimeout(() => run(), DEBOUNCE_MS)
-    return () => window.clearTimeout(timer)
-  }, [trimmed, scope, run])
+    return () => { window.clearTimeout(timer); runToken.current += 1 }
+  }, [trimmed, scope, run, requestKey])
 
   const loadMore = useCallback(() => {
     const current = stateRef.current
@@ -122,7 +132,7 @@ export function useSearch(query: string, scope?: string): SearchController {
 
   const retry = useCallback(() => run(), [run])
 
-  return { state, loadMore, retry }
+  return { state: !trimmed ? dataIdle() : state.requestKey === requestKey ? state : dataLoading(), loadMore, retry }
 }
 
 /** Convenience for renderers: bucket accumulated items by reason group. */

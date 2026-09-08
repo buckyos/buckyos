@@ -8,6 +8,7 @@
 
 import type { SearchHit, WireRef } from '../../../../api/nfsp_client'
 import type { SearchResultItem, SearchResultPage } from '../../types'
+import { dfsPathOf } from '../urls'
 import { classifyFileKind } from '../fileKinds'
 import { registerSearchProvider } from '../search'
 import { ensureSession, nfspClient } from './client'
@@ -57,6 +58,7 @@ function mapHit(hit: SearchHit, query: string): SearchResultItem | null {
 export function registerNfspSearchProvider() {
   return registerSearchProvider({
     async search(request): Promise<SearchResultPage> {
+      if (request.scope && dfsPathOf(request.scope) === null) throw new Error('Search in this location is not supported. Choose all accessible files.')
       await ensureSession()
       try {
         const result = await nfspClient().raw.search(
@@ -64,14 +66,15 @@ export function registerNfspSearchProvider() {
           {
             limit: PAGE_LIMIT,
             cursor: request.cursor,
-            scope: request.scope,
+            scope: request.scope ? dfsPathOf(request.scope) ?? undefined : undefined,
           },
           ['base'],
         )
         return {
           items: result.hits
             .map((hit) => mapHit(hit, request.query))
-            .filter((item): item is SearchResultItem => item !== null),
+            .filter((item): item is SearchResultItem => item !== null)
+            .filter((hit) => (!request.kind || hit.entry.kind === request.kind) && (!request.modifiedSince || Date.parse(hit.entry.modifiedAt) >= Date.parse(request.modifiedSince))),
           partial: result.partial,
           sources: result.sources.map((source) => ({
             mode: source.mode,

@@ -62,7 +62,7 @@ Windows carry a `WindowLaunch` (`requestId` + payload) through the desktop store
 
 Settings (`settings.ts`, localStorage): window mode, cap, default UI mode, default image layout, wrap in folders / selections, reopen last session, prefetch, prefer Full App.
 
-File Browser hands over a Container Context for folder listings and an explicit list for views / collections / search / multi-selection (`FileBrowserView.tsx` → `handleOpenFile`, menu commands `open`, `preview-new-window`, `preview-selection`).
+File Browser hands over a Container Context for folder listings and an explicit list for views / collections / search / multi-selection (`FileBrowserView.tsx` → `handleOpenFile`, menu commands `open`, `preview-new-window`, `preview-selection`). On mobile, tapping a file opens the full Preview App. `origin.windowId` identifies the Files window; Preview exit and the mobile shell Back action return focus to it. Files retains tab/location/search/scroll snapshots in memory across that transition. Metadata remains a separate Files details action. The built-in Preview manifest uses the standard mobile shell bar, reserving its height so the preview toolbar/content stay below it; the shell title follows the current file.
 
 ## Verification
 
@@ -77,4 +77,4 @@ npx playwright test tests/e2e/pages/preview.spec.ts
 - `repr` Pipeline on nfs_server is not implemented server-side; the client contract is provisional.
 - "Open with…" offers Download / Copy reference only — the Full App association protocol is pending (§23.8 item 10).
 - Provider-based sessions are one-shot; no Session Navigation Stack (P1).
-- Fullscreen uses the component's own element (`allowFullscreen`); mobile sheets are unchanged (File Browser keeps its metadata sheet on mobile).
+- Fullscreen uses the component's own element (`allowFullscreen`).

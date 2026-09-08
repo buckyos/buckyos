@@ -72,13 +72,16 @@ function DfsTreeNode({
 }) {
   const hasChildren = !!node.children?.length
   const nodeUrl = normalizeUrl(node.path)
-  const [expanded, setExpanded] = useState(depth < 1 || activeUrl.startsWith(nodeUrl))
+  const [expanded, setExpanded] = useState(() => localStorage.getItem(`files.tree:${nodeUrl}`) !== 'false' && (depth < 1 || activeUrl.startsWith(`${nodeUrl}/`)))
+  const [previousUrl, setPreviousUrl] = useState(activeUrl)
+  if (previousUrl !== activeUrl) { setPreviousUrl(activeUrl); if (activeUrl.startsWith(`${nodeUrl}/`)) setExpanded(true) }
   const active = activeUrl === nodeUrl
 
   return (
     <div>
       <button
         type="button"
+        aria-label={node.name}
         className={clsx(
           'group flex w-full items-center gap-2 rounded-[14px] px-2 py-1.5 text-left text-sm transition',
           active
@@ -87,19 +90,10 @@ function DfsTreeNode({
         )}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
         onClick={() => {
-          if (hasChildren) setExpanded((v) => !v)
           onNavigate(node.path)
         }}
       >
-        {hasChildren ? (
-          expanded ? (
-            <ChevronDown size={14} className="shrink-0" />
-          ) : (
-            <ChevronRight size={14} className="shrink-0" />
-          )
-        ) : (
-          <span className="w-[14px] shrink-0" />
-        )}
+        {hasChildren ? <span role="button" tabIndex={0} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${node.name}`} onClick={(event) => { event.stopPropagation(); const next = !expanded; setExpanded(next); localStorage.setItem(`files.tree:${nodeUrl}`, String(next)) }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setExpanded(!expanded) } }}>{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span> : <span className="w-[14px] shrink-0" />}
         {nodeIcon(node.kind)}
         <span className="min-w-0 truncate font-medium">{node.name}</span>
       </button>
@@ -268,10 +262,14 @@ export function Sidebar({
   onAfterNavigate,
 }: SidebarProps) {
   const { t } = useI18n()
+  const [pins, setPins] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('files.pins') ?? '[]') } catch { return [] } })
+  const [groups, setGroups] = useState<Record<string, boolean>>(() => { try { return JSON.parse(localStorage.getItem('files.sidebarGroups') ?? '{}') } catch { return {} } })
+  const toggleGroup = (key: string) => setGroups((prev) => { const next = { ...prev, [key]: !(prev[key] ?? true) }; localStorage.setItem('files.sidebarGroups', JSON.stringify(next)); return next })
+  const pinCurrent = () => setPins((prev) => { const next = prev.includes(activeUrl) ? prev.filter((url) => url !== activeUrl) : [...prev, activeUrl]; localStorage.setItem('files.pins', JSON.stringify(next)); return next })
   const [activeSection, setActiveSection] = useState<Section | null>(compact ? 'dfs' : null)
 
   const sections: { id: Section; label: string; icon: React.ReactNode }[] = [
-    { id: 'dfs', label: t('filebrowser.sidebar.dfs', 'DFS'), icon: <FolderOpen size={14} /> },
+    { id: 'dfs', label: t('filebrowser.sidebar.myFiles', 'My files'), icon: <FolderOpen size={14} /> },
     { id: 'views', label: t('filebrowser.sidebar.views', 'Views'), icon: <Sparkles size={14} /> },
     {
       id: 'collections',
@@ -286,6 +284,12 @@ export function Sidebar({
     onAfterNavigate?.()
   }
 
+  const favorites = <div className="space-y-1">
+    <button className="min-h-9 w-full truncate rounded-xl px-2 text-left text-sm" onClick={() => goto('/home')}>{t('filebrowser.sidebar.myFiles', 'My files')}</button>
+    <button className="min-h-9 w-full truncate rounded-xl px-2 text-left text-sm" onClick={() => goto('view://recent')}>{t('filebrowser.sidebar.recent', 'Recent')}</button>
+    {pins.map((url) => <button key={url} className={clsx('block min-h-9 w-full truncate rounded-xl px-2 text-left text-xs', normalizeUrl(url) === activeUrl && 'bg-[color:var(--cp-accent-soft)]')} title={url} onClick={() => goto(url)}>★ {url.split('/').filter(Boolean).at(-1)}</button>)}
+    <button className="min-h-9 w-full px-2 text-left text-xs underline" onClick={pinCurrent}>{pins.includes(activeUrl) ? t('filebrowser.sidebar.unpin', 'Unpin current folder') : t('filebrowser.sidebar.pin', 'Pin current folder')}</button>
+  </div>
   // Views — recent + AI topics, all read-only query results.
   const renderViews = (
     <div className="space-y-0.5">
@@ -487,6 +491,7 @@ export function Sidebar({
           ))}
         </div>
         <div className="flex-1 overflow-y-auto pr-1">
+          {activeSection === 'dfs' && favorites}
           {activeSection ? bodies[activeSection] : null}
         </div>
       </div>
@@ -496,26 +501,13 @@ export function Sidebar({
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
       <div className="flex-1 space-y-1 overflow-y-auto pr-1">
-        <SectionHeader
-          icon={<Sparkles size={13} className="text-[color:var(--cp-accent)]" />}
-          label={t('filebrowser.sidebar.views', 'AI Topics')}
-          hint={topics.state.data ? `${topics.state.data.length}` : '…'}
-        />
-        {renderViews}
-
-        <SectionHeader
-          icon={<Library size={13} className="text-[color:var(--cp-accent)]" />}
-          label={t('filebrowser.sidebar.collections', 'Collections')}
-          hint={`${collections.length}`}
-        />
-        {renderCollections}
-
-        <SectionHeader
-          icon={<FolderOpen size={13} />}
-          label={t('filebrowser.sidebar.dfs', 'DFS · Logical view')}
-        />
+        {favorites}
+        <SectionHeader icon={<FolderOpen size={13} />} label={advancedMode ? t('filebrowser.sidebar.dfs', 'DFS · Logical view') : t('filebrowser.sidebar.folders', 'Folders')} />
         {bodies.dfs}
-
+        <button className="w-full text-left" onClick={() => toggleGroup('topics')} aria-expanded={groups.topics ?? true}><SectionHeader icon={<Sparkles size={13} />} label={t('filebrowser.sidebar.views', 'AI Topics')} hint={`${topics.state.data?.length ?? '…'} ${groups.topics === false ? '›' : '⌄'}`} /></button>
+        {(groups.topics ?? true) && renderViews}
+        <button className="w-full text-left" onClick={() => toggleGroup('collections')} aria-expanded={groups.collections ?? true}><SectionHeader icon={<Library size={13} />} label={t('filebrowser.sidebar.collections', 'Collections')} hint={`${collections.length} ${groups.collections === false ? '›' : '⌄'}`} /></button>
+        {(groups.collections ?? true) && renderCollections}
         <SectionHeader
           icon={<Cpu size={13} />}
           label={t('filebrowser.sidebar.devices', 'Devices')}

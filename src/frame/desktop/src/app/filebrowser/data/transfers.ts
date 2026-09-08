@@ -10,7 +10,7 @@
  */
 
 import type { FileEntry, LocationUrl } from '../types'
-import type { TransferStatus, TransferTask } from './state'
+import type { TransferStatus, TransferTask, UiError } from './state'
 import { toUiError } from './state'
 import type { UploadCandidateInput } from './schemas'
 import { uploadCandidateSchema } from './schemas'
@@ -18,7 +18,7 @@ import { uploadCandidateSchema } from './schemas'
 export interface TransferControls {
   /** Executors poll this between stages and abort with CancelledError. */
   isCancelled(): boolean
-  setStatus(status: Exclude<TransferStatus, 'success' | 'error' | 'cancelled'>): void
+  setStatus(status: Exclude<TransferStatus, 'success' | 'error' | 'cancelled' | 'skipped'>): void
   setProgress(bytesSent: number): void
 }
 
@@ -65,6 +65,7 @@ export interface RejectedUpload {
 const tasks: TransferTask[] = []
 const listeners = new Set<() => void>()
 const cancelRequested = new Set<string>()
+const retryHandlers = new Map<string, () => void>()
 let snapshotVersion = 0
 let taskCounter = 0
 
@@ -110,6 +111,8 @@ function runTask(task: TransferTask) {
       task.committedEntry = entry
       task.error = null
       localFiles.delete(task.candidate.localId)
+      retryHandlers.delete(task.id)
+      cancelRequested.delete(task.id)
       emit()
     })
     .catch((err: unknown) => {
@@ -138,6 +141,13 @@ export const transferStore = {
     return tasks
   },
 
+  recordOutcome(targetUrl: LocationUrl, candidate: UploadCandidateInput, status: 'error' | 'cancelled' | 'skipped', error: UiError | null = null, retry?: () => void) {
+    const task: TransferTask = { id: `transfer-${++taskCounter}`, targetUrl, candidate, status, bytesSent: 0, totalBytes: candidate.sizeBytes, error }
+    tasks.push(task)
+    if (retry) retryHandlers.set(task.id, retry)
+    emit()
+  },
+
   /**
    * Validate candidates and start accepted ones. Invalid candidates come back
    * with their schema message keys so the caller can surface them.
@@ -145,12 +155,14 @@ export const transferStore = {
   enqueue(
     targetUrl: LocationUrl,
     candidates: UploadCandidateInput[],
+    onRetry?: () => void,
   ): { accepted: TransferTask[]; rejected: RejectedUpload[] } {
     const accepted: TransferTask[] = []
     const rejected: RejectedUpload[] = []
     for (const raw of candidates) {
       const parsed = uploadCandidateSchema.safeParse(raw)
       if (!parsed.success) {
+        localFiles.delete(raw.localId)
         rejected.push({
           name: raw.name || raw.localId,
           messageKeys: parsed.error.issues.map((issue) => issue.message),
@@ -168,6 +180,7 @@ export const transferStore = {
         error: null,
       }
       tasks.push(task)
+      if (onRetry) retryHandlers.set(task.id, onRetry)
       accepted.push(task)
     }
     if (accepted.length) emit()
@@ -178,7 +191,7 @@ export const transferStore = {
   cancel(id: string) {
     const task = taskById(id)
     if (!task) return
-    if (task.status === 'success' || task.status === 'error' || task.status === 'cancelled') {
+    if (task.status === 'success' || task.status === 'error' || task.status === 'cancelled' || task.status === 'skipped') {
       return
     }
     // The executor notices at its next stage boundary and settles the task.
@@ -188,6 +201,12 @@ export const transferStore = {
   retry(id: string) {
     const task = taskById(id)
     if (!task || (task.status !== 'error' && task.status !== 'cancelled')) return
+    const handler = retryHandlers.get(id)
+    if (handler) {
+      this.dismiss(id)
+      handler()
+      return
+    }
     task.status = 'queued'
     task.bytesSent = 0
     task.error = null
@@ -199,10 +218,12 @@ export const transferStore = {
     const index = tasks.findIndex((task) => task.id === id)
     if (index === -1) return
     const task = tasks[index]
-    if (task.status !== 'success' && task.status !== 'error' && task.status !== 'cancelled') {
+    if (task.status !== 'success' && task.status !== 'error' && task.status !== 'cancelled' && task.status !== 'skipped') {
       return
     }
     localFiles.delete(task.candidate.localId)
+    retryHandlers.delete(id)
+    cancelRequested.delete(id)
     tasks.splice(index, 1)
     emit()
   },

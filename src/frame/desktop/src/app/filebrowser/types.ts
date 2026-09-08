@@ -96,6 +96,8 @@ export interface StoryEntry {
  */
 export interface FileEntry {
   id: FileEntryId
+  operations?: import('./data/schemas').EntryOperations
+  thumbnailUrl?: string
   name: string
   kind: FileKind
   /** Current original DFS/display location, not persistent identity. */
@@ -218,12 +220,22 @@ export interface BrowserTab {
   path: LocationUrl
 }
 
+export interface PaneLocation {
+  path: LocationUrl
+  query: string
+  scope: 'current' | 'all'
+  kind: string
+  modified: string
+  scroll: number
+}
+
 export interface HistoryState {
-  back: LocationUrl[]
-  forward: LocationUrl[]
+  back: PaneLocation[]
+  forward: PaneLocation[]
 }
 
 export interface ClipboardState {
+  token: string
   entries: FileEntry[]
   mode: 'cut' | 'copy'
 }

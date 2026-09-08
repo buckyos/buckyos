@@ -1,0 +1,24 @@
+.filebrowser { container-type: inline-size; color: var(--cp-text); }
+.fb-content { container-type: inline-size; min-height: 0; }
+.fb-pane[data-active="true"] { box-shadow: inset 0 2px var(--cp-accent); }
+.filebrowser :focus-visible { outline: 2px solid var(--cp-accent); outline-offset: -2px; }
+.fb-list-row { grid-template-columns: minmax(150px, 1fr) 84px 145px; }
+.fb-column-kind, .fb-column-tags, .fb-column-url { display: none; }
+.fb-column-size, .fb-column-modified { white-space: nowrap; font-size: 12px; }
+.fb-mobile button, .fb-mobile .MuiIconButton-root { min-width: 44px; min-height: 44px; }
+.fb-mobile { padding-bottom: env(safe-area-inset-bottom); }
+@container (max-width: 460px) {
+  .fb-list-row { grid-template-columns: minmax(130px, 1fr) 80px; }
+  .fb-column-modified { display: none; }
+  .fb-sort-label { display: none; }
+}
+@container (min-width: 800px) {
+  .fb-list-row { grid-template-columns: minmax(220px, 1fr) 100px 84px 145px 120px; }
+  .fb-column-kind, .fb-column-tags { display: block; }
+  .fb-public .fb-list-row { grid-template-columns: minmax(180px, 1fr) 80px 75px 130px 80px minmax(140px, 1fr); }
+  .fb-public .fb-column-url { display: block; }
+}
+
+.fb-full .fb-list-row { grid-template-columns: var(--fb-name-width, 260px) 100px 84px 145px 120px; }
+.fb-full.fb-public .fb-list-row { grid-template-columns: var(--fb-name-width, 260px) 100px 84px 145px 120px 160px; }
+.fb-full .fb-column-kind, .fb-full .fb-column-tags, .fb-full .fb-column-modified, .fb-full .fb-column-url { display: block; }

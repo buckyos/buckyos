@@ -1,57 +1,105 @@
-/**
- * Folder write operations — the extension point behind toolbar/menu mutations
- * on real storage locations (new folder, rename, delete, move, download).
- * Collection membership stays on CollectionReader; uploads stay on the
- * transfer executor. The mock registers in-memory-index operations; the NFSP
- * adapter registers mkdir/move/delete/readUrl (UI_DATAMODEL.md §8.3).
- *
- * Implementations throw UiError-shaped values (data/state.ts) so callers can
- * surface normalized, display-safe messages.
- */
-
 import type { FileEntry } from '../types'
+import { toUiError } from './state'
+import type { UiError } from './state'
+import { entryNameSchema } from './schemas'
 
+export type ConflictChoice = 'keep-both' | 'skip' | 'cancel'
+export interface OperationConflict {
+  source: FileEntry
+  target: FileEntry
+  targetPath: string
+}
+export interface OperationResult {
+  itemKey?: string
+  entry: FileEntry
+  targetPath?: string
+  status: 'success' | 'failed' | 'skipped' | 'cancelled'
+  error?: UiError
+}
+export interface BatchOptions {
+  signal?: AbortSignal
+  onProgress?: (results: OperationResult[]) => void
+  onConflict?: (conflict: OperationConflict) => Promise<ConflictChoice>
+}
 export interface FolderWriteOps {
-  /** True when `name` already exists directly under `parentPath`. */
+  readonly supportsCopy: boolean
   nameExists(parentPath: string, name: string): Promise<boolean>
+  statEntry(parentPath: string, name: string): Promise<FileEntry | null>
   createFolder(parentPath: string, name: string): Promise<void>
   renameEntry(entry: FileEntry, name: string): Promise<void>
-  /** Destroy semantics — never used for collection references (§6.3). */
-  deleteEntries(entries: FileEntry[]): Promise<void>
-  moveEntries(entries: FileEntry[], toParentPath: string): Promise<void>
-  /**
-   * Data-plane download URL for a file entry, or null when the backend has
-   * no data plane (mock) — callers fall back to an informational toast.
-   */
+  deleteEntries(entries: FileEntry[], options?: BatchOptions): Promise<OperationResult[]>
+  moveEntries(entries: FileEntry[], toParentPath: string, options?: BatchOptions): Promise<OperationResult[]>
   downloadUrl(entry: FileEntry): string | null
 }
 
-const unsupported = () =>
-  Promise.reject({
-    code: 'UNSUPPORTED',
-    messageKey: 'filebrowser.error.noWriteBackend',
-    fallback: 'File operations are not available',
-    retryable: false,
-  })
-
-const noOps: FolderWriteOps = {
-  nameExists: () => Promise.resolve(false),
-  createFolder: unsupported,
-  renameEntry: unsupported,
-  deleteEntries: unsupported,
-  moveEntries: unsupported,
-  downloadUrl: () => null,
+export function operationError(code: string, fallback: string): UiError {
+  return { code, messageKey: `filebrowser.operation.${code}`, fallback, retryable: true }
 }
 
-let active: FolderWriteOps = noOps
+export async function availableName(parent: string, name: string, folder = false): Promise<string> {
+  const dot = folder ? -1 : name.lastIndexOf('.')
+  const extension = dot > 0 ? name.slice(dot) : ''
+  const base = dot > 0 ? name.slice(0, dot) : name
+  for (let i = 2; i < 10000; i++) {
+    const suffix = ` (${i})${extension}`
+    let stem = base
+    while (stem && new TextEncoder().encode(stem + suffix).length > 255) stem = [...stem].slice(0, -1).join('')
+    const candidate = entryNameSchema.parse(stem + suffix)
+    if (!await folderOps().nameExists(parent, candidate)) return candidate
+  }
+  throw operationError('CONFLICT', 'Could not find an unused name')
+}
 
+export async function runEntryBatch(
+  entries: FileEntry[],
+  mutate: (entry: FileEntry, name: string) => Promise<void>,
+  target?: string,
+  options: BatchOptions = {},
+): Promise<OperationResult[]> {
+  const results: OperationResult[] = []
+  let cancelled = false
+  for (const original of entries) {
+    const entry = { ...original }
+    let result: OperationResult = { entry, targetPath: target, status: 'success' }
+    if (cancelled || options.signal?.aborted) result.status = 'cancelled'
+    else try {
+      let name = entry.name
+      if (target) {
+        const parent = entry.path.slice(0, entry.path.lastIndexOf('/')) || '/'
+        if (parent === target) { result.status = 'skipped'; result.error = operationError('SAME_FOLDER', 'Already in this folder') }
+        else {
+          if (entry.kind === 'folder' && (target === entry.path || target.startsWith(`${entry.path}/`))) throw operationError('DESCENDANT', 'A folder cannot be moved into itself or its descendants')
+          const existing = await folderOps().statEntry(target, name)
+          if (existing) {
+            if (!options.onConflict) throw operationError('CONFLICT', 'This name already exists in the destination')
+            const choice = await options.onConflict({ source: entry, target: existing, targetPath: target })
+            if (choice === 'cancel') { cancelled = true; result.status = 'cancelled' }
+            else if (choice === 'skip') result.status = 'skipped'
+            else name = await availableName(target, name, entry.kind === 'folder')
+          }
+        }
+        result.targetPath = `${target === '/' ? '' : target}/${name}`
+      }
+      if (options.signal?.aborted) result.status = 'cancelled'
+      if (result.status === 'success') await mutate(entry, name)
+    } catch (err) {
+      result = err instanceof Error && err.name === 'AbortError' ? { ...result, status: 'cancelled' } : { ...result, status: 'failed', error: toUiError(err) }
+    }
+    results.push(result)
+    options.onProgress?.([...results])
+  }
+  return results
+}
+
+const unsupported = () => Promise.reject(operationError('UNSUPPORTED', 'File operations are not available'))
+const noOps: FolderWriteOps = {
+  supportsCopy: false,
+  nameExists: unsupported, statEntry: unsupported, createFolder: unsupported,
+  renameEntry: unsupported, deleteEntries: unsupported, moveEntries: unsupported, downloadUrl: () => null,
+}
+let active: FolderWriteOps = noOps
 export function registerFolderOps(ops: FolderWriteOps): () => void {
   active = ops
-  return () => {
-    if (active === ops) active = noOps
-  }
+  return () => { if (active === ops) active = noOps }
 }
-
-export function folderOps(): FolderWriteOps {
-  return active
-}
+export function folderOps(): FolderWriteOps { return active }

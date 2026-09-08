@@ -1,3 +1,4 @@
+import { commandState } from './commands'
 /**
  * Context-menu registry and the built-in (default) providers.
  *
@@ -51,6 +52,11 @@ export class FileMenuRegistry {
       .flatMap((provider) => provider.build(context))
       .map((section) => section.filter((item) => !hiddenItems.includes(item.id)))
       .filter((section) => section.length > 0)
+      .map((section) => section.map((item) => {
+        if (item.type !== 'action') return item
+        const state = commandState(item.command, context)
+        return { ...item, disabled: item.disabled || state.state !== 'available', disabledReason: state.reason }
+      }))
   }
 }
 
@@ -153,6 +159,9 @@ const clipboardProvider: FileMenuProvider = {
     const count = ctx.entries.length
     const item = ctx.items[0]
     const section: FileMenuSection = [
+      action('cut', label('cut', 'Cut'), { icon: 'move', shortcut: 'Ctrl/⌘X' }),
+      action('copy', label('copyFiles', 'Copy files'), { icon: 'copy', shortcut: 'Ctrl/⌘C' }),
+      action('copy-references', label('copyReferences', 'Copy references for a collection'), { icon: 'collection' }),
       isSelection(ctx)
         ? action('copy-path', label('copyPaths', 'Copy {{count}} paths', { count }), {
             icon: 'copy',
@@ -179,6 +188,7 @@ const clipboardProvider: FileMenuProvider = {
         }),
       )
     }
+    section.push(action('details', label('details', 'Details'), { icon: 'preview' }))
     return [section]
   },
 }
@@ -187,27 +197,14 @@ const clipboardProvider: FileMenuProvider = {
 const organizeProvider: FileMenuProvider = {
   id: 'default.organize',
   order: 400,
-  when: (ctx) => hasItems(ctx) && ctx.capabilities.acceptsContent,
+  when: (ctx) => hasItems(ctx) && (ctx.capabilities.kind === 'folder' || !!ctx.searching),
   build: (ctx) => {
     const section: FileMenuSection = []
     if (isItem(ctx)) {
       section.push(action('rename', label('rename', 'Rename…'), { icon: 'rename' }))
     }
-    if (ctx.moveTargets.length) {
-      section.push({
-        type: 'submenu',
-        id: 'move-to',
-        label: label('moveTo', 'Move to'),
-        icon: 'move',
-        items: ctx.moveTargets.map((target) =>
-          action(`move-to:${target.path}`, { key: '', fallback: target.label }, {
-            command: 'move-to',
-            args: { path: target.path },
-            icon: 'open',
-          }),
-        ),
-      })
-    }
+    section.push(action('move-to', label('moveTo', 'Move to…'), { icon: 'move' }))
+    if (ctx.otherPath) section.push(action('move-other', label('moveOther', 'Move to other pane'), { icon: 'move', args: { path: ctx.otherPath } }))
     return section.length ? [section] : []
   },
 }
@@ -280,7 +277,7 @@ const jumpToOriginalProvider: FileMenuProvider = {
   order: 550,
   when: (ctx) =>
     isItem(ctx) &&
-    !!(ctx.items[0]?.ref || ctx.entries[0]?.link || ctx.capabilities.kind === 'view') &&
+    !!(ctx.searching || ctx.items[0]?.ref || ctx.entries[0]?.link || ctx.capabilities.kind === 'view') &&
     !ctx.items[0]?.ref?.broken &&
     !ctx.entries[0]?.link?.broken,
   build: () => [
@@ -342,6 +339,7 @@ const viewCreateProvider: FileMenuProvider = {
     [
       action('new-folder', label('newFolder', 'New folder'), { icon: 'new-folder' }),
       action('upload', label('upload', 'Upload…'), { icon: 'upload' }),
+      action('paste', label('paste', 'Paste'), { icon: 'copy', shortcut: 'Ctrl/⌘V' }),
     ],
   ],
 }
@@ -352,7 +350,7 @@ const collectionViewProvider: FileMenuProvider = {
   order: 100,
   when: (ctx) => isView(ctx) && ctx.capabilities.kind === 'collection',
   build: () => [
-    [action('new-group', label('newGroup', 'New group…'), { icon: 'new-folder' })],
+    [action('add-existing', label('addExisting', 'Add existing files'), { icon: 'collection' }), action('paste', label('pasteReferences', 'Paste references'), { icon: 'copy' }), action('new-group', label('newGroup', 'New group…'), { icon: 'new-folder' })],
   ],
 }
 
@@ -381,9 +379,10 @@ const viewSelectProvider: FileMenuProvider = {
   id: 'default.view-select',
   order: 300,
   when: isView,
-  build: () => [
+  build: (ctx) => [
     [
-      action('select-all', label('selectAll', 'Select all'), { icon: 'select-all' }),
+      action('select-loaded', label('selectLoaded', 'Select loaded {{count}} items', { count: ctx.loadedCount ?? 0 }), { icon: 'select-all' }),
+      ...(!ctx.searching ? [action('select-all', label('selectEntire', 'Select all items in this folder'), { icon: 'select-all' })] : []),
       action('copy-path', label('copyCurrentPath', 'Copy current path'), { icon: 'copy' }),
     ],
   ],

@@ -23,6 +23,8 @@ import type { Topic } from './types'
 
 interface PreviewPanelProps {
   item: FileItem | null
+  items?: FileItem[]
+  onOpenFile?: (item: FileItem) => void
   topics: Topic[]
   onClose?: () => void
   onJumpToTopic: (topicId: string) => void
@@ -57,20 +59,26 @@ function SectionSkeleton({ rows = 4 }: { rows?: number }) {
 }
 
 export function PreviewPanel({
-  item,
+  item, items = [], onOpenFile,
   topics,
   onClose,
   onJumpToTopic,
   onJumpToPath,
   embedded = false,
 }: PreviewPanelProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [tab, setTab] = useState(0)
   // Enrichment resolves asynchronously — identity/name render immediately
   // from the item; meta/story sections skeleton until the state settles.
   const preview = usePreview(item, topics)
   const enriching = preview.status === 'loading'
 
+  if (items.length > 1) {
+    const known = items.filter((item) => item.entry.sizeBytes !== undefined)
+    const kinds = new Map<string, number>()
+    items.forEach((item) => kinds.set(item.entry.kind, (kinds.get(item.entry.kind) ?? 0) + 1))
+    return <div className="space-y-3 p-4 text-sm"><strong>{t('filebrowser.status.selectedCount', '{{count}} selected', { count: items.length })}</strong>{[...kinds].map(([kind, count]) => <p key={kind}>{t(`filebrowser.kind.${kind}`, kind)}: {count}</p>)}<p>{t('filebrowser.meta.knownSize', 'Known size ({{count}}/{{total}} items)', { count: known.length, total: items.length })}: {formatBytes(known.reduce((sum, item) => sum + item.entry.sizeBytes!, 0), locale)}</p></div>
+  }
   if (!item) {
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-2 p-6 text-center text-[color:var(--cp-muted)]">
@@ -93,6 +101,7 @@ export function PreviewPanel({
 
   return (
     <div className="flex h-full w-full flex-col">
+      {entry.kind !== 'folder' && onOpenFile && !entry.link?.broken && !item.ref?.broken && <button className="m-3 min-h-11 shrink-0 rounded-xl bg-[color:var(--cp-accent)] px-4 text-sm font-semibold text-white" onClick={() => onOpenFile(item)}>{t('filebrowser.operation.openFile', 'Open file')}</button>}
       <div className="flex items-start gap-3 border-b border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-4 py-3">
         <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[16px] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)]">
           {kindIcon(entry.kind, 22)}
@@ -110,10 +119,11 @@ export function PreviewPanel({
             type="button"
             onClick={() => onJumpToPath(originalParent)}
             title={t('filebrowser.preview.jumpOriginal', 'Jump to original location')}
-            className="mt-0.5 block max-w-full truncate text-left font-mono text-[10px] text-[color:var(--cp-muted)] hover:text-[color:var(--cp-accent)] hover:underline"
+            className="mt-0.5 block max-w-full break-all text-left font-mono text-xs text-[color:var(--cp-muted)] hover:text-[color:var(--cp-accent)] hover:underline"
           >
             {originalPath}
           </button>
+          <button className="min-h-8 text-xs underline" onClick={() => void navigator.clipboard.writeText(originalPath)}>{t('filebrowser.topbar.copyPath', 'Copy path')}</button>
           {entry.link?.broken || item.ref?.broken ? (
             <span className="mt-1 inline-block rounded-full bg-[color:color-mix(in_srgb,var(--cp-warning)_18%,var(--cp-surface))] px-2 py-0.5 text-[10px] font-semibold text-[color:var(--cp-warning)]">
               {t('filebrowser.preview.brokenRef', 'Dangling reference')}
@@ -144,10 +154,10 @@ export function PreviewPanel({
           <>
             <div className="space-y-1.5">
               <Row label={t('filebrowser.preview.size', 'Size')}>
-                {entry.kind === 'folder' ? '—' : formatBytes(entry.sizeBytes)}
+                {entry.kind === 'folder' ? t('filebrowser.meta.notCalculated', 'Not calculated') : formatBytes(entry.sizeBytes)}
               </Row>
               <Row label={t('filebrowser.preview.kind', 'Kind')}>
-                <span className="capitalize">{entry.kind}</span>
+                <span className="capitalize">{t(`filebrowser.kind.${entry.kind}`, entry.kind)}</span>
               </Row>
               <Row label={t('filebrowser.preview.modified', 'Modified')}>
                 {formatDate(entry.modifiedAt)}
@@ -306,15 +316,13 @@ export function PreviewPanel({
                 {t('filebrowser.preview.aiStatus', 'AI pipeline status')}
               </p>
               <p className="mt-2 leading-5 text-[color:var(--cp-text)]">
-                {entry.triggersActive
-                  ? t(
-                      'filebrowser.preview.aiActive',
-                      'This folder is wired to the knowledge base pipeline. New files here are semantically indexed.',
-                    )
-                  : t(
-                      'filebrowser.preview.aiInactive',
-                      'This folder is excluded from AI post-processing. Upload here stays strictly filesystem-level.',
-                    )}
+                {entry.triggersActive === undefined
+                  ? t('filebrowser.preview.aiUnknown', 'AI processing status is unknown.')
+                  : entry.triggersActive
+                    ? t('filebrowser.preview.aiEnabledState', 'Applicable AI processing policy: enabled.')
+                    : t('filebrowser.preview.aiDisabledState', 'Applicable AI processing policy: disabled.')}
+                {' '}{t('filebrowser.preview.aiPolicyScope', 'This is the reported policy summary; file overrides and inherited folder rules may differ.')}
+
               </p>
             </div>
             <p className="text-[11px] leading-5">

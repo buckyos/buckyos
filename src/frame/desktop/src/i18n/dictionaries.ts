@@ -1,3 +1,4 @@
+import { fileBrowserReviewEn, fileBrowserReviewZh } from './filebrowser-review'
 import { messageHubEn, messageHubZh } from './messagehub'
 import { appServiceEn, appServiceZh } from './app-service'
 import type { SupportedLocale } from '../models/ui'
@@ -1959,8 +1960,8 @@ const ar: Dictionary = {
 }
 
 export const dictionaries: Record<SupportedLocale, Dictionary> = {
-  en: { ...en, ...appServiceEn },
-  'zh-CN': { ...zhCN, ...appServiceZh },
+  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn },
+  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh },
   ja,
   ko,
   fr,

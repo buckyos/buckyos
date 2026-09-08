@@ -29,6 +29,7 @@ import type {
 export type { LocationKind }
 
 export interface LocationCapabilities {
+  availability?: 'ready' | 'loading'
   kind: LocationKind
   /** Folder-only: real storage destination (upload / new / paste content). */
   acceptsContent: boolean

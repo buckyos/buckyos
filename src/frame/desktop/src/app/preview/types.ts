@@ -16,6 +16,7 @@ export const PREVIEW_APP_ID = 'preview'
 export const PREVIEW_LAUNCH_KIND = 'preview-launch'
 
 export interface PreviewLaunchOrigin {
+  windowId?: string
   /** Host app id (`files`, `messagehub`, …). */
   app?: string
   /** Host-side browsing context (a pane url, a chat id) — relevance only. */

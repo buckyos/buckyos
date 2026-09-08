@@ -150,6 +150,8 @@ export function mapEntryToItem(entry: Entry, context: EntryMapContext): FileItem
   if (typeof target.attrs?.size === 'number' && target.kind === 'file') {
     fileEntry.sizeBytes = target.attrs.size
   }
+  const thumbnail = target.attrs?.access_urls?.find((url) => url.kind === 'thumbnail')
+  if (thumbnail) fileEntry.thumbnailUrl = absoluteUrl(thumbnail.url)
   const publicUrl = publicUrlOf(target.attrs)
   if (publicUrl) fileEntry.publicUrl = publicUrl
   if (broken) {

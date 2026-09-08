@@ -39,9 +39,10 @@ const LIST_WANT: WantGroup[] = ['base', 'access']
 
 const PROVISIONAL_FOLDER: LocationCapabilities = {
   kind: 'folder',
-  acceptsContent: true,
+  availability: 'loading',
+  acceptsContent: false,
   acceptsReferences: false,
-  removal: 'destroy',
+  removal: null,
   canReorder: false,
   sortKeys: ['name', 'size', 'modified'],
   sortDirs: NFSP_SORT_DIRS,
@@ -50,6 +51,7 @@ const PROVISIONAL_FOLDER: LocationCapabilities = {
 
 const PROVISIONAL_VIEW: LocationCapabilities = {
   kind: 'view',
+  availability: 'loading',
   acceptsContent: false,
   acceptsReferences: false,
   removal: null,

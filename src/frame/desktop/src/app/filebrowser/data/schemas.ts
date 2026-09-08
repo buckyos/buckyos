@@ -43,6 +43,8 @@ export const searchInputSchema = z.object({
     .min(1, 'filebrowser.validation.searchRequired')
     .max(256, 'filebrowser.validation.searchTooLong'),
   scope: z.string().trim().min(1).optional(),
+  kind: z.enum(['folder', 'image', 'document', 'video', 'audio', 'archive', 'code', 'other']).optional(),
+  modifiedSince: z.iso.date().optional(),
 })
 
 export const locationInputSchema = z.object({
@@ -124,3 +126,11 @@ export const validationFallback: Record<string, string> = {
   'filebrowser.validation.locationTooLong': 'Locations are limited to 2048 characters',
   'filebrowser.validation.manualDirectionIgnored': 'Manual order has no direction',
 }
+
+export const entryOperationStateSchema = z.enum(['available', 'denied', 'unsupported', 'loading'])
+export const entryOperationsSchema = z.object({
+  rename: entryOperationStateSchema.optional(), move: entryOperationStateSchema.optional(),
+  delete: entryOperationStateSchema.optional(), download: entryOperationStateSchema.optional(),
+  share: entryOperationStateSchema.optional(), copy: entryOperationStateSchema.optional(),
+})
+export type EntryOperations = z.infer<typeof entryOperationsSchema>

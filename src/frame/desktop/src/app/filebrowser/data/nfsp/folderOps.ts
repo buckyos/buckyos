@@ -1,102 +1,80 @@
-/**
- * NFSP folder write operations (UI_DATAMODEL.md §8.3): mkdir for new
- * folders, move for rename and relocation, delete for native destruction,
- * and the data-plane read URL for downloads. Every successful write
- * notifies the local invalidation bus so same-client readers reload without
- * waiting for the watch round-trip (§8.4).
- */
-
-import type { WireRef } from '../../../../api/nfsp_client'
+import type { NodeInfo } from '../../../../api/nfsp_client'
 import type { FileEntry } from '../../types'
-import { registerFolderOps } from '../folderOps'
+import { registerFolderOps, runEntryBatch, operationError } from '../folderOps'
+import { classifyFileKind } from '../fileKinds'
 import { ensureSession, nfspClient } from './client'
 import { nfspToUiError } from './errors'
 import { notifyDfsPath } from './invalidation'
+import { refIdOf, unixToIso } from './mapping'
 
-function parentPathOf(path: string): string {
-  return path.split('/').slice(0, -1).join('/') || '/'
+const parentOf = (path: string) => path.slice(0, path.lastIndexOf('/')) || '/'
+async function resolveDirRef(path: string): Promise<NodeInfo> {
+  const info = await nfspClient().stat(path, { cache: 'no-cache' })
+  if (!info) throw operationError('NOT_FOUND', 'The destination folder no longer exists')
+  if (!info.capabilities.accepts_content) throw operationError('PERMISSION_DENIED', 'The destination does not accept file content')
+  return info
 }
-
-async function resolveDirRef(path: string): Promise<WireRef> {
-  const info = await nfspClient().resolve(path)
-  if (!info) throw nfspToUiError({ code: 'NOT_FOUND', message: 'folder gone' })
-  return info.ref
-}
-
 async function run<T>(op: () => Promise<T>): Promise<T> {
-  await ensureSession()
-  try {
-    return await op()
-  } catch (err) {
-    throw nfspToUiError(err)
-  }
+  try { await ensureSession(); return await op() }
+  catch (err) { if (err instanceof Error && err.name === 'AbortError') throw err; throw nfspToUiError(err) }
 }
-
+async function statEntry(parent: string, name: string): Promise<FileEntry | null> {
+  return run(async () => {
+    try {
+      const info = await nfspClient().stat(parent, { name, cache: 'no-cache', want: ['base'] })
+      if (!info) return null
+      return { id: refIdOf(info.ref), name, path: `${parent === '/' ? '' : parent}/${name}`, kind: info.kind === 'dir' ? 'folder' : classifyFileKind(name), modifiedAt: unixToIso(info.mtime), sizeBytes: info.size }
+    } catch (err) {
+      if (nfspToUiError(err).code === 'NOT_FOUND') return null
+      throw err
+    }
+  })
+}
+async function validate(entry: FileEntry) {
+  const parent = await nfspClient().stat(parentOf(entry.path), { cache: 'no-cache' })
+  if (!parent) throw operationError('STALE', 'The original folder no longer exists')
+  const live = await statEntry(parentOf(entry.path), entry.name)
+  if (!live || live.id !== entry.id) throw operationError('STALE', 'This item moved or changed. Refresh before retrying.')
+  return parent
+}
 export function registerNfspFolderOps() {
   return registerFolderOps({
-    nameExists(parentPath, name) {
-      return run(async () => {
-        const info = await nfspClient()
-          .stat(parentPath, { name, cache: 'no-cache' })
-          .catch(() => null)
-        return info !== null
-      })
+    supportsCopy: false,
+    nameExists: async (parent, name) => (await statEntry(parent, name)) !== null,
+    statEntry,
+    createFolder(parent, name) {
+      return run(async () => { const info = await resolveDirRef(parent); if (await statEntry(parent, name)) throw operationError('CONFLICT', 'This name already exists here'); await nfspClient().mkdir(info.ref, name, { expectedRevision: info.revision }); notifyDfsPath(parent) })
     },
-
-    createFolder(parentPath, name) {
-      return run(async () => {
-        const parentRef = await resolveDirRef(parentPath)
-        await nfspClient().mkdir(parentRef, name)
-        notifyDfsPath(parentPath)
-      })
-    },
-
     renameEntry(entry, name) {
       return run(async () => {
-        const parentPath = parentPathOf(entry.path)
-        const parentRef = await resolveDirRef(parentPath)
-        await nfspClient().move(
-          { parentRef, name: entry.name },
-          { parentRef, name },
-        )
-        notifyDfsPath(parentPath)
+        const info = await validate(entry)
+        const parent = parentOf(entry.path)
+        await nfspClient().move({ parentRef: info.ref, name: entry.name }, { parentRef: info.ref, name }, { expectedFromRevision: info.revision, expectedToRevision: info.revision })
+        notifyDfsPath(parent)
       })
     },
-
-    deleteEntries(entries: FileEntry[]) {
-      return run(async () => {
-        const touched = new Set<string>()
-        for (const entry of entries) {
-          const parentPath = parentPathOf(entry.path)
-          await nfspClient().delete(parentPath, entry.name, { recursive: true })
-          touched.add(parentPath)
-        }
-        for (const path of touched) notifyDfsPath(path)
-      })
+    deleteEntries(entries, options) {
+      return runEntryBatch(entries, (entry) => run(async () => {
+        const info = await validate(entry)
+        const parent = parentOf(entry.path)
+        options?.signal?.throwIfAborted()
+        await nfspClient().delete(parent, entry.name, { recursive: entry.kind === 'folder', expectedRevision: info.revision })
+        notifyDfsPath(parent)
+      }), undefined, options)
     },
-
-    moveEntries(entries: FileEntry[], toParentPath) {
-      return run(async () => {
-        const toRef = await resolveDirRef(toParentPath)
-        const touched = new Set<string>([toParentPath])
-        for (const entry of entries) {
-          const fromPath = parentPathOf(entry.path)
-          const fromRef = await resolveDirRef(fromPath)
-          await nfspClient().move(
-            { parentRef: fromRef, name: entry.name },
-            { parentRef: toRef, name: entry.name },
-          )
-          touched.add(fromPath)
-        }
-        for (const path of touched) notifyDfsPath(path)
-      })
+    moveEntries(entries, target, options) {
+      return runEntryBatch(entries, (entry, name) => run(async () => {
+        const fromInfo = await validate(entry)
+        const parent = parentOf(entry.path)
+        const toInfo = await resolveDirRef(target)
+        options?.signal?.throwIfAborted()
+        await nfspClient().move({ parentRef: fromInfo.ref, name: entry.name }, { parentRef: toInfo.ref, name }, { expectedFromRevision: fromInfo.revision, expectedToRevision: toInfo.revision })
+        notifyDfsPath(parent)
+        notifyDfsPath(target)
+      }), target, options)
     },
-
     downloadUrl(entry) {
-      if (entry.kind === 'folder') return null
-      // FileEntry.id is the serialized live Ref identity (the node id) —
-      // exactly what the data plane addresses (§8.2 read mapping).
-      return nfspClient().raw.readUrl(entry.id, { download: true, name: entry.name })
+      return entry.kind === 'folder' ? null : nfspClient().raw.readUrl(entry.id, { download: true, name: entry.name })
     },
   })
 }

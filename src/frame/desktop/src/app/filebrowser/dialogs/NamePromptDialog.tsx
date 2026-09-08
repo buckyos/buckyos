@@ -5,8 +5,8 @@
  */
 
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect } from 'react'
-import { useForm } from 'react-hook-form'
+import { useEffect, useRef } from 'react'
+import { useForm, useWatch } from 'react-hook-form'
 import { z } from 'zod'
 import { useI18n } from '../../../i18n/provider'
 import { validationFallback } from '../data/schemas'
@@ -20,6 +20,7 @@ export interface NamePromptRequest {
   submitLabel: string
   /** Edit-state refill: the current title/name exactly as displayed. */
   defaultValue?: string
+  selectStem?: boolean
   /** Field-level schema (entryNameSchema / collectionTitleSchema / …). */
   schema: z.ZodType<string, string>
   onSubmit: (value: string) => void | Promise<void>
@@ -37,10 +38,12 @@ export function NamePromptDialog({
   onClose: () => void
 }) {
   const { t } = useI18n()
+  const inputRef = useRef<HTMLInputElement | null>(null)
 
   const formSchema = request ? z.object({ value: request.schema }) : z.object({ value: z.string() })
   const {
     register,
+    control,
     handleSubmit,
     reset,
     setError,
@@ -50,8 +53,19 @@ export function NamePromptDialog({
     defaultValues: { value: request?.defaultValue ?? '' },
   })
 
+  const currentValue = useWatch({ control, name: 'value' }) ?? ''
+
   useEffect(() => {
     reset({ value: request?.defaultValue ?? '' })
+    if (!request) return
+    const frame = requestAnimationFrame(() => {
+      const input = inputRef.current
+      if (!input) return
+      input.focus()
+      const dot = request.selectStem ? input.value.lastIndexOf('.') : -1
+      input.setSelectionRange(0, dot > 0 ? dot : input.value.length)
+    })
+    return () => cancelAnimationFrame(frame)
   }, [request, reset])
 
   if (!request) return null
@@ -72,8 +86,12 @@ export function NamePromptDialog({
 
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/40" onClick={() => { if (!isSubmitting) onClose() }} />
       <form
+        role="dialog"
+        aria-modal="true"
+        aria-label={request.title}
+        onKeyDown={(event) => { if (event.key === 'Escape' && !isSubmitting) { event.stopPropagation(); onClose() } }}
         onSubmit={(event) => void submit(event)}
         className="relative w-[min(92vw,380px)] rounded-[20px] border border-[color:var(--cp-border)] p-4 shadow-[0_18px_48px_rgba(0,0,0,0.28)]"
         style={{ background: 'var(--cp-surface)' }}
@@ -89,11 +107,14 @@ export function NamePromptDialog({
           <input
             type="text"
             autoFocus
+            onFocus={(event) => { const name = request.defaultValue; if (name) { const dot = request.selectStem ? name.lastIndexOf('.') : -1; event.currentTarget.setSelectionRange(0, dot > 0 ? dot : name.length) } }}
             {...register('value')}
+            ref={(element) => { register('value').ref(element); inputRef.current = element }}
             className="w-full rounded-[12px] border border-[color:var(--cp-border)] bg-[color:color-mix(in_srgb,var(--cp-surface-2)_88%,transparent)] px-3 py-2 text-sm outline-none focus:border-[color:var(--cp-accent)]"
             style={{ color: 'var(--cp-text)' }}
           />
         </label>
+        {request.selectStem && request.defaultValue?.includes('.') && currentValue.slice(currentValue.lastIndexOf('.')) !== request.defaultValue.slice(request.defaultValue.lastIndexOf('.')) && <p role="status" className="mt-2 text-xs text-[color:var(--cp-warning)]">{t('filebrowser.operation.extensionChanged', 'Changing the extension may change which app opens this file.')}</p>}
         {fieldError ? (
           <p className="mt-1.5 text-[11px] text-[color:var(--cp-warning)]" role="alert">
             {t(fieldError, validationFallback[fieldError] ?? fieldError)}
@@ -108,6 +129,7 @@ export function NamePromptDialog({
           <button
             type="button"
             onClick={onClose}
+            disabled={isSubmitting}
             className="rounded-full border border-[color:var(--cp-border)] px-4 py-1.5 text-sm text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)]"
           >
             {t('common.cancel', 'Cancel')}

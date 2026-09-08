@@ -1,75 +1,65 @@
-/**
- * Mock folder write operations over the in-memory index (UI_DATAMODEL.md
- * §7.3): mutations are real in-session so the interaction loop is
- * experienceable; refresh resets to seeds because persistence belongs to the
- * backend. Downloads have no mock data plane and return null.
- */
-
 import type { FileEntry } from '../types'
-import { registerFolderOps } from '../data/folderOps'
+import { registerFolderOps, runEntryBatch, operationError } from '../data/folderOps'
 import { invalidateMockPath, mockDelay } from '../data/mockReader'
-import {
-  mockAddEntry,
-  mockMoveEntry,
-  mockNameExists,
-  mockRemoveEntry,
-  mockRenameEntry,
-} from './data'
+import { mockAddEntry, mockMoveEntry, mockNameExists, mockRemoveEntry, mockRenameEntry, mockEntryById, mockEntryByPath, mockEntriesAtPath } from './data'
 
-function parentPathOf(path: string): string {
-  return path.split('/').slice(0, -1).join('/') || '/'
+const parentOf = (path: string) => path.slice(0, path.lastIndexOf('/')) || '/'
+const failures = new Set<string>()
+async function validate(entry: FileEntry, action: 'move' | 'rename' | 'delete') {
+  const slow = new URLSearchParams(location.search).has('fbSlowOps')
+  await mockDelay(slow ? 900 : 20, slow ? 900 : 60)
+  const live = mockEntryById(entry.id)
+  if (!live || live.path !== entry.path || live.name !== entry.name) throw operationError('STALE', 'This item moved or changed. Refresh before retrying.')
+  if (live.operations?.[action] === 'denied' || entry.name.startsWith('denied-')) throw operationError('PERMISSION_DENIED', 'You do not have permission to change this item')
+  if (entry.name.startsWith('fail-once-') && !failures.has(entry.id)) {
+    failures.add(entry.id)
+    throw operationError('NETWORK', 'The request was interrupted. Please retry.')
+  }
 }
-
+function requireFolder(path: string) {
+  if (mockEntriesAtPath(path) === undefined) throw operationError('NOT_FOUND', 'The destination folder no longer exists')
+  if (path.startsWith('/readonly')) throw operationError('PERMISSION_DENIED', 'The destination is read-only')
+}
 export function registerMockFolderOps() {
   return registerFolderOps({
-    async nameExists(parentPath, name) {
-      return mockNameExists(parentPath, name)
-    },
-
-    async createFolder(parentPath, name) {
+    supportsCopy: false,
+    async nameExists(parent, name) { requireFolder(parent); return mockNameExists(parent, name) },
+    async statEntry(parent, name) { requireFolder(parent); const item = mockEntryByPath(`${parent === '/' ? '' : parent}/${name}`); return item ? { ...item } : null },
+    async createFolder(parent, name) {
       await mockDelay(20, 60)
-      mockAddEntry({
-        id: `folder-${Date.now()}`,
-        name,
-        kind: 'folder',
-        path: parentPath === '/' ? `/${name}` : `${parentPath}/${name}`,
-        modifiedAt: new Date().toISOString(),
-      })
-      invalidateMockPath(parentPath)
+      requireFolder(parent)
+      if (mockNameExists(parent, name)) throw operationError('CONFLICT', 'This name already exists here')
+      mockAddEntry({ id: crypto.randomUUID(), name, kind: 'folder', path: `${parent === '/' ? '' : parent}/${name}`, modifiedAt: new Date().toISOString() })
+      invalidateMockPath(parent)
     },
-
     async renameEntry(entry, name) {
-      await mockDelay(20, 60)
-      if (mockRenameEntry(entry.id, name)) {
-        invalidateMockPath(parentPathOf(entry.path))
-      }
+      await validate(entry, 'rename')
+      const parent = parentOf(entry.path)
+      if (name !== entry.name && mockNameExists(parent, name)) throw operationError('CONFLICT', 'This name already exists here')
+      mockRenameEntry(entry.id, name)
+      invalidateMockPath(parent)
     },
-
-    async deleteEntries(entries: FileEntry[]) {
-      await mockDelay(20, 60)
-      const touched = new Set<string>()
-      for (const entry of entries) {
+    deleteEntries(entries, options) {
+      return runEntryBatch(entries, async (entry) => {
+        await validate(entry, 'delete')
+        options?.signal?.throwIfAborted()
         const parent = mockRemoveEntry(entry.id)
-        if (parent) touched.add(parent)
-      }
-      for (const path of touched) invalidateMockPath(path)
+        if (parent) invalidateMockPath(parent)
+      }, undefined, options)
     },
-
-    async moveEntries(entries: FileEntry[], toParentPath) {
-      await mockDelay(20, 60)
-      const touched = new Set<string>()
-      for (const entry of entries) {
-        const from = mockMoveEntry(entry.id, toParentPath)
-        if (from) {
-          touched.add(from)
-          touched.add(toParentPath)
-        }
-      }
-      for (const path of touched) invalidateMockPath(path)
+    moveEntries(entries, target, options) {
+      return runEntryBatch(entries, async (entry, name) => {
+        await validate(entry, 'move')
+        options?.signal?.throwIfAborted()
+        requireFolder(target)
+        if (mockNameExists(target, name)) throw operationError('CONFLICT', 'This name already exists in the destination')
+        const parent = parentOf(entry.path)
+        mockMoveEntry(entry.id, target)
+        if (name !== entry.name) mockRenameEntry(entry.id, name)
+        invalidateMockPath(parent)
+        invalidateMockPath(target)
+      }, target, options)
     },
-
-    downloadUrl() {
-      return null
-    },
+    downloadUrl() { return null },
   })
 }
