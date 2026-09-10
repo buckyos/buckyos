@@ -340,7 +340,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
     virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => (
       !filterAnchor.current
       && scrollModeRef.current === 'free-scroll'
-      && item.end <= (instance.scrollOffset ?? 0) + instance.scrollAdjustments
+      && item.end <= (instance.scrollElement?.scrollTop ?? instance.scrollOffset ?? 0)
     )
   }, [virtualizer])
 
