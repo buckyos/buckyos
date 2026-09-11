@@ -122,6 +122,9 @@ apps:
     - etc/node_gateway.json
     - etc/cyfs_gateway.yaml
     - data/               # cyfs://$zone_id/ 映射根: home/, srv/, var/, cache/ 均在此下
+    - data/home/
+    - data/srv/library/
+    - data/srv/publish/
     - storage/            # 内核基础设施持久化存储 (chunks, named_store, dRDB)
     - local/              # host-node-local 服务数据
     - security/           # 身份私钥、keyref、signer descriptor 等敏感材料
