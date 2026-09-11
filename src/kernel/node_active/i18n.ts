@@ -141,13 +141,21 @@ function detectSystemLanguage(): SupportedLanguage {
   }
 }
 
-const initialLanguage = getStoredLanguage() ?? detectSystemLanguage();
+function getUrlLanguage(): SupportedLanguage | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const lang = new URLSearchParams(window.location.search).get('lang');
+  return getLanguageOption(lang)?.code ?? null;
+}
+
+const initialLanguage = getUrlLanguage() ?? getStoredLanguage() ?? detectSystemLanguage();
 
 i18next
   .use(HttpBackend)
   .use(initReactI18next)
   .init({
-    lng: initialLanguage, // 使用检测到的系统语言
+    lng: initialLanguage,
     fallbackLng: 'en', // 降级语言
     supportedLngs: LANGUAGE_OPTIONS.map((option) => option.code), // 支持的语言列表
     load: 'currentOnly',
