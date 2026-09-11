@@ -4,6 +4,7 @@ import type { AppDefinition } from '../models/ui'
 export const DESKTOP_BUILTIN_APP_IDS = new Set([
   'ai-center',
   'files',
+  'messagehub',
   'task-center',
   'workflow',
   'settings',
