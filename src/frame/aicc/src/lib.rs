@@ -6,6 +6,7 @@ pub(crate) mod execution;
 pub(crate) mod health;
 pub(crate) mod matching;
 pub(crate) mod model;
+#[cfg(test)]
 pub(crate) mod observability;
 pub(crate) mod protocol;
 pub(crate) mod provider;

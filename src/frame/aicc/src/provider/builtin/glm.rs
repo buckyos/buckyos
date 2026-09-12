@@ -171,6 +171,9 @@ mod tests {
             region: Some("global".to_owned()),
             workspace: None,
             account: None,
+            request_timeout: std::time::Duration::from_secs(120),
+            auto_sync_models: true,
+            instance_rules: None,
         };
         let credential = ResolvedCredential::bearer("secret://glm", "secret").unwrap();
         let snapshot = discovery

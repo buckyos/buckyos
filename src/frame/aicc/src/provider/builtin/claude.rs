@@ -1,15 +1,11 @@
 #[cfg(test)]
-use super::super::{
-    DiscoveryMode, ProviderConnectionContract, ProviderProfile,
-};
+use super::super::{DiscoveryMode, ProviderConnectionContract, ProviderProfile};
 use super::anthropic_models::{AnthropicModelsDiscovery, AnthropicModelsSpec};
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
 #[cfg(test)]
 use crate::protocol::CredentialKind;
 use crate::protocol::{ClaudeMessagesCodec, CodecRegistration, HttpTransport};
-#[cfg(test)]
-use serde::de::DeserializeOwned;
 use std::sync::Arc;
 
 pub(crate) const CLAUDE_PROVIDER_PROFILE_ID: &str = "claude";
@@ -48,11 +44,6 @@ pub(crate) fn claude_model_driver() -> ModelDriverCatalog {
 #[cfg(test)]
 pub(crate) fn claude_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[CLAUDE_PROVIDER_PROFILE_ID])
-}
-
-#[cfg(test)]
-fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
-    serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 pub(crate) fn claude_discovery(transport: HttpTransport) -> AnthropicModelsDiscovery {

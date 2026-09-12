@@ -7,14 +7,12 @@ use super::super::{
     DiscoveryMode, ProviderConnectionContract, ProviderConnectionInput, ProviderProfile,
 };
 #[cfg(test)]
-use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
+use crate::catalog::{CurrentCatalogFile, ProviderRulesCatalog};
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, GEMINI_ADAPTER_ID,
 };
 use async_trait::async_trait;
 use reqwest::{Method, Url};
-#[cfg(test)]
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -49,18 +47,8 @@ pub(crate) fn gemini_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog 
 }
 
 #[cfg(test)]
-pub(crate) fn gemini_model_driver() -> ModelDriverCatalog {
-    super::builtin_model_driver(GEMINI_PROVIDER_PROFILE_ID)
-}
-
-#[cfg(test)]
 pub(crate) fn gemini_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[GEMINI_PROVIDER_PROFILE_ID])
-}
-
-#[cfg(test)]
-fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
-    serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 #[async_trait]
@@ -409,6 +397,9 @@ mod tests {
             region: None,
             workspace: None,
             account: None,
+            request_timeout: Duration::from_secs(120),
+            auto_sync_models: true,
+            instance_rules: None,
         }
     }
 

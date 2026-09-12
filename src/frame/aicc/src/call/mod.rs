@@ -1,12 +1,10 @@
-#![allow(dead_code)]
-
 use crate::catalog::{CatalogSnapshot, Pricing, ResolvedProviderRule};
 use crate::error::{CallLoweringError, CatalogResolveError, ModelRegistryError};
 use crate::matching::MatchContext;
 use crate::model::ExactModelName;
 use crate::protocol::{
-    CodecContext, CodecInput, CodecLimits, CodecRegistry, CredentialAudit, ExecutionMode,
-    ResolvedCredential,
+    normalize_provider_base_url, CodecContext, CodecInput, CodecLimits, CodecRegistry,
+    CredentialAudit, ExecutionMode, ResolvedCredential,
 };
 use crate::resource::ResourceAccessContext;
 use crate::routing::{RouteDecision, SelectedRoute};
@@ -135,6 +133,7 @@ impl fmt::Debug for ResolvedProviderCall {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Serialize)]
 pub(crate) struct DeterministicCallView<'a> {
     exact_model: &'a str,
@@ -158,6 +157,7 @@ pub(crate) struct DeterministicCallView<'a> {
 }
 
 impl ResolvedProviderCall {
+    #[cfg(test)]
     pub(crate) fn deterministic_view(&self) -> DeterministicCallView<'_> {
         DeterministicCallView {
             exact_model: &self.exact_model,
@@ -452,8 +452,16 @@ impl<'a> CallResolver<'a> {
         let credential = target.credential.audit().clone();
         let credential_reference = target.credential_reference;
         let credential_header_name = target.credential_header_name;
+        let normalized_base_url = normalize_provider_base_url(&target.base_url)
+            .map_err(|error| CallLoweringError::InvalidCanonicalRequest(error.to_string()))?;
         let context = CodecContext {
             base_url: target.base_url,
+            state_coordinate: buckyos_api::ProviderStateCoordinate {
+                normalized_base_url,
+                adapter_type: decision.selected.protocol_adapter_id.clone(),
+                origin_provider: decision.selected.model_driver_id.clone(),
+                origin_model: decision.selected.origin_model_id.clone(),
+            },
             credential: Some(target.credential),
             resources: BTreeMap::new(),
             limits: target.limits,
@@ -1382,6 +1390,19 @@ mod tests {
         assert_eq!(lowered.pricing.source, PricingSource::ProviderRules);
         assert_eq!(lowered.pricing.matched_amount, Some(0.01));
         assert_eq!(lowered.revisions.catalog_target_seq, 11);
+        assert_eq!(
+            lowered.context.limits.request_timeout,
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            lowered.context.state_coordinate,
+            buckyos_api::ProviderStateCoordinate {
+                normalized_base_url: "https://api.openai.test/v1".to_string(),
+                adapter_type: "openai-responses".to_string(),
+                origin_provider: "openai".to_string(),
+                origin_model: "gpt-5.2".to_string(),
+            }
+        );
         let golden = serde_json::to_value(lowered.deterministic_view()).unwrap();
         assert_eq!(golden["operation"], "responses.create");
         assert_eq!(golden["execution_mode"], "immediate");

@@ -118,7 +118,7 @@ derived protocol_adapter_id
 
 同一个历史 API 代际只实现一份共享 Adapter。Provider 没有额外差异时，Provider Profile 或 Instance 直接保存这个 Adapter ID。确有渠道差异时，先用 `.provider.json` 的 operation、provider options、request rules、能力收窄及其它受限声明表达；只有不同 wire envelope、流事件状态机、签名/动态认证算法、任务生命周期或无法声明化的错误语义，才建立独立派生 Adapter，并用 `base_adapter_id` 指向共享历史 Adapter。多个派生 Adapter 可以引用同一个历史 Adapter，各自只实现剩余的最小逻辑差异，不复制历史 wire protocol，也不在代码中保存可由 Provider Rules 表达的参数表。
 
-Provider Profile/Rules 必须在路由前得到一个确定的 Adapter 和 operation。内置 Provider 的默认选择由 Known Provider catalog 和 `.provider.json` 固定；用户添加 `custom` Provider 时只选择或识别 OpenAI、Claude、Gemini 等协议族，不选择 API 代际。接入测试按该协议族“官方新接口优先、运行时已注册的历史接口其次”的顺序验证，成功后把 resolved `protocol_adapter_id` 固化到 Provider Instance。接口不支持才继续测试下一候选；认证、网络和服务端故障必须直接报告，不能被误判成历史接口需求。运行时只使用已固化 Adapter，不重新探测，也不在一次调用中静默切换新旧 Adapter。
+Provider Profile/Rules 必须在路由前得到一个确定的 Adapter 和 operation。内置 Provider 的默认选择由 Known Provider catalog 和 `.provider.json` 固定；用户添加 `custom` Provider 时只选择或识别 OpenAI、Claude、Gemini 等协议族，不选择 API 代际。接入测试只枚举无 `base_adapter_id` 且声明 `probe_path` 的协议族级 Adapter，按“官方新接口优先、运行时已注册的历史接口其次”的 `probe_priority` 顺序发送带认证的空 JSON 探测，成功识别后把 resolved `protocol_adapter_id` 固化到 Provider Instance。只有 `404/405/501` 继续下一候选；其它 4xx 证明接口存在，认证、限流、网络和 5xx 直接报告，不能被误判成历史接口需求。运行时只使用已固化 Adapter，不重新探测，也不在一次调用中静默切换新旧 Adapter。
 
 ### 2.2 SN Provider 的 OpenAI 子类语义
 
@@ -169,9 +169,9 @@ GLM JWT 使用同一个 `api_key` 模式并显式选择 typed credential variant
 
 ### 3.0 Known Provider typed configuration
 
-Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯一 metadata 来源。每项必须直接包含 typed `credential` 与 `connection`，不得从 `ui_hints` 推断。`CatalogSnapshot::resolve_provider_configuration()` 同时解析 Known Provider 和其 `provider_rules_id`，校验 Rules 存在且 identity 一致后，返回生成 `ProviderProfile` 与 `ProviderConnectionContract` 所需的默认配置。
+Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯一 metadata 来源。每项必须直接包含 typed `credential`、`connection` 与 `discovery_behavior_id`，可按需声明 `dynamic_login_behavior_id`、`connection_behavior_id`，不得从 `ui_hints` 推断。`CatalogSnapshot::resolve_provider_configuration()` 同时解析 Known Provider 和其 `provider_rules_id`，校验 Rules 存在且 identity 一致后，返回默认配置与稳定 behavior IDs。
 
-行为 registry 只为确实需要代码的 Profile 注册 discovery 差异、动态登录或其它不可声明执行行为；它是可选覆盖表，不是 Provider Profile 白名单。所有其它 Known Provider 都使用 Adapter 协议族的通用 discovery 行为，refresh 时从当前 Provider Rules 和明确引用的 Model Driver exact models 重建仅在机器发现失败时启用的 default inventory。GLM catalog 默认 credential 为 Bearer，JWT 是行为 registry 的显式可选变体；SN catalog 默认静态认证为 Bearer API key，dynamic login 及其 account 约束由 SN 行为按显式 auth mode 收窄。任何缺失或冲突均拒绝装配，不允许读取 `ui_hints`、按 Provider ID 猜测或静默 first-match。
+行为 registry 以稳定 behavior ID 注册 discovery、动态登录或其它不可声明执行行为，不是 Provider Profile 白名单。Known Provider 必须在 metadata 中选择已注册 discovery behavior；通用 OpenAI-compatible/Claude/Gemini discovery 也有稳定 ID，可由任意新 Profile 复用。refresh 时从当前 Provider Rules 和明确引用的 Model Driver exact models 重建仅在机器发现失败时启用的 default inventory。任何未知或冲突 behavior 均拒绝装配，不允许读取 `ui_hints`、按 Provider ID 猜测或静默 first-match。
 
 可选 credential 由 typed `credential_variants[]` 声明，实例在 `auth.mode=api_key` 时用 `credential_kind` 显式选择；省略则使用 `credential` 默认值。区域入口由 typed `connection.region_base_urls` 声明，只有实例未显式提供 `base_url` 时才按解析后的 region 选择。GLM 的 `glm_jwt` 和 GLM/MiniMax 的区域入口均通过这两个 typed 字段进入 production registry。SN 的 `device_jwt` 是 SN 登录实现支持的稳定行为 ID，由显式 `auth.login_profile` 选择和校验，不从可选的 `ui_hints` 推断。
 

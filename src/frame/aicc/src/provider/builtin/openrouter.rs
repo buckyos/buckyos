@@ -3,7 +3,7 @@ use super::super::{
     ProviderDiscoverySnapshot, ProviderError, ProviderHealthState, ProviderResult,
 };
 #[cfg(test)]
-use super::super::{DiscoveryMode, ProviderConnectionContract, ProviderProfile};
+use super::super::{DiscoveryMode, ProviderProfile};
 use crate::catalog::Pricing;
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ProviderRulesCatalog};
@@ -28,11 +28,6 @@ const MODELS_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
 #[cfg(test)]
 pub(crate) fn openrouter_profile() -> ProviderProfile {
     super::builtin_profile(OPENROUTER_PROVIDER_PROFILE_ID, DiscoveryMode::MachineApi)
-}
-
-#[cfg(test)]
-pub(crate) fn openrouter_connection_contract() -> ProviderConnectionContract {
-    super::builtin_connection_contract(OPENROUTER_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
@@ -401,6 +396,9 @@ mod tests {
             region: None,
             workspace: None,
             account: None,
+            request_timeout: Duration::from_secs(120),
+            auto_sync_models: true,
+            instance_rules: None,
         };
         let credential = ResolvedCredential::bearer("secret://openrouter", "secret").unwrap();
         let snapshot = discovery

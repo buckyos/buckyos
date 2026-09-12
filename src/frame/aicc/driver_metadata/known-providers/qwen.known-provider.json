@@ -10,6 +10,7 @@
       "display_name": "Qwen（阿里云百炼）",
       "base_url": "https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1",
       "protocol_adapter_id": "qwen-responses",
+      "discovery_behavior_id": "openai-compatible-models",
       "provider_rules_id": "qwen",
       "credential": { "kind": "bearer" },
       "connection": {

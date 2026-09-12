@@ -1,16 +1,14 @@
 use super::minimax_messages::validate_minimax_response;
 use super::{
-    CodecCall, CodecContext, CodecRegistration,
-    CredentialKind, ExecutionMode, HttpBody, HttpRequest, HttpResponse, MaterializedResource,
-    NativeTaskCodec, NativeTaskHandle, NativeTaskInput, NativeTaskOperation, NativeTaskOutput,
-    NativeTaskState, OperationBinding, OperationCodec, OperationDescriptor, ProtocolError,
-    ProtocolErrorKind, ProtocolExecution, ProtocolOutput, ProtocolResultValue,
+    CodecCall, CodecContext, CodecRegistration, CredentialKind, ExecutionMode, HttpBody,
+    HttpRequest, HttpResponse, MaterializedResource, NativeTaskCodec, NativeTaskHandle,
+    NativeTaskInput, NativeTaskOperation, NativeTaskOutput, NativeTaskState, OperationBinding,
+    OperationCodec, OperationDescriptor, ProtocolError, ProtocolErrorKind, ProtocolExecution,
+    ProtocolOutput, ProtocolResultValue,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use buckyos_api::{
-    AiArtifact, AiUsage, AiccCall, ApiType, ResourceRef, TextToImageInvokeRequest,
-};
+use buckyos_api::{AiArtifact, AiUsage, AiccCall, ApiType, ResourceRef, TextToImageInvokeRequest};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::{Method, Url};
 use serde_json::{json, Map, Value};
@@ -156,9 +154,10 @@ impl OperationCodec for MiniMaxImmediateCodec {
                 }
                 ("/v1/t2a_v2", Value::Object(body))
             }
-            (AiccCall::ImagesGenerate(request), ApiType::ImageTextToImage) => {
-                ("/v1/image_generation", Value::Object(image_body(request, &model)))
-            }
+            (AiccCall::ImagesGenerate(request), ApiType::ImageTextToImage) => (
+                "/v1/image_generation",
+                Value::Object(image_body(request, &model)),
+            ),
             (AiccCall::ImageToImage(request), ApiType::ImageImageToImage) => {
                 if request.images.len() != 1 {
                     return Err(ProtocolError::new(
@@ -419,20 +418,37 @@ fn decode_images(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
     let mut resources = Vec::new();
     if let Some(urls) = value.pointer("/data/image_urls").and_then(Value::as_array) {
         for url in urls {
-            let url = url.as_str().filter(|url| !url.trim().is_empty()).ok_or_else(|| {
-                ProtocolError::invalid_response("MiniMax image URL must be a non-empty string")
-            })?;
-            resources.push(ResourceRef::url(url.to_string(), Some("image/png".to_string())));
+            let url = url
+                .as_str()
+                .filter(|url| !url.trim().is_empty())
+                .ok_or_else(|| {
+                    ProtocolError::invalid_response("MiniMax image URL must be a non-empty string")
+                })?;
+            resources.push(ResourceRef::url(
+                url.to_string(),
+                Some("image/png".to_string()),
+            ));
         }
-    } else if let Some(images) = value.pointer("/data/image_base64").and_then(Value::as_array) {
+    } else if let Some(images) = value
+        .pointer("/data/image_base64")
+        .and_then(Value::as_array)
+    {
         for image in images {
-            let data = image.as_str().filter(|data| !data.trim().is_empty()).ok_or_else(|| {
-                ProtocolError::invalid_response("MiniMax base64 image must be a non-empty string")
-            })?;
+            let data = image
+                .as_str()
+                .filter(|data| !data.trim().is_empty())
+                .ok_or_else(|| {
+                    ProtocolError::invalid_response(
+                        "MiniMax base64 image must be a non-empty string",
+                    )
+                })?;
             STANDARD.decode(data).map_err(|_| {
                 ProtocolError::invalid_response("MiniMax response contains invalid base64 image")
             })?;
-            resources.push(ResourceRef::base64("image/jpeg".to_string(), data.to_string()));
+            resources.push(ResourceRef::base64(
+                "image/jpeg".to_string(),
+                data.to_string(),
+            ));
         }
     }
     if resources.is_empty() {
@@ -492,9 +508,8 @@ fn decode_hex(value: &str) -> ProtocolResultValue<Vec<u8>> {
         .as_bytes()
         .chunks_exact(2)
         .map(|pair| {
-            let text = std::str::from_utf8(pair).map_err(|_| {
-                ProtocolError::invalid_response("MiniMax audio hex is not ASCII")
-            })?;
+            let text = std::str::from_utf8(pair)
+                .map_err(|_| ProtocolError::invalid_response("MiniMax audio hex is not ASCII"))?;
             u8::from_str_radix(text, 16).map_err(|_| {
                 ProtocolError::invalid_response("MiniMax audio response contains invalid hex")
             })
@@ -543,12 +558,28 @@ fn apply_media_credential(
     let mut source = HeaderMap::new();
     credential.apply(&mut source)?;
     let secret = source.values().next().ok_or_else(|| {
-        ProtocolError::new(ProtocolErrorKind::Authentication, "MiniMax credential is empty")
+        ProtocolError::new(
+            ProtocolErrorKind::Authentication,
+            "MiniMax credential is empty",
+        )
     })?;
-    let value = HeaderValue::from_bytes(format!("Bearer {}", secret.to_str().map_err(|_| {
-        ProtocolError::new(ProtocolErrorKind::Authentication, "MiniMax credential is invalid")
-    })?).as_bytes()).map_err(|_| {
-        ProtocolError::new(ProtocolErrorKind::Authentication, "MiniMax credential is invalid")
+    let value = HeaderValue::from_bytes(
+        format!(
+            "Bearer {}",
+            secret.to_str().map_err(|_| {
+                ProtocolError::new(
+                    ProtocolErrorKind::Authentication,
+                    "MiniMax credential is invalid",
+                )
+            })?
+        )
+        .as_bytes(),
+    )
+    .map_err(|_| {
+        ProtocolError::new(
+            ProtocolErrorKind::Authentication,
+            "MiniMax credential is invalid",
+        )
     })?;
     headers.insert(AUTHORIZATION, value);
     Ok(())
@@ -564,7 +595,10 @@ fn provider_model_id(parameters: &BTreeMap<String, Value>) -> ProtocolResultValu
 }
 
 fn require_only_model(parameters: &BTreeMap<String, Value>) -> ProtocolResultValue<()> {
-    if let Some(name) = parameters.keys().find(|name| name.as_str() != "provider_model_id") {
+    if let Some(name) = parameters
+        .keys()
+        .find(|name| name.as_str() != "provider_model_id")
+    {
         return Err(ProtocolError::invalid_request(format!(
             "resolved MiniMax parameter `{name}` is not supported"
         )));
@@ -572,10 +606,7 @@ fn require_only_model(parameters: &BTreeMap<String, Value>) -> ProtocolResultVal
     Ok(())
 }
 
-fn resource_string(
-    resource: &ResourceRef,
-    context: &CodecContext,
-) -> ProtocolResultValue<String> {
+fn resource_string(resource: &ResourceRef, context: &CodecContext) -> ProtocolResultValue<String> {
     match resource {
         ResourceRef::Url { url, .. } => Ok(url.clone()),
         ResourceRef::Base64 { mime, data_base64 } => {
@@ -585,7 +616,8 @@ fn resource_string(
             Ok(format!("data:{mime};base64,{data_base64}"))
         }
         ResourceRef::NamedObject { .. } => {
-            let MaterializedResource { bytes, mime, .. } = context.materialized_resource(resource)?;
+            let MaterializedResource { bytes, mime, .. } =
+                context.materialized_resource(resource)?;
             Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
         }
     }

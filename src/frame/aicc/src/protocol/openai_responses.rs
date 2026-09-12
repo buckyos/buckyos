@@ -170,6 +170,9 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
         interface_generation: "responses-v1".to_string(),
         base_adapter_id: None,
         status: AdapterStatus::Stable,
+        probe_priority: 0,
+        probe_path: Some("responses".to_owned()),
+        credential: super::AdapterCredentialContract::bearer(),
         operations,
     };
     let operation_codecs: Vec<Arc<dyn OperationCodec>> = vec![
@@ -710,9 +713,11 @@ fn encode_response_input(
                 .content
                 .iter()
                 .filter_map(|block| match block {
-                    AiContent::ProviderState { provider, value }
-                        if provider == OPENAI_PROVIDER_NAMESPACE
-                            && value.get("type").and_then(Value::as_str) != Some("refusal") =>
+                    AiContent::ProviderState { source, value, .. }
+                        if super::provider_state_is_native(
+                            source,
+                            &call.context.state_coordinate,
+                        ) && value.get("type").and_then(Value::as_str) != Some("refusal") =>
                     {
                         Some(value.clone())
                     }
@@ -799,8 +804,8 @@ fn encode_response_input(
                     }));
                 }
                 AiContent::Thinking { .. } => {}
-                AiContent::ProviderState { provider, value }
-                    if provider == OPENAI_PROVIDER_NAMESPACE =>
+                AiContent::ProviderState { source, value, .. }
+                    if super::provider_state_is_native(source, &call.context.state_coordinate) =>
                 {
                     validate_provider_state(value)?;
                     if replays_output_message
@@ -812,7 +817,9 @@ fn encode_response_input(
                         items.push(value.clone());
                     }
                 }
-                AiContent::ProviderState { provider, value } => {
+                AiContent::ProviderState {
+                    provider, value, ..
+                } => {
                     if let Some(text) = foreign_provider_state_text(provider, value) {
                         content.push(json!({
                             "type": if replays_output_message { "output_text" } else { "input_text" },
@@ -1193,6 +1200,7 @@ fn decode_response_item(
 
 fn provider_state(value: Value) -> AiContent {
     AiContent::ProviderState {
+        source: buckyos_api::ProviderStateCoordinate::unbound(),
         provider: OPENAI_PROVIDER_NAMESPACE.to_string(),
         value,
     }
@@ -2655,6 +2663,12 @@ mod tests {
     fn context() -> CodecContext {
         CodecContext {
             base_url: "https://api.openai.com/v1".to_string(),
+            state_coordinate: buckyos_api::ProviderStateCoordinate {
+                normalized_base_url: "https://api.openai.com/v1".into(),
+                adapter_type: OPENAI_RESPONSES_ADAPTER_ID.into(),
+                origin_provider: "openai".into(),
+                origin_model: "test-model".into(),
+            },
             credential: Some(
                 ResolvedCredential::bearer("secret://openai/key", "top-secret").unwrap(),
             ),
@@ -2833,6 +2847,7 @@ mod tests {
                             text: "checking weather".to_string(),
                         },
                         AiContent::ProviderState {
+                            source: context().state_coordinate,
                             provider: "openai".to_string(),
                             value: json!({"type":"reasoning","id":"rs_1","encrypted_content":"opaque"}),
                         },
@@ -2850,6 +2865,7 @@ mod tests {
                             text: "cannot answer fully".to_string(),
                         },
                         AiContent::ProviderState {
+                            source: context().state_coordinate,
                             provider: "openai".to_string(),
                             value: json!({"type":"refusal","refusal":"restricted"}),
                         },
@@ -2981,7 +2997,7 @@ mod tests {
                 UNIX_EPOCH,
             )
             .unwrap();
-        let ProtocolExecution::Immediate(output) = registry()
+        let ProtocolExecution::Immediate(mut output) = registry()
             .decode(
                 OPENAI_RESPONSES_ADAPTER_ID,
                 OPENAI_RESPONSES_OPERATION_ID,
@@ -2993,6 +3009,7 @@ mod tests {
         else {
             panic!("expected immediate result")
         };
+        crate::protocol::bind_provider_state_source(&mut output.value, &context().state_coordinate);
         assert_eq!(output.usage.unwrap().total_tokens, Some(12));
         assert_eq!(output.value["message"]["content"][0]["type"], "thinking");
         assert_eq!(

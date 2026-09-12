@@ -34,7 +34,14 @@ pub(crate) enum ResponsesDialectKind {
 pub(crate) struct ResponsesDialectContract {
     pub protocol_adapter_id: &'static str,
     pub base_adapter_id: &'static str,
-    pub override_points: BTreeSet<&'static str>,
+    pub override_points: BTreeSet<ResponsesOverridePoint>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) enum ResponsesOverridePoint {
+    EndpointPath,
+    ProviderStateNamespace,
+    SessionCacheHeader,
 }
 
 impl ResponsesDialectKind {
@@ -43,19 +50,22 @@ impl ResponsesDialectKind {
             Self::DeepSeek => ResponsesDialectContract {
                 protocol_adapter_id: DEEPSEEK_RESPONSES_ADAPTER_ID,
                 base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
-                override_points: BTreeSet::from(["provider_state_namespace"]),
+                override_points: BTreeSet::from([
+                    ResponsesOverridePoint::EndpointPath,
+                    ResponsesOverridePoint::ProviderStateNamespace,
+                ]),
             },
             Self::Doubao => ResponsesDialectContract {
                 protocol_adapter_id: DOUBAO_RESPONSES_ADAPTER_ID,
                 base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
-                override_points: BTreeSet::from(["provider_state_namespace"]),
+                override_points: BTreeSet::from([ResponsesOverridePoint::ProviderStateNamespace]),
             },
             Self::Qwen => ResponsesDialectContract {
                 protocol_adapter_id: QWEN_RESPONSES_ADAPTER_ID,
                 base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
                 override_points: BTreeSet::from([
-                    "session_cache_header",
-                    "provider_state_namespace",
+                    ResponsesOverridePoint::SessionCacheHeader,
+                    ResponsesOverridePoint::ProviderStateNamespace,
                 ]),
             },
         }
@@ -107,6 +117,9 @@ fn responses_dialect_adapter(
         interface_generation: "responses-v1".to_string(),
         base_adapter_id: Some(contract.base_adapter_id.to_string()),
         status: AdapterStatus::Stable,
+        probe_priority: 200,
+        probe_path: None,
+        credential: super::AdapterCredentialContract::bearer(),
         operations: BTreeMap::from([(operation.operation_id.clone(), operation.clone())]),
     };
     let codec: Arc<dyn OperationCodec> = Arc::new(ResponsesDialectCodec {
@@ -289,6 +302,12 @@ mod tests {
     fn context(base_url: &str) -> CodecContext {
         CodecContext {
             base_url: base_url.to_string(),
+            state_coordinate: buckyos_api::ProviderStateCoordinate {
+                normalized_base_url: base_url.trim_end_matches('/').to_string(),
+                adapter_type: OPENAI_RESPONSES_ADAPTER_ID.into(),
+                origin_provider: "test".into(),
+                origin_model: "test-model".into(),
+            },
             credential: Some(ResolvedCredential::bearer("secret://provider", "secret").unwrap()),
             resources: BTreeMap::new(),
             limits: CodecLimits {
@@ -317,12 +336,15 @@ mod tests {
         }
         assert_eq!(
             ResponsesDialectKind::DeepSeek.contract().override_points,
-            BTreeSet::from(["provider_state_namespace"])
+            BTreeSet::from([
+                ResponsesOverridePoint::EndpointPath,
+                ResponsesOverridePoint::ProviderStateNamespace,
+            ])
         );
         assert!(ResponsesDialectKind::Qwen
             .contract()
             .override_points
-            .contains("session_cache_header"));
+            .contains(&ResponsesOverridePoint::SessionCacheHeader));
     }
 
     #[test]

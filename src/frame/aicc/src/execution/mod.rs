@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::call::ResolvedProviderCall;
 use crate::catalog::PricingUnit;
 use crate::error::NativeTaskResumeError;
@@ -1729,6 +1727,12 @@ mod tests {
             },
             context: CodecContext {
                 base_url: "https://fake.invalid".into(),
+                state_coordinate: buckyos_api::ProviderStateCoordinate {
+                    normalized_base_url: "https://fake.invalid".into(),
+                    adapter_type: "fake-adapter".into(),
+                    origin_provider: "fake".into(),
+                    origin_model: "model".into(),
+                },
                 credential: Some(ResolvedCredential::bearer("credential-1", "secret").unwrap()),
                 resources: BTreeMap::new(),
                 limits: CodecLimits {

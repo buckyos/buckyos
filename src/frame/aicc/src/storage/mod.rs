@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::error::{StorageError, StorageResult};
 use crate::execution::{
     ExecutionOutput, ExecutionRecord, ExecutionState, ExecutionStore, IdempotencyClaim,
@@ -11,23 +9,35 @@ use buckyos_api::{
     ai_methods, get_rdb_instance, AiUsage, AiccError, AiccErrorCode, AiccRouteTraceEvent,
     AiccUsageEvent, Money, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
     QueryUsageResponse, RdbBackend, UsageAggregate, UsageBucketedRow, UsageGroupedRow,
-    UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange, AICC_USAGE_LOG_RDB_INSTANCE_ID,
+    UsageQueryFilters, UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange,
+    AICC_USAGE_LOG_RDB_INSTANCE_ID,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::any::{install_default_drivers, AnyPoolOptions, AnyRow};
-use sqlx::{AnyPool, Executor, Row};
-use std::collections::BTreeMap;
+use sqlx::{Any, AnyPool, Executor, QueryBuilder, Row};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Once;
 
 const SERVICE_NAME: &str = "aicc";
+const STORAGE_SCHEMA_VERSION: i64 = 2;
 const INVENTORY_SCHEMA_VERSION: i64 = 1;
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 1_000;
 static INSTALL_DRIVERS: Once = Once::new();
 
+const SCHEMA_META: &str = "CREATE TABLE IF NOT EXISTS aicc_schema_meta (schema_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)";
+const MIGRATIONS: &[(i64, &str)] = &[(1, SCHEMA), (2, USAGE_PROJECTIONS)];
+const USAGE_PROJECTIONS: &str = r#"
+ALTER TABLE aicc_usage_event ADD COLUMN finance_amount REAL;
+ALTER TABLE aicc_usage_event ADD COLUMN finance_currency TEXT;
+ALTER TABLE aicc_usage_event ADD COLUMN finance_valid INTEGER NOT NULL DEFAULT 0;
+"#;
+
 const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS aicc_schema_meta (
+ schema_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL);
 CREATE TABLE IF NOT EXISTS aicc_provider_inventory_lkgs (
  provider_instance_name TEXT PRIMARY KEY, schema_version INTEGER NOT NULL DEFAULT 1,
  provider_profile_id TEXT NOT NULL, protocol_adapter_id TEXT NOT NULL,
@@ -259,10 +269,52 @@ impl AiccStorage {
             .connect(connection)
             .await?;
         let storage = Self { pool, backend };
-        for statement in SCHEMA.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-            storage.pool.execute(statement).await?;
-        }
+        storage.migrate().await?;
         Ok(storage)
+    }
+
+    async fn migrate(&self) -> StorageResult<()> {
+        self.pool.execute(SCHEMA_META).await?;
+        let version: Option<i64> = sqlx::query_scalar(
+            "SELECT schema_version FROM aicc_schema_meta WHERE schema_key='aicc'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let mut version = version.unwrap_or(0);
+        if version > STORAGE_SCHEMA_VERSION {
+            return Err(StorageError::InvalidRecord(format!(
+                "unsupported AICC storage schema version {version}; latest supported is {STORAGE_SCHEMA_VERSION}"
+            )));
+        }
+        for (target, schema) in MIGRATIONS {
+            if *target <= version {
+                continue;
+            }
+            let mut transaction = self.pool.begin().await?;
+            for statement in schema
+                .split(';')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                transaction.execute(statement).await?;
+            }
+            let update = self.sql(
+                "INSERT INTO aicc_schema_meta (schema_key,schema_version,updated_at_ms)
+                 VALUES ('aicc',?,0) ON CONFLICT(schema_key) DO UPDATE SET schema_version=excluded.schema_version,updated_at_ms=excluded.updated_at_ms",
+            );
+            sqlx::query(&update)
+                .bind(*target)
+                .execute(&mut *transaction)
+                .await?;
+            transaction.commit().await?;
+            version = *target;
+        }
+        if version != STORAGE_SCHEMA_VERSION {
+            return Err(StorageError::InvalidRecord(format!(
+                "incomplete AICC storage migration at version {version}"
+            )));
+        }
+        Ok(())
     }
 
     pub(crate) async fn open_from_service_spec() -> StorageResult<Self> {
@@ -433,22 +485,6 @@ impl AiccStorage {
         }
     }
 
-    pub(crate) async fn list_inventory_behind(
-        &self,
-        seq: u64,
-    ) -> StorageResult<Vec<InventoryLkgsRecord>> {
-        let sql = self.sql("SELECT * FROM aicc_provider_inventory_lkgs WHERE metadata_applied_seq<? ORDER BY provider_instance_name");
-        let rows = sqlx::query(&sql)
-            .bind(to_i64(seq)?)
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| inventory_from_row(row).ok())
-            .filter(|r| r.validate().is_ok())
-            .collect())
-    }
-
     pub(crate) async fn write_provider_completion(
         &self,
         completion: ProviderCompletion,
@@ -511,11 +547,12 @@ impl AiccStorage {
                 "usage method is not canonical".into(),
             ));
         }
+        let finance = e.finance_snapshot_json.as_ref().and_then(valid_finance);
         let sql = self.sql("INSERT INTO aicc_usage_event
           (event_id,tenant_id,user_id,caller_app_id,task_id,trace_id,idempotency_key,method,capability,
            request_model,provider_instance_name,provider_model,input_tokens,output_tokens,total_tokens,
-           request_units,usage_json,finance_snapshot_json,created_at_ms)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING");
+           request_units,usage_json,finance_snapshot_json,finance_amount,finance_currency,finance_valid,created_at_ms)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING");
         let result = sqlx::query(&sql)
             .bind(&e.event_id)
             .bind(&e.tenant_id)
@@ -540,6 +577,9 @@ impl AiccStorage {
                     .map(serde_json::to_string)
                     .transpose()?,
             )
+            .bind(finance.as_ref().map(|(amount, _)| *amount))
+            .bind(finance.as_ref().map(|(_, currency)| currency.as_str()))
+            .bind(i64::from(finance.is_some()))
             .bind(e.created_at_ms)
             .execute(&self.pool)
             .await?;
@@ -668,20 +708,44 @@ impl AiccStorage {
         now_ms: i64,
     ) -> StorageResult<QueryUsageResponse> {
         let (start, end) = time_range(&req.time_range, now_ms)?;
-        let sql = self.sql("SELECT * FROM aicc_usage_event WHERE created_at_ms>=? AND created_at_ms<? ORDER BY created_at_ms DESC,event_id DESC");
-        let rows = sqlx::query(&sql)
-            .bind(start)
-            .bind(end)
-            .fetch_all(&self.pool)
-            .await?;
-        let mut events = rows
+        let total = self
+            .usage_aggregates(start, end, &req.filters, &[], None)
+            .await?
             .into_iter()
-            .map(usage_from_row)
-            .collect::<StorageResult<Vec<_>>>()?;
-        events.retain(|e| usage_matches(e, &req.filters));
-        let total = aggregate(events.iter());
-        let grouped = grouped(&events, &req.group_by);
-        let buckets = bucketed(&events, &req.group_by, req.time_bucket);
+            .next()
+            .map(|row| row.aggregate)
+            .unwrap_or_default();
+        let grouped = if req.group_by.is_empty() {
+            Vec::new()
+        } else {
+            self.usage_aggregates(start, end, &req.filters, &req.group_by, None)
+                .await?
+                .into_iter()
+                .map(|row| UsageGroupedRow {
+                    group: row.group,
+                    aggregate: row.aggregate,
+                })
+                .collect()
+        };
+        let buckets = match req.time_bucket {
+            Some(bucket) => self
+                .usage_aggregates(
+                    start,
+                    end,
+                    &req.filters,
+                    &req.group_by,
+                    Some(bucket.span_ms()),
+                )
+                .await?
+                .into_iter()
+                .map(|row| UsageBucketedRow {
+                    bucket_start_ms: row.bucket_start_ms.unwrap_or_default(),
+                    group: row.group,
+                    aggregate: row.aggregate,
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         let mut raw = Vec::new();
         let mut next_cursor = None;
         if matches!(
@@ -689,17 +753,30 @@ impl AiccStorage {
             UsageQueryOutputMode::Events | UsageQueryOutputMode::SummaryAndEvents
         ) {
             let cursor = req.cursor.as_deref().map(decode_cursor).transpose()?;
-            raw = events
+            let page_limit = limit(req.limit);
+            let mut query = usage_query(
+                "SELECT * FROM aicc_usage_event WHERE created_at_ms>=".to_owned(),
+                start,
+                end,
+                &req.filters,
+                cursor.as_ref(),
+            );
+            query
+                .push(" ORDER BY created_at_ms DESC,event_id DESC LIMIT ")
+                .push_bind((page_limit + 1) as i64);
+            raw = query
+                .build()
+                .fetch_all(&self.pool)
+                .await?
                 .into_iter()
-                .filter(|e| cursor_allows(e.created_at_ms, &e.event_id, cursor.as_ref()))
-                .collect();
-            let limit = limit(req.limit);
-            if raw.len() > limit {
+                .map(usage_from_row)
+                .collect::<StorageResult<Vec<_>>>()?;
+            if raw.len() > page_limit {
                 next_cursor = Some(encode_cursor(
-                    raw[limit - 1].created_at_ms,
-                    &raw[limit - 1].event_id,
+                    raw[page_limit - 1].created_at_ms,
+                    &raw[page_limit - 1].event_id,
                 ));
-                raw.truncate(limit);
+                raw.truncate(page_limit);
             }
         }
         Ok(QueryUsageResponse {
@@ -709,6 +786,47 @@ impl AiccStorage {
             events: raw,
             next_cursor,
         })
+    }
+
+    async fn usage_aggregates(
+        &self,
+        start: i64,
+        end: i64,
+        filters: &UsageQueryFilters,
+        groups: &[UsageQueryGroup],
+        bucket_span_ms: Option<i64>,
+    ) -> StorageResult<Vec<SqlUsageAggregateRow>> {
+        let mut select = String::from("SELECT ");
+        if let Some(span) = bucket_span_ms {
+            select.push_str(&format!(
+                "(created_at_ms / {span}) * {span} AS bucket_start_ms,"
+            ));
+        }
+        for group in groups {
+            select.push_str(group.as_key());
+            select.push(',');
+        }
+        select.push_str(
+            "finance_currency,COUNT(*) AS total_requests,\
+             COALESCE(SUM(COALESCE(input_tokens,0)),0) AS input_tokens,\
+             COALESCE(SUM(COALESCE(output_tokens,0)),0) AS output_tokens,\
+             COALESCE(SUM(COALESCE(total_tokens,0)),0) AS total_tokens,\
+             COALESCE(SUM(CASE WHEN request_units IS NULL OR request_units<1 THEN 1 ELSE request_units END),0) AS request_units,\
+             COALESCE(SUM(CASE WHEN finance_valid=1 THEN finance_amount ELSE 0 END),0.0) AS finance_amount,\
+             COALESCE(SUM(finance_valid),0) AS valid_finance_count \
+             FROM aicc_usage_event WHERE created_at_ms>=",
+        );
+        let mut query = usage_query(select, start, end, filters, None);
+        query.push(" GROUP BY ");
+        if let Some(span) = bucket_span_ms {
+            query.push(format!("(created_at_ms / {span}) * {span},"));
+        }
+        for group in groups {
+            query.push(group.as_key()).push(',');
+        }
+        query.push("finance_currency");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        merge_usage_aggregate_rows(rows, groups, bucket_span_ms.is_some())
     }
 
     pub(crate) async fn write_route_trace(&self, r: &RouteTraceRecord) -> StorageResult<()> {
@@ -751,18 +869,32 @@ impl AiccStorage {
         tenant: &str,
         req: &QueryRouteTraceRequest,
     ) -> StorageResult<QueryRouteTraceResponse> {
-        let sql = self.sql("SELECT * FROM aicc_route_trace_event WHERE tenant_id=? ORDER BY created_at_ms DESC,trace_id DESC");
-        let rows = sqlx::query(&sql).bind(tenant).fetch_all(&self.pool).await?;
         let cursor = req.cursor.as_deref().map(decode_cursor).transpose()?;
+        let total_count: i64 = route_trace_query(
+            "SELECT COUNT(*) AS total_count FROM aicc_route_trace_event WHERE tenant_id=",
+            tenant,
+            req,
+            None,
+        )
+        .build()
+        .fetch_one(&self.pool)
+        .await?
+        .try_get("total_count")?;
+        let page_limit = limit(req.limit);
+        let mut query = route_trace_query(
+            "SELECT * FROM aicc_route_trace_event WHERE tenant_id=",
+            tenant,
+            req,
+            cursor.as_ref(),
+        );
+        query
+            .push(" ORDER BY created_at_ms DESC,trace_id DESC LIMIT ")
+            .push_bind((page_limit + 1) as i64);
+        let rows = query.build().fetch_all(&self.pool).await?;
         let mut records = rows
             .into_iter()
             .map(trace_from_row)
             .collect::<StorageResult<Vec<_>>>()?;
-        records.retain(|r| trace_matches(r, req));
-        let total_count = records.len() as u64;
-        records
-            .retain(|r| cursor_allows(r.trace.created_at_ms, &r.trace.trace_id, cursor.as_ref()));
-        let page_limit = limit(req.limit);
         let next_cursor = (records.len() > page_limit).then(|| {
             encode_cursor(
                 records[page_limit - 1].trace.created_at_ms,
@@ -776,7 +908,7 @@ impl AiccStorage {
                 .map(serde_json::to_value)
                 .collect::<Result<Vec<_>, _>>()?,
             next_cursor,
-            total_count: Some(total_count),
+            total_count: Some(from_i64(total_count)?),
         })
     }
 
@@ -818,11 +950,22 @@ impl AiccStorage {
         if q.tenant_id.trim().is_empty() {
             return Err(StorageError::InvalidRecord("audit tenant is empty".into()));
         }
-        let sql = self.sql("SELECT * FROM aicc_audit_event WHERE tenant_id=? ORDER BY created_at_ms DESC,audit_id DESC");
-        let rows = sqlx::query(&sql)
-            .bind(&q.tenant_id)
-            .fetch_all(&self.pool)
-            .await?;
+        let mut query = QueryBuilder::<Any>::new("SELECT * FROM aicc_audit_event WHERE tenant_id=");
+        query.push_bind(q.tenant_id.clone());
+        if let Some(start) = q.start_time_ms {
+            query.push(" AND created_at_ms>=").push_bind(start);
+        }
+        if let Some(end) = q.end_time_ms {
+            query.push(" AND created_at_ms<").push_bind(end);
+        }
+        push_in_clause(&mut query, "event_type", &q.event_types);
+        push_in_clause(&mut query, "trace_id", &q.trace_ids);
+        push_in_clause(&mut query, "request_id", &q.request_ids);
+        push_in_clause(&mut query, "task_id", &q.task_ids);
+        push_in_clause(&mut query, "route_id", &q.route_ids);
+        push_in_clause(&mut query, "provider_trace_id", &q.provider_trace_ids);
+        query.push(" ORDER BY created_at_ms DESC,audit_id DESC");
+        let rows = query.build().fetch_all(&self.pool).await?;
         let cursor = q.cursor.as_deref().map(decode_cursor).transpose()?;
         let mut events = rows
             .into_iter()
@@ -1015,15 +1158,8 @@ fn validate_initial_execution(record: &ExecutionRecord) -> StorageResult<()> {
 }
 
 fn execution_from_row(row: AnyRow) -> StorageResult<ExecutionRecord> {
-    let state: String = row.try_get("state")?;
     let record_json: String = row.try_get("record_json")?;
-    let record: ExecutionRecord = serde_json::from_str(&record_json)?;
-    if state != state_name(record.state) {
-        return Err(StorageError::InvalidRecord(
-            "execution state does not match its durable record".into(),
-        ));
-    }
-    Ok(record)
+    Ok(serde_json::from_str(&record_json)?)
 }
 
 fn state_name(state: ExecutionState) -> &'static str {
@@ -1155,92 +1291,229 @@ fn time_range(range: &UsageQueryTimeRange, now: i64) -> StorageResult<(i64, i64)
     }
 }
 
-fn usage_matches(e: &AiccUsageEvent, f: &buckyos_api::UsageQueryFilters) -> bool {
-    exact(&f.tenant_ids, Some(&e.tenant_id))
-        && exact(&f.user_ids, Some(&e.user_id))
-        && exact(&f.caller_app_ids, e.caller_app_id.as_deref())
-        && fuzzy(f.caller_app_query.as_deref(), e.caller_app_id.as_deref())
-        && exact(&f.request_models, Some(&e.request_model))
-        && exact(&f.provider_models, Some(&e.provider_model))
-        && fuzzy(f.provider_model_query.as_deref(), Some(&e.provider_model))
-        && exact(&f.provider_instance_names, Some(&e.provider_instance_name))
-        && fuzzy(
-            f.provider_instance_query.as_deref(),
-            Some(&e.provider_instance_name),
-        )
-        && exact(&f.capabilities, Some(&e.capability))
-        && exact(&f.task_ids, Some(&e.task_id))
-        && exact(&f.idempotency_keys, e.idempotency_key.as_deref())
-        && exact(&f.methods, Some(&e.method))
+fn push_in_clause(query: &mut QueryBuilder<'_, Any>, column: &str, values: &[String]) {
+    if values.is_empty() {
+        return;
+    }
+    query.push(" AND ").push(column).push(" IN (");
+    let mut separated = query.separated(",");
+    for value in values {
+        separated.push_bind(value.clone());
+    }
+    separated.push_unseparated(")");
 }
 
-fn grouped(events: &[AiccUsageEvent], groups: &[UsageQueryGroup]) -> Vec<UsageGroupedRow> {
-    if groups.is_empty() {
-        return Vec::new();
+fn push_like_clause(query: &mut QueryBuilder<'_, Any>, column: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        query
+            .push(" AND LOWER(")
+            .push(column)
+            .push(") LIKE ")
+            .push_bind(format!("%{}%", value.to_lowercase()));
     }
-    let mut map: BTreeMap<Vec<String>, Vec<&AiccUsageEvent>> = BTreeMap::new();
-    for e in events {
-        map.entry(group_values(e, groups)).or_default().push(e);
-    }
-    map.into_iter()
-        .map(|(values, events)| UsageGroupedRow {
-            group: groups
-                .iter()
-                .zip(values)
-                .map(|(g, v)| (g.as_key().to_string(), v))
-                .collect(),
-            aggregate: aggregate(events),
-        })
-        .collect()
 }
 
-fn bucketed(
-    events: &[AiccUsageEvent],
+fn usage_query(
+    select: String,
+    start: i64,
+    end: i64,
+    filters: &UsageQueryFilters,
+    cursor: Option<&(i64, String)>,
+) -> QueryBuilder<'static, Any> {
+    let mut query = QueryBuilder::<Any>::new(select);
+    query
+        .push_bind(start)
+        .push(" AND created_at_ms<")
+        .push_bind(end);
+    push_in_clause(&mut query, "tenant_id", &filters.tenant_ids);
+    push_in_clause(&mut query, "user_id", &filters.user_ids);
+    push_in_clause(&mut query, "caller_app_id", &filters.caller_app_ids);
+    push_like_clause(
+        &mut query,
+        "caller_app_id",
+        filters.caller_app_query.as_deref(),
+    );
+    push_in_clause(&mut query, "request_model", &filters.request_models);
+    push_in_clause(&mut query, "provider_model", &filters.provider_models);
+    push_like_clause(
+        &mut query,
+        "provider_model",
+        filters.provider_model_query.as_deref(),
+    );
+    push_in_clause(
+        &mut query,
+        "provider_instance_name",
+        &filters.provider_instance_names,
+    );
+    push_like_clause(
+        &mut query,
+        "provider_instance_name",
+        filters.provider_instance_query.as_deref(),
+    );
+    push_in_clause(&mut query, "capability", &filters.capabilities);
+    push_in_clause(&mut query, "task_id", &filters.task_ids);
+    push_in_clause(&mut query, "idempotency_key", &filters.idempotency_keys);
+    push_in_clause(&mut query, "method", &filters.methods);
+    if let Some((timestamp, id)) = cursor {
+        query
+            .push(" AND (created_at_ms<")
+            .push_bind(*timestamp)
+            .push(" OR (created_at_ms=")
+            .push_bind(*timestamp)
+            .push(" AND event_id<")
+            .push_bind(id.clone())
+            .push("))");
+    }
+    query
+}
+
+fn route_trace_query(
+    select: &'static str,
+    tenant: &str,
+    req: &QueryRouteTraceRequest,
+    cursor: Option<&(i64, String)>,
+) -> QueryBuilder<'static, Any> {
+    let mut query = QueryBuilder::<Any>::new(select);
+    query.push_bind(tenant.to_owned());
+    if let Some(start) = req.start_time_ms {
+        query.push(" AND created_at_ms>=").push_bind(start);
+    }
+    if let Some(end) = req.end_time_ms {
+        query.push(" AND created_at_ms<").push_bind(end);
+    }
+    push_in_clause(&mut query, "task_id", &req.task_ids);
+    push_in_clause(&mut query, "request_id", &req.request_ids);
+    push_in_clause(&mut query, "api_type", &req.api_types);
+    push_in_clause(
+        &mut query,
+        "provider_instance_name",
+        &req.provider_instance_names,
+    );
+    push_in_clause(
+        &mut query,
+        "selected_exact_model",
+        &req.selected_exact_models,
+    );
+    push_in_clause(&mut query, "scheduler_profile", &req.scheduler_profiles);
+    if let Some(outcome) = &req.outcome {
+        query.push(" AND outcome=").push_bind(outcome.clone());
+    }
+    if let Some(search) = req.query.as_deref() {
+        let search = format!("%{}%", search.to_lowercase());
+        query
+            .push(" AND (LOWER(trace_id) LIKE ")
+            .push_bind(search.clone());
+        for column in [
+            "task_id",
+            "request_id",
+            "route_id",
+            "provider_trace_id",
+            "selected_exact_model",
+            "provider_instance_name",
+        ] {
+            query
+                .push(" OR LOWER(COALESCE(")
+                .push(column)
+                .push(",'')) LIKE ")
+                .push_bind(search.clone());
+        }
+        query.push(")");
+    }
+    if let Some((timestamp, id)) = cursor {
+        query
+            .push(" AND (created_at_ms<")
+            .push_bind(*timestamp)
+            .push(" OR (created_at_ms=")
+            .push_bind(*timestamp)
+            .push(" AND trace_id<")
+            .push_bind(id.clone())
+            .push("))");
+    }
+    query
+}
+
+#[derive(Default)]
+struct SqlUsageAggregateAccumulator {
+    aggregate: UsageAggregate,
+    valid_finance_count: u64,
+    finance: BTreeMap<String, Option<f64>>,
+}
+
+struct SqlUsageAggregateRow {
+    bucket_start_ms: Option<i64>,
+    group: HashMap<String, String>,
+    aggregate: UsageAggregate,
+}
+
+fn merge_usage_aggregate_rows(
+    rows: Vec<AnyRow>,
     groups: &[UsageQueryGroup],
-    bucket: Option<buckyos_api::UsageQueryBucket>,
-) -> Vec<UsageBucketedRow> {
-    let Some(bucket) = bucket else {
-        return Vec::new();
-    };
-    let span = bucket.span_ms();
-    let mut map: BTreeMap<(i64, Vec<String>), Vec<&AiccUsageEvent>> = BTreeMap::new();
-    for e in events {
-        map.entry((
-            e.created_at_ms.div_euclid(span) * span,
-            group_values(e, groups),
-        ))
-        .or_default()
-        .push(e);
+    bucketed: bool,
+) -> StorageResult<Vec<SqlUsageAggregateRow>> {
+    let mut merged = BTreeMap::<(Option<i64>, Vec<String>), SqlUsageAggregateAccumulator>::new();
+    for row in rows {
+        let bucket_start_ms = if bucketed {
+            Some(row.try_get("bucket_start_ms")?)
+        } else {
+            None
+        };
+        let values = groups
+            .iter()
+            .map(|group| {
+                row.try_get::<Option<String>, _>(group.as_key())
+                    .map(|value| value.unwrap_or_default())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let total_requests = from_i64(row.try_get("total_requests")?)?;
+        let valid_finance_count = from_i64(row.try_get("valid_finance_count")?)?;
+        let accumulator = merged.entry((bucket_start_ms, values)).or_default();
+        accumulator.aggregate.total_requests += total_requests;
+        accumulator.aggregate.input_tokens += from_i64(row.try_get("input_tokens")?)?;
+        accumulator.aggregate.output_tokens += from_i64(row.try_get("output_tokens")?)?;
+        accumulator.aggregate.total_tokens += from_i64(row.try_get("total_tokens")?)?;
+        accumulator.aggregate.consumed_request_units += from_i64(row.try_get("request_units")?)?;
+        accumulator.valid_finance_count += valid_finance_count;
+        if valid_finance_count > 0 {
+            let currency: Option<String> = row.try_get("finance_currency")?;
+            let amount: f64 = row.try_get("finance_amount")?;
+            if let Some(currency) = currency.filter(|value| !value.is_empty()) {
+                let total = accumulator.finance.entry(currency).or_insert(Some(0.0));
+                if let Some(current) = total {
+                    let next = *current + amount;
+                    if next.is_finite() {
+                        *current = next;
+                    } else {
+                        *total = None;
+                    }
+                }
+            }
+        }
     }
-    map.into_iter()
-        .map(|((bucket_start_ms, values), events)| UsageBucketedRow {
-            bucket_start_ms,
-            group: groups
-                .iter()
-                .zip(values)
-                .map(|(g, v)| (g.as_key().to_string(), v))
-                .collect(),
-            aggregate: aggregate(events),
+    Ok(merged
+        .into_iter()
+        .map(|((bucket_start_ms, values), mut accumulator)| {
+            accumulator.aggregate.finance_complete = accumulator.valid_finance_count
+                == accumulator.aggregate.total_requests
+                && accumulator.finance.values().all(Option::is_some);
+            accumulator.aggregate.finance_totals = accumulator
+                .finance
+                .into_iter()
+                .filter_map(|(currency, amount)| amount.map(|amount| Money::new(amount, currency)))
+                .collect();
+            SqlUsageAggregateRow {
+                bucket_start_ms,
+                group: groups
+                    .iter()
+                    .zip(values)
+                    .map(|(group, value)| (group.as_key().to_owned(), value))
+                    .collect(),
+                aggregate: accumulator.aggregate,
+            }
         })
-        .collect()
+        .collect())
 }
 
-fn group_values(e: &AiccUsageEvent, groups: &[UsageQueryGroup]) -> Vec<String> {
-    groups
-        .iter()
-        .map(|g| match g {
-            UsageQueryGroup::ProviderModel => e.provider_model.clone(),
-            UsageQueryGroup::ProviderInstanceName => e.provider_instance_name.clone(),
-            UsageQueryGroup::RequestModel => e.request_model.clone(),
-            UsageQueryGroup::Method => e.method.clone(),
-            UsageQueryGroup::Capability => e.capability.clone(),
-            UsageQueryGroup::CallerAppId => e.caller_app_id.clone().unwrap_or_default(),
-            UsageQueryGroup::UserId => e.user_id.clone(),
-            UsageQueryGroup::TenantId => e.tenant_id.clone(),
-        })
-        .collect()
-}
-
+#[cfg(test)]
 fn aggregate<'a>(events: impl IntoIterator<Item = &'a AiccUsageEvent>) -> UsageAggregate {
     let mut a = UsageAggregate::default();
     let mut finance = BTreeMap::<String, Option<f64>>::new();
@@ -1282,41 +1555,6 @@ fn valid_finance(value: &Value) -> Option<(f64, String)> {
     Some((amount, currency.to_ascii_uppercase()))
 }
 
-fn trace_matches(r: &RouteTraceRecord, q: &QueryRouteTraceRequest) -> bool {
-    q.start_time_ms.is_none_or(|v| r.trace.created_at_ms >= v)
-        && q.end_time_ms.is_none_or(|v| r.trace.created_at_ms < v)
-        && exact(&q.task_ids, Some(&r.trace.task_id))
-        && exact(&q.request_ids, r.request_id.as_deref())
-        && exact(&q.api_types, Some(&r.trace.api_type))
-        && exact(
-            &q.provider_instance_names,
-            r.trace.provider_instance_name.as_deref(),
-        )
-        && exact(
-            &q.selected_exact_models,
-            r.trace.selected_exact_model.as_deref(),
-        )
-        && exact(&q.scheduler_profiles, r.scheduler_profile.as_deref())
-        && q.outcome
-            .as_deref()
-            .is_none_or(|v| r.outcome.as_deref() == Some(v))
-        && q.query.as_deref().is_none_or(|query| {
-            let query = query.to_lowercase();
-            [
-                Some(r.trace.trace_id.as_str()),
-                Some(r.trace.task_id.as_str()),
-                r.request_id.as_deref(),
-                r.route_id.as_deref(),
-                r.provider_trace_id.as_deref(),
-                r.trace.selected_exact_model.as_deref(),
-                r.trace.provider_instance_name.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|v| v.to_lowercase().contains(&query))
-        })
-}
-
 fn audit_matches(e: &AuditEvent, q: &AuditQuery) -> bool {
     q.start_time_ms.is_none_or(|v| e.created_at_ms >= v)
         && q.end_time_ms.is_none_or(|v| e.created_at_ms < v)
@@ -1330,9 +1568,6 @@ fn audit_matches(e: &AuditEvent, q: &AuditQuery) -> bool {
 
 fn exact(values: &[String], actual: Option<&str>) -> bool {
     values.is_empty() || actual.is_some_and(|a| values.iter().any(|v| v == a))
-}
-fn fuzzy(query: Option<&str>, actual: Option<&str>) -> bool {
-    query.is_none_or(|q| actual.is_some_and(|a| a.to_lowercase().contains(&q.to_lowercase())))
 }
 fn limit(value: Option<u32>) -> usize {
     value
@@ -1410,6 +1645,29 @@ mod tests {
         AiccStorage::open("sqlite::memory:", RdbBackend::Sqlite)
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn storage_records_its_global_schema_version() {
+        let storage = db().await;
+        let version: i64 = sqlx::query_scalar(
+            "SELECT schema_version FROM aicc_schema_meta WHERE schema_key='aicc'",
+        )
+        .fetch_one(&storage.pool)
+        .await
+        .unwrap();
+        assert_eq!(version, STORAGE_SCHEMA_VERSION);
+    }
+
+    #[tokio::test]
+    async fn storage_rejects_a_future_schema_version_before_business_migrations() {
+        let storage = db().await;
+        sqlx::query("UPDATE aicc_schema_meta SET schema_version=99 WHERE schema_key='aicc'")
+            .execute(&storage.pool)
+            .await
+            .unwrap();
+        let error = storage.migrate().await.unwrap_err();
+        assert!(error.to_string().contains("latest supported"));
     }
 
     #[tokio::test]

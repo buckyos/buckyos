@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::catalog::CatalogSnapshot;
 use crate::error::ModelRegistryError;
 use buckyos_api::{
@@ -176,6 +174,7 @@ pub(crate) struct ProviderInventory {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum MountMode {
+    #[cfg(test)]
     Manual,
     Auto,
     #[default]

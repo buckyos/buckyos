@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::super::DiscoveryMode;
 use super::super::{
     validate_discovery, CredentialDescriptor, CredentialReference, CredentialResolver,
     DiscoveredModel, DiscoveryContext, DynamicLoginContext, DynamicLoginCredentialResolver,
@@ -6,8 +8,6 @@ use super::super::{
     ProviderFieldSchema, ProviderHealthState, ProviderInstanceConfig, ProviderProfile,
     ProviderResult,
 };
-#[cfg(test)]
-use super::super::DiscoveryMode;
 #[cfg(test)]
 use crate::catalog::KnownProvider;
 #[cfg(test)]
@@ -114,6 +114,9 @@ pub(crate) fn resolve_sn_provider_instance_with_config(
             region: connection.region,
             workspace: connection.workspace,
             account: connection.account,
+            request_timeout: std::time::Duration::from_secs(120),
+            auto_sync_models: true,
+            instance_rules: None,
         },
         auth: input.auth,
     })
@@ -177,11 +180,6 @@ fn embedded_value<T: DeserializeOwned>(known: &KnownProvider, key: &str, label: 
     .unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
-#[cfg(test)]
-fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
-    serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SnDialectContract {
     pub base_adapter_id: &'static str,
@@ -219,6 +217,9 @@ pub(crate) fn sn_openai_adapter() -> ProtocolResultValue<AdapterDescriptor> {
         interface_generation: base.interface_generation,
         base_adapter_id: Some(OPENAI_RESPONSES_ADAPTER_ID.to_owned()),
         status: AdapterStatus::Stable,
+        probe_priority: 200,
+        probe_path: None,
+        credential: crate::protocol::AdapterCredentialContract::bearer(),
         operations: BTreeMap::from([(responses.operation_id.clone(), responses)]),
     })
 }
@@ -516,12 +517,6 @@ impl SnCredentialBroker {
                 self.dynamic_resolver.resolve_dynamic(&context).await
             }
         }
-    }
-
-    pub(crate) async fn invalidate(&self, provider_instance_name: &str) {
-        self.dynamic_resolver
-            .invalidate(provider_instance_name)
-            .await;
     }
 }
 

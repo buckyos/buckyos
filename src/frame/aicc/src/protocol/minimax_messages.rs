@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 pub(crate) const MINIMAX_MESSAGES_ADAPTER_ID: &str = "minimax-messages";
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MiniMaxMessagesDialectContract {
     pub base_adapter_id: &'static str,
@@ -22,6 +23,7 @@ pub(crate) struct MiniMaxMessagesDialectContract {
     pub unsupported_capabilities: BTreeSet<&'static str>,
 }
 
+#[cfg(test)]
 pub(crate) fn minimax_messages_dialect_contract() -> MiniMaxMessagesDialectContract {
     MiniMaxMessagesDialectContract {
         base_adapter_id: CLAUDE_MESSAGES_ADAPTER_ID,
@@ -54,6 +56,9 @@ pub(crate) fn minimax_messages_adapter() -> (AdapterDescriptor, CodecRegistratio
         interface_generation: "messages-2023-06-01-minimax".to_owned(),
         base_adapter_id: Some(CLAUDE_MESSAGES_ADAPTER_ID.to_owned()),
         status: AdapterStatus::Stable,
+        probe_priority: 200,
+        probe_path: None,
+        credential: super::AdapterCredentialContract::named_header("x-api-key"),
         operations,
     };
     (
@@ -333,6 +338,12 @@ mod tests {
     fn context() -> CodecContext {
         CodecContext {
             base_url: "https://api.minimax.io/anthropic".to_owned(),
+            state_coordinate: buckyos_api::ProviderStateCoordinate {
+                normalized_base_url: "https://api.minimax.io/anthropic".into(),
+                adapter_type: "minimax-messages".into(),
+                origin_provider: "minimax".into(),
+                origin_model: "test-model".into(),
+            },
             credential: Some(
                 ResolvedCredential::named_header("secret://minimax", "x-api-key", "secret")
                     .unwrap(),

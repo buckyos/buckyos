@@ -10,6 +10,7 @@
       "display_name": "MiniMax",
       "base_url": "https://api.minimax.io/anthropic",
       "protocol_adapter_id": "minimax-messages",
+      "discovery_behavior_id": "minimax-models",
       "provider_rules_id": "minimax",
       "credential": { "kind": "named_header", "header_name": "x-api-key" },
       "connection": {

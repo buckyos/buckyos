@@ -99,7 +99,7 @@ Known Provider 的选择身份是 `catalog_id`。一个文件内包含多个 `pr
 
 路径：`v2/known-providers/<catalog_id>-<revision_seq>.json`。
 
-内容定义已知服务商的 typed 默认值，包括 `provider_profile_id`、显示名称、默认 `base_url`、`protocol_adapter_id`、可选 `provider_rules_id`、默认 credential、credential variants、connection schema 和区域 URL；UI hints 只能承载展示信息。它不能修改已经存在的 Provider Instance 私有配置。
+内容定义已知服务商的 typed 默认值，包括 `provider_profile_id`、显示名称、默认 `base_url`、`protocol_adapter_id`、`discovery_behavior_id`、可选的动态登录/连接 behavior ID、可选 `provider_rules_id`、默认 credential、credential variants、connection schema 和区域 URL；UI hints 只能承载展示信息。behavior ID 必须由客户端 registry 注册，未知 ID fail closed；它不能修改已经存在的 Provider Instance 私有配置。
 
 ## 6. 版本兼容与防回退
 

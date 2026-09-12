@@ -10,6 +10,7 @@
       "display_name": "Moonshot Kimi",
       "base_url": "https://api.moonshot.ai/v1",
       "protocol_adapter_id": "kimi-chat",
+      "discovery_behavior_id": "kimi-models",
       "provider_rules_id": "kimi",
       "credential": { "kind": "bearer" },
       "connection": {

@@ -20,6 +20,7 @@ pub(crate) const OPENROUTER_RERANK_OPERATION_ID: &str = "rerank.create";
 pub(crate) const KIMI_CHAT_ADAPTER_ID: &str = "kimi-chat";
 pub(crate) const GLM_CHAT_ADAPTER_ID: &str = "glm-chat";
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ChatCompletionsDialectContract {
     pub adapter_id: &'static str,
@@ -29,6 +30,7 @@ pub(crate) struct ChatCompletionsDialectContract {
     pub unsupported_features: BTreeSet<&'static str>,
 }
 
+#[cfg(test)]
 pub(crate) fn openrouter_chat_contract() -> ChatCompletionsDialectContract {
     ChatCompletionsDialectContract {
         adapter_id: OPENROUTER_CHAT_ADAPTER_ID,
@@ -51,6 +53,7 @@ pub(crate) fn openrouter_chat_contract() -> ChatCompletionsDialectContract {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn kimi_chat_contract() -> ChatCompletionsDialectContract {
     ChatCompletionsDialectContract {
         adapter_id: KIMI_CHAT_ADAPTER_ID,
@@ -67,6 +70,7 @@ pub(crate) fn kimi_chat_contract() -> ChatCompletionsDialectContract {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn glm_chat_contract() -> ChatCompletionsDialectContract {
     ChatCompletionsDialectContract {
         adapter_id: GLM_CHAT_ADAPTER_ID,
@@ -320,6 +324,16 @@ fn derived_adapter(
             interface_generation: "v1".to_owned(),
             base_adapter_id: Some(OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_owned()),
             status: AdapterStatus::Stable,
+            probe_priority: 200,
+            probe_path: None,
+            credential: if adapter_id == GLM_CHAT_ADAPTER_ID {
+                super::AdapterCredentialContract {
+                    kind: super::CredentialKind::GlmJwt,
+                    header_name: None,
+                }
+            } else {
+                super::AdapterCredentialContract::bearer()
+            },
             operations: BTreeMap::from([(operation.operation_id.clone(), operation)]),
         },
         CodecRegistration {
@@ -379,6 +393,7 @@ impl OpenAiChatCompletionsDialect for OpenRouterDialect {
         }
         if !metadata.is_empty() {
             extensions.content.push(AiContent::ProviderState {
+                source: buckyos_api::ProviderStateCoordinate::unbound(),
                 provider: "openrouter".to_owned(),
                 value: Value::Object(metadata),
             });
@@ -391,8 +406,15 @@ impl OpenAiChatCompletionsDialect for OpenRouterDialect {
         request: &LlmChatInvokeRequest,
         body: &mut Map<String, Value>,
         _headers: &mut HeaderMap,
+        context: &super::CodecContext,
     ) -> ProtocolResultValue<()> {
-        restore_assistant_state(request, body, "openrouter", false)
+        restore_assistant_state(
+            request,
+            body,
+            "openrouter",
+            false,
+            &context.state_coordinate,
+        )
     }
 
     fn transform_stream_chunk(
@@ -408,6 +430,7 @@ impl OpenAiChatCompletionsDialect for OpenRouterDialect {
                     ));
                 }
                 extensions.content.push(AiContent::ProviderState {
+                    source: buckyos_api::ProviderStateCoordinate::unbound(),
                     provider: "openrouter".to_owned(),
                     value: json!({"type":"reasoning_details", "value":details}),
                 });
@@ -421,6 +444,7 @@ impl OpenAiChatCompletionsDialect for OpenRouterDialect {
         }
         if !metadata.is_empty() {
             extensions.content.push(AiContent::ProviderState {
+                source: buckyos_api::ProviderStateCoordinate::unbound(),
                 provider: "openrouter".to_owned(),
                 value: Value::Object(metadata),
             });
@@ -469,8 +493,9 @@ impl OpenAiChatCompletionsDialect for KimiDialect {
         request: &LlmChatInvokeRequest,
         body: &mut Map<String, Value>,
         _headers: &mut HeaderMap,
+        context: &super::CodecContext,
     ) -> ProtocolResultValue<()> {
-        restore_assistant_state(request, body, "kimi", true)
+        restore_assistant_state(request, body, "kimi", true, &context.state_coordinate)
     }
 
     fn transform_immediate_response(
@@ -523,9 +548,10 @@ impl OpenAiChatCompletionsDialect for GlmDialect {
         request: &LlmChatInvokeRequest,
         body: &mut Map<String, Value>,
         _headers: &mut HeaderMap,
+        context: &super::CodecContext,
     ) -> ProtocolResultValue<()> {
         body.remove("stream_options");
-        restore_assistant_state(request, body, "glm", false)
+        restore_assistant_state(request, body, "glm", false, &context.state_coordinate)
     }
 
     fn transform_immediate_response(
@@ -555,6 +581,7 @@ fn restore_assistant_state(
     body: &mut Map<String, Value>,
     provider: &str,
     allow_partial: bool,
+    target: &buckyos_api::ProviderStateCoordinate,
 ) -> ProtocolResultValue<()> {
     let wire_messages = body
         .get_mut("messages")
@@ -595,10 +622,9 @@ fn restore_assistant_state(
                         }
                     }
                 }
-                AiContent::ProviderState {
-                    provider: owner,
-                    value,
-                } if owner == provider => {
+                AiContent::ProviderState { source, value, .. }
+                    if super::provider_state_is_native(source, target) =>
+                {
                     if provider == "openrouter"
                         && value.get("type").and_then(Value::as_str) == Some("reasoning_details")
                     {
@@ -664,6 +690,7 @@ fn reasoning_from_response(
     if let Some(Value::Object(details)) = response.get_mut("usage") {
         if let Some(cached_tokens) = details.remove("cached_tokens") {
             content.push(AiContent::ProviderState {
+                source: buckyos_api::ProviderStateCoordinate::unbound(),
                 provider: provider.to_owned(),
                 value: json!({"type": "cached_tokens", "value": cached_tokens}),
             });
@@ -820,6 +847,12 @@ mod tests {
     fn context() -> CodecContext {
         CodecContext {
             base_url: "https://example.test/v1".to_owned(),
+            state_coordinate: buckyos_api::ProviderStateCoordinate {
+                normalized_base_url: "https://example.test/v1".into(),
+                adapter_type: "openai-chat-completions".into(),
+                origin_provider: "test".into(),
+                origin_model: "test-model".into(),
+            },
             credential: Some(ResolvedCredential::bearer("secret://test", "secret").unwrap()),
             resources: BTreeMap::new(),
             limits: CodecLimits {
@@ -1049,6 +1082,8 @@ mod tests {
     #[test]
     fn kimi_round_trips_partial_thinking_and_cached_usage() {
         let registry = registry_with(kimi_chat_adapter());
+        let mut call_context = context();
+        call_context.state_coordinate.adapter_type = KIMI_CHAT_ADAPTER_ID.to_string();
         let mut codec_input = input(BTreeMap::new());
         if let AiccCall::ChatCompletionsCreate(request) = &mut codec_input.canonical_request {
             request.messages.push(AiMessage::new(
@@ -1063,6 +1098,7 @@ mod tests {
                         provider_metadata: None,
                     },
                     AiContent::ProviderState {
+                        source: call_context.state_coordinate.clone(),
                         provider: "kimi".to_owned(),
                         value: json!({"partial": true}),
                     },
@@ -1075,7 +1111,7 @@ mod tests {
                 OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
                 ApiType::Llm,
                 &codec_input,
-                &context(),
+                &call_context,
             )
             .unwrap();
         let HttpBody::Json(body) = request.body else {
@@ -1149,7 +1185,9 @@ mod tests {
         ));
         assert!(matches!(
             &extensions.content[1],
-            AiContent::ProviderState { provider, value }
+            AiContent::ProviderState {
+                provider, value, ..
+            }
                 if provider == "openrouter" && value["provider"] == "Anthropic"
         ));
     }
@@ -1208,7 +1246,9 @@ mod tests {
             .is_none());
         assert!(matches!(
             &extensions.content[0],
-            AiContent::ProviderState { provider, value }
+            AiContent::ProviderState {
+                provider, value, ..
+            }
                 if provider == "openrouter" && value["value"][0]["data"] == "stream-opaque"
         ));
     }

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::error::{MatchCompileError, MatchCompileErrorKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,8 +16,10 @@ pub(crate) enum MatchRule {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DimensionType {
     String,
+    #[cfg(test)]
     Number,
     Version,
+    #[cfg(test)]
     Boolean,
     JsonScalar,
 }
@@ -64,6 +64,7 @@ const ROUTING_PROVIDER_DIMENSIONS: &[DimensionSpec] = &[
     string_dimension("logical_path"),
 ];
 
+#[cfg(test)]
 const ROUTING_MODEL_DIMENSIONS: &[DimensionSpec] = &[
     string_dimension("exact_model"),
     string_dimension("api_type"),
@@ -123,6 +124,7 @@ pub(crate) const ROUTING_PROVIDER_MATCH_SCHEMA: MatchSchema = MatchSchema {
     allow_json_pointer_dimensions: false,
 };
 
+#[cfg(test)]
 pub(crate) const ROUTING_MODEL_MATCH_SCHEMA: MatchSchema = MatchSchema {
     name: "routing_model_scope",
     primary_dimension: Some("exact_model"),
@@ -346,7 +348,9 @@ fn compile_scalar(
         (DimensionType::String | DimensionType::Version, Value::String(value)) => {
             Ok(CompiledScalar::String(CompiledGlob::compile(value)?))
         }
+        #[cfg(test)]
         (DimensionType::Number, Value::Number(value)) => Ok(CompiledScalar::Number(value.clone())),
+        #[cfg(test)]
         (DimensionType::Boolean, Value::Bool(value)) => Ok(CompiledScalar::Boolean(*value)),
         (DimensionType::JsonScalar, Value::String(value)) => {
             Ok(CompiledScalar::String(CompiledGlob::compile(value)?))
@@ -429,7 +433,9 @@ fn compile_range(
 
     let range_type = match value_type {
         DimensionType::Version => RangeType::Version,
-        DimensionType::Number | DimensionType::JsonScalar => RangeType::Number,
+        #[cfg(test)]
+        DimensionType::Number => RangeType::Number,
+        DimensionType::JsonScalar => RangeType::Number,
         _ => return Err(MatchCompileErrorKind::RangeNotAllowed),
     };
     let min = operator

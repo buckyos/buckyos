@@ -763,9 +763,9 @@ pub fn msg_ref_from_pending(input: &PendingInput, received_at_ms: u64) -> Option
 
 fn render_msg_content(message: &AiMessage) -> (Vec<Json>, Vec<Json>, String, Vec<Json>, bool) {
     let metadata = message.content.iter().find_map(|block| match block {
-        AiContent::ProviderState { provider, value } if provider == PROVIDER_MSG_METADATA => {
-            Some(value)
-        }
+        AiContent::ProviderState {
+            provider, value, ..
+        } if provider == PROVIDER_MSG_METADATA => Some(value),
         _ => None,
     });
     let canonical_attachments = metadata

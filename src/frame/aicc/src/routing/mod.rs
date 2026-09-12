@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub(crate) mod policy;
 
 use crate::error::{ModelRegistryError, RoutingError};

@@ -105,6 +105,9 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         interface_generation: "interactions-v1beta".to_string(),
         base_adapter_id: None,
         status: AdapterStatus::Preview,
+        probe_priority: 0,
+        probe_path: Some("interactions".to_owned()),
+        credential: super::AdapterCredentialContract::named_header("x-goog-api-key"),
         operations: BTreeMap::from([
             (interactions.operation_id.clone(), interactions.clone()),
             (embeddings.operation_id.clone(), embeddings.clone()),
@@ -471,18 +474,18 @@ fn encode_interaction_content(
                     "Gemini user input cannot contain model-generated steps",
                 ))
             }
-            AiContent::ProviderState { provider, value }
-                if provider == GEMINI_PROVIDER_NAMESPACE =>
+            AiContent::ProviderState { source, .. }
+                if super::provider_state_is_native(source, &call.context.state_coordinate) =>
             {
                 Err(ProtocolError::invalid_request(
                     "Gemini provider state must be replayed in assistant history",
                 ))
             }
-            AiContent::ProviderState { provider, value } => {
-                Ok(foreign_provider_state_text(provider, value)
-                    .map(|text| json!({"type":"text", "text":text}))
-                    .unwrap_or(Value::Null))
-            }
+            AiContent::ProviderState {
+                provider, value, ..
+            } => Ok(foreign_provider_state_text(provider, value)
+                .map(|text| json!({"type":"text", "text":text}))
+                .unwrap_or(Value::Null)),
             AiContent::ToolResult { .. } => Err(ProtocolError::invalid_request(
                 "Gemini tool results must use the canonical tool role",
             )),
@@ -503,8 +506,8 @@ fn encode_assistant_steps(
     let native_steps = content
         .iter()
         .filter_map(|block| match block {
-            AiContent::ProviderState { provider, value }
-                if provider == GEMINI_PROVIDER_NAMESPACE
+            AiContent::ProviderState { source, value, .. }
+                if super::provider_state_is_native(source, &call.context.state_coordinate)
                     && value.get("type").and_then(Value::as_str).is_some() =>
             {
                 Some(value.clone())
@@ -574,13 +577,16 @@ fn encode_assistant_steps(
                 }
                 input.push(Value::Object(thought));
             }
-            AiContent::ProviderState { provider, value }
-                if provider == GEMINI_PROVIDER_NAMESPACE && value.is_object() =>
+            AiContent::ProviderState { source, value, .. }
+                if super::provider_state_is_native(source, &call.context.state_coordinate)
+                    && value.is_object() =>
             {
                 flush_model_output(&mut model_content, input);
                 input.push(value.clone());
             }
-            AiContent::ProviderState { provider, value } => {
+            AiContent::ProviderState {
+                provider, value, ..
+            } => {
                 if let Some(text) = foreign_provider_state_text(provider, value) {
                     model_content.push(json!({"type":"text", "text":text}));
                 }
@@ -1410,6 +1416,7 @@ fn normalize_llm(
                         normalize_llm_output(part, &mut content)?;
                     }
                     content.push(AiContent::ProviderState {
+                        source: buckyos_api::ProviderStateCoordinate::unbound(),
                         provider: GEMINI_PROVIDER_NAMESPACE.to_string(),
                         value: step.clone(),
                     });
@@ -1417,11 +1424,13 @@ fn normalize_llm(
                 Some("function_call" | "thought") => {
                     normalize_llm_output(step, &mut content)?;
                     content.push(AiContent::ProviderState {
+                        source: buckyos_api::ProviderStateCoordinate::unbound(),
                         provider: GEMINI_PROVIDER_NAMESPACE.to_string(),
                         value: step.clone(),
                     });
                 }
                 _ => content.push(AiContent::ProviderState {
+                    source: buckyos_api::ProviderStateCoordinate::unbound(),
                     provider: GEMINI_PROVIDER_NAMESPACE.to_string(),
                     value: step.clone(),
                 }),
@@ -1437,6 +1446,7 @@ fn normalize_llm(
         .or_else(|| interaction.get("safety"))
     {
         content.push(AiContent::ProviderState {
+            source: buckyos_api::ProviderStateCoordinate::unbound(),
             provider: GEMINI_PROVIDER_NAMESPACE.to_string(),
             value: json!({"safety":safety}),
         });
@@ -1507,6 +1517,7 @@ fn normalize_llm_output(output: &Value, content: &mut Vec<AiContent>) -> Protoco
                 .map(str::to_string),
         }),
         _ => content.push(AiContent::ProviderState {
+            source: buckyos_api::ProviderStateCoordinate::unbound(),
             provider: GEMINI_PROVIDER_NAMESPACE.to_string(),
             value: output.clone(),
         }),
@@ -2385,6 +2396,7 @@ impl GeminiFilesCodec {
         finish_request(&mut request, context)
     }
 
+    #[expect(dead_code, reason = "shared decoder for upload and lookup responses")]
     pub(crate) fn decode_file(&self, response: HttpResponse) -> ProtocolResultValue<GeminiFile> {
         ensure_success(&response)?;
         let value: Value = response.json(DEFAULT_MAX_RESPONSE_BYTES)?;
@@ -2448,6 +2460,12 @@ mod tests {
     fn context() -> CodecContext {
         CodecContext {
             base_url: "https://generativelanguage.googleapis.com".to_string(),
+            state_coordinate: buckyos_api::ProviderStateCoordinate {
+                normalized_base_url: "https://generativelanguage.googleapis.com".into(),
+                adapter_type: "gemini-interactions".into(),
+                origin_provider: "gemini".into(),
+                origin_model: "test-model".into(),
+            },
             credential: Some(gemini_api_key("secret://gemini", "top-secret").unwrap()),
             resources: BTreeMap::new(),
             limits: CodecLimits {
@@ -2788,13 +2806,14 @@ mod tests {
             ],
             "usage":{"total_input_tokens":4,"total_output_tokens":3,"total_tokens":7}
         });
-        let ProtocolExecution::Immediate(output) = codec
+        let ProtocolExecution::Immediate(mut output) = codec
             .decode(response(StatusCode::OK, "application/json", value.clone()))
             .await
             .unwrap()
         else {
             panic!("expected immediate")
         };
+        crate::protocol::bind_provider_state_source(&mut output.value, &context().state_coordinate);
         assert_eq!(output.usage.unwrap().total_tokens, Some(7));
         assert_eq!(
             output.value["message"]["content"][0]["summary"],

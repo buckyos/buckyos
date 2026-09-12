@@ -4,8 +4,9 @@ use super::{
     ResolvedCredential, StreamingHttpResponse,
 };
 use async_trait::async_trait;
-use buckyos_api::{AiccCall, ApiType, Capability, ResourceRef};
+use buckyos_api::{AiccCall, ApiType, Capability, ProviderStateCoordinate, ResourceRef};
 use bytes::Bytes;
+use reqwest::{Method, StatusCode};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -22,6 +23,10 @@ pub(crate) enum ExecutionMode {
 pub(crate) enum AdapterStatus {
     Stable,
     Preview,
+    #[expect(
+        dead_code,
+        reason = "registry schema accepts adapters deprecated by future metadata"
+    )]
     Deprecated,
 }
 
@@ -134,7 +139,32 @@ pub(crate) struct AdapterDescriptor {
     pub interface_generation: String,
     pub base_adapter_id: Option<String>,
     pub status: AdapterStatus,
+    pub probe_priority: u32,
+    pub probe_path: Option<String>,
+    pub credential: AdapterCredentialContract,
     pub operations: BTreeMap<String, OperationDescriptor>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AdapterCredentialContract {
+    pub kind: CredentialKind,
+    pub header_name: Option<String>,
+}
+
+impl AdapterCredentialContract {
+    pub(crate) fn bearer() -> Self {
+        Self {
+            kind: CredentialKind::Bearer,
+            header_name: None,
+        }
+    }
+
+    pub(crate) fn named_header(name: &str) -> Self {
+        Self {
+            kind: CredentialKind::NamedHeader,
+            header_name: Some(name.to_string()),
+        }
+    }
 }
 
 impl AdapterDescriptor {
@@ -150,9 +180,33 @@ impl AdapterDescriptor {
                 ));
             }
         }
+        if self.probe_path.as_ref().is_some_and(|path| {
+            path.is_empty()
+                || path.starts_with('/')
+                || path.contains('?')
+                || path.contains('#')
+                || path
+                    .split('/')
+                    .any(|segment| segment.is_empty() || segment == "..")
+        }) {
+            return Err(ProtocolError::invalid_configuration(
+                "adapter probe path must be a safe relative path",
+            ));
+        }
         if self.operations.is_empty() {
             return Err(ProtocolError::invalid_configuration(
                 "adapter must declare at least one operation",
+            ));
+        }
+        if self.credential.kind == CredentialKind::NamedHeader
+            && self
+                .credential
+                .header_name
+                .as_deref()
+                .is_none_or(str::is_empty)
+        {
+            return Err(ProtocolError::invalid_configuration(
+                "named-header adapter credential requires a header name",
             ));
         }
         for (operation_id, descriptor) in &self.operations {
@@ -259,6 +313,7 @@ impl CodecLimits {
 #[derive(Clone)]
 pub(crate) struct CodecContext {
     pub base_url: String,
+    pub state_coordinate: ProviderStateCoordinate,
     pub credential: Option<ResolvedCredential>,
     pub resources: BTreeMap<String, MaterializedResource>,
     pub limits: CodecLimits,
@@ -269,6 +324,7 @@ impl std::fmt::Debug for CodecContext {
         formatter
             .debug_struct("CodecContext")
             .field("base_url", &self.base_url)
+            .field("state_coordinate", &self.state_coordinate)
             .field(
                 "credential",
                 &self.credential.as_ref().map(|_| "[REDACTED]"),
@@ -277,6 +333,32 @@ impl std::fmt::Debug for CodecContext {
             .field("limits", &self.limits)
             .finish()
     }
+}
+
+pub(crate) fn normalize_provider_base_url(value: &str) -> ProtocolResultValue<String> {
+    let mut url = reqwest::Url::parse(value)
+        .map_err(|_| ProtocolError::invalid_configuration("provider base URL is invalid"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.cannot_be_a_base()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ProtocolError::invalid_configuration(
+            "provider base URL must be an absolute HTTP URL without credentials, query, or fragment",
+        ));
+    }
+    if (url.scheme() == "http" && url.port() == Some(80))
+        || (url.scheme() == "https" && url.port() == Some(443))
+    {
+        url.set_port(None).map_err(|_| {
+            ProtocolError::invalid_configuration("provider base URL port is invalid")
+        })?;
+    }
+    let path = url.path().trim_end_matches('/').to_owned();
+    url.set_path(if path.is_empty() { "/" } else { &path });
+    Ok(url.to_string().trim_end_matches('/').to_owned())
 }
 
 impl CodecContext {
@@ -453,6 +535,10 @@ pub(crate) struct CodecRegistry {
     operations: HashMap<(String, String, ApiType), RegisteredOperation>,
 }
 
+pub(crate) trait ProtocolAdapterPlugin: Send + Sync {
+    fn register(&self, registry: &mut CodecRegistry) -> ProtocolResultValue<()>;
+}
+
 impl std::fmt::Debug for CodecRegistry {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -464,6 +550,54 @@ impl std::fmt::Debug for CodecRegistry {
 }
 
 impl CodecRegistry {
+    pub(crate) async fn probe_adapter(
+        &self,
+        adapter_id: &str,
+        base_url: &str,
+        credential: &ResolvedCredential,
+        timeout: Duration,
+    ) -> ProtocolResultValue<bool> {
+        let adapter = self.adapter(adapter_id).ok_or_else(|| {
+            ProtocolError::new(
+                ProtocolErrorKind::UnknownAdapter,
+                "protocol adapter is not registered",
+            )
+        })?;
+        let path = adapter.probe_path.as_deref().ok_or_else(|| {
+            ProtocolError::invalid_configuration("protocol adapter is not probeable")
+        })?;
+        let mut request = HttpRequest::new(
+            Method::POST,
+            format!("{}/{}", base_url.trim_end_matches('/'), path),
+        );
+        request.body = super::HttpBody::Json(Value::Object(Default::default()));
+        request.timeout = Some(timeout);
+        request.max_request_bytes = Some(1024);
+        request.max_response_bytes = Some(64 * 1024);
+        credential.apply(&mut request.headers)?;
+        let response = super::HttpTransport::new(super::HttpTransportConfig::default())?
+            .send(request)
+            .await?;
+        match response.status {
+            StatusCode::NOT_FOUND
+            | StatusCode::METHOD_NOT_ALLOWED
+            | StatusCode::NOT_IMPLEMENTED => Ok(false),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(ProtocolError::new(
+                ProtocolErrorKind::Authentication,
+                "protocol probe authentication failed",
+            )),
+            StatusCode::TOO_MANY_REQUESTS => Err(ProtocolError::new(
+                ProtocolErrorKind::Transport,
+                "protocol probe was rate limited",
+            )),
+            status if status.is_server_error() => Err(ProtocolError::new(
+                ProtocolErrorKind::Transport,
+                "protocol probe failed with a server error",
+            )),
+            _ => Ok(true),
+        }
+    }
+
     pub(crate) fn register(
         &mut self,
         descriptor: AdapterDescriptor,
@@ -654,6 +788,83 @@ impl CodecRegistry {
         &self,
     ) -> impl DoubleEndedIterator<Item = &AdapterDescriptor> + ExactSizeIterator {
         self.adapters.values()
+    }
+
+    pub(crate) fn adapters_for_family<'a>(
+        &'a self,
+        protocol_family_id: &'a str,
+    ) -> impl Iterator<Item = &'a AdapterDescriptor> + 'a {
+        self.adapters
+            .values()
+            .filter(move |adapter| adapter.protocol_family_id == protocol_family_id)
+    }
+
+    pub(crate) fn probe_candidates(
+        &self,
+        protocol_family_id: &str,
+    ) -> ProtocolResultValue<Vec<String>> {
+        let mut candidates = self
+            .adapters_for_family(protocol_family_id)
+            .filter(|adapter| adapter.base_adapter_id.is_none())
+            .filter(|adapter| adapter.probe_path.is_some())
+            .map(|adapter| (adapter.probe_priority, adapter.protocol_adapter_id.clone()))
+            .collect::<Vec<_>>();
+        candidates.sort();
+        if candidates.is_empty() {
+            return Err(ProtocolError::new(
+                super::ProtocolErrorKind::UnknownAdapter,
+                format!("protocol family `{protocol_family_id}` has no probeable adapter"),
+            ));
+        }
+        Ok(candidates
+            .into_iter()
+            .map(|(_, adapter_id)| adapter_id)
+            .collect())
+    }
+
+    pub(crate) fn resolve_adapter_id(
+        &self,
+        protocol_family_id: Option<&str>,
+        protocol_adapter_id: Option<&str>,
+        default_adapter_id: Option<&str>,
+    ) -> ProtocolResultValue<String> {
+        if let Some(adapter_id) = protocol_adapter_id {
+            let adapter = self.adapter(adapter_id).ok_or_else(|| {
+                ProtocolError::new(
+                    super::ProtocolErrorKind::UnknownAdapter,
+                    format!("protocol adapter `{adapter_id}` is not registered"),
+                )
+            })?;
+            if protocol_family_id.is_some_and(|family_id| family_id != adapter.protocol_family_id) {
+                return Err(ProtocolError::invalid_configuration(format!(
+                    "protocol adapter `{adapter_id}` does not belong to family `{}`",
+                    protocol_family_id.unwrap_or_default()
+                )));
+            }
+            return Ok(adapter_id.to_owned());
+        }
+
+        if let Some(family_id) = protocol_family_id {
+            if let Some(default_id) = default_adapter_id {
+                if self
+                    .adapter(default_id)
+                    .is_some_and(|adapter| adapter.protocol_family_id == family_id)
+                {
+                    return Ok(default_id.to_owned());
+                }
+            }
+            return Ok(self.probe_candidates(family_id)?.remove(0));
+        }
+
+        default_adapter_id
+            .filter(|adapter_id| self.adapter(adapter_id).is_some())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                ProtocolError::new(
+                    super::ProtocolErrorKind::UnknownAdapter,
+                    "provider adapter cannot be resolved without a family, adapter, or registered default",
+                )
+            })
     }
 
     fn registered(
@@ -916,6 +1127,8 @@ mod tests {
     use reqwest::{header::HeaderMap, Method, StatusCode};
     use serde_json::json;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
     use tokio::time::Instant;
 
     struct FakeCodec {
@@ -1070,6 +1283,9 @@ mod tests {
             interface_generation: "v1".to_string(),
             base_adapter_id: None,
             status: AdapterStatus::Stable,
+            probe_priority: 0,
+            probe_path: Some("probe".to_owned()),
+            credential: AdapterCredentialContract::bearer(),
             operations: BTreeMap::from([(operation.operation_id.clone(), operation)]),
         }
     }
@@ -1077,6 +1293,12 @@ mod tests {
     fn context(base_url: &str, secret: &str) -> CodecContext {
         CodecContext {
             base_url: base_url.to_string(),
+            state_coordinate: ProviderStateCoordinate {
+                normalized_base_url: base_url.trim_end_matches('/').to_string(),
+                adapter_type: "test".into(),
+                origin_provider: "test".into(),
+                origin_model: "test-model".into(),
+            },
             credential: Some(ResolvedCredential::bearer("ref:test", secret).unwrap()),
             resources: BTreeMap::new(),
             limits: CodecLimits {
@@ -1202,6 +1424,152 @@ mod tests {
             ],
         );
         assert!(duplicate.validate().is_err());
+    }
+
+    #[test]
+    fn adapter_resolution_honors_family_and_rejects_cross_family_adapter() {
+        let operation = operation(
+            "interactions.create",
+            vec![OperationBinding::new(
+                ApiType::Llm,
+                [ExecutionMode::Immediate],
+            )],
+        );
+        let mut registry = CodecRegistry::default();
+        registry
+            .register(
+                adapter("test-default", operation.clone()),
+                vec![Arc::new(FakeCodec {
+                    descriptor: operation.clone(),
+                    api_type: ApiType::Llm,
+                })],
+            )
+            .unwrap();
+        let mut other = adapter("other-default", operation.clone());
+        other.protocol_family_id = "other".to_string();
+        registry
+            .register(
+                other,
+                vec![Arc::new(FakeCodec {
+                    descriptor: operation,
+                    api_type: ApiType::Llm,
+                })],
+            )
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .resolve_adapter_id(Some("test"), None, Some("test-default"))
+                .unwrap(),
+            "test-default"
+        );
+        assert!(registry
+            .resolve_adapter_id(Some("test"), Some("other-default"), None)
+            .is_err());
+    }
+
+    #[test]
+    fn probe_candidates_use_priority_and_exclude_provider_dialects() {
+        let operation = operation(
+            "interactions.create",
+            vec![OperationBinding::new(
+                ApiType::Llm,
+                [ExecutionMode::Immediate],
+            )],
+        );
+        let mut registry = CodecRegistry::default();
+        let mut current = adapter("current", operation.clone());
+        current.probe_priority = 0;
+        registry
+            .register(
+                current,
+                vec![Arc::new(FakeCodec {
+                    descriptor: operation.clone(),
+                    api_type: ApiType::Llm,
+                })],
+            )
+            .unwrap();
+        let mut legacy = adapter("legacy", operation.clone());
+        legacy.probe_priority = 100;
+        registry
+            .register(
+                legacy,
+                vec![Arc::new(FakeCodec {
+                    descriptor: operation.clone(),
+                    api_type: ApiType::Llm,
+                })],
+            )
+            .unwrap();
+        let mut dialect = adapter("vendor-dialect", operation);
+        dialect.base_adapter_id = Some("current".to_owned());
+        dialect.probe_priority = 1;
+        registry
+            .register_derived(dialect, CodecRegistration::default())
+            .unwrap();
+
+        assert_eq!(
+            registry.probe_candidates("test").unwrap(),
+            vec!["current", "legacy"]
+        );
+    }
+
+    #[tokio::test]
+    async fn protocol_probe_distinguishes_unsupported_endpoint_from_client_error() {
+        async fn probe(status: &str) -> bool {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let status = status.to_owned();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 2048];
+                let read = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..read]);
+                assert!(request.starts_with("POST /probe "));
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer secret"));
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+            let operation = operation(
+                "interactions.create",
+                vec![OperationBinding::new(
+                    ApiType::Llm,
+                    [ExecutionMode::Immediate],
+                )],
+            );
+            let mut registry = CodecRegistry::default();
+            registry
+                .register(
+                    adapter("probe-adapter", operation.clone()),
+                    vec![Arc::new(FakeCodec {
+                        descriptor: operation,
+                        api_type: ApiType::Llm,
+                    })],
+                )
+                .unwrap();
+            let supported = registry
+                .probe_adapter(
+                    "probe-adapter",
+                    &format!("http://{address}"),
+                    &ResolvedCredential::bearer("test", "secret").unwrap(),
+                    Duration::from_secs(2),
+                )
+                .await
+                .unwrap();
+            server.await.unwrap();
+            supported
+        }
+
+        assert!(!probe("404 Not Found").await);
+        assert!(probe("400 Bad Request").await);
     }
 
     #[test]

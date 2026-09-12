@@ -10,6 +10,7 @@
       "display_name": "Z.ai GLM",
       "base_url": "https://api.z.ai/api/paas/v4",
       "protocol_adapter_id": "glm-chat",
+      "discovery_behavior_id": "openai-compatible-models",
       "provider_rules_id": "glm",
       "credential": { "kind": "bearer" },
       "credential_variants": [{ "kind": "glm_jwt" }],

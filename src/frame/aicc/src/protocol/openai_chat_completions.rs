@@ -79,6 +79,7 @@ pub(crate) trait OpenAiChatCompletionsDialect: std::fmt::Debug + Send + Sync {
         _request: &LlmChatInvokeRequest,
         _body: &mut Map<String, Value>,
         _headers: &mut HeaderMap,
+        _context: &super::CodecContext,
     ) -> ProtocolResultValue<()> {
         Ok(())
     }
@@ -160,6 +161,9 @@ impl OpenAiChatCompletionsCodec {
             interface_generation: OPENAI_CHAT_COMPLETIONS_GENERATION.to_string(),
             base_adapter_id: None,
             status: AdapterStatus::Stable,
+            probe_priority: 100,
+            probe_path: Some("chat/completions".to_owned()),
+            credential: super::AdapterCredentialContract::bearer(),
             operations: BTreeMap::from([(
                 self.descriptor.operation_id.clone(),
                 self.descriptor.clone(),
@@ -245,7 +249,7 @@ impl OpenAiChatCompletionsCodec {
         })?;
         credential.apply(&mut headers)?;
         self.dialect
-            .transform_request(request, &mut body, &mut headers)?;
+            .transform_request(request, &mut body, &mut headers, call.context)?;
 
         let mut wire_request = HttpRequest::new(
             Method::POST,
@@ -452,7 +456,7 @@ fn encode_message(
             "role": "user",
             "content": encode_user_content(&message.content, dialect, context)?
         })),
-        AiRole::Assistant => encode_assistant_message(&message.content, dialect),
+        AiRole::Assistant => encode_assistant_message(&message.content, dialect, context),
         AiRole::Tool => encode_tool_message(&message.content),
     }
 }
@@ -531,6 +535,7 @@ fn encode_image_url(source: &ResourceRef, context: &CodecContext) -> ProtocolRes
 fn encode_assistant_message(
     content: &[AiContent],
     dialect: &dyn OpenAiChatCompletionsDialect,
+    context: &super::CodecContext,
 ) -> ProtocolResultValue<Value> {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
@@ -558,14 +563,16 @@ fn encode_assistant_message(
                     "base Chat Completions does not map thinking content",
                 ));
             }
-            AiContent::ProviderState { provider, value }
-                if provider == OPENAI_PROVIDER_NAMESPACE
+            AiContent::ProviderState { source, value, .. }
+                if super::provider_state_is_native(source, &context.state_coordinate)
                     && value.get("type").and_then(Value::as_str)
                         == Some("chat_completion_refusal") =>
             {
                 refusal = Some(required_value_string(value, "refusal")?);
             }
-            AiContent::ProviderState { provider, value } => {
+            AiContent::ProviderState {
+                provider, value, ..
+            } => {
                 if let Some(part) = foreign_provider_state_text(provider, value) {
                     if !text.is_empty() {
                         text.push('\n');
@@ -942,6 +949,7 @@ fn decode_assistant_message(
         match refusal {
             Value::String(refusal) if !refusal.is_empty() => {
                 content.push(AiContent::ProviderState {
+                    source: buckyos_api::ProviderStateCoordinate::unbound(),
                     provider: OPENAI_PROVIDER_NAMESPACE.to_string(),
                     value: json!({
                         "type": "chat_completion_refusal",
@@ -1453,6 +1461,7 @@ fn finalize_stream(state: &mut ChatCompletionStreamState) -> ProtocolResultValue
     }
     if !state.refusal.is_empty() {
         content.push(AiContent::ProviderState {
+            source: buckyos_api::ProviderStateCoordinate::unbound(),
             provider: OPENAI_PROVIDER_NAMESPACE.to_string(),
             value: json!({
                 "type": "chat_completion_refusal",
@@ -1576,6 +1585,7 @@ mod tests {
             request: &LlmChatInvokeRequest,
             body: &mut Map<String, Value>,
             headers: &mut HeaderMap,
+            _context: &super::CodecContext,
         ) -> ProtocolResultValue<()> {
             headers.insert("x-fake-dialect", HeaderValue::from_static("enabled"));
             let thinking = request
@@ -1629,6 +1639,7 @@ mod tests {
                         provider_metadata: None,
                     },
                     AiContent::ProviderState {
+                        source: buckyos_api::ProviderStateCoordinate::unbound(),
                         provider: "fake".to_string(),
                         value: metadata,
                     },
@@ -1649,6 +1660,7 @@ mod tests {
             let mut extensions = ChatCompletionsStreamExtensions::default();
             if let Some(metadata) = chunk.remove("fake_metadata") {
                 extensions.content.push(AiContent::ProviderState {
+                    source: buckyos_api::ProviderStateCoordinate::unbound(),
                     provider: "fake".to_string(),
                     value: metadata,
                 });
@@ -1683,6 +1695,9 @@ mod tests {
                 interface_generation: "fake-v1".to_string(),
                 base_adapter_id: Some(OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_string()),
                 status: AdapterStatus::Stable,
+                probe_priority: 200,
+                probe_path: Some("chat/completions".to_owned()),
+                credential: crate::protocol::AdapterCredentialContract::bearer(),
                 operations: BTreeMap::from([(operation.operation_id.clone(), operation)]),
             },
             CodecRegistration {
@@ -1699,6 +1714,12 @@ mod tests {
     fn context(base_url: &str) -> CodecContext {
         CodecContext {
             base_url: base_url.to_string(),
+            state_coordinate: buckyos_api::ProviderStateCoordinate {
+                normalized_base_url: base_url.trim_end_matches('/').to_string(),
+                adapter_type: OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.into(),
+                origin_provider: "openai".into(),
+                origin_model: "test-model".into(),
+            },
             credential: Some(ResolvedCredential::bearer("secret://chat", "test-secret").unwrap()),
             resources: BTreeMap::new(),
             limits: CodecLimits {

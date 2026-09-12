@@ -526,6 +526,7 @@ fn compose_turn_message_preserves_message_envelope_boundaries() {
                 ),
             },
             AiContent::ProviderState {
+                source: buckyos_api::ProviderStateCoordinate::unbound(),
                 provider: llm_context::PROVIDER_MSG_METADATA.to_string(),
                 value: serde_json::json!({
                     "attachments": [{
@@ -546,6 +547,7 @@ fn compose_turn_message_preserves_message_envelope_boundaries() {
         vec![
             AiContent::text("second"),
             AiContent::ProviderState {
+                source: buckyos_api::ProviderStateCoordinate::unbound(),
                 provider: llm_context::PROVIDER_MSG_METADATA.to_string(),
                 value: serde_json::json!({
                     "attachments": [],

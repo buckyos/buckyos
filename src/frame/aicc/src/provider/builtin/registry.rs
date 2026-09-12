@@ -4,12 +4,7 @@ use crate::catalog::{
     CatalogSnapshot, ProviderCredentialKind, ProviderFieldMode as CatalogProviderFieldMode,
     ResolvedProviderConfiguration,
 };
-use crate::protocol::{
-    fal_queue_adapter, gemini_interactions_adapter, glm_chat_adapter, kimi_chat_adapter,
-    minimax_messages_adapter, openai_chat_completions_adapter, openai_responses_adapter,
-    openai_responses_compatible_adapters, openrouter_chat_adapter, CodecRegistry, CredentialKind,
-    HttpTransport, HttpTransportConfig,
-};
+use crate::protocol::{CodecRegistry, CredentialKind, HttpTransport, HttpTransportConfig};
 use crate::provider::{
     catalog_only_inventory, CatalogOnlyDiscovery, CredentialDescriptor, DiscoveryMode,
     DynamicLoginCredentialResolver, FallbackDiscovery, ProviderAuthMode,
@@ -17,7 +12,8 @@ use crate::provider::{
     ProviderFieldMode, ProviderFieldSchema, ProviderInstanceConfig, ProviderProfile,
     ProviderResult, RefreshPolicy,
 };
-use serde_json::{Map, Value};
+#[cfg(test)]
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -34,14 +30,32 @@ enum BuiltinDiscoveryFactory {
     Standard,
 }
 
+fn discovery_behaviors() -> BTreeMap<&'static str, BuiltinDiscoveryFactory> {
+    BTreeMap::from([
+        ("openai-models", BuiltinDiscoveryFactory::OpenAi),
+        ("anthropic-models", BuiltinDiscoveryFactory::Claude),
+        ("minimax-models", BuiltinDiscoveryFactory::MiniMax),
+        ("gemini-models", BuiltinDiscoveryFactory::Gemini),
+        ("openrouter-models", BuiltinDiscoveryFactory::OpenRouter),
+        ("kimi-models", BuiltinDiscoveryFactory::Kimi),
+        ("deepseek-models", BuiltinDiscoveryFactory::DeepSeek),
+        ("sn-models", BuiltinDiscoveryFactory::Sn),
+        (
+            "openai-compatible-models",
+            BuiltinDiscoveryFactory::Standard,
+        ),
+        ("standard-models", BuiltinDiscoveryFactory::Standard),
+    ])
+}
+
 #[derive(Clone)]
 struct BuiltinProviderRegistration {
     profile: ProviderProfile,
     connection: BuiltinConnectionFactory,
-    discovery: BuiltinDiscoveryFactory,
-    supports_dynamic_login: bool,
+    discovery_behavior_id: String,
+    dynamic_login_behavior_id: Option<String>,
     supports_any_adapter: bool,
-    instance_rules: Option<Value>,
+    instance_rules: Option<buckyos_api::ProviderInstanceRules>,
 }
 
 #[derive(Clone)]
@@ -71,7 +85,7 @@ pub(crate) struct BuiltinProviderBinding {
     pub connection: ProviderConnectionContract,
     pub discovery: Arc<dyn ProviderDiscovery>,
     pub dynamic_login_resolver: Option<Arc<dyn DynamicLoginCredentialResolver>>,
-    pub instance_rules: Option<Value>,
+    pub instance_rules: Option<buckyos_api::ProviderInstanceRules>,
 }
 
 pub(crate) struct BuiltinProviderRequest<'a> {
@@ -86,7 +100,7 @@ pub(crate) struct BuiltinProviderRegistry {
     providers: BTreeMap<String, BuiltinProviderRegistration>,
     codecs: Arc<CodecRegistry>,
     transport_config: HttpTransportConfig,
-    dynamic_login_resolver: Arc<dyn DynamicLoginCredentialResolver>,
+    dynamic_login_resolvers: BTreeMap<String, Arc<dyn DynamicLoginCredentialResolver>>,
 }
 
 pub(crate) const CUSTOM_PROVIDER_PROFILE_ID: &str = "custom";
@@ -129,15 +143,19 @@ impl BuiltinProviderRegistry {
             })
             .collect();
         let codecs = Arc::new(builtin_codec_registry()?);
-        let dynamic_login_resolver = Arc::new(SnDynamicLoginResolver::new(
-            reqwest::Client::new(),
-            SN_DYNAMIC_LOGIN_PROFILE_ID.to_owned(),
-        ));
+        let dynamic_login_resolvers: BTreeMap<_, Arc<dyn DynamicLoginCredentialResolver>> =
+            BTreeMap::from([(
+                "sn".to_owned(),
+                Arc::new(SnDynamicLoginResolver::new(
+                    reqwest::Client::new(),
+                    SN_DYNAMIC_LOGIN_PROFILE_ID.to_owned(),
+                )) as Arc<dyn DynamicLoginCredentialResolver>,
+            )]);
         Ok(Self {
             providers,
             codecs,
             transport_config,
-            dynamic_login_resolver,
+            dynamic_login_resolvers,
         })
     }
 
@@ -150,7 +168,10 @@ impl BuiltinProviderRegistry {
     }
 
     pub(crate) fn dynamic_login_resolver(&self) -> Arc<dyn DynamicLoginCredentialResolver> {
-        self.dynamic_login_resolver.clone()
+        self.dynamic_login_resolvers
+            .get("sn")
+            .expect("SN dynamic-login behavior must be registered")
+            .clone()
     }
 
     pub(crate) fn resolve(
@@ -173,15 +194,30 @@ impl BuiltinProviderRegistry {
                 request.provider_profile_id, registration.profile.default_protocol_adapter_id
             )));
         }
-        if request.auth_mode == ProviderAuthMode::DynamicLogin
-            && !registration.supports_dynamic_login
-        {
-            return Err(ProviderError::InvalidConfiguration(format!(
-                "provider profile `{}` does not support dynamic login",
-                request.provider_profile_id
-            )));
-        }
-        let profile = if request.provider_profile_id == CUSTOM_PROVIDER_PROFILE_ID {
+        let dynamic_login_resolver = if request.auth_mode == ProviderAuthMode::DynamicLogin {
+            let behavior_id = registration
+                .dynamic_login_behavior_id
+                .as_deref()
+                .ok_or_else(|| {
+                    ProviderError::InvalidConfiguration(format!(
+                        "provider profile `{}` does not support dynamic login",
+                        request.provider_profile_id
+                    ))
+                })?;
+            Some(
+                self.dynamic_login_resolvers
+                    .get(behavior_id)
+                    .ok_or_else(|| {
+                        ProviderError::InvalidConfiguration(format!(
+                            "unknown dynamic-login behavior `{behavior_id}`"
+                        ))
+                    })?
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        let profile = if registration.supports_any_adapter {
             custom_profile_for_adapter(&registration.profile, adapter, request.credential_kind)?
         } else {
             registration
@@ -189,7 +225,7 @@ impl BuiltinProviderRegistry {
                 .with_credential(request.credential_kind)?
         };
         let discovery = self.discovery(
-            registration.discovery,
+            &registration.discovery_behavior_id,
             request.provider_profile_id,
             request.protocol_adapter_id,
             request.configured_inventory,
@@ -199,8 +235,7 @@ impl BuiltinProviderRegistry {
             profile,
             connection: registration.connection.build(request.auth_mode),
             discovery,
-            dynamic_login_resolver: (request.auth_mode == ProviderAuthMode::DynamicLogin)
-                .then(|| self.dynamic_login_resolver.clone()),
+            dynamic_login_resolver,
             instance_rules: registration.instance_rules.clone(),
         })
     }
@@ -222,7 +257,7 @@ impl BuiltinProviderRegistry {
 
     fn discovery(
         &self,
-        factory: BuiltinDiscoveryFactory,
+        behavior_id: &str,
         provider_profile_id: &str,
         protocol_adapter_id: &str,
         configured_inventory: Option<ProviderDiscoverySnapshot>,
@@ -232,6 +267,14 @@ impl BuiltinProviderRegistry {
             HttpTransport::new(self.transport_config.clone())
                 .map_err(|error| ProviderError::InvalidConfiguration(error.to_string()))
         };
+        let factory = discovery_behaviors()
+            .get(behavior_id)
+            .copied()
+            .ok_or_else(|| {
+                ProviderError::InvalidConfiguration(format!(
+                    "unknown provider discovery behavior `{behavior_id}`"
+                ))
+            })?;
         let primary: Arc<dyn ProviderDiscovery> = match factory {
             BuiltinDiscoveryFactory::OpenAi => Arc::new(OpenAiDiscovery::new(transport()?)),
             BuiltinDiscoveryFactory::Claude => Arc::new(claude_discovery(transport()?)),
@@ -288,28 +331,9 @@ pub(crate) fn custom_profile_for_adapter(
     adapter: &crate::protocol::AdapterDescriptor,
     requested: Option<CredentialKind>,
 ) -> ProviderResult<ProviderProfile> {
-    let credential = match adapter.protocol_family_id.as_str() {
-        "openai" => CredentialDescriptor {
-            kind: CredentialKind::Bearer,
-            header_name: None,
-        },
-        "claude" => CredentialDescriptor {
-            kind: CredentialKind::NamedHeader,
-            header_name: Some("x-api-key".to_owned()),
-        },
-        "gemini" => CredentialDescriptor {
-            kind: CredentialKind::NamedHeader,
-            header_name: Some("x-goog-api-key".to_owned()),
-        },
-        "fal" => CredentialDescriptor {
-            kind: CredentialKind::FalKey,
-            header_name: None,
-        },
-        family => {
-            return Err(ProviderError::InvalidConfiguration(format!(
-                "custom provider protocol family `{family}` has no credential contract"
-            )))
-        }
+    let credential = CredentialDescriptor {
+        kind: adapter.credential.kind,
+        header_name: adapter.credential.header_name.clone(),
     };
     if requested.is_some_and(|kind| kind != credential.kind) {
         return Err(ProviderError::InvalidConfiguration(format!(
@@ -330,32 +354,11 @@ fn builtin_provider_registrations(
 ) -> ProviderResult<Vec<BuiltinProviderRegistration>> {
     let mut providers = vec![custom_registration()];
     for known in catalog.known_providers() {
-        let (discovery, supports_dynamic_login) = match known.provider_profile_id.as_str() {
-            OPENAI_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::OpenAi, false),
-            CLAUDE_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Claude, false),
-            MINIMAX_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::MiniMax, false),
-            GEMINI_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Gemini, false),
-            OPENROUTER_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::OpenRouter, false),
-            KIMI_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Kimi, false),
-            DEEPSEEK_PROFILE_ID => (BuiltinDiscoveryFactory::DeepSeek, false),
-            DOUBAO_PROFILE_ID | QWEN_PROFILE_ID => (BuiltinDiscoveryFactory::Standard, false),
-            SN_PROVIDER_PROFILE_ID => (BuiltinDiscoveryFactory::Sn, true),
-            _ => (BuiltinDiscoveryFactory::Standard, false),
-        };
-        let mut registration = catalog_registration(
+        providers.push(catalog_registration(
             catalog,
             &known.provider_profile_id,
-            discovery,
-            supports_dynamic_login,
             false,
-        )?;
-        if known.provider_profile_id == SN_PROVIDER_PROFILE_ID {
-            registration.connection = BuiltinConnectionFactory::Sn(match registration.connection {
-                BuiltinConnectionFactory::Configured(connection) => connection,
-                BuiltinConnectionFactory::Sn(_) => unreachable!(),
-            });
-        }
-        providers.push(registration);
+        )?);
     }
     let mut unique = BTreeMap::new();
     for provider in &providers {
@@ -372,29 +375,34 @@ fn builtin_provider_registrations(
 fn catalog_registration(
     catalog: &CatalogSnapshot,
     provider_profile_id: &str,
-    discovery: BuiltinDiscoveryFactory,
-    supports_dynamic_login: bool,
     supports_any_adapter: bool,
 ) -> ProviderResult<BuiltinProviderRegistration> {
     let configuration = catalog
         .resolve_provider_configuration(provider_profile_id)
         .map_err(|error| ProviderError::InvalidConfiguration(error.to_string()))?;
-    let mut profile = profile_from_catalog(&configuration, discovery);
+    let mut profile = profile_from_catalog(&configuration);
     profile.default_inventory = catalog_only_inventory(catalog, provider_profile_id);
+    let connection = connection_from_catalog(&configuration);
+    let connection = match configuration.connection_behavior_id.as_deref() {
+        None | Some("standard") => BuiltinConnectionFactory::Configured(connection),
+        Some("sn") => BuiltinConnectionFactory::Sn(connection),
+        Some(id) => {
+            return Err(ProviderError::InvalidConfiguration(format!(
+                "unknown provider connection behavior `{id}`"
+            )))
+        }
+    };
     Ok(BuiltinProviderRegistration {
         profile,
-        connection: BuiltinConnectionFactory::Configured(connection_from_catalog(&configuration)),
-        discovery,
-        supports_dynamic_login,
+        connection,
+        discovery_behavior_id: configuration.discovery_behavior_id,
+        dynamic_login_behavior_id: configuration.dynamic_login_behavior_id,
         supports_any_adapter,
         instance_rules: None,
     })
 }
 
-fn profile_from_catalog(
-    configuration: &ResolvedProviderConfiguration,
-    _discovery: BuiltinDiscoveryFactory,
-) -> ProviderProfile {
+fn profile_from_catalog(configuration: &ResolvedProviderConfiguration) -> ProviderProfile {
     ProviderProfile {
         provider_profile_id: configuration.provider_profile_id.clone(),
         display_name: configuration.display_name.clone(),
@@ -408,6 +416,7 @@ fn profile_from_catalog(
         discovery_mode: DiscoveryMode::MachineApi,
         refresh: RefreshPolicy::default(),
         default_inventory: None,
+        accepts_any_adapter: false,
     }
 }
 
@@ -465,6 +474,7 @@ fn custom_registration() -> BuiltinProviderRegistration {
             discovery_mode: DiscoveryMode::MachineApi,
             refresh: RefreshPolicy::default(),
             default_inventory: None,
+            accepts_any_adapter: true,
         },
         connection: BuiltinConnectionFactory::Configured(ProviderConnectionContract {
             default_base_url: String::new(),
@@ -473,44 +483,16 @@ fn custom_registration() -> BuiltinProviderRegistration {
             account: ProviderFieldSchema::optional(),
             region_base_urls: BTreeMap::new(),
         }),
-        discovery: BuiltinDiscoveryFactory::Standard,
-        supports_dynamic_login: false,
+        discovery_behavior_id: "standard-models".to_owned(),
+        dynamic_login_behavior_id: None,
         supports_any_adapter: true,
-        instance_rules: Some(Value::Object(Map::new())),
+        instance_rules: Some(Default::default()),
     }
 }
 
 fn builtin_codec_registry() -> ProviderResult<CodecRegistry> {
     let mut registry = CodecRegistry::default();
-    for (descriptor, codecs) in [
-        openai_responses_adapter(),
-        claude_messages_adapter(),
-        gemini_interactions_adapter(),
-        openai_chat_completions_adapter(),
-        fal_queue_adapter(),
-    ] {
-        registry
-            .register_codecs(descriptor, codecs)
-            .map_err(|error| ProviderError::InvalidConfiguration(error.to_string()))?;
-    }
-    for (descriptor, codecs) in [
-        minimax_messages_adapter(),
-        openrouter_chat_adapter(),
-        kimi_chat_adapter(),
-        glm_chat_adapter(),
-    ] {
-        registry
-            .register_derived(descriptor, codecs)
-            .map_err(|error| ProviderError::InvalidConfiguration(error.to_string()))?;
-    }
-    for (descriptor, codecs) in openai_responses_compatible_adapters()
-        .map_err(|error| ProviderError::InvalidConfiguration(error.to_string()))?
-    {
-        registry
-            .register_derived(descriptor, codecs)
-            .map_err(|error| ProviderError::InvalidConfiguration(error.to_string()))?;
-    }
-    register_sn_openai_adapter(&mut registry)
+    crate::protocol::register_builtin_adapter_plugins(&mut registry)
         .map_err(|error| ProviderError::InvalidConfiguration(error.to_string()))?;
     Ok(registry)
 }
@@ -577,6 +559,22 @@ mod tests {
             ])
         );
         assert_eq!(registry.profiles().len(), profile_ids.len());
+
+        let catalog = MetadataSources {
+            builtin: load_builtin_metadata().unwrap(),
+            ..MetadataSources::default()
+        }
+        .build_snapshot(1, &crate::catalog::CatalogBuildOptions::default())
+        .unwrap();
+        let behaviors = discovery_behaviors();
+        for provider in catalog.known_providers() {
+            assert!(
+                behaviors.contains_key(provider.discovery_behavior_id.as_str()),
+                "{} references an unregistered discovery behavior {}",
+                provider.provider_profile_id,
+                provider.discovery_behavior_id
+            );
+        }
 
         let codecs = registry.codecs();
         let adapter_ids = codecs
@@ -657,6 +655,7 @@ mod tests {
                         "display_name": "Vendor",
                         "base_url": "https://vendor.example/v1",
                         "protocol_adapter_id": "openai-responses",
+                        "discovery_behavior_id": "openai-compatible-models",
                         "provider_rules_id": "vendor",
                         "credential": {"kind": "bearer"},
                         "connection": {
@@ -975,6 +974,9 @@ mod tests {
                 region: None,
                 workspace: None,
                 account: None,
+                request_timeout: std::time::Duration::from_secs(120),
+                auto_sync_models: true,
+                instance_rules: None,
             };
             let binding = registry
                 .resolve_instance(&instance, ProviderAuthMode::ApiKey, configured_inventory)
@@ -987,7 +989,7 @@ mod tests {
             assert_eq!(
                 binding.instance_rules,
                 (profile.provider_profile_id == CUSTOM_PROVIDER_PROFILE_ID)
-                    .then(|| Value::Object(Map::new()))
+                    .then(buckyos_api::ProviderInstanceRules::default)
             );
         }
 
@@ -1025,7 +1027,7 @@ mod tests {
             binding.profile.credential.header_name.as_deref(),
             Some("x-api-key")
         );
-        assert_eq!(binding.instance_rules, Some(Value::Object(Map::new())));
+        assert_eq!(binding.instance_rules, Some(Default::default()));
         assert_eq!(
             binding
                 .connection

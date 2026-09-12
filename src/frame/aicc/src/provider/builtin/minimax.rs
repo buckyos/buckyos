@@ -9,8 +9,6 @@ use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalo
 #[cfg(test)]
 use crate::protocol::CredentialKind;
 use crate::protocol::HttpTransport;
-#[cfg(test)]
-use serde::de::DeserializeOwned;
 
 pub(crate) const MINIMAX_PROVIDER_PROFILE_ID: &str = "minimax";
 
@@ -55,11 +53,6 @@ pub(crate) fn minimax_model_driver() -> ModelDriverCatalog {
 #[cfg(test)]
 pub(crate) fn minimax_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[MINIMAX_PROVIDER_PROFILE_ID])
-}
-
-#[cfg(test)]
-fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
-    serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 pub(crate) fn minimax_discovery(transport: HttpTransport) -> AnthropicModelsDiscovery {

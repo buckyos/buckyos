@@ -405,9 +405,9 @@ T1.5 必须增加同一对话连续调用中的跨模型切换矩阵，覆盖：
   x <target provider, target model>
 ```
 
-矩阵中的 `provider` 按 Provider driver 或协议 namespace 归类，`model` 使用会影响 wire 协议、provider_state 语义、tool/result replay 或响应解析的 T1.5 模型单元；同协议且无差异的物理模型可合并为一个代表模型，但合并依据必须写入 manifest。每个矩阵 cell 至少构造两轮同一 session 的调用：第一轮由 source 单元产生可回放的 assistant/tool/provider_state 历史，第二轮强制切换到 target 单元并验证请求可被 target Mock 接受，历史中不属于 target provider namespace 的 provider_state 按目标 Provider 降级策略处理。source 与 target 相同的 cell 也必须保留，用于证明同 Provider/model 的原生 provider_state 续用仍然正确。
+矩阵按 ProviderState 四元组 `<normalized_base_url, adapter_type, origin_provider, origin_model>` 归类；同协议且状态结构无差异的物理模型可合并为代表模型，但合并依据必须写入 manifest。每个矩阵 cell 至少构造两轮同一 session 的调用：第一轮产生可回放历史，第二轮强制切换到 target 单元并验证请求可被 target Mock 接受。只有四元组完全一致的状态可原样回放，其余状态必须按目标结构转换或安全跳过；同一四元组的 cell 也必须保留。
 
-当前 T1.5 runner 已对 OpenAI、OpenRouter、Claude 和 Gemini 的 LLM 历史回放单元派生不同 Provider 之间的 switch 矩阵；执行时同一 session 先调用 source exact model，再携带 source namespace 的 provider_state 强制调用 target exact model，并以 target 高保真 Mock 的严格协议检查作为通过条件。
+T1.5 runner 必须对 OpenAI、OpenRouter、Claude 和 Gemini 的 LLM 历史回放单元派生 source/target 四元组 switch 矩阵，并记录转换前后的完整坐标；不能只记录 Provider namespace。
 
 T1.5 必须把近期线上失败沉淀为跨 Provider 回归用例，而不能只补单个 Provider 的 happy path。至少包括：
 
@@ -839,7 +839,7 @@ run_id
 - 每次 attempt、耗时、错误码、failure class 和脱敏诊断。
 - T1 路由分支/组合覆盖率。
 - T1.5 按 Provider、adapter/API version、API type 的官方协议请求/响应/错误覆盖率及证据 revision。
-- T1.5 同一 session `<source provider, source model> x <target provider, target model>` 切换矩阵的 planned/passed/failed/skipped 明细、合并依据和 provider_state 降级证据。
+- T1.5 同一 session `source 四元组 x target 四元组` 切换矩阵的 planned/passed/failed/skipped 明细、合并依据和 provider_state 转换证据。
 - T1.5 artifact task-result 回归用例的 planned/passed/failed/skipped 明细，覆盖 Provider driver、API type、资源表示、TaskMgr task 终态和 inline base64 清除证据。
 - T2 `ProviderInstance × model × API-Type` 矩阵结果和推理正确性结论。
 - T3 各入口入站、出站和多附件覆盖率。

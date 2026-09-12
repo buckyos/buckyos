@@ -3,7 +3,7 @@ use super::super::{
     ProviderDiscoverySnapshot, ProviderError, ProviderHealthState, ProviderResult,
 };
 #[cfg(test)]
-use super::super::{DiscoveryMode, ProviderConnectionContract, ProviderProfile};
+use super::super::{DiscoveryMode, ProviderProfile};
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
 use crate::protocol::{CredentialKind, HttpRequest, HttpResponse, HttpTransport};
@@ -26,11 +26,6 @@ pub(crate) fn openai_profile() -> ProviderProfile {
 #[cfg(test)]
 pub(crate) fn openai_known_provider() -> crate::catalog::KnownProvider {
     super::builtin_known_provider(OPENAI_PROVIDER_PROFILE_ID)
-}
-
-#[cfg(test)]
-pub(crate) fn openai_connection_contract() -> ProviderConnectionContract {
-    super::builtin_connection_contract(OPENAI_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
@@ -290,6 +285,9 @@ mod tests {
             region: None,
             workspace: None,
             account: None,
+            request_timeout: Duration::from_secs(120),
+            auto_sync_models: true,
+            instance_rules: None,
         }
     }
 

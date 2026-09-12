@@ -229,13 +229,8 @@ fal Queue、MiniMax video、GLM async、豆包媒体和 Qwen/DashScope 媒体共
 
 ```text
 provider/
-├── profile          Provider Profile descriptor
-├── rules            Provider Rules 编译结果
-├── instance         settings 与运行态组合
-├── registry         ExecutableProviderInstance 不可变索引
-├── discovery        openai/claude/gemini/openrouter models 与 catalog_only
-├── inventory        build、LKGS、seq 收敛、refresh loop
-├── lifecycle        start/stop/replace 与迟到写保护
+├── mod.rs           Profile、运行 registry 与 lifecycle
+├── inventory.rs     typed connection/discovery、库存 build 与 Model Driver 匹配
 └── builtin
     ├── openai       ├── claude      ├── gemini
     ├── fal          ├── openrouter  ├── minimax
@@ -243,7 +238,11 @@ provider/
     ├── doubao       └── qwen
 ```
 
-`builtin/<provider>` 是专用行为装配模块，不是协议实现、配置真相源或完整 Provider 清单。它只为需要代码的稳定 ID 注册无法声明化的 credential/discovery 差异、协议 codec 及必要 dialect/native module，并消费 catalog 解析结果；没有专用模块的新 Profile 由通用协议发现路径装配，并在发现失败时使用配置/catalog 静态 inventory。显示信息、默认 `base_url`、区域/workspace schema、credential 的声明信息、模型映射、operation/Adapter 选择、请求规则、能力收窄和静态价格等常规内容来自该 Provider 独立的 `.provider.json` 或 Known Provider catalog，不得在 Rust 中重复构造生产用 catalog。
+`builtin/<provider>` 是专用行为实现，不是协议实现、配置真相源或完整 Provider 清单。Known Provider metadata 用 `discovery_behavior_id` 及可选 dynamic-login/connection behavior ID 选择 registry 实现；registry 不按 Provider ID 分派。通用行为也使用稳定 ID，新增复用者无需改 Rust。显示信息、默认 `base_url`、区域/workspace schema、credential 的声明信息、模型映射、operation/Adapter 选择、请求规则、能力收窄和静态价格等常规内容来自该 Provider 独立的 `.provider.json` 或 Known Provider catalog，不得在 Rust 中重复构造生产用 catalog。
+
+`service/` 的组合根只保留启动装配、service 状态和共享小工具；`management.rs`、`ports.rs`、`inference.rs`、`provider_execution.rs`、`quota.rs`、`settings_runtime.rs` 与 `model_defaults.rs` 分别拥有管理 RPC、系统端口适配、推理入口、Provider wire 执行、额度聚合、settings/runtime 装配和逻辑模型工厂。`provider/mod.rs` 保存 Provider 契约，`provider/runtime.rs` 保存刷新状态机和生命周期管理器，`provider/inventory.rs` 保存库存构建。`catalog/schema.rs` 保存 typed catalog 文档，`catalog/mod.rs` 负责 snapshot/索引/解析，`catalog/validation.rs` 负责 schema 与引用校验。上述子模块均使用显式 re-export，禁止星号 re-export 扩大 crate 内可见面。
+
+Protocol Adapter 通过 `ProtocolAdapterPlugin` 注册。构建脚本自动扫描 `protocol/plugins/*.rs` 并生成确定顺序的插件表，因此新增 wire protocol 的代码注册点就是新增插件文件；Provider registry 不再维护 Adapter 厂商列表。
 
 ### 5.2 首版装配矩阵
 

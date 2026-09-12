@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::catalog::CatalogSnapshot;
 #[cfg(test)]
 use crate::error::SettingsError;
@@ -727,11 +725,15 @@ mod tests {
                     .iter()
                     .map(|name| ProviderSettings {
                         provider_instance_name: (*name).into(),
-                        provider_type: "cloud_api".into(),
+                        provider_type: buckyos_api::ProviderInstanceType::CloudApi,
                         provider_profile_id: "openai".into(),
+                        protocol_family_id: Some("openai".into()),
                         protocol_adapter_id: "openai-responses".into(),
                         base_url: "https://api.example/v1".into(),
-                        credentials: json!({"credential_ref": format!("secret://{name}")}),
+                        credentials: serde_json::from_value(
+                            json!({"credential_ref": {"locked": format!("secret://{name}")}}),
+                        )
+                        .unwrap(),
                         enabled: true,
                         region: None,
                         workspace: None,
@@ -742,6 +744,7 @@ mod tests {
                         instance_rules: None,
                         timeout_ms: None,
                         auto_sync_models: None,
+                        lifecycle: Default::default(),
                     })
                     .collect(),
                 session_config: None,
