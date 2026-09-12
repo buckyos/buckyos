@@ -5,7 +5,6 @@ mod claude_messages;
 #[cfg(test)]
 mod contract;
 mod derived_responses;
-mod error;
 mod fal_queue;
 mod gemini;
 mod minimax_media;
@@ -45,7 +44,7 @@ pub(crate) use derived_responses::ResponsesDialectKind;
 pub(crate) use derived_responses::{
     openai_responses_compatible_adapters, DEEPSEEK_RESPONSES_ADAPTER_ID,
 };
-pub(crate) use error::{ProtocolError, ProtocolErrorKind, ProtocolResultValue};
+pub(crate) use crate::error::{ProtocolError, ProtocolErrorKind, ProtocolResultValue};
 pub(crate) use fal_queue::fal_queue_adapter;
 #[cfg(test)]
 pub(crate) use fal_queue::{FAL_QUEUE_ADAPTER_ID, FAL_QUEUE_OPERATION_ID};
