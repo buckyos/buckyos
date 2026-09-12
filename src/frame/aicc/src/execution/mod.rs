@@ -595,6 +595,8 @@ pub(crate) struct ExecutionReceipt {
     pub output: Option<ExecutionOutput>,
     pub error: Option<AiccError>,
     pub provider_task_ref: Option<String>,
+    #[serde(skip)]
+    pub initial_poll_after: Option<Duration>,
 }
 
 impl From<ExecutionRecord> for ExecutionReceipt {
@@ -606,6 +608,7 @@ impl From<ExecutionRecord> for ExecutionReceipt {
             output: record.output,
             error: record.error,
             provider_task_ref: record.binding.and_then(|binding| binding.remote_task_id),
+            initial_poll_after: None,
         }
     }
 }
@@ -880,7 +883,9 @@ impl ExecutionEngine {
                             )
                             .await?;
                         self.remove_active(&record.task_id);
-                        return self.current_receipt(&record.task_id).await;
+                        let mut receipt = self.current_receipt(&record.task_id).await?;
+                        receipt.initial_poll_after = handle.poll_after;
+                        return Ok(receipt);
                     }
                 },
                 Err(failure) => {
@@ -923,6 +928,14 @@ impl ExecutionEngine {
     }
 
     pub(crate) async fn drive_native(&self, task_id: &str) -> Result<ExecutionReceipt, AiccError> {
+        self.drive_native_after(task_id, None).await
+    }
+
+    pub(crate) async fn drive_native_after(
+        &self,
+        task_id: &str,
+        initial_poll_after: Option<Duration>,
+    ) -> Result<ExecutionReceipt, AiccError> {
         let record = self.store.get_task(task_id).await?.ok_or_else(|| {
             aicc_error(
                 AiccErrorCode::InvalidRequest,
@@ -980,7 +993,17 @@ impl ExecutionEngine {
         if already_active {
             return self.current_receipt(task_id).await;
         }
+        let mut next_poll_after = initial_poll_after;
         loop {
+            if let Some(delay) = next_poll_after.take().filter(|delay| !delay.is_zero()) {
+                tokio::select! {
+                    _ = cancellation.cancelled() => {
+                        self.remove_active(task_id);
+                        return self.current_receipt(task_id).await;
+                    }
+                    _ = tokio::time::sleep(delay) => {}
+                }
+            }
             if cancellation.is_cancelled() {
                 self.remove_active(task_id);
                 return self.current_receipt(task_id).await;
@@ -1014,7 +1037,7 @@ impl ExecutionEngine {
                             json_state("provider_progress", progress, record.trace_id.as_deref()),
                         )
                         .await?;
-                    tokio::time::sleep(retry_after.unwrap_or(Duration::from_millis(250))).await;
+                    next_poll_after = Some(retry_after.unwrap_or(Duration::from_millis(250)));
                 }
                 Ok(NativeTaskPoll::Complete(output)) => {
                     return self
@@ -2281,6 +2304,7 @@ mod tests {
         let providers = Arc::new(FakeProviders::default());
         let mut handle = NativeTaskHandle::new("remote-1").unwrap();
         handle.state = NativeTaskState::Queued;
+        handle.poll_after = Some(Duration::from_secs(2));
         handle.cancel_supported = true;
         providers
             .plans
@@ -2306,6 +2330,7 @@ mod tests {
         let started = engine.execute(request(call("primary"))).await.unwrap();
         assert_eq!(started.state, ExecutionState::Queued);
         assert_eq!(started.provider_task_ref.as_deref(), Some("remote-1"));
+        assert_eq!(started.initial_poll_after, Some(Duration::from_secs(2)));
         let persisted = store.get_task(&started.task_id).await.unwrap().unwrap();
         assert_eq!(persisted.trace_id.as_deref(), Some("trace-1"));
         assert_eq!(persisted.user_id, "user-1");
@@ -2347,6 +2372,51 @@ mod tests {
             tasks.completed.lock().unwrap().as_slice(),
             [(started.task_id, Some("trace-1".into()))]
         );
+    }
+
+    #[tokio::test]
+    async fn native_task_honors_submit_poll_after_before_first_poll() {
+        let providers = Arc::new(FakeProviders::default());
+        let mut handle = NativeTaskHandle::new("remote-delayed").unwrap();
+        handle.state = NativeTaskState::Queued;
+        handle.poll_after = Some(Duration::from_millis(100));
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle,
+                resume: resume_descriptor(),
+            }));
+        providers
+            .polls
+            .lock()
+            .unwrap()
+            .push_back(NativeTaskPoll::Complete(output("video")));
+        let (engine, _, _, _) = make_engine(providers.clone());
+        let started = engine.execute(request(call("primary"))).await.unwrap();
+        let initial_poll_after = started.initial_poll_after;
+        let task_id = started.task_id;
+        let engine = Arc::new(engine);
+        let drive = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .drive_native_after(&task_id, initial_poll_after)
+                    .await
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(providers.polls.lock().unwrap().len(), 1);
+
+        let completed = tokio::time::timeout(Duration::from_secs(1), drive)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.state, ExecutionState::Succeeded);
+        assert!(providers.polls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
