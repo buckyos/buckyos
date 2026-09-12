@@ -141,7 +141,11 @@ Indexes：`created_at_ms`、`(tenant_id, created_at_ms)`、`(trace_id, created_a
 
 ## 5. Schema Version
 
-本文表集的初始契约版本为 `1`。Beta 2.2 当前由 AICC 发布版本中的 `storage::SCHEMA` 固定表集版本，除 inventory 行外尚未在 RDB 中单独保存全局 schema version。在 Beta 2.2 发布冻结前，任何需要保留旧数据的第二版 schema 必须先引入平台 RDB meta/version 记录和显式 migration；不得依赖 `CREATE TABLE IF NOT EXISTS` 猜测版本。
+本文表集的初始契约版本为 `1`，当前版本为 `2`。版本 2 为 usage finance 增加 `finance_amount`、`finance_currency`、`finance_valid` 查询投影；`finance_snapshot_json` 仍是权威数据，普通列是写入时生成且可直接信任的查询投影，读取时不反向解析 JSON，也不做双份校验。RDB 先只 bootstrap `aicc_schema_meta`，再从记录版本按 `MIGRATIONS` 的严格递增序列逐项执行事务化 migration，成功提交后才更新全局版本；高于客户端支持版本、缺少中间 migration 或执行失败均拒绝启动。业务表不再先于版本检查无条件创建。后续字段变化必须新增显式 migration，不得依赖 `CREATE TABLE IF NOT EXISTS` 猜测版本。
+
+`usage.query` 的时间、身份、模型、Provider、method 等过滤条件、事件游标和页大小均进入 SQL；summary、group 和 time bucket 由数据库基于 typed projection 聚合，只将聚合行和请求页返回进程，不再先加载全部命中事件。
+
+各业务表的 `*_json` 是完整权威 payload，普通 typed columns 是同一次写入生成、可直接信任的查询投影。读取列表、过滤、聚合和分页可以只读投影列，无需加载 JSON 或逐行复核两者相等；需要重建完整对象时才读取 JSON。
 
 ## 6. Upgrade Compatibility Strategy
 

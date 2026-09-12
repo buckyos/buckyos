@@ -52,8 +52,7 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
       "protocol_adapter_id": "openai-responses",
       "base_url": "https://api.openai.com/v1",
       "credentials": {
-        "type": "bearer",
-        "secret_ref": "system-config://secrets/aicc/openai-work"
+        "api_token": { "locked": "..." }
       },
       "region": "global",
       "enabled": true
@@ -64,7 +63,7 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 
 不使用 Provider family section、`instances[]` 包装、`provider_driver`、settings 中的 `endpoint`、section 级 token、`features` 或字段别名。`base_url` 是 Provider Instance settings 的正式字段；Profile 默认值只用于创建表单，不能覆盖实例显式配置。
 
-用户通过管理 RPC 添加自定义 Provider 时不填写 `protocol_adapter_id`，只提交协议族、`base_url` 和凭据；管理 RPC、UI DataModel 与 settings 使用同一字段名。例如：
+用户通过管理 RPC 添加自定义 Provider 时可以只提交协议族、`base_url` 和凭据；registry 解析族默认 Adapter。需要指定已注册的历史/派生协议时可同时提交 `protocol_adapter_id`，但它必须属于所给协议族。例如：
 
 ```json
 {
@@ -77,20 +76,32 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 
 这种 `custom` Provider 默认使用空 Provider Rules `{}`。接入测试解析出的 Adapter 只决定调用协议；discovery 返回的每个 `provider_model_id` 保持原样，并在系统当前安装的全部 Model Driver 中唯一匹配原厂 metadata。系统不自动删除 `openai/` 等前缀，也不复用 OpenRouter 等官方 Provider 的 origin mapping；需要非标准命名映射时，必须把该渠道升级为有独立 `.provider.json` 的官方支持 Provider。
 
-`provider.validate` / `provider.add` 先测试该协议族的官方新接口，再按优先级测试运行时已经注册的历史接口。首个成功结果作为内部 `protocol_adapter_id` 保存，例如解析为 `openai-chat-completions`。只有“接口不支持”允许继续下一个候选；认证、网络、限流和服务端错误直接返回。该协商只发生在创建或更新阶段，运行时不得再次试探或 fallback。
+`provider.validate` / `provider.add` 通过 registry 校验协议族与 Adapter 的归属关系并保存确定的 `protocol_adapter_id`。当前不会通过发送推理请求盲探多个协议；调用方未显式指定 Adapter 时使用该协议族注册的默认项。该解析只发生在创建或更新阶段，运行时不得再次猜测或 fallback。
 
 ## 4. 接入步骤
 
-1. 将渠道加入官方支持范围时，为它创建独立 `.provider.json`，在 Provider Profile / Known Provider catalog 定义认证声明、默认 `base_url`、Adapter 选择和 UI schema。用户自行添加的 `custom` Provider 不创建伪官方 catalog，使用标准空规则 `{}`。
+1. 将渠道加入官方支持范围时，为它创建独立 `.provider.json`，在 Known Provider catalog 定义认证声明、默认 `base_url`、Adapter、`discovery_behavior_id` 和 UI schema；仅在需要时声明 `dynamic_login_behavior_id` / `connection_behavior_id`。用户自行添加的 `custom` Provider 不创建伪官方 catalog，使用标准空规则 `{}`。
 2. 如 Provider 需要尚未实现的新协议或历史接口，在 Adapter registry 按需注册固定 `protocol_adapter_id` 和支持的 operations；不要为了覆盖厂商历史而预先实现未被使用的 Adapter。
    若只是兼容旧 API，则新增一份协议族级共享历史 Adapter，不修改官方新接口 Adapter，也不增加运行时协议 fallback；同时把它加入该协议族的接入测试候选顺序。
    若共享 Adapter 已存在且渠道没有差异，直接引用它；有认证、endpoint、参数或能力差异时先写入 `.provider.json`。只有无法安全声明化的执行差异才增加派生 Adapter，声明 `base_adapter_id`，并只实现剩余的最小逻辑差异层。
+   如现有 discovery 行为可复用，直接引用已注册的稳定 behavior ID；只有出现新的机器发现 wire 行为时才实现并注册新 behavior。不得在中心代码增加 `provider_profile_id == ...` 或按厂商 ID 的 `match`。
+   Adapter 插件在 `src/protocol/plugins/*.rs` 实现 `ProtocolAdapterPlugin`；`build.rs` 按文件名排序自动生成注册表。新增插件文件后不需要再修改 `provider/builtin/registry.rs` 或中心 Adapter 列表。
 3. 在 Model Driver catalog 声明 ModelUID、origin model、variants、能力与限制。
 4. 在 Provider Rules 中声明 provider model 映射、operation 选择、参数 lowering 和价格解析。
    对拟新增的 dialect 先完成声明化评审；schema 不足时优先扩展统一 schema，禁止在 dialect 代码中直接维护常规模型/参数/operation 表。
 5. 让 discovery 只收窄 catalog 声明，不能自行抬高模型能力。
 6. 通过 `provider.validate` 校验实例草案，再写入 system-config。
 7. 调用 `service.reload_settings`，用 `models.list` 和 `route.resolve` 验证完整身份链。
+
+内置 metadata 文件放入 `driver_metadata/models`、`driver_metadata/providers` 或
+`driver_metadata/known-providers` 后由 build script 自动嵌入；不再维护 Rust
+`include_bytes!` 清单。聚合 Provider 的 discovery/Rules 必须至少确定
+`origin_model_id`；没有直接给出 Model Driver 时，库存构建器在全部 Model Driver metadata
+中做唯一匹配并补全 `origin_provider`，多重命中拒绝发布库存。
+
+实例字段 `timeout_ms` 直接控制 HTTP 请求超时；`auto_sync_models=false` 只关闭周期同步，
+不跳过启动时的首次发现；`instance_rules` 是强类型对象，目前支持
+`exclude_models` 与 `origin_model_overrides`，未知字段会被拒绝。
 
 ## 5. 必须验证的行为
 

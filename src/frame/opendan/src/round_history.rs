@@ -1185,12 +1185,15 @@ fn chat_msgonly_message(message: &AiMessage) -> Option<AiMessage> {
         .iter()
         .filter_map(|block| match block {
             AiContent::Text { text } => Some(AiContent::Text { text: text.clone() }),
-            AiContent::ProviderState { provider, value } if message.role == AiRole::Assistant => {
-                Some(AiContent::ProviderState {
-                    provider: provider.clone(),
-                    value: value.clone(),
-                })
-            }
+            AiContent::ProviderState {
+                source,
+                provider,
+                value,
+            } if message.role == AiRole::Assistant => Some(AiContent::ProviderState {
+                source: source.clone(),
+                provider: provider.clone(),
+                value: value.clone(),
+            }),
             _ => None,
         })
         .collect();
@@ -1444,6 +1447,12 @@ mod tests {
                 vec![
                     AiContent::text(text),
                     AiContent::ProviderState {
+                        source: buckyos_api::ProviderStateCoordinate {
+                            normalized_base_url: "https://openrouter.ai/api/v1".to_string(),
+                            adapter_type: "openrouter-chat-completions".to_string(),
+                            origin_provider: "openai".to_string(),
+                            origin_model: "test-model".to_string(),
+                        },
                         provider: "openrouter".to_string(),
                         value: serde_json::json!({
                             "type": "message",

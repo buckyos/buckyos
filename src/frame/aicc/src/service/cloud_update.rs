@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, Notify, RwLock, broadcast, watch};
+use tokio::sync::{broadcast, watch, Mutex, Notify, RwLock};
 
 use crate::catalog::CatalogKind;
 #[cfg(test)]

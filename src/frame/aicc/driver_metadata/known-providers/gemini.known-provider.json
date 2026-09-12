@@ -10,6 +10,7 @@
       "display_name": "Google Gemini",
       "base_url": "https://generativelanguage.googleapis.com/v1beta",
       "protocol_adapter_id": "gemini-interactions",
+      "discovery_behavior_id": "gemini-models",
       "provider_rules_id": "gemini",
       "credential": { "kind": "named_header", "header_name": "x-goog-api-key" },
       "connection": {

@@ -191,6 +191,7 @@ pub fn msg_object_to_ai_message_with_role(msg: &MsgObject, role: AiRole) -> AiMe
     if let Some(machine) = &msg.content.machine {
         if let Ok(value) = serde_json::to_value(machine) {
             blocks.push(AiContent::ProviderState {
+                source: buckyos_api::ProviderStateCoordinate::unbound(),
                 provider: PROVIDER_MSG_MACHINE.to_string(),
                 value,
             });
@@ -236,6 +237,7 @@ pub fn msg_object_to_ai_message_with_role_structured(msg: &MsgObject, role: AiRo
         })
         .unwrap_or_default();
     message.content.push(AiContent::ProviderState {
+        source: buckyos_api::ProviderStateCoordinate::unbound(),
         provider: PROVIDER_MSG_METADATA.to_string(),
         value: json!({
             "attachments": attachments,
@@ -324,7 +326,9 @@ pub fn ai_message_to_msg_object_with_base_validated_with_options(
                     validator,
                 );
             }
-            AiContent::ProviderState { provider, value } if provider == PROVIDER_MSG_MACHINE => {
+            AiContent::ProviderState {
+                provider, value, ..
+            } if provider == PROVIDER_MSG_MACHINE => {
                 machine_payloads.push(value.clone());
             }
             AiContent::ToolUse { .. }
@@ -386,7 +390,9 @@ pub async fn ai_message_to_msg_object_with_base_validated_async(
                     validator,
                 );
             }
-            AiContent::ProviderState { provider, value } if provider == PROVIDER_MSG_MACHINE => {
+            AiContent::ProviderState {
+                provider, value, ..
+            } if provider == PROVIDER_MSG_MACHINE => {
                 machine_payloads.push(value.clone());
             }
             AiContent::ToolUse { .. }
@@ -488,6 +494,7 @@ fn ref_item_to_ai_content(
             }
         }
         RefTarget::ServiceDid { did } => Some(AiContent::ProviderState {
+            source: buckyos_api::ProviderStateCoordinate::unbound(),
             provider: PROVIDER_MSG_SERVICE_REF.to_string(),
             value: json!({
                 "did": did.to_string(),
@@ -1399,11 +1406,9 @@ mod tests {
             .content
             .iter()
             .find_map(|block| match block {
-                AiContent::ProviderState { provider, value }
-                    if provider == PROVIDER_MSG_METADATA =>
-                {
-                    Some(value)
-                }
+                AiContent::ProviderState {
+                    provider, value, ..
+                } if provider == PROVIDER_MSG_METADATA => Some(value),
                 _ => None,
             })
             .expect("structured message metadata")

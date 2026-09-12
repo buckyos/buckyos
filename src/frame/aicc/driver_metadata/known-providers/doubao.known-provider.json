@@ -10,6 +10,7 @@
       "display_name": "豆包（火山方舟）",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "protocol_adapter_id": "doubao-responses",
+      "discovery_behavior_id": "openai-compatible-models",
       "provider_rules_id": "doubao",
       "credential": { "kind": "bearer" },
       "connection": {

@@ -8,7 +8,7 @@ use name_lib::DID;
 use ndn_lib::ObjId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 
 pub const AICC_SERVICE_UNIQUE_ID: &str = "aicc";
@@ -194,6 +194,12 @@ mod canonical_contract_tests {
                     provider_metadata: Some(json!({"signature": "opaque"})),
                 },
                 AiContent::ProviderState {
+                    source: ProviderStateCoordinate {
+                        normalized_base_url: "https://api.openai.com/v1".to_string(),
+                        adapter_type: "openai-responses".to_string(),
+                        origin_provider: "openai".to_string(),
+                        origin_model: "gpt-test".to_string(),
+                    },
                     provider: "openai".to_string(),
                     value: json!({"type": "reasoning", "id": "rs_1"}),
                 },
@@ -513,10 +519,10 @@ mod canonical_contract_tests {
 
         let request = ProviderAddRequest::new(
             "openai-main",
-            "cloud_api",
+            ProviderInstanceType::CloudApi,
             "openai",
             "https://api.openai.com/v1",
-            json!({"type": "bearer", "secret": "redacted"}),
+            serde_json::from_value(json!({"api_token": {"locked": "redacted"}})).unwrap(),
         );
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(ProviderAddRequest::from_json(value).unwrap(), request);
@@ -694,7 +700,7 @@ mod canonical_contract_tests {
     fn provider_instance_view(enabled: bool) -> ProviderInstanceView {
         ProviderInstanceView {
             provider_instance_name: "openai-main".to_string(),
-            provider_type: "cloud_api".to_string(),
+            provider_type: ProviderInstanceType::CloudApi,
             provider_profile_id: "openai".to_string(),
             protocol_adapter_id: "openai-responses".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
@@ -906,20 +912,20 @@ mod canonical_contract_tests {
 
     fn provider_validate_request() -> ProviderValidateRequest {
         ProviderValidateRequest::new(
-            "cloud_api",
+            ProviderInstanceType::CloudApi,
             "openai",
             "https://api.openai.com/v1",
-            json!({"type": "bearer", "secret": "redacted"}),
+            serde_json::from_value(json!({"api_token": {"locked": "redacted"}})).unwrap(),
         )
     }
 
     fn provider_add_request() -> ProviderAddRequest {
         ProviderAddRequest::new(
             "openai-main",
-            "cloud_api",
+            ProviderInstanceType::CloudApi,
             "openai",
             "https://api.openai.com/v1",
-            json!({"type": "bearer", "secret": "redacted"}),
+            serde_json::from_value(json!({"api_token": {"locked": "redacted"}})).unwrap(),
         )
     }
 
@@ -2048,10 +2054,38 @@ pub enum AiContent {
     /// abstracted across providers (OpenAI reasoning item id/encrypted_content,
     /// Claude server_tool_use / web_search_tool_result, etc.).
     ///
-    /// `provider` is the stable owner/consumer namespace for the opaque item,
-    /// not the native item's protocol or type name. Each adapter defines the
-    /// provider namespaces it can restore; the rest are dropped.
-    ProviderState { provider: String, value: Value },
+    ProviderState {
+        source: ProviderStateCoordinate,
+        provider: String,
+        value: Value,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderStateCoordinate {
+    pub normalized_base_url: String,
+    pub adapter_type: String,
+    pub origin_provider: String,
+    pub origin_model: String,
+}
+
+impl ProviderStateCoordinate {
+    pub fn unbound() -> Self {
+        Self {
+            normalized_base_url: String::new(),
+            adapter_type: String::new(),
+            origin_provider: String::new(),
+            origin_model: String::new(),
+        }
+    }
+
+    pub fn is_bound(&self) -> bool {
+        !self.normalized_base_url.is_empty()
+            && !self.adapter_type.is_empty()
+            && !self.origin_provider.is_empty()
+            && !self.origin_model.is_empty()
+    }
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq)]
@@ -3823,6 +3857,11 @@ pub struct ProviderCatalogEntry {
     pub display_name: String,
     pub base_url: String,
     pub protocol_adapter_id: String,
+    pub discovery_behavior_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_login_behavior_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_behavior_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_rules_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -3890,6 +3929,8 @@ pub struct ProtocolAdapterView {
     pub status: ProtocolAdapterStatus,
     pub probe_priority: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_adapter_id: Option<String>,
     #[serde(default)]
     pub operations: Vec<ProtocolAdapterOperation>,
@@ -3902,19 +3943,98 @@ pub struct ProtocolAdapterListResponse {
     pub adapters: Vec<ProtocolAdapterView>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCredentialKind {
+    Bearer,
+    NamedHeader,
+    FalKey,
+    GlmJwt,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProviderAuthSettings {
+    ApiKey {
+        credential_ref: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_kind: Option<ProviderCredentialKind>,
+    },
+    DynamicLogin {
+        login_profile: String,
+        login_endpoint: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderLockedCredential {
+    pub locked: String,
+}
+
+pub type ProviderCredentials = BTreeMap<String, ProviderLockedCredential>;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderDiscoveryHealth {
+    Unknown,
+    Healthy,
+    Degraded,
+    Unavailable,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderModelAvailability {
+    Available,
+    Unavailable,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderDiscoveredModel {
+    pub provider_model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_types: Option<Vec<ApiType>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported_features: Option<BTreeSet<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_methods: Option<BTreeSet<String>>,
+    pub availability: ProviderModelAvailability,
+    #[serde(default)]
+    pub deprecated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderDiscoverySettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    pub discovered_at_ms: i64,
+    pub health: ProviderDiscoveryHealth,
+    #[serde(default)]
+    pub models: Vec<ProviderDiscoveredModel>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderValidateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_instance_name: Option<String>,
-    pub provider_type: String,
+    pub provider_type: ProviderInstanceType,
     pub provider_profile_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_family_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_adapter_id: Option<String>,
     pub base_url: String,
-    pub credentials: Value,
+    pub credentials: ProviderCredentials,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3924,11 +4044,11 @@ pub struct ProviderValidateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_rules_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth: Option<Value>,
+    pub auth: Option<ProviderAuthSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discovery: Option<Value>,
+    pub discovery: Option<ProviderDiscoverySettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_rules: Option<Value>,
+    pub instance_rules: Option<ProviderInstanceRules>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3939,14 +4059,14 @@ impl_request_json!(ProviderValidateRequest);
 
 impl ProviderValidateRequest {
     pub fn new(
-        provider_type: impl Into<String>,
+        provider_type: ProviderInstanceType,
         provider_profile_id: impl Into<String>,
         base_url: impl Into<String>,
-        credentials: Value,
+        credentials: ProviderCredentials,
     ) -> Self {
         Self {
             provider_instance_name: None,
-            provider_type: provider_type.into(),
+            provider_type,
             provider_profile_id: provider_profile_id.into(),
             protocol_family_id: None,
             protocol_adapter_id: None,
@@ -4003,14 +4123,14 @@ pub struct ProviderValidateResponse {
 #[serde(deny_unknown_fields)]
 pub struct ProviderAddRequest {
     pub provider_instance_name: String,
-    pub provider_type: String,
+    pub provider_type: ProviderInstanceType,
     pub provider_profile_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_family_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_adapter_id: Option<String>,
     pub base_url: String,
-    pub credentials: Value,
+    pub credentials: ProviderCredentials,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4020,11 +4140,11 @@ pub struct ProviderAddRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_rules_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth: Option<Value>,
+    pub auth: Option<ProviderAuthSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discovery: Option<Value>,
+    pub discovery: Option<ProviderDiscoverySettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_rules: Option<Value>,
+    pub instance_rules: Option<ProviderInstanceRules>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4036,14 +4156,14 @@ impl_request_json!(ProviderAddRequest);
 impl ProviderAddRequest {
     pub fn new(
         provider_instance_name: impl Into<String>,
-        provider_type: impl Into<String>,
+        provider_type: ProviderInstanceType,
         provider_profile_id: impl Into<String>,
         base_url: impl Into<String>,
-        credentials: Value,
+        credentials: ProviderCredentials,
     ) -> Self {
         Self {
             provider_instance_name: provider_instance_name.into(),
-            provider_type: provider_type.into(),
+            provider_type,
             provider_profile_id: provider_profile_id.into(),
             protocol_family_id: None,
             protocol_adapter_id: None,
@@ -4257,6 +4377,23 @@ pub enum ProviderInstanceInventoryState {
     Loaded,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderInstanceType {
+    LocalInference,
+    CloudApi,
+    ProxyUnknown,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderInstanceRules {
+    #[serde(default)]
+    pub exclude_models: BTreeSet<String>,
+    #[serde(default)]
+    pub origin_model_overrides: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderInstanceInventoryView {
@@ -4291,7 +4428,7 @@ pub struct ProviderInstanceHealthView {
 #[serde(deny_unknown_fields)]
 pub struct ProviderInstanceView {
     pub provider_instance_name: String,
-    pub provider_type: String,
+    pub provider_type: ProviderInstanceType,
     pub provider_profile_id: String,
     pub protocol_adapter_id: String,
     pub base_url: String,
@@ -4341,15 +4478,17 @@ pub struct ProviderUpdateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential: Option<Value>,
+    pub credential: Option<ProviderCredentials>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_profile_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_family_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_adapter_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discovery: Option<Value>,
+    pub discovery: Option<ProviderDiscoverySettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_rules: Option<Value>,
+    pub instance_rules: Option<ProviderInstanceRules>,
 }
 
 impl_request_json!(ProviderUpdateRequest);
@@ -4363,6 +4502,7 @@ impl ProviderUpdateRequest {
             base_url: None,
             credential: None,
             provider_profile_id: None,
+            protocol_family_id: None,
             protocol_adapter_id: None,
             discovery: None,
             instance_rules: None,

@@ -87,11 +87,12 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
 - `provider_instance_name` 是 Zone 内稳定唯一主键。
 - `provider_type` 只表达部署类型，不表达厂商或协议。
 - `provider_profile_id` 必须来自 Known Provider catalog 或 `custom`。
-- `protocol_family_id` 只用于 `custom` Provider 的创建/更新请求，表达 OpenAI-compatible、Claude-compatible、Gemini-compatible 等大类；解析成功后可由 resolved Adapter 反查，不作为另一个运行期选择字段。
+- `protocol_family_id` 用于 `custom` Provider 的创建/更新协商，表达 OpenAI-compatible、Claude-compatible、Gemini-compatible 等大类；后端必须从该族已注册 Adapter 中解析并持久化确定的 `protocol_adapter_id`，运行时不再猜测。
 - `protocol_adapter_id` 是后端解析并保存的内部执行字段，必须来自运行时 adapter registry；Known Provider 由 Profile 给出确定值，`custom` Provider 的创建请求不要求用户填写。
-- `custom` Provider 管理请求只提交协议族、`base_url` 和凭据；后端在保存前先测官方新接口，再测该协议族中已注册的历史接口，并固化首个协议验证成功的 Adapter。
+- `custom` Provider 可以只提交协议族、`base_url` 和凭据，由 registry 选择该族默认 Adapter；也可显式提交属于该族的 Adapter。跨族组合必须拒绝，解析结果固化到 settings。
 - 只有明确的“接口不支持”结果才继续下一候选；连接、认证、限流和服务端故障直接返回，不能用旧接口测试掩盖。
-- 凭据使用 system-config locked value 或 credential reference，不进入 catalog、inventory、trace 或日志。
+- `credentials` 是 `map<string, {locked: string}>`，`auth` 是 `api_key|dynamic_login` tagged union，静态 `discovery` 是带 typed health/model availability 的对象；管理协议和持久 settings 共用这些 DTO，不接受任意 JSON 外壳。
+- 凭据使用 system-config locked value，不进入 catalog、inventory、trace 或日志；运行时从 typed auth 的 `credential_ref` 建立引用。
 - Catalog 更新不得修改实例名称、`base_url`、凭据、区域、账号或协议选择。
 - 不读取 `instance_id`、`provider_driver`、`endpoint`、`api_key`、`apiKey` 等旧字段或别名；管理 RPC 和 UI DataModel 同样拒绝配置字段 `endpoint`，`base_url` 是各层统一使用的正式字段。
 
@@ -109,7 +110,7 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
 
 `provider.catalog` 返回当前 active Known Provider catalog，至少包含 `provider_profile_id`、显示名、默认 `base_url`、内部默认 `protocol_adapter_id` 和 UI hints。Adapter 默认值供后端解析 Known Provider，不要求 UI 暴露 API 版本选择。Catalog 只提供表单默认值，不能覆盖 Provider Instance 私有配置。
 
-`protocol_adapter.list` 返回当前实际注册的 `protocol_family_id`、adapter ID、接口代际/状态、探测优先级、可选 `base_adapter_id`、支持的 operation 和协议能力。每个协议族必须包含官方新接口；历史接口由首个真实 Provider 需求触发实现，之后作为协议族级 Adapter 被多个 Provider 或派生 Adapter 共享。`sn-openai` 等派生 Adapter 使用独立 ID，并展示其确定的基础 Adapter。该接口用于后端接入解析、诊断和管理员只读展示，不作为普通用户的 API 版本选择列表。
+`protocol_adapter.list` 返回当前实际注册的 `protocol_family_id`、adapter ID、接口代际/状态、探测优先级、可选 `probe_path`、可选 `base_adapter_id`、支持的 operation 和协议能力。没有 `base_adapter_id` 且声明安全相对 `probe_path` 的协议族级 Adapter 才进入自动探测；Provider 派生 dialect 不参与 custom Provider 猜测。探测使用带认证的空 JSON 请求，`404/405/501` 表示接口不支持并继续下一候选，其它 4xx 表示接口存在；认证、限流、网络和 5xx 直接失败。每个协议族必须包含官方新接口；历史接口由首个真实 Provider 需求触发实现，之后作为协议族级 Adapter 被多个 Provider 或派生 Adapter 共享。`sn-openai` 等派生 Adapter 使用独立 ID，并展示其确定的基础 Adapter。该接口用于后端接入解析、诊断和管理员只读展示，不作为普通用户的 API 版本选择列表。
 
 Provider Wizard 每次打开只读取一次完整 catalog；catalog 不可用时仍允许进入手工模式。手工模式让用户选择 OpenAI-compatible、Claude-compatible、Gemini-compatible 等协议族，不要求识别 Responses、Chat Completions、Interactions 等 API 代际。保存前由后端执行 `base_url`、认证、协议和 discovery 验证并返回 resolved Adapter。
 

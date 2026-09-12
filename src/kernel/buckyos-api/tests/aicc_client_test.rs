@@ -1,6 +1,6 @@
 use buckyos_api::{
     AiMessage, AiMethodStatus, AiRole, AiccError, AiccErrorCode, AiccExecutionMode,
-    LlmChatInvokeRequest, LlmChatInvokeResponse, ProviderAddRequest,
+    LlmChatInvokeRequest, LlmChatInvokeResponse, ProviderAddRequest, ProviderInstanceType,
 };
 use serde_json::{json, Value};
 
@@ -101,10 +101,10 @@ fn aicc_errors_round_trip_through_krpc_and_task_data() {
 fn provider_add_accepts_only_the_current_locked_credential_schema() {
     let mut request = ProviderAddRequest::new(
         "t15-openai",
-        "cloud_api",
+        ProviderInstanceType::CloudApi,
         "openai",
         "http://127.0.0.1:18081/v1",
-        json!({"api_token": {"locked": "mock-secret"}}),
+        serde_json::from_value(json!({"api_token": {"locked": "mock-secret"}})).unwrap(),
     );
     request.protocol_adapter_id = Some("openai-responses".to_owned());
     request.auto_sync_models = Some(true);

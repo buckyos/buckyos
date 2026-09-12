@@ -4,13 +4,12 @@ use super::super::{
 };
 #[cfg(test)]
 use super::super::{
-    CatalogOnlyDiscovery, CredentialDescriptor, DiscoveryMode, ProviderConnectionContract,
-    ProviderConnectionInput, ProviderProfile, RefreshPolicy,
+    CredentialDescriptor, DiscoveryMode, ProviderConnectionContract, ProviderConnectionInput,
+    ProviderProfile, RefreshPolicy,
 };
 #[cfg(test)]
 use crate::catalog::{
-    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ModelDriverCatalog,
-    ProviderRulesCatalog,
+    CatalogKind, CurrentCatalogFile, KnownProvider, KnownProviderCatalog, ProviderRulesCatalog,
 };
 #[cfg(test)]
 use crate::protocol::CredentialKind;
@@ -96,15 +95,6 @@ impl BuiltinProviderDescriptor {
             models,
         })
     }
-
-    pub(crate) fn catalog_only_discovery(
-        &self,
-        model_ids: impl IntoIterator<Item = String>,
-    ) -> ProviderResult<Arc<dyn ProviderDiscovery>> {
-        Ok(Arc::new(CatalogOnlyDiscovery::new(
-            self.catalog_only_inventory(model_ids)?,
-        )))
-    }
 }
 
 #[cfg(test)]
@@ -157,14 +147,6 @@ pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProv
 #[cfg(test)]
 pub(crate) fn openai_responses_compatible_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID])
-}
-
-#[cfg(test)]
-pub(crate) fn openai_responses_compatible_model_driver_catalogs() -> Vec<ModelDriverCatalog> {
-    [DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID]
-        .into_iter()
-        .map(|id| super::builtin_catalog_document(CatalogKind::ModelDriver, id))
-        .collect()
 }
 
 pub(crate) fn openai_compatible_models_discovery(
@@ -243,6 +225,7 @@ fn descriptor(
             },
             refresh: RefreshPolicy::default(),
             default_inventory: None,
+            accepts_any_adapter: false,
         },
         connection,
         discovery,
@@ -323,19 +306,6 @@ impl OpenAiCompatibleModelsDiscovery {
             provider_profile_id: provider_profile_id.into(),
             protocol_adapter_id: protocol_adapter_id.into(),
             transport: Arc::new(transport),
-        }
-    }
-
-    #[cfg(test)]
-    fn with_transport(
-        provider_profile_id: &'static str,
-        protocol_adapter_id: &'static str,
-        transport: Arc<dyn OpenAiCompatibleModelsTransport>,
-    ) -> Self {
-        Self {
-            provider_profile_id: provider_profile_id.to_owned(),
-            protocol_adapter_id: protocol_adapter_id.to_owned(),
-            transport,
         }
     }
 }
@@ -715,6 +685,9 @@ mod tests {
             region: None,
             workspace: None,
             account: None,
+            request_timeout: Duration::from_secs(120),
+            auto_sync_models: true,
+            instance_rules: None,
         };
         let credential =
             ResolvedCredential::bearer("secret://deepseek/main", "secret-value").unwrap();
@@ -774,6 +747,9 @@ mod tests {
                 region: None,
                 workspace: (profile_id == QWEN_PROFILE_ID).then(|| "workspace1".to_owned()),
                 account: None,
+                request_timeout: Duration::from_secs(120),
+                auto_sync_models: true,
+                instance_rules: None,
             };
             let inventory = InventoryBuilder::build(
                 &provider.profile,

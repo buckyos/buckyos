@@ -189,9 +189,10 @@ AICC 应尽量把不同 AI 服务来源的结果整理成一致格式，使调�
 
 跨服务来源切换时，历史消息中的 Provider 原生状态必须按三档处理：
 
-1. 属于目标 Provider namespace 的 `provider_state` 必须按目标 Adapter 的规则原样还原，用于保持多轮推理、工具调用或服务端状态连续性。
-2. 不属于目标 Provider namespace、但包含可公开表达文本的 `provider_state`，必须降级为目标 Provider 可接受的普通文本上下文；降级内容只能来自公开文本、摘要、拒绝说明或已规范化内容，不得读取或暴露加密状态、密钥、原始私有 payload。
-3. 不属于目标 Provider namespace、且无法安全降级的 opaque `provider_state` 必须跳过。AICC 不得伪造目标 Provider 的私有状态，也不得因为存在外部 namespace 的 `provider_state` 直接让本次请求失败。
+1. 状态来源和转换目标都使用 `<normalized_base_url, adapter_type, origin_provider, origin_model>`；Provider Instance 与 API Key 不进入坐标。
+2. 来源四元组与目标完全一致时才允许按目标 Adapter 原样还原；跨实例、原厂或模型均必须执行到目标结构的转换。
+3. 通用转换只能提取公开文本、摘要、拒绝说明或已规范化内容；不得读取或暴露加密状态、密钥、原始私有 payload。无法安全转换的 opaque 状态必须跳过，不得伪造目标 Provider 私有状态。
+4. `origin_provider` 和 `origin_model` 在库存刷新阶段完成映射。ProviderState 使用阶段不得再执行原厂推断或 unresolved/ambiguity 分支。
 
 ### 6.9 使用量、成本和预算
 

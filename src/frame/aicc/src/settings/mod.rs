@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::catalog::{
     CatalogBuildOptions, CatalogKind, CatalogSnapshot, CurrentCatalogFile, KnownProviderCatalog,
     ModelDriverCatalog, ProviderRulesCatalog,
@@ -7,7 +5,9 @@ use crate::catalog::{
 use crate::error::SettingsError;
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, AiccRouteOverlay, SystemConfigClient, SystemConfigError,
+    get_buckyos_api_runtime, AiccRouteOverlay, ProviderAuthSettings, ProviderCredentials,
+    ProviderDiscoverySettings, ProviderInstanceRules, ProviderInstanceType, SystemConfigClient,
+    SystemConfigError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,148 +22,7 @@ pub(crate) const SYSTEM_CONFIG_METADATA_KEY: &str = "services/aicc/driver_metada
 pub(crate) const LOCAL_METADATA_RELATIVE_DIR: &str = "etc/aicc/driver_metadata/local";
 const SYSTEM_CONFIG_METADATA_SCHEMA_VERSION: u32 = 1;
 
-const BUILTIN_METADATA_DOCUMENTS: &[(CatalogKind, &[u8])] = &[
-    (
-        CatalogKind::ModelDriver,
-        include_bytes!("../../driver_metadata/models/anthropic.model.json"),
-    ),
-    (
-        CatalogKind::ModelDriver,
-        include_bytes!("../../driver_metadata/models/cohere.model.json"),
-    ),
-    (
-        CatalogKind::ModelDriver,
-        include_bytes!("../../driver_metadata/models/deepseek.model.json"),
-    ),
-    (
-        CatalogKind::ModelDriver,
-        include_bytes!("../../driver_metadata/models/doubao.model.json"),
-    ),
-    (
-        CatalogKind::ModelDriver,
-        include_bytes!("../../driver_metadata/models/fal.model.json"),
-    ),
-    (
-        CatalogKind::ModelDriver,
-        include_bytes!("../../driver_metadata/models/gemini.model.json"),
-    ),
-    (
-        CatalogKind::ModelDriver,
-        include_bytes!("../../driver_metadata/models/glm.model.json"),
-    ),
-    (
-        CatalogKind::ModelDriver,
-        include_bytes!("../../driver_metadata/models/kimi.model.json"),
-    ),
-    (
-        CatalogKind::ModelDriver,
-        include_bytes!("../../driver_metadata/models/minimax.model.json"),
-    ),
-    (
-        CatalogKind::ModelDriver,
-        include_bytes!("../../driver_metadata/models/openai.model.json"),
-    ),
-    (
-        CatalogKind::ModelDriver,
-        include_bytes!("../../driver_metadata/models/qwen.model.json"),
-    ),
-    (
-        CatalogKind::ProviderRules,
-        include_bytes!("../../driver_metadata/providers/claude.provider.json"),
-    ),
-    (
-        CatalogKind::ProviderRules,
-        include_bytes!("../../driver_metadata/providers/deepseek.provider.json"),
-    ),
-    (
-        CatalogKind::ProviderRules,
-        include_bytes!("../../driver_metadata/providers/doubao.provider.json"),
-    ),
-    (
-        CatalogKind::ProviderRules,
-        include_bytes!("../../driver_metadata/providers/fal.provider.json"),
-    ),
-    (
-        CatalogKind::ProviderRules,
-        include_bytes!("../../driver_metadata/providers/gemini.provider.json"),
-    ),
-    (
-        CatalogKind::ProviderRules,
-        include_bytes!("../../driver_metadata/providers/glm.provider.json"),
-    ),
-    (
-        CatalogKind::ProviderRules,
-        include_bytes!("../../driver_metadata/providers/kimi.provider.json"),
-    ),
-    (
-        CatalogKind::ProviderRules,
-        include_bytes!("../../driver_metadata/providers/minimax.provider.json"),
-    ),
-    (
-        CatalogKind::ProviderRules,
-        include_bytes!("../../driver_metadata/providers/openai.provider.json"),
-    ),
-    (
-        CatalogKind::ProviderRules,
-        include_bytes!("../../driver_metadata/providers/openrouter.provider.json"),
-    ),
-    (
-        CatalogKind::ProviderRules,
-        include_bytes!("../../driver_metadata/providers/qwen.provider.json"),
-    ),
-    (
-        CatalogKind::ProviderRules,
-        include_bytes!("../../driver_metadata/providers/sn.provider.json"),
-    ),
-    (
-        CatalogKind::KnownProvider,
-        include_bytes!("../../driver_metadata/known-providers/claude.known-provider.json"),
-    ),
-    (
-        CatalogKind::KnownProvider,
-        include_bytes!("../../driver_metadata/known-providers/deepseek.known-provider.json"),
-    ),
-    (
-        CatalogKind::KnownProvider,
-        include_bytes!("../../driver_metadata/known-providers/doubao.known-provider.json"),
-    ),
-    (
-        CatalogKind::KnownProvider,
-        include_bytes!("../../driver_metadata/known-providers/fal.known-provider.json"),
-    ),
-    (
-        CatalogKind::KnownProvider,
-        include_bytes!("../../driver_metadata/known-providers/gemini.known-provider.json"),
-    ),
-    (
-        CatalogKind::KnownProvider,
-        include_bytes!("../../driver_metadata/known-providers/glm.known-provider.json"),
-    ),
-    (
-        CatalogKind::KnownProvider,
-        include_bytes!("../../driver_metadata/known-providers/kimi.known-provider.json"),
-    ),
-    (
-        CatalogKind::KnownProvider,
-        include_bytes!("../../driver_metadata/known-providers/minimax.known-provider.json"),
-    ),
-    (
-        CatalogKind::KnownProvider,
-        include_bytes!("../../driver_metadata/known-providers/openai.known-provider.json"),
-    ),
-    (
-        CatalogKind::KnownProvider,
-        include_bytes!("../../driver_metadata/known-providers/openrouter.known-provider.json"),
-    ),
-    (
-        CatalogKind::KnownProvider,
-        include_bytes!("../../driver_metadata/known-providers/qwen.known-provider.json"),
-    ),
-    (
-        CatalogKind::KnownProvider,
-        include_bytes!("../../driver_metadata/known-providers/sn.known-provider.json"),
-    ),
-];
+include!(concat!(env!("OUT_DIR"), "/builtin_metadata.rs"));
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -178,11 +37,13 @@ pub(crate) struct AiccSettings {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProviderSettings {
     pub provider_instance_name: String,
-    pub provider_type: String,
+    pub provider_type: ProviderInstanceType,
     pub provider_profile_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_family_id: Option<String>,
     pub protocol_adapter_id: String,
     pub base_url: String,
-    pub credentials: Value,
+    pub credentials: ProviderCredentials,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -194,15 +55,24 @@ pub(crate) struct ProviderSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_rules_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth: Option<Value>,
+    pub auth: Option<ProviderAuthSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub discovery: Option<Value>,
+    pub discovery: Option<ProviderDiscoverySettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_rules: Option<Value>,
+    pub instance_rules: Option<ProviderInstanceRules>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_sync_models: Option<bool>,
+    #[serde(default)]
+    pub lifecycle: ProviderLifecyclePolicy,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderLifecyclePolicy {
+    #[serde(default)]
+    pub non_deletable: bool,
 }
 
 impl fmt::Debug for ProviderSettings {
@@ -212,6 +82,7 @@ impl fmt::Debug for ProviderSettings {
             .field("provider_instance_name", &self.provider_instance_name)
             .field("provider_type", &self.provider_type)
             .field("provider_profile_id", &self.provider_profile_id)
+            .field("protocol_family_id", &self.protocol_family_id)
             .field("protocol_adapter_id", &self.protocol_adapter_id)
             .field("base_url", &self.base_url)
             .field("credentials", &"<redacted>")
@@ -231,6 +102,7 @@ impl fmt::Debug for ProviderSettings {
             )
             .field("timeout_ms", &self.timeout_ms)
             .field("auto_sync_models", &self.auto_sync_models)
+            .field("lifecycle", &self.lifecycle)
             .finish()
     }
 }
@@ -291,8 +163,10 @@ impl ProviderSettings {
     fn validate(&self) -> Result<(), SettingsError> {
         validate_id("provider_instance_name", &self.provider_instance_name)?;
         validate_id("provider_profile_id", &self.provider_profile_id)?;
+        if let Some(protocol_family_id) = &self.protocol_family_id {
+            validate_id("protocol_family_id", protocol_family_id)?;
+        }
         validate_id("protocol_adapter_id", &self.protocol_adapter_id)?;
-        validate_nonempty("provider_type", &self.provider_type)?;
         if let Some(provider_rules_id) = &self.provider_rules_id {
             validate_id("provider_rules_id", provider_rules_id)?;
         }
@@ -319,25 +193,20 @@ impl ProviderSettings {
                 reason: "must not contain credentials, query, or fragment".into(),
             });
         }
-        let credentials = self
-            .credentials
-            .as_object()
-            .ok_or(SettingsError::InvalidField {
-                field: "credentials",
-                reason: "must be an object containing locked values or credential references"
-                    .into(),
-            })?;
-        if credentials.is_empty() {
+        if self.credentials.is_empty() {
             return Err(SettingsError::InvalidField {
                 field: "credentials",
                 reason: "must not be empty".into(),
             });
         }
-        reject_legacy_fields(&self.credentials)?;
-        if !contains_protected_credential(&self.credentials) {
+        if self
+            .credentials
+            .values()
+            .all(|credential| credential.locked.trim().is_empty())
+        {
             return Err(SettingsError::InvalidField {
                 field: "credentials",
-                reason: "must contain a locked value or credential reference".into(),
+                reason: "must contain a non-empty locked value".into(),
             });
         }
         if self.timeout_ms == Some(0) {
@@ -347,49 +216,6 @@ impl ProviderSettings {
             });
         }
         Ok(())
-    }
-}
-
-fn reject_legacy_fields(value: &Value) -> Result<(), SettingsError> {
-    match value {
-        Value::Object(fields) => {
-            for (name, value) in fields {
-                if matches!(
-                    name.as_str(),
-                    "instance_id"
-                        | "provider_driver"
-                        | "endpoint"
-                        | "api_key"
-                        | "apiKey"
-                        | "secret"
-                ) {
-                    return Err(SettingsError::InvalidField {
-                        field: "credentials",
-                        reason: format!("legacy or plaintext field `{name}` is not accepted"),
-                    });
-                }
-                reject_legacy_fields(value)?;
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                reject_legacy_fields(value)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn contains_protected_credential(value: &Value) -> bool {
-    match value {
-        Value::Object(fields) => fields.iter().any(|(name, value)| {
-            ((name == "locked" || name.ends_with("_ref"))
-                && value.as_str().is_some_and(|value| !value.trim().is_empty()))
-                || contains_protected_credential(value)
-        }),
-        Value::Array(values) => values.iter().any(contains_protected_credential),
-        _ => false,
     }
 }
 
@@ -949,7 +775,7 @@ mod tests {
         let mut value = provider("primary");
         value["workspace"] = json!("engineering");
         value["credentials"] = json!({"api_token": {"locked": secret}});
-        value["auth"] = json!({"credential_ref": secret});
+        value["auth"] = json!({"mode": "api_key", "credential_ref": secret});
         let document =
             SettingsDocument::parse(1, &json!({"providers": [value]}).to_string()).unwrap();
         let debug = format!("{document:?}");

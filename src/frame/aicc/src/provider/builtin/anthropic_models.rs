@@ -371,6 +371,9 @@ mod tests {
             region: None,
             workspace: None,
             account: None,
+            request_timeout: Duration::from_secs(120),
+            auto_sync_models: true,
+            instance_rules: None,
         }
     }
 

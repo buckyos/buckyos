@@ -157,6 +157,8 @@ Content Schema：
   - `provider_profile_id`、`display_name`；
   - `base_url`：默认 base URL，可包含 `{region}`、`{workspace}`、`{account}` 占位符；
   - `protocol_adapter_id`；
+  - `discovery_behavior_id`：稳定的 discovery registry ID；新增 Provider 通过 metadata 选择行为，不允许 service/registry 按 `provider_profile_id` 猜测；
+  - 可选 `dynamic_login_behavior_id`、`connection_behavior_id`：仅在需要代码行为时声明稳定 ID；未知 ID 必须拒绝装配；
   - `provider_rules_id`：正式 Provider configuration 必须提供，且被引用 Rules 的 `provider_profile_id` 必须与本项一致；
   - `credential`：typed 默认凭据描述，`kind` 为 `bearer`、`named_header`、`fal_key` 或 `glm_jwt`；`named_header` 必须同时提供非空 `header_name`；
   - 可选 `credential_variants[]`：同结构的实例级可选凭据；kind 不得与默认凭据或其它变体重复，实例通过 `auth.credential_kind` 显式选择，省略时使用默认凭据；
@@ -166,9 +168,9 @@ Content Schema：
 
 `credential_variants` 与 `connection.region_base_urls` 从 Known Provider `schema_revision: 1` 起可用；revision 0 文档携带这些字段必须拒绝。
 
-`CatalogSnapshot::resolve_provider_configuration(provider_profile_id)` 把以上数据解析为 `ResolvedProviderConfiguration`。返回结果包含默认 credential、credential variants、typed connection schema、默认及区域 base URL、Adapter ID 和 Rules ID。Known Provider 不存在、Rules 引用缺失、Rules 不存在、identity 不一致或 typed 字段无效时必须 fail closed，调用方不得回退到 `ui_hints` 或 Rust builtin metadata helper。
+`CatalogSnapshot::resolve_provider_configuration(provider_profile_id)` 把以上数据解析为 `ResolvedProviderConfiguration`。返回结果包含默认 credential、credential variants、typed connection schema、默认及区域 base URL、Adapter ID、Rules ID 和 behavior IDs。Known Provider 不存在、Rules 引用缺失、Rules 不存在、identity 不一致、behavior 未注册或 typed 字段无效时必须 fail closed，调用方不得回退到 `ui_hints` 或 Rust builtin metadata helper。
 
-该对象只声明可直接生成 `ProviderProfile` 和 `ProviderConnectionContract` 的静态配置。Provider 行为 registry 负责执行 credential variant 选择和 region URL 选择，并注册 discovery、refresh、default inventory、SN dynamic login 等不可声明化行为；registry 必须基于同 generation snapshot 的 resolved configuration 装配，不能维护另一份默认配置。
+该对象只声明可直接生成 `ProviderProfile` 和 `ProviderConnectionContract` 的静态配置。Provider 行为 registry 按 metadata 中的稳定 behavior ID 注册 discovery、refresh、default inventory、SN dynamic login 等不可声明化行为；registry 中允许按 behavior ID 分派实现，但不得再维护 Provider ID 分支或另一份默认配置。
 
 该 catalog 只提供默认值。保存 Provider Instance 前必须让用户看到并允许修正协议和 `base_url`，并执行连接与协议验证。
 

@@ -10,6 +10,7 @@
       "display_name": "Anthropic Claude",
       "base_url": "https://api.anthropic.com/v1",
       "protocol_adapter_id": "claude-messages",
+      "discovery_behavior_id": "anthropic-models",
       "provider_rules_id": "claude",
       "credential": { "kind": "named_header", "header_name": "x-api-key" },
       "connection": {

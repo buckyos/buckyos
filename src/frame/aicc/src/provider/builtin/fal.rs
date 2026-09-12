@@ -8,8 +8,6 @@ use super::super::{DiscoveryMode, ProviderConnectionContract, ProviderProfile};
 use crate::catalog::{CatalogKind, CurrentCatalogFile, ProviderRulesCatalog};
 #[cfg(test)]
 use crate::protocol::{CredentialKind, FAL_QUEUE_ADAPTER_ID};
-#[cfg(test)]
-use serde::de::DeserializeOwned;
 use std::sync::Arc;
 
 pub(crate) const FAL_PROVIDER_PROFILE_ID: &str = "fal";
@@ -44,11 +42,6 @@ pub(crate) fn fal_discovery(
 ) -> ProviderResult<Arc<dyn ProviderDiscovery>> {
     validate_discovery(&configured_inventory)?;
     Ok(Arc::new(CatalogOnlyDiscovery::new(configured_inventory)))
-}
-
-#[cfg(test)]
-fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
-    serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 #[cfg(test)]
@@ -93,6 +86,9 @@ mod tests {
             region: None,
             workspace: None,
             account: None,
+            request_timeout: std::time::Duration::from_secs(120),
+            auto_sync_models: true,
+            instance_rules: None,
         }
     }
 

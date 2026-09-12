@@ -57,6 +57,9 @@ impl ClaudeMessagesCodec {
             interface_generation: CLAUDE_MESSAGES_VERSION.to_string(),
             base_adapter_id: None,
             status: AdapterStatus::Stable,
+            probe_priority: 0,
+            probe_path: Some("messages".to_owned()),
+            credential: super::AdapterCredentialContract::named_header("x-api-key"),
             operations: BTreeMap::from([(
                 self.descriptor.operation_id.clone(),
                 self.descriptor.clone(),
@@ -502,8 +505,13 @@ fn encode_message_content(
 ) -> ProtocolResultValue<Vec<Value>> {
     let mut encoded = Vec::new();
     for block in content {
-        if let AiContent::ProviderState { provider, value } = block {
-            if provider != CLAUDE_PROVIDER_NAMESPACE {
+        if let AiContent::ProviderState {
+            source,
+            provider,
+            value,
+        } = block
+        {
+            if !super::provider_state_is_native(source, &context.state_coordinate) {
                 if let Some(text) = foreign_provider_state_text(provider, value) {
                     encoded.push(encode_content(&AiContent::Text { text }, true, context)?);
                 }
@@ -664,8 +672,11 @@ fn encode_content(
                 "signature": signature
             }))
         }
-        AiContent::ProviderState { provider, value } => {
-            if allow_provider_state && provider == CLAUDE_PROVIDER_NAMESPACE && value.is_object() {
+        AiContent::ProviderState { source, value, .. } => {
+            if allow_provider_state
+                && super::provider_state_is_native(source, &context.state_coordinate)
+                && value.is_object()
+            {
                 Ok(value.clone())
             } else {
                 Err(ProtocolError::new(
@@ -891,6 +902,7 @@ fn decode_content(value: &Value) -> ProtocolResultValue<AiContent> {
             ),
         }),
         _ => Ok(AiContent::ProviderState {
+            source: buckyos_api::ProviderStateCoordinate::unbound(),
             provider: CLAUDE_PROVIDER_NAMESPACE.to_string(),
             value: value.clone(),
         }),
@@ -1450,6 +1462,12 @@ mod tests {
     fn context() -> CodecContext {
         CodecContext {
             base_url: "https://api.anthropic.com/v1".to_string(),
+            state_coordinate: buckyos_api::ProviderStateCoordinate {
+                normalized_base_url: "https://api.anthropic.com/v1".into(),
+                adapter_type: "claude-messages".into(),
+                origin_provider: "anthropic".into(),
+                origin_model: "test-model".into(),
+            },
             credential: Some(
                 ResolvedCredential::named_header("ref:claude", "x-api-key", "secret-key").unwrap(),
             ),
@@ -1550,6 +1568,7 @@ mod tests {
                             args: HashMap::from([("city".to_string(), json!("Paris"))]),
                         },
                         AiContent::ProviderState {
+                            source: buckyos_api::ProviderStateCoordinate::unbound(),
                             provider: "openai".to_string(),
                             value: json!({"type": "foreign_state"}),
                         },

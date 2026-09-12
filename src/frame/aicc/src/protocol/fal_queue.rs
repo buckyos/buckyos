@@ -54,6 +54,12 @@ pub(crate) fn fal_queue_adapter() -> (AdapterDescriptor, CodecRegistration) {
         interface_generation: "queue-v1".to_string(),
         base_adapter_id: None,
         status: AdapterStatus::Stable,
+        probe_priority: 0,
+        probe_path: None,
+        credential: super::AdapterCredentialContract {
+            kind: super::CredentialKind::FalKey,
+            header_name: None,
+        },
         operations: BTreeMap::from([(operation.operation_id.clone(), operation.clone())]),
     };
     let native_task_codecs = FAL_API_TYPES
@@ -700,6 +706,12 @@ mod tests {
     fn context() -> CodecContext {
         CodecContext {
             base_url: "https://queue.fal.run".to_string(),
+            state_coordinate: buckyos_api::ProviderStateCoordinate {
+                normalized_base_url: "https://queue.fal.run".into(),
+                adapter_type: "fal-queue".into(),
+                origin_provider: "fal".into(),
+                origin_model: "test-model".into(),
+            },
             credential: Some(
                 ResolvedCredential::fal_key("secret://fal/key", "top-secret").unwrap(),
             ),
@@ -941,7 +953,10 @@ mod tests {
         let NativeTaskOutput::Status { state, .. } = codec
             .decode_native(
                 NativeTaskOperation::Status,
-                response(StatusCode::OK, json!({"status":"COMPLETED","error":"failed"})),
+                response(
+                    StatusCode::OK,
+                    json!({"status":"COMPLETED","error":"failed"}),
+                ),
             )
             .await
             .unwrap()

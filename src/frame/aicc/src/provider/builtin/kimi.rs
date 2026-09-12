@@ -3,7 +3,7 @@ use super::super::{
     ProviderDiscoverySnapshot, ProviderError, ProviderHealthState, ProviderResult,
 };
 #[cfg(test)]
-use super::super::{DiscoveryMode, ProviderConnectionContract, ProviderProfile};
+use super::super::{DiscoveryMode, ProviderProfile};
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
 use crate::protocol::{
@@ -14,8 +14,6 @@ use async_trait::async_trait;
 use buckyos_api::{features, ApiType};
 use reqwest::header::ETAG;
 use reqwest::{Method, Url};
-#[cfg(test)]
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -28,11 +26,6 @@ const MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 #[cfg(test)]
 pub(crate) fn kimi_profile() -> ProviderProfile {
     super::builtin_profile(KIMI_PROVIDER_PROFILE_ID, DiscoveryMode::MachineApi)
-}
-
-#[cfg(test)]
-pub(crate) fn kimi_connection_contract() -> ProviderConnectionContract {
-    super::builtin_connection_contract(KIMI_PROVIDER_PROFILE_ID)
 }
 
 #[cfg(test)]
@@ -53,11 +46,6 @@ pub(crate) fn kimi_model_driver() -> ModelDriverCatalog {
 #[cfg(test)]
 pub(crate) fn kimi_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[KIMI_PROVIDER_PROFILE_ID])
-}
-
-#[cfg(test)]
-fn embedded_json<T: DeserializeOwned>(contents: &[u8], label: &str) -> T {
-    serde_json::from_slice(contents).unwrap_or_else(|error| panic!("{label} is invalid: {error}"))
 }
 
 #[async_trait]
@@ -290,6 +278,9 @@ mod tests {
             region: None,
             workspace: None,
             account: None,
+            request_timeout: Duration::from_secs(120),
+            auto_sync_models: true,
+            instance_rules: None,
         }
     }
 

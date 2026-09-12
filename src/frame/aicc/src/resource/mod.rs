@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::error::ResourceError;
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -273,14 +271,6 @@ impl InspectedResourceBatch {
             .map(|resource| resource.metadata.clone())
             .collect()
     }
-
-    pub fn len(&self) -> usize {
-        self.resources.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.resources.is_empty()
-    }
 }
 
 impl fmt::Debug for InspectedResourceBatch {
@@ -304,16 +294,8 @@ impl MaterializedResource {
         &self.key
     }
 
-    pub fn metadata(&self) -> &ResourceMetadata {
-        &self.metadata
-    }
-
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
-    }
-
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.bytes
     }
 
     pub fn into_codec_parts(self) -> Result<CodecResourceParts, ResourceError> {

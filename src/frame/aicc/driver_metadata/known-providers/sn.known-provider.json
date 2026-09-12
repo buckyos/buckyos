@@ -10,6 +10,9 @@
       "display_name": "BuckyOS SN",
       "base_url": "https://sn.buckyos.ai/api/v1/ai",
       "protocol_adapter_id": "sn-openai",
+      "discovery_behavior_id": "sn-models",
+      "dynamic_login_behavior_id": "sn",
+      "connection_behavior_id": "sn",
       "provider_rules_id": "sn",
       "credential": { "kind": "bearer" },
       "connection": {

@@ -10,6 +10,7 @@
       "display_name": "DeepSeek",
       "base_url": "https://api.deepseek.com",
       "protocol_adapter_id": "deepseek-responses",
+      "discovery_behavior_id": "openai-compatible-models",
       "provider_rules_id": "deepseek",
       "credential": { "kind": "bearer" },
       "connection": {
