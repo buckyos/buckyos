@@ -613,7 +613,7 @@ mod tests {
     #[test]
     fn jarvis_work_behaviors_define_runtime_prompt_hooks() {
         let jarvis_root =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../rootfs/bin/buckyos_jarvis");
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/jarvis_runtime/agent");
         let root = jarvis_root.join("behaviors");
         let role_prompt = std::fs::read_to_string(jarvis_root.join("role.md")).unwrap();
         assert!(

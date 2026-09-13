@@ -109,7 +109,7 @@ apps:
 `pikg.meta_dir: dapp_meta`，因此可以省略整个 `pikg` 配置块。systest 显式使用
 `type: web`，项目级组装由其 `pnpm run build` 调用 `prepare.mjs` 完成。Jarvis
 省略 `type`，按默认的 `none` builder 处理；它的 source 已经是可工作的
-`rootfs/bin/buckyos_jarvis`，因此不执行项目 build，也不再保留 `build.mjs`、
+`apps/jarvis_runtime/agent`，因此不执行项目 build，也不再保留 `build.mjs`、
 `package.json` 或 `deno.json`。
 
 ### 4.2 `type`
@@ -227,7 +227,7 @@ builder 阶段准备好 metadata 所引用的 source，就进入完全相同的 
 formatter 在运行命令前解析 `pikg.json`。对每个 `source.type: path` 的路径，
 formatter 将其解析为绝对路径，并作为独立的 `--allow-read` 参数传给
 `npx --yes buckyos@latest`。因此 Jarvis 指向
-`rootfs/bin/buckyos_jarvis` 的路径无需在
+`apps/jarvis_runtime/agent` 的路径无需在
 `bucky_project.yaml` 中重复配置。
 
 本次实现不对 `meta_dir`、`output_dir` 或 metadata source 做“必须位于 module
@@ -573,7 +573,9 @@ app 引用时还必须包含 app name 与原始 install path；涉及子命令�
    AppDoc 安装项、对应 `.gitignore` 特例，以及工作树中遗留但未跟踪的
    `src/rootfs/local/did_docs/buckyos-systest.buckyos.bns.did.doc.json`；
 8. 将 `jarvis_runtime` 改为省略 type 的 `format: pikg`，由 NoneBuilder 直接
-   把 `apps/jarvis_runtime` 交给 formatter；
+   把 `apps/jarvis_runtime` 交给 formatter；Jarvis 源码放入
+   `apps/jarvis_runtime/agent`，`dapp_meta/pikg.json` 引用 `../agent`，并移除旧
+   `bin/buckyos_jarvis/` 静态安装项；
 9. 删除两个 module 的 `build.mjs`，并删除 Jarvis 不再需要的 `package.json`
    与 `deno.json`；
 10. systest 的 `package.json` 使用 npmjs 的 `"buckyos": "latest"`，build
@@ -675,7 +677,7 @@ BuckyOS”进入同一构建，也不能用旧 devkit 构建已经迁移的 Buck
   或项目 build 命令；
 - systest 的组装结果与 pikg 内容和迁移前等价，且不再产生独立 AppDoc staging
   文件；旧 AppDoc 安装声明、`.gitignore` 特例和遗留工作树文件均不存在；
-- Jarvis 的 formatter 调用包含 `rootfs/bin/buckyos_jarvis` allow-read；
+- Jarvis 的 formatter 调用包含 `apps/jarvis_runtime/agent` allow-read；
 - `buckyos install --app=buckyos` 能从源码 staging rootfs 安装两个 pikg，
   预安装流程能从各自 pikg 内部读取 AppDoc；
 - Linux、macOS、Windows 的本地安装包都从同一 staging rootfs 声明获得 pikg；

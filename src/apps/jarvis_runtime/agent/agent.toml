@@ -175,7 +175,7 @@ pull_msg = "all"
 pull_event = "timer.*"
 
 [session.self_improve]
-enabled = true
+enabled = false
 kind = "self_improve"
 loop_mode = "behavior"
 default_behavior = "self_improve_signals"

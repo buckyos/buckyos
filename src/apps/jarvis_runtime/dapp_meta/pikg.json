@@ -7,7 +7,7 @@
       "required": true,
       "source": {
         "type": "path",
-        "path": "../../../rootfs/bin/buckyos_jarvis"
+        "path": "../agent"
       }
     }
   }

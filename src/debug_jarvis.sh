@@ -18,7 +18,7 @@ Press Ctrl+C to stop it.
 
 Environment:
   BUCKYOS_ROOT=/opt/buckyos
-  JARVIS_PACKAGE_ROOT=src/rootfs/bin/buckyos_jarvis
+  JARVIS_PACKAGE_ROOT=src/apps/jarvis_runtime/agent
 EOF
 }
 
@@ -44,7 +44,7 @@ for arg in "$@"; do
   fi
 done
 
-JARVIS_PACKAGE_ROOT="${JARVIS_PACKAGE_ROOT:-${SCRIPT_DIR}/rootfs/bin/buckyos_jarvis}"
+JARVIS_PACKAGE_ROOT="${JARVIS_PACKAGE_ROOT:-${SCRIPT_DIR}/apps/jarvis_runtime/agent}"
 SERVICE_DEBUG_SCRIPT="${SCRIPT_DIR}/rootfs/bin/service_debug.tsx"
 
 if [[ ! -d "${JARVIS_PACKAGE_ROOT}" ]]; then

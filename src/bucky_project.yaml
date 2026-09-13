@@ -107,7 +107,6 @@ apps:
       stop.py: bin/stop.py
       stop.ps1: bin/stop.ps1
       stop_osx.sh: bin/stop_osx.sh
-      buckyos_jarvis: bin/buckyos_jarvis/
       desktop: bin/control-panel/web/
       buckyos_systest: data/cache/buckyos-systest.buckyos.bns.did-0.5.1.pikg
       jarvis_runtime: data/cache/jarvis.buckyos.bns.did-0.7.0.pikg

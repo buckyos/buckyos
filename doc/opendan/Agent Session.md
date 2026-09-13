@@ -145,7 +145,7 @@ Timer 分为两层:
 
 SelfCheck 被 timer 唤醒后**不应盲目扫描所有任务**,而应优先根据 `reason` 做定向检查;若需要发出提醒,
 则调用 `send_message` action;若需要继续延后,可再 schedule 下一个 precise timer。Behavior 模板见
-`src/rootfs/bin/buckyos_jarvis/behaviors/self_check.toml`。
+`src/apps/jarvis_runtime/agent/behaviors/self_check.toml`。
 
 事件分发上,SelfCheck 默认 driver 在每个 hook point 上把 `pull_event` 设置为 `timer.*` 过滤,
 对应到 [Agent Environment §5](./Agent%20Enviroment.md) 的派生变量
@@ -179,7 +179,7 @@ SelfImprove 的默认 driver 全程 `pull_msg = none`, `pull_event = none`——
 [`AgentSession::apply_hook`](../../src/frame/opendan/src/agent_session.rs) 协作)。
 最小落地:改进任务 dispatch 写 `improvement_tasks.jsonl` 并同步更新
 `SessionMeta.pending_improvement_tasks`;Behavior 模板见
-`src/rootfs/bin/buckyos_jarvis/behaviors/self_improve.toml`。
+`src/apps/jarvis_runtime/agent/behaviors/self_improve.toml`。
 
 ## 4. 持久化目录
 
@@ -776,13 +776,13 @@ TODO:
 - §3.3 reminder trigger path:
   - `src/frame/opendan/src/agent_session.rs::AgentSession::dispatch_behavior_send_messages`
   - `src/frame/opendan/src/agent_session.rs::AgentSession::post_send_message_record`
-  - 行为模板:`src/rootfs/bin/buckyos_jarvis/behaviors/self_check.toml`
+  - 行为模板:`src/apps/jarvis_runtime/agent/behaviors/self_check.toml`
 - §8.1 timer pull_event filter 命名空间:
   - `src/frame/opendan/src/session_model.rs::TimerEventKind`
   - `src/frame/opendan/src/agent_config.rs::validate_driver_filters`
 - §8.4 SelfCheck driver 默认配置:
   - `src/frame/opendan/src/agent_config.rs::default_self_check_driver`
-  - 模板:`src/rootfs/bin/buckyos_jarvis/agent.toml [session.self_check]`
+  - 模板:`src/apps/jarvis_runtime/agent/agent.toml [session.self_check]`
 
 ### A.2 SelfImprove Session
 
@@ -797,10 +797,10 @@ TODO:
 - §3.4 改进任务 dispatch:
   - `src/frame/opendan/src/agent_session.rs::dispatch_self_improvement_tasks`
   - 最小落地:写 `improvement_tasks.jsonl`,并同步更新 `SessionMeta.pending_improvement_tasks`
-  - 行为模板:`src/rootfs/bin/buckyos_jarvis/behaviors/self_improve.toml`
+  - 行为模板:`src/apps/jarvis_runtime/agent/behaviors/self_improve.toml`
 - §8.4 SelfImprove driver 默认配置:
   - `src/frame/opendan/src/agent_config.rs::default_self_improve_driver`
-  - 模板:`src/rootfs/bin/buckyos_jarvis/agent.toml [session.self_improve]`
+  - 模板:`src/apps/jarvis_runtime/agent/agent.toml [session.self_improve]`
 
 ### A.3 Driver 配置与回归
 

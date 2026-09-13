@@ -13,7 +13,7 @@
 
 这个原理上，是worksession恢复后，通过task工具读取到human.input 来推进的
 
-- **P2 task_route 的输出/复用路径没落地**：文档要求 task_route 输出 resolved/need_human_input，并可复用已有 worksession。当前只记录 `route.session_id`，没有消费 route session 的结构化结果，[agent_task_executor.rs](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/agent_task_executor.rs:279)。Jarvis 的 `task_route` behavior 还白名单了不存在/拼错的 `disptach_task`，[task_route.toml](/Users/liuzhicong/project/buckyos/src/rootfs/bin/buckyos_jarvis/behaviors/task_route.toml:37)，实际工具名里没有它，[worksession_tools.rs](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/worksession_tools.rs:67)。
+- **P2 task_route 的输出/复用路径没落地**：文档要求 task_route 输出 resolved/need_human_input，并可复用已有 worksession。当前只记录 `route.session_id`，没有消费 route session 的结构化结果，[agent_task_executor.rs](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/agent_task_executor.rs:279)。Jarvis 的 `task_route` behavior 还白名单了不存在/拼错的 `disptach_task`，[task_route.toml](/Users/liuzhicong/project/buckyos/src/apps/jarvis_runtime/agent/behaviors/task_route.toml:37)，实际工具名里没有它，[worksession_tools.rs](/Users/liuzhicong/project/buckyos/src/frame/opendan/src/worksession_tools.rs:67)。
 
 这个步骤worksession没启动，比较麻烦。可以用“fail first的原则“，直接把task设置为失败，让上层创建新的task
 

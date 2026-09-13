@@ -98,7 +98,7 @@ function printUsage(): never {
       '  service_debug jarvis.buckyos.bns.did alice',
       '  service_debug buckyos_systest devtest',
       '  service_debug jarvis.buckyos.bns.did alice --port 14060',
-      '  service_debug jarvis.buckyos.bns.did alice --agent-package-root ./rootfs/bin/buckyos_jarvis',
+      '  service_debug jarvis.buckyos.bns.did alice --agent-package-root ./apps/jarvis_runtime/agent',
       '  service_debug jarvis.buckyos.bns.did alice --worksession-test ./case.json',
       '  service_debug jarvis.buckyos.bns.did alice --worksession-task-test ./case.json',
     ].join('\n'),
