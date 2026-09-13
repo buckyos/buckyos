@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-09-06.1",
-  "checked_at": "2026-09-06",
+  "revision": "official-provider-protocols-2026-09-13.1",
+  "checked_at": "2026-09-13",
   "providers": [
     {
       "provider_driver": "openai",
@@ -629,30 +629,30 @@
       },
       "official_variant_sources": ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"],
       "official_variant_rules": [
-        { "model_ids": ["openai/gpt-5.6"], "variants": { "reasoning-none": { "reasoning_effort": "none" }, "reasoning-low": { "reasoning_effort": "low" }, "reasoning-medium": { "reasoning_effort": "medium" }, "reasoning-high": { "reasoning_effort": "high" }, "reasoning-xhigh": { "reasoning_effort": "xhigh" }, "reasoning-max": { "reasoning_effort": "max" } } },
-        { "model_ids": ["openai/gpt-5.5", "openai/gpt-5.4"], "variants": { "reasoning-none": { "reasoning_effort": "none" }, "reasoning-low": { "reasoning_effort": "low" }, "reasoning-medium": { "reasoning_effort": "medium" }, "reasoning-high": { "reasoning_effort": "high" }, "reasoning-xhigh": { "reasoning_effort": "xhigh" } } }
+        { "model_ids": ["openai/gpt-5.6"], "variants": { "reasoning-none": { "reasoning": { "effort": "none" } }, "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } }, "reasoning-max": { "reasoning": { "effort": "max" } } } },
+        { "model_ids": ["openai/gpt-5.5", "openai/gpt-5.4"], "variants": { "reasoning-none": { "reasoning": { "effort": "none" } }, "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } }
       ],
       "test_model_ids": { "llm": "openai/gpt-5.6", "embedding.text": "openai/text-embedding-3-small", "rerank": "cohere/rerank-v3.5" },
       "contracts": [{
-        "id": "openrouter.chat-completions.v1",
-        "protocol_adapter_id": "openrouter-openai",
+        "id": "openrouter.responses.v1",
+        "protocol_adapter_id": "openrouter-responses",
         "api_version": "v1",
         "api_types": ["llm"],
-        "operation": "chat.completions.create",
+        "operation": "responses.create",
         "http_method": "POST",
-        "path": "/api/v1/chat/completions",
+        "path": "/api/v1/responses",
         "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
         "content_type": "application/json",
-        "required_body_fields": ["model", "messages"],
-        "allowed_body_fields": ["model", "messages", "prompt", "response_format", "stop", "stream", "stream_options", "max_tokens", "max_completion_tokens", "temperature", "tools", "tool_choice", "top_p", "seed", "frequency_penalty", "presence_penalty", "repetition_penalty", "top_k", "min_p", "top_a", "logit_bias", "logprobs", "top_logprobs", "metadata", "models", "provider", "plugins", "reasoning", "reasoning_effort", "transforms", "user", "cache_control", "debug", "image_config", "modalities", "parallel_tool_calls", "route", "service_tier", "session_id", "stop_server_tools_when", "trace"],
-        "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"], "stream_options": ["object"], "max_tokens": ["number"], "max_completion_tokens": ["number"], "temperature": ["number"], "tools": ["array"], "tool_choice": ["string", "object"], "top_p": ["number"], "seed": ["number"], "frequency_penalty": ["number"], "presence_penalty": ["number"], "reasoning": ["object"], "reasoning_effort": ["string"], "cache_control": ["object"], "debug": ["object"], "image_config": ["object"], "modalities": ["array"], "parallel_tool_calls": ["boolean"], "route": ["string"], "service_tier": ["string"], "session_id": ["string"], "stop_server_tools_when": ["boolean"], "trace": ["object"] },
-        "stream_protocol": "openrouter_chat",
-        "success_fixture": { "id": "gen_mock_1", "object": "chat.completion", "created": 1770000000, "model": "mock-model", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827", "reasoning_details": [{ "type": "reasoning.encrypted", "id": "reason-t15-4827", "data": "opaque-t15-reasoning" }] }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7 } },
-        "official_sources": ["https://openrouter.ai/docs/api-reference/overview", "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens", "https://openrouter.ai/openapi.yaml"],
-        "evidence_summary": "OpenRouter chat completions uses POST /api/v1/chat/completions with Bearer auth; assistant reasoning_details must be passed back unmodified for multi-turn reasoning and tool use."
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "background", "cache_control", "debug", "image_config", "include", "max_output_tokens", "max_tool_calls", "metadata", "modalities", "models", "parallel_tool_calls", "plugins", "prompt_cache_key", "provider", "reasoning", "route", "safety_identifier", "service_tier", "session_id", "stop_server_tools_when", "store", "stream", "temperature", "text", "tool_choice", "tools", "top_p", "truncation"],
+        "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "max_output_tokens": ["number"], "temperature": ["number"], "tools": ["array"], "tool_choice": ["string", "object"], "top_p": ["number"], "reasoning": ["object"], "cache_control": ["object"], "debug": ["object"], "image_config": ["object"], "modalities": ["array"], "models": ["array"], "parallel_tool_calls": ["boolean"], "plugins": ["array"], "provider": ["object"], "route": ["string"], "service_tier": ["string"], "session_id": ["string"], "stop_server_tools_when": ["array"] },
+        "stream_protocol": "openai_responses",
+        "success_fixture": { "id": "resp_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "reasoning", "id": "rs_t15_4827", "summary": [{ "type": "summary_text", "text": "opaque reasoning" }], "encrypted_content": "opaque-t15-reasoning" }, { "type": "message", "id": "msg_t15_4827", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://openrouter.ai/docs/api/api-reference/responses/create-responses", "https://openrouter.ai/openapi.yaml"],
+        "evidence_summary": "OpenRouter Responses uses POST /api/v1/responses with Bearer authentication and the OpenResponses model/input, output item, usage, tool, and SSE event shapes."
       }, {
         "id": "openrouter.embeddings.v1",
-        "protocol_adapter_id": "openrouter-openai",
+        "protocol_adapter_id": "openrouter-responses",
         "api_version": "v1",
         "api_types": ["embedding.text"],
         "operation": "embeddings.create",
@@ -668,7 +668,7 @@
         "evidence_summary": "OpenRouter embeddings uses POST /api/v1/embeddings with Bearer authentication and OpenAI-compatible model/input and embedding results."
       }, {
         "id": "openrouter.rerank.v1",
-        "protocol_adapter_id": "openrouter-openai",
+        "protocol_adapter_id": "openrouter-responses",
         "api_version": "v1",
         "api_types": ["rerank"],
         "operation": "rerank.create",

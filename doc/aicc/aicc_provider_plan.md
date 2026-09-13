@@ -15,7 +15,7 @@ Kimi / GLM / DeepSeek / 豆包（火山方舟）/ Qwen（阿里云百炼）
 ## 1. 范围原则
 
 1. OpenAI、Claude、Gemini 是三个独立基础协议族，分别优先实现 Responses、Messages、Interactions；
-2. OpenRouter、Kimi、GLM 的首版官方主入口形成 `openai-chat-completions` 的真实需求，三者共享一份基础实现；
+2. Kimi、GLM 的首版官方主入口形成 `openai-chat-completions` 的真实需求，两者共享一份基础实现；OpenRouter 使用 `openai-responses` 派生实现；
 3. MiniMax 文本接口优先复用 `claude-messages`，只在派生层处理兼容差异；
 4. DeepSeek、豆包、Qwen 优先复用 `openai-responses`，各自隔离扩展和限制；
 5. fal Queue 及各家媒体/异步接口保留原生 codec，只复用任务生命周期基础设施；
@@ -36,7 +36,7 @@ SN Provider 的既有 `sn-openai -> openai-responses` 设计保持不变，但�
 | `claude` | `claude-messages` | LLM、视觉理解 | `x-api-key` |
 | `gemini` | `gemini-interactions` + Gen Media | 多模态、embedding、image/audio/video | `x-goog-api-key` |
 | `fal` | `fal-queue` | 图像、音频、视频生成或处理的长尾模型 | `Authorization: Key` |
-| `openrouter` | `openrouter-openai -> openai-chat-completions` | 聚合 LLM、长尾模型、成本/可用性路由 | Bearer API key |
+| `openrouter` | `openrouter-responses -> openai-responses` | 聚合 LLM、长尾模型、成本/可用性路由 | Bearer API key |
 | `minimax` | `minimax-messages -> claude-messages` + 原生媒体 | LLM、speech、image、video、music | named-header API key / 原生 Bearer（按 operation） |
 | `kimi` | `kimi-chat -> openai-chat-completions` | LLM、视觉/视频理解 | Bearer API key |
 | `glm` | `glm-chat -> openai-chat-completions` + 原生异步 | LLM、多模态、embedding | Bearer API key；可选短期 JWT |

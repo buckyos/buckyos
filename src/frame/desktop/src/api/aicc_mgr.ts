@@ -109,7 +109,7 @@ const BUILTIN_PROVIDER_NAMES: Array<[ProviderType, string, string, string]> = [
   ['claude', 'Anthropic Claude', 'https://api.anthropic.com/v1', 'claude-messages'],
   ['gemini', 'Google Gemini', 'https://generativelanguage.googleapis.com/v1beta', 'gemini-interactions'],
   ['fal', 'fal', 'https://queue.fal.run', 'fal-queue'],
-  ['openrouter', 'OpenRouter', 'https://openrouter.ai/api/v1', 'openrouter-openai'],
+  ['openrouter', 'OpenRouter', 'https://openrouter.ai/api/v1', 'openrouter-responses'],
   ['minimax', 'MiniMax', 'https://api.minimax.io/anthropic', 'minimax-messages'],
   ['kimi', 'Moonshot Kimi', 'https://api.moonshot.ai/v1', 'kimi-chat'],
   ['glm', 'Z.ai GLM', 'https://api.z.ai/api/paas/v4', 'glm-chat'],

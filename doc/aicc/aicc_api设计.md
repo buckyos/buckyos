@@ -799,7 +799,7 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 
 Response mapping：
 
-`chat.completions.create` 返回 `LlmChatInvokeResponse`，assistant 输出使用 content-block `message: AiMessage`。`text`、`tool_use`、`thinking` 和 opaque `ProviderState` 必须保持原始顺序；存在匹配当前 adapter 的 ProviderState 时优先原样 replay，并替代其对应的 canonical 表示，不能重复发送；否则从 provider-neutral blocks lowering。foreign ProviderState 按三档策略处理：匹配目标 namespace 时还原，可安全抽取公开文本时降级为普通文本，无法降级时跳过。OpenAI Responses 的 completed output item、Gemini Interactions 的 completed step、OpenRouter 的 `reasoning_details` 都属于必须无损回放的原生历史。
+`chat.completions.create` 返回 `LlmChatInvokeResponse`，assistant 输出使用 content-block `message: AiMessage`。`text`、`tool_use`、`thinking` 和 opaque `ProviderState` 必须保持原始顺序；存在匹配当前 adapter 的 ProviderState 时优先原样 replay，并替代其对应的 canonical 表示，不能重复发送；否则从 provider-neutral blocks lowering。foreign ProviderState 按三档策略处理：匹配目标 namespace 时还原，可安全抽取公开文本时降级为普通文本，无法降级时跳过。OpenAI/OpenRouter Responses 的 completed output item 和 Gemini Interactions 的 completed step 都属于必须无损回放的原生历史。
 
 Fallback（逻辑路由层语义，由 `route.resolve` / helper / logical definition 承载，数据面 `chat.completions.create` 自身不 fallback）：
 

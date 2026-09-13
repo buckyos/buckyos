@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 pub(crate) const DEEPSEEK_RESPONSES_ADAPTER_ID: &str = "deepseek-responses";
 pub(crate) const DOUBAO_RESPONSES_ADAPTER_ID: &str = "doubao-responses";
+pub(crate) const OPENROUTER_RESPONSES_ADAPTER_ID: &str = "openrouter-responses";
 pub(crate) const QWEN_RESPONSES_ADAPTER_ID: &str = "qwen-responses";
 
 const QWEN_SESSION_CACHE_PARAMETER: &str = "session_cache";
@@ -27,6 +28,7 @@ const QWEN_SESSION_CACHE_HEADER: &str = "x-dashscope-session-cache";
 pub(crate) enum ResponsesDialectKind {
     DeepSeek,
     Doubao,
+    OpenRouter,
     Qwen,
 }
 
@@ -60,6 +62,11 @@ impl ResponsesDialectKind {
                 base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
                 override_points: BTreeSet::from([ResponsesOverridePoint::ProviderStateNamespace]),
             },
+            Self::OpenRouter => ResponsesDialectContract {
+                protocol_adapter_id: OPENROUTER_RESPONSES_ADAPTER_ID,
+                base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
+                override_points: BTreeSet::from([ResponsesOverridePoint::ProviderStateNamespace]),
+            },
             Self::Qwen => ResponsesDialectContract {
                 protocol_adapter_id: QWEN_RESPONSES_ADAPTER_ID,
                 base_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
@@ -75,6 +82,7 @@ impl ResponsesDialectKind {
         match self {
             Self::DeepSeek => "deepseek",
             Self::Doubao => "doubao",
+            Self::OpenRouter => "openrouter",
             Self::Qwen => "qwen",
         }
     }
@@ -92,7 +100,7 @@ pub(crate) fn openai_responses_compatible_adapters(
     .collect()
 }
 
-fn responses_dialect_adapter(
+pub(crate) fn responses_dialect_adapter(
     dialect: ResponsesDialectKind,
 ) -> ProtocolResultValue<(AdapterDescriptor, CodecRegistration)> {
     let (base_descriptor, mut base_registration) = openai_responses_adapter();
@@ -158,6 +166,11 @@ impl OperationCodec for ResponsesDialectCodec {
 
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
         let mut parameters = call.input.resolved_parameters.clone();
+        let openrouter_parameters = if self.dialect == ResponsesDialectKind::OpenRouter {
+            take_openrouter_parameters(&mut parameters)?
+        } else {
+            BTreeMap::new()
+        };
         let session_cache = if self.dialect == ResponsesDialectKind::Qwen {
             parameters.remove(QWEN_SESSION_CACHE_PARAMETER)
         } else {
@@ -173,6 +186,19 @@ impl OperationCodec for ResponsesDialectCodec {
             context: call.context,
         };
         let mut request = self.base.encode(&delegated)?;
+        if !openrouter_parameters.is_empty() {
+            let super::HttpBody::Json(body) = &mut request.body else {
+                return Err(ProtocolError::invalid_configuration(
+                    "OpenRouter Responses request body is not JSON",
+                ));
+            };
+            let body = body.as_object_mut().ok_or_else(|| {
+                ProtocolError::invalid_configuration(
+                    "OpenRouter Responses request body is not an object",
+                )
+            })?;
+            body.extend(openrouter_parameters);
+        }
         if self.dialect == ResponsesDialectKind::DeepSeek {
             let base = Url::parse(&call.context.base_url).map_err(|_| {
                 ProtocolError::invalid_configuration("DeepSeek base URL is invalid")
@@ -217,6 +243,50 @@ impl OperationCodec for ResponsesDialectCodec {
             ),
         })
     }
+}
+
+fn take_openrouter_parameters(
+    parameters: &mut BTreeMap<String, Value>,
+) -> ProtocolResultValue<BTreeMap<String, Value>> {
+    let mut extensions = BTreeMap::new();
+    for name in [
+        "cache_control",
+        "debug",
+        "image_config",
+        "max_tool_calls",
+        "modalities",
+        "models",
+        "plugins",
+        "prompt_cache_key",
+        "provider",
+        "route",
+        "safety_identifier",
+        "session_id",
+        "stop_server_tools_when",
+    ] {
+        let Some(value) = parameters.remove(name) else {
+            continue;
+        };
+        let valid = match name {
+            "cache_control" | "debug" | "image_config" | "provider" => value.is_object(),
+            "max_tool_calls" => value.is_u64(),
+            "modalities" | "models" => value
+                .as_array()
+                .is_some_and(|items| !items.is_empty() && items.iter().all(Value::is_string)),
+            "plugins" | "stop_server_tools_when" => value.is_array(),
+            "prompt_cache_key" | "route" | "safety_identifier" | "session_id" => {
+                value.as_str().is_some_and(|value| !value.trim().is_empty())
+            }
+            _ => false,
+        };
+        if !valid {
+            return Err(ProtocolError::invalid_request(format!(
+                "OpenRouter Responses parameter `{name}` has an invalid value"
+            )));
+        }
+        extensions.insert(name.to_owned(), value);
+    }
+    Ok(extensions)
 }
 
 fn rewrite_execution_namespace(execution: ProtocolExecution, namespace: &str) -> ProtocolExecution {
@@ -345,6 +415,10 @@ mod tests {
             .contract()
             .override_points
             .contains(&ResponsesOverridePoint::SessionCacheHeader));
+        assert_eq!(
+            ResponsesDialectKind::OpenRouter.contract().override_points,
+            BTreeSet::from([ResponsesOverridePoint::ProviderStateNamespace])
+        );
     }
 
     #[test]
@@ -381,6 +455,7 @@ mod tests {
         for dialect in [
             ResponsesDialectKind::DeepSeek,
             ResponsesDialectKind::Doubao,
+            ResponsesDialectKind::OpenRouter,
             ResponsesDialectKind::Qwen,
         ] {
             let (_, registration) = responses_dialect_adapter(dialect).unwrap();

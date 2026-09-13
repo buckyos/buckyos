@@ -1010,7 +1010,7 @@
     {
       "provider_driver": "openrouter",
       "provider_profile_id": "openrouter",
-      "protocol_adapter_ids": ["openrouter-openai"],
+      "protocol_adapter_ids": ["openrouter-responses"],
       "model_driver_ids": ["openai", "claude", "google-gemini", "minimax", "deepseek", "kimi", "glm", "qwen", "cohere"],
       "discovery": "runtime_catalog",
       "official_catalog": {
@@ -1020,11 +1020,11 @@
       },
       "source_urls": ["https://openrouter.ai/docs/api/api-reference/models/get-models"],
       "protocol_evidence": {
-        "documentation_version": "official documentation checked 2026-08-27",
-        "streaming_semantics": "OpenRouter exposes OpenAI-compatible streaming subject to the selected upstream model/provider.",
+        "documentation_version": "official documentation checked 2026-09-13",
+        "streaming_semantics": "OpenRouter Responses exposes OpenResponses SSE events subject to the selected upstream model/provider.",
         "async_operation_semantics": "Lifecycle behavior is inherited from the selected model endpoint; unsupported async behavior is not inferred.",
         "usage_semantics": "Models API exposes pricing and requests expose normalized usage subject to upstream support.",
-        "input_output_formats": "Runtime Models API output_modalities, architecture, and supported_parameters are the per-model source of truth.",
+        "input_output_formats": "Runtime Models API output_modalities, architecture, and supported_parameters are the per-model source of truth; LLM wire requests use OpenRouter Responses.",
         "item_request_batch_limits": "Models API per_request_limits and upstream provider metadata are authoritative; null remains explicitly unknown.",
         "image_audio_video_limits": "Media constraints are inherited from the selected upstream model/provider and must be present in runtime metadata or official upstream evidence.",
         "context_output_limits": "Models API publishes context_length and top-provider limits per canonical physical model.",

@@ -8,8 +8,8 @@ use crate::catalog::Pricing;
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ProviderRulesCatalog};
 use crate::protocol::{
-    CredentialKind, HttpRequest, HttpResponse, HttpTransport, OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
-    OPENAI_EMBEDDINGS_OPERATION_ID, OPENROUTER_CHAT_ADAPTER_ID, OPENROUTER_RERANK_OPERATION_ID,
+    CredentialKind, HttpRequest, HttpResponse, HttpTransport, OPENAI_EMBEDDINGS_OPERATION_ID,
+    OPENAI_RESPONSES_OPERATION_ID, OPENROUTER_RERANK_OPERATION_ID, OPENROUTER_RESPONSES_ADAPTER_ID,
 };
 use async_trait::async_trait;
 use buckyos_api::{features, ApiType};
@@ -163,7 +163,7 @@ impl ProviderDiscovery for OpenRouterDiscovery {
             } else if embedding {
                 OPENAI_EMBEDDINGS_OPERATION_ID
             } else {
-                OPENAI_CHAT_COMPLETIONS_OPERATION_ID
+                OPENAI_RESPONSES_OPERATION_ID
             };
             models.insert(
                 model.id.clone(),
@@ -250,9 +250,9 @@ fn parse_nonnegative_price(name: &str, value: Option<&str>) -> ProviderResult<Op
 
 fn validate_context(context: &DiscoveryContext<'_>) -> ProviderResult<()> {
     if context.profile.provider_profile_id != OPENROUTER_PROVIDER_PROFILE_ID
-        || context.profile.default_protocol_adapter_id != OPENROUTER_CHAT_ADAPTER_ID
+        || context.profile.default_protocol_adapter_id != OPENROUTER_RESPONSES_ADAPTER_ID
         || context.instance.provider_profile_id != OPENROUTER_PROVIDER_PROFILE_ID
-        || context.instance.protocol_adapter_id != OPENROUTER_CHAT_ADAPTER_ID
+        || context.instance.protocol_adapter_id != OPENROUTER_RESPONSES_ADAPTER_ID
     {
         return Err(ProviderError::InvalidConfiguration(
             "OpenRouter discovery requires its builtin profile and adapter".to_owned(),
@@ -386,7 +386,7 @@ mod tests {
         let instance = ProviderInstanceConfig {
             provider_instance_name: "openrouter-main".to_owned(),
             provider_profile_id: OPENROUTER_PROVIDER_PROFILE_ID.to_owned(),
-            protocol_adapter_id: OPENROUTER_CHAT_ADAPTER_ID.to_owned(),
+            protocol_adapter_id: OPENROUTER_RESPONSES_ADAPTER_ID.to_owned(),
             base_url: openrouter_known_provider().base_url,
             credential: CredentialReference {
                 reference: "secret://openrouter".to_owned(),
@@ -461,10 +461,7 @@ mod tests {
             .iter()
             .find(|pattern| pattern.operations.contains_key("llm"))
             .unwrap();
-        assert_eq!(
-            llm_pattern.operations["llm"],
-            OPENAI_CHAT_COMPLETIONS_OPERATION_ID
-        );
+        assert_eq!(llm_pattern.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
         assert_eq!(openrouter_provider_rules(3).origin_mappings.len(), 1);
     }
 

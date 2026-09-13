@@ -1,5 +1,5 @@
 use crate::protocol::{
-    glm_chat_adapter, kimi_chat_adapter, minimax_messages_adapter, openrouter_chat_adapter,
+    glm_chat_adapter, kimi_chat_adapter, minimax_messages_adapter, openrouter_responses_adapter,
     CodecRegistry, ProtocolAdapterPlugin, ProtocolResultValue,
 };
 
@@ -9,7 +9,7 @@ impl ProtocolAdapterPlugin for Plugin {
     fn register(&self, registry: &mut CodecRegistry) -> ProtocolResultValue<()> {
         for (descriptor, codecs) in [
             minimax_messages_adapter(),
-            openrouter_chat_adapter(),
+            openrouter_responses_adapter(),
             kimi_chat_adapter(),
             glm_chat_adapter(),
         ] {

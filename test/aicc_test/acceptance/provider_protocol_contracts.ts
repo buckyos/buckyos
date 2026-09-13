@@ -75,8 +75,7 @@ export type ProviderProtocolContract = {
     | "openai_responses"
     | "openai_chat"
     | "claude_messages"
-    | "gemini_interactions"
-    | "openrouter_chat";
+    | "gemini_interactions";
   async_protocol?:
     | "fal_queue"
     | "minimax_video"
@@ -1718,7 +1717,7 @@ export function buildT15Manifest(
       expected_wire_fixture:
         `${base.protocol_contract_id}.request.tool-history`,
     });
-    if (base.provider_driver === "openai") {
+    if (["openai", "openrouter"].includes(base.provider_driver ?? "")) {
       cases.push({
         ...base,
         case_id: caseId(
@@ -1727,17 +1726,6 @@ export function buildT15Manifest(
         tags: [...base.tags, "history", "native_history"],
         expected_wire_fixture:
           `${base.protocol_contract_id}.request.native-history`,
-      });
-    }
-    if (base.provider_driver === "openrouter") {
-      cases.push({
-        ...base,
-        case_id: caseId(
-          `t1.5.${base.provider_driver}.${base.protocol_contract_id}.llm.reasoning-history`,
-        ),
-        tags: [...base.tags, "history", "reasoning_history"],
-        expected_wire_fixture:
-          `${base.protocol_contract_id}.request.reasoning-history`,
       });
     }
     if (base.provider_driver === "claude") {

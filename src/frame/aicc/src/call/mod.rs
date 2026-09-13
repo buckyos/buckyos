@@ -1183,7 +1183,7 @@ mod tests {
         use crate::protocol::{
             fal_queue_adapter, gemini_interactions_adapter, glm_chat_adapter, kimi_chat_adapter,
             minimax_messages_adapter, openai_chat_completions_adapter,
-            openai_responses_compatible_adapters, openrouter_chat_adapter,
+            openai_responses_compatible_adapters, openrouter_responses_adapter,
         };
         use crate::provider::register_sn_openai_adapter;
 
@@ -1205,7 +1205,7 @@ mod tests {
         let (chat, registration) = openai_chat_completions_adapter();
         registry.register_codecs(chat, registration).unwrap();
         for (descriptor, registration) in [
-            openrouter_chat_adapter(),
+            openrouter_responses_adapter(),
             kimi_chat_adapter(),
             glm_chat_adapter(),
         ] {
@@ -1725,9 +1725,9 @@ mod tests {
         assert!(golden
             .contains(&"gemini|gemini-interactions|video.extend|models.predictLongRunning".into()));
         assert!(golden.contains(&"fal|fal-queue|image.upscale|queue.submit".into()));
-        assert!(golden.contains(&"openrouter|openrouter-openai|rerank|rerank.create".into()));
+        assert!(golden.contains(&"openrouter|openrouter-responses|rerank|rerank.create".into()));
         assert!(golden
-            .contains(&"openrouter|openrouter-openai|embedding.text|embeddings.create".into()));
+            .contains(&"openrouter|openrouter-responses|embedding.text|embeddings.create".into()));
         assert!(golden
             .contains(&"minimax|minimax-messages|video.txt2video|video_generation.create".into()));
         assert!(golden.contains(&"qwen|qwen-responses|llm|responses.create".into()));

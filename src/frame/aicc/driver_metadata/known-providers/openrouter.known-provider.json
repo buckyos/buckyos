@@ -9,7 +9,7 @@
       "provider_profile_id": "openrouter",
       "display_name": "OpenRouter",
       "base_url": "https://openrouter.ai/api/v1",
-      "protocol_adapter_id": "openrouter-openai",
+      "protocol_adapter_id": "openrouter-responses",
       "discovery_behavior_id": "openrouter-models",
       "provider_rules_id": "openrouter",
       "credential": { "kind": "bearer" },
