@@ -1,7 +1,7 @@
 {
   "format": "buckyos.aicc.model-driver-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "model_driver_id": "glm",
   "revision_seq": 1,
   "required_features": [],
@@ -140,8 +140,8 @@
   "patterns": [],
   "defaults": { "version_rules": ["glm-standard", "glm-turbo", "glm-air", "glm-airx", "glm-flash", "glm-flashx"] },
   "variants": [
-    { "name": "thinking-enabled", "match": { "origin_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"] } },
-    { "name": "thinking-disabled", "match": { "origin_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"] } }
+    { "name": "thinking-enabled", "match": { "origin_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"] }, "provider_options": { "thinking": { "type": "enabled" } } },
+    { "name": "thinking-disabled", "match": { "origin_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"] }, "provider_options": { "thinking": { "type": "disabled" } } }
   ],
   "version_rules": [
     { "id": "glm-standard", "family": "glm", "tier": "standard", "match": "glm-*", "exclude_tier_tokens": ["turbo", "air", "airx", "flash", "flashx"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm", "version_mount": "llm.glm.{model}" },

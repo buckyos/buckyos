@@ -1,7 +1,7 @@
 {
   "format": "buckyos.aicc.model-driver-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "model_driver_id": "gemini",
   "revision_seq": 1,
   "required_features": [],
@@ -187,11 +187,14 @@
   "patterns": [],
   "defaults": { "version_rules": ["gemini-flash", "gemini-flash-lite", "gemini-pro"] },
   "variants": [
-    { "name": "reasoning-none", "match": { "origin_model_id": ["gemini-2.5-flash", "gemini-2.5-flash-lite"] }, "mount_suffix": "reasoning-none" },
-    { "name": "reasoning-minimal", "match": { "origin_model_id": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite-image"] }, "mount_suffix": "reasoning-minimal" },
-    { "name": "reasoning-low", "match": { "origin_model_id": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"] }, "mount_suffix": "reasoning-low" },
-    { "name": "reasoning-medium", "match": { "origin_model_id": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"] }, "mount_suffix": "reasoning-medium" },
-    { "name": "reasoning-high", "match": { "origin_model_id": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-3.1-flash-lite-image"] }, "mount_suffix": "reasoning-high" }
+    { "name": "reasoning-none", "match": { "origin_model_id": ["gemini-2.5-flash", "gemini-2.5-flash-lite"] }, "mount_suffix": "reasoning-none", "provider_options": { "generation_config": { "thinking_budget": 0 } } },
+    { "name": "reasoning-minimal", "match": { "origin_model_id": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite-image"] }, "mount_suffix": "reasoning-minimal", "provider_options": { "generation_config": { "thinking_level": "minimal" } } },
+    { "name": "reasoning-low", "match": { "origin_model_id": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview"] }, "mount_suffix": "reasoning-low", "provider_options": { "generation_config": { "thinking_level": "low" } } },
+    { "name": "reasoning-low", "match": { "origin_model_id": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"] }, "mount_suffix": "reasoning-low", "provider_options": { "generation_config": { "thinking_budget": 1024 } } },
+    { "name": "reasoning-medium", "match": { "origin_model_id": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3-flash-preview"] }, "mount_suffix": "reasoning-medium", "provider_options": { "generation_config": { "thinking_level": "medium" } } },
+    { "name": "reasoning-medium", "match": { "origin_model_id": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"] }, "mount_suffix": "reasoning-medium", "provider_options": { "generation_config": { "thinking_budget": 8192 } } },
+    { "name": "reasoning-high", "match": { "origin_model_id": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-image"] }, "mount_suffix": "reasoning-high", "provider_options": { "generation_config": { "thinking_level": "high" } } },
+    { "name": "reasoning-high", "match": { "origin_model_id": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"] }, "mount_suffix": "reasoning-high", "provider_options": { "generation_config": { "thinking_budget": 24576 } } }
   ],
   "version_rules": [
     { "id": "gemini-flash", "family": "gemini", "tier": "flash", "match": "gemini-*", "tier_tokens": ["flash"], "exclude_tier_tokens": ["lite", "image", "tts", "transcribe", "omni"], "version_rank": { "prefix": "gemini" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.gemini-flash", "version_mount": "llm.gemini.{model}" },

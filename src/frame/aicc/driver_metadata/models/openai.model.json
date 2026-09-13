@@ -1,7 +1,7 @@
 {
   "format": "buckyos.aicc.model-driver-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "model_driver_id": "openai",
   "revision_seq": 1,
   "required_features": [],
@@ -252,12 +252,12 @@
   ],
   "defaults": {},
   "variants": [
-    { "name": "reasoning-none", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5", "gpt-5.5-20*", "gpt-5.4", "gpt-5.4-20*", "gpt-5.4-mini*", "gpt-5.4-nano*"] }, "mount_suffix": "reasoning-none" },
-    { "name": "reasoning-low", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5", "gpt-5.5-20*", "gpt-5.4", "gpt-5.4-20*", "gpt-5.4-mini*", "gpt-5.4-nano*", "gpt-5.3-codex*"] }, "mount_suffix": "reasoning-low" },
-    { "name": "reasoning-medium", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5*", "gpt-5.4*", "gpt-5.3-codex*"] }, "mount_suffix": "reasoning-medium" },
-    { "name": "reasoning-high", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5*", "gpt-5.4*", "gpt-5.3-codex*"] }, "mount_suffix": "reasoning-high" },
-    { "name": "reasoning-xhigh", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5*", "gpt-5.4*", "gpt-5.3-codex*"] }, "mount_suffix": "reasoning-xhigh" },
-    { "name": "reasoning-max", "match": "gpt-5.6*", "mount_suffix": "reasoning-max" }
+    { "name": "reasoning-none", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5", "gpt-5.5-20*", "gpt-5.4", "gpt-5.4-20*", "gpt-5.4-mini*", "gpt-5.4-nano*"] }, "mount_suffix": "reasoning-none", "provider_options": { "reasoning": { "effort": "none" } } },
+    { "name": "reasoning-low", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5", "gpt-5.5-20*", "gpt-5.4", "gpt-5.4-20*", "gpt-5.4-mini*", "gpt-5.4-nano*", "gpt-5.3-codex*"] }, "mount_suffix": "reasoning-low", "provider_options": { "reasoning": { "effort": "low" } } },
+    { "name": "reasoning-medium", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5*", "gpt-5.4*", "gpt-5.3-codex*"] }, "mount_suffix": "reasoning-medium", "provider_options": { "reasoning": { "effort": "medium" } } },
+    { "name": "reasoning-high", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5*", "gpt-5.4*", "gpt-5.3-codex*"] }, "mount_suffix": "reasoning-high", "provider_options": { "reasoning": { "effort": "high" } } },
+    { "name": "reasoning-xhigh", "match": { "origin_model_id": ["gpt-5.6*", "gpt-5.5*", "gpt-5.4*", "gpt-5.3-codex*"] }, "mount_suffix": "reasoning-xhigh", "provider_options": { "reasoning": { "effort": "xhigh" } } },
+    { "name": "reasoning-max", "match": "gpt-5.6*", "mount_suffix": "reasoning-max", "provider_options": { "reasoning": { "effort": "max" } } }
   ],
   "version_rules": [
     {

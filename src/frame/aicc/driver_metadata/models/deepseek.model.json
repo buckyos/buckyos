@@ -1,7 +1,7 @@
 {
   "format": "buckyos.aicc.model-driver-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "model_driver_id": "deepseek",
   "revision_seq": 1,
   "required_features": [],
@@ -58,13 +58,13 @@
     "version_rules": ["deepseek-flash", "deepseek-pro"]
   },
   "variants": [
-    { "name": "reasoning-minimal", "match": "deepseek-v4-*" },
-    { "name": "reasoning-none", "match": "deepseek-v4-*" },
-    { "name": "reasoning-low", "match": "deepseek-v4-*" },
-    { "name": "reasoning-medium", "match": "deepseek-v4-*" },
-    { "name": "reasoning-high", "match": "deepseek-v4-*" },
-    { "name": "reasoning-xhigh", "match": "deepseek-v4-*" },
-    { "name": "reasoning-max", "match": "deepseek-v4-*" }
+    { "name": "reasoning-minimal", "match": "deepseek-v4-*", "provider_options": { "reasoning": { "effort": "minimal" } } },
+    { "name": "reasoning-none", "match": "deepseek-v4-*", "provider_options": { "reasoning": { "effort": "none" } } },
+    { "name": "reasoning-low", "match": "deepseek-v4-*", "provider_options": { "reasoning": { "effort": "low" } } },
+    { "name": "reasoning-medium", "match": "deepseek-v4-*", "provider_options": { "reasoning": { "effort": "medium" } } },
+    { "name": "reasoning-high", "match": "deepseek-v4-*", "provider_options": { "reasoning": { "effort": "high" } } },
+    { "name": "reasoning-xhigh", "match": "deepseek-v4-*", "provider_options": { "reasoning": { "effort": "xhigh" } } },
+    { "name": "reasoning-max", "match": "deepseek-v4-*", "provider_options": { "reasoning": { "effort": "max" } } }
   ],
   "version_rules": [
     { "id": "deepseek-flash", "family": "deepseek", "tier": "flash", "match": "deepseek-v*-flash*", "tier_tokens": ["flash"], "version_rank": { "prefix": "deepseek-v" }, "stability": { "unstable_tokens": ["preview", "experimental", "exp", "beta"], "current_requires_stable": true }, "current_mount": "llm.deepseek-flash", "version_mount": "llm.deepseek.{model}" },

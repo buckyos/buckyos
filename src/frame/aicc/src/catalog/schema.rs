@@ -203,6 +203,8 @@ pub(crate) struct ModelVariant {
     pub match_rule: MatchRule,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mount_suffix: Option<String>,
+    #[serde(default)]
+    pub provider_options: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -500,7 +500,7 @@ Owner：Protocol/Router 联合小组
 - [x] 应用 Provider Rules operation 映射；
 - [x] 应用 request defaults、rewrite、delete 和 provider options；
 - [x] 明确全部参数优先级；
-- [x] 校验 Provider variant 完整覆盖 Model Driver variant；
+- [x] Provider variant 按具体模型优先适配，无匹配时回退 Model Driver variant；
 - [x] 最终确定 operation、credential 和资源需求；
 - [x] Adapter 不根据 Provider/model 名猜 operation；
 - [x] 为每个 Provider/operation 建立 golden lowering fixture。
