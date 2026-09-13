@@ -1,5 +1,6 @@
 use super::{ProtocolError, ProtocolErrorKind, ProtocolResultValue, StreamingHttpResponse};
 use futures_util::{stream, Stream, StreamExt};
+#[cfg(test)]
 use reqwest::StatusCode;
 use std::collections::VecDeque;
 use std::pin::Pin;
@@ -243,11 +244,7 @@ pub(crate) async fn sse_frame_stream(
         let response = response
             .into_bounded_error_response(max_response_bytes)
             .await?;
-        let kind = match response.status {
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProtocolErrorKind::Authentication,
-            StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT => ProtocolErrorKind::Timeout,
-            _ => ProtocolErrorKind::InvalidResponse,
-        };
+        let kind = super::protocol_error_kind_from_http_status(response.status);
         return Err(ProtocolError::new(
             kind,
             format!("upstream returned HTTP status {}", response.status.as_u16()),
@@ -627,7 +624,7 @@ mod tests {
         .await
         .err()
         .unwrap();
-        assert_eq!(error.kind, ProtocolErrorKind::InvalidResponse);
+        assert_eq!(error.kind, ProtocolErrorKind::Transport);
         assert_eq!(error.request_id.as_deref(), Some("request-stream"));
         assert_eq!(error.retry_after, Some(Duration::from_secs(3)));
 
@@ -642,7 +639,7 @@ mod tests {
         .await
         .err()
         .unwrap();
-        assert_eq!(server_error.kind, ProtocolErrorKind::InvalidResponse);
+        assert_eq!(server_error.kind, ProtocolErrorKind::Transport);
         assert!(server_error.message.contains("503"));
 
         let too_large = sse_frame_stream(

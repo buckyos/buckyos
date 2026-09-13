@@ -103,6 +103,24 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 不跳过启动时的首次发现；`instance_rules` 是强类型对象，目前支持
 `exclude_models` 与 `origin_model_overrides`，未知字段会被拒绝。
 
+模型名转换的事实源按以下顺序处理：
+
+- OpenRouter 这类稳定的聚合渠道命名规则写入可更新的 Provider Rules `origin_mappings`；
+- 豆包方舟 `ep-*` 是用户实例自己的 endpoint ID，必须在该实例的
+  `instance_rules.origin_model_overrides` 中映射到官方模型 ID，不能写成全局映射；
+- SN 的 `provider_actual_model_id` 来自网关动态 discovery，继续以动态响应为事实源；
+- 恒等命名的 provider 不配置映射。
+
+Provider 不提供价格或价格无法由现有 schema 精确表达时，价格保持未知。禁止为了让
+`finance_complete` 变为 true 而填写估算常量。OpenRouter `/models` 与响应 `usage.cost`
+当前按其官方约定使用 USD；响应给出的实际金额优先于本地估算。
+各内置 Provider 的事实源和静态/动态/unknown 决策见
+[`../provider_pricing_sources.md`](../provider_pricing_sources.md)。
+
+原生任务只有在 adapter 明确声明 `cancel_supported` 时才发送远端取消。Gemini/MiniMax
+视频当前不支持取消：`task.cancel` 返回 `unsupported_operation`，已有轮询不终止，任务仍会
+继续收敛到供应商最终状态。
+
 ## 5. 必须验证的行为
 
 - Profile、Adapter、Driver 或 Rules ID 不存在时拒绝加载。

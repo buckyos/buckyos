@@ -8,7 +8,7 @@ use crate::protocol::{
 };
 use crate::resource::ResourceAccessContext;
 use crate::routing::{RouteDecision, SelectedRoute};
-use buckyos_api::{AiccCall, AiccErrorCode, AiccExecutionMode, ApiType, ResourceRef};
+use buckyos_api::{AiccCall, AiccErrorCode, AiccExecutionMode, ApiType, Money, ResourceRef};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,7 +29,7 @@ pub(crate) struct ResolvedPricing {
     pub source: PricingSource,
     pub pricing: Option<Pricing>,
     pub matched_amount: Option<f64>,
-    pub estimated_cost_usd: Option<f64>,
+    pub estimated_cost: Option<Money>,
 }
 
 #[derive(Clone)]
@@ -444,7 +444,7 @@ impl<'a> CallResolver<'a> {
             provider_rule
                 .as_ref()
                 .and_then(|rule| rule.price_for(&pricing_context)),
-            decision.selected.estimated_cost_usd,
+            decision.selected.estimated_cost.clone(),
         );
         let credential = target.credential.audit().clone();
         let credential_reference = target.credential_reference;
@@ -1054,7 +1054,7 @@ fn resolve_pricing(
     target: Option<ResolvedPricing>,
     provider_pricing: Option<Pricing>,
     matched_amount: Option<f64>,
-    estimated_cost_usd: Option<f64>,
+    estimated_cost: Option<Money>,
 ) -> ResolvedPricing {
     if let Some(target) = target {
         return target;
@@ -1064,14 +1064,14 @@ fn resolve_pricing(
             source: PricingSource::ProviderRules,
             pricing: Some(pricing),
             matched_amount,
-            estimated_cost_usd,
+            estimated_cost,
         };
     }
     ResolvedPricing {
         source: PricingSource::RouteEstimate,
         pricing: None,
         matched_amount: None,
-        estimated_cost_usd,
+        estimated_cost,
     }
 }
 
@@ -1280,7 +1280,7 @@ mod tests {
             inventory_revision: "inventory-3".into(),
             enabled_capabilities: vec!["reasoning".into()],
             disabled_capabilities: Vec::new(),
-            estimated_cost_usd: Some(0.01),
+            estimated_cost: Some(Money::new(0.01, "USD")),
             final_score: 1.0,
         };
         RouteDecision {
@@ -1312,7 +1312,7 @@ mod tests {
                     local: 0.0,
                     final_score: 1.0,
                 },
-                estimated_cost_usd: Some(0.01),
+                estimated_cost: Some(Money::new(0.01, "USD")),
                 runtime_failover_count: 0,
                 logical_item_sources: Vec::new(),
                 logical_admission: Vec::new(),
@@ -1712,6 +1712,18 @@ mod tests {
         }
         golden.sort();
         golden.dedup();
+        let document = include_str!("../../../../../doc/aicc/provider_operation_bindings.md");
+        let documented = document
+            .split("<!-- BEGIN GENERATED BINDINGS -->")
+            .nth(1)
+            .and_then(|section| section.split("<!-- END GENERATED BINDINGS -->").next())
+            .unwrap()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert_eq!(golden, documented);
         assert_eq!(golden.len(), 71);
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(

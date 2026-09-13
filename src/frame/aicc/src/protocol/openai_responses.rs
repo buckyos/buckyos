@@ -1223,7 +1223,35 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         input_tokens,
         output_tokens,
         total_tokens,
+        cache_read_input_tokens: value
+            .pointer("/input_tokens_details/cached_tokens")
+            .and_then(Value::as_u64),
+        cache_write_input_tokens: value
+            .pointer("/input_tokens_details/cache_write_tokens")
+            .and_then(Value::as_u64),
+        reasoning_tokens: value
+            .pointer("/output_tokens_details/reasoning_tokens")
+            .and_then(Value::as_u64),
+        image_units: None,
+        audio_seconds: None,
+        video_seconds: None,
         request_units: None,
+        cost: decode_reported_usd_cost(value)?,
+    }))
+}
+
+fn decode_reported_usd_cost(value: &Value) -> ProtocolResultValue<Option<buckyos_api::AiCost>> {
+    let Some(amount) = value.get("cost").and_then(Value::as_f64) else {
+        return Ok(None);
+    };
+    if !amount.is_finite() || amount < 0.0 {
+        return Err(ProtocolError::invalid_response(
+            "reported usage cost must be finite and non-negative",
+        ));
+    }
+    Ok(Some(buckyos_api::AiCost {
+        amount,
+        currency: "USD".to_owned(),
     }))
 }
 
@@ -1563,22 +1591,12 @@ fn openai_http_error(
         .or(provider_type)
         .unwrap_or("http_error");
     ProtocolError::new(
-        http_error_kind(status),
+        super::protocol_error_kind_from_http_status(status),
         format!("OpenAI {label}: {message}"),
     )
     .with_provider_code(provider_code)
     .with_request_id(Some(request_id.to_string()))
     .with_retry_after(retry_after)
-}
-
-fn http_error_kind(status: StatusCode) -> ProtocolErrorKind {
-    match status {
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProtocolErrorKind::Authentication,
-        StatusCode::REQUEST_TIMEOUT => ProtocolErrorKind::Timeout,
-        StatusCode::TOO_MANY_REQUESTS => ProtocolErrorKind::Transport,
-        status if status.is_server_error() => ProtocolErrorKind::Transport,
-        _ => ProtocolErrorKind::InvalidRequest,
-    }
 }
 
 fn is_sse(value: Option<&HeaderValue>) -> bool {
@@ -1821,6 +1839,7 @@ fn decode_embedding_usage(value: Option<&Value>) -> ProtocolResultValue<Option<A
         output_tokens: None,
         total_tokens,
         request_units: None,
+        ..AiUsage::default()
     }))
 }
 
@@ -2335,7 +2354,13 @@ fn decode_audio_transcription(response: HttpResponse) -> ProtocolResultValue<Pro
         .and_then(Value::as_str)
     {
         Some("tokens") => decode_usage(value.get("usage"))?,
-        Some("duration") => Some(AiUsage::request_units(1)),
+        Some("duration") => Some(AiUsage {
+            audio_seconds: value
+                .pointer("/usage/seconds")
+                .and_then(Value::as_f64)
+                .filter(|seconds| seconds.is_finite() && *seconds >= 0.0),
+            ..AiUsage::request_units(1)
+        }),
         _ => None,
     };
     Ok(ProtocolExecution::Immediate(ProtocolOutput {
@@ -2990,7 +3015,7 @@ mod tests {
                         {"type":"image_generation_call","id":"ig_1","status":"completed","result":"aW1hZ2U=","output_format":"png"},
                         {"type":"web_search_call","id":"ws_1","status":"completed"}
                       ],
-                      "usage":{"input_tokens":5,"output_tokens":7,"total_tokens":12}
+                      "usage":{"input_tokens":5,"output_tokens":7,"total_tokens":12,"cost":0.0125,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":3}}
                     }"#,
                 ),
                 "request-1",
@@ -3010,7 +3035,11 @@ mod tests {
             panic!("expected immediate result")
         };
         crate::protocol::bind_provider_state_source(&mut output.value, &context().state_coordinate);
-        assert_eq!(output.usage.unwrap().total_tokens, Some(12));
+        let usage = output.usage.unwrap();
+        assert_eq!(usage.total_tokens, Some(12));
+        assert_eq!(usage.cache_read_input_tokens, Some(2));
+        assert_eq!(usage.reasoning_tokens, Some(3));
+        assert_eq!(usage.cost.unwrap().currency, "USD");
         assert_eq!(output.value["message"]["content"][0]["type"], "thinking");
         assert_eq!(
             output.value["message"]["content"][1]["type"],

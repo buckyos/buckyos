@@ -575,6 +575,7 @@ mod tests {
                 output_tokens: Some(4),
                 total_tokens: Some(14),
                 request_units: None,
+                ..AiUsage::default()
             },
             finance_snapshot_json: None,
             created_at_ms: 1_750_000_000_000,

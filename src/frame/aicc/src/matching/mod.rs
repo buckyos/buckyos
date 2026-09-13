@@ -39,13 +39,7 @@ pub(crate) struct MatchSchema {
     pub allow_json_pointer_dimensions: bool,
 }
 
-const MODEL_DRIVER_DIMENSIONS: &[DimensionSpec] = &[
-    string_dimension("origin_model_id"),
-    string_dimension("family"),
-    string_dimension("tier"),
-    string_dimension("stability"),
-    string_dimension("api_type"),
-];
+const MODEL_DRIVER_DIMENSIONS: &[DimensionSpec] = &[string_dimension("origin_model_id")];
 
 const PROVIDER_RULE_DIMENSIONS: &[DimensionSpec] = &[
     string_dimension("provider_model_id"),
@@ -964,27 +958,14 @@ mod tests {
                 .kind,
             MatchCompileErrorKind::UnknownDimension
         );
-        assert_eq!(
-            compile(json!({"family": 5}), &MODEL_DRIVER_MATCH_SCHEMA)
-                .unwrap_err()
-                .kind,
-            MatchCompileErrorKind::InvalidValueType
-        );
-        assert_eq!(
-            compile(
-                json!({"family": {"glob": "gpt-*"}}),
-                &MODEL_DRIVER_MATCH_SCHEMA
-            )
-            .unwrap_err()
-            .kind,
-            MatchCompileErrorKind::InvalidOperator
-        );
-        assert_eq!(
-            compile(json!({"family": {"min": "a"}}), &MODEL_DRIVER_MATCH_SCHEMA)
-                .unwrap_err()
-                .kind,
-            MatchCompileErrorKind::RangeNotAllowed
-        );
+        for dimension in ["family", "tier", "stability", "api_type"] {
+            assert_eq!(
+                compile(json!({(dimension): "*"}), &MODEL_DRIVER_MATCH_SCHEMA)
+                    .unwrap_err()
+                    .kind,
+                MatchCompileErrorKind::UnknownDimension
+            );
+        }
         assert_eq!(
             compile(json!("high"), &REQUEST_RULE_MATCH_SCHEMA)
                 .unwrap_err()
@@ -1070,24 +1051,24 @@ mod tests {
                 RuleEntry {
                     rule_id: Some("model-gpt".to_owned()),
                     rule: serde_json::from_value(json!({
-                        "origin_model_id": "gpt-*",
+                        "provider_model_id": "gpt-*",
                         "api_type": "llm"
                     }))
                     .unwrap(),
                 },
             ],
-            &MODEL_DRIVER_MATCH_SCHEMA,
+            &PROVIDER_RULE_MATCH_SCHEMA,
         )
         .unwrap();
         let trace = rules
             .first_match(&context(&[
-                ("origin_model_id", json!("gpt-secret-model-name")),
+                ("provider_model_id", json!("gpt-secret-model-name")),
                 ("api_type", json!("llm")),
             ]))
             .unwrap();
         assert_eq!(trace.rule_id.as_deref(), Some("model-gpt"));
         assert_eq!(trace.position, 1);
-        assert_eq!(trace.dimensions, ["api_type", "origin_model_id"]);
+        assert_eq!(trace.dimensions, ["api_type", "provider_model_id"]);
         assert!(!format!("{trace:?}").contains("secret"));
     }
 

@@ -201,3 +201,23 @@ deduplicated by a static variant identity key.
 snapshot. They may match model patterns and tiers, rank versions, suppress
 unstable or snapshot aliases, and attach semantic family mounts. These rules
 do not select Provider operations or endpoints.
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `id` | yes | Rule identity referenced by model rules/defaults. |
+| `family` | yes | Family label used for diagnostics and grouping. It is not a match input. |
+| `tier` | yes | Tier label used for diagnostics and grouping. It is not a match input. |
+| `match` | yes | Matches `origin_model_id`; string shorthand is a glob. |
+| `tier_tokens` | no | Tokens that all must occur in the normalized origin model ID. |
+| `exclude_tier_tokens` | no | Tokens that disqualify a model from this tier. |
+| `version_rank.prefix` | no | Prefix removed before numeric/version ranking. |
+| `stability.unstable_tokens` | no | Tokens that mark a version as unstable. |
+| `stability.current_requires_stable` | no | Prevents an unstable winner from receiving `current_mount`. |
+| `current_mount` | yes | Mount assigned only to the highest ranked eligible model. |
+| `version_mount` | yes | Mount assigned to every eligible version; `{model}` expands from `origin_model_id`. |
+| `auto_mounts` | no | Additional mounts assigned to every eligible version. |
+
+All model `logical_mounts` expand `{driver}` from `model_driver_id` and `{model}`
+from `origin_model_id` before validation. Any remaining brace is rejected. Version
+selection and ranking always use `origin_model_id`, so an aggregator's channel name
+cannot alter the logical directory.

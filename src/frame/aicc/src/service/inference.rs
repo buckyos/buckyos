@@ -80,8 +80,14 @@ impl RuntimeInferencePort {
             )
             .await
             .map_err(|_| inference_error(AiccErrorCode::PolicyDenied, "quota scope is invalid"))?;
-        let runtime_states =
-            candidate_runtime_states(snapshot.as_ref(), caller, self.model_health.as_ref()).await;
+        let runtime_states = candidate_runtime_states(
+            snapshot.as_ref(),
+            caller,
+            self.model_health.as_ref(),
+            input.estimated_input_tokens,
+            input.estimated_output_tokens,
+        )
+        .await;
         let session_overlay = input
             .session_overlay
             .as_ref()
@@ -196,7 +202,7 @@ impl RuntimeInferencePort {
                 },
                 pricing: Some(pricing.value.clone()),
                 matched_amount: None,
-                estimated_cost_usd: selected.estimated_cost_usd,
+                estimated_cost: selected.estimated_cost.clone(),
             });
         let mut match_dimensions = BTreeMap::new();
         for (name, value) in [
@@ -510,6 +516,8 @@ async fn candidate_runtime_states(
     snapshot: &crate::runtime::RuntimeSnapshot,
     caller: &AuthorizedCaller,
     model_health: &ModelHealthRegistry,
+    estimated_input_tokens: Option<u64>,
+    estimated_output_tokens: Option<u64>,
 ) -> BTreeMap<String, CandidateRuntimeState> {
     let mut credentials = BTreeMap::new();
     let mut health_states = BTreeMap::new();
@@ -580,7 +588,22 @@ async fn candidate_runtime_states(
                 credential_scope: CredentialScope::Tenant {
                     tenant_id: caller.tenant_id.clone(),
                 },
-                estimated_cost_usd: None,
+                estimated_cost: runtime
+                    .as_ref()
+                    .and_then(|runtime| {
+                        runtime.inventory.models.iter().find(|candidate| {
+                            candidate.provider_model_id == model.provider_model_id
+                                && candidate.model_driver_id == model.model_driver_id
+                        })
+                    })
+                    .and_then(|model| model.pricing.as_ref())
+                    .and_then(|pricing| {
+                        estimate_model_cost(
+                            &pricing.value,
+                            estimated_input_tokens,
+                            estimated_output_tokens,
+                        )
+                    }),
                 p50_latency_ms: observed.p50_latency_ms,
                 p95_latency_ms: observed.p95_latency_ms,
                 error_rate_5m: observed.error_rate_5m,
@@ -591,6 +614,26 @@ async fn candidate_runtime_states(
             (model.exact_model, state)
         })
         .collect()
+}
+
+fn estimate_model_cost(
+    pricing: &crate::catalog::Pricing,
+    estimated_input_tokens: Option<u64>,
+    estimated_output_tokens: Option<u64>,
+) -> Option<buckyos_api::Money> {
+    let amount = if let Some(amount) = pricing.estimated_cost {
+        amount
+    } else if pricing.input_token.is_some() || pricing.output_token.is_some() {
+        let input = pricing.input_token.unwrap_or(0.0) * estimated_input_tokens? as f64;
+        let output = pricing.output_token.unwrap_or(0.0) * estimated_output_tokens? as f64;
+        input + output
+    } else if pricing.unit == Some(crate::catalog::PricingUnit::Request) {
+        pricing.amount?
+    } else {
+        return None;
+    };
+    (amount.is_finite() && amount >= 0.0 && !pricing.currency.trim().is_empty())
+        .then(|| buckyos_api::Money::new(amount, pricing.currency.trim().to_ascii_uppercase()))
 }
 
 fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCErrors> {

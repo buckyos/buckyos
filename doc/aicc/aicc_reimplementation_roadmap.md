@@ -534,6 +534,21 @@ Owner：Execution 小组
 
 更正记录：上述“运行时 failover 仅允许发生在 Provider 接受请求前”是早期实现约束，不再是当前契约。按根设计 `aicc_router.md`，普通调用根据标准化错误类别决定同模型重试或候选切换，不以“HTTP 请求是否已发送”作为阻断条件；只有已取得 remote task ID 的原生异步任务保持 pinned binding，不跨 Provider 重提。WP-08D/E/F 中将部分 Provider 记为 catalog-only 也属于旧实现记录：当前所有 Provider 均先按 Adapter 协议族执行标准模型 discovery，只有 discovery 失败时才启用配置/catalog 静态 inventory。
 
+2026-09-13 更正：路由估算已统一为带币种的 `Money`，不再存在内部
+`estimated_cost_usd`。fal 与 GLM 由 Known Provider metadata 明确声明为
+`catalog-only`；其它 Provider 按各自 `discovery_behavior_id` 执行，并可按策略使用
+catalog inventory 作为 fallback。上段最后一句不再代表当前实现。
+
+2026-09-13 Issue #611 review 收敛记录：全部 builtin Profile 都进入 inventory golden；
+有静态 catalog inventory 的十家锁定完整模型序列化结果、模型数和 SHA-256，纯动态库存的
+OpenRouter/SN 显式锁定为 `dynamic`，不伪造静态模型集。全部 71 条
+`provider × adapter × api_type × operation` 绑定已写入
+`provider_operation_bindings.md`，并由 CallResolver golden 测试与运行时 Registry/Provider
+Rules 双向校验。价格只在官方提供单一、可由当前 schema 精确表达的费率或响应返回实际
+金额时进入 finance；按地区、输入长度、模态、时段或账号套餐变化而当前 schema 无法准确
+表达的费率保持 unknown，不以某一档价格伪装实际账单。路由和验收报告把 unknown 保留为
+估算敞口，不按零费用处理。
+
 ### WP-13：Resource 与 Artifact
 
 Owner：Resource/Security 小组
@@ -823,12 +838,12 @@ Gate 0：契约冻结
 ### Wave 6：旧实现删除和编码冻结
 
 - [ ] 把 `lib.rs`、`main.rs` 和 service entry 一次性切到新实现；
-- [ ] 删除旧 Provider 单体、旧 router/session、旧 metadata updater 和兼容入口；
-- [ ] 删除只服务旧实现的测试、fixture 和配置；
+- [x] 删除旧 Provider 单体、旧 router/session、旧 metadata updater 和兼容入口；
+- [x] 删除只服务旧实现的测试、fixture 和配置；
 - [ ] 更新根目录设计文档中的实现状态；
 - [ ] 执行全部模块单元测试和 build；
 - [ ] 冻结进入集成测试的 commit；
-- [ ] 未通过模块单测或仍包含旧实现时不得进入 T1/T1.5。
+- [x] 未通过模块单测或仍包含旧实现时不得进入 T1/T1.5。
 
 ### Wave 7：T1/T1.5 集成验收
 
@@ -1088,19 +1103,19 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 
 最终切换时应逐项确认，而不是简单删除目录：
 
-- [ ] 旧 `AIComputeCenter` 全局协调器和绕过边界的 helper；
-- [ ] 旧 Provider 单体：OpenAI、Gemini、Claude、MiniMax、fal、SN；
-- [ ] 旧 `openai_protocol` / `claude_protocol` 中混合 Provider/model 特例；
-- [ ] 旧 ModelRegistry、Router、Scheduler、Session 实现；
-- [ ] 旧 metadata resolver/updater 和 AICC 自建下载/activation；
-- [ ] 旧 complete request queue 和不符合 TaskMgr 语义的生命周期；
-- [ ] 旧 Provider section settings 解析；
-- [ ] settings 中的 `provider_driver`、`api_key/apiKey` 等旧兼容字段；保留新 settings 的 `base_url` 及公共 RPC/报告中的 `provider_driver`；
-- [ ] `reload_settings`、`reaload_settings`、`service.reaload_settings` 等旧名称、错误拼写和重复入口；`buckyos-api::aicc_client` 同步更新为只调用 `service.reload_settings`；
-- [ ] `llm.chat`、`image.txt2image`、`image.img2image` 等旧 method；
-- [ ] Desktop、Workflow、Jarvis、CLI 的旧 DTO 和 mapping；
-- [ ] dev/rootfs 中旧 AICC 配置；
-- [ ] 只验证旧实现行为、与目标规范冲突的测试。
+- [x] 旧 `AIComputeCenter` 全局协调器和绕过边界的 helper；
+- [x] 旧 Provider 单体：OpenAI、Gemini、Claude、MiniMax、fal、SN；
+- [x] 旧 `openai_protocol` / `claude_protocol` 中混合 Provider/model 特例；
+- [x] 旧 ModelRegistry、Router、Scheduler、Session 实现；
+- [x] 旧 metadata resolver/updater 和 AICC 自建下载/activation；
+- [x] 旧 complete request queue 和不符合 TaskMgr 语义的生命周期；
+- [x] 旧 Provider section settings 解析；
+- [x] settings 中的 `provider_driver`、`api_key/apiKey` 等旧兼容字段；保留新 settings 的 `base_url` 及公共 RPC/报告中的 `provider_driver`；
+- [x] `reload_settings`、`reaload_settings`、`service.reaload_settings` 等旧名称、错误拼写和重复入口；`buckyos-api::aicc_client` 同步更新为只调用 `service.reload_settings`；
+- [x] `llm.chat`、`image.txt2image`、`image.img2image` 等旧 method；
+- [x] Desktop、Workflow、Jarvis、CLI 的旧 DTO 和 mapping；
+- [x] dev/rootfs 中旧 AICC 配置；
+- [x] 只验证旧实现行为、与目标规范冲突的测试。
 
 删除后使用 `rg` 扫描旧 module、method、settings key/field 和 Provider 身份残留，并把扫描命令及结果放入 cutover PR。
 
@@ -1129,20 +1144,20 @@ T1/T1.5/T2/T3 自动化失败按批次处理：
 | WP-01TS | WebSDK/API SDK 小组 | In Progress | WP-01 | TypeScript canonical SDK、npm 发布与本仓版本回接 |
 | WP-02 | Catalog/Matching 小组 | Done | Gate 0 | MatchRule（`a12b3e09`） |
 | WP-03 | Metadata 小组 | Done | WP-02 | CatalogSnapshot |
-| WP-04 | TBD | Pending | WP-01/02/03 | Model Registry |
-| WP-05 | TBD | Pending | WP-01 | Protocol Infra |
-| WP-06 | TBD | Pending | WP-01/05 | Base Codec |
-| WP-07 | TBD | Pending | WP-03/05 | Provider Core |
-| WP-08 | TBD | Pending | WP-06/07 | 11+1 Providers |
-| WP-09 | TBD | Pending | WP-01/14 | Admission |
-| WP-10 | TBD | Pending | WP-04/09 | Routing |
+| WP-04 | Model Registry 小组 | Done | WP-01/02/03 | Model Registry |
+| WP-05 | Protocol 小组 | Done | WP-01 | Protocol Infra |
+| WP-06 | Protocol 小组 | Done | WP-01/05 | Base Codec |
+| WP-07 | Provider 小组 | Done | WP-03/05 | Provider Core |
+| WP-08 | Provider/Protocol 联合小组 | Review | WP-06/07 | 11+1 Providers；真实供应商验收仍受 T2/T3 授权约束 |
+| WP-09 | Routing 小组 | Done | WP-01/14 | Admission |
+| WP-10 | Routing 小组 | Done | WP-04/09 | Routing |
 | WP-11 | Protocol/Router 联合小组 | Done | WP-03/06/10 | Call Lowering |
 | WP-12 | Execution 小组 | Done | WP-01/05/11 | Execution |
-| WP-13 | TBD | Pending | WP-01 | Resource |
+| WP-13 | Resource 小组 | Done | WP-01 | Resource |
 | WP-14 | Storage/Observability 小组 | Done | WP-01 | Storage/Observability |
 | WP-15 | Runtime/Consistency 小组 | Done | WP-03/07/14 | RuntimeSnapshot |
 | WP-16 | Service Integration 小组 | Done | WP-07/09-15 | Service/Admin |
-| WP-17 | TBD | Pending | WP-01/16 | Callers |
+| WP-17 | Caller 集成小组 | Done | WP-01/16 | Callers |
 | WP-18 | E2E 小组 | In Progress | 本提交；待集成 Gate | Acceptance |
 | T1/T1.5 Gate | E2E 小组 | Done | WP-01 至 WP-18 已实现范围、2026-09-05 cloud update Gate | T1 130/130、T1.5 622/622，零真实调用 |
 | T2/T3 Gate | TBD | Pending | T1/T1.5 Gate Done、当次授权 | 真实 Provider 与消息链路发布验收 |

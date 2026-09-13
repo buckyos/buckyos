@@ -10,7 +10,7 @@
       "display_name": "fal",
       "base_url": "https://queue.fal.run",
       "protocol_adapter_id": "fal-queue",
-      "discovery_behavior_id": "openai-compatible-models",
+      "discovery_behavior_id": "catalog-only",
       "provider_rules_id": "fal",
       "credential": { "kind": "fal_key" },
       "connection": {

@@ -343,9 +343,10 @@ fn rewrite_value_namespace(value: &mut Value, namespace: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{CodecContext, CodecLimits, CodecRegistry, ResolvedCredential};
+    use crate::protocol::{CodecContext, CodecLimits, CodecRegistry, HttpBody, ResolvedCredential};
     use buckyos_api::{AiContent, AiMessage, AiRole, AiccCall, LlmChatInvokeRequest};
     use reqwest::header::AUTHORIZATION;
+    use serde_json::json;
     use std::time::Duration;
 
     fn input(parameters: BTreeMap<String, Value>) -> CodecInput {
@@ -468,6 +469,50 @@ mod tests {
                 .unwrap();
             assert_eq!(request.url, "https://provider.example/v1/responses");
             assert!(request.headers.contains_key(AUTHORIZATION));
+        }
+    }
+
+    #[test]
+    fn derived_provider_state_round_trips_back_to_the_wire_request() {
+        for dialect in [
+            ResponsesDialectKind::DeepSeek,
+            ResponsesDialectKind::Doubao,
+            ResponsesDialectKind::Qwen,
+        ] {
+            let (_, registration) = responses_dialect_adapter(dialect).unwrap();
+            let mut context = context("https://provider.example/v1");
+            context.state_coordinate.adapter_type =
+                dialect.contract().protocol_adapter_id.to_owned();
+            context.state_coordinate.origin_provider = dialect.provider_namespace().to_owned();
+            let state = json!({"type":"reasoning","id":"reasoning-1","encrypted_content":"opaque"});
+            let input = CodecInput {
+                canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest::new(
+                    "logical.model",
+                    vec![AiMessage::new(
+                        AiRole::Assistant,
+                        vec![AiContent::ProviderState {
+                            source: context.state_coordinate.clone(),
+                            provider: dialect.provider_namespace().to_owned(),
+                            value: state.clone(),
+                        }],
+                    )],
+                )),
+                resolved_parameters: BTreeMap::from([(
+                    "provider_model_id".to_owned(),
+                    Value::String("provider-model".to_owned()),
+                )]),
+            };
+            let request = registration.operation_codecs[0]
+                .encode(&CodecCall {
+                    api_type: ApiType::Llm,
+                    input: &input,
+                    context: &context,
+                })
+                .unwrap();
+            let HttpBody::Json(body) = request.body else {
+                panic!("expected JSON request");
+            };
+            assert_eq!(body["input"][0], state);
         }
     }
 

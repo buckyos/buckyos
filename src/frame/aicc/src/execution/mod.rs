@@ -151,6 +151,9 @@ impl TryFrom<ProtocolOutput> for ExecutionOutput {
         if usage.input_tokens.is_none()
             && usage.output_tokens.is_none()
             && usage.total_tokens.is_none()
+            && usage.image_units.is_none()
+            && usage.audio_seconds.is_none()
+            && usage.video_seconds.is_none()
             && usage.request_units.is_none()
         {
             return Err(aicc_error(
@@ -259,20 +262,34 @@ impl PinnedPricingSnapshot {
         let amount = match self.basis {
             PinnedPricingBasis::Tokens {
                 input_token,
-                cache_input_token: _,
+                cache_input_token,
                 output_token,
             } => {
-                let input = match input_token {
-                    Some(rate) => usage.input_tokens? as f64 * rate,
-                    None => 0.0,
-                };
+                let input_tokens = usage.input_tokens?;
+                let cached_tokens = usage.cache_read_input_tokens.unwrap_or(0).min(input_tokens);
+                let uncached_tokens = input_tokens - cached_tokens;
+                let input = input_token
+                    .map(|rate| uncached_tokens as f64 * rate)
+                    .unwrap_or(0.0);
+                let cached_input = cache_input_token
+                    .or(input_token)
+                    .map(|rate| cached_tokens as f64 * rate)
+                    .unwrap_or(0.0);
                 let output = match output_token {
                     Some(rate) => usage.output_tokens? as f64 * rate,
                     None => 0.0,
                 };
-                input + output
+                input + cached_input + output
             }
-            PinnedPricingBasis::Units { amount, .. } => usage.request_units? as f64 * amount,
+            PinnedPricingBasis::Units { unit, amount } => {
+                let units = match unit {
+                    PricingUnit::Request => usage.request_units? as f64,
+                    PricingUnit::Image => usage.image_units? as f64,
+                    PricingUnit::AudioSecond => usage.audio_seconds?,
+                    PricingUnit::VideoSecond => usage.video_seconds?,
+                };
+                units * amount
+            }
         };
         if invalid_price(amount) {
             return None;
@@ -563,6 +580,9 @@ pub(crate) trait ProviderExecutionPort: Send + Sync {
         binding: &PinnedProviderTask,
         output: &ProtocolOutput,
     ) -> Option<AiCost> {
+        if let Some(cost) = output.usage.as_ref()?.cost.clone() {
+            return Some(cost);
+        }
         binding
             .pricing
             .as_ref()?
@@ -1079,6 +1099,17 @@ impl ExecutionEngine {
         }
         if record.state.is_terminal() {
             return Ok(false);
+        }
+        if record
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.remote_task_id.is_some() && !binding.cancel_supported)
+        {
+            return Err(aicc_error(
+                AiccErrorCode::UnsupportedOperation,
+                "the provider task does not support cancellation",
+                false,
+            ));
         }
         let active = self
             .active
@@ -1688,12 +1719,17 @@ mod tests {
             binding: &PinnedProviderTask,
             output: &ProtocolOutput,
         ) -> Option<AiCost> {
-            self.completion_cost.lock().unwrap().clone().or_else(|| {
-                binding
-                    .pricing
-                    .as_ref()
-                    .and_then(|pricing| pricing.completion_cost(output.usage.as_ref()?))
-            })
+            self.completion_cost
+                .lock()
+                .unwrap()
+                .clone()
+                .or_else(|| output.usage.as_ref()?.cost.clone())
+                .or_else(|| {
+                    binding
+                        .pricing
+                        .as_ref()
+                        .and_then(|pricing| pricing.completion_cost(output.usage.as_ref()?))
+                })
         }
     }
 
@@ -1705,6 +1741,7 @@ mod tests {
                 output_tokens: Some(1),
                 total_tokens: Some(3),
                 request_units: None,
+                ..AiUsage::default()
             }),
             artifacts: Vec::new(),
         }
@@ -1781,7 +1818,7 @@ mod tests {
                 source: PricingSource::RouteEstimate,
                 pricing: None,
                 matched_amount: None,
-                estimated_cost_usd: None,
+                estimated_cost: None,
             },
             revisions: LoweringRevisions {
                 catalog_target_seq: 1,
@@ -1811,9 +1848,47 @@ mod tests {
                 rules: Vec::new(),
             }),
             matched_amount: None,
-            estimated_cost_usd: Some(777.0),
+            estimated_cost: Some(buckyos_api::Money::new(777.0, "USD")),
         };
         call
+    }
+
+    #[test]
+    fn pinned_pricing_uses_cached_input_rate_and_provider_reported_cost_wins() {
+        let pricing = PinnedPricingSnapshot {
+            currency: "USD".into(),
+            basis: PinnedPricingBasis::Tokens {
+                input_token: Some(0.01),
+                cache_input_token: Some(0.001),
+                output_token: Some(0.02),
+            },
+        };
+        let usage = AiUsage {
+            input_tokens: Some(100),
+            output_tokens: Some(10),
+            cache_read_input_tokens: Some(40),
+            ..AiUsage::default()
+        };
+        assert!((pricing.completion_cost(&usage).unwrap().amount - 0.84).abs() < 1e-12);
+
+        let output = ProtocolOutput {
+            value: json!({}),
+            usage: Some(AiUsage {
+                cost: Some(AiCost {
+                    amount: 0.25,
+                    currency: "USD".into(),
+                }),
+                ..usage
+            }),
+            artifacts: Vec::new(),
+        };
+        let providers = FakeProviders::default();
+        let binding =
+            PinnedProviderTask::from_call(1, &token_priced_call("primary", 1.0, 1.0)).unwrap();
+        assert_eq!(
+            providers.completion_cost(&binding, &output).unwrap().amount,
+            0.25
+        );
     }
 
     fn request(primary: ResolvedProviderCall) -> ExecutionRequest {
@@ -2554,6 +2629,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unsupported_native_cancel_returns_error_and_keeps_polling() {
+        let providers = Arc::new(FakeProviders::default());
+        let mut handle = NativeTaskHandle::new("remote-no-cancel").unwrap();
+        handle.state = NativeTaskState::Running;
+        handle.poll_after = Some(Duration::from_secs(60));
+        handle.cancel_supported = false;
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle,
+                resume: resume_descriptor(),
+            }));
+        let (engine, store, tasks, usage) = make_engine(providers.clone());
+        let started = engine.execute(request(call("primary"))).await.unwrap();
+
+        let error = engine
+            .cancel("tenant-1", &started.task_id)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, AiccErrorCode::UnsupportedOperation);
+        assert_eq!(
+            store
+                .get_task(&started.task_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            ExecutionState::Running
+        );
+        assert!(tasks.cancelled.lock().unwrap().is_empty());
+        assert!(usage.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn cancel_is_tenant_scoped_and_blocks_late_completion() {
         let providers = Arc::new(FakeProviders::default());
         let mut handle = NativeTaskHandle::new("remote-1").unwrap();
@@ -2597,7 +2708,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn idle_native_task_without_upstream_cancel_returns_not_accepted() {
+    async fn native_task_without_upstream_cancel_returns_unsupported_and_keeps_running() {
         let providers = Arc::new(FakeProviders::default());
         let mut handle = NativeTaskHandle::new("remote-1").unwrap();
         handle.state = NativeTaskState::Running;
@@ -2611,7 +2722,14 @@ mod tests {
             }));
         let (engine, store, tasks, _) = make_engine(providers);
         let receipt = engine.execute(request(call("primary"))).await.unwrap();
-        assert!(!engine.cancel("tenant-1", &receipt.task_id).await.unwrap());
+        assert_eq!(
+            engine
+                .cancel("tenant-1", &receipt.task_id)
+                .await
+                .unwrap_err()
+                .code,
+            AiccErrorCode::UnsupportedOperation
+        );
         assert_eq!(
             store
                 .get_task(&receipt.task_id)

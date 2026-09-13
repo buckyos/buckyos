@@ -15,7 +15,9 @@ use buckyos_api::{
 };
 use futures_util::{stream, StreamExt};
 use reqwest::header::{HeaderMap, CONTENT_TYPE};
-use reqwest::{Method, StatusCode};
+use reqwest::Method;
+#[cfg(test)]
+use reqwest::StatusCode;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -1024,7 +1026,33 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         input_tokens: Some(required_u64(usage, "prompt_tokens")?),
         output_tokens: Some(required_u64(usage, "completion_tokens")?),
         total_tokens: Some(required_u64(usage, "total_tokens")?),
+        cache_read_input_tokens: usage
+            .get("prompt_tokens_details")
+            .and_then(Value::as_object)
+            .and_then(|details| details.get("cached_tokens"))
+            .and_then(Value::as_u64),
+        cache_write_input_tokens: usage
+            .get("prompt_tokens_details")
+            .and_then(Value::as_object)
+            .and_then(|details| details.get("cache_write_tokens"))
+            .and_then(Value::as_u64),
+        reasoning_tokens: usage
+            .get("completion_tokens_details")
+            .and_then(Value::as_object)
+            .and_then(|details| details.get("reasoning_tokens"))
+            .and_then(Value::as_u64),
+        image_units: None,
+        audio_seconds: None,
+        video_seconds: None,
         request_units: None,
+        cost: value
+            .get("cost")
+            .and_then(Value::as_f64)
+            .filter(|amount| amount.is_finite() && *amount >= 0.0)
+            .map(|amount| buckyos_api::AiCost {
+                amount,
+                currency: "USD".to_owned(),
+            }),
     }))
 }
 
@@ -1098,14 +1126,7 @@ fn decode_error_response(response: HttpResponse) -> ProtocolError {
         || provider_message.to_string(),
         |label| format!("OpenAI {label}: {provider_message}"),
     );
-    let kind = match response.status {
-        StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED => {
-            ProtocolErrorKind::InvalidRequest
-        }
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProtocolErrorKind::Authentication,
-        StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT => ProtocolErrorKind::Timeout,
-        _ => ProtocolErrorKind::Transport,
-    };
+    let kind = super::protocol_error_kind_from_http_status(response.status);
     ProtocolError::new(kind, message)
         .with_request_id(Some(response.request_id))
         .with_retry_after(response.retry_after)
@@ -1649,6 +1670,7 @@ mod tests {
                     output_tokens: Some(7),
                     total_tokens: Some(18),
                     request_units: None,
+                    ..AiUsage::default()
                 }),
             })
         }

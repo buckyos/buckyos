@@ -170,7 +170,12 @@ For LLM calls it should include token usage when available:
 
 The token fields must also be copied to top-level columns so SQL can aggregate common statistics without parsing JSON.
 
-For non-token providers, `usage_json` must still represent usage in a normalized way. `request_units` can be used as the first generic top-level metric. A future extension may add more top-level unit fields, such as image count, audio seconds, video seconds, or tool calls, when SQL aggregation needs them.
+For non-token providers, `usage_json` represents usage with `request_units`,
+`image_units`, `audio_seconds`, and `video_seconds`. Token usage additionally records
+cache-read, cache-write, and reasoning token counts. Provider-reported cost remains a
+currency-bearing object. The dedicated SQL projection keeps the stable aggregate
+columns; detailed dimensions remain authoritative in `usage_json` until a concrete
+indexed query requires a schema migration.
 
 ## 9. Finance Snapshot Semantics
 

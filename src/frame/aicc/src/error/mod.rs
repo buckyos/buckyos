@@ -286,6 +286,21 @@ pub(crate) enum ProtocolErrorKind {
     WebhookRejected,
 }
 
+pub(crate) fn protocol_error_kind_from_http_status(
+    status: reqwest::StatusCode,
+) -> ProtocolErrorKind {
+    use reqwest::StatusCode;
+    match status {
+        StatusCode::BAD_REQUEST
+        | StatusCode::NOT_FOUND
+        | StatusCode::METHOD_NOT_ALLOWED
+        | StatusCode::UNPROCESSABLE_ENTITY => ProtocolErrorKind::InvalidRequest,
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProtocolErrorKind::Authentication,
+        StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT => ProtocolErrorKind::Timeout,
+        _ => ProtocolErrorKind::Transport,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProtocolError {
     pub kind: ProtocolErrorKind,
@@ -567,9 +582,8 @@ impl From<ProtocolError> for AiccError {
             ProtocolErrorKind::InvalidConfiguration
             | ProtocolErrorKind::DuplicateAdapter
             | ProtocolErrorKind::UnknownAdapter => AiccErrorCode::InternalError,
-            ProtocolErrorKind::InvalidRequest | ProtocolErrorKind::UnsupportedOperation => {
-                AiccErrorCode::InvalidRequest
-            }
+            ProtocolErrorKind::InvalidRequest => AiccErrorCode::InvalidRequest,
+            ProtocolErrorKind::UnsupportedOperation => AiccErrorCode::UnsupportedOperation,
             ProtocolErrorKind::Authentication | ProtocolErrorKind::ProviderRejected => {
                 AiccErrorCode::ProviderError
             }

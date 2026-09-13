@@ -504,7 +504,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(version_tiers, ["standard", "pro", "mini", "nano"]);
         for (model_id, mount) in [
-            ("gpt-5.6", "llm.gpt-standard"),
+            ("gpt-5.6", "llm.openai.gpt-5-6"),
             ("gpt-5.6-sol", "llm.gpt-pro"),
             ("gpt-5.6-terra", "llm.gpt-mini"),
             ("gpt-5.6-luna", "llm.gpt-nano"),
@@ -514,7 +514,11 @@ mod tests {
                 .iter()
                 .find(|model| model.provider_model_id == model_id)
                 .unwrap();
-            assert!(mapped.logical_mounts.contains(&mount.to_owned()));
+            assert!(
+                mapped.logical_mounts.contains(&mount.to_owned()),
+                "{model_id} mounts: {:?}",
+                mapped.logical_mounts
+            );
             assert!(!mapped.logical_mounts.iter().any(|mount| matches!(
                 mount.as_str(),
                 "llm.gpt-sol" | "llm.gpt-terra" | "llm.gpt-luna"

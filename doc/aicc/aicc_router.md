@@ -879,7 +879,7 @@ interface CostEstimateInput {
 }
 
 interface CostEstimateOutput {
-  estimated_cost_usd: number;
+  estimated_cost: { amount: number; currency: string };
   pricing_mode: "per_token" | "subscription" | "free_quota" | "unknown";
   quota_state: "normal" | "near_limit" | "exhausted" | "unknown";
   confidence: number;
@@ -1242,7 +1242,7 @@ interface RouteTrace {
     local: number;
     final_score: number;
   };
-  estimated_cost_usd?: number;
+  estimated_cost?: { amount: number; currency: string };
   runtime_failover_count: number;
   // 逻辑模型定义 / auto-mount / overlay 来源解释（见 §6.7、§12.4）
   logical_item_sources?: Array<{

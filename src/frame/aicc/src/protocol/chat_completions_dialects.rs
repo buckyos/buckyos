@@ -230,6 +230,7 @@ impl OperationCodec for OpenRouterRerankCodec {
             output_tokens: None,
             total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
             request_units: usage.get("search_units").and_then(Value::as_u64),
+            ..AiUsage::default()
         });
         Ok(ProtocolExecution::Immediate(ProtocolOutput {
             value: json!({"results":results}),
@@ -255,19 +256,7 @@ fn openrouter_rerank_http_error(response: &HttpResponse) -> ProtocolError {
         .and_then(|value| value.pointer("/error/message"))
         .and_then(Value::as_str)
         .unwrap_or("OpenRouter rerank request failed");
-    let kind = match response.status {
-        reqwest::StatusCode::BAD_REQUEST
-        | reqwest::StatusCode::NOT_FOUND
-        | reqwest::StatusCode::METHOD_NOT_ALLOWED
-        | reqwest::StatusCode::UNPROCESSABLE_ENTITY => super::ProtocolErrorKind::InvalidRequest,
-        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
-            super::ProtocolErrorKind::Authentication
-        }
-        reqwest::StatusCode::REQUEST_TIMEOUT | reqwest::StatusCode::GATEWAY_TIMEOUT => {
-            super::ProtocolErrorKind::Timeout
-        }
-        _ => super::ProtocolErrorKind::Transport,
-    };
+    let kind = super::protocol_error_kind_from_http_status(response.status);
     ProtocolError::new(kind, format!("OpenRouter rerank: {provider_message}"))
         .with_provider_code(provider_code)
         .with_request_id(Some(response.request_id.clone()))
@@ -503,7 +492,7 @@ fn restore_assistant_state(
 
 fn reasoning_from_response(
     response: &mut Map<String, Value>,
-    provider: &str,
+    _provider: &str,
 ) -> ProtocolResultValue<ChatCompletionsImmediateExtensions> {
     let Some(message) = first_choice_part_mut(response, "message")? else {
         return Ok(ChatCompletionsImmediateExtensions::default());
@@ -520,11 +509,15 @@ fn reasoning_from_response(
     }
     if let Some(Value::Object(details)) = response.get_mut("usage") {
         if let Some(cached_tokens) = details.remove("cached_tokens") {
-            content.push(AiContent::ProviderState {
-                source: buckyos_api::ProviderStateCoordinate::unbound(),
-                provider: provider.to_owned(),
-                value: json!({"type": "cached_tokens", "value": cached_tokens}),
-            });
+            let prompt_details = details
+                .entry("prompt_tokens_details")
+                .or_insert_with(|| Value::Object(Map::new()));
+            let prompt_details = prompt_details.as_object_mut().ok_or_else(|| {
+                ProtocolError::invalid_response(
+                    "prompt_tokens_details must be an object when cached_tokens is present",
+                )
+            })?;
+            prompt_details.insert("cached_tokens".to_owned(), cached_tokens);
         }
     }
     Ok(ChatCompletionsImmediateExtensions {
@@ -961,10 +954,11 @@ mod tests {
             &extensions.content[0],
             AiContent::Thinking { text: Some(text), .. } if text == "thought"
         ));
-        assert!(matches!(
-            &extensions.content[1],
-            AiContent::ProviderState { provider, .. } if provider == "kimi"
-        ));
+        assert_eq!(extensions.content.len(), 1);
+        assert_eq!(
+            response.pointer("/usage/prompt_tokens_details/cached_tokens"),
+            Some(&json!(2))
+        );
     }
 
     #[test]
