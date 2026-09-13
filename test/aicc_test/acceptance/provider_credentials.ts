@@ -39,7 +39,7 @@ function defaultInstance(driver: ProviderTokenDriver, name: string, token: strin
     "google-gemini": "gemini-interactions",
     fal: "fal-queue",
     minimax: "minimax-messages",
-    openrouter: "openrouter-openai",
+    openrouter: "openrouter-responses",
     glm: "glm-chat",
   };
   const profile = profileId(driver);

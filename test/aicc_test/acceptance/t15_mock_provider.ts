@@ -201,7 +201,6 @@ function streamFixture(contract: ProviderProtocolContract): string {
         "event: done\ndata: [DONE]",
       ].join("\n\n") + "\n\n";
     case "openai_chat":
-    case "openrouter_chat":
       return [
         "data: {\"id\":\"gen_mock_1\",\"object\":\"chat.completion.chunk\",\"created\":1770000000,\"model\":\"mock-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"BUCKYOS-AICC-4827\"},\"finish_reason\":null}]}",
         "data: {\"id\":\"gen_mock_1\",\"object\":\"chat.completion.chunk\",\"created\":1770000000,\"model\":\"mock-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":3,\"total_tokens\":7}}",

@@ -415,7 +415,7 @@ T1.5 必须把近期线上失败沉淀为跨 Provider 回归用例，而不能�
 - Gemini 3 等模型族废弃旧参数名时，metadata variant 或旧缓存中的 `thinking_budget` 必须在协议出站前按官方新参数降级/拒绝，Mock 要严格拒绝目标模型不支持的旧字段。
 - Gemini Interactions 工具回合必须校验顶层 `function_call` / `function_result` 顺序，`call_id` 与函数 `name` 均须匹配；同 Provider 下一轮必须原样回放 response step，不能把 tool step 塞入 `model_output.content` 或丢失签名和状态字段。
 - OpenAI Responses 同 Provider 历史必须以 Mock 返回的完整 output item 驱动下一轮请求，逐项比较 item 的顺序、ID、status、annotations、reasoning opaque 字段和 tool call；canonical block 只能用于跨 Provider 降级，不能与对应原生 item 重复发送。
-- OpenRouter assistant 历史中的 `reasoning_details` 必须逐字段、逐数组顺序原样回传；仅验证提取出的 reasoning 文本不算通过。
+- OpenRouter Responses 的 completed output item 必须逐字段、逐数组顺序原样回传；仅验证提取出的 reasoning 文本不算通过。
 - Claude canonical JSON Schema 必须 lowering 到 `output_config.format`；Claude 5 Mock 必须拒绝 `thinking.type=enabled` 和 `budget_tokens`，并验证旧配置已转换为 adaptive thinking 且不覆盖显式 effort。
 - Provider 返回图片、音频、视频、OCR/segment 等媒体 artifact 时，不论 Provider driver 是 Gemini、OpenAI、Fal、MiniMax 还是其他实现，AICC 提交给 TaskMgr 的最终 result 必须使用 `NamedObject` 或 URL 等稳定资源引用，不得保留 inline base64 导致 TaskMgr result 提交失败或 task 停留在非终态。
 

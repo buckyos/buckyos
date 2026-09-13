@@ -563,7 +563,9 @@ export function buildT15TypedParams(
     case "llm": {
       const toolHistory = requestKey.endsWith(".tool-history");
       const nativeHistory = requestKey.endsWith(".native-history");
-      const reasoningHistory = requestKey.endsWith(".reasoning-history");
+      const nativeHistoryProvider = requestKey.startsWith("openrouter.")
+        ? "openrouter"
+        : "openai";
       const structuredOutput = requestKey.endsWith(".structured-output");
       const providerSwitch = requestKey.endsWith(".provider-switch");
       const providerState = typedOptions.foreignProviderState;
@@ -582,7 +584,7 @@ export function buildT15TypedParams(
                 { type: "text", text: "BUCKYOS-AICC-4827" },
                 {
                   type: "provider_state",
-                  provider: "openai",
+                  provider: nativeHistoryProvider,
                   value: {
                     type: "reasoning",
                     id: "rs_t15_4827",
@@ -595,7 +597,7 @@ export function buildT15TypedParams(
                 },
                 {
                   type: "provider_state",
-                  provider: "openai",
+                  provider: nativeHistoryProvider,
                   value: {
                     type: "message",
                     id: "msg_t15_4827",
@@ -614,28 +616,6 @@ export function buildT15TypedParams(
               role: "user",
               content: [{ type: "text", text: "Return the marker." }],
             },
-          ]
-          : reasoningHistory
-          ? [
-            {
-              role: "user",
-              content: [{ type: "text", text: "Think before answering." }],
-            },
-            typedOptions.historyMessage ?? {
-              role: "assistant",
-              content: [
-                { type: "text", text: "I considered the request." },
-                {
-                  type: "thinking",
-                  provider_metadata: [{
-                    type: "reasoning.encrypted",
-                    id: "reason-t15-4827",
-                    data: "opaque-t15-reasoning",
-                  }],
-                },
-              ],
-            },
-            { role: "user", content: [{ type: "text", text: "Continue." }] },
           ]
           : toolHistory
           ? [
@@ -1241,26 +1221,7 @@ async function executeCase(
       message?.status !== "completed"
     ) {
       diagnostics.push(
-        "OpenAI native output items were not replayed unchanged",
-      );
-    }
-  }
-  if (testCase.tags.includes("reasoning_history")) {
-    const messages = Array.isArray(wireBody?.messages) ? wireBody.messages : [];
-    const assistant = messages.find((item) =>
-      item && typeof item === "object" &&
-      (item as Record<string, unknown>).role === "assistant"
-    ) as Record<string, unknown> | undefined;
-    const expectedReasoningDetails = [{
-        type: "reasoning.encrypted",
-        id: "reason-t15-4827",
-        data: "opaque-t15-reasoning",
-      }];
-    if (!sameJsonSemantics(assistant?.reasoning_details, expectedReasoningDetails)) {
-      diagnostics.push(
-        `OpenRouter reasoning_details were not replayed unchanged: ${
-          JSON.stringify(assistant?.reasoning_details ?? null)
-        }`,
+        "Responses native output items were not replayed unchanged",
       );
     }
   }

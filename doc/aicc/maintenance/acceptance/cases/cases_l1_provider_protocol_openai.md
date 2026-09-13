@@ -13,7 +13,8 @@
 | Google Gemini 官方 | `gemini-interactions`；其它媒体/embedding API 按 operation | interaction steps（`model_output.content`）、function call、safety、media content | Interactions stream / 长任务 operation | 新接口 contract、safety、multimodal、video operation |
 | 首版历史接口 | `openai-chat-completions` | Chat completion、tool calls、usage | Chat Completions SSE | 由 OpenRouter/Kimi/GLM 的真实需求触发，只维护一份基础 Adapter；其它历史代际仍按需加入 |
 | fal | 图片/音频/视频工具型任务 | artifact URL / operation status | 异步 submit + poll | upscale、bg_remove、audio.enhance、video.upscale、operation timeout |
-| OpenRouter / Kimi / GLM | 共享 `openai-chat-completions` + 各自 dialect | 归一化 message/tool/reasoning/usage | 共享基础 SSE，各自验证扩展 event | 基础合同只维护一次；分别验证路由参数、partial/cache、thinking/tool_stream |
+| OpenRouter | `openrouter-responses -> openai-responses` | 归一化 Responses output/tool/reasoning/usage | Responses SSE | 验证路由参数和 ProviderState namespace |
+| Kimi / GLM | 共享 `openai-chat-completions` + 各自 dialect | 归一化 message/tool/reasoning/usage | 共享基础 SSE，各自验证扩展 event | 基础合同只维护一次；分别验证 partial/cache、thinking/tool_stream |
 | MiniMax | `claude-messages` + MiniMax dialect；媒体走原生 operation | Messages content block / media artifact | Messages SSE / 原生异步任务 | 复用 Claude 基础合同，只增加 `base_resp` 和兼容差异 |
 | DeepSeek / 豆包 / Qwen | 共享 `openai-responses` + 各自 dialect | Responses item/tool/reasoning/usage | 共享基础 SSE，各自验证扩展 event | 分别验证 thinking、方舟工具、Qwen 参数子集/session cache |
 | SN AI Provider | 统一 Provider Instance，`sn-openai` 派生 Adapter | OpenAI 基础协议语义 | 复用 OpenAI stream/响应处理 | API Key 与动态登录双模式、token 刷新、SN 错误隔离、usage / trace / free credit 归因 |

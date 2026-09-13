@@ -37,7 +37,7 @@
 | Claude | 每个模型执行多模态 `chat.completions.create` + tool use + vision caption/OCR fallback |
 | Google Gemini | 每个模型执行多模态 `chat.completions.create` + embedding/multimodal 或 image/video operation |
 | fal | 每个模型执行 `image.upscale` / `image.bg_remove` / `audio.enhance` / `video.upscale` 中匹配能力的异步任务 + artifact 读取 |
-| OpenRouter | 每个模型执行 `chat.completions.create` 复杂 JSON 输出 + OpenAI-compatible 兼容字段检查 |
+| OpenRouter | 每个模型通过 AICC `chat.completions.create` 执行 OpenRouter Responses wire 调用及复杂 JSON 输出检查 |
 | SN AI Provider | 每个模型分别执行 API Key 和动态登录 workflow，验证 token 刷新、Provider 归因、usage、trace 和 free credit 归因 |
 
 ## 2. 执行命令约定

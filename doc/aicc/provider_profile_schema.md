@@ -112,7 +112,7 @@ derived protocol_adapter_id
 | `gemini` | `gemini-interactions` | 无 | Gemini 官方默认的新接口实现 |
 | `gemini` | `gemini-generate-content` | 无 | 按首次真实需求实现，之后在协议族内共享 |
 | `openai` | `sn-openai` | `openai-responses` | SN 鉴权扩展，当前复用 Responses 实现 |
-| `openai` | `openrouter-openai` | `openai-chat-completions` | OpenRouter 渠道扩展，复用其实际兼容的旧接口 |
+| `openai` | `openrouter-responses` | `openai-responses` | OpenRouter 渠道扩展，复用 OpenResponses 兼容接口 |
 
 新接口 Adapter 与兼容 Adapter 是平级实现。兼容 Adapter 不继承新接口 Adapter，也不通过调用新接口失败后回退旧接口。两者只允许复用低层、无状态且协议中立的组件，例如 HTTP transport、SSE framing、通用 JSON/错误工具和 AICC normalized IR；endpoint path、request schema、response event、错误映射和能力声明保持各自内聚。
 
@@ -504,7 +504,7 @@ OpenRouter 是内置专用 Provider，而不是配置型 Provider。
 - 维护 OpenRouter vendor slug 与 Model Driver 的别名关系；
 - 排除 moving alias、Provider variant alias 和 OpenRouter 虚拟模型；
 - 保留原始 `provider_model_id` 完成实际调用；
-- 按模型和 AICC `api_type` 选择 OpenRouter chat、image、video 等 operation；
+- 按模型和 AICC `api_type` 选择 OpenRouter Responses、embedding、rerank 等 operation；
 - 从 OpenRouter discovery 获取价格并覆盖 Model Driver 默认价格；
 - 对可声明差异随 metadata catalog 进行版本发布。
 

@@ -32,7 +32,7 @@ Kimi / GLM / DeepSeek / 豆包（火山方舟）/ Qwen（阿里云百炼）
 | Claude | Messages | `claude/messages` | `x-api-key`、`anthropic-version`、content block 与 SSE event |
 | Gemini | Interactions | `gemini/interactions` | `x-goog-api-key`、interaction/event 结构、Files/Gen Media/Live 等独立接口 |
 | fal | Queue API | `fal/queue` | `Authorization: Key`、endpoint 即模型、submit/status/result/cancel/webhook、模型特定输入输出 |
-| OpenRouter | Chat Completions | `openai/chat_completions` | 路由参数、归因 header、渠道 metadata、富模型目录与实时价格 |
+| OpenRouter | Responses | `openai/responses` | 路由参数、ProviderState namespace、富模型目录与实时价格 |
 | MiniMax | Anthropic-compatible Messages | `claude/messages` | `/anthropic` 基址、兼容差异、`base_resp`；speech/image/video/music 为原生接口 |
 | Kimi | Chat Completions | `openai/chat_completions` | `partial`、思考内容、缓存 key、图片/视频 content 扩展 |
 | GLM | Chat Completions | `openai/chat_completions` | `thinking`、`reasoning_content`、`tool_stream`、JWT 可选鉴权和原生异步 API |
@@ -46,7 +46,7 @@ Kimi / GLM / DeepSeek / 豆包（火山方舟）/ Qwen（阿里云百炼）
 - Claude 原生协议是 [Messages API](https://platform.claude.com/docs/en/api/messages)，认证还要求 API key 和 API version header；
 - Gemini 已将 [Interactions API](https://ai.google.dev/gemini-api/docs/interactions-overview) 作为新项目默认接口，`generateContent` 保持支持但已属于历史接口；
 - fal 官方推荐持久化 [Queue API](https://fal.ai/docs/documentation/model-apis/inference/queue)，完整生命周期包含提交、状态、结果、取消和 webhook；
-- OpenRouter 官方入口仍是 [Chat Completions](https://openrouter.ai/docs/quickstart)，其 [Models API](https://openrouter.ai/docs/guides/overview/models) 还返回架构、渠道和价格信息；
+- OpenRouter 官方提供 [Responses](https://openrouter.ai/docs/api/api-reference/responses/create-responses) 入口，其 [Models API](https://openrouter.ai/docs/guides/overview/models) 还返回架构、渠道和价格信息；
 - MiniMax 文档推荐 [Anthropic-compatible Messages](https://platform.minimax.io/docs/api-reference/text-chat-anthropic)，媒体能力具有自己的异步接口；
 - Kimi 当前主要提供 [Chat Completions](https://platform.kimi.com/docs/api/chat)；
 - GLM 的主文本接口是 [Chat Completions](https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E5%AF%B9%E8%AF%9D%E8%A1%A5%E5%85%A8)，并另外提供原生异步调用；
@@ -97,7 +97,7 @@ openai.responses.computer
 
 ### 2.3 历史接口按真实需求加入一次
 
-首版已经存在真实需求：OpenRouter、Kimi 和 GLM 的官方主入口仍为 Chat Completions，因此实现一份协议族级 `openai-chat-completions`。三家复用这一份 codec，各自只实现差异。
+首版已经存在真实需求：Kimi 和 GLM 的官方主入口为 Chat Completions，因此实现一份协议族级 `openai-chat-completions`。OpenRouter 改为复用 `openai-responses` codec，仅实现渠道差异。
 
 Gemini `generateContent` 等其它历史接口不能为了“兼容完整”预先加入。第一个实际 Provider/operation 确认需要时，新增一份共享历史 Adapter；后续使用同一接口的 Provider 复用它。新旧 Adapter 平级且互不 fallback，只共享更低层基础设施和 canonical IR。
 
@@ -181,7 +181,7 @@ protocol/
 │   ├── doubao_media
 │   └── dashscope_media
 └── dialect
-    ├── openrouter_chat
+    ├── openrouter_responses
     ├── minimax_messages
     ├── kimi_chat
     ├── glm_chat
@@ -207,7 +207,7 @@ ResolvedProviderCall
 
 | Dialect | Base | 只负责 |
 | --- | --- | --- |
-| `openrouter-openai` | `openai-chat-completions` | provider routing、归因/metadata header、渠道结果扩展 |
+| `openrouter-responses` | `openai-responses` | OpenRouter routing 参数和 ProviderState namespace |
 | `minimax-messages` | `claude-messages` | 兼容差异、`base_resp`、MiniMax content 扩展 |
 | `kimi-chat` | `openai-chat-completions` | partial/cache/reasoning 与多模态扩展 |
 | `glm-chat` | `openai-chat-completions` | thinking、tool stream、reasoning 与错误扩展 |
@@ -252,7 +252,7 @@ Protocol Adapter 通过 `ProtocolAdapterPlugin` 注册。构建脚本自动扫�
 | Claude | Messages | Claude Models API；价格由 Provider Rules |
 | Gemini | Interactions + embeddings/files/gen-media | Gemini Models API；价格由 Provider Rules |
 | fal | Queue | 四个暂未接入原厂 Provider 的 endpoint 临时归属 fal；其它配置随 fal 官方事实调整 |
-| OpenRouter | OpenRouter Chat dialect | Models API；使用动态模型、能力和实时价格 |
+| OpenRouter | OpenRouter Responses dialect | Models API；使用动态模型、能力和实时价格 |
 | MiniMax | MiniMax Messages dialect + native media | Anthropic-compatible Models API；媒体由 catalog/rules 补充 |
 | Kimi | Kimi Chat dialect | Kimi Models API；价格由 Provider Rules |
 | GLM | GLM Chat dialect + native async | 有官方机器接口时 discovery，否则 catalog；不得爬取文档页 |
@@ -365,7 +365,7 @@ tests/
 └── resource_security      鉴权、限制、上传和脱敏
 ```
 
-OpenRouter/Kimi/GLM 共同运行 Chat Completions 基础合同；DeepSeek/豆包/Qwen 共同运行 Responses 基础合同；MiniMax 运行 Claude Messages 基础合同。每个 dialect 只增加官方差异断言。在线 smoke test 使用独立 credential，不进入默认 `cargo test`。
+Kimi/GLM 共同运行 Chat Completions 基础合同；OpenRouter/DeepSeek/豆包/Qwen 共同运行 Responses 基础合同；MiniMax 运行 Claude Messages 基础合同。每个 dialect 只增加官方差异断言。在线 smoke test 使用独立 credential，不进入默认 `cargo test`。
 
 以上是编码期间必须完成的模块单元测试。模块编码和单元测试完成后才进入集成测试：先补齐并完成 T1/T1.5，再补齐并完成 T2/T3。历史维护材料中的 L1-L4 只表示旧测试拆分，不作为 Beta 2.2 发布门禁名称。
 
@@ -373,7 +373,7 @@ OpenRouter/Kimi/GLM 共同运行 Chat Completions 基础合同；DeepSeek/豆包
 
 1. canonical IR、error、HTTP/SSE、credential 和 task polling；
 2. `openai-responses`、`claude-messages`、`gemini-interactions`；
-3. 因 OpenRouter/Kimi/GLM 的真实需求实现一份 `openai-chat-completions`；
+3. 因 Kimi/GLM 的真实需求实现一份 `openai-chat-completions`，OpenRouter 复用 `openai-responses`；
 4. 11 个轻量 builtin Provider 装配和 discovery；
 5. 用合同测试判断七个候选 dialect，能用数据表达的差异不写代码；
 6. fal Queue 和首版实际 ApiType 所需的专用/原生 operation；

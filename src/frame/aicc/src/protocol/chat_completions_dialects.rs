@@ -15,7 +15,6 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-pub(crate) const OPENROUTER_CHAT_ADAPTER_ID: &str = "openrouter-openai";
 pub(crate) const OPENROUTER_RERANK_OPERATION_ID: &str = "rerank.create";
 pub(crate) const KIMI_CHAT_ADAPTER_ID: &str = "kimi-chat";
 pub(crate) const GLM_CHAT_ADAPTER_ID: &str = "glm-chat";
@@ -28,29 +27,6 @@ pub(crate) struct ChatCompletionsDialectContract {
     pub request_extensions: BTreeSet<&'static str>,
     pub response_extensions: BTreeSet<&'static str>,
     pub unsupported_features: BTreeSet<&'static str>,
-}
-
-#[cfg(test)]
-pub(crate) fn openrouter_chat_contract() -> ChatCompletionsDialectContract {
-    ChatCompletionsDialectContract {
-        adapter_id: OPENROUTER_CHAT_ADAPTER_ID,
-        base_adapter_id: OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-        request_extensions: BTreeSet::from([
-            "models",
-            "plugins",
-            "provider",
-            "reasoning",
-            "route",
-            "transforms",
-        ]),
-        response_extensions: BTreeSet::from([
-            "openrouter_metadata",
-            "provider",
-            "reasoning",
-            "reasoning_details",
-        ]),
-        unsupported_features: BTreeSet::new(),
-    }
 }
 
 #[cfg(test)]
@@ -81,9 +57,11 @@ pub(crate) fn glm_chat_contract() -> ChatCompletionsDialectContract {
     }
 }
 
-pub(crate) fn openrouter_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    let (mut descriptor, mut registration) =
-        derived_adapter(OPENROUTER_CHAT_ADAPTER_ID, Arc::new(OpenRouterDialect));
+pub(crate) fn openrouter_responses_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    let (mut descriptor, mut registration) = super::derived_responses::responses_dialect_adapter(
+        super::derived_responses::ResponsesDialectKind::OpenRouter,
+    )
+    .expect("OpenRouter Responses adapter must be valid");
     let (openai_descriptor, openai_registration) = openai_responses_adapter();
     let embeddings = openai_descriptor
         .operations
@@ -348,112 +326,6 @@ fn derived_adapter(
 }
 
 #[derive(Debug)]
-struct OpenRouterDialect;
-
-impl OpenAiChatCompletionsDialect for OpenRouterDialect {
-    fn allows_unmapped_message_content(&self, role: AiRole, content: &AiContent) -> bool {
-        role == AiRole::Assistant
-            && (matches!(content, AiContent::Thinking { .. })
-                || matches!(
-                    content,
-                    AiContent::ProviderState { provider, .. } if provider == "openrouter"
-                ))
-    }
-
-    fn transform_resolved_parameter(
-        &self,
-        name: &str,
-        value: &Value,
-    ) -> ProtocolResultValue<Option<(String, Value)>> {
-        let valid = match name {
-            "provider" | "reasoning" => value.is_object(),
-            "models" => string_array(value),
-            "plugins" | "transforms" => value.is_array(),
-            "route" => value.is_string(),
-            _ => return Ok(None),
-        };
-        if !valid {
-            return Err(ProtocolError::invalid_request(format!(
-                "OpenRouter parameter `{name}` has an invalid value"
-            )));
-        }
-        Ok(Some((name.to_owned(), value.clone())))
-    }
-
-    fn transform_immediate_response(
-        &self,
-        response: &mut Map<String, Value>,
-    ) -> ProtocolResultValue<ChatCompletionsImmediateExtensions> {
-        let mut extensions = reasoning_from_response(response, "openrouter")?;
-        let mut metadata = Map::new();
-        for field in ["openrouter_metadata", "provider"] {
-            if let Some(value) = response.remove(field) {
-                metadata.insert(field.to_owned(), value);
-            }
-        }
-        if !metadata.is_empty() {
-            extensions.content.push(AiContent::ProviderState {
-                source: buckyos_api::ProviderStateCoordinate::unbound(),
-                provider: "openrouter".to_owned(),
-                value: Value::Object(metadata),
-            });
-        }
-        Ok(extensions)
-    }
-
-    fn transform_request(
-        &self,
-        request: &LlmChatInvokeRequest,
-        body: &mut Map<String, Value>,
-        _headers: &mut HeaderMap,
-        context: &super::CodecContext,
-    ) -> ProtocolResultValue<()> {
-        restore_assistant_state(
-            request,
-            body,
-            "openrouter",
-            false,
-            &context.state_coordinate,
-        )
-    }
-
-    fn transform_stream_chunk(
-        &self,
-        chunk: &mut Map<String, Value>,
-    ) -> ProtocolResultValue<ChatCompletionsStreamExtensions> {
-        let mut extensions = reasoning_from_stream(chunk)?;
-        if let Some(delta) = first_choice_part_mut(chunk, "delta")? {
-            if let Some(details) = delta.remove("reasoning_details") {
-                if !details.is_array() {
-                    return Err(ProtocolError::invalid_response(
-                        "OpenRouter streamed reasoning_details must be an array",
-                    ));
-                }
-                extensions.content.push(AiContent::ProviderState {
-                    source: buckyos_api::ProviderStateCoordinate::unbound(),
-                    provider: "openrouter".to_owned(),
-                    value: json!({"type":"reasoning_details", "value":details}),
-                });
-            }
-        }
-        let mut metadata = Map::new();
-        for field in ["openrouter_metadata", "provider"] {
-            if let Some(value) = chunk.remove(field) {
-                metadata.insert(field.to_owned(), value);
-            }
-        }
-        if !metadata.is_empty() {
-            extensions.content.push(AiContent::ProviderState {
-                source: buckyos_api::ProviderStateCoordinate::unbound(),
-                provider: "openrouter".to_owned(),
-                value: Value::Object(metadata),
-            });
-        }
-        Ok(extensions)
-    }
-}
-
-#[derive(Debug)]
 struct KimiDialect;
 
 impl OpenAiChatCompletionsDialect for KimiDialect {
@@ -495,7 +367,7 @@ impl OpenAiChatCompletionsDialect for KimiDialect {
         _headers: &mut HeaderMap,
         context: &super::CodecContext,
     ) -> ProtocolResultValue<()> {
-        restore_assistant_state(request, body, "kimi", true, &context.state_coordinate)
+        restore_assistant_state(request, body, true, &context.state_coordinate)
     }
 
     fn transform_immediate_response(
@@ -551,7 +423,7 @@ impl OpenAiChatCompletionsDialect for GlmDialect {
         context: &super::CodecContext,
     ) -> ProtocolResultValue<()> {
         body.remove("stream_options");
-        restore_assistant_state(request, body, "glm", false, &context.state_coordinate)
+        restore_assistant_state(request, body, false, &context.state_coordinate)
     }
 
     fn transform_immediate_response(
@@ -579,7 +451,6 @@ impl OpenAiChatCompletionsDialect for GlmDialect {
 fn restore_assistant_state(
     request: &LlmChatInvokeRequest,
     body: &mut Map<String, Value>,
-    provider: &str,
     allow_partial: bool,
     target: &buckyos_api::ProviderStateCoordinate,
 ) -> ProtocolResultValue<()> {
@@ -602,53 +473,13 @@ fn restore_assistant_state(
         for content in &canonical.content {
             match content {
                 AiContent::Thinking {
-                    text: Some(text),
-                    provider_metadata,
-                    ..
+                    text: Some(text), ..
                 } if !text.is_empty() => {
                     wire.insert("reasoning_content".to_owned(), Value::String(text.clone()));
-                    if provider == "openrouter" {
-                        if let Some(details) = provider_metadata {
-                            wire.insert("reasoning_details".to_owned(), details.clone());
-                        }
-                    }
-                }
-                AiContent::Thinking {
-                    provider_metadata, ..
-                } => {
-                    if provider == "openrouter" {
-                        if let Some(details) = provider_metadata {
-                            wire.insert("reasoning_details".to_owned(), details.clone());
-                        }
-                    }
                 }
                 AiContent::ProviderState { source, value, .. }
                     if super::provider_state_is_native(source, target) =>
                 {
-                    if provider == "openrouter"
-                        && value.get("type").and_then(Value::as_str) == Some("reasoning_details")
-                    {
-                        let details =
-                            value
-                                .get("value")
-                                .and_then(Value::as_array)
-                                .ok_or_else(|| {
-                                    ProtocolError::invalid_request(
-                                "OpenRouter reasoning_details ProviderState must contain an array",
-                            )
-                                })?;
-                        let target = wire
-                            .entry("reasoning_details".to_owned())
-                            .or_insert_with(|| Value::Array(Vec::new()))
-                            .as_array_mut()
-                            .ok_or_else(|| {
-                                ProtocolError::invalid_request(
-                                    "OpenRouter assistant reasoning_details must be an array",
-                                )
-                            })?;
-                        target.extend(details.iter().cloned());
-                        continue;
-                    }
                     if !allow_partial {
                         continue;
                     }
@@ -796,15 +627,6 @@ fn nonempty_string(value: &Value) -> bool {
     value.as_str().is_some_and(|value| !value.trim().is_empty())
 }
 
-fn string_array(value: &Value) -> bool {
-    value.as_array().is_some_and(|values| {
-        !values.is_empty()
-            && values
-                .iter()
-                .all(|value| value.as_str().is_some_and(|value| !value.trim().is_empty()))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -816,13 +638,14 @@ mod tests {
         AiMessage, AiccCall, ApiType, LlmChatInvokeRequest, RerankDocument, RerankRequest,
     };
     use bytes::Bytes;
-    use reqwest::header::HeaderValue;
     use reqwest::StatusCode;
     use std::time::Duration;
 
     fn registry_with(derived: (AdapterDescriptor, CodecRegistration)) -> CodecRegistry {
         let mut registry = CodecRegistry::default();
         let (base, codecs) = openai_chat_completions_adapter();
+        registry.register_codecs(base, codecs).unwrap();
+        let (base, codecs) = openai_responses_adapter();
         registry.register_codecs(base, codecs).unwrap();
         registry.register_derived(derived.0, derived.1).unwrap();
         registry
@@ -866,7 +689,6 @@ mod tests {
     #[test]
     fn all_dialects_declare_and_register_one_way_base_reuse() {
         for (contract, adapter) in [
-            (openrouter_chat_contract(), openrouter_chat_adapter()),
             (kimi_chat_contract(), kimi_chat_adapter()),
             (glm_chat_contract(), glm_chat_adapter()),
         ] {
@@ -883,11 +705,11 @@ mod tests {
 
     #[test]
     fn openrouter_accepts_only_typed_routing_options() {
-        let registry = registry_with(openrouter_chat_adapter());
+        let registry = registry_with(openrouter_responses_adapter());
         let request = registry
             .encode(
-                OPENROUTER_CHAT_ADAPTER_ID,
-                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                super::super::OPENROUTER_RESPONSES_ADAPTER_ID,
+                super::super::OPENAI_RESPONSES_OPERATION_ID,
                 ApiType::Llm,
                 &input(BTreeMap::from([(
                     "provider".to_owned(),
@@ -896,17 +718,20 @@ mod tests {
                 &context(),
             )
             .unwrap();
+        assert_eq!(request.url, "https://example.test/v1/responses");
         assert!(!request.headers.contains_key("x-openrouter-metadata"));
         assert!(!request.headers.contains_key("x-openrouter-title"));
         let HttpBody::Json(body) = request.body else {
             panic!()
         };
+        assert!(body.get("input").is_some());
+        assert!(body.get("messages").is_none());
         assert_eq!(body["provider"]["order"][0], "Anthropic");
 
         assert!(registry
             .encode(
-                OPENROUTER_CHAT_ADAPTER_ID,
-                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                super::super::OPENROUTER_RESPONSES_ADAPTER_ID,
+                super::super::OPENAI_RESPONSES_OPERATION_ID,
                 ApiType::Llm,
                 &input(BTreeMap::from([("provider".to_owned(), json!("any"))])),
                 &context(),
@@ -916,7 +741,7 @@ mod tests {
 
     #[tokio::test]
     async fn openrouter_rerank_uses_native_endpoint_and_official_result_shape() {
-        let registry = registry_with(openrouter_chat_adapter());
+        let registry = registry_with(openrouter_responses_adapter());
         let mut rerank_context = context();
         rerank_context.base_url = "https://openrouter.ai/api/v1".to_owned();
         let input = CodecInput {
@@ -937,7 +762,7 @@ mod tests {
         };
         let request = registry
             .encode(
-                OPENROUTER_CHAT_ADAPTER_ID,
+                super::super::OPENROUTER_RESPONSES_ADAPTER_ID,
                 OPENROUTER_RERANK_OPERATION_ID,
                 ApiType::Rerank,
                 &input,
@@ -955,7 +780,7 @@ mod tests {
 
         let ProtocolExecution::Immediate(output) = registry
             .decode(
-                OPENROUTER_CHAT_ADAPTER_ID,
+                super::super::OPENROUTER_RESPONSES_ADAPTER_ID,
                 OPENROUTER_RERANK_OPERATION_ID,
                 ApiType::Rerank,
                 HttpResponse {
@@ -978,7 +803,7 @@ mod tests {
 
     #[tokio::test]
     async fn openrouter_rerank_maps_caller_errors_as_non_retriable() {
-        let registry = registry_with(openrouter_chat_adapter());
+        let registry = registry_with(openrouter_responses_adapter());
         for (status, expected_kind) in [
             (
                 StatusCode::BAD_REQUEST,
@@ -995,7 +820,7 @@ mod tests {
         ] {
             let error = registry
                 .decode(
-                    OPENROUTER_CHAT_ADAPTER_ID,
+                    super::super::OPENROUTER_RESPONSES_ADAPTER_ID,
                     OPENROUTER_RERANK_OPERATION_ID,
                     ApiType::Rerank,
                     HttpResponse {
@@ -1162,169 +987,5 @@ mod tests {
         let delta = &chunk["choices"][0]["delta"];
         assert!(delta.get("tool_stream").is_none());
         assert_eq!(delta["tool_calls"][0]["function"]["name"], "lookup");
-    }
-
-    #[test]
-    fn openrouter_preserves_channel_metadata_as_provider_state() {
-        let mut response = json!({
-            "object": "chat.completion",
-            "provider": "Anthropic",
-            "openrouter_metadata": {"provider_name": "Anthropic", "model": "claude"},
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": "answer", "reasoning": "thought"},
-                "finish_reason": "stop"
-            }]
-        });
-        let extensions = OpenRouterDialect
-            .transform_immediate_response(response.as_object_mut().unwrap())
-            .unwrap();
-        assert!(matches!(
-            &extensions.content[0],
-            AiContent::Thinking { text: Some(text), .. } if text == "thought"
-        ));
-        assert!(matches!(
-            &extensions.content[1],
-            AiContent::ProviderState {
-                provider, value, ..
-            }
-                if provider == "openrouter" && value["provider"] == "Anthropic"
-        ));
-    }
-
-    #[test]
-    fn openrouter_replays_reasoning_details_without_modification() {
-        let registry = registry_with(openrouter_chat_adapter());
-        let mut codec_input = input(BTreeMap::new());
-        if let AiccCall::ChatCompletionsCreate(request) = &mut codec_input.canonical_request {
-            request.messages.push(AiMessage::new(
-                AiRole::Assistant,
-                vec![
-                    AiContent::Text {
-                        text: "I will call the tool".to_owned(),
-                    },
-                    AiContent::Thinking {
-                        summary: None,
-                        text: None,
-                        provider_metadata: Some(json!([{
-                            "type": "reasoning.encrypted",
-                            "id": "reason-1",
-                            "data": "opaque"
-                        }])),
-                    },
-                ],
-            ));
-        }
-        let request = registry
-            .encode(
-                OPENROUTER_CHAT_ADAPTER_ID,
-                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
-                ApiType::Llm,
-                &codec_input,
-                &context(),
-            )
-            .unwrap();
-        let HttpBody::Json(body) = request.body else {
-            panic!("expected JSON")
-        };
-        assert_eq!(
-            body["messages"][1]["reasoning_details"],
-            json!([{"type":"reasoning.encrypted","id":"reason-1","data":"opaque"}])
-        );
-
-        let mut chunk = json!({
-            "object":"chat.completion.chunk",
-            "choices":[{"index":0,"delta":{"reasoning_details":[
-                {"type":"reasoning.encrypted","id":"reason-2","data":"stream-opaque"}
-            ]},"finish_reason":null}]
-        });
-        let extensions = OpenRouterDialect
-            .transform_stream_chunk(chunk.as_object_mut().unwrap())
-            .unwrap();
-        assert!(chunk["choices"][0]["delta"]
-            .get("reasoning_details")
-            .is_none());
-        assert!(matches!(
-            &extensions.content[0],
-            AiContent::ProviderState {
-                provider, value, ..
-            }
-                if provider == "openrouter" && value["value"][0]["data"] == "stream-opaque"
-        ));
-    }
-
-    #[tokio::test]
-    async fn openrouter_decoded_reasoning_details_replay_without_modification() {
-        let registry = registry_with(openrouter_chat_adapter());
-        let decoded = registry
-            .decode(
-                OPENROUTER_CHAT_ADAPTER_ID,
-                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
-                ApiType::Llm,
-                HttpResponse {
-                    status: StatusCode::OK,
-                    headers: HeaderMap::from_iter([(
-                        CONTENT_TYPE,
-                        HeaderValue::from_static("application/json"),
-                    )]),
-                    body: Bytes::from(
-                        serde_json::to_vec(&json!({
-                            "object":"chat.completion",
-                            "created":1770000000,
-                            "model":"openai/gpt-5",
-                            "choices":[{
-                                "index":0,
-                                "message":{
-                                    "role":"assistant",
-                                    "content":"BUCKYOS-AICC-4827",
-                                    "reasoning_details":[{
-                                        "type":"reasoning.encrypted",
-                                        "id":"reason-t15-4827",
-                                        "data":"opaque-t15-reasoning"
-                                    }]
-                                },
-                                "finish_reason":"stop"
-                            }],
-                            "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
-                        }))
-                        .unwrap(),
-                    ),
-                    request_id: "reasoning-replay".to_owned(),
-                    retry_after: None,
-                },
-            )
-            .await
-            .unwrap();
-        let ProtocolExecution::Immediate(decoded) = decoded else {
-            panic!("expected immediate output")
-        };
-        let message = serde_json::from_value(decoded.value["message"].clone()).unwrap();
-        let mut codec_input = input(BTreeMap::new());
-        if let AiccCall::ChatCompletionsCreate(request) = &mut codec_input.canonical_request {
-            request.messages.push(message);
-            request
-                .messages
-                .push(AiMessage::text(AiRole::User, "Continue."));
-        }
-        let request = registry
-            .encode(
-                OPENROUTER_CHAT_ADAPTER_ID,
-                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
-                ApiType::Llm,
-                &codec_input,
-                &context(),
-            )
-            .unwrap();
-        let HttpBody::Json(body) = request.body else {
-            panic!("expected JSON")
-        };
-        assert_eq!(
-            body["messages"][1]["reasoning_details"],
-            json!([{
-                "type":"reasoning.encrypted",
-                "id":"reason-t15-4827",
-                "data":"opaque-t15-reasoning"
-            }])
-        );
     }
 }

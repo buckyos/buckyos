@@ -2312,9 +2312,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn openrouter_kimi_and_glm_share_the_identical_base_contract() {
+    async fn kimi_and_glm_share_the_identical_base_contract() {
         let consumers = [
-            ("openrouter-openai", "https://openrouter.example/api/v1"),
+            ("vendor-chat", "https://provider.example/api/v1"),
             ("kimi-chat", "https://kimi.example/v1"),
             ("glm-chat", "https://glm.example/api/paas/v4"),
         ];

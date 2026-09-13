@@ -19,6 +19,7 @@ mod transport;
 
 use minimax_media::minimax_media_registration;
 
+pub(crate) use crate::error::{ProtocolError, ProtocolErrorKind, ProtocolResultValue};
 pub(crate) use adapter::{
     normalize_provider_base_url, AdapterCredentialContract, AdapterDescriptor, AdapterStatus,
     CodecCall, CodecContext, CodecInput, CodecLimits, CodecRegistration, CodecRegistry,
@@ -31,8 +32,8 @@ pub(crate) use auth::{CredentialAudit, CredentialKind, ResolvedCredential};
 #[cfg(test)]
 pub(crate) use chat_completions_dialects::GLM_CHAT_ADAPTER_ID;
 pub(crate) use chat_completions_dialects::{
-    glm_chat_adapter, kimi_chat_adapter, openrouter_chat_adapter, KIMI_CHAT_ADAPTER_ID,
-    OPENROUTER_CHAT_ADAPTER_ID, OPENROUTER_RERANK_OPERATION_ID,
+    glm_chat_adapter, kimi_chat_adapter, openrouter_responses_adapter, KIMI_CHAT_ADAPTER_ID,
+    OPENROUTER_RERANK_OPERATION_ID,
 };
 #[cfg(test)]
 pub(crate) use claude_messages::CLAUDE_MESSAGES_OPERATION_ID;
@@ -43,8 +44,8 @@ pub(crate) use contract::{GoldenBody, ProtocolContractHarness};
 pub(crate) use derived_responses::ResponsesDialectKind;
 pub(crate) use derived_responses::{
     openai_responses_compatible_adapters, DEEPSEEK_RESPONSES_ADAPTER_ID,
+    OPENROUTER_RESPONSES_ADAPTER_ID,
 };
-pub(crate) use crate::error::{ProtocolError, ProtocolErrorKind, ProtocolResultValue};
 pub(crate) use fal_queue::fal_queue_adapter;
 #[cfg(test)]
 pub(crate) use fal_queue::{FAL_QUEUE_ADAPTER_ID, FAL_QUEUE_OPERATION_ID};

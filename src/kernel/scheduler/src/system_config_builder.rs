@@ -825,7 +825,7 @@ fn build_aicc_settings_with_endpoints(
         (
             "openrouter-default",
             "openrouter",
-            "openrouter-openai",
+            "openrouter-responses",
             "https://openrouter.ai/api/v1",
             config.ai_provider_config.openrouter_api_token.as_str(),
         ),

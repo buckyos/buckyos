@@ -2290,8 +2290,8 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
   );
   const openAiChat = protocolContract(
     catalog,
-    "openrouter",
-    "openrouter.chat-completions.v1",
+    "kimi",
+    "kimi.chat-completions.v1",
   );
   const chatToolErrors = validateProviderRequest(openAiChat, {
     method: "POST",
@@ -3231,7 +3231,7 @@ test("T1.5 manifest owns Provider normal, streaming, async, error, and variant c
   assert.ok(
     manifest.some((item) =>
       item.case_id ===
-        "t1.5.openrouter.openrouter.chat-completions.v1.llm.tool-history"
+        "t1.5.openrouter.openrouter.responses.v1.llm.tool-history"
     ),
   );
   assert.ok(
@@ -3249,7 +3249,7 @@ test("T1.5 manifest owns Provider normal, streaming, async, error, and variant c
   for (
     const caseId of [
       "t1.5.openai.openai.responses.v1.llm.native-history",
-      "t1.5.openrouter.openrouter.chat-completions.v1.llm.reasoning-history",
+      "t1.5.openrouter.openrouter.responses.v1.llm.native-history",
       "t1.5.claude.anthropic.messages.2023-06-01.llm.structured-output",
     ]
   ) {
@@ -3431,7 +3431,7 @@ test("T1.5 typed request fixtures use current provider-neutral methods without l
     "openai/gpt-5.4@t15-openrouter",
     "run",
     "immediate",
-    "openrouter.chat-completions.v1.reasoning-history",
+    "openrouter.responses.v1.native-history",
     { historyMessage: decodedMessage },
   );
   assert.equal((reasoningHistory.messages as unknown[])[1], decodedMessage);

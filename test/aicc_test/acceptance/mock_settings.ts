@@ -198,7 +198,7 @@ export function buildMockSettings(
     provider({
       name: `dv-openrouter-${suffix}`,
       profile: "openrouter",
-      adapter: "openrouter-openai",
+      adapter: "openrouter-responses",
       baseUrl: `${baseUrl}/instance-openrouter`,
       token: `mock-openrouter-${suffix}`,
       timeoutMs,

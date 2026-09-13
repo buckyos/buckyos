@@ -184,8 +184,9 @@ mod wp08d_tests {
     };
     use crate::protocol::{
         glm_chat_adapter, kimi_chat_adapter, openai_chat_completions_adapter,
-        openrouter_chat_adapter, CodecRegistry, GLM_CHAT_ADAPTER_ID, KIMI_CHAT_ADAPTER_ID,
-        OPENAI_CHAT_COMPLETIONS_OPERATION_ID, OPENROUTER_CHAT_ADAPTER_ID,
+        openrouter_responses_adapter, CodecRegistry, GLM_CHAT_ADAPTER_ID, KIMI_CHAT_ADAPTER_ID,
+        OPENAI_CHAT_COMPLETIONS_OPERATION_ID, OPENAI_RESPONSES_OPERATION_ID,
+        OPENROUTER_RESPONSES_ADAPTER_ID,
     };
     use crate::provider::{
         CredentialReference, DiscoveredModel, InventoryBuilder, ModelAvailability,
@@ -246,7 +247,8 @@ mod wp08d_tests {
                 api_types: Some(vec![ApiType::Llm]),
                 supported_features: None,
                 remote_methods: Some(BTreeSet::from([
-                    OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned()
+                    OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned(),
+                    OPENAI_RESPONSES_OPERATION_ID.to_owned(),
                 ])),
                 availability: ModelAvailability::Available,
                 deprecated: false,
@@ -291,8 +293,10 @@ mod wp08d_tests {
         let mut codecs = CodecRegistry::default();
         let (base, registration) = openai_chat_completions_adapter();
         codecs.register_codecs(base, registration).unwrap();
+        let (base, registration) = crate::protocol::openai_responses_adapter();
+        codecs.register_codecs(base, registration).unwrap();
         for (descriptor, registration) in [
-            openrouter_chat_adapter(),
+            openrouter_responses_adapter(),
             kimi_chat_adapter(),
             glm_chat_adapter(),
         ] {
@@ -302,24 +306,27 @@ mod wp08d_tests {
         let cases = [
             (
                 openrouter_profile(),
-                instance("openrouter", OPENROUTER_CHAT_ADAPTER_ID),
+                instance("openrouter", OPENROUTER_RESPONSES_ADAPTER_ID),
                 discovery("openai/router-model", Some("router-model")),
                 "openai",
+                OPENAI_RESPONSES_OPERATION_ID,
             ),
             (
                 kimi_profile(),
                 instance("kimi", KIMI_CHAT_ADAPTER_ID),
                 discovery("kimi-k2.6", None),
                 "kimi",
+                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
             ),
             (
                 glm_profile(),
                 instance("glm", GLM_CHAT_ADAPTER_ID),
                 discovery("glm-5.1", None),
                 "glm",
+                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
             ),
         ];
-        for (profile, instance, discovered, expected_driver) in cases {
+        for (profile, instance, discovered, expected_driver, expected_operation) in cases {
             let inventory =
                 InventoryBuilder::build(&profile, &instance, discovered, &catalog, &codecs)
                     .unwrap();
@@ -330,10 +337,7 @@ mod wp08d_tests {
             );
             assert_eq!(inventory.models.len(), 1);
             assert_eq!(inventory.models[0].model_driver_id, expected_driver);
-            assert_eq!(
-                inventory.models[0].operations["llm"],
-                OPENAI_CHAT_COMPLETIONS_OPERATION_ID
-            );
+            assert_eq!(inventory.models[0].operations["llm"], expected_operation);
         }
     }
 

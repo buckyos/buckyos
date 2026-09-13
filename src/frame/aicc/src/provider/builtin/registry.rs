@@ -504,7 +504,7 @@ mod tests {
     use crate::protocol::{
         FAL_QUEUE_ADAPTER_ID, FAL_QUEUE_OPERATION_ID, GLM_CHAT_ADAPTER_ID, KIMI_CHAT_ADAPTER_ID,
         MINIMAX_MESSAGES_ADAPTER_ID, OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-        OPENAI_RESPONSES_ADAPTER_ID, OPENROUTER_CHAT_ADAPTER_ID,
+        OPENAI_RESPONSES_ADAPTER_ID, OPENROUTER_RESPONSES_ADAPTER_ID,
     };
     use crate::provider::{
         CredentialReference, ModelAvailability, ProviderConnectionInput, ProviderHealthState,
@@ -590,7 +590,7 @@ mod tests {
             OPENAI_RESPONSES_ADAPTER_ID,
             OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
             MINIMAX_MESSAGES_ADAPTER_ID,
-            OPENROUTER_CHAT_ADAPTER_ID,
+            OPENROUTER_RESPONSES_ADAPTER_ID,
             KIMI_CHAT_ADAPTER_ID,
             GLM_CHAT_ADAPTER_ID,
             FAL_QUEUE_ADAPTER_ID,
