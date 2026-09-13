@@ -208,6 +208,98 @@ fn anthropic_effort_variants_exclude_unsupported_haiku() {
 }
 
 #[test]
+fn builtin_model_variant_defaults_match_origin_provider_variants() {
+    let catalogs: [(&str, &[u8], &[u8]); 8] = [
+        (
+            "anthropic",
+            include_bytes!("../../driver_metadata/models/anthropic.model.json"),
+            include_bytes!("../../driver_metadata/providers/claude.provider.json"),
+        ),
+        (
+            "deepseek",
+            include_bytes!("../../driver_metadata/models/deepseek.model.json"),
+            include_bytes!("../../driver_metadata/providers/deepseek.provider.json"),
+        ),
+        (
+            "doubao",
+            include_bytes!("../../driver_metadata/models/doubao.model.json"),
+            include_bytes!("../../driver_metadata/providers/doubao.provider.json"),
+        ),
+        (
+            "gemini",
+            include_bytes!("../../driver_metadata/models/gemini.model.json"),
+            include_bytes!("../../driver_metadata/providers/gemini.provider.json"),
+        ),
+        (
+            "glm",
+            include_bytes!("../../driver_metadata/models/glm.model.json"),
+            include_bytes!("../../driver_metadata/providers/glm.provider.json"),
+        ),
+        (
+            "kimi",
+            include_bytes!("../../driver_metadata/models/kimi.model.json"),
+            include_bytes!("../../driver_metadata/providers/kimi.provider.json"),
+        ),
+        (
+            "openai",
+            include_bytes!("../../driver_metadata/models/openai.model.json"),
+            include_bytes!("../../driver_metadata/providers/openai.provider.json"),
+        ),
+        (
+            "qwen",
+            include_bytes!("../../driver_metadata/models/qwen.model.json"),
+            include_bytes!("../../driver_metadata/providers/qwen.provider.json"),
+        ),
+    ];
+
+    for (catalog_id, model_contents, provider_contents) in catalogs {
+        build(vec![
+            CurrentCatalogFile {
+                kind: CatalogKind::ModelDriver,
+                contents: model_contents.to_vec(),
+            },
+            CurrentCatalogFile {
+                kind: CatalogKind::ProviderRules,
+                contents: provider_contents.to_vec(),
+            },
+        ])
+        .unwrap();
+        let model: Value = serde_json::from_slice(model_contents).unwrap();
+        let provider: Value = serde_json::from_slice(provider_contents).unwrap();
+        let model_variants = model["variants"].as_array().unwrap();
+        let provider_variants = provider["variants"].as_array().unwrap();
+
+        assert_eq!(
+            model_variants.len(),
+            provider_variants.len(),
+            "{catalog_id}.model.json must cover every origin Provider variant"
+        );
+        for provider_variant in provider_variants {
+            let variant_name = provider_variant["variant"].as_str().unwrap();
+            let provider_models = &provider_variant["match"]["provider_model_id"];
+            let matching_defaults = model_variants
+                .iter()
+                .filter(|model_variant| {
+                    let model_match = &model_variant["match"];
+                    let origin_models = model_match.get("origin_model_id").unwrap_or(model_match);
+                    model_variant["name"] == variant_name && origin_models == provider_models
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                matching_defaults.len(),
+                1,
+                "{catalog_id}.model.json is missing variant {variant_name:?} for {provider_models}"
+            );
+            assert_eq!(
+                matching_defaults[0]["provider_options"], provider_variant["provider_options"],
+                "{catalog_id}.model.json has different provider_options for variant {variant_name:?} and {provider_models}"
+            );
+        }
+    }
+}
+
+#[test]
 fn current_file_set_builds_immutable_indexes_and_deterministic_snapshot() {
     let first = build(complete_files()).unwrap();
     let mut reversed_files = complete_files();
@@ -481,6 +573,75 @@ fn provider_exact_and_ordered_pattern_indexes_preserve_actions() {
 }
 
 #[test]
+fn provider_variants_override_model_variants_per_matching_model() {
+    let mut model = model_driver("openai", json!([]), json!([]));
+    model["variants"] = json!([
+        {"name": "model-only", "match": "gpt-*"},
+        {"name": "shared", "match": "gpt-*", "mount_suffix": "shared"}
+    ]);
+    let mut rules = provider_rules();
+    rules["variants"] = json!([
+        {
+            "model_driver": "openai",
+            "variant": "provider-only",
+            "match": "gpt-provider-*",
+            "provider_options": {"reasoning": {"effort": "high"}}
+        },
+        {
+            "model_driver": "openai",
+            "variant": "shared",
+            "match": "gpt-provider-*",
+            "provider_options": {"reasoning": {"effort": "medium"}}
+        }
+    ]);
+    let snapshot = build(vec![
+        file(CatalogKind::ModelDriver, model),
+        file(CatalogKind::ProviderRules, rules),
+    ])
+    .unwrap();
+
+    let provider_context = MatchContext::from([
+        ("provider_model_id".to_owned(), json!("gpt-provider-1")),
+        ("origin_model_id".to_owned(), json!("gpt-provider-1")),
+    ]);
+    let effective = snapshot
+        .effective_model_variants(Some("openai"), "openai", &provider_context)
+        .unwrap();
+    assert!(effective.provider_override);
+    assert_eq!(
+        effective
+            .variants
+            .iter()
+            .map(EffectiveModelVariant::name)
+            .collect::<Vec<_>>(),
+        ["provider-only", "shared"]
+    );
+    assert_eq!(
+        effective.variants[1]
+            .model
+            .and_then(|model| model.mount_suffix.as_deref()),
+        Some("shared")
+    );
+
+    let fallback_context = MatchContext::from([
+        ("provider_model_id".to_owned(), json!("other-model")),
+        ("origin_model_id".to_owned(), json!("gpt-fallback")),
+    ]);
+    let effective = snapshot
+        .effective_model_variants(Some("openai"), "openai", &fallback_context)
+        .unwrap();
+    assert!(!effective.provider_override);
+    assert_eq!(
+        effective
+            .variants
+            .iter()
+            .map(EffectiveModelVariant::name)
+            .collect::<Vec<_>>(),
+        ["model-only", "shared"]
+    );
+}
+
+#[test]
 fn exact_model_wins_globally_and_cross_driver_conflicts_are_rejected() {
     let files = vec![
         file(
@@ -708,10 +869,24 @@ fn provider_origin_aliases_cannot_escape_metadata_drivers() {
 #[test]
 fn schema_revision_required_features_and_references_are_validated() {
     let mut unsupported_schema = model_driver("openai", json!([]), json!([]));
-    unsupported_schema["schema_revision"] = json!(1);
+    unsupported_schema["schema_revision"] = json!(2);
     assert!(matches!(
         build(vec![file(CatalogKind::ModelDriver, unsupported_schema)]),
         Err(CatalogBuildError::UnsupportedSchema { .. })
+    ));
+
+    let mut revision_zero_variant_options = model_driver("openai", json!([]), json!([]));
+    revision_zero_variant_options["variants"] = json!([{
+        "name": "reasoning-high",
+        "match": "gpt-*",
+        "provider_options": {"reasoning": {"effort": "high"}}
+    }]);
+    assert!(matches!(
+        build(vec![file(
+            CatalogKind::ModelDriver,
+            revision_zero_variant_options
+        )]),
+        Err(CatalogBuildError::InvalidValue { .. })
     ));
 
     let mut required_feature = model_driver("openai", json!([]), json!([]));

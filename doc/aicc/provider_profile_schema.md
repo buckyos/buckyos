@@ -189,7 +189,7 @@ Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯�
 | `variants` | 对模型身份、路由和审计有意义的语义 variant |
 | 默认价格 | Provider 没有价格数据时使用的保守估值 |
 
-Model Driver 的 variant 只定义语义身份，例如 `reasoning.high`。配置型 Provider 如何将它转换为请求参数，由 Provider 配置中的 `variants` 定义。
+Model Driver 的 variant 定义语义身份，例如 `reasoning.high`，并可携带原厂默认 `provider_options`。配置型 Provider 命中该具体模型的任一 variant 时，由 Provider 配置中的 `variants` 完整定义该模型的 variant 集合和请求参数；完全未命中时才使用 Model Driver 默认值。
 
 ### 3.2 配置型 Provider 管理
 
@@ -585,7 +585,7 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 - `models` 按 `id` 覆盖同名 exact rule；
 - `patterns` 出现时整体替换默认有序列表；每项的 `match` 使用统一 `MatchRule`，通常是字符串 wildcard；
 - `origin_mappings` 出现时整体替换，避免合并后产生不可解释的顺序；
-- `variants` 按 `model_driver + variant + match` 覆盖；
+- `variants` 不按静态身份键与 Model Driver 去重。对每个具体模型，先用 `provider_model_id` 在当前 Provider Rules 的 `variants` 中适配；只要命中至少一项，该模型的有效 variant 集合完全采用 Provider 结果；一项都未命中时，才回退到对应 Model Driver 的 `variants`；
 - 字段缺失继续使用默认值；
 - `{}` 仅用于 `custom` Provider：使用 Adapter 标准协议行为、保留原始模型名并搜索全部 Model Driver，不启用任何厂商映射。
 
@@ -598,7 +598,7 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 1. 首版 11 家内置 Provider 包括 OpenAI、Claude、Google Gemini、fal、OpenRouter、MiniMax、Kimi、GLM、DeepSeek、豆包和 Qwen；SN 作为独立扩展 Provider 保留。它们都必须在集成测试阶段进入对应的 T1/T1.5 和 T2 验收矩阵。
 2. 配置型 Provider 只能使用运行时已经注册的 Protocol Adapter；用户只提供协议族和连接信息，接入测试自动解析并固化具体 Adapter。AICC 不开放第三方 Provider 插件或任意协议 ID。
 3. Provider Rules、Model Driver、Pricing 和 Known Provider 保持独立对象和 revision；文件发现、下载、校验、替换及目标 seq 由 NDN 保证。AICC 在推理前或 Provider 定时库存刷新时统一收敛所有 applied seq 落后的 Provider；列表未变化且 seq 相同时只探测。
-4. Model Driver variant 定义语义身份；Provider variant 必须完整覆盖该身份到 adapter 参数的 lowering，否则该 Provider 不得声明对应 variant 可用。
+4. Provider variant 优先定义当前渠道中具体模型的 variant 集合及 adapter 参数 lowering；Provider 对该模型无任何 variant 命中时，才使用 Model Driver variant 及其默认 `provider_options`。Provider 可以增加、减少或替换 Model Driver 声明的 variant，不要求按 `model_driver + variant` 完整覆盖。
 5. 旧 settings 中 `provider_driver` 承担的职责拆为实例级 `provider_profile_id`、`protocol_adapter_id` 和模型级 `model_driver_id`；新 settings 不兼容读取 `provider_driver`，但不因此删除 `buckyos-api` 和验收报告中已经导出的同名兼容字段。
 6. OpenAI、Claude、Google Gemini 分别实现专用协议族；优先实现官方新接口。历史 API 代际由首个真实 Provider 需求触发实现，注册为协议族级共享 Adapter，后续 Provider 直接引用或通过 `base_adapter_id` 复用，不重复实现。
 7. SN 使用独立 `sn-openai` Adapter，并以 `openai-responses` 为 `base_adapter_id`；支持 `api_key` 与 `dynamic_login` 两种认证模式。

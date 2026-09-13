@@ -32,12 +32,24 @@ pub(super) fn validate_model_driver(
     for rule in &catalog.patterns {
         validate_model_semantics(&catalog.model_driver_id, &model_rule_semantics!(rule))?;
     }
-    validate_unique_nonempty(
+    validate_nonempty_strings(
         CatalogKind::ModelDriver,
         &catalog.model_driver_id,
         "variants.name",
         catalog.variants.iter().map(|variant| variant.name.as_str()),
     )?;
+    if catalog.schema_revision == 0
+        && catalog
+            .variants
+            .iter()
+            .any(|variant| !variant.provider_options.is_empty())
+    {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: catalog.model_driver_id.clone(),
+            field: "schema_revision",
+            reason: "variant provider_options require schema_revision 1".to_owned(),
+        });
+    }
     validate_unique_nonempty(
         CatalogKind::ModelDriver,
         &catalog.model_driver_id,

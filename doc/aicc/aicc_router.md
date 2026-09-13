@@ -166,7 +166,7 @@ qwen3@local
 
 例如 `gpt-5.1:reasoning-high@openai_primary`。
 
-- variant 字典由 Model Driver Metadata 定义语义身份，不包含 Provider 参数。
+- variant 字典由 Model Driver Metadata 定义语义身份，并可包含原厂默认 `provider_options`；具体 Provider 对该模型有 variant 命中时以 Provider Rules 为准，否则使用该默认值。
 - Provider Rules 把带 variant 的 exact model lower 成原始 `provider_model_id`、operation 和 resolved options。
 - `route.resolve` 输出含 variant 的 `selected_exact_model` 和不带 variant 的原始 `provider_model_id`，不向调用方暴露 `provider_options`。
 - 数据面根据 exact model、canonical request 和当前规则生成内部 `ResolvedProviderCall`。

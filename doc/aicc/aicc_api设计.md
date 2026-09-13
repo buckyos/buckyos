@@ -1795,7 +1795,7 @@ Fallback：
 <provider_model_id>[:<variant>]@<provider_instance_name>
 ```
 
-例如 `gpt-5.1:reasoning-high@openai_primary`。Model Driver variant 定义语义身份；Provider Rules 将该 variant lowering 为当前 Protocol Adapter 的请求参数。Model Driver Metadata 不包含 `provider_options`。
+例如 `gpt-5.1:reasoning-high@openai_primary`。Model Driver variant 定义语义身份及原厂默认 `provider_options`；Provider Rules 对具体模型命中 variant 时完整覆盖该模型的 variant 集合和 lowering，完全未命中时才使用 Model Driver 默认值。
 
 1. `route.resolve` 输出含 variant 的 `selected_exact_model` 和不带 variant 的原始 `provider_model_id`。
 2. typed inference 根据 exact model、Provider Rules 和 method 生成内部 `ResolvedProviderCall`；调用方不传 `provider_options`。

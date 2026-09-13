@@ -828,39 +828,31 @@ impl InventoryBuilder {
             )
             .map_err(|error| ProviderError::Inventory(error.to_string()))?
             .as_stable_string();
-            let mut variants = Vec::new();
-            if catalog.provider_rules(rules_id).is_some() {
-                variants.extend(
-                    catalog
-                        .matching_model_variants(&model_driver_id, &dimensions)
-                        .map_err(|error| ProviderError::Inventory(error.to_string()))?
-                        .into_iter()
-                        .map(|variant| InventoryModelVariant {
-                            name: variant.name.clone(),
-                            logical_mounts: variant
-                                .mount_suffix
-                                .as_ref()
-                                .map(|suffix| {
-                                    logical_mounts
-                                        .clone()
-                                        .into_iter()
-                                        .map(|mount| format!("{mount}.{suffix}"))
-                                        .collect()
-                                })
-                                .unwrap_or_default(),
-                        }),
-                );
-                variants.extend(
-                    catalog
-                        .matching_provider_variants_for_model(rules_id, &dimensions)
-                        .map_err(|error| ProviderError::Inventory(error.to_string()))?
-                        .into_iter()
-                        .map(|variant| InventoryModelVariant {
-                            name: variant.variant.clone(),
-                            logical_mounts: Vec::new(),
-                        }),
-                );
-            }
+            let effective_variants = catalog
+                .effective_model_variants(
+                    catalog.provider_rules(rules_id).map(|_| rules_id),
+                    &model_driver_id,
+                    &dimensions,
+                )
+                .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+            let mut variants = effective_variants
+                .variants
+                .into_iter()
+                .map(|variant| InventoryModelVariant {
+                    name: variant.name().to_owned(),
+                    logical_mounts: variant
+                        .model
+                        .and_then(|model| model.mount_suffix.as_ref())
+                        .map(|suffix| {
+                            logical_mounts
+                                .clone()
+                                .into_iter()
+                                .map(|mount| format!("{mount}.{suffix}"))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })
+                .collect::<Vec<_>>();
             variants.sort_by(|left, right| left.name.cmp(&right.name));
             variants.dedup_by(|left, right| left.name == right.name);
             models.push(ProviderInventoryModel {

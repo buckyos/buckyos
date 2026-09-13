@@ -36,7 +36,7 @@ const KNOWN_PROVIDER_FORMAT: &str = "buckyos.aicc.known-provider-catalog";
 const MODEL_DRIVER_SCHEMA_VERSION: u32 = 1;
 const PROVIDER_RULES_SCHEMA_VERSION: u32 = 1;
 const KNOWN_PROVIDER_SCHEMA_VERSION: u32 = 1;
-const MODEL_DRIVER_SUPPORTED_SCHEMA_REVISION: u32 = 0;
+const MODEL_DRIVER_SUPPORTED_SCHEMA_REVISION: u32 = 1;
 const PROVIDER_RULES_SUPPORTED_SCHEMA_REVISION: u32 = 0;
 const KNOWN_PROVIDER_SUPPORTED_SCHEMA_REVISION: u32 = 1;
 
@@ -79,6 +79,27 @@ pub(crate) struct CatalogSnapshot {
     known_provider_catalogs: BTreeMap<String, KnownProviderCatalog>,
     model_exact_index: BTreeMap<String, Vec<String>>,
     known_provider_index: BTreeMap<String, (String, usize)>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct EffectiveModelVariant<'a> {
+    pub model: Option<&'a ModelVariant>,
+    pub provider: Option<&'a ProviderVariantRule>,
+}
+
+impl EffectiveModelVariant<'_> {
+    pub(crate) fn name(&self) -> &str {
+        self.provider
+            .map(|variant| variant.variant.as_str())
+            .or_else(|| self.model.map(|variant| variant.name.as_str()))
+            .expect("effective variant has a model or provider definition")
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct EffectiveModelVariants<'a> {
+    pub provider_override: bool,
+    pub variants: Vec<EffectiveModelVariant<'a>>,
 }
 
 impl CatalogSnapshot {
@@ -327,6 +348,7 @@ impl CatalogSnapshot {
             .collect())
     }
 
+    #[cfg(test)]
     pub(crate) fn matching_provider_variants(
         &self,
         provider_profile_id: &str,
@@ -369,6 +391,48 @@ impl CatalogSnapshot {
                 condition.matches(&variant_context).then_some(variant)
             })
             .collect())
+    }
+
+    pub(crate) fn effective_model_variants(
+        &self,
+        provider_rules_id: Option<&str>,
+        model_driver_id: &str,
+        context: &MatchContext,
+    ) -> Result<EffectiveModelVariants<'_>, CatalogResolveError> {
+        let model_variants = self.matching_model_variants(model_driver_id, context)?;
+        if let Some(provider_rules_id) = provider_rules_id {
+            let provider_variants = self
+                .matching_provider_variants_for_model(provider_rules_id, context)?
+                .into_iter()
+                .filter(|variant| variant.model_driver == model_driver_id)
+                .collect::<Vec<_>>();
+            if !provider_variants.is_empty() {
+                let variants = provider_variants
+                    .into_iter()
+                    .map(|provider| EffectiveModelVariant {
+                        model: model_variants
+                            .iter()
+                            .copied()
+                            .find(|model| model.name == provider.variant),
+                        provider: Some(provider),
+                    })
+                    .collect();
+                return Ok(EffectiveModelVariants {
+                    provider_override: true,
+                    variants,
+                });
+            }
+        }
+        Ok(EffectiveModelVariants {
+            provider_override: false,
+            variants: model_variants
+                .into_iter()
+                .map(|model| EffectiveModelVariant {
+                    model: Some(model),
+                    provider: None,
+                })
+                .collect(),
+        })
     }
 
     pub(crate) fn resolve_model(

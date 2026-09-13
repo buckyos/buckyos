@@ -6,9 +6,12 @@ semantic variants. Provider discovery supplies channel-local model IDs;
 Provider Rules resolve those IDs to an origin identity before this metadata is
 matched.
 
-Provider-specific origin mappings, exclusions, operations, request fields,
+Provider-specific origin mappings, exclusions, operations, request rules,
 endpoints and channel pricing are not valid Model Driver fields. They belong to
-the Provider Rules catalog described by `provider_profile_schema.md`.
+the Provider Rules catalog described by `provider_profile_schema.md`. A Model
+Driver variant may carry fallback `provider_options`; these defaults are used
+only when the selected Provider Rules has no variant matching that concrete
+model.
 
 All boolean matching uses the shared `MatchRule` defined by `match_rule.md`.
 Simple model rules remain wildcard strings; the object form is only used when a
@@ -110,7 +113,7 @@ do not participate.
 {
   "format": "buckyos.aicc.model-driver-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "model_driver_id": "openai",
   "revision_seq": 1,
   "required_features": [],
@@ -132,7 +135,7 @@ or higher-priority sources. AICC resolves all four sources before parsing the
 effective documents into runtime types. A cloud-source parse failure is an NDN
 delivery-contract violation and must keep the update marker for diagnosis;
 invalid local or system-config documents are reported against their own source
-and must not produce a partially merged snapshot. The former `provider_driver`, `provider_options`,
+and must not produce a partially merged snapshot. The former root-level `provider_driver`, `provider_options`,
 `origin_provider_aliases`, `origin_mappings` and `signature` fields are rejected
 in beta 2.2; no compatibility alias is provided. Catalog authenticity comes
 from NDN's file delivery contract; AICC does not repeat file verification.
@@ -160,13 +163,18 @@ claim tool calling, JSON output, web search, vision or image generation.
 
 ## Variants
 
-Variants define semantic identities only:
+Variants define semantic identities and their origin-provider fallback lowering:
 
 ```json
 {
   "name": "reasoning.high",
   "match": "gpt-*",
-  "mount_suffix": "reasoning-high"
+  "mount_suffix": "reasoning-high",
+  "provider_options": {
+    "reasoning": {
+      "effort": "high"
+    }
+  }
 }
 ```
 
@@ -174,7 +182,18 @@ For `gpt-5.1`, this creates
 `gpt-5.1:reasoning-high@<provider-instance>` and corresponding semantic mount
 suffixes. The variant still calls the base channel model. A Provider Rules
 entry matching `*:reasoning-high` converts that identity to protocol-specific
-request options. Model Driver variants cannot contain `provider_options`.
+request options. Model Driver `provider_options` are the default lowering used
+when the selected Provider has no matching variant. This field is available
+from `schema_revision: 1`; revision 0 documents carrying it are rejected. The
+same variant name may appear in multiple entries with disjoint model matches
+when protocol parameters differ by model generation.
+
+Variant resolution is model-specific and Provider-first. AICC first matches the
+concrete `provider_model_id` against the selected Provider Rules `variants`.
+If at least one Provider variant matches, those matches are the complete
+effective variant set for that model. Model Driver `variants` are used only
+when no Provider variant matches the model. The two sources are not merged or
+deduplicated by a static variant identity key.
 
 ## Version rules
 

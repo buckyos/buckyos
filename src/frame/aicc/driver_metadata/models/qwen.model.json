@@ -1,7 +1,7 @@
 {
   "format": "buckyos.aicc.model-driver-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "model_driver_id": "qwen",
   "revision_seq": 1,
   "required_features": [],
@@ -228,13 +228,13 @@
     "version_rules": ["qwen-max", "qwen-plus", "qwen-flash"]
   },
   "variants": [
-    { "name": "reasoning-none", "match": "qwen3*" },
-    { "name": "reasoning-minimal", "match": "qwen3*" },
-    { "name": "reasoning-low", "match": "qwen3*" },
-    { "name": "reasoning-medium", "match": "qwen3*" },
-    { "name": "reasoning-high", "match": "qwen3*" },
-    { "name": "reasoning-xhigh", "match": "qwen3*" },
-    { "name": "reasoning-max", "match": "qwen3*" }
+    { "name": "reasoning-none", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "none" } } },
+    { "name": "reasoning-minimal", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "minimal" } } },
+    { "name": "reasoning-low", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "low" } } },
+    { "name": "reasoning-medium", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "medium" } } },
+    { "name": "reasoning-high", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "high" } } },
+    { "name": "reasoning-xhigh", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "xhigh" } } },
+    { "name": "reasoning-max", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "max" } } }
   ],
   "version_rules": [
     { "id": "qwen-max", "family": "qwen", "tier": "max", "match": "qwen3*-max*", "tier_tokens": ["max"], "version_rank": { "prefix": "qwen" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.qwen-max", "version_mount": "llm.qwen.{model}" },

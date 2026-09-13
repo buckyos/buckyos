@@ -1,7 +1,7 @@
 {
   "format": "buckyos.aicc.model-driver-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "model_driver_id": "kimi",
   "revision_seq": 1,
   "required_features": [],
@@ -36,8 +36,8 @@
   "patterns": [],
   "defaults": { "version_rules": ["kimi-general", "kimi-code", "kimi-code-highspeed"] },
   "variants": [
-    { "name": "thinking-enabled", "match": { "origin_model_id": ["kimi-k2.5", "kimi-k2.6"] } },
-    { "name": "thinking-disabled", "match": { "origin_model_id": ["kimi-k2.5", "kimi-k2.6"] } }
+    { "name": "thinking-enabled", "match": { "origin_model_id": ["kimi-k2.5", "kimi-k2.6"] }, "provider_options": { "thinking": { "type": "enabled" } } },
+    { "name": "thinking-disabled", "match": { "origin_model_id": ["kimi-k2.5", "kimi-k2.6"] }, "provider_options": { "thinking": { "type": "disabled" } } }
   ],
   "version_rules": [
     { "id": "kimi-general", "family": "kimi", "tier": "general", "match": "kimi-k*", "exclude_tier_tokens": ["code", "highspeed"], "version_rank": { "prefix": "kimi-k" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.kimi", "version_mount": "llm.kimi.{model}" },
