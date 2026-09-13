@@ -625,18 +625,15 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 
 ```json
 {
-  "tokens": {
-    "input": 1024,
-    "output": 512,
-    "total": 1536,
-    "cached": 300,
-    "reasoning": 128
-  },
-  "media": {
-    "audio_seconds": 12.4,
-    "video_seconds": 8,
-    "image_count": 1
-  },
+  "input_tokens": 1024,
+  "output_tokens": 512,
+  "total_tokens": 1536,
+  "cache_read_input_tokens": 300,
+  "cache_write_input_tokens": 0,
+  "reasoning_tokens": 128,
+  "image_units": 1,
+  "audio_seconds": 12.4,
+  "video_seconds": 8,
   "request_units": 1,
   "cost": {
     "amount": 0.0123,
@@ -645,7 +642,10 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 }
 ```
 
-当前 `AiUsage` 已包含顶层 `request_units`，非 token provider 应至少上报该字段；其它媒体计量字段仍按本节分组结构逐步扩展。
+这些字段都是可选字段，但成功结果必须至少包含一种用量。厂商直接返回的实际金额写入
+`cost`，币种不可省略；否则执行层使用固定在任务上的定价快照计算金额。缓存读取 token
+按 `cache_input_token` 结算，没有缓存价时回退普通输入价。媒体 provider 在响应可确认时
+上报实际图片数或音视频秒数，无法从响应确认时仅保留 `request_units`，不猜测时长。
 
 ### 3.5 Bounding Box
 

@@ -54,7 +54,7 @@ pub(crate) struct CandidateRuntimeState {
     pub provider_privacy: ProviderPrivacy,
     pub trust: Option<ProviderTrustView>,
     pub credential_scope: CredentialScope,
-    pub estimated_cost_usd: Option<f64>,
+    pub estimated_cost: Option<Money>,
     pub p50_latency_ms: Option<f64>,
     pub p95_latency_ms: Option<f64>,
     pub error_rate_5m: Option<f64>,
@@ -130,7 +130,7 @@ pub(crate) struct SelectedRoute {
     pub inventory_revision: String,
     pub enabled_capabilities: Vec<Feature>,
     pub disabled_capabilities: Vec<Feature>,
-    pub estimated_cost_usd: Option<f64>,
+    pub estimated_cost: Option<Money>,
     pub final_score: f64,
 }
 
@@ -164,7 +164,7 @@ pub(crate) struct RoutingTrace {
     pub scheduler_profile: String,
     pub score_breakdown: ScoreBreakdown,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub estimated_cost_usd: Option<f64>,
+    pub estimated_cost: Option<Money>,
     pub runtime_failover_count: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub logical_item_sources: Vec<LogicalItemSourceTrace>,
@@ -522,9 +522,7 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
                     caller: &request.caller,
                     method: &request.method,
                     capability: request.capability.clone(),
-                    estimated_cost: state
-                        .estimated_cost_usd
-                        .map(|amount| Money::new(amount, "USD")),
+                    estimated_cost: state.estimated_cost.clone(),
                     request_units: request.request_units,
                 };
                 let policy_candidate = CandidatePolicyInput {
@@ -634,7 +632,7 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
             fallback_chain,
             scheduler_profile: scheduler_profile_name(&profile).into(),
             score_breakdown: score_breakdown(&selected_score, &weights),
-            estimated_cost_usd: selected_result.estimated_cost_usd,
+            estimated_cost: selected_result.estimated_cost.clone(),
             runtime_failover_count: 0,
             logical_item_sources: logical_sources(&ranked),
             logical_admission: admission_trace(admissions),
@@ -919,9 +917,21 @@ fn score_candidates(
     previous_exact_model: Option<&str>,
     locality: LocalityPreference,
 ) -> Vec<RankedCandidate> {
+    let common_currency = candidates
+        .iter()
+        .filter_map(|candidate| candidate.state.estimated_cost.as_ref())
+        .map(|cost| cost.currency.as_str())
+        .reduce(|left, right| if left == right { left } else { "" });
     let costs = candidates
         .iter()
-        .map(|candidate| candidate.state.estimated_cost_usd)
+        .map(|candidate| {
+            candidate
+                .state
+                .estimated_cost
+                .as_ref()
+                .filter(|cost| common_currency == Some(cost.currency.as_str()))
+                .map(|cost| cost.amount)
+        })
         .collect::<Vec<_>>();
     let latencies = candidates
         .iter()
@@ -1092,7 +1102,7 @@ fn selected_route(
         inventory_revision: model.inventory_revision.clone(),
         enabled_capabilities: enabled_features(model, directory_disable, &request.disable),
         disabled_capabilities: disabled_features(directory_disable, &request.disable),
-        estimated_cost_usd: candidate.pending.state.estimated_cost_usd,
+        estimated_cost: candidate.pending.state.estimated_cost.clone(),
         final_score: candidate.score.final_score,
     }
 }
@@ -1544,7 +1554,7 @@ mod tests {
             credential_scope: CredentialScope::Tenant {
                 tenant_id: "tenant".into(),
             },
-            estimated_cost_usd: Some(cost),
+            estimated_cost: Some(Money::new(cost, "USD")),
             p50_latency_ms: Some(latency),
             p95_latency_ms: Some(latency),
             error_rate_5m: Some(0.0),

@@ -70,6 +70,7 @@ fn aicc_errors_round_trip_through_krpc_and_task_data() {
         AiccErrorCode::InvalidRequest,
         AiccErrorCode::InvalidMethod,
         AiccErrorCode::SchemaValidationFailed,
+        AiccErrorCode::UnsupportedOperation,
         AiccErrorCode::UnsupportedExecutionMode,
         AiccErrorCode::InvalidModelName,
         AiccErrorCode::PolicyDenied,

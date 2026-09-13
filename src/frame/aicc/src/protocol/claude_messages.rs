@@ -15,7 +15,9 @@ use buckyos_api::{
 };
 use futures_util::{stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
-use reqwest::{Method, StatusCode};
+use reqwest::Method;
+#[cfg(test)]
+use reqwest::StatusCode;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -946,7 +948,16 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<AiUsage> {
         input_tokens: Some(input_tokens),
         output_tokens: Some(output_tokens),
         total_tokens: Some(total_tokens),
+        cache_read_input_tokens: usage.get("cache_read_input_tokens").and_then(Value::as_u64),
+        cache_write_input_tokens: usage
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64),
+        reasoning_tokens: None,
+        image_units: None,
+        audio_seconds: None,
+        video_seconds: None,
         request_units: None,
+        cost: None,
     })
 }
 
@@ -987,13 +998,7 @@ fn decode_error_response(response: HttpResponse) -> ProtocolError {
         || provider_message.to_string(),
         |kind| format!("Claude {kind}: {provider_message}"),
     );
-    let kind = match response.status {
-        StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED => {
-            ProtocolErrorKind::InvalidRequest
-        }
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProtocolErrorKind::Authentication,
-        _ => ProtocolErrorKind::Transport,
-    };
+    let kind = super::protocol_error_kind_from_http_status(response.status);
     ProtocolError::new(kind, message)
         .with_request_id(Some(response.request_id))
         .with_retry_after(response.retry_after)
@@ -1281,6 +1286,7 @@ fn decode_stream_event(
                     output_tokens: Some(output_tokens),
                     total_tokens: Some(total_tokens),
                     request_units: None,
+                    ..AiUsage::default()
                 }),
                 artifacts: Vec::new(),
             };

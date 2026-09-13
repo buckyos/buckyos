@@ -19,7 +19,9 @@ mod transport;
 
 use minimax_media::minimax_media_registration;
 
-pub(crate) use crate::error::{ProtocolError, ProtocolErrorKind, ProtocolResultValue};
+pub(crate) use crate::error::{
+    protocol_error_kind_from_http_status, ProtocolError, ProtocolErrorKind, ProtocolResultValue,
+};
 pub(crate) use adapter::{
     normalize_provider_base_url, AdapterCredentialContract, AdapterDescriptor, AdapterStatus,
     CodecCall, CodecContext, CodecInput, CodecLimits, CodecRegistration, CodecRegistry,

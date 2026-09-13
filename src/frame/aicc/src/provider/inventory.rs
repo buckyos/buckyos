@@ -728,14 +728,28 @@ impl InventoryBuilder {
             if resolved.semantics.exclude.unwrap_or(false) {
                 continue;
             }
-            let Some(model_driver_id) = resolved.model_driver_id.clone() else {
-                continue;
-            };
+            let conservative_fallback = resolved.model_driver_id.is_none();
+            let model_driver_id = resolved
+                .model_driver_id
+                .clone()
+                .unwrap_or_else(|| "unclassified".to_owned());
             version_rule_refs.insert(
                 discovered.provider_model_id.clone(),
                 resolved.semantics.version_rules.clone(),
             );
             let mut static_api_types = resolved.semantics.api_types.unwrap_or_default();
+            if conservative_fallback && static_api_types.is_empty() {
+                static_api_types = discovered
+                    .api_types
+                    .as_ref()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|api_type| api_type_name(*api_type).ok())
+                            .collect()
+                    })
+                    .unwrap_or_else(|| BTreeSet::from(["llm".to_owned()]));
+            }
             let mut capabilities = resolved.semantics.capabilities.unwrap_or_default();
             let mut pricing = resolved.semantics.pricing.map(|value| InventoryPricing {
                 source: PricingSource::ModelDriver,
@@ -818,7 +832,13 @@ impl InventoryBuilder {
                 api_types.clear();
                 operations.clear();
             }
-            let mut logical_mounts = resolved.semantics.logical_mounts.unwrap_or_default();
+            let mut logical_mounts: Vec<String> = resolved
+                .semantics
+                .logical_mounts
+                .unwrap_or_default()
+                .into_iter()
+                .map(|mount| expand_mount_template(&mount, &model_driver_id, &origin_model_id))
+                .collect();
             logical_mounts.retain(|mount| logical_mount_matches_api_types(mount, &api_types));
             let model_uid = ModelUid::new(
                 &model_driver_id,
@@ -919,10 +939,10 @@ fn apply_version_rules(
             .into_iter()
             .filter(|rule| rule_ids.contains(&rule.id))
         {
-            if !matches_version_tier(&model.provider_model_id, rule) {
+            if !matches_version_tier(&model.origin_model_id, rule) {
                 continue;
             }
-            let version_mount = expand_version_mount(&rule.version_mount, &model.provider_model_id);
+            let version_mount = expand_version_mount(&rule.version_mount, &model.origin_model_id);
             if !logical_mount_matches_api_types(&version_mount, &model.api_types) {
                 continue;
             }
@@ -930,14 +950,14 @@ fn apply_version_rules(
                 model.logical_mounts.push(version_mount);
             }
             for mount in &rule.auto_mounts {
-                let auto_mount = expand_version_mount(mount, &model.provider_model_id);
+                let auto_mount = expand_version_mount(mount, &model.origin_model_id);
                 if logical_mount_matches_api_types(&auto_mount, &model.api_types)
                     && !model.logical_mounts.contains(&auto_mount)
                 {
                     model.logical_mounts.push(auto_mount);
                 }
             }
-            let rank = version_rank(&model.provider_model_id, rule);
+            let rank = version_rank(&model.origin_model_id, rule);
             if rule
                 .stability
                 .as_ref()
@@ -971,7 +991,7 @@ fn apply_version_rules(
                 ProviderError::Inventory(format!("version rule `{rule_id}` disappeared"))
             })?;
         let current_mount =
-            expand_version_mount(&rule.current_mount, &models[index].provider_model_id);
+            expand_version_mount(&rule.current_mount, &models[index].origin_model_id);
         if logical_mount_matches_api_types(&current_mount, &models[index].api_types)
             && !models[index].logical_mounts.contains(&current_mount)
         {
@@ -1047,6 +1067,12 @@ fn version_tokens(model_id: &str) -> BTreeSet<String> {
 
 pub(super) fn expand_version_mount(template: &str, model_id: &str) -> String {
     template.replace("{model}", &logical_mount_segment(model_id))
+}
+
+fn expand_mount_template(template: &str, driver_id: &str, model_id: &str) -> String {
+    template
+        .replace("{driver}", &logical_mount_segment(driver_id))
+        .replace("{model}", &logical_mount_segment(model_id))
 }
 
 fn logical_mount_segment(value: &str) -> String {

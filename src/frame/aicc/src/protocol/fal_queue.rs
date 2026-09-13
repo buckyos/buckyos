@@ -432,6 +432,7 @@ fn decode_result(
             })?
         },
     )]));
+    let image_units = (field == "images").then_some(resources.len() as u64);
     let artifacts = resources
         .into_iter()
         .enumerate()
@@ -452,7 +453,10 @@ fn decode_result(
         .collect();
     Ok(NativeTaskOutput::Result(ProtocolOutput {
         value: normalized,
-        usage: Some(AiUsage::request_units(1)),
+        usage: Some(AiUsage {
+            image_units,
+            ..AiUsage::request_units(1)
+        }),
         artifacts,
     }))
 }
@@ -631,14 +635,7 @@ fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
         return Ok(());
     }
     let value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
-    let kind = match response.status {
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProtocolErrorKind::Authentication,
-        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
-            ProtocolErrorKind::ProviderRejected
-        }
-        StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT => ProtocolErrorKind::Timeout,
-        _ => ProtocolErrorKind::Transport,
-    };
+    let kind = super::protocol_error_kind_from_http_status(response.status);
     let provider_code = value
         .get("error_type")
         .and_then(Value::as_str)

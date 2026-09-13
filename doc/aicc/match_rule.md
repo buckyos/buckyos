@@ -98,7 +98,7 @@ MatchRule = string | MatchRuleObject
 
 | 场景 | 主维度 | 常见扩展维度 |
 | --- | --- | --- |
-| Model Driver model pattern / variant / version rule | `origin_model_id` | `family`、`tier`、`stability`、`api_type` |
+| Model Driver model pattern / variant / version rule | `origin_model_id` | 无；`family/tier/stability` 是 version rule 的输出属性，不是匹配输入 |
 | Provider model rule | `provider_model_id` | `origin_model_id`、`model_driver_id`、`variant`、`api_type` |
 | Request rule / pricing rule | 无，必须使用扁平对象 | normalized option path、`api_type`、`operation` |
 | routing policy 的 Provider/model 范围 | 当前列表对应的 Provider 或 exact model | `api_type`、`logical_path` |

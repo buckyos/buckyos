@@ -224,6 +224,7 @@
   ],
   "defaults": {
     "api_types": [],
+    "logical_mounts": ["llm.qwen", "llm.{driver}.{model}"],
     "capabilities": {},
     "version_rules": ["qwen-max", "qwen-plus", "qwen-flash"]
   },

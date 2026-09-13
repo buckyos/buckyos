@@ -795,7 +795,7 @@ fn version_rule_auto_mounts_are_applied_to_inventory_models() {
         "models": [{
             "id": "gpt-test",
             "api_types": ["llm"],
-            "logical_mounts": [],
+            "logical_mounts": ["llm.{driver}.{model}"],
             "capabilities": {
                 "tool_call": true,
                 "json_schema": true
@@ -862,6 +862,10 @@ fn version_rule_auto_mounts_are_applied_to_inventory_models() {
     assert!(model
         .logical_mounts
         .contains(&"llm.openai.gpt-test".to_string()));
+    assert!(model
+        .logical_mounts
+        .iter()
+        .all(|mount| !mount.contains('{') && !mount.contains('}')));
     assert!(!model.logical_mounts.contains(&"image.txt2img".to_string()));
 }
 
@@ -1553,6 +1557,26 @@ fn instance_rules_exclude_models_before_inventory_publication() {
     )
     .unwrap();
     assert!(inventory.models.is_empty());
+}
+
+#[test]
+fn instance_origin_override_maps_endpoint_ids_without_global_provider_rules() {
+    let mut config = instance("doubao-endpoint");
+    config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        exclude_models: BTreeSet::new(),
+        origin_model_overrides: BTreeMap::from([("ep-user-specific".into(), "gpt-test".into())]),
+    });
+    let inventory = InventoryBuilder::build(
+        &profile(),
+        &config,
+        discovery("ep-user-specific"),
+        &catalog(),
+        &codecs(),
+    )
+    .unwrap();
+    assert_eq!(inventory.models.len(), 1);
+    assert_eq!(inventory.models[0].provider_model_id, "ep-user-specific");
+    assert_eq!(inventory.models[0].origin_model_id, "gpt-test");
 }
 
 #[tokio::test]

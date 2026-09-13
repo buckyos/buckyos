@@ -1759,6 +1759,7 @@ mod tests {
                 output_tokens: Some(5),
                 total_tokens: Some(15),
                 request_units: None,
+                ..AiUsage::default()
             }),
             finance_snapshot: Some(json!({"amount": 0.25, "currency": "USD"})),
             created_at_ms: at,
@@ -1771,6 +1772,7 @@ mod tests {
             output_tokens: None,
             total_tokens: None,
             request_units,
+            ..AiUsage::default()
         };
         AiccUsageEvent {
             event_id: id.into(),
@@ -2030,6 +2032,7 @@ mod tests {
                 output_tokens: Some(5),
                 total_tokens: Some(15),
                 request_units: None,
+                ..AiUsage::default()
             },
             finance_snapshot: Some(AiCost {
                 amount: 0.25,

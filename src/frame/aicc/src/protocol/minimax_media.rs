@@ -456,6 +456,7 @@ fn decode_images(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
             "MiniMax image response contains no images",
         ));
     }
+    let image_units = resources.len() as u64;
     let artifacts = resources
         .iter()
         .enumerate()
@@ -468,7 +469,10 @@ fn decode_images(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
         .collect();
     Ok(ProtocolOutput {
         value: json!({"images":resources,"provider_states":[]}),
-        usage: Some(AiUsage::request_units(1)),
+        usage: Some(AiUsage {
+            image_units: Some(image_units),
+            ..AiUsage::request_units(1)
+        }),
         artifacts,
     })
 }
@@ -486,9 +490,20 @@ fn decode_hex_audio(value: &Value, name: &str) -> ProtocolResultValue<ProtocolOu
         .unwrap_or("mp3");
     let mime = audio_mime(format).to_string();
     let resource = ResourceRef::base64(mime.clone(), STANDARD.encode(bytes));
+    let duration_ms = value
+        .pointer(if name == "music" {
+            "/extra_info/music_duration"
+        } else {
+            "/extra_info/audio_length"
+        })
+        .and_then(Value::as_f64)
+        .filter(|duration| duration.is_finite() && *duration >= 0.0);
     Ok(ProtocolOutput {
         value: json!({"audio":resource}),
-        usage: Some(AiUsage::request_units(1)),
+        usage: Some(AiUsage {
+            audio_seconds: duration_ms.map(|duration| duration / 1_000.0),
+            ..AiUsage::request_units(1)
+        }),
         artifacts: vec![AiArtifact {
             name: name.to_string(),
             resource,

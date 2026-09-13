@@ -1297,6 +1297,7 @@ pub enum AiccErrorCode {
     FallbackNotAllowed,
     ProviderStartFailed,
     ProviderError,
+    UnsupportedOperation,
     UnsupportedExecutionMode,
     Timeout,
     BudgetExceeded,
@@ -1320,6 +1321,7 @@ impl AiccErrorCode {
             Self::FallbackNotAllowed => "fallback_not_allowed",
             Self::ProviderStartFailed => "provider_start_failed",
             Self::ProviderError => "provider_error",
+            Self::UnsupportedOperation => "unsupported_operation",
             Self::UnsupportedExecutionMode => "unsupported_execution_mode",
             Self::Timeout => "timeout",
             Self::BudgetExceeded => "budget_exceeded",
@@ -2409,7 +2411,21 @@ pub struct AiUsage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_units: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_units: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<AiCost>,
 }
 
 impl AiUsage {
@@ -2418,7 +2434,14 @@ impl AiUsage {
             input_tokens: None,
             output_tokens: None,
             total_tokens: None,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
+            reasoning_tokens: None,
+            image_units: None,
+            audio_seconds: None,
+            video_seconds: None,
             request_units: Some(request_units),
+            cost: None,
         }
     }
 }

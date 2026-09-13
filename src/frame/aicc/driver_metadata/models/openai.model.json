@@ -7,10 +7,32 @@
   "required_features": [],
   "models": [
     {
+      "id": "gpt-6-astra",
+      "parameter_scale": "astra",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "agent.computer_use"],
+      "logical_mounts": ["llm.openai", "llm.{driver}.{model}", "agent_runtime.computer_use"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "reasoning": true,
+        "vision": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.00001,
+        "cache_input_token": 0.000001,
+        "output_token": 0.00005
+      }
+    },
+    {
       "id": "gpt-5.6",
       "parameter_scale": "sol",
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
-      "logical_mounts": ["llm.openai", "llm.gpt-standard", "llm.{driver}.{model}", "agent_runtime.computer_use"],
+      "logical_mounts": ["llm.openai", "llm.{driver}.{model}", "agent_runtime.computer_use"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
@@ -28,7 +50,7 @@
         "cache_input_token": 0.0000004,
         "output_token": 0.00002
       },
-      "version_rules": ["gpt-standard"]
+      "version_rules": ["gpt-pro"]
     },
     {
       "id": "gpt-image-2",
@@ -64,6 +86,18 @@
       "pricing": { "currency": "USD", "input_token": 0.00000002 }
     },
     {
+      "id": "text-embedding-ada-002",
+      "api_types": ["embedding.text"],
+      "logical_mounts": ["embedding.text", "embedding.text.openai", "embedding.text.{model}"],
+      "capabilities": { "max_context_tokens": 8192 }
+    },
+    {
+      "id": "whisper-1",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr", "audio.asr.openai", "audio.asr.{model}"],
+      "pricing": { "currency": "USD", "unit": "audio_second", "amount": 0.0001 }
+    },
+    {
       "id": "gpt-transcribe",
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr", "audio.asr.openai", "audio.asr.{model}"]
@@ -89,6 +123,16 @@
       "capabilities": { "max_context_tokens": 2000 }
     },
     {
+      "id": "tts-1",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts", "audio.tts.openai", "audio.tts.{model}"]
+    },
+    {
+      "id": "tts-1-hd",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts", "audio.tts.openai", "audio.tts.{model}"]
+    },
+    {
       "id": "sora-2",
       "api_types": ["video.txt2video", "video.img2video"],
       "logical_mounts": ["video.txt2video.openai", "video.txt2video.{model}", "video.img2video.openai", "video.img2video.{model}"]
@@ -105,7 +149,7 @@
       "match": { "origin_model_id": ["gpt-5.5", "gpt-5.5-20*", "gpt-5.4", "gpt-5.4-20*"] },
       "parameter_scale": "standard",
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
-      "logical_mounts": ["llm.openai", "llm.gpt-standard", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.openai", "llm.{driver}.{model}"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
@@ -121,7 +165,7 @@
       "match": { "origin_model_id": ["gpt-5.5-pro*", "gpt-5.4-pro*"] },
       "parameter_scale": "pro",
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img"],
-      "logical_mounts": ["llm.openai", "llm.gpt-pro", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.openai", "llm.{driver}.{model}"],
       "capabilities": {
         "streaming": false,
         "tool_call": true,
@@ -136,7 +180,7 @@
       "match": "gpt-5.4-mini*",
       "parameter_scale": "mini",
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
-      "logical_mounts": ["llm.openai", "llm.gpt-mini", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.openai", "llm.{driver}.{model}"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
@@ -152,7 +196,7 @@
       "match": "gpt-5.4-nano*",
       "parameter_scale": "nano",
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
-      "logical_mounts": ["llm.openai", "llm.gpt-nano", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.openai", "llm.{driver}.{model}"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
@@ -181,7 +225,7 @@
       "match": "gpt-5.6-sol*",
       "parameter_scale": "sol",
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
-      "logical_mounts": ["llm.openai", "llm.gpt-pro", "llm.{driver}.{model}", "agent_runtime.computer_use"],
+      "logical_mounts": ["llm.openai", "llm.{driver}.{model}", "agent_runtime.computer_use"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
@@ -205,7 +249,7 @@
       "match": "gpt-5.6-terra*",
       "parameter_scale": "terra",
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
-      "logical_mounts": ["llm.openai", "llm.gpt-mini", "llm.{driver}.{model}", "agent_runtime.computer_use"],
+      "logical_mounts": ["llm.openai", "llm.{driver}.{model}", "agent_runtime.computer_use"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
@@ -229,7 +273,7 @@
       "match": "gpt-5.6-luna*",
       "parameter_scale": "luna",
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
-      "logical_mounts": ["llm.openai", "llm.gpt-nano", "llm.{driver}.{model}", "agent_runtime.computer_use"],
+      "logical_mounts": ["llm.openai", "llm.{driver}.{model}", "agent_runtime.computer_use"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
@@ -276,7 +320,7 @@
       "id": "gpt-pro",
       "family": "gpt",
       "tier": "pro",
-      "match": { "origin_model_id": ["gpt-*-pro*", "gpt-*-sol*"] },
+      "match": { "origin_model_id": ["gpt-5.6", "gpt-*-pro*", "gpt-*-sol*"] },
       "version_rank": { "prefix": "gpt" },
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-pro",

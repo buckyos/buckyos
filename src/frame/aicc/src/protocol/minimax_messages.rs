@@ -222,18 +222,7 @@ fn minimax_http_error(response: &HttpResponse) -> ProtocolError {
         })
         .filter(|message| !message.trim().is_empty())
         .unwrap_or("MiniMax request failed");
-    let kind = match response.status {
-        reqwest::StatusCode::BAD_REQUEST
-        | reqwest::StatusCode::NOT_FOUND
-        | reqwest::StatusCode::METHOD_NOT_ALLOWED => ProtocolErrorKind::InvalidRequest,
-        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
-            ProtocolErrorKind::Authentication
-        }
-        reqwest::StatusCode::REQUEST_TIMEOUT | reqwest::StatusCode::GATEWAY_TIMEOUT => {
-            ProtocolErrorKind::Timeout
-        }
-        _ => ProtocolErrorKind::Transport,
-    };
+    let kind = super::protocol_error_kind_from_http_status(response.status);
     ProtocolError::new(
         kind,
         format!(
@@ -480,5 +469,43 @@ mod tests {
         assert!(descriptor
             .operations
             .contains_key(CLAUDE_MESSAGES_OPERATION_ID));
+    }
+
+    #[test]
+    fn minimax_provider_state_round_trips_back_to_the_wire_request() {
+        let (_, registration) = minimax_messages_adapter();
+        let context = context();
+        let state = json!({"type":"thinking","thinking":"private","signature":"opaque"});
+        let input = CodecInput {
+            canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest {
+                messages: vec![AiMessage::new(
+                    AiRole::Assistant,
+                    vec![AiContent::ProviderState {
+                        source: context.state_coordinate.clone(),
+                        provider: "minimax".to_owned(),
+                        value: state.clone(),
+                    }],
+                )],
+                ..match input(Vec::new(), None).canonical_request {
+                    AiccCall::ChatCompletionsCreate(request) => request,
+                    _ => unreachable!(),
+                }
+            }),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".to_owned(),
+                Value::String("MiniMax-M2.7".to_owned()),
+            )]),
+        };
+        let request = registration.operation_codecs[0]
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &input,
+                context: &context,
+            })
+            .unwrap();
+        let HttpBody::Json(body) = request.body else {
+            panic!("expected JSON request");
+        };
+        assert_eq!(body["messages"][0]["content"][0], state);
     }
 }

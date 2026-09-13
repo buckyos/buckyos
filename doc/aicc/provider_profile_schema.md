@@ -120,6 +120,22 @@ derived protocol_adapter_id
 
 Provider Profile/Rules 必须在路由前得到一个确定的 Adapter 和 operation。内置 Provider 的默认选择由 Known Provider catalog 和 `.provider.json` 固定；用户添加 `custom` Provider 时只选择或识别 OpenAI、Claude、Gemini 等协议族，不选择 API 代际。接入测试只枚举无 `base_adapter_id` 且声明 `probe_path` 的协议族级 Adapter，按“官方新接口优先、运行时已注册的历史接口其次”的 `probe_priority` 顺序发送带认证的空 JSON 探测，成功识别后把 resolved `protocol_adapter_id` 固化到 Provider Instance。只有 `404/405/501` 继续下一候选；其它 4xx 证明接口存在，认证、限流、网络和 5xx 直接报告，不能被误判成历史接口需求。运行时只使用已固化 Adapter，不重新探测，也不在一次调用中静默切换新旧 Adapter。
 
+一个 Provider 需要多套 protocol client 时，不把实例字段扩成无约束的 Adapter 数组。
+Adapter 是该 Provider 的可执行协议边界，可以注册多个按 operation 分派的
+`OperationCodec`/`NativeTaskCodec`，每个 codec 可委托不同的基础协议实现。MiniMax 的
+Messages、T2A、图片、音乐和视频即按此方式组合；OpenRouter 的 Responses 与 rerank 也按
+operation 显式组合。这样仍满足“Provider 可持有多个 protocol client”，同时保证一次路由
+在调用前得到唯一的 `adapter + operation + codec`，避免运行时试探或静默切换。
+
+### 2.1.1 可执行绑定表的事实源
+
+完整的 `provider × api_type × operation × codec` 关系见
+[`provider_operation_bindings.md`](provider_operation_bindings.md)。
+运行时通过 `protocol_adapter.list` 返回当前注册的 Adapter、operation、API type 和执行模式；
+Provider Rules 再给出每个模型的 operation 选择。`call::tests::every_builtin_provider_operation_has_a_golden_lowering_binding`
+从这两份事实源生成、去重并校验全部内置绑定及文档（当前 71 条）。因此新增或删除绑定必须修改
+metadata/Adapter，并同步更新由测试强制校验的绑定文档。
+
 ### 2.2 SN Provider 的 OpenAI 子类语义
 
 SN Provider 当前使用独立的 `sn-openai` Protocol Adapter，属于 `openai` 协议族，并声明 `base_adapter_id: "openai-responses"`。它复用 OpenAI Responses 请求、响应、stream、错误和 operation 语义，SN 特性只实现在派生层。

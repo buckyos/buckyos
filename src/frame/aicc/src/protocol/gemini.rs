@@ -1294,7 +1294,14 @@ fn decode_embedding_usage(value: &Value) -> ProtocolResultValue<Option<AiUsage>>
         input_tokens: input,
         output_tokens: Some(0),
         total_tokens: total,
+        cache_read_input_tokens: usage.get("cachedContentTokenCount").and_then(Value::as_u64),
+        cache_write_input_tokens: None,
+        reasoning_tokens: usage.get("thoughtsTokenCount").and_then(Value::as_u64),
+        image_units: None,
+        audio_seconds: None,
+        video_seconds: None,
         request_units: None,
+        cost: None,
     }))
 }
 
@@ -1669,7 +1676,12 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         input_tokens: input,
         output_tokens: output,
         total_tokens: total,
+        cache_read_input_tokens: object
+            .get("cached_content_token_count")
+            .and_then(Value::as_u64),
+        reasoning_tokens: object.get("thoughts_token_count").and_then(Value::as_u64),
         request_units: None,
+        ..AiUsage::default()
     }))
 }
 
@@ -2217,7 +2229,7 @@ fn ensure_stream_success(response: &StreamingHttpResponse) -> ProtocolResultValu
         return Ok(());
     }
     Err(ProtocolError::new(
-        http_error_kind(response.status),
+        super::protocol_error_kind_from_http_status(response.status),
         format!("Gemini HTTP {}", response.status.as_u16()),
     )
     .with_provider_code(Some(response.status.as_u16().to_string()))
@@ -2242,20 +2254,13 @@ fn gemini_http_error(
         .and_then(|value| value.pointer("/error/message"))
         .and_then(Value::as_str)
         .unwrap_or("Gemini request failed");
-    ProtocolError::new(http_error_kind(status), format!("Gemini {code}: {message}"))
-        .with_provider_code(Some(status.as_u16().to_string()))
-        .with_request_id(Some(request_id.to_string()))
-        .with_retry_after(retry_after)
-}
-
-fn http_error_kind(status: StatusCode) -> ProtocolErrorKind {
-    match status {
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProtocolErrorKind::Authentication,
-        StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT => ProtocolErrorKind::Timeout,
-        StatusCode::TOO_MANY_REQUESTS => ProtocolErrorKind::Transport,
-        status if status.is_server_error() => ProtocolErrorKind::Transport,
-        _ => ProtocolErrorKind::InvalidRequest,
-    }
+    ProtocolError::new(
+        super::protocol_error_kind_from_http_status(status),
+        format!("Gemini {code}: {message}"),
+    )
+    .with_provider_code(Some(status.as_u16().to_string()))
+    .with_request_id(Some(request_id.to_string()))
+    .with_retry_after(retry_after)
 }
 
 fn is_sse(value: Option<&HeaderValue>) -> bool {

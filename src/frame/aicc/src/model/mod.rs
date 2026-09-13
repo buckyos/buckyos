@@ -1324,6 +1324,8 @@ fn validate_logical_path(path: &str) -> Result<(), ModelRegistryError> {
     if path.is_empty()
         || path.trim() != path
         || path.contains('@')
+        || path.contains('{')
+        || path.contains('}')
         || path.split('.').any(str::is_empty)
         || path.chars().any(char::is_whitespace)
     {

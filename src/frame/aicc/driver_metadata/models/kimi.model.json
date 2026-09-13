@@ -33,7 +33,21 @@
       }
     }
   ],
-  "patterns": [],
+  "patterns": [
+    {
+      "match": "kimi-k*-code*",
+      "parameter_scale": "code",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.kimi", "llm.{driver}.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true
+      },
+      "version_rules": ["kimi-code", "kimi-code-highspeed"]
+    }
+  ],
   "defaults": { "version_rules": ["kimi-general", "kimi-code", "kimi-code-highspeed"] },
   "variants": [
     { "name": "thinking-enabled", "match": { "origin_model_id": ["kimi-k2.5", "kimi-k2.6"] }, "provider_options": { "thinking": { "type": "enabled" } } },

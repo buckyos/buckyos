@@ -6,8 +6,8 @@ use crate::catalog::{
 };
 use crate::protocol::{CodecRegistry, CredentialKind, HttpTransport, HttpTransportConfig};
 use crate::provider::{
-    catalog_only_inventory, CatalogOnlyDiscovery, CredentialDescriptor, DiscoveryMode,
-    DynamicLoginCredentialResolver, FallbackDiscovery, ProviderAuthMode,
+    catalog_only_inventory, validate_discovery, CatalogOnlyDiscovery, CredentialDescriptor,
+    DiscoveryMode, DynamicLoginCredentialResolver, FallbackDiscovery, ProviderAuthMode,
     ProviderConnectionContract, ProviderDiscovery, ProviderDiscoverySnapshot, ProviderError,
     ProviderFieldMode, ProviderFieldSchema, ProviderInstanceConfig, ProviderProfile,
     ProviderResult, RefreshPolicy,
@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BuiltinDiscoveryFactory {
+    CatalogOnly,
     OpenAi,
     Claude,
     MiniMax,
@@ -32,6 +33,7 @@ enum BuiltinDiscoveryFactory {
 
 fn discovery_behaviors() -> BTreeMap<&'static str, BuiltinDiscoveryFactory> {
     BTreeMap::from([
+        ("catalog-only", BuiltinDiscoveryFactory::CatalogOnly),
         ("openai-models", BuiltinDiscoveryFactory::OpenAi),
         ("anthropic-models", BuiltinDiscoveryFactory::Claude),
         ("minimax-models", BuiltinDiscoveryFactory::MiniMax),
@@ -275,7 +277,17 @@ impl BuiltinProviderRegistry {
                     "unknown provider discovery behavior `{behavior_id}`"
                 ))
             })?;
+        if factory == BuiltinDiscoveryFactory::CatalogOnly {
+            let inventory = configured_inventory.or(default_inventory).ok_or_else(|| {
+                ProviderError::InvalidConfiguration(format!(
+                    "catalog-only provider `{provider_profile_id}` has no inventory"
+                ))
+            })?;
+            validate_discovery(&inventory)?;
+            return Ok(Arc::new(CatalogOnlyDiscovery::new(inventory)));
+        }
         let primary: Arc<dyn ProviderDiscovery> = match factory {
+            BuiltinDiscoveryFactory::CatalogOnly => unreachable!(),
             BuiltinDiscoveryFactory::OpenAi => Arc::new(OpenAiDiscovery::new(transport()?)),
             BuiltinDiscoveryFactory::Claude => Arc::new(claude_discovery(transport()?)),
             BuiltinDiscoveryFactory::MiniMax => Arc::new(minimax_discovery(transport()?)),
@@ -413,7 +425,11 @@ fn profile_from_catalog(configuration: &ResolvedProviderConfiguration) -> Provid
             .iter()
             .map(credential_from_catalog)
             .collect(),
-        discovery_mode: DiscoveryMode::MachineApi,
+        discovery_mode: if configuration.discovery_behavior_id == "catalog-only" {
+            DiscoveryMode::CatalogOnly
+        } else {
+            DiscoveryMode::MachineApi
+        },
         refresh: RefreshPolicy::default(),
         default_inventory: None,
         accepts_any_adapter: false,
@@ -507,12 +523,14 @@ mod tests {
         OPENAI_RESPONSES_ADAPTER_ID, OPENROUTER_RESPONSES_ADAPTER_ID,
     };
     use crate::provider::{
-        CredentialReference, ModelAvailability, ProviderConnectionInput, ProviderHealthState,
+        CredentialReference, InventoryBuilder, ModelAvailability, ProviderConnectionInput,
+        ProviderHealthState,
     };
     use crate::settings::{load_builtin_metadata, MetadataFile, MetadataSource, MetadataSources};
     use buckyos_api::ApiType;
     use serde_json::json;
-    use std::collections::BTreeSet;
+    use sha2::{Digest, Sha256};
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn configured_inventory() -> ProviderDiscoverySnapshot {
         ProviderDiscoverySnapshot {
@@ -605,6 +623,133 @@ mod tests {
                 ApiType::ImageTextToImage,
             )
             .is_ok());
+    }
+
+    #[test]
+    fn builtin_metadata_inventory_and_mounts_match_golden() {
+        let catalog = MetadataSources {
+            builtin: load_builtin_metadata().unwrap(),
+            ..MetadataSources::default()
+        }
+        .build_snapshot(1, &crate::catalog::CatalogBuildOptions::default())
+        .unwrap();
+        let registry = builtin_provider_registry(catalog.as_ref()).unwrap();
+
+        let mut golden = BTreeMap::new();
+        for profile in registry.profiles() {
+            if profile.provider_profile_id == CUSTOM_PROVIDER_PROFILE_ID {
+                continue;
+            }
+            let Some(discovery) = profile.default_inventory.clone() else {
+                golden.insert(profile.provider_profile_id.clone(), "dynamic".to_owned());
+                continue;
+            };
+            let instance = ProviderInstanceConfig {
+                provider_instance_name: format!("{}-golden", profile.provider_profile_id),
+                provider_profile_id: profile.provider_profile_id.clone(),
+                protocol_adapter_id: profile.default_protocol_adapter_id.clone(),
+                base_url: "https://provider.example/v1".to_owned(),
+                credential: CredentialReference {
+                    reference: "secret://provider".to_owned(),
+                },
+                credential_kind: None,
+                provider_rules_id: Some(profile.provider_profile_id.clone()),
+                region: None,
+                workspace: None,
+                account: None,
+                request_timeout: std::time::Duration::from_secs(120),
+                auto_sync_models: true,
+                instance_rules: None,
+            };
+            let inventory = InventoryBuilder::build(
+                profile,
+                &instance,
+                discovery,
+                catalog.as_ref(),
+                &registry.codecs(),
+            )
+            .unwrap_or_else(|error| panic!("{}: {error}", profile.provider_profile_id));
+
+            assert!(
+                !inventory.models.is_empty(),
+                "{} produced an empty catalog inventory",
+                profile.provider_profile_id
+            );
+            for model in &inventory.models {
+                assert!(
+                    !model.logical_mounts.is_empty(),
+                    "{}:{} produced no logical mounts",
+                    profile.provider_profile_id,
+                    model.provider_model_id
+                );
+                assert!(
+                    model
+                        .logical_mounts
+                        .iter()
+                        .all(|mount| !mount.contains('{') && !mount.contains('}')),
+                    "{}:{} has unexpanded mounts {:?}",
+                    profile.provider_profile_id,
+                    model.origin_model_id,
+                    model.logical_mounts
+                );
+            }
+            let encoded = serde_json::to_vec(&inventory.models).unwrap();
+            golden.insert(
+                profile.provider_profile_id.clone(),
+                format!("{}:{:x}", inventory.models.len(), Sha256::digest(encoded)),
+            );
+        }
+        assert_eq!(
+            golden,
+            BTreeMap::from([
+                (
+                    "claude".to_owned(),
+                    "5:b82f1a71d81c76fc08c65a6c30b69eb740d2e4b79346d43dc740b07b4be2c122".to_owned()
+                ),
+                (
+                    "deepseek".to_owned(),
+                    "3:f5d6145093aaac077454373910206e55f896462436343938038224f98b9ba9c2".to_owned()
+                ),
+                (
+                    "doubao".to_owned(),
+                    "1:13aa0a4e9efc50688cbbae87ae4121d4f4fac137c83d8ce9b18282e4223c99b4".to_owned()
+                ),
+                (
+                    "fal".to_owned(),
+                    "4:fedb70ea0b8e5f6911c86d2777434bf648bb0a09ebe3e33f2776bf78a2817fe4".to_owned()
+                ),
+                (
+                    "gemini".to_owned(),
+                    "28:631587a0ce3b38d222e437d4db284ac11392eeef381856c028c77d3af250fd78"
+                        .to_owned()
+                ),
+                (
+                    "glm".to_owned(),
+                    "20:0186bb1cca455696828596f368d2259876a55e31f5c80e2faf9584232a4fd652"
+                        .to_owned()
+                ),
+                (
+                    "kimi".to_owned(),
+                    "2:badc49a02e57b9c1e80b4b4399b30b197fb5d5133e85374c5e357b672795a78c".to_owned()
+                ),
+                (
+                    "minimax".to_owned(),
+                    "19:3d4b86ff77acb3640dba7a28a21fcf3cc022ad35a0d33d24e2f6fc39eaa20c4c"
+                        .to_owned()
+                ),
+                (
+                    "openai".to_owned(),
+                    "15:ab4173f22f708310849ea659d0c372b59100d9d3a15fe3af1818a364c5202790"
+                        .to_owned()
+                ),
+                ("openrouter".to_owned(), "dynamic".to_owned()),
+                (
+                    "qwen".to_owned(),
+                    "4:dde70b46db03c9c0bbcf8fddc89b8d7581a2a295f6e9fae1f71751a23e01e6b8".to_owned()
+                ),
+                ("sn".to_owned(), "dynamic".to_owned()),
+            ])
+        );
     }
 
     #[test]
