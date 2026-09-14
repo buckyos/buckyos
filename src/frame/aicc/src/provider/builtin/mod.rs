@@ -133,12 +133,12 @@ pub(crate) use claude::{claude_discovery, claude_messages_adapter, CLAUDE_PROVID
 pub(crate) use fal::FAL_PROVIDER_PROFILE_ID;
 #[allow(unused_imports)]
 pub(crate) use gemini::{GeminiDiscovery, GEMINI_CREDENTIAL_HEADER, GEMINI_PROVIDER_PROFILE_ID};
-#[allow(unused_imports)]
-pub(crate) use glm::GLM_PROVIDER_PROFILE_ID;
 #[cfg(test)]
 use glm::{
     glm_catalog_files, glm_known_provider, glm_model_driver, glm_profile, glm_provider_rules,
 };
+#[allow(unused_imports)]
+pub(crate) use glm::{glm_models_discovery, GlmModelsDiscovery, GLM_PROVIDER_PROFILE_ID};
 #[cfg(test)]
 use kimi::{
     kimi_catalog_files, kimi_known_provider, kimi_model_driver, kimi_profile, kimi_provider_rules,

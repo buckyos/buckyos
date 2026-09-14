@@ -26,6 +26,7 @@ enum BuiltinDiscoveryFactory {
     Gemini,
     OpenRouter,
     Kimi,
+    Glm,
     DeepSeek,
     Sn,
     Standard,
@@ -40,6 +41,7 @@ fn discovery_behaviors() -> BTreeMap<&'static str, BuiltinDiscoveryFactory> {
         ("gemini-models", BuiltinDiscoveryFactory::Gemini),
         ("openrouter-models", BuiltinDiscoveryFactory::OpenRouter),
         ("kimi-models", BuiltinDiscoveryFactory::Kimi),
+        ("glm-models", BuiltinDiscoveryFactory::Glm),
         ("deepseek-models", BuiltinDiscoveryFactory::DeepSeek),
         ("sn-models", BuiltinDiscoveryFactory::Sn),
         (
@@ -294,6 +296,7 @@ impl BuiltinProviderRegistry {
             BuiltinDiscoveryFactory::Gemini => Arc::new(GeminiDiscovery::new(transport()?)),
             BuiltinDiscoveryFactory::OpenRouter => Arc::new(OpenRouterDiscovery::new(transport()?)),
             BuiltinDiscoveryFactory::Kimi => Arc::new(KimiDiscovery::new(transport()?)),
+            BuiltinDiscoveryFactory::Glm => Arc::new(glm_models_discovery(transport()?)),
             BuiltinDiscoveryFactory::DeepSeek => Arc::new(openai_compatible_models_discovery(
                 DEEPSEEK_PROFILE_ID,
                 crate::protocol::DEEPSEEK_RESPONSES_ADAPTER_ID,

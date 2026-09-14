@@ -153,9 +153,14 @@ fn normalize_glm_chat_discovery(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{ResolvedCredential, GLM_CHAT_ADAPTER_ID};
+    use crate::catalog::{CatalogBuildOptions, CatalogDocuments, CatalogSnapshot};
+    use crate::protocol::{
+        glm_chat_adapter, openai_chat_completions_adapter, CodecRegistry, ResolvedCredential,
+        GLM_CHAT_ADAPTER_ID,
+    };
     use crate::provider::{
-        CredentialReference, DiscoveryContext, ProviderDiscovery, ProviderInstanceConfig,
+        CredentialReference, DiscoveryContext, InventoryBuilder, ProviderDiscovery,
+        ProviderInstanceConfig,
     };
 
     #[test]
@@ -250,5 +255,73 @@ mod tests {
 
         assert_eq!(snapshot.models[0].api_types, None);
         assert_eq!(snapshot.models[0].remote_methods, None);
+    }
+
+    #[test]
+    fn inventory_uses_glm_metadata_after_models_discovery() {
+        let catalog = CatalogSnapshot::build(
+            1,
+            CatalogDocuments {
+                model_drivers: vec![glm_model_driver()],
+                provider_rules: vec![glm_provider_rules(1)],
+                known_providers: Vec::new(),
+            },
+            &CatalogBuildOptions::default(),
+        )
+        .unwrap();
+        let mut codecs = CodecRegistry::default();
+        let (descriptor, registration) = openai_chat_completions_adapter();
+        codecs.register_codecs(descriptor, registration).unwrap();
+        let (descriptor, registration) = glm_chat_adapter();
+        codecs.register_derived(descriptor, registration).unwrap();
+        let discovery = normalize_glm_chat_discovery(ProviderDiscoverySnapshot {
+            revision: Some("models-etag".to_owned()),
+            discovered_at_ms: 1,
+            health: ProviderHealthState::Healthy,
+            models: vec![DiscoveredModel {
+                provider_model_id: "glm-5.3".to_owned(),
+                origin_model_id: None,
+                api_types: Some(vec![ApiType::Llm]),
+                supported_features: None,
+                remote_methods: Some(BTreeSet::from(["responses.create".to_owned()])),
+                availability: ModelAvailability::Available,
+                deprecated: false,
+                pricing: None,
+            }],
+        })
+        .unwrap();
+        let inventory = InventoryBuilder::build(
+            &glm_profile(),
+            &ProviderInstanceConfig {
+                provider_instance_name: "glm-main".to_owned(),
+                provider_profile_id: GLM_PROVIDER_PROFILE_ID.to_owned(),
+                protocol_adapter_id: GLM_CHAT_ADAPTER_ID.to_owned(),
+                base_url: glm_known_provider().base_url,
+                credential: CredentialReference {
+                    reference: "secret://glm".to_owned(),
+                },
+                credential_kind: None,
+                provider_rules_id: Some(GLM_PROVIDER_PROFILE_ID.to_owned()),
+                region: Some("global".to_owned()),
+                workspace: None,
+                account: None,
+                request_timeout: std::time::Duration::from_secs(120),
+                auto_sync_models: true,
+                instance_rules: None,
+            },
+            discovery,
+            &catalog,
+            &codecs,
+        )
+        .unwrap();
+
+        assert_eq!(inventory.models[0].api_types, vec![ApiType::Llm]);
+        assert_eq!(
+            inventory.models[0].operations["llm"],
+            OPENAI_CHAT_COMPLETIONS_OPERATION_ID
+        );
+        assert!(inventory.models[0]
+            .logical_mounts
+            .contains(&"llm.glm".to_owned()));
     }
 }

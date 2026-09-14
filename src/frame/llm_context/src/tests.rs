@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use buckyos_api::{AiContent, AiMessage, AiResponse, AiRole, AiToolCall, AiUsage, ResourceRef};
+use buckyos_api::{
+    AiContent, AiCost, AiMessage, AiResponse, AiRole, AiToolCall, AiUsage, ResourceRef,
+};
 use serde_json::json;
 
 use crate::deps::{
@@ -206,7 +208,17 @@ async fn done_without_tool_calls() {
             input_tokens: Some(5),
             output_tokens: Some(3),
             total_tokens: Some(8),
-            request_units: None,
+            cache_read_input_tokens: Some(2),
+            cache_write_input_tokens: Some(1),
+            reasoning_tokens: Some(1),
+            image_units: Some(2),
+            audio_seconds: Some(1.5),
+            video_seconds: Some(2.5),
+            request_units: Some(1),
+            cost: Some(AiCost {
+                amount: 0.25,
+                currency: "USD".to_string(),
+            }),
         }),
         ..Default::default()
     }]));
@@ -220,6 +232,20 @@ async fn done_without_tool_calls() {
                 _ => panic!("expected text output"),
             }
             assert_eq!(usage.total_tokens, Some(8));
+            assert_eq!(usage.cache_read_input_tokens, Some(2));
+            assert_eq!(usage.cache_write_input_tokens, Some(1));
+            assert_eq!(usage.reasoning_tokens, Some(1));
+            assert_eq!(usage.image_units, Some(2));
+            assert_eq!(usage.audio_seconds, Some(1.5));
+            assert_eq!(usage.video_seconds, Some(2.5));
+            assert_eq!(usage.request_units, Some(1));
+            assert_eq!(
+                usage.cost,
+                Some(AiCost {
+                    amount: 0.25,
+                    currency: "USD".to_string(),
+                })
+            );
         }
         other => panic!("unexpected outcome: {other:?}"),
     }

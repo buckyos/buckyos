@@ -84,12 +84,7 @@ impl LLMContextState {
     pub fn from_request(req: &LLMContextRequest, started_at_ms: u64) -> Self {
         Self {
             accumulated: req.input.clone(),
-            usage: AiUsage {
-                input_tokens: None,
-                output_tokens: None,
-                total_tokens: None,
-                request_units: None,
-            },
+            usage: AiUsage::default(),
             rounds_left: req.tool_policy.max_rounds,
             started_at_ms,
             cost_units: 0,
