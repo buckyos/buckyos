@@ -204,6 +204,7 @@ Response：
 4. `operation` 由 Provider Rules 和 adapter 注册表解析；调用方不能指定任意 operation 或 URL。
 5. `enabled_capabilities` / `disabled_capabilities` 表达本次路由后实际启用 / 禁用的能力集合。
 6. `fallback_attempts` 是路由建议的运行时候选顺序（不含 primary），供调用方在失败后自行决定是否重试，不是 lease，也不保证后续时刻仍可用。
+7. `requirements.canonical_fields` 以 typed request 的 JSON Pointer 为 key。Model/Provider metadata 为每个 pointer 选择 AICC 内置的 Rust converter，并用统一 `fallback` 配置字段缺失或转换失败时的 `reject`、`omit` 或 canonical `default`；配置不内联映射表或脚本。默认值仍须通过同一 converter。`strict=true` 不执行 fallback，只接受 converter 产生的 exact，或在 `allow_fuzzy=true` 时接受 fuzzy。无法满足的严格要求会在路由阶段排除，不能作为无效 Provider 参数静默下发。
 
 ### 2.2 typed inference（数据面）
 
@@ -1334,11 +1335,10 @@ Request：
 {
   "text": "你好，欢迎使用 AICC。",
   "voice": {
-    "voice_id": "voice_zh_female_warm_001",
     "language": "zh-CN",
     "gender": "female",
     "style": "warm",
-    "speaker_similarity_required": false
+    "instructions": "语速舒缓，语气亲切"
   },
   "speed": 1.0,
   "output": {
@@ -1347,6 +1347,20 @@ Request：
   }
 }
 ```
+
+`VoiceSpec` 只表达 Provider/Model 无关的语音要求，不接受 Provider 原生 voice ID。
+字段要求的匹配策略属于路由 requirement，而不是 `VoiceSpec` 自身的一部分。
+`gender` 是 `female`、`male`、`neutral` 枚举；`style` 是 AICC 定义的
+`bright`、`upbeat`、`informative`、`firm`、`excitable`、`youthful`、
+`breezy`、`easy_going`、`breathy`、`clear`、`smooth`、`gravelly`、`soft`、
+`even`、`mature`、`forward`、`friendly`、`casual`、`gentle`、`lively`、
+`knowledgeable`、`warm` 枚举。未知值在 typed request 解析阶段拒绝。
+
+OpenAI converter 在 Rust 中维护预置 voice 的 AICC `gender/style` 语义画像，
+按照 style 优先、gender 次之的规则选择得分最高的可用 voice；该画像不是 OpenAI
+官方结构化属性，因此结果始终记为 fuzzy。`gpt-4o-mini-tts` 可使用全部预置 voice
+并把 style/instructions 同步写入 `instructions`；`tts-1`、`tts-1-hd` 只在其较小
+的 voice 值域内选择，且不下发 `instructions`。
 
 Response：
 
@@ -1361,8 +1375,9 @@ Response：
 
 Fallback：
 
-1. 如果指定 `voice_id` 且 `speaker_similarity_required=true`，禁止跨 Provider fallback。
-2. 如果只指定 language / gender / style，可在满足 voice contract 的 Provider 内 fallback。
+1. Helper/typed 调用会从 `voice` 自动构造非严格路由字段要求；`strict` 默认值为 `false`，`VoiceSpec` 当前不提供 strict 开关。
+2. 单独调用 `route.resolve` 时，可在 `requirements.canonical_fields["/voice"]` 传入同一份 canonical value，并通过 requirement 的 `strict`、`allow_fuzzy` 指定匹配策略。
+3. Provider 原生 voice ID 不属于公开接口。
 
 ### 10.2 `audio.asr`
 

@@ -152,6 +152,11 @@ for the common case it is only `"match": "gpt-*"`:
 - `logical_mounts`: semantic mounts using `{driver}` and `{model}` templates.
 - `capabilities`: intrinsic capability limits such as streaming, tool calling,
   JSON output, web search, vision, image generation and token limits.
+- `canonical_fields`: maps canonical request JSON Pointers to mapping policies.
+  Each policy names a converter implemented by AICC in Rust and configures how
+  missing or unconvertible values are handled by one fallback policy. A Provider Rules entry
+  with the same JSON Pointer replaces the complete Model Driver policy for that
+  channel.
 - `pricing`: last-resort semantic estimate only. Provider discovery, Provider
   Instance overrides and Provider Rules take precedence.
 - scheduling hints: `estimated_latency_ms`, `quality_score`, `latency_class`

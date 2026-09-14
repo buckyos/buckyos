@@ -8,7 +8,6 @@ import {
   ArgError,
   bailArgError,
   COMMON_OPTIONS_HELP,
-  flagBool,
   flagFloat,
   flagInt,
   parseArgvOrExit,
@@ -41,17 +40,40 @@ const METHOD = "audio.tts";
 export const HELP = `Usage: text_to_speech <text> <output_audio> [options]
 
 Options:
-  --voice-id <id>
   --lang <language_tag>
   --gender <male|female|neutral>
-  --style <style>
-  --speaker-similarity-required
+  --style <bright|upbeat|informative|firm|excitable|youthful|breezy|easy_going|breathy|clear|smooth|gravelly|soft|even|mature|forward|friendly|casual|gentle|lively|knowledgeable|warm>
+  --instructions <text>
   --speed <float>
   --format <mp3|wav|ogg>
   --sample-rate <hz>
 ${COMMON_OPTIONS_HELP}`;
 
 const GENDER = new Set(["male", "female", "neutral"]);
+const STYLE = new Set([
+  "bright",
+  "upbeat",
+  "informative",
+  "firm",
+  "excitable",
+  "youthful",
+  "breezy",
+  "easy_going",
+  "breathy",
+  "clear",
+  "smooth",
+  "gravelly",
+  "soft",
+  "even",
+  "mature",
+  "forward",
+  "friendly",
+  "casual",
+  "gentle",
+  "lively",
+  "knowledgeable",
+  "warm",
+]);
 
 function formatToMime(f: string | undefined): string | undefined {
   if (!f) return undefined;
@@ -74,12 +96,7 @@ export async function run(argv: string[]): Promise<never> {
   const [text, outputPath] = parsed.positional;
 
   const request = { text, voice: {} } as TypedRequestMap[typeof METHOD];
-  // §5.1: 当用户既给了 --voice-id 又要求 --speaker-similarity-required，
-  // 需要把路由策略设成 strict，避免跨 provider fallback 导致声音不一致。
-  let strictVoice = false;
   try {
-    const voice = requireString(parsed.flags, "voice-id");
-    if (voice !== undefined) request.voice.voice_id = voice;
     const lang = requireString(parsed.flags, "lang");
     if (lang !== undefined) request.voice.language = lang;
     const gender = requireString(parsed.flags, "gender");
@@ -90,9 +107,12 @@ export async function run(argv: string[]): Promise<never> {
       request.voice.gender = gender;
     }
     const style = requireString(parsed.flags, "style");
-    if (style !== undefined) request.voice.style = style;
-    strictVoice = flagBool(parsed.flags, "speaker-similarity-required");
-    if (strictVoice) request.voice.speaker_similarity_required = true;
+    if (style !== undefined) {
+      if (!STYLE.has(style)) throw new ArgError(`--style invalid: ${style}`);
+      request.voice.style = style;
+    }
+    const instructions = requireString(parsed.flags, "instructions");
+    if (instructions !== undefined) request.voice.instructions = instructions;
     const speed = flagFloat(parsed.flags, "speed");
     if (speed !== undefined) request.speed = speed;
     const mime = formatToMime(requireString(parsed.flags, "format"));
@@ -101,7 +121,6 @@ export async function run(argv: string[]): Promise<never> {
     if (mime) out.media_type = mime;
     if (sr !== undefined) out.sample_rate = sr;
     if (Object.keys(out).length > 0) request.output = out;
-    strictVoice = !!voice && strictVoice;
   } catch (err) {
     if (err instanceof ArgError) bailArgError(TOOL, err);
     throw err;
@@ -118,12 +137,6 @@ export async function run(argv: string[]): Promise<never> {
     call = await callAicc(runtime, {
       method: METHOD,
       ...commonPolicyOptions(parsed.common),
-      allowFallback: strictVoice
-        ? false
-        : commonPolicyOptions(parsed.common).allowFallback,
-      runtimeFailover: strictVoice
-        ? false
-        : commonPolicyOptions(parsed.common).runtimeFailover,
       model: parsed.common.model ?? METHOD,
       request,
     });

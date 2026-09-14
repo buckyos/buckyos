@@ -5,6 +5,38 @@
   "revision_seq": 1,
   "provider_profile_id": "gemini",
   "metadata_drivers": ["gemini"],
+  "models": [
+    {
+      "id": "gemini-3.1-flash-tts-preview",
+      "operations": { "audio.tts": "interactions.create" },
+      "canonical_fields": {
+        "/voice": {
+          "converter": "gemini_tts_voice_v1",
+          "fallback": { "action": "default", "value": {} }
+        }
+      }
+    },
+    {
+      "id": "gemini-2.5-flash-preview-tts",
+      "operations": { "audio.tts": "interactions.create" },
+      "canonical_fields": {
+        "/voice": {
+          "converter": "gemini_tts_voice_v1",
+          "fallback": { "action": "default", "value": {} }
+        }
+      }
+    },
+    {
+      "id": "gemini-2.5-pro-preview-tts",
+      "operations": { "audio.tts": "interactions.create" },
+      "canonical_fields": {
+        "/voice": {
+          "converter": "gemini_tts_voice_v1",
+          "fallback": { "action": "default", "value": {} }
+        }
+      }
+    }
+  ],
   "patterns": [
     {
       "match": "*",

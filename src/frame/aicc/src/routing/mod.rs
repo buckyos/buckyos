@@ -1,5 +1,6 @@
 pub(crate) mod policy;
 
+use crate::canonical::{resolve_canonical_field, CanonicalMatchQuality};
 use crate::error::{ModelRegistryError, RoutingError};
 use crate::model::{
     AdmissionRecord, CandidatePath, ExactModelName, FallbackStep, LogicalItemSource, ModelRegistry,
@@ -548,6 +549,7 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
             }
             if reasons.is_empty() {
                 allowed.push(PendingCandidate {
+                    canonical_quality: canonical_quality(request, &candidate.model),
                     candidate,
                     state: state.expect("allowed candidate has runtime state").clone(),
                 });
@@ -654,6 +656,7 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
 struct PendingCandidate {
     candidate: RegistryCandidate,
     state: CandidateRuntimeState,
+    canonical_quality: CanonicalMatchQuality,
 }
 
 #[derive(Clone, Debug)]
@@ -779,7 +782,28 @@ fn hard_filter_model(
             ));
         }
     }
+    for (pointer, requirement) in &request.requirements.canonical_fields {
+        let resolved = resolve_canonical_field(model.canonical_fields.get(pointer), requirement);
+        if !resolved.satisfies(requirement) {
+            reasons.push(filter_reason(
+                "canonical_field_unsatisfied",
+                format!("model cannot satisfy canonical field {pointer}"),
+            ));
+        }
+    }
     reasons
+}
+
+fn canonical_quality(request: &RoutingRequest, model: &RegisteredModel) -> CanonicalMatchQuality {
+    request
+        .requirements
+        .canonical_fields
+        .iter()
+        .map(|(pointer, requirement)| {
+            resolve_canonical_field(model.canonical_fields.get(pointer), requirement).quality
+        })
+        .min()
+        .unwrap_or(CanonicalMatchQuality::Exact)
 }
 
 fn hard_filter_runtime(
@@ -1056,7 +1080,11 @@ fn weighted_score(inputs: &ScoreInputs, weights: &AiccSchedulerProfileWeights) -
 }
 
 fn compare_ranked(left: &RankedCandidate, right: &RankedCandidate) -> Ordering {
-    compare_priority(&right.priority_path, &left.priority_path)
+    right
+        .pending
+        .canonical_quality
+        .cmp(&left.pending.canonical_quality)
+        .then_with(|| compare_priority(&right.priority_path, &left.priority_path))
         .then_with(|| {
             right
                 .pending
@@ -1327,6 +1355,7 @@ fn logical_item_source_name(source: LogicalItemSource) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canonical::{CanonicalFallback, CanonicalFieldConverter, CanonicalFieldMapping};
     use crate::catalog::{
         CatalogBuildOptions, CatalogDocuments, CatalogSnapshot, ModelDriverCatalog,
     };
@@ -1388,6 +1417,20 @@ mod tests {
     }
 
     fn inventory(instance: &str, id: &str, tool_call: bool) -> ProviderInventory {
+        let canonical_fields = match id {
+            "fast" => BTreeMap::from([(
+                "/voice".into(),
+                CanonicalFieldMapping::required(CanonicalFieldConverter::GeminiTtsVoiceV1),
+            )]),
+            "cheap" => BTreeMap::from([(
+                "/voice".into(),
+                CanonicalFieldMapping {
+                    converter: CanonicalFieldConverter::OpenaiTtsVoiceV2,
+                    fallback: CanonicalFallback::Default { value: json!({}) },
+                },
+            )]),
+            _ => BTreeMap::new(),
+        };
         ProviderInventory {
             provider_instance_name: instance.into(),
             provider_profile_id: "profile".into(),
@@ -1404,6 +1447,7 @@ mod tests {
                     ("tool_call".into(), json!(tool_call)),
                     ("max_context_tokens".into(), json!(128_000)),
                 ]),
+                canonical_fields,
                 attributes: BTreeMap::new(),
                 operations: BTreeMap::from([(
                     "chat.completions.create".into(),
@@ -1621,6 +1665,24 @@ mod tests {
         assert_eq!(decision.selected.exact_model, "cheap@cloud-a");
         assert_eq!(decision.fallback_candidates.len(), 2);
         assert_eq!(decision.fallback_candidates[1].exact_model, "local@local");
+    }
+
+    #[test]
+    fn exact_voice_mappings_are_ranked_by_the_selected_profile() {
+        let mut request = request("llm.family");
+        request.requirements.canonical_fields.insert(
+            "/voice".into(),
+            buckyos_api::CanonicalFieldRequirement::new(json!({"style": "warm"})),
+        );
+        let decision = route(
+            AiccSchedulerProfile::CostFirst,
+            &RoutingPolicyPatch::default(),
+            &request,
+            &runtime(),
+        )
+        .unwrap();
+        assert_eq!(decision.selected.exact_model, "cheap@cloud-a");
+        assert_eq!(decision.fallback_candidates[0].exact_model, "fast@cloud-b");
     }
 
     #[test]

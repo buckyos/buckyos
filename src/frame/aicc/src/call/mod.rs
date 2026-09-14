@@ -1,3 +1,7 @@
+use crate::canonical::{
+    resolve_canonical_field, resolve_missing_canonical_field, CanonicalFieldMapping,
+    CanonicalMatchQuality,
+};
 use crate::catalog::{CatalogSnapshot, Pricing, ResolvedProviderRule};
 use crate::error::{CallLoweringError, CatalogResolveError, ModelRegistryError};
 use crate::matching::MatchContext;
@@ -8,7 +12,10 @@ use crate::protocol::{
 };
 use crate::resource::ResourceAccessContext;
 use crate::routing::{RouteDecision, SelectedRoute};
-use buckyos_api::{AiccCall, AiccErrorCode, AiccExecutionMode, ApiType, Money, ResourceRef};
+use buckyos_api::{
+    AiccCall, AiccErrorCode, AiccExecutionMode, ApiType, CanonicalFieldRequirement, Money,
+    ResourceRef,
+};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -337,7 +344,7 @@ impl<'a> CallResolver<'a> {
             api_type,
             &method,
         )?;
-        let canonical_json = serialize_call(canonical_request)?;
+        let mut canonical_json = serialize_call(canonical_request)?;
         let option_keys = canonical_option_keys(canonical_request)?;
         let mut normalized = Value::Object(Map::new());
         if let Some(rule) = &provider_rule {
@@ -356,6 +363,17 @@ impl<'a> CallResolver<'a> {
             &mut normalized,
             &Value::Object(variant_options.into_iter().collect()),
         );
+        let model_driver_ids = vec![decision.selected.model_driver_id.clone()];
+        let model = self.catalog.resolve_model(
+            &decision.selected.origin_model_id,
+            Some(&model_driver_ids),
+            &identity_context,
+        )?;
+        let mut canonical_fields = model.semantics.canonical_fields.unwrap_or_default();
+        if let Some(rule) = &provider_rule {
+            canonical_fields.extend(rule.action.canonical_fields.clone());
+        }
+        apply_canonical_mappings(&mut canonical_json, &mut normalized, &canonical_fields)?;
         merge_user_options(&mut normalized, &canonical_json, option_keys);
         if let Some(rule) = &provider_rule {
             let defaults_context = request_match_context(api_name, &operation, &normalized);
@@ -835,6 +853,93 @@ fn merge_user_options(target: &mut Value, canonical: &Value, keys: &[&str]) {
     }
 }
 
+fn apply_canonical_mappings(
+    canonical: &mut Value,
+    normalized: &mut Value,
+    mappings: &BTreeMap<String, CanonicalFieldMapping>,
+) -> Result<(), CallLoweringError> {
+    for (pointer, mapping) in mappings {
+        let (resolved, strict) = match canonical.pointer(pointer).cloned() {
+            Some(value) => {
+                let requirement = inferred_canonical_requirement(value);
+                let strict = requirement.strict;
+                (resolve_canonical_field(Some(mapping), &requirement), strict)
+            }
+            None => (resolve_missing_canonical_field(mapping), false),
+        };
+        if resolved.quality == CanonicalMatchQuality::Unsupported
+            || (strict && resolved.quality < CanonicalMatchQuality::Fuzzy)
+        {
+            return Err(CallLoweringError::InvalidCanonicalRequest(format!(
+                "canonical field `{pointer}` cannot be mapped for the selected model"
+            )));
+        }
+        if resolved.omit {
+            if canonical.pointer(pointer).is_some() {
+                remove_pointer(canonical, pointer)?;
+            }
+            continue;
+        }
+        let Some(resolution) = resolved.resolution else {
+            continue;
+        };
+        set_pointer(canonical, pointer, resolution.resolved)?;
+        merge_overwrite(
+            normalized,
+            &Value::Object(resolution.provider_options.into_iter().collect()),
+        );
+    }
+    Ok(())
+}
+
+fn set_pointer(
+    document: &mut Value,
+    pointer: &str,
+    replacement: Value,
+) -> Result<(), CallLoweringError> {
+    if document.pointer(pointer).is_some() {
+        return replace_pointer(document, pointer, replacement);
+    }
+    let Some((parent_pointer, token)) = pointer.rsplit_once('/') else {
+        return Err(CallLoweringError::InvalidRule(format!(
+            "canonical field pointer `{pointer}` is invalid"
+        )));
+    };
+    let token = token.replace("~1", "/").replace("~0", "~");
+    let parent = document.pointer_mut(parent_pointer).ok_or_else(|| {
+        CallLoweringError::InvalidRule(format!(
+            "canonical field pointer `{pointer}` has a missing parent"
+        ))
+    })?;
+    let parent = parent.as_object_mut().ok_or_else(|| {
+        CallLoweringError::InvalidRule(format!(
+            "canonical field pointer `{pointer}` does not target an object member"
+        ))
+    })?;
+    parent.insert(token, replacement);
+    Ok(())
+}
+
+fn inferred_canonical_requirement(value: Value) -> CanonicalFieldRequirement {
+    CanonicalFieldRequirement::new(value)
+}
+
+fn replace_pointer(
+    document: &mut Value,
+    pointer: &str,
+    replacement: Value,
+) -> Result<(), CallLoweringError> {
+    if pointer.is_empty() {
+        *document = replacement;
+        return Ok(());
+    }
+    let target = document.pointer_mut(pointer).ok_or_else(|| {
+        CallLoweringError::InvalidRule(format!("canonical field pointer `{pointer}` is invalid"))
+    })?;
+    *target = replacement;
+    Ok(())
+}
+
 fn merge_overwrite(target: &mut Value, overlay: &Value) {
     match (target, overlay) {
         (Value::Object(target), Value::Object(overlay)) => {
@@ -1107,7 +1212,16 @@ mod tests {
             "schema_revision": 1,
             "model_driver_id": "openai",
             "revision_seq": 7,
-            "models": [{"id": "gpt-5.2", "api_types": ["llm", "embedding.text"]}],
+            "models": [{
+                "id": "gpt-5.2",
+                "api_types": ["llm", "embedding.text"],
+                "canonical_fields": {
+                    "/temperature": {
+                        "converter": "openai_tts_voice_v1",
+                        "fallback": {"action": "reject"}
+                    }
+                }
+            }],
             "defaults": {},
             "variants": [{
                 "name": "reasoning-high",
@@ -1137,6 +1251,12 @@ mod tests {
                     "reasoning": {"effort": "minimal"},
                     "service_tier": "auto",
                     "stream": false
+                },
+                "canonical_fields": {
+                    "/temperature": {
+                        "converter": "passthrough",
+                        "fallback": {"action": "omit"}
+                    }
                 },
                 "request_rules": [
                     {"defaults": {"temperature": 0.2, "top_p": 0.8, "max_output_tokens": 100}},
@@ -1411,6 +1531,29 @@ mod tests {
         assert_eq!(golden["execution_mode"], "immediate");
         assert_eq!(golden["credential_kind"], "bearer");
         assert!(!golden.to_string().contains("credential-secret"));
+    }
+
+    #[test]
+    fn provider_canonical_mapping_overrides_model_default_during_lowering() {
+        let catalog = catalog();
+        let codecs = codecs();
+        let resolver = CallResolver::new(&catalog, &codecs);
+        let mut call = call();
+        let AiccCall::ChatCompletionsCreate(request) = &mut call else {
+            unreachable!()
+        };
+        request.temperature = Some(0.5);
+        let lowered = resolver
+            .lower(
+                &decision(call_exact_model(&call).unwrap()),
+                &call,
+                target("credential-secret"),
+            )
+            .unwrap();
+        assert_eq!(
+            lowered.input.resolved_parameters.get("provider_model_id"),
+            Some(&json!("gpt-5.2"))
+        );
     }
 
     #[test]

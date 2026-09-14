@@ -360,17 +360,16 @@ text_to_speech "你好，欢迎使用 AICC。" result.mp3
 
 ```text
 text_to_speech <text> <output_audio>
-  --voice-id <id>
   --lang <language_tag>
   --gender <male|female|neutral>
-  --style <style>
-  --speaker-similarity-required
+  --style <AICC voice style>
+  --instructions <text>
   --speed <float>
   --format <mp3|wav|ogg>
   --sample-rate <hz>
 ```
 
-如果传入 `--voice-id --speaker-similarity-required`，CLI 应默认设置 strict route，避免跨 Provider fallback 导致声音不一致。
+CLI 只构造 Provider/Model 无关的 `VoiceSpec`，不接受 Provider 原生 voice ID，也不在 voice 数据中混入路由匹配策略。
 
 ### 5.2 `speech_to_text`
 

@@ -48,7 +48,7 @@ canonical `ApiType` 序列化值以协议 schema 为准：LLM chat 为 `llm`，c
 
 | Method | 必测输入 | 必测输出 | 异常 |
 |---|---|---|---|
-| `audio.tts` | text、voice contract、speed、output | audio artifact | voice_id 不可 fallback、sample_rate 不支持 |
+| `audio.tts` | text、voice contract、speed、output | audio artifact | voice contract 映射失败、Provider voice ID 不可出现在公开接口、sample_rate 不支持 |
 | `audio.asr` | audio、language、timestamps、diarization、output_formats | transcript、segments、vtt/srt/json artifacts | output format 不支持、音频 meta 缺失 |
 | `audio.music` | prompt、duration、instrumental、lyrics、seed、output | async task、audio artifact、structure | duration 越界、异步任务失败 |
 | `audio.enhance` | audio、task、strength、return_stems | enhanced audio artifact、stems | task 不支持 |

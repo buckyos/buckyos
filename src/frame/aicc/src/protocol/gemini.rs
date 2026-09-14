@@ -814,33 +814,16 @@ fn encode_tts(
     body: &mut Map<String, Value>,
 ) -> ProtocolResultValue<()> {
     body.insert("input".to_string(), Value::String(request.text.clone()));
-    if request.voice.gender.is_some()
-        || request.voice.style.is_some()
-        || request.voice.speaker_similarity_required
-        || request.speed.is_some()
-    {
+    if request.speed.is_some() {
         return Err(ProtocolError::new(
             ProtocolErrorKind::UnsupportedOperation,
-            "Gemini Interactions speech_config does not define gender, style, similarity, or speed",
+            "Gemini Interactions speech_config does not define speed",
         ));
     }
     body.insert(
         "response_format".to_string(),
         Value::Object(audio_response_format(request.output.as_ref())?),
     );
-    let mut speech = Map::new();
-    if let Some(voice) = &request.voice.voice_id {
-        speech.insert("voice".to_string(), json!(voice));
-    }
-    if let Some(language) = &request.voice.language {
-        speech.insert("language".to_string(), json!(language));
-    }
-    if !speech.is_empty() {
-        body.insert(
-            "generation_config".to_string(),
-            json!({"speech_config": [speech]}),
-        );
-    }
     if request.execution_mode == AiccExecutionMode::Stream {
         body.insert("stream".to_string(), Value::Bool(true));
     }
@@ -2776,10 +2759,13 @@ mod tests {
         request.execution_mode = AiccExecutionMode::Stream;
         let input = CodecInput {
             canonical_request: AiccCall::AudioTextToSpeech(request),
-            resolved_parameters: BTreeMap::from([(
-                "provider_model_id".to_string(),
-                json!("gemini-tts"),
-            )]),
+            resolved_parameters: BTreeMap::from([
+                ("provider_model_id".to_string(), json!("gemini-tts")),
+                (
+                    "generation_config".to_string(),
+                    json!({"speech_config": [{"voice": "Sulafat", "language": "zh-CN"}]}),
+                ),
+            ]),
         };
         let wire = registry
             .encode(
@@ -2794,6 +2780,11 @@ mod tests {
             panic!("expected JSON body")
         };
         assert_eq!(body["stream"], true);
+        assert_eq!(
+            body["generation_config"]["speech_config"][0]["voice"],
+            "Sulafat"
+        );
+        assert_eq!(body["input"], "hello");
         assert!(body.get("execution_mode").is_none());
     }
 

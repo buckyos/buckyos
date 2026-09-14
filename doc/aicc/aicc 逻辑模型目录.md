@@ -43,7 +43,7 @@ API Type 决定 request/response schema。**Provider 不能自定义 api_type**,
 
 | api_type | 输入 | 输出 | 说明 |
 |---|---|---|---|
-| `audio.tts` | `text + voice_id` | `audio` | 文转语音 |
+| `audio.tts` | `text + voice contract` | `audio` | Provider/模型无关的文转语音 |
 | `audio.asr` | `audio` | `text + 可选 timestamps` | 语音识别(转录/字幕) |
 | `audio.music` | `prompt + duration` | `audio` | 音乐生成 |
 | `audio.enhance` | `audio + 任务参数` | `audio` | 降噪、人声分离、混响去除 |

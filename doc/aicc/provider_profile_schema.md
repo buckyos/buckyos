@@ -277,6 +277,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 | `exclude` | `false` | 从当前 Provider inventory 排除模型 | 从 Model Driver metadata 移入 |
 | `operations` | `{}` | method/api_type 到 adapter operation 的映射 | 新增 |
 | `provider_options` | `{}` | 调用该模型时附加的 Provider 参数 | 从 Model Driver metadata 移入 |
+| `canonical_fields` | `{}` | 以 Rust converter 和失败策略覆盖 Model Driver 的 canonical 字段映射 | 新增 |
 | `request_rules` | `[]` | 请求默认值、条件改写和不兼容参数删除 | 新增 |
 | `pricing` | 无 | Provider 渠道价格及条件价格规则 | 从 Model Driver metadata 移入并扩展 |
 | `remove_api_types` | `[]` | 删除当前 Provider 无法提供的 API type | 新增 |
@@ -355,7 +356,41 @@ method exact key > api_type key > adapter default operation
 
 operation 是现有 adapter 已实现的符号名称，不是任意 URL。adapter 自己知道 operation 使用的 endpoint、请求结构和异步流程。
 
-### 5.3 Request rules
+### 5.3 Canonical field mapping
+
+`canonical_fields` 的 key 是 typed request 中的非空 JSON Pointer，value 是映射策略。
+`converter` 是 AICC 代码中固定实现的转换函数名；`fallback` 统一控制 canonical 字段
+不存在，或字段存在但 converter 无法转换时的行为：
+
+```json
+{
+  "canonical_fields": {
+    "/voice": {
+      "converter": "gemini_tts_voice_v1",
+      "fallback": { "action": "default", "value": {} }
+    }
+  }
+}
+```
+
+`fallback.action` 可为 `reject`、`omit` 或 `default`；`default`
+必须提供 canonical `value`，catalog 加载时会用同一个 converter 验证该值。converter
+是纯 Rust 函数，只负责值域转换及 exact/fuzzy 质量，不内置缺失、默认或失败策略。
+metadata 不携带映射表、脚本或任意表达式。函数名是受 serde 校验的协议枚举，未知名称、
+无法转换的默认值都会使 catalog 加载失败。`strict=true` 的显式要求失败时总是
+reject，不执行 fallback；是否允许 fuzzy 由同一个 requirement 的 `allow_fuzzy`
+决定。`strict` 默认值为 `false`。Typed TTS 当前自动构造非严格 requirement；
+`VoiceSpec` 本身不携带匹配策略。
+
+converter 按厂商对字段语义的演进命名，不包含首次采用该规则的模型名；模型规则只负责选择
+对应版本。例如 OpenAI TTS voice v1 表示预置 voice ID，v2 在此基础上增加 instructions
+语义。当前 converter 名称为：`passthrough`、`prompt`、`openai_tts_voice_v1`、
+`openai_tts_voice_v2`、`gemini_tts_voice_v1`、
+`minimax_tts_voice_v1`。Provider 对同一 pointer 的整个策略对象完整覆盖 Model Driver
+默认策略。转换及策略结果的匹配质量仍按 exact → fuzzy → default → prompt 排序；严格
+要求不能落到 default、omit 或 prompt。完成 canonical 映射后才执行 `request_rules`。
+
+### 5.4 Request rules
 
 `request_rules` 是有序列表。每条规则只有四个字段：
 
@@ -403,7 +438,7 @@ operation 是现有 adapter 已实现的符号名称，不是任意 URL。adapte
 
 条件基于 AICC 已归一化、准备交给 adapter 的 options，而不是直接查询任意原始 JSON。规则执行顺序固定为：Provider defaults、用户显式参数、条件 `set/remove`；因此用户参数通常覆盖默认值，但不能恢复 Provider 明确禁止的字段。
 
-### 5.4 Pricing
+### 5.5 Pricing
 
 `pricing` 保留现有 token 价格字段，并补充非 token 计价：
 
@@ -446,7 +481,7 @@ operation 是现有 adapter 已实现的符号名称，不是任意 URL。adapte
 
 image 单价自动乘以归一化请求中的生成数量；audio/video second 单价自动乘以归一化时长。
 
-### 5.5 能力收窄
+### 5.6 能力收窄
 
 `remove_api_types` / `remove_features` 只能从 Model Driver 结果中删除能力。最终可执行能力固定取交集：
 

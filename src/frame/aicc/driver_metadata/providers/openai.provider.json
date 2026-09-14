@@ -7,7 +7,18 @@
   "metadata_drivers": ["openai"],
   "origin_provider_aliases": {},
   "origin_mappings": [],
-  "models": [],
+  "models": [
+    {
+      "id": "gpt-4o-mini-tts",
+      "operations": { "audio.tts": "audio.speech" },
+      "canonical_fields": {
+        "/voice": {
+          "converter": "openai_tts_voice_v2",
+          "fallback": { "action": "default", "value": {} }
+        }
+      }
+    }
+  ],
   "patterns": [
     {
       "match": "gpt-5*",
@@ -18,6 +29,16 @@
         "image.txt2img": "responses.create",
         "image.img2img": "responses.create",
         "agent.computer_use": "responses.create"
+      }
+    },
+    {
+      "match": "tts-*",
+      "operations": { "audio.tts": "audio.speech" },
+      "canonical_fields": {
+        "/voice": {
+          "converter": "openai_tts_voice_v1",
+          "fallback": { "action": "default", "value": {} }
+        }
       }
     },
     {

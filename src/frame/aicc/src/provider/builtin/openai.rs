@@ -345,20 +345,25 @@ mod tests {
             rules.patterns[0].operations["image.img2img"],
             OPENAI_RESPONSES_OPERATION_ID
         );
+        let general = rules
+            .patterns
+            .iter()
+            .find(|rule| rule.operations.contains_key("video.txt2video"))
+            .unwrap();
         assert_eq!(
-            rules.patterns[1].operations["video.txt2video"],
+            general.operations["video.txt2video"],
             OPENAI_VIDEOS_OPERATION_ID
         );
         assert_eq!(
-            rules.patterns[1].operations["embedding.text"],
+            general.operations["embedding.text"],
             OPENAI_EMBEDDINGS_OPERATION_ID
         );
         assert_eq!(
-            rules.patterns[1].operations["audio.tts"],
+            general.operations["audio.tts"],
             OPENAI_AUDIO_SPEECH_OPERATION_ID
         );
         assert_eq!(
-            rules.patterns[1].operations["audio.asr"],
+            general.operations["audio.asr"],
             OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID
         );
         assert_eq!(models.model_driver_id, "openai");
