@@ -18,7 +18,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use buckyos_api::{AiContent, AiMessage, AiResponse, AiRole, AiToolResultContent, AiUsage};
+use buckyos_api::{AiContent, AiCost, AiMessage, AiResponse, AiRole, AiToolResultContent, AiUsage};
 use serde_json::Value;
 
 use crate::behavior_loop::{LLMBehaviorResult, StepMeta, StepRecord};
@@ -1230,18 +1230,48 @@ fn classify(err: LLMComputeError) -> ErrorClass {
 }
 
 fn merge_usage(left: &AiUsage, right: &AiUsage) -> AiUsage {
-    fn add(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    fn add_u64(a: Option<u64>, b: Option<u64>) -> Option<u64> {
         match (a, b) {
             (Some(x), Some(y)) => Some(x.saturating_add(y)),
             (Some(x), None) | (None, Some(x)) => Some(x),
             (None, None) => None,
         }
     }
+    fn add_f64(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+        match (a, b) {
+            (Some(x), Some(y)) => Some(x + y),
+            (Some(x), None) | (None, Some(x)) => Some(x),
+            (None, None) => None,
+        }
+    }
+    fn add_cost(left: &Option<AiCost>, right: &Option<AiCost>) -> Option<AiCost> {
+        match (left, right) {
+            (Some(left), Some(right)) if left.currency == right.currency => Some(AiCost {
+                amount: left.amount + right.amount,
+                currency: left.currency.clone(),
+            }),
+            (Some(cost), None) | (None, Some(cost)) => Some(cost.clone()),
+            _ => None,
+        }
+    }
     AiUsage {
-        input_tokens: add(left.input_tokens, right.input_tokens),
-        output_tokens: add(left.output_tokens, right.output_tokens),
-        total_tokens: add(left.total_tokens, right.total_tokens),
-        request_units: add(left.request_units, right.request_units),
+        input_tokens: add_u64(left.input_tokens, right.input_tokens),
+        output_tokens: add_u64(left.output_tokens, right.output_tokens),
+        total_tokens: add_u64(left.total_tokens, right.total_tokens),
+        cache_read_input_tokens: add_u64(
+            left.cache_read_input_tokens,
+            right.cache_read_input_tokens,
+        ),
+        cache_write_input_tokens: add_u64(
+            left.cache_write_input_tokens,
+            right.cache_write_input_tokens,
+        ),
+        reasoning_tokens: add_u64(left.reasoning_tokens, right.reasoning_tokens),
+        image_units: add_u64(left.image_units, right.image_units),
+        audio_seconds: add_f64(left.audio_seconds, right.audio_seconds),
+        video_seconds: add_f64(left.video_seconds, right.video_seconds),
+        request_units: add_u64(left.request_units, right.request_units),
+        cost: add_cost(&left.cost, &right.cost),
     }
 }
 
