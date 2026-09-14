@@ -130,7 +130,7 @@ mod tests {
             .iter()
             .any(|file| file.kind == CatalogKind::ModelDriver));
         let catalog =
-            CatalogSnapshot::from_current_files(1, files, &CatalogBuildOptions::default()).unwrap();
+            CatalogSnapshot::from_current_files(2, files, &CatalogBuildOptions::default()).unwrap();
         assert!(catalog.known_provider(FAL_PROVIDER_PROFILE_ID).is_some());
         assert!(catalog.provider_rules(FAL_PROVIDER_PROFILE_ID).is_some());
         assert_eq!(
@@ -185,7 +185,7 @@ mod tests {
     fn configured_rules_and_adapter_build_complete_inventory_identity() {
         let files = fal_catalog_files();
         let catalog =
-            CatalogSnapshot::from_current_files(1, files, &CatalogBuildOptions::default()).unwrap();
+            CatalogSnapshot::from_current_files(2, files, &CatalogBuildOptions::default()).unwrap();
         let (descriptor, registration) = fal_queue_adapter();
         let mut codecs = CodecRegistry::default();
         codecs.register_codecs(descriptor, registration).unwrap();

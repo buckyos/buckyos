@@ -314,7 +314,7 @@ mod tests {
             builtin,
             ..MetadataSources::default()
         }
-        .build_snapshot(1, &CatalogBuildOptions::default())
+        .build_snapshot(2, &CatalogBuildOptions::default())
         .unwrap()
     }
 

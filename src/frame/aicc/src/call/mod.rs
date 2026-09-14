@@ -1358,7 +1358,7 @@ mod tests {
                 contents: std::fs::read(path).unwrap(),
             }));
         }
-        CatalogSnapshot::from_current_files(1, files, &CatalogBuildOptions::default()).unwrap()
+        CatalogSnapshot::from_current_files(2, files, &CatalogBuildOptions::default()).unwrap()
     }
 
     fn built_in_rules() -> Vec<(ResolvedProviderConfiguration, ProviderRulesCatalog)> {
@@ -1867,7 +1867,7 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         assert_eq!(golden, documented);
-        assert_eq!(golden.len(), 71);
+        assert_eq!(golden.len(), 77);
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(
             golden.contains(&"openai|openai-responses|agent.computer_use|responses.create".into())

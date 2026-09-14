@@ -856,7 +856,7 @@ mod tests {
             builtin,
             ..MetadataSources::default()
         }
-        .build_snapshot(1, &CatalogBuildOptions::default())
+        .build_snapshot(2, &CatalogBuildOptions::default())
         .unwrap();
 
         assert_eq!(
@@ -1107,7 +1107,7 @@ mod tests {
         }))
         .unwrap();
         let catalog = CatalogSnapshot::build(
-            1,
+            2,
             CatalogDocuments {
                 model_drivers: vec![model_driver],
                 provider_rules: vec![sn_provider_rules(1)],

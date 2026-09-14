@@ -133,7 +133,7 @@ mod tests {
             builtin,
             ..MetadataSources::default()
         }
-        .build_snapshot(1, &CatalogBuildOptions::default())
+        .build_snapshot(2, &CatalogBuildOptions::default())
         .unwrap();
         assert!(catalog.known_provider(CLAUDE_PROVIDER_PROFILE_ID).is_some());
         assert!(catalog.provider_rules(CLAUDE_PROVIDER_PROFILE_ID).is_some());

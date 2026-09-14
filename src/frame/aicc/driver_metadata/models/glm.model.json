@@ -3,9 +3,169 @@
   "schema_version": 1,
   "schema_revision": 1,
   "model_driver_id": "glm",
-  "revision_seq": 1,
+  "revision_seq": 2,
   "required_features": [],
   "models": [
+    {
+      "id": "glm-5v-turbo",
+      "parameter_scale": "turbo",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
+      "capabilities": { "max_context_tokens": 204800, "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true, "vision": true }
+    },
+    {
+      "id": "glm-ocr",
+      "api_types": ["llm", "vision.ocr"],
+      "logical_mounts": ["llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}"],
+      "capabilities": { "streaming": true, "vision": true }
+    },
+    {
+      "id": "glm-4.1v-thinking-flashx",
+      "parameter_scale": "flashx",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
+      "capabilities": { "max_context_tokens": 65536, "max_output_tokens": 16384, "streaming": true, "reasoning": true, "vision": true }
+    },
+    {
+      "id": "glm-4.1v-thinking-flash",
+      "parameter_scale": "flash",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
+      "capabilities": { "max_context_tokens": 65536, "max_output_tokens": 16384, "streaming": true, "reasoning": true, "vision": true }
+    },
+    {
+      "id": "glm-4v-flash",
+      "parameter_scale": "flash",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
+      "capabilities": { "max_context_tokens": 16384, "max_output_tokens": 1024, "streaming": true, "vision": true }
+    },
+    {
+      "id": "glm-4-long",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 1048576, "streaming": true, "tool_call": true }
+    },
+    {
+      "id": "glm-4-flashx-250414",
+      "parameter_scale": "flashx",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 131072, "streaming": true, "tool_call": true }
+    },
+    {
+      "id": "glm-4-flash-250414",
+      "parameter_scale": "flash",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 131072, "streaming": true, "tool_call": true }
+    },
+    {
+      "id": "charglm-4",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "streaming": true }
+    },
+    {
+      "id": "emohaa",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "streaming": true }
+    },
+    {
+      "id": "codegeex-4",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "streaming": true }
+    },
+    {
+      "id": "glm-image",
+      "api_types": ["image.txt2img"],
+      "logical_mounts": ["image.txt2img", "image.txt2img.glm", "image.txt2img.{model}"],
+      "capabilities": { "image_generation": true }
+    },
+    {
+      "id": "cogview-4-250304",
+      "api_types": ["image.txt2img"],
+      "logical_mounts": ["image.txt2img", "image.txt2img.glm", "image.txt2img.{model}"],
+      "capabilities": { "image_generation": true }
+    },
+    {
+      "id": "cogview-4",
+      "api_types": ["image.txt2img"],
+      "logical_mounts": ["image.txt2img", "image.txt2img.glm", "image.txt2img.{model}"],
+      "capabilities": { "image_generation": true }
+    },
+    {
+      "id": "cogview-3-flash",
+      "parameter_scale": "flash",
+      "api_types": ["image.txt2img"],
+      "logical_mounts": ["image.txt2img", "image.txt2img.glm", "image.txt2img.{model}"],
+      "capabilities": { "image_generation": true }
+    },
+    {
+      "id": "glm-asr-2512",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr", "audio.asr.glm", "audio.asr.{model}"]
+    },
+    {
+      "id": "glm-tts",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts", "audio.tts.glm", "audio.tts.{model}"]
+    },
+    {
+      "id": "embedding-3",
+      "api_types": ["embedding.text"],
+      "logical_mounts": ["embedding.text", "embedding.text.glm", "embedding.text.{model}"],
+      "capabilities": { "max_context_tokens": 8192 }
+    },
+    {
+      "id": "embedding-2",
+      "api_types": ["embedding.text"],
+      "logical_mounts": ["embedding.text", "embedding.text.glm", "embedding.text.{model}"],
+      "capabilities": { "max_context_tokens": 8192 }
+    },
+    {
+      "id": "cogvideox-3",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": ["video.txt2video.glm", "video.txt2video.{model}", "video.img2video.glm", "video.img2video.{model}"]
+    },
+    {
+      "id": "cogvideox-flash",
+      "parameter_scale": "flash",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": ["video.txt2video.glm", "video.txt2video.{model}", "video.img2video.glm", "video.img2video.{model}"]
+    },
+    {
+      "id": "viduq1-text",
+      "api_types": ["video.txt2video"],
+      "logical_mounts": ["video.txt2video.glm", "video.txt2video.{model}"]
+    },
+    {
+      "id": "viduq1-image",
+      "api_types": ["video.img2video"],
+      "logical_mounts": ["video.img2video.glm", "video.img2video.{model}"]
+    },
+    {
+      "id": "viduq1-start-end",
+      "api_types": ["video.img2video"],
+      "logical_mounts": ["video.img2video.glm", "video.img2video.{model}"]
+    },
+    {
+      "id": "vidu2-image",
+      "api_types": ["video.img2video"],
+      "logical_mounts": ["video.img2video.glm", "video.img2video.{model}"]
+    },
+    {
+      "id": "vidu2-start-end",
+      "api_types": ["video.img2video"],
+      "logical_mounts": ["video.img2video.glm", "video.img2video.{model}"]
+    },
+    {
+      "id": "vidu2-reference",
+      "api_types": ["video.img2video"],
+      "logical_mounts": ["video.img2video.glm", "video.img2video.{model}"]
+    },
     {
       "id": "glm-5.1",
       "api_types": ["llm"],
@@ -117,17 +277,10 @@
       "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "reasoning": true }
     },
     {
-      "id": "glm-4.5-flash",
-      "parameter_scale": "flash",
-      "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "reasoning": true }
-    },
-    {
       "id": "glm-4.5v",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
-      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 16384, "streaming": true, "tool_call": true, "reasoning": true, "vision": true }
+      "capabilities": { "max_context_tokens": 65536, "max_output_tokens": 16384, "streaming": true, "tool_call": true, "reasoning": true, "vision": true }
     },
     {
       "id": "glm-4-32b-0414-128k",

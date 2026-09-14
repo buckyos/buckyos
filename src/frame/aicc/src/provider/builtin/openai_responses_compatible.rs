@@ -496,7 +496,7 @@ mod tests {
             builtin,
             ..MetadataSources::default()
         }
-        .build_snapshot(1, &CatalogBuildOptions::default())
+        .build_snapshot(2, &CatalogBuildOptions::default())
         .unwrap();
         for profile_id in [DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID] {
             assert!(catalog.known_provider(profile_id).is_some());

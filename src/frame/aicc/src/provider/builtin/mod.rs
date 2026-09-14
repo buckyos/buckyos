@@ -260,7 +260,7 @@ mod wp08d_tests {
     #[test]
     fn wp08d_profiles_rules_dialects_and_inventory_form_complete_identity_chains() {
         let catalog = CatalogSnapshot::build(
-            1,
+            2,
             CatalogDocuments {
                 model_drivers: vec![
                     driver("openai", "router-model"),
@@ -368,7 +368,7 @@ mod wp08d_tests {
             builtin,
             ..MetadataSources::default()
         }
-        .build_snapshot(1, &CatalogBuildOptions::default())
+        .build_snapshot(2, &CatalogBuildOptions::default())
         .unwrap();
 
         for provider in ["openrouter", "kimi", "glm"] {

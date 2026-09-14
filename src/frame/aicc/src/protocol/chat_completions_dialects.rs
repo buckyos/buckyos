@@ -268,7 +268,21 @@ pub(crate) fn kimi_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
 }
 
 pub(crate) fn glm_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    derived_adapter(GLM_CHAT_ADAPTER_ID, Arc::new(GlmDialect))
+    let (mut descriptor, mut registration) =
+        derived_adapter(GLM_CHAT_ADAPTER_ID, Arc::new(GlmDialect));
+    let (operations, media_registration) = super::glm_media::glm_media_registration();
+    for operation in operations {
+        descriptor
+            .operations
+            .insert(operation.operation_id.clone(), operation);
+    }
+    registration
+        .operation_codecs
+        .extend(media_registration.operation_codecs);
+    registration
+        .native_task_codecs
+        .extend(media_registration.native_task_codecs);
+    (descriptor, registration)
 }
 
 fn derived_adapter(

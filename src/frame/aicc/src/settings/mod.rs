@@ -950,7 +950,7 @@ mod tests {
             builtin: files,
             ..Default::default()
         }
-        .build_snapshot(1, &CatalogBuildOptions::default())
+        .build_snapshot(2, &CatalogBuildOptions::default())
         .unwrap();
         assert!(catalog.model_driver("openai").is_some());
         assert!(catalog.provider_rules("openai").is_some());
