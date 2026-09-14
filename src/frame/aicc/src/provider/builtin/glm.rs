@@ -1,6 +1,7 @@
 use super::super::{
-    CatalogOnlyDiscovery, DiscoveredModel, ModelAvailability, ProviderDiscoverySnapshot,
-    ProviderError, ProviderHealthState, ProviderResult,
+    validate_discovery, CatalogOnlyDiscovery, DiscoveredModel, DiscoveryContext, ModelAvailability,
+    ProviderDiscovery, ProviderDiscoverySnapshot, ProviderError, ProviderHealthState,
+    ProviderResult,
 };
 #[cfg(test)]
 use super::super::{
@@ -12,10 +13,13 @@ use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalo
 #[cfg(test)]
 use crate::protocol::CredentialKind;
 use crate::protocol::OPENAI_CHAT_COMPLETIONS_OPERATION_ID;
+use async_trait::async_trait;
 use buckyos_api::ApiType;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 pub(crate) const GLM_PROVIDER_PROFILE_ID: &str = "glm";
+const GLM_CHAT_ADAPTER_ID: &str = "glm-chat";
 
 #[cfg(test)]
 pub(crate) fn glm_profile() -> ProviderProfile {
@@ -29,11 +33,7 @@ pub(crate) fn glm_jwt_profile() -> ProviderProfile {
 
 #[cfg(test)]
 fn glm_profile_with_credential(kind: CredentialKind) -> ProviderProfile {
-    super::builtin_profile_with_credential(
-        GLM_PROVIDER_PROFILE_ID,
-        DiscoveryMode::CatalogOnly,
-        kind,
-    )
+    super::builtin_profile_with_credential(GLM_PROVIDER_PROFILE_ID, DiscoveryMode::MachineApi, kind)
 }
 
 #[cfg(test)]
@@ -112,6 +112,44 @@ pub(crate) fn glm_catalog_only_inventory(
     }))
 }
 
+pub(crate) fn glm_models_discovery(
+    transport: crate::protocol::HttpTransport,
+) -> GlmModelsDiscovery {
+    GlmModelsDiscovery {
+        inner: Arc::new(super::openai_compatible_models_discovery(
+            GLM_PROVIDER_PROFILE_ID,
+            GLM_CHAT_ADAPTER_ID,
+            transport,
+        )),
+    }
+}
+
+pub(crate) struct GlmModelsDiscovery {
+    inner: Arc<dyn ProviderDiscovery>,
+}
+
+#[async_trait]
+impl ProviderDiscovery for GlmModelsDiscovery {
+    async fn discover(
+        &self,
+        context: &DiscoveryContext<'_>,
+    ) -> ProviderResult<ProviderDiscoverySnapshot> {
+        let snapshot = self.inner.discover(context).await?;
+        normalize_glm_chat_discovery(snapshot)
+    }
+}
+
+fn normalize_glm_chat_discovery(
+    mut snapshot: ProviderDiscoverySnapshot,
+) -> ProviderResult<ProviderDiscoverySnapshot> {
+    for model in &mut snapshot.models {
+        model.api_types = None;
+        model.remote_methods = None;
+    }
+    validate_discovery(&snapshot)?;
+    Ok(snapshot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +186,8 @@ mod tests {
             glm_known_provider().protocol_adapter_id,
             GLM_CHAT_ADAPTER_ID
         );
+        assert_eq!(glm_known_provider().discovery_behavior_id, "glm-models");
+        assert_eq!(glm_profile().discovery_mode, DiscoveryMode::MachineApi);
         assert_eq!(
             glm_provider_rules(5).patterns[0].operations["llm"],
             OPENAI_CHAT_COMPLETIONS_OPERATION_ID
@@ -187,5 +227,28 @@ mod tests {
         assert_eq!(snapshot.models[0].provider_model_id, "glm-model");
         assert!(glm_catalog_only_inventory(Vec::<String>::new()).is_err());
         assert!(glm_catalog_only_inventory(vec!["same".to_owned(), "same".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn models_discovery_defers_capabilities_to_metadata() {
+        let snapshot = normalize_glm_chat_discovery(ProviderDiscoverySnapshot {
+            revision: Some("models-etag".to_owned()),
+            discovered_at_ms: 1,
+            health: ProviderHealthState::Healthy,
+            models: vec![DiscoveredModel {
+                provider_model_id: "glm-5.3".to_owned(),
+                origin_model_id: None,
+                api_types: Some(vec![ApiType::Llm]),
+                supported_features: None,
+                remote_methods: Some(BTreeSet::from(["responses.create".to_owned()])),
+                availability: ModelAvailability::Available,
+                deprecated: false,
+                pricing: None,
+            }],
+        })
+        .unwrap();
+
+        assert_eq!(snapshot.models[0].api_types, None);
+        assert_eq!(snapshot.models[0].remote_methods, None);
     }
 }
