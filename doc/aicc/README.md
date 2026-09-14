@@ -2,6 +2,15 @@
 
 本目录是 AICC 模块文档的统一归档位置。
 
+## Beta 2.2 冻结基线
+
+以下四份文档是当前实现的冻结设计入口。后续开发涉及公共协议、内部边界、模型目录或 Provider 接入时，应先以它们为准；更长的专题文档用于字段细节、背景和验收补充。
+
+- `frozen_trait_protocol.md`：公共 kRPC、内部 trait、Protocol Adapter、错误与任务语义。
+- `frozen_model_driver_and_logical_model_fs.md`：Model Driver、逻辑模型虚拟 FS、来源优先级、持久化与 overlay。
+- `frozen_provider_implementation.md`：Provider 分解、装配、discovery、inventory、凭据与扩展流程。
+- `frozen_user_api.md`：面向应用、Agent、UI 和运维工具的调用接口与使用约束。
+
 ## 根目录文档
 
 根目录文档用于描述 AICC 的需求、设计目标、协议契约、路由规则、Provider 方案、schema 和验收目标。后续开发需要判断设计约束或工程目标时，应优先阅读这些根目录文档。
