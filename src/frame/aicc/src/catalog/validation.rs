@@ -145,6 +145,9 @@ fn validate_model_semantics(
             }
         }
     }
+    if let Some(mappings) = &semantics.canonical_fields {
+        validate_canonical_fields(owner, mappings)?;
+    }
     if let Some(pricing) = &semantics.pricing {
         validate_pricing(owner, pricing)?;
         if !pricing.rules.is_empty() {
@@ -240,6 +243,7 @@ pub(super) fn validate_provider_rules(
 trait ProviderRuleValidation {
     fn operations(&self) -> &BTreeMap<String, String>;
     fn request_rules(&self) -> &[RequestRule];
+    fn canonical_fields(&self) -> &BTreeMap<String, crate::canonical::CanonicalFieldMapping>;
     fn pricing(&self) -> Option<&Pricing>;
     fn remove_api_types(&self) -> &BTreeSet<String>;
     fn remove_features(&self) -> &BTreeSet<String>;
@@ -253,6 +257,11 @@ macro_rules! impl_provider_rule_validation {
             }
             fn request_rules(&self) -> &[RequestRule] {
                 &self.request_rules
+            }
+            fn canonical_fields(
+                &self,
+            ) -> &BTreeMap<String, crate::canonical::CanonicalFieldMapping> {
+                &self.canonical_fields
             }
             fn pricing(&self) -> Option<&Pricing> {
                 self.pricing.as_ref()
@@ -294,6 +303,7 @@ fn validate_provider_rule_data(
             }
         }
     }
+    validate_canonical_fields(owner, rule.canonical_fields())?;
     if let Some(pricing) = rule.pricing() {
         validate_pricing(owner, pricing)?;
     }
@@ -305,6 +315,29 @@ fn validate_provider_rule_data(
                 reason: "entries must be non-empty".to_owned(),
             });
         }
+    }
+    Ok(())
+}
+
+fn validate_canonical_fields(
+    owner: &str,
+    mappings: &BTreeMap<String, crate::canonical::CanonicalFieldMapping>,
+) -> Result<(), CatalogBuildError> {
+    for (pointer, mapping) in mappings {
+        if pointer.is_empty() || !valid_json_pointer(pointer) {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "canonical_fields",
+                reason: format!("field key must be a non-empty JSON Pointer: {pointer:?}"),
+            });
+        }
+        mapping
+            .validate()
+            .map_err(|reason| CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "canonical_fields",
+                reason: format!("invalid mapping for {pointer:?}: {reason}"),
+            })?;
     }
     Ok(())
 }

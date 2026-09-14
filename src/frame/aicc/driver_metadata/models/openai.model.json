@@ -120,17 +120,35 @@
       "id": "gpt-4o-mini-tts",
       "api_types": ["audio.tts"],
       "logical_mounts": ["audio.tts", "audio.tts.openai", "audio.tts.{model}"],
-      "capabilities": { "max_context_tokens": 2000 }
+      "capabilities": { "max_context_tokens": 2000 },
+      "canonical_fields": {
+        "/voice": {
+          "converter": "openai_tts_voice_v2",
+          "fallback": { "action": "default", "value": {} }
+        }
+      }
     },
     {
       "id": "tts-1",
       "api_types": ["audio.tts"],
-      "logical_mounts": ["audio.tts", "audio.tts.openai", "audio.tts.{model}"]
+      "logical_mounts": ["audio.tts", "audio.tts.openai", "audio.tts.{model}"],
+      "canonical_fields": {
+        "/voice": {
+          "converter": "openai_tts_voice_v1",
+          "fallback": { "action": "default", "value": {} }
+        }
+      }
     },
     {
       "id": "tts-1-hd",
       "api_types": ["audio.tts"],
-      "logical_mounts": ["audio.tts", "audio.tts.openai", "audio.tts.{model}"]
+      "logical_mounts": ["audio.tts", "audio.tts.openai", "audio.tts.{model}"],
+      "canonical_fields": {
+        "/voice": {
+          "converter": "openai_tts_voice_v1",
+          "fallback": { "action": "default", "value": {} }
+        }
+      }
     },
     {
       "id": "sora-2",

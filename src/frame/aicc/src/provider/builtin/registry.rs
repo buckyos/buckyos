@@ -720,7 +720,7 @@ mod tests {
                 ),
                 (
                     "gemini".to_owned(),
-                    "28:631587a0ce3b38d222e437d4db284ac11392eeef381856c028c77d3af250fd78"
+                    "28:b3ced25c547849c22f5b66d41d52e8198721f28a2be5a7b6b265203d3d770954"
                         .to_owned()
                 ),
                 (
@@ -734,12 +734,12 @@ mod tests {
                 ),
                 (
                     "minimax".to_owned(),
-                    "19:3d4b86ff77acb3640dba7a28a21fcf3cc022ad35a0d33d24e2f6fc39eaa20c4c"
+                    "19:bfbdc64dd510d91d9bc3af130cf20c6cd4d99e233e1a96c192c1692aadf94ebb"
                         .to_owned()
                 ),
                 (
                     "openai".to_owned(),
-                    "15:ab4173f22f708310849ea659d0c372b59100d9d3a15fe3af1818a364c5202790"
+                    "15:15bfc92abfc4b294f3ea32b68e7051df545c0db842ba3c95b5cfde46c69a9736"
                         .to_owned()
                 ),
                 ("openrouter".to_owned(), "dynamic".to_owned()),

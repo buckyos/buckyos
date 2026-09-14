@@ -1,4 +1,5 @@
 use super::*;
+use crate::canonical::CanonicalFieldMapping;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -559,6 +560,8 @@ pub(crate) struct ProviderInventoryModel {
     pub logical_mounts: Vec<String>,
     #[serde(default)]
     pub capabilities: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub canonical_fields: BTreeMap<String, CanonicalFieldMapping>,
     #[serde(default)]
     pub operations: BTreeMap<String, String>,
     #[serde(default)]
@@ -618,6 +621,7 @@ impl ProviderInventorySnapshot {
                     logical_mounts: model.logical_mounts.clone(),
                     variants: model.variants.clone(),
                     capabilities: model.capabilities.clone(),
+                    canonical_fields: model.canonical_fields.clone(),
                     attributes: BTreeMap::from([
                         ("model_uid".into(), Value::String(model.model_uid.clone())),
                         (
@@ -751,6 +755,7 @@ impl InventoryBuilder {
                     .unwrap_or_else(|| BTreeSet::from(["llm".to_owned()]));
             }
             let mut capabilities = resolved.semantics.capabilities.unwrap_or_default();
+            let mut canonical_fields = resolved.semantics.canonical_fields.unwrap_or_default();
             let mut pricing = resolved.semantics.pricing.map(|value| InventoryPricing {
                 source: PricingSource::ModelDriver,
                 value,
@@ -760,6 +765,7 @@ impl InventoryBuilder {
                 let narrowed = rule.action.narrow(&static_api_types, &capabilities);
                 static_api_types = narrowed.api_types;
                 capabilities = narrowed.capabilities;
+                canonical_fields.extend(rule.action.canonical_fields.clone());
                 if let Some(value) = &rule.action.pricing {
                     pricing = Some(InventoryPricing {
                         source: PricingSource::ProviderRules,
@@ -883,6 +889,7 @@ impl InventoryBuilder {
                 api_types,
                 logical_mounts,
                 capabilities,
+                canonical_fields,
                 operations,
                 variants,
                 availability: discovered.availability,

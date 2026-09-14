@@ -313,7 +313,7 @@ impl OperationCodec for OpenAiResponsesCodec {
             _ => {
                 return Err(ProtocolError::invalid_request(
                     "OpenAI Responses codec received the wrong canonical request",
-                ))
+                ));
             }
         };
         json_request(call, Method::POST, "responses", body)
@@ -621,7 +621,7 @@ fn decode_computer_action(value: &Value) -> ProtocolResultValue<ComputerAction> 
                 _ => {
                     return Err(ProtocolError::invalid_response(
                         "OpenAI computer click uses an unsupported button",
-                    ))
+                    ));
                 }
             };
             Ok(action)
@@ -778,7 +778,7 @@ fn encode_response_input(
                 AiContent::Image { .. } => {
                     return Err(ProtocolError::invalid_request(
                         "OpenAI Responses assistant history cannot contain input_image content",
-                    ))
+                    ));
                 }
                 AiContent::Document { source, title } => {
                     if replays_output_message {
@@ -830,7 +830,7 @@ fn encode_response_input(
                 AiContent::ToolResult { .. } => {
                     return Err(ProtocolError::invalid_request(
                         "tool result block must use the canonical tool role",
-                    ))
+                    ));
                 }
             }
         }
@@ -2173,22 +2173,22 @@ fn encode_audio_speech(
     request: &AudioTextToSpeechRequest,
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<HttpRequest> {
-    require_parameter_subset(&call.input.resolved_parameters, &["instructions"], "speech")?;
-    let voice = request.voice.voice_id.as_ref().ok_or_else(|| {
-        ProtocolError::new(
-            ProtocolErrorKind::UnsupportedOperation,
-            "OpenAI speech requires a resolved voice_id",
-        )
-    })?;
-    if request.voice.speaker_similarity_required
-        || request.voice.gender.is_some()
-        || request.voice.language.is_some()
-    {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::UnsupportedOperation,
-            "OpenAI speech cannot satisfy the requested voice contract",
-        ));
-    }
+    require_parameter_subset(
+        &call.input.resolved_parameters,
+        &["voice", "instructions"],
+        "speech",
+    )?;
+    let voice = call
+        .input
+        .resolved_parameters
+        .get("voice")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ProtocolError::new(
+                ProtocolErrorKind::UnsupportedOperation,
+                "OpenAI speech requires a resolved provider voice",
+            )
+        })?;
     let mut body = Map::from_iter([
         ("model".to_string(), json!(provider_model_id(call)?)),
         ("input".to_string(), json!(request.text)),
@@ -2202,8 +2202,6 @@ fn encode_audio_speech(
             ));
         }
         body.insert("instructions".to_string(), instructions.clone());
-    } else if let Some(style) = &request.voice.style {
-        body.insert("instructions".to_string(), json!(style));
     }
     if let Some(output) = &request.output {
         if output.sample_rate.is_some() {
@@ -2308,7 +2306,7 @@ fn encode_audio_transcription(
             _ => {
                 return Err(ProtocolError::invalid_request(
                     "OpenAI transcription timestamps must be segment, word, or both",
-                ))
+                ));
             }
         };
         for granularity in granularities {
@@ -2519,7 +2517,7 @@ fn encode_video_submit(
             _ => {
                 return Err(ProtocolError::invalid_request(
                     "OpenAI video codec received the wrong canonical request",
-                ))
+                ));
             }
         };
     let model = required_parameter(input.resolved_parameters, "provider_model_id")?;
@@ -3458,17 +3456,18 @@ mod tests {
         let speech = AudioTextToSpeechRequest::new(
             "ignored@instance",
             "hello".to_string(),
-            VoiceSpec {
-                voice_id: Some("alloy".to_string()),
-                ..VoiceSpec::default()
-            },
+            VoiceSpec::default(),
         );
+        let mut speech_input = input(AiccCall::AudioTextToSpeech(speech));
+        speech_input
+            .resolved_parameters
+            .insert("voice".to_string(), json!("alloy"));
         let wire = registry()
             .encode(
                 OPENAI_RESPONSES_ADAPTER_ID,
                 OPENAI_AUDIO_SPEECH_OPERATION_ID,
                 ApiType::AudioTextToSpeech,
-                &input(AiccCall::AudioTextToSpeech(speech)),
+                &speech_input,
                 &context(),
             )
             .unwrap();

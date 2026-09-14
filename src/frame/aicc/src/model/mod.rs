@@ -1,3 +1,4 @@
+use crate::canonical::CanonicalFieldMapping;
 use crate::catalog::CatalogSnapshot;
 use crate::error::ModelRegistryError;
 use buckyos_api::{
@@ -159,6 +160,7 @@ pub(crate) struct InventoryModel {
     pub logical_mounts: Vec<String>,
     pub variants: Vec<InventoryModelVariant>,
     pub capabilities: BTreeMap<String, Value>,
+    pub canonical_fields: BTreeMap<String, CanonicalFieldMapping>,
     pub attributes: BTreeMap<String, Value>,
     pub operations: BTreeMap<String, String>,
 }
@@ -229,6 +231,7 @@ pub(crate) struct RegisteredModel {
     pub api_types: Vec<ApiType>,
     pub logical_mounts: Vec<String>,
     pub capabilities: BTreeMap<String, Value>,
+    pub canonical_fields: BTreeMap<String, CanonicalFieldMapping>,
     pub attributes: BTreeMap<String, Value>,
     pub operations: BTreeMap<String, String>,
     pub inventory_revision: String,
@@ -248,6 +251,7 @@ pub(crate) struct ModelView {
     pub api_types: Vec<String>,
     pub logical_mounts: Vec<String>,
     pub capabilities: BTreeMap<String, Value>,
+    pub canonical_fields: BTreeMap<String, CanonicalFieldMapping>,
     pub attributes: BTreeMap<String, Value>,
     pub operations: BTreeMap<String, String>,
     pub inventory_revision: String,
@@ -641,6 +645,7 @@ impl ModelRegistry {
             api_types: deduplicate_api_types(&model.api_types),
             logical_mounts,
             capabilities: model.capabilities.clone(),
+            canonical_fields: model.canonical_fields.clone(),
             attributes: model.attributes.clone(),
             operations: model.operations.clone(),
             inventory_revision: inventory.inventory_revision.clone(),
@@ -1199,6 +1204,7 @@ impl From<&RegisteredModel> for ModelView {
                 .collect(),
             logical_mounts: model.logical_mounts.clone(),
             capabilities: model.capabilities.clone(),
+            canonical_fields: model.canonical_fields.clone(),
             attributes: model.attributes.clone(),
             operations: model.operations.clone(),
             inventory_revision: model.inventory_revision.clone(),
@@ -1664,6 +1670,7 @@ mod tests {
                 ("tool_call".to_owned(), json!(tool_call)),
                 ("max_context_tokens".to_owned(), json!(128_000)),
             ]),
+            canonical_fields: BTreeMap::new(),
             attributes: BTreeMap::new(),
             operations: BTreeMap::from([(
                 "chat.completions.create".to_owned(),

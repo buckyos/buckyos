@@ -1,4 +1,5 @@
 use super::*;
+use crate::canonical::CanonicalFieldMapping;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum CatalogKind {
@@ -73,6 +74,8 @@ pub(crate) struct ModelSemantics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<BTreeMap<String, Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_fields: Option<BTreeMap<String, CanonicalFieldMapping>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<Pricing>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_latency_ms: Option<u64>,
@@ -107,6 +110,10 @@ impl ModelSemantics {
                 .capabilities
                 .clone()
                 .or_else(|| self.capabilities.clone()),
+            canonical_fields: rule
+                .canonical_fields
+                .clone()
+                .or_else(|| self.canonical_fields.clone()),
             pricing: rule.pricing.clone().or_else(|| self.pricing.clone()),
             estimated_latency_ms: rule.estimated_latency_ms.or(self.estimated_latency_ms),
             quality_score: rule.quality_score.or(self.quality_score),
@@ -128,6 +135,7 @@ impl ModelSemantics {
             api_types: Some(BTreeSet::new()),
             logical_mounts: Some(Vec::new()),
             capabilities: Some(BTreeMap::new()),
+            canonical_fields: Some(BTreeMap::new()),
             ..Self::default()
         }
     }
@@ -151,6 +159,8 @@ macro_rules! define_model_rule {
         pub logical_mounts: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub capabilities: Option<BTreeMap<String, Value>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub canonical_fields: Option<BTreeMap<String, CanonicalFieldMapping>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub pricing: Option<Pricing>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,6 +195,7 @@ macro_rules! model_rule_semantics {
             api_types: $rule.api_types.clone(),
             logical_mounts: $rule.logical_mounts.clone(),
             capabilities: $rule.capabilities.clone(),
+            canonical_fields: $rule.canonical_fields.clone(),
             pricing: $rule.pricing.clone(),
             estimated_latency_ms: $rule.estimated_latency_ms,
             quality_score: $rule.quality_score,
@@ -314,6 +325,8 @@ macro_rules! define_provider_rule {
         pub operations: BTreeMap<String, String>,
         #[serde(default)]
         pub provider_options: BTreeMap<String, Value>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        pub canonical_fields: BTreeMap<String, CanonicalFieldMapping>,
         #[serde(default)]
         pub request_rules: Vec<RequestRule>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -346,6 +359,7 @@ pub(crate) struct ProviderRuleAction {
     pub exclude: bool,
     pub operations: BTreeMap<String, String>,
     pub provider_options: BTreeMap<String, Value>,
+    pub canonical_fields: BTreeMap<String, CanonicalFieldMapping>,
     pub request_rules: Vec<RequestRule>,
     pub pricing: Option<Pricing>,
     pub remove_api_types: BTreeSet<String>,
@@ -361,6 +375,7 @@ macro_rules! provider_rule_action {
             exclude: $rule.exclude,
             operations: $rule.operations.clone(),
             provider_options: $rule.provider_options.clone(),
+            canonical_fields: $rule.canonical_fields.clone(),
             request_rules: $rule.request_rules.clone(),
             pricing: $rule.pricing.clone(),
             remove_api_types: $rule.remove_api_types.clone(),

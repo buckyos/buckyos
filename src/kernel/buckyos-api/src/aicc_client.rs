@@ -180,6 +180,23 @@ mod canonical_contract_tests {
         assert!(requirement.requires_feature("json_schema"));
         assert!(!requirement.requires_feature("tool_calling"));
         assert!(!requirement.requires_feature("json_output"));
+
+        let mut fields = ModelRequirement::default();
+        fields.canonical_fields.insert(
+            "/voice".to_string(),
+            CanonicalFieldRequirement::strict(json!({"style": "warm"})),
+        );
+        let value = serde_json::to_value(&fields).unwrap();
+        assert_eq!(
+            value["canonical_fields"]["/voice"]["value"]["style"],
+            "warm"
+        );
+        assert_eq!(value["canonical_fields"]["/voice"]["strict"], true);
+        assert_eq!(value["canonical_fields"]["/voice"]["allow_fuzzy"], false);
+        let defaulted: CanonicalFieldRequirement =
+            serde_json::from_value(json!({"value": {"style": "warm"}})).unwrap();
+        assert!(!defaulted.strict);
+        assert!(defaulted.allow_fuzzy);
     }
 
     #[test]
@@ -237,6 +254,12 @@ mod canonical_contract_tests {
             "payload": {}
         }))
         .is_err());
+        assert!(AudioTextToSpeechRequest::from_json(json!({
+            "exact_model": "audio.tts@provider",
+            "text": "hello",
+            "voice": {"style": "provider_specific_style"}
+        }))
+        .is_err());
         assert!(VideoImageToVideoRequest::from_json(json!({
             "exact_model": "m@p",
             "image": {"kind": "named_object", "obj_id": "chunk:123456"}
@@ -245,6 +268,23 @@ mod canonical_contract_tests {
         assert!(EmbeddingTextRequest::from_json(json!({
             "exact_model": "embedding.text",
             "items": []
+        }))
+        .is_err());
+        let tts = AudioTextToSpeechRequest::from_json(json!({
+            "exact_model": "audio.tts@provider",
+            "text": "hello",
+            "voice": {
+                "language": "en-US",
+                "style": "warm",
+                "instructions": "Speak calmly"
+            }
+        }))
+        .unwrap();
+        assert_eq!(tts.voice.style, Some(VoiceStyle::Warm));
+        assert!(AudioTextToSpeechRequest::from_json(json!({
+            "exact_model": "audio.tts@provider",
+            "text": "hello",
+            "voice": {"voice_id": "alloy"}
         }))
         .is_err());
     }
@@ -1451,6 +1491,40 @@ pub struct ModelRequirement {
     pub image_generation: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub canonical_fields: BTreeMap<String, CanonicalFieldRequirement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalFieldRequirement {
+    pub value: Value,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strict: bool,
+    #[serde(default = "default_allow_fuzzy")]
+    pub allow_fuzzy: bool,
+}
+
+fn default_allow_fuzzy() -> bool {
+    true
+}
+
+impl CanonicalFieldRequirement {
+    pub fn new(value: Value) -> Self {
+        Self {
+            value,
+            strict: false,
+            allow_fuzzy: true,
+        }
+    }
+
+    pub fn strict(value: Value) -> Self {
+        Self {
+            value,
+            strict: true,
+            allow_fuzzy: false,
+        }
+    }
 }
 
 impl ModelRequirement {
@@ -2850,6 +2924,8 @@ pub struct HelperModelRequirement {
     pub image_generation: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub canonical_fields: BTreeMap<String, CanonicalFieldRequirement>,
 }
 
 impl From<HelperModelRequirement> for ModelRequirement {
@@ -2862,6 +2938,7 @@ impl From<HelperModelRequirement> for ModelRequirement {
             vision: value.vision,
             image_generation: value.image_generation,
             min_context_tokens: value.min_context_tokens,
+            canonical_fields: value.canonical_fields,
         }
     }
 }
@@ -3570,15 +3647,48 @@ typed_response!(VisionSegmentResponse { masks: Vec<SegmentationMask> });
 #[serde(deny_unknown_fields)]
 pub struct VoiceSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voice_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gender: Option<String>,
+    pub gender: Option<VoiceGender>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub style: Option<String>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub speaker_similarity_required: bool,
+    pub style: Option<VoiceStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceGender {
+    Female,
+    Male,
+    Neutral,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceStyle {
+    Bright,
+    Upbeat,
+    Informative,
+    Firm,
+    Excitable,
+    Youthful,
+    Breezy,
+    EasyGoing,
+    Breathy,
+    Clear,
+    Smooth,
+    Gravelly,
+    Soft,
+    Even,
+    Mature,
+    Forward,
+    Friendly,
+    Casual,
+    Gentle,
+    Lively,
+    Knowledgeable,
+    Warm,
 }
 
 typed_request!(

@@ -1,5 +1,6 @@
 pub(crate) mod api;
 pub(crate) mod call;
+pub(crate) mod canonical;
 pub(crate) mod catalog;
 pub(crate) mod error;
 pub(crate) mod execution;

@@ -109,27 +109,31 @@ impl OperationCodec for MiniMaxImmediateCodec {
     }
 
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
-        require_only_model(&call.input.resolved_parameters)?;
+        if self.api_type == ApiType::AudioTextToSpeech {
+            require_parameters(&call.input.resolved_parameters, &["voice_setting"])?;
+        } else {
+            require_only_model(&call.input.resolved_parameters)?;
+        }
         let model = provider_model_id(&call.input.resolved_parameters)?;
         let (path, body) = match (&call.input.canonical_request, self.api_type) {
             (AiccCall::AudioTextToSpeech(request), ApiType::AudioTextToSpeech) => {
-                let voice_id = request.voice.voice_id.as_deref().ok_or_else(|| {
-                    ProtocolError::new(
-                        ProtocolErrorKind::UnsupportedOperation,
-                        "MiniMax T2A requires voice.voice_id",
-                    )
-                })?;
-                if request.voice.speaker_similarity_required
-                    || request.voice.gender.is_some()
-                    || request.voice.language.is_some()
-                    || request.voice.style.is_some()
-                {
-                    return Err(ProtocolError::new(
-                        ProtocolErrorKind::UnsupportedOperation,
-                        "MiniMax T2A cannot satisfy the requested voice contract",
+                let mut voice = call
+                    .input
+                    .resolved_parameters
+                    .get("voice_setting")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ProtocolError::new(
+                            ProtocolErrorKind::UnsupportedOperation,
+                            "MiniMax T2A requires resolved voice_setting",
+                        )
+                    })?;
+                if !voice.get("voice_id").is_some_and(Value::is_string) {
+                    return Err(ProtocolError::invalid_request(
+                        "resolved MiniMax voice_setting.voice_id must be a string",
                     ));
                 }
-                let mut voice = Map::from_iter([("voice_id".to_string(), json!(voice_id))]);
                 if let Some(speed) = request.speed {
                     voice.insert("speed".to_string(), json!(speed));
                 }
@@ -201,7 +205,7 @@ impl OperationCodec for MiniMaxImmediateCodec {
             _ => {
                 return Err(ProtocolError::invalid_request(
                     "MiniMax media codec received the wrong canonical request",
-                ))
+                ));
             }
         };
         media_json_request(call.context, Method::POST, path, body)
@@ -217,7 +221,7 @@ impl OperationCodec for MiniMaxImmediateCodec {
             _ => {
                 return Err(ProtocolError::invalid_response(
                     "MiniMax media codec has an invalid API type",
-                ))
+                ));
             }
         };
         Ok(ProtocolExecution::Immediate(output))
@@ -300,7 +304,7 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
                     _ => {
                         return Err(ProtocolError::invalid_response(
                             "MiniMax video status is unknown",
-                        ))
+                        ));
                     }
                 };
                 let result_ref = if state == NativeTaskState::Succeeded {
@@ -369,7 +373,7 @@ fn encode_video_submit(
         _ => {
             return Err(ProtocolError::invalid_request(
                 "MiniMax video codec received the wrong canonical request",
-            ))
+            ));
         }
     };
     match &codec_input.canonical_request {
@@ -610,9 +614,16 @@ fn provider_model_id(parameters: &BTreeMap<String, Value>) -> ProtocolResultValu
 }
 
 fn require_only_model(parameters: &BTreeMap<String, Value>) -> ProtocolResultValue<()> {
+    require_parameters(parameters, &[])
+}
+
+fn require_parameters(
+    parameters: &BTreeMap<String, Value>,
+    allowed: &[&str],
+) -> ProtocolResultValue<()> {
     if let Some(name) = parameters
         .keys()
-        .find(|name| name.as_str() != "provider_model_id")
+        .find(|name| name.as_str() != "provider_model_id" && !allowed.contains(&name.as_str()))
     {
         return Err(ProtocolError::invalid_request(format!(
             "resolved MiniMax parameter `{name}` is not supported"

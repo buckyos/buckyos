@@ -8,7 +8,13 @@
   "models": [
     {
       "id": "speech-2.8-hd",
-      "operations": { "audio.tts": "t2a.create" }
+      "operations": { "audio.tts": "t2a.create" },
+      "canonical_fields": {
+        "/voice": {
+          "converter": "minimax_tts_voice_v1",
+          "fallback": { "action": "reject" }
+        }
+      }
     },
     {
       "id": "image-01",
@@ -36,7 +42,13 @@
     },
     {
       "match": "speech-*",
-      "operations": { "audio.tts": "t2a.create" }
+      "operations": { "audio.tts": "t2a.create" },
+      "canonical_fields": {
+        "/voice": {
+          "converter": "minimax_tts_voice_v1",
+          "fallback": { "action": "reject" }
+        }
+      }
     },
     {
       "match": "image-*",

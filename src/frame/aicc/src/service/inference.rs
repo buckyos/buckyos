@@ -677,6 +677,13 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
                     inference_error(AiccErrorCode::InvalidModelName, "exact_model is missing")
                 })?
                 .to_string();
+            let mut requirements = buckyos_api::ModelRequirement::default();
+            if let Some(voice) = params.get("voice") {
+                requirements.canonical_fields.insert(
+                    "/voice".into(),
+                    buckyos_api::CanonicalFieldRequirement::new(voice.clone()),
+                );
+            }
             Ok(InferenceRouteInput {
                 trace_id: call.trace_id().map(str::to_owned),
                 request_id: None,
@@ -684,7 +691,7 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
                 api_type: call.api_type().ok_or_else(|| {
                     inference_error(AiccErrorCode::InvalidMethod, "unsupported inference method")
                 })?,
-                requirements: Default::default(),
+                requirements,
                 disable: Default::default(),
                 policy: None,
                 session_overlay: None,
