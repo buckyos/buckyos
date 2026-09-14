@@ -43,7 +43,13 @@ gemini|gemini-interactions|vision.caption|interactions.create
 gemini|gemini-interactions|vision.detect|interactions.create
 gemini|gemini-interactions|vision.ocr|interactions.create
 gemini|gemini-interactions|vision.segment|interactions.create
+glm|glm-chat|audio.asr|audio.transcriptions
+glm|glm-chat|audio.tts|audio.speech
+glm|glm-chat|embedding.text|embeddings.create
+glm|glm-chat|image.txt2img|images.generate
 glm|glm-chat|llm|chat.completions.create
+glm|glm-chat|video.img2video|videos.generate
+glm|glm-chat|video.txt2video|videos.generate
 glm|glm-chat|vision.caption|chat.completions.create
 glm|glm-chat|vision.ocr|chat.completions.create
 kimi|kimi-chat|llm|chat.completions.create

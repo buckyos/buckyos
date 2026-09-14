@@ -25,7 +25,7 @@ const MANIFEST_FORMAT: &str = "buckyos.aicc.provider-catalog-manifest";
 const INDEX_PATH: &str = "aicc/provider-catalog/index.json";
 const STATE_FILE: &str = "state.json";
 const REVISIONS_DIR: &str = "revisions";
-const BUILTIN_CATALOG_REVISION_SEQ: u64 = 1;
+const BUILTIN_CATALOG_REVISION_SEQ: u64 = 2;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

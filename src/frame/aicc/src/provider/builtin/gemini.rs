@@ -475,7 +475,7 @@ mod tests {
             builtin,
             ..MetadataSources::default()
         }
-        .build_snapshot(1, &CatalogBuildOptions::default())
+        .build_snapshot(2, &CatalogBuildOptions::default())
         .unwrap();
 
         assert!(catalog.known_provider(GEMINI_PROVIDER_PROFILE_ID).is_some());
