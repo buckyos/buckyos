@@ -302,6 +302,8 @@ pub(crate) struct ProviderRulesCatalog {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_drivers: Option<Vec<String>>,
     #[serde(default)]
+    pub static_inventory_models: Vec<String>,
+    #[serde(default)]
     pub origin_provider_aliases: BTreeMap<String, String>,
     #[serde(default)]
     pub origin_mappings: Vec<OriginMapping>,

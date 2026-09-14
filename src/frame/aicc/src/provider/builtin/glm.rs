@@ -8,8 +8,9 @@ use super::super::{
     DiscoveryMode, ProviderConnectionContract, ProviderConnectionInput, ProviderProfile,
     ResolvedProviderConnection,
 };
+use crate::catalog::ProviderRulesCatalog;
 #[cfg(test)]
-use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
+use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog};
 #[cfg(test)]
 use crate::protocol::CredentialKind;
 use crate::protocol::OPENAI_CHAT_COMPLETIONS_OPERATION_ID;
@@ -146,8 +147,57 @@ fn normalize_glm_chat_discovery(
         model.api_types = None;
         model.remote_methods = None;
     }
+    merge_static_glm_inventory_models(&mut snapshot)?;
     validate_discovery(&snapshot)?;
     Ok(snapshot)
+}
+
+fn merge_static_glm_inventory_models(
+    snapshot: &mut ProviderDiscoverySnapshot,
+) -> ProviderResult<()> {
+    let rules: ProviderRulesCatalog = serde_json::from_slice(include_bytes!(
+        "../../../driver_metadata/providers/glm.provider.json"
+    ))
+    .map_err(|error| {
+        ProviderError::InvalidConfiguration(format!(
+            "GLM provider rules metadata is invalid: {error}"
+        ))
+    })?;
+    let mut existing = snapshot
+        .models
+        .iter()
+        .map(|model| model.provider_model_id.clone())
+        .collect::<BTreeSet<_>>();
+    let excluded_models = rules
+        .models
+        .iter()
+        .filter(|rule| rule.exclude)
+        .map(|rule| rule.id.as_str())
+        .collect::<BTreeSet<_>>();
+    for model_id in rules
+        .static_inventory_models
+        .iter()
+        .filter(|model_id| !excluded_models.contains(model_id.as_str()))
+    {
+        if existing.insert(model_id.clone()) {
+            snapshot.models.push(DiscoveredModel {
+                provider_model_id: model_id.clone(),
+                origin_model_id: None,
+                api_types: None,
+                supported_features: None,
+                remote_methods: None,
+                availability: ModelAvailability::Available,
+                deprecated: false,
+                pricing: None,
+            });
+        }
+    }
+    let static_revision = format!("static-glm-{}", rules.revision_seq);
+    snapshot.revision = Some(match snapshot.revision.take() {
+        Some(dynamic_revision) => format!("{dynamic_revision}+{static_revision}"),
+        None => static_revision,
+    });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -197,6 +247,9 @@ mod tests {
             glm_provider_rules(5).patterns[0].operations["llm"],
             OPENAI_CHAT_COMPLETIONS_OPERATION_ID
         );
+        assert!(glm_provider_rules(5)
+            .static_inventory_models
+            .contains(&"glm-image".to_owned()));
     }
 
     #[tokio::test]
@@ -253,8 +306,17 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(snapshot.models[0].api_types, None);
-        assert_eq!(snapshot.models[0].remote_methods, None);
+        let glm_53 = snapshot
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "glm-5.3")
+            .unwrap();
+        assert_eq!(glm_53.api_types, None);
+        assert_eq!(glm_53.remote_methods, None);
+        assert!(snapshot
+            .models
+            .iter()
+            .any(|model| model.provider_model_id == "glm-image"));
     }
 
     #[test]
@@ -315,13 +377,27 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(inventory.models[0].api_types, vec![ApiType::Llm]);
+        let glm_53 = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "glm-5.3")
+            .unwrap();
+        assert_eq!(glm_53.api_types, vec![ApiType::Llm]);
         assert_eq!(
-            inventory.models[0].operations["llm"],
+            glm_53.operations["llm"],
             OPENAI_CHAT_COMPLETIONS_OPERATION_ID
         );
-        assert!(inventory.models[0]
+        assert!(glm_53.logical_mounts.contains(&"llm.glm".to_owned()));
+
+        let glm_image = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "glm-image")
+            .unwrap();
+        assert_eq!(glm_image.api_types, vec![ApiType::ImageTextToImage]);
+        assert_eq!(glm_image.operations["image.txt2img"], "images.generate");
+        assert!(glm_image
             .logical_mounts
-            .contains(&"llm.glm".to_owned()));
+            .contains(&"image.txt2img".to_owned()));
     }
 }

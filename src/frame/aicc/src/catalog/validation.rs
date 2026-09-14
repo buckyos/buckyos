@@ -211,6 +211,19 @@ pub(super) fn validate_provider_rules(
             &mapping.extract.regex,
         )?;
     }
+    validate_unique_nonempty(
+        CatalogKind::ProviderRules,
+        &catalog.provider_profile_id,
+        "static_inventory_models",
+        catalog.static_inventory_models.iter().map(String::as_str),
+    )?;
+    if catalog.schema_revision == 0 && !catalog.static_inventory_models.is_empty() {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: catalog.provider_profile_id.clone(),
+            field: "schema_revision",
+            reason: "static_inventory_models requires schema_revision 1".to_owned(),
+        });
+    }
     validate_nonempty_strings(
         CatalogKind::ProviderRules,
         &catalog.provider_profile_id,
