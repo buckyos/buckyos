@@ -303,6 +303,14 @@ BuckyOS 曾考虑过一类更高级、但短期内不建议面向 C 端主推的
 - 但默认 OOD 已被替换，或其 DID Document 中的权威身份已变化。
 - 旧 OOD 不再是当前解析结果对应的设备。
 
+### 8.2 OwnerDocument 的发布与刷新
+
+绑定、解绑和重绑都遵循：修改 OwnerDocument → 推进文档 `iat` → 权威发布 → 读取方按 TTL 刷新。BNS 的文档存储版本和操作授权 JWT 的 `iat` 不代替 OwnerDocument 的 `iat`。
+
+解绑在 SN 的 Owner 文档更新事务中取 `max(当前时间, 旧 iat + 1)`，然后计算结果 hash 并提交 BNS；同一请求的重试复用已保存的发布结果。激活绑定取 `max(本次已签名 ZoneDocument.iat, 旧 OwnerDocument.iat + 1)`，使 BNS 确认延迟期间的同一激活请求仍生成相同文档。绑定内容未变化时不推进 `iat`、不重新发布。
+
+App 的 `getCurrentUser` 通过现有 name-client 解析 OwnerDocument，复用其 TTL 缓存。解绑确认后的本地同步只保存权威结果；普通读取也同步本地副本，拒绝同 `iat` 不同内容，并保留已经确认的较新版本。读取方不自行改写 `iat`，不依赖清空全部缓存来传播绑定变更。
+
 ---
 
 ## 9. Headless 状态

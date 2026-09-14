@@ -481,6 +481,7 @@ impl ActiveServer {
             &req.owner_document,
             &projected_owner,
             &req.prepared.names.zone_did,
+            req.signed_documents.zone_document.iat,
         )?;
         let sn_client =
             SnClient::new_krpc(req.sn.sn_url.as_str(), Some(req.sn.access_token.clone()));
@@ -721,6 +722,7 @@ fn prepare_owner_binding_for_activation(
     owner_document: &OwnerDocument,
     projected_owner: &OwnerDocument,
     zone_did: &DID,
+    activation_iat: u64,
 ) -> Result<(OwnerDocument, bool), RPCErrors> {
     validate_owner_document(projected_owner)?;
     if projected_owner.id != owner_document.id
@@ -734,8 +736,12 @@ fn prepare_owner_binding_for_activation(
     }
     let mut effective_owner = projected_owner.clone();
     effective_owner.set_default_zone_did(zone_did.clone());
-    validate_owner_document(&effective_owner)?;
     let needs_owner_publish = effective_owner != *projected_owner;
+    if needs_owner_publish {
+        effective_owner.iat =
+            activation_iat.max(next_document_iat("OwnerDocument", projected_owner.iat)?);
+    }
+    validate_owner_document(&effective_owner)?;
     Ok((effective_owner, needs_owner_publish))
 }
 
@@ -1906,7 +1912,7 @@ mod tests {
         let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         let owner = owner_document(mnemonic);
         let (effective, needs_publish) =
-            prepare_owner_binding_for_activation(&owner, &owner, &owner.id).unwrap();
+            prepare_owner_binding_for_activation(&owner, &owner, &owner.id, owner.iat).unwrap();
 
         assert!(needs_publish);
         let value = serde_json::to_value(&effective).unwrap();
@@ -1929,7 +1935,7 @@ mod tests {
         owner.set_default_zone_did(first);
 
         let (effective, needs_publish) =
-            prepare_owner_binding_for_activation(&owner, &owner, &selected).unwrap();
+            prepare_owner_binding_for_activation(&owner, &owner, &selected, owner.iat).unwrap();
         assert!(needs_publish);
         assert_eq!(
             effective
@@ -1943,8 +1949,9 @@ mod tests {
             ]
         );
 
-        let (unchanged, needs_publish) =
-            prepare_owner_binding_for_activation(&effective, &effective, &selected).unwrap();
+        let (unchanged, needs_publish) = prepare_owner_binding_for_activation(
+            &effective, &effective, &selected, effective.iat + 60,
+        ).unwrap();
         assert!(!needs_publish);
         assert_eq!(unchanged, effective);
     }
@@ -1953,30 +1960,40 @@ mod tests {
     fn activation_rebind_uses_projected_owner_instead_of_stale_input() {
         let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         let mut projected = owner_document(mnemonic);
+        let activation_iat = buckyos_get_unix_timestamp();
+        projected.iat = activation_iat + 60;
         let mut stale = projected.clone();
         stale.set_default_zone_did(stale.id.clone());
         projected.set_default_zone_did(DID::new("web", "other.example.com"));
         projected.display_name = "Updated remote profile".to_string();
         let (effective, needs_publish) =
-            prepare_owner_binding_for_activation(&stale, &projected, &stale.id).unwrap();
+            prepare_owner_binding_for_activation(&stale, &projected, &stale.id, activation_iat).unwrap();
         assert!(needs_publish);
         assert_eq!(effective.display_name, projected.display_name);
+        assert_eq!(effective.iat, projected.iat + 1);
+        let (retry, _) = prepare_owner_binding_for_activation(
+            &stale, &projected, &stale.id, activation_iat,
+        ).unwrap();
+        assert_eq!(retry, effective);
         assert_eq!(
             effective.binded_zone_list,
             vec![stale.id.clone(), DID::new("web", "other.example.com")]
         );
         let (unchanged, needs_publish) =
-            prepare_owner_binding_for_activation(&stale, &effective, &stale.id).unwrap();
+            prepare_owner_binding_for_activation(&stale, &effective, &stale.id, activation_iat).unwrap();
         assert!(!needs_publish);
         assert_eq!(unchanged, effective);
 
-        let unbound = owner_document(mnemonic);
+        let mut unbound = owner_document(mnemonic);
+        unbound.iat = activation_iat - 100;
         let (rebound, needs_publish) =
-            prepare_owner_binding_for_activation(&stale, &unbound, &stale.id).unwrap();
+            prepare_owner_binding_for_activation(&stale, &unbound, &stale.id, activation_iat).unwrap();
         assert!(needs_publish);
         assert_eq!(rebound.binded_zone_list, vec![stale.id.clone()]);
+        assert!(rebound.iat > unbound.iat);
+        assert_eq!(rebound.iat, activation_iat);
         projected.id = DID::new("bns", "other");
-        assert!(prepare_owner_binding_for_activation(&stale, &projected, &stale.id).is_err());
+        assert!(prepare_owner_binding_for_activation(&stale, &projected, &stale.id, activation_iat).is_err());
     }
 
     #[test]
