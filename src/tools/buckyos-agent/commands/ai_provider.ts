@@ -17,6 +17,7 @@ import {
 import { JsonValue } from "../lib/types.ts";
 
 const TOOL = "ai_provider";
+const MAX_PROVIDER_SUMMARY_LINES = 20;
 
 export const HELP = `Usage:
   ai_provider list      # list configured providers
@@ -76,18 +77,80 @@ export async function run(argv: string[]): Promise<never> {
     bailAiccError(TOOL, method, err);
   }
 
+  const summary = sub === "list"
+    ? formatProviderListSummary(response)
+    : "provider health";
   emitAndExit(
     successResult(
       TOOL,
       `${TOOL} => done`,
-      sub === "list" ? "provider list" : "provider health",
+      summary,
       {
         method,
         response,
       },
+      sub === "list" ? summary : undefined,
     ),
     EXIT_SUCCESS,
   );
+}
+
+export function formatProviderListSummary(response: JsonValue): string {
+  if (!isRecord(response)) {
+    return "provider list: invalid response";
+  }
+  const providers: Record<string, unknown>[] = Array.isArray(response.providers)
+    ? (response.providers as unknown[]).filter(isRecord)
+    : [];
+  const settingsRevision = formatScalar(response.settings_revision);
+  const inventoryRevision = formatScalar(response.inventory_revision);
+  const lines = [
+    `provider list: ${providers.length} provider(s), settings_revision=${settingsRevision}, inventory_revision=${inventoryRevision}`,
+  ];
+
+  for (const provider of providers.slice(0, MAX_PROVIDER_SUMMARY_LINES)) {
+    const name = formatScalar(provider.provider_instance_name);
+    const profile = formatScalar(provider.provider_profile_id);
+    const type = formatScalar(provider.provider_type);
+    const adapter = formatScalar(provider.protocol_adapter_id);
+    const enabled = formatScalar(provider.enabled);
+    const auth = isRecord(provider.auth) ? provider.auth : {};
+    const inventory = isRecord(provider.inventory) ? provider.inventory : {};
+    const health = isRecord(provider.health) ? provider.health : {};
+    const authMode = formatScalar(auth.mode);
+    const authConfigured = formatScalar(auth.configured);
+    const inventoryState = formatScalar(inventory.state);
+    const modelCount = formatScalar(inventory.model_count);
+    const healthState = formatScalar(health.state);
+    lines.push(
+      `- ${name}: profile=${profile}, type=${type}, adapter=${adapter}, enabled=${enabled}, auth=${authMode}/${authConfigured}, inventory=${inventoryState}/${modelCount} models, health=${healthState}`,
+    );
+  }
+
+  if (providers.length > MAX_PROVIDER_SUMMARY_LINES) {
+    lines.push(
+      `... ${
+        providers.length - MAX_PROVIDER_SUMMARY_LINES
+      } provider(s) omitted`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function formatScalar(value: unknown): string {
+  if (value === null || value === undefined) return "unknown";
+  if (
+    typeof value === "string" || typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return String(value);
+  }
+  return "unknown";
 }
 
 if (import.meta.main) {

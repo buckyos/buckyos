@@ -243,6 +243,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 ```json
 {
   "metadata_drivers": [],
+  "static_inventory_models": [],
   "origin_provider_aliases": {},
   "origin_mappings": [],
   "models": [],
@@ -252,6 +253,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 ```
 
 - `metadata_drivers`：参与匹配的 Model Driver 列表；省略时搜索系统当前安装的全部 Model Driver。
+- `static_inventory_models`：Provider `/models` 暂时不能枚举、但厂商文档确认可通过专用接口调用的 `provider_model_id` 列表；专用 discovery 可将其与机器发现结果取并集。通常应为空，仅作为临时补丁，方便后续拆卸。
 - `origin_provider_aliases`：Provider 命名中的厂商 slug 到 Model Driver 名称的映射。
 - `origin_mappings`：可以从命名确定性解析原厂身份时使用的特殊映射。
 - `models`：按完整 `provider_model_id` 精确匹配的 Provider 规则。

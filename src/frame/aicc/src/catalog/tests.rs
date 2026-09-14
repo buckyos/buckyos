@@ -922,6 +922,29 @@ fn schema_revision_required_features_and_references_are_validated() {
         })
     ));
 
+    let mut revision_zero_static_inventory = provider_rules();
+    revision_zero_static_inventory["static_inventory_models"] = json!(["gpt-special"]);
+    let mut files = complete_files();
+    files[1] = file(CatalogKind::ProviderRules, revision_zero_static_inventory);
+    assert!(matches!(
+        build(files),
+        Err(CatalogBuildError::InvalidValue { field, .. }) if field == "schema_revision"
+    ));
+
+    let mut revision_one_static_inventory = provider_rules();
+    revision_one_static_inventory["schema_revision"] = json!(1);
+    revision_one_static_inventory["static_inventory_models"] = json!(["gpt-special"]);
+    let mut files = complete_files();
+    files[1] = file(CatalogKind::ProviderRules, revision_one_static_inventory);
+    let snapshot = build(files).unwrap();
+    assert_eq!(
+        snapshot
+            .provider_rules("openai")
+            .unwrap()
+            .static_inventory_models,
+        vec!["gpt-special".to_owned()]
+    );
+
     let missing_driver = vec![file(CatalogKind::ProviderRules, provider_rules())];
     assert!(matches!(
         build(missing_driver),
