@@ -677,3 +677,71 @@ test('codeassistant history does not jump back to bottom while scrolling older m
   const settledMetrics = await getScrollMetrics(historyPane)
   expect(settledMetrics.distanceToBottom).toBeGreaterThan(600)
 })
+
+test('dragging a launcher icon keeps items that overflowed to another page', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/?scenario=normal')
+  await expect(page.getByTestId('desktop-item-app-settings')).toBeVisible()
+
+  const noteText = 'Overflow note keeps its content.'
+  await page.getByTestId('notepad-preview-widget-notepad').click()
+  await page.getByTestId('notepad-editor-widget-notepad').fill(noteText)
+  await page.getByTestId('notepad-save-widget-notepad').click()
+  await expect(page.getByTestId('notepad-preview-widget-notepad')).toContainText(noteText)
+
+  const tileIds = () =>
+    page
+      .locator('[data-testid^="desktop-item-"]')
+      .evaluateAll((elements) => elements.map((el) => el.getAttribute('data-testid')).sort())
+  const allIds = await tileIds()
+  expect(allIds.length).toBeGreaterThan(0)
+
+  // Move the notepad four rows down so a short viewport can no longer fit it.
+  const settingsBox = (await page.getByTestId('desktop-item-app-settings').boundingBox())!
+  const aiCenterBox = (await page.getByTestId('desktop-item-app-ai-center').boundingBox())!
+  const cellHeight = aiCenterBox.y - settingsBox.y
+  const notepad = page.getByTestId('desktop-item-widget-notepad')
+  const notepadBox = (await notepad.boundingBox())!
+  await notepad.hover()
+  await page.mouse.down()
+  await page.mouse.move(
+    notepadBox.x + notepadBox.width / 2,
+    notepadBox.y + notepadBox.height / 2 + cellHeight * 4,
+    { steps: 14 },
+  )
+  await page.mouse.up()
+  await expect
+    .poll(async () => (await notepad.boundingBox())?.y ?? 0)
+    .toBeGreaterThan(notepadBox.y + cellHeight * 3)
+
+  // A 7×3 grid: the notepad (and the rightmost icons) overflow onto page 2.
+  await page.setViewportSize({ width: 780, height: 400 })
+  await expect.poll(async () => (await notepad.boundingBox())?.x ?? 0).toBeGreaterThanOrEqual(780)
+  expect(await tileIds()).toEqual(allIds)
+
+  // Drag a page-1 icon one cell down.
+  const settings = page.getByTestId('desktop-item-app-settings')
+  const before = (await settings.boundingBox())!
+  const cellHeightSmall =
+    (await page.getByTestId('desktop-item-app-ai-center').boundingBox())!.y - before.y
+  await settings.hover()
+  await page.mouse.down()
+  await page.mouse.move(
+    before.x + before.width / 2,
+    before.y + before.height / 2 + cellHeightSmall,
+    { steps: 12 },
+  )
+  await page.mouse.up()
+  await expect
+    .poll(async () => (await settings.boundingBox())?.y ?? 0)
+    .toBeGreaterThan(before.y + cellHeightSmall / 2)
+
+  // Nothing that lived on page 2 may disappear, before or after a reload.
+  expect(await tileIds()).toEqual(allIds)
+  await expect(page.getByTestId('notepad-preview-widget-notepad')).toContainText(noteText)
+
+  await page.reload()
+  await expect(page.getByTestId('desktop-item-app-settings')).toBeVisible()
+  expect(await tileIds()).toEqual(allIds)
+  await expect(page.getByTestId('notepad-preview-widget-notepad')).toContainText(noteText)
+})

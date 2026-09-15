@@ -1126,27 +1126,18 @@ export class DesktopUIStore {
     )
     if (nextPage === resolvedLayout.pages[resolvedPageIndex]) return
 
-    // Commit the displayed page: its auto-placed items keep the slot they
-    // were shown in (still `placementType: 'auto'`, so a later resize may
-    // reflow them). Items that overflowed onto this page from another page
-    // now live here, so drop them from their source page.
-    // If the drop happened on an overflow page that `resolveLayout` created,
-    // materialise it (and any overflow pages before it) in the same order.
-    const materialized = layoutState.pages.some((page) => page.id === pageId)
-      ? []
-      : resolvedLayout.pages
-          .slice(layoutState.pages.length, resolvedPageIndex + 1)
-          .map((page) => (page.id === pageId ? nextPage : page))
-    const pinnedIds = new Set(
-      [nextPage, ...materialized].flatMap((page) => page.items.map((item) => item.id)),
+    // Commit the layout *as displayed*, with the target page replaced by the
+    // collision result. `resolveLayout` places every item of `layoutState`
+    // on some page (creating overflow pages when needed), so taking its
+    // pages wholesale keeps items that a shrunken grid pushed off the page
+    // they are stored on: replacing only the target page with its resolved
+    // contents used to drop those (they were stored on the target page but
+    // displayed elsewhere), together with their config such as note text.
+    // Auto-placed items keep `placementType: 'auto'`, so a later resize may
+    // still reflow them.
+    const pages = resolvedLayout.pages.map((page, index) =>
+      index === resolvedPageIndex ? nextPage : page,
     )
-    const pages = layoutState.pages
-      .map((page) =>
-        page.id === pageId
-          ? nextPage
-          : { ...page, items: page.items.filter((item) => !pinnedIds.has(item.id)) },
-      )
-      .concat(materialized)
 
     this.update({ layoutState: { ...layoutState, pages } })
     this.persistLayout()
