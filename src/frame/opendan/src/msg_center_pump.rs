@@ -434,7 +434,13 @@ fn lower_inbound_message(
 fn inbound_text_preview(text: &str) -> String {
     const MAX_CHARS: usize = 100;
     let mut out = String::new();
-    for (i, ch) in text.split_whitespace().collect::<Vec<_>>().join(" ").chars().enumerate() {
+    for (i, ch) in text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .enumerate()
+    {
         if i >= MAX_CHARS {
             out.push('…');
             break;

@@ -203,6 +203,7 @@ fn merge_static_glm_inventory_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canonical::{CanonicalFallback, CanonicalFieldConverter};
     use crate::catalog::{CatalogBuildOptions, CatalogDocuments, CatalogSnapshot};
     use crate::protocol::{
         glm_chat_adapter, openai_chat_completions_adapter, CodecRegistry, ResolvedCredential,
@@ -399,5 +400,22 @@ mod tests {
         assert!(glm_image
             .logical_mounts
             .contains(&"image.txt2img".to_owned()));
+
+        let glm_tts = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "glm-tts")
+            .unwrap();
+        assert_eq!(glm_tts.api_types, vec![ApiType::AudioTextToSpeech]);
+        assert_eq!(glm_tts.operations["audio.tts"], "audio.speech");
+        assert!(glm_tts.logical_mounts.contains(&"audio.tts".to_owned()));
+        let voice = glm_tts.canonical_fields.get("/voice").unwrap();
+        assert_eq!(voice.converter, CanonicalFieldConverter::GlmTtsVoiceV1);
+        assert_eq!(
+            voice.fallback,
+            CanonicalFallback::Default {
+                value: serde_json::json!({})
+            }
+        );
     }
 }

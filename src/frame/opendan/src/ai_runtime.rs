@@ -130,14 +130,7 @@ impl LlmClient for AiccLlmClient {
         for feature in disable_capabilities {
             disable.set_feature_disabled(&feature);
         }
-        let response_format = if force_json {
-            Some(match json_schema {
-                Some(schema) => LlmResponseFormat::json_schema(None, schema, None),
-                None => LlmResponseFormat::json_object(),
-            })
-        } else {
-            None
-        };
+        let response_format = aicc_response_format(force_json, json_schema);
         let request = LlmChatHelperRequest {
             logical_model: model_alias,
             trace_id,

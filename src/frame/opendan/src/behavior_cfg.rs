@@ -656,6 +656,8 @@ mod tests {
             "use `llm_understand_media` for a general description or classification of audio",
             "reserve `speech_to_text` for established speech or explicit transcription requests",
             "present its diagnostic `candidate_text` only as an uncertain candidate",
+            "Use `exec_bash` to run the matching command",
+            "`text_to_speech`",
         ] {
             assert!(
                 media_cli_prompt.contains(required),

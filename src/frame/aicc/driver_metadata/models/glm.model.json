@@ -111,7 +111,13 @@
     {
       "id": "glm-tts",
       "api_types": ["audio.tts"],
-      "logical_mounts": ["audio.tts", "audio.tts.glm", "audio.tts.{model}"]
+      "logical_mounts": ["audio.tts", "audio.tts.glm", "audio.tts.{model}"],
+      "canonical_fields": {
+        "/voice": {
+          "converter": "glm_tts_voice_v1",
+          "fallback": { "action": "default", "value": {} }
+        }
+      }
     },
     {
       "id": "embedding-3",

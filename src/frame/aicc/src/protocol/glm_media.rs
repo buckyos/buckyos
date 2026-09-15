@@ -1,8 +1,8 @@
 use super::{
-    openai_responses_adapter, CodecRegistration, HttpBody, HttpRequest,
-    HttpResponse, NativeTaskCodec, NativeTaskHandle, NativeTaskInput, NativeTaskOperation,
-    NativeTaskOutput, NativeTaskState, OperationBinding, OperationDescriptor, ProtocolError,
-    ProtocolErrorKind, ProtocolOutput, ProtocolResultValue, OPENAI_AUDIO_SPEECH_OPERATION_ID,
+    openai_responses_adapter, CodecRegistration, HttpBody, HttpRequest, HttpResponse,
+    NativeTaskCodec, NativeTaskHandle, NativeTaskInput, NativeTaskOperation, NativeTaskOutput,
+    NativeTaskState, OperationBinding, OperationDescriptor, ProtocolError, ProtocolErrorKind,
+    ProtocolOutput, ProtocolResultValue, OPENAI_AUDIO_SPEECH_OPERATION_ID,
     OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID, OPENAI_EMBEDDINGS_OPERATION_ID,
     OPENAI_IMAGES_GENERATE_OPERATION_ID,
 };
@@ -250,7 +250,9 @@ fn decode_result(value: &Value) -> ProtocolResultValue<NativeTaskOutput> {
     let videos = value
         .get("video_result")
         .and_then(Value::as_array)
-        .ok_or_else(|| ProtocolError::invalid_response("GLM video result is missing video_result"))?;
+        .ok_or_else(|| {
+            ProtocolError::invalid_response("GLM video result is missing video_result")
+        })?;
     let mut resources = Vec::with_capacity(videos.len());
     let mut artifacts = Vec::with_capacity(videos.len());
     for (index, video) in videos.iter().enumerate() {
@@ -298,8 +300,13 @@ fn resource_string(
     }
 }
 
-fn require_parameter_subset(parameters: &std::collections::BTreeMap<String, Value>) -> ProtocolResultValue<()> {
-    if let Some(name) = parameters.keys().find(|name| name.as_str() != "provider_model_id") {
+fn require_parameter_subset(
+    parameters: &std::collections::BTreeMap<String, Value>,
+) -> ProtocolResultValue<()> {
+    if let Some(name) = parameters
+        .keys()
+        .find(|name| name.as_str() != "provider_model_id")
+    {
         return Err(ProtocolError::invalid_request(format!(
             "resolved GLM video parameter `{name}` is not supported"
         )));
@@ -312,9 +319,9 @@ fn safe_task_id(value: Option<&str>) -> ProtocolResultValue<&str> {
         .filter(|value| {
             !value.is_empty()
                 && value.len() <= 512
-                && value.bytes().all(|byte| {
-                    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
-                })
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
         })
         .ok_or_else(|| ProtocolError::invalid_request("GLM video task ID is invalid"))
 }

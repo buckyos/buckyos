@@ -1688,7 +1688,9 @@ fn user_message_round_errors_remain_user_visible() {
         preview: "hello".to_string(),
     };
     assert!(should_notify_user_on_round_error(Some(&trigger)));
-    assert!(should_notify_user_on_round_error(Some(&RoundTrigger::Mixed)));
+    assert!(should_notify_user_on_round_error(Some(
+        &RoundTrigger::Mixed
+    )));
     assert!(should_notify_user_on_round_error(None));
 }
 

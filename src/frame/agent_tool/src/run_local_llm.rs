@@ -964,6 +964,15 @@ fn deliver_completed(
     }
 }
 
+fn aicc_response_format(force_json: bool, json_schema: Option<Value>) -> Option<LlmResponseFormat> {
+    force_json.then(|| match json_schema {
+        Some(schema) => {
+            LlmResponseFormat::json_schema(Some("llm_response".to_string()), schema, None)
+        }
+        None => LlmResponseFormat::json_object(),
+    })
+}
+
 // =========================================================================
 // resume / list / status / result
 // =========================================================================

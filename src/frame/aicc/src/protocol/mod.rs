@@ -68,13 +68,14 @@ pub(crate) use openai_chat_completions::{
     OPENAI_CHAT_COMPLETIONS_ADAPTER_ID, OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
     OPENAI_PROTOCOL_FAMILY_ID,
 };
-pub(crate) use openai_responses::{
-    OPENAI_AUDIO_SPEECH_OPERATION_ID, OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
-    OPENAI_EMBEDDINGS_OPERATION_ID, OPENAI_IMAGES_GENERATE_OPERATION_ID,
-    OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID, openai_responses_adapter,
-};
 #[cfg(test)]
 pub(crate) use openai_responses::OPENAI_VIDEOS_OPERATION_ID;
+pub(crate) use openai_responses::{
+    openai_responses_adapter, OPENAI_AUDIO_SPEECH_OPERATION_ID,
+    OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID, OPENAI_EMBEDDINGS_OPERATION_ID,
+    OPENAI_IMAGES_GENERATE_OPERATION_ID, OPENAI_RESPONSES_ADAPTER_ID,
+    OPENAI_RESPONSES_OPERATION_ID,
+};
 pub(crate) use provider_state::{
     bind_provider_state_source, foreign_provider_state_text, provider_state_is_native,
 };

@@ -373,7 +373,8 @@ impl<'a> CallResolver<'a> {
         if let Some(rule) = &provider_rule {
             canonical_fields.extend(rule.action.canonical_fields.clone());
         }
-        apply_canonical_mappings(&mut canonical_json, &mut normalized, &canonical_fields)?;
+        let canonical_provider_options =
+            apply_canonical_mappings(&mut canonical_json, &mut normalized, &canonical_fields)?;
         merge_user_options(&mut normalized, &canonical_json, option_keys);
         if let Some(rule) = &provider_rule {
             let defaults_context = request_match_context(api_name, &operation, &normalized);
@@ -399,7 +400,8 @@ impl<'a> CallResolver<'a> {
         let rewritten_request =
             AiccCall::from_method_and_params(&method, rewritten_json.clone())
                 .map_err(|error| CallLoweringError::InvalidCanonicalRequest(error.to_string()))?;
-        let mut resolved_parameters = provider_parameters(&normalized, option_keys);
+        let mut resolved_parameters =
+            provider_parameters(&normalized, option_keys, &canonical_provider_options);
         resolved_parameters.insert(
             "provider_model_id".into(),
             Value::String(decision.selected.provider_model_id.clone()),
@@ -857,7 +859,8 @@ fn apply_canonical_mappings(
     canonical: &mut Value,
     normalized: &mut Value,
     mappings: &BTreeMap<String, CanonicalFieldMapping>,
-) -> Result<(), CallLoweringError> {
+) -> Result<BTreeMap<String, Value>, CallLoweringError> {
+    let mut provider_options = BTreeMap::new();
     for (pointer, mapping) in mappings {
         let (resolved, strict) = match canonical.pointer(pointer).cloned() {
             Some(value) => {
@@ -884,12 +887,13 @@ fn apply_canonical_mappings(
             continue;
         };
         set_pointer(canonical, pointer, resolution.resolved)?;
+        provider_options.extend(resolution.provider_options.clone());
         merge_overwrite(
             normalized,
             &Value::Object(resolution.provider_options.into_iter().collect()),
         );
     }
-    Ok(())
+    Ok(provider_options)
 }
 
 fn set_pointer(
@@ -1115,14 +1119,20 @@ fn rewrite_canonical_options(
     Ok(rewritten)
 }
 
-fn provider_parameters(normalized: &Value, canonical_keys: &[&str]) -> BTreeMap<String, Value> {
-    normalized
+fn provider_parameters(
+    normalized: &Value,
+    canonical_keys: &[&str],
+    canonical_provider_options: &BTreeMap<String, Value>,
+) -> BTreeMap<String, Value> {
+    let mut parameters = normalized
         .as_object()
         .into_iter()
         .flatten()
         .filter(|(key, _)| !canonical_keys.contains(&key.as_str()))
         .map(|(key, value)| (key.clone(), value.clone()))
-        .collect()
+        .collect::<BTreeMap<_, _>>();
+    parameters.extend(canonical_provider_options.clone());
+    parameters
 }
 
 fn collect_resource_requirements(value: &Value) -> Vec<ResourceRequirement> {
@@ -1183,6 +1193,7 @@ fn resolve_pricing(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canonical::{CanonicalFallback, CanonicalFieldConverter};
     use crate::catalog::{
         CatalogBuildOptions, CatalogDocuments, CatalogKind, CurrentCatalogFile, ModelDriverCatalog,
         ProviderRulesCatalog, ResolvedProviderConfiguration,
@@ -1554,6 +1565,33 @@ mod tests {
             lowered.input.resolved_parameters.get("provider_model_id"),
             Some(&json!("gpt-5.2"))
         );
+    }
+
+    #[test]
+    fn canonical_provider_options_survive_canonical_key_filtering() {
+        let mut canonical = json!({
+            "text": "hello",
+            "voice": {"language": "zh-CN"}
+        });
+        let mut normalized = json!({});
+        let mappings = BTreeMap::from([(
+            "/voice".to_owned(),
+            CanonicalFieldMapping {
+                converter: CanonicalFieldConverter::GlmTtsVoiceV1,
+                fallback: CanonicalFallback::Default { value: json!({}) },
+            },
+        )]);
+        let provider_options =
+            apply_canonical_mappings(&mut canonical, &mut normalized, &mappings).unwrap();
+        merge_user_options(&mut normalized, &canonical, &["voice", "speed", "output"]);
+
+        let parameters = provider_parameters(
+            &normalized,
+            &["voice", "speed", "output"],
+            &provider_options,
+        );
+
+        assert_eq!(parameters.get("voice"), Some(&json!("tongtong")));
     }
 
     #[test]

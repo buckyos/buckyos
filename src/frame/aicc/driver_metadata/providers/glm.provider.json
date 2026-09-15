@@ -29,7 +29,16 @@
     { "id": "cogview-4", "operations": { "image.txt2img": "images.generate" } },
     { "id": "cogview-3-flash", "operations": { "image.txt2img": "images.generate" } },
     { "id": "glm-asr-2512", "operations": { "audio.asr": "audio.transcriptions" } },
-    { "id": "glm-tts", "operations": { "audio.tts": "audio.speech" } },
+    {
+      "id": "glm-tts",
+      "operations": { "audio.tts": "audio.speech" },
+      "canonical_fields": {
+        "/voice": {
+          "converter": "glm_tts_voice_v1",
+          "fallback": { "action": "default", "value": {} }
+        }
+      }
+    },
     { "id": "embedding-3", "operations": { "embedding.text": "embeddings.create" } },
     { "id": "embedding-2", "operations": { "embedding.text": "embeddings.create" } },
     { "id": "cogvideox-3", "operations": { "video.txt2video": "videos.generate", "video.img2video": "videos.generate" } },
