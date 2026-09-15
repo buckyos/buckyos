@@ -1,153 +1,153 @@
-# BuckyOS Beta2 (0.6.0) 发布！
+# BuckyOS Beta2.2 (0.7.0)
 
-Beta2 是 BuckyOS 在 AI 时代的一次大更新，主要新增功能如下：
+[English](README.md) | **简体中文**
 
-- 两个新的内核组件：`kmsgqueue` + `kevent`，配合使用可以实现高性能的分布式事件通知
-- 新增了完整的 BuckyOS Desktop WebUI
-- 完成 [OpenDAN](https://github.com/fiatrete/OpenDAN-Personal-AI-OS) 的移植（使用 Rust 重新实现）
-  - 内置 Agent Jarvis
-  - 提供了 UI-Session <-> WorkSession 的基础体系
-  - 实现 Agent-Behavior Loop，相比 skills 能更准确地支持一些“行为模式”
-  - 基于“意图引擎”重新设计 Agent Tool，并完成了必要的元工具实现
-  - 升级了 Agent Memory 系统，使用 `set_memory` + `topic` 组合，同时支持自动 memory 查询/压缩，以及 Agent 基于文件系统的手工查找
-  - 支持基于 TODO List 的 SubAgent 体系
-  - 提供 Runtime Sandbox，Agent 之间可以完全可控地隔离
-- 新增 AI Computer Center，统一实现集群 AI 能力管理和模型路由
-- 新增 Msg Center，对 DID 实体提供统一的 Message Inbox/Outbox 管理，为规划中的两个默认应用 Message Hub 和 Home Station 提供底层支持
-  - Msg Center 支持 Msg Tunnel 扩展（已完整支持 Telegram API）
-- 新增 Workflow 引擎，支持 Agent-Human-Loop，并作为 Agent 意图引擎的底层（*该组件目前在开发中）
-- 完全重构了 ndn-lib 的 Named Store 存储层
-- 重新实现 repo-service，从过去的“app 源”升级为通用的“数字内容管理与分发基础服务”
-- 已经完成了 CYFS（基于 `cyfs://` 的分布式文件系统）的内核开发，计划在 Beta3 启用
-- cyfs-gateway 也有多处更新，丰富了 Server 配置，进一步增强了 process-chain 的能力
-- BuckyOS 的集群路由 process-chain 已重写，更加模块化，能够支持更丰富的网关安全能力，从源头保护系统安装
-- Rtcp 协议安全升级中，计划在 Beta2 的前两次迭代中完成
-- 支持虚拟机管理，并可以把虚拟机分配给 Agent 使用（*该功能目前开发中）
-- 调度器支持 Function Instance，取代原规划的 OPTask（*该功能目前开发中）
-- BuckyOS TypeScript SDK 成为一等公民，将得到和 Rust SDK 相同的功能（*进行中）
-  - 开发者可以选择 TypeScript 或 Rust 来开发 BuckyOS Native App
-- 增加了支持 Harness Engineering 的基础设施，我们会在这个版本完全切换到 AI-Native 的开发工作流
+BuckyOS 是一个开源的个人 AI 操作系统，将你的设备、应用、数据和 AI Agent 整合到一个 **Zone** 中，构成由你掌控的个人云。
 
-**加入我们的征程吧！欢迎随时提交 issue 或 pull request！让我们共同构建下一代分布式 Personal AI 操作系统！**
+当前源码面向 **Beta2.2 / 0.7.0**，计划于 **2026 年 10 月 15 日**正式上线。这是一次包含不兼容变更的版本更新：系统配置、身份、应用打包和 Agent 配置均有调整，不保证与早期 Beta 版本向后兼容。
 
-Beta2 首个版本发布后，我们将进入快速迭代状态，期望每周都有带来用户体验改进的版本发布。
+## Beta2.2 的主要功能
 
-内核方向，我们正在以“第一个商用级、Zero OP 的个人分布式私有云”为目标，推进数据可靠性和系统自恢复相关的工作。该版本规划为 Beta3，计划在 4 月底发布。
+- **Web Desktop 与 Control Panel**：统一的桌面环境，支持应用窗口、设置、用户与 Agent 管理、AI Center、Task Center 和应用管理。
+- **FileBrowser 与 Preview**：内置文件浏览和预览界面。FileBrowser 通过 `nfs-server` 执行文件操作，后台复制任务由 Task Manager 管理。
+- **MessageHub 与 Message Center**：内置消息应用，以 `msg-center` 为后端，支持会话历史、附件、已读状态，以及会话归档、恢复和删除。服务层提供基于 DID 的收发箱、联系人、自托管群组、原生消息通信和 Telegram 通道。
+- **OpenDAN 与 Jarvis**：基于 Rust 的 Agent Runtime，支持可配置的会话类别与行为循环、记忆和工作区工具、消息与事件路由、任务委派，以及请求人工输入。Jarvis 以带版本号的 `.pikg` 应用包交付，提示词、行为配置和翻译资源位于 [`src/apps/jarvis_runtime/agent`](src/apps/jarvis_runtime/agent)。
+- **AI Compute Center（AICC）**：提供服务商与模型管理、逻辑模型路由、用量日志，以及文本和媒体能力的适配器。桌面中的 AI Center 提供相应的管理界面。
+- **Workflow 与 Task Manager**：支持工作流定义与运行、计划任务、任务进度与控制，以及人工审批或介入。Workflow 和 OpenDAN 与 Task Manager、`kevent` 集成，交换任务状态更新。
+- **应用交付与 SDK/CLI**：支持 `.pikg` 包、经过校验的安装计划、按用户区分的应用实例和网关路由。TypeScript SDK 与 `buckyos` CLI 一起构建并随系统分发；Rust 服务使用 `buckyos-api`。
+- **系统基础设施**：`system-config`、调度器和 `node-daemon` 管理系统目标状态与部署；`verify-hub` 和 RBAC 负责登录与授权。`kmsg` 和 `kevent` 提供消息与事件通知，`repo-service` 和命名对象存储支持内容交付。
+- **开发工作流**：包含各平台的构建与打包流水线、本地开发验证（DV）测试，以及 [`harness/`](harness/README.md) 中的贡献者指南。
+
+### 当前限制与进行中的工作
+
+Beta2.2 仍在持续完善。服务或界面的存在并不代表所有规划能力均已完成：
+
+- 当前运行的 Workflow 服务将定义、运行状态和对象存储保存在内存中。计划任务定义已镜像到 Task Manager，但工作流的持久化恢复，以及 `func::*` 到调度器的调用链路仍待完成。
+- 调度器已有 FunctionObject/Thunk 支持，但核心中仍保留 OPTask，尚未完成用 Function Instance 替代 OPTask 的计划。
+- Telegram 是当前仓库已实现的外部消息通道。Lark 和其他外部通道仍属于后续工作。
+
+**欢迎提交 issue 和 pull request，一起构建下一代个人 AI 操作系统。**
 
 ## 开始使用
 
-首先获取活跃代码：
-[https://github.com/buckyos/buckyos/discussions/70](https://github.com/buckyos/buckyos/discussions/70)
+源码支持在 macOS、Linux 和 Windows 上构建。以下命令使用 macOS/Linux shell。BuckyOS Desktop 是面向 Mac/Windows 的桌面发行版；Linux 构建面向服务器和开发环境。
 
-从源码安装是了解 BuckyOS 的好方法，也是迈向贡献的第一步。BuckyOS 支持在 macOS / Linux / Windows 上完成构建。
+### 第 1 步：获取源码并准备环境
 
-```bash
-git clone https://github.com/buckyos/buckyos.git
-```
-
-clone 完成后，先安装 `uv`。仓库根目录现在带有 `pyproject.toml`，因此主开发脚本可以直接通过 `uv run` 拉起 `buckyos-devkit`，不需要先手工创建项目 venv：
-
-如果本机还没准备好开发环境，可以先执行 `python3 devenv.py`。脚本会按当前平台安装 `uv`、`deno`、`tmux` 以及其他基础依赖。
+将以下仓库克隆到同一父目录，统一使用 `main` 分支：
 
 ```bash
+git clone --branch main https://github.com/buckyos/buckyos.git
+git clone --branch main https://github.com/buckyos/cyfs-gateway.git
+git clone --branch main https://github.com/buckyos/buckyos-websdk.git
 cd buckyos
-uv run src/buckyos-build.py --skip-web
 ```
 
-开始构建：构建前可以参考 `devenv.py` 搭建环境。我们主要依赖 `Rust 工具链、Node.js + pnpm、Python 3.12、uv、Deno、tmux、docker.io`。安装成功后执行下面命令开始构建。
+构建需要稳定版 Rust 工具链、当前平台的 C/C++ 构建工具、Python 3.12+、`uv`、Node.js 及 npm 和 pnpm，以及 Deno。容器应用需要 Docker，开发工具会用到 tmux。当前 CI 使用 Node.js 24、pnpm 10.13.1 和 Deno 2.9.2。
 
-### Step 1. 构建 cyfs-gateway
-
-目前 BuckyOS 依赖 cyfs-gateway，因此在运行前需要先从源码构建 cyfs-gateway：
+可以先查看并运行 [`devenv.py`](devenv.py)，安装当前平台的基础依赖：
 
 ```bash
-cd ~/
-git clone https://github.com/buckyos/cyfs-gateway.git
-cd cyfs-gateway/src
+python3 devenv.py
+```
+
+根目录的 `pyproject.toml` 让 `uv run` 自动解析 `buckyos-devkit`，无需手工创建单独的虚拟环境。
+
+### 第 2 步：构建并安装 cyfs-gateway
+
+从 `buckyos` 仓库根目录执行：
+
+```bash
+cd ../cyfs-gateway/src
 uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main" buckyos-build
 uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main" buckyos-install --all
+cd ../../buckyos/src
 ```
 
-### Step 2. 构建并更新 buckyos rootfs
+### 第 3 步：构建 BuckyOS
 
-回到 BuckyOS 目录，执行下面命令：
+在 `buckyos/src` 下执行：
 
 ```bash
-cd buckyos/src
-uv run ./buckyos-build.py
-uv run ./buckyos-install.py --all
+uv run buckyos-build.py
 ```
 
-`uv run ./buckyos-build.py` 有意设计为不只是纯编译命令。它会先运行 devkit 的 `buckyos-build`，然后运行 `buckyos-update`，把最新构建结果复制到已安装的 BuckyOS rootfs 中，通常 macOS/Linux 下是 `/opt/buckyos`，Windows 下是 `%APPDATA%\buckyos`。VM 相关开发脚本依赖这个 rootfs 保持最新；Linux VM 流程也可以通过更新后的 rootfs 直接使用交叉编译结果。
+该脚本先从同级的 `buckyos-websdk` 仓库构建并打包 SDK/CLI，将 Deno 运行时一同打包，再调用 devkit 构建。如果 SDK 源码位于其他位置，可通过 `BUCKYOS_SDK_TOOL_SOURCE` 指定。使用 `--skip-web` 或 `-s <module>` 时也会执行这一步，因此仍需要 SDK 源码、Node.js、npm、pnpm 和 Deno。
 
-首次源码安装，或需要完整刷新已安装 rootfs 的数据、配置和模块布局时，请保留 `buckyos-install.py --all` 这一步。BuckyOS 已安装后的日常开发中，`uv run ./buckyos-build.py` 通常就是“编译并更新已安装 rootfs”的常用命令。
+构建产物汇总到 `src/rootfs`。**`buckyos-build.py` 不会更新已安装的运行环境。** 使用 `start.py` 将最新产物复制到安装目录并重启系统。发布构建所用的预构建 SDK/CLI 输入，参见 [`src/readme.md`](src/readme.md)。
 
-如果 BuckyOS 已经在运行，`buckyos-build.py` 可能会尝试覆盖正在运行的二进制，例如 `bin/node-daemon/node_daemon`。更新已安装产物前应先停止本机 runtime。`src/stop.py` 只是按已知进程名 kill，不会停用 host service manager 或 keepalive launcher，因此被服务管理的 `node_daemon` 可能会自动拉起。更新 host 托管的服务前，应先通过对应平台的安装器或服务管理器停止它。
+### 第 4 步：初始化并启动 Zone
 
-如果开发机器上同时安装了 BuckyOS Desktop 版本，需要特别小心。源码开发 rootfs 和 Desktop 管理的 BuckyOS runtime 可能争用同一个 rootfs、服务注册、端口和运行进程。应把源码开发环境和 BuckyOS Desktop 测试环境分开。例如把 Desktop 版本跑在独立 VM 中，把宿主机留给源码开发。
+从下面两种初始化方式中选择一种，命令均在 `buckyos/src` 下执行。
 
-### Step 3. 启动 buckyos
-
-首次安装：
+**本地开发：**
 
 ```bash
-cd src && uv run ./start.py --reinstall release
+uv run start.py --all
+uv run check.py
 ```
 
-源码安装不会自动将 BuckyOS 加入自启服务。后续如需手工启动，请执行：
+`--all` 使用 `dev` 配置：Owner 为 `devtest`，Zone 为 `test.buckyos.io`，身份已预先配置，无需手工激活或 SN 中转。在开发机上访问 `http://test.buckyos.io`，并确保该域名及应用子域名解析到本地运行环境。应用开发步骤与测试登录信息见[应用开发指南](doc/sdk/app-dev-quickstart.md)。
+
+**首次安装并通过界面激活：**
 
 ```bash
-cd src && uv run ./start.py
+uv run start.py --reinstall release
+uv run check.py
 ```
 
-**注意：千万不要再次执行上面的 `uv run ./start.py --reinstall release`，这会导致系统被 soft reset。**
+该命令使用 `buckyos.ai` 环境初始化一个待激活系统，访问 `http://127.0.0.1:3182` 完成激活。`nightly` 配置组则使用 `buckyos.io` 环境。
 
-`start.py` 里实际执行的是下面命令，你可以手工把该命令加入当前系统的自启服务列表：
+**仅在明确需要重新初始化系统时使用 `--all` 或 `--reinstall`。** 它们会重置配置和运行状态。安装布局会保留 `data/home`、`data/srv` 和 `storage`，因此重新初始化不等于彻底清空数据。切换 Beta 版本或重置已有系统前，请先备份。
+
+日常更新与重启使用：
 
 ```bash
-sudo /opt/buckyos/bin/node-daemon/node_daemon --enable_active
+uv run start.py
 ```
 
-#### 常见坑点与排查（过渡期）
+`start.py` 会停止已知的 BuckyOS 进程，更新已安装产物，然后在后台启动 `node_daemon --enable_active`。运行根目录在 macOS/Linux 上默认为 `/opt/buckyos`，在 Windows 上默认为 `%APPDATA%\buckyos`，可通过 `BUCKYOS_ROOT` 覆盖。请确保当前用户具有运行目录与端口所需的权限。源码启动流程不会注册宿主机自启服务。
 
-- **经常需要 `cargo update`**：尤其是新环境或依赖锁漂移时。
-- **`make_config.ts` 依赖 Deno >= 2.2**：在 buckyos 的 `src/` 目录执行 `deno task make_config <group> --rootfs <rootfs>`。
-- **不要手工 kill 一个由服务管理的 `node_daemon` 后就认为它会保持停止**：launchd、systemd 或 Windows keepalive 任务都可能自动重新拉起它。应使用与启动方式匹配的 BuckyOS stop/uninstall 路径。
-- **除非明确管理 runtime，否则不要把源码开发环境和 BuckyOS Desktop 混在同一台机器上**：两者可能同时触碰相同的已安装 rootfs 和 host service 状态。把 Desktop 放在 VM 里是更低摩擦的推荐做法。
+如果已有运行环境由 systemd、launchd 或 Windows 保活服务托管，请在安装或更新产物前，通过对应的服务管理器停止它。单独执行 `stop.py` 不会禁用自动重启。源码开发与 BuckyOS Desktop 测试应使用独立环境，避免争用相同的运行目录、服务和端口。
 
-### 源码目录的常用脚本
+### 常用开发命令
 
-- 下面脚本只进行 Rust 部分的构建：
+在 `buckyos/src` 下执行：
+
+| 用途 | 命令 |
+| --- | --- |
+| 构建系统与 Web UI | `uv run buckyos-build.py` |
+| 跳过 Web UI 构建（仍会构建 SDK/CLI） | `uv run buckyos-build.py --skip-web` |
+| 构建指定模块 | `uv run buckyos-build.py -s <module>` |
+| 更新已安装产物并重启 | `uv run start.py` |
+| 仅重启，不更新产物 | `uv run start.py --skip-update` |
+| 检查激活状态与运行健康状况 | `uv run check.py` |
+| 停止本地进程 | `uv run stop.py` |
+| 在前台调试 Jarvis | `./debug_jarvis.sh` |
+| 运行 Rust 单元测试 | `cargo test` |
+
+启动所需的开发环境后，在仓库根目录列出并运行 DV 测试：
 
 ```bash
-cd src
-uv run ./buckyos-build.py --skip-web
+uv run src/check.py
+uv run test/run.py --list
+uv run test/run.py -p aicc_test
 ```
 
-Rust 构建成功后仍会更新已安装 rootfs；`--skip-web` 只是跳过 Web UI 构建。
+### 配置组
 
-- 下面脚本只更新编译产物并启动 `/opt/buckyos`：
+`start.py --reinstall <group>` 为指定环境重新生成配置。当前配置组定义在 [`src/devenv_config.ts`](src/devenv_config.ts) 和 [`src/make_config.ts`](src/make_config.ts) 中：
 
-```bash
-cd src
-uv run ./start.py
-```
+| 配置组 | 用途 |
+| --- | --- |
+| `dev`、`devtest_ood1` | 预先配置的本地 DV Zone，域名为 `test.buckyos.io` |
+| `release` | 使用 `buckyos.ai` 环境的待激活系统 |
+| `nightly` | 使用 `buckyos.io` 环境的待激活系统 |
+| `vmtest` | 不预置身份的 VM 激活测试 |
+| `alice.ood1`、`bob.ood1`、`charlie.ood1`、`dave.ood1` | 分布式测试环境的预设身份与网络场景 |
+| `devtests_ood1`、`sn_web` | 测试环境使用的 `devtests.org` OOD |
 
-- 下面脚本基于指定的配置组重装 BuckyOS：
-
-```bash
-cd src
-uv run ./start.py --reinstall $group_name
-```
-
-如果 `group_name` 为空，则使用空配置文件启动 BuckyOS，此时进入待激活状态。
-
-目前系统带有几组常用配置文件：
-
-- `release`（正式环境，使用 buckyos.ai 的 SN 设施）
-- `dev`（无 SN 的开发测试配置，不依赖任何本机外组件）
-- `alice.ood1`、`bob.ood1`、`charlie.ood1`：3 个预设身份，均使用计划部署到虚拟测试环境的 `devtests.org` 环境
-- `sn`：虚拟测试环境中的 SN
+SN 配置生成已移至 `cyfs-gateway/src/make_sn_config.ts`；BuckyOS 的 `make_config.ts` 不再支持 `sn` 和 `sn_server`。
 
 ## BuckyOS 的愿景
 
@@ -157,10 +157,13 @@ uv run ./start.py --reinstall $group_name
 
 ### 了解更多 BuckyOS 内容
 
-- BuckyOS 架构设计（敬请期待）
-- Hello BuckyOS!（敬请期待）
-- BuckyOS dApp 开发者手册（敬请期待）
-- BuckyOS 贡献者指南（敬请期待）
+- [架构与核心概念](doc/arch/README.md)
+- [应用开发快速入门](doc/sdk/app-dev-quickstart.md)
+- [Rust API Runtime](doc/sdk/buckyos-api-runtime.md)
+- [OpenDAN Agent 开发](doc/sdk/OpenDAN_Agent_Dev_Guide.md)
+- [源码目录与 SDK/CLI 构建](src/readme.md)
+- [运行时目录](doc/path_usage.md)
+- [贡献者工作流](harness/README.md)与[仓库开发约定](AGENTS.md)
 
 ## 下一代 GPL：创建全新开源协作模型
 
@@ -194,8 +197,11 @@ SourceDAO 是基于以上理念构建的开源 DAO 智能合约。更多详情�
 
 #### 2026
 
-- **0.6.0 Beta2：** 2.5%（2026 年 Q1，本次发布，迭代开发中）
-- **0.7.0 Beta3：** 2.5%（计划于 2026 年 4 月底发布）
+- **0.6.0 Beta2：** 4%（2026 年 4 月已完成）
+- **0.7.0 Beta2.2：** 7.5%（计划于 2026 年 10 月 15 日正式上线）
+- **0.8.0 Beta3：** 2.5%（完整的分布式内核版本，计划于 2026 年底上线）
+
+**0.8.0 / Beta3** 的目标是交付完整的分布式内核，计划于 2026 年底上线。相关工作包括分布式存储集成、备份恢复、数据可靠性和系统自恢复。
 
 ## 许可证
 

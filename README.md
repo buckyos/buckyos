@@ -1,152 +1,154 @@
-# BuckyOS Beta2 (0.6.0) Release!
+# BuckyOS Beta2.2 (0.7.0)
 
-Beta2 is a major BuckyOS update for the AI era. Key additions include:
+**English** | [简体中文](README_zhCN.md)
 
-- Two new kernel components: `kmsgqueue` + `kevent`, which together enable high-performance distributed event notification
-- A complete BuckyOS Desktop WebUI
-- A completed port of [OpenDAN](https://github.com/fiatrete/OpenDAN-Personal-AI-OS), reimplemented in Rust
-  - Built-in Jarvis agent
-  - Core UI-Session <-> WorkSession architecture
-  - An Agent-Behavior Loop that supports certain behavior patterns more accurately than skills alone
-  - Agent Tool redesigned around the Intent Engine, together with the necessary meta-tools
-  - Upgraded Agent Memory using `set_memory` + `topic`, plus automatic memory query/compression and filesystem-based manual lookup by agents
-  - Support for a TODO-list-based SubAgent system
-  - A Runtime Sandbox with fully controlled isolation between agents
-- A new AI Computer Center for unified cluster AI capability management and model routing
-- A new Msg Center that provides unified Message Inbox/Outbox management for DID entities and serves as the foundation for the planned default apps Message Hub and Home Station
-  - Msg Center support for Msg Tunnel extensions, with full Telegram API support already implemented
-- A complete refactor of the Named Store storage layer in ndn-lib
-- A reimplemented repo-service, upgraded from an "app source" into a general-purpose digital content management and distribution infrastructure service
-- Multiple cyfs-gateway updates that expand Server configuration and further strengthen process-chain capabilities
-- A rewritten BuckyOS cluster-routing process-chain that is more modular, supports richer gateway security, and protects system installation from the source
-- Rtcp protocol security upgrades are in progress and are planned to be completed in the first two Beta2 iterations
-- Infrastructure for Harness Engineering has been added, and we will fully switch to an AI-native development workflow in this release
-- A new Workflow engine with Agent-Human-Loop support, serving as the foundation of the Agent Intent Engine (move to beta2.2)
-- Support for virtual machine management, with VMs assignable to agents (move to beta3)
-- Scheduler support for Function Instance, replacing the originally planned OPTask (move to beta2.2)
-- Kernel development for CYFS (a distributed file system based on `cyfs://`) is complete and planned to be enabled in Beta3
-- The BuckyOS TypeScript SDK is becoming a first-class citizen and will gain feature parity with the Rust SDK (move to bete 2.2)
-  - Developers can choose either TypeScript or Rust to build BuckyOS native apps
-    
-**Join us on this journey. Issues and pull requests are always welcome. Let’s build the next generation of distributed personal AI operating systems together.**
+BuckyOS is an open-source personal AI operating system. It brings your devices, applications, data, and AI agents together in a **Zone**: a personal cloud under your control.
 
-After the first Beta2 release, we will move into a rapid iteration phase, with the goal of shipping user-experience improvements every week.
-On the kernel side, we are pushing toward "the first commercial-grade, Zero OP personal distributed private cloud," with current work focused on data reliability and system self-healing. That version is planned as Beta3 and is currently targeted for late April 2026.
+The current source tree targets **Beta2.2 / 0.7.0**, with the official launch planned for **October 15, 2026**. This is a breaking-change release: system configuration, identity, application packaging, and agent configuration have changed. Backward compatibility with earlier betas is not guaranteed.
+
+## What's in Beta2.2
+
+- **Web Desktop and Control Panel**: a shared desktop with application windows, Settings, Users & Agents, AI Center, Task Center, and application management.
+- **FileBrowser and Preview**: built-in file browsing and preview interfaces. FileBrowser connects to `nfs-server` for file operations; background copy jobs use Task Manager.
+- **MessageHub and Message Center**: a built-in messaging app backed by `msg-center`, with conversation history, attachments, read state, and session archive/restore/delete. The service provides DID-based mailboxes, contacts, self-hosted groups, native messaging, and a Telegram tunnel.
+- **OpenDAN and Jarvis**: the Rust agent runtime supports configurable session classes and behavior loops, memory and workspace tools, message/event routing, delegated tasks, and requests for human input. Jarvis is packaged as a versioned `.pikg` application; its prompts, behaviors, and translations live in [`src/apps/jarvis_runtime/agent`](src/apps/jarvis_runtime/agent).
+- **AI Compute Center (AICC)**: provider and model management, logical model routing, usage logging, and adapters for text and media capabilities. AI Center exposes these controls in the desktop.
+- **Workflow and Task Manager**: workflow definitions and runs, scheduled tasks, task progress/control, and human approval or intervention. Workflow and OpenDAN integrate with Task Manager and `kevent` to exchange task updates.
+- **Application delivery and SDK/CLI**: `.pikg` packages, validated installation plans, per-user application instances, and gateway routing. The TypeScript SDK and `buckyos` CLI are built together and bundled into the system; Rust services use `buckyos-api`.
+- **System infrastructure**: `system-config`, the scheduler, and `node-daemon` manage desired state and deployment; `verify-hub` and RBAC handle login and authorization. `kmsg` and `kevent` provide messaging and event notification, while `repo-service` and named-object storage support content delivery.
+- **Development workflow**: platform build/packaging pipelines, local development verification (DV) tests, and contributor guidance under [`harness/`](harness/README.md).
+
+### Current boundaries and ongoing work
+
+Beta2.2 is still being refined. The presence of a service or UI does not mean every planned capability is complete:
+
+- Workflow's running service currently keeps definitions, runs, and its object store in memory. Schedule definitions are mirrored to Task Manager, but durable workflow recovery and the `func::*` path into the scheduler are still pending.
+- The scheduler has FunctionObject/Thunk support, but its core still contains OPTask. The planned replacement with Function Instance is not complete.
+- Telegram is the external message tunnel implemented in this repository. Lark and other external channels remain future work.
+
+
+**Issues and pull requests are welcome. Help us build the next generation of personal AI operating systems.**
 
 ## Getting Started
 
-Get the active code first:
-[https://github.com/buckyos/buckyos/discussions/70](https://github.com/buckyos/buckyos/discussions/70)
+The source build supports macOS, Linux, and Windows. The commands below use a macOS/Linux shell. BuckyOS Desktop is the Mac/Windows desktop distribution; Linux builds target servers and development environments.
 
-Installing from source is a good way to understand BuckyOS and the first step toward contributing. BuckyOS can be built on macOS, Linux, and Windows.
+### Step 1. Get the sources and prepare the environment
 
-```bash
-git clone https://github.com/buckyos/buckyos.git
-```
-
-After cloning, install `uv` first. The repo now ships a root `pyproject.toml`, so `uv run` can resolve `buckyos-devkit` for the main development scripts without creating a separate venv first:
+Clone these repositories into the same parent directory, using the `main` branch:
 
 ```bash
+git clone --branch main https://github.com/buckyos/buckyos.git
+git clone --branch main https://github.com/buckyos/cyfs-gateway.git
+git clone --branch main https://github.com/buckyos/buckyos-websdk.git
 cd buckyos
-uv run src/buckyos-build.py --skip-web
 ```
 
-If your machine is not ready for BuckyOS development yet, you can run `python3 devenv.py` first. The script installs `uv`, `deno`, `tmux`, and other basic dependencies according to the current platform.
+The build needs a stable Rust toolchain and platform C/C++ build tools, Python 3.12+, `uv`, Node.js with npm and pnpm, and Deno. Docker is needed for container applications; tmux is used by development tools. The current CI uses Node.js 24, pnpm 10.13.1, and Deno 2.9.2.
 
-Before building, you can refer to `devenv.py` to prepare the environment. The main dependencies are the Rust toolchain, Node.js + pnpm, Python 3.12, `uv`, Deno, tmux, and `docker.io`. Once those are ready, use the following steps.
-
-### Step 1. Build cyfs-gateway
-
-BuckyOS currently depends on cyfs-gateway, so you need to build cyfs-gateway from source before running BuckyOS:
+To bootstrap the platform dependencies, inspect and run [`devenv.py`](devenv.py):
 
 ```bash
-cd ~/
-git clone https://github.com/buckyos/cyfs-gateway.git
-cd cyfs-gateway/src
+python3 devenv.py
+```
+
+The root `pyproject.toml` lets `uv run` resolve `buckyos-devkit` automatically. A separate manually created virtual environment is not required.
+
+### Step 2. Build and install cyfs-gateway
+
+From the `buckyos` repository root:
+
+```bash
+cd ../cyfs-gateway/src
 uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main" buckyos-build
 uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main" buckyos-install --all
+cd ../../buckyos/src
 ```
 
-### Step 2. Build and update buckyos rootfs
+### Step 3. Build BuckyOS
 
-Return to the BuckyOS repository and run:
+From `buckyos/src`:
 
 ```bash
-cd buckyos/src
-uv run ./buckyos-build.py
-uv run ./buckyos-install.py --all
+uv run buckyos-build.py
 ```
 
-`uv run ./buckyos-build.py` is intentionally not a pure compile command. It runs the devkit `buckyos-build` command first, then runs `buckyos-update` to copy the latest build results into the installed BuckyOS rootfs, usually `/opt/buckyos` on macOS/Linux or `%APPDATA%\buckyos` on Windows. VM-related development scripts depend on this rootfs being up to date; Linux VM flows can use cross-compiled results through the updated rootfs directly.
+The wrapper first builds and packages the SDK/CLI from the sibling `buckyos-websdk` checkout, including its bundled Deno runtime, then invokes the devkit build. Set `BUCKYOS_SDK_TOOL_SOURCE` if your SDK checkout is elsewhere. This preparation also runs with `--skip-web` or `-s <module>`; those options still require the SDK sources, Node.js, npm, pnpm, and Deno.
 
-Keep the `buckyos-install.py --all` step for a first source installation or when you need a full refresh of the installed rootfs data/config/module layout. For normal development after BuckyOS has already been installed, `uv run ./buckyos-build.py` is the usual "compile and update installed rootfs" command.
+Build output is assembled under `src/rootfs`. **`buckyos-build.py` does not update the installed runtime.** Use `start.py` to copy the latest artifacts into the installation and restart it. For the prebuilt SDK/CLI inputs used by release builds, see [`src/readme.md`](src/readme.md).
 
-If BuckyOS is already running, `buckyos-build.py` may try to overwrite running binaries such as `bin/node-daemon/node_daemon`. Stop the local runtime before updating installed artifacts. `src/stop.py` only kills known process names and does not disable host service managers or keepalive launchers, so a service-managed `node_daemon` may be restarted automatically. Stop the host-managed service through the platform installer or service manager before updating it.
+### Step 4. Initialize and start a Zone
 
-Be especially careful when developing on a machine that also has the BuckyOS Desktop edition installed. A source development rootfs and a Desktop-managed BuckyOS runtime can compete for the same root, service registration, ports, and running processes. Keep source development and BuckyOS Desktop testing in separate environments. For example, run the Desktop edition in a dedicated VM and keep the host machine for source development.
+Choose one initialization mode below. Both commands run from `buckyos/src`.
 
-### Step 3. Start buckyos
-
-For the first installation:
+**Local development:**
 
 ```bash
-uv run ./start.py --reinstall release
+uv run start.py --all
+uv run check.py
 ```
 
-A source install does not automatically register BuckyOS as a startup service. For later manual starts, run:
+`--all` selects the `dev` configuration: Owner `devtest`, Zone `test.buckyos.io`, and a preconfigured identity, without manual activation or an SN relay. Open `http://test.buckyos.io` on the development machine, with that domain and its app subdomains resolving to the local runtime. For application development and the test login, see the [app development guide](doc/sdk/app-dev-quickstart.md).
+
+**First installation with interactive activation:**
 
 ```bash
-uv run ./start.py
+uv run start.py --reinstall release
+uv run check.py
 ```
 
-**Important: do not run `uv run ./start.py --reinstall release` again after the initial setup. It will soft-reset your system.**
+This prepares an unactivated system using the `buckyos.ai` environment. Open `http://127.0.0.1:3182` to activate it. The `nightly` group uses the `buckyos.io` environment instead.
 
-`start.py` ultimately runs the command below. You can add it to your system startup service list manually:
+**Use `--all` and `--reinstall` only when deliberately reinitializing a system.** They reset configuration and runtime state. The installation layout preserves `data/home`, `data/srv`, and `storage`, so reinitialization is not a complete data wipe. Back up an existing installation before changing beta versions or resetting it.
+
+For normal updates and restarts:
 
 ```bash
-sudo /opt/buckyos/bin/node-daemon/node_daemon --enable_active
+uv run start.py
 ```
 
-#### Common pitfalls and troubleshooting during the transition period
+`start.py` stops known BuckyOS processes, updates installed artifacts, and starts `node_daemon --enable_active` in the background. The runtime root defaults to `/opt/buckyos` on macOS/Linux or `%APPDATA%\buckyos` on Windows; `BUCKYOS_ROOT` overrides it. Ensure the current user has the required runtime-directory and port permissions. Source startup does not register a host startup service.
 
-- **You may need `cargo update` frequently**: especially in a fresh environment or when the lockfile has drifted.
-- **`make_config.ts` requires Deno >= 2.2**: run it from the buckyos `src/` directory with `deno task make_config <group> --rootfs <rootfs>`.
-- **Do not manually kill a service-managed `node_daemon` and expect it to stay stopped**: launchd, systemd, or Windows keepalive tasks can restart it. Use the BuckyOS stop/uninstall path that matches how it was started.
-- **Avoid mixing source development and BuckyOS Desktop on the same machine unless you manage the runtime deliberately**: both environments can touch the same installed rootfs and host service state. Keeping Desktop in a VM is the recommended low-friction setup.
+If an existing runtime is managed by systemd, launchd, or a Windows keepalive service, stop it through that service manager before installing or updating artifacts. `stop.py` alone does not disable automatic restarts. Keep source development and BuckyOS Desktop testing in separate environments to avoid competing for the same runtime, services, and ports.
 
-### Common scripts in the source tree
+### Common development commands
 
-- Build only the Rust parts:
+Run these from `buckyos/src`:
+
+| Purpose | Command |
+| --- | --- |
+| Build the system and Web UI | `uv run buckyos-build.py` |
+| Skip Web UI builds (SDK/CLI still builds) | `uv run buckyos-build.py --skip-web` |
+| Build a specific module | `uv run buckyos-build.py -s <module>` |
+| Update installed artifacts and restart | `uv run start.py` |
+| Restart without updating artifacts | `uv run start.py --skip-update` |
+| Inspect activation and runtime health | `uv run check.py` |
+| Stop local processes | `uv run stop.py` |
+| Debug Jarvis in the foreground | `./debug_jarvis.sh` |
+| Run Rust unit tests | `cargo test` |
+
+To discover and run DV tests, use the repository root after starting the required development environment:
 
 ```bash
-cd src
-uv run ./buckyos-build.py --skip-web
+uv run src/check.py
+uv run test/run.py --list
+uv run test/run.py -p aicc_test
 ```
 
-This still updates the installed rootfs after the Rust build succeeds; `--skip-web` only skips web UI builds.
+### Configuration groups
 
-- Update only the compiled artifacts and then start `/opt/buckyos`:
+`start.py --reinstall <group>` regenerates configuration for the selected environment. Current groups are defined in [`src/devenv_config.ts`](src/devenv_config.ts) and [`src/make_config.ts`](src/make_config.ts):
 
-```bash
-cd src
-uv run ./start.py
-```
+| Group | Purpose |
+| --- | --- |
+| `dev`, `devtest_ood1` | Preconfigured local DV Zone at `test.buckyos.io` |
+| `release` | Unactivated system using the `buckyos.ai` environment |
+| `nightly` | Unactivated system using the `buckyos.io` environment |
+| `vmtest` | VM activation test without a preseeded identity |
+| `alice.ood1`, `bob.ood1`, `charlie.ood1`, `dave.ood1` | Preset identities and network cases for the distributed test environment |
+| `devtests_ood1`, `sn_web` | The `devtests.org` OOD used by the test environment |
 
-- Reinstall BuckyOS using a specified config group:
-
-```bash
-cd src
-uv run ./start.py --reinstall $group_name
-```
-
-If `group_name` is empty, BuckyOS starts with an empty config and enters the pending activation state.
-
-The system currently includes several commonly used config groups:
-
-- `release` (production use, backed by buckyos.ai SN infrastructure)
-- `dev` (development config without SN and without dependencies on off-machine components)
-- `alice.ood1`, `bob.ood1`, `charlie.ood1` (three preset identities intended for the planned virtual test environment at `devtests.org`)
-- `sn` (the SN node config for the virtual test environment)
+SN configuration generation has moved to `cyfs-gateway/src/make_sn_config.ts`; `sn` and `sn_server` are not supported by BuckyOS's `make_config.ts`.
 
 ## BuckyOS Vision
 
@@ -156,10 +158,13 @@ The system currently includes several commonly used config groups:
 
 ### Learn More About BuckyOS
 
-- BuckyOS Architecture Design (Coming Soon)
-- Hello BuckyOS! (Coming Soon)
-- BuckyOS dApp Developer Manual (Coming Soon)
-- BuckyOS Contributor Guide (Coming Soon)
+- [Architecture and core concepts](doc/arch/README.md)
+- [Application development quickstart](doc/sdk/app-dev-quickstart.md)
+- [Rust API runtime](doc/sdk/buckyos-api-runtime.md)
+- [OpenDAN agent development](doc/sdk/OpenDAN_Agent_Dev_Guide.md)
+- [Source tree and SDK/CLI build](src/readme.md)
+- [Runtime directories](doc/path_usage.md)
+- [Contributor workflow](harness/README.md) and [repository guidelines](AGENTS.md)
 
 ## The Next Generation of GPL: A New Open Source Collaboration Model
 
@@ -194,8 +199,10 @@ SourceDAO is the open-source DAO smart contract built on these ideas. For more d
 #### 2026
 
 - **0.6.0 Beta2:** 4% (Completed in April 2026)
-- **0.7.0 Beta2.2:** 7.5% (Planned for May 2026)
-- **0.8.0 Beat3:** 4% (Planed for July 2026)
+- **0.7.0 Beta2.2:** 7.5% (Official launch planned for October 15, 2026)
+- **0.8.0 Beta3:** 2.5% (Complete distributed kernel release, planned for the end of 2026)
+
+The goal of **0.8.0 / Beta3** is to deliver the complete distributed kernel, with launch planned for the end of 2026. Work toward this release includes distributed storage integration, backup and recovery, data reliability, and system self-healing.
 
 
 ## License
