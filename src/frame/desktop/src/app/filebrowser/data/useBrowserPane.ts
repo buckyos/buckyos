@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { SelectModifiers } from '../MainContent'
 import type { BrowserTab, HistoryState, PaneLocation, SortDir, SortKey, ViewMode } from '../types'
 import type { FileItem } from './FolderReader'
@@ -32,6 +32,12 @@ function stateOf(tab: BrowserTab): TabState {
 
 const sessions = new Map<string, { states: TabState[]; activeTabId: string }>()
 
+/** Scroll positions reach pane state at most this often (ms); the live value sits in a ref meanwhile. */
+const SCROLL_COMMIT_MS = 200
+
+const withScroll = (state: TabState, scroll: number | undefined): TabState =>
+  scroll === undefined || scroll === state.location.scroll ? state : { ...state, location: { ...state.location, scroll } }
+
 export function useBrowserPane(initialTabs: BrowserTab[], sessionKey?: string) {
   const [states, setStates] = useState(() => {
     const saved = sessionKey ? sessions.get(sessionKey) : undefined
@@ -46,6 +52,38 @@ export function useBrowserPane(initialTabs: BrowserTab[], sessionKey?: string) {
   const active = states.find((state) => state.tab.id === activeTabId) ?? states[0]
   const activeRef = useRef(active)
   useLayoutEffect(() => { activeRef.current = active }, [active])
+  const sessionKeyRef = useRef(sessionKey)
+  useLayoutEffect(() => { sessionKeyRef.current = sessionKey }, [sessionKey])
+  // Live scroll positions per tab. Scroll events fire ~60×/s; committing each
+  // one to pane state would re-render the whole browser per frame, so the
+  // latest value is kept here and folded into state on a trailing timer, at
+  // navigation (history entries need it) and on unmount (session restore).
+  const pendingScroll = useRef(new Map<string, number>())
+  const scrollTimer = useRef<{ id: number | null }>({ id: null })
+  const commitScroll = useCallback(() => {
+    scrollTimer.current.id = null
+    const pending = pendingScroll.current
+    if (pending.size === 0) return
+    setStates((prev) => {
+      const next = prev.map((state) => withScroll(state, pending.get(state.tab.id)))
+      return next.some((state, i) => state !== prev[i]) ? next : prev
+    })
+  }, [])
+  const takeScroll = useCallback((tabId: string) => {
+    const scroll = pendingScroll.current.get(tabId)
+    pendingScroll.current.delete(tabId)
+    return scroll
+  }, [])
+  useEffect(() => {
+    const timer = scrollTimer.current
+    const pending = pendingScroll.current
+    return () => {
+      if (timer.id !== null) window.clearTimeout(timer.id)
+      const key = sessionKeyRef.current
+      const saved = key ? sessions.get(key) : undefined
+      if (saved && pending.size > 0) sessions.set(key!, { ...saved, states: saved.states.map((state) => withScroll(state, pending.get(state.tab.id))) })
+    }
+  }, [])
   const fallback = stateOf({ id: '', title: 'Home', path: '/home' })
   const state = active ?? fallback
   const { location, selected, revision } = state
@@ -74,12 +112,14 @@ export function useBrowserPane(initialTabs: BrowserTab[], sessionKey?: string) {
     }))
   }, [list, update])
 
-  const searchItems = [...new Map((search.state.data?.items ?? []).filter((hit) =>
-    (!location.kind || hit.entry.kind === location.kind) &&
-    (!location.modified || Date.parse(hit.entry.modifiedAt) >= Date.parse(location.modified)),
-  ).map((hit) => [hit.entry.id, { key: hit.entry.id, entry: hit.entry }])).values()]
-  const visibleItems = location.query.trim() ? searchItems : list.loadedKeys()
-    .map((key) => list.loadedItemByKey(key)).filter((item): item is FileItem => !!item)
+  const searchData = search.state.data
+  const { kind: searchKind, modified: searchModified } = location
+  const searchItems = useMemo(() => [...new Map((searchData?.items ?? []).filter((hit) =>
+    (!searchKind || hit.entry.kind === searchKind) &&
+    (!searchModified || Date.parse(hit.entry.modifiedAt) >= Date.parse(searchModified)),
+  ).map((hit) => [hit.entry.id, { key: hit.entry.id, entry: hit.entry }])).values()], [searchData, searchKind, searchModified])
+  // loadedItems() is cached per list change, so identity is stable across renders.
+  const visibleItems = location.query.trim() ? searchItems : list.loadedItems()
   const selectItem = (item: FileItem, modifiers: SelectModifiers = {}) => {
     cancelEnumeration()
     setSelectionNotice(false)
@@ -128,34 +168,43 @@ export function useBrowserPane(initialTabs: BrowserTab[], sessionKey?: string) {
   const changeLocation = useCallback((next: PaneLocation, direction?: 'back' | 'forward') => {
     cancelEnumeration()
     setRevealIndex(null)
-    update((state) => ({
-      ...state,
-      tab: { ...state.tab, path: next.path, title: fallbackTitle(next.path) }, location: next,
-      history: direction === 'back'
-        ? { back: state.history.back.slice(0, -1), forward: [state.location, ...state.history.forward] }
-        : direction === 'forward'
-          ? { back: [...state.history.back, state.location], forward: state.history.forward.slice(1) }
-          : { back: [...state.history.back, state.location], forward: [] },
-      selected: new Map(), anchor: null, revision: state.revision + 1,
-    }))
-  }, [update, cancelEnumeration])
+    const scroll = takeScroll(activeTabId)
+    update((state) => {
+      const location = withScroll(state, scroll).location
+      return {
+        ...state,
+        tab: { ...state.tab, path: next.path, title: fallbackTitle(next.path) }, location: next,
+        history: direction === 'back'
+          ? { back: state.history.back.slice(0, -1), forward: [location, ...state.history.forward] }
+          : direction === 'forward'
+            ? { back: [...state.history.back, location], forward: state.history.forward.slice(1) }
+            : { back: [...state.history.back, location], forward: [] },
+        selected: new Map(), anchor: null, revision: state.revision + 1,
+      }
+    })
+  }, [update, cancelEnumeration, takeScroll, activeTabId])
   const navigate = useCallback((input: string) => {
     const path = normalizeUrl(input)
     if (path === currentUrl && !location.query) return
     changeLocation({ path, query: '', scope: 'current', kind: '', modified: '', scroll: 0 })
   }, [currentUrl, location.query, changeLocation])
   const setSearchQuery = (query: string) => {
+    const scroll = takeScroll(activeTabId)
     update((state) => ({ ...state,
-      history: query && !state.location.query ? { back: [...state.history.back, state.location], forward: [] } : state.history,
+      history: query && !state.location.query ? { back: [...state.history.back, withScroll(state, scroll).location], forward: [] } : state.history,
       location: { ...state.location, query, scroll: 0 }, selected: new Map(), anchor: null, revision: state.revision + 1,
     }))
   }
-  const setSearchScope = (scope: 'current' | 'all') => update((state) => ({ ...state,
+  const setSearchScope = (scope: 'current' | 'all') => { takeScroll(activeTabId); update((state) => ({ ...state,
     location: { ...state.location, scope, scroll: 0 }, selected: new Map(), revision: state.revision + 1,
-  }))
-  const setSearchFilter = (kind: string, modified: string) => update((state) => ({ ...state,
+  })) }
+  const setSearchFilter = (kind: string, modified: string) => { takeScroll(activeTabId); update((state) => ({ ...state,
     location: { ...state.location, kind, modified, scroll: 0 }, selected: new Map(), revision: state.revision + 1,
-  }))
+  })) }
+  const setScroll = useCallback((scroll: number) => {
+    pendingScroll.current.set(activeTabId, scroll)
+    if (scrollTimer.current.id === null) scrollTimer.current.id = window.setTimeout(commitScroll, SCROLL_COMMIT_MS)
+  }, [activeTabId, commitScroll])
 
   useEffect(() => list.subscribe(() => {
     const caps = list.capabilities
@@ -199,7 +248,7 @@ export function useBrowserPane(initialTabs: BrowserTab[], sessionKey?: string) {
     enumerating, cancelEnumeration, selectionError, selectionNotice,
     searchQuery: location.query, setSearchQuery, search, searchItems,
     searchScope: location.scope, setSearchScope, searchKind: location.kind, searchModified: location.modified, setSearchFilter,
-    scroll: location.scroll, setScroll: (scroll: number) => update((state) => ({ ...state, location: { ...state.location, scroll } })),
+    scroll: location.scroll, setScroll,
     revealIndex,
     contextToken: `${activeTabId}:${revision}`,
     isCurrent: () => activeRef.current?.tab.id === activeTabId && activeRef.current.revision === revision,
@@ -220,8 +269,9 @@ export function useBrowserPane(initialTabs: BrowserTab[], sessionKey?: string) {
     goUp: () => { const up = parentUrl(currentUrl); if (up) navigate(up) },
     adoptTab: (tab: BrowserTab, history?: HistoryState, snapshot?: TabState) => { const next = snapshot ? { ...snapshot, tab: { ...tab, path: normalizeUrl(tab.path) } } : stateOf(tab); if (history) next.history = history; setStates((prev) => [...prev, next]); setActiveTabId(tab.id) },
     detachTab: (id: string) => {
-      const removed = states.find((state) => state.tab.id === id)
-      if (!removed) return null
+      const found = states.find((state) => state.tab.id === id)
+      if (!found) return null
+      const removed = withScroll(found, takeScroll(id))
       setStates((prev) => prev.filter((state) => state.tab.id !== id))
       if (id === activeTabId) setActiveTabId(states.find((state) => state.tab.id !== id)?.tab.id ?? '')
       return { tab: removed.tab, history: removed.history, state: removed }

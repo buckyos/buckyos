@@ -5,10 +5,11 @@ import { Sparkles } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { parseDelimited, toTsv } from '../../data/csv'
 import { parseCellValue } from '../../domain/factories'
+import { newId } from '../../domain/ids'
 import { cellDisplay, colLetter } from '../../domain/selectors'
 import type { CanvasBlockOf, TableCell } from '../../domain/types'
 import { MAX_TABLE_COLS, MAX_TABLE_ROWS } from '../../domain/types'
-import { useCanvasEditor, useStoreState } from '../../store/hooks'
+import { useCanvasEditor } from '../../store/hooks'
 import { useEditorActions } from '../actions'
 import { trackEvent } from '../../events'
 import { Btn, Input, Menu, type MenuItem } from '../primitives'
@@ -30,7 +31,6 @@ function norm(a: { r: number; c: number }, b: { r: number; c: number }): Range {
 
 export function TableBlockView({ block, selected }: { block: CanvasBlockOf<'table'>; selected: boolean }) {
   const { store, runner } = useCanvasEditor()
-  const { ui } = useStoreState()
   const actions = useEditorActions()
   const c = block.content
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -189,15 +189,17 @@ export function TableBlockView({ block, selected }: { block: CanvasBlockOf<'tabl
     if (!cursor || block.locked) return
     const matrix = parseDelimited(text, text.includes('\t') ? '\t' : undefined)
     if (!matrix.length) return
+    const width = matrix.reduce((w, r) => Math.max(w, r.length), 0)
     const needRows = cursor.r + matrix.length - c.rows.length
-    const needCols = cursor.c + Math.max(...matrix.map((r) => r.length)) - c.columns.length
+    const needCols = cursor.c + width - c.columns.length
     if (c.rows.length + Math.max(0, needRows) > MAX_TABLE_ROWS || c.columns.length + Math.max(0, needCols) > MAX_TABLE_COLS) {
       store.toast('粘贴内容超过表格上限', 'error')
       return
     }
     store.beginTransient()
-    for (let i = 0; i < needRows; i++) store.dispatch({ type: 'TABLE_STRUCTURE', id: block.id, action: { kind: 'addRow' } })
-    for (let i = 0; i < needCols; i++) store.dispatch({ type: 'TABLE_STRUCTURE', id: block.id, action: { kind: 'addColumn' } })
+    // one reduction for all missing rows / columns (one per row would copy the table each time)
+    if (needRows > 0) store.dispatch({ type: 'TABLE_STRUCTURE', id: block.id, action: { kind: 'addRows', rows: Array.from({ length: needRows }, () => ({ id: newId('row'), cells: {} })) } })
+    if (needCols > 0) store.dispatch({ type: 'TABLE_STRUCTURE', id: block.id, action: { kind: 'addColumns', columns: Array.from({ length: needCols }, (_, i) => ({ id: newId('col'), name: `列${c.columns.length + i + 1}`, width: 120 })) } })
     const fresh = store.doc.blocks[block.id]
     if (fresh?.type === 'table') {
       const edits = matrix.flatMap((row, ri) => row.map((v, ci) => ({ rowId: fresh.content.rows[cursor.r + ri].id, columnId: fresh.content.columns[cursor.c + ci].id, cell: parseCellValue(v) })))
@@ -205,7 +207,7 @@ export function TableBlockView({ block, selected }: { block: CanvasBlockOf<'tabl
     }
     store.endTransient()
     setAnchor(cursor)
-    setCursor({ r: cursor.r + matrix.length - 1, c: cursor.c + Math.max(...matrix.map((r) => r.length)) - 1 })
+    setCursor({ r: cursor.r + matrix.length - 1, c: cursor.c + width - 1 })
   }
 
   const menuItems = (r: number, col: number): MenuItem[] => {
@@ -476,7 +478,6 @@ export function TableBlockView({ block, selected }: { block: CanvasBlockOf<'tabl
         {src?.truncated ? <span className="text-[color:var(--cp-warning)]">已截断（原 {src.truncated.originalRows} 行）</span> : null}
         {block.dataRevision > 0 ? <span>已修改 {block.dataRevision} 次</span> : null}
         {range ? <span className="ml-auto">{`${colLetter(range.colStart)}${range.rowStart + 1}:${colLetter(range.colEnd)}${range.rowEnd + 1}`}</span> : null}
-        {ui.tableSelection?.blockId === block.id && !range ? null : null}
       </div>
       {menu ? <MenuPortal at={menu} items={menuItems(menu.r, menu.c)} onClose={() => setMenu(null)} /> : null}
     </div>

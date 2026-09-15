@@ -1,32 +1,38 @@
+import { useMemo } from 'react'
 import { useI18n } from '../../i18n/provider'
 import { useMinuteClock } from '../shell'
 
+/**
+ * Clock widget. Layout is driven by container queries (see `.cp-clock` in
+ * index.css): in a single-row cell the time sits left with weekday and date
+ * stacked on the right; with two rows or more the weekday chip moves to the
+ * top-right and the time/date stack underneath.
+ */
 export function ClockWidget() {
   const { locale } = useI18n()
   const now = useMinuteClock()
+  // Intl.DateTimeFormat construction is comparatively expensive; build the
+  // three formatters once per locale instead of on every render.
+  const formatters = useMemo(
+    () => ({
+      weekday: new Intl.DateTimeFormat(locale, { weekday: 'short' }),
+      time: new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }),
+      date: new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', year: 'numeric' }),
+    }),
+    [locale],
+  )
 
   return (
-    <div className="flex h-full flex-col justify-between rounded-[22px] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--cp-surface-3)_100%,transparent),color-mix(in_srgb,var(--cp-surface-2)_96%,transparent))] p-4">
-      <div className="flex justify-end">
-        <span className="rounded-full bg-[color:color-mix(in_srgb,var(--cp-surface)_70%,transparent)] px-2.5 py-1 text-[11px] font-medium text-[color:var(--cp-muted)]">
-          {new Intl.DateTimeFormat(locale, {
-            weekday: 'short',
-          }).format(now)}
+    <div className="cp-clock rounded-[22px] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--cp-surface-3)_100%,transparent),color-mix(in_srgb,var(--cp-surface-2)_96%,transparent))]">
+      <p className="cp-clock__time font-display font-semibold text-[color:var(--cp-text)]">
+        {formatters.time.format(now)}
+      </p>
+      <div className="cp-clock__meta">
+        <span className="cp-clock__weekday rounded-full bg-[color:color-mix(in_srgb,var(--cp-surface)_70%,transparent)] font-medium text-[color:var(--cp-muted)]">
+          {formatters.weekday.format(now)}
         </span>
-      </div>
-      <div className="-mt-1">
-        <p className="font-display whitespace-nowrap text-[clamp(1.6rem,3.2vw,3rem)] font-semibold leading-[0.94] tracking-[-0.05em] text-[color:var(--cp-text)]">
-          {new Intl.DateTimeFormat(locale, {
-            hour: '2-digit',
-            minute: '2-digit',
-          }).format(now)}
-        </p>
-        <p className="mt-1 text-sm text-[color:var(--cp-muted)]">
-          {new Intl.DateTimeFormat(locale, {
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric',
-          }).format(now)}
+        <p className="cp-clock__date text-[color:var(--cp-muted)]">
+          {formatters.date.format(now)}
         </p>
       </div>
     </div>

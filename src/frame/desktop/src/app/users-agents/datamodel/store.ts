@@ -39,6 +39,7 @@ export class UsersAgentsStore {
 
   private snapshot: UsersAgentsSnapshot
   private listeners = new Set<() => void>()
+  private reloadSeq = 0
 
   constructor(options: UsersAgentsStoreOptions = {}) {
     this.useMock = options.useMock ?? defaultUseMock()
@@ -67,6 +68,8 @@ export class UsersAgentsStore {
   getSnapshot = (): UsersAgentsSnapshot => this.snapshot
 
   async reload(): Promise<UsersAgentsSnapshot> {
+    const seq = ++this.reloadSeq
+
     if (this.useMock) {
       const snapshot = createMockUsersAgentsSnapshot()
       this.applySnapshot(snapshot)
@@ -75,8 +78,11 @@ export class UsersAgentsStore {
     }
 
     const snapshot = await fetchUsersAgentsSnapshot()
-    this.applySnapshot(snapshot)
-    this.notify()
+    // A newer reload has started meanwhile; keep its result instead of this stale one.
+    if (seq === this.reloadSeq) {
+      this.applySnapshot(snapshot)
+      this.notify()
+    }
     return snapshot
   }
 

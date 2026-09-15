@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+/* eslint-disable react-refresh/only-export-components */
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 export interface MobileTitleOverride {
   title: string
@@ -48,8 +49,18 @@ export function MobileNavProvider({ children }: { children: React.ReactNode }) {
     handlerRef.current?.()
   }, [])
 
-  const state: MobileNavState = { canGoBack, goBack, titleOverride }
-  const controller: MobileNavController = { setBackHandler, setTitleOverride }
+  // Both context values must be referentially stable across re-renders of the
+  // provider (which lives in DesktopRoute and re-renders on every store
+  // change); otherwise every consumer — the status bar and every app that
+  // registers a back handler / title — re-renders along with it.
+  const state = useMemo<MobileNavState>(
+    () => ({ canGoBack, goBack, titleOverride }),
+    [canGoBack, goBack, titleOverride],
+  )
+  const controller = useMemo<MobileNavController>(
+    () => ({ setBackHandler, setTitleOverride }),
+    [setBackHandler, setTitleOverride],
+  )
 
   return (
     <MobileNavStateContext.Provider value={state}>
@@ -87,9 +98,13 @@ export function useMobileBackHandler(handler: (() => void) | null) {
  */
 export function useMobileTitleOverride(override: MobileTitleOverride | null) {
   const { setTitleOverride } = useContext(MobileNavControllerContext)
+  // Depend on the primitive fields, not the object: callers usually pass an
+  // inline literal, which would otherwise re-run the effect on every render.
+  const title = override?.title
+  const subtitle = override?.subtitle
 
   useEffect(() => {
-    setTitleOverride(override)
+    setTitleOverride(title === undefined ? null : { title, subtitle })
     return () => setTitleOverride(null)
-  }, [override?.title, override?.subtitle, setTitleOverride])
+  }, [title, subtitle, setTitleOverride])
 }

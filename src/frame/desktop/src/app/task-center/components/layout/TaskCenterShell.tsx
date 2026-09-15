@@ -1,6 +1,6 @@
 /* ── TaskCenter shell – responsive layout ── */
 
-import { useCallback, useState, useEffect } from 'react'
+import { useCallback, useState } from 'react'
 import { useMediaQuery } from '@mui/material'
 import { Sidebar } from './Sidebar'
 import { MobileTabBar } from './MobileTabBar'
@@ -8,6 +8,11 @@ import { useMobileBackHandler } from '../../../../desktop/windows/MobileNavConte
 import type { TaskCenterPage, TaskCenterNav } from './navigation'
 
 interface TaskCenterShellProps {
+  /**
+   * Initial navigation target. Only read on mount: the standalone route
+   * remounts the shell (via `key`) whenever the `?taskid` query changes, so
+   * no effect is needed to resync it.
+   */
   initialTaskId?: string | null
   children: (nav: TaskCenterNav, navigate: (nav: TaskCenterNav) => void) => React.ReactNode
 }
@@ -17,13 +22,6 @@ export function TaskCenterShell({ initialTaskId, children }: TaskCenterShellProp
     initialTaskId ? { page: 'tasks', taskId: initialTaskId } : { page: 'home' },
   )
   const isMobile = useMediaQuery('(max-width: 767px)')
-
-  // If initialTaskId changes (e.g. from route), update nav
-  useEffect(() => {
-    if (initialTaskId) {
-      setCurrentNav({ page: 'tasks', taskId: initialTaskId })
-    }
-  }, [initialTaskId])
 
   const handleNavigate = (nav: TaskCenterNav) => setCurrentNav(nav)
   const handlePageNavigate = (page: TaskCenterPage) => setCurrentNav({ page })

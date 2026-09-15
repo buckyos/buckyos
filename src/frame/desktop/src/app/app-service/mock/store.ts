@@ -112,6 +112,10 @@ export function runtimeStatus(runtime: RuntimeView) {
     : runtime.status
 }
 
+/** Finished tasks kept in memory/storage; older ones are pruned on persist. */
+const MAX_FINISHED_TASKS = 20
+let persistWarned = false
+
 export class AppServiceMockStore {
   scope = readScope()
   services: AppServiceItem[] = []
@@ -1190,7 +1194,25 @@ export class AppServiceMockStore {
       2,
     )
   }
+  /**
+   * Drop finished tasks beyond the most recent few and the idempotency
+   * records that pointed at them, so the persisted blob stays bounded.
+   */
+  private pruneFinished() {
+    const finished = Object.values(this.tasks)
+      .filter((task) => task.phase === 'Terminal')
+      .sort((a, b) => b.updated_at - a.updated_at)
+    for (const task of finished.slice(MAX_FINISHED_TASKS))
+      delete this.tasks[task.task_id]
+    for (const [key, entry] of Object.entries(this.idempotency)) {
+      const id = entry.result.task_id
+      if (id === null) continue
+      const task = this.tasks[id]
+      if (!task || task.phase === 'Terminal') delete this.idempotency[key]
+    }
+  }
   private persist() {
+    this.pruneFinished()
     const drafts = Object.fromEntries(
       Object.values(this.drafts).map((draft) => [
         draft.draft_id,
@@ -1209,17 +1231,25 @@ export class AppServiceMockStore {
         { ...task, plan: safePlan(task.plan) },
       ]),
     )
-    localStorage.setItem(
-      scopeStorageKey(this.scope),
-      JSON.stringify({
-        model_version: MODEL_VERSION,
-        scope: scopeStorageKey(this.scope),
-        services: this.services,
-        tasks,
-        drafts,
-        idempotency: this.idempotency,
-      }),
-    )
+    try {
+      localStorage.setItem(
+        scopeStorageKey(this.scope),
+        JSON.stringify({
+          model_version: MODEL_VERSION,
+          scope: scopeStorageKey(this.scope),
+          services: this.services,
+          tasks,
+          drafts,
+          idempotency: this.idempotency,
+        }),
+      )
+    } catch (error) {
+      // Quota/private-mode failures must not stop the task state machine.
+      if (!persistWarned) {
+        persistWarned = true
+        console.warn('app-service mock: persist failed', error)
+      }
+    }
   }
   private schedule(callback: () => void, ms: number) {
     const timer = window.setTimeout(() => {

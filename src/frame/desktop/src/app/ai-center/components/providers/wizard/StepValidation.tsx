@@ -20,7 +20,9 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
   const { t } = useI18n()
   const store = useAICCStore()
   const [checks, setChecks] = useState<CheckItem[]>([
-    { key: 'endpoint', label: t('aiCenter.wizard.checkEndpoint', 'Checking endpoint connectivity...'), status: 'pending' },
+    // The first check starts in `checking` right away (the validation
+    // request is issued on mount), so no effect needs to flip it.
+    { key: 'endpoint', label: t('aiCenter.wizard.checkEndpoint', 'Checking endpoint connectivity...'), status: 'checking' },
     { key: 'auth', label: t('aiCenter.wizard.checkAuth', 'Verifying authentication...'), status: 'pending' },
     { key: 'models', label: t('aiCenter.wizard.checkModels', 'Discovering available models...'), status: 'pending' },
     { key: 'balance', label: t('aiCenter.wizard.checkBalance', 'Checking balance capability...'), status: 'pending' },
@@ -119,13 +121,6 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
       }
       setChecks((prev) => prev.map((item) => ({ ...item, status: 'error' as const })))
       onResult(result)
-    })
-
-    // Start first item as checking
-    setChecks((prev) => {
-      const next = [...prev]
-      next[0] = { ...next[0], status: 'checking' }
-      return next
     })
 
     return () => {

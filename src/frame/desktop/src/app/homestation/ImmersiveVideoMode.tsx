@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Bookmark,
   ChevronDown,
@@ -37,9 +37,14 @@ export function ImmersiveVideoMode({
   const touchStartRef = useRef<{ y: number; time: number } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const currentFeed = feeds[currentIndex]
-  if (!currentFeed) return null
+  // Clamp instead of indexing blindly: `feeds` can shrink while this overlay
+  // is open (filter change, deletion), and the index must stay valid.
+  const lastIndex = Math.max(feeds.length - 1, 0)
+  const safeIndex = Math.min(currentIndex, lastIndex)
+  const currentFeed = feeds[safeIndex]
 
+  // All hooks are declared unconditionally (before the early return below);
+  // React requires the same hook order on every render.
   const goNext = useCallback(() => {
     setCurrentIndex((prev) => Math.min(prev + 1, feeds.length - 1))
   }, [feeds.length])
@@ -70,6 +75,15 @@ export function ImmersiveVideoMode({
     else if (e.key === 'Escape') onClose()
   }, [goNext, goPrev, onClose])
 
+  // React only honours `autoFocus` on form controls, so focus the container
+  // imperatively; otherwise Escape / arrow keys do nothing until the user
+  // clicks the overlay first.
+  useEffect(() => {
+    containerRef.current?.focus()
+  }, [])
+
+  if (!currentFeed) return null
+
   const hasVideo = currentFeed.media.some((m) => m.type === 'video')
 
   return (
@@ -81,7 +95,6 @@ export function ImmersiveVideoMode({
       onTouchEnd={handleTouchEnd}
       onKeyDown={handleKeyDown}
       tabIndex={0}
-      autoFocus
     >
       {/* Close button */}
       <button
@@ -98,7 +111,7 @@ export function ImmersiveVideoMode({
         className="absolute right-4 top-4 z-50 rounded-full px-3 py-1 text-xs font-medium"
         style={{ background: 'rgba(255,255,255,0.15)', color: 'white' }}
       >
-        {currentIndex + 1} / {feeds.length}
+        {safeIndex + 1} / {feeds.length}
       </span>
 
       {/* Content area */}
@@ -134,7 +147,7 @@ export function ImmersiveVideoMode({
           <button
             type="button"
             onClick={goPrev}
-            disabled={currentIndex === 0}
+            disabled={safeIndex === 0}
             className="flex h-10 w-10 items-center justify-center rounded-full disabled:opacity-30"
             style={{ background: 'rgba(255,255,255,0.15)', color: 'white' }}
           >
@@ -143,7 +156,7 @@ export function ImmersiveVideoMode({
           <button
             type="button"
             onClick={goNext}
-            disabled={currentIndex === feeds.length - 1}
+            disabled={safeIndex === feeds.length - 1}
             className="flex h-10 w-10 items-center justify-center rounded-full disabled:opacity-30"
             style={{ background: 'rgba(255,255,255,0.15)', color: 'white' }}
           >

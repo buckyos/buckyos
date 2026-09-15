@@ -5,6 +5,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -271,48 +272,63 @@ export function WindowDialogProvider({
     }
   }, [])
 
-  const api: WindowDialogApi = {
-    canPresent: (presentation) =>
-      isPresentationAllowed(
-        permissions,
-        resolvePresentation(surface, presentation),
-      ),
-    close: (dialogId, result) => {
-      setDialogs((prev) => settleDialog(prev, dialogId, result))
-    },
-    dismiss: (dialogId) => {
-      setDialogs((prev) => settleDialog(prev, dialogId))
-    },
-    dismissTop: () => {
-      const topDialog = dialogsRef.current[dialogsRef.current.length - 1]
-      if (topDialog) {
-        setDialogs((prev) => settleDialog(prev, topDialog.id))
-      }
-    },
-    isOpen: dialogs.length > 0,
-    open: (options) =>
-      new Promise((resolve, reject) => {
-        const resolvedPresentation = resolvePresentation(
-          surface,
-          options.presentation ?? 'auto',
-        )
+  // Callers pass `permissions` as a fresh object literal on every render;
+  // normalise it to a stable identity keyed on its only field.
+  const allowFullscreen = permissions.fullscreen
+  const stablePermissions = useMemo<WindowDialogPermissions>(
+    () => ({ fullscreen: allowFullscreen }),
+    [allowFullscreen],
+  )
+  const stackDepth = dialogs.length
 
-        if (!isPresentationAllowed(permissions, resolvedPresentation)) {
-          reject(new WindowDialogPermissionError(resolvedPresentation))
-          return
+  // The api object is the context value: keep it stable unless something a
+  // consumer can observe changed, otherwise every `useWindowDialog()` caller
+  // re-renders whenever the hosting window re-renders (e.g. while dragging).
+  const api = useMemo<WindowDialogApi>(
+    () => ({
+      canPresent: (presentation) =>
+        isPresentationAllowed(
+          stablePermissions,
+          resolvePresentation(surface, presentation),
+        ),
+      close: (dialogId, result) => {
+        setDialogs((prev) => settleDialog(prev, dialogId, result))
+      },
+      dismiss: (dialogId) => {
+        setDialogs((prev) => settleDialog(prev, dialogId))
+      },
+      dismissTop: () => {
+        const topDialog = dialogsRef.current[dialogsRef.current.length - 1]
+        if (topDialog) {
+          setDialogs((prev) => settleDialog(prev, topDialog.id))
         }
+      },
+      isOpen: stackDepth > 0,
+      open: (options) =>
+        new Promise((resolve, reject) => {
+          const resolvedPresentation = resolvePresentation(
+            surface,
+            options.presentation ?? 'auto',
+          )
 
-        const dialog: ActiveWindowDialog = {
-          id: `window-dialog-${nextIdRef.current++}`,
-          options,
-          resolve: (result) => resolve(result as never),
-        }
+          if (!isPresentationAllowed(stablePermissions, resolvedPresentation)) {
+            reject(new WindowDialogPermissionError(resolvedPresentation))
+            return
+          }
 
-        setDialogs((prev) => [...prev, dialog])
-      }),
-    permissions,
-    stackDepth: dialogs.length,
-  }
+          const dialog: ActiveWindowDialog = {
+            id: `window-dialog-${nextIdRef.current++}`,
+            options,
+            resolve: (result) => resolve(result as never),
+          }
+
+          setDialogs((prev) => [...prev, dialog])
+        }),
+      permissions: stablePermissions,
+      stackDepth,
+    }),
+    [stablePermissions, stackDepth, surface],
+  )
 
   const activeDialog = dialogs[dialogs.length - 1]
 

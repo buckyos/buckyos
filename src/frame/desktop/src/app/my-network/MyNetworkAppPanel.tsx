@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, TextField, ToggleButton, ToggleButtonGroup, useMediaQuery } from '@mui/material'
 import { Plus, Search, UserPlus, Users2 } from 'lucide-react'
+import { isMockRuntime } from '../../runtime'
 import { CollectionCard } from '../users-agents/components/cards/CollectionCard'
 import { ContactDetailPage } from '../users-agents/components/detail/ContactDetailPage'
 import { EntityGroupDetailPage } from '../users-agents/components/detail/EntityGroupDetailPage'
@@ -102,7 +103,8 @@ function MyNetworkShell() {
   const createCollection = () => {
     const fallbackName = createMode === 'manual' ? 'New Contact Collection' : 'Imported Contact Group'
     const collection = store.addCollection(collectionName.trim() || fallbackName, collectionDescription.trim())
-    if (createMode === 'import') {
+    if (createMode === 'import' && isMockRuntime()) {
+      // Sample members only exist in the mock seed; a real runtime has no group import source yet.
       store.addToCollection(collection.id, 'ct-001')
       store.addToCollection(collection.id, 'ct-002')
       store.addToCollection(collection.id, 'ct-008')

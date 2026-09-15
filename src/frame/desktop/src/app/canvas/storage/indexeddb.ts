@@ -52,6 +52,12 @@ function tx<T>(store: string, mode: IDBTransactionMode, fn: (s: IDBObjectStore) 
         req.onsuccess = () => resolve(req.result as T)
         req.onerror = () => reject(req.error ?? new Error('数据库操作失败'))
         t.oncomplete = () => db.close()
+        // an aborted / failed transaction must not leak the connection (every retry would open another)
+        t.onabort = () => {
+          db.close()
+          reject(t.error ?? new Error('数据库事务已中止'))
+        }
+        t.onerror = () => db.close()
       }),
   )
 }

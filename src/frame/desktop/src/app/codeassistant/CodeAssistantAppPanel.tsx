@@ -3,6 +3,7 @@ import { ConversationView } from '../messagehub/ConversationView'
 import { InMemoryConversationMessageReader } from '../messagehub/conversation/history/data-source'
 import type { AppendableConversationMessageReader } from '../messagehub/conversation/history/types'
 import type { ConversationComposerSubmitPayload } from '../messagehub/conversation/input/ConversationComposer'
+import type { MessageObject } from '../messagehub/protocol/msgobj'
 import { EntityDetails } from '../messagehub/EntityDetails'
 import {
   createOutgoingMockMessage,
@@ -37,6 +38,9 @@ export function CodeAssistantAppPanel(props: AppContentLoaderProps) {
     {},
   )
   const panelRef = useRef<HTMLDivElement>(null)
+  // Messages sent before the persistent readers resolve; replayed onto them once available.
+  const pendingMessagesRef = useRef<Map<string, MessageObject[]>>(new Map())
+  const readersLoadedRef = useRef(false)
   const sessionSidebarWidthRef = useRef(SESSION_SIDEBAR_DEFAULT_WIDTH)
   const sessionSidebarResizeRef = useRef<{
     pointerId: number
@@ -52,9 +56,24 @@ export function CodeAssistantAppPanel(props: AppContentLoaderProps) {
     let cancelled = false
 
     void createCodeAssistantMockReaders().then((readers) => {
-      if (!cancelled) {
-        setLocalReaders(readers)
+      if (cancelled) {
+        return
       }
+
+      readersLoadedRef.current = true
+      const pendingMessages = pendingMessagesRef.current
+      pendingMessagesRef.current = new Map()
+
+      setLocalReaders((prev) => {
+        const next = { ...prev, ...readers }
+        pendingMessages.forEach((messages, sessionId) => {
+          next[sessionId] = messages.reduce(
+            (reader, message) => reader.append(message),
+            readers[sessionId] ?? prev[sessionId] ?? EMPTY_READER,
+          )
+        })
+        return next
+      })
     })
 
     return () => {
@@ -119,6 +138,11 @@ export function CodeAssistantAppPanel(props: AppContentLoaderProps) {
       content: buildOutgoingDraftContent(payload),
       createdAtMs: Date.now(),
     })
+
+    if (!readersLoadedRef.current) {
+      const pending = pendingMessagesRef.current.get(activeSession.id) ?? []
+      pendingMessagesRef.current.set(activeSession.id, [...pending, newMessage])
+    }
 
     setLocalReaders((prev) => ({
       ...prev,

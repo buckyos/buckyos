@@ -150,6 +150,28 @@ function normalizeSudoError(error: unknown) {
   return message || 'Sudo request failed. Please try again.'
 }
 
+/**
+ * Maps a sudo failure to an `app22.error.*` dictionary code.
+ *
+ * Real Verify Hub failures arrive as `SudoRequestError` whose `message` is an
+ * English sentence, so keying the translation on the message never matched
+ * and the English fallback was shown in every locale. Mock stores throw plain
+ * `Error('INCORRECT_PASSWORD')`-style codes, which are used verbatim.
+ */
+function sudoErrorI18nCode(error: unknown) {
+  if (error instanceof SudoRequestError) {
+    const lower = error.message.toLowerCase()
+    if (lower.includes('invalidpassword') || lower.includes('invalid password')) {
+      return 'INCORRECT_PASSWORD'
+    }
+    if (lower.includes('no permission') || lower.includes('only admin')) {
+      return 'ADMIN_REQUIRED'
+    }
+    return error.code
+  }
+  return error instanceof Error ? error.message : 'request_failed'
+}
+
 export async function sudoByPassword({
   username,
   password,
@@ -273,8 +295,7 @@ function SudoPasswordForm({
       controls.close(grant)
     } catch (submitError) {
       setPassword('')
-      const code = submitError instanceof Error ? submitError.message : 'request_failed'
-      setError(t(`app22.error.${code}`, normalizeSudoError(submitError)))
+      setError(t(`app22.error.${sudoErrorI18nCode(submitError)}`, normalizeSudoError(submitError)))
       setSubmitting(false)
     }
   }

@@ -238,6 +238,18 @@ function ServiceLedger({ services }: { services: AppServiceItem[] }) {
   )
 }
 
+/** Finished tasks shown as banners; older ones stay reachable via Task Center. */
+const RECENT_FINISHED_BANNERS = 3
+
+function bannerTasks(tasks: InstallTask[]): InstallTask[] {
+  // `tasks` is sorted by updated_at desc.
+  let finished = 0
+  return tasks.filter(
+    (task) =>
+      task.phase !== 'Terminal' || finished++ < RECENT_FINISHED_BANNERS,
+  )
+}
+
 function ActiveTaskBanner({
   task,
   onOpen,
@@ -467,7 +479,7 @@ export function HomePage({ onNavigate, onOpenInstaller }: HomePageProps) {
               </button>
             </section>
           ))}
-          {store.getTasks().map((task) => (
+          {bannerTasks(store.getTasks()).map((task) => (
             <ActiveTaskBanner
               key={task.task_id}
               task={task}

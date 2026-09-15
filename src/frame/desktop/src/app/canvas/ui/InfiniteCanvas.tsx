@@ -19,7 +19,7 @@ const GRID = 8
 
 type Drag =
   | { kind: 'pan'; lastX: number; lastY: number; moved: boolean; button: number; startX: number; startY: number }
-  | { kind: 'move'; ids: string[]; startX: number; startY: number; applied: { x: number; y: number }; moved: boolean; clickedId: string; shift: boolean }
+  | { kind: 'move'; ids: string[]; startX: number; startY: number; applied: { x: number; y: number }; moved: boolean; clickedId: string; shift: boolean; wasSelected: boolean }
   | { kind: 'resize'; id: string; dir: string; startX: number; startY: number; startRect: Rect }
   | { kind: 'marquee'; startX: number; startY: number; additive: boolean; moved: boolean }
 
@@ -37,6 +37,35 @@ export function InfiniteCanvas({ controllerRef }: { controllerRef: MutableRefObj
   const [panning, setPanning] = useState(false)
   const [fileOver, setFileOver] = useState(false)
   const presenting = Boolean(ui.presentation)
+
+  // pointermove / wheel fire faster than frames: keep only the latest update per channel and
+  // dispatch it once per animation frame (each dispatch re-renders the whole canvas)
+  const frameRef = useRef<{ raf: number; pending: Map<string, () => void> }>({ raf: 0, pending: new Map() })
+  const runPending = useCallback(() => {
+    const f = frameRef.current
+    if (f.raf) cancelAnimationFrame(f.raf)
+    f.raf = 0
+    const fns = [...f.pending.values()]
+    f.pending.clear()
+    for (const fn of fns) fn()
+  }, [])
+  const schedule = useCallback(
+    (channel: 'camera' | 'drag', fn: () => void) => {
+      const f = frameRef.current
+      f.pending.set(channel, fn)
+      if (!f.raf) f.raf = requestAnimationFrame(runPending)
+    },
+    [runPending],
+  )
+  useEffect(
+    () => () => {
+      const f = frameRef.current
+      if (f.raf) cancelAnimationFrame(f.raf)
+      f.raf = 0
+      f.pending.clear()
+    },
+    [],
+  )
 
   const blocks = useMemo(() => [...sheetBlocks(doc, sheet.id)].sort((a, b) => a.zIndex - b.zIndex || a.createdAt.localeCompare(b.createdAt)), [doc, sheet.id])
   const selection = useMemo(() => new Set(ui.selection), [ui.selection])
@@ -104,23 +133,35 @@ export function InfiniteCanvas({ controllerRef }: { controllerRef: MutableRefObj
   useEffect(() => {
     const el = rootRef.current
     if (!el) return
+    // deltas accumulate between frames so no scroll input is lost when several events share a frame
+    const acc = { dx: 0, dy: 0, zoomDelta: 0, px: 0, py: 0 }
+    const apply = () => {
+      let c = camNow()
+      if (acc.dx || acc.dy) c = { ...c, x: c.x - acc.dx, y: c.y - acc.dy }
+      if (acc.zoomDelta) {
+        const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, c.zoom * Math.exp(-acc.zoomDelta * 0.0018)))
+        c = { zoom, x: acc.px - (acc.px - c.x) * (zoom / c.zoom), y: acc.py - (acc.py - c.y) * (zoom / c.zoom) }
+      }
+      acc.dx = acc.dy = acc.zoomDelta = 0
+      store.setCamera(c)
+    }
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
-      const c = camNow()
       if (store.getState().ui.presentation) store.setUi({ presentation: { ...store.getState().ui.presentation!, deviated: true } })
       if (e.ctrlKey || e.metaKey) {
         const r = el.getBoundingClientRect()
-        const px = e.clientX - r.left
-        const py = e.clientY - r.top
-        const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, c.zoom * Math.exp(-e.deltaY * 0.0018)))
-        store.setCamera({ zoom, x: px - (px - c.x) * (zoom / c.zoom), y: py - (py - c.y) * (zoom / c.zoom) })
+        acc.zoomDelta += e.deltaY
+        acc.px = e.clientX - r.left
+        acc.py = e.clientY - r.top
       } else {
-        store.setCamera({ ...c, x: c.x - e.deltaX, y: c.y - e.deltaY })
+        acc.dx += e.deltaX
+        acc.dy += e.deltaY
       }
+      schedule('camera', apply)
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [camNow, store])
+  }, [camNow, store, schedule])
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement
@@ -171,7 +212,7 @@ export function InfiniteCanvas({ controllerRef }: { controllerRef: MutableRefObj
       } else if (!already) store.select([blockId])
       const ids = store.getState().ui.selection
       store.beginTransient()
-      dragRef.current = { kind: 'move', ids, startX: e.clientX, startY: e.clientY, applied: { x: 0, y: 0 }, moved: false, clickedId: blockId, shift: e.shiftKey }
+      dragRef.current = { kind: 'move', ids, startX: e.clientX, startY: e.clientY, applied: { x: 0, y: 0 }, moved: false, clickedId: blockId, shift: e.shiftKey, wasSelected: already }
       if (!(target as HTMLElement).closest('input, textarea, select, button, [contenteditable]')) rootRef.current?.focus()
       return
     }
@@ -186,9 +227,13 @@ export function InfiniteCanvas({ controllerRef }: { controllerRef: MutableRefObj
     const c = camNow()
     if (d.kind === 'pan') {
       if (!d.moved && Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < 3) return
-      store.setCamera({ ...c, x: c.x + e.clientX - d.lastX, y: c.y + e.clientY - d.lastY })
-      d.lastX = e.clientX
-      d.lastY = e.clientY
+      const { clientX, clientY } = e
+      schedule('camera', () => {
+        const cam = camNow()
+        store.setCamera({ ...cam, x: cam.x + clientX - d.lastX, y: cam.y + clientY - d.lastY })
+        d.lastX = clientX
+        d.lastY = clientY
+      })
       if (!d.moved) {
         setPanning(true)
         if (presenting) store.setUi({ presentation: { ...store.getState().ui.presentation!, deviated: true } })
@@ -202,12 +247,14 @@ export function InfiniteCanvas({ controllerRef }: { controllerRef: MutableRefObj
       const snap = e.altKey ? 1 : GRID
       const sx = Math.round(tx / snap) * snap
       const sy = Math.round(ty / snap) * snap
-      const dx = sx - d.applied.x
-      const dy = sy - d.applied.y
-      if (dx || dy) {
-        store.dispatch({ type: 'MOVE_BLOCKS', ids: d.ids, dx, dy })
-        d.applied = { x: sx, y: sy }
-      }
+      schedule('drag', () => {
+        const dx = sx - d.applied.x
+        const dy = sy - d.applied.y
+        if (dx || dy) {
+          store.dispatch({ type: 'MOVE_BLOCKS', ids: d.ids, dx, dy })
+          d.applied = { x: sx, y: sy }
+        }
+      })
     } else if (d.kind === 'resize') {
       const dx = (e.clientX - d.startX) / c.zoom
       const dy = (e.clientY - d.startY) / c.zoom
@@ -224,7 +271,7 @@ export function InfiniteCanvas({ controllerRef }: { controllerRef: MutableRefObj
         r.y = d.startRect.y + (d.startRect.height - h)
         r.height = h
       }
-      store.dispatch({ type: 'RESIZE_BLOCK', id: d.id, rect: r })
+      schedule('drag', () => store.dispatch({ type: 'RESIZE_BLOCK', id: d.id, rect: r }))
     } else if (d.kind === 'marquee') {
       const a = toCanvas(d.startX, d.startY)
       const b = toCanvas(e.clientX, e.clientY)
@@ -232,9 +279,10 @@ export function InfiniteCanvas({ controllerRef }: { controllerRef: MutableRefObj
       d.moved = true
       setMarquee({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) })
     }
-  }, [camNow, presenting, store, toCanvas])
+  }, [camNow, presenting, store, toCanvas, schedule])
 
   const onPointerUp = useCallback((e: PointerEvent) => {
+    runPending() // apply the last coalesced move/resize/pan before the gesture ends
     const d = dragRef.current
     dragRef.current = null
     if (!d) return
@@ -248,8 +296,10 @@ export function InfiniteCanvas({ controllerRef }: { controllerRef: MutableRefObj
     } else if (d.kind === 'move') {
       store.endTransient()
       if (!d.moved) {
-        if (d.shift) store.toggleSelect(d.clickedId)
-        else store.select([d.clickedId])
+        // shift-click: pointer-down already added an unselected block; only an already-selected one toggles off
+        if (d.shift) {
+          if (d.wasSelected) store.toggleSelect(d.clickedId)
+        } else store.select([d.clickedId])
       }
     } else if (d.kind === 'resize') {
       store.endTransient()
@@ -265,7 +315,7 @@ export function InfiniteCanvas({ controllerRef }: { controllerRef: MutableRefObj
       }
       setMarquee(null)
     }
-  }, [marquee, store, presenting, toCanvas])
+  }, [marquee, store, presenting, toCanvas, runPending])
 
   useEffect(() => {
     window.addEventListener('pointermove', onPointerMove)

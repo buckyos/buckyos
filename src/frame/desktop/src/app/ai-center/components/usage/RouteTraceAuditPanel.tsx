@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronUp, Filter, Route, Search } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useRouteTraces } from '../../hooks/use-aicc-store'
+import { useDebouncedValue } from '../../hooks/use-debounced-value'
 import { StatusBadge } from '../shared/StatusBadge'
 import { PagedListFooter } from '../shared/paged-list'
 import { LongField } from '../shared/LongField'
@@ -19,6 +20,8 @@ type TraceFilters = {
 type TimeRangeFilter = 'all' | '24h' | '7d' | '30d' | 'custom'
 
 const ROUTE_TRACE_PAGE_SIZE = 20
+// Free text is debounced before it reaches trace.query so typing does not issue an RPC per keystroke.
+const TRACE_QUERY_DEBOUNCE_MS = 250
 
 type RouteTraceAuditPanelProps = {
   compact: boolean
@@ -40,20 +43,20 @@ function dateInputEnd(value: string): number | null {
   return Number.isNaN(date.getTime()) ? null : date.getTime()
 }
 
-function localTrailingDaysRange(days: number): { startTimeMs: number; endTimeMs: number } {
-  const start = new Date()
+function localTrailingDaysRange(days: number, nowMs: number): { startTimeMs: number; endTimeMs: number } {
+  const start = new Date(nowMs)
   start.setHours(0, 0, 0, 0)
   start.setDate(start.getDate() - Math.max(0, days - 1))
-  return { startTimeMs: start.getTime(), endTimeMs: Date.now() }
+  return { startTimeMs: start.getTime(), endTimeMs: nowMs }
 }
 
-function timeRangeToQuery(value: TimeRangeFilter, customStartDate: string, customEndDate: string): { startTimeMs: number; endTimeMs: number } | undefined {
+function timeRangeToQuery(value: TimeRangeFilter, customStartDate: string, customEndDate: string, nowMs: number): { startTimeMs: number; endTimeMs: number } | undefined {
   if (value === 'all') return undefined
   if (value === 'custom') {
-    const fallback = localTrailingDaysRange(30)
+    const fallback = localTrailingDaysRange(30, nowMs)
     return {
       startTimeMs: dateInputStart(customStartDate) ?? fallback.startTimeMs,
-      endTimeMs: dateInputEnd(customEndDate) ?? Date.now(),
+      endTimeMs: dateInputEnd(customEndDate) ?? nowMs,
     }
   }
   const duration = value === '24h'
@@ -61,7 +64,26 @@ function timeRangeToQuery(value: TimeRangeFilter, customStartDate: string, custo
     : value === '7d'
       ? 7 * 24 * 60 * 60 * 1000
       : 30 * 24 * 60 * 60 * 1000
-  return { startTimeMs: Date.now() - duration, endTimeMs: Date.now() }
+  return { startTimeMs: nowMs - duration, endTimeMs: nowMs }
+}
+
+type TraceQueryFilters = {
+  query?: string
+  outcome?: 'fallback' | 'failed' | 'warning'
+  apiTypes?: string[]
+  providerInstanceNames?: string[]
+  selectedExactModels?: string[]
+  schedulerProfiles?: string[]
+}
+
+function buildTraceQueryParams(
+  filters: TraceQueryFilters,
+  timeRange: TimeRangeFilter,
+  customStartDate: string,
+  customEndDate: string,
+  nowMs: number,
+): TraceQueryFilters & { timeRange?: { startTimeMs: number; endTimeMs: number } } {
+  return { ...filters, timeRange: timeRangeToQuery(timeRange, customStartDate, customEndDate, nowMs) }
 }
 
 export function RouteTraceAuditPanel({
@@ -88,20 +110,22 @@ export function RouteTraceAuditPanel({
   const [traceLoading, setTraceLoading] = useState(false)
   const [traceError, setTraceError] = useState<'initial' | 'more' | null>(null)
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
+  const debouncedQuery = useDebouncedValue(query, TRACE_QUERY_DEBOUNCE_MS)
+  // Upper bound of the query window: refreshed when a new query series starts (filter change, retry),
+  // stable while paging within that series.
+  const queryEndMsRef = useRef(0)
+  // Sequence of the latest trace request; responses from older requests are dropped instead of
+  // overwriting a newer result.
+  const traceRequestSeqRef = useRef(0)
 
-  const traceQueryRange = useMemo(
-    () => timeRangeToQuery(timeRange, customStartDate, customEndDate),
-    [customEndDate, customStartDate, timeRange],
-  )
-  const traceQueryParams = useMemo(() => ({
-    timeRange: traceQueryRange,
-    query: query.trim() || undefined,
+  const traceQueryFilters = useMemo<TraceQueryFilters>(() => ({
+    query: debouncedQuery.trim() || undefined,
     outcome: outcomeFilter === 'all' ? undefined : outcomeFilter,
     apiTypes: traceFilters.apiType ? [traceFilters.apiType] : undefined,
     providerInstanceNames: traceFilters.provider ? [traceFilters.provider] : undefined,
     selectedExactModels: traceFilters.model ? [traceFilters.model] : undefined,
     schedulerProfiles: traceFilters.profile ? [traceFilters.profile] : undefined,
-  }), [outcomeFilter, query, traceFilters, traceQueryRange])
+  }), [debouncedQuery, outcomeFilter, traceFilters])
   const timeRangeOptions: Array<[TimeRangeFilter, string]> = useMemo(() => [
     ['all', t('aiCenter.home.allTime', 'All time')],
     ['24h', t('aiCenter.home.last24Hours', 'Last 24 hours')],
@@ -111,36 +135,33 @@ export function RouteTraceAuditPanel({
   ], [t])
 
   useEffect(() => {
-    let cancelled = false
+    const seq = ++traceRequestSeqRef.current
+    queryEndMsRef.current = Date.now()
+    const params = buildTraceQueryParams(traceQueryFilters, timeRange, customStartDate, customEndDate, queryEndMsRef.current)
     async function loadInitialTraces() {
       setTraceLoading(true)
       try {
-        const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE, ...traceQueryParams })
-        if (!cancelled) {
-          setTraces(page.traces)
-          setTraceNextCursor(page.nextCursor)
-          setTraceTotalCount(page.totalCount ?? page.traces.length)
-          setTracePageIndex(0)
-          setTraceError(null)
-        }
+        const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE, ...params })
+        if (seq !== traceRequestSeqRef.current) return
+        setTraces(page.traces)
+        setTraceNextCursor(page.nextCursor)
+        setTraceTotalCount(page.totalCount ?? page.traces.length)
+        setTracePageIndex(0)
+        setTraceError(null)
       } catch (error) {
         console.error('aicc.trace.query usage audit failed', error)
-        if (!cancelled) {
-          setTraces(snapshotTraces)
-          setTraceNextCursor(snapshotTraces.length >= ROUTE_TRACE_PAGE_SIZE ? String(ROUTE_TRACE_PAGE_SIZE) : undefined)
-          setTraceTotalCount(snapshotTraces.length)
-          setTracePageIndex(0)
-          setTraceError('initial')
-        }
+        if (seq !== traceRequestSeqRef.current) return
+        setTraces(snapshotTraces)
+        setTraceNextCursor(snapshotTraces.length >= ROUTE_TRACE_PAGE_SIZE ? String(ROUTE_TRACE_PAGE_SIZE) : undefined)
+        setTraceTotalCount(snapshotTraces.length)
+        setTracePageIndex(0)
+        setTraceError('initial')
       } finally {
-        if (!cancelled) setTraceLoading(false)
+        if (seq === traceRequestSeqRef.current) setTraceLoading(false)
       }
     }
     void loadInitialTraces()
-    return () => {
-      cancelled = true
-    }
-  }, [snapshotTraces, store, traceQueryParams])
+  }, [customEndDate, customStartDate, snapshotTraces, store, timeRange, traceQueryFilters])
 
   const visibleTraces = useMemo(
     () => traces.filter((trace) => !logicalPathFilter || traceLogicalPath(trace) === logicalPathFilter),
@@ -150,8 +171,12 @@ export function RouteTraceAuditPanel({
   const traceFiltersActive = Object.values(traceFilters).some(Boolean)
   const emptyState = traceEmptyStateKind(traces.length, visibleTraces.length, traceError, query.trim().length > 0 || timeRange !== 'all' || traceFiltersActive, outcomeFilter)
 
+  const currentTraceQueryParams = () =>
+    buildTraceQueryParams(traceQueryFilters, timeRange, customStartDate, customEndDate, queryEndMsRef.current)
+
   const loadTracePage = async (pageIndex: number) => {
     if (traceLoading) return
+    const seq = ++traceRequestSeqRef.current
     const nextPageIndex = Math.max(0, pageIndex)
     setTraceLoading(true)
     setTraceError(null)
@@ -159,44 +184,54 @@ export function RouteTraceAuditPanel({
       const page = await store.queryRouteTraces({
         limit: ROUTE_TRACE_PAGE_SIZE,
         cursor: nextPageIndex > 0 ? String(nextPageIndex * ROUTE_TRACE_PAGE_SIZE) : undefined,
-        ...traceQueryParams,
+        ...currentTraceQueryParams(),
       })
+      if (seq !== traceRequestSeqRef.current) return
       setTraces(page.traces)
       setTraceNextCursor(page.nextCursor)
       setTraceTotalCount(page.totalCount ?? page.traces.length)
       setTracePageIndex(nextPageIndex)
     } catch (error) {
       console.error('aicc.trace.query usage audit page failed', error)
+      if (seq !== traceRequestSeqRef.current) return
       setTraceError('initial')
     } finally {
-      setTraceLoading(false)
+      if (seq === traceRequestSeqRef.current) setTraceLoading(false)
     }
   }
 
   const loadMoreTraces = async () => {
     if (!traceNextCursor || traceLoading) return
+    const seq = ++traceRequestSeqRef.current
     setTraceLoading(true)
     setTraceError(null)
     try {
       const page = await store.queryRouteTraces({
         limit: ROUTE_TRACE_PAGE_SIZE,
         cursor: traceNextCursor,
-        ...traceQueryParams,
+        ...currentTraceQueryParams(),
       })
+      if (seq !== traceRequestSeqRef.current) return
       setTraces((current) => mergeRouteTraces(current, page.traces))
       setTraceNextCursor(page.nextCursor)
       setTraceTotalCount((current) => page.totalCount ?? Math.max(current, traces.length + page.traces.length))
     } catch (error) {
       console.error('aicc.trace.query usage audit more failed', error)
+      if (seq !== traceRequestSeqRef.current) return
       setTraceError('more')
     } finally {
-      setTraceLoading(false)
+      if (seq === traceRequestSeqRef.current) setTraceLoading(false)
     }
   }
 
   const retryTraceLoad = () => {
-    if (traceError === 'initial') void loadTracePage(tracePageIndex)
-    else void loadMoreTraces()
+    if (traceError === 'initial') {
+      // Retrying starts a new query series, so pick up events that arrived since the last attempt.
+      queryEndMsRef.current = Date.now()
+      void loadTracePage(tracePageIndex)
+    } else {
+      void loadMoreTraces()
+    }
   }
 
   const segmentOptions: Array<{ key: TraceOutcomeFilter; label: string }> = [

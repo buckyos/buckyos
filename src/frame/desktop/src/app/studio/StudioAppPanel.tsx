@@ -1,8 +1,7 @@
 import { PanelIntro } from '../../components/AppPanelPrimitives'
 import { useI18n } from '../../i18n/provider'
-import type { AppContentLoaderProps } from '../types'
 
-export function StudioAppPanel(_: AppContentLoaderProps) {
+export function StudioAppPanel() {
   const { t } = useI18n()
 
   return (

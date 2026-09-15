@@ -71,6 +71,24 @@ async function fetchGroupListByMember(memberDid?: string): Promise<{
   }
 }
 
+const APP_LIST_CONCURRENCY = 4
+
+async function forEachWithConcurrency<T>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex]
+      nextIndex += 1
+      await worker(item)
+    }
+  })
+  await Promise.all(runners)
+}
+
 async function fetchUsersAgentsCoreSnapshot(): Promise<UsersAgentsCoreSnapshot> {
   const accountInfo = await buckyos.getAccountInfo() as AccountInfo | null
   const selfUserId = accountInfo?.user_id
@@ -90,10 +108,10 @@ async function fetchUsersAgentsCoreSnapshot(): Promise<UsersAgentsCoreSnapshot> 
     usersResult.data?.users ?? [],
   )
   const appsByUser = new Map<string, NonNullable<Awaited<ReturnType<typeof fetchAppList>>['data']>['apps']>()
-  await Promise.all(targetUserIds.map(async (userId) => {
+  await forEachWithConcurrency(targetUserIds, APP_LIST_CONCURRENCY, async (userId) => {
     const result = await fetchAppList({ userId })
     if (result.data) appsByUser.set(userId, result.data.apps)
-  }))
+  })
 
   const selfDetail = selfResult.data ?? (accountInfo ? accountDetail(accountInfo) : null)
   const hasCoreData = Boolean(

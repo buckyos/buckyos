@@ -8,13 +8,26 @@ import {
 import { I18nProvider } from './i18n/provider'
 import { PrototypeThemeProvider } from './theme/provider'
 import { DesktopRoute } from './desktop/DesktopRoute'
-import { HomeStationRoute } from './app/homestation/HomeStationRoute'
-import { MessageHubRoute } from './app/messagehub/MessageHubRoute'
-import { TaskCenterRoute } from './app/task-center/TaskCenterRoute'
-import { UserProfileRoute } from './userprofile'
-import { AppInstallerRoute } from './sysdlg'
 
+// Standalone routes are code-split like the app panels: a visitor of `/`
+// should not download MessageHub / HomeStation / TaskCenter / the installer
+// up front, and a visitor of `/messagehub` should not download the desktop.
 const LoginPage = lazy(() => import('./auth/LoginPage'))
+const HomeStationRoute = lazy(() =>
+  import('./app/homestation/HomeStationRoute').then((m) => ({ default: m.HomeStationRoute })),
+)
+const MessageHubRoute = lazy(() =>
+  import('./app/messagehub/MessageHubRoute').then((m) => ({ default: m.MessageHubRoute })),
+)
+const TaskCenterRoute = lazy(() =>
+  import('./app/task-center/TaskCenterRoute').then((m) => ({ default: m.TaskCenterRoute })),
+)
+const UserProfileRoute = lazy(() =>
+  import('./userprofile').then((m) => ({ default: m.UserProfileRoute })),
+)
+const AppInstallerRoute = lazy(() =>
+  import('./sysdlg').then((m) => ({ default: m.AppInstallerRoute })),
+)
 
 const router = createBrowserRouter([
   {
@@ -29,25 +42,45 @@ const router = createBrowserRouter([
       </Suspense>
     ),
   },
-{
+  {
     path: '/homestation',
-    element: <HomeStationRoute />,
+    element: (
+      <Suspense fallback={null}>
+        <HomeStationRoute />
+      </Suspense>
+    ),
   },
   {
     path: '/messagehub',
-    element: <MessageHubRoute />,
+    element: (
+      <Suspense fallback={null}>
+        <MessageHubRoute />
+      </Suspense>
+    ),
   },
   {
     path: '/taskcenter',
-    element: <TaskCenterRoute />,
+    element: (
+      <Suspense fallback={null}>
+        <TaskCenterRoute />
+      </Suspense>
+    ),
   },
   {
     path: '/userprofile',
-    element: <UserProfileRoute />,
+    element: (
+      <Suspense fallback={null}>
+        <UserProfileRoute />
+      </Suspense>
+    ),
   },
   {
     path: '/sysdlg/app_installer',
-    element: <AppInstallerRoute />,
+    element: (
+      <Suspense fallback={null}>
+        <AppInstallerRoute />
+      </Suspense>
+    ),
   },
   {
     path: '*',
@@ -63,7 +96,6 @@ function AppShell() {
       <DesktopBackground
         wallpaper={background.wallpaper}
         pageCount={background.pageCount}
-        viewportProgress={background.viewportProgress}
       />
       <RouterProvider router={router} />
     </>

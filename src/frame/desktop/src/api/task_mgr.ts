@@ -172,6 +172,12 @@ export interface TaskCenterModel {
    * (doc §14.3). No-op once the cached copy is current.
    */
   loadTaskDetail(taskId: string): Promise<void>
+  /**
+   * Release upstream subscriptions/timers. Safe to call more than once; a
+   * later `subscribe` re-attaches, which StrictMode's simulated
+   * unmount/remount relies on.
+   */
+  dispose(): void
   getAllTasks(): Task[]
   getRunningTasks(): Task[]
   getRecentFinishedTasks(): Task[]
@@ -683,24 +689,40 @@ export class TaskCenterMockModel
   implements TaskCenterModel
 {
   private readonly subscription = new SubscribableModel()
+  private readonly appServiceStore = getSharedAppServiceStore()
+  /**
+   * Upstream unsubscribe. Attached lazily on the first `subscribe` (so a
+   * model StrictMode discards from a double-invoked `useState` initializer
+   * never listens) and released only by `dispose`.
+   */
+  private detachAppService: (() => void) | null = null
 
   constructor() {
     super()
-    const store = getSharedAppServiceStore()
-    const update = () => {
-      this.tasks = [
-        ...this.tasks.filter(
-          (task) =>
-            !['app.install/v1', 'app.update/v1'].includes(
-              task.schemaType ?? '',
-            ),
-        ),
-        ...store.getTasks().map(installationTaskView),
-      ]
-      this.subscription.emitChange()
-    }
-    update()
-    store.subscribe(update)
+    this.syncInstallTasks()
+  }
+
+  private syncInstallTasks(): void {
+    this.tasks = [
+      ...this.tasks.filter(
+        (task) =>
+          !['app.install/v1', 'app.update/v1'].includes(
+            task.schemaType ?? '',
+          ),
+      ),
+      ...this.appServiceStore.getTasks().map(installationTaskView),
+    ]
+    this.subscription.emitChange()
+  }
+
+  /** Idempotent, so re-subscribing on every render cannot cause churn. */
+  private attach(): void {
+    if (this.detachAppService) return
+    this.detachAppService = this.appServiceStore.subscribe(() =>
+      this.syncInstallTasks(),
+    )
+    // Catch up on anything that changed while detached.
+    this.syncInstallTasks()
   }
 
   getSnapshot(): number {
@@ -708,7 +730,13 @@ export class TaskCenterMockModel
   }
 
   subscribe(listener: () => void): () => void {
+    this.attach()
     return this.subscription.subscribe(listener)
+  }
+
+  dispose(): void {
+    this.detachAppService?.()
+    this.detachAppService = null
   }
 
   async refresh(): Promise<void> {
@@ -732,6 +760,8 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
   private events: SystemEvent[] = []
   private handledNotifications = new Map<string, Pick<SystemNotification, 'handledAction' | 'handledAt'>>()
   private readonly provider: TaskCenterRpcProvider
+  /** The list fetch in flight, so detail loads can wait for it. */
+  private pendingRefresh: Promise<void> | null = null
 
   constructor(provider: TaskCenterRpcProvider = new BuckyOSTaskMgrProvider()) {
     super()
@@ -739,7 +769,15 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
     void this.refresh()
   }
 
-  async refresh(): Promise<void> {
+  refresh(): Promise<void> {
+    const pending = this.fetchTasks().finally(() => {
+      if (this.pendingRefresh === pending) this.pendingRefresh = null
+    })
+    this.pendingRefresh = pending
+    return pending
+  }
+
+  private async fetchTasks(): Promise<void> {
     try {
       this.snapshots = await this.provider.listTasks()
     } catch (error) {
@@ -749,7 +787,13 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
     this.rebuild()
   }
 
+  dispose(): void {
+    // No timers or upstream subscriptions to release.
+  }
+
   async loadTaskDetail(taskId: string): Promise<void> {
+    // A deep link (`?taskid=`) can open before the initial list resolves.
+    if (this.pendingRefresh) await this.pendingRefresh
     const snapshot = this.snapshots.find((item) => item.summary.task_id === taskId)
     if (!snapshot || snapshot.detail) return
     let detail: TaskMgrTask | null

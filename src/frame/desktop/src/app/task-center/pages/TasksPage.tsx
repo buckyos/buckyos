@@ -1,6 +1,6 @@
 /* ── TaskCenter Tasks Page (full task list with filters) ── */
 
-import { useState, useMemo } from 'react'
+import { useState } from 'react'
 import {
   Search,
   Play,
@@ -68,19 +68,18 @@ export function TasksPage({ onNavigate }: TasksPageProps) {
   const [filterSource, setFilterSource] = useState<TaskSource | ''>('')
   const [showFilters, setShowFilters] = useState(false)
 
-  const tasks = useMemo(() => {
-    return store.filterTasks({
-      status: filterStatus || undefined,
-      type: filterType || undefined,
-      source: filterSource || undefined,
-      search: search || undefined,
-    })
-  }, [store, filterStatus, filterType, filterSource, search])
+  // Not memoized: the store keeps its identity and notifies through
+  // useSyncExternalStore, so a memo keyed on it would never recompute.
+  const tasks = store.filterTasks({
+    status: filterStatus || undefined,
+    type: filterType || undefined,
+    source: filterSource || undefined,
+    search: search || undefined,
+  })
 
   // Sort by updatedAt descending
-  const sorted = useMemo(
-    () => [...tasks].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
-    [tasks],
+  const sorted = [...tasks].sort(
+    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
   )
 
   return (

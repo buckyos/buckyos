@@ -8,6 +8,7 @@ import {
 import { buckyos } from 'buckyos'
 import clsx from 'clsx'
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -26,13 +27,19 @@ import { Pagination } from 'swiper/modules'
 import { Swiper, SwiperSlide } from 'swiper/react'
 import { globalSettingsStore } from '../app/settings/mock/store'
 import { findDesktopAppById } from '../app/registry'
+import type { DesktopAppItem } from '../app/types'
 import {
   AppIcon,
 } from '../components/DesktopVisuals'
+import { LoadingOrb } from '../components/LoadingOrb'
 import {
   appIconSurfaceStyle,
 } from '../components/DesktopVisualTokens'
 import { useDesktopBackground } from './DesktopBackgroundProvider'
+import {
+  resetDesktopViewportProgress,
+  setDesktopViewportProgress,
+} from './viewportProgress'
 import { StatusBar } from './StatusBar'
 import { SystemSidebar } from './SystemSidebar'
 import { DesktopWidgetRenderer } from './widgets/WidgetRenderer'
@@ -46,6 +53,7 @@ import {
   mobileStatusBarMode,
   shellStatusBarHeight,
   type ConnectionState,
+  type StatusTip,
 } from './shell'
 import { useI18n } from '../i18n/provider'
 import { isMockRuntime } from '../runtime'
@@ -53,9 +61,11 @@ import type {
   AppDefinition,
   FormFactor,
   LayoutItem,
+  LayoutState,
   MockScenario,
   SupportedLocale,
   SystemPreferencesInput,
+  WindowRecord,
 } from '../models/ui'
 import { supportedLocales } from '../models/ui'
 import { useThemeMode } from '../theme/provider'
@@ -136,8 +146,16 @@ function useSafeAreaInsets() {
   return insets
 }
 
+/**
+ * Grid geometry derived from the grid container's measured size.
+ *
+ * Takes the container *element* (from a callback ref) rather than a ref
+ * object: the container is only mounted once the layout has loaded, so an
+ * effect keyed on a ref object would run before the node exists and never
+ * attach the ResizeObserver.
+ */
 function useGridSpec(
-  containerRef: { current: HTMLElement | null },
+  container: HTMLElement | null,
   density: GridDensity,
   isMobile: boolean,
 ) {
@@ -145,7 +163,7 @@ function useGridSpec(
   const [containerHeight, setContainerHeight] = useState(720)
 
   useEffect(() => {
-    const el = containerRef.current
+    const el = container
     if (!el) return
 
     const ro = new ResizeObserver((entries) => {
@@ -161,7 +179,7 @@ function useGridSpec(
 
     ro.observe(el)
     return () => ro.disconnect()
-  }, [containerRef, isMobile])
+  }, [container, isMobile])
 
   const rows = rowsForHeight(containerHeight, density, isMobile)
   const rowHeight = effectiveRowHeight(containerHeight, rows, density, isMobile)
@@ -201,6 +219,8 @@ const zeroDeadZone = { top: 0, bottom: 0, left: 0, right: 0 }
 // drop via applyDragCollision; during the drag only the placeholder moves.
 const dragOverlayCompactor = getCompactor(null, true)
 
+type WindowGeometryPatch = Partial<Pick<WindowRecord, 'x' | 'y' | 'width' | 'height'>>
+
 // ---------------------------------------------------------------------------
 // DesktopRoute — now a thin view that delegates to the unified store
 // ---------------------------------------------------------------------------
@@ -225,7 +245,7 @@ export function DesktopRoute() {
   const draggedOpenBlockItemId = useRef<string | null>(null)
   const draggedOpenBlockTimeoutId = useRef<number | null>(null)
   const workspaceRef = useRef<HTMLDivElement | null>(null)
-  const gridContainerRef = useRef<HTMLDivElement | null>(null)
+  const [gridContainer, setGridContainer] = useState<HTMLDivElement | null>(null)
 
   const [viewportSize, setViewportSize] = useState(() => ({
     width: window.innerWidth,
@@ -238,7 +258,7 @@ export function DesktopRoute() {
     globalSettingsStore.getSnapshot,
   )
   const density = (settingsSnap.session.appearance.fontSize ?? 'medium') as GridDensity
-  const gridSpec = useGridSpec(gridContainerRef, density, isMobile)
+  const gridSpec = useGridSpec(gridContainer, density, isMobile)
 
   // Sync grid spec into store
   useEffect(() => {
@@ -285,13 +305,6 @@ export function DesktopRoute() {
   }, [])
 
   // Viewport resize → normalise window positions
-  const normalizeOpenWindowsForViewport = useCallback(
-    (nextViewportSize: { width: number; height: number }) => {
-      store.normalizeOpenWindowsForViewport(nextViewportSize)
-    },
-    [store],
-  )
-
   useEffect(() => {
     const updateViewportSize = () => {
       const nextViewportSize = {
@@ -300,7 +313,7 @@ export function DesktopRoute() {
       }
       setViewportSize(nextViewportSize)
       if (formFactor === 'desktop') {
-        normalizeOpenWindowsForViewport(nextViewportSize)
+        store.normalizeOpenWindowsForViewport(nextViewportSize)
       }
     }
     window.addEventListener('resize', updateViewportSize)
@@ -309,7 +322,7 @@ export function DesktopRoute() {
       window.removeEventListener('resize', updateViewportSize)
       window.removeEventListener('orientationchange', updateViewportSize)
     }
-  }, [formFactor, normalizeOpenWindowsForViewport])
+  }, [formFactor, store])
 
   // Read from snapshot — grouped by data tier
   const { status, apps, resolvedLayout } = snap
@@ -321,7 +334,6 @@ export function DesktopRoute() {
     snackbar,
     isSystemSidebarOpen,
     selectedItemId,
-    viewportProgress,
     contextMenu,
   } = snap.runtime
 
@@ -333,11 +345,15 @@ export function DesktopRoute() {
   const safeArea = useSafeAreaInsets()
   const desktopWorkspaceTopInset =
     safeArea.top + shellStatusBarHeight('desktop')
-  const desktopViewportBounds = getDesktopWindowWorkspaceBounds({
-    safeArea,
-    topInset: desktopWorkspaceTopInset,
-    viewportSize,
-  })
+  const desktopViewportBounds = useMemo(
+    () =>
+      getDesktopWindowWorkspaceBounds({
+        safeArea,
+        topInset: desktopWorkspaceTopInset,
+        viewportSize,
+      }),
+    [safeArea, desktopWorkspaceTopInset, viewportSize],
+  )
   const workspaceInnerWidth = Math.max(
     workspaceSize.width -
       resolvedDeadZone.left -
@@ -349,100 +365,138 @@ export function DesktopRoute() {
 
   // ---------------------------------------------------------------------------
   // Action handlers (thin wrappers around store)
+  //
+  // All handlers are referentially stable so that the memoised subtrees
+  // (window slots, app panels, the launcher grid) do not re-render on every
+  // store update — e.g. on each pointermove while a window is dragged.
+  // They read the *current* snapshot from the store instead of closing over
+  // `windows`/`apps` from this render.
   // ---------------------------------------------------------------------------
 
-  const logActivity = (message: string) => store.logActivity(message, locale)
+  const logActivity = useCallback(
+    (message: string) => store.logActivity(message, locale),
+    [store, locale],
+  )
 
-  const handleOpenApp = (appId: string) => {
-    const app = findDesktopAppById(apps, appId)
-    if (!app) return
+  const handleOpenApp = useCallback(
+    (appId: string) => {
+      const app = findDesktopAppById(store.getSnapshot().apps, appId)
+      if (!app) return
 
-    if (isMobile && app.manifest.mobileRedirectPath) {
-      navigate(app.manifest.mobileRedirectPath)
-      return
-    }
+      if (isMobile && app.manifest.mobileRedirectPath) {
+        navigate(app.manifest.mobileRedirectPath)
+        return
+      }
 
-    if (app.manifest.placement === 'new-container' || app.tier === 'external') {
+      if (app.manifest.placement === 'new-container' || app.tier === 'external') {
+        logActivity(
+          t('activity.external', 'Requested new-container launch for {{name}}', {
+            name: t(app.labelKey),
+          }),
+        )
+        store.setSnackbar(t('external.body'))
+        return
+      }
+
+      // The store's own `logActivity` hook is intentionally not passed here:
+      // the translated "Opened …" entry below is the single activity entry.
+      store.openApp(appId, {
+        isMobile,
+        navigate,
+        viewportBounds: desktopViewportBounds,
+      })
       logActivity(
-        t('activity.external', 'Requested new-container launch for {{name}}', {
-          name: t(app.labelKey),
-        }),
+        t('activity.opened', 'Opened {{name}}', { name: t(app.labelKey) }),
       )
-      store.setSnackbar(t('external.body'))
-      return
-    }
+    },
+    [store, isMobile, navigate, logActivity, t, desktopViewportBounds],
+  )
 
-    store.openApp(appId, {
-      isMobile,
-      navigate,
-      logActivity,
-      viewportBounds: desktopViewportBounds,
-    })
-    logActivity(
-      t('activity.opened', 'Opened {{name}}', { name: t(app.labelKey) }),
-    )
-  }
+  const describeWindow = useCallback(
+    (windowId: string) => {
+      const current = store.getSnapshot()
+      const target = current.runtime.windows.find((w) => w.id === windowId)
+      if (!target) return null
+      const app = findDesktopAppById(current.apps, target.appId)
+      return t(app?.labelKey ?? target.titleKey)
+    },
+    [store, t],
+  )
 
-  const handleCloseWindow = (windowId: string) => {
-    const closing = windows.find((w) => w.id === windowId)
-    if (closing) {
-      const app = findDesktopAppById(apps, closing.appId)
-      logActivity(
-        t('activity.closed', 'Closed {{name}}', {
-          name: t(app?.labelKey ?? closing.titleKey),
-        }),
-      )
-    }
-    store.closeWindow(windowId)
-  }
+  const handleCloseWindow = useCallback(
+    (windowId: string) => {
+      const name = describeWindow(windowId)
+      if (name !== null) {
+        logActivity(t('activity.closed', 'Closed {{name}}', { name }))
+      }
+      store.closeWindow(windowId)
+    },
+    [store, describeWindow, logActivity, t],
+  )
 
-  const minimizeWindow = (windowId: string) => {
-    const target = windows.find((w) => w.id === windowId)
-    if (target) {
-      const app = findDesktopAppById(apps, target.appId)
-      logActivity(
-        t('activity.minimized', 'Minimized {{name}}', {
-          name: t(app?.labelKey ?? target.titleKey),
-        }),
-      )
-    }
-    store.minimizeWindow(windowId)
-  }
+  const minimizeWindow = useCallback(
+    (windowId: string) => {
+      const name = describeWindow(windowId)
+      if (name !== null) {
+        logActivity(t('activity.minimized', 'Minimized {{name}}', { name }))
+      }
+      store.minimizeWindow(windowId)
+    },
+    [store, describeWindow, logActivity, t],
+  )
 
-  const toggleMaximizeWindow = (windowId: string) => {
-    const target = windows.find((w) => w.id === windowId)
-    if (target) {
-      const app = findDesktopAppById(apps, target.appId)
-      logActivity(
-        t('activity.maximized', 'Toggled maximize for {{name}}', {
-          name: t(app?.labelKey ?? target.titleKey),
-        }),
-      )
-    }
-    store.toggleMaximizeWindow(windowId)
-  }
+  const toggleMaximizeWindow = useCallback(
+    (windowId: string) => {
+      const name = describeWindow(windowId)
+      if (name !== null) {
+        logActivity(
+          t('activity.maximized', 'Toggled maximize for {{name}}', { name }),
+        )
+      }
+      store.toggleMaximizeWindow(windowId)
+    },
+    [store, describeWindow, logActivity, t],
+  )
 
-  const focusWindow = (windowId: string) => store.focusWindow(windowId)
-  const updateWindowGeometry = (
-    windowId: string,
-    geometry: Partial<Pick<import('../models/ui').WindowRecord, 'x' | 'y' | 'width' | 'height'>>,
-  ) => store.updateWindowGeometry(windowId, geometry)
+  const focusWindow = useCallback(
+    (windowId: string) => store.focusWindow(windowId),
+    [store],
+  )
+  const updateWindowGeometry = useCallback(
+    (windowId: string, geometry: WindowGeometryPatch) =>
+      store.updateWindowGeometry(windowId, geometry),
+    [store],
+  )
 
-  const applySettings = (values: SystemPreferencesInput) => {
-    store.applySettings(values, { setLocale, setThemeMode, viewportSize })
-    logActivity(t('activity.saved'))
-  }
+  const applySettings = useCallback(
+    (values: SystemPreferencesInput) => {
+      store.applySettings(values, { setLocale, setThemeMode, viewportSize })
+      logActivity(t('activity.saved'))
+    },
+    [store, setLocale, setThemeMode, viewportSize, logActivity, t],
+  )
 
-  const restoreDefaults = () => store.restoreDefaults()
-  const handleReturnDesktop = () => store.returnToDesktop()
+  const restoreDefaults = useCallback(() => store.restoreDefaults(), [store])
+  const handleReturnDesktop = useCallback(() => store.returnToDesktop(), [store])
 
-  const toggleSidebar = () => store.toggleSystemSidebar()
-  const closeSidebar = () => store.closeSystemSidebar()
-  const handleSelectSidebarApp = (appId: string) => {
-    handleOpenApp(appId)
-    closeSidebar()
-  }
-  const handleLogout = async () => {
+  const toggleSidebar = useCallback(() => store.toggleSystemSidebar(), [store])
+  const closeSidebar = useCallback(() => store.closeSystemSidebar(), [store])
+  const handleSelectSidebarApp = useCallback(
+    (appId: string) => {
+      handleOpenApp(appId)
+      closeSidebar()
+    },
+    [handleOpenApp, closeSidebar],
+  )
+  const handleOpenDiagnostics = useCallback(
+    () => handleSelectSidebarApp('diagnostics'),
+    [handleSelectSidebarApp],
+  )
+  const handleOpenSettings = useCallback(
+    () => handleSelectSidebarApp('settings'),
+    [handleSelectSidebarApp],
+  )
+  const handleLogout = useCallback(async () => {
     if (isLoggingOut) return
 
     setIsLoggingOut(true)
@@ -469,10 +523,15 @@ export function DesktopRoute() {
       store.setSnackbar(t('shell.logoutFailed', 'Log out failed. Please try again.'))
       setIsLoggingOut(false)
     }
-  }
-  const handleCycleLocale = () => setLocale(nextSupportedLocale(locale))
-  const handleToggleTheme = () =>
-    setThemeMode(themeMode === 'light' ? 'dark' : 'light')
+  }, [isLoggingOut, store, t])
+  const handleCycleLocale = useCallback(
+    () => setLocale(nextSupportedLocale(locale)),
+    [setLocale, locale],
+  )
+  const handleToggleTheme = useCallback(
+    () => setThemeMode(themeMode === 'light' ? 'dark' : 'light'),
+    [setThemeMode, themeMode],
+  )
 
   // ---------------------------------------------------------------------------
   // Drag suppression helpers (view-layer only)
@@ -512,42 +571,81 @@ export function DesktopRoute() {
     return false
   }
 
-  const handleGridDragStart = (
-    _pageId: string,
-    oldItem: GridLayoutItem | null,
-    newItem: GridLayoutItem | null,
-  ) => {
-    const itemId = newItem?.i ?? oldItem?.i
-    if (!itemId) return
-    blockOpenAfterDrag(itemId)
-    suppressNextOpen(itemId)
-  }
-
-  const handleGridDragStop = (
-    pageId: string,
-    oldItem: GridLayoutItem | null,
-    newItem: GridLayoutItem | null,
-  ) => {
-    const itemId = newItem?.i ?? oldItem?.i
-    if (itemId) {
+  const handleGridDragStart = useCallback(
+    (
+      _pageId: string,
+      oldItem: GridLayoutItem | null,
+      newItem: GridLayoutItem | null,
+    ) => {
+      const itemId = newItem?.i ?? oldItem?.i
+      if (!itemId) return
       blockOpenAfterDrag(itemId)
       suppressNextOpen(itemId)
-    }
-    if (!newItem) return
-    store.handleGridDragStop(pageId, oldItem, newItem)
-  }
+    },
+    // The helpers only touch refs.
+    [],
+  )
 
-  const handleLayoutChange = () => {}
+  const handleGridDragStop = useCallback(
+    (
+      pageId: string,
+      oldItem: GridLayoutItem | null,
+      newItem: GridLayoutItem | null,
+    ) => {
+      const itemId = newItem?.i ?? oldItem?.i
+      if (itemId) {
+        blockOpenAfterDrag(itemId)
+        suppressNextOpen(itemId)
+      }
+      if (!newItem) return
+      store.handleGridDragStop(pageId, oldItem, newItem)
+    },
+    // The helpers only touch refs.
+    [store],
+  )
+
+  const handleOpenItem = useCallback(
+    (item: LayoutItem) => {
+      if (item.type === 'app') {
+        if (!consumeOpenBlock(item.id)) handleOpenApp(item.appId)
+        return
+      }
+      store.setSelectedItemId(item.id)
+    },
+    // consumeOpenBlock only touches refs.
+    [store, handleOpenApp],
+  )
+
+  const handleOpenItemContextMenu = useCallback(
+    (item: LayoutItem, event: ReactMouseEvent<HTMLDivElement>) => {
+      event.preventDefault()
+      store.setSelectedItemId(item.id)
+      store.setContextMenu({
+        itemId: item.id,
+        mouseX: event.clientX + 2,
+        mouseY: event.clientY - 6,
+      })
+    },
+    [store],
+  )
+
+  const handleSaveNote = useCallback(
+    (itemId: string, content: string) => store.updateWidgetNote(itemId, content),
+    [store],
+  )
+
+  const handleViewportProgress = useCallback(
+    (progress: number, pageCount: number) =>
+      store.setViewportProgress(normalizeViewportProgress(progress, pageCount)),
+    [store],
+  )
 
   // ---------------------------------------------------------------------------
   // Derived data
   // ---------------------------------------------------------------------------
 
-  const windowLayerModel = useMemo(
-    () => store.getWindowLayerModel(),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [apps, windows],
-  )
+  // Memoised inside the store on (apps, windows) identity.
+  const windowLayerModel = store.getWindowLayerModel()
   const topMobileWindow = windowLayerModel.topWindow
   const activeMobileApp =
     formFactor === 'mobile' && topMobileWindow ? topMobileWindow.app : undefined
@@ -569,15 +667,33 @@ export function DesktopRoute() {
   )
   const shouldLockDesktopViewport = formFactor === 'desktop'
   const systemSidebarModel = store.getSystemSidebarDataModel(activeMobileApp?.id)
+  const topMobileWindowId = topMobileWindow?.id
+  const handleMinimizeTopMobileWindow = useMemo(
+    () =>
+      isMobile && topMobileWindowId
+        ? () => minimizeWindow(topMobileWindowId)
+        : undefined,
+    [isMobile, topMobileWindowId, minimizeWindow],
+  )
 
+  // Tray state depends on a few primitives derived from `windows`; derive
+  // them first so the memo is not invalidated by every geometry update.
+  const backupActive = windows.some(
+    (w) => w.appId === 'files' && w.state !== 'minimized',
+  )
+  const messageCount = Math.min(
+    windows.filter((w) => w.state !== 'minimized').length,
+    3,
+  )
+  const recentActivity = activityLog[0]
   const trayState = useMemo(() => {
-    const statusTips = [
+    const statusTips: StatusTip[] = [
       {
         id: 'recent-shell-action',
         tone: 'success' as const,
         taskLabel: t('tips.task.shell'),
         title: t('tips.card.recent.title'),
-        body: activityLog[0] ?? t('tips.card.recent.body'),
+        body: recentActivity ?? t('tips.card.recent.body'),
         statusLabel: t('tips.status.completed'),
         timeLabel: t('tips.time.justNow'),
       },
@@ -647,17 +763,12 @@ export function DesktopRoute() {
     ]
 
     return {
-      backupActive: windows.some(
-        (w) => w.appId === 'files' && w.state !== 'minimized',
-      ),
-      messageCount: Math.min(
-        windows.filter((w) => w.state !== 'minimized').length,
-        3,
-      ),
+      backupActive,
+      messageCount,
       notificationCount: Math.min(statusTips.length, 9),
       tips: statusTips,
     }
-  }, [activityLog, t, windows])
+  }, [backupActive, messageCount, recentActivity, t])
 
   // Background
   const backgroundWallpaper = useMemo(
@@ -670,9 +781,8 @@ export function DesktopRoute() {
     setBackground({
       wallpaper: backgroundWallpaper,
       pageCount: backgroundPageCount,
-      viewportProgress,
     })
-  }, [backgroundPageCount, backgroundWallpaper, setBackground, viewportProgress])
+  }, [backgroundPageCount, backgroundWallpaper, setBackground])
 
   useEffect(() => resetBackground, [resetBackground])
 
@@ -721,20 +831,16 @@ export function DesktopRoute() {
                 formFactor={formFactor}
                 safeAreaTop={safeArea.top}
                 onCycleLocale={handleCycleLocale}
-                onMinimizeWindow={
-                  isMobile && topMobileWindow
-                    ? () => minimizeWindow(topMobileWindow.id)
-                    : undefined
-                }
-                onOpenDiagnostics={() => handleSelectSidebarApp('diagnostics')}
-                onOpenSettings={() => handleSelectSidebarApp('settings')}
+                onMinimizeWindow={handleMinimizeTopMobileWindow}
+                onOpenDiagnostics={handleOpenDiagnostics}
+                onOpenSettings={handleOpenSettings}
                 onOpenSidebar={toggleSidebar}
                 onToggleTheme={handleToggleTheme}
                 themeMode={themeMode}
                 trayState={trayState}
               />
               <div
-                ref={gridContainerRef}
+                ref={setGridContainer}
                 className="relative overflow-hidden"
                 data-density={density}
                 style={{
@@ -744,110 +850,24 @@ export function DesktopRoute() {
                   paddingRight: resolvedDeadZone.right + safeArea.right,
                 }}
               >
-                {resolvedLayout.pages.length === 0 ||
-                resolvedLayout.pages.every((page) => page.items.length === 0) ? (
-                  <EmptyState onRestore={restoreDefaults} />
-                ) : (
-                  <Swiper
-                    modules={[Pagination]}
-                    allowTouchMove={isMobile}
-                    pagination={{ clickable: true }}
-                    className="h-full"
-                    style={{ height: workspaceInnerHeight }}
-                    onSwiper={(swiper) =>
-                      store.setViewportProgress(
-                        normalizeViewportProgress(
-                          swiper.progress,
-                          resolvedLayout.pages.length,
-                        ),
-                      )
-                    }
-                    onProgress={(swiper) =>
-                      store.setViewportProgress(
-                        normalizeViewportProgress(
-                          swiper.progress,
-                          resolvedLayout.pages.length,
-                        ),
-                      )
-                    }
-                    onSlideChange={(swiper) =>
-                      store.setViewportProgress(
-                        normalizeViewportProgress(
-                          swiper.progress,
-                          resolvedLayout.pages.length,
-                        ),
-                      )
-                    }
-                  >
-                    {resolvedLayout.pages.map((page) => (
-                      <SwiperSlide key={page.id} className="h-full">
-                        <div className="h-full px-4 pb-16 pt-6 sm:px-6">
-                          <GridLayoutBase
-                            className="layout h-full"
-                            gridConfig={{
-                              cols: gridSpec.cols,
-                              rowHeight: gridSpec.rowHeight,
-                              margin: [GRID_GAP, GRID_GAP],
-                              containerPadding: [0, 0],
-                              maxRows: gridSpec.rows,
-                            }}
-                            layout={mapPageToGrid(page)}
-                            width={workspaceInnerWidth - (isMobile ? 32 : 48)}
-                            resizeConfig={{ enabled: false }}
-                            dragConfig={{
-                              enabled: true,
-                              handle: '.desktop-tile-shell',
-                              cancel: '.widget-interactive',
-                              threshold: isMobile ? 5 : 4,
-                            }}
-                            compactor={dragOverlayCompactor}
-                            onDragStart={(_, oldItem, newItem) =>
-                              handleGridDragStart(page.id, oldItem, newItem)
-                            }
-                            onLayoutChange={handleLayoutChange}
-                            onDragStop={(_, oldItem, newItem) =>
-                              handleGridDragStop(page.id, oldItem, newItem)
-                            }
-                          >
-                            {page.items.map((item) => (
-                              <div key={item.id}>
-                                <DesktopTile
-                                  app={
-                                    item.type === 'app'
-                                      ? findDesktopAppById(apps, item.appId)
-                                      : undefined
-                                  }
-                                  isDesktop={!isMobile}
-                                  item={item}
-                                  isSelected={selectedItemId === item.id}
-                                  onOpen={() =>
-                                    item.type === 'app'
-                                      ? consumeOpenBlock(item.id)
-                                        ? undefined
-                                        : handleOpenApp(item.appId)
-                                      : store.setSelectedItemId(item.id)
-                                  }
-                                  onOpenContextMenu={(event) => {
-                                    event.preventDefault()
-                                    store.setSelectedItemId(item.id)
-                                    store.setContextMenu({
-                                      itemId: item.id,
-                                      mouseX: event.clientX + 2,
-                                      mouseY: event.clientY - 6,
-                                    })
-                                  }}
-                                  onSaveNote={(itemId, content) =>
-                                    store.updateWidgetNote(itemId, content)
-                                  }
-                                />
-                              </div>
-                            ))}
-                          </GridLayoutBase>
-                        </div>
-                      </SwiperSlide>
-                    ))}
-                  </Swiper>
-                )}
+                <DesktopPages
+                  apps={apps}
+                  gridCols={gridSpec.cols}
+                  gridRowHeight={gridSpec.rowHeight}
+                  gridRows={gridSpec.rows}
+                  height={workspaceInnerHeight}
+                  isMobile={isMobile}
+                  layout={resolvedLayout}
+                  onGridDragStart={handleGridDragStart}
+                  onGridDragStop={handleGridDragStop}
+                  onOpenItem={handleOpenItem}
+                  onOpenItemContextMenu={handleOpenItemContextMenu}
+                  onRestore={restoreDefaults}
+                  onSaveNote={handleSaveNote}
+                  onViewportProgress={handleViewportProgress}
+                  selectedItemId={selectedItemId}
+                  width={workspaceInnerWidth - (isMobile ? 32 : 48)}
+                />
               </div>
 
               {!isMobile && (
@@ -974,6 +994,161 @@ export function DesktopRoute() {
 }
 
 // ---------------------------------------------------------------------------
+// Launcher pages (Swiper + react-grid-layout)
+// ---------------------------------------------------------------------------
+
+interface DesktopPagesProps {
+  apps: DesktopAppItem[]
+  gridCols: number
+  gridRowHeight: number
+  gridRows: number
+  height: number
+  isMobile: boolean
+  layout: LayoutState
+  onGridDragStart: (
+    pageId: string,
+    oldItem: GridLayoutItem | null,
+    newItem: GridLayoutItem | null,
+  ) => void
+  onGridDragStop: (
+    pageId: string,
+    oldItem: GridLayoutItem | null,
+    newItem: GridLayoutItem | null,
+  ) => void
+  onOpenItem: (item: LayoutItem) => void
+  onOpenItemContextMenu: (item: LayoutItem, event: ReactMouseEvent<HTMLDivElement>) => void
+  onRestore: () => void
+  onSaveNote: (itemId: string, content: string) => void
+  onViewportProgress: (progress: number, pageCount: number) => void
+  selectedItemId: string | null
+  width: number
+}
+
+const noopLayoutChange = () => {}
+
+/**
+ * Memoised: the launcher grid only depends on the resolved layout, the grid
+ * spec and the selection. Window drag/resize, status-bar ticks and sidebar
+ * toggles update the store without touching any of these, so this subtree
+ * (and react-grid-layout's per-render layout synchronisation) is skipped.
+ */
+const DesktopPages = memo(function DesktopPages({
+  apps,
+  gridCols,
+  gridRowHeight,
+  gridRows,
+  height,
+  isMobile,
+  layout,
+  onGridDragStart,
+  onGridDragStop,
+  onOpenItem,
+  onOpenItemContextMenu,
+  onRestore,
+  onSaveNote,
+  onViewportProgress,
+  selectedItemId,
+  width,
+}: DesktopPagesProps) {
+  const pageCount = layout.pages.length
+  const gridLayouts = useMemo(
+    () => layout.pages.map((page) => mapPageToGrid(page)),
+    [layout],
+  )
+  const gridConfig = useMemo(
+    () => ({
+      cols: gridCols,
+      rowHeight: gridRowHeight,
+      margin: [GRID_GAP, GRID_GAP] as [number, number],
+      containerPadding: [0, 0] as [number, number],
+      maxRows: gridRows,
+    }),
+    [gridCols, gridRowHeight, gridRows],
+  )
+  const dragConfig = useMemo(
+    () => ({
+      enabled: true,
+      handle: '.desktop-tile-shell',
+      cancel: '.widget-interactive',
+      threshold: isMobile ? 5 : 4,
+    }),
+    [isMobile],
+  )
+  // Per-frame progress (while swiping) only touches a CSS variable; the store
+  // learns about page changes once, when the slide settles.
+  const handleProgress = useCallback(
+    (swiper: { progress: number }) => setDesktopViewportProgress(swiper.progress, pageCount),
+    [pageCount],
+  )
+  const handleSlideSettled = useCallback(
+    (swiper: { progress: number }) => {
+      setDesktopViewportProgress(swiper.progress, pageCount)
+      onViewportProgress(swiper.progress, pageCount)
+    },
+    [onViewportProgress, pageCount],
+  )
+  useEffect(() => resetDesktopViewportProgress, [])
+
+  if (pageCount === 0 || layout.pages.every((page) => page.items.length === 0)) {
+    return <EmptyState onRestore={onRestore} />
+  }
+
+  return (
+    <Swiper
+      modules={[Pagination]}
+      allowTouchMove={isMobile}
+      pagination={{ clickable: true }}
+      className="h-full"
+      style={{ height }}
+      onSwiper={handleSlideSettled}
+      onProgress={handleProgress}
+      onSlideChange={handleSlideSettled}
+    >
+      {layout.pages.map((page, pageIndex) => (
+        <SwiperSlide key={page.id} className="h-full">
+          <div className="h-full px-4 pb-16 pt-6 sm:px-6">
+            <GridLayoutBase
+              className="layout h-full"
+              gridConfig={gridConfig}
+              layout={gridLayouts[pageIndex]}
+              width={width}
+              resizeConfig={{ enabled: false }}
+              dragConfig={dragConfig}
+              compactor={dragOverlayCompactor}
+              onDragStart={(_, oldItem, newItem) =>
+                onGridDragStart(page.id, oldItem, newItem)
+              }
+              onLayoutChange={noopLayoutChange}
+              onDragStop={(_, oldItem, newItem) =>
+                onGridDragStop(page.id, oldItem, newItem)
+              }
+            >
+              {page.items.map((item) => (
+                <div key={item.id}>
+                  <DesktopTile
+                    app={
+                      item.type === 'app'
+                        ? findDesktopAppById(apps, item.appId)
+                        : undefined
+                    }
+                    isDesktop={!isMobile}
+                    item={item}
+                    isSelected={selectedItemId === item.id}
+                    onOpen={onOpenItem}
+                    onOpenContextMenu={onOpenItemContextMenu}
+                    onSaveNote={onSaveNote}
+                  />
+                </div>
+              ))}
+            </GridLayoutBase>
+          </div>
+        </SwiperSlide>
+      ))}
+    </Swiper>
+  )
+})
+
+// ---------------------------------------------------------------------------
 // Sub-components (unchanged)
 // ---------------------------------------------------------------------------
 
@@ -982,8 +1157,8 @@ function LoadingState() {
   return (
     <div className="absolute inset-0 flex items-center justify-center bg-[color:var(--cp-surface)]/72 backdrop-blur-xl">
       <div className="shell-panel max-w-lg px-7 py-8 text-center">
-        <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_16%,var(--cp-surface))]">
-          <div className="h-11 w-11 animate-pulse rounded-full border border-[color:color-mix(in_srgb,var(--cp-accent)_26%,transparent)] bg-[radial-gradient(circle_at_30%_30%,color-mix(in_srgb,var(--cp-accent-soft)_65%,white),color-mix(in_srgb,var(--cp-accent)_88%,transparent))]" />
+        <div className="mx-auto mb-3 flex items-center justify-center">
+          <LoadingOrb size={48} label={t('states.loadingTitle')} />
         </div>
         <p className="shell-kicker">Prototype</p>
         <p className="mt-2 font-display text-2xl font-semibold sm:text-[2rem]">
@@ -1050,8 +1225,8 @@ function DesktopTile({
   isDesktop: boolean
   item: LayoutItem
   isSelected: boolean
-  onOpen: () => void
-  onOpenContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => void
+  onOpen: (item: LayoutItem) => void
+  onOpenContextMenu: (item: LayoutItem, event: ReactMouseEvent<HTMLDivElement>) => void
   onSaveNote: (itemId: string, content: string) => void
 }) {
   const { t } = useI18n()
@@ -1086,7 +1261,7 @@ function DesktopTile({
     clearAppPointer()
     if (!start || start.pointerId !== pointerId) return
     const distance = Math.hypot(clientX - start.x, clientY - start.y)
-    if (distance <= 12) onOpen()
+    if (distance <= 12) onOpen(item)
   }
 
   const handleAppPointerDown = (
@@ -1148,12 +1323,12 @@ function DesktopTile({
             ? 'hover:border-[color:color-mix(in_srgb,var(--cp-border)_84%,transparent)]'
             : '',
       )}
-      onContextMenu={onOpenContextMenu}
+      onContextMenu={(event) => onOpenContextMenu(item, event)}
     >
       {item.type === 'app' && app ? (
         <button
           type="button"
-          onClick={isDesktop ? onOpen : undefined}
+          onClick={isDesktop ? () => onOpen(item) : undefined}
           onPointerDown={handleAppPointerDown}
           onPointerUp={handleAppPointerUp}
           onPointerCancel={clearAppPointer}
@@ -1163,7 +1338,11 @@ function DesktopTile({
             'flex h-full w-full flex-col items-center rounded-[28px] bg-transparent text-center transition-[background-color,box-shadow] duration-200 ease-[var(--cp-ease-emphasis)] focus-visible:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_10%,var(--cp-surface))]',
             isDesktop ? 'cursor-grab active:cursor-grabbing' : '',
           )}
-          style={{ paddingTop: 'var(--icon-padding-top)' }}
+          // Size-query container for the label: desktop cells are capped at
+          // ~110px wide and the fixed row height only leaves room for one
+          // label line, so the label scales with the cell instead of the
+          // viewport (see the label's fontSize below).
+          style={{ paddingTop: 'var(--icon-padding-top)', containerType: 'inline-size' }}
         >
           <span
             className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-[20px] shadow-[0_8px_20px_color-mix(in_srgb,var(--cp-shadow)_10%,transparent)]"
@@ -1180,11 +1359,13 @@ function DesktopTile({
             style={{
               paddingTop: 'var(--label-padding-top)',
               fontSize: isDesktop
-                ? 'clamp(12px,1.1vw,var(--font-size-label))'
+                ? 'clamp(11px, 12cqw, var(--font-size-label))'
                 : 'var(--font-size-label)',
               lineHeight: 'var(--line-height-label)',
               display: '-webkit-box',
-              WebkitLineClamp: 2,
+              // Desktop rows are sized for a single label line; a second
+              // line would be clipped, so truncate with an ellipsis instead.
+              WebkitLineClamp: isDesktop ? 1 : 2,
               WebkitBoxOrient: 'vertical',
             }}
           >

@@ -58,10 +58,25 @@ const classifyError = (error: unknown): LoginError => {
   if (lower.includes('user not found') || lower.includes('user_not_found')) {
     return { kind: 'user_not_found', username: '' }
   }
-  if (lower.includes('locked') || lower.includes('disabled')) {
+  // Redirect-target problems (e.g. "http redirect_url is disabled" when the
+  // zone forces https) must be classified before the generic "disabled"
+  // check below, which would otherwise report a locked account.
+  if (lower.includes('redirect_url') || lower.includes('redirect url')) {
+    return { kind: 'invalid_redirect' }
+  }
+  if (
+    /\b(account|user)\b.*\b(locked|disabled)\b/.test(lower) ||
+    /\b(locked|disabled)\b/.test(lower)
+  ) {
     return { kind: 'account_locked', username: '' }
   }
-  if (lower.includes('rate') || lower.includes('too many') || lower.includes('429')) {
+  // "rate" alone also matches "generate"/"certificate"; require the phrase.
+  if (
+    lower.includes('rate limit') ||
+    lower.includes('rate_limit') ||
+    lower.includes('too many') ||
+    lower.includes('429')
+  ) {
     return { kind: 'rate_limited' }
   }
   if (lower.includes('timeout') || lower.includes('timed out')) {
@@ -223,6 +238,9 @@ const LoginPage = () => {
         } else {
           window.location.href = '/'
         }
+        // Keep the form disabled: the navigation above is asynchronous and a
+        // re-enabled button would allow a second login round-trip (new nonce,
+        // second pending SSO login on the server) before the page unloads.
       } catch (err) {
         console.error('[login] error caught:', err)
         const classified = classifyError(err)
@@ -233,7 +251,6 @@ const LoginPage = () => {
           ;(classified as { username: string }).username = trimmedUsername
         }
         setError(classified)
-      } finally {
         setSubmitting(false)
       }
     },

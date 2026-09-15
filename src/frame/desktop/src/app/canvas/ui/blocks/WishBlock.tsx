@@ -2,51 +2,75 @@
 
 import clsx from 'clsx'
 import { AlertTriangle, ChevronDown, ChevronRight, Database, Play, Plus, Square, X } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useRef, useState } from 'react'
 import { contextPreviewLines, buildContext } from '../../agent/context'
 import { refKey, sheetBlocks, tableRangeLabel, wishStatus, wouldCreateCycle } from '../../domain/selectors'
-import type { CanvasBlockOf, ContextRef } from '../../domain/types'
-import { useCanvasEditor, useStoreState } from '../../store/hooks'
+import type { CanvasBlock, CanvasBlockOf, ContextRef } from '../../domain/types'
+import { shallowEqualArray, useCanvasEditor, useStoreSelector } from '../../store/hooks'
 import { useEditorActions } from '../actions'
 import { Badge, Btn, IconBtn, Menu, Select } from '../primitives'
 import { RUNNING_STATES, STATUS_META, WISH_STATE_LABEL, formatTime } from '../meta'
 
+const NO_BLOCKS: CanvasBlock[] = []
+const NO_LINES: string[] = []
+
 export function WishBlockView({ block }: { block: CanvasBlockOf<'wish'> }) {
-  const { doc, runs, ui, settings } = useStoreState()
   const { store } = useCanvasEditor()
   const actions = useEditorActions()
   const c = block.content
-  const run = runs[block.id]
   const running = RUNNING_STATES.includes(c.state)
   const [sourceMenu, setSourceMenu] = useState<{ x: number; y: number } | null>(null)
   const [showDetails, setShowDetails] = useState(false)
-  const status = wishStatus(doc, block)
 
-  const candidates = useMemo(() => {
+  // Narrow subscriptions: the store changes on every pointer move; this view only re-renders when
+  // its own run, its sources or the pieces of UI state it shows change.
+  const run = useStoreSelector((s) => s.runs[block.id])
+  const settings = useStoreSelector((s) => s.settings)
+  const highlightRun = useStoreSelector((s) => s.ui.highlightRun)
+  const highlighted = useStoreSelector((s) => s.ui.highlightBlockId === block.id)
+  const status = useStoreSelector((s) => wishStatus(s.doc, block))
+  const sources = useStoreSelector((s) => c.contextRefs.map((r) => s.doc.blocks[r.blockId]), shallowEqualArray)
+  const generatedCount = useStoreSelector((s) =>
+    c.generatedGroupIds.reduce((n, g) => {
+      const b = s.doc.blocks[g]
+      return n + (b?.type === 'group' ? b.content.childBlockIds.length : b ? 1 : 0)
+    }, 0),
+  )
+  const selectedOthers = useStoreSelector(
+    (s) => s.ui.selection.filter((id) => id !== block.id && s.doc.blocks[id] && s.doc.blocks[id].type !== 'wish' && s.doc.blocks[id].type !== 'frame'),
+    shallowEqualArray,
+  )
+  // only while the "add source" menu is open
+  const candidates = useStoreSelector((s) => {
+    if (!sourceMenu) return NO_BLOCKS
     const own = new Set(c.generatedGroupIds)
-    return sheetBlocks(doc, block.sheetId).filter(
+    return sheetBlocks(s.doc, block.sheetId).filter(
       (b) => b.id !== block.id && b.type !== 'wish' && b.type !== 'frame' && !own.has(b.id) && !(b.type === 'group' && b.generated?.wishBlockId === block.id),
     )
-  }, [doc, block.id, block.sheetId, c.generatedGroupIds])
+  }, shallowEqualArray)
+  // context serialisation is the expensive part: only while the details pane is open, and only when a source block changed
+  const linesCache = useRef<{ sources: Array<CanvasBlock | undefined>; lines: string[] } | null>(null)
+  const contextLines = useStoreSelector((s) => {
+    if (!showDetails) return NO_LINES
+    const current = c.contextRefs.map((r) => s.doc.blocks[r.blockId])
+    const cached = linesCache.current
+    if (cached && shallowEqualArray(cached.sources, current)) return cached.lines
+    const lines = contextPreviewLines(buildContext(s.doc, block).items)
+    linesCache.current = { sources: current, lines }
+    return lines
+  })
 
   const update = (patch: Partial<typeof c>) => store.dispatch({ type: 'UPDATE_BLOCK', id: block.id, patch: { content: { ...c, ...patch } } })
 
   const addRef = (ref: ContextRef) => {
     if (c.contextRefs.some((r) => refKey(r) === refKey(ref))) return
-    if (wouldCreateCycle(doc, block.id, ref.blockId)) {
+    if (wouldCreateCycle(store.doc, block.id, ref.blockId)) {
       store.toast('不能添加：该块依赖本许愿格的结果，会形成循环依赖', 'error')
       return
     }
     update({ contextRefs: [...c.contextRefs, ref] })
   }
   const removeRef = (key: string) => update({ contextRefs: c.contextRefs.filter((r) => refKey(r) !== key) })
-
-  const selectedOthers = ui.selection.filter((id) => id !== block.id && doc.blocks[id] && doc.blocks[id].type !== 'wish' && doc.blocks[id].type !== 'frame')
-  const contextLines = useMemo(() => contextPreviewLines(buildContext(doc, block).items), [doc, block])
-  const generatedCount = c.generatedGroupIds.reduce((n, g) => {
-    const b = doc.blocks[g]
-    return n + (b?.type === 'group' ? b.content.childBlockIds.length : b ? 1 : 0)
-  }, 0)
 
   return (
     <div className="flex h-full flex-col gap-2 p-2.5" data-no-drag>
@@ -68,8 +92,8 @@ export function WishBlockView({ block }: { block: CanvasBlockOf<'wish'> }) {
         <span className="inline-flex items-center gap-1 text-[11px] text-[color:var(--cp-muted)]">
           <Database className="size-[12px]" /> 数据来源
         </span>
-        {c.contextRefs.map((ref) => {
-          const src = doc.blocks[ref.blockId]
+        {c.contextRefs.map((ref, i) => {
+          const src = sources[i]
           const key = refKey(ref)
           const label = !src ? '已删除的来源' : src.type === 'table' ? tableRangeLabel(src, ref) : src.title ?? src.type
           return (
@@ -95,7 +119,7 @@ export function WishBlockView({ block }: { block: CanvasBlockOf<'wish'> }) {
               onClose={() => setSourceMenu(null)}
               items={[
                 ...(selectedOthers.length
-                  ? [{ label: `使用当前选中的 ${selectedOthers.length} 个块`, onClick: () => selectedOthers.forEach((id) => addRef({ kind: 'block', blockId: id, revision: doc.blocks[id].dataRevision })) }, { label: '', divider: true, onClick: () => undefined }]
+                  ? [{ label: `使用当前选中的 ${selectedOthers.length} 个块`, onClick: () => selectedOthers.forEach((id) => { const b = store.doc.blocks[id]; if (b) addRef({ kind: 'block', blockId: id, revision: b.dataRevision }) }) }, { label: '', divider: true, onClick: () => undefined }]
                   : []),
                 ...(candidates.length
                   ? candidates.map((b) => ({
@@ -125,7 +149,7 @@ export function WishBlockView({ block }: { block: CanvasBlockOf<'wish'> }) {
             取消
           </Btn>
         ) : (
-          <Btn variant="primary" icon={<Play />} onClick={() => actions.runWish(block.id)} className={clsx(ui.highlightRun && 'aic-highlight')} title="Ctrl/Cmd + Enter" disabled={!c.prompt.trim()}>
+          <Btn variant="primary" icon={<Play />} onClick={() => actions.runWish(block.id)} className={clsx(highlightRun && 'aic-highlight')} title="Ctrl/Cmd + Enter" disabled={!c.prompt.trim()}>
             {c.generatedGroupIds.length ? '重新运行' : '运行'}
           </Btn>
         )}
@@ -188,7 +212,7 @@ export function WishBlockView({ block }: { block: CanvasBlockOf<'wish'> }) {
           </div>
         ) : null}
       </div>
-      {ui.highlightBlockId === block.id ? <IconBtn icon={<span />} label="" className="hidden" /> : null}
+      {highlighted ? <IconBtn icon={<span />} label="" className="hidden" /> : null}
     </div>
   )
 }

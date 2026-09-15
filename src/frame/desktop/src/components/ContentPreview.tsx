@@ -337,6 +337,9 @@ interface TransientState {
 
 const EMPTY_TRANSIENT: Omit<TransientState, 'key'> = { findOpen: false, findQuery: '', findActive: 0, imageView: null }
 
+const sameImageView = (a: ImageViewInfo | null, b: ImageViewInfo | null): boolean =>
+  a === b || (!!a && !!b && a.scale === b.scale && a.mode === b.mode && a.rotation === b.rotation)
+
 // ─── Component ───
 
 export function ContentPreview(props: ContentPreviewProps) {
@@ -390,6 +393,13 @@ export function ContentPreview(props: ContentPreviewProps) {
   const loadKey = item ? `${sessionKey}|${item.id}|${retryNonce}|${fallbackNonce}` : null
   const [load, setLoad] = useState<LoadState | null>(null)
   const current = load && load.key === loadKey ? load : null
+  // Renderer effects depend on onFailure; reading `load` through a ref keeps
+  // that callback stable across phase changes (else onRendered → new load →
+  // new onFailure → the renderer re-reads the content a second time).
+  const loadRef = useRef(load)
+  useEffect(() => {
+    loadRef.current = load
+  })
 
   const status: PreviewStatus = !currentSession
     ? sessionError
@@ -583,7 +593,8 @@ export function ContentPreview(props: ContentPreviewProps) {
   const handleRenderFailure = useCallback(
     (failure: RenderFailure) => {
       if (!item) return
-      const state = load && load.key === loadKey ? load : null
+      const snapshot = loadRef.current
+      const state = snapshot && snapshot.key === loadKey ? snapshot : null
       if (state?.via === 'direct' && (failure === 'unsupported-encoding' || failure === 'corrupted') && !skipDirectRef.current.has(item.id)) {
         // Direct decode failed → back to the Pipeline Planner (§23.3).
         skipDirectRef.current.set(item.id, failure)
@@ -599,7 +610,7 @@ export function ContentPreview(props: ContentPreviewProps) {
             : { kind: 'corrupted', code: 'CORRUPTED', message: t('preview.error.corruptedBody', 'The content could not be decoded and may be damaged'), retryable: false, contentLabel: label }
       setLoad((prev) => (prev && prev.key === loadKey ? { ...prev, phase: 'error', error: err } : prev))
     },
-    [item, load, loadKey, t],
+    [item, loadKey, t],
   )
 
   // ── navigation ──
@@ -630,8 +641,11 @@ export function ContentPreview(props: ContentPreviewProps) {
       retryContextRef.current = { key: item.id, expectedAttemptId: work?.state === 'failed' ? work.attemptId : undefined }
       resolvedCache.delete(refIdentity(item.source))
     }
+    // A failed session context is keyed by sessionKey, which retryNonce is not
+    // part of — drop it so the session effect resolves again.
+    setSessionState((prev) => (prev && prev.key === sessionKey && prev.error ? null : prev))
     setRetryNonce((n) => n + 1)
-  }, [current?.work, item])
+  }, [current?.work, item, sessionKey])
 
   // ── prefetch neighbours (±1) ──
   useEffect(() => {
@@ -713,6 +727,12 @@ export function ContentPreview(props: ContentPreviewProps) {
       setTransientState((prev) => {
         const base: TransientState = prev.key === loadKey ? prev : { key: loadKey, ...EMPTY_TRANSIENT }
         const next = typeof patch === 'function' ? patch(base) : patch
+        // Pointer-move driven patches (image pan/pinch) often carry no change;
+        // keep the previous state so the whole preview does not re-render.
+        const unchanged = (Object.keys(next) as (keyof typeof next)[]).every((k) =>
+          k === 'imageView' ? sameImageView(next.imageView ?? null, base.imageView) : next[k] === base[k],
+        )
+        if (unchanged) return prev
         return { ...base, ...next, key: loadKey }
       })
     },
@@ -1771,14 +1791,20 @@ function ImageRenderer({
     return { ...view, scale: fitScaleFor(container, natural, view.rotation, view.mode), tx: 0, ty: 0 }
   }, [container, natural, view])
 
+  const reportedView = useRef<ImageViewInfo | null>(null)
   useEffect(() => {
     if (!natural) return
     const fitScale = fitScaleFor(container, natural, effective.rotation, 'fit')
-    onViewChange({
+    const view: ImageViewInfo = {
       scale: effective.scale,
       mode: effective.mode === 'custom' && Math.abs(effective.scale - fitScale) < 0.001 ? 'fit' : effective.mode,
       rotation: effective.rotation,
-    })
+    }
+    // Panning changes tx/ty only; skip the parent update when the reported
+    // info (scale/mode/rotation) is unchanged.
+    if (sameImageView(reportedView.current, view)) return
+    reportedView.current = view
+    onViewChange(view)
   }, [container, effective, natural, onViewChange])
 
   const applyZoom = useCallback(

@@ -69,10 +69,15 @@ export function HomeStationView() {
   const infoPanelResizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null)
 
   /* ── Derived Data ── */
-  const filteredFeeds = useMemo(
-    () => filterFeedObjects(feedObjects, activeFilter, activeTopicId),
-    [feedObjects, activeFilter, activeTopicId],
-  )
+  const filteredFeeds = useMemo(() => {
+    const filtered = filterFeedObjects(feedObjects, activeFilter, activeTopicId)
+    const normalizedQuery = searchQuery.trim().toLowerCase()
+    if (!normalizedQuery) return filtered
+    return filtered.filter((feed) =>
+      [feed.title, feed.text, feed.body, feed.author.name]
+        .some((value) => value?.toLowerCase().includes(normalizedQuery)),
+    )
+  }, [feedObjects, activeFilter, activeTopicId, searchQuery])
 
   const selectedFeed = useMemo(
     () => (selectedFeedId ? feedObjects.find((f) => f.id === selectedFeedId) ?? null : null),

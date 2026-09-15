@@ -57,3 +57,13 @@ export function getDesktopWindowPositionBounds(
     ),
   }
 }
+
+/**
+ * Windows are positioned with a compositor-only transform instead of
+ * `left`/`top`, so moving one never triggers layout. The layer writes this
+ * exact string straight to the DOM while dragging and React writes it on
+ * commit; keeping one formatter guarantees the two never disagree.
+ */
+export function desktopWindowTransform(x: number, y: number) {
+  return `translate3d(${x}px, ${y}px, 0)`
+}

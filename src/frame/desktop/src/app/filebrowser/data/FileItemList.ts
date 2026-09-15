@@ -43,6 +43,8 @@ export interface FileItemList {
   loadedItemByKey(key: string): FileItem | undefined
   /** Ordered keys of currently loaded items (shift range selection). */
   loadedKeys(): string[]
+  /** Ordered loaded items; identity is stable until the next change (memo key). */
+  loadedItems(): FileItem[]
   enumerate(signal: AbortSignal): Promise<FileItem[]>
   findPath(path: string, signal: AbortSignal): Promise<{ item: FileItem; index: number } | null>
   reload(): void
@@ -58,6 +60,7 @@ export class FileItemListImpl implements FileItemList {
   private items = new Map<number, FileItem>()
   private byKey = new Map<string, FileItem>()
   private orderedKeysCache: string[] | null = null
+  private orderedItemsCache: FileItem[] | null = null
 
   private versionToken = 0
   private inFlightPages = new Set<number>()
@@ -143,6 +146,7 @@ export class FileItemListImpl implements FileItemList {
     this.items.clear()
     this.byKey.clear()
     this.orderedKeysCache = null
+    this.orderedItemsCache = null
     this.totalCount = undefined
     this.contiguous = 0
     this.hasMoreFlag = false
@@ -162,11 +166,18 @@ export class FileItemListImpl implements FileItemList {
 
   loadedKeys(): string[] {
     if (!this.orderedKeysCache) {
-      this.orderedKeysCache = [...this.items.entries()]
-        .sort((a, b) => a[0] - b[0])
-        .map(([, item]) => item.key)
+      this.orderedKeysCache = this.loadedItems().map((item) => item.key)
     }
     return this.orderedKeysCache
+  }
+
+  loadedItems(): FileItem[] {
+    if (!this.orderedItemsCache) {
+      this.orderedItemsCache = [...this.items.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, item]) => item)
+    }
+    return this.orderedItemsCache
   }
 
   ensureRange(start: number, end: number) {
@@ -243,6 +254,7 @@ export class FileItemListImpl implements FileItemList {
         }
         this.hasMoreFlag = this.totalCount === undefined && result.hasMore
         this.orderedKeysCache = null
+        this.orderedItemsCache = null
         this.status = 'ready'
         this.error = null
         this.emit()
@@ -297,6 +309,7 @@ export class FileItemListImpl implements FileItemList {
           this.totalCount = offset + result.items.length
         }
         this.orderedKeysCache = null
+        this.orderedItemsCache = null
         this.status = 'ready'
         this.error = null
         this.emit()
@@ -330,6 +343,7 @@ export class FileItemListImpl implements FileItemList {
           this.items.set(offset + i, item)
           this.byKey.set(item.key, item)
           this.orderedKeysCache = null
+          this.orderedItemsCache = null
           this.emit()
           return { items, found: { item, index: offset + i } }
         }

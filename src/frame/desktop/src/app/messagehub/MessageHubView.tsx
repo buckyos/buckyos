@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMediaQuery } from '@mui/material'
 import { ChevronLeft, ChevronRight, MessageSquare } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
@@ -31,6 +31,7 @@ import type {
 } from './types'
 
 const EMPTY_READER = InMemoryConversationMessageReader.empty()
+const EMPTY_SESSIONS: Session[] = []
 
 export function MessageHubView({ initialEntityId = null, contextRequest }: { initialEntityId?: string | null; contextRequest?: MessageHubContextRequest | MessageHubContext }) {
   const { t } = useI18n()
@@ -65,7 +66,8 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
   useMessageHubRuntime()
   // Without an explicit entity the most recent one opens (pinned first), which
   // is what the mock route did with the CodeAssistant seed.
-  const resolvedInitialEntityId = initialEntityId ? store.findEntity(context, initialEntityId)?.id ?? null : store.entities(context)[0]?.id ?? null
+  // Resolved once: the component is keyed on the context and the initial entity.
+  const [resolvedInitialEntityId] = useState(() => initialEntityId ? store.findEntity(context, initialEntityId)?.id ?? null : store.entities(context)[0]?.id ?? null)
   const getDefaultSessionId = (entityId: string | null) => entityId ? store.sessions(context, entityId, 'active')[0]?.id ?? null : null
   const contextEpoch = useRef(0)
   const ownerDid = context.ownerDid
@@ -139,14 +141,17 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
     }
   }, [clampEntityListWidth, clampSessionSidebarWidth, isDesktop])
 
-  const entities = store.entities(context)
+  const snapshot = store.getSnapshot()
+  const entities = useMemo(() => store.entities(context), [store, snapshot, context.ownerDid, context.mode, context.viewerDid]) // eslint-disable-line react-hooks/exhaustive-deps
   const findProjectedEntity = (id: string | null) => {
     const queue = [...entities]
     while (queue.length) { const item = queue.shift()!; if (item.id === id) return item; queue.push(...(item.children ?? [])) }
     return null
   }
   const selectedEntity = findProjectedEntity(selectedEntityId)
-  const sessions = store.sessions(context, selectedEntityId ?? '', archived ? 'archived' : 'active')
+  // Without a selected entity nothing is rendered, so no session may become
+  // active (an empty entity id would otherwise return every session).
+  const sessions = useMemo(() => selectedEntityId ? store.sessions(context, selectedEntityId, archived ? 'archived' : 'active') : EMPTY_SESSIONS, [store, snapshot, selectedEntityId, archived, context.ownerDid, context.mode, context.viewerDid]) // eslint-disable-line react-hooks/exhaustive-deps
   const activeSession = sessions.find(session => session.id === selectedSessionId) ?? sessions[0] ?? null
   const messageReader = activeSession ? store.reader(context, activeSession.id) : EMPTY_READER
   const entityDetail = selectedEntity ? store.entityDetail(context, selectedEntity.id) : null

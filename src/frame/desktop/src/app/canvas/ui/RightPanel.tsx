@@ -1,6 +1,7 @@
 /* ── Right property panel: block / wish / generated / chart / metric / step properties (PRD §8.4) ── */
 
 import { Copy, Download, ExternalLink, ImagePlus, Lock, Play, RefreshCw, Sparkles, Trash2, Unlink, Unlock, Camera } from 'lucide-react'
+import { useState } from 'react'
 import { toCsv } from '../data/csv'
 import { formatBytes } from '../data/image'
 import { imageBlockHeight } from '../domain/factories'
@@ -311,15 +312,46 @@ function ChartSection({ block }: { block: Extract<CanvasBlock, { type: 'chart' }
   )
 }
 
+/** "1." / "-" / "1e" are on the way to a number: keep them as the draft instead of committing the parse. */
+function parseMetricValue(text: string): number | string | null {
+  const t = text.trim()
+  if (t === '' || !Number.isFinite(Number(t))) return t === '' ? '' : text
+  if (/[.eE+-]$/.test(t)) return null
+  return Number(t)
+}
+
 function MetricSection({ block }: { block: Extract<CanvasBlock, { type: 'metric' }> }) {
   const { store } = useCanvasEditor()
   const c = block.content
+  // local string draft: `String(Number('1.'))` would drop the decimal point while typing
+  const [draft, setDraft] = useState<{ id: string; text: string } | null>(null)
   const update = (patch: Partial<MetricBlockContent>) => store.dispatch({ type: 'UPDATE_BLOCK', id: block.id, patch: { content: { ...c, ...patch } }, userEdit: true })
+  const valueText = draft && draft.id === block.id ? draft.text : String(c.value)
+  const commitValue = (text: string) => {
+    const t = text.trim()
+    const value = t !== '' && Number.isFinite(Number(t)) ? Number(t) : text
+    if (value !== c.value) update({ value })
+    setDraft(null)
+  }
   return (
     <div className="space-y-3">
       <SectionTitle>指标</SectionTitle>
       <Field label="名称"><Input value={c.label} onChange={(e) => update({ label: e.target.value })} /></Field>
-      <Field label="数值"><Input value={String(c.value)} onChange={(e) => update({ value: Number.isFinite(Number(e.target.value)) && e.target.value.trim() !== '' ? Number(e.target.value) : e.target.value })} /></Field>
+      <Field label="数值">
+        <Input
+          value={valueText}
+          onChange={(e) => {
+            const text = e.target.value
+            setDraft({ id: block.id, text })
+            const parsed = parseMetricValue(text)
+            if (parsed !== null && parsed !== c.value) update({ value: parsed })
+          }}
+          onBlur={(e) => commitValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitValue((e.currentTarget as HTMLInputElement).value)
+          }}
+        />
+      </Field>
       <div className="grid grid-cols-2 gap-2">
         <Field label="格式">
           <Select value={c.format ?? 'plain'} onChange={(e) => update({ format: e.target.value as MetricBlockContent['format'] })}>

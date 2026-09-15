@@ -2,7 +2,7 @@
 
 import type { CanvasCommand } from '../domain/commands'
 import { QUIET_COMMANDS } from '../domain/commands'
-import { applyCommand } from '../domain/reducer'
+import { RUNNING_WISH_STATES, applyCommand, sanitizeDocument } from '../domain/reducer'
 import type { CanvasBlock, CanvasDocument, Camera, WishState } from '../domain/types'
 import type { CanvasStorageAdapter } from '../storage/indexeddb'
 import { trackEvent } from '../events'
@@ -68,13 +68,20 @@ export interface StoreState {
 }
 
 const MAX_HISTORY = 100
+const SAVE_DELAY_MS = 800
+/** Camera-only changes are not "edits": persist them lazily so wheel/pan does not thrash IndexedDB. */
+const CAMERA_SAVE_DELAY_MS = 5000
+
+export { sanitizeDocument }
 
 export class CanvasStore {
   private listeners = new Set<() => void>()
   private state: StoreState
   private saveTimer: ReturnType<typeof setTimeout> | null = null
+  private saveDue = 0
   private transientBase: CanvasDocument | null = null
   private toastSeq = 0
+  private disposed = false
 
   private readonly storage: CanvasStorageAdapter
 
@@ -126,6 +133,7 @@ export class CanvasStore {
   /* ── commands / history ── */
 
   dispatch(cmd: CanvasCommand): boolean {
+    if (this.disposed) return false
     const prev = this.state.doc
     let next: CanvasDocument
     try {
@@ -135,6 +143,12 @@ export class CanvasStore {
       return false
     }
     if (next === prev) return false
+    if (cmd.type === 'SET_CAMERA') {
+      // navigation only: no dirty flag, no unsaved-changes guard, lazy persistence
+      this.set({ doc: next })
+      this.scheduleSave(CAMERA_SAVE_DELAY_MS)
+      return true
+    }
     if (QUIET_COMMANDS.has(cmd.type) || this.transientBase) {
       this.set({ doc: next, dirty: true })
     } else {
@@ -247,9 +261,14 @@ export class CanvasStore {
 
   /* ── persistence ── */
 
-  private scheduleSave() {
+  private scheduleSave(delay = SAVE_DELAY_MS) {
+    if (this.disposed) return
+    const due = Date.now() + delay
+    // never push an already-pending (earlier) save further out
+    if (this.saveTimer && this.saveDue <= due) return
     if (this.saveTimer) clearTimeout(this.saveTimer)
-    this.saveTimer = setTimeout(() => void this.saveNow(), 800)
+    this.saveDue = due
+    this.saveTimer = setTimeout(() => void this.saveNow(), delay)
   }
 
   async saveNow(): Promise<boolean> {
@@ -257,6 +276,7 @@ export class CanvasStore {
       clearTimeout(this.saveTimer)
       this.saveTimer = null
     }
+    if (this.disposed) return false
     const doc = this.state.doc
     this.set({ saveStatus: 'saving' })
     try {
@@ -270,13 +290,24 @@ export class CanvasStore {
   }
 
   replaceDocument(doc: CanvasDocument) {
-    this.set({ doc, past: [], future: [], dirty: true, runs: {} })
+    this.set({ doc: sanitizeDocument(doc), past: [], future: [], dirty: true, runs: {} })
     this.setUi({ selection: [], editingBlockId: null, presentation: null })
     this.scheduleSave()
   }
 
+  /**
+   * After dispose, nothing mutates or persists the document any more: a wish run that finishes
+   * after the editor unmounted must not write into (or save over) a document the user has left.
+   * A pending debounced save is flushed first so the last edits are not lost.
+   */
   dispose() {
-    if (this.saveTimer) clearTimeout(this.saveTimer)
+    if (this.saveTimer) void this.saveNow()
+    this.disposed = true
+  }
+
+  /** StrictMode runs effect cleanup once on mount; the host calls this when the effect re-runs. */
+  resume() {
+    this.disposed = false
   }
 }
 
@@ -284,18 +315,7 @@ function emptyRun(wishId: string): RunState {
   return { wishId, runId: '', stage: 'idle', message: '', log: [], warnings: [], startedAt: new Date().toISOString() }
 }
 
-const RUNNING = new Set<WishState>(['planning', 'running', 'validating', 'applying', 'waiting_permission'])
-
-/** Documents loaded from storage may carry a run that never finished (page closed mid-run). */
-export function sanitizeDocument(doc: CanvasDocument): CanvasDocument {
-  let blocks = doc.blocks
-  for (const [id, b] of Object.entries(doc.blocks)) {
-    if (b.type === 'wish' && RUNNING.has(b.content.state)) {
-      blocks = { ...blocks, [id]: { ...b, content: { ...b.content, state: 'failed', lastError: '上次运行未完成（页面已关闭），请重新运行' } } }
-    }
-  }
-  return blocks === doc.blocks ? doc : { ...doc, blocks }
-}
+const RUNNING = RUNNING_WISH_STATES
 
 /**
  * After undo/redo, runtime-only wish fields (state, error, history) always come from the live doc:

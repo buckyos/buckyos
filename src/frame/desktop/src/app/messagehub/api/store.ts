@@ -57,6 +57,8 @@ interface OwnerData {
   prefsLoaded: Set<string>
   version: number
   projected?: { version: number; value: ProjectedOwner }
+  /** Enriched `entities()` per `(viewerDid, mode)`, keyed on owner + local state versions. */
+  entitiesCache: Map<string, { version: number; localVersion: number; value: Entity[] }>
   groupAccess: Record<string, GroupAccessCache>
   histories: Map<string, SessionHistory>
   historyStatus: Map<string, 'idle' | 'loading' | 'ready' | 'error'>
@@ -167,7 +169,7 @@ export class MessageHubApiStore implements MessageHubStore {
   private owner(ownerDid: string): OwnerData {
     let data = this.owners.get(ownerDid)
     if (!data) {
-      data = { status: { phase: 'idle' }, summaries: [], contacts: [], groups: [], agentDids: [], prefs: {}, prefsLoaded: new Set(), version: 0, groupAccess: {}, histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
+      data = { status: { phase: 'idle' }, summaries: [], contacts: [], groups: [], agentDids: [], prefs: {}, prefsLoaded: new Set(), version: 0, entitiesCache: new Map(), groupAccess: {}, histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
       this.owners.set(ownerDid, data)
     }
     return data
@@ -194,6 +196,9 @@ export class MessageHubApiStore implements MessageHubStore {
     if (data.status.phase === 'ready' && !refresh) return Promise.resolve()
     if (data.status.phase === 'denied' && !refresh) return Promise.resolve()
     const epoch = ++data.epoch
+    // A failed timeline load is retried once the owner is refreshed (idle
+    // histories are loaded again on the next read).
+    for (const [sessionId, status] of data.historyStatus) if (status === 'error') data.historyStatus.set(sessionId, 'idle')
     data.status = { phase: 'loading' }
     this.notify()
     data.loading = (async () => {
@@ -274,7 +279,11 @@ export class MessageHubApiStore implements MessageHubStore {
     const summaryTimer = setInterval(() => { void this.refreshSummaries(context) }, SUMMARY_POLL_MS)
     const tailTimer = activeSessionId ? setInterval(() => { void this.reconcileTail(context, activeSessionId) }, SUMMARY_POLL_MS) : null
     const runtimeTimer = activeSessionId ? setInterval(() => { void this.refreshRuntime(context, activeSessionId) }, RUNTIME_POLL_MS) : null
-    if (activeSessionId) { void this.refreshRuntime(context, activeSessionId); void this.ensureSessionPrefs(context, activeSessionId) }
+    if (activeSessionId) {
+      // (Re)selecting a session whose timeline failed to load retries it once.
+      if (data.historyStatus.get(activeSessionId) === 'error') void this.loadLatest(context, activeSessionId)
+      void this.refreshRuntime(context, activeSessionId); void this.ensureSessionPrefs(context, activeSessionId)
+    }
     let subscription: { close(): Promise<void> } | null = null
     const token = ownerToken(context.ownerDid)
     const patterns = ['box_in', 'box_sent', 'box_group_in', 'box_request'].map(prefix => `/msg_center/${token}/${prefix}_${token}/changed`)
@@ -309,18 +318,24 @@ export class MessageHubApiStore implements MessageHubStore {
     return value
   }
 
-  findEntity(context: MessageHubContext, id: string) { return this.projected(context).entities.find(entity => entity.id === id) }
+  findEntity(context: MessageHubContext, id: string) { return this.projected(context).entityById.get(id) }
 
   entities(context: MessageHubContext): Entity[] {
     if (!this.canView(context)) return []
+    const data = this.owner(context.ownerDid)
+    const cacheKey = `${context.viewerDid}\n${context.mode}`
+    const cached = data.entitiesCache.get(cacheKey)
+    if (cached && cached.version === data.version && cached.localVersion === this.local.version) return cached.value
     const { entities } = this.projected(context)
-    return entities.map(entity => {
+    const value = entities.map(entity => {
       const policy = this.policy(context, entity.id)
       const choices = this.connections(context, entity.id)
       const reason = entity.id === UNASSIGNED_ENTITY_ID ? 'binding_unknown' : choices.some(choice => !creationReason(context, entity, policy, choice.binding)) ? undefined : creationReason(context, entity, policy, choices[0]?.binding)
-      const sessionPrefs = this.sessions(context, entity.id)
-      return { ...entity, isPinned: sessionPrefs.some(session => this.preferences(context, session.id).pinned), isMuted: sessionPrefs.length > 0 && sessionPrefs.every(session => this.preferences(context, session.id).muted), sessionCreation: { policy, canCreate: !reason, unavailableReason: reason } }
+      const sessionPrefs = this.sessions(context, entity.id).map(session => this.preferences(context, session.id))
+      return { ...entity, isPinned: sessionPrefs.some(prefs => prefs.pinned), isMuted: sessionPrefs.length > 0 && sessionPrefs.every(prefs => prefs.muted), sessionCreation: { policy, canCreate: !reason, unavailableReason: reason } }
     }).sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.name.localeCompare(b.name))
+    data.entitiesCache.set(cacheKey, { version: data.version, localVersion: this.local.version, value })
+    return value
   }
 
   entityDetail(context: MessageHubContext, id: string): EntityDetail | null {
@@ -348,20 +363,24 @@ export class MessageHubApiStore implements MessageHubStore {
   }
 
   private groupDid(context: MessageHubContext, entityId: string) {
-    return this.projected(context).entities.find(entity => entity.id === entityId)?.type === 'group'
+    return this.findEntity(context, entityId)?.type === 'group'
   }
 
   sessions(context: MessageHubContext, entityId?: string, lifecycle?: Session['lifecycle']): Session[] {
     if (!this.canView(context)) return []
-    const { sessions } = this.projected(context)
-    return sortSessions(sessions.filter(session => (!entityId || session.entityId === entityId) && (!lifecycle || session.lifecycle === lifecycle)), id => this.preferences(context, id))
+    const projected = this.projected(context)
+    const source = entityId ? projected.sessionsByEntity.get(entityId) ?? [] : projected.sessions
+    const filtered = lifecycle ? source.filter(session => session.lifecycle === lifecycle) : source
+    // Preferences are resolved once per session, not once per comparison.
+    const prefs = new Map(filtered.map(session => [session.id, this.preferences(context, session.id)]))
+    return sortSessions(filtered, id => prefs.get(id) ?? this.preferences(context, id))
   }
 
   connections(context: MessageHubContext, entityId: string): ConnectionChoice[] {
     const entity = this.findEntity(context, entityId)
     const choices = new Map<string, ConnectionChoice>()
     if (!entity || entityId === UNASSIGNED_ENTITY_ID) return []
-    const known = this.projected(context).sessions.filter(session => session.entityId === entityId)
+    const known = this.projected(context).sessionsByEntity.get(entityId) ?? []
     if (entity.domain !== 'external' || known.some(session => session.binding.kind === 'native')) choices.set('native', { id: 'native', binding: { kind: 'native', targetDid: entityId }, label: 'BuckyOS' })
     for (const session of known) {
       if (session.binding.kind === 'tunnel') choices.set(session.binding.tunnelInstanceId, { id: session.binding.tunnelInstanceId, binding: session.binding, label: session.binding.connectionName })
@@ -396,7 +415,9 @@ export class MessageHubApiStore implements MessageHubStore {
     const key = viewerSessionKey(context, sessionId)
     const epoch = data.epoch
     data.historyStatus.set(sessionId, 'loading')
-    this.notify()
+    // `reader()` kicks this off during render; listeners must not run inside
+    // another component's render, so the first notification is deferred.
+    queueMicrotask(() => this.notify())
     try {
       const page = await listSessionMessages({ owner: context.ownerDid, session_id: sessionId, limit: HISTORY_PAGE_SIZE, descending: true, with_object: true })
       if (data.epoch !== epoch) { data.historyStatus.set(sessionId, 'idle'); this.notify(); return }
@@ -444,7 +465,7 @@ export class MessageHubApiStore implements MessageHubStore {
     data.historyStatus.set(sessionId, 'loading')
     try {
       const page = await listSessionMessages({ owner: context.ownerDid, session_id: sessionId, limit: HISTORY_PAGE_SIZE, descending: true, with_object: true, cursor_sort_key: history.oldestCursor.sortKey, cursor_record_id: history.oldestCursor.recordId })
-      if (data.epoch !== epoch) return false
+      if (data.epoch !== epoch) { data.historyStatus.set(sessionId, 'ready'); this.notify(); return false }
       const messages = (page.items ?? []).map(item => itemToMessage(item, context.ownerDid, sessionId, this.senderName(context, item.from), translate('messagehub.messageUnavailable', 'Message unavailable')))
       const current = data.histories.get(key) ?? history
       const more = page.next_cursor_sort_key !== undefined && page.next_cursor_record_id !== undefined
@@ -465,30 +486,32 @@ export class MessageHubApiStore implements MessageHubStore {
     const key = viewerSessionKey(context, sessionId)
     const history = data.histories.get(key)
     if (!history) return
+    const wanted = new Set(recordIds)
     const targets = history.messages.filter(message => {
       const meta = recordMeta(message)
-      return meta && recordIds.includes(meta.recordId) && meta.direction === 'in' && meta.recipientState === 'UNREAD'
+      return meta && wanted.has(meta.recordId) && meta.direction === 'in' && meta.recipientState === 'UNREAD'
     })
     if (targets.length === 0) return
-    let changed = 0
-    for (const message of targets) {
+    // Records are marked in parallel and merged in one revision so the
+    // history pane rebuilds once per batch instead of once per record.
+    const results = await Promise.allSettled(targets.map(async message => {
       const meta = recordMeta(message)!
-      try {
-        const record = await updateRecordState(meta.recordId, 'READ')
-        const current = data.histories.get(key)
-        if (!current) return
-        data.histories.set(key, upsertMessages(current, [{ ...message, ui_record: { ...meta, recipientState: record.state } }]))
-        changed++
-      } catch (error) {
-        console.warn('MessageHub mark read failed.', error)
-      }
+      const record = await updateRecordState(meta.recordId, 'READ')
+      return { ...message, ui_record: { ...meta, recipientState: record.state } }
+    }))
+    const updated: MessageObject[] = []
+    for (const result of results) {
+      if (result.status === 'fulfilled') updated.push(result.value)
+      else console.warn('MessageHub mark read failed.', result.reason)
     }
-    if (changed > 0) {
-      const summary = data.summaries.find(item => item.session_id === sessionId)
-      if (summary) summary.unread_count = Math.max(0, summary.unread_count - changed)
-      this.bump(data)
-      void this.refreshSummaries(context)
-    }
+    if (updated.length === 0) return
+    const current = data.histories.get(key)
+    if (!current) return
+    data.histories.set(key, upsertMessages(current, updated))
+    const summary = data.summaries.find(item => item.session_id === sessionId)
+    if (summary) summary.unread_count = Math.max(0, summary.unread_count - updated.length)
+    this.bump(data)
+    void this.refreshSummaries(context)
   }
 
   private async ensureGroupAccess(context: MessageHubContext, groupDid: string) {
@@ -647,7 +670,7 @@ export class MessageHubApiStore implements MessageHubStore {
     const binding = session.binding as SessionBinding
     if (binding.kind === 'tunnel') return { to: binding.endpointDid, kind: 'chat' }
     if (binding.kind !== 'native') throw new Error('binding_unknown')
-    const isGroup = this.projected({ viewerDid: this.selfDid, ownerDid: session.ownerDid, mode: 'self' }).entities.find(entity => entity.id === session.entityId)?.type === 'group'
+    const isGroup = this.projected({ viewerDid: this.selfDid, ownerDid: session.ownerDid, mode: 'self' }).entityById.get(session.entityId)?.type === 'group'
     const keepsTopic = !session.id.startsWith('dm:') && session.id !== session.entityId
     return { to: binding.targetDid, kind: isGroup ? 'group_msg' : 'chat', topic: keepsTopic || isUuid(session.id) ? session.id : undefined }
   }
@@ -681,21 +704,19 @@ export class MessageHubApiStore implements MessageHubStore {
     const optimistic: MessageObject = { ...message, ui_message_id: optimisticId, ui_session_id: sessionId, ui_delivery_status: 'sending', ui_sender_name: labels().you }
     data.histories.set(key, upsertMessages(data.histories.get(key) ?? { ...emptyHistory, loaded: true }, [optimistic]))
     this.notify()
-    const epoch = data.epoch
+    // Histories survive an owner refresh (epoch bump), so the outcome is always
+    // applied: otherwise the optimistic bubble and its pending key would leak.
     let result
     try {
       result = await postSendMessage(message, idempotencyKey)
     } catch (error) {
       // Unknown outcome: keep the optimistic item marked failed; the same
       // idempotency key is reused on retry and the tail reconcile resolves it.
-      if (data.epoch === epoch) {
-        data.histories.set(key, upsertMessages(data.histories.get(key) ?? emptyHistory, [{ ...optimistic, ui_delivery_status: 'failed' }]))
-        this.notify()
-        void this.reconcileTail(context, sessionId)
-      }
+      data.histories.set(key, upsertMessages(data.histories.get(key) ?? emptyHistory, [{ ...optimistic, ui_delivery_status: 'failed' }]))
+      this.notify()
+      void this.reconcileTail(context, sessionId)
       throw new Error(`result_unknown: ${error instanceof Error ? error.message : String(error)}`)
     }
-    if (data.epoch !== epoch) return
     if (!result.ok) {
       data.histories.set(key, removeMessage(data.histories.get(key) ?? emptyHistory, optimisticId))
       this.pendingSendKeys.delete(pendingKey)

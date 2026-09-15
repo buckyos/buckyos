@@ -11,7 +11,7 @@ import {
   MessageCircle,
   Minimize2,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '../i18n/provider'
 import type { AppDefinition, FormFactor, LayoutState, ThemeMode } from '../models/ui'
 import { useMobileNavState } from './windows/MobileNavContext'
@@ -80,10 +80,10 @@ function StatusTray({
   trayState: StatusTrayState
 }) {
   const { t } = useI18n()
-  const timeLabel = new Intl.DateTimeFormat(locale, {
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(now)
+  const timeLabel = useMemo(
+    () => new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(now),
+    [locale, now],
+  )
   const [isTipsOpen, setIsTipsOpen] = useState(false)
   const [arrowOffset, setArrowOffset] = useState<number | null>(null)
   const tipsRef = useRef<HTMLDivElement | null>(null)
@@ -132,8 +132,9 @@ function StatusTray({
   }, [isTipsOpen])
 
   useEffect(() => {
+    // The panel is unmounted while closed, so a stale offset is never
+    // visible; it is re-measured on the next open.
     if (!isTipsOpen) {
-      setArrowOffset(null)
       return
     }
 
@@ -259,7 +260,7 @@ function StatusTray({
 
 function StatusTipCard({ tip }: { tip: StatusTip }) {
   const toneStyles = statusTipToneStyles(tip.tone)
-  const Icon = statusTipToneIcon(tip.tone)
+  const Icon = statusTipToneIcons[tip.tone]
 
   return (
     <article
@@ -294,16 +295,12 @@ function StatusTipCard({ tip }: { tip: StatusTip }) {
   )
 }
 
-function statusTipToneIcon(tone: StatusTipTone) {
-  if (tone === 'success') {
-    return CheckCheck
-  }
-
-  if (tone === 'error') {
-    return AlertTriangle
-  }
-
-  return LoaderCircle
+// Module-level lookup: the icon components are static, so selecting one by
+// key during render does not create a new component type per render.
+const statusTipToneIcons: Record<StatusTipTone, typeof CheckCheck> = {
+  success: CheckCheck,
+  error: AlertTriangle,
+  progress: LoaderCircle,
 }
 
 function statusTipToneStyles(tone: StatusTipTone) {

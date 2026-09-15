@@ -135,8 +135,11 @@ test('desktop flow opens settings window and supports locale switch', async ({
     steps: 14,
   })
   await page.mouse.up()
-  const settingsAfterWidgetDrag = await page.getByTestId('desktop-app-settings').boundingBox()
-  const filesAfterWidgetDrag = await page.getByTestId('desktop-app-files').boundingBox()
+  // Compare the grid tiles (exact cell boxes), not the inner buttons: a
+  // two-line label makes the button taller than the cell, so two icons that
+  // legitimately sit in vertically adjacent cells would otherwise "overlap".
+  const settingsAfterWidgetDrag = await page.getByTestId('desktop-item-app-settings').boundingBox()
+  const filesAfterWidgetDrag = await page.getByTestId('desktop-item-app-files').boundingBox()
   expect(boxesOverlap(settingsAfterWidgetDrag, filesAfterWidgetDrag)).toBeFalsy()
 
   await page.getByTestId('desktop-app-settings').click()
@@ -617,8 +620,18 @@ test('window modal only blocks its owner window', async ({ page }) => {
   await page.getByRole('button', { name: 'Window modal' }).first().click()
   await expect(page.getByRole('dialog', { name: 'Scoped window modal' })).toBeVisible()
 
+  // The Language select lives on the Appearance page of the (unblocked)
+  // Settings window.
+  await page
+    .getByTestId('window-settings')
+    .getByRole('button', { name: 'Appearance' })
+    .click()
   await page.getByRole('combobox', { name: 'Language' }).selectOption('ja')
-  await expect(page.getByRole('combobox', { name: 'Language' })).toHaveValue('ja')
+  // The whole shell is now in Japanese, including the select's own label.
+  await expect(page.getByRole('combobox', { name: '言語' })).toHaveValue('ja')
+  // Switch back so the remaining English locators keep working.
+  await page.getByRole('combobox', { name: '言語' }).selectOption('en')
+  await expect(page.getByRole('combobox', { name: 'Language' })).toHaveValue('en')
 
   await expect(page.getByRole('dialog', { name: 'Scoped window modal' })).toBeVisible()
   await page

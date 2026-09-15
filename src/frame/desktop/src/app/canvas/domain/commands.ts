@@ -41,6 +41,9 @@ export type CanvasCommand =
       action:
         | { kind: 'addRow'; afterRowId?: string; row?: TableRow }
         | { kind: 'addColumn'; afterColumnId?: string; column?: TableColumn }
+        /** bulk insert (paste): one reduction instead of one per row/column */
+        | { kind: 'addRows'; afterRowId?: string; rows: TableRow[] }
+        | { kind: 'addColumns'; afterColumnId?: string; columns: TableColumn[] }
         | { kind: 'deleteRows'; rowIds: string[] }
         | { kind: 'deleteColumns'; columnIds: string[] }
         | { kind: 'renameColumn'; columnId: string; name: string }

@@ -157,7 +157,9 @@ export function ScheduledTasksPage({ onNavigate }: ScheduledTasksPageProps) {
   const [filterStatus, setFilterStatus] = useState<WorkflowScheduleStatus | ''>('')
   const [showFilters, setShowFilters] = useState(false)
 
-  const schedules = useMemo(() => store.getScheduledTasks().map(toScheduleView), [store])
+  // Not memoized: the store keeps its identity and notifies through
+  // useSyncExternalStore, so a memo keyed on it would never recompute.
+  const schedules = store.getScheduledTasks().map(toScheduleView)
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase()
     return schedules.filter((schedule) => {

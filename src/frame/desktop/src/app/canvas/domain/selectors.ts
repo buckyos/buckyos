@@ -91,6 +91,21 @@ export function wishStatus(doc: CanvasDocument, wish: WishBlock): GeneratedStatu
   return worst
 }
 
+const childToGroup = new WeakMap<Record<string, CanvasBlock>, Map<string, string>>()
+
+/** Group containing `blockId`, if any. Index is built once per `doc.blocks` identity (shared by every block view). */
+export function groupIdOf(blocks: Record<string, CanvasBlock>, blockId: string): string | null {
+  let index = childToGroup.get(blocks)
+  if (!index) {
+    index = new Map()
+    for (const g of Object.values(blocks)) {
+      if (g.type === 'group') for (const c of g.content.childBlockIds) index.set(c, g.id)
+    }
+    childToGroup.set(blocks, index)
+  }
+  return index.get(blockId) ?? null
+}
+
 /** Wish that generated the given block (direct or via group), if any. */
 export function generatingWishId(doc: CanvasDocument, blockId: string): string | null {
   const block = doc.blocks[blockId]

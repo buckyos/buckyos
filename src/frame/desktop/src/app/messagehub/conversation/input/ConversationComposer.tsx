@@ -28,6 +28,13 @@ import {
   type ComposerAttachmentItem,
 } from './attachmentDraft'
 
+/** Keystrokes are coalesced before the draft text is persisted. */
+const DRAFT_PERSIST_DELAY_MS = 300
+
+function sameAttachmentInputs(a: readonly ComposerAttachmentInput[], b: readonly ComposerAttachmentInput[]) {
+  return a.length === b.length && a.every((item, index) => item.file === b[index].file && item.relativePath === b[index].relativePath)
+}
+
 export interface ConversationComposerSubmitPayload {
   attachments: ComposerAttachmentItem[]
   content: string
@@ -63,10 +70,36 @@ const ConversationComposerInner = forwardRef<
   const sendLock = useRef(false)
   const attachmentsCallback = useRef(onAttachmentsChange)
   useEffect(() => { attachmentsCallback.current = onAttachmentsChange }, [onAttachmentsChange])
-  useEffect(() => { if (attachmentsCallback.current) void attachmentsCallback.current(attachments.map(({ file, relativePath }) => ({ file, relativePath })))?.catch(() => setSendError('true')) }, [attachments])
   const draftCallback = useRef(onDraftChange)
   useEffect(() => { draftCallback.current = onDraftChange }, [onDraftChange])
-  useEffect(() => { if (draftCallback.current) void draftCallback.current(inputValue)?.catch(() => setSendError('true')) }, [inputValue])
+  // Every persisted write clones the whole local record, so the draft text is
+  // debounced (flushed on unmount and whenever attachments are written) and a
+  // value that is already stored is never written again.
+  const persistedDraft = useRef(initialDraft)
+  const persistedAttachments = useRef<ComposerAttachmentInput[]>(initialAttachments)
+  const latestDraft = useRef(initialDraft)
+  const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flushDraft = useCallback(() => {
+    if (draftTimer.current) { clearTimeout(draftTimer.current); draftTimer.current = null }
+    const value = latestDraft.current
+    if (value === persistedDraft.current || !draftCallback.current) return
+    persistedDraft.current = value
+    void draftCallback.current(value)?.catch(() => setSendError('true'))
+  }, [])
+  useEffect(() => {
+    latestDraft.current = inputValue
+    if (inputValue === persistedDraft.current) return
+    if (draftTimer.current) clearTimeout(draftTimer.current)
+    draftTimer.current = setTimeout(flushDraft, DRAFT_PERSIST_DELAY_MS)
+  }, [inputValue, flushDraft])
+  useEffect(() => flushDraft, [flushDraft])
+  useEffect(() => {
+    const inputs = attachments.map(({ file, relativePath }) => ({ file, relativePath }))
+    if (sameAttachmentInputs(inputs, persistedAttachments.current)) return
+    persistedAttachments.current = inputs
+    flushDraft()
+    if (attachmentsCallback.current) void attachmentsCallback.current(inputs)?.catch(() => setSendError('true'))
+  }, [attachments, flushDraft])
   const [pickerOpen, setPickerOpen] = useState(false)
   const attachmentsRef = useRef<ComposerAttachmentItem[]>([])
   const composerRef = useRef<HTMLDivElement>(null)

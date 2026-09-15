@@ -83,6 +83,7 @@ import {
   readJson,
   readWindowAppearancePreferences,
   reconcileLayoutWithDefaultApps,
+  refreshSlotIndexes,
   resolveLayout,
   runtimeStorageKey,
   sameWindowGeometry,
@@ -226,27 +227,6 @@ export function mergeToLayoutState(
   }
 }
 
-/**
- * Build the full syncData from current state.
- */
-function buildSyncData(
-  appearance: AppearanceSettings,
-  windowLayout: WindowLayoutSettings,
-  apps: AppDefinition[],
-  layout: LayoutState | null,
-): DesktopSyncData {
-  const emptyAppLayout: AppItemLayoutSettings = { pages: [] }
-  const emptyWidgetLayout: WidgetLayoutSettings = { pages: [] }
-
-  return {
-    appearance,
-    windowLayout,
-    appItemConfig: { apps },
-    appItemLayout: layout ? extractAppItemLayout(layout) : emptyAppLayout,
-    widgetLayout: layout ? extractWidgetLayout(layout) : emptyWidgetLayout,
-  }
-}
-
 function buildAuthorizedDefaultLayout(
   layout: LayoutState,
   definitions: AppDefinition[],
@@ -303,6 +283,37 @@ function buildAuthorizedDefaultLayout(
   return { ...layout, pages }
 }
 
+/**
+ * Bring `targetId` to `targetZIndex` and renumber the rest as `10 + index`
+ * (the shell's long-standing stacking rule). Records whose values are
+ * already right are returned as the same object, so the window layer's
+ * memoised slots only re-render for windows that actually changed; when
+ * nothing changes at all the input array itself is returned.
+ */
+function raiseWindow(
+  windows: WindowRecord[],
+  targetId: string,
+  targetZIndex: number,
+  patch: Partial<WindowRecord> = {},
+): WindowRecord[] {
+  let changed = false
+  const next = windows.map((w, i) => {
+    if (w.id === targetId) {
+      const patched = { ...w, ...patch, zIndex: targetZIndex }
+      const same = (Object.keys(patched) as Array<keyof WindowRecord>).every(
+        (key) => patched[key] === w[key],
+      )
+      if (same) return w
+      changed = true
+      return patched
+    }
+    if (w.zIndex === 10 + i) return w
+    changed = true
+    return { ...w, zIndex: 10 + i }
+  })
+  return changed ? next : windows
+}
+
 // ---------------------------------------------------------------------------
 // Store class
 // ---------------------------------------------------------------------------
@@ -326,6 +337,29 @@ export class DesktopUIStore {
   private static readonly RESIZE_REFLOW_DELAY = 200
   /** Last workspace bounds the view reported — lets non-React callers open windows. */
   private lastViewportBounds: ReturnType<typeof getDesktopWindowWorkspaceBounds> | null = null
+
+  /**
+   * Window geometry is updated on every pointermove while dragging/resizing.
+   * The in-memory map is always current; the localStorage write is coalesced
+   * so we don't JSON.stringify + setItem on every frame.
+   */
+  private geometryWriteTimer: number | null = null
+  private static readonly GEOMETRY_WRITE_DELAY = 200
+
+  /**
+   * Monotonic init token. `init()` can be invoked concurrently (StrictMode
+   * double-effects, form-factor flips while a fetch is in flight); only the
+   * most recent call is allowed to commit its result.
+   */
+  private initSeq = 0
+  private inflightInit: { key: string; promise: Promise<void> } | null = null
+
+  /** Memo for `getWindowLayerModel()` — keyed on the inputs' identity. */
+  private windowLayerModelCache: {
+    apps: DesktopAppItem[]
+    windows: WindowRecord[]
+    model: ReturnType<typeof createDesktopWindowLayerDataModel>
+  } | null = null
 
   constructor() {
     const runtimeContainer =
@@ -378,6 +412,9 @@ export class DesktopUIStore {
     this.windowGeometryByApp = sanitizeWindowGeometryMap(
       readJson(windowGeometryStorageKey),
     )
+
+    // Make sure a coalesced geometry write is not lost when the page goes away.
+    window.addEventListener('pagehide', () => this.flushGeometryWrite())
   }
 
   // ---- useSyncExternalStore protocol --------------------------------------
@@ -392,70 +429,103 @@ export class DesktopUIStore {
   getSnapshot = () => this.snapshot
 
   private notify() {
-    this.snapshot = { ...this.snapshot }
     for (const listener of this.listeners) listener()
   }
 
   /**
    * Low-level update: accepts partial top-level fields + partial runtime.
+   *
+   * The snapshot is treated as immutable: a new object is produced and the
+   * derived fields (`resolvedLayout`, `syncData`) are only recomputed when
+   * one of their inputs actually changed. This matters because window
+   * drag/resize calls `update()` on every pointermove — recomputing the
+   * layout there would also churn the identity of `resolvedLayout`, which
+   * every open app panel receives as a prop.
    */
   private update(
     partial: Partial<Pick<DesktopUISnapshot, 'status' | 'error' | 'formFactor' | 'scenario' | 'layoutState' | 'apps'>> & {
       runtime?: Partial<DesktopRuntimeState>
       appearance?: Partial<AppearanceSettings>
+      /** Group 3: replace the AppItem config source list. */
+      appItemApps?: AppDefinition[]
     },
   ) {
+    const prev = this.snapshot
+    const next: DesktopUISnapshot = { ...prev }
+
     // Merge top-level scalars
-    if (partial.status !== undefined) this.snapshot.status = partial.status
-    if (partial.error !== undefined) this.snapshot.error = partial.error
-    if (partial.formFactor !== undefined) this.snapshot.formFactor = partial.formFactor
-    if (partial.scenario !== undefined) this.snapshot.scenario = partial.scenario
-    if (partial.apps !== undefined) this.snapshot.apps = partial.apps
-    if (partial.layoutState !== undefined) this.snapshot.layoutState = partial.layoutState
+    if (partial.status !== undefined) next.status = partial.status
+    if (partial.error !== undefined) next.error = partial.error
+    if (partial.formFactor !== undefined) next.formFactor = partial.formFactor
+    if (partial.scenario !== undefined) next.scenario = partial.scenario
+    if (partial.apps !== undefined) next.apps = partial.apps
+    if (partial.layoutState !== undefined) next.layoutState = partial.layoutState
 
     // Merge runtime
     if (partial.runtime) {
-      this.snapshot.runtime = { ...this.snapshot.runtime, ...partial.runtime }
+      next.runtime = { ...prev.runtime, ...partial.runtime }
     }
 
     // Merge appearance
-    if (partial.appearance) {
-      this.snapshot.syncData = {
-        ...this.snapshot.syncData,
-        appearance: { ...this.snapshot.syncData.appearance, ...partial.appearance },
+    const appearance = partial.appearance
+      ? { ...prev.syncData.appearance, ...partial.appearance }
+      : prev.syncData.appearance
+    const appItemApps = partial.appItemApps ?? prev.syncData.appItemConfig.apps
+
+    // Derived: resolvedLayout (only when its inputs changed)
+    const layoutInputsChanged =
+      next.layoutState !== prev.layoutState ||
+      next.formFactor !== prev.formFactor ||
+      next.runtime.gridCols !== prev.runtime.gridCols ||
+      next.runtime.gridRows !== prev.runtime.gridRows
+    if (layoutInputsChanged) {
+      next.resolvedLayout = this.computeResolvedLayout(next)
+    }
+
+    // Derived: syncData (rebuild only the groups whose source changed)
+    const layoutChanged = next.layoutState !== prev.layoutState
+    const geometryChanged =
+      prev.syncData.windowLayout.geometryByApp !== this.windowGeometryByApp
+    if (
+      layoutChanged ||
+      geometryChanged ||
+      appearance !== prev.syncData.appearance ||
+      appItemApps !== prev.syncData.appItemConfig.apps
+    ) {
+      next.syncData = {
+        appearance,
+        windowLayout: geometryChanged
+          ? { geometryByApp: this.windowGeometryByApp }
+          : prev.syncData.windowLayout,
+        appItemConfig:
+          appItemApps === prev.syncData.appItemConfig.apps
+            ? prev.syncData.appItemConfig
+            : { apps: appItemApps },
+        appItemLayout: layoutChanged
+          ? next.layoutState
+            ? extractAppItemLayout(next.layoutState)
+            : { pages: [] }
+          : prev.syncData.appItemLayout,
+        widgetLayout: layoutChanged
+          ? next.layoutState
+            ? extractWidgetLayout(next.layoutState)
+            : { pages: [] }
+          : prev.syncData.widgetLayout,
       }
     }
 
-    // Recompute derived data
-    this.recomputeResolvedLayout()
-    this.rebuildSyncData()
+    this.snapshot = next
     this.notify()
   }
 
   // ---- Derived data recomputation -----------------------------------------
 
-  private recomputeResolvedLayout() {
-    const { layoutState, formFactor } = this.snapshot
-    const { gridCols, gridRows } = this.snapshot.runtime
-    if (!layoutState) {
-      this.snapshot.resolvedLayout = null
-      return
-    }
+  private computeResolvedLayout(snapshot: DesktopUISnapshot): LayoutState | null {
+    const { layoutState, formFactor } = snapshot
+    const { gridCols, gridRows } = snapshot.runtime
+    if (!layoutState) return null
     const scanOrder: ScanOrder = formFactor === 'mobile' ? 'row-major' : 'col-major'
-    this.snapshot.resolvedLayout = resolveLayout(layoutState, gridCols, gridRows, scanOrder)
-  }
-
-  private rebuildSyncData() {
-    const { layoutState } = this.snapshot
-    const { appearance } = this.snapshot.syncData
-    const appDefs = this.snapshot.syncData.appItemConfig.apps
-
-    this.snapshot.syncData = buildSyncData(
-      appearance,
-      { geometryByApp: { ...this.windowGeometryByApp } },
-      appDefs,
-      layoutState,
-    )
+    return resolveLayout(layoutState, gridCols, gridRows, scanOrder)
   }
 
   // ========================================================================
@@ -469,11 +539,28 @@ export class DesktopUIStore {
    * - 正式环境                       → 走真实 API（当前 stub）
    */
   async init(formFactor: FormFactor, scenario: MockScenario = 'normal') {
-    if (isMockRuntime()) {
-      await this.initByMock(formFactor, scenario)
-    } else {
-      await this.initByReal(formFactor)
+    // Coalesce identical concurrent calls (StrictMode runs the mount effect
+    // twice) so we neither double-fetch nor let a stale result win.
+    const key = `${formFactor}:${scenario}`
+    if (this.inflightInit?.key === key) {
+      await this.inflightInit.promise
+      return
     }
+    const seq = ++this.initSeq
+    const promise = isMockRuntime()
+      ? this.initByMock(formFactor, scenario, seq)
+      : this.initByReal(formFactor, seq)
+    this.inflightInit = { key, promise }
+    try {
+      await promise
+    } finally {
+      if (this.inflightInit?.promise === promise) this.inflightInit = null
+    }
+  }
+
+  /** True when a newer `init()` superseded the call identified by `seq`. */
+  private isStaleInit(seq: number) {
+    return seq !== this.initSeq
   }
 
   /**
@@ -487,7 +574,7 @@ export class DesktopUIStore {
   /**
    * Mock 初��化 — 使用 mock/provider 获取模拟数据。
    */
-  private async initByMock(formFactor: FormFactor, scenario: MockScenario) {
+  private async initByMock(formFactor: FormFactor, scenario: MockScenario, seq: number) {
     this.update({
       status: 'loading',
       error: null,
@@ -502,6 +589,7 @@ export class DesktopUIStore {
 
     try {
       const payload = await fetchDesktopPayload({ formFactor, scenario })
+      if (this.isStaleInit(seq)) return
       this.defaultPayload = payload
       const apps = resolveDesktopApps(payload.apps, formFactor)
       let layoutState: LayoutState
@@ -529,19 +617,19 @@ export class DesktopUIStore {
       // Validate positions against current grid (init-time reflow)
       layoutState = invalidatePositions(layoutState, gridCols, gridRows)
 
-      // Populate syncData from payload
-      this.snapshot.syncData.appItemConfig = { apps: payload.apps }
-
       this.update({
         status: 'success',
         apps,
         layoutState,
+        // Populate syncData (Group 3) from payload
+        appItemApps: payload.apps,
         appearance: {
           wallpaper: payload.wallpaper,
           deadZone: layoutState.deadZone,
         },
       })
     } catch (err) {
+      if (this.isStaleInit(seq)) return
       this.update({
         status: 'error',
         error: err instanceof Error ? err.message : String(err),
@@ -553,7 +641,7 @@ export class DesktopUIStore {
    * 真实初始化 — 生产环境从后端 API 获取数据。
    * TODO: 对接真实后端后实现。
    */
-  private async initByReal(formFactor: FormFactor) {
+  private async initByReal(formFactor: FormFactor, seq: number) {
     this.update({
       status: 'loading',
       error: null,
@@ -571,6 +659,7 @@ export class DesktopUIStore {
         fetchDesktopPayload({ formFactor, scenario: 'normal' }),
         fetchAppList(),
       ])
+      if (this.isStaleInit(seq)) return
       if (!appsResult.data) {
         throw appsResult.error ?? new Error('apps.list unavailable')
       }
@@ -601,17 +690,18 @@ export class DesktopUIStore {
       layoutState = migrateToSlotModel(layoutState, gridCols, gridRows)
       layoutState = invalidatePositions(layoutState, gridCols, gridRows)
 
-      this.snapshot.syncData.appItemConfig = { apps: authorizedDefinitions }
       this.update({
         status: 'success',
         apps,
         layoutState,
+        appItemApps: authorizedDefinitions,
         appearance: {
           wallpaper: payload.wallpaper,
           deadZone: layoutState.deadZone,
         },
       })
     } catch (err) {
+      if (this.isStaleInit(seq)) return
       this.update({
         status: 'error',
         error: err instanceof Error ? err.message : String(err),
@@ -671,6 +761,9 @@ export class DesktopUIStore {
     // Migrate legacy layouts to slot model
     layoutState = migrateToSlotModel(layoutState, cols, rows)
 
+    // Slot indexes are grid-relative; keep them in step with the new grid.
+    layoutState = refreshSlotIndexes(layoutState, cols, rows)
+
     if (layoutState !== before) {
       this.update({ layoutState })
       this.persistLayout()
@@ -710,18 +803,12 @@ export class DesktopUIStore {
     const existing = windows.find((w) => w.appId === appId)
 
     if (existing) {
-      const nextWindows = windows.map((w, i) =>
-        w.id === existing.id
-          ? {
-              ...w,
-              state: (app.manifest.defaultMode === 'windowed'
-                ? 'windowed'
-                : 'maximized') as WindowRecord['state'],
-              minimizedOrder: null,
-              zIndex: windows.length + 10,
-            }
-          : { ...w, zIndex: 10 + i },
-      )
+      const nextWindows = raiseWindow(windows, existing.id, windows.length + 10, {
+        state: (app.manifest.defaultMode === 'windowed'
+          ? 'windowed'
+          : 'maximized') as WindowRecord['state'],
+        minimizedOrder: null,
+      })
       this.update({ runtime: { windows: nextWindows } })
     } else {
       // Group 2: 用保存的窗口布局设置作为参考
@@ -786,18 +873,12 @@ export class DesktopUIStore {
           : target.state
       this.update({
         runtime: {
-          windows: windows.map((w, i) =>
-            w.id === target.id
-              ? {
-                  ...w,
-                  state: restoredState,
-                  minimizedOrder: null,
-                  zIndex: top,
-                  launch: opts.launch ?? w.launch,
-                  title: opts.title ?? w.title,
-                }
-              : { ...w, zIndex: 10 + i },
-          ),
+          windows: raiseWindow(windows, target.id, top, {
+            state: restoredState,
+            minimizedOrder: null,
+            launch: opts.launch ?? target.launch,
+            title: opts.title ?? target.title,
+          }),
         },
       })
       return target.id
@@ -887,16 +968,12 @@ export class DesktopUIStore {
   }
 
   focusWindow(windowId: string) {
-    const top = this.snapshot.runtime.windows.length + 12
-    this.update({
-      runtime: {
-        windows: this.snapshot.runtime.windows.map((w, i) =>
-          w.id === windowId
-            ? { ...w, zIndex: top }
-            : { ...w, zIndex: 10 + i },
-        ),
-      },
-    })
+    const { windows } = this.snapshot.runtime
+    if (!windows.some((w) => w.id === windowId)) return
+    const nextWindows = raiseWindow(windows, windowId, windows.length + 12)
+    // Clicking the window that is already in front changes nothing.
+    if (nextWindows === windows) return
+    this.update({ runtime: { windows: nextWindows } })
   }
 
   updateWindowGeometry(
@@ -1026,22 +1103,52 @@ export class DesktopUIStore {
 
     if (!positionChanged) return
 
-    const { layoutState, formFactor } = this.snapshot
-    if (!layoutState) return
+    const { layoutState, resolvedLayout, formFactor } = this.snapshot
+    if (!layoutState || !resolvedLayout) return
 
     const { gridCols: cols, gridRows: rows } = this.snapshot.runtime
     const order: ScanOrder = formFactor === 'mobile' ? 'row-major' : 'col-major'
 
-    this.update({
-      layoutState: {
-        ...layoutState,
-        pages: layoutState.pages.map((page) => {
-          if (page.id !== pageId) return page
-          return applyDragCollision(page, oldItem, newItem, cols, rows, order)
-        }),
-      },
-    })
+    // Collide against the page *as displayed*: auto-placed items only have
+    // a position in `resolvedLayout`. Resolving them on the unpositioned
+    // `layoutState` page ignored them as occupants and, worse, re-derived
+    // their tail slot after the drop, so every auto item on the page slid
+    // along behind the dragged one.
+    const resolvedPageIndex = resolvedLayout.pages.findIndex((page) => page.id === pageId)
+    if (resolvedPageIndex < 0) return
+    const nextPage = applyDragCollision(
+      resolvedLayout.pages[resolvedPageIndex],
+      oldItem,
+      newItem,
+      cols,
+      rows,
+      order,
+    )
+    if (nextPage === resolvedLayout.pages[resolvedPageIndex]) return
 
+    // Commit the displayed page: its auto-placed items keep the slot they
+    // were shown in (still `placementType: 'auto'`, so a later resize may
+    // reflow them). Items that overflowed onto this page from another page
+    // now live here, so drop them from their source page.
+    // If the drop happened on an overflow page that `resolveLayout` created,
+    // materialise it (and any overflow pages before it) in the same order.
+    const materialized = layoutState.pages.some((page) => page.id === pageId)
+      ? []
+      : resolvedLayout.pages
+          .slice(layoutState.pages.length, resolvedPageIndex + 1)
+          .map((page) => (page.id === pageId ? nextPage : page))
+    const pinnedIds = new Set(
+      [nextPage, ...materialized].flatMap((page) => page.items.map((item) => item.id)),
+    )
+    const pages = layoutState.pages
+      .map((page) =>
+        page.id === pageId
+          ? nextPage
+          : { ...page, items: page.items.filter((item) => !pinnedIds.has(item.id)) },
+      )
+      .concat(materialized)
+
+    this.update({ layoutState: { ...layoutState, pages } })
     this.persistLayout()
   }
 
@@ -1072,7 +1179,10 @@ export class DesktopUIStore {
       items: [...page.items],
     }))
 
-    if (targetPageIndex >= nextPages.length) {
+    // `resolvedLayout` may contain overflow pages that do not exist in
+    // `layoutState` yet, so the target index can be more than one page past
+    // the end — create every missing page, not just one.
+    while (targetPageIndex >= nextPages.length) {
       nextPages.push({
         id: `${formFactor}-page-${nextPages.length + 1}`,
         items: [],
@@ -1123,6 +1233,7 @@ export class DesktopUIStore {
     if (!this.defaultPayload) return
     const { formFactor } = this.snapshot
     window.localStorage.removeItem(layoutStorageKey(formFactor))
+    this.cancelGeometryWrite()
     window.localStorage.removeItem(windowGeometryStorageKey)
     this.windowGeometryByApp = {}
 
@@ -1234,10 +1345,15 @@ export class DesktopUIStore {
   // ========================================================================
 
   getWindowLayerModel() {
-    return createDesktopWindowLayerDataModel(
-      this.snapshot.apps,
-      this.snapshot.runtime.windows,
-    )
+    const { apps } = this.snapshot
+    const { windows } = this.snapshot.runtime
+    const cached = this.windowLayerModelCache
+    if (cached && cached.apps === apps && cached.windows === windows) {
+      return cached.model
+    }
+    const model = createDesktopWindowLayerDataModel(apps, windows)
+    this.windowLayerModelCache = { apps, windows, model }
+    return model
   }
 
   getSystemSidebarDataModel(currentAppId?: string): SystemSidebarDataModel {
@@ -1300,11 +1416,28 @@ export class DesktopUIStore {
   // Private helpers
   // ========================================================================
 
-  /** Group 2: 持久化窗口几何信息 */
+  /** Group 2: 持久化窗口几何信息（内存立即更新，localStorage 写入合并） */
   private persistWindowGeometry(appId: string, geometry: WindowGeometry) {
     if (sameWindowGeometry(this.windowGeometryByApp[appId], geometry)) return
     this.windowGeometryByApp = { ...this.windowGeometryByApp, [appId]: geometry }
+    if (this.geometryWriteTimer !== null) return
+    this.geometryWriteTimer = window.setTimeout(
+      () => this.flushGeometryWrite(),
+      DesktopUIStore.GEOMETRY_WRITE_DELAY,
+    )
+  }
+
+  private flushGeometryWrite() {
+    if (this.geometryWriteTimer === null) return
+    window.clearTimeout(this.geometryWriteTimer)
+    this.geometryWriteTimer = null
     writeJson(windowGeometryStorageKey, this.windowGeometryByApp)
+  }
+
+  private cancelGeometryWrite() {
+    if (this.geometryWriteTimer === null) return
+    window.clearTimeout(this.geometryWriteTimer)
+    this.geometryWriteTimer = null
   }
 
   /** 持久化合并后的 Layout（包含 Group 1 deadZone + Group 4 + Group 5） */

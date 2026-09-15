@@ -3,19 +3,18 @@
 import { Copy, ExternalLink, MoreHorizontal, RefreshCw, Sparkles, Trash2, Unlink, PencilLine } from 'lucide-react'
 import type { CanvasBlockOf } from '../../domain/types'
 import { generatedStatus } from '../../domain/selectors'
-import { useCanvasEditor, useStoreState } from '../../store/hooks'
+import { useCanvasEditor, useStoreSelector } from '../../store/hooks'
 import { useEditorActions } from '../actions'
 import { Badge, IconBtn, MenuButton } from '../primitives'
 import { STATUS_META, formatTime } from '../meta'
 
 export function GroupHeader({ block }: { block: CanvasBlockOf<'group'> }) {
-  const { doc, runs } = useStoreState()
   const { store } = useCanvasEditor()
   const actions = useEditorActions()
   const meta = block.generated
-  const status = meta && !meta.detached ? generatedStatus(doc, block) : null
   const wishId = meta?.wishBlockId
-  const running = wishId ? Boolean(runs[wishId] && !['succeeded', 'failed', 'cancelled', 'idle'].includes(runs[wishId].stage)) : false
+  const status = useStoreSelector((s) => (meta && !meta.detached ? generatedStatus(s.doc, block) : null))
+  const running = useStoreSelector((s) => (wishId ? Boolean(s.runs[wishId] && !['succeeded', 'failed', 'cancelled', 'idle'].includes(s.runs[wishId].stage)) : false))
   const sm = status && status !== 'never_run' ? STATUS_META[status] : null
 
   return (

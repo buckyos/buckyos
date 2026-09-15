@@ -75,9 +75,13 @@ import type {
   FileEntry,
   SortDir,
   SortKey,
+  Topic,
 } from './types'
 
 installFileBrowserData()
+
+/** Stable empty list while topics are loading/errored — a fresh `[]` per render would re-run preview enrichment. */
+const NO_TOPICS: Topic[] = []
 
 /** Initial pane tabs — backend-independent defaults. */
 const DEFAULT_TABS: BrowserTab[] = [
@@ -155,7 +159,7 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
   const dfsSource = useSidebarDfs()
   const devicesSource = useSidebarDevices()
   const topicsSource = useSidebarTopics()
-  const topicList = topicsSource.state.data ?? []
+  const topicList = topicsSource.state.data ?? NO_TOPICS
 
   // Live collection list (sidebar + "Add to Collection" submenu).
   const collections = useCollections()

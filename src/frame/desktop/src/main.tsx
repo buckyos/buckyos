@@ -77,4 +77,34 @@ async function bootstrap() {
   )
 }
 
-void bootstrap()
+function renderBootstrapFailure(error: unknown) {
+  const root = document.getElementById('root')
+  if (!root) return
+  const message = error instanceof Error ? error.message : String(error)
+  root.replaceChildren()
+  const panel = document.createElement('div')
+  panel.setAttribute('role', 'alert')
+  panel.style.cssText =
+    'max-width:32rem;margin:15vh auto 0;padding:1.5rem;font:14px/1.6 system-ui,sans-serif;'
+  const title = document.createElement('p')
+  title.style.cssText = 'font-size:1.25rem;font-weight:600;margin:0 0 .5rem'
+  title.textContent = 'BuckyOS failed to start'
+  const body = document.createElement('p')
+  body.style.margin = '0 0 1rem'
+  body.textContent = message
+  const retry = document.createElement('button')
+  retry.type = 'button'
+  retry.textContent = 'Retry'
+  retry.style.cssText = 'padding:.5rem 1rem;font:inherit;cursor:pointer'
+  retry.addEventListener('click', () => window.location.reload())
+  panel.append(title, body, retry)
+  root.append(panel)
+}
+
+// Without this, any rejection during bootstrap (SDK host discovery, site
+// data reset, session refresh) leaves a permanently blank page with the
+// error only in the console.
+bootstrap().catch((error) => {
+  console.error('[bootstrap] failed:', error)
+  renderBootstrapFailure(error)
+})

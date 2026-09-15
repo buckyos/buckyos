@@ -5,8 +5,8 @@ import { parseDelimited } from '../data/csv'
 import { isImageFile, readImageFile } from '../data/image'
 import { cloneBlockForPaste, createFrameBlock, createImageBlock, createMetricBlock, createTableBlock, createTextBlock, createWishBlock, imageBlockHeight, looksLikeHeader, tableContentFromMatrix } from '../domain/factories'
 import { newId, nowIso } from '../domain/ids'
-import { activeSheet, cameraToFit, rectsIntersect, sheetBlocks, unionRect, wishStatus } from '../domain/selectors'
-import type { CanvasBlock, CanvasDocument, ContextRef, Rect, TableBlockContent } from '../domain/types'
+import { activeSheet, cameraToFit, rectsIntersect, refKey, sheetBlocks, unionRect, wishStatus } from '../domain/selectors'
+import type { CanvasBlock, CanvasDocument, ContextRef, Rect, TableBlockContent, WishBlock } from '../domain/types'
 import { trackEvent } from '../events'
 import { downloadText, exportDocument, exportFilename } from '../storage/export'
 import type { CanvasStorageAdapter } from '../storage/indexeddb'
@@ -48,6 +48,27 @@ function findFreeRect(doc: CanvasDocument, rect: Rect): Rect {
     if (!overlaps(right)) return right
   }
   return rect
+}
+
+type SourceRevisions = Array<{ refKey: string; revision: number }>
+
+function currentSourceRevisions(doc: CanvasDocument, wish: WishBlock): SourceRevisions {
+  return wish.content.contextRefs.map((r) => ({ refKey: refKey(r), revision: doc.blocks[r.blockId]?.dataRevision ?? r.revision }))
+}
+
+function sameRevisions(a: SourceRevisions, b: SourceRevisions): boolean {
+  return a.length === b.length && a.every((x, i) => x.refKey === b[i].refKey && x.revision === b[i].revision)
+}
+
+/** Everything `runner.preflight` depends on, as a cheap string: the result is reused until this changes. */
+function preflightKey(doc: CanvasDocument, wish: WishBlock): string {
+  return [
+    wish.contentRevision,
+    wish.content.state,
+    wish.content.runHistory[0]?.runId ?? '',
+    ...currentSourceRevisions(doc, wish).map((s) => `${s.refKey}=${s.revision}`),
+    ...wish.content.generatedGroupIds.map((g) => `${g}:${doc.blocks[g]?.generated?.userModified ? 1 : 0}`),
+  ].join('|')
 }
 
 function isEditableTarget(t: EventTarget | null): boolean {
@@ -114,7 +135,8 @@ export function EditorShell({ onBack, storage, pendingImportFile }: { onBack: ()
         store.toast(pre.errors.join('；'), 'error')
         return
       }
-      const go = (mode: 'replace' | 'keep') => void runner.run(wishId, { mode, adapterId: opts?.adapterId })
+      // the deferred (dialog) path re-runs preflight inside run(): the document may have changed meanwhile
+      const go = (mode: 'replace' | 'keep', precomputed?: typeof pre) => void runner.run(wishId, { mode, adapterId: opts?.adapterId }, precomputed)
       if (pre.needsDecision) {
         setConfirm({
           title: '结果包含手工修改',
@@ -126,7 +148,7 @@ export function EditorShell({ onBack, storage, pendingImportFile }: { onBack: ()
         })
         return
       }
-      go('replace')
+      go('replace', pre)
     }
     const setBlockImage: EditorActions['setBlockImage'] = (blockId, file) => {
       readImageFile(file)
@@ -467,14 +489,26 @@ export function EditorShell({ onBack, storage, pendingImportFile }: { onBack: ()
   /* ── auto-run for on_change wishes (page-open only) ── */
   useEffect(() => {
     const timers = new Map<string, ReturnType<typeof setTimeout>>()
+    // preflight serialises the wish's whole context; a declined wish is not re-checked until its inputs change
+    const declined = new Map<string, string>()
     const unsub = store.subscribe(() => {
       const d = store.doc
       for (const b of Object.values(d.blocks)) {
         if (b.type !== 'wish' || b.content.refreshPolicy.mode !== 'on_change') continue
         if (RUNNING_STATES.includes(b.content.state) || timers.has(b.id)) continue
         if (wishStatus(d, b) !== 'stale') continue
+        // a run that failed (or was cancelled) for exactly these sources is not retried until a source
+        // changes again — otherwise every store notification would schedule another run
+        const last = b.content.runHistory[0]
+        if (last && (last.status === 'failed' || last.status === 'cancelled') && sameRevisions(last.sourceRevisions, currentSourceRevisions(d, b))) continue
+        const key = preflightKey(d, b)
+        if (declined.get(b.id) === key) continue
         const pre = runner.preflight(b.id)
-        if (!pre.ok || pre.needsDecision) continue
+        if (!pre.ok || pre.needsDecision) {
+          declined.set(b.id, key)
+          continue
+        }
+        declined.delete(b.id)
         timers.set(b.id, setTimeout(() => {
           timers.delete(b.id)
           const fresh = store.doc.blocks[b.id]
