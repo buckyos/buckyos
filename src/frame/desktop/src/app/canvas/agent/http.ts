@@ -79,6 +79,9 @@ export class HttpCanvasAgentAdapter implements CanvasAgentAdapter {
     let buffer = ''
     let eventName = 'message'
     let data = ''
+    // set once a `completed` event has been handled: the stream may stay open (server keeps the
+    // connection), so the loop must exit on its own rather than wait for the server to close it
+    let completed = false
     const flush = () => {
       if (!data) return
       try {
@@ -93,23 +96,29 @@ export class HttpCanvasAgentAdapter implements CanvasAgentAdapter {
         if (e instanceof AgentRunError) throw e
         onEvent({ type: 'log', message: data })
       }
+      if (eventName === 'completed') completed = true
       eventName = 'message'
       data = ''
     }
-    for (;;) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let idx: number
-      while ((idx = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, idx).replace(/\r$/, '')
-        buffer = buffer.slice(idx + 1)
-        if (line === '') flush()
-        else if (line.startsWith('event:')) eventName = line.slice(6).trim()
-        else if (line.startsWith('data:')) data += line.slice(5).trim()
+    try {
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let idx: number
+        while ((idx = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, idx).replace(/\r$/, '')
+          buffer = buffer.slice(idx + 1)
+          if (line === '') flush()
+          else if (line.startsWith('event:')) eventName = line.slice(6).trim()
+          else if (line.startsWith('data:')) data += line.slice(5).trim()
+        }
+        if (completed || (eventName === 'completed' && data === '')) return
       }
-      if (eventName === 'completed' && data === '') return
+      flush()
+    } finally {
+      // early return / throw / abort: release the connection instead of leaving the body stream open
+      await reader.cancel().catch(() => undefined)
     }
-    flush()
   }
 }

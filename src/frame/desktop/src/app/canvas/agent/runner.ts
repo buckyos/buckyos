@@ -29,6 +29,7 @@ export interface PreflightResult {
 
 export class WishRunner {
   private controllers = new Map<string, AbortController>()
+  private disposed = false
   readonly mock: MockCanvasAgentAdapter
   readonly http: HttpCanvasAgentAdapter
 
@@ -70,9 +71,22 @@ export class WishRunner {
     this.controllers.get(wishId)?.abort()
   }
 
-  async run(wishId: string, options: RunOptions): Promise<boolean> {
+  /** Editor unmounted: abort every in-flight run so nothing completes into a store the user has left. */
+  dispose() {
+    this.disposed = true
+    for (const ctrl of this.controllers.values()) ctrl.abort(new AgentRunError('cancelled', '编辑器已关闭'))
+    this.controllers.clear()
+  }
+
+  /** StrictMode runs effect cleanup once on mount; the host calls this when the effect re-runs. */
+  resume() {
+    this.disposed = false
+  }
+
+  /** `pre` lets callers that already ran `preflight()` (to ask for a decision) skip the second pass. */
+  async run(wishId: string, options: RunOptions, pre: PreflightResult = this.preflight(wishId)): Promise<boolean> {
     const store = this.store
-    const pre = this.preflight(wishId)
+    if (this.disposed) return false
     if (!pre.ok) {
       store.toast(pre.errors[0], 'error')
       return false
@@ -122,40 +136,44 @@ export class WishRunner {
     }
     clearTimeout(timeout)
     this.controllers.delete(wishId)
+    if (this.disposed) return false
 
-    // validate
-    store.setRun(wishId, { stage: 'validating', message: '正在校验结果' })
-    store.dispatch({ type: 'WISH_SET_STATE', id: wishId, state: 'validating', runId })
-    const docNow = store.doc
-    const validation = validatePatch(docNow, patch, wishId)
-    if (!validation.ok) {
-      const kind = validation.conflict ? 'conflict' : 'invalid_patch'
-      const msg = validation.conflict ? '画布在运行期间已变化，结果未写入。请基于最新内容重新运行。' : '结果未通过校验，画布未被修改。'
+    const fail = (msg: string, kind: string, details?: string[]) => {
       store.dispatch({ type: 'WISH_SET_STATE', id: wishId, state: 'failed', error: msg, runId })
-      store.setRun(wishId, { stage: 'failed', message: msg, error: msg, errorDetails: validation.errors, errorKind: kind })
-      validation.errors.forEach((e) => store.appendRunLog(wishId, e, 'error'))
+      store.setRun(wishId, { stage: 'failed', message: msg, error: msg, errorDetails: details, errorKind: kind })
+      details?.forEach((e) => store.appendRunLog(wishId, e, 'error'))
       store.dispatch({ type: 'WISH_PUSH_HISTORY', id: wishId, summary: summary(runId, startedAt, 'failed', wish, doc0, adapter.id, msg) })
       trackEvent('wish_run_failed', { kind })
       return false
     }
 
-    // apply atomically (one undo entry)
-    store.setRun(wishId, { stage: 'applying', message: '正在写入画布', percent: 95 })
-    const applied = store.dispatch({ type: 'APPLY_AGENT_PATCH', patch, wishId, adapter: adapter.id, replaceGroupIds })
-    if (!applied) {
-      store.dispatch({ type: 'WISH_SET_STATE', id: wishId, state: 'failed', error: '写入画布失败', runId })
-      store.setRun(wishId, { stage: 'failed', message: '写入画布失败', error: '写入画布失败' })
-      return false
+    // validate — the patch is agent-supplied data: a malformed one must fail the run, never throw out of it
+    store.setRun(wishId, { stage: 'validating', message: '正在校验结果' })
+    store.dispatch({ type: 'WISH_SET_STATE', id: wishId, state: 'validating', runId })
+    try {
+      const validation = validatePatch(store.doc, patch, wishId)
+      if (!validation.ok) {
+        const kind = validation.conflict ? 'conflict' : 'invalid_patch'
+        return fail(validation.conflict ? '画布在运行期间已变化，结果未写入。请基于最新内容重新运行。' : '结果未通过校验，画布未被修改。', kind, validation.errors)
+      }
+
+      // apply atomically (one undo entry)
+      store.setRun(wishId, { stage: 'applying', message: '正在写入画布', percent: 95 })
+      const applied = store.dispatch({ type: 'APPLY_AGENT_PATCH', patch, wishId, adapter: adapter.id, replaceGroupIds })
+      if (!applied) return fail('写入画布失败', 'apply_failed')
+      const after = store.doc.blocks[wishId] as WishBlock
+      const newGroups = after.content.generatedGroupIds.filter((g) => !wish.content.generatedGroupIds.includes(g) || replaceGroupIds.includes(g))
+      const warnings = Array.isArray(patch.warnings) ? patch.warnings : []
+      store.dispatch({ type: 'WISH_SET_STATE', id: wishId, state: 'succeeded', runId })
+      store.setRun(wishId, { stage: 'succeeded', message: `已生成 ${countVisible(store.doc, newGroups)} 个结果`, percent: 100, warnings })
+      warnings.forEach((w) => store.appendRunLog(wishId, w, 'warning'))
+      store.appendRunLog(wishId, String(patch.summary ?? ''))
+      store.dispatch({ type: 'WISH_PUSH_HISTORY', id: wishId, summary: { ...summary(runId, startedAt, 'succeeded', wish, doc0, adapter.id), groupId: newGroups[0] } })
+      trackEvent(replaceGroupIds.length ? 'result_refreshed' : 'wish_run_succeeded', { adapter: adapter.id })
+      return true
+    } catch (e) {
+      return fail('结果未通过校验，画布未被修改。', 'invalid_patch', [e instanceof Error ? e.message : String(e)])
     }
-    const after = store.doc.blocks[wishId] as WishBlock
-    const newGroups = after.content.generatedGroupIds.filter((g) => !wish.content.generatedGroupIds.includes(g) || replaceGroupIds.includes(g))
-    store.dispatch({ type: 'WISH_SET_STATE', id: wishId, state: 'succeeded', runId })
-    store.setRun(wishId, { stage: 'succeeded', message: `已生成 ${countVisible(store.doc, newGroups)} 个结果`, percent: 100, warnings: patch.warnings })
-    patch.warnings.forEach((w) => store.appendRunLog(wishId, w, 'warning'))
-    store.appendRunLog(wishId, patch.summary)
-    store.dispatch({ type: 'WISH_PUSH_HISTORY', id: wishId, summary: { ...summary(runId, startedAt, 'succeeded', wish, doc0, adapter.id), groupId: newGroups[0] } })
-    trackEvent(replaceGroupIds.length ? 'result_refreshed' : 'wish_run_succeeded', { adapter: adapter.id })
-    return true
   }
 
   /** Table AI cell (PRD §11.6). Uses the row as context, writes back one cell. */
@@ -163,7 +181,7 @@ export class WishRunner {
     const store = this.store
     const doc0 = store.doc
     const table = doc0.blocks[tableId]
-    if (!table || table.type !== 'table') return false
+    if (!table || table.type !== 'table' || this.disposed) return false
     const key = `${rowId}:${columnId}`
     const wishId = table.content.cellWishes?.[key]?.id ?? newId('cellwish')
     const rowIndex = table.content.rows.findIndex((r) => r.id === rowId)
@@ -187,7 +205,9 @@ export class WishRunner {
       capabilities: ['read_canvas_context'],
       cell: { tableBlockId: tableId, rowId, columnId },
     }
+    const timeout = setTimeout(() => ctrl.abort(new AgentRunError('timeout', '运行超时')), store.getState().settings.timeoutMs)
     const finish = (state: 'succeeded' | 'failed', error?: string) => {
+      clearTimeout(timeout)
       this.controllers.delete(runKey)
       store.dispatch({ type: 'TABLE_STRUCTURE', id: tableId, action: { kind: 'setCellWish', key, wish: { id: wishId, prompt, rowId, columnId, state, lastRunAt: nowIso(), error } } })
       store.setRun(runKey, null)
@@ -196,18 +216,24 @@ export class WishRunner {
       const patch = await adapter.run(request, () => undefined, ctrl.signal)
       const doc = store.doc
       // cell patches are applied directly: only the target ai cell may be written
-      const op = patch.operations.find((o) => o.op === 'updateTableCells')
-      if (!op || op.op !== 'updateTableCells' || op.cells.some((c) => c.rowId !== rowId || c.columnId !== columnId)) {
+      const ops = Array.isArray(patch?.operations) ? patch.operations : []
+      const op = ops.find((o) => o?.op === 'updateTableCells')
+      if (!op || op.op !== 'updateTableCells' || !Array.isArray(op.cells) || op.cells.some((c) => c?.rowId !== rowId || c?.columnId !== columnId || !c.cell)) {
         finish('failed', '结果未通过校验')
         return false
       }
       const t = doc.blocks[tableId] as TableBlock | undefined
-      if (!t) return false
+      if (!t) {
+        finish('failed', '表格已不存在')
+        return false
+      }
       store.dispatch({ type: 'UPDATE_TABLE_CELLS', id: tableId, edits: op.cells.map((c) => ({ ...c, cell: { ...c.cell, kind: 'ai' as const, wishId } })) })
       finish('succeeded')
       return true
     } catch (e) {
-      finish('failed', e instanceof Error ? e.message : String(e))
+      const reason = ctrl.signal.reason
+      const err = reason instanceof AgentRunError ? reason : e
+      finish('failed', err instanceof Error ? err.message : String(err))
       return false
     }
   }

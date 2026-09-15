@@ -40,6 +40,9 @@ export interface ProjectedOwner {
   sessions: Session[]
   details: Record<string, EntityDetail>
   names: Record<string, string>
+  /** O(1) lookups over `entities` / `sessions` (same objects, summary order kept). */
+  entityById: Map<string, Entity>
+  sessionsByEntity: Map<string, Session[]>
 }
 
 export interface SessionAttribution {
@@ -331,5 +334,5 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
     names[UNASSIGNED_ENTITY_ID] = container.name
   }
   entities.sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.name.localeCompare(b.name))
-  return { entities, sessions, details, names }
+  return { entities, sessions, details, names, entityById: new Map(entities.map(entity => [entity.id, entity])), sessionsByEntity }
 }

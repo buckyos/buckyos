@@ -19,6 +19,7 @@ const codeAssistantEntityId = getMockEntityDid('agent-coder')
 const storageNamespace = 'buckyos.mock.codeassistant.history'
 const databaseName = 'buckyos-mock-message-history'
 const storageVersion = 'v4'
+const metaStoreName = 'conversation_meta'
 const defaultPageSize = 40
 const trustedImageUri = 'https://upload.wikimedia.org/wikipedia/commons/9/95/Museo_di_Santa_Giulia_Coro_delle_Monache_Deposizione_Paolo_da_Caylina_Brescia.jpg'
 
@@ -111,63 +112,159 @@ const assistantImageCaptions = [
   '补一条带可信域 uri_hint 的图片样本，这样可以直接覆盖自动预览路径。',
 ]
 
+interface SessionSeedSpec {
+  sessionId: string
+  topic: string
+  iterationCount: number
+  startedDaysAgo: number
+  includeStatus: boolean
+}
+
+interface StoredSessionMeta {
+  version: string
+  totalCount: number
+}
+
+const sessionSeedSpecs: readonly SessionSeedSpec[] = [
+  {
+    sessionId: 'session-coder-1',
+    topic: 'Auth Module Refactor',
+    iterationCount: 900,
+    startedDaysAgo: 160,
+    includeStatus: true,
+  },
+  {
+    sessionId: 'session-coder-2',
+    topic: 'API Documentation',
+    iterationCount: 420,
+    startedDaysAgo: 110,
+    includeStatus: false,
+  },
+  {
+    sessionId: 'session-coder-3',
+    topic: 'Bug Investigation #142',
+    iterationCount: 560,
+    startedDaysAgo: 84,
+    includeStatus: true,
+  },
+]
+
 export async function createCodeAssistantMockReaders(): Promise<Record<string, AppendableConversationMessageReader>> {
-  const seeds = buildCodeAssistantSessionSeeds()
+  const nowMs = Date.now()
 
   if (typeof window === 'undefined') {
     return Object.fromEntries(
-      Object.entries(seeds).map(([sessionId, messages]) => [
-        sessionId,
+      sessionSeedSpecs.map((spec) => [
+        spec.sessionId,
         InMemoryConversationMessageReader.fromMessages(
-          messages,
+          buildSessionSeed(spec, nowMs),
           defaultPageSize,
-          `memory:${sessionId}`,
+          `memory:${spec.sessionId}`,
         ),
       ]),
     ) as Record<string, AppendableConversationMessageReader>
   }
 
   const entries = await Promise.all(
-    Object.entries(seeds).map(async ([sessionId, messages]) => [
-      sessionId,
-      await IndexedDbConversationMessageReader.seed({
-        databaseName,
-        namespace: storageNamespace,
+    sessionSeedSpecs.map(async (spec) => {
+      const { sessionId } = spec
+      const storedMeta = await readStoredSessionMeta(sessionId)
+
+      // Already seeded at the current version: open the stored history directly instead of
+      // rebuilding thousands of seed messages that the seeder would discard anyway.
+      if (storedMeta?.version === storageVersion && storedMeta.totalCount > 0) {
+        return [
+          sessionId,
+          new IndexedDbConversationMessageReader({
+            databaseName,
+            namespace: storageNamespace,
+            sessionId,
+            totalCount: storedMeta.totalCount,
+            pageSize: defaultPageSize,
+            version: storedMeta.version,
+          }),
+        ] as const
+      }
+
+      return [
         sessionId,
-        messages,
-        pageSize: defaultPageSize,
-        version: storageVersion,
-      }),
-    ] as const),
+        await IndexedDbConversationMessageReader.seed({
+          databaseName,
+          namespace: storageNamespace,
+          sessionId,
+          messages: buildSessionSeed(spec, nowMs),
+          pageSize: defaultPageSize,
+          version: storageVersion,
+        }),
+      ] as const
+    }),
   )
 
   return Object.fromEntries(entries) as Record<string, AppendableConversationMessageReader>
 }
 
-function buildCodeAssistantSessionSeeds(): Record<string, readonly MessageObject[]> {
-  return {
-    'session-coder-1': buildThread({
-      sessionId: 'session-coder-1',
-      topic: 'Auth Module Refactor',
-      iterationCount: 900,
-      startedAtMs: Date.now() - 160 * 24 * 3600_000,
-      includeStatus: true,
-    }),
-    'session-coder-2': buildThread({
-      sessionId: 'session-coder-2',
-      topic: 'API Documentation',
-      iterationCount: 420,
-      startedAtMs: Date.now() - 110 * 24 * 3600_000,
-      includeStatus: false,
-    }),
-    'session-coder-3': buildThread({
-      sessionId: 'session-coder-3',
-      topic: 'Bug Investigation #142',
-      iterationCount: 560,
-      startedAtMs: Date.now() - 84 * 24 * 3600_000,
-      includeStatus: true,
-    }),
-  }
+function buildSessionSeed(spec: SessionSeedSpec, nowMs: number): readonly MessageObject[] {
+  return buildThread({
+    sessionId: spec.sessionId,
+    topic: spec.topic,
+    iterationCount: spec.iterationCount,
+    startedAtMs: nowMs - spec.startedDaysAgo * 24 * 3600_000,
+    includeStatus: spec.includeStatus,
+  })
+}
+
+/**
+ * Reads the stored meta record for a session without creating the database:
+ * if the database does not exist yet the upgrade is aborted so the history
+ * data source can create its own schema on seed. Any failure yields `null`,
+ * which falls back to the regular seeding path.
+ */
+function readStoredSessionMeta(sessionId: string): Promise<StoredSessionMeta | null> {
+  return new Promise((resolve) => {
+    let request: IDBOpenDBRequest
+    try {
+      request = window.indexedDB.open(databaseName)
+    } catch {
+      resolve(null)
+      return
+    }
+
+    request.onupgradeneeded = () => {
+      request.transaction?.abort()
+    }
+    request.onblocked = () => resolve(null)
+    request.onerror = () => resolve(null)
+    request.onsuccess = () => {
+      const db = request.result
+      const finish = (meta: StoredSessionMeta | null) => {
+        db.close()
+        resolve(meta)
+      }
+
+      try {
+        if (!db.objectStoreNames.contains(metaStoreName)) {
+          finish(null)
+          return
+        }
+
+        const getRequest = db
+          .transaction(metaStoreName, 'readonly')
+          .objectStore(metaStoreName)
+          .get([storageNamespace, sessionId])
+        getRequest.onerror = () => finish(null)
+        getRequest.onsuccess = () => {
+          const record = getRequest.result as Partial<StoredSessionMeta> | undefined
+          finish(
+            record && typeof record.version === 'string' && typeof record.totalCount === 'number'
+              ? { version: record.version, totalCount: record.totalCount }
+              : null,
+          )
+        }
+      } catch {
+        finish(null)
+      }
+    }
+  })
 }
 
 function buildThread({

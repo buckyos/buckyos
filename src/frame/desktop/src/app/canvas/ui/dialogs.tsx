@@ -121,9 +121,11 @@ function ImportDialogInner({ open, onClose, initialFile, onImport }: { open: boo
   }
 
   function applyMatrix(base: Partial<ImportState> & { warnings: string[] }, matrixIn: Matrix) {
-    let matrix = matrixIn
+    // keep at most header + MAX rows in memory (CSV parsing is not row-capped); the original count is kept for the notice
+    const originalRows = matrixIn.length
+    let matrix = originalRows > MAX_TABLE_ROWS + 1 ? matrixIn.slice(0, MAX_TABLE_ROWS + 1) : matrixIn
     const warnings = [...base.warnings]
-    const width = Math.max(0, ...matrix.map((r) => r.length))
+    const width = matrix.reduce((w, r) => Math.max(w, r.length), 0)
     if (width > MAX_TABLE_COLS) {
       matrix = matrix.map((r) => r.slice(0, MAX_TABLE_COLS))
       warnings.push(`列数 ${width} 超过 ${MAX_TABLE_COLS}，仅保留前 ${MAX_TABLE_COLS} 列`)
@@ -133,7 +135,7 @@ function ImportDialogInner({ open, onClose, initialFile, onImport }: { open: boo
       return
     }
     const strMatrix = matrix.slice(0, 50).map((r) => r.map((v) => (v == null ? '' : String(v))))
-    const truncated = matrix.length - 1 > MAX_TABLE_ROWS ? { originalRows: matrix.length - 1 } : undefined
+    const truncated = originalRows - 1 > MAX_TABLE_ROWS ? { originalRows: originalRows - 1 } : undefined
     setSt({ ...base, phase: 'preview', matrix, hasHeader: looksLikeHeader(strMatrix), warnings, truncated, keepFirst: true })
   }
 
@@ -163,7 +165,7 @@ function ImportDialogInner({ open, onClose, initialFile, onImport }: { open: boo
 
   const preview = st.matrix?.slice(0, 12) ?? []
   const rowCount = st.matrix ? st.matrix.length - (st.hasHeader ? 1 : 0) : 0
-  const colCount = st.matrix ? Math.max(0, ...st.matrix.map((r) => r.length)) : 0
+  const colCount = st.matrix ? st.matrix.reduce((w, r) => Math.max(w, r.length), 0) : 0
 
   return (
     <Modal open={open} title="导入 Excel / CSV" onClose={onClose} width={720} footer={st.phase === 'preview' ? (<><Btn variant="ghost" onClick={() => setSt({ phase: 'pick', warnings: [] })}>重新选择</Btn><Btn variant="primary" icon={<Upload />} onClick={doImport} disabled={Boolean(st.truncated) && !st.keepFirst}>导入到画布</Btn></>) : undefined}>

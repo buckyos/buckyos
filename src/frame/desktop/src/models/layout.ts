@@ -309,22 +309,50 @@ export function getMaxUsedSlot(
 ): number {
   let maxSlot = -1
   for (const item of page.items) {
-    if (item.slotIndex !== undefined) {
-      // Use slotIndex directly (new model)
-      const endSlot = item.slotIndex + (item.w - 1) * (order === 'col-major' ? rows : 1)
-        + (item.h - 1) * (order === 'col-major' ? 1 : cols)
-      maxSlot = Math.max(maxSlot, endSlot)
-    } else if (item.x !== undefined && item.y !== undefined) {
-      // Fallback to x/y (legacy or derived)
+    if (item.x !== undefined && item.y !== undefined) {
+      // Always derive from x/y against the grid we are laying out for: a
+      // stored slotIndex may have been computed for a different row count
+      // (the store starts with a default grid before the container is
+      // measured) and would then point at the wrong cell.
       for (let dx = 0; dx < item.w; dx++) {
         for (let dy = 0; dy < item.h; dy++) {
           const slot = coordToSlot(item.x + dx, item.y + dy, cols, rows, order)
           maxSlot = Math.max(maxSlot, slot)
         }
       }
+    } else if (item.slotIndex !== undefined) {
+      const endSlot = item.slotIndex + (item.w - 1) * (order === 'col-major' ? rows : 1)
+        + (item.h - 1) * (order === 'col-major' ? 1 : cols)
+      maxSlot = Math.max(maxSlot, endSlot)
     }
   }
   return maxSlot
+}
+
+/**
+ * Recompute `slotIndex` for every positioned item against the given grid.
+ * Returns the same object when nothing changed.
+ */
+export function refreshSlotIndexes(
+  layout: LayoutState,
+  cols: number,
+  rows: number,
+): LayoutState {
+  const order: ScanOrder = layout.formFactor === 'mobile' ? 'row-major' : 'col-major'
+  let anyChanged = false
+  const pages = layout.pages.map((page) => {
+    let pageChanged = false
+    const items = page.items.map((item) => {
+      if (item.x === undefined || item.y === undefined) return item
+      const slot = coordToSlot(item.x, item.y, cols, rows, order)
+      if (item.slotIndex === slot) return item
+      pageChanged = true
+      return { ...item, slotIndex: slot }
+    })
+    if (pageChanged) anyChanged = true
+    return pageChanged ? { ...page, items } : page
+  })
+  return anyChanged ? { ...layout, pages } : layout
 }
 
 /** Axis-aligned cell rectangle on the grid. */
@@ -392,10 +420,13 @@ export function findTailSlot(
 
   if (startSlot >= cap && w === 1 && h === 1) return null
 
-  // For 1×1 items, just convert startSlot
+  // For 1×1 items, take the first free slot from startSlot on. The tail is
+  // normally free by construction; the occupancy check only guards against
+  // inconsistent input (e.g. positions from a differently sized grid).
   if (w === 1 && h === 1) {
-    if (startSlot < cap) {
-      return slotToCoord(startSlot, cols, rows, scanOrder)
+    for (let slot = startSlot; slot < cap; slot++) {
+      const coord = slotToCoord(slot, cols, rows, scanOrder)
+      if (fits(page, coord.x, coord.y, 1, 1, cols, rows)) return coord
     }
     return null
   }

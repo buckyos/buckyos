@@ -866,7 +866,9 @@ const mobileItems: LayoutItem[][] = [
       id: 'app-workflow-mobile',
       type: 'app',
       appId: 'workflow',
-      x: 0,
+      // (0, 4) is already taken by app-service; the two icons used to render
+      // on top of each other on mobile.
+      x: 3,
       y: 4,
       w: 1,
       h: 1,

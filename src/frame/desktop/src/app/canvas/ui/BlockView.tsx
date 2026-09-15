@@ -4,8 +4,8 @@ import clsx from 'clsx'
 import { Frame, Lock, PencilLine } from 'lucide-react'
 import { memo, useState } from 'react'
 import type { CanvasBlock } from '../domain/types'
-import { generatedStatus } from '../domain/selectors'
-import { useCanvasEditor, useStoreState } from '../store/hooks'
+import { generatedStatus, groupIdOf } from '../domain/selectors'
+import { useCanvasEditor, useStoreSelector } from '../store/hooks'
 import { Badge } from './primitives'
 import { STATUS_META, TYPE_ICON, TYPE_LABEL } from './meta'
 import { ChartBlockView } from './blocks/ChartBlock'
@@ -69,7 +69,10 @@ function Title({ block }: { block: CanvasBlock }) {
 }
 
 export const BlockView = memo(function BlockView({ block, selected, editing, highlight, presenting }: { block: CanvasBlock; selected: boolean; editing: boolean; highlight: boolean; presenting: boolean }) {
-  const { doc } = useStoreState()
+  const managed = Boolean(block.generated && !block.generated.detached)
+  // narrow subscriptions: a camera move or another block's drag must not re-render this block
+  const status = useStoreSelector((s) => (managed ? generatedStatus(s.doc, block) : null))
+  const inGroup = useStoreSelector((s) => managed && groupIdOf(s.doc.blocks, block.id) !== null)
   const { rect } = block
   const base: React.CSSProperties = { left: rect.x, top: rect.y, width: rect.width, height: rect.height, zIndex: block.zIndex + (selected ? 1000 : 0) }
   const showHandles = selected && !block.locked && !presenting
@@ -105,9 +108,7 @@ export const BlockView = memo(function BlockView({ block, selected, editing, hig
     )
   }
 
-  const status = block.generated && !block.generated.detached ? generatedStatus(doc, block) : null
   const sm = status && status !== 'never_run' ? STATUS_META[status] : null
-  const inGroup = Boolean(block.generated && !block.generated.detached && Object.values(doc.blocks).some((g) => g.type === 'group' && g.content.childBlockIds.includes(block.id)))
 
   return (
     <div className={clsx('aic-block', highlight && 'aic-highlight')} data-block-id={block.id} style={base}>

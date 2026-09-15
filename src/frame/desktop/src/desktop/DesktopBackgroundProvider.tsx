@@ -12,13 +12,11 @@ import type { DesktopWallpaper } from '../models/ui'
 export interface DesktopBackgroundState {
   wallpaper: DesktopWallpaper
   pageCount: number
-  viewportProgress: number
 }
 
 const defaultDesktopBackgroundState: DesktopBackgroundState = {
   wallpaper: { mode: 'infinite' },
   pageCount: 1,
-  viewportProgress: 0,
 }
 
 interface DesktopBackgroundContextValue {
@@ -38,8 +36,7 @@ export function DesktopBackgroundProvider({ children }: PropsWithChildren) {
     setBackgroundRaw((prev) => {
       if (
         prev.wallpaper === next.wallpaper &&
-        prev.pageCount === next.pageCount &&
-        prev.viewportProgress === next.viewportProgress
+        prev.pageCount === next.pageCount
       ) {
         return prev
       }

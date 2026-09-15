@@ -1,10 +1,10 @@
-import type { CSSProperties } from 'react'
+import { memo, type CSSProperties } from 'react'
 import type { DesktopWallpaper } from '../models/ui'
+import { DESKTOP_VIEWPORT_PROGRESS_VAR } from './viewportProgress'
 
 interface DesktopBackgroundProps {
   wallpaper: DesktopWallpaper
   pageCount: number
-  viewportProgress: number
 }
 
 const defaultWallpaper: DesktopWallpaper = {
@@ -21,28 +21,21 @@ function resolveBackgroundImage(imageUrl: string | undefined, fallback: string) 
     : `url("${imageUrl}")`
 }
 
-function clampProgress(progress: number, pageCount: number) {
-  if (!Number.isFinite(progress) || pageCount <= 1) {
-    return 0
-  }
-
-  return Math.min(Math.max(progress, 0), 1)
-}
-
 function buildPanoramaStyle(
   wallpaper: DesktopWallpaper,
   pageCount: number,
-  viewportProgress: number,
 ): CSSProperties {
   const resolvedPageCount = Math.max(pageCount, 1)
-  const translatePercent =
-    resolvedPageCount > 1
-      ? -(viewportProgress * (resolvedPageCount - 1) * 100) / resolvedPageCount
-      : 0
+  // Full travel (progress = 1) shifts the panorama by all but one page.
+  const travelPercent =
+    resolvedPageCount > 1 ? -((resolvedPageCount - 1) * 100) / resolvedPageCount : 0
 
   return {
     width: `${resolvedPageCount * 100}%`,
-    transform: `translate3d(${translatePercent}%, 0, 0)`,
+    // The paging progress lives in a CSS variable (see viewportProgress.ts),
+    // so a swipe never re-renders this component: the compositor moves the
+    // layer as the variable changes.
+    transform: `translate3d(calc(var(${DESKTOP_VIEWPORT_PROGRESS_VAR}, 0) * ${travelPercent}%), 0, 0)`,
     backgroundImage: resolveBackgroundImage(
       wallpaper.imageUrl,
       [
@@ -103,13 +96,22 @@ function buildInfiniteStyle(wallpaper: DesktopWallpaper): CSSProperties {
   }
 }
 
-export function DesktopBackground({
+// The two former overlay layers (corner glows + vertical sheen) merged into
+// one element: background layers paint top-to-bottom in list order, so this
+// is pixel-identical while costing one full-screen layer instead of two.
+const overlayStyle: CSSProperties = {
+  backgroundImage: [
+    'linear-gradient(180deg, color-mix(in srgb, white 9%, transparent), transparent 22%, transparent 78%, color-mix(in srgb, var(--cp-surface) 12%, transparent))',
+    'radial-gradient(circle at top left, color-mix(in srgb, white 28%, transparent), transparent 28%)',
+    'radial-gradient(circle at bottom right, color-mix(in srgb, var(--cp-surface) 22%, transparent), transparent 28%)',
+  ].join(','),
+}
+
+export const DesktopBackground = memo(function DesktopBackground({
   wallpaper = defaultWallpaper,
   pageCount,
-  viewportProgress,
 }: DesktopBackgroundProps) {
   const resolvedWallpaper = wallpaper ?? defaultWallpaper
-  const clampedProgress = clampProgress(viewportProgress, pageCount)
 
   return (
     <div
@@ -121,7 +123,7 @@ export function DesktopBackground({
       {resolvedWallpaper.mode === 'panorama' ? (
         <div
           className="absolute inset-y-0 left-0"
-          style={buildPanoramaStyle(resolvedWallpaper, pageCount, clampedProgress)}
+          style={buildPanoramaStyle(resolvedWallpaper, pageCount)}
         />
       ) : (
         <div
@@ -134,22 +136,7 @@ export function DesktopBackground({
         />
       )}
 
-      <div
-        className="absolute inset-0"
-        style={{
-          backgroundImage: [
-            'radial-gradient(circle at top left, color-mix(in srgb, white 28%, transparent), transparent 28%)',
-            'radial-gradient(circle at bottom right, color-mix(in srgb, var(--cp-surface) 22%, transparent), transparent 28%)',
-          ].join(','),
-        }}
-      />
-      <div
-        className="absolute inset-0"
-        style={{
-          backgroundImage:
-            'linear-gradient(180deg, color-mix(in srgb, white 9%, transparent), transparent 22%, transparent 78%, color-mix(in srgb, var(--cp-surface) 12%, transparent))',
-        }}
-      />
+      <div className="absolute inset-0" style={overlayStyle} />
     </div>
   )
-}
+})

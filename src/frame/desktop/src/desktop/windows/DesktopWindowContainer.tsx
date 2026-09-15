@@ -4,6 +4,7 @@ import type {
   CSSProperties,
   PointerEvent as ReactPointerEvent,
   ReactNode,
+  Ref,
 } from 'react'
 import { AppIcon } from '../../components/DesktopVisuals'
 import { useI18n } from '../../i18n/provider'
@@ -118,6 +119,7 @@ function mixWithTransparency(color: string, opacityPercent: number) {
 export function DesktopWindowContainer({
   children,
   isFront,
+  ref,
   onClose,
   onDragPointerDown,
   onFocus,
@@ -139,6 +141,8 @@ export function DesktopWindowContainer({
   onResizePointerDown: (
     direction: ResizeDirection,
   ) => (event: ReactPointerEvent<HTMLDivElement>) => void
+  /** The window element; the layer writes drag/resize geometry to it directly. */
+  ref?: Ref<HTMLDivElement>
   style: CSSProperties
   themeMode: ThemeMode
   uiModel: DesktopWindowDataModel
@@ -189,9 +193,12 @@ export function DesktopWindowContainer({
 
   return (
     <div
+      ref={ref}
       data-testid={`window-${app.id}`}
+      // Positioned by `transform` (see desktopWindowTransform) so a move is
+      // compositor-only; `left/top` stay at 0.
       className={clsx(
-        'pointer-events-auto shell-window absolute flex flex-col overflow-hidden rounded-[12px] border border-[color:var(--cp-border)] transition-[transform,box-shadow,opacity] duration-200 ease-[var(--cp-ease-emphasis)]',
+        'pointer-events-auto shell-window absolute left-0 top-0 flex flex-col overflow-hidden rounded-[12px] border border-[color:var(--cp-border)] transition-[box-shadow,opacity] duration-200 ease-[var(--cp-ease-emphasis)]',
         isFront ? 'opacity-100' : 'opacity-[0.97]',
       )}
       style={windowStyle}

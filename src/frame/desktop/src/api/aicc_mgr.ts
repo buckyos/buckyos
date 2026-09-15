@@ -332,6 +332,7 @@ export class AICCModelStore implements AICCMgr {
   private readonly provider: AiccDataProvider
   private snapshot: StoreSnapshot
   private snapshotVersion = 0
+  private refreshSeq = 0
   private listeners = new Set<Listener>()
 
   constructor(provider: AiccDataProvider, initialSnapshot = EMPTY_SNAPSHOT) {
@@ -349,7 +350,11 @@ export class AICCModelStore implements AICCMgr {
   getSnapshotVersion = (): number => this.snapshotVersion
 
   async refresh(): Promise<void> {
-    this.snapshot = await this.provider.fetchSnapshot()
+    const seq = ++this.refreshSeq
+    const next = await this.provider.fetchSnapshot()
+    // A newer refresh started while this one was in flight; drop the stale result.
+    if (seq !== this.refreshSeq) return
+    this.snapshot = next
     this.snapshotVersion++
     this.emit()
   }
@@ -568,58 +573,64 @@ class BuckyOSAiccProvider implements AiccDataProvider {
   private controlPanelClient: AiccRpcClient | null = null
   private usageSummary = EMPTY_USAGE_SUMMARY
   private usageTrend: UsageTrendPoint[] = []
+  private fetchSeq = 0
 
   async fetchSnapshot(): Promise<StoreSnapshot> {
+    const seq = ++this.fetchSeq
     const dashboardRange = localTrailingDaysRange(30)
     const todayRange = localTodayRange()
     const monthRange = localCurrentMonthRange()
     const [directory, providerCards, usageByModel, usageByCapability, usageByApp, usageTrend, usageToday, usageThisMonth, traceQuery] = await Promise.all([
       this.call<RawModelDirectory>('models.list', {}),
       this.queryProviderCards(),
-      this.queryUsage({
+      this.queryUsageOrEmpty({
         time_range: toRawTimeRange(dashboardRange),
         filters: {},
         group_by: ['provider_model'],
         output_mode: 'summary',
       }),
-      this.queryUsage({
+      this.queryUsageOrEmpty({
         time_range: toRawTimeRange(dashboardRange),
         filters: {},
         group_by: ['capability'],
         output_mode: 'summary',
       }),
-      this.queryUsage({
+      this.queryUsageOrEmpty({
         time_range: toRawTimeRange(dashboardRange),
         filters: {},
         group_by: ['caller_app_id'],
         output_mode: 'summary',
       }),
-      this.queryUsage({
+      this.queryUsageOrEmpty({
         time_range: toRawTimeRange(dashboardRange),
         filters: {},
         time_bucket: 'day',
         output_mode: 'summary',
       }),
-      this.queryUsage({
+      this.queryUsageOrEmpty({
         time_range: toRawTimeRange(todayRange),
         filters: {},
         output_mode: 'summary',
       }),
-      this.queryUsage({
+      this.queryUsageOrEmpty({
         time_range: toRawTimeRange(monthRange),
         filters: {},
         output_mode: 'summary',
       }),
-      this.queryRouteTraces({ limit: 20 }),
+      this.queryRouteTracesOrEmpty({ limit: 20 }),
     ])
-    this.usageSummary = toUsageSummary({
-      byModel: usageByModel,
-      byCapability: usageByCapability,
-      byApp: usageByApp,
-      today: usageToday,
-      thisMonth: usageThisMonth,
-    })
-    this.usageTrend = toUsageTrend(usageTrend)
+    // Only the latest in-flight fetch may publish summary/trend, so they always
+    // match the snapshot the store ends up keeping (see AICCModelStore.refresh).
+    if (seq === this.fetchSeq) {
+      this.usageSummary = toUsageSummary({
+        byModel: usageByModel,
+        byCapability: usageByCapability,
+        byApp: usageByApp,
+        today: usageToday,
+        thisMonth: usageThisMonth,
+      })
+      this.usageTrend = toUsageTrend(usageTrend)
+    }
     const rawProviders = Array.isArray(directory.providers) ? directory.providers : []
     return toStoreSnapshot(directory, rawProviders, providerCards, [], traceQuery.traces)
   }
@@ -803,12 +814,26 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     return result as T
   }
 
-  private async queryUsage(params: Record<string, unknown>): Promise<RawUsageQueryResponse> {
+  private queryUsage(params: Record<string, unknown>): Promise<RawUsageQueryResponse> {
+    return this.call<RawUsageQueryResponse>('usage.query', params)
+  }
+
+  // Dashboard aggregates are best-effort: a failed slice must not block the whole snapshot.
+  private async queryUsageOrEmpty(params: Record<string, unknown>): Promise<RawUsageQueryResponse> {
     try {
-      return await this.call<RawUsageQueryResponse>('usage.query', params)
+      return await this.queryUsage(params)
     } catch (error) {
       console.error('aicc.usage.query failed', error)
       return {}
+    }
+  }
+
+  private async queryRouteTracesOrEmpty(params: RouteTracesQuery): Promise<RouteTracesPage> {
+    try {
+      return await this.queryRouteTraces(params)
+    } catch (error) {
+      console.error('aicc.trace.query failed', error)
+      return { traces: [] }
     }
   }
 
@@ -825,30 +850,25 @@ class BuckyOSAiccProvider implements AiccDataProvider {
   }
 
   async queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage> {
-    try {
-      const raw = await this.call<RawTraceQueryResponse>('trace.query', {
-        limit: params.limit,
-        cursor: params.cursor,
-        task_ids: params.taskIds,
-        request_ids: params.requestIds,
-        start_time_ms: params.timeRange?.startTimeMs,
-        end_time_ms: params.timeRange?.endTimeMs,
-        query: params.query?.trim() || undefined,
-        outcome: params.outcome,
-        api_types: params.apiTypes,
-        provider_instance_names: params.providerInstanceNames,
-        selected_exact_models: params.selectedExactModels,
-        scheduler_profiles: params.schedulerProfiles,
-      })
-      const traces = toRouteTraces(raw)
-      return {
-        traces,
-        nextCursor: asOptionalString(raw.next_cursor),
-        totalCount: asOptionalNumber(raw.total_count) ?? asOptionalNumber(raw.total) ?? traces.length,
-      }
-    } catch (error) {
-      console.error('aicc.trace.query failed', error)
-      return { traces: [] }
+    const raw = await this.call<RawTraceQueryResponse>('trace.query', {
+      limit: params.limit,
+      cursor: params.cursor,
+      task_ids: params.taskIds,
+      request_ids: params.requestIds,
+      start_time_ms: params.timeRange?.startTimeMs,
+      end_time_ms: params.timeRange?.endTimeMs,
+      query: params.query?.trim() || undefined,
+      outcome: params.outcome,
+      api_types: params.apiTypes,
+      provider_instance_names: params.providerInstanceNames,
+      selected_exact_models: params.selectedExactModels,
+      scheduler_profiles: params.schedulerProfiles,
+    })
+    const traces = toRouteTraces(raw)
+    return {
+      traces,
+      nextCursor: asOptionalString(raw.next_cursor),
+      totalCount: asOptionalNumber(raw.total_count) ?? asOptionalNumber(raw.total) ?? traces.length,
     }
   }
 
@@ -1843,10 +1863,9 @@ function logicalTreeFromDirectory(
       childPaths.add(model.exact_model)
     }
 
-    node.children = children.sort((left, right) => {
-      if (left.level !== right.level) return left.level === 'L1' ? 1 : -1
-      return left.path.localeCompare(right.path)
-    })
+    node.children = children.sort((left, right) =>
+      LOGICAL_LEVEL_RANK[left.level] - LOGICAL_LEVEL_RANK[right.level] || left.path.localeCompare(right.path),
+    )
   }
 
   return rootNodes.sort(compareLogicalRoot)
@@ -2337,3 +2356,5 @@ const API_TYPES: ApiType[] = [
 ]
 
 const LOGICAL_ROOT_ORDER = ['llm', 'image', 'audio', 'video', 'embedding', 'rerank', 'agent', 'agent_runtime', 'multimodal']
+// Directory children sort L3 (mount) -> L2 (target) -> L1 (exact model), then by path.
+const LOGICAL_LEVEL_RANK: Record<LogicalNode['level'], number> = { L3: 0, L2: 1, L1: 2 }

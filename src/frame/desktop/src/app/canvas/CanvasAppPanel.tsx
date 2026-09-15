@@ -29,7 +29,15 @@ function EditorHost({ doc, storage, importFile, onBack }: { doc: CanvasDocument;
     const runner = new WishRunner(store)
     return { store, runner }
   }, [doc, storage])
-  useEffect(() => () => value.store.dispose(), [value])
+  useEffect(() => {
+    // StrictMode runs this cleanup once right after mount: resume() undoes that dispose()
+    value.store.resume()
+    value.runner.resume()
+    return () => {
+      value.runner.dispose()
+      value.store.dispose()
+    }
+  }, [value])
   return (
     <CanvasEditorContext.Provider value={value}>
       <EditorShell onBack={onBack} storage={storage} pendingImportFile={importFile ?? null} />

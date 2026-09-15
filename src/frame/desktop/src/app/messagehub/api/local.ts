@@ -26,6 +26,7 @@ function openDatabase(): Promise<IDBDatabase> {
 export class LocalStateStore {
   private db?: IDBDatabase
   private state: LocalRecord = { drafts: {}, draftAttachments: {}, showActions: {}, policies: {} }
+  private stateVersion = 0
   private queue = Promise.resolve()
 
   async load(): Promise<void> {
@@ -45,11 +46,15 @@ export class LocalStateStore {
 
   get(): LocalRecord { return this.state }
 
+  /** Bumped on every committed `update`; lets derived caches key on local state. */
+  get version(): number { return this.stateVersion }
+
   update(mutate: (next: LocalRecord) => void): Promise<void> {
     const result = this.queue.then(async () => {
       const next: LocalRecord = { drafts: { ...this.state.drafts }, draftAttachments: { ...this.state.draftAttachments }, showActions: { ...this.state.showActions }, policies: { ...this.state.policies } }
       mutate(next)
       this.state = next
+      this.stateVersion++
       if (!this.db) return
       await new Promise<void>((resolve, reject) => {
         const transaction = this.db!.transaction('state', 'readwrite')

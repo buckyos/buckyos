@@ -59,14 +59,13 @@ const ARROW_IMPLICIT = {
 function buildGraph(
   graph: WorkflowGraphView,
   issuesByNode: Record<string, AnalysisIssue[]>,
-  selectedNodeId: string | null,
 ): { nodes: WorkflowFlowNode[]; edges: WorkflowFlowEdge[] } {
   const nodes: Node<WorkflowNodeData>[] = graph.nodes.map((n) => ({
     id: n.id,
     type: n.kind === 'control' ? 'control' : 'task',
     position: { x: 0, y: 0 },
     data: { node: n, issues: issuesByNode[n.id] ?? [] },
-    selected: selectedNodeId === n.id,
+    selected: false,
     draggable: false,
     connectable: false,
   }))
@@ -92,9 +91,20 @@ function InnerGraphCanvas({
   selectedNodeId,
   onSelectNode,
 }: GraphCanvasProps) {
-  const { nodes, edges } = useMemo(
-    () => buildGraph(graph, issuesByNode, selectedNodeId),
-    [graph, issuesByNode, selectedNodeId],
+  // Dagre layout only re-runs when the definition (or its analysis) changes.
+  const { nodes: laidOut, edges } = useMemo(
+    () => buildGraph(graph, issuesByNode),
+    [graph, issuesByNode],
+  )
+  // Selection is a cheap flag pass over the laid-out nodes.
+  const nodes = useMemo(
+    () =>
+      laidOut.map((n) =>
+        n.selected === (selectedNodeId === n.id)
+          ? n
+          : { ...n, selected: selectedNodeId === n.id },
+      ),
+    [laidOut, selectedNodeId],
   )
 
   const rf = useReactFlow()

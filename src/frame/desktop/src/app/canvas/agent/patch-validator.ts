@@ -22,8 +22,13 @@ function finite(n: unknown): n is number {
   return typeof n === 'number' && Number.isFinite(n)
 }
 
+/**
+ * The patch is agent-supplied data: every field is checked before it is dereferenced so a
+ * malformed patch produces validation errors rather than an exception.
+ */
 export function validatePatch(doc: CanvasDocument, patch: CanvasPatch, wishId: string): PatchValidation {
   const errors: string[] = []
+  if (!patch || typeof patch !== 'object') return { ok: false, errors: ['补丁不是对象'], conflict: false }
   const conflict = patch.baseCanvasRevision !== doc.revision
   if (conflict) errors.push(`画布在运行期间已变化（基线 ${patch.baseCanvasRevision}，当前 ${doc.revision}）`)
   if (patch.protocolVersion !== '0.1') errors.push(`不支持的协议版本: ${String(patch.protocolVersion)}`)
@@ -31,6 +36,8 @@ export function validatePatch(doc: CanvasDocument, patch: CanvasPatch, wishId: s
     return { ok: false, errors: [...errors, '补丁缺少 operations'], conflict }
   }
   if (patch.operations.length > MAX_OPS) errors.push(`操作数量超限: ${patch.operations.length} > ${MAX_OPS}`)
+  if (typeof patch.summary !== 'string') errors.push('补丁缺少 summary')
+  if (!Array.isArray(patch.warnings) || !Array.isArray(patch.assumptions)) errors.push('补丁的 warnings / assumptions 必须是数组')
 
   const wish = doc.blocks[wishId]
   if (!wish || wish.type !== 'wish') errors.push('许愿格不存在')
@@ -46,10 +53,12 @@ export function validatePatch(doc: CanvasDocument, patch: CanvasPatch, wishId: s
 
   patch.operations.forEach((op, i) => {
     const at = `操作#${i + 1}`
+    if (!op || typeof op !== 'object') return errors.push(`${at}: 不是有效的操作`)
     switch (op.op) {
       case 'createBlock': {
         const b = op.block as CanvasBlock
-        if (!b || typeof b.id !== 'string') return errors.push(`${at}: 块缺少 id`)
+        if (!b || typeof b !== 'object' || typeof b.id !== 'string') return errors.push(`${at}: 块缺少 id`)
+        if (!b.content || typeof b.content !== 'object') return errors.push(`${at}: 块缺少 content`)
         if (knows(b.id)) errors.push(`${at}: 块 id 重复 ${b.id}`)
         if (!BLOCK_TYPES.has(b.type)) errors.push(`${at}: 未知块类型 ${String(b.type)}`)
         if (b.sheetId !== sheetId) errors.push(`${at}: 不允许写入其他 Sheet`)
@@ -61,14 +70,15 @@ export function validatePatch(doc: CanvasDocument, patch: CanvasPatch, wishId: s
         }
         if (b.type !== 'group') visible += 1
         if (b.type === 'table') {
-          const cells = b.content.rows.length * b.content.columns.length
-          if (cells > MAX_TABLE_CELLS) errors.push(`${at}: 表格输出超过 ${MAX_TABLE_CELLS} 个单元格`)
+          if (!Array.isArray(b.content.rows) || !Array.isArray(b.content.columns)) errors.push(`${at}: 表格缺少 rows / columns`)
+          else if (b.content.rows.length * b.content.columns.length > MAX_TABLE_CELLS) errors.push(`${at}: 表格输出超过 ${MAX_TABLE_CELLS} 个单元格`)
         }
-        if (b.type === 'text' && b.content.text.length > MAX_TEXT_CHARS) {
-          errors.push(`${at}: 文本超过 ${MAX_TEXT_CHARS} 字符`)
+        if (b.type === 'text') {
+          if (typeof b.content.text !== 'string') errors.push(`${at}: 文本块缺少 text`)
+          else if (b.content.text.length > MAX_TEXT_CHARS) errors.push(`${at}: 文本超过 ${MAX_TEXT_CHARS} 字符`)
         }
         if (b.type === 'interactive') {
-          const size = b.content.html.length + b.content.css.length + b.content.js.length
+          const size = (b.content.html?.length ?? 0) + (b.content.css?.length ?? 0) + (b.content.js?.length ?? 0)
           if (size > MAX_HTML_BYTES) errors.push(`${at}: 自定义 HTML 体积超限`)
           if (!b.content.manifest?.name) errors.push(`${at}: 自定义交互块缺少 manifest`)
         }
@@ -79,19 +89,25 @@ export function validatePatch(doc: CanvasDocument, patch: CanvasPatch, wishId: s
           else if (!/^(data:image\/|https?:\/\/)/.test(b.content.src)) errors.push(`${at}: 图片 src 必须是 data:image 或 http(s) 地址`)
         }
         if (b.type === 'video') {
-          const total = (b.content?.src?.length ?? 0) + (b.content?.frames ?? []).reduce((n, f) => n + f.src.length, 0)
+          const total = (b.content?.src?.length ?? 0) + (b.content?.frames ?? []).reduce((n, f) => n + (f?.src?.length ?? 0), 0)
           if (total > MAX_IMAGE_BYTES * 4) errors.push(`${at}: 视频体积超限`)
           if (!b.content?.src && !b.content?.frames?.length) errors.push(`${at}: 视频既没有文件也没有帧序列`)
         }
-        if (b.type === 'chart' && b.content.data.kind === 'tableBlock') {
-          const src = b.content.data.blockId
-          if (!knows(src)) errors.push(`${at}: 图表引用的表格不存在 ${src}`)
-          else if (wouldCreateCycle(doc, wishId, src)) errors.push(`${at}: 引用会产生循环依赖`)
+        if (b.type === 'chart') {
+          const data = b.content.data
+          if (!data || (data.kind !== 'inline' && data.kind !== 'tableBlock')) errors.push(`${at}: 图表缺少数据来源`)
+          else if (data.kind === 'inline' && !Array.isArray(data.rows)) errors.push(`${at}: 图表内嵌数据必须是数组`)
+          else if (data.kind === 'tableBlock') {
+            const src = data.blockId
+            if (!knows(src)) errors.push(`${at}: 图表引用的表格不存在 ${src}`)
+            else if (wouldCreateCycle(doc, wishId, src)) errors.push(`${at}: 引用会产生循环依赖`)
+          }
         }
         createdIds.add(b.id)
         break
       }
       case 'updateBlock': {
+        if (!op.patch || typeof op.patch !== 'object') errors.push(`${at}: 缺少 patch`)
         if (!knows(op.blockId)) errors.push(`${at}: 引用的块不存在 ${op.blockId}`)
         else if (!createdIds.has(op.blockId) && !ownedByWish(op.blockId)) {
           errors.push(`${at}: 不允许修改用户块 ${op.blockId}`)
@@ -105,6 +121,7 @@ export function validatePatch(doc: CanvasDocument, patch: CanvasPatch, wishId: s
       }
       case 'createGroup': {
         if (!knows(op.groupId)) errors.push(`${at}: 结果组不存在 ${op.groupId}`)
+        if (!Array.isArray(op.childBlockIds)) return errors.push(`${at}: 结果组缺少成员列表`)
         for (const c of op.childBlockIds) if (!knows(c)) errors.push(`${at}: 结果组成员不存在 ${c}`)
         break
       }
@@ -113,11 +130,14 @@ export function validatePatch(doc: CanvasDocument, patch: CanvasPatch, wishId: s
         break
       case 'addPresentationStep':
         if (!doc.presentationPaths.some((p) => p.id === op.pathId)) errors.push(`${at}: 讲述路径不存在`)
+        if (!op.step || typeof op.step !== 'object' || typeof op.step.id !== 'string') errors.push(`${at}: 讲述步骤无效`)
         break
       case 'updateTableCells': {
         const t = doc.blocks[op.blockId]
         if (!t || t.type !== 'table') return errors.push(`${at}: 表格不存在 ${op.blockId}`)
+        if (!Array.isArray(op.cells)) return errors.push(`${at}: 缺少 cells`)
         for (const c of op.cells) {
+          if (!c || typeof c !== 'object' || !c.cell) return errors.push(`${at}: 单元格写入无效`)
           const row = t.content.rows.find((r) => r.id === c.rowId)
           if (!row) return errors.push(`${at}: 行不存在 ${c.rowId}`)
           const existing = row.cells[c.columnId]

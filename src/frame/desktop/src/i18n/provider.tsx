@@ -8,7 +8,7 @@ import {
   type PropsWithChildren,
 } from 'react'
 import { dictionaries } from './dictionaries'
-import type { SupportedLocale } from '../models/ui'
+import { supportedLocales, type SupportedLocale } from '../models/ui'
 
 interface I18nContextValue {
   locale: SupportedLocale
@@ -35,8 +35,12 @@ function interpolate(
 
 export function I18nProvider({ children }: PropsWithChildren) {
   const [locale, setLocale] = useState<SupportedLocale>(() => {
-    const saved = window.localStorage.getItem(storageKey) as SupportedLocale | null
-    return saved ?? 'en'
+    // Validate the persisted value: a stale/foreign locale would make
+    // `dictionaries[locale]` undefined and crash every `t()` call at render.
+    const saved = window.localStorage.getItem(storageKey)
+    return supportedLocales.includes(saved as SupportedLocale)
+      ? (saved as SupportedLocale)
+      : 'en'
   })
 
   useEffect(() => {
@@ -50,7 +54,8 @@ export function I18nProvider({ children }: PropsWithChildren) {
       locale,
       setLocale,
       t: (key, fallback = key, variables) => {
-        const current = dictionaries[locale][key] ?? dictionaries.en[key] ?? fallback
+        const table = dictionaries[locale] ?? dictionaries.en
+        const current = table[key] ?? dictionaries.en[key] ?? fallback
         return interpolate(current, variables)
       },
     }

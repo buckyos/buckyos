@@ -229,7 +229,7 @@ export function tableContentFromMatrix(
   matrix: Array<Array<string | number | boolean | null>>,
   options: { hasHeader: boolean; source?: TableBlockContent['source'] },
 ): TableBlockContent {
-  const width = Math.max(0, ...matrix.map((r) => r.length))
+  const width = matrix.reduce((w, r) => Math.max(w, r.length), 0)
   const headerRow = options.hasHeader ? matrix[0] ?? [] : []
   const dataRows = options.hasHeader ? matrix.slice(1) : matrix
   const columns: TableColumn[] = Array.from({ length: width }, (_, i) => ({

@@ -127,6 +127,9 @@ export type InvalidateListener = (ref: WireRef | null) => void
 // ---------------------------------------------------------------------------
 
 const KEY_SCHEMA = 'nfsp:v1:'
+/** 倒排索引达到该长度时剔除死键;剔除后仍不少于 INDEX_MAX 则逐出最旧条目。 */
+const INDEX_PRUNE_AT = 64
+const INDEX_MAX = 512
 const MAX_ENTRY_CHARS = 256 * 1024
 const DEFAULT_ATTR_TTL_MS = 5000
 /** watch 健康时,携带 revision 的条目的 TTL 放宽倍数。 */
@@ -197,12 +200,45 @@ interface CacheEntry {
  * 读类方法全部吞掉异常;`set` 让配额类错误穿透给上层做 LRU 逐出。
  */
 export class LocalStorageCacheStore implements CacheStore {
+  /**
+   * 内存中的键集合:`keys(prefix)` 只扫这里而不是每次遍历整个 localStorage
+   * (invalidateSubtree 每次写操作调 6 次 deletePrefix)。首次使用时从
+   * localStorage 建立,之后由 set/delete 维护;其他标签页的改动经 `storage`
+   * 事件同步。持久化格式不变。
+   */
+  private known: Set<string> | null = null
+
+  constructor() {
+    try {
+      globalThis.addEventListener?.('storage', (ev: StorageEvent) => {
+        if (!this.known) return
+        if (ev.key === null) this.known.clear()
+        else if (ev.newValue === null) this.known.delete(ev.key)
+        else this.known.add(ev.key)
+      })
+    } catch {
+      // 无 window(测试/worker):退化为仅本实例维护。
+    }
+  }
+
   private storage(): Storage | null {
     try {
       return globalThis.localStorage ?? null
     } catch {
       return null
     }
+  }
+
+  private index(ls: Storage): Set<string> {
+    if (!this.known) {
+      const known = new Set<string>()
+      for (let i = 0; i < ls.length; i++) {
+        const k = ls.key(i)
+        if (k !== null) known.add(k)
+      }
+      this.known = known
+    }
+    return this.known
   }
 
   async get(key: string): Promise<string | null> {
@@ -215,12 +251,18 @@ export class LocalStorageCacheStore implements CacheStore {
 
   async set(key: string, value: string): Promise<void> {
     // 不 catch:QuotaExceededError 等由调用方(逐出路径)处理。
-    this.storage()?.setItem(key, value)
+    const ls = this.storage()
+    if (!ls) return
+    ls.setItem(key, value)
+    this.index(ls).add(key)
   }
 
   async delete(key: string): Promise<void> {
     try {
-      this.storage()?.removeItem(key)
+      const ls = this.storage()
+      if (!ls) return
+      ls.removeItem(key)
+      this.index(ls).delete(key)
     } catch {
       // ignore
     }
@@ -235,10 +277,7 @@ export class LocalStorageCacheStore implements CacheStore {
       const ls = this.storage()
       if (!ls) return []
       const out: string[] = []
-      for (let i = 0; i < ls.length; i++) {
-        const k = ls.key(i)
-        if (k !== null && k.startsWith(prefix)) out.push(k)
-      }
+      for (const k of this.index(ls)) if (k.startsWith(prefix)) out.push(k)
       return out
     } catch {
       return []
@@ -282,9 +321,12 @@ export class NfsBrowserClient {
   async hello(): Promise<HelloResult> {
     const r = await this.raw.hello()
     this.helloed = true
+    // 只有 re-hello(会话过期自愈)时才有旧流要踢:旧 session 上的 watch 流
+    // 已失效,关掉让重连循环用新 session 重建。首次 hello 由 connectWatch 新开的
+    // 流不能在这里被关掉(否则白白等一次退避重连)。
+    const wasRunning = this.watchRunning
     if (this.autoWatch) this.connectWatch()
-    // 旧 session 上的 watch 流已失效,踢掉让重连循环用新 session 重建。
-    if (this.watchRunning) this.watchConn?.close()
+    if (wasRunning) this.watchConn?.close()
     return r
   }
 
@@ -776,8 +818,21 @@ export class NfsBrowserClient {
 
   private async indexAdd(scope: string, key: string): Promise<void> {
     const idxKey = `${this.sp}ix:${scope}`
-    const keys = await this.readIndex(idxKey)
+    let keys = await this.readIndex(idxKey)
     if (keys.includes(key)) return
+    if (keys.length >= INDEX_PRUNE_AT) {
+      // 宽 scope(如 `ma:*`)只增不减:先剔除已被逐出/失效的死键,仍超上限
+      // 就把最旧的条目连同缓存一起丢掉(条目不在索引里就无法按 scope 失效,
+      // 所以宁可删缓存也不丢索引项)。
+      const alive: string[] = []
+      for (const k of keys) if ((await this.safe(() => this.store.get(k), null)) !== null) alive.push(k)
+      const excess = alive.length - (INDEX_MAX - 1)
+      for (const k of alive.splice(0, Math.max(0, excess))) {
+        await this.safe(() => this.store.delete(k))
+        this.stats.evictions++
+      }
+      keys = alive
+    }
     keys.push(key)
     await this.safe(() => this.store.set(idxKey, JSON.stringify(keys)))
   }

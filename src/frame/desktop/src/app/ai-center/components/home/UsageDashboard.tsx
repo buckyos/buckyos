@@ -3,6 +3,7 @@ import { Activity, Check, ChevronDown, ChevronUp, Copy, CreditCard, DollarSign, 
 import { useMediaQuery } from '@mui/material'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore, useAIStatus, useProviders, useUsageSummary, useUsageTrend } from '../../hooks/use-aicc-store'
+import { useDebouncedEffect } from '../../hooks/use-debounced-value'
 import { SummaryCard } from '../shared/SummaryCard'
 import { PagedListFooter } from '../shared/paged-list'
 import { LongField } from '../shared/LongField'
@@ -116,10 +117,10 @@ function localDayStart(value = new Date()): Date {
   return result
 }
 
-function localTrailingDaysRange(days: number): UsageTimeRange {
-  const start = localDayStart()
+function localTrailingDaysRange(days: number, nowMs: number): UsageTimeRange {
+  const start = localDayStart(new Date(nowMs))
   start.setDate(start.getDate() - Math.max(0, days - 1))
-  return { startTimeMs: start.getTime(), endTimeMs: Date.now() }
+  return { startTimeMs: start.getTime(), endTimeMs: nowMs }
 }
 
 function timeRangeToQuery(
@@ -129,7 +130,7 @@ function timeRangeToQuery(
   nowMs: number,
 ): UsageTimeRange {
   if (value === 'custom') {
-    const start = dateInputStart(customStartDate) ?? localTrailingDaysRange(30).startTimeMs
+    const start = dateInputStart(customStartDate) ?? localTrailingDaysRange(30, nowMs).startTimeMs
     const end = dateInputEnd(customEndDate) ?? nowMs
     return { startTimeMs: start, endTimeMs: end }
   }
@@ -143,7 +144,7 @@ function timeRangeToQuery(
   if (duration != null) {
     return { startTimeMs: nowMs - duration, endTimeMs: nowMs }
   }
-  return localTrailingDaysRange(30)
+  return localTrailingDaysRange(30, nowMs)
 }
 
 function uniqueSorted(values: Array<string | undefined>): string[] {
@@ -157,6 +158,11 @@ type MultiFilter = {
   query: string
   selected: string[]
 }
+type FilterText = {
+  provider: string
+  model: string
+  app: string
+}
 type KpiCard = {
   icon: ReactNode
   title: string
@@ -168,6 +174,13 @@ type KpiCard = {
 const PAGE_SIZE = 10
 const HOME_USAGE_LIMIT = 5
 const EMPTY_MULTI_FILTER: MultiFilter = { query: '', selected: [] }
+const EMPTY_FILTER_TEXT: FilterText = { provider: '', model: '', app: '' }
+// Free-text filters are debounced before they reach the usage query so typing does not issue an RPC per keystroke.
+const FILTER_TEXT_DEBOUNCE_MS = 250
+
+function sameFilterText(left: FilterText, right: FilterText): boolean {
+  return left.provider === right.provider && left.model === right.model && left.app === right.app
+}
 
 export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
   const { t } = useI18n()
@@ -183,8 +196,12 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
   const [appAgentFilter, setAppAgentFilter] = useState<MultiFilter>(EMPTY_MULTI_FILTER)
   const [customStartDate, setCustomStartDate] = useState('')
   const [customEndDate, setCustomEndDate] = useState('')
+  // Free-text portion of the filters as last committed to the query (see useDebouncedEffect below).
+  const [committedFilterText, setCommittedFilterText] = useState<FilterText>(EMPTY_FILTER_TEXT)
   const [detailPage, setDetailPage] = useState(1)
-  const [nowMs] = useState(() => Date.now())
+  // Upper bound of the query window; refreshed whenever a new query series starts (filter change, retry)
+  // and kept stable while paging through that series.
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const [pageCursors, setPageCursors] = useState<Record<number, string | undefined>>({ 1: undefined })
   const [usagePage, setUsagePage] = useState<UsageEventsPage>({ events: [], totalRequests: 0 })
   const [usageLoading, setUsageLoading] = useState(false)
@@ -228,12 +245,12 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
   )
   const usageQueryFilters = useMemo(() => ({
     providerInstanceNames: providerFilter.selected,
-    providerInstanceQuery: providerFilter.query,
+    providerInstanceQuery: committedFilterText.provider,
     providerModels: modelFilter.selected,
-    providerModelQuery: modelFilter.query,
+    providerModelQuery: committedFilterText.model,
     appIds: appAgentFilter.selected,
-    appQuery: appAgentFilter.query,
-  }), [appAgentFilter, modelFilter, providerFilter])
+    appQuery: committedFilterText.app,
+  }), [appAgentFilter.selected, committedFilterText, modelFilter.selected, providerFilter.selected])
   const currentCursor = pageCursors[detailPage]
   const effectiveDetailPage = detailPage
   const pageStart = (effectiveDetailPage - 1) * pageLimit
@@ -306,26 +323,45 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
     setDetailPage(1)
     setPageCursors({ 1: undefined })
     setUsageError(null)
+    setNowMs(Date.now())
   }
+
+  const retryUsagePage = () => {
+    setUsageError(null)
+    setNowMs(Date.now())
+    setUsageRetryKey((value) => value + 1)
+  }
+
+  useDebouncedEffect(
+    `${providerFilter.query}\u0000${modelFilter.query}\u0000${appAgentFilter.query}`,
+    FILTER_TEXT_DEBOUNCE_MS,
+    () => {
+      const next: FilterText = { provider: providerFilter.query, model: modelFilter.query, app: appAgentFilter.query }
+      if (sameFilterText(next, committedFilterText)) return
+      setCommittedFilterText(next)
+      resetUsagePaging()
+    },
+  )
 
   const updateTimeRange = (value: TimeRangeFilter) => {
     setTimeRange(value)
     resetUsagePaging()
   }
 
+  // Selection changes hit the query immediately; free-text changes are committed by the debounce above.
   const updateProviderFilter = (value: MultiFilter) => {
     setProviderFilter(value)
-    resetUsagePaging()
+    if (value.selected !== providerFilter.selected) resetUsagePaging()
   }
 
   const updateModelFilter = (value: MultiFilter) => {
     setModelFilter(value)
-    resetUsagePaging()
+    if (value.selected !== modelFilter.selected) resetUsagePaging()
   }
 
   const updateAppAgentFilter = (value: MultiFilter) => {
     setAppAgentFilter(value)
-    resetUsagePaging()
+    if (value.selected !== appAgentFilter.selected) resetUsagePaging()
   }
 
   const balanceSubtitle = balanceProviders
@@ -355,6 +391,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
     setProviderFilter(target === 'provider' ? { query: '', selected: [value] } : EMPTY_MULTI_FILTER)
     setModelFilter(target === 'model' ? { query: '', selected: [value] } : EMPTY_MULTI_FILTER)
     setAppAgentFilter(target === 'appAgent' ? { query: '', selected: [value] } : EMPTY_MULTI_FILTER)
+    setCommittedFilterText(EMPTY_FILTER_TEXT)
     resetUsagePaging()
     window.requestAnimationFrame(() => {
       detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -829,10 +866,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
             onLoadMore={() => {
               if (hasUsageMore) setDetailPage((page) => page + 1)
             }}
-            onRetry={() => {
-              setUsageError(null)
-              setUsageRetryKey((value) => value + 1)
-            }}
+            onRetry={retryUsagePage}
             onPreviousPage={() => setDetailPage((page) => Math.max(1, page - 1))}
             onNextPage={() => setDetailPage((page) => Math.min(detailPageCount, page + 1))}
             canGoPrevious={effectiveDetailPage > 1}

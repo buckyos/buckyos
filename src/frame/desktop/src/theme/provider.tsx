@@ -21,8 +21,8 @@ const ThemeModeContext = createContext<ThemeModeContextValue | null>(null)
 
 export function PrototypeThemeProvider({ children }: PropsWithChildren) {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
-    const saved = window.localStorage.getItem(storageKey) as ThemeMode | null
-    return saved ?? 'light'
+    const saved = window.localStorage.getItem(storageKey)
+    return saved === 'dark' || saved === 'light' ? saved : 'light'
   })
 
   useEffect(() => {

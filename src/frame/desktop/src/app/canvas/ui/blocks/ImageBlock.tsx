@@ -12,7 +12,9 @@ export function ImageBlockView({ block }: { block: CanvasBlockOf<'image'> }) {
   const actions = useEditorActions()
   const c = block.content
   const [over, setOver] = useState(false)
-  const [broken, setBroken] = useState(false)
+  // remembered per src: a replacement image must get a fresh chance to load
+  const [brokenSrc, setBrokenSrc] = useState<string | null>(null)
+  const broken = brokenSrc !== null && brokenSrc === c.src
 
   const onDrop = (e: React.DragEvent) => {
     const file = [...e.dataTransfer.files].find(isImageFile)
@@ -61,7 +63,7 @@ export function ImageBlockView({ block }: { block: CanvasBlockOf<'image'> }) {
       {broken ? (
         <div className="flex h-full items-center justify-center p-3 text-center text-xs text-[color:var(--cp-danger)]">图片无法显示（来源可能已失效）</div>
       ) : (
-        <img src={c.src} alt={c.alt ?? block.title ?? ''} draggable={false} className="h-full w-full select-none" style={{ objectFit: c.fit }} onError={() => setBroken(true)} data-testid="aic-image" />
+        <img src={c.src} alt={c.alt ?? block.title ?? ''} draggable={false} className="h-full w-full select-none" style={{ objectFit: c.fit }} onError={() => setBrokenSrc(c.src)} data-testid="aic-image" />
       )}
       {c.caption ? <div className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-[color:color-mix(in_srgb,#000_55%,transparent)] px-2 py-1 text-[11px] text-white">{c.caption}</div> : null}
     </div>

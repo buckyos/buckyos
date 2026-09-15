@@ -1,6 +1,6 @@
 /* ── Workflow sidebar: org tree of Definitions + Apps + Script Apps ── */
 
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import {
   AlertTriangle,
   AppWindow,
@@ -72,27 +72,24 @@ export function WorkflowSidebar({ selection, onSelect, onImport }: SidebarProps)
     scripts: true,
   })
 
-  const definitions = useMemo(() => {
-    const all = store.listDefinitions()
-    return all.filter((d) => {
-      if (!showArchived && d.status === 'archived') return false
-      if (search) {
-        const q = search.toLowerCase()
-        if (
-          !d.name.toLowerCase().includes(q) &&
-          !d.id.toLowerCase().includes(q)
-        )
-          return false
-      }
-      return true
-    })
-  }, [store, search, showArchived])
+  // Not memoized: the store keeps its identity and notifies through
+  // useSyncExternalStore, so a memo keyed on it would go stale after an
+  // import or (un)bind. The lists are small.
+  const definitions = store.listDefinitions().filter((d) => {
+    if (!showArchived && d.status === 'archived') return false
+    if (search) {
+      const q = search.toLowerCase()
+      if (
+        !d.name.toLowerCase().includes(q) &&
+        !d.id.toLowerCase().includes(q)
+      )
+        return false
+    }
+    return true
+  })
 
-  const apps = useMemo(() => store.listApps().filter((a) => a.kind === 'app'), [store])
-  const scripts = useMemo(
-    () => store.listApps().filter((a) => a.kind === 'script_app'),
-    [store],
-  )
+  const apps = store.listApps().filter((a) => a.kind === 'app')
+  const scripts = store.listApps().filter((a) => a.kind === 'script_app')
 
   function isDefSelected(d: WorkflowDefinition) {
     return selection.kind === 'definition' && selection.definitionId === d.id
@@ -382,25 +379,28 @@ function SectionHeader({
   count?: number
   right?: React.ReactNode
 }) {
+  // `right` may hold its own button, so it sits beside the toggle rather
+  // than inside it (buttons cannot nest).
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      className="flex w-full items-center gap-1.5 px-1.5 py-1.5 text-left"
-      style={{ color: 'var(--cp-muted)' }}
-    >
-      {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-      {icon}
-      <span className="text-[11px] font-semibold uppercase tracking-wider">
-        {label}
-      </span>
-      {count != null && (
-        <span className="text-[10px]" style={{ color: 'var(--cp-muted)' }}>
-          ({count})
+    <div className="flex w-full items-center" style={{ color: 'var(--cp-muted)' }}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 py-1.5 text-left"
+      >
+        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        {icon}
+        <span className="text-[11px] font-semibold uppercase tracking-wider">
+          {label}
         </span>
-      )}
-      {right && <span className="ml-auto">{right}</span>}
-    </button>
+        {count != null && (
+          <span className="text-[10px]" style={{ color: 'var(--cp-muted)' }}>
+            ({count})
+          </span>
+        )}
+      </button>
+      {right && <span className="ml-auto flex items-center pr-1.5">{right}</span>}
+    </div>
   )
 }
 

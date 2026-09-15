@@ -20,4 +20,16 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // Playwright / Deno tests are not React code: `use` in a fixture is the
+    // Playwright fixture callback, `({}, use) => …` is the documented fixture
+    // signature, and the specs poke at untyped page globals.
+    files: ['tests/**/*.{ts,tsx}'],
+    rules: {
+      'react-hooks/rules-of-hooks': 'off',
+      'no-empty-pattern': 'off',
+      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-empty-object-type': 'off',
+    },
+  },
 ])

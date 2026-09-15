@@ -334,7 +334,7 @@ export function MobileHomeScreen({
             </div>
           </div>
 
-          {(showSearch || query) && (
+          {(showSearch || query || filter !== 'all') && (
             <>
               <SearchFilterBar
                 query={query}

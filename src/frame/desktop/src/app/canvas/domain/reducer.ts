@@ -12,9 +12,33 @@ import type {
   GroupBlock,
   TableBlock,
   WishBlock,
+  WishState,
 } from './types'
 import { MIN_BLOCK_HEIGHT, MIN_BLOCK_WIDTH } from './types'
 import { QUIET_COMMANDS } from './commands'
+
+export const RUNNING_WISH_STATES = new Set<WishState>(['planning', 'running', 'validating', 'applying', 'waiting_permission'])
+const UNFINISHED_RUN_ERROR = '上次运行未完成（页面已关闭），请重新运行'
+
+/**
+ * Documents loaded from storage / snapshots may carry a run that never finished (page closed
+ * mid-run): wish blocks and table AI cells stuck in a running state become "failed".
+ */
+export function sanitizeDocument(doc: CanvasDocument): CanvasDocument {
+  let blocks = doc.blocks
+  for (const [id, b] of Object.entries(doc.blocks)) {
+    if (b.type === 'wish' && RUNNING_WISH_STATES.has(b.content.state)) {
+      blocks = { ...blocks, [id]: { ...b, content: { ...b.content, state: 'failed', lastError: UNFINISHED_RUN_ERROR } } }
+    } else if (b.type === 'table' && b.content.cellWishes) {
+      let cellWishes = b.content.cellWishes
+      for (const [key, w] of Object.entries(b.content.cellWishes)) {
+        if (w.state === 'running') cellWishes = { ...cellWishes, [key]: { ...w, state: 'failed', error: UNFINISHED_RUN_ERROR } }
+      }
+      if (cellWishes !== b.content.cellWishes) blocks = { ...blocks, [id]: { ...b, content: { ...b.content, cellWishes } } }
+    }
+  }
+  return blocks === doc.blocks ? doc : { ...doc, blocks }
+}
 
 export function applyCommand(doc: CanvasDocument, cmd: CanvasCommand): CanvasDocument {
   const next = reduce(doc, cmd)
@@ -173,7 +197,8 @@ function reduce(doc: CanvasDocument, cmd: CanvasCommand): CanvasDocument {
             [nb.id]: nb,
             [group.id]: { ...group, generated: { ...group.generated, userModified: true } },
           }
-          return recomputeGeneratedStatuses(withBlocks(doc, blocks))
+          const next = withBlocks(doc, blocks)
+          return recomputeGeneratedStatuses(rest.rect ? refitGroups(next, new Set([cmd.id])) : next)
         }
       }
       const next = withBlocks(doc, { ...doc.blocks, [cmd.id]: nb })
@@ -218,14 +243,14 @@ function reduce(doc: CanvasDocument, cmd: CanvasCommand): CanvasDocument {
       const c = b.content
       const a = cmd.action
       let content = c
-      if (a.kind === 'addRow') {
-        const row = a.row ?? { id: newId('row'), cells: {} }
-        const idx = a.afterRowId ? c.rows.findIndex((r) => r.id === a.afterRowId) + 1 : c.rows.length
-        content = { ...c, rows: [...c.rows.slice(0, idx), row, ...c.rows.slice(idx)] }
-      } else if (a.kind === 'addColumn') {
-        const column = a.column ?? { id: newId('col'), name: `列${c.columns.length + 1}`, width: 120 }
-        const idx = a.afterColumnId ? c.columns.findIndex((x) => x.id === a.afterColumnId) + 1 : c.columns.length
-        content = { ...c, columns: [...c.columns.slice(0, idx), column, ...c.columns.slice(idx)] }
+      if (a.kind === 'addRow' || a.kind === 'addRows') {
+        const rows = a.kind === 'addRow' ? [a.row ?? { id: newId('row'), cells: {} }] : a.rows
+        if (!rows.length) return doc
+        content = { ...c, rows: insertAfter(c.rows, rows, a.afterRowId) }
+      } else if (a.kind === 'addColumn' || a.kind === 'addColumns') {
+        const columns = a.kind === 'addColumn' ? [a.column ?? { id: newId('col'), name: `列${c.columns.length + 1}`, width: 120 }] : a.columns
+        if (!columns.length) return doc
+        content = { ...c, columns: insertAfter(c.columns, columns, a.afterColumnId) }
       } else if (a.kind === 'deleteRows') {
         const del = new Set(a.rowIds)
         content = { ...c, rows: c.rows.filter((r) => !del.has(r.id)) }
@@ -396,11 +421,18 @@ function reduce(doc: CanvasDocument, cmd: CanvasCommand): CanvasDocument {
       })
 
     case 'RESTORE_SNAPSHOT':
-      return { ...cmd.doc, id: doc.id }
+      return sanitizeDocument({ ...cmd.doc, id: doc.id })
 
     default:
       return doc
   }
+}
+
+/** Insert after the item with `afterId`; a missing / stale id appends at the end (never at the top). */
+function insertAfter<T extends { id: string }>(list: T[], items: T[], afterId?: string): T[] {
+  const at = afterId ? list.findIndex((x) => x.id === afterId) : -1
+  const idx = at >= 0 ? at + 1 : list.length
+  return [...list.slice(0, idx), ...items, ...list.slice(idx)]
 }
 
 function mapPath(

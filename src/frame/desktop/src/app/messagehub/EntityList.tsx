@@ -926,7 +926,7 @@ export function EntityList({
                   disabled={loadingMore}
                   className="min-h-11 w-full rounded-lg border border-[color:var(--cp-border)] text-sm disabled:opacity-40"
                   data-testid="entity-load-more"
-                  onClick={() => { setLoadingMore(true); void onLoadMore().finally(() => setLoadingMore(false)) }}
+                  onClick={() => { setLoadingMore(true); void onLoadMore().catch(error => console.warn('MessageHub load more failed.', error)).finally(() => setLoadingMore(false)) }}
                 >
                   {t('messagehub.loadMore', 'Load more')}
                 </button>

@@ -25,6 +25,13 @@ const statusColor = {
   error: 'var(--cp-danger)',
 }
 
+function createSocialAccountId(platform: string) {
+  const suffix = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  return `social-${platform}-${suffix}`
+}
+
 export function SocialAccountsSection({ entityId, accounts, editable = true }: SocialAccountsSectionProps) {
   const [open, setOpen] = useState(false)
   const store = useUsersAgentsStore()
@@ -33,7 +40,7 @@ export function SocialAccountsSection({ entityId, accounts, editable = true }: S
     if (!entityId) return
     const accountId = platform === 'telegram' ? '@new_channel' : platform === 'phone' ? '+1-555-0123' : 'new@example.com'
     store.addSocialAccount(entityId, {
-      id: `social-${platform}-${accounts.length + 1}`,
+      id: createSocialAccountId(platform),
       platform,
       accountId,
       displayId: accountId,

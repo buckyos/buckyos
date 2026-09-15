@@ -2,9 +2,9 @@
 
 import { useMemo } from 'react'
 import type { CanvasBlockOf } from '../../domain/types'
-import { formatNumber } from '../../domain/selectors'
-import { useStoreState } from '../../store/hooks'
-import { resolveChart } from '../chart-data'
+import { formatNumber, tableToRecords } from '../../domain/selectors'
+import { useStoreSelector } from '../../store/hooks'
+import { resolveChartRows } from '../chart-data'
 
 const PALETTE = ['oklch(0.63 0.152 257)', 'oklch(0.72 0.13 160)', 'oklch(0.76 0.12 65)', 'oklch(0.62 0.15 300)', 'oklch(0.66 0.14 25)', 'oklch(0.7 0.1 200)']
 
@@ -26,9 +26,14 @@ function short(n: number, fmt: 'plain' | 'percent' | 'currency' = 'plain'): stri
 }
 
 export function ChartBlockView({ block }: { block: CanvasBlockOf<'chart'> }) {
-  const { doc } = useStoreState()
   const c = block.content
-  const data = useMemo(() => resolveChart(doc, c), [doc, c])
+  // only the source table's content feeds the chart: moving the table or panning must not re-resolve it
+  const sourceContent = useStoreSelector((s) => {
+    if (c.data.kind !== 'tableBlock') return undefined
+    const t = s.doc.blocks[c.data.blockId]
+    return t?.type === 'table' ? t.content : undefined
+  })
+  const data = useMemo(() => resolveChartRows(c.data.kind === 'inline' ? c.data.rows : sourceContent ? tableToRecords(sourceContent) : [], c), [sourceContent, c])
   const width = Math.max(120, block.rect.width - 2)
   const height = Math.max(80, block.rect.height - 28 - (c.caption ? 22 : 0))
   const fmt = c.numberFormat ?? 'plain'
@@ -48,7 +53,7 @@ export function ChartBlockView({ block }: { block: CanvasBlockOf<'chart'> }) {
   )
 }
 
-type D = ReturnType<typeof resolveChart>
+type D = ReturnType<typeof resolveChartRows>
 
 function Legend({ data, x, y }: { data: D; x: number; y: number }) {
   if (data.series.length < 2) return null

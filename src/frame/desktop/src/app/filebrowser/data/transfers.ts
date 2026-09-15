@@ -69,6 +69,28 @@ const retryHandlers = new Map<string, () => void>()
 let snapshotVersion = 0
 let taskCounter = 0
 
+/**
+ * Concurrency limit: each running task holds its whole file in memory while
+ * hashing/uploading, so dropping hundreds of files must not start hundreds of
+ * pipelines at once. Accepted tasks beyond the limit wait in `queued` state.
+ */
+const MAX_RUNNING = 3
+let running = 0
+const waiting: TransferTask[] = []
+
+function startTask(task: TransferTask) {
+  if (running < MAX_RUNNING) runTask(task)
+  else waiting.push(task)
+}
+
+function pump() {
+  while (running < MAX_RUNNING) {
+    const next = waiting.shift()
+    if (!next) return
+    if (next.status === 'queued') runTask(next)
+  }
+}
+
 function emit() {
   snapshotVersion += 1
   for (const listener of listeners) listener()
@@ -91,6 +113,12 @@ function runTask(task: TransferTask) {
     return
   }
   cancelRequested.delete(task.id)
+  running += 1
+  const settle = () => {
+    running -= 1
+    emit()
+    pump()
+  }
   const controls: TransferControls = {
     isCancelled: () => cancelRequested.has(task.id),
     setStatus: (status) => {
@@ -113,7 +141,7 @@ function runTask(task: TransferTask) {
       localFiles.delete(task.candidate.localId)
       retryHandlers.delete(task.id)
       cancelRequested.delete(task.id)
-      emit()
+      settle()
     })
     .catch((err: unknown) => {
       if (err instanceof TransferCancelledError || cancelRequested.has(task.id)) {
@@ -123,7 +151,7 @@ function runTask(task: TransferTask) {
         task.status = 'error'
         task.error = toUiError(err)
       }
-      emit()
+      settle()
     })
 }
 
@@ -184,7 +212,7 @@ export const transferStore = {
       accepted.push(task)
     }
     if (accepted.length) emit()
-    for (const task of accepted) runTask(task)
+    for (const task of accepted) startTask(task)
     return { accepted, rejected }
   },
 
@@ -192,6 +220,15 @@ export const transferStore = {
     const task = taskById(id)
     if (!task) return
     if (task.status === 'success' || task.status === 'error' || task.status === 'cancelled' || task.status === 'skipped') {
+      return
+    }
+    const waitingIndex = waiting.indexOf(task)
+    if (waitingIndex !== -1) {
+      // Not started yet: settle immediately instead of waiting for a slot.
+      waiting.splice(waitingIndex, 1)
+      task.status = 'cancelled'
+      task.error = null
+      emit()
       return
     }
     // The executor notices at its next stage boundary and settles the task.
@@ -211,7 +248,7 @@ export const transferStore = {
     task.bytesSent = 0
     task.error = null
     emit()
-    runTask(task)
+    startTask(task)
   },
 
   dismiss(id: string) {

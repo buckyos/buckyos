@@ -1,9 +1,8 @@
 import { AppIcon, TierBadge } from '../../components/DesktopVisuals'
 import { PanelIntro } from '../../components/AppPanelPrimitives'
 import { useI18n } from '../../i18n/provider'
-import type { AppContentLoaderProps } from '../types'
 
-export function MarketAppPanel(_: AppContentLoaderProps) {
+export function MarketAppPanel() {
   const { t } = useI18n()
   const cards = [
     {

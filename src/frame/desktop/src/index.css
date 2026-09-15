@@ -38,7 +38,11 @@
   --cp-message-self-link: rgba(255, 255, 255, 0.92);
   --cp-focus-ring: color-mix(in srgb, var(--cp-accent) 46%, transparent);
   --cp-panel-shadow: 0 22px 60px color-mix(in srgb, var(--cp-shadow) 10%, transparent);
-  --cp-window-shadow: 0 30px 90px color-mix(in srgb, var(--cp-shadow) 18%, transparent);
+  /* Two tight layers instead of one 90px blur: a large blur radius is
+     re-rasterised on every window move and dominated drag frame time. */
+  --cp-window-shadow:
+    0 1px 2px color-mix(in srgb, var(--cp-shadow) 10%, transparent),
+    0 14px 36px color-mix(in srgb, var(--cp-shadow) 16%, transparent);
   --cp-ease-emphasis: cubic-bezier(0.19, 1, 0.22, 1);
   --cp-ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
 
@@ -92,7 +96,9 @@
   --cp-message-self-link: color-mix(in srgb, var(--cp-text) 92%, transparent);
   --cp-focus-ring: color-mix(in srgb, var(--cp-accent) 56%, transparent);
   --cp-panel-shadow: 0 28px 70px color-mix(in srgb, var(--cp-shadow) 32%, transparent);
-  --cp-window-shadow: 0 36px 110px color-mix(in srgb, var(--cp-shadow) 42%, transparent);
+  --cp-window-shadow:
+    0 1px 2px color-mix(in srgb, var(--cp-shadow) 30%, transparent),
+    0 18px 44px color-mix(in srgb, var(--cp-shadow) 40%, transparent);
 }
 
 :root[data-theme='dark'] .homestation-root {
@@ -214,6 +220,17 @@ a {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--cp-surface) 94%, transparent), color-mix(in srgb, var(--cp-surface-2) 92%, transparent));
   box-shadow: var(--cp-window-shadow);
+  /* A window's layout and paint never leak out of its box; lets the engine
+     skip the rest of the desktop when only this window changes. */
+  contain: layout paint;
+}
+
+/* While the window layer drives a drag/resize it writes transform and size
+   to the element every frame: no transitions may fight those writes, and the
+   layer is promoted for the duration so the move stays on the compositor. */
+.shell-window[data-dragging='true'] {
+  transition: none;
+  will-change: transform, width, height;
 }
 
 .react-grid-layout {
@@ -248,6 +265,15 @@ a {
 
 .swiper {
   overflow: visible;
+}
+
+/* Swiper sets `box-sizing: content-box` on .swiper-wrapper, and MUI's
+   CssBaseline makes every element inherit its box-sizing, so everything
+   rendered inside a slide (launcher tiles, widgets) silently lost
+   border-box: bordered tiles grew by 2px and the notepad form overflowed
+   its cell by its padding. Re-anchor border-box at the slide. */
+.swiper-slide {
+  box-sizing: border-box;
 }
 
 .swiper-pagination {
@@ -484,6 +510,178 @@ a {
   --files-wx-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='5.5' r='2' fill='black'/%3E%3Ccircle cx='12' cy='12' r='2' fill='black'/%3E%3Ccircle cx='12' cy='18.5' r='2' fill='black'/%3E%3C/svg%3E");
 }
 
+/* ---------------------------------------------------------------------------
+   Clock widget (src/desktop/widgets/ClockWidget.tsx)
+   The widget is its own size container and re-flows on its height, so a
+   one-row cell and a two-row cell both keep the text clear of the edges.
+   --------------------------------------------------------------------------- */
+.cp-clock {
+  container-type: size;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  height: 100%;
+  min-width: 0;
+  padding: 12px 18px;
+}
+
+.cp-clock__time {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  /* Scales with the cell width, capped by its height so the meta line below
+     always keeps its room. */
+  font-size: clamp(1.125rem, min(17cqw, 46cqh), 2.5rem);
+}
+
+/* One-row cell: weekday chip and date share a line under the time. */
+.cp-clock__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cp-clock__weekday {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.cp-clock__date {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* Two rows or more: weekday chip top-right, time and date stacked at the
+   bottom. `display: contents` lets the chip and date take part in the
+   column layout directly so they can be ordered around the time. */
+@container (min-height: 150px) {
+  .cp-clock {
+    justify-content: flex-end;
+    gap: 6px;
+    padding: 16px 20px 18px;
+  }
+
+  .cp-clock__meta {
+    display: contents;
+  }
+
+  .cp-clock__weekday {
+    order: -1;
+    align-self: flex-end;
+    margin-bottom: auto;
+    padding: 3px 9px;
+  }
+
+  .cp-clock__time {
+    font-size: clamp(1.25rem, 17cqw, 2.75rem);
+  }
+
+  .cp-clock__date {
+    font-size: 13px;
+    line-height: 18px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Loading orb (src/components/LoadingOrb.tsx)
+   A conventional spinner arc around a glossy orb. Only transforms/opacity
+   are animated, so it stays on the compositor.
+   --------------------------------------------------------------------------- */
+.cp-orb {
+  --cp-orb-size: 56px;
+  --cp-orb-ring: calc(var(--cp-orb-size) * 1.5);
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: calc(var(--cp-orb-size) * 1.9);
+  height: calc(var(--cp-orb-size) * 1.9);
+  flex-shrink: 0;
+}
+
+.cp-orb > * {
+  grid-area: 1 / 1;
+  border-radius: 999px;
+}
+
+/* Soft halo that fades in and out */
+.cp-orb__halo {
+  width: calc(var(--cp-orb-size) * 1.9);
+  height: calc(var(--cp-orb-size) * 1.9);
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--cp-accent) 26%, transparent) 0%,
+    color-mix(in srgb, var(--cp-accent-soft) 14%, transparent) 45%,
+    transparent 70%
+  );
+  animation: cp-orb-pulse 2s ease-in-out infinite;
+}
+
+/* Classic spinner: a border ring with a coloured arc, rotating */
+.cp-orb__ring {
+  width: var(--cp-orb-ring);
+  height: var(--cp-orb-ring);
+  border: 3px solid color-mix(in srgb, var(--cp-accent) 14%, transparent);
+  border-top-color: var(--cp-accent);
+  border-right-color: color-mix(in srgb, var(--cp-accent) 55%, transparent);
+  animation: cp-orb-spin 0.9s linear infinite;
+}
+
+/* Glossy core */
+.cp-orb__core {
+  width: var(--cp-orb-size);
+  height: var(--cp-orb-size);
+  background: radial-gradient(
+    circle at 30% 28%,
+    color-mix(in srgb, white 80%, var(--cp-accent-soft)) 0%,
+    color-mix(in srgb, var(--cp-accent-soft) 70%, white) 28%,
+    var(--cp-accent) 76%,
+    color-mix(in srgb, var(--cp-accent) 70%, var(--cp-shadow)) 100%
+  );
+  box-shadow:
+    inset 0 -5px 10px color-mix(in srgb, var(--cp-shadow) 22%, transparent),
+    inset 0 2px 3px color-mix(in srgb, white 55%, transparent),
+    0 10px 24px color-mix(in srgb, var(--cp-accent) 30%, transparent);
+  animation: cp-orb-float 2s ease-in-out infinite;
+}
+
+@keyframes cp-orb-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes cp-orb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes cp-orb-float {
+  0%,
+  100% {
+    transform: scale(0.97);
+  }
+  50% {
+    transform: scale(1.03);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -492,5 +690,20 @@ a {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* A loading spinner that stops reads as "frozen": keep the ring turning
+   (slower) under reduced motion, drop only the decorative pulse/float. */
+@media (prefers-reduced-motion: reduce) {
+  .cp-orb__ring {
+    animation-duration: 1.4s !important;
+    animation-iteration-count: infinite !important;
+  }
+
+  .cp-orb__halo,
+  .cp-orb__core {
+    animation: none !important;
+    opacity: 0.85;
   }
 }

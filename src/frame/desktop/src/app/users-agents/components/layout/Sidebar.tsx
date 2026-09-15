@@ -84,7 +84,7 @@ export function Sidebar({ selection, onSelect, onAddUser, onAddAgent }: SidebarP
           </div>
         </div>
 
-        {(showSearch || query) && (
+        {(showSearch || query || filter !== 'all') && (
           <>
             <SearchFilterBar
               query={query}

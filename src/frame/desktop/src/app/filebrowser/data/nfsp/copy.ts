@@ -43,10 +43,25 @@ export async function copyEntries(entries: FileEntry[], target: string, options:
   options.onTask?.({ taskId, total: input.sources.length, cancelling: false })
   return resumeCopy(taskId, options)
 }
+/** Progress polls notify touched destination folders at most this often (ms); Terminal flushes unconditionally. */
+const NOTIFY_INTERVAL_MS = 1000
+const parentOf = (path: string) => path.slice(0, path.lastIndexOf('/')) || '/'
 export async function resumeCopy(taskId: string, options: BatchOptions = {}): Promise<OperationResult[]> {
   let cancelSent = false
   let next: number | null = null
   const rows = new Map<number, CopyItem>()
+  // Destination folders with changed items since the last notification. Each
+  // notify reloads every list on that path, so parents are invalidated once
+  // per flush instead of once per changed item per 250 ms poll.
+  const dirty = new Set<string>()
+  let lastNotified = 0
+  const flushDirty = async (force: boolean) => {
+    if (dirty.size === 0 || (!force && Date.now() - lastNotified < NOTIFY_INTERVAL_MS)) return
+    lastNotified = Date.now()
+    const parents = [...dirty]
+    dirty.clear()
+    await Promise.all(parents.map((parent) => nfspClient().invalidateContainer(parent).catch(() => undefined).then(() => notifyDfsPath(parent))))
+  }
   const completed = () => [...rows.values()].filter((item) => ['success', 'failed', 'skipped', 'cancelled'].includes(item.status)).map(resultOf)
   const loadMore = async () => {
     if (next === null) return
@@ -79,11 +94,9 @@ export async function resumeCopy(taskId: string, options: BatchOptions = {}): Pr
     view.items.forEach((item) => {
       const previous = rows.get(item.id)
       rows.set(item.id, item)
-      if (item.identity && previous?.status !== item.status) {
-        const parent = item.target_path.slice(0, item.target_path.lastIndexOf('/')) || '/'
-        void nfspClient().invalidateContainer(parent).then(() => notifyDfsPath(parent))
-      }
+      if (item.identity && previous?.status !== item.status) dirty.add(parentOf(item.target_path))
     })
+    if (view.task.phase !== 'Terminal') void flushDirty(false)
     if (rows.size <= 100) next = view.next
     report(view)
     options.onProgress?.(completed())
@@ -97,10 +110,9 @@ export async function resumeCopy(taskId: string, options: BatchOptions = {}): Pr
       }
       options.onProgress?.(completed())
       const input = view.task.input as unknown as CopyInput
-      for (const source of input.sources) {
-        const result = view.items.find((item) => item.source_path === source.source_path)
-        if (result) notifyDfsPath(result.target_path.slice(0, result.target_path.lastIndexOf('/')) || '/')
-      }
+      const sourcePaths = new Set(input.sources.map((source) => source.source_path))
+      for (const item of view.items) if (sourcePaths.has(item.source_path)) dirty.add(parentOf(item.target_path))
+      await flushDirty(true)
       if (!view.items.length && view.task.error) throw operationError(view.task.error.code, view.task.error.message)
       return completed()
     }

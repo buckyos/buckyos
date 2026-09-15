@@ -34,6 +34,7 @@ export class MyNetworkStore {
 
   private snapshot: MyNetworkSnapshot
   private listeners = new Set<() => void>()
+  private reloadSeq = 0
 
   constructor(options: MyNetworkStoreOptions = {}) {
     this.useMock = options.useMock ?? defaultUseMock()
@@ -58,6 +59,8 @@ export class MyNetworkStore {
   getSnapshot = (): MyNetworkSnapshot => this.snapshot
 
   async reload() {
+    const seq = ++this.reloadSeq
+
     if (this.useMock) {
       this.applySnapshot(createMockMyNetworkSnapshot())
       this.notify()
@@ -65,7 +68,10 @@ export class MyNetworkStore {
     }
 
     try {
-      this.applySnapshot(await fetchMyNetworkSnapshot())
+      const snapshot = await fetchMyNetworkSnapshot()
+      // A newer reload has started meanwhile; drop this stale result.
+      if (seq !== this.reloadSeq) return
+      this.applySnapshot(snapshot)
       this.notify()
     } catch (error) {
       console.warn('Failed to load my-network datamodel from backend.', error)
@@ -197,6 +203,7 @@ export class MyNetworkStore {
   }
 
   addToCollection(collectionId: string, entityId: string) {
+    if (!this.findEntity(entityId)) return
     this.collections = this.collections.map((collection) =>
       collection.id === collectionId &&
       !collection.isReadOnly &&

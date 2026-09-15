@@ -1,6 +1,6 @@
 /* ── Definition / MountPoint detail page ── */
 
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import {
   ExternalLink,
   GitMerge,
@@ -28,13 +28,21 @@ interface DetailPageProps {
   onSelect: (s: WorkflowSelection) => void
 }
 
+const EMPTY_ISSUES: Record<string, AnalysisIssue[]> = {}
+// Cached per definition object so the graph canvas receives a stable map and
+// only re-runs layout when the definition itself changes, not on every click.
+const issuesCache = new WeakMap<WorkflowDefinition, Record<string, AnalysisIssue[]>>()
+
 function issuesByNode(def: WorkflowDefinition): Record<string, AnalysisIssue[]> {
+  const cached = issuesCache.get(def)
+  if (cached) return cached
   const out: Record<string, AnalysisIssue[]> = {}
   for (const i of def.analysis.issues) {
     if (!i.nodeId) continue
     if (!out[i.nodeId]) out[i.nodeId] = []
     out[i.nodeId].push(i)
   }
+  issuesCache.set(def, out)
   return out
 }
 
@@ -43,9 +51,11 @@ export function DetailPage({ selection, onSelect }: DetailPageProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [bindOpen, setBindOpen] = useState(false)
   const [showAmendments, setShowAmendments] = useState(false)
-  const [tick, force] = useState(0)
 
-  const ctx = useMemo(() => {
+  // Not memoized: the store keeps its identity and notifies through
+  // useSyncExternalStore, so a memo keyed on it would go stale after a
+  // (un)bind. The lookups are trivial.
+  const ctx = (() => {
     if (selection.kind === 'definition') {
       const def = store.getDefinition(selection.definitionId)
       return def
@@ -68,8 +78,7 @@ export function DetailPage({ selection, onSelect }: DetailPageProps) {
       mp: found.mp,
       app: found.app,
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, selection, tick])
+  })()
 
   if (!ctx) {
     return (
@@ -83,7 +92,7 @@ export function DetailPage({ selection, onSelect }: DetailPageProps) {
   }
 
   const def = ctx.definition
-  const issuesMap = def ? issuesByNode(def) : {}
+  const issuesMap = def ? issuesByNode(def) : EMPTY_ISSUES
   const selectedNode = def?.graph.nodes.find((n) => n.id === selectedNodeId) ?? null
   const usedBy = def ? store.listMountPointsUsing(def.id) : []
   const runs =
@@ -191,7 +200,6 @@ export function DetailPage({ selection, onSelect }: DetailPageProps) {
               type="button"
               onClick={() => {
                 store.restoreDefaultBinding(ctx.app!.id, ctx.mp!.id)
-                force((x) => x + 1)
               }}
               className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px]"
               style={{
@@ -208,7 +216,6 @@ export function DetailPage({ selection, onSelect }: DetailPageProps) {
               type="button"
               onClick={() => {
                 store.unbindMountPoint(ctx.app!.id, ctx.mp!.id)
-                force((x) => x + 1)
               }}
               className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px]"
               style={{
@@ -364,7 +371,6 @@ export function DetailPage({ selection, onSelect }: DetailPageProps) {
           onClose={() => setBindOpen(false)}
           onDone={(appId, mountPointId) => {
             setBindOpen(false)
-            force((x) => x + 1)
             onSelect({ kind: 'mount', appId, mountPointId })
           }}
         />

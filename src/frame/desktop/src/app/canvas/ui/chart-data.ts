@@ -22,7 +22,10 @@ export function chartRows(doc: CanvasDocument, content: ChartBlockContent): Reco
 }
 
 export function resolveChart(doc: CanvasDocument, content: ChartBlockContent): ChartSeriesData {
-  const rows = chartRows(doc, content)
+  return resolveChartRows(chartRows(doc, content), content)
+}
+
+export function resolveChartRows(rows: Record<string, CellPrimitive>[], content: ChartBlockContent): ChartSeriesData {
   const fields = rows.length ? Object.keys(rows[0]) : []
   const numericFields = fields.filter((f) => rows.some((r) => toNum(r[f]) !== null && typeof r[f] !== 'string') || rows.every((r) => toNum(r[f]) !== null))
   const xField = content.xField && fields.includes(content.xField) ? content.xField : fields.find((f) => !numericFields.includes(f)) ?? fields[0]

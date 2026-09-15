@@ -44,6 +44,14 @@ export function createWindowRecord(
   }
 }
 
+/**
+ * Per-record memo so an unchanged `WindowRecord` maps to the same
+ * `DesktopWindowDataModel` object across recomputations. The window layer
+ * relies on this identity to skip re-rendering windows that did not move
+ * while a sibling is being dragged.
+ */
+const windowModelCache = new WeakMap<WindowRecord, DesktopWindowDataModel>()
+
 export function createDesktopWindowLayerDataModel(
   apps: DesktopAppItem[],
   windows: WindowRecord[],
@@ -57,10 +65,17 @@ export function createDesktopWindowLayerDataModel(
         return null
       }
 
-      return {
+      const cached = windowModelCache.get(windowItem)
+      if (cached && cached.app === app) {
+        return cached
+      }
+
+      const model: DesktopWindowDataModel = {
         ...windowItem,
         app,
       }
+      windowModelCache.set(windowItem, model)
+      return model
     })
     .filter((windowItem): windowItem is DesktopWindowDataModel => Boolean(windowItem))
     .sort((left, right) => left.zIndex - right.zIndex)

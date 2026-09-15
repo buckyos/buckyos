@@ -99,7 +99,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
   const [keyError, setKeyError] = useState<string | null>(null)
   const [keyFeedback, setKeyFeedback] = useState<string | null>(null)
   const [refreshingModels, setRefreshingModels] = useState(false)
-  const [refreshFeedback, setRefreshFeedback] = useState<string | null>(null)
+  const [refreshFeedback, setRefreshFeedback] = useState<{ message: string; at: Date } | null>(null)
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const [weightDraft, setWeightDraft] = useState(() => formatWeight(routingWeight))
   const [savingWeight, setSavingWeight] = useState(false)
@@ -179,7 +179,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
       setApiKeyDraft('')
       setShowKeyDialog(false)
       setKeyFeedback(t('aiCenter.providers.updateKeySuccess', 'API key updated and AICC reloaded.'))
-      setRefreshFeedback(t('aiCenter.providers.modelsRefreshedNow', 'Provider models refreshed just now.'))
+      setRefreshFeedback({ message: t('aiCenter.providers.modelsRefreshedNow', 'Provider models refreshed just now.'), at: new Date() })
     } catch (error) {
       console.error('aicc.updateProviderKey failed', error)
       setKeyError(errorMessage(error, t('aiCenter.providers.updateKeyFailed', 'Could not update API key.')))
@@ -194,7 +194,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
     setRefreshFeedback(null)
     try {
       await store.refreshProviderModels(config.id)
-      setRefreshFeedback(t('aiCenter.providers.refreshModelsSuccess', 'Provider models refreshed.'))
+      setRefreshFeedback({ message: t('aiCenter.providers.refreshModelsSuccess', 'Provider models refreshed.'), at: new Date() })
     } catch (error) {
       console.error('aicc.refreshProviderModels failed', error)
       setRefreshError(errorMessage(error, t('aiCenter.providers.refreshModelsFailed', 'Could not refresh provider models.')))
@@ -554,7 +554,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
       {keyFeedback && <InlineNotice tone="success">{keyFeedback}</InlineNotice>}
       {refreshFeedback && (
         <InlineNotice tone="success">
-          {refreshFeedback} {t('aiCenter.providers.updatedAt', 'Updated at')} {new Date().toLocaleTimeString()}
+          {refreshFeedback.message} {t('aiCenter.providers.updatedAt', 'Updated at')} {refreshFeedback.at.toLocaleTimeString()}
         </InlineNotice>
       )}
       {refreshError && <InlineNotice tone="error">{refreshError}</InlineNotice>}

@@ -1,4 +1,4 @@
-import { createContext, useContext, useSyncExternalStore } from 'react'
+import { createContext, useContext, useMemo, useSyncExternalStore } from 'react'
 import type { MyNetworkStore } from '../datamodel/store'
 import type {
   Collection,
@@ -33,15 +33,19 @@ export function useCollection(id: string): Collection | undefined {
   return useCollections().find((collection) => collection.id === id)
 }
 
+const EMPTY_ENTITIES: MyNetworkEntity[] = []
+
 export function useCollectionEntities(collectionId: string): MyNetworkEntity[] {
   const snap = useMyNetworkSnapshot()
-  const collection = snap.collections.find((item) => item.id === collectionId)
-  if (!collection) return []
+  return useMemo(() => {
+    const collection = snap.collections.find((item) => item.id === collectionId)
+    if (!collection) return EMPTY_ENTITIES
 
-  const all: MyNetworkEntity[] = [
-    ...snap.contacts,
-    ...snap.entityGroups,
-  ]
-  const lookup = new Map(all.map((entity) => [entity.id, entity]))
-  return collection.entityIds.map((id) => lookup.get(id)).filter(Boolean) as MyNetworkEntity[]
+    const all: MyNetworkEntity[] = [
+      ...snap.contacts,
+      ...snap.entityGroups,
+    ]
+    const lookup = new Map(all.map((entity) => [entity.id, entity]))
+    return collection.entityIds.map((id) => lookup.get(id)).filter(Boolean) as MyNetworkEntity[]
+  }, [snap, collectionId])
 }
