@@ -130,14 +130,7 @@ impl LlmClient for AiccLlmClient {
         for feature in disable_capabilities {
             disable.set_feature_disabled(&feature);
         }
-        let response_format = if force_json {
-            Some(match json_schema {
-                Some(schema) => LlmResponseFormat::json_schema(None, schema, None),
-                None => LlmResponseFormat::json_object(),
-            })
-        } else {
-            None
-        };
+        let response_format = aicc_response_format(force_json, json_schema);
         let request = LlmChatHelperRequest {
             logical_model: model_alias,
             trace_id,
@@ -201,6 +194,15 @@ impl LlmClient for AiccLlmClient {
             }
         }
     }
+}
+
+fn aicc_response_format(force_json: bool, json_schema: Option<Value>) -> Option<LlmResponseFormat> {
+    force_json.then(|| match json_schema {
+        Some(schema) => {
+            LlmResponseFormat::json_schema(Some("llm_response".to_string()), schema, None)
+        }
+        None => LlmResponseFormat::json_object(),
+    })
 }
 
 /// Block until an AICC-side async task reaches a terminal state and return

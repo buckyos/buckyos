@@ -11,6 +11,7 @@ pub(crate) enum CanonicalFieldConverter {
     OpenaiTtsVoiceV1,
     OpenaiTtsVoiceV2,
     GeminiTtsVoiceV1,
+    GlmTtsVoiceV1,
     MinimaxTtsVoiceV1,
 }
 
@@ -95,7 +96,11 @@ pub(crate) fn resolve_canonical_field(
     requirement: &CanonicalFieldRequirement,
 ) -> ResolvedCanonicalField {
     let Some(mapping) = mapping else {
-        return unsupported();
+        return ResolvedCanonicalField {
+            quality: CanonicalMatchQuality::Default,
+            resolution: None,
+            omit: true,
+        };
     };
     let converted = convert_canonical_field(&mapping.converter, requirement);
     if converted.quality != CanonicalMatchQuality::Unsupported {
@@ -129,6 +134,7 @@ fn convert_canonical_field(
         CanonicalFieldConverter::OpenaiTtsVoiceV1 => resolve_openai_tts_voice_v1(requirement),
         CanonicalFieldConverter::OpenaiTtsVoiceV2 => resolve_openai_tts_voice_v2(requirement),
         CanonicalFieldConverter::GeminiTtsVoiceV1 => resolve_gemini_voice(requirement),
+        CanonicalFieldConverter::GlmTtsVoiceV1 => resolve_glm_voice(requirement),
         CanonicalFieldConverter::MinimaxTtsVoiceV1 => resolve_minimax_voice(requirement),
     }
 }
@@ -396,6 +402,133 @@ fn resolve_minimax_voice(requirement: &CanonicalFieldRequirement) -> ResolvedCan
     unsupported()
 }
 
+struct GlmVoiceProfile {
+    voice: &'static str,
+    gender: VoiceGender,
+    styles: &'static [VoiceStyle],
+}
+
+const GLM_VOICES: &[GlmVoiceProfile] = &[
+    GlmVoiceProfile {
+        voice: "tongtong",
+        gender: VoiceGender::Female,
+        styles: &[
+            VoiceStyle::Warm,
+            VoiceStyle::Friendly,
+            VoiceStyle::Gentle,
+            VoiceStyle::Clear,
+            VoiceStyle::Soft,
+            VoiceStyle::Even,
+        ],
+    },
+    GlmVoiceProfile {
+        voice: "xiaochen",
+        gender: VoiceGender::Male,
+        styles: &[
+            VoiceStyle::Informative,
+            VoiceStyle::Knowledgeable,
+            VoiceStyle::Mature,
+            VoiceStyle::Firm,
+            VoiceStyle::Clear,
+            VoiceStyle::Even,
+        ],
+    },
+    GlmVoiceProfile {
+        voice: "chuichui",
+        gender: VoiceGender::Female,
+        styles: &[
+            VoiceStyle::Bright,
+            VoiceStyle::Upbeat,
+            VoiceStyle::Youthful,
+            VoiceStyle::Lively,
+            VoiceStyle::Excitable,
+        ],
+    },
+    GlmVoiceProfile {
+        voice: "jam",
+        gender: VoiceGender::Neutral,
+        styles: &[VoiceStyle::Casual, VoiceStyle::Lively, VoiceStyle::Breezy],
+    },
+    GlmVoiceProfile {
+        voice: "kazi",
+        gender: VoiceGender::Neutral,
+        styles: &[VoiceStyle::Gravelly, VoiceStyle::Forward, VoiceStyle::Firm],
+    },
+    GlmVoiceProfile {
+        voice: "douji",
+        gender: VoiceGender::Neutral,
+        styles: &[
+            VoiceStyle::Excitable,
+            VoiceStyle::Upbeat,
+            VoiceStyle::Casual,
+        ],
+    },
+    GlmVoiceProfile {
+        voice: "luodo",
+        gender: VoiceGender::Neutral,
+        styles: &[
+            VoiceStyle::Smooth,
+            VoiceStyle::EasyGoing,
+            VoiceStyle::Breathy,
+        ],
+    },
+];
+
+fn resolve_glm_voice(requirement: &CanonicalFieldRequirement) -> ResolvedCanonicalField {
+    let Some(requested) = parse_voice_spec(requirement) else {
+        return unsupported();
+    };
+    if requested.instructions.is_some() {
+        return unsupported();
+    }
+    if let Some(language) = &requested.language {
+        let normalized = language.to_ascii_lowercase().replace('_', "-");
+        if normalized != "zh"
+            && normalized != "zh-cn"
+            && normalized != "cmn"
+            && normalized != "cmn-cn"
+        {
+            return unsupported();
+        }
+    }
+    let has_voice_constraints = requested.gender.is_some() || requested.style.is_some();
+    let (voice, quality) = if has_voice_constraints {
+        if !requirement.allow_fuzzy {
+            return unsupported();
+        }
+        let Some(voice) = select_glm_voice(&requested) else {
+            return unsupported();
+        };
+        (voice, CanonicalMatchQuality::Fuzzy)
+    } else {
+        ("tongtong", CanonicalMatchQuality::Exact)
+    };
+    resolved_with_options(
+        quality,
+        requirement.value.clone(),
+        BTreeMap::from([("voice".to_owned(), json!(voice))]),
+    )
+}
+
+fn select_glm_voice(requested: &VoiceSpec) -> Option<&'static str> {
+    GLM_VOICES
+        .iter()
+        .filter_map(|profile| {
+            let gender_score = requested
+                .gender
+                .is_some_and(|gender| gender == profile.gender)
+                as u8;
+            let style_score = requested
+                .style
+                .is_some_and(|style| profile.styles.contains(&style))
+                as u8;
+            let score = gender_score + style_score * 2;
+            (score > 0).then_some((score, profile.voice))
+        })
+        .max_by_key(|(score, _)| *score)
+        .map(|(_, voice)| voice)
+}
+
 fn combine_voice_instructions(requested: &VoiceSpec) -> Option<String> {
     let instructions = requested.instructions.as_deref();
     let style = requested
@@ -492,6 +625,12 @@ mod tests {
             resolve_canonical_field(Some(&gemini), &no_fuzzy).quality,
             CanonicalMatchQuality::Unsupported
         );
+        let unmapped = CanonicalFieldRequirement::new(json!({"style": "warm"}));
+        let unmapped_result = resolve_canonical_field(None, &unmapped);
+        assert!(unmapped_result.omit);
+        assert!(unmapped_result.satisfies(&unmapped));
+        let strict_unmapped = CanonicalFieldRequirement::strict(json!({"style": "warm"}));
+        assert!(!resolve_canonical_field(None, &strict_unmapped).satisfies(&strict_unmapped));
         let strict_unsupported = CanonicalFieldRequirement::strict(json!({"unsupported": "value"}));
         let defaulted = resolve_canonical_field(Some(&openai), &strict_unsupported);
         assert_eq!(defaulted.quality, CanonicalMatchQuality::Unsupported);
@@ -526,6 +665,63 @@ mod tests {
             .provider_options["voice"],
             "fable"
         );
+        let glm = CanonicalFieldMapping {
+            converter: CanonicalFieldConverter::GlmTtsVoiceV1,
+            fallback: CanonicalFallback::Default { value: json!({}) },
+        };
+        let glm_zh = resolve_canonical_field(
+            Some(&glm),
+            &CanonicalFieldRequirement::new(json!({"language": "zh-CN"})),
+        );
+        assert_eq!(glm_zh.quality, CanonicalMatchQuality::Exact);
+        assert_eq!(
+            glm_zh.resolution.unwrap().provider_options["voice"],
+            "tongtong"
+        );
+        let glm_male = resolve_canonical_field(
+            Some(&glm),
+            &CanonicalFieldRequirement::new(json!({"gender": "male"})),
+        );
+        assert_eq!(glm_male.quality, CanonicalMatchQuality::Fuzzy);
+        assert_eq!(
+            glm_male.resolution.unwrap().provider_options["voice"],
+            "xiaochen"
+        );
+        let glm_warm = resolve_canonical_field(
+            Some(&glm),
+            &CanonicalFieldRequirement::new(json!({"style": "warm"})),
+        );
+        assert_eq!(glm_warm.quality, CanonicalMatchQuality::Fuzzy);
+        assert_eq!(
+            glm_warm.resolution.unwrap().provider_options["voice"],
+            "tongtong"
+        );
+        let glm_gravelly = resolve_canonical_field(
+            Some(&glm),
+            &CanonicalFieldRequirement::new(json!({"style": "gravelly"})),
+        );
+        assert_eq!(glm_gravelly.quality, CanonicalMatchQuality::Fuzzy);
+        assert_eq!(
+            glm_gravelly.resolution.unwrap().provider_options["voice"],
+            "kazi"
+        );
+        let glm_easy_going = resolve_canonical_field(
+            Some(&glm),
+            &CanonicalFieldRequirement::new(json!({"style": "easy_going"})),
+        );
+        assert_eq!(glm_easy_going.quality, CanonicalMatchQuality::Fuzzy);
+        assert_eq!(
+            glm_easy_going.resolution.unwrap().provider_options["voice"],
+            "luodo"
+        );
+        assert_eq!(
+            resolve_canonical_field(
+                Some(&glm),
+                &CanonicalFieldRequirement::strict(json!({"style": "warm"}))
+            )
+            .quality,
+            CanonicalMatchQuality::Unsupported
+        );
         assert_eq!(
             resolve_missing_canonical_field(&openai)
                 .resolution
@@ -540,6 +736,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(CanonicalFieldConverter::GeminiTtsVoiceV1).unwrap(),
             json!("gemini_tts_voice_v1")
+        );
+        assert_eq!(
+            serde_json::to_value(CanonicalFieldConverter::GlmTtsVoiceV1).unwrap(),
+            json!("glm_tts_voice_v1")
         );
         assert!(serde_json::from_value::<CanonicalFieldConverter>(json!("unknown")).is_err());
         let mapping: CanonicalFieldMapping = serde_json::from_value(json!({

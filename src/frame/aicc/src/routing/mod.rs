@@ -262,10 +262,23 @@ impl fmt::Display for RoutingError {
         match self {
             Self::InvalidRequest(reason) => write!(formatter, "invalid route request: {reason}"),
             Self::InvalidExactModel(model) => write!(formatter, "exact model not found: {model}"),
-            Self::ExactModelUnavailable { exact_model, .. } => {
-                write!(formatter, "exact model unavailable: {exact_model}")
+            Self::ExactModelUnavailable {
+                exact_model,
+                reasons,
+            } => {
+                write!(
+                    formatter,
+                    "exact model unavailable: {exact_model}{}",
+                    format_filter_reasons(reasons)
+                )
             }
-            Self::NoCandidate { model, .. } => write!(formatter, "no candidate for {model}"),
+            Self::NoCandidate { model, filtered } => {
+                write!(
+                    formatter,
+                    "no candidate for {model}{}",
+                    format_filtered_candidates(filtered)
+                )
+            }
             Self::FallbackNotAllowed(model) => {
                 write!(formatter, "fallback is not allowed for {model}")
             }
@@ -277,6 +290,46 @@ impl fmt::Display for RoutingError {
             Self::Registry(error) => error.fmt(formatter),
         }
     }
+}
+
+fn format_filter_reasons(reasons: &[FilterReasonTrace]) -> String {
+    if reasons.is_empty() {
+        return String::new();
+    }
+    let joined = reasons
+        .iter()
+        .take(4)
+        .map(|reason| reason.code.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let suffix = if reasons.len() > 4 { ",..." } else { "" };
+    format!(": filtered by {joined}{suffix}")
+}
+
+fn format_filtered_candidates(candidates: &[FilteredCandidateTrace]) -> String {
+    if candidates.is_empty() {
+        return String::new();
+    }
+    let joined = candidates
+        .iter()
+        .take(4)
+        .map(|candidate| {
+            let reasons = candidate
+                .reasons
+                .iter()
+                .take(3)
+                .map(|reason| reason.code.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{}@{}[{reasons}]",
+                candidate.exact_model, candidate.provider_instance_name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let suffix = if candidates.len() > 4 { "; ..." } else { "" };
+    format!(": filtered candidates {joined}{suffix}")
 }
 
 impl Error for RoutingError {}
@@ -1686,6 +1739,25 @@ mod tests {
     }
 
     #[test]
+    fn missing_canonical_mapping_does_not_filter_non_strict_requests() {
+        let mut request = request("local@local");
+        request.requirements.canonical_fields.insert(
+            "/voice".into(),
+            buckyos_api::CanonicalFieldRequirement::new(json!({"language": "zh-CN"})),
+        );
+
+        let decision = route(
+            AiccSchedulerProfile::Balanced,
+            &RoutingPolicyPatch::default(),
+            &request,
+            &runtime(),
+        )
+        .unwrap();
+
+        assert_eq!(decision.selected.exact_model, "local@local");
+    }
+
+    #[test]
     fn exact_route_does_not_fallback_by_default() {
         let mut runtime = runtime();
         runtime.get_mut("fast@cloud-b").unwrap().health = ProviderHealthStatus::Unavailable;
@@ -2100,6 +2172,10 @@ mod tests {
         let error = Router::new(&registry, &engine, &runtime)
             .route(&request("llm.family"))
             .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("no candidate for llm.family"));
+        assert!(message.contains("cheap@cloud-a@cloud-a[latency_unavailable]"));
+        assert!(message.contains("fast@cloud-b@cloud-b[latency_ceiling_exceeded]"));
         let RoutingError::NoCandidate { filtered, .. } = error else {
             panic!("expected all candidates to be rejected by max latency");
         };

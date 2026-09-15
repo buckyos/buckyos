@@ -61,7 +61,7 @@ use llm_context::{
 
 use crate::local_llm_context::{Compressor, LocalLLMContextError};
 use crate::{LocalLLMContext, OneShotRequest};
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::fs;
 use tokio::io::AsyncReadExt;
 
@@ -493,14 +493,7 @@ impl LlmClient for AiccLlmClient {
         for feature in disable_capabilities {
             disable.set_feature_disabled(&feature);
         }
-        let response_format = if force_json {
-            Some(match json_schema {
-                Some(schema) => LlmResponseFormat::json_schema(None, schema, None),
-                None => LlmResponseFormat::json_object(),
-            })
-        } else {
-            None
-        };
+        let response_format = aicc_response_format(force_json, json_schema);
         let request = LlmChatHelperRequest {
             logical_model: model_alias.clone(),
             trace_id,
@@ -569,6 +562,15 @@ impl LlmClient for AiccLlmClient {
     }
 }
 
+fn aicc_response_format(force_json: bool, json_schema: Option<Value>) -> Option<LlmResponseFormat> {
+    force_json.then(|| match json_schema {
+        Some(schema) => {
+            LlmResponseFormat::json_schema(Some("llm_response".to_string()), schema, None)
+        }
+        None => LlmResponseFormat::json_object(),
+    })
+}
+
 // =========================================================================
 // Compressor：保留 system + 最后 N 条
 // =========================================================================
@@ -615,9 +617,9 @@ mod tests {
             "required": ["answer"],
             "properties": { "answer": { "type": "string" } }
         });
-        let format = LlmResponseFormat::json_schema(None, schema.clone(), Some(true));
+        let format = aicc_response_format(true, Some(schema.clone())).unwrap();
         let value = serde_json::to_value(format).unwrap();
+        assert_eq!(value["json_schema"]["name"], "llm_response");
         assert_eq!(value["json_schema"]["schema"], schema);
-        assert_eq!(value["json_schema"]["strict"], true);
     }
 }

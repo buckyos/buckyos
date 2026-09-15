@@ -728,7 +728,7 @@ mod tests {
                 ),
                 (
                     "glm".to_owned(),
-                    "46:b19368983c15cf55819014181e8089c2c88527a30e78fa9a4d445e1e57e125ec"
+                    "46:fd0097818afebae188ed251f83a93c4d6a4956b5039a09a369e6b2267844955d"
                         .to_owned()
                 ),
                 (
