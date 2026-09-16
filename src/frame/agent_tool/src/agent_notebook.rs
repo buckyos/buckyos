@@ -2171,7 +2171,7 @@ impl AgentNotebook {
 
     pub fn build_notebook_hints(&self, input: BuildHintsInput) -> Result<HintsContext> {
         let topic_tags = match &input.topic_tags {
-            Some(t) => normalize_tags(t)?,
+            Some(t) => filter_recall_tags(t),
             None => Vec::new(),
         };
         let max_hints = input.max_hints.unwrap_or(DEFAULT_MAX_HINTS);
@@ -2590,6 +2590,20 @@ pub fn normalize_tags(raw: &[String]) -> Result<Vec<String>> {
         set.insert(lower, ());
     }
     Ok(set.into_keys().collect())
+}
+
+fn filter_recall_tags(raw: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for tag in raw {
+        match normalize_tags(std::slice::from_ref(tag)) {
+            Ok(mut normalized) => out.append(&mut normalized),
+            Err(error) => log::warn!(
+                "notebook recall: ignoring invalid filter tag {tag:?}: {}",
+                error
+            ),
+        }
+    }
+    out
 }
 
 fn validate_tag(tag: &str) -> Result<()> {
@@ -4212,6 +4226,31 @@ mod tests {
             .suppressed
             .iter()
             .any(|s| s.reason == HintSuppressionReason::AlreadyReadUnchanged));
+    }
+
+    #[test]
+    fn topic_hints_ignore_invalid_filter_tags_instead_of_failing() {
+        let (_t, n) = open_tmp();
+        append(&n, "user/prefs", "theme", "dark mode", &["focus"]);
+        let h = n
+            .build_notebook_hints(BuildHintsInput {
+                session_id: "S".into(),
+                topic_tags: Some(vec!["gen_image".into(), "focus".into()]),
+                candidate_notebook_ids: None,
+                max_hints: Some(3),
+            })
+            .unwrap();
+        assert!(h.hints.iter().any(|x| x.notebook_id == "user/prefs"));
+
+        let none = n
+            .build_notebook_hints(BuildHintsInput {
+                session_id: "S".into(),
+                topic_tags: Some(vec!["gen_image".into()]),
+                candidate_notebook_ids: None,
+                max_hints: Some(3),
+            })
+            .unwrap();
+        assert!(none.hints.is_empty());
     }
 
     #[test]

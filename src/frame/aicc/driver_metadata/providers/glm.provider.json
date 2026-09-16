@@ -58,6 +58,9 @@
   ],
   "variants": [
     { "model_driver": "glm", "variant": "thinking-enabled", "match": { "provider_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"], "variant": "thinking-enabled" }, "provider_options": { "thinking": { "type": "enabled" } } },
-    { "model_driver": "glm", "variant": "thinking-disabled", "match": { "provider_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"], "variant": "thinking-disabled" }, "provider_options": { "thinking": { "type": "disabled" } } }
+    { "model_driver": "glm", "variant": "thinking-disabled", "match": { "provider_model_id": ["glm-5", "glm-5-*", "glm-5.1*", "glm-5.2*", "glm-5-turbo*", "glm-5v-turbo*", "glm-4.6*", "glm-4.5", "glm-4.5-x*", "glm-4.5-flash*"], "variant": "thinking-disabled" }, "provider_options": { "thinking": { "type": "disabled" } } },
+    { "model_driver": "glm", "variant": "effort-max", "match": { "provider_model_id": ["glm-5.2*", "glm-5.3*"], "variant": "effort-max" }, "provider_options": { "reasoning_effort": "max" } },
+    { "model_driver": "glm", "variant": "effort-high", "match": { "provider_model_id": ["glm-5.2*", "glm-5.3*"], "variant": "effort-high" }, "provider_options": { "reasoning_effort": "high" } },
+    { "model_driver": "glm", "variant": "effort-low", "match": { "provider_model_id": ["glm-5.3*"], "variant": "effort-low" }, "provider_options": { "reasoning_effort": "low" } }
   ]
 }
