@@ -230,7 +230,7 @@
   },
   "variants": [
     { "name": "reasoning-none", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "none" } } },
-    { "name": "reasoning-minimal", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "minimal" } } },
+    { "name": "reasoning-mini", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "minimal" } } },
     { "name": "reasoning-low", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "low" } } },
     { "name": "reasoning-medium", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "medium" } } },
     { "name": "reasoning-high", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "high" } } },

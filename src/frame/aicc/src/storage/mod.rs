@@ -489,14 +489,7 @@ impl AiccStorage {
         &self,
         completion: ProviderCompletion,
     ) -> StorageResult<UsageWriteOutcome> {
-        let usage = completion.usage.ok_or(StorageError::MissingUsage)?;
-        if usage.input_tokens.is_none()
-            && usage.output_tokens.is_none()
-            && usage.total_tokens.is_none()
-            && usage.request_units.is_none()
-        {
-            return Err(StorageError::MissingUsage);
-        }
+        let usage = completion.usage.unwrap_or_default();
         let event = AiccUsageEvent {
             event_id: completion.event_id,
             tenant_id: completion.tenant_id,
@@ -2060,14 +2053,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn usage_is_required_deduplicated_and_queryable() {
+    async fn usage_is_optional_deduplicated_and_queryable() {
         let db = db().await;
         let mut missing = completion("e0", "t0", "i0", 9_000);
         missing.usage = None;
-        assert!(matches!(
-            db.write_provider_completion(missing).await,
-            Err(StorageError::MissingUsage)
-        ));
+        assert_eq!(
+            db.write_provider_completion(missing).await.unwrap(),
+            UsageWriteOutcome::Inserted
+        );
         assert_eq!(
             db.write_provider_completion(completion("e1", "t1", "i1", 9_000))
                 .await
@@ -2106,10 +2099,10 @@ mod tests {
             cursor: None,
         };
         let first = db.query_usage(&request, 20_000).await.unwrap();
-        assert_eq!(first.total.total_requests, 2);
+        assert_eq!(first.total.total_requests, 3);
         assert_eq!(first.total.total_tokens, 30);
-        assert_eq!(first.total.consumed_request_units, 2);
-        assert_eq!(first.total.finance_totals, vec![Money::new(0.5, "USD")]);
+        assert_eq!(first.total.consumed_request_units, 3);
+        assert_eq!(first.total.finance_totals, vec![Money::new(0.75, "USD")]);
         assert!(first.total.finance_complete);
         assert_eq!(first.grouped.len(), 1);
         assert_eq!(first.grouped[0].group["user_id"], "user-a");

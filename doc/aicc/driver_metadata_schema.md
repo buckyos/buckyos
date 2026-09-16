@@ -172,7 +172,7 @@ Variants define semantic identities and their origin-provider fallback lowering:
 
 ```json
 {
-  "name": "reasoning.high",
+  "name": "reasoning-high",
   "match": "gpt-*",
   "mount_suffix": "reasoning-high",
   "provider_options": {
@@ -199,6 +199,40 @@ If at least one Provider variant matches, those matches are the complete
 effective variant set for that model. Model Driver `variants` are used only
 when no Provider variant matches the model. The two sources are not merged or
 deduplicated by a static variant identity key.
+
+### Variant naming
+
+Variant names are a closed, Provider-independent vocabulary shared by Model
+Driver and Provider Rules catalogs. Every Model Driver `variants[].name` and
+every Provider Rules `variants[].variant` MUST be exactly one of the following
+tiers, ordered from no reasoning to the largest budget:
+
+| Canonical name | Tier |
+| --- | --- |
+| `reasoning-none` | Reasoning disabled. |
+| `reasoning-mini` | Lowest enabled tier; vendor `minimal`. |
+| `reasoning-low` | Low. |
+| `reasoning-medium` | Common/default tier; vendor `medium`/`normal`, or `enable` for a plain on/off switch. |
+| `reasoning-high` | High. |
+| `reasoning-xhigh` | Extra high; vendor `xhigh`. |
+| `reasoning-max` | Maximum. |
+
+Vendor-specific tier names MUST be normalized to the closest canonical name.
+Names such as `effort-low`, `effort-medium`, `effort-high`, `effort-xhigh`,
+`effort-max`, `thinking-enabled`, `thinking-disabled` or `reasoning-minimal`
+are forbidden. Only the variant name is normalized: `provider_options` keep the
+vendor's own parameter names and values.
+
+Mapping rules:
+
+- Vendor `disable` / `disabled` maps to `reasoning-none`.
+- A model that only exposes an on/off switch maps `enable` to `reasoning-medium`.
+- Vendor `medium` / `normal` or an equivalent common/default tier maps to
+  `reasoning-medium`; tiers above or below map to the nearest canonical name
+  (`minimal` -> `reasoning-mini`, `xhigh` -> `reasoning-xhigh`).
+- A Model Driver variant and the Provider Rules variant that lowers the same
+  concrete model MUST use the identical canonical name. `mount_suffix`, when
+  present, uses that same string.
 
 ## Version rules
 

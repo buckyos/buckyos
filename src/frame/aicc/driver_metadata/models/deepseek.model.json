@@ -58,7 +58,7 @@
     "version_rules": ["deepseek-flash", "deepseek-pro"]
   },
   "variants": [
-    { "name": "reasoning-minimal", "match": "deepseek-v4-*", "provider_options": { "reasoning": { "effort": "minimal" } } },
+    { "name": "reasoning-mini", "match": "deepseek-v4-*", "provider_options": { "reasoning": { "effort": "minimal" } } },
     { "name": "reasoning-none", "match": "deepseek-v4-*", "provider_options": { "reasoning": { "effort": "none" } } },
     { "name": "reasoning-low", "match": "deepseek-v4-*", "provider_options": { "reasoning": { "effort": "low" } } },
     { "name": "reasoning-medium", "match": "deepseek-v4-*", "provider_options": { "reasoning": { "effort": "medium" } } },

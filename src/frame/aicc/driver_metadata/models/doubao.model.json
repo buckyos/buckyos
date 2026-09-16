@@ -70,7 +70,7 @@
     "version_rules": ["doubao-pro", "doubao-lite", "doubao-mini", "doubao-code"]
   },
   "variants": [
-    { "name": "thinking-disabled", "match": "doubao-seed-2-0-*", "provider_options": { "thinking": { "type": "disabled" } } }
+    { "name": "reasoning-none", "match": "doubao-seed-2-0-*", "provider_options": { "thinking": { "type": "disabled" } } }
   ],
   "version_rules": [
     { "id": "doubao-pro", "family": "doubao-seed", "tier": "pro", "match": "doubao-seed-*-pro-*", "tier_tokens": ["pro"], "version_rank": { "prefix": "doubao-seed" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.doubao-pro", "version_mount": "llm.doubao.{model}" },
