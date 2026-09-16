@@ -1136,8 +1136,12 @@ impl AgentMemory {
         tags: &[String],
         opts: MemoryRecallOptions,
     ) -> Result<Vec<MemoryHint>> {
+        let filter_tags = filter_recall_tags(tags);
+        if filter_tags.is_empty() && tags.iter().any(|tag| !tag.trim().is_empty()) {
+            return Ok(Vec::new());
+        }
         let mut candidates = self.load(
-            tags,
+            &filter_tags,
             LoadOptions {
                 max_records: memory_candidate_limit(&opts),
                 max_bytes: DEFAULT_MAX_BYTES,
@@ -2579,6 +2583,20 @@ fn normalize_tags(tags: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
+fn filter_recall_tags(raw: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for tag in raw {
+        match normalize_tags(std::slice::from_ref(tag)) {
+            Ok(mut normalized) => out.append(&mut normalized),
+            Err(error) => log::warn!(
+                "memory recall: ignoring invalid filter tag {tag:?}: {}",
+                error
+            ),
+        }
+    }
+    out
+}
+
 fn collapse_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_space = false;
@@ -3076,6 +3094,36 @@ mod tests {
         assert!(validate_tag("绘画创作").is_ok());
         assert!(validate_tag("a").is_err());
         assert!(validate_tag("with\"quote").is_err());
+    }
+
+    #[test]
+    fn recall_hints_ignores_invalid_filter_tags_instead_of_failing() {
+        let (_tmp, m) = open_tmp();
+        m.set_free(FlatSetOp {
+            key: "/free/theme".to_string(),
+            content: "User prefers dark mode".to_string(),
+            reason: "test".to_string(),
+            entities: Vec::new(),
+            tags: vec!["theme".to_string()],
+            weight: Some(1.0),
+            confidence: Some(1.0),
+        })
+        .unwrap();
+
+        let opts = MemoryRecallOptions {
+            max_hints: 3,
+            ..MemoryRecallOptions::default()
+        };
+        let mixed = m
+            .recall_hints(
+                &["gen_image".to_string(), "theme".to_string()],
+                opts.clone(),
+            )
+            .unwrap();
+        assert!(!mixed.is_empty());
+
+        let all_invalid = m.recall_hints(&["gen_image".to_string()], opts).unwrap();
+        assert!(all_invalid.is_empty());
     }
 
     #[test]

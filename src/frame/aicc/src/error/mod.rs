@@ -520,11 +520,32 @@ impl ProtocolError {
     }
 
     pub(crate) fn is_model_unavailable(&self) -> bool {
-        self.provider_code.as_deref() == Some("1211")
+        matches!(self.provider_code.as_deref(), Some("1211" | "1212"))
             || contains_any(
                 &self.message,
-                &["model does not exist", "model not found", "unknown model"],
+                &[
+                    "model does not exist",
+                    "model not found",
+                    "unknown model",
+                    "当前模型不支持",
+                    "始终思考",
+                    "不支持关闭思考",
+                ],
             )
+    }
+
+    pub(crate) fn is_account_exhausted(&self) -> bool {
+        contains_any(
+            &self.message,
+            &[
+                "余额不足",
+                "请充值",
+                "insufficient balance",
+                "insufficient quota",
+                "quota exhausted",
+                "quota exceeded",
+            ],
+        )
     }
 
     pub(crate) fn retry_same_model(&self) -> bool {
@@ -552,6 +573,8 @@ impl ProtocolError {
                     "insufficient quota",
                     "insufficient balance",
                     "model temporarily unavailable",
+                    "余额不足",
+                    "请充值",
                 ],
             )
     }
@@ -644,5 +667,44 @@ mod tests {
             ProtocolError::new(ProtocolErrorKind::Authentication, "invalid API key");
         assert!(!authentication.retry_same_model());
         assert!(!authentication.allows_model_failover());
+    }
+
+    #[test]
+    fn glm_thinking_capability_errors_are_model_unavailable() {
+        for message in [
+            "OpenAI 1210: 该模型始终思考，不支持关闭思考；请使用 low、high 或 max。",
+            "OpenAI 1210: 该模型不支持关闭思考",
+            "OpenAI 1212: 当前模型不支持 embeddings 调用方式",
+        ] {
+            let error = ProtocolError::new(ProtocolErrorKind::ProviderRejected, message);
+            assert!(error.is_model_unavailable(), "{message}");
+            assert!(!error.retry_same_model());
+            assert!(error.allows_model_failover());
+        }
+
+        let generic_param_error = ProtocolError::new(
+            ProtocolErrorKind::ProviderRejected,
+            "OpenAI 1210: API 调用参数有误，请检查文档",
+        );
+        assert!(!generic_param_error.is_model_unavailable());
+
+        let model_missing = ProtocolError::new(
+            ProtocolErrorKind::ProviderRejected,
+            "OpenAI 1211: 模型不存在，请检查模型代码",
+        )
+        .with_provider_code(Some("1211".to_owned()));
+        assert!(model_missing.is_model_unavailable());
+    }
+
+    #[test]
+    fn account_exhaustion_is_recognized_and_not_retried_same_model() {
+        let error = ProtocolError::new(
+            ProtocolErrorKind::Transport,
+            "OpenAI 1113: 余额不足或无可用资源包,请充值。",
+        );
+        assert!(error.is_account_exhausted());
+        assert!(!error.is_model_unavailable());
+        assert!(!error.retry_same_model());
+        assert!(error.allows_model_failover());
     }
 }

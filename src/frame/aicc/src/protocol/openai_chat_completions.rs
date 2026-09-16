@@ -1128,6 +1128,7 @@ fn decode_error_response(response: HttpResponse) -> ProtocolError {
     );
     let kind = super::protocol_error_kind_from_http_status(response.status);
     ProtocolError::new(kind, message)
+        .with_provider_code(provider_code)
         .with_request_id(Some(response.request_id))
         .with_retry_after(response.retry_after)
 }
@@ -2402,5 +2403,18 @@ mod tests {
         assert!(!rendered.contains("test-secret"));
         let golden = ProtocolContractHarness::default().request(&wire).unwrap();
         assert_eq!(golden.headers[AUTHORIZATION.as_str()], "[REDACTED]");
+    }
+
+    #[test]
+    fn error_response_keeps_provider_code_for_model_unavailable_classification() {
+        let response = success_response(json!({
+            "error": {
+                "code": "1210",
+                "message": "该模型始终思考，不支持关闭思考；请使用 low、high 或 max。"
+            }
+        }));
+        let error = decode_error_response(response);
+        assert_eq!(error.provider_code.as_deref(), Some("1210"));
+        assert!(error.is_model_unavailable());
     }
 }

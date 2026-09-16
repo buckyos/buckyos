@@ -883,7 +883,9 @@ fn observed_protocol_stream(
 }
 
 fn health_failure_kind(error: &ProtocolError) -> HealthFailureKind {
-    if error.is_model_unavailable() {
+    if error.is_account_exhausted() {
+        HealthFailureKind::Permanent
+    } else if error.is_model_unavailable() {
         HealthFailureKind::ModelUnavailable
     } else if error.allows_model_failover() {
         HealthFailureKind::Transient
@@ -906,4 +908,33 @@ fn credential_fingerprint(reference: &str) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_failure_kind_scopes_account_exhaustion_and_model_capability_errors() {
+        let exhausted = ProtocolError::new(
+            ProtocolErrorKind::Transport,
+            "OpenAI 1113: 余额不足或无可用资源包,请充值。",
+        );
+        assert_eq!(
+            health_failure_kind(&exhausted),
+            HealthFailureKind::Permanent
+        );
+
+        let thinking_unsupported = ProtocolError::new(
+            ProtocolErrorKind::Transport,
+            "OpenAI 1210: 该模型始终思考，不支持关闭思考；请使用 low、high 或 max。",
+        );
+        assert_eq!(
+            health_failure_kind(&thinking_unsupported),
+            HealthFailureKind::ModelUnavailable
+        );
+
+        let timeout = ProtocolError::new(ProtocolErrorKind::Timeout, "timed out");
+        assert_eq!(health_failure_kind(&timeout), HealthFailureKind::Transient);
+    }
 }

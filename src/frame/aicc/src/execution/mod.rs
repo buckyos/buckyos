@@ -966,13 +966,18 @@ impl ExecutionEngine {
         if record.state.is_terminal() {
             return Ok(record.into());
         }
-        let binding = record.binding.clone().ok_or_else(|| {
-            aicc_error(
-                AiccErrorCode::InternalError,
-                "running task has no pinned Provider binding",
-                false,
-            )
-        })?;
+        let Some(binding) = record.binding.clone() else {
+            return self
+                .finish_failure(
+                    task_id,
+                    aicc_error(
+                        AiccErrorCode::InternalError,
+                        "running task has no pinned Provider binding",
+                        false,
+                    ),
+                )
+                .await;
+        };
         if binding.remote_task_id.is_none() {
             return self
                 .finish_failure(
@@ -1076,14 +1081,21 @@ impl ExecutionEngine {
 
     pub(crate) async fn recover(&self) -> Result<Vec<ExecutionReceipt>, AiccError> {
         let records = self.store.recoverable().await?;
-        join_all(
-            records
-                .iter()
-                .map(|record| self.drive_native(&record.task_id)),
-        )
-        .await
-        .into_iter()
-        .collect()
+        let task_ids: Vec<String> = records
+            .iter()
+            .map(|record| record.task_id.clone())
+            .collect();
+        let results = join_all(task_ids.iter().map(|task_id| self.drive_native(task_id))).await;
+        let mut receipts = Vec::with_capacity(results.len());
+        for (task_id, result) in task_ids.into_iter().zip(results) {
+            match result {
+                Ok(receipt) => receipts.push(receipt),
+                Err(error) => {
+                    log::warn!("AICC task recovery: resume failed for task {task_id}: {error}");
+                }
+            }
+        }
+        Ok(receipts)
     }
 
     pub(crate) async fn cancel(&self, tenant_id: &str, task_id: &str) -> Result<bool, AiccError> {
@@ -1420,7 +1432,7 @@ mod tests {
     use buckyos_api::{AiccCall, LlmChatInvokeRequest};
     use futures_util::stream;
     use serde_json::json;
-    use std::collections::VecDeque;
+    use std::collections::{BTreeSet, VecDeque};
     use std::time::Duration;
 
     #[derive(Default)]
@@ -2585,6 +2597,90 @@ mod tests {
                 .unwrap()
                 .state,
             ExecutionState::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_fails_orphan_submitted_task_and_still_resumes_healthy_tasks() {
+        let providers = Arc::new(FakeProviders::default());
+        let mut handle = NativeTaskHandle::new("remote-orphan-neighbor").unwrap();
+        handle.state = NativeTaskState::Queued;
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::NativeTask {
+                handle,
+                resume: resume_descriptor(),
+            }));
+        let (engine, store, tasks, usage) = make_engine(providers.clone());
+
+        let orphan_request = request(call("primary"));
+        let orphan_scope = IdempotencyScope::new(
+            orphan_request.tenant_id.clone(),
+            orphan_request.primary.method.clone(),
+            "orphan-1",
+        )
+        .unwrap();
+        let orphan = ExecutionRecord {
+            scope: orphan_scope,
+            usage_event_id: "usage-orphan".into(),
+            trace_id: orphan_request.trace_id.clone(),
+            user_id: orphan_request.user_id.clone(),
+            caller_app_id: orphan_request.caller_app_id.clone(),
+            request_model: orphan_request.request_model.clone(),
+            body_fingerprint: canonical_body_fingerprint(&orphan_request.canonical_body).unwrap(),
+            task_id: "orphan-task".into(),
+            event_ref: "orphan-task/events".into(),
+            state: ExecutionState::Submitted,
+            binding: None,
+            output: None,
+            error: None,
+            created_at_ms: 1_000,
+            expires_at_ms: 2_000,
+        };
+        store.claim(orphan).await.unwrap();
+
+        let started = engine.execute(request(call("primary"))).await.unwrap();
+        assert!(!started.state.is_terminal());
+        *providers.poll_error.lock().unwrap() = Some(NativeTaskResumeError::CredentialUnavailable);
+
+        let restarted = ExecutionEngine::new(store.clone(), tasks.clone(), providers, usage);
+        let recovered = restarted.recover().await.unwrap();
+        assert_eq!(recovered.len(), 2);
+
+        let orphan_receipt = recovered
+            .iter()
+            .find(|receipt| receipt.task_id == "orphan-task")
+            .expect("orphan task receipt");
+        assert_eq!(orphan_receipt.state, ExecutionState::Failed);
+        let orphan_error = orphan_receipt.error.as_ref().unwrap();
+        assert_eq!(orphan_error.code, AiccErrorCode::InternalError);
+        assert!(!orphan_error.retriable);
+        assert_eq!(
+            store.get_task("orphan-task").await.unwrap().unwrap().state,
+            ExecutionState::Failed
+        );
+
+        let neighbor_receipt = recovered
+            .iter()
+            .find(|receipt| receipt.task_id == started.task_id)
+            .expect("healthy task receipt");
+        assert_eq!(neighbor_receipt.state, ExecutionState::Failed);
+        assert_eq!(
+            neighbor_receipt.error.as_ref().unwrap().code,
+            AiccErrorCode::ProviderError
+        );
+        let failed_tasks: BTreeSet<String> = tasks
+            .failed
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(task_id, _)| task_id.clone())
+            .collect();
+        assert_eq!(
+            failed_tasks,
+            BTreeSet::from(["orphan-task".to_string(), started.task_id.clone()])
         );
     }
 
