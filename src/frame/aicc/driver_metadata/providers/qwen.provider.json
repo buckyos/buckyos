@@ -37,8 +37,8 @@
     },
     {
       "model_driver": "qwen",
-      "variant": "reasoning-minimal",
-      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-minimal" },
+      "variant": "reasoning-mini",
+      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-mini" },
       "provider_options": { "reasoning": { "effort": "minimal" } }
     },
     {

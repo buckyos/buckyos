@@ -188,17 +188,17 @@ fn anthropic_effort_variants_exclude_unsupported_haiku() {
     assert_eq!(
         variants("claude-sonnet-5"),
         [
-            "effort-low",
-            "effort-medium",
-            "effort-high",
-            "effort-xhigh",
-            "effort-max",
+            "reasoning-low",
+            "reasoning-medium",
+            "reasoning-high",
+            "reasoning-xhigh",
+            "reasoning-max",
         ]
     );
     for model in ["claude-haiku-4-5-20251001", "claude-sonnet-5"] {
         let context = BTreeMap::from([
             ("provider_model_id".to_owned(), json!(model)),
-            ("variant".to_owned(), json!("effort-high")),
+            ("variant".to_owned(), json!("reasoning-high")),
         ]);
         let matched = snapshot
             .matching_provider_variants("claude", &context)

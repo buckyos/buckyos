@@ -299,11 +299,11 @@
   "patterns": [],
   "defaults": { "version_rules": ["glm-standard", "glm-turbo", "glm-air", "glm-airx", "glm-flash", "glm-flashx"] },
   "variants": [
-    { "name": "thinking-enabled", "match": { "origin_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"] }, "provider_options": { "thinking": { "type": "enabled" } } },
-    { "name": "thinking-disabled", "match": { "origin_model_id": ["glm-5", "glm-5-*", "glm-5.1*", "glm-5.2*", "glm-5-turbo*", "glm-5v-turbo*", "glm-4.6*", "glm-4.5", "glm-4.5-x*", "glm-4.5-flash*"] }, "provider_options": { "thinking": { "type": "disabled" } } },
-    { "name": "effort-max", "match": { "origin_model_id": ["glm-5.2*", "glm-5.3*"] }, "provider_options": { "reasoning_effort": "max" } },
-    { "name": "effort-high", "match": { "origin_model_id": ["glm-5.2*", "glm-5.3*"] }, "provider_options": { "reasoning_effort": "high" } },
-    { "name": "effort-low", "match": { "origin_model_id": ["glm-5.3*"] }, "provider_options": { "reasoning_effort": "low" } }
+    { "name": "reasoning-medium", "match": { "origin_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"] }, "provider_options": { "thinking": { "type": "enabled" } } },
+    { "name": "reasoning-none", "match": { "origin_model_id": ["glm-5", "glm-5-*", "glm-5.1*", "glm-5.2*", "glm-5-turbo*", "glm-5v-turbo*", "glm-4.6*", "glm-4.5", "glm-4.5-x*", "glm-4.5-flash*"] }, "provider_options": { "thinking": { "type": "disabled" } } },
+    { "name": "reasoning-max", "match": { "origin_model_id": ["glm-5.2*", "glm-5.3*"] }, "provider_options": { "reasoning_effort": "max" } },
+    { "name": "reasoning-high", "match": { "origin_model_id": ["glm-5.2*", "glm-5.3*"] }, "provider_options": { "reasoning_effort": "high" } },
+    { "name": "reasoning-low", "match": { "origin_model_id": ["glm-5.3*"] }, "provider_options": { "reasoning_effort": "low" } }
   ],
   "version_rules": [
     { "id": "glm-standard", "family": "glm", "tier": "standard", "match": "glm-*", "exclude_tier_tokens": ["turbo", "air", "airx", "flash", "flashx"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm", "version_mount": "llm.glm.{model}" },

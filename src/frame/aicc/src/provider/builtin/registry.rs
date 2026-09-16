@@ -707,15 +707,15 @@ mod tests {
             BTreeMap::from([
                 (
                     "claude".to_owned(),
-                    "5:b82f1a71d81c76fc08c65a6c30b69eb740d2e4b79346d43dc740b07b4be2c122".to_owned()
+                    "5:1cb7434a4dc0f40787a4b8783ea70d30163b51a6bdda38e0c38aa392a5c04bca".to_owned()
                 ),
                 (
                     "deepseek".to_owned(),
-                    "3:f5d6145093aaac077454373910206e55f896462436343938038224f98b9ba9c2".to_owned()
+                    "3:ce3c52f8d1f14a152ee3e1e81d7044009a35e64c0c0f56b6770e3793064b7cda".to_owned()
                 ),
                 (
                     "doubao".to_owned(),
-                    "1:13aa0a4e9efc50688cbbae87ae4121d4f4fac137c83d8ce9b18282e4223c99b4".to_owned()
+                    "1:d3476842ec3996c8326f47fce6ec812c2d5a6cbb6cd5e74472f260ebda63d4da".to_owned()
                 ),
                 (
                     "fal".to_owned(),
@@ -723,17 +723,17 @@ mod tests {
                 ),
                 (
                     "gemini".to_owned(),
-                    "28:b3ced25c547849c22f5b66d41d52e8198721f28a2be5a7b6b265203d3d770954"
+                    "28:767803a43e66ade6b4c9b4a5ae3997e038424f0de91f7ff7c3d49144e04c6c92"
                         .to_owned()
                 ),
                 (
                     "glm".to_owned(),
-                    "46:d286a9ad87b99f654a49666160ac7190136e714f17c3f932d9d3125fafccb3b9"
+                    "46:76b81aa65672869ab4c578c527340db6b5f30185e837af90b1ce67e5d3ece232"
                         .to_owned()
                 ),
                 (
                     "kimi".to_owned(),
-                    "2:badc49a02e57b9c1e80b4b4399b30b197fb5d5133e85374c5e357b672795a78c".to_owned()
+                    "2:55a6ef20936caf492f3c6ab83a13287160aa7d4d105b0c22775de1d9ddfbb5d4".to_owned()
                 ),
                 (
                     "minimax".to_owned(),
@@ -748,7 +748,7 @@ mod tests {
                 ("openrouter".to_owned(), "dynamic".to_owned()),
                 (
                     "qwen".to_owned(),
-                    "4:dde70b46db03c9c0bbcf8fddc89b8d7581a2a295f6e9fae1f71751a23e01e6b8".to_owned()
+                    "4:6e154e42f27f8127fe230a5241cdcdf5455d460d5d2c4035e0e84b8d888d9ced".to_owned()
                 ),
                 ("sn".to_owned(), "dynamic".to_owned()),
             ])

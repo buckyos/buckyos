@@ -205,7 +205,9 @@ Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯�
 | `variants` | 对模型身份、路由和审计有意义的语义 variant |
 | 默认价格 | Provider 没有价格数据时使用的保守估值 |
 
-Model Driver 的 variant 定义语义身份，例如 `reasoning.high`，并可携带原厂默认 `provider_options`。配置型 Provider 命中该具体模型的任一 variant 时，由 Provider 配置中的 `variants` 完整定义该模型的 variant 集合和请求参数；完全未命中时才使用 Model Driver 默认值。
+Model Driver 的 variant 定义语义身份，例如 `reasoning-high`，并可携带原厂默认 `provider_options`。配置型 Provider 命中该具体模型的任一 variant 时，由 Provider 配置中的 `variants` 完整定义该模型的 variant 集合和请求参数；完全未命中时才使用 Model Driver 默认值。
+
+variant 名称是 Model Driver 与 Provider Rules 共用的封闭词汇表，Model Driver 的 `variants[].name` 和 Provider 的 `variants[].variant` 都必须使用 `driver_metadata_schema.md` 中 Variant naming 定义的统一档位名（`reasoning-none` / `reasoning-mini` / `reasoning-low` / `reasoning-medium` / `reasoning-high` / `reasoning-xhigh` / `reasoning-max`）。厂商自己的档位名（`effort-*`、`thinking-*`、`minimal`、`normal` 等）只能在 `provider_options` 中表达，不得作为 variant 名。
 
 ### 3.2 配置型 Provider 管理
 
@@ -258,7 +260,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 - `origin_mappings`：可以从命名确定性解析原厂身份时使用的特殊映射。
 - `models`：按完整 `provider_model_id` 精确匹配的 Provider 规则。
 - `patterns`：有序 Provider 规则；每项的 `match` 通常直接写匹配完整 `provider_model_id` 的 wildcard 字符串，多维条件才写对象。
-- `variants`：将 Model Driver 语义 variant 转换为 Provider 请求参数。
+- `variants`：将 Model Driver 语义 variant 转换为 Provider 请求参数；variant 名必须使用统一档位名，厂商档位差异写在 `provider_options`。
 
 不增加 `refresh_interval_sec`、`on_no_match`、`on_ambiguous`、`failure_policy`、`protocol_adapter` 等程序固定字段。
 

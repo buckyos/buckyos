@@ -13,7 +13,7 @@
     }
   ],
   "variants": [
-    { "model_driver": "kimi", "variant": "thinking-enabled", "match": { "provider_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "thinking-enabled" }, "provider_options": { "thinking": { "type": "enabled" } } },
-    { "model_driver": "kimi", "variant": "thinking-disabled", "match": { "provider_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "thinking-disabled" }, "provider_options": { "thinking": { "type": "disabled" } } }
+    { "model_driver": "kimi", "variant": "reasoning-medium", "match": { "provider_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "reasoning-medium" }, "provider_options": { "thinking": { "type": "enabled" } } },
+    { "model_driver": "kimi", "variant": "reasoning-none", "match": { "provider_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "reasoning-none" }, "provider_options": { "thinking": { "type": "disabled" } } }
   ]
 }

@@ -38,12 +38,13 @@ runner 的 `--yes` 选项仅用于已经获得授权的自动化；它本身不�
 - 机密信息只能保存在本地且被忽略的 TOML 文件中，并且必须从命令、日志和报告中脱敏。
 - 恢复临时设置和资源，然后报告清理结果、实际调用次数、成本、失败情况及定向重测命令。
 - 当确认某个失败属于 AICC/Jarvis 缺陷时，应保持测试断言正确，并记录预期行为、实际行为和证据；没有单独请求时不得修改产品代码。
+- 修复 Provider API 协议缺陷（请求 lowering、字段名/路径、错误形态、streaming/async 事件顺序、响应解析等）时，必须同步更新并完善受影响的 T1.5 MockProvider 及其 wire fixture，使其继续按官方协议 fail-closed 地校验修复后的 wire 行为；不得只改产品实现而让旧 Mock 继续通过，也不得为迁就产品实现而放宽或跳过 Mock 断言。
 
 ## 开发与推送节奏
 
 - 每轮 coding 期间，只运行与本轮所修改实现相对应的单元测试。不得反复 build、deploy 或运行 T1/T1.5/T2/T3，以此替代内循环中的针对性单元测试。
 - 每次 Git push 前，如果待推送变更更新了路由逻辑，运行受影响的 T1 测试套件。
-- 每次 Git push 前，如果待推送变更更新了 Provider API 协议实现、模型 metadata、Provider metadata 或 Provider 配置，只对受影响的一个或多个 Provider 运行 T1.5。
+- 每次 Git push 前，如果待推送变更更新了 Provider API 协议实现、模型 metadata、Provider metadata 或 Provider 配置，只对受影响的一个或多个 Provider 运行 T1.5；协议实现变更必须与对应的 T1.5 MockProvider/fixture 更新一起提交。
 - 如果一次 push 同时包含路由和 Provider 协议/metadata/配置变更，运行上述两项必要门禁。仅含文档或无关改动的 push 不会因这些规则而产生 E2E 执行义务。
 
 ## E2E 自动化收敛循环

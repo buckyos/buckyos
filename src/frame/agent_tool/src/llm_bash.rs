@@ -29,8 +29,8 @@ use crate::{
 
 pub const TOOL_EXEC_BASH: &str = "exec_bash";
 
-const DEFAULT_TIMEOUT_MS: u64 = 60_000;
-const DEFAULT_MAX_TIMEOUT_MS: u64 = 10 * 60_000;
+const DEFAULT_TIMEOUT_MS: u64 = 30 * 60_000;
+const DEFAULT_MAX_TIMEOUT_MS: u64 = 60 * 60_000;
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
 const LOCAL_ENGINE: &str = "local";
 

@@ -456,8 +456,6 @@ pub(crate) enum StorageError {
     Database(#[from] sqlx::Error),
     #[error("invalid storage record: {0}")]
     InvalidRecord(String),
-    #[error("provider completion is missing usage")]
-    MissingUsage,
     #[error("invalid cursor")]
     InvalidCursor,
     #[error("json error: {0}")]

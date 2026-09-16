@@ -141,27 +141,23 @@ impl TryFrom<ProtocolOutput> for ExecutionOutput {
     type Error = AiccError;
 
     fn try_from(value: ProtocolOutput) -> Result<Self, Self::Error> {
-        let usage = value.usage.ok_or_else(|| {
-            aicc_error(
-                AiccErrorCode::ProviderError,
-                "successful Provider completion is missing usage",
-                false,
-            )
-        })?;
-        if usage.input_tokens.is_none()
-            && usage.output_tokens.is_none()
-            && usage.total_tokens.is_none()
-            && usage.image_units.is_none()
-            && usage.audio_seconds.is_none()
-            && usage.video_seconds.is_none()
-            && usage.request_units.is_none()
-        {
-            return Err(aicc_error(
-                AiccErrorCode::ProviderError,
-                "successful Provider completion contains empty usage",
-                false,
-            ));
-        }
+        let usage_empty = value.usage.as_ref().is_none_or(|usage| {
+            usage.input_tokens.is_none()
+                && usage.output_tokens.is_none()
+                && usage.total_tokens.is_none()
+                && usage.image_units.is_none()
+                && usage.audio_seconds.is_none()
+                && usage.video_seconds.is_none()
+                && usage.request_units.is_none()
+        });
+        let usage = if usage_empty {
+            log::warn!(
+                "provider completed successfully without usage; billing for this completion will be zero"
+            );
+            AiUsage::default()
+        } else {
+            value.usage.unwrap_or_default()
+        };
         Ok(Self {
             value: value.value,
             usage,
@@ -2839,21 +2835,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_usage_turns_success_into_provider_failure() {
+    async fn missing_usage_keeps_success_and_records_zero_usage() {
         let providers = Arc::new(FakeProviders::default());
         providers
             .plans
             .lock()
             .unwrap()
             .push_back(StartPlan::Success(ProviderExecution::Immediate(
-                ProtocolOutput::new(json!({"text": "bad"})),
+                ProtocolOutput::new(json!({"text": "ok"})),
             )));
         let (engine, _, tasks, usage) = make_engine(providers);
         let receipt = engine.execute(request(call("primary"))).await.unwrap();
-        assert_eq!(receipt.state, ExecutionState::Failed);
-        assert_eq!(receipt.error.unwrap().code, AiccErrorCode::ProviderError);
-        assert!(usage.writes.lock().unwrap().is_empty());
-        assert_eq!(tasks.failed.lock().unwrap().len(), 1);
+        assert_eq!(receipt.state, ExecutionState::Succeeded);
+        assert!(receipt.error.is_none());
+        let writes = usage.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        let recorded = writes.values().next().unwrap();
+        assert!(recorded.usage.input_tokens.is_none());
+        assert!(recorded.usage.output_tokens.is_none());
+        assert!(recorded.usage.total_tokens.is_none());
+        assert!(tasks.failed.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
