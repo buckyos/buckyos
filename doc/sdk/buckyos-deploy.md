@@ -1,19 +1,94 @@
 # BuckyOS 企业部署指南
 
-本文面向企业运维、平台工程和应用交付团队，介绍在企业自有或托管的 Linux 服务器上更新 BuckyOS、部署应用、管理配置与访问权限，以及迁移数据和验收发布的流程。公网、企业内网和通过 VPN 访问的环境均可采用，网络入口按实际部署调整。
+本文面向企业运维、平台工程和应用交付团队，介绍从准备开发机、源码构建，到在企业自有或托管的 Linux 服务器上安装 BuckyOS，再到日常功能更新、权限管理和数据维护的完整流程。公网、企业内网和通过 VPN 访问的环境均可采用，网络入口按实际部署调整。
 
 本文对应仓库当前 Beta 2.2 实现。应用通过标准 `.pikg` 包交付，不依赖特定企业、业务系统或私有安装脚本。测试与生产使用同一套流程，但分别配置服务器、Zone、身份、访问策略和业务参数；测试通过后，将同一份已验证的构建产物发布到生产。
 
-以下操作以**已安装并激活 BuckyOS 的环境**为起点。首次部署系统时，先按仓库 [入门说明](../../README.md#getting-started) 完成依赖准备、系统安装和 Zone 激活，再配置企业域名、网关与服务托管。源码启动不会自动注册系统服务；文中的 `buckyos.service` 示例要求目标机已配置该服务。首次初始化命令不能作为已有环境的日常更新命令使用。
+企业部署分为三个阶段：
 
-## 1. 部署前准备
+1. **准备开发机并自行构建**：由企业授权人员取得源码、准备工具链，构建 BuckyOS、SDK/Tool 和网关，形成企业自己的发布产物。自行审查源码并构建，可规避直接采用来源或构建过程不明的预打包 BuckyOS 二进制所带来的风险；构建工具和第三方依赖也应使用企业认可的来源。
+2. **部署到指定环境**：通过命令将编译结果安装或更新到目标服务器。新环境随后完成系统启动、Zone 激活、域名和运维身份配置；已有环境保留身份及运行数据。
+3. **日常通过 PIKG 更新功能**：系统功能的日常更新以 PIKG 交付为主，适用于以 App Service/应用包交付的组件。当前可用命令行更新；BuckyOS 的 App Service 面板更新功能即将合入，合入并部署到目标版本后也可通过面板操作。底层二进制或网关需要变更时，再执行源码构建和系统文件更新。
 
-### 环境与交付物
+## 1. 准备开发机并从源码构建
 
-- **目标环境**：确认服务器系统、CPU 架构、BuckyOS 版本、实际运行根目录和服务管理方式。运行根目录通常是 `/opt/buckyos`；容器应用还需具备与包要求匹配的容器运行环境。
-- **网络入口**：确认 Zone 的域名解析、网关路由和证书可用。SSH 地址用于系统文件部署，Zone API 入口用于应用管理，两者分别配置。公网入口使用 HTTPS；企业内网或 VPN 环境应能从运维终端访问目标网关。
-- **身份与归属**：准备有应用管理权限的目标 Zone 运维身份，并明确应用安装归属的用户。应用发布者 DID、安装 owner 和执行部署的运维身份是不同概念，不应混用。
-- **构建环境**：系统源码构建依赖见 [README](../../README.md#getting-started)。应用使用自身项目的构建工具与锁文件；本文以 Node.js、pnpm 和项目内的 `buckyos` npm 包为例。只有更新系统文件或通过 SSH 上传包时才需要 `ssh` / `scp`。
+### 授权人员与开发机
+
+由企业授权的开发或运维人员使用专用开发机，具备源码读取、依赖安装、构建产物管理及目标服务器 SSH 部署权限。开发机用于编译和发布，目标服务器用于运行 BuckyOS；为了避免开发命令影响线上环境，两者最好是不同机器。
+
+以下以 **Linux 开发机和同 CPU 架构的 Linux 目标服务器**为例，避免把开发机上的 Deno 或容器镜像误用于其他系统及架构。跨平台或跨架构部署时，需单独准备目标工具链、目标 Deno 和目标镜像，`--remote` 不会自动交叉编译。
+
+开发机先安装 Git、Python 3 和 OpenSSH 客户端。Ubuntu/Debian 可执行：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git python3 openssh-client
+
+mkdir -p /path/to/project
+cd /path/to/project
+git clone --branch main https://github.com/buckyos/buckyos.git
+git clone --branch main https://github.com/buckyos/cyfs-gateway.git
+git clone --branch main https://github.com/buckyos/buckyos-websdk.git
+```
+
+三个仓库放在同一父目录。已有检出时使用企业审核过的 `main` 分支源码，并记录实际构建的提交和锁文件，测试与生产复用同一批构建产物。
+
+### 安装和检查构建依赖
+
+阅读仓库的 [环境准备脚本](../../devenv.py) 后，在开发机执行：
+
+```bash
+cd /path/to/project/buckyos
+python3 devenv.py --skip-buckyos-dir
+```
+
+脚本准备 Rust stable、C/C++ 编译工具及 OpenSSL/Clang 依赖、Python、uv、Node.js/npm、pnpm、Deno、Docker 和 Linux 编译工具链。`--skip-buckyos-dir` 表示不在开发机创建运行目录，系统稍后安装到指定服务器。脚本对部分依赖只作尽力安装；按输出补齐缺项，重新打开终端使 PATH 生效，再检查：
+
+```bash
+git --version
+rustc --version
+cargo --version
+uv --version
+node --version
+npm --version
+pnpm --version
+deno --version
+docker info
+
+cd /path/to/project/buckyos
+uv sync
+uv run python --version
+```
+
+工程要求 Python 3.12+；Node.js 使用工程支持的版本（当前 CI 为 24），pnpm 按各工程的 `packageManager` 声明准备。Deno 必须满足所用 SDK/Tool 发布清单的版本要求。构建容器应用时，`docker info` 应能连接 Docker 服务。使用下文 `amd64` / `aarch64` 构建参数时，还需确认对应的 Rust musl target 及完整的 C/C++ musl 工具链可用。
+
+### 构建网关与 BuckyOS
+
+下面命令均在开发机执行。`TARGET_ARCH=amd64` 用于 Linux x86_64；Linux ARM64 使用 `aarch64`，并在匹配架构的开发机上准备对应工具链。
+
+```bash
+TARGET_ARCH=amd64
+
+cd /path/to/project/cyfs-gateway/src
+uv run buckyos-build --app=cyfs-gateway "$TARGET_ARCH"
+
+cd /path/to/project/buckyos/src
+unset BUCKYOS_SDK_TOOL_ARTIFACT BUCKYOS_SDK_TOOL_RELEASE_MANIFEST BUCKYOS_SDK_TOOL_SBOM
+uv run buckyos-build.py "$TARGET_ARCH"
+```
+
+BuckyOS 构建入口会先从同级 `buckyos-websdk` 安装锁定依赖、构建 SDK/Tool、打包并生成发布清单和 SBOM，再构建系统模块。Deno 默认从开发机 PATH 获取；若设置了 `BUCKYOS_SDK_TOOL_DENO`，应确认它指向匹配版本及目标架构的可执行文件。SDK 源码在其他位置时用 `BUCKYOS_SDK_TOOL_SOURCE` 指定。
+
+编译结果分别位于 `cyfs-gateway/src/rootfs` 和 `buckyos/src/rootfs`。上述命令只构建，不向目标服务器安装；其中网关使用 devkit 的 `buckyos-build`，避免调用附带本机更新动作的网关包装脚本。确认两次构建均成功，保存源码提交、依赖锁文件、构建日志和产物摘要后，再进入下一节。
+
+企业已有自己的构建流水线时，也可使用该流水线从源码生成的 SDK/Tool 产物，按 [源码构建说明](../../src/readme.md) 提供四项 `BUCKYOS_SDK_TOOL_*` 输入；这些预构建输入不是本文主流程的前置条件。
+
+### 准备目标环境
+
+- **目标服务器**：准备 Linux、SSH 服务、systemd 及运行所需的容器环境，确认 CPU 架构与构建产物一致，并为数据、日志和备份安排存储空间。SSH 部署账号需有目标目录及服务管理权限；下文以支持免密 sudo 的 `deploy` 账号为例。
+- **安装状态**：首次安装使用未承载业务的新目录；已有环境记录 BuckyOS 版本、实际运行根目录和服务管理方式。本文使用 `/opt/buckyos`，其他路径需同步调整命令和服务配置。
+- **网络入口**：准备企业域名和目标网关入口。SSH 地址用于系统文件部署，Zone API 入口用于应用管理，两者分别配置；首次安装后完成 Zone 激活、DNS、路由和证书配置。公网入口使用 HTTPS，内网或 VPN 环境也需确保运维终端能够访问网关。
+- **身份与归属**：Zone 激活后，配置有应用管理权限的运维身份，并明确应用安装归属的用户。应用发布者 DID、安装 owner 和执行部署的运维身份是不同概念，不应混用。
 - **发布记录与备份**：记录系统版本、CLI 版本、应用版本、包摘要、目标环境和安装归属。系统更新、配置变更或数据迁移前，保存可恢复的配置、身份材料和业务数据备份，并明确停机窗口与恢复负责人。
 
 普通运维身份位于 `~/.buckyos`。`~/.buckycli` 中的开发身份只有在目标 Zone 开启开发模式时才能使用，不应作为企业生产部署的前置条件。
@@ -35,48 +110,43 @@
 | `APP_OWNER` | `appowner` | 目标 Zone 中的应用安装归属用户 |
 | `APP_PIKG` | `/path/to/release/portal-1.0.0.pikg` | 本次发布的已验证应用包 |
 
-## 2. 按需更新 BuckyOS
+## 2. 将编译结果安装或更新到指定环境
 
-仅发布应用时跳过本节。系统二进制、配套 Deno 和容器镜像的系统及 CPU 架构必须与目标节点匹配；`--remote` 只负责远程复制，不会自动交叉编译。
+本节使用上一节在开发机上构建的结果。首次部署执行文件安装、初始化及激活；已有系统需要更新底层文件时执行停止、更新及启动。日常 PIKG 功能更新直接进入第 3、4 节。
 
-### 构建系统发布产物
+### 选择目标并准备安装
 
-在构建机的 `buckyos/src` 目录执行，`uv` 使用上级工程声明的 devkit 依赖。发布构建可显式提供同一批 SDK/Tool 发行物的四个绝对路径：npm 包、发布清单、Deno 可执行文件和 SBOM。清单中的版本及摘要必须与实际文件一致。
-
-```bash
-cd /path/to/project/buckyos/src
-export BUCKYOS_SDK_TOOL_ARTIFACT=/path/to/release/buckyos.tgz
-export BUCKYOS_SDK_TOOL_RELEASE_MANIFEST=/path/to/release/release-manifest.json
-export BUCKYOS_SDK_TOOL_DENO=/path/to/release/deno
-export BUCKYOS_SDK_TOOL_SBOM=/path/to/release/sbom.cdx.json
-
-# Linux x86_64；ARM64 使用 aarch64，并准备对应架构的产物及工具链。
-uv run buckyos-build.py amd64
-```
-
-未指定预构建产物时，当前入口会从同级 `buckyos-websdk` 源码构建 SDK/Tool；相关依赖及路径配置见 [源码构建说明](../../src/readme.md)。选择预构建产物模式后，四项输入必须齐全。构建入口将系统版 Tool 和各模块组装到 `rootfs`，不要绕过入口而遗漏配套 Tool。
-
-若本次需要更新 `cyfs-gateway`，应在其工程中另行构建和部署；`buckyos-install` 不会执行 `publish` 配置中的依赖打包流程。将系统和网关更新纳入同一份发布与恢复计划。
-
-### 更新目标服务器
-
-以下示例在构建机执行，适用于目标机已配置 `buckyos.service`、安装目录为 `/opt/buckyos`，且 SSH 用户支持免密 sudo 的环境：
+在开发机设置本次部署目标，并确认连接的是预期服务器：
 
 ```bash
 TARGET_SERVER_IP=192.0.2.10
 TARGET_SSH_USER=deploy
+ssh "${TARGET_SSH_USER}@${TARGET_SERVER_IP}" 'hostname; uname -m; sudo -n true'
+```
 
+已有环境先完成备份，通过实际服务管理器停止 BuckyOS。以 systemd 为例：
+
+```bash
 ssh "${TARGET_SSH_USER}@${TARGET_SERVER_IP}" 'sudo -n systemctl stop buckyos.service'
 ```
 
-确认服务及旧系统进程已停止，目标目录是现有安装目录且非空，并完成备份后，再执行文件更新。下面的命令仅在安装成功后启动服务：
+确认旧系统进程已停止，目标目录是预期的现有安装目录且非空。首次安装的新服务器无需停止尚不存在的服务，但必须确认 `/opt/buckyos` 不存在或为空，不能将部分安装目录当作干净环境。
+
+### 安装或更新文件
+
+按顺序执行，任一步失败都先处理错误，不继续启动：
 
 ```bash
-uv run buckyos-install --remote "$TARGET_SERVER_IP" \
-  --ssh-user "$TARGET_SSH_USER" --sudo --target-rootfs /opt/buckyos &&
-ssh "${TARGET_SSH_USER}@${TARGET_SERVER_IP}" 'sudo -n systemctl start buckyos.service' &&
-ssh "${TARGET_SSH_USER}@${TARGET_SERVER_IP}" 'sudo -n systemctl is-active buckyos.service'
+cd /path/to/project/buckyos/src
+uv run buckyos-install --app=buckyos --remote "$TARGET_SERVER_IP" \
+  --ssh-user "$TARGET_SSH_USER" --sudo --target-rootfs /opt/buckyos
+
+cd /path/to/project/cyfs-gateway/src
+uv run buckyos-install --app=cyfs-gateway --remote "$TARGET_SERVER_IP" \
+  --ssh-user "$TARGET_SSH_USER" --sudo --target-rootfs /opt/buckyos
 ```
+
+首次安装先部署 BuckyOS，以便在空目录中初始化数据路径，再补齐网关。已有环境若网关无变更，可跳过网关更新。`buckyos-install` 不会自动部署 `publish` 配置中的依赖，也不会注册系统服务、启动系统或完成 Zone 激活。
 
 以 root 连接时可去掉 `--sudo` 和服务命令中的 `sudo -n`。安装连接参数支持 `--ssh-port`、`--ssh-key` 和可重复的 `--ssh-option`；单独执行的 SSH/SCP 命令也应配置相同的端口、密钥和连接选项。使用其他根目录或服务管理方式时，按实际环境调整。
 
@@ -86,9 +156,82 @@ ssh "${TARGET_SSH_USER}@${TARGET_SERVER_IP}" 'sudo -n systemctl is-active buckyo
 - 安装不会自动停止、启动或重启 BuckyOS，也不是原子切换。复制失败时保持服务停止，完成修复或恢复一致的旧版本后再启动。
 - 日常更新不使用 `--all` 或 `reinstall`：它们会执行清理、数据初始化和模块安装，可能删除身份、配置及运行数据。目标目录不存在或为空时，默认更新也会进入重装路径。
 
-启动后确认 Zone API、核心服务和网关可用。`systemctl is-active` 只代表 systemd 单元处于运行状态，不能代替服务健康检查。
+### 新环境初始化与激活
+
+本小节仅用于首次安装，已有环境跳到下一小节。先在开发机用刚构建的 SDK 生成初始配置；`release` 使用 `buckyos.ai` 的名称与激活服务。企业自建这些基础服务时，应按实际服务和信任配置调整，不能直接套用该环境预设。
+
+```bash
+cd /path/to/project/buckyos/src
+mkdir -p ../.deploy
+cat > ../.deploy/import-map.json <<'JSON'
+{
+  "imports": {
+    "buckyos/provision": "../../buckyos-websdk/dist/provision.mjs"
+  }
+}
+JSON
+deno run -A --import-map ../.deploy/import-map.json \
+  make_config.ts release --rootfs ../.deploy/initial
+
+ssh "${TARGET_SSH_USER}@${TARGET_SERVER_IP}" 'mkdir -p ~/buckyos-init'
+scp ../.deploy/initial/etc/machine.json \
+  ../.deploy/initial/bin/node-active/active_config.json \
+  "${TARGET_SSH_USER}@${TARGET_SERVER_IP}:buckyos-init/"
+ssh "${TARGET_SSH_USER}@${TARGET_SERVER_IP}" \
+  'sudo -n install -m 0644 ~/buckyos-init/machine.json /opt/buckyos/etc/machine.json && sudo -n install -m 0644 ~/buckyos-init/active_config.json /opt/buckyos/bin/node-active/active_config.json'
+```
+
+在**目标服务器**上配置 systemd 服务。以下示例使用 `/opt/buckyos`；仅在尚未配置该服务时创建，已有企业服务配置应保留：
+
+```bash
+sudo tee /etc/systemd/system/buckyos.service >/dev/null <<'UNIT'
+[Unit]
+Description=BuckyOS
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=BUCKYOS_ROOT=/opt/buckyos
+WorkingDirectory=/opt/buckyos
+ExecStart=/opt/buckyos/bin/node-daemon/node_daemon --enable_active
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable --now buckyos.service
+```
+
+在开发机建立激活端口隧道，并保持该终端连接：
+
+```bash
+ssh -N -L 3182:127.0.0.1:3182 "${TARGET_SSH_USER}@${TARGET_SERVER_IP}"
+```
+
+开发机浏览器打开 `http://127.0.0.1:3182`，按激活向导设置企业 Zone 和 owner。完成后配置企业域名的 DNS、网关路由和 HTTPS 证书，确认能够通过目标域名登录，再为授权人员配置 Zone 运维身份。生产环境不使用 `dev` 预设或开发测试账号。
+
+### 已有环境启动与就绪检查
+
+已有环境仅在文件更新全部成功后，从开发机启动目标服务：
+
+```bash
+ssh "${TARGET_SSH_USER}@${TARGET_SERVER_IP}" 'sudo -n systemctl start buckyos.service'
+```
+
+首次安装和更新均需确认服务状态：
+
+```bash
+ssh "${TARGET_SSH_USER}@${TARGET_SERVER_IP}" 'sudo -n systemctl is-active buckyos.service'
+```
+
+环境准备完成的标准是：系统已激活，Zone API、核心服务和网关可用，企业域名及登录正常，且第 4 节的 `auth whoami` 能确认正确的 Zone 和运维身份。`systemctl is-active` 只代表 systemd 单元处于运行状态，不能代替这些检查。达到上述状态后再开始日常 PIKG 发布。
 
 ## 3. 构建与验证应用包
+
+以 PIKG 交付的系统功能和企业应用，日常更新通常只需构建、验证并安装新包，无需重新安装整套 BuckyOS。只有涉及底层系统二进制、SDK/Tool 或网关变更时，才回到前两节执行相应源码构建及文件更新。
 
 应用开发和首次生成 `dapp_meta` 的方法见 [应用开发指南](app-dev-quickstart.md)。应用项目应锁定与目标系统匹配的 `buckyos` SDK/CLI 版本，并提交依赖锁文件。
 
@@ -115,7 +258,16 @@ sha256sum "$APP_PIKG"
 
 在测试 Zone 安装该包，完成自动化测试、浏览器验收和关键业务流程验证。涉及数据库迁移或启动校验时，使用按企业数据管理要求准备的副本演练升级及恢复，不直接操作生产数据。通过后保存包、摘要、元数据和验证记录，向生产交付**同一个 PIKG 文件**，不重新构建。
 
-## 4. 在目标 Zone 安装或更新应用
+## 4. 通过 PIKG 安装或更新功能
+
+PIKG 更新有两个操作入口：
+
+| 入口 | 适用方式 | 当前状态 |
+| --- | --- | --- |
+| 命令行 | 授权运维人员使用 `buckyos app install` 安装已验证的 PIKG，可用于人工发布或发布流水线 | 本文提供当前可执行的命令 |
+| BuckyOS App Service 面板 | 在面板中选择对应服务，使用 PIKG 完成更新，具体操作以合入后的界面为准 | 更新功能即将合入；目标版本包含该功能后可使用 |
+
+两个入口均应使用企业已验证的同一份 PIKG，并遵循目标环境、身份、信任策略、备份和发布验收要求。下文说明当前命令行流程。
 
 ### 选择 CLI 执行位置
 
