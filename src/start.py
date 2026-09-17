@@ -1,5 +1,6 @@
 #!/usr/bin/env -S uv run
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -268,19 +269,25 @@ def main(argv: list[str] | None = None) -> int:
     if any(arg in {"-h", "--help"} for arg in args):
         return _print_help()
 
+    parser = argparse.ArgumentParser(allow_abbrev=False, add_help=False)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--all", action="store_true")
+    mode.add_argument("--reinstall", nargs="?", const="", metavar="GROUP")
+    mode.add_argument("--skip-update", action="store_true")
+    try:
+        options = parser.parse_args(args)
+    except SystemExit as error:
+        return error.code
+
     print("=== BuckyOS Development Environment Startup Script ===")
     
-    # Parse command line arguments
     config_group_name = None
-    install_all = "--all" in args or "--reinstall" in args
-    need_update = "--skip-update" not in args
-    if install_all:
+    install_all = options.all or options.reinstall is not None
+    need_update = not options.skip_update
+    if options.all:
         config_group_name = "dev"
-    if "--reinstall" in args:
-        config_group_name = None
-        group_name_index = args.index("--reinstall") + 1
-        if group_name_index < len(args):
-            config_group_name = args[group_name_index]
+    if options.reinstall is not None:
+        config_group_name = options.reinstall or None
 
     if need_update and not _sdk_tool_distribution_ready():
         return 2

@@ -1,5 +1,9 @@
 # OpenDAN AgentTool 实体化
 
+## 协议文档
+
+- [run_local_llm SDK 化：目录与命令行协议基线](local_llm_context_protocol.md)：工具 SDK 化范围、Rust 协议现状与 TS 设计参考；Rust 库改造另行处理。
+
 ## 背景
 
 当前 OpenDAN Runtime 中的 AgentTool 采用传统模式实现，基于 tool_calls 机制提供基本的 Agent 工具能力。在此基础上，每个 tool 支持两种调用模式：

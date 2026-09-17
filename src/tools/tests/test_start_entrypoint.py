@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -18,6 +20,58 @@ def _load_start_script():
 
 
 class BuckyosStartEntrypointTests(unittest.TestCase):
+    def test_invalid_arguments_stop_before_any_side_effects(self) -> None:
+        for args in (
+            ["--release"],
+            ["release"],
+            ["--reinstal", "release"],
+            ["--reinstall", "release", "--skip-update"],
+            ["--all", "--reinstall", "release"],
+        ):
+            with self.subTest(args=args):
+                module = _load_start_script()
+                with (
+                    patch.object(module, "_sdk_tool_distribution_ready") as ready,
+                    patch.object(module, "kill_all_processes") as kill_all,
+                    patch.object(module, "update_files") as update_files,
+                    patch.object(module, "start_system") as start_system,
+                    contextlib.redirect_stderr(io.StringIO()) as stderr,
+                ):
+                    result = module.main(args)
+
+                self.assertEqual(result, 2)
+                self.assertIn("error:", stderr.getvalue())
+                ready.assert_not_called()
+                kill_all.assert_not_called()
+                update_files.assert_not_called()
+                start_system.assert_not_called()
+
+    def test_startup_modes_select_expected_configuration(self) -> None:
+        for args, expected_update in (
+            ([], (False, None)),
+            (["--all"], (True, "dev")),
+            (["--reinstall"], (True, None)),
+            (["--reinstall", "release"], (True, "release")),
+            (["--skip-update"], None),
+        ):
+            with self.subTest(args=args):
+                module = _load_start_script()
+                with (
+                    patch.object(module, "_sdk_tool_distribution_ready", return_value=True),
+                    patch.object(module, "kill_all_processes") as kill_all,
+                    patch.object(module, "update_files") as update_files,
+                    patch.object(module, "start_system") as start_system,
+                ):
+                    result = module.main(args)
+
+                self.assertEqual(result, 0)
+                kill_all.assert_called_once_with()
+                start_system.assert_called_once_with()
+                if expected_update is None:
+                    update_files.assert_not_called()
+                else:
+                    update_files.assert_called_once_with(*expected_update)
+
     def test_main_stops_before_install_when_sdk_tool_is_missing(self) -> None:
         module = _load_start_script()
 
