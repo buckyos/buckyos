@@ -20,7 +20,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 
 const DEFAULT_OPENDAN_SERVICE_PORT: u16 = 4060;
@@ -61,6 +61,22 @@ const DEVENV_JSON_EXTTOOL_KEY: &str = "exttool";
 /// per host with the volume mounted so Docker auto-copies the baked
 /// /opt/buckyos/tools/ tree into the empty volume.
 const DEFAULT_EXTTOOL_IMAGE_REPO: &str = "paios/exttool";
+
+/// Process-wide single-flight guard for ExtTool volume preparation.
+///
+/// [`AppLoader`] is constructed per app instance, and `node_main` deploys a
+/// node's apps with `for_each_concurrent`, so two deploys can reach
+/// `prepare_exttool_volume` at the same time. Both would observe the image as
+/// missing and launch a `docker pull` for it. Serialising the whole
+/// check/pull/seed sequence keeps that work to a single execution; other
+/// callers re-check under the guard and return once the image and volume are
+/// in place.
+static EXTTOOL_PREPARE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+pub(crate) fn exttool_prepare_lock() -> &'static tokio::sync::Mutex<()> {
+    EXTTOOL_PREPARE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 pub(crate) const DOCKER_LABEL_APP_ID: &str = "buckyos.app_id";
 pub(crate) const DOCKER_LABEL_APP_DID: &str = "buckyos.app_did";
 pub(crate) const DOCKER_LABEL_APP_INSTANCE_ID: &str = "buckyos.app_instance_id";
@@ -2104,6 +2120,13 @@ impl AppLoader {
     /// and once the image becomes reachable a later deploy will seed the
     /// volume cleanly, instead of being locked into an empty one forever.
     async fn prepare_exttool_volume(&self) -> Result<()> {
+        let _guard = exttool_prepare_lock().lock().await;
+        self.prepare_exttool_volume_serialised().await
+    }
+
+    /// Body of [`Self::prepare_exttool_volume`]; always called with
+    /// `EXTTOOL_PREPARE_LOCK` held.
+    async fn prepare_exttool_volume_serialised(&self) -> Result<()> {
         let volume_exists = self
             .check_docker_volume_exists(DEFAULT_EXTTOOL_VOLUME_NAME)
             .await?;
@@ -2114,23 +2137,39 @@ impl AppLoader {
             .await?
         {
             info!("exttool image {} missing, pulling now", image_name);
+            let pull_started = Instant::now();
             if let Err(pull_error) = self.pull_docker_image(image_name.as_str(), None).await {
                 error!(
-                    "exttool image {} unavailable: {}. Skipping {} volume seed; worker containers will start without the ExtTool mount until the image becomes reachable.",
-                    image_name, pull_error, DEFAULT_EXTTOOL_VOLUME_NAME
+                    "exttool image {} unavailable after {:.1}s: {}. Skipping {} volume seed; worker containers will start without the ExtTool mount until the image becomes reachable.",
+                    image_name,
+                    pull_started.elapsed().as_secs_f64(),
+                    pull_error,
+                    DEFAULT_EXTTOOL_VOLUME_NAME
                 );
                 return Ok(());
             }
+            info!(
+                "exttool image {} pulled in {:.1}s",
+                image_name,
+                pull_started.elapsed().as_secs_f64()
+            );
         }
 
         if !volume_exists {
             self.ensure_docker_volume(DEFAULT_EXTTOOL_VOLUME_NAME)
                 .await?;
             info!(
-                "seeding {} from {}",
+                "seeding {} from {} (copies the image payload; can take several minutes)",
                 DEFAULT_EXTTOOL_VOLUME_NAME, image_name
             );
+            let seed_started = Instant::now();
             self.seed_exttool_volume(image_name.as_str()).await?;
+            info!(
+                "seeded {} from {} in {:.1}s",
+                DEFAULT_EXTTOOL_VOLUME_NAME,
+                image_name,
+                seed_started.elapsed().as_secs_f64()
+            );
         }
 
         Ok(())
