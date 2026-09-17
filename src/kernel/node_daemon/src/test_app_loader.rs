@@ -2,11 +2,11 @@ use crate::app_loader::{
     command_matches_agent_process, command_matches_exact_agent_process,
     container_list_contains_name, docker_deployment_health, docker_desc_requires_exact_match,
     docker_image_tar_candidates_for_arch, docker_missing_text, docker_runtime_matches_deployment,
-    docker_runtime_matches_target, inspect_docker_image_layout, normalize_digest,
-    parse_docker_container_inspect, resolve_aios_image_repo_from_paths, AppLoader, CommandSpec,
-    ControlOperation, DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget, RuntimeType,
-    DOCKER_LABEL_APP_DOC_OBJECT_ID, DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_ID,
-    DOCKER_LABEL_PKG_OBJID, DOCKER_LABEL_SPEC_GENERATION,
+    docker_runtime_matches_target, exttool_prepare_lock, inspect_docker_image_layout,
+    normalize_digest, parse_docker_container_inspect, resolve_aios_image_repo_from_paths,
+    AppLoader, CommandSpec, ControlOperation, DockerRuntimeIdentity, PlatformArch, PlatformOs,
+    PlatformTarget, RuntimeType, DOCKER_LABEL_APP_DOC_OBJECT_ID, DOCKER_LABEL_IMAGE_DIGEST,
+    DOCKER_LABEL_PKG_ID, DOCKER_LABEL_PKG_OBJID, DOCKER_LABEL_SPEC_GENERATION,
 };
 use crate::run_item::ControlRuntItemErrors;
 use buckyos_api::{
@@ -1170,4 +1170,31 @@ fn web_app_type_is_rejected_by_runtime_selector() {
         let result = loader.preview_operation(operation);
         assert!(matches!(result, Err(ControlRuntItemErrors::NotSupport(_))));
     }
+}
+
+#[test]
+fn exttool_prepare_lock_is_process_wide_and_exclusive() {
+    // `prepare_exttool_volume` is reached from a per-app `AppLoader`, while
+    // `node_main` deploys a node's apps with `for_each_concurrent`. The guard
+    // therefore has to be one process-wide lock: if it ever becomes
+    // per-instance, two concurrent deploys would each launch their own
+    // `docker pull` for `paios/exttool` again (see buckyos#616).
+    let guard = exttool_prepare_lock();
+    assert!(
+        std::ptr::eq(guard, exttool_prepare_lock()),
+        "the ExtTool guard must be a single process-wide lock"
+    );
+
+    let held = guard
+        .try_lock()
+        .expect("the ExtTool guard should be free here");
+    assert!(
+        guard.try_lock().is_err(),
+        "a second caller must not enter while the ExtTool guard is held"
+    );
+    drop(held);
+    assert!(
+        guard.try_lock().is_ok(),
+        "the ExtTool guard must be released once the holder is done"
+    );
 }
