@@ -21,12 +21,7 @@
         "reasoning": true
       },
       "version_rules": ["claude-fable"],
-      "pricing": {
-        "currency": "USD",
-        "input_token": 0.00001,
-        "cache_input_token": 0.00000025,
-        "output_token": 0.00005
-      }
+      "pricing": { "currency": "USD", "input_token": 1e-05, "output_token": 5e-05, "cache_input_token": 2.5e-07 }
     },
     {
       "id": "claude-fable-5",
@@ -43,11 +38,7 @@
         "reasoning": true
       },
       "version_rules": ["claude-fable"],
-      "pricing": {
-        "currency": "USD",
-        "input_token": 0.00001,
-        "output_token": 0.00005
-      }
+      "pricing": { "currency": "USD", "input_token": 1e-05, "output_token": 5e-05, "cache_input_token": 1e-06 }
     },
     {
       "id": "claude-opus-5",
@@ -64,11 +55,7 @@
         "reasoning": true
       },
       "version_rules": ["claude-opus"],
-      "pricing": {
-        "currency": "USD",
-        "input_token": 0.000005,
-        "output_token": 0.000025
-      }
+      "pricing": { "currency": "USD", "input_token": 5e-06, "output_token": 2.5e-05, "cache_input_token": 5e-07 }
     },
     {
       "id": "claude-sonnet-5",
@@ -85,11 +72,7 @@
         "reasoning": true
       },
       "version_rules": ["claude-sonnet"],
-      "pricing": {
-        "currency": "USD",
-        "input_token": 0.000003,
-        "output_token": 0.000015
-      }
+      "pricing": { "currency": "USD", "input_token": 2e-06, "output_token": 1e-05, "cache_input_token": 2.0000000000000002e-07 }
     },
     {
       "id": "claude-haiku-4-5-20251001",
@@ -105,11 +88,7 @@
         "reasoning": true
       },
       "version_rules": ["claude-haiku"],
-      "pricing": {
-        "currency": "USD",
-        "input_token": 0.000001,
-        "output_token": 0.000005
-      }
+      "pricing": { "currency": "USD", "input_token": 1e-06, "output_token": 5e-06, "cache_input_token": 1.0000000000000001e-07 }
     }
   ],
   "patterns": [],

@@ -18,7 +18,8 @@
         "vision": true,
         "reasoning": true
       }
-    },
+    ,
+"pricing": { "currency": "CNY", "input_token": 4e-06, "output_token": 2.1e-05, "cache_input_token": 7e-07 }},
     {
       "id": "kimi-k2.6",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
@@ -31,7 +32,8 @@
         "vision": true,
         "reasoning": true
       }
-    }
+    ,
+"pricing": { "currency": "CNY", "input_token": 6.5e-06, "output_token": 2.7e-05, "cache_input_token": 1.1e-06 }}
   ],
   "patterns": [
     {

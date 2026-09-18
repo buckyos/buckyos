@@ -121,7 +121,7 @@ mod tests {
             sonnet.capabilities.as_ref().unwrap()["max_context_tokens"],
             1_000_000
         );
-        assert_eq!(sonnet.pricing.as_ref().unwrap().input_token, Some(0.000003));
+        assert_eq!(sonnet.pricing.as_ref().unwrap().input_token, Some(0.000002));
         assert_eq!(adapter.base_adapter_id, None);
         assert_eq!(registration.operation_codecs.len(), 3);
         let builtin = claude_catalog_files()
