@@ -830,6 +830,7 @@ Fallback（逻辑路由层语义，由 `route.resolve` / helper / logical defini
 1. `llm.plan`、`llm.code`、`llm.summary` 可 parent fallback 到 `llm`。
 2. `llm.reason` 默认 disabled 或 strict，避免静默降级到无 reasoning 能力模型。
 3. `llm.vision` 必须硬过滤 `vision=true`（在逻辑模型定义 `min_line` 中表达）。
+4. `llm.audio` 必须硬过滤 `audio=true`，且不得 parent fallback 到 `llm`：音频请求不能静默降级到仅支持文本的模型。
 
 AICC 不定义 `llm.completion`。纯文本 completion 由调用方构造单条 user message 后调用 `chat.completions.create`；服务端不保留旧 Completion schema、method alias 或自动转换入口。
 

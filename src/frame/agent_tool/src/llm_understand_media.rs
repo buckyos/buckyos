@@ -27,6 +27,11 @@ pub const TOOL_LLM_UNDERSTAND_MEDIA: &str = "llm_understand_media";
 
 const DEFAULT_MODEL_ALIAS: &str = "llm.vision";
 const DEFAULT_SUMMARY_MODEL_ALIAS: &str = "llm.summary";
+/// Audio attachments route here unless `LLM_UNDERSTAND_MEDIA_AUDIO_MODEL`
+/// overrides it. `llm.audio` requires an audio-input-capable LLM and, unlike
+/// `llm.vision`, has no parent fallback, so a clip can never be silently
+/// downgraded onto a text-only model.
+const DEFAULT_AUDIO_MODEL_ALIAS: &str = "llm.audio";
 const DEFAULT_TARGET_TOKENS: u32 = 24_000;
 const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 2_048;
 const RAW_OUTPUT_LOG_PREVIEW_CHARS: usize = 2_000;
@@ -90,7 +95,7 @@ impl AgentTool for LlmUnderstandMediaTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_LLM_UNDERSTAND_MEDIA.to_string(),
-            description: "Understand an attachment through a controlled LLM side context. Archives must be extracted first; other formats are forwarded to the selected model and fail if it does not support them. Images and sampled video frames route to llm.vision; audio has no default route and needs LLM_UNDERSTAND_MEDIA_AUDIO_MODEL (or an explicit model) naming a model that accepts audio input, such as glm-4-voice. Use the speech_to_text command when the goal is exact transcription. Accepts media, goal, and max_completion_tokens only. media is either a stored object ({kind:\"named_object\", obj_id:\"cyfile:…\"}), a url, or a local file ({kind:\"local_file\", path:\"/abs/path\"}); use the local-file form for artifacts an earlier exec_bash produced.".to_string(),
+            description: "Understand an attachment through a controlled LLM side context. Archives must be extracted first; other formats are forwarded to the selected model and fail if it does not support them. Images and sampled video frames route to llm.vision; audio routes to llm.audio, which needs a model that accepts audio input (set LLM_UNDERSTAND_MEDIA_AUDIO_MODEL to override, or use the speech_to_text command when the goal is exact transcription). Accepts media, goal, and max_completion_tokens only. media is either a stored object ({kind:\"named_object\", obj_id:\"cyfile:…\"}), a url, or a local file ({kind:\"local_file\", path:\"/abs/path\"}); use the local-file form for artifacts an earlier exec_bash produced.".to_string(),
             args_schema: json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -1400,16 +1405,15 @@ fn route_model(mime: &str) -> Option<String> {
         return None;
     }
     if is_audio_mime(mime) {
-        // Audio must never inherit the vision fallback: the old blanket
+        // Audio must never inherit the vision fallback. No text/vision model
+        // in the fleet accepts audio input, and the old blanket
         // `DEFAULT_MODEL_ALIAS` fallback turned every audio attachment into a
-        // `Document` addressed to `llm.vision` — see
-        // diagnosis/glm-audio-input-capability-2026-09-18.md. There is also no
-        // audio counterpart to `llm.vision` to fall back to: the catalog
-        // defines audio only as the standalone `audio.*` APIs (`audio.asr` and
-        // friends), whose request shape is not a chat request. So the caller
-        // names the model — `glm-4-voice` accepts audio input on the chat path,
-        // and `speech_to_text` covers exact transcription through `audio.asr`.
-        return configured_model("LLM_UNDERSTAND_MEDIA_AUDIO_MODEL");
+        // `Document` sent to `llm.vision` — see
+        // diagnosis/glm-audio-input-capability-2026-09-18.md. A dedicated
+        // override is required (e.g. `glm-4-voice`, or an ASR model used
+        // through `speech_to_text`).
+        return configured_model("LLM_UNDERSTAND_MEDIA_AUDIO_MODEL")
+            .or_else(|| Some(DEFAULT_AUDIO_MODEL_ALIAS.to_string()));
     }
     let specific = if is_video_mime(mime) {
         configured_model("LLM_UNDERSTAND_MEDIA_VIDEO_MODEL")
@@ -1901,9 +1905,8 @@ Required:
 Options:
   --history-file <path>   JSON Vec<AiMessage> parent history snapshot.
   --work-dir <path>       LocalLLMContext working directory.
-  --model <alias>         AICC logical model alias; the default is llm.vision
-                          for image/video. Audio has no default and must be
-                          named here or in LLM_UNDERSTAND_MEDIA_AUDIO_MODEL.
+  --model <alias>         AICC logical model alias; defaults are llm.vision for
+                          image/video and llm.audio for audio.
   --max-completion-tokens <n>  Positive output budget; default 2048, rounded up to 2048/4096/8192 tiers.
   -h, --help              Show this help.
 "#;
@@ -2105,19 +2108,20 @@ mod tests {
     }
 
     #[test]
-    fn audio_attachments_have_no_default_route() {
-        // The catalog has no audio counterpart to `llm.vision`: audio is only
-        // defined as the standalone `audio.*` APIs, which do not take a chat
-        // request. So there is no default model to route an audio attachment
-        // to, and the caller must name one. What must never come back is the
-        // old blanket fallback that forwarded clips to `llm.vision`.
-        for mime in ["audio/mpeg", "audio/wav", "audio/flac"] {
-            let routed = route_model(mime);
-            assert!(
-                routed.is_none(),
-                "{mime} must not be routed by default, got {routed:?}"
-            );
-        }
+    fn audio_attachments_route_to_the_audio_alias() {
+        assert_eq!(
+            route_model("audio/mpeg").as_deref(),
+            Some(DEFAULT_AUDIO_MODEL_ALIAS)
+        );
+        assert_eq!(
+            route_model("audio/wav").as_deref(),
+            Some(DEFAULT_AUDIO_MODEL_ALIAS)
+        );
+        // The archive escape hatch still wins: audio never falls back to vision.
+        assert_ne!(
+            route_model("audio/flac").as_deref(),
+            Some(DEFAULT_MODEL_ALIAS)
+        );
     }
 
     #[test]
