@@ -127,6 +127,23 @@ impl ToolManager for EchoTools {
     }
 }
 
+struct FailingTools;
+
+#[async_trait]
+impl ToolManager for FailingTools {
+    async fn call_tool(&self, call: AiToolCall) -> Observation {
+        Observation::Error {
+            call_id: call.call_id,
+            message: "boom".into(),
+            tool_result: None,
+        }
+    }
+
+    fn list_tool_specs(&self) -> Vec<ToolSpecLite> {
+        Vec::new()
+    }
+}
+
 struct CustomStepResultHook;
 
 #[async_trait]
@@ -696,20 +713,68 @@ async fn behavior_loop_keeps_recoverable_error_out_of_system_messages() {
 }
 
 #[tokio::test]
-async fn behavior_loop_ignores_next_behavior_when_actions_exist() {
+async fn behavior_loop_honours_terminal_end_declared_with_actions() {
+    let llm = Arc::new(ScriptedLlm::new(vec![text_response(
+        r#"<response>
+<thinking>done, closing the loop</thinking>
+<actions><exec_bash>echo done</exec_bash></actions>
+<next_behavior>END</next_behavior>
+</response>"#,
+    )]));
+    let mut req = base_request();
+    req.behavior_name = "plan".into();
+    let deps = LLMContextDeps::new(llm, Arc::new(EchoTools))
+        .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+        .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+    let mut ctx = LLMContext::new(req, deps);
+
+    let outcome = ctx.run().await;
+    let LLMContextOutcome::Done {
+        behavior_result,
+        trace,
+        ..
+    } = outcome
+    else {
+        panic!("expected behavior Done");
+    };
+    // The action still ran...
+    assert_eq!(trace.tool_trace.len(), 1);
+    // ...and END was honoured, so this one step ended the behavior. Anything
+    // else makes a model that always closes with `actions + END` loop forever.
+    assert_eq!(
+        behavior_result.and_then(|r| r.next_behavior).as_deref(),
+        Some("END")
+    );
+
+    let snapshot = ctx.snapshot();
+    assert_eq!(snapshot.state.steps.len(), 1);
+    assert_eq!(snapshot.state.steps[0].actions.len(), 1);
+    assert_eq!(snapshot.state.steps[0].actions[0].call_id, "1");
+    assert_eq!(snapshot.state.steps[0].action_results.len(), 1);
+    assert_eq!(
+        snapshot.state.steps[0].next_behavior.as_deref(),
+        Some("END")
+    );
+    assert_eq!(snapshot.state.next_action_id, 1);
+}
+
+#[tokio::test]
+async fn behavior_loop_still_defers_jump_target_declared_with_actions() {
+    // A jump target keeps the old contract: its target behavior must observe
+    // this step's results first, so the directive is suppressed for one step.
     let llm = Arc::new(ScriptedLlm::new(vec![
         text_response(
             r#"<response>
 <thinking>run before switching</thinking>
 <actions><exec_bash>echo done</exec_bash></actions>
-<next_behavior>END</next_behavior>
+<next_behavior>CHECK</next_behavior>
 </response>"#,
         ),
         text_response(
             r#"<response>
 <observation>action result observed</observation>
 <thinking>now switch</thinking>
-<next_behavior>END</next_behavior>
+<next_behavior>CHECK</next_behavior>
 </response>"#,
         ),
     ]));
@@ -732,19 +797,17 @@ async fn behavior_loop_ignores_next_behavior_when_actions_exist() {
     assert_eq!(trace.tool_trace.len(), 1);
     assert_eq!(
         behavior_result.and_then(|r| r.next_behavior).as_deref(),
-        Some("END")
+        Some("CHECK")
     );
 
     let snapshot = ctx.snapshot();
     assert_eq!(snapshot.state.steps.len(), 2);
     assert_eq!(snapshot.state.steps[0].actions.len(), 1);
-    assert_eq!(snapshot.state.steps[0].actions[0].call_id, "1");
     assert_eq!(snapshot.state.steps[0].next_behavior, None);
     assert_eq!(snapshot.state.steps[0].action_results.len(), 1);
-    assert_eq!(snapshot.state.next_action_id, 1);
     assert_eq!(
         snapshot.state.steps[1].next_behavior.as_deref(),
-        Some("END")
+        Some("CHECK")
     );
 }
 
@@ -831,22 +894,14 @@ async fn behavior_loop_on_behavior_step_ob_can_skip_next_inference() {
 }
 
 #[tokio::test]
-async fn behavior_loop_ignores_next_behavior_when_sendmsg_exists() {
-    let llm = Arc::new(ScriptedLlm::new(vec![
-        text_response(
-            r#"<response>
-<thinking>notify before switching</thinking>
+async fn behavior_loop_honours_terminal_end_declared_with_sendmsg() {
+    let llm = Arc::new(ScriptedLlm::new(vec![text_response(
+        r#"<response>
+<thinking>notify and finish</thinking>
 <actions><sendmsg target="user">working</sendmsg></actions>
 <next_behavior>END</next_behavior>
 </response>"#,
-        ),
-        text_response(
-            r#"<response>
-<thinking>now switch</thinking>
-<next_behavior>END</next_behavior>
-</response>"#,
-        ),
-    ]));
+    )]));
     let mut req = base_request();
     req.behavior_name = "plan".into();
     let deps = LLMContextDeps::new(llm, Arc::new(EchoTools))
@@ -867,8 +922,58 @@ async fn behavior_loop_ignores_next_behavior_when_sendmsg_exists() {
     );
 
     let snapshot = ctx.snapshot();
-    assert_eq!(snapshot.state.steps.len(), 2);
+    assert_eq!(snapshot.state.steps.len(), 1);
     assert_eq!(snapshot.state.steps[0].messages_sent.len(), 1);
+    assert_eq!(
+        snapshot.state.steps[0].next_behavior.as_deref(),
+        Some("END")
+    );
+}
+
+#[tokio::test]
+async fn behavior_loop_releases_terminal_end_when_a_dispatched_action_failed() {
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        text_response(
+            r#"<response>
+<thinking>last step</thinking>
+<actions><exec_bash>boom</exec_bash></actions>
+<next_behavior>END</next_behavior>
+</response>"#,
+        ),
+        text_response(
+            r#"<response>
+<observation>it failed</observation>
+<next_behavior>END</next_behavior>
+</response>"#,
+        ),
+    ]));
+    let mut req = base_request();
+    req.behavior_name = "plan".into();
+    let deps = LLMContextDeps::new(llm, Arc::new(FailingTools))
+        .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+        .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+    let mut ctx = LLMContext::new(req, deps);
+
+    let outcome = ctx.run().await;
+    let LLMContextOutcome::Done {
+        behavior_result, ..
+    } = outcome
+    else {
+        panic!("expected behavior Done");
+    };
+    assert_eq!(
+        behavior_result.and_then(|r| r.next_behavior).as_deref(),
+        Some("END")
+    );
+
+    // The failure had to be observed first, so END did not end the step it was
+    // declared on: the loop ran one more step and the model re-declared it.
+    let snapshot = ctx.snapshot();
+    assert_eq!(snapshot.state.steps.len(), 2);
+    assert!(matches!(
+        snapshot.state.steps[0].action_results[0],
+        Observation::Error { .. }
+    ));
     assert_eq!(snapshot.state.steps[0].next_behavior, None);
     assert_eq!(
         snapshot.state.steps[1].next_behavior.as_deref(),

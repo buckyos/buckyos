@@ -24,7 +24,8 @@ use agent_tool::{
 };
 use llm_context::{
     behavior_loop::{
-        HistoryInputRecord, SendMessageRecord, StepRecord, StepResultHook, StepResultHookOutput,
+        is_terminal_next_behavior, HistoryInputRecord, SendMessageRecord, StepRecord,
+        StepResultHook, StepResultHookOutput, NEXT_BEHAVIOR_END,
     },
     context_loop::LLMContext,
     interrupt::LLMContextInterruptHandle,
@@ -4325,11 +4326,11 @@ impl AgentSession {
                         .map(|next| next.trim().eq_ignore_ascii_case("self_improve_set_memory"))
                         .unwrap_or(false)
                 {
-                    next_behavior = Some("END".to_string());
+                    next_behavior = Some(NEXT_BEHAVIOR_END.to_string());
                 }
                 if let Some(next) = next_behavior.as_deref() {
                     let trimmed = next.trim();
-                    if trimmed.eq_ignore_ascii_case("END") {
+                    if is_terminal_next_behavior(trimmed) {
                         // Independent-mode call-stack-aware End: pop a
                         // parent frame if one is waiting; only an empty
                         // stack means the session itself is done.

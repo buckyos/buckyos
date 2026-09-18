@@ -91,10 +91,13 @@ pub struct StepRecord {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<AiToolCall>,
     /// "Next behavior" slot — when `Some` on a step with no action side
-    /// effects, this step is terminal and the loop returns. If the LLM emits
-    /// actions / sendmsg and next_behavior together, the loop suppresses
-    /// next_behavior so action observations are seen before any behavior
-    /// change.
+    /// effects, this step is terminal and the loop returns.
+    ///
+    /// When the LLM emits it together with actions / sendmsg the directive is
+    /// still in force, but only where it can be honoured safely — see
+    /// [`is_terminal_next_behavior`]: a jump target is suppressed so the next
+    /// inference observes the results first, while the terminal `END` is
+    /// honoured at the end of this very step and is never dropped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_behavior: Option<String>,
     /// Self Report (`<report>`) — overwrites
@@ -127,6 +130,23 @@ pub struct StepRecord {
 pub struct SendMessageRecord {
     pub target: String,
     pub body: String,
+}
+
+/// The terminal value of the `<next_behavior>` slot.
+///
+/// Every other value is an opaque jump target that only the worksession above
+/// interprets. `END` is the single exception recognised by this crate, and
+/// only because termination safety depends on it: a terminal directive may be
+/// applied on a step that also carried actions (nothing later in this behavior
+/// could still observe their results), while a jump target must wait for
+/// exactly that.
+pub const NEXT_BEHAVIOR_END: &str = "END";
+
+/// Case-insensitive test for the terminal `<next_behavior>` value. Shared with
+/// the worksession so the two layers cannot drift apart on what "terminal"
+/// means.
+pub fn is_terminal_next_behavior(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case(NEXT_BEHAVIOR_END)
 }
 
 impl StepRecord {
@@ -202,10 +222,13 @@ pub struct LLMBehaviorResult {
     /// excluding parser-side tags like `<sendmsg>` and `<report>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub do_actions: Vec<AiToolCall>,
-    /// Terminal signal + jump target. `Some(_)` is terminal only when
-    /// `do_actions` is empty; otherwise the loop suppresses it and requires
-    /// the next inference to observe action results first. The loop does
-    /// **not** interpret the string — that belongs to the worksession above.
+    /// Terminal signal + jump target. `Some(_)` is terminal when
+    /// `do_actions` is empty. If actions were dispatched in the same step the
+    /// loop requires the next inference to observe their results first, with
+    /// one exception: the terminal [`NEXT_BEHAVIOR_END`] is honoured at the
+    /// end of that step, unless an action failed — then the failure is fed
+    /// back first and the directive is re-declared by the model. No other
+    /// value is interpreted here; the rest belongs to the worksession above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_behavior: Option<String>,
 

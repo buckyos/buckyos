@@ -21,7 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use buckyos_api::{AiContent, AiCost, AiMessage, AiResponse, AiRole, AiToolResultContent, AiUsage};
 use serde_json::Value;
 
-use crate::behavior_loop::{LLMBehaviorResult, StepMeta, StepRecord};
+use crate::behavior_loop::{is_terminal_next_behavior, LLMBehaviorResult, StepMeta, StepRecord};
 use crate::deps::{resolve_tool_specs, LLMContextDeps, LlmInferenceRequest, WorkEvent};
 use crate::error::LLMComputeError;
 use crate::interrupt::{
@@ -805,11 +805,29 @@ impl LLMContext {
                 }
             };
 
-            if had_action_side_effects_before_gate {
+            // 5b. `<next_behavior>` on a step that also carries action side
+            //     effects. A *jump target* is still scrubbed here: the target
+            //     behavior must observe this step's results before the
+            //     behavior changes.
+            //
+            //     A *terminal* directive (`END`) is deliberately kept. It
+            //     declares that the current intent is finished, so no later
+            //     inference in this behavior would act on those results
+            //     anyway. Dropping it was this loop's most expensive bug: a
+            //     model that closes every step with
+            //     `<actions>…</actions><next_behavior>END</next_behavior>`
+            //     never converged and re-declared the same intent until the
+            //     Provider rejected the request. The actions are still
+            //     dispatched below — the model did ask for them — and `END`
+            //     then decides the step's outcome.
+            let terminal_declared = new_step
+                .next_behavior
+                .as_deref()
+                .is_some_and(is_terminal_next_behavior);
+            if had_action_side_effects_before_gate && !terminal_declared {
                 if let Some(violating) = new_step.next_behavior.take() {
                     log::warn!(
-                        "behavior_loop: ignoring `<next_behavior>{}</next_behavior>` because actions are present; action results must be observed before changing behavior",
-                        violating
+                        "behavior_loop: ignoring `<next_behavior>{violating}</next_behavior>` because actions are present; action results must be observed before changing behavior"
                     );
                 }
             }
@@ -920,11 +938,29 @@ impl LLMContext {
                 self.state.consecutive_errors = 0;
             }
 
+            // 6b. A terminal END that shared its step with actions is honoured
+            //     only if every dispatched action succeeded. A failed action
+            //     still has to be fed back (the error path below sediments it
+            //     and bumps the consecutive-error counter), so the directive is
+            //     released for the model to re-declare once it has seen the
+            //     failure — released with a log line, never dropped silently.
+            if terminal_declared && error_to_bump.is_some() {
+                if let Some(deferred) = new_step.next_behavior.take() {
+                    log::warn!(
+                        "behavior_loop: deferring `<next_behavior>{deferred}</next_behavior>` — a dispatched action failed, its result must be observed before this behavior can end"
+                    );
+                }
+            }
+
             // 7. Terminal cases:
-            //    a) `<next_behavior>` was set on an action-free step — finish.
-            //       If actions were present, the guard above scrubbed
-            //       next_behavior so the next inference can observe results
-            //       before changing behavior.
+            //    a) `<next_behavior>` is in force for this step. An action-free
+            //       step always ends here. A step that carried actions only
+            //       reaches this point with the terminal END (5b suppressed
+            //       every jump target, 6b released a failed END), which is
+            //       precisely the case the model must not be second-guessed
+            //       about: it already ran its actions, nothing later in this
+            //       behavior would look at their results, and re-declaring END
+            //       would be the only way out of an otherwise endless loop.
             //    b) No actions, no report, no message, no next_behavior — a
             //       pure-thought response = natural convergence.
             if new_step.next_behavior.is_some() {
