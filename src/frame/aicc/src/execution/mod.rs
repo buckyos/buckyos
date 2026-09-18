@@ -1,6 +1,7 @@
 use crate::call::ResolvedProviderCall;
 use crate::catalog::{
-    PricingTierStep, PricingTiers, PricingUnit, TierDimension, TierMode,
+    Pricing, PricingTierStep, PricingTiers, PricingTimeWindow, PricingUnit,
+    TierDimension, TierMode,
 };
 use crate::error::NativeTaskResumeError;
 use crate::protocol::{
@@ -224,11 +225,104 @@ pub(crate) enum PinnedPricingBasis {
     },
 }
 
+/// Monday-based weekday (0 = Monday) and minute-of-day for `now` on the clock implied
+/// by `utc_offset_minutes`. Derived from the epoch directly so no timezone database is
+/// needed; this means the offset is fixed rather than DST-aware, which is called out in
+/// the pricing contract.
+fn local_clock(now: std::time::SystemTime, utc_offset_minutes: i32) -> Option<(u8, i64)> {
+    let secs = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs()
+        .min(i64::MAX as u64) as i64;
+    let local = secs + i64::from(utc_offset_minutes) * 60;
+    let day = local.div_euclid(86_400);
+    let minute = local.rem_euclid(86_400) / 60;
+    // 1970-01-01 was a Thursday.
+    let weekday = u8::try_from((day + 3).rem_euclid(7)).ok()?;
+    Some((weekday, minute))
+}
+
+fn parse_clock(value: &str) -> Option<i64> {
+    let (hour, minute) = value.trim().split_once(':')?;
+    let hour: i64 = hour.trim().parse().ok()?;
+    let minute: i64 = minute.trim().parse().ok()?;
+    if !(0..24).contains(&hour) || !(0..60).contains(&minute) {
+        return None;
+    }
+    Some(hour * 60 + minute)
+}
+
+fn time_window_matches(window: &PricingTimeWindow, now: std::time::SystemTime) -> bool {
+    let (Some((weekday, minute)), Some(from), Some(to)) = (
+        local_clock(now, window.utc_offset_minutes),
+        parse_clock(&window.from),
+        parse_clock(&window.to),
+    ) else {
+        return false;
+    };
+    if from == to {
+        return false;
+    }
+    let in_range = if from < to {
+        minute >= from && minute < to
+    } else {
+        minute >= from || minute < to
+    };
+    if !in_range {
+        return false;
+    }
+    match &window.days {
+        Some(days) => days.is_empty() || days.iter().any(|day| day.index() == weekday),
+        None => true,
+    }
+}
+
+/// First matching window wins; `validate_pricing_time_windows` guarantees windows on one
+/// pricing never overlap, so the choice is unambiguous.
+fn active_time_window<'a>(
+    windows: &'a [PricingTimeWindow],
+    now: std::time::SystemTime,
+) -> Option<&'a PricingTimeWindow> {
+    windows
+        .iter()
+        .find(|window| time_window_matches(window, now))
+}
+
+/// Fold a matched window over the base pricing: only fields the window declares override
+/// the base rates, so a provider lists just what changes (for example a peak surcharge).
+fn apply_time_window(base: &Pricing, window: Option<&PricingTimeWindow>) -> Pricing {
+    let Some(window) = window else {
+        return base.clone();
+    };
+    Pricing {
+        currency: base.currency.clone(),
+        input_token: window.input_token.or(base.input_token),
+        output_token: window.output_token.or(base.output_token),
+        cache_input_token: window.cache_input_token.or(base.cache_input_token),
+        estimated_cost: base.estimated_cost,
+        unit: window.unit.or(base.unit),
+        amount: window.amount.or(base.amount),
+        rules: base.rules.clone(),
+        tiers: base.tiers.clone(),
+        // Already resolved; clearing prevents a second pass from re-applying it.
+        time_windows: Vec::new(),
+    }
+}
+
 impl PinnedPricingSnapshot {
     fn from_call(call: &ResolvedProviderCall) -> Result<Option<Self>, AiccError> {
-        let Some(pricing) = call.pricing.pricing.as_ref() else {
+        let Some(base_pricing) = call.pricing.pricing.as_ref() else {
             return Ok(None);
         };
+        // Peak/off-peak billing is decided by wall-clock time, so it is pinned
+        // here at request time. Tier selection still has to wait for the usage
+        // numbers, which only exist once the response lands.
+        let effective = apply_time_window(
+            base_pricing,
+            active_time_window(&base_pricing.time_windows, std::time::SystemTime::now()),
+        );
+        let pricing = &effective;
         let currency = pricing.currency.trim().to_ascii_uppercase();
         if currency.is_empty() {
             return Err(invalid_pinned_pricing());
@@ -288,6 +382,10 @@ impl PinnedPricingSnapshot {
                     PricingUnit::AudioSecond => usage.audio_seconds?,
                     PricingUnit::VideoSecond => usage.video_seconds?,
                     PricingUnit::Character => usage.characters? as f64,
+                    // Billable by compute-second or megapixel (for example fal.ai);
+                    // the vocabulary is expressible but no adapter reports these
+                    // counters yet, so the cost stays unresolved rather than wrong.
+                    PricingUnit::Second | PricingUnit::Megapixel => return None,
                 };
                 units * amount
             }
@@ -1542,6 +1640,7 @@ impl From<ProtocolErrorKind> for ExecutionState {
 
 #[cfg(test)]
 mod tests {
+    use crate::catalog::PricingWeekday;
     use super::*;
     use crate::call::{LoweringRevisions, PricingSource, ResolvedPricing};
     use crate::catalog::Pricing;
@@ -1961,6 +2060,101 @@ mod tests {
         }
     }
 
+    fn time_window(
+        from: &str,
+        to: &str,
+        days: Option<Vec<PricingWeekday>>,
+        input_token: Option<f64>,
+        output_token: Option<f64>,
+    ) -> PricingTimeWindow {
+        PricingTimeWindow {
+            from: from.into(),
+            to: to.into(),
+            utc_offset_minutes: 480,
+            days,
+            input_token,
+            output_token,
+            cache_input_token: None,
+            unit: None,
+            amount: None,
+        }
+    }
+
+    /// Epoch 0 is a Thursday 00:00 UTC, so with a +08:00 offset `at(3600)` is
+    /// Thursday 09:00 local -- inside a 09:00-12:00 peak window.
+    fn at(secs: u64) -> std::time::SystemTime {
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn time_window_matches_local_peak_hours() {
+        let window = time_window("09:00", "12:00", None, Some(9e-6), None);
+        assert!(time_window_matches(&window, at(3600)));
+        assert!(!time_window_matches(&window, at(0)));
+        // `to` is exclusive.
+        assert!(!time_window_matches(&window, at(4 * 3600)));
+    }
+
+    #[test]
+    fn time_window_honours_weekday_filter() {
+        let thursday = time_window("09:00", "12:00", Some(vec![PricingWeekday::Thu]), None, None);
+        let monday = time_window("09:00", "12:00", Some(vec![PricingWeekday::Mon]), None, None);
+        assert!(time_window_matches(&thursday, at(3600)));
+        assert!(!time_window_matches(&monday, at(3600)));
+    }
+
+    #[test]
+    fn time_window_wraps_past_midnight() {
+        let window = time_window("22:00", "02:00", None, None, None);
+        // Thursday 23:00 and Friday 01:00 local both fall inside.
+        assert!(time_window_matches(&window, at(15 * 3600)));
+        assert!(time_window_matches(&window, at(17 * 3600)));
+        assert!(!time_window_matches(&window, at(4 * 3600)));
+    }
+
+    #[test]
+    fn time_window_override_only_replaces_declared_fields() {
+        let base = Pricing {
+            currency: "USD".into(),
+            input_token: Some(1e-6),
+            output_token: Some(4e-6),
+            cache_input_token: Some(1e-7),
+            estimated_cost: None,
+            unit: None,
+            amount: None,
+            rules: Vec::new(),
+            tiers: None,
+            time_windows: Vec::new(),
+        };
+        let window = time_window("09:00", "12:00", None, Some(9e-6), None);
+        let merged = apply_time_window(&base, Some(&window));
+        assert_eq!(merged.input_token, Some(9e-6));
+        // Untouched fields keep the base (off-peak) rates.
+        assert_eq!(merged.output_token, Some(4e-6));
+        assert_eq!(merged.cache_input_token, Some(1e-7));
+        // Already resolved, so a second pass cannot re-apply it.
+        assert!(merged.time_windows.is_empty());
+    }
+
+    #[test]
+    fn apply_time_window_without_match_returns_base() {
+        let base = Pricing {
+            currency: "USD".into(),
+            input_token: Some(1e-6),
+            output_token: Some(4e-6),
+            cache_input_token: None,
+            estimated_cost: None,
+            unit: None,
+            amount: None,
+            rules: Vec::new(),
+            tiers: None,
+            time_windows: vec![time_window("09:00", "12:00", None, Some(9e-6), None)],
+        };
+        let unchanged = apply_time_window(&base, None);
+        assert_eq!(unchanged.input_token, Some(1e-6));
+        assert_eq!(unchanged.time_windows.len(), 1);
+    }
+
     fn token_priced_call(
         instance: &str,
         input_token: f64,
@@ -1979,7 +2173,8 @@ mod tests {
                 amount: None,
                 rules: Vec::new(),
                 tiers: None,
-            }),
+            
+                time_windows: Vec::new(),}),
             matched_amount: None,
             estimated_cost: Some(buckyos_api::Money::new(777.0, "USD")),
         };
@@ -2000,7 +2195,8 @@ mod tests {
                 amount: Some(amount),
                 rules: Vec::new(),
                 tiers: None,
-            }),
+            
+                time_windows: Vec::new(),}),
             matched_amount: None,
             estimated_cost: None,
         };

@@ -7,7 +7,8 @@ pub(crate) use schema::ProviderRuleMatchKind;
 pub(crate) use schema::{
     CatalogBuildOptions, CatalogDocuments, CatalogKind, CurrentCatalogFile, KnownProvider,
     KnownProviderCatalog, ModelDriverCatalog, ModelMatchKind, ModelSemantics, ModelVariant,
-    OriginMapping, Pricing, PricingTierStep, PricingTiers, PricingUnit,
+    OriginMapping, Pricing, PricingTierStep, PricingTiers, PricingTimeWindow, PricingUnit,
+    PricingWeekday,
     ProviderCredentialDescriptor, ProviderCredentialKind,
     ProviderExactRule, ProviderFieldMode, ProviderFieldSchema, ProviderPatternRule,
     ProviderRuleAction, ProviderRulesCatalog, ProviderVariantRule, RequestRule,

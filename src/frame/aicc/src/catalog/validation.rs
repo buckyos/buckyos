@@ -411,6 +411,133 @@ fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), CatalogBuildEr
     if let Some(tiers) = &pricing.tiers {
         validate_pricing_tiers(owner, tiers)?;
     }
+    validate_pricing_time_windows(owner, &pricing.time_windows)?;
+    Ok(())
+}
+
+fn parse_validate_clock(value: &str) -> Option<i64> {
+    let (hour, minute) = value.trim().split_once(':')?;
+    let hour: i64 = hour.trim().parse().ok()?;
+    let minute: i64 = minute.trim().parse().ok()?;
+    if !(0..24).contains(&hour) || !(0..60).contains(&minute) {
+        return None;
+    }
+    Some(hour * 60 + minute)
+}
+
+/// Half-open [start, end) minute intervals; a window that wraps past midnight is split.
+fn time_window_intervals(window: &PricingTimeWindow) -> Vec<(i64, i64)> {
+    let (Some(from), Some(to)) = (
+        parse_validate_clock(&window.from),
+        parse_validate_clock(&window.to),
+    ) else {
+        return Vec::new();
+    };
+    if from < to {
+        vec![(from, to)]
+    } else {
+        vec![(from, 1440), (0, to)]
+    }
+}
+
+fn time_window_days_overlap(a: Option<&[PricingWeekday]>, b: Option<&[PricingWeekday]>) -> bool {
+    match (a, b) {
+        (None, _) | (_, None) => true,
+        (Some(a), Some(b)) => a.iter().any(|day| b.contains(day)),
+    }
+}
+
+fn time_windows_overlap(a: &PricingTimeWindow, b: &PricingTimeWindow) -> bool {
+    if !time_window_days_overlap(a.days.as_deref(), b.days.as_deref()) {
+        return false;
+    }
+    for (a_start, a_end) in time_window_intervals(a) {
+        for (b_start, b_end) in time_window_intervals(b) {
+            if a_start < b_end && b_start < a_end {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn validate_pricing_time_windows(
+    owner: &str,
+    windows: &[PricingTimeWindow],
+) -> Result<(), CatalogBuildError> {
+    let invalid = |reason: String| CatalogBuildError::InvalidValue {
+        owner: owner.to_owned(),
+        field: "pricing.time_windows",
+        reason,
+    };
+    // Comparing windows expressed in different local clocks would be ambiguous, so a
+    // single pricing may only declare windows on one clock.
+    if let Some(first) = windows.first() {
+        if windows
+            .iter()
+            .any(|window| window.utc_offset_minutes != first.utc_offset_minutes)
+        {
+            return Err(invalid(
+                "all time_windows must share one utc_offset_minutes".to_owned(),
+            ));
+        }
+    }
+    for (index, window) in windows.iter().enumerate() {
+        if parse_validate_clock(&window.from).is_none() {
+            return Err(invalid(format!("windows[{index}].from must be HH:MM")));
+        }
+        if parse_validate_clock(&window.to).is_none() {
+            return Err(invalid(format!("windows[{index}].to must be HH:MM")));
+        }
+        if parse_validate_clock(&window.from) == parse_validate_clock(&window.to) {
+            return Err(invalid(format!("windows[{index}] must not be empty")));
+        }
+        if !(-1440..1440).contains(&window.utc_offset_minutes) {
+            return Err(invalid(format!(
+                "windows[{index}].utc_offset_minutes out of range"
+            )));
+        }
+        if window.days.as_ref().is_some_and(|days| days.is_empty()) {
+            return Err(invalid(format!("windows[{index}].days must not be empty")));
+        }
+        let declares_override = window.input_token.is_some()
+            || window.output_token.is_some()
+            || window.cache_input_token.is_some()
+            || window.unit.is_some()
+            || window.amount.is_some();
+        if !declares_override {
+            return Err(invalid(format!(
+                "windows[{index}] declares no price override"
+            )));
+        }
+        for (field, amount) in [
+            ("input_token", window.input_token),
+            ("output_token", window.output_token),
+            ("cache_input_token", window.cache_input_token),
+            ("amount", window.amount),
+        ] {
+            if amount.is_some_and(|amount| !amount.is_finite() || amount < 0.0) {
+                return Err(invalid(format!(
+                    "windows[{index}].{field} must be finite and non-negative"
+                )));
+            }
+        }
+        let billed_by_token = window.input_token.is_some() || window.output_token.is_some();
+        if billed_by_token && window.unit.is_some() {
+            return Err(invalid(format!(
+                "windows[{index}]: token rates and unit billing are mutually exclusive"
+            )));
+        }
+    }
+    for i in 0..windows.len() {
+        for j in (i + 1)..windows.len() {
+            if time_windows_overlap(&windows[i], &windows[j]) {
+                return Err(invalid(format!(
+                    "windows[{i}] and windows[{j}] overlap; matches would be ambiguous"
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
