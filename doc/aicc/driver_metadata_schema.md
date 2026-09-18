@@ -155,27 +155,24 @@ for the common case it is only `"match": "gpt-*"`:
 - `capabilities`: intrinsic capability limits such as streaming, tool calling,
   JSON output, web search, vision, audio input, image generation and token
   limits.
-  A model whose transport AICC does not implement yet is booked here with an
-  `extend` flag instead of being dropped from the catalog:
+  A model whose transport AICC does not implement yet is booked here with
+  `exclude: true` instead of being dropped from the catalog:
 
   ```json
   {
     "id": "glm-realtime-flash",
-    "exclude": true,
-    "capabilities": {
-      "extend": true,
-      "extend_protocol": "websocket.realtime",
-      "extend_endpoint": "wss://open.bigmodel.cn/api/paas/v4/realtime"
-    }
+    "exclude": true
   }
   ```
 
   The model keeps its identity and its `model_pricing` entry, but it never
-  reaches an inventory and is never routed. `capabilities.extend: true` is only
-  accepted together with `exclude: true`; catalog validation rejects the flag on
-  its own. Wiring the protocol later therefore means: clear `extend`, clear
-  `exclude`, add the Provider Rules `operations` mapping, and drop the matching
-  `exclude` entry from the Provider Rules `models[]`.
+  reaches an inventory and is never routed. There is no separate "not wired
+  yet" flag: `exclude` already states that the model is not served, and a
+  second flag would only be one more thing to clear at wiring time. The
+  Provider Rules `models[]` still needs the matching `exclude` entry, because
+  the static fallback inventory is assembled from both sides. Wiring the
+  protocol later therefore means: add the Provider Rules `operations` mapping
+  and drop the `exclude` entries on both sides.
 - `canonical_fields`: maps canonical request JSON Pointers to mapping policies.
   Each policy names a converter implemented by AICC in Rust and configures how
   missing or unconvertible values are handled by one fallback policy. A Provider Rules entry

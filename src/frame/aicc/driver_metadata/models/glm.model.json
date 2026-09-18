@@ -388,13 +388,11 @@
     },
     {
       "id": "glm-realtime-flash",
-      "exclude": true,
-      "capabilities": { "extend": true, "extend_protocol": "websocket.realtime", "extend_endpoint": "wss://open.bigmodel.cn/api/paas/v4/realtime" }
+      "exclude": true
     },
     {
       "id": "glm-realtime-air",
-      "exclude": true,
-      "capabilities": { "extend": true, "extend_protocol": "websocket.realtime", "extend_endpoint": "wss://open.bigmodel.cn/api/paas/v4/realtime" }
+      "exclude": true
     }
   ],
   "patterns": [],

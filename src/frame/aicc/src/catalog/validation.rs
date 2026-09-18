@@ -145,20 +145,6 @@ fn validate_model_semantics(
                 });
             }
         }
-        // `extend` marks a model whose transport is not implemented yet. Such a
-        // model must stay excluded: registration is bookkeeping, not routing.
-        // Enforcing the pair here means a future protocol landing cannot leave
-        // an unwired model selectable just because the flag was forgotten.
-        if capabilities.get("extend").and_then(|value| value.as_bool()) == Some(true)
-            && semantics.exclude != Some(true)
-        {
-            return Err(CatalogBuildError::InvalidValue {
-                owner: owner.to_owned(),
-                field: "capabilities.extend",
-                reason: "models flagged with `capabilities.extend` must also set `exclude: true`"
-                    .to_owned(),
-            });
-        }
     }
     if let Some(mappings) = &semantics.canonical_fields {
         validate_canonical_fields(owner, mappings)?;
