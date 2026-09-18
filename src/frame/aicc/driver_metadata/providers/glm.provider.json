@@ -54,7 +54,9 @@
     { "id": "vidu2-reference", "operations": { "video.img2video": "videos.generate" } },
     { "id": "glm-4-voice", "operations": { "llm": "chat.completions.create" } },
     { "id": "glm-tts-clone", "operations": { "audio.tts": "audio.speech" }, "canonical_fields": { "/voice": { "converter": "glm_tts_voice_v1", "fallback": { "action": "default", "value": {} } } } },
-    { "id": "cogvideox-2", "operations": { "video.txt2video": "videos.generate", "video.img2video": "videos.generate" } }
+    { "id": "cogvideox-2", "operations": { "video.txt2video": "videos.generate", "video.img2video": "videos.generate" } },
+    { "id": "glm-realtime-flash", "exclude": true },
+    { "id": "glm-realtime-air", "exclude": true }
   ],
   "patterns": [
     {

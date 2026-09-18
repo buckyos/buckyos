@@ -6,11 +6,9 @@ mod validation;
 pub(crate) use schema::ProviderRuleMatchKind;
 pub(crate) use schema::{
     CatalogBuildOptions, CatalogDocuments, CatalogKind, CurrentCatalogFile, KnownProvider,
-    KnownProviderCatalog, ModelDriverCatalog, ModelMatchKind, ModelPricingRule,
-    ModelSemantics, ModelVariant,
-    OriginMapping, Pricing, PricingTierStep, PricingTiers, PricingTimeWindow, PricingUnit,
-    PricingWeekday,
-    ProviderCredentialDescriptor, ProviderCredentialKind,
+    KnownProviderCatalog, ModelDriverCatalog, ModelMatchKind, ModelPricingRule, ModelSemantics,
+    ModelVariant, OriginMapping, Pricing, PricingTierStep, PricingTiers, PricingTimeWindow,
+    PricingUnit, PricingWeekday, ProviderCredentialDescriptor, ProviderCredentialKind,
     ProviderExactRule, ProviderFieldMode, ProviderFieldSchema, ProviderPatternRule,
     ProviderRuleAction, ProviderRulesCatalog, ProviderVariantRule, RequestRule,
     ResolvedModelSemantics, ResolvedProviderConfiguration, ResolvedProviderOrigin,
@@ -684,7 +682,13 @@ impl CatalogSnapshot {
         let rule = &catalog.document.patterns[position];
         let mut action = provider_rule_action!(rule);
         let mut compiled = catalog.pattern_compiled[position].clone();
-        apply_pricing(&mut action, &mut compiled, catalog, provider_model_id, &context);
+        apply_pricing(
+            &mut action,
+            &mut compiled,
+            catalog,
+            provider_model_id,
+            &context,
+        );
         Ok(Some(ResolvedProviderRule {
             catalog_revision_seq: catalog.document.revision_seq,
             #[cfg(test)]

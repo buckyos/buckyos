@@ -26,11 +26,7 @@ pub(super) fn validate_model_driver(
         catalog.models.iter().map(|rule| rule.id.as_str()),
     )?;
     validate_model_semantics(&catalog.model_driver_id, &catalog.defaults)?;
-    validate_model_pricing(
-        &catalog.model_driver_id,
-        &catalog.model_pricing,
-        false,
-    )?;
+    validate_model_pricing(&catalog.model_driver_id, &catalog.model_pricing, false)?;
     for rule in &catalog.models {
         validate_model_semantics(&catalog.model_driver_id, &model_rule_semantics!(rule))?;
     }
@@ -149,6 +145,20 @@ fn validate_model_semantics(
                 });
             }
         }
+        // `extend` marks a model whose transport is not implemented yet. Such a
+        // model must stay excluded: registration is bookkeeping, not routing.
+        // Enforcing the pair here means a future protocol landing cannot leave
+        // an unwired model selectable just because the flag was forgotten.
+        if capabilities.get("extend").and_then(|value| value.as_bool()) == Some(true)
+            && semantics.exclude != Some(true)
+        {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "capabilities.extend",
+                reason: "models flagged with `capabilities.extend` must also set `exclude: true`"
+                    .to_owned(),
+            });
+        }
     }
     if let Some(mappings) = &semantics.canonical_fields {
         validate_canonical_fields(owner, mappings)?;
@@ -231,11 +241,7 @@ pub(super) fn validate_provider_rules(
     for rule in &catalog.patterns {
         validate_provider_rule_data(&catalog.provider_profile_id, rule)?;
     }
-    validate_model_pricing(
-        &catalog.provider_profile_id,
-        &catalog.model_pricing,
-        true,
-    )?;
+    validate_model_pricing(&catalog.provider_profile_id, &catalog.model_pricing, true)?;
     for variant in &catalog.variants {
         validate_nonempty_field(
             CatalogKind::ProviderRules,

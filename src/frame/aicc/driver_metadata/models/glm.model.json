@@ -385,6 +385,16 @@
       "id": "cogvideox-2",
       "api_types": ["video.txt2video", "video.img2video"],
       "logical_mounts": ["video.txt2video.glm", "video.txt2video.{model}", "video.img2video.glm", "video.img2video.{model}"]
+    },
+    {
+      "id": "glm-realtime-flash",
+      "exclude": true,
+      "capabilities": { "extend": true, "extend_protocol": "websocket.realtime", "extend_endpoint": "wss://open.bigmodel.cn/api/paas/v4/realtime" }
+    },
+    {
+      "id": "glm-realtime-air",
+      "exclude": true,
+      "capabilities": { "extend": true, "extend_protocol": "websocket.realtime", "extend_endpoint": "wss://open.bigmodel.cn/api/paas/v4/realtime" }
     }
   ],
   "patterns": [],

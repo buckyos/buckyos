@@ -995,6 +995,33 @@ fn static_catalogs_reject_dynamic_discovery_facts_and_capability_additions() {
         Err(CatalogBuildError::StaticDynamicBoundary { .. })
     ));
 
+    // A model gated behind a protocol AICC does not implement yet is booked
+    // with `capabilities.extend`, and that flag is only legal together with
+    // `exclude: true`.
+    let extend_without_exclude = model_driver(
+        "openai",
+        json!([{
+            "id": "realtime-model",
+            "capabilities": {"extend": true, "extend_protocol": "websocket.realtime"}
+        }]),
+        json!([]),
+    );
+    assert!(matches!(
+        build(vec![file(CatalogKind::ModelDriver, extend_without_exclude)]),
+        Err(CatalogBuildError::InvalidValue { field, .. }) if field == "capabilities.extend"
+    ));
+
+    let extend_with_exclude = model_driver(
+        "openai",
+        json!([{
+            "id": "realtime-model",
+            "exclude": true,
+            "capabilities": {"extend": true, "extend_protocol": "websocket.realtime"}
+        }]),
+        json!([]),
+    );
+    build(vec![file(CatalogKind::ModelDriver, extend_with_exclude)]).unwrap();
+
     let mut capability_addition = provider_rules();
     capability_addition["patterns"][0]["capabilities"] = json!({"tool_call": true});
     assert!(matches!(

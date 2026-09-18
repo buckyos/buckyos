@@ -217,6 +217,8 @@ variant 名称是 Model Driver 与 Provider Rules 共用的封闭词汇表，Mod
 | Provider 厂商 slug 映射 | `origin_provider_aliases` |
 | `provider_model_id` 到原厂身份的确定性映射 | `origin_mappings` |
 | 渠道专属排除规则 | `models[].exclude` / `patterns[].exclude` |
+
+依赖当前尚未实现的协议（例如 GLM-Realtime 的 WebSocket `/realtime` 事件流）的模型，在 Model Driver 的 `models[]` 中登记并带 `capabilities.extend` 标志，同时在 Provider Rules 的 `models[]` 中给出同名 `exclude: true` 条目。两处缺一不可：Provider Rules 侧负责把模型挡在静态兜底 inventory（`static_inventory_models` 与 Model Driver `models[]` 的并集）之外，Model Driver 侧负责挡住运行时 discovery 结果。`capabilities.extend` 是待接线标记，见 `driver_metadata_schema.md`。
 | 选择按渠道模型名、原厂模型名或其它维度匹配 | `match: MatchRule`；字符串默认匹配渠道模型名 |
 | Provider 请求参数 | `provider_options` / `variants` |
 | 模型级请求默认值、改写和参数删除 | `request_rules` |
