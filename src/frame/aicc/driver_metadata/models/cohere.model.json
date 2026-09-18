@@ -10,7 +10,8 @@
       "id": "rerank-v3.5",
       "api_types": ["rerank"],
       "logical_mounts": ["rerank", "rerank.cohere", "rerank.{driver}.{model}"]
-    }
+    ,
+"pricing": { "currency": "USD", "amount": 0.002, "unit": "request" }}
   ],
   "patterns": [
     {

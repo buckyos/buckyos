@@ -20,97 +20,113 @@
         "vision": true,
         "reasoning": true
       }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 7.5e-07, "output_token": 3.75e-06, "cache_input_token": 7.5e-08 }},
     {
       "id": "gemini-3.7-flash",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
       "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
       "capabilities": { "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 7.5e-07, "output_token": 3.75e-06, "cache_input_token": 7.5e-08 }},
     {
       "id": "gemini-3.6-flash",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
       "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "web_search": true, "vision": true, "reasoning": true }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 7.5e-07, "output_token": 3.75e-06, "cache_input_token": 7.5e-08 }},
     {
       "id": "gemini-3.5-flash",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
       "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "web_search": true, "vision": true, "reasoning": true }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 1.5e-06, "output_token": 9e-06, "cache_input_token": 1.5e-07 }},
     {
       "id": "gemini-3.5-flash-lite",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
       "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
       "capabilities": { "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 3e-07, "output_token": 2.5e-06, "cache_input_token": 3e-08 }},
     {
       "id": "gemini-3.1-flash-lite",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
       "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "web_search": true, "vision": true, "reasoning": true }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 2.5e-07, "output_token": 1.5e-06, "cache_input_token": 2.5000000000000002e-08 }},
     {
       "id": "gemini-3.1-pro-preview",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
       "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 2e-06, "output_token": 1.2e-05, "cache_input_token": 2.0000000000000002e-07, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 200000, "input_token": 2e-06, "output_token": 1.2e-05, "cache_input_token": null }, { "up_to": null, "input_token": 4e-06, "output_token": 1.8e-05, "cache_input_token": null }] } }},
     {
       "id": "gemini-3-pro-preview",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
       "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
       "capabilities": { "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 2e-06, "output_token": 1.2e-05, "cache_input_token": 2.0000000000000002e-07, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 200000, "input_token": 2e-06, "output_token": 1.2e-05, "cache_input_token": null }, { "up_to": null, "input_token": 4e-06, "output_token": 1.8e-05, "cache_input_token": null }] } }},
     {
       "id": "gemini-3-flash-preview",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
       "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
       "capabilities": { "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 5e-07, "output_token": 3e-06, "cache_input_token": 5.0000000000000004e-08 }},
     {
       "id": "gemini-2.5-flash",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
       "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "web_search": true, "vision": true, "reasoning": true }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 3e-07, "output_token": 2.5e-06, "cache_input_token": 3e-08 }},
     {
       "id": "gemini-2.5-flash-lite",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
       "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 1.0000000000000001e-07, "output_token": 4.0000000000000003e-07 }},
     {
       "id": "gemini-2.5-pro",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
       "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "web_search": true, "vision": true, "reasoning": true }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 1.25e-06, "output_token": 1e-05, "cache_input_token": 1.25e-07, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 200000, "input_token": 1.25e-06, "output_token": 1e-05, "cache_input_token": null }, { "up_to": null, "input_token": 2.5e-06, "output_token": 1.5e-05, "cache_input_token": null }] } }},
     {
       "id": "gemini-3.1-flash-image",
       "api_types": ["image.txt2img", "image.img2img"],
       "logical_mounts": ["image.txt2img.gemini", "image.txt2img.{model}", "image.img2img.gemini", "image.img2img.{model}"],
       "capabilities": { "image_generation": true }
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.067, "unit": "image" }},
     {
       "id": "gemini-3.1-flash-lite-image",
       "api_types": ["image.txt2img", "image.img2img"],
       "logical_mounts": ["image.txt2img.gemini", "image.txt2img.{model}", "image.img2img.gemini", "image.img2img.{model}"],
       "capabilities": { "image_generation": true }
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 30.0, "unit": "image" }},
     {
       "id": "gemini-3-pro-image",
       "api_types": ["image.txt2img", "image.img2img"],
       "logical_mounts": ["image.txt2img.gemini", "image.txt2img.{model}", "image.img2img.gemini", "image.img2img.{model}"],
       "capabilities": { "image_generation": true }
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.134, "unit": "image" }},
     {
       "id": "gemini-2.5-flash-image",
       "api_types": ["image.txt2img", "image.img2img"],
       "logical_mounts": ["image.txt2img.gemini", "image.txt2img.{model}", "image.img2img.gemini", "image.img2img.{model}"],
       "capabilities": { "image_generation": true }
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.039, "unit": "image" }},
     {
       "id": "gemini-3.1-flash-tts-preview",
       "api_types": ["audio.tts"],
@@ -152,55 +168,64 @@
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr.gemini", "audio.asr.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 2e-06, "output_token": 1.2e-05 }},
     {
       "id": "veo-3.1-generate-preview",
       "api_types": ["video.txt2video", "video.img2video"],
       "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.2, "unit": "request" }},
     {
       "id": "veo-3.1-lite-generate-preview",
       "api_types": ["video.txt2video", "video.img2video"],
       "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.03, "unit": "request" }},
     {
       "id": "gemini-omni-1.1-flash",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
       "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.video2video.gemini", "video.video2video.{model}", "video.extend.gemini", "video.extend.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 1.5e-06, "output_token": 9e-06 }},
     {
       "id": "lyria-3-pro-preview",
       "api_types": ["audio.music"],
       "logical_mounts": ["audio.music.gemini", "audio.music.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.08, "unit": "request" }},
     {
       "id": "lyria-3-clip-preview",
       "api_types": ["audio.music"],
       "logical_mounts": ["audio.music.gemini", "audio.music.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.04, "unit": "request" }},
     {
       "id": "gemini-embedding-2",
       "api_types": ["embedding.text", "embedding.multimodal"],
       "logical_mounts": ["embedding.text.gemini", "embedding.text.{model}", "embedding.multimodal.gemini", "embedding.multimodal.{model}"],
       "capabilities": { "max_context_tokens": 8192, "embedding_dimensions_min": 128, "embedding_dimensions_max": 3072 }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 2.0000000000000002e-07 }},
     {
       "id": "gemini-embedding-2-preview",
       "api_types": ["embedding.text", "embedding.multimodal"],
       "logical_mounts": ["embedding.text.gemini", "embedding.text.{model}", "embedding.multimodal.gemini", "embedding.multimodal.{model}"],
       "capabilities": { "max_context_tokens": 8192, "embedding_dimensions_min": 128, "embedding_dimensions_max": 3072 }
-    },
+    ,
+"pricing": { "currency": "USD", "input_token": 2.0000000000000002e-07 }},
     {
       "id": "gemini-embedding-001",
       "api_types": ["embedding.text"],
       "logical_mounts": ["embedding.text.gemini", "embedding.text.{model}"],
       "capabilities": { "max_context_tokens": 2048, "embedding_dimensions_min": 128, "embedding_dimensions_max": 3072 }
-    }
+    ,
+"pricing": { "currency": "USD", "input_token": 1.5e-07 }}
   ],
   "patterns": [],
   "defaults": { "version_rules": ["gemini-flash", "gemini-flash-lite", "gemini-pro"] },

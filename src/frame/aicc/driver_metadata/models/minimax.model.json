@@ -67,73 +67,85 @@
       "api_types": ["audio.tts"],
       "logical_mounts": ["audio.tts.minimax", "audio.tts.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.0001, "unit": "character" }},
     {
       "id": "speech-2.8-turbo",
       "api_types": ["audio.tts"],
       "logical_mounts": ["audio.tts.minimax-turbo", "audio.tts.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 6e-05, "unit": "character" }},
     {
       "id": "speech-2.6-hd",
       "api_types": ["audio.tts"],
       "logical_mounts": ["audio.tts.minimax", "audio.tts.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.0001, "unit": "character" }},
     {
       "id": "speech-2.6-turbo",
       "api_types": ["audio.tts"],
       "logical_mounts": ["audio.tts.minimax-turbo", "audio.tts.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 6e-05, "unit": "character" }},
     {
       "id": "image-01",
       "api_types": ["image.txt2img", "image.img2img"],
       "logical_mounts": ["image.txt2img.minimax", "image.txt2img.{model}", "image.img2img.minimax", "image.img2img.{model}"],
       "capabilities": { "image_generation": true }
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.0035, "unit": "image" }},
     {
       "id": "image-01-live",
       "api_types": ["image.img2img"],
       "logical_mounts": ["image.img2img.minimax", "image.img2img.{model}"],
       "capabilities": { "image_generation": true }
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.0035, "unit": "image" }},
     {
       "id": "MiniMax-Hailuo-2.3",
       "api_types": ["video.txt2video", "video.img2video"],
       "logical_mounts": ["video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax", "video.img2video.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.28, "unit": "request" }},
     {
       "id": "MiniMax-Hailuo-2.3-Fast",
       "api_types": ["video.img2video"],
       "logical_mounts": ["video.img2video.minimax-fast", "video.img2video.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.19, "unit": "request" }},
     {
       "id": "MiniMax-Hailuo-02",
       "api_types": ["video.txt2video", "video.img2video"],
       "logical_mounts": ["video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax", "video.img2video.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.28, "unit": "request" }},
     {
       "id": "music-2.6",
       "api_types": ["audio.music"],
       "logical_mounts": ["audio.music.minimax", "audio.music.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.15, "unit": "request" }},
     {
       "id": "music-2.6-free",
       "api_types": ["audio.music"],
       "logical_mounts": ["audio.music.minimax-free", "audio.music.{model}"],
       "capabilities": {}
-    },
+    ,
+"pricing": { "currency": "USD", "amount": 0.0, "unit": "request" }},
     {
       "id": "music-2.0",
       "api_types": ["audio.music"],
       "logical_mounts": ["audio.music.minimax", "audio.music.{model}"],
       "capabilities": {}
-    }
+    ,
+"pricing": { "currency": "USD", "amount": 0.03, "unit": "request" }}
   ],
   "patterns": [],
   "defaults": { "api_types": [], "capabilities": {}, "version_rules": ["minimax-standard", "minimax-highspeed", "minimax-speech-hd", "minimax-speech-turbo", "minimax-image", "minimax-video", "minimax-video-fast", "minimax-music", "minimax-music-free"] },

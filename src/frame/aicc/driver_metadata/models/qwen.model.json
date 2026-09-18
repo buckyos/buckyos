@@ -17,7 +17,8 @@
         "reasoning": true,
         "max_context_tokens": 262144
       }
-    },
+    ,
+"pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 9e-06, "output_token": 5.4e-05, "cache_input_token": 9.000000000000001e-07 }, { "up_to": null, "input_token": 1.5e-05, "output_token": 9e-05, "cache_input_token": 1.5e-06 }] } }},
     {
       "id": "qwen3.8-2.4t-a95b",
       "parameter_scale": "2.4t-a95b",
@@ -28,7 +29,8 @@
         "json_schema": true,
         "reasoning": true
       }
-    },
+    ,
+"pricing": { "currency": "CNY", "input_token": 1.2e-05, "output_token": 3.6e-05, "cache_input_token": 1.2e-06 }},
     {
       "id": "qwen3.8-27b",
       "parameter_scale": "27b",
@@ -39,7 +41,8 @@
         "json_schema": true,
         "reasoning": true
       }
-    },
+    ,
+"pricing": { "currency": "CNY", "input_token": 3e-06, "output_token": 1.2e-05, "cache_input_token": 3e-07 }},
     {
       "id": "qwen3.6-35b-a3b",
       "parameter_scale": "35b-a3b",
@@ -50,7 +53,8 @@
         "json_schema": true,
         "reasoning": true
       }
-    }
+    ,
+"pricing": { "currency": "CNY", "input_token": 1.8000000000000001e-06, "output_token": 1.08e-05 }}
   ],
   "patterns": [
     {

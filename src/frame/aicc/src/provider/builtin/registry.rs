@@ -707,50 +707,52 @@ mod tests {
             BTreeMap::from([
                 (
                     "claude".to_owned(),
-                    "5:1cb7434a4dc0f40787a4b8783ea70d30163b51a6bdda38e0c38aa392a5c04bca".to_owned()
+                    "5:2d1e605c90b0f6aff837c7fb1b0d27e634d07bd97987697a4b78d31ee3b81df2".to_owned()
                 ),
                 (
                     "deepseek".to_owned(),
-                    "3:ce3c52f8d1f14a152ee3e1e81d7044009a35e64c0c0f56b6770e3793064b7cda".to_owned()
+                    "3:1adead8cb4da22a0a844bfead8416f14a0c7e627fba9a4134b985178580e5557".to_owned()
                 ),
                 (
                     "doubao".to_owned(),
-                    "1:d3476842ec3996c8326f47fce6ec812c2d5a6cbb6cd5e74472f260ebda63d4da".to_owned()
+                    "1:c054587853f80372caf82eaac075f91fab1d7f5b8d0f2bfe9167b9fdb56d019c".to_owned()
                 ),
                 (
                     "fal".to_owned(),
-                    "4:fedb70ea0b8e5f6911c86d2777434bf648bb0a09ebe3e33f2776bf78a2817fe4".to_owned()
+                    "4:05760592a1391867052b6b68348099c6008dc8998d2fc8b5f957c96bb280a2d0".to_owned()
                 ),
                 (
                     "gemini".to_owned(),
-                    "28:767803a43e66ade6b4c9b4a5ae3997e038424f0de91f7ff7c3d49144e04c6c92"
-                        .to_owned()
+                    "28:eeb0fd8e39dc866dcb428df4a61ea8df4ccb6c78107213ea3a3fc212857dc367".to_owned()
                 ),
                 (
                     "glm".to_owned(),
-                    "46:21834a76909a74ad83bc30e84c408d6bba0dc5ba2e8cbb7019eee0e4f595078e"
-                        .to_owned()
+                    "46:21834a76909a74ad83bc30e84c408d6bba0dc5ba2e8cbb7019eee0e4f595078e".to_owned()
                 ),
                 (
                     "kimi".to_owned(),
-                    "2:55a6ef20936caf492f3c6ab83a13287160aa7d4d105b0c22775de1d9ddfbb5d4".to_owned()
+                    "2:bbd95d92bef225aa080c8914667f255d278529032c0ef45110ef643cbc4b804a".to_owned()
                 ),
                 (
                     "minimax".to_owned(),
-                    "19:bfbdc64dd510d91d9bc3af130cf20c6cd4d99e233e1a96c192c1692aadf94ebb"
-                        .to_owned()
+                    "19:889ef13b059216f0855dbc1fcb5571e10433c5dd21007096c6c3daad74a27340".to_owned()
                 ),
                 (
                     "openai".to_owned(),
-                    "15:15bfc92abfc4b294f3ea32b68e7051df545c0db842ba3c95b5cfde46c69a9736"
-                        .to_owned()
+                    "15:1881225103e252c6dd28206ca5c18aa94ca0cccc3b4d599b788c18508be9ed58".to_owned()
                 ),
-                ("openrouter".to_owned(), "dynamic".to_owned()),
+                (
+                    "openrouter".to_owned(),
+                    "dynamic".to_owned()
+                ),
                 (
                     "qwen".to_owned(),
-                    "4:6e154e42f27f8127fe230a5241cdcdf5455d460d5d2c4035e0e84b8d888d9ced".to_owned()
+                    "4:6a457f72a703c9f859f015977ecfc74e587d06d46e45d55b753f795f64f088c3".to_owned()
                 ),
-                ("sn".to_owned(), "dynamic".to_owned()),
+                (
+                    "sn".to_owned(),
+                    "dynamic".to_owned()
+                )
             ])
         );
     }
