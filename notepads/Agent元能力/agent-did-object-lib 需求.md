@@ -12,7 +12,7 @@ Status: Draft v0.1
 
 ## 1. 背景与目标
 
-Agent Runtime 需要一套统一对象访问骨架，把不同来源的对象都包装成 Agent / LLM 可消费的 `read`、`x-call` 和 subscription 能力。DID Object Protocol 是其中一种重要对象来源，协议文档已经把 DID Object 的核心边界收敛为：
+Agent Runtime 需要一套统一对象访问骨架，把不同来源的对象都包装成 Agent / LLM 可消费的 `read`、`xcall` 和 subscription 能力。DID Object Protocol 是其中一种重要对象来源，协议文档已经把 DID Object 的核心边界收敛为：
 
 ```text
 Gateway resolver input
@@ -22,13 +22,13 @@ Gateway resolver input
   -> declared property / action / event endpoint
 ```
 
-该协议是 closed-world、caller-neutral、declared capability only。它不定义 Agent 侧开放世界的 `read()`，也不把 `x-call` 当成协议名。
+该协议是 closed-world、caller-neutral、declared capability only。它不定义 Agent 侧开放世界的 `read()`，也不把 `xcall` 当成协议名。
 
 `agent-did-object-lib` 的职责是实现 Agent Runtime 侧的核心对象函数，并提供一个可在多个独立进程中 link 的统一骨架。很多 Agent 工具不是 OpenDAN 主进程的一部分，它们仍应通过同一个 lib 读取路由配置、解析 Object ID、选择 adapter、返回统一的 Agent-facing 结果。
 
 ```text
 read(input, options)              -> Agent-facing read view
-x_call(object, action, params)    -> Agent-facing x-call result
+x_call(object, action, params)    -> Agent-facing xcall result
 subscribe_event(object, event)    -> local KEvent bridge subscription
 unsubscribe_event(subscription)   -> stop / release local bridge subscription
 ```
@@ -36,9 +36,9 @@ unsubscribe_event(subscription)   -> stop / release local bridge subscription
 核心目标：
 
 1. 实现 `read()`：把文件、本地/远端 Web 资源、Agent Runtime 对象、DID Object 等对象读取并直接返回合法 `AgentToolResult`。
-2. 实现 `x_call()`：把 Agent 侧的 x-call 请求路由到对应 adapter，执行 action / method / command，并直接返回合法 `AgentToolResult`。
+2. 实现 `x_call()`：把 Agent 侧的 xcall 请求路由到对应 adapter，执行 action / method / command，并直接返回合法 `AgentToolResult`。
 3. 实现 subscription：把对象事件订阅路由到对应 adapter，并把可唤醒 Agent Session 的事件桥接成本地 KEvent pattern。
-4. 建立路由机制和路由配置，让不同 Object ID / Object pattern 能导向不同 adapter；这套配置必须可被 `x-call` 命令行单独使用。
+4. 建立路由机制和路由配置，让不同 Object ID / Object pattern 能导向不同 adapter；这套配置必须可被 `xcall` 命令行单独使用。
 5. 定义统一 `AgentObjectAdapter` trait，让 filesystem、web、agent_runtime、DID Object、本地 HTTP 扩展 adapter 共享同一接口。
 6. 支持用户通过本地 HTTP Server（例如 Agent Docker 容器内 TypeScript server）实现进程外 adapter。
 
@@ -58,7 +58,7 @@ unsubscribe_event(subscription)   -> stop / release local bridge subscription
 
 本库不要求 Event 具备 MQ 语义。第一版所有 object event 都按 best-effort accelerator 处理，用于唤醒 session、提示 cache invalidation 和触发后续 `read()` 刷新；不要求 adapter 实现 ack、backlog、重投、顺序一致性或跨重启补齐。若未来需要可靠事件，应作为单独的 durable event / MQ 能力设计，而不是当前 Event Bridge 的默认语义。
 
-本库第一版不实现新的 Agent Tool CLI。它必须提供可被 `x-call` / `agent_tool` / `opendan` 以及其他独立工具进程调用的 Rust API 和配置加载能力。
+本库第一版不实现新的 Agent Tool CLI。它必须提供可被 `xcall` / `agent_tool` / `opendan` 以及其他独立工具进程调用的 Rust API 和配置加载能力。
 
 ---
 
@@ -145,7 +145,7 @@ API 约束：
 
 - `AgentDIDObjectRuntime` MUST 只依赖传入的配置和可选 runtime client，不在构造时隐式扫描全局目录。
 - `read()`、`x_call()`、`subscribe_event()` MUST 先走 router，再调用 adapter。
-- `x-call` CLI 未来可以直接加载同一个 `ObjectRouteConfig` 并调用 `AgentDIDObjectRuntime::x_call()`。
+- `xcall` CLI 未来可以直接加载同一个 `ObjectRouteConfig` 并调用 `AgentDIDObjectRuntime::x_call()`。
 - Runtime MUST 支持内存态 adapter registry，方便单元测试注入 fake adapter。
 
 ---
@@ -307,7 +307,7 @@ pub struct EventBridgeSubscription {
 
 ## 7. 路由配置
 
-路由配置是本库的核心。它必须能独立被 `x-call` 命令行加载，所以不能依赖 OpenDAN session 内部状态。
+路由配置是本库的核心。它必须能独立被 `xcall` 命令行加载，所以不能依赖 OpenDAN session 内部状态。
 
 配置格式使用 TOML。第一版 schema：
 
@@ -638,7 +638,7 @@ Meta 是对对象的说明，不是内容正文。Meta 不受 range 影响。
 
 ```text
 Guidance:
-- This object supports x-call action `reserve` for tentative booking.
+- This object supports xcall action `reserve` for tentative booking.
 - Full profile is available by reading `<object-id>-profile`.
 - unchanged: content omitted because the same version was already read in this session.
 ```
@@ -713,7 +713,7 @@ Session 级状态统一由 read 拼接层管理：
 
 本库第一版至少应提供下列内置 adapters：
 
-| Adapter | 主要用途 | read | x-call | subscription |
+| Adapter | 主要用途 | read | xcall | subscription |
 |---|---|---:|---:|---:|
 | `filesystem` | 读取本地 workspace / file path；当前已有 `read` 能力主要属于这一类。 | MUST | MAY | MAY |
 | `web` | 读取传统 Web URL / HTTP 资源，并翻译成 LLM 友好的 read content。 | MUST | MAY | MAY |
@@ -840,7 +840,7 @@ adapter 应只读取这些 property。第一版不要自动读取所有 property
 
 ### 10.5 Local HTTP Adapter
 
-本地 HTTP Adapter 用于用户扩展。典型场景：用户在 Agent 所在 Docker 容器里启动一个 TypeScript HTTP Server，实现对某类 Object ID 的 read / x-call / event bridge。
+本地 HTTP Adapter 用于用户扩展。典型场景：用户在 Agent 所在 Docker 容器里启动一个 TypeScript HTTP Server，实现对某类 Object ID 的 read / xcall / event bridge。
 
 安全边界：
 
@@ -1189,7 +1189,7 @@ cargo test
 - 实现 adapter registry 和 fake adapter 测试。
 - 完成 route config 单元测试。
 
-### Phase 2: read / x-call 基础能力
+### Phase 2: read / xcall 基础能力
 
 - 实现 `AgentDIDObjectRuntime::read()` 和 `x_call()` 主流程。
 - 实现 `FilesystemAdapter` 的 read。
@@ -1215,7 +1215,7 @@ cargo test
 ### Phase 5: OpenDAN / Agent Tool 接入准备
 
 - 输出稳定 Rust API。
-- 文档中给出 `x-call` CLI 使用同一 `ObjectRouteConfig` 的入口。
+- 文档中给出 `xcall` CLI 使用同一 `ObjectRouteConfig` 的入口。
 - 不在本阶段修改 OpenDAN session pump，除非后续任务明确要求。
 
 ---
@@ -1234,7 +1234,7 @@ cargo test
 - adapter trait 支持内置和用户扩展实现。
 - local HTTP adapter 可由 Agent Docker 容器内 TypeScript server 实现。
 - event bridge 在订阅时 lazy start，并能把 EventFrame 发布成合法 KEvent。
-- 单元测试覆盖路由、adapter、x-call mapping、event bridge 状态机。
+- 单元测试覆盖路由、adapter、xcall mapping、event bridge 状态机。
 - 未经用户确认，不新增 WebSocket 相关依赖。
 
 ---

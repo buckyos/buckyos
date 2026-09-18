@@ -84,8 +84,7 @@ Glob
 Grep
 dcrontab
 read
-x-call
-x_call
+xcall
 read_file
 write_file
 edit_file
@@ -103,8 +102,8 @@ finish_task
 
 注意：
 
-- `read` / `x-call` / `x_call` / `check_task` / `cancel_task` / `finish_task` 是 CLI pseudo-tool，不在 `AgentToolManager` 注册表中。
-- `read` / `x-call` 通过 `agent-did-object-lib` 加载 `ObjectRouteConfig` 并调用 `AgentDIDObjectRuntime`，用于替代旧 `agent_tool::read_tool` 的 CLI 接入路径。
+- `read` / `xcall` / `check_task` / `cancel_task` / `finish_task` 是 CLI pseudo-tool，不在 `AgentToolManager` 注册表中。
+- `read` / `xcall` 通过 `agent-did-object-lib` 加载 `ObjectRouteConfig` 并调用 `AgentDIDObjectRuntime`，用于替代旧 `agent_tool::read_tool` 的 CLI 接入路径。
 - `load_memory` 当前是 Runtime 注册的 LLM/bash-capable tool，但没有加入 `agent_tool_cli_dev::TOOL_NAMES`，也没有默认 session 软链接。
 - `worklog_manage` 的 `TypedTool` 仍在 `agent_tool` crate 中，但当前 OpenDAN workshop 不再把它暴露成 Runtime tool，只保留 `tools.json` 参数解析给写审计复用。
 
@@ -502,25 +501,29 @@ read_file ./demo.txt | wc -l
 
 ### 5.5 DID Object 访问 CLI
 
-`read` 和 `x-call` 是 `agent-did-object-lib` 的 CLI 接入准备层。二者加载同一份 `ObjectRouteConfig`，构造 `AgentDIDObjectRuntime` 后直接返回库生成的 `AgentToolResult`，CLI 不再二次拼接 read / x-call 结果。
+Bash 的 `read` 是从标准输入读取变量的内建命令，优先于 PATH 中的同名可执行文件。对象读取在 shell 中使用 `agent_tool read ...`；LLM 的 `read` 工具调用不经过 shell，不受此同名问题影响。文件读取仍可使用 `read_file ...`。
+
+`xcall` 是唯一的对象 action CLI 命令名，可使用 `agent_tool xcall ...`，也会在 OpenDAN session 工具目录中生成 `xcall` 软链接，支持直接调用。返回结果的 `tool` / `cmd_name` 均为 `xcall`。Rust API 和路由配置方法名仍为 `x_call`，本地 adapter HTTP endpoint 仍为 `/adapter/x-call`。
+
+`read` 和 `xcall` 是 `agent-did-object-lib` 的 CLI 接入准备层。二者加载同一份 `ObjectRouteConfig`，构造 `AgentDIDObjectRuntime` 后直接返回库生成的 `AgentToolResult`，CLI 不再二次拼接 read / xcall 结果。
 
 配置加载顺序：
 
 1. 命令行 `--config <route.toml>` 或 `--route-config <route.toml>`。
 2. 环境变量 `AGENT_DID_OBJECT_ROUTE_CONFIG`。
 3. 环境变量 `OPENDAN_AGENT_OBJECT_ROUTE_CONFIG`。
-4. 内置 dev 默认配置：`file://` read 走 filesystem，`http://` / `https://` read 走 web，`https://` x-call 走 did_object，`agent://` 走 agent_runtime。
+4. 内置 dev 默认配置：`file://` read 走 filesystem，`http://` / `https://` read 走 web，`https://` xcall 走 did_object，`agent://` 走 agent_runtime。
 
 示例：
 
 ```bash
 agent_tool read ./demo.txt --content-only --offset 1 --limit 20
 agent_tool read uri=file:///tmp/demo.txt content_only=true
-agent_tool x-call --config ./object-routes.toml obj://demo/item reserve qty=2
-agent_tool x-call https://device.example.com/cam01 restart --params '{"delay_ms":1000}'
+agent_tool xcall --config ./object-routes.toml obj://demo/item reserve qty=2
+agent_tool xcall https://device.example.com/cam01 restart --params '{"delay_ms":1000}'
 ```
 
-CLI 层只做 Gateway 第一层的本地便利转换：没有 `://` 的 `read` / `x-call` object 会按当前工作目录解析成 canonical `file://` URL。进入 `agent-did-object-lib` 后仍只接受 URL，不接受 DID URI、alias 或裸路径。
+CLI 层只做 Gateway 第一层的本地便利转换：没有 `://` 的 `read` / `xcall` object 会按当前工作目录解析成 canonical `file://` URL。进入 `agent-did-object-lib` 后仍只接受 URL，不接受 DID URI、alias 或裸路径。
 
 ### 5.6 stdout / stderr 分工
 

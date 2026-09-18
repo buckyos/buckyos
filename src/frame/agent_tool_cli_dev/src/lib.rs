@@ -79,8 +79,9 @@ const TOOL_CHECK_TASK: &str = "check_task";
 const TOOL_CANCEL_TASK: &str = "cancel_task";
 const TOOL_FINISH_TASK: &str = "finish_task";
 const TOOL_READ_OBJECT: &str = "read";
-const TOOL_X_CALL: &str = "x-call";
-const TOOL_X_CALL_SNAKE: &str = "x_call";
+const READ_OBJECT_USAGE: &str = "agent_tool read <object-or-path> [--content-only] [--offset <1-based-line>] [--limit <lines>] [--config <route.toml>]";
+const TOOL_XCALL: &str = "xcall";
+const XCALL_USAGE: &str = "xcall <object> <action> [--params <json>] [key=value ...] [--key=value ...] [--config <route.toml>]";
 const TOOL_AGENT_MEMORY: &str = "agent-memory";
 const TOOL_AGENT_MEMORY_SNAKE: &str = "agent_memory";
 const TOOL_AGENT_NOTEBOOK: &str = "agent-notebook";
@@ -93,13 +94,12 @@ const TOOL_BEGIN_ATTENTION_SIGNAL_EXTRACTION: &str = "BeginAttentionSignalExtrac
 const TOOL_COMPLETE_ATTENTION_SIGNAL_EXTRACTION: &str = "CompleteAttentionSignalExtraction";
 const TOOL_LIST_PENDING_ATTENTION_SIGNALS: &str = "ListPendingAttentionSignals";
 const TOOL_MARK_ATTENTION_SIGNAL_CONSUMED: &str = "MarkAttentionSignalConsumed";
-const TOOL_NAMES: [&str; 32] = [
+const TOOL_NAMES: [&str; 31] = [
     "Glob",
     "Grep",
     "dcrontab",
     TOOL_READ_OBJECT,
-    TOOL_X_CALL,
-    TOOL_X_CALL_SNAKE,
+    TOOL_XCALL,
     "read_file",
     "write_file",
     "edit_file",
@@ -949,9 +949,7 @@ fn parse_tool_command(
 
     match tool_name.as_str() {
         TOOL_READ_OBJECT => parse_object_read_cli_command(tokens, current_dir),
-        TOOL_X_CALL | TOOL_X_CALL_SNAKE => {
-            parse_object_x_call_cli_command(tool_name, tokens, current_dir)
-        }
+        TOOL_XCALL => parse_object_x_call_cli_command(tool_name, tokens, current_dir),
         TOOL_CHECK_TASK => parse_check_task_cli_command(tool_name, tokens),
         TOOL_CANCEL_TASK => parse_cancel_task_cli_command(tool_name, tokens),
         TOOL_FINISH_TASK => parse_finish_task_cli_command(tool_name, tokens),
@@ -6391,6 +6389,8 @@ async fn build_help_result(env: &CliRuntimeEnv, tool_name: Option<&str>) -> Agen
             }
         }
         match name {
+            TOOL_READ_OBJECT => READ_OBJECT_USAGE.to_string(),
+            TOOL_XCALL => XCALL_USAGE.to_string(),
             TOOL_CHECK_TASK => "check_task <task_id>".to_string(),
             TOOL_CANCEL_TASK => "cancel_task <task_id> [--recursive]".to_string(),
             TOOL_FINISH_TASK => "finish_task <task_id> [failed] [--message <text>]".to_string(),
@@ -6420,12 +6420,8 @@ async fn build_help_result(env: &CliRuntimeEnv, tool_name: Option<&str>) -> Agen
 
 fn with_tool_usage(message: impl Into<String>, tool_name: &str) -> AgentToolError {
     let usage = match tool_name {
-        TOOL_READ_OBJECT => {
-            "read <object-or-path> [--content-only] [--offset <1-based-line>] [--limit <lines>] [--config <route.toml>]"
-        }
-        TOOL_X_CALL | TOOL_X_CALL_SNAKE => {
-            "x-call <object> <action> [--params <json>] [key=value ...] [--key=value ...] [--config <route.toml>]"
-        }
+        TOOL_READ_OBJECT => READ_OBJECT_USAGE,
+        TOOL_XCALL => XCALL_USAGE,
         TOOL_CHECK_TASK => "check_task <task_id>",
         TOOL_CANCEL_TASK => "cancel_task <task_id> [--recursive]",
         TOOL_FINISH_TASK => "finish_task <task_id> [failed] [--message <text>]",
@@ -7549,7 +7545,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn object_x_call_cli_uses_route_config_and_local_http_adapter() {
+    async fn object_xcall_cli_uses_route_config_and_local_http_adapter() {
         let temp = tempdir().expect("create tempdir");
         let root = temp.path().join("agent");
         let cwd = root.join("workspace");
@@ -7608,7 +7604,7 @@ methods = ["x_call"]
         let output = execute(
             vec![
                 OsString::from("/tmp/agent_tool"),
-                OsString::from("x-call"),
+                OsString::from("xcall"),
                 OsString::from("--config"),
                 OsString::from(config_path),
                 OsString::from("obj://demo/item"),
@@ -7620,14 +7616,14 @@ methods = ["x_call"]
             None,
         )
         .await
-        .expect("run object x-call");
+        .expect("run object xcall");
         server.await.expect("server task");
 
         assert_eq!(output.exit_code, EXIT_SUCCESS);
         let payload: Json = serde_json::from_str(&output.stdout).expect("parse json");
         assert_eq!(payload["status"], "success");
-        assert_eq!(payload["tool"], "x-call");
-        assert_eq!(payload["cmd_name"], "x_call");
+        assert_eq!(payload["tool"], "xcall");
+        assert_eq!(payload["cmd_name"], "xcall");
         assert_eq!(payload["detail"]["reserved"], true);
         assert_eq!(payload["output"], "ok");
     }

@@ -72,6 +72,7 @@ const BUILTIN_AGENT_TOOL_BINS: &[&str] = &[
     "Glob",
     "Grep",
     "dcrontab",
+    "xcall",
     "read_file",
     "write_file",
     "edit_file",

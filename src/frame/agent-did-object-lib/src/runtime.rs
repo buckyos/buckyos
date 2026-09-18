@@ -122,7 +122,7 @@ impl AgentDIDObjectRuntime {
         Ok(AgentToolResult {
             agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
             tool: None,
-            cmd_name: Some("x_call".to_string()),
+            cmd_name: Some("xcall".to_string()),
             status: match response.status {
                 AdapterCallStatus::Success => AgentToolStatus::Success,
                 AdapterCallStatus::Error => AgentToolStatus::Error,
@@ -134,10 +134,10 @@ impl AgentDIDObjectRuntime {
             estimated_wait: None,
             title: response
                 .title
-                .unwrap_or_else(|| format!("x-call `{}`", input.action)),
+                .unwrap_or_else(|| format!("xcall `{}`", input.action)),
             summary: response.summary.unwrap_or_else(|| {
                 format!(
-                    "x-call `{}` on `{}` returned {:?}.",
+                    "xcall `{}` on `{}` returned {:?}.",
                     input.action, input.object, response.status
                 )
             }),
@@ -641,7 +641,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.details["ok"], true);
-        assert_eq!(result.cmd_name.as_deref(), Some("x_call"));
+        assert_eq!(result.cmd_name.as_deref(), Some("xcall"));
     }
 
     #[tokio::test]

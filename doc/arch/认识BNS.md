@@ -351,7 +351,7 @@ BNS 负责让 Agent 确认 `cam01.alice` 当前确实属于 Alice 的 Zone，并
 
 ```text
 read_property(object = did:bns:cam01.alice, property = "battery")
-x_call(object = did:bns:cam01.alice, action = "query_clip", params = { ... })
+xcall(object = did:bns:cam01.alice, action = "query_clip", params = { ... })
 subscribe_event(object = did:bns:cam01.alice, event = "low_battery")
 ```
 

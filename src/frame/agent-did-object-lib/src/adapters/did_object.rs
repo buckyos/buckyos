@@ -255,7 +255,7 @@ pub fn action_response_to_adapter_response(
                 "error": error,
                 "meta": response.meta,
             }),
-            title: format!("x-call `{action}` failed").into(),
+            title: format!("xcall `{action}` failed").into(),
             summary: error_summary(action),
             route,
         };
@@ -268,7 +268,7 @@ pub fn action_response_to_adapter_response(
             "result": response.result.unwrap_or(Value::Null),
             "meta": response.meta,
         }),
-        title: Some(format!("x-call `{action}` succeeded")),
+        title: Some(format!("xcall `{action}` succeeded")),
         summary: Some(format!("Action `{action}` completed successfully.")),
         route,
     }

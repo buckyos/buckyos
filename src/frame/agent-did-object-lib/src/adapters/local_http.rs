@@ -271,7 +271,7 @@ impl AgentObjectAdapter for LocalHttpAdapter {
                     .or_else(|| value.get("details"))
                     .cloned()
                     .unwrap_or_else(|| json!({})),
-                title: Some(format!("x-call `{}` completed", req.input.action)),
+                title: Some(format!("xcall `{}` completed", req.input.action)),
                 summary: Some(format!(
                     "Local HTTP adapter `{}` returned an AgentToolResult.",
                     self.id
@@ -290,7 +290,7 @@ impl AgentObjectAdapter for LocalHttpAdapter {
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
             detail: value,
-            title: Some(format!("x-call `{}` completed", req.input.action)),
+            title: Some(format!("xcall `{}` completed", req.input.action)),
             summary: Some(format!(
                 "Local HTTP adapter `{}` returned a response.",
                 self.id
@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(x_call_tool.detail["queued"], true);
         assert_eq!(
             x_call_tool.title.as_deref(),
-            Some("x-call `return_tool` completed")
+            Some("xcall `return_tool` completed")
         );
 
         let subscription = adapter.subscribe_event(subscribe_request()).await.unwrap();
