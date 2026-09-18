@@ -215,6 +215,7 @@ async fn done_without_tool_calls() {
             audio_seconds: Some(1.5),
             video_seconds: Some(2.5),
             request_units: Some(1),
+            characters: None,
             cost: Some(AiCost {
                 amount: 0.25,
                 currency: "USD".to_string(),

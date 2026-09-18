@@ -7,11 +7,12 @@ pub(crate) use schema::ProviderRuleMatchKind;
 pub(crate) use schema::{
     CatalogBuildOptions, CatalogDocuments, CatalogKind, CurrentCatalogFile, KnownProvider,
     KnownProviderCatalog, ModelDriverCatalog, ModelMatchKind, ModelSemantics, ModelVariant,
-    OriginMapping, Pricing, PricingUnit, ProviderCredentialDescriptor, ProviderCredentialKind,
+    OriginMapping, Pricing, PricingTierStep, PricingTiers, PricingUnit,
+    ProviderCredentialDescriptor, ProviderCredentialKind,
     ProviderExactRule, ProviderFieldMode, ProviderFieldSchema, ProviderPatternRule,
     ProviderRuleAction, ProviderRulesCatalog, ProviderVariantRule, RequestRule,
     ResolvedModelSemantics, ResolvedProviderConfiguration, ResolvedProviderOrigin,
-    ResolvedProviderRule, VersionRule,
+    ResolvedProviderRule, TierDimension, TierMode, VersionRule,
 };
 use validation::{
     validate_known_provider_catalog, validate_model_driver, validate_provider_rules,

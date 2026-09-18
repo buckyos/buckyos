@@ -273,6 +273,8 @@ pub(crate) struct Pricing {
     pub amount: Option<f64>,
     #[serde(default)]
     pub rules: Vec<PricingRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tiers: Option<PricingTiers>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -282,6 +284,7 @@ pub(crate) enum PricingUnit {
     Image,
     AudioSecond,
     VideoSecond,
+    Character,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -289,6 +292,64 @@ pub(crate) enum PricingUnit {
 pub(crate) struct PricingRule {
     pub when: MatchRule,
     pub amount: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<PricingUnit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_input_token: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TierDimension {
+    InputTokens,
+    OutputTokens,
+    TotalTokens,
+    ContextTokens,
+    RequestUnits,
+    Characters,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TierMode {
+    Volume,
+    Graduated,
+}
+
+impl Default for TierMode {
+    fn default() -> Self {
+        TierMode::Volume
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PricingTierStep {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up_to: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<PricingUnit>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PricingTiers {
+    pub dimension: TierDimension,
+    #[serde(default)]
+    pub mode: TierMode,
+    pub steps: Vec<PricingTierStep>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

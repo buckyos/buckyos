@@ -1509,6 +1509,7 @@ fn merge_usage(left: &AiUsage, right: &AiUsage) -> AiUsage {
         audio_seconds: add_f64(left.audio_seconds, right.audio_seconds),
         video_seconds: add_f64(left.video_seconds, right.video_seconds),
         request_units: add_u64(left.request_units, right.request_units),
+        characters: add_u64(left.characters, right.characters),
         cost: add_cost(&left.cost, &right.cost),
     }
 }
