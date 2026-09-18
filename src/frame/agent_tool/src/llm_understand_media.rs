@@ -1316,6 +1316,30 @@ fn is_video_mime(mime: &str) -> bool {
     mime.starts_with("video/")
 }
 
+fn is_audio_mime(mime: &str) -> bool {
+    mime.starts_with("audio/")
+}
+
+/// Container hint handed to providers that require an explicit audio
+/// `format` (GLM-4-Voice, OpenAI `input_audio`). `None` when the MIME suffix
+/// carries no usable container name.
+fn audio_format_hint(mime: &str) -> Option<String> {
+    let subtype = mime.strip_prefix("audio/")?;
+    let subtype = subtype.split(';').next().unwrap_or(subtype).trim();
+    let format = match subtype {
+        "mpeg" | "mp3" => "mp3",
+        "wav" | "x-wav" | "wave" => "wav",
+        "ogg" => "ogg",
+        "webm" => "webm",
+        "flac" | "x-flac" => "flac",
+        "aac" => "aac",
+        "mp4" | "m4a" | "x-m4a" => "m4a",
+        "" => return None,
+        other => other,
+    };
+    Some(format.to_string())
+}
+
 fn is_archive_mime(mime: &str) -> bool {
     matches!(
         mime,
@@ -1340,12 +1364,23 @@ fn configured_model(name: &str) -> Option<String> {
 }
 
 fn route_model(mime: &str) -> Option<String> {
+    if is_archive_mime(mime) {
+        return None;
+    }
+    if is_audio_mime(mime) {
+        // Audio must never inherit the vision fallback. No text/vision model
+        // in the fleet accepts audio input, and the old blanket
+        // `DEFAULT_MODEL_ALIAS` fallback turned every audio attachment into a
+        // `Document` sent to `llm.vision` — see
+        // diagnosis/glm-audio-input-capability-2026-09-18.md. A dedicated
+        // override is required (e.g. `glm-4-voice`, or an ASR model used
+        // through `speech_to_text`).
+        return configured_model("LLM_UNDERSTAND_MEDIA_AUDIO_MODEL");
+    }
     let specific = if is_video_mime(mime) {
         configured_model("LLM_UNDERSTAND_MEDIA_VIDEO_MODEL")
     } else if is_image_mime(mime) {
         configured_model("LLM_UNDERSTAND_MEDIA_IMAGE_MODEL")
-    } else if is_archive_mime(mime) {
-        return None;
     } else {
         None
     };
@@ -1357,6 +1392,12 @@ fn route_model(mime: &str) -> Option<String> {
 async fn prepare_media_content(media: ResolvedMedia) -> Result<Vec<AiContent>, String> {
     if is_image_mime(&media.mime) {
         return Ok(vec![AiContent::image(media.source)]);
+    }
+    if is_audio_mime(&media.mime) {
+        return Ok(vec![AiContent::Audio {
+            source: media.source,
+            format: audio_format_hint(&media.mime),
+        }]);
     }
     if is_archive_mime(&media.mime) {
         return Err(format!(
@@ -1546,6 +1587,13 @@ fn purify_content(content: &AiContent) -> AiContent {
                             "document",
                             source,
                             title.as_deref(),
+                        ))
+                    }
+                    buckyos_api::AiToolResultContent::Audio { source, format } => {
+                        buckyos_api::AiToolResultContent::text(media_placeholder(
+                            "audio",
+                            source,
+                            format.as_deref(),
                         ))
                     }
                 })
@@ -2120,7 +2168,6 @@ mod tests {
     #[test]
     fn non_archive_attachment_mime_routes_to_model_and_sniffs_common_containers() {
         assert!(route_model("video/mp4").is_some());
-        assert!(route_model("audio/mpeg").is_some());
         assert!(route_model("application/pdf").is_some());
         assert!(route_model("text/plain").is_some());
         assert!(route_model("application/octet-stream").is_some());
@@ -2139,12 +2186,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_archive_attachments_are_forwarded_inline() {
-        for mime in [
-            "audio/mpeg",
-            "application/pdf",
-            "text/plain",
-            "application/octet-stream",
-        ] {
+        for mime in ["application/pdf", "text/plain", "application/octet-stream"] {
             let content = prepare_media_content(ResolvedMedia {
                 source: ResourceRef::Base64 {
                     mime: mime.to_string(),
@@ -2162,6 +2204,26 @@ mod tests {
                 } if actual == mime
             ));
         }
+
+        // Audio keeps its own block instead of being flattened into a
+        // `Document`, so providers with real speech input (GLM-4-Voice,
+        // Gemini inline audio, OpenAI `input_audio`) receive it intact.
+        let content = prepare_media_content(ResolvedMedia {
+            source: ResourceRef::Base64 {
+                mime: "audio/mpeg".to_string(),
+                data_base64: "AAAA".to_string(),
+            },
+            mime: "audio/mpeg".to_string(),
+        })
+        .await
+        .expect("audio attachment should be forwarded");
+        assert!(matches!(
+            &content[0],
+            AiContent::Audio {
+                source: ResourceRef::Base64 { mime: actual, .. },
+                format: Some(format),
+            } if actual == "audio/mpeg" && format == "mp3"
+        ));
 
         let err = prepare_media_content(ResolvedMedia {
             source: ResourceRef::Base64 {

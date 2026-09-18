@@ -1185,6 +1185,10 @@ fn chat_msgonly_message(message: &AiMessage) -> Option<AiMessage> {
         .iter()
         .filter_map(|block| match block {
             AiContent::Text { text } => Some(AiContent::Text { text: text.clone() }),
+            AiContent::Audio { source, format } => Some(AiContent::Audio {
+                source: source.clone(),
+                format: format.clone(),
+            }),
             AiContent::ProviderState {
                 source,
                 provider,

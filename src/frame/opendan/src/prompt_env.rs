@@ -845,6 +845,31 @@ fn render_msg_content(message: &AiMessage) -> (Vec<Json>, Vec<Json>, String, Vec
                 }));
                 attachments.push(attachment);
             }
+            AiContent::Audio { source, format } => {
+                let attachment = canonical_attachments
+                    .get(attachment_index)
+                    .cloned()
+                    .unwrap_or_else(|| attachment_ref("audio", source, format.as_deref()));
+                attachment_index += 1;
+                let kind = attachment
+                    .get("kind")
+                    .and_then(Json::as_str)
+                    .unwrap_or("audio");
+                text_parts.push(
+                    attachment
+                        .get("text_marker")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("[audio]")
+                        .to_string(),
+                );
+                content.push(json!({
+                    "type": kind,
+                    "text": Json::Null,
+                    "attachment": attachment.clone(),
+                    "machine": Json::Null,
+                }));
+                attachments.push(attachment);
+            }
             AiContent::ProviderState { provider, .. } if provider == PROVIDER_MSG_METADATA => {}
             AiContent::ToolUse { .. }
             | AiContent::ToolResult { .. }

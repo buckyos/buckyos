@@ -294,6 +294,97 @@
       "api_types": ["llm"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
       "capabilities": { "streaming": true, "tool_call": true }
+    },
+    {
+      "id": "glm-5.3-flashx",
+      "parameter_scale": "flashx",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
+      "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 131072, "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true, "vision": true }
+    },
+    {
+      "id": "glm-4-plus",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 4096, "streaming": true, "tool_call": true }
+    },
+    {
+      "id": "glm-4-air-250414",
+      "parameter_scale": "air",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 4096, "streaming": true, "tool_call": true }
+    },
+    {
+      "id": "glm-4-airx",
+      "parameter_scale": "airx",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 8192, "max_output_tokens": 4096, "streaming": true, "tool_call": true }
+    },
+    {
+      "id": "glm-4-assistant",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 4096, "streaming": true, "tool_call": true }
+    },
+    {
+      "id": "glm-z1-air",
+      "parameter_scale": "air",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 32768, "max_output_tokens": 8192, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-z1-airx",
+      "parameter_scale": "airx",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 32768, "max_output_tokens": 8192, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-z1-flash",
+      "parameter_scale": "flash",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 32768, "max_output_tokens": 8192, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-z1-flashx",
+      "parameter_scale": "flashx",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 32768, "max_output_tokens": 8192, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-4.5-flash",
+      "parameter_scale": "flash",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "reasoning": true }
+    },
+    {
+      "id": "glm-4v-plus-0111",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
+      "capabilities": { "max_context_tokens": 8192, "max_output_tokens": 4096, "streaming": true, "tool_call": true, "vision": true }
+    },
+    {
+      "id": "glm-4-voice",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
+      "capabilities": { "max_context_tokens": 8192, "max_output_tokens": 4096, "streaming": true, "audio": true }
+    },
+    {
+      "id": "glm-tts-clone",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts", "audio.tts.glm", "audio.tts.{model}"],
+      "canonical_fields": { "/voice": { "converter": "glm_tts_voice_v1", "fallback": { "action": "default", "value": {} } } }
+    },
+    {
+      "id": "cogvideox-2",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": ["video.txt2video.glm", "video.txt2video.{model}", "video.img2video.glm", "video.img2video.{model}"]
     }
   ],
   "patterns": [],

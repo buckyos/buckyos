@@ -8224,6 +8224,7 @@ fn ai_message_has_payload(message: &AiMessage) -> bool {
         AiContent::Text { text } => !text.trim().is_empty(),
         AiContent::Image { .. }
         | AiContent::Document { .. }
+        | AiContent::Audio { .. }
         | AiContent::ToolUse { .. }
         | AiContent::ToolResult { .. }
         | AiContent::Thinking { .. }
@@ -8412,6 +8413,7 @@ fn is_plain_text_user_message(message: &AiMessage) -> bool {
         AiContent::Thinking { .. } | AiContent::ProviderState { .. } => true,
         AiContent::Image { .. }
         | AiContent::Document { .. }
+        | AiContent::Audio { .. }
         | AiContent::ToolUse { .. }
         | AiContent::ToolResult { .. } => false,
     })

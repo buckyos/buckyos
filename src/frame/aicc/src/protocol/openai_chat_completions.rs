@@ -68,6 +68,20 @@ pub(crate) trait OpenAiChatCompletionsDialect: std::fmt::Debug + Send + Sync {
         false
     }
 
+    /// Encode an [`AiContent::Audio`] block into a Chat Completions content
+    /// part. `Ok(None)` means this dialect cannot express audio input; the
+    /// encoder then falls back to
+    /// [`OpenAiChatCompletionsDialect::allows_unmapped_message_content`]
+    /// (silently drops the block) or reports `UnsupportedOperation`.
+    fn encode_audio_content(
+        &self,
+        _source: &ResourceRef,
+        _format: Option<&str>,
+        _context: &CodecContext,
+    ) -> ProtocolResultValue<Option<Value>> {
+        Ok(None)
+    }
+
     fn transform_resolved_parameter(
         &self,
         _name: &str,
@@ -504,6 +518,18 @@ fn encode_user_content(
                 ProtocolErrorKind::UnsupportedOperation,
                 "base Chat Completions does not map document content",
             )),
+            AiContent::Audio { source, format } => {
+                match dialect.encode_audio_content(source, format.as_deref(), context)? {
+                    Some(part) => Ok(part),
+                    None if dialect.allows_unmapped_message_content(AiRole::User, block) => {
+                        Ok(Value::Null)
+                    }
+                    None => Err(ProtocolError::new(
+                        ProtocolErrorKind::UnsupportedOperation,
+                        "base Chat Completions does not map audio content",
+                    )),
+                }
+            }
             _ if dialect.allows_unmapped_message_content(AiRole::User, block) => Ok(Value::Null),
             _ => Err(ProtocolError::invalid_request(
                 "Chat Completions user message contains an invalid content block",
@@ -582,6 +608,14 @@ fn encode_assistant_message(
                     text.push_str(&part);
                 }
             }
+            AiContent::Audio { .. }
+                if dialect.allows_unmapped_message_content(AiRole::Assistant, block) => {}
+            AiContent::Audio { .. } => {
+                return Err(ProtocolError::new(
+                    ProtocolErrorKind::UnsupportedOperation,
+                    "base Chat Completions does not map assistant audio content",
+                ));
+            }
             _ if dialect.allows_unmapped_message_content(AiRole::Assistant, block) => {}
             _ => {
                 return Err(ProtocolError::invalid_request(
@@ -625,7 +659,9 @@ fn encode_tool_message(content: &[AiContent]) -> ProtocolResultValue<Value> {
     for block in content {
         match block {
             AiToolResultContent::Text { text: part } => text.push_str(part),
-            AiToolResultContent::Image { .. } | AiToolResultContent::Document { .. } => {
+            AiToolResultContent::Image { .. }
+            | AiToolResultContent::Document { .. }
+            | AiToolResultContent::Audio { .. } => {
                 return Err(ProtocolError::new(
                     ProtocolErrorKind::UnsupportedOperation,
                     "base Chat Completions only maps text tool results",
@@ -945,6 +981,29 @@ fn decode_assistant_message(
             return Err(ProtocolError::invalid_response(
                 "response message content must be a string or null",
             ));
+        }
+    }
+    // GLM-4-Voice / OpenAI audio chat return the spoken answer in a sibling
+    // `audio` object instead of `content`.
+    if let Some(audio) = message.get("audio").and_then(Value::as_object) {
+        if let Some(data) = audio
+            .get("data")
+            .and_then(Value::as_str)
+            .filter(|data| !data.is_empty())
+        {
+            let format = audio
+                .get("format")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_ascii_lowercase());
+            let mime = format
+                .as_deref()
+                .map(|value| format!("audio/{value}"))
+                .unwrap_or_else(|| "audio/wav".to_string());
+            content.push(AiContent::Audio {
+                source: ResourceRef::base64(mime, data.to_string()),
+                format,
+            });
         }
     }
     if let Some(refusal) = message.get("refusal") {

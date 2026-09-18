@@ -20,8 +20,9 @@
 //!    blocks from an LLM response are joined with blank lines when producing
 //!    a `MsgObject`.
 //! 2. CYFS data-object references become non-text LLM content. A `DataObj`
-//!    ref is lowered to `AiContent::Image` when its MIME/label/URI looks like
-//!    an image; otherwise it becomes `AiContent::Document`. The CYFS object id
+//!    ref is lowered to `AiContent::Image` / `AiContent::Audio` when its
+//!    MIME/label/URI looks like an image / audio clip; otherwise it becomes
+//!    `AiContent::Document`. The CYFS object id
 //!    is preserved as `ResourceRef::NamedObject`, because that is the stable
 //!    cross-zone identity.
 //! 3. LLM non-text content is mapped back to MessageHub attachments whenever
@@ -326,6 +327,16 @@ pub fn ai_message_to_msg_object_with_base_validated_with_options(
                     validator,
                 );
             }
+            AiContent::Audio { source, format } => {
+                collect_resource_ref(
+                    "audio",
+                    source,
+                    format.as_deref(),
+                    &mut text_parts,
+                    &mut refs,
+                    validator,
+                );
+            }
             AiContent::ProviderState {
                 provider, value, ..
             } if provider == PROVIDER_MSG_MACHINE => {
@@ -385,6 +396,16 @@ pub async fn ai_message_to_msg_object_with_base_validated_async(
                     "document",
                     source,
                     title.as_deref(),
+                    &mut text_parts,
+                    &mut refs,
+                    validator,
+                );
+            }
+            AiContent::Audio { source, format } => {
+                collect_resource_ref(
+                    "audio",
+                    source,
+                    format.as_deref(),
                     &mut text_parts,
                     &mut refs,
                     validator,
@@ -484,13 +505,16 @@ fn ref_item_to_ai_content(
     match &item.target {
         RefTarget::DataObj { obj_id, uri_hint } => {
             let source = ResourceRef::named_object(obj_id.clone());
-            if attachment_kind(msg_format, item.label.as_deref(), uri_hint.as_deref()) == "image" {
-                Some(AiContent::Image { source })
-            } else {
-                Some(AiContent::Document {
+            match attachment_kind(msg_format, item.label.as_deref(), uri_hint.as_deref()) {
+                "image" => Some(AiContent::Image { source }),
+                "audio" => Some(AiContent::Audio {
+                    source,
+                    format: None,
+                }),
+                _ => Some(AiContent::Document {
                     source,
                     title: item.label.clone(),
-                })
+                }),
             }
         }
         RefTarget::ServiceDid { did } => Some(AiContent::ProviderState {

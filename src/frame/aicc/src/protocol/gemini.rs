@@ -469,6 +469,7 @@ fn encode_interaction_content(
                 }
                 Ok(value)
             }
+            AiContent::Audio { source, .. } => encode_resource(source, "audio", call.context),
             AiContent::ToolUse { .. } | AiContent::Thinking { .. } => {
                 Err(ProtocolError::invalid_request(
                     "Gemini user input cannot contain model-generated steps",
@@ -533,6 +534,9 @@ fn encode_assistant_steps(
             AiContent::Text { text } => model_content.push(json!({"type":"text", "text":text})),
             AiContent::Image { source } => {
                 model_content.push(encode_resource(source, "image", call.context)?);
+            }
+            AiContent::Audio { source, .. } => {
+                model_content.push(encode_resource(source, "audio", call.context)?);
             }
             AiContent::Document { source, title } => {
                 let mut value = encode_resource(source, "document", call.context)?;
@@ -622,6 +626,9 @@ fn encode_tool_result(
                     object.insert("display_name".to_string(), Value::String(title.clone()));
                 }
                 Ok(value)
+            }
+            AiToolResultContent::Audio { source, .. } => {
+                encode_resource(source, "audio", call.context)
             }
         })
         .collect()

@@ -2063,6 +2063,11 @@ pub enum AiToolResultContent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
     },
+    Audio {
+        source: ResourceRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<String>,
+    },
 }
 
 impl AiToolResultContent {
@@ -2094,6 +2099,16 @@ pub enum AiContent {
         source: ResourceRef,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+    },
+
+    /// Audio / speech block. Mirrors OpenAI `input_audio` and Gemini inline
+    /// audio data. `format` carries the container/codec hint (`wav`, `mp3`,
+    /// `pcm`, `webm`, …) that providers without a MIME field require — for
+    /// example GLM-4-Voice demands an explicit `format` beside the payload.
+    Audio {
+        source: ResourceRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<String>,
     },
 
     /// Assistant requesting a tool call.
@@ -2188,6 +2203,11 @@ impl AiContent {
         Self::Image { source }
     }
 
+    /// Audio block constructor. See [`AiContent::Audio`] for `format`.
+    pub fn audio(source: ResourceRef, format: Option<String>) -> Self {
+        Self::Audio { source, format }
+    }
+
     pub fn tool_use(
         call_id: impl Into<String>,
         name: impl Into<String>,
@@ -2217,6 +2237,7 @@ impl AiContent {
             Self::Text { .. } => "text",
             Self::Image { .. } => "image",
             Self::Document { .. } => "document",
+            Self::Audio { .. } => "audio",
             Self::ToolUse { .. } => "tool_use",
             Self::ToolResult { .. } => "tool_result",
             Self::Thinking { .. } => "thinking",
@@ -2303,6 +2324,14 @@ impl AiMessage {
             match block {
                 AiContent::Text { text } => out.push_str(text),
                 AiContent::Image { source: _ } => out.push_str("[image]"),
+                AiContent::Audio { format, .. } => {
+                    out.push_str("[audio");
+                    if let Some(f) = format {
+                        out.push_str(": ");
+                        out.push_str(f);
+                    }
+                    out.push(']');
+                }
                 AiContent::Document { title, .. } => {
                     out.push_str("[document");
                     if let Some(t) = title {
@@ -2358,7 +2387,9 @@ impl AiMessage {
         for block in &self.content {
             match block {
                 AiContent::Text { text } => total += text.len(),
-                AiContent::Image { .. } | AiContent::Document { .. } => total += 256,
+                AiContent::Image { .. } | AiContent::Document { .. } | AiContent::Audio { .. } => {
+                    total += 256
+                }
                 AiContent::ToolUse {
                     name,
                     call_id,
@@ -2377,7 +2408,8 @@ impl AiMessage {
                         match c {
                             AiToolResultContent::Text { text } => total += text.len(),
                             AiToolResultContent::Image { .. }
-                            | AiToolResultContent::Document { .. } => total += 256,
+                            | AiToolResultContent::Document { .. }
+                            | AiToolResultContent::Audio { .. } => total += 256,
                         }
                     }
                 }
@@ -2418,7 +2450,8 @@ impl AiMessage {
                     match block {
                         AiContent::Text { .. }
                         | AiContent::Image { .. }
-                        | AiContent::Document { .. } => {}
+                        | AiContent::Document { .. }
+                        | AiContent::Audio { .. } => {}
                         _ => {
                             return Err(AiMessageError::InvalidBlockForRole {
                                 role: self.role,
@@ -2434,6 +2467,7 @@ impl AiMessage {
                         AiContent::Text { .. }
                         | AiContent::Image { .. }
                         | AiContent::Document { .. }
+                        | AiContent::Audio { .. }
                         | AiContent::ToolUse { .. }
                         | AiContent::Thinking { .. }
                         | AiContent::ProviderState { .. } => {}
@@ -2681,6 +2715,12 @@ impl AiResponse {
                     mime: resource_ref_mime(source),
                     metadata: None,
                 }),
+                AiContent::Audio { source, .. } => Some(AiArtifact {
+                    name: format!("audio_{}", idx + 1),
+                    resource: source.clone(),
+                    mime: resource_ref_mime(source),
+                    metadata: None,
+                }),
                 _ => None,
             })
             .collect()
@@ -2699,20 +2739,23 @@ impl AiResponse {
 
 impl AiArtifact {
     pub fn into_content(self) -> AiContent {
-        let is_image = self
+        let kind = self
             .mime
             .as_deref()
-            .map(|mime| mime.starts_with("image/"))
-            .unwrap_or(false);
-        if is_image {
-            AiContent::Image {
+            .map(|mime| mime.split('/').next().unwrap_or_default())
+            .unwrap_or_default();
+        match kind {
+            "image" => AiContent::Image {
                 source: self.resource,
-            }
-        } else {
-            AiContent::Document {
+            },
+            "audio" => AiContent::Audio {
+                source: self.resource,
+                format: None,
+            },
+            _ => AiContent::Document {
                 source: self.resource,
                 title: Some(self.name),
-            }
+            },
         }
     }
 }

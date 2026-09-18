@@ -556,6 +556,7 @@ pub enum AiContent {
     Text { text: String },
     Image { source: ResourceRef },
     Document { source: ResourceRef, title: Option<String> },
+    Audio { source: ResourceRef, format: Option<String> },
     ToolUse { call_id: String, name: String, args: HashMap<String, Value> },
     ToolResult { call_id: String, content: Vec<AiToolResultContent>, is_error: bool },
     Thinking { summary: Option<String>, text: Option<String>, provider_metadata: Option<Value> },
@@ -582,11 +583,33 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 }
 ```
 
+`audio` 块承载语音输入，镜像 OpenAI `input_audio` / Gemini inline audio。
+`format` 是容器/编码提示（`wav` / `mp3` / `pcm` / `webm` …），供不接受 MIME 字段的
+provider 使用——GLM-4-Voice 要求在 payload 旁显式给出 `format`：
+
+```json
+{
+  "role": "user",
+  "content": [
+    { "type": "text", "text": "请转写这段录音。" },
+    { "type": "audio", "source": { "kind": "base64", "mime": "audio/wav", "data_base64": "..." }, "format": "wav" }
+  ]
+}
+```
+
+各协议族的落地方式：
+
+- **OpenAI Chat Completions**：方言（dialect）通过 `encode_audio_content` 决定是否支持；`GlmDialect` 输出 `{"type":"input_audio","input_audio":{"data":<raw base64>,"format":"wav"}}`。基础方言不支持音频输入，会显式报 `UnsupportedOperation`（而非静默丢块）。
+- **OpenAI Responses**：`input_audio` content part（`data` 为裸 base64）。
+- **Gemini**：`{"type":"audio","data":...,"mime_type":...}`（`encode_resource` 按 MIME 前缀选 kind）。
+- **Claude Messages**：没有音频块，遇到 `audio` 直接 `UnsupportedOperation`。
+- **解码**：Chat Completions 响应里若出现 `message.audio.data`（GLM-4-Voice / OpenAI 音频对话），会被还原为 `AiContent::Audio` 并同时产出 `AiArtifact`。
+
 落地约束：
 
 1. `messages[].content` 是 `Vec<AiContent>` content-block 数组。最常见的纯文本消息用单个 `text` block 表达（`AiMessage::text(role, "...")`）。
 2. `role` 是 `AiRole` 枚举（snake_case 序列化）。`tool` 是 IR 内部承载 tool result 的角色，`developer` 是 OpenAI Responses 原生角色；Provider Adapter 在 lowering 时改写为各 provider 原生形态。
-3. `tool_use` / `tool_result` 用 `call_id` 关联；`tool_result.content` 只允许 `text` / `image` / `document` 三类子块。
+3. `tool_use` / `tool_result` 用 `call_id` 关联；`tool_result.content` 只允许 `text` / `image` / `document` / `audio` 四类子块。
 4. `thinking` 承载扩展思考；`provider_state` 承载无法跨协议抽象、但需要 round-trip 的原生项。lowering 仅在 `source` 四元组与目标四元组完全一致时原样还原；不一致时必须转换为目标可接受结构。当前通用转换只提取公开文本、摘要、拒绝说明或规范化内容，无法安全转换的 opaque 块跳过。不得读取加密状态或伪造目标私有状态。
 5. 多模态内容直接进入 `content` 数组，不引入 `messages_v2` 等并行通道。
 6. Provider 响应中的一个原生历史单元可以同时产生 provider-neutral block 和紧邻的 `ProviderState`。两者不是两份待发送内容：同四元组回放时原生状态是权威表示并替代对应 canonical block；跨实例、原厂或模型时由源坐标到目标坐标执行转换，不能仅凭 namespace 直传。

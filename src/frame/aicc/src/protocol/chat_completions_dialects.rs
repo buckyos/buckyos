@@ -8,7 +8,9 @@ use super::{
     OPENAI_EMBEDDINGS_OPERATION_ID, OPENAI_PROTOCOL_FAMILY_ID,
 };
 use async_trait::async_trait;
-use buckyos_api::{AiContent, AiRole, AiUsage, AiccCall, ApiType, LlmChatInvokeRequest};
+use buckyos_api::{
+    AiContent, AiRole, AiUsage, AiccCall, ApiType, LlmChatInvokeRequest, ResourceRef,
+};
 use reqwest::header::{HeaderMap, CONTENT_TYPE};
 use reqwest::{Method, Url};
 use serde_json::{json, Map, Value};
@@ -398,6 +400,35 @@ impl OpenAiChatCompletionsDialect for GlmDialect {
 
     fn allows_unmapped_message_content(&self, role: AiRole, content: &AiContent) -> bool {
         role == AiRole::Assistant && matches!(content, AiContent::Thinking { .. })
+    }
+
+    /// GLM takes speech input on `chat.completions.create` through the
+    /// OpenAI-compatible `input_audio` content part. This is the wire shape
+    /// GLM-4-Voice expects: `data` is *raw* base64 (no data-URI prefix) and
+    /// `format` is mandatory.
+    fn encode_audio_content(
+        &self,
+        source: &ResourceRef,
+        format: Option<&str>,
+        context: &super::CodecContext,
+    ) -> ProtocolResultValue<Option<Value>> {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        let data = match source {
+            ResourceRef::Url { url, .. } => url.clone(),
+            ResourceRef::Base64 { data_base64, .. } => data_base64.clone(),
+            ResourceRef::NamedObject { .. } => {
+                let resource = context.materialized_resource(source)?;
+                STANDARD.encode(&resource.bytes)
+            }
+        };
+        Ok(Some(json!({
+            "type": "input_audio",
+            "input_audio": {
+                "data": data,
+                "format": format.unwrap_or("wav")
+            }
+        })))
     }
 
     fn transform_resolved_parameter(

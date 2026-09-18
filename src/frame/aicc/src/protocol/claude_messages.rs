@@ -630,6 +630,12 @@ fn encode_content(
             }
             Ok(Value::Object(block))
         }
+        // Claude Messages has no audio content block: fail loudly instead of
+        // silently dropping the user's speech.
+        AiContent::Audio { .. } => Err(ProtocolError::new(
+            ProtocolErrorKind::UnsupportedOperation,
+            "Claude Messages does not accept audio input",
+        )),
         AiContent::ToolUse {
             call_id,
             name,
@@ -709,6 +715,10 @@ fn encode_tool_result_content(
             }
             Ok(Value::Object(block))
         }
+        AiToolResultContent::Audio { .. } => Err(ProtocolError::new(
+            ProtocolErrorKind::UnsupportedOperation,
+            "Claude Messages does not accept audio tool results",
+        )),
     }
 }
 

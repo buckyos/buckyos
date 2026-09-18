@@ -21,7 +21,10 @@
     "viduq1-start-end",
     "vidu2-image",
     "vidu2-start-end",
-    "vidu2-reference"
+    "vidu2-reference",
+    "glm-4-voice",
+    "glm-tts-clone",
+    "cogvideox-2"
   ],
   "models": [
     { "id": "glm-image", "operations": { "image.txt2img": "images.generate" } },
@@ -48,7 +51,10 @@
     { "id": "viduq1-start-end", "operations": { "video.img2video": "videos.generate" } },
     { "id": "vidu2-image", "operations": { "video.img2video": "videos.generate" } },
     { "id": "vidu2-start-end", "operations": { "video.img2video": "videos.generate" } },
-    { "id": "vidu2-reference", "operations": { "video.img2video": "videos.generate" } }
+    { "id": "vidu2-reference", "operations": { "video.img2video": "videos.generate" } },
+    { "id": "glm-4-voice", "operations": { "llm": "chat.completions.create" } },
+    { "id": "glm-tts-clone", "operations": { "audio.tts": "audio.speech" }, "canonical_fields": { "/voice": { "converter": "glm_tts_voice_v1", "fallback": { "action": "default", "value": {} } } } },
+    { "id": "cogvideox-2", "operations": { "video.txt2video": "videos.generate", "video.img2video": "videos.generate" } }
   ],
   "patterns": [
     {
@@ -62,10 +68,13 @@
     { "id": "cogview-4", "pricing": { "currency": "CNY", "amount": 0.06, "unit": "request" } },
     { "id": "cogview-3-flash", "pricing": { "currency": "CNY", "amount": 0, "unit": "request" } },
     { "id": "glm-asr-2512", "pricing": { "currency": "CNY", "input_token": 1.6e-05 } },
+    { "id": "glm-4-voice", "pricing": { "currency": "CNY", "input_token": 8e-05, "output_token": 8e-05 } },
     { "id": "glm-tts", "pricing": { "currency": "CNY", "amount": 0.0002 } },
+    { "id": "glm-tts-clone", "pricing": { "currency": "CNY", "unit": "request", "amount": 6 } },
     { "id": "embedding-3", "pricing": { "currency": "CNY", "input_token": 5e-07 } },
     { "id": "embedding-2", "pricing": { "currency": "CNY", "input_token": 5e-07 } },
     { "id": "cogvideox-3", "pricing": { "currency": "CNY", "amount": 1, "unit": "request" } },
+    { "id": "cogvideox-2", "pricing": { "currency": "CNY", "unit": "request", "amount": 0.5 } },
     { "id": "cogvideox-flash", "pricing": { "currency": "CNY", "amount": 0, "unit": "request" } },
     { "id": "viduq1-text", "pricing": { "currency": "CNY", "amount": 2.5, "unit": "request" } },
     { "id": "viduq1-image", "pricing": { "currency": "CNY", "amount": 2.5, "unit": "request" } },

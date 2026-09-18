@@ -780,6 +780,14 @@ fn encode_response_input(
                         "OpenAI Responses assistant history cannot contain input_image content",
                     ));
                 }
+                AiContent::Audio { source, format } if !replays_output_message => {
+                    content.push(encode_input_audio(source, format.as_deref(), call)?)
+                }
+                AiContent::Audio { .. } => {
+                    return Err(ProtocolError::invalid_request(
+                        "OpenAI Responses assistant history cannot contain input_audio content",
+                    ));
+                }
                 AiContent::Document { source, title } => {
                     if replays_output_message {
                         return Err(ProtocolError::invalid_request(
@@ -853,6 +861,9 @@ fn encode_tool_result(
             AiToolResultContent::Image { source } => output.push(encode_input_image(source, call)?),
             AiToolResultContent::Document { source, title } => {
                 output.push(encode_input_file(source, title.as_deref(), call)?)
+            }
+            AiToolResultContent::Audio { source, format } => {
+                output.push(encode_input_audio(source, format.as_deref(), call)?)
             }
         }
     }
@@ -1614,6 +1625,36 @@ fn encode_input_image(
         "type": "input_image",
         "image_url": resource_data_or_url(source, call)?
     }))
+}
+
+fn encode_input_audio(
+    source: &PublicResourceRef,
+    format: Option<&str>,
+    call: &CodecCall<'_>,
+) -> ProtocolResultValue<Value> {
+    Ok(json!({
+        "type": "input_audio",
+        "input_audio": {
+            "data": resource_bare_base64_or_url(source, call)?,
+            "format": format.unwrap_or("wav")
+        }
+    }))
+}
+
+/// Like [`resource_data_or_url`], but returns the payload *without* a
+/// `data:<mime>;base64,` prefix — `input_audio.data` is raw base64.
+fn resource_bare_base64_or_url(
+    source: &PublicResourceRef,
+    call: &CodecCall<'_>,
+) -> ProtocolResultValue<String> {
+    match source {
+        PublicResourceRef::Url { url, .. } => Ok(url.clone()),
+        PublicResourceRef::Base64 { data_base64, .. } => Ok(data_base64.clone()),
+        PublicResourceRef::NamedObject { .. } => {
+            let resource = call.context.materialized_resource(source)?;
+            Ok(STANDARD.encode(&resource.bytes))
+        }
+    }
 }
 
 fn encode_input_file(
