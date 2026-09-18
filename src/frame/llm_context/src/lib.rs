@@ -24,8 +24,9 @@ pub mod step_record;
 pub mod xml_behavior;
 
 pub use behavior_loop::{
-    HistorySummaryRecord, LLMBehaviorResult, LLMResultParser, StepCompressionLevel, StepMeta,
-    StepRecord, StepRenderer, StepResultHook, StepResultHookOutput,
+    is_terminal_next_behavior, HistorySummaryRecord, LLMBehaviorResult, LLMResultParser,
+    StepCompressionLevel, StepMeta, StepRecord, StepRenderer, StepResultHook, StepResultHookOutput,
+    NEXT_BEHAVIOR_END,
 };
 pub use context_loop::LLMContext;
 pub use deps::{

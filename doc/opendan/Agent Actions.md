@@ -249,7 +249,10 @@ pub fn bar() -> u32 { 42 }
 1. 新增 `<actions>` 容器。所有 Action 是它的直接子元素，**一级标签即 Action 名**，不再用 `<action tool="...">`。
 2. **Self Report `<report>` 在 `<actions>` 外面**——它是当前 `LLMContext` 的 LastState 更新，跟 `<observation>` / `<thinking>` / `<next_behavior>` 同级。
 3. **SendMessage 形态用 `<sendmsg target=...>` 放在 `<actions>` 里面**——它是这一步内执行的副作用动作之一。
-4. `<next_behavior>` 保留，跟 v1 语义一致：终止本 behavior，可选携带下一个 behavior 名；但只能在 `<actions>` 为空时设置。
+4. `<next_behavior>` 保留，跟 v1 语义一致：终止本 behavior，可选携带下一个 behavior 名。与 `<actions>` 同现时的规则分两种：
+   - **跳转目标**（`CHECK` / `DO` / …）只能在 `<actions>` 为空时设置：同一步同时给出 `<actions>` 和跳转目标时，`llm_context` 忽略该跳转目标并输出 warning，action 结果必须先被下一轮 LLM 观察，再由下一轮决定是否跳转。
+   - **终止值 `END`** 可以与 `<actions>` 同现：这些 action 照常 dispatch，`END` 在本步结束时收束 behavior（不会丢弃，也不会再多跑一轮）。理由：`END` 声明"当前 intent 已结束"，本 behavior 内不会再有推理去消费这些结果，丢弃它只会让"每步都以 `<actions>…</actions><next_behavior>END</next_behavior>` 收尾"的 LLM 永远不收敛。
+     唯一例外：本步有 action 失败时，`END` 被顺延（从该 step 移除并发 warning），失败结果先经 error path 反馈给 LLM，由 LLM 见到失败后重新声明。
 5. LLM 不需要给每个 Action 输出 ID。运行时执行前会为 dispatchable action 分配上下文内唯一的自增 `call_id`；渲染下一轮 prompt 的 assistant/user message pair 时，assistant 原文中的对应 action 标签会补上该 `call_id`，`last_step_action_results` 的标题前也会加同一个 `#<call_id>` 前缀。
 
 ### 2.2 `<report>` 与 `<next_behavior>` 的共存规则
@@ -263,7 +266,12 @@ pub fn bar() -> u32 { 42 }
 | 只 `<report>` | 写 `last_report`，但**不终止**——下一轮仍是当前 behavior，可继续覆盖 `last_report` |
 | 两者都有 | 写 `last_report` 后跳转/终止——典型的"结束并留下产出" |
 
-`<next_behavior>` 必须只出现在没有 action side effect 的步骤里。若 LLM 在同一步同时输出 `<actions>` 和 `<next_behavior>`，`llm_context` 会忽略该 `<next_behavior>` 并输出 warning 日志；action 结果必须先被下一轮 LLM 观察，再由下一轮决定是否跳转。
+`<next_behavior>` 与 action side effect 同现的规则：
+
+- **跳转目标**（非 `END`）必须只出现在没有 action side effect 的步骤里。若 LLM 在同一步同时输出 `<actions>` 和跳转目标，`llm_context` 会忽略该 `<next_behavior>` 并输出 warning 日志；action 结果必须先被下一轮 LLM 观察，再由下一轮决定是否跳转。
+- **终止值 `END`** 不受此限制：与 `<actions>` 同现时，这些 action 照常 dispatch，`END` 在本步结束时收束本 behavior。丢弃 `END` 会让"每一步都以 `<actions>…</actions><next_behavior>END</next_behavior>` 收尾"的 LLM 无法收敛——它会一轮轮重发同一个 `END`，直到 provider 侧因请求超长而报错，把额度烧光。若同一步有 action 失败，`END` 从该 step 上移除并打 warning，等 LLM 观察到失败后再自行重新声明（`llm_context` 不替它决定）。
+
+`llm_context` 只识别 `END` 这一个字面量（`NEXT_BEHAVIOR_END` / `is_terminal_next_behavior`），其余取值一律不解释，语义归上层 worksession。
 
 **为什么 `<report>` 单独出现不终止：** 长任务里 LLM 可能想中途"打个 checkpoint"——把当前阶段的结论先写进 last_report，方便外部 inspect / fork 用，但本任务还要继续。终止动作的权威信号始终是 `<next_behavior>`，单一职责。
 
