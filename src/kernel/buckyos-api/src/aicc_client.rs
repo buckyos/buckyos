@@ -1234,9 +1234,6 @@ pub mod features {
     pub const WEB_SEARCH: &str = "web_search";
     pub const VISION: &str = "vision";
     pub const IMAGE_GENERATION: &str = "image_generation";
-    /// Audio-input capability marker; pairs `ModelRequirement::audio` with the
-    /// `capabilities.audio` boolean on model metadata.
-    pub const AUDIO: &str = "audio";
     pub const ASR: &str = "asr";
     pub const VIDEO_UNDERSTAND: &str = "video_understand";
 }
@@ -1490,11 +1487,6 @@ pub struct ModelRequirement {
     pub web_search: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub vision: bool,
-    /// Audio input (speech) on the LLM request path, mirroring `vision`.
-    /// Distinct from `Capability::Audio`, which covers the standalone
-    /// `audio.*` generation / transcription APIs.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub audio: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub image_generation: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1543,7 +1535,6 @@ impl ModelRequirement {
             features::WEB_SEARCH => self.web_search = true,
             features::VISION => self.vision = true,
             features::IMAGE_GENERATION => self.image_generation = true,
-            features::AUDIO => self.audio = true,
             "streaming" => self.streaming = true,
             _ => {}
         }
@@ -1556,7 +1547,6 @@ impl ModelRequirement {
             features::WEB_SEARCH => self.web_search,
             features::VISION => self.vision,
             features::IMAGE_GENERATION => self.image_generation,
-            features::AUDIO => self.audio,
             "streaming" => self.streaming,
             _ => false,
         }
@@ -1581,9 +1571,6 @@ impl ModelRequirement {
         }
         if self.image_generation {
             features.push(features::IMAGE_GENERATION.to_string());
-        }
-        if self.audio {
-            features.push(features::AUDIO.to_string());
         }
         features
     }
@@ -1601,11 +1588,6 @@ pub struct ModelDisable {
     pub web_search: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub vision: bool,
-    /// Audio input (speech) on the LLM request path, mirroring `vision`.
-    /// Distinct from `Capability::Audio`, which covers the standalone
-    /// `audio.*` generation / transcription APIs.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub audio: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub image_generation: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1620,7 +1602,6 @@ impl ModelDisable {
             features::WEB_SEARCH => self.web_search = true,
             features::VISION => self.vision = true,
             features::IMAGE_GENERATION => self.image_generation = true,
-            features::AUDIO => self.audio = true,
             "streaming" => self.streaming = true,
             _ => {}
         }
@@ -1633,7 +1614,6 @@ impl ModelDisable {
             features::WEB_SEARCH => self.web_search,
             features::VISION => self.vision,
             features::IMAGE_GENERATION => self.image_generation,
-            features::AUDIO => self.audio,
             "streaming" => self.streaming,
             _ => false,
         }
@@ -1658,9 +1638,6 @@ impl ModelDisable {
         }
         if self.image_generation {
             features.push(features::IMAGE_GENERATION.to_string());
-        }
-        if self.audio {
-            features.push(features::AUDIO.to_string());
         }
         if let Some(tokens) = self.min_context_tokens {
             features.push(format!("min_context_tokens:{}", tokens));
@@ -2989,11 +2966,6 @@ pub struct HelperModelRequirement {
     pub web_search: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub vision: bool,
-    /// Audio input (speech) on the LLM request path, mirroring `vision`.
-    /// Distinct from `Capability::Audio`, which covers the standalone
-    /// `audio.*` generation / transcription APIs.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub audio: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub image_generation: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3010,7 +2982,6 @@ impl From<HelperModelRequirement> for ModelRequirement {
             json_schema: value.json_schema,
             web_search: value.web_search,
             vision: value.vision,
-            audio: value.audio,
             image_generation: value.image_generation,
             min_context_tokens: value.min_context_tokens,
             canonical_fields: value.canonical_fields,

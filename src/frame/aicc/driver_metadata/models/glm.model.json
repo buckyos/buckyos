@@ -373,7 +373,7 @@
       "id": "glm-4-voice",
       "api_types": ["llm"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_context_tokens": 8192, "max_output_tokens": 4096, "streaming": true, "audio": true }
+      "capabilities": { "max_context_tokens": 8192, "max_output_tokens": 4096, "streaming": true }
     },
     {
       "id": "glm-tts-clone",

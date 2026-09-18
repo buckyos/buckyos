@@ -154,18 +154,6 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             parent_fallback(),
             Some("multimodal"),
         ),
-        // Audio attachments must land on a model that actually accepts audio
-        // input. `strict_fallback()` is deliberate: with `parent_fallback()`
-        // this alias would degrade to plain `llm` and hand the clip to a
-        // text-only model, which is the failure this alias exists to prevent.
-        llm_logical_definition(
-            "llm.audio",
-            audio_requirement(),
-            MountMode::Hybrid,
-            AiccSchedulerProfile::Balanced,
-            strict_fallback(),
-            Some("audio"),
-        ),
         llm_logical_definition(
             "llm.long",
             context_requirement(128_000),
@@ -446,16 +434,6 @@ fn vision_requirement(min_context_tokens: u64) -> ModelRequirement {
     }
 }
 
-/// Audio-input requirement. Deliberately sets no `min_context_tokens` floor:
-/// the only audio-capable LLM registered today (GLM-4-Voice) has an 8K window,
-/// and any floor above that would silently exclude the entire candidate set.
-fn audio_requirement() -> ModelRequirement {
-    ModelRequirement {
-        audio: true,
-        ..ModelRequirement::default()
-    }
-}
-
 pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
     AiccRouteOverlay {
         revision: Some("builtin-aicc-router-v4".to_string()),
@@ -579,12 +557,6 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                             ("doubao_pro", "llm.doubao-pro", 1.5),
                             ("kimi", "llm.kimi", 1.4),
                         ]),
-                    ),
-                    // Only mounts carrying an audio-input-capable LLM are
-                    // listed; the `audio` requirement filters the rest out.
-                    (
-                        "audio".to_string(),
-                        logical_node(&[("glm_voice", "llm.glm", 1.0)]),
                     ),
                     (
                         "long".to_string(),

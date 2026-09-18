@@ -1510,7 +1510,6 @@ fn missing_requirements(requirement: &ModelRequirement, model: &RegisteredModel)
         (requirement.json_schema, "json_schema"),
         (requirement.web_search, "web_search"),
         (requirement.vision, "vision"),
-        (requirement.audio, "audio"),
         (requirement.image_generation, "image_generation"),
     ] {
         let supported = model
