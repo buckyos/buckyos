@@ -135,11 +135,30 @@ impl RuntimeProviderExecutionPort {
         Ok(output)
     }
 
+    /// Whether `output` actually carries inline payloads that have to be
+    /// relocated into the artifact store. The overwhelming majority of calls
+    /// (every text / chat / tool response) carry none, and for those this
+    /// materializer is a pure no-op — so it must not demand artifact scope.
+    fn has_inline_artifacts(output: &ProtocolOutput) -> bool {
+        let mut value_resources = Vec::new();
+        collect_inline_base64_resource_refs(&output.value, &mut value_resources);
+        if !value_resources.is_empty() {
+            return true;
+        }
+        output
+            .artifacts
+            .iter()
+            .any(|artifact| matches!(artifact.resource, buckyos_api::ResourceRef::Base64 { .. }))
+    }
+
     async fn materialize_inline_artifact_output(
         &self,
         call: &ResolvedProviderCall,
         output: ProtocolOutput,
     ) -> Result<ProtocolOutput, ProtocolError> {
+        if !Self::has_inline_artifacts(&output) {
+            return Ok(output);
+        }
         let context = call.resource_access_context.as_ref().ok_or_else(|| {
             ProtocolError::invalid_configuration("inline artifact context is missing")
         })?;
@@ -152,15 +171,11 @@ impl RuntimeProviderExecutionPort {
         context: &ResourceAccessContext,
         mut output: ProtocolOutput,
     ) -> Result<ProtocolOutput, ProtocolError> {
-        let mut value_resources = Vec::new();
-        collect_inline_base64_resource_refs(&output.value, &mut value_resources);
-        let has_sideband_resources = output
-            .artifacts
-            .iter()
-            .any(|artifact| matches!(artifact.resource, buckyos_api::ResourceRef::Base64 { .. }));
-        if !has_sideband_resources && value_resources.is_empty() {
+        if !Self::has_inline_artifacts(&output) {
             return Ok(output);
         }
+        let mut value_resources = Vec::new();
+        collect_inline_base64_resource_refs(&output.value, &mut value_resources);
         let manager = ResourceManager::new(
             Arc::new(AuthenticatedResourceAuthorizer {
                 tenant_id: context.tenant_id.clone(),

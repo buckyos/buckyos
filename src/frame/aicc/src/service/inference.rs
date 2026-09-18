@@ -417,6 +417,13 @@ impl InferencePort for RuntimeInferencePort {
                 .await
             {
                 call.context.resources = primary.context.resources.clone();
+                // Access scope belongs to the *request*, not to the candidate:
+                // tenant / caller / request id are identical for every
+                // failover target. Without this the candidate starts with no
+                // artifact scope and fails with a fabricated
+                // "inline artifact context is missing" before its Provider is
+                // ever contacted — masking the primary's real error.
+                call.resource_access_context = primary.resource_access_context.clone();
                 failover.push(call);
             }
         }
