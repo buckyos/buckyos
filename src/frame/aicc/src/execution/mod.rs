@@ -1,5 +1,7 @@
 use crate::call::ResolvedProviderCall;
-use crate::catalog::PricingUnit;
+use crate::catalog::{
+    PricingTierStep, PricingTiers, PricingUnit, TierDimension, TierMode,
+};
 use crate::error::NativeTaskResumeError;
 use crate::protocol::{
     cancellation_pair, CancelHandle, Cancellation, NativeTaskHandle, NativeTaskState,
@@ -213,6 +215,8 @@ pub(crate) enum PinnedPricingBasis {
         input_token: Option<f64>,
         cache_input_token: Option<f64>,
         output_token: Option<f64>,
+        #[serde(default)]
+        tiers: Option<PricingTiers>,
     },
     Units {
         unit: PricingUnit,
@@ -242,8 +246,12 @@ impl PinnedPricingSnapshot {
                 input_token: pricing.input_token,
                 cache_input_token: pricing.cache_input_token,
                 output_token: pricing.output_token,
+                tiers: pricing.tiers.clone(),
             }
-        } else if let (Some(unit), Some(amount)) = (pricing.unit, call.pricing.matched_amount) {
+        } else if let Some(unit) = pricing.unit {
+            let Some(amount) = call.pricing.matched_amount.or(pricing.amount) else {
+                return Ok(None);
+            };
             if invalid_price(amount) {
                 return Err(invalid_pinned_pricing());
             }
@@ -255,27 +263,23 @@ impl PinnedPricingSnapshot {
     }
 
     fn completion_cost(&self, usage: &AiUsage) -> Option<AiCost> {
-        let amount = match self.basis {
+        let amount = match &self.basis {
             PinnedPricingBasis::Tokens {
                 input_token,
                 cache_input_token,
                 output_token,
+                tiers,
             } => {
-                let input_tokens = usage.input_tokens?;
-                let cached_tokens = usage.cache_read_input_tokens.unwrap_or(0).min(input_tokens);
-                let uncached_tokens = input_tokens - cached_tokens;
-                let input = input_token
-                    .map(|rate| uncached_tokens as f64 * rate)
-                    .unwrap_or(0.0);
-                let cached_input = cache_input_token
-                    .or(input_token)
-                    .map(|rate| cached_tokens as f64 * rate)
-                    .unwrap_or(0.0);
-                let output = match output_token {
-                    Some(rate) => usage.output_tokens? as f64 * rate,
-                    None => 0.0,
+                let base = TokenRates {
+                    input_token: *input_token,
+                    cache_input_token: *cache_input_token,
+                    output_token: *output_token,
                 };
-                input + cached_input + output
+                let resolved = tiers
+                    .as_ref()
+                    .and_then(|tiers| tier_rates(tiers, &base, usage))
+                    .unwrap_or(base);
+                resolved.apply(usage)?
             }
             PinnedPricingBasis::Units { unit, amount } => {
                 let units = match unit {
@@ -283,6 +287,7 @@ impl PinnedPricingSnapshot {
                     PricingUnit::Image => usage.image_units? as f64,
                     PricingUnit::AudioSecond => usage.audio_seconds?,
                     PricingUnit::VideoSecond => usage.video_seconds?,
+                    PricingUnit::Character => usage.characters? as f64,
                 };
                 units * amount
             }
@@ -295,6 +300,125 @@ impl PinnedPricingSnapshot {
             currency: self.currency.clone(),
         })
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TokenRates {
+    input_token: Option<f64>,
+    cache_input_token: Option<f64>,
+    output_token: Option<f64>,
+}
+
+impl TokenRates {
+    fn apply(&self, usage: &AiUsage) -> Option<f64> {
+        let input_tokens = usage.input_tokens?;
+        let cached_tokens = usage
+            .cache_read_input_tokens
+            .unwrap_or(0)
+            .min(input_tokens);
+        let uncached_tokens = input_tokens - cached_tokens;
+        let input = self
+            .input_token
+            .map(|rate| uncached_tokens as f64 * rate)
+            .unwrap_or(0.0);
+        let cached_input = self
+            .cache_input_token
+            .or(self.input_token)
+            .map(|rate| cached_tokens as f64 * rate)
+            .unwrap_or(0.0);
+        let output = match self.output_token {
+            Some(rate) => usage.output_tokens? as f64 * rate,
+            None => 0.0,
+        };
+        Some(input + cached_input + output)
+    }
+
+    fn rate_for(&self, dimension: TierDimension) -> Option<f64> {
+        match dimension {
+            TierDimension::InputTokens
+            | TierDimension::TotalTokens
+            | TierDimension::ContextTokens => self.input_token,
+            TierDimension::OutputTokens => self.output_token,
+            TierDimension::RequestUnits | TierDimension::Characters => None,
+        }
+    }
+
+    fn set_rate_for(&mut self, dimension: TierDimension, rate: f64) {
+        match dimension {
+            TierDimension::InputTokens
+            | TierDimension::TotalTokens
+            | TierDimension::ContextTokens => self.input_token = Some(rate),
+            TierDimension::OutputTokens => self.output_token = Some(rate),
+            TierDimension::RequestUnits | TierDimension::Characters => {}
+        }
+    }
+}
+
+impl PricingTierStep {
+    fn resolve(&self, base: TokenRates) -> TokenRates {
+        TokenRates {
+            input_token: self.input_token.or(base.input_token),
+            cache_input_token: self.cache_input_token.or(base.cache_input_token),
+            output_token: self.output_token.or(base.output_token),
+        }
+    }
+}
+
+fn tier_quantity(dimension: TierDimension, usage: &AiUsage) -> Option<f64> {
+    Some(match dimension {
+        TierDimension::InputTokens => usage.input_tokens? as f64,
+        TierDimension::OutputTokens => usage.output_tokens? as f64,
+        TierDimension::TotalTokens => usage
+            .total_tokens
+            .or_else(|| usage.input_tokens?.checked_add(usage.output_tokens?))? as f64,
+        TierDimension::ContextTokens => {
+            usage.input_tokens? as f64 + usage.output_tokens.unwrap_or(0) as f64
+        }
+        TierDimension::RequestUnits => usage.request_units.unwrap_or(1) as f64,
+        TierDimension::Characters => usage.characters? as f64,
+    })
+}
+
+fn tier_rates(tiers: &PricingTiers, base: &TokenRates, usage: &AiUsage) -> Option<TokenRates> {
+    let quantity = tier_quantity(tiers.dimension, usage)?;
+    let hit = tiers
+        .steps
+        .iter()
+        .find(|step| step.up_to.is_none_or(|bound| quantity < bound as f64))?;
+    if tiers.mode == TierMode::Volume {
+        return Some(hit.resolve(*base));
+    }
+    // Graduated: walk the steps and fold them into one equivalent average rate for the
+    // tiered dimension. Non-tiered quantities keep the rate of the step the total fell into.
+    let hit_rates = hit.resolve(*base);
+    let Some(hit_rate) = hit_rates.rate_for(tiers.dimension) else {
+        return Some(hit_rates);
+    };
+    let mut sum = 0.0f64;
+    let mut lower = 0.0f64;
+    for step in &tiers.steps {
+        let upper = step
+            .up_to
+            .map(|bound| bound as f64)
+            .unwrap_or(f64::INFINITY);
+        let span = (quantity.min(upper) - lower).max(0.0);
+        if span > 0.0 {
+            let rate = step
+                .resolve(*base)
+                .rate_for(tiers.dimension)
+                .unwrap_or(hit_rate);
+            sum += span * rate;
+        }
+        lower = upper;
+        if quantity <= upper {
+            break;
+        }
+    }
+    let mut resolved = hit_rates;
+    if quantity > 0.0 {
+        resolved.set_rate_for(tiers.dimension, sum / quantity);
+    }
+    Some(resolved)
 }
 
 fn invalid_price(amount: f64) -> bool {
@@ -1854,11 +1978,147 @@ mod tests {
                 unit: None,
                 amount: None,
                 rules: Vec::new(),
+                tiers: None,
             }),
             matched_amount: None,
             estimated_cost: Some(buckyos_api::Money::new(777.0, "USD")),
         };
         call
+    }
+
+    fn unit_priced_call(instance: &str, amount: f64) -> ResolvedProviderCall {
+        let mut call = call(instance);
+        call.pricing = ResolvedPricing {
+            source: PricingSource::ProviderRules,
+            pricing: Some(Pricing {
+                currency: "CNY".into(),
+                input_token: None,
+                output_token: None,
+                cache_input_token: None,
+                estimated_cost: None,
+                unit: Some(PricingUnit::Request),
+                amount: Some(amount),
+                rules: Vec::new(),
+                tiers: None,
+            }),
+            matched_amount: None,
+            estimated_cost: None,
+        };
+        call
+    }
+
+    fn token_usage(input_tokens: u64, output_tokens: u64) -> AiUsage {
+        AiUsage {
+            input_tokens: Some(input_tokens),
+            output_tokens: Some(output_tokens),
+            total_tokens: None,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
+            reasoning_tokens: None,
+            image_units: None,
+            audio_seconds: None,
+            video_seconds: None,
+            request_units: None,
+            characters: None,
+            cost: None,
+        }
+    }
+
+    fn input_tiers(mode: TierMode) -> PricingTiers {
+        PricingTiers {
+            dimension: TierDimension::InputTokens,
+            mode,
+            steps: vec![
+                PricingTierStep {
+                    up_to: Some(32 * 1024),
+                    input_token: Some(6e-6),
+                    output_token: Some(24e-6),
+                    cache_input_token: None,
+                    amount: None,
+                    unit: None,
+                },
+                PricingTierStep {
+                    up_to: None,
+                    input_token: Some(8e-6),
+                    output_token: Some(28e-6),
+                    cache_input_token: None,
+                    amount: None,
+                    unit: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn request_priced_call_settles_without_matched_amount() {
+        // Regression: `matched_amount` is always None on the provider-inventory path, which
+        // used to make every per-request / per-image / per-second price settle to zero.
+        let call = unit_priced_call("instance", 0.1);
+        let pinned = PinnedPricingSnapshot::from_call(&call).unwrap().unwrap();
+        assert_eq!(
+            pinned.basis,
+            PinnedPricingBasis::Units {
+                unit: PricingUnit::Request,
+                amount: 0.1
+            }
+        );
+        let cost = pinned
+            .completion_cost(&AiUsage::request_units(1))
+            .expect("request usage");
+        assert!((cost.amount - 0.1).abs() < 1e-12);
+        assert_eq!(cost.currency, "CNY");
+    }
+
+    #[test]
+    fn tiered_volume_reprices_the_whole_quantity() {
+        let pricing = PinnedPricingSnapshot {
+            currency: "CNY".into(),
+            basis: PinnedPricingBasis::Tokens {
+                input_token: Some(6e-6),
+                cache_input_token: None,
+                output_token: Some(24e-6),
+                tiers: Some(input_tiers(TierMode::Volume)),
+            },
+        };
+        let below = pricing.completion_cost(&token_usage(1_000, 1_000)).unwrap();
+        assert!((below.amount - (1_000.0 * 6e-6 + 1_000.0 * 24e-6)).abs() < 1e-12);
+        // 40K input crosses into the second step; the entire input is repriced at 8.
+        let above = pricing.completion_cost(&token_usage(40_000, 1_000)).unwrap();
+        assert!((above.amount - (40_000.0 * 8e-6 + 1_000.0 * 28e-6)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn tiered_graduated_walks_each_step() {
+        let pricing = PinnedPricingSnapshot {
+            currency: "CNY".into(),
+            basis: PinnedPricingBasis::Tokens {
+                input_token: Some(6e-6),
+                cache_input_token: None,
+                output_token: Some(24e-6),
+                tiers: Some(input_tiers(TierMode::Graduated)),
+            },
+        };
+        let cost = pricing.completion_cost(&token_usage(40_000, 0)).unwrap();
+        let expected = 32_768.0 * 6e-6 + (40_000.0 - 32_768.0) * 8e-6;
+        assert!((cost.amount - expected).abs() < 1e-12, "{}", cost.amount);
+    }
+
+    #[test]
+    fn tier_boundary_is_exclusive() {
+        let pricing = PinnedPricingSnapshot {
+            currency: "CNY".into(),
+            basis: PinnedPricingBasis::Tokens {
+                input_token: Some(6e-6),
+                cache_input_token: None,
+                output_token: Some(24e-6),
+                tiers: Some(input_tiers(TierMode::Volume)),
+            },
+        };
+        let boundary = 32 * 1024;
+        let just_below = pricing.completion_cost(&token_usage(boundary - 1, 0)).unwrap();
+        assert!((just_below.amount - ((boundary - 1) as f64 * 6e-6)).abs() < 1e-12);
+        let at_boundary = pricing.completion_cost(&token_usage(boundary, 0)).unwrap();
+        assert!((at_boundary.amount - (boundary as f64 * 8e-6)).abs() < 1e-12);
     }
 
     #[test]
@@ -1869,6 +2129,7 @@ mod tests {
                 input_token: Some(0.01),
                 cache_input_token: Some(0.001),
                 output_token: Some(0.02),
+                tiers: None,
             },
         };
         let usage = AiUsage {

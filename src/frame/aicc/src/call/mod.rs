@@ -1171,7 +1171,13 @@ fn resolve_pricing(
     matched_amount: Option<f64>,
     estimated_cost: Option<Money>,
 ) -> ResolvedPricing {
-    if let Some(target) = target {
+    if let Some(mut target) = target {
+        // A caller-supplied target (usually the provider inventory snapshot) still wins,
+        // but a conditional rule may refine it. The bare `return target` here used to
+        // discard `matched_amount` outright, which made `pricing.rules` dead code.
+        if target.matched_amount.is_none() {
+            target.matched_amount = matched_amount;
+        }
         return target;
     }
     if let Some(pricing) = provider_pricing {

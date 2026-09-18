@@ -2499,6 +2499,8 @@ pub struct AiUsage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_units: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub characters: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<AiCost>,
 }
 
@@ -2515,6 +2517,7 @@ impl AiUsage {
             audio_seconds: None,
             video_seconds: None,
             request_units: Some(request_units),
+            characters: None,
             cost: None,
         }
     }

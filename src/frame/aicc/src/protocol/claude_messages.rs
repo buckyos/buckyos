@@ -957,6 +957,7 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<AiUsage> {
         audio_seconds: None,
         video_seconds: None,
         request_units: None,
+        characters: None,
         cost: None,
     })
 }

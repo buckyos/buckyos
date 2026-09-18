@@ -1045,6 +1045,7 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         audio_seconds: None,
         video_seconds: None,
         request_units: None,
+        characters: None,
         cost: value
             .get("cost")
             .and_then(Value::as_f64)

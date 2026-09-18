@@ -386,6 +386,85 @@ fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), CatalogBuildEr
                 reason: "must be finite and non-negative".to_owned(),
             });
         }
+        for (field, amount) in [
+            ("input_token", rule.input_token),
+            ("output_token", rule.output_token),
+            ("cache_input_token", rule.cache_input_token),
+        ] {
+            if amount.is_some_and(|amount| !amount.is_finite() || amount < 0.0) {
+                return Err(CatalogBuildError::InvalidValue {
+                    owner: owner.to_owned(),
+                    field: "pricing.rules",
+                    reason: format!("{field} must be finite and non-negative"),
+                });
+            }
+        }
+        let billed_by_token = rule.input_token.is_some() || rule.output_token.is_some();
+        if billed_by_token && rule.unit.is_some() {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "pricing.rules",
+                reason: "token rates and unit billing are mutually exclusive".to_owned(),
+            });
+        }
+    }
+    if let Some(tiers) = &pricing.tiers {
+        validate_pricing_tiers(owner, tiers)?;
+    }
+    Ok(())
+}
+
+fn validate_pricing_tiers(owner: &str, tiers: &PricingTiers) -> Result<(), CatalogBuildError> {
+    if tiers.steps.is_empty() {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: owner.to_owned(),
+            field: "pricing.tiers.steps",
+            reason: "must declare at least one step".to_owned(),
+        });
+    }
+    let invalid = |reason: String| CatalogBuildError::InvalidValue {
+        owner: owner.to_owned(),
+        field: "pricing.tiers",
+        reason,
+    };
+    let mut previous: Option<u64> = None;
+    for (index, step) in tiers.steps.iter().enumerate() {
+        for (name, amount) in [
+            ("input_token", step.input_token),
+            ("output_token", step.output_token),
+            ("cache_input_token", step.cache_input_token),
+            ("amount", step.amount),
+        ] {
+            if amount.is_some_and(|amount| !amount.is_finite() || amount < 0.0) {
+                return Err(invalid(format!(
+                    "steps[{index}]: {name} must be finite and non-negative"
+                )));
+            }
+        }
+        let billed_by_token = step.input_token.is_some() || step.output_token.is_some();
+        if billed_by_token && step.unit.is_some() {
+            return Err(invalid(format!(
+                "steps[{index}]: token rates and unit billing are mutually exclusive"
+            )));
+        }
+        let is_last = index + 1 == tiers.steps.len();
+        match step.up_to {
+            None => {
+                if !is_last {
+                    return Err(invalid(format!(
+                        "steps[{index}]: only the final step may omit up_to"
+                    )));
+                }
+            }
+            Some(bound) => {
+                if previous.is_some_and(|previous| bound <= previous) {
+                    return Err(invalid(format!(
+                        "steps[{index}]: up_to must be strictly increasing"
+                    )));
+                }
+                previous = Some(bound);
+            }
+        }
     }
     Ok(())
 }

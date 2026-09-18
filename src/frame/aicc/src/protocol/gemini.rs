@@ -1284,6 +1284,7 @@ fn decode_embedding_usage(value: &Value) -> ProtocolResultValue<Option<AiUsage>>
         audio_seconds: None,
         video_seconds: None,
         request_units: None,
+        characters: None,
         cost: None,
     }))
 }

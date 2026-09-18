@@ -230,6 +230,7 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
         unit: None,
         amount: None,
         rules: Vec::new(),
+        tiers: None,
     }))
 }
 

@@ -1858,6 +1858,7 @@ mod tests {
                     input_token: Some(0.000_001_25),
                     cache_input_token: Some(0.000_000_125),
                     output_token: Some(0.000_01),
+                    tiers: None,
                 },
             }),
         }

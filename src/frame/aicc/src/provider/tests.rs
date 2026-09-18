@@ -372,6 +372,7 @@ fn discovery(model_id: &str) -> ProviderDiscoverySnapshot {
                 unit: None,
                 amount: None,
                 rules: vec![],
+                tiers: None,
             }),
         }],
     }
