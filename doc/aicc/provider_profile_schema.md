@@ -203,7 +203,7 @@ Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯�
 | `quality_score` | 与交付渠道无关的模型质量估计 |
 | `version_rules` | 家族、tier、版本排序和稳定性规则 |
 | `variants` | 对模型身份、路由和审计有意义的语义 variant |
-| 默认价格 | Provider 没有价格数据时使用的保守估值 |
+| 默认价格 | 已无此字段：价格统一在顶层 `model_pricing` 表中声明 |
 
 Model Driver 的 variant 定义语义身份，例如 `reasoning-high`，并可携带原厂默认 `provider_options`。配置型 Provider 命中该具体模型的任一 variant 时，由 Provider 配置中的 `variants` 完整定义该模型的 variant 集合和请求参数；完全未命中时才使用 Model Driver 默认值。
 
@@ -220,8 +220,10 @@ variant 名称是 Model Driver 与 Provider Rules 共用的封闭词汇表，Mod
 | 选择按渠道模型名、原厂模型名或其它维度匹配 | `match: MatchRule`；字符串默认匹配渠道模型名 |
 | Provider 请求参数 | `provider_options` / `variants` |
 | 模型级请求默认值、改写和参数删除 | `request_rules` |
-| Provider 渠道默认价格 | `pricing` |
-| 按质量、尺寸、时长等请求维度计价 | `pricing.rules` |
+| Provider 渠道价格 | `model_pricing`（与技术规则并列的独立价格表） |
+| 按质量、尺寸、时长等请求维度计价 | `model_pricing[].pricing.rules` |
+| 按输入长度等用量档位计价 | `model_pricing[].pricing.tiers` |
+| 按峰谷时段分时计价 | `model_pricing[].pricing.time_windows` |
 | 模型使用的具体接口 | `operations` |
 | Provider 无法提供的模型能力 | `remove_api_types` / `remove_features` |
 | 渠道延迟和成本提示 | `estimated_latency_ms` / `latency_class` / `cost_class` |
@@ -250,6 +252,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
   "origin_mappings": [],
   "models": [],
   "patterns": [],
+  "model_pricing": [],
   "variants": []
 }
 ```
@@ -283,12 +286,17 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 | `provider_options` | `{}` | 调用该模型时附加的 Provider 参数 | 从 Model Driver metadata 移入 |
 | `canonical_fields` | `{}` | 以 Rust converter 和失败策略覆盖 Model Driver 的 canonical 字段映射 | 新增 |
 | `request_rules` | `[]` | 请求默认值、条件改写和不兼容参数删除 | 新增 |
-| `pricing` | 无 | Provider 渠道价格及条件价格规则 | 从 Model Driver metadata 移入并扩展 |
+| `pricing` | 无 | 不再是模型规则字段：价格声明在顶层 `model_pricing` 表中 | 已从 `models` / `patterns` 移出 |
 | `remove_api_types` | `[]` | 删除当前 Provider 无法提供的 API type | 新增 |
 | `remove_features` | `[]` | 删除当前 Provider 无法提供的 feature | 新增 |
 | `estimated_latency_ms` | 无 | 渠道默认延迟估计 | 从 Model Driver metadata 移入 |
 | `latency_class` | 无 | 渠道延迟分类 | 从 Model Driver metadata 移入 |
 | `cost_class` | 无 | 渠道成本分类 | 从 Model Driver metadata 移入 |
+
+`model_pricing` 是与 `models` / `patterns` 并列的顶层数组，不属于单个模型规则。把价格从模型
+规则里拆出来，是为了让"哪些模型走哪个接口、带哪些默认参数"继续由 `patterns` 通配批量声明，
+而"每个模型的单价"逐个精确声明，两者互不牵连：此前为给出差异化价格而新增的精确条目，会同时
+顶掉 `patterns` 的批量技术参数（exact 优先），拆开后不再有这个问题。
 
 未配置的字段不覆盖 adapter 默认值。示例：
 
@@ -444,46 +452,85 @@ converter 按厂商对字段语义的演进命名，不包含首次采用该规�
 
 ### 5.5 Pricing
 
-`pricing` 保留现有 token 价格字段，并补充非 token 计价：
-
-- `currency`；
-- `input_token`、`output_token`、`cache_input_token`；
-- `estimated_cost`：无法精确计算时的默认估值；
-- `unit`：`request`、`image`、`audio_second` 或 `video_second`；
-- `amount`：对应 unit 的单价；
-- `rules`：根据请求参数选择单价的有序规则，使用与 `request_rules.when` 相同的 `MatchRule`。
-
-`pricing.rules` 使用第一条命中的价格；均未命中时使用外层 `amount` 或 `estimated_cost`。例如 GPT Image 按 quality/size 计价：
+价格声明在与 `models` / `patterns` 并列的顶层 `model_pricing` 表中，每项只允许 `id` 与 `match`
+二选一：
 
 ```json
 {
-  "pricing": {
-    "currency": "USD",
-    "unit": "image",
-    "amount": 0.042,
-    "rules": [
-      {
-        "when": {
-          "/quality": "high",
-          "/size": [
-            "1536x1024",
-            "1024x1536"
-          ]
-        },
-        "amount": 0.167
-      },
-      {
-        "when": {
-          "/quality": "low"
-        },
-        "amount": 0.011
-      }
-    ]
-  }
+  "model_pricing": [
+    { "id": "vendor/image-model", "pricing": { "currency": "USD", "unit": "image", "amount": 0.042 } },
+    { "match": "vendor/fast-*", "pricing": { "currency": "USD", "input_token": 5e-07, "output_token": 2e-06 } }
+  ]
 }
 ```
 
-image 单价自动乘以归一化请求中的生成数量；audio/video second 单价自动乘以归一化时长。
+解析顺序固定为：先查精确 `id`，未命中再按声明顺序取第一条命中的 `match`。Model Driver 侧以
+`origin_model_id` 查找，Provider Rules 侧以 `provider_model_id` 查找。查找发生在技术规则解析
+之后，与模型本身命中 `models` 还是 `patterns` 无关，因此通配技术规则与逐模型价格可以并存。
+
+`pricing` 本身支持三类正交的计量方式：
+
+- token 计量：`currency` 与 `input_token` / `output_token` / `cache_input_token`，都是**每 token**
+  单价（官方"元/百万 Tokens"要除以 1e6）；
+- 非 token 计量：`unit` + `amount`，`unit` 取值 `request`、`image`、`audio_second`、
+  `video_second`、`character`、`second`（算力秒）、`megapixel`（百万像素）；同一份 `pricing` 内
+  token 字段与 `unit` 互斥；
+- `estimated_cost`：无法精确计算时的默认估值，只作展示与路由参考。
+
+在计量之上还有三种取价修饰：
+
+- `tiers`：按本次请求的**实际用量**选档，因此只能在结算时确定。`dimension` 取值
+  `input_tokens`、`output_tokens`、`total_tokens`、`context_tokens`、`request_units`、
+  `characters`；`mode` 为 `volume`（整单按命中档计价）或 `graduated`（逐档累进）；`steps[].up_to`
+  是**不含**的上界，最后一档省略。适合厂商按输入长度分档的价表。
+- `time_windows`：按**挂钟时间**分时取价，在请求时刻钉住。外层字段是默认（闲时）价，命中窗口
+  只覆盖窗口内声明过的字段，其余继承。`from` / `to` 为本地 `HH:MM`，`from > to` 表示跨午夜；
+  `days` 可限定星期；`utc_offset_minutes` 定义该分时表使用的时钟（默认 0 即 UTC，不感知夏令时，
+  同一份 `pricing` 内必须一致）。窗口之间不得重叠。
+- `rules`：按**请求参数**选价，在请求前确定，使用与 `request_rules.when` 相同的 `MatchRule`。
+  `rules` 使用第一条命中的价格，均未命中时退回外层 `amount` / `estimated_cost`。`rules` 是
+  Provider Rules 专属能力，Model Driver 的 `model_pricing` 声明它会被校验拒绝；`tiers` 与
+  `time_windows` 两侧都可以使用。
+
+例如 GPT Image 按 quality/size 计价：
+
+```json
+{
+  "model_pricing": [
+    {
+      "id": "gpt-image-2",
+      "pricing": {
+        "currency": "USD",
+        "unit": "image",
+        "amount": 0.042,
+        "rules": [
+          {
+            "when": {
+              "/quality": "high",
+              "/size": [
+                "1536x1024",
+                "1024x1536"
+              ]
+            },
+            "amount": 0.167
+          },
+          {
+            "when": {
+              "/quality": "low"
+            },
+            "amount": 0.011
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+结算时 image 单价乘以归一化请求中的生成数量，audio/video second 与 character 单价乘以归一化
+时长或字符数。`second` / `megapixel` 目前没有 adapter 上报对应计数器，`completion_cost` 返回
+unknown 而不是 0——先让价格口径可表达，等计数器落地即自动生效。按次计费的 `tiers` 不参与选档：
+档位只在 token 计量下生效。
 
 ### 5.6 能力收窄
 
@@ -523,11 +570,11 @@ Provider discovery 获得 provider_model_id
 
 ```text
 Provider 实时 discovery 价格
-> Provider 配置 models / patterns 中的价格
-> Model Driver 默认价格
+> Provider Rules 的 model_pricing（渠道价）
+> Model Driver 的 model_pricing（原厂默认价）
 ```
 
-Provider 配置中的价格不能覆盖更新鲜的实时价格。
+两张 `model_pricing` 表里的静态价格都不能覆盖更新鲜的实时价格；渠道价可以覆盖原厂默认价。
 
 ## 8. OpenAI 官方 Provider 示例
 
@@ -560,7 +607,7 @@ OpenRouter 是内置专用 Provider，而不是配置型 Provider。
 - 排除 moving alias、Provider variant alias 和 OpenRouter 虚拟模型；
 - 保留原始 `provider_model_id` 完成实际调用；
 - 按模型和 AICC `api_type` 选择 OpenRouter Responses、embedding、rerank 等 operation；
-- 从 OpenRouter discovery 获取价格并覆盖 Model Driver 默认价格；
+- 从 OpenRouter discovery 获取价格并覆盖 `model_pricing` 里的静态价；
 - 对可声明差异随 metadata catalog 进行版本发布。
 
 OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模型固有能力，候选范围、命名解析、排除规则、operation 和静态价格规则均以 `openrouter.provider.json` 为真相源。只有 Models API 交互、无法声明化的响应/事件解析等执行逻辑留在专用实现中。

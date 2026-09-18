@@ -378,7 +378,17 @@ mod tests {
             sol.capabilities.as_ref().unwrap()["max_context_tokens"],
             1_050_000
         );
-        assert_eq!(sol.pricing.as_ref().unwrap().input_token, Some(0.000004));
+        let sol_price = models
+            .model_pricing
+            .iter()
+            .find(|rule| {
+                rule.match_rule
+                    == Some(crate::matching::MatchRule::Shorthand(
+                        "gpt-5.6-sol*".into(),
+                    ))
+            })
+            .expect("gpt-5.6-sol* has a price entry");
+        assert_eq!(sol_price.pricing.input_token, Some(0.000004));
         assert_eq!(models.variants.len(), 6);
     }
 

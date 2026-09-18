@@ -723,7 +723,7 @@ mod tests {
                 ),
                 (
                     "gemini".to_owned(),
-                    "28:eeb0fd8e39dc866dcb428df4a61ea8df4ccb6c78107213ea3a3fc212857dc367".to_owned()
+                    "28:2d2e0ea7dce142aaef4f1e3f6d7ed83e11a4d9eb4c5ac3a9f89594b4dfa54b82".to_owned()
                 ),
                 (
                     "glm".to_owned(),

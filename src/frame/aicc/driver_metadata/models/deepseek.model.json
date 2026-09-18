@@ -19,8 +19,7 @@
         "max_context_tokens": 1000000,
         "max_output_tokens": 393216
       }
-    ,
-"pricing": { "currency": "CNY", "input_token": 1e-06, "output_token": 4e-06, "cache_input_token": 2e-08, "time_windows": [{ "from": "09:00", "to": "12:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 2e-06, "output_token": 8e-06, "cache_input_token": 4e-08 }, { "from": "14:00", "to": "18:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 2e-06, "output_token": 8e-06, "cache_input_token": 4e-08 }] }},
+    },
     {
       "id": "deepseek-v4-pro",
       "parameter_scale": "pro",
@@ -34,8 +33,7 @@
         "max_context_tokens": 1000000,
         "max_output_tokens": 393216
       }
-    ,
-"pricing": { "currency": "CNY", "input_token": 4.5e-06, "output_token": 1.35e-05, "cache_input_token": 1.5e-07, "time_windows": [{ "from": "09:00", "to": "12:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 9e-06, "output_token": 2.7e-05, "cache_input_token": 3e-07 }, { "from": "14:00", "to": "18:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 9e-06, "output_token": 2.7e-05, "cache_input_token": 3e-07 }] }},
+    },
     {
       "id": "deepseek-v4-flash-vision-exp",
       "parameter_scale": "flash",
@@ -51,10 +49,14 @@
         "max_context_tokens": 1000000,
         "max_output_tokens": 393216
       }
-    ,
-"pricing": { "currency": "CNY", "input_token": 1e-06, "output_token": 4e-06, "cache_input_token": 2e-08, "time_windows": [{ "from": "09:00", "to": "12:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 2e-06, "output_token": 8e-06, "cache_input_token": 4e-08 }, { "from": "14:00", "to": "18:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 2e-06, "output_token": 8e-06, "cache_input_token": 4e-08 }] }}
+    }
   ],
   "patterns": [],
+  "model_pricing": [
+    { "id": "deepseek-v4-flash", "pricing": { "currency": "CNY", "input_token": 1e-06, "output_token": 4e-06, "cache_input_token": 2e-08, "time_windows": [{ "from": "09:00", "to": "12:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 2e-06, "output_token": 8e-06, "cache_input_token": 4e-08 }, { "from": "14:00", "to": "18:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 2e-06, "output_token": 8e-06, "cache_input_token": 4e-08 }] } },
+    { "id": "deepseek-v4-pro", "pricing": { "currency": "CNY", "input_token": 4.5e-06, "output_token": 1.35e-05, "cache_input_token": 1.5e-07, "time_windows": [{ "from": "09:00", "to": "12:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 9e-06, "output_token": 2.7e-05, "cache_input_token": 3e-07 }, { "from": "14:00", "to": "18:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 9e-06, "output_token": 2.7e-05, "cache_input_token": 3e-07 }] } },
+    { "id": "deepseek-v4-flash-vision-exp", "pricing": { "currency": "CNY", "input_token": 1e-06, "output_token": 4e-06, "cache_input_token": 2e-08, "time_windows": [{ "from": "09:00", "to": "12:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 2e-06, "output_token": 8e-06, "cache_input_token": 4e-08 }, { "from": "14:00", "to": "18:00", "days": ["mon", "tue", "wed", "thu", "fri"], "utc_offset_minutes": 480, "input_token": 2e-06, "output_token": 8e-06, "cache_input_token": 4e-08 }] } }
+  ],
   "defaults": {
     "api_types": [],
     "capabilities": {},

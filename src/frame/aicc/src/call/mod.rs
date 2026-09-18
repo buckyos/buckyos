@@ -1282,7 +1282,10 @@ mod tests {
                         "set": {"service_tier": "priority"},
                         "remove": ["/temperature", "/top_p"]
                     }
-                ],
+                ]
+            }],
+            "model_pricing": [{
+                "id": "gpt-5.2",
                 "pricing": {"currency": "USD", "unit": "request", "amount": 0.01}
             }],
             "patterns": [],

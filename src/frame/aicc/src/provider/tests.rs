@@ -398,9 +398,9 @@ fn catalog_with_revision(revision_seq: u64, context_tokens: u64) -> Arc<CatalogS
                 "tool_call": true,
                 "json_schema": true,
                 "context_tokens": context_tokens
-            },
-            "pricing": {"currency": "USD", "input_token": 9.0}
+            }
         }],
+        "model_pricing": [{"id": "gpt-test", "pricing": {"currency": "USD", "input_token": 9.0}}],
         "patterns": [],
         "defaults": {},
         "variants": [],
@@ -416,9 +416,9 @@ fn catalog_with_revision(revision_seq: u64, context_tokens: u64) -> Arc<CatalogS
         "metadata_drivers": ["openai"],
         "models": [{
             "id": "gpt-test",
-            "operations": {"llm": "responses.create"},
-            "pricing": {"currency": "USD", "input_token": 2.0}
+            "operations": {"llm": "responses.create"}
         }],
+        "model_pricing": [{"id": "gpt-test", "pricing": {"currency": "USD", "input_token": 2.0}}],
         "patterns": [],
         "variants": []
     }))

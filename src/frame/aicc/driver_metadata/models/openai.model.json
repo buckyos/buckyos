@@ -20,8 +20,7 @@
         "vision": true,
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
-      },
-      "pricing": { "currency": "USD", "input_token": 1e-05, "output_token": 5e-05, "cache_input_token": 1e-06 }
+      }
     },
     {
       "id": "gpt-5.6",
@@ -39,7 +38,6 @@
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
       },
-      "pricing": { "currency": "USD", "input_token": 4e-06, "output_token": 2e-05, "cache_input_token": 4.0000000000000003e-07 },
       "version_rules": ["gpt-pro"]
     },
     {
@@ -58,43 +56,37 @@
         "vision": true,
         "image_generation": true
       }
-    ,
-"pricing": { "currency": "USD", "input_token": 8e-06, "output_token": 3e-05, "cache_input_token": 2e-06 }},
+    },
     {
       "id": "text-embedding-3-large",
       "parameter_scale": "large",
       "api_types": ["embedding.text"],
       "logical_mounts": ["embedding.text", "embedding.text.openai", "embedding.text.{model}"],
-      "capabilities": { "max_context_tokens": 8192 },
-      "pricing": { "currency": "USD", "input_token": 1.3e-07 }
+      "capabilities": { "max_context_tokens": 8192 }
     },
     {
       "id": "text-embedding-3-small",
       "parameter_scale": "small",
       "api_types": ["embedding.text"],
       "logical_mounts": ["embedding.text", "embedding.text.openai", "embedding.text.{model}"],
-      "capabilities": { "max_context_tokens": 8192 },
-      "pricing": { "currency": "USD", "input_token": 2e-08 }
+      "capabilities": { "max_context_tokens": 8192 }
     },
     {
       "id": "text-embedding-ada-002",
       "api_types": ["embedding.text"],
       "logical_mounts": ["embedding.text", "embedding.text.openai", "embedding.text.{model}"],
       "capabilities": { "max_context_tokens": 8192 }
-    ,
-"pricing": { "currency": "USD", "input_token": 1.0000000000000001e-07 }},
+    },
     {
       "id": "whisper-1",
       "api_types": ["audio.asr"],
-      "logical_mounts": ["audio.asr", "audio.asr.openai", "audio.asr.{model}"],
-      "pricing": { "currency": "USD", "amount": 0.0001, "unit": "audio_second" }
+      "logical_mounts": ["audio.asr", "audio.asr.openai", "audio.asr.{model}"]
     },
     {
       "id": "gpt-transcribe",
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr", "audio.asr.openai", "audio.asr.{model}"]
-    ,
-"pricing": { "currency": "USD", "amount": 7.5e-05, "unit": "audio_second" }},
+    },
     {
       "id": "gpt-4o-transcribe",
       "api_types": ["audio.asr"],
@@ -103,14 +95,12 @@
         "max_context_tokens": 16000,
         "max_output_tokens": 2000
       }
-    ,
-"pricing": { "currency": "USD", "input_token": 2.5e-06, "output_token": 1e-05 }},
+    },
     {
       "id": "gpt-4o-mini-transcribe",
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr", "audio.asr.openai", "audio.asr.{model}"]
-    ,
-"pricing": { "currency": "USD", "input_token": 1.25e-06, "output_token": 5e-06 }},
+    },
     {
       "id": "gpt-4o-mini-tts",
       "api_types": ["audio.tts"],
@@ -122,8 +112,7 @@
           "fallback": { "action": "default", "value": {} }
         }
       }
-    ,
-"pricing": { "currency": "USD", "input_token": 6e-07, "output_token": 1.2e-05 }},
+    },
     {
       "id": "tts-1",
       "api_types": ["audio.tts"],
@@ -134,8 +123,7 @@
           "fallback": { "action": "default", "value": {} }
         }
       }
-    ,
-"pricing": { "currency": "USD", "amount": 1.5e-05, "unit": "character" }},
+    },
     {
       "id": "tts-1-hd",
       "api_types": ["audio.tts"],
@@ -146,21 +134,18 @@
           "fallback": { "action": "default", "value": {} }
         }
       }
-    ,
-"pricing": { "currency": "USD", "amount": 3e-05, "unit": "character" }},
+    },
     {
       "id": "sora-2",
       "api_types": ["video.txt2video", "video.img2video"],
       "logical_mounts": ["video.txt2video.openai", "video.txt2video.{model}", "video.img2video.openai", "video.img2video.{model}"]
-    ,
-"pricing": { "currency": "USD", "amount": 0.1, "unit": "video_second" }},
+    },
     {
       "id": "sora-2-pro",
       "parameter_scale": "pro",
       "api_types": ["video.txt2video", "video.img2video"],
       "logical_mounts": ["video.txt2video.openai", "video.txt2video.{model}", "video.img2video.openai", "video.img2video.{model}"]
-    ,
-"pricing": { "currency": "USD", "amount": 0.3, "unit": "video_second" }}
+    }
   ],
   "patterns": [
     {
@@ -255,12 +240,6 @@
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
       },
-      "pricing": {
-        "currency": "USD",
-        "input_token": 0.000004,
-        "cache_input_token": 0.0000004,
-        "output_token": 0.00002
-      },
       "version_rules": ["gpt-pro"]
     },
     {
@@ -278,12 +257,6 @@
         "image_generation": true,
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
-      },
-      "pricing": {
-        "currency": "USD",
-        "input_token": 0.000002,
-        "cache_input_token": 0.0000002,
-        "output_token": 0.000012
       },
       "version_rules": ["gpt-mini"]
     },
@@ -303,14 +276,38 @@
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
       },
-      "pricing": {
-        "currency": "USD",
-        "input_token": 0.0000002,
-        "cache_input_token": 0.00000002,
-        "output_token": 0.0000012
-      },
       "version_rules": ["gpt-nano"]
     }
+  ],
+  "model_pricing": [
+    { "id": "gpt-6-astra", "pricing": { "currency": "USD", "input_token": 1e-05, "output_token": 5e-05, "cache_input_token": 1e-06 } },
+    { "id": "gpt-5.6", "pricing": { "currency": "USD", "input_token": 4e-06, "output_token": 2e-05, "cache_input_token": 4.0000000000000003e-07 } },
+    { "id": "gpt-image-2", "pricing": { "currency": "USD", "input_token": 8e-06, "output_token": 3e-05, "cache_input_token": 2e-06 } },
+    { "id": "text-embedding-3-large", "pricing": { "currency": "USD", "input_token": 1.3e-07 } },
+    { "id": "text-embedding-3-small", "pricing": { "currency": "USD", "input_token": 2e-08 } },
+    { "id": "text-embedding-ada-002", "pricing": { "currency": "USD", "input_token": 1.0000000000000001e-07 } },
+    { "id": "whisper-1", "pricing": { "currency": "USD", "amount": 0.0001, "unit": "audio_second" } },
+    { "id": "gpt-transcribe", "pricing": { "currency": "USD", "amount": 7.5e-05, "unit": "audio_second" } },
+    { "id": "gpt-4o-transcribe", "pricing": { "currency": "USD", "input_token": 2.5e-06, "output_token": 1e-05 } },
+    { "id": "gpt-4o-mini-transcribe", "pricing": { "currency": "USD", "input_token": 1.25e-06, "output_token": 5e-06 } },
+    { "id": "gpt-4o-mini-tts", "pricing": { "currency": "USD", "input_token": 6e-07, "output_token": 1.2e-05 } },
+    { "id": "tts-1", "pricing": { "currency": "USD", "amount": 1.5e-05, "unit": "character" } },
+    { "id": "tts-1-hd", "pricing": { "currency": "USD", "amount": 3e-05, "unit": "character" } },
+    { "id": "sora-2", "pricing": { "currency": "USD", "amount": 0.1, "unit": "video_second" } },
+    { "id": "sora-2-pro", "pricing": { "currency": "USD", "amount": 0.3, "unit": "video_second" } },
+    { "match": "gpt-5.6-sol*", "pricing": { "currency": "USD", "input_token": 4e-06, "cache_input_token": 4e-07, "output_token": 2e-05 } },
+    { "match": "gpt-5.6-terra*", "pricing": { "currency": "USD", "input_token": 2e-06, "cache_input_token": 2e-07, "output_token": 1.2e-05 } },
+    { "match": "gpt-5.6-luna*", "pricing": { "currency": "USD", "input_token": 2e-07, "cache_input_token": 2e-08, "output_token": 1.2e-06 } },
+    { "id": "gpt-5.5", "pricing": { "currency": "USD", "input_token": 5e-06, "output_token": 3e-05, "cache_input_token": 5e-07 } },
+    { "id": "gpt-5.5-pro", "pricing": { "currency": "USD", "input_token": 3e-05, "output_token": 0.00018 } },
+    { "id": "gpt-5.4", "pricing": { "currency": "USD", "input_token": 2.5e-06, "output_token": 1.5e-05, "cache_input_token": 2.5e-07 } },
+    { "id": "gpt-5.4-mini", "pricing": { "currency": "USD", "input_token": 7.5e-07, "output_token": 4.5e-06, "cache_input_token": 7.5e-08 } },
+    { "id": "gpt-5.4-nano", "pricing": { "currency": "USD", "input_token": 2e-07, "output_token": 1.25e-06, "cache_input_token": 2e-08 } },
+    { "id": "gpt-5.4-pro", "pricing": { "currency": "USD", "input_token": 3e-05, "output_token": 0.00018 } },
+    { "id": "gpt-5.3-codex", "pricing": { "currency": "USD", "input_token": 1.75e-06, "output_token": 1.4e-05, "cache_input_token": 1.75e-07 } },
+    { "id": "gpt-5.6-sol", "pricing": { "currency": "USD", "input_token": 4e-06, "output_token": 2e-05, "cache_input_token": 4e-07 } },
+    { "id": "gpt-5.6-terra", "pricing": { "currency": "USD", "input_token": 2e-06, "output_token": 1.2e-05, "cache_input_token": 2e-07 } },
+    { "id": "gpt-5.6-luna", "pricing": { "currency": "USD", "input_token": 2e-07, "output_token": 1.2e-06, "cache_input_token": 2e-08 } }
   ],
   "defaults": {},
   "variants": [
