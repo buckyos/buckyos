@@ -26,6 +26,11 @@ pub(super) fn validate_model_driver(
         catalog.models.iter().map(|rule| rule.id.as_str()),
     )?;
     validate_model_semantics(&catalog.model_driver_id, &catalog.defaults)?;
+    validate_model_pricing(
+        &catalog.model_driver_id,
+        &catalog.model_pricing,
+        false,
+    )?;
     for rule in &catalog.models {
         validate_model_semantics(&catalog.model_driver_id, &model_rule_semantics!(rule))?;
     }
@@ -148,16 +153,6 @@ fn validate_model_semantics(
     if let Some(mappings) = &semantics.canonical_fields {
         validate_canonical_fields(owner, mappings)?;
     }
-    if let Some(pricing) = &semantics.pricing {
-        validate_pricing(owner, pricing)?;
-        if !pricing.rules.is_empty() {
-            return Err(CatalogBuildError::InvalidValue {
-                owner: owner.to_owned(),
-                field: "pricing.rules",
-                reason: "conditional channel pricing belongs to Provider Rules".to_owned(),
-            });
-        }
-    }
     Ok(())
 }
 
@@ -236,6 +231,11 @@ pub(super) fn validate_provider_rules(
     for rule in &catalog.patterns {
         validate_provider_rule_data(&catalog.provider_profile_id, rule)?;
     }
+    validate_model_pricing(
+        &catalog.provider_profile_id,
+        &catalog.model_pricing,
+        true,
+    )?;
     for variant in &catalog.variants {
         validate_nonempty_field(
             CatalogKind::ProviderRules,
@@ -257,7 +257,6 @@ trait ProviderRuleValidation {
     fn operations(&self) -> &BTreeMap<String, String>;
     fn request_rules(&self) -> &[RequestRule];
     fn canonical_fields(&self) -> &BTreeMap<String, crate::canonical::CanonicalFieldMapping>;
-    fn pricing(&self) -> Option<&Pricing>;
     fn remove_api_types(&self) -> &BTreeSet<String>;
     fn remove_features(&self) -> &BTreeSet<String>;
 }
@@ -275,9 +274,6 @@ macro_rules! impl_provider_rule_validation {
                 &self,
             ) -> &BTreeMap<String, crate::canonical::CanonicalFieldMapping> {
                 &self.canonical_fields
-            }
-            fn pricing(&self) -> Option<&Pricing> {
-                self.pricing.as_ref()
             }
             fn remove_api_types(&self) -> &BTreeSet<String> {
                 &self.remove_api_types
@@ -317,9 +313,6 @@ fn validate_provider_rule_data(
         }
     }
     validate_canonical_fields(owner, rule.canonical_fields())?;
-    if let Some(pricing) = rule.pricing() {
-        validate_pricing(owner, pricing)?;
-    }
     for value in rule.remove_api_types().iter().chain(rule.remove_features()) {
         if value.trim().is_empty() {
             return Err(CatalogBuildError::InvalidValue {
@@ -351,6 +344,51 @@ fn validate_canonical_fields(
                 field: "canonical_fields",
                 reason: format!("invalid mapping for {pointer:?}: {reason}"),
             })?;
+    }
+    Ok(())
+}
+
+fn validate_model_pricing(
+    owner: &str,
+    entries: &[ModelPricingRule],
+    allow_conditional_rules: bool,
+) -> Result<(), CatalogBuildError> {
+    let mut exact = BTreeSet::new();
+    for entry in entries {
+        match (entry.id.as_deref(), entry.match_rule.is_some()) {
+            (Some(id), false) => {
+                if id.trim().is_empty() {
+                    return Err(CatalogBuildError::InvalidValue {
+                        owner: owner.to_owned(),
+                        field: "model_pricing.id",
+                        reason: "must not be empty".to_owned(),
+                    });
+                }
+                if !exact.insert(id.to_owned()) {
+                    return Err(CatalogBuildError::InvalidValue {
+                        owner: owner.to_owned(),
+                        field: "model_pricing.id",
+                        reason: format!("duplicate price entry for {id:?}"),
+                    });
+                }
+            }
+            (None, true) => {}
+            _ => {
+                return Err(CatalogBuildError::InvalidValue {
+                    owner: owner.to_owned(),
+                    field: "model_pricing",
+                    reason: "each entry needs exactly one of `id` or `match`".to_owned(),
+                });
+            }
+        }
+        validate_pricing(owner, &entry.pricing)?;
+        if !allow_conditional_rules && !entry.pricing.rules.is_empty() {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "model_pricing.pricing.rules",
+                reason: "conditional channel pricing belongs to Provider Rules".to_owned(),
+            });
+        }
     }
     Ok(())
 }

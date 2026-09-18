@@ -6,9 +6,11 @@ semantic variants. Provider discovery supplies channel-local model IDs;
 Provider Rules resolve those IDs to an origin identity before this metadata is
 matched.
 
-Provider-specific origin mappings, exclusions, operations, request rules,
-endpoints and channel pricing are not valid Model Driver fields. They belong to
-the Provider Rules catalog described by `provider_profile_schema.md`. A Model
+Provider-specific origin mappings, exclusions, operations, request rules and
+endpoints are not valid Model Driver fields. They belong to the Provider Rules
+catalog described by `provider_profile_schema.md`. Channel prices are declared
+independently of the technical rules, in the `model_pricing` table shared by both
+catalogs. A Model
 Driver variant may carry fallback `provider_options`; these defaults are used
 only when the selected Provider Rules has no variant matching that concrete
 model.
@@ -157,8 +159,11 @@ for the common case it is only `"match": "gpt-*"`:
   missing or unconvertible values are handled by one fallback policy. A Provider Rules entry
   with the same JSON Pointer replaces the complete Model Driver policy for that
   channel.
-- `pricing`: last-resort semantic estimate only. Provider discovery, Provider
-  Instance overrides and Provider Rules take precedence.
+- `pricing`: not a field of `models[]` or `patterns[]`. Prices live in the
+  top-level `model_pricing` table, each entry keyed by `id` (exact origin model
+  name) or `match` (wildcard). An exact `id` always wins; otherwise the first
+  matching wildcard applies. The lookup is independent of whether the concrete
+  model matched an exact entry or a pattern.
 - scheduling hints: `estimated_latency_ms`, `quality_score`, `latency_class`
   and `cost_class`.
 

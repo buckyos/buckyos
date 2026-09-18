@@ -6,7 +6,8 @@ mod validation;
 pub(crate) use schema::ProviderRuleMatchKind;
 pub(crate) use schema::{
     CatalogBuildOptions, CatalogDocuments, CatalogKind, CurrentCatalogFile, KnownProvider,
-    KnownProviderCatalog, ModelDriverCatalog, ModelMatchKind, ModelSemantics, ModelVariant,
+    KnownProviderCatalog, ModelDriverCatalog, ModelMatchKind, ModelPricingRule,
+    ModelSemantics, ModelVariant,
     OriginMapping, Pricing, PricingTierStep, PricingTiers, PricingTimeWindow, PricingUnit,
     PricingWeekday,
     ProviderCredentialDescriptor, ProviderCredentialKind,
@@ -22,8 +23,8 @@ use validation::{
 
 use crate::error::{CatalogBuildError, CatalogResolveError, MatchCompileError};
 use crate::matching::{
-    CompiledMatchRule, CompiledRuleSet, MatchContext, MatchRule, MatchTrace, RuleEntry,
-    MODEL_DRIVER_MATCH_SCHEMA, PRICING_RULE_MATCH_SCHEMA, PROVIDER_RULE_MATCH_SCHEMA,
+    CompiledMatchRule, CompiledRuleSet, MatchContext, MatchRule, MatchSchema, MatchTrace,
+    RuleEntry, MODEL_DRIVER_MATCH_SCHEMA, PRICING_RULE_MATCH_SCHEMA, PROVIDER_RULE_MATCH_SCHEMA,
     REQUEST_RULE_MATCH_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
@@ -47,8 +48,85 @@ struct CompiledModelDriverCatalog {
     document: ModelDriverCatalog,
     exact_index: BTreeMap<String, usize>,
     patterns: CompiledRuleSet,
+    pricing: CompiledPricingTable,
     compiled_variants: Vec<CompiledMatchRule>,
     compiled_version_rules: Vec<CompiledMatchRule>,
+}
+
+/// Prices, resolved independently of the technical rules.
+///
+/// An exact `id` always wins; wildcard entries are tried in declaration order,
+/// so a provider can give a family default and still override single models.
+#[derive(Clone, Debug)]
+struct CompiledPricingTable {
+    exact: BTreeMap<String, CompiledPricing>,
+    patterns: CompiledRuleSet,
+    pattern_pricing: Vec<CompiledPricing>,
+}
+
+#[derive(Clone, Debug)]
+struct CompiledPricing {
+    pricing: Pricing,
+    rules: Vec<CompiledMatchRule>,
+}
+
+impl CompiledPricingTable {
+    fn compile(
+        entries: &[ModelPricingRule],
+        schema: &MatchSchema,
+    ) -> Result<Self, MatchCompileError> {
+        let mut exact = BTreeMap::new();
+        let mut wildcard_rules = Vec::new();
+        let mut pattern_pricing = Vec::new();
+        for entry in entries {
+            let rules = entry
+                .pricing
+                .rules
+                .iter()
+                .map(|rule| {
+                    CompiledMatchRule::compile(rule.when.clone(), &PRICING_RULE_MATCH_SCHEMA)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let compiled = CompiledPricing {
+                pricing: entry.pricing.clone(),
+                rules,
+            };
+            match (&entry.id, &entry.match_rule) {
+                (Some(id), None) => {
+                    exact.insert(id.clone(), compiled);
+                }
+                (None, Some(rule)) => {
+                    wildcard_rules.push(RuleEntry {
+                        rule_id: None,
+                        rule: rule.clone(),
+                    });
+                    pattern_pricing.push(compiled);
+                }
+                // `validate_model_pricing` rejects the other two shapes.
+                _ => {}
+            }
+        }
+        let patterns = CompiledRuleSet::compile(wildcard_rules, schema)?;
+        Ok(Self {
+            exact,
+            patterns,
+            pattern_pricing,
+        })
+    }
+
+    fn lookup(&self, model_id: &str, context: &MatchContext) -> Option<&CompiledPricing> {
+        if let Some(pricing) = self.exact.get(model_id) {
+            return Some(pricing);
+        }
+        let trace = self.patterns.first_match(context)?;
+        self.pattern_pricing.get(trace.position)
+    }
+}
+
+fn pricing_context(model_id: &str, dimension: &str, base: &MatchContext) -> MatchContext {
+    let mut context = base.clone();
+    context.insert(dimension.to_owned(), Value::String(model_id.to_owned()));
+    context
 }
 
 #[derive(Clone, Debug)]
@@ -63,6 +141,7 @@ struct CompiledProviderRulesCatalog {
     origin_mappings: Vec<CompiledOriginMapping>,
     exact_index: BTreeMap<String, usize>,
     patterns: CompiledRuleSet,
+    pricing: CompiledPricingTable,
     exact_compiled: Vec<CompiledProviderRule>,
     pattern_compiled: Vec<CompiledProviderRule>,
     compiled_variants: Vec<CompiledMatchRule>,
@@ -463,10 +542,17 @@ impl CatalogSnapshot {
             let catalog = &self.model_drivers[driver_id];
             let position = catalog.exact_index[origin_model_id];
             let rule = &catalog.document.models[position];
-            let semantics = catalog
+            let mut semantics = catalog
                 .document
                 .defaults
                 .overlay(&model_rule_semantics!(rule));
+            semantics.pricing = catalog
+                .pricing
+                .lookup(
+                    origin_model_id,
+                    &pricing_context(origin_model_id, "origin_model_id", dimensions),
+                )
+                .map(|entry| entry.pricing.clone());
             return Ok(resolved_model(
                 origin_model_id,
                 driver_id,
@@ -502,10 +588,14 @@ impl CatalogSnapshot {
         if let Some((driver_id, trace)) = pattern_matches.pop() {
             let catalog = &self.model_drivers[&driver_id];
             let rule = &catalog.document.patterns[trace.position];
-            let semantics = catalog
+            let mut semantics = catalog
                 .document
                 .defaults
                 .overlay(&model_rule_semantics!(rule));
+            semantics.pricing = catalog
+                .pricing
+                .lookup(origin_model_id, &context)
+                .map(|entry| entry.pricing.clone());
             return Ok(resolved_model(
                 origin_model_id,
                 &driver_id,
@@ -519,13 +609,21 @@ impl CatalogSnapshot {
         if candidates.len() == 1 {
             let driver_id = &candidates[0];
             let catalog = &self.model_drivers[driver_id];
+            let mut semantics = catalog.document.defaults.clone();
+            semantics.pricing = catalog
+                .pricing
+                .lookup(
+                    origin_model_id,
+                    &pricing_context(origin_model_id, "origin_model_id", dimensions),
+                )
+                .map(|entry| entry.pricing.clone());
             return Ok(resolved_model(
                 origin_model_id,
                 driver_id,
                 catalog.document.revision_seq,
                 ModelMatchKind::Defaults,
                 None,
-                catalog.document.defaults.clone(),
+                semantics,
             ));
         }
 
@@ -554,14 +652,23 @@ impl CatalogSnapshot {
             })?;
         if let Some(position) = catalog.exact_index.get(provider_model_id) {
             let rule = &catalog.document.models[*position];
+            let mut action = provider_rule_action!(rule);
+            let mut compiled = catalog.exact_compiled[*position].clone();
+            apply_pricing(
+                &mut action,
+                &mut compiled,
+                catalog,
+                provider_model_id,
+                &pricing_context(provider_model_id, "provider_model_id", dimensions),
+            );
             return Ok(Some(ResolvedProviderRule {
                 catalog_revision_seq: catalog.document.revision_seq,
                 #[cfg(test)]
                 match_kind: ProviderRuleMatchKind::Exact,
                 #[cfg(test)]
                 trace: None,
-                action: provider_rule_action!(rule),
-                compiled: catalog.exact_compiled[*position].clone(),
+                action,
+                compiled,
             }));
         }
 
@@ -575,14 +682,17 @@ impl CatalogSnapshot {
         };
         let position = trace.position;
         let rule = &catalog.document.patterns[position];
+        let mut action = provider_rule_action!(rule);
+        let mut compiled = catalog.pattern_compiled[position].clone();
+        apply_pricing(&mut action, &mut compiled, catalog, provider_model_id, &context);
         Ok(Some(ResolvedProviderRule {
             catalog_revision_seq: catalog.document.revision_seq,
             #[cfg(test)]
             match_kind: ProviderRuleMatchKind::Pattern,
             #[cfg(test)]
             trace: Some(trace),
-            action: provider_rule_action!(rule),
-            compiled: catalog.pattern_compiled[position].clone(),
+            action,
+            compiled,
         }))
     }
 
@@ -718,6 +828,8 @@ fn compile_model_driver(
         }),
         &MODEL_DRIVER_MATCH_SCHEMA,
     )?;
+    let pricing =
+        CompiledPricingTable::compile(&document.model_pricing, &MODEL_DRIVER_MATCH_SCHEMA)?;
     let compiled_variants = document
         .variants
         .iter()
@@ -734,6 +846,7 @@ fn compile_model_driver(
         document,
         exact_index,
         patterns,
+        pricing,
         compiled_variants,
         compiled_version_rules,
     })
@@ -764,6 +877,8 @@ fn compile_provider_rules(
         }),
         &PROVIDER_RULE_MATCH_SCHEMA,
     )?;
+    let pricing =
+        CompiledPricingTable::compile(&document.model_pricing, &PROVIDER_RULE_MATCH_SCHEMA)?;
     let exact_compiled = document
         .models
         .iter()
@@ -786,6 +901,7 @@ fn compile_provider_rules(
         origin_mappings,
         exact_index,
         patterns,
+        pricing,
         exact_compiled,
         pattern_compiled,
         compiled_variants,
@@ -895,26 +1011,17 @@ fn apply_origin_mapping(
 
 trait ProviderRuleData {
     fn request_rules(&self) -> &[RequestRule];
-    fn pricing(&self) -> Option<&Pricing>;
 }
 
 impl ProviderRuleData for ProviderExactRule {
     fn request_rules(&self) -> &[RequestRule] {
         &self.request_rules
     }
-
-    fn pricing(&self) -> Option<&Pricing> {
-        self.pricing.as_ref()
-    }
 }
 
 impl ProviderRuleData for ProviderPatternRule {
     fn request_rules(&self) -> &[RequestRule] {
         &self.request_rules
-    }
-
-    fn pricing(&self) -> Option<&Pricing> {
-        self.pricing.as_ref()
     }
 }
 
@@ -931,16 +1038,26 @@ fn compile_provider_rule(
                 .transpose()
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let pricing_rules = rule
-        .pricing()
-        .into_iter()
-        .flat_map(|pricing| &pricing.rules)
-        .map(|rule| CompiledMatchRule::compile(rule.when.clone(), &PRICING_RULE_MATCH_SCHEMA))
-        .collect::<Result<Vec<_>, _>>()?;
+    // Conditional channel prices now come from `model_pricing`; the resolved
+    // rules are attached in `apply_pricing`.
     Ok(CompiledProviderRule {
         request_conditions,
-        pricing_rules,
+        pricing_rules: Vec::new(),
     })
+}
+
+fn apply_pricing(
+    action: &mut ProviderRuleAction,
+    compiled: &mut CompiledProviderRule,
+    catalog: &CompiledProviderRulesCatalog,
+    provider_model_id: &str,
+    context: &MatchContext,
+) {
+    let Some(entry) = catalog.pricing.lookup(provider_model_id, context) else {
+        return;
+    };
+    action.pricing = Some(entry.pricing.clone());
+    compiled.pricing_rules = entry.rules.clone();
 }
 
 impl From<MatchCompileError> for CatalogBuildError {

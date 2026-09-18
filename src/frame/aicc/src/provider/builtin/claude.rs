@@ -121,7 +121,12 @@ mod tests {
             sonnet.capabilities.as_ref().unwrap()["max_context_tokens"],
             1_000_000
         );
-        assert_eq!(sonnet.pricing.as_ref().unwrap().input_token, Some(0.000002));
+        let sonnet_price = models
+            .model_pricing
+            .iter()
+            .find(|rule| rule.id.as_deref() == Some("claude-sonnet-5"))
+            .expect("claude-sonnet-5 has a price entry");
+        assert_eq!(sonnet_price.pricing.input_token, Some(0.000002));
         assert_eq!(adapter.base_adapter_id, None);
         assert_eq!(registration.operation_codecs.len(), 3);
         let builtin = claude_catalog_files()

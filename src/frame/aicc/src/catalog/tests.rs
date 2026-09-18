@@ -48,6 +48,14 @@ fn provider_rules() -> Value {
                 "when": {"/quality": "high"},
                 "remove": ["/temperature"]
             }],
+            "remove_api_types": ["image.txt2img"],
+            "remove_features": ["tool_call"]
+        }, {
+            "match": "*",
+            "exclude": true
+        }],
+        "model_pricing": [{
+            "match": "gpt-*",
             "pricing": {
                 "currency": "USD",
                 "unit": "request",
@@ -56,12 +64,7 @@ fn provider_rules() -> Value {
                     "when": {"/quality": "high"},
                     "amount": 2.0
                 }]
-            },
-            "remove_api_types": ["image.txt2img"],
-            "remove_features": ["tool_call"]
-        }, {
-            "match": "*",
-            "exclude": true
+            }
         }],
         "variants": [{
             "model_driver": "openai",
@@ -1023,24 +1026,21 @@ fn all_nested_match_rules_compile_during_snapshot_build() {
         Err(CatalogBuildError::Match(_))
     ));
 
-    let conditional_model_price = model_driver(
-        "openai",
-        json!([{
-            "id": "gpt",
-            "pricing": {
-                "currency": "USD",
-                "rules": [{"when": {"/quality": "high"}, "amount": 1.0}]
-            }
-        }]),
-        json!([]),
-    );
+    let mut conditional_model_price = model_driver("openai", json!([{"id": "gpt"}]), json!([]));
+    conditional_model_price["model_pricing"] = json!([{
+        "id": "gpt",
+        "pricing": {
+            "currency": "USD",
+            "rules": [{"when": {"/quality": "high"}, "amount": 1.0}]
+        }
+    }]);
     assert!(matches!(
         build(vec![file(
             CatalogKind::ModelDriver,
             conditional_model_price
         )]),
         Err(CatalogBuildError::InvalidValue {
-            field: "pricing.rules",
+            field: "model_pricing.pricing.rules",
             ..
         })
     ));

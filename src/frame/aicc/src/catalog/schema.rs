@@ -50,6 +50,9 @@ pub(crate) struct ModelDriverCatalog {
     pub models: Vec<ModelExactRule>,
     #[serde(default)]
     pub patterns: Vec<ModelPatternRule>,
+    /// Prices, listed separately from the technical rules above.
+    #[serde(default)]
+    pub model_pricing: Vec<ModelPricingRule>,
     #[serde(default)]
     pub defaults: ModelSemantics,
     #[serde(default)]
@@ -75,7 +78,8 @@ pub(crate) struct ModelSemantics {
     pub capabilities: Option<BTreeMap<String, Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_fields: Option<BTreeMap<String, CanonicalFieldMapping>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Resolved from `model_pricing`; never declared inline.
+    #[serde(skip)]
     pub pricing: Option<Pricing>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_latency_ms: Option<u64>,
@@ -114,7 +118,7 @@ impl ModelSemantics {
                 .canonical_fields
                 .clone()
                 .or_else(|| self.canonical_fields.clone()),
-            pricing: rule.pricing.clone().or_else(|| self.pricing.clone()),
+            pricing: None,
             estimated_latency_ms: rule.estimated_latency_ms.or(self.estimated_latency_ms),
             quality_score: rule.quality_score.or(self.quality_score),
             latency_class: rule
@@ -162,8 +166,6 @@ macro_rules! define_model_rule {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub canonical_fields: Option<BTreeMap<String, CanonicalFieldMapping>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub pricing: Option<Pricing>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub estimated_latency_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub quality_score: Option<f64>,
@@ -196,7 +198,7 @@ macro_rules! model_rule_semantics {
             logical_mounts: $rule.logical_mounts.clone(),
             capabilities: $rule.capabilities.clone(),
             canonical_fields: $rule.canonical_fields.clone(),
-            pricing: $rule.pricing.clone(),
+            pricing: None,
             estimated_latency_ms: $rule.estimated_latency_ms,
             quality_score: $rule.quality_score,
             latency_class: $rule.latency_class.clone(),
@@ -253,6 +255,24 @@ pub(crate) struct VersionStability {
     pub unstable_tokens: Vec<String>,
     #[serde(default)]
     pub current_requires_stable: bool,
+}
+
+/// A standalone price entry.
+///
+/// Prices live outside `models`/`patterns` on purpose: nearly every model has
+/// its own price, so carrying prices inside the technical rules meant an exact
+/// rule per model, and an exact rule shadows every wildcard `patterns` entry.
+/// Keeping prices here lets `models`/`patterns` stay grouped by model traits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ModelPricingRule {
+    /// Exact model id. Mutually exclusive with `match`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Wildcard selector, evaluated only when no exact `id` matches.
+    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+    pub match_rule: Option<MatchRule>,
+    pub pricing: Pricing,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -428,6 +448,9 @@ pub(crate) struct ProviderRulesCatalog {
     pub models: Vec<ProviderExactRule>,
     #[serde(default)]
     pub patterns: Vec<ProviderPatternRule>,
+    /// Prices, listed separately from the technical rules above.
+    #[serde(default)]
+    pub model_pricing: Vec<ModelPricingRule>,
     #[serde(default)]
     pub variants: Vec<ProviderVariantRule>,
 }
@@ -448,8 +471,6 @@ macro_rules! define_provider_rule {
         pub canonical_fields: BTreeMap<String, CanonicalFieldMapping>,
         #[serde(default)]
         pub request_rules: Vec<RequestRule>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub pricing: Option<Pricing>,
         #[serde(default)]
         pub remove_api_types: BTreeSet<String>,
         #[serde(default)]
@@ -480,6 +501,7 @@ pub(crate) struct ProviderRuleAction {
     pub provider_options: BTreeMap<String, Value>,
     pub canonical_fields: BTreeMap<String, CanonicalFieldMapping>,
     pub request_rules: Vec<RequestRule>,
+    /// Resolved from `model_pricing`; rules never declare it inline.
     pub pricing: Option<Pricing>,
     pub remove_api_types: BTreeSet<String>,
     pub remove_features: BTreeSet<String>,
@@ -496,7 +518,7 @@ macro_rules! provider_rule_action {
             provider_options: $rule.provider_options.clone(),
             canonical_fields: $rule.canonical_fields.clone(),
             request_rules: $rule.request_rules.clone(),
-            pricing: $rule.pricing.clone(),
+            pricing: None,
             remove_api_types: $rule.remove_api_types.clone(),
             remove_features: $rule.remove_features.clone(),
             estimated_latency_ms: $rule.estimated_latency_ms,

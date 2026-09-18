@@ -17,8 +17,7 @@
         "reasoning": true,
         "max_context_tokens": 262144
       }
-    ,
-"pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 9e-06, "output_token": 5.4e-05, "cache_input_token": 9.000000000000001e-07 }, { "up_to": null, "input_token": 1.5e-05, "output_token": 9e-05, "cache_input_token": 1.5e-06 }] } }},
+    },
     {
       "id": "qwen3.8-2.4t-a95b",
       "parameter_scale": "2.4t-a95b",
@@ -29,8 +28,7 @@
         "json_schema": true,
         "reasoning": true
       }
-    ,
-"pricing": { "currency": "CNY", "input_token": 1.2e-05, "output_token": 3.6e-05, "cache_input_token": 1.2e-06 }},
+    },
     {
       "id": "qwen3.8-27b",
       "parameter_scale": "27b",
@@ -41,8 +39,7 @@
         "json_schema": true,
         "reasoning": true
       }
-    ,
-"pricing": { "currency": "CNY", "input_token": 3e-06, "output_token": 1.2e-05, "cache_input_token": 3e-07 }},
+    },
     {
       "id": "qwen3.6-35b-a3b",
       "parameter_scale": "35b-a3b",
@@ -53,8 +50,7 @@
         "json_schema": true,
         "reasoning": true
       }
-    ,
-"pricing": { "currency": "CNY", "input_token": 1.8000000000000001e-06, "output_token": 1.08e-05 }}
+    }
   ],
   "patterns": [
     {
@@ -225,6 +221,42 @@
         "max_context_tokens": 262144
       }
     }
+  ],
+  "model_pricing": [
+    { "id": "qwen3.6-max-preview", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 9e-06, "output_token": 5.4e-05, "cache_input_token": 9.000000000000001e-07 }, { "up_to": null, "input_token": 1.5e-05, "output_token": 9e-05, "cache_input_token": 1.5e-06 }] } } },
+    { "id": "qwen3.8-2.4t-a95b", "pricing": { "currency": "CNY", "input_token": 1.2e-05, "output_token": 3.6e-05, "cache_input_token": 1.2e-06 } },
+    { "id": "qwen3.8-27b", "pricing": { "currency": "CNY", "input_token": 3e-06, "output_token": 1.2e-05, "cache_input_token": 3e-07 } },
+    { "id": "qwen3.6-35b-a3b", "pricing": { "currency": "CNY", "input_token": 1.8000000000000001e-06, "output_token": 1.08e-05 } },
+    { "id": "qwen3.8-max", "pricing": { "currency": "CNY", "input_token": 1.2e-05, "output_token": 3.6e-05, "cache_input_token": 1.5e-06 } },
+    { "id": "qwen3.8-max-0902", "pricing": { "currency": "CNY", "input_token": 1.2e-05, "output_token": 3.6e-05, "cache_input_token": 1.5e-06 } },
+    { "id": "qwen3.8-max-prime", "pricing": { "currency": "CNY", "input_token": 2.4e-05, "output_token": 7.2e-05 } },
+    { "id": "qwen3.7-max", "pricing": { "currency": "CNY", "input_token": 1.2e-05, "output_token": 3.6e-05, "cache_input_token": 2.4e-06 } },
+    { "id": "qwen3.7-max-2026-06-08", "pricing": { "currency": "CNY", "input_token": 1.2e-05, "output_token": 3.6e-05, "cache_input_token": 2.4e-06 } },
+    { "id": "qwen3.7-max-2026-05-20", "pricing": { "currency": "CNY", "input_token": 1.2e-05, "output_token": 3.6e-05, "cache_input_token": 2.4e-06 } },
+    { "id": "qwen3.7-max-preview", "pricing": { "currency": "CNY", "input_token": 1.2e-05, "output_token": 3.6e-05, "cache_input_token": 2.4e-06 } },
+    { "id": "qwen3.7-max-2026-05-17", "pricing": { "currency": "CNY", "input_token": 1.2e-05, "output_token": 3.6e-05, "cache_input_token": 2.4e-06 } },
+    { "id": "qwen3.7-plus", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 262144, "input_token": 2e-06, "output_token": 8e-06, "cache_input_token": 4e-07 }, { "input_token": 6e-06, "output_token": 2.4e-05, "cache_input_token": 1.2e-06 }] } } },
+    { "id": "qwen3.7-plus-2026-05-26", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 262144, "input_token": 2e-06, "output_token": 8e-06, "cache_input_token": 4e-07 }, { "input_token": 6e-06, "output_token": 2.4e-05, "cache_input_token": 1.2e-06 }] } } },
+    { "id": "qwen3.7-flash", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 2e-07, "output_token": 8e-07, "cache_input_token": 4e-08 }, { "up_to": 262144, "input_token": 6e-07, "output_token": 2.4e-06, "cache_input_token": 1.2e-07 }, { "input_token": 1.2e-06, "output_token": 4.8e-06, "cache_input_token": 2.4e-07 }] } } },
+    { "id": "qwen3.6-plus", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 262144, "input_token": 2e-06, "output_token": 1.2e-05, "cache_input_token": 2e-07 }, { "input_token": 8e-06, "output_token": 4.8e-05, "cache_input_token": 9.6e-07 }] } } },
+    { "id": "qwen3.6-plus-2026-04-02", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 262144, "input_token": 2e-06, "output_token": 1.2e-05, "cache_input_token": 2e-07 }, { "input_token": 8e-06, "output_token": 4.8e-05, "cache_input_token": 9.6e-07 }] } } },
+    { "id": "qwen3.6-flash", "pricing": { "currency": "CNY", "input_token": 1.2e-06, "output_token": 7.2e-06 } },
+    { "id": "qwen3.6-flash-2026-04-16", "pricing": { "currency": "CNY", "input_token": 1.2e-06, "output_token": 7.2e-06 } },
+    { "id": "qwen3.5-plus", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 8e-07, "output_token": 4.8e-06, "cache_input_token": null }, { "up_to": 262144, "input_token": 2e-06, "output_token": 1.2e-05, "cache_input_token": null }, { "input_token": 4e-06, "output_token": 2.4e-05, "cache_input_token": null }] } } },
+    { "id": "qwen3.5-plus-2026-04-20", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 8e-07, "output_token": 4.8e-06, "cache_input_token": null }, { "up_to": 262144, "input_token": 2e-06, "output_token": 1.2e-05, "cache_input_token": null }, { "input_token": 4e-06, "output_token": 2.4e-05, "cache_input_token": null }] } } },
+    { "id": "qwen3.5-flash", "pricing": { "currency": "CNY", "input_token": 2e-07, "output_token": 2e-06 } },
+    { "id": "qwen3.5-flash-2026-02-23", "pricing": { "currency": "CNY", "input_token": 2e-07, "output_token": 2e-06 } },
+    { "id": "qwen3.5-397b-a17b", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 1.2e-06, "output_token": 7.2e-06, "cache_input_token": null }, { "input_token": 3e-06, "output_token": 1.8e-05, "cache_input_token": null }] } } },
+    { "id": "qwen3.5-122b-a10b", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 8e-07, "output_token": 6.4e-06, "cache_input_token": null }, { "input_token": 2e-06, "output_token": 1.6e-05, "cache_input_token": null }] } } },
+    { "id": "qwen3.5-27b", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 6e-07, "output_token": 4.8e-06, "cache_input_token": null }, { "input_token": 1.8e-06, "output_token": 1.44e-05, "cache_input_token": null }] } } },
+    { "id": "qwen3-max", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 2.5e-06, "output_token": 1e-05, "cache_input_token": null }, { "up_to": 131072, "input_token": 4e-06, "output_token": 1.6e-05, "cache_input_token": null }, { "input_token": 7e-06, "output_token": 2.8e-05, "cache_input_token": null }] } } },
+    { "id": "qwen3-max-2026-01-23", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 2.5e-06, "output_token": 1e-05, "cache_input_token": null }, { "up_to": 131072, "input_token": 4e-06, "output_token": 1.6e-05, "cache_input_token": null }, { "input_token": 7e-06, "output_token": 2.8e-05, "cache_input_token": null }] } } },
+    { "id": "qwen3-max-2025-09-23", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 6e-06, "output_token": 2.4e-05, "cache_input_token": null }, { "up_to": 131072, "input_token": 1e-05, "output_token": 4e-05, "cache_input_token": null }, { "input_token": 1.5e-05, "output_token": 6e-05, "cache_input_token": null }] } } },
+    { "id": "qwen3-max-preview", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 6e-06, "output_token": 2.4e-05, "cache_input_token": null }, { "up_to": 131072, "input_token": 1e-05, "output_token": 4e-05, "cache_input_token": null }, { "input_token": 1.5e-05, "output_token": 6e-05, "cache_input_token": null }] } } },
+    { "id": "qwen-max", "pricing": { "currency": "CNY", "input_token": 2.4e-06, "output_token": 9.6e-06 } },
+    { "id": "qwen-long", "pricing": { "currency": "CNY", "input_token": 5e-07, "output_token": 2e-06 } },
+    { "id": "qwen3.7-text-embedding", "pricing": { "currency": "CNY", "input_token": 6e-07, "output_token": 0 } },
+    { "id": "qwen3-rerank", "pricing": { "currency": "CNY", "input_token": 6e-07, "output_token": 0 } }
   ],
   "defaults": {
     "api_types": [],
