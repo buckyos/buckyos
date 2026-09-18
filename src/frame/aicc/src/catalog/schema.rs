@@ -275,6 +275,8 @@ pub(crate) struct Pricing {
     pub rules: Vec<PricingRule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tiers: Option<PricingTiers>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub time_windows: Vec<PricingTimeWindow>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -285,6 +287,8 @@ pub(crate) enum PricingUnit {
     AudioSecond,
     VideoSecond,
     Character,
+    Second,
+    Megapixel,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -350,6 +354,58 @@ pub(crate) struct PricingTiers {
     #[serde(default)]
     pub mode: TierMode,
     pub steps: Vec<PricingTierStep>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PricingWeekday {
+    Mon,
+    Tue,
+    Wed,
+    Thu,
+    Fri,
+    Sat,
+    Sun,
+}
+
+impl PricingWeekday {
+    /// 0 = Monday .. 6 = Sunday, matching the ordering used by [`day_index_from_epoch`].
+    pub(crate) fn index(self) -> u8 {
+        match self {
+            Self::Mon => 0,
+            Self::Tue => 1,
+            Self::Wed => 2,
+            Self::Thu => 3,
+            Self::Fri => 4,
+            Self::Sat => 5,
+            Self::Sun => 6,
+        }
+    }
+}
+
+/// A wall-clock window during which a different set of rates applies (peak / off-peak
+/// billing). `from`/`to` are `HH:MM` in the local clock implied by `utc_offset_minutes`;
+/// `from > to` means the window wraps past midnight. Only the fields that are `Some`
+/// override the base pricing, so a provider lists just what changes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PricingTimeWindow {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub utc_offset_minutes: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days: Option<Vec<PricingWeekday>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<PricingUnit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
