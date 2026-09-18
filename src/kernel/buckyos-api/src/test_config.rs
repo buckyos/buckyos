@@ -1,4 +1,7 @@
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine,
+};
 use buckyos_kit::buckyos_get_unix_timestamp;
 use ed25519_dalek::pkcs8::DecodePrivateKey;
 use ed25519_dalek::{SigningKey, VerifyingKey};
@@ -13,6 +16,7 @@ use package_lib::PackageId;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::net::IpAddr;
@@ -33,7 +37,13 @@ use crate::{
 
 const BASE_TIME: u64 = 1743478939; // 2025-04-01
 const DEFAULT_EXP_YEARS: u64 = 10;
-const ADMIN_PASSWORD_HASH: &str = "o8XyToejrbCYou84h/VkF4Tht0BeQQbuX3XKG+8+GQ4="; // bucky2025
+const DEFAULT_ADMIN_PASSWORD: &str = "bucky2025";
+
+fn admin_password_hash_for(username: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{}{}.buckyos", DEFAULT_ADMIN_PASSWORD, username).as_bytes());
+    STANDARD.encode(hasher.finalize())
+}
 
 struct DevSnDb {
     path: PathBuf,
@@ -758,7 +768,7 @@ impl<'a> UserEnvScope<'a> {
 
         if device_name.starts_with("ood") {
             let start_config = json!({
-                "admin_password_hash": ADMIN_PASSWORD_HASH,
+                "admin_password_hash": admin_password_hash_for(self.username),
                 "ood_jwt": device_jwt.to_string(),
                 "friend_passcode": "sdfsdfsdf",
                 "gateway_type": "PortForward",
@@ -1589,7 +1599,7 @@ mod tests {
             get_jwk(&owner_keys.public_key_x),
         );
         let start_config = json!({
-            "admin_password_hash": ADMIN_PASSWORD_HASH,
+            "admin_password_hash": admin_password_hash_for("devtest"),
             "friend_passcode": "sdfsdfsdf",
             "gateway_type": "PortForward",
             "guest_access": true,
@@ -1802,5 +1812,30 @@ mod tests {
         let app_list = create_applist().unwrap();
         let app_list_json = serde_json::to_string_pretty(&app_list).unwrap();
         println!("app_list:\n{}", app_list_json);
+    }
+}
+
+#[cfg(test)]
+mod admin_password_hash_tests {
+    use super::*;
+
+    #[test]
+    fn derives_the_legacy_devtest_hash() {
+        assert_eq!(
+            admin_password_hash_for("devtest"),
+            "o8XyToejrbCYou84h/VkF4Tht0BeQQbuX3XKG+8+GQ4="
+        );
+    }
+
+    #[test]
+    fn hash_is_bound_to_the_account_name() {
+        assert_eq!(
+            admin_password_hash_for("alice"),
+            "YaaDqMk7FOSXWcYIEFN0L4mnKOodxgi8spA7TkAkpRI="
+        );
+        assert_ne!(
+            admin_password_hash_for("alice"),
+            admin_password_hash_for("bob")
+        );
     }
 }
