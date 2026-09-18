@@ -1199,6 +1199,21 @@ fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
         Some("application/zip")
     } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE" {
         Some("audio/wav")
+    } else if bytes.starts_with(b"ID3") {
+        Some("audio/mpeg")
+    } else if bytes.len() >= 2
+        && bytes[0] == 0xff
+        && (bytes[1] & 0xe0) == 0xe0
+        && (bytes[1] & 0x06) != 0
+    {
+        // MPEG audio frame sync: eleven set bits plus a non-reserved layer.
+        Some("audio/mpeg")
+    } else if bytes.starts_with(b"fLaC") {
+        Some("audio/flac")
+    } else if bytes.starts_with(b"OggS") {
+        Some("audio/ogg")
+    } else if bytes.len() >= 12 && bytes.get(4..8) == Some(b"ftyp") && &bytes[8..12] == b"M4A " {
+        Some("audio/mp4")
     } else {
         None
     }
@@ -1209,7 +1224,12 @@ fn mime_matches(declared: &str, detected: &str) -> bool {
         || declared == "application/octet-stream"
         || matches!(
             (declared, detected),
-            ("application/x-zip-compressed", "application/zip") | ("image/jpg", "image/jpeg")
+            ("application/x-zip-compressed", "application/zip")
+                | ("image/jpg", "image/jpeg")
+                | ("audio/mp3", "audio/mpeg")
+                | ("audio/x-wav", "audio/wav")
+                | ("audio/x-flac", "audio/flac")
+                | ("audio/m4a", "audio/mp4")
         )
 }
 

@@ -153,7 +153,8 @@ for the common case it is only `"match": "gpt-*"`:
 - `api_types`: intrinsic AICC API types.
 - `logical_mounts`: semantic mounts using `{driver}` and `{model}` templates.
 - `capabilities`: intrinsic capability limits such as streaming, tool calling,
-  JSON output, web search, vision, image generation and token limits.
+  JSON output, web search, vision, audio input, image generation and token
+  limits.
   A model whose transport AICC does not implement yet is booked here with an
   `extend` flag instead of being dropped from the catalog:
 
@@ -190,7 +191,8 @@ for the common case it is only `"match": "gpt-*"`:
 
 Provider Rules may only reduce the capabilities declared here; they cannot add
 an intrinsic capability. Unknown models enter conservative fallback and do not
-claim tool calling, JSON output, web search, vision or image generation.
+claim tool calling, JSON output, web search, vision, audio input or image
+generation.
 
 ## Variants
 

@@ -178,7 +178,9 @@ typed response 共同字段为：`task_id`、`status`、业务结果、`usage?`�
 ## 7. 路由控制
 
 `ModelRequirement` 用于硬需求，例如 `tool_call`、`json_schema`、`web_search`、
-`vision`、`image_generation`、`min_context_tokens` 和 canonical field 要求。`ModelDisable` 用于显式禁用能力。
+`vision`、`audio`、`image_generation`、`min_context_tokens` 和 canonical field 要求。
+`audio` 表示模型必须接受 LLM 请求路径上的音频输入（对应元数据 `capabilities.audio`），
+与面向独立 `audio.*` 接口的 `Capability::Audio` 不是同一件事。`ModelDisable` 用于显式禁用能力。
 
 `RoutePolicy` 支持：`cheap | fast | balanced | quality` profile、local only、fallback、runtime failover、explain、Provider allow/block、最大成本和最大延迟。策略只能缩小候选或改变排序，不能赋予模型/adapter 不存在的能力。
 

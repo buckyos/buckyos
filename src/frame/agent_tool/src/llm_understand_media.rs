@@ -27,6 +27,11 @@ pub const TOOL_LLM_UNDERSTAND_MEDIA: &str = "llm_understand_media";
 
 const DEFAULT_MODEL_ALIAS: &str = "llm.vision";
 const DEFAULT_SUMMARY_MODEL_ALIAS: &str = "llm.summary";
+/// Audio attachments route here unless `LLM_UNDERSTAND_MEDIA_AUDIO_MODEL`
+/// overrides it. `llm.audio` requires an audio-input-capable LLM and, unlike
+/// `llm.vision`, has no parent fallback, so a clip can never be silently
+/// downgraded onto a text-only model.
+const DEFAULT_AUDIO_MODEL_ALIAS: &str = "llm.audio";
 const DEFAULT_TARGET_TOKENS: u32 = 24_000;
 const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 2_048;
 const RAW_OUTPUT_LOG_PREVIEW_CHARS: usize = 2_000;
@@ -90,7 +95,7 @@ impl AgentTool for LlmUnderstandMediaTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_LLM_UNDERSTAND_MEDIA.to_string(),
-            description: "Understand an attachment through a controlled LLM side context. Archives must be extracted first; other formats are forwarded to the selected model and fail if it does not support them. Accepts media, goal, and max_completion_tokens only. media is either a stored object ({kind:\"named_object\", obj_id:\"cyfile:…\"}), a url, or a local file ({kind:\"local_file\", path:\"/abs/path\"}); use the local-file form for artifacts an earlier exec_bash produced.".to_string(),
+            description: "Understand an attachment through a controlled LLM side context. Archives must be extracted first; other formats are forwarded to the selected model and fail if it does not support them. Images and sampled video frames route to llm.vision; audio routes to llm.audio, which needs a model that accepts audio input (set LLM_UNDERSTAND_MEDIA_AUDIO_MODEL to override, or use the speech_to_text command when the goal is exact transcription). Accepts media, goal, and max_completion_tokens only. media is either a stored object ({kind:\"named_object\", obj_id:\"cyfile:…\"}), a url, or a local file ({kind:\"local_file\", path:\"/abs/path\"}); use the local-file form for artifacts an earlier exec_bash produced.".to_string(),
             args_schema: json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -1044,6 +1049,7 @@ async fn resolve_media(
                 .or_else(|| sniff_archive_mime(&bytes).map(str::to_string))
                 .or_else(|| sniff_image_mime(&bytes).map(str::to_string))
                 .or_else(|| sniff_video_mime(&bytes).map(str::to_string))
+                .or_else(|| sniff_audio_mime(&bytes).map(str::to_string))
                 .or_else(|| sniff_document_mime(&bytes).map(str::to_string))
                 .ok_or_else(|| {
                     format!(
@@ -1130,6 +1136,7 @@ async fn resolve_media(
                 .or_else(|| sniff_archive_mime(&bytes).map(str::to_string))
                 .or_else(|| sniff_image_mime(&bytes).map(str::to_string))
                 .or_else(|| sniff_video_mime(&bytes).map(str::to_string))
+                .or_else(|| sniff_audio_mime(&bytes).map(str::to_string))
                 .or_else(|| sniff_document_mime(&bytes).map(str::to_string))
                 .or(object_mime)
                 .or_else(|| media.mime_hint.as_deref().and_then(normalize_mime))
@@ -1233,7 +1240,10 @@ fn mime_from_path_extension(path: &Path) -> Option<String> {
         "mp3" => "audio/mpeg",
         "m4a" => "audio/mp4",
         "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
         "flac" => "audio/flac",
+        "aac" => "audio/aac",
+        "amr" => "audio/amr",
         "pdf" => "application/pdf",
         "json" => "application/json",
         "txt" | "md" | "log" | "csv" | "tsv" => "text/plain",
@@ -1272,6 +1282,33 @@ fn sniff_video_mime(bytes: &[u8]) -> Option<&'static str> {
     }
     if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
         return Some("video/webm");
+    }
+    None
+}
+
+/// Container sniffing for audio. Matters for `named_object` attachments, which
+/// carry no file extension: without this an audio clip whose stored MIME is
+/// `application/octet-stream` has no route at all.
+fn sniff_audio_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"ID3") {
+        return Some("audio/mpeg");
+    }
+    // MPEG-1/2/2.5 audio frame sync: eleven set bits followed by a non-reserved
+    // layer code. The layer check keeps arbitrary `0xFF`-led payloads out.
+    if bytes.len() >= 2 && bytes[0] == 0xff && (bytes[1] & 0xe0) == 0xe0 && (bytes[1] & 0x06) != 0 {
+        return Some("audio/mpeg");
+    }
+    if bytes.starts_with(b"fLaC") {
+        return Some("audio/flac");
+    }
+    if bytes.starts_with(b"OggS") {
+        return Some("audio/ogg");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE" {
+        return Some("audio/wav");
+    }
+    if bytes.len() >= 12 && bytes.get(4..8) == Some(b"ftyp") && &bytes[8..12] == b"M4A " {
+        return Some("audio/mp4");
     }
     None
 }
@@ -1375,7 +1412,8 @@ fn route_model(mime: &str) -> Option<String> {
         // diagnosis/glm-audio-input-capability-2026-09-18.md. A dedicated
         // override is required (e.g. `glm-4-voice`, or an ASR model used
         // through `speech_to_text`).
-        return configured_model("LLM_UNDERSTAND_MEDIA_AUDIO_MODEL");
+        return configured_model("LLM_UNDERSTAND_MEDIA_AUDIO_MODEL")
+            .or_else(|| Some(DEFAULT_AUDIO_MODEL_ALIAS.to_string()));
     }
     let specific = if is_video_mime(mime) {
         configured_model("LLM_UNDERSTAND_MEDIA_VIDEO_MODEL")
@@ -1867,7 +1905,8 @@ Required:
 Options:
   --history-file <path>   JSON Vec<AiMessage> parent history snapshot.
   --work-dir <path>       LocalLLMContext working directory.
-  --model <alias>         AICC logical model alias; default image route is llm.vision.
+  --model <alias>         AICC logical model alias; defaults are llm.vision for
+                          image/video and llm.audio for audio.
   --max-completion-tokens <n>  Positive output budget; default 2048, rounded up to 2048/4096/8192 tiers.
   -h, --help              Show this help.
 "#;
@@ -2066,6 +2105,54 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(masked_resource_id(&source), "cyfile:d05ec9f1…bbb49fdd");
+    }
+
+    #[test]
+    fn audio_attachments_route_to_the_audio_alias() {
+        assert_eq!(
+            route_model("audio/mpeg").as_deref(),
+            Some(DEFAULT_AUDIO_MODEL_ALIAS)
+        );
+        assert_eq!(
+            route_model("audio/wav").as_deref(),
+            Some(DEFAULT_AUDIO_MODEL_ALIAS)
+        );
+        // The archive escape hatch still wins: audio never falls back to vision.
+        assert_ne!(
+            route_model("audio/flac").as_deref(),
+            Some(DEFAULT_MODEL_ALIAS)
+        );
+    }
+
+    #[test]
+    fn audio_magic_sniffing_is_distinct_from_image_and_video() {
+        let wav = b"RIFF\x00\x00\x00\x00WAVEfmt ";
+        assert_eq!(sniff_audio_mime(wav), Some("audio/wav"));
+        assert!(sniff_image_mime(wav).is_none());
+        assert!(sniff_video_mime(wav).is_none());
+
+        assert_eq!(sniff_audio_mime(b"ID3\x03\x00"), Some("audio/mpeg"));
+        assert_eq!(
+            sniff_audio_mime(&[0xff, 0xfb, 0x90, 0x00]),
+            Some("audio/mpeg")
+        );
+        assert_eq!(
+            sniff_audio_mime(b"fLaC\x00\x00\x00\x00"),
+            Some("audio/flac")
+        );
+        assert_eq!(sniff_audio_mime(b"OggS\x00\x02\x00\x00"), Some("audio/ogg"));
+        assert_eq!(
+            sniff_audio_mime(b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00"),
+            Some("audio/mp4")
+        );
+
+        // Image and video signatures must keep their own identity.
+        assert_eq!(
+            sniff_audio_mime(b"\x89PNG\r\n\x1a\n"),
+            None,
+            "PNG must not be sniffed as audio"
+        );
+        assert_eq!(sniff_audio_mime(b"\x00\x00\x00\x18ftypisom"), None);
     }
 
     #[test]

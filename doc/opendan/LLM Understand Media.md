@@ -286,7 +286,9 @@ model = "llm.video"
 ```
 
 - v0 只启用 `image/* -> llm.vision` 与 `video/*`（本地抽帧后按图片转发）；`Document` 类 MIME 直接以 document block 转发。
-- `audio/*` 自 2026-09-18 起按 `AiContent::Audio` 原样转发（不再降级成 `Document`，也**不再回退到 `llm.vision`**）：必须显式设置 `LLM_UNDERSTAND_MEDIA_AUDIO_MODEL`（例如 `glm-4-voice`），否则工具返回明确的 `no model route for media mime` 错误。`llm.audio` 逻辑模型名目前仅为设计预留，AICC 侧尚未注册。
+- `audio/*` 自 2026-09-18 起按 `AiContent::Audio` 原样转发（不再降级成 `Document`，也**不再回退到 `llm.vision`**）。默认路由目标即上表的 `llm.audio`；`LLM_UNDERSTAND_MEDIA_AUDIO_MODEL` 可覆盖为某个具体模型（例如 `glm-4-voice`）。两者都不可用时工具返回明确的 `no model route for media mime` 错误。
+- `llm.audio` 已由 AICC 内置逻辑模型定义注册（`service/model_defaults.rs`）：`min_line` 硬过滤 `audio = true`，且使用 `strict` fallback，因此音频**不会**被静默降级到只支持文本的模型。候选来自 provider 元数据 `capabilities.audio`；目前只有 `glm-4-voice` 打了这个标记。
+- 上表中的 `llm.media` / `llm.document` / `llm.video` 仍是设计稿：AICC 侧尚未注册这些逻辑模型名，当前生效的是 `image/*`+`video/*` → `llm.vision`、`audio/*` → `llm.audio`，其余 MIME 走 document block。
 - `model` 是 AICC 逻辑模型名，最终 exact provider / model 由 AICC route policy 解析。
 - `default_model` 仅在 MIME 已识别但没有更具体 route 时使用；MIME 无法识别时不盲目 fallback。
 - 对 `NamedObject`，MIME 探测发生在打开 chunk reader / materialize 阶段：优先 FileObject meta，其次首块 magic sniff，最后才使用调用方 `mime_hint`。

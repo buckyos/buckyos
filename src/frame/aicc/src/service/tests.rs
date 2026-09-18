@@ -1023,6 +1023,75 @@ fn builtin_logical_definitions_make_llm_chat_routable_without_routing_config() {
 }
 
 #[test]
+fn llm_audio_admits_only_audio_capable_models() {
+    let catalog = CatalogSnapshot::from_current_files(
+        3,
+        [crate::catalog::CurrentCatalogFile {
+            kind: crate::catalog::CatalogKind::ModelDriver,
+            contents: include_bytes!("../../driver_metadata/models/glm.model.json").to_vec(),
+        }],
+        &crate::catalog::CatalogBuildOptions::default(),
+    )
+    .unwrap();
+    let inventory_model = |id: &str, audio: bool| crate::model::InventoryModel {
+        provider_model_id: id.to_string(),
+        model_driver_id: "glm".to_string(),
+        origin_model_id: id.to_string(),
+        api_types: vec![buckyos_api::ApiType::Llm],
+        logical_mounts: vec!["llm.glm".to_string()],
+        variants: Vec::new(),
+        capabilities: if audio {
+            BTreeMap::from([("audio".to_string(), serde_json::json!(true))])
+        } else {
+            BTreeMap::new()
+        },
+        canonical_fields: BTreeMap::new(),
+        attributes: BTreeMap::new(),
+        operations: BTreeMap::new(),
+    };
+    let inventory = ModelProviderInventory {
+        provider_instance_name: "glm-main".to_string(),
+        provider_profile_id: "glm".to_string(),
+        protocol_adapter_id: "glm-chat".to_string(),
+        inventory_revision: "inventory-1".to_string(),
+        models: vec![
+            inventory_model("glm-4-voice", true),
+            inventory_model("glm-5.3", false),
+        ],
+    };
+    let registry = ModelRegistry::build(
+        &catalog,
+        &[inventory],
+        builtin_logical_model_definitions(),
+        RegistryLayers {
+            factory: Some(&builtin_logical_tree_overlay()),
+            ..RegistryLayers::default()
+        },
+    )
+    .unwrap();
+
+    let candidates = registry
+        .resolve_candidates("llm.audio", buckyos_api::ApiType::Llm)
+        .unwrap();
+    assert_eq!(candidates.resolved_logical_path, "llm.audio");
+    assert_eq!(
+        candidates.candidates.len(),
+        1,
+        "only the audio-capable model may be admitted"
+    );
+    assert_eq!(
+        candidates.candidates[0].model.exact_model.as_str(),
+        "glm-4-voice@glm-main"
+    );
+
+    // The requirement must stay scoped to llm.audio.
+    let chat = registry
+        .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
+        .unwrap();
+    assert_eq!(chat.candidates.len(), 2);
+}
+
+#[test]
 fn builtin_logical_definitions_make_llm_chat_routable_with_glm_only() {
     let catalog = CatalogSnapshot::from_current_files(
         2,
