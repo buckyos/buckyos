@@ -12,7 +12,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
       "capabilities": { "max_context_tokens": 204800, "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true, "vision": true },
-      "pricing": { "currency": "CNY", "input_token": 0.000005, "output_token": 0.000022, "cache_input_token": 0.0000012 }
+      "pricing": { "currency": "CNY", "input_token": 5e-06, "output_token": 2.2e-05, "cache_input_token": 1.2e-06, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 5e-06, "output_token": 2.2e-05, "cache_input_token": 1.2e-06 }, { "input_token": 7e-06, "output_token": 2.6e-05, "cache_input_token": 1.8000000000000001e-06 }] } }
     },
     {
       "id": "glm-ocr",
@@ -204,7 +204,7 @@
       "api_types": ["llm"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
       "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true },
-      "pricing": { "currency": "CNY", "input_token": 0.000006, "output_token": 0.000024, "cache_input_token": 0.0000013 }
+      "pricing": { "currency": "CNY", "input_token": 6e-06, "output_token": 2.4e-05, "cache_input_token": 1.3e-06, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 6e-06, "output_token": 2.4e-05, "cache_input_token": 1.3e-06 }, { "input_token": 8e-06, "output_token": 2.8e-05, "cache_input_token": 2e-06 }] } }
     },
     {
       "id": "glm-5.3",
@@ -233,21 +233,21 @@
       "api_types": ["llm"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
       "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true },
-      "pricing": { "currency": "CNY", "input_token": 0.000005, "output_token": 0.000022, "cache_input_token": 0.0000012 }
+      "pricing": { "currency": "CNY", "input_token": 5e-06, "output_token": 2.2e-05, "cache_input_token": 1.2e-06, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 5e-06, "output_token": 2.2e-05, "cache_input_token": 1.2e-06 }, { "input_token": 7e-06, "output_token": 2.6e-05, "cache_input_token": 1.8000000000000001e-06 }] } }
     },
     {
       "id": "glm-5",
       "api_types": ["llm"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
       "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true },
-      "pricing": { "currency": "CNY", "input_token": 0.000004, "output_token": 0.000018, "cache_input_token": 0.000001 }
+      "pricing": { "currency": "CNY", "input_token": 4e-06, "output_token": 1.8e-05, "cache_input_token": 1e-06, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 4e-06, "output_token": 1.8e-05, "cache_input_token": 1e-06 }, { "input_token": 6e-06, "output_token": 2.2e-05, "cache_input_token": 1.5e-06 }] } }
     },
     {
       "id": "glm-4.7",
       "api_types": ["llm"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
       "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true },
-      "pricing": { "currency": "CNY", "input_token": 0.000002, "output_token": 0.000008, "cache_input_token": 0.0000004 }
+      "pricing": { "currency": "CNY", "input_token": 3e-06, "output_token": 1.4e-05, "cache_input_token": 6e-07, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 3e-06, "output_token": 1.4e-05, "cache_input_token": 6e-07 }, { "input_token": 4e-06, "output_token": 1.6e-05, "cache_input_token": 8.000000000000001e-07 }] } }
     },
     {
       "id": "glm-4.7-flash",
@@ -277,7 +277,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
       "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 32768, "streaming": true, "tool_call": true, "reasoning": true, "vision": true },
-      "pricing": { "currency": "CNY", "input_token": 0.000001, "output_token": 0.000003, "cache_input_token": 0.0000002 }
+      "pricing": { "currency": "CNY", "input_token": 1e-06, "output_token": 3e-06, "cache_input_token": 2.0000000000000002e-07, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 1e-06, "output_token": 3e-06, "cache_input_token": 2.0000000000000002e-07 }, { "input_token": 2e-06, "output_token": 6e-06, "cache_input_token": 4.0000000000000003e-07 }] } }
     },
     {
       "id": "glm-4.6v-flash",
@@ -293,7 +293,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
       "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 32768, "streaming": true, "tool_call": true, "reasoning": true, "vision": true },
-      "pricing": { "currency": "CNY", "input_token": 0.00000015, "output_token": 0.0000015, "cache_input_token": 0.00000003 }
+      "pricing": { "currency": "CNY", "input_token": 1.5e-07, "output_token": 1.5e-06, "cache_input_token": 3e-08, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 1.5e-07, "output_token": 1.5e-06, "cache_input_token": 3e-08 }, { "input_token": 3e-07, "output_token": 3e-06, "cache_input_token": 3e-08 }] } }
     },
     {
       "id": "glm-4.5",
@@ -316,7 +316,7 @@
       "api_types": ["llm"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
       "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true },
-      "pricing": { "currency": "CNY", "input_token": 0.0000008, "output_token": 0.000002, "cache_input_token": 0.00000016 }
+      "pricing": { "currency": "CNY", "input_token": 8.000000000000001e-07, "output_token": 6e-06, "cache_input_token": 1.6e-07, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 8.000000000000001e-07, "output_token": 6e-06, "cache_input_token": 1.6e-07 }, { "input_token": 1.2e-06, "output_token": 8e-06, "cache_input_token": 2.4e-07 }] } }
     },
     {
       "id": "glm-4.5-airx",
@@ -331,7 +331,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
       "capabilities": { "max_context_tokens": 65536, "max_output_tokens": 16384, "streaming": true, "tool_call": true, "reasoning": true, "vision": true },
-      "pricing": { "currency": "CNY", "input_token": 0.000002, "output_token": 0.000006, "cache_input_token": 0.0000004 }
+      "pricing": { "currency": "CNY", "input_token": 2e-06, "output_token": 6e-06, "cache_input_token": 4.0000000000000003e-07, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 2e-06, "output_token": 6e-06, "cache_input_token": 4.0000000000000003e-07 }, { "input_token": 4e-06, "output_token": 1.2e-05, "cache_input_token": 8.000000000000001e-07 }] } }
     },
     {
       "id": "glm-4-32b-0414-128k",
