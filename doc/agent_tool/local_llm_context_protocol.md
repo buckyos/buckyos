@@ -270,7 +270,7 @@ ContextThreshold 只有两种形状：`{"kind":"ratio","value":0.75}` 和 `{"kin
 - `budget.max_completion_tokens`、`max_cost_units`、`on_exhausted` 没有在当前传统循环中实现对应控制分支。单次输出 token 限制由 `model_policy.max_completion_tokens` 下发。
 - **context 阈值目前仅被保存，没有执行检查；当前循环没有产生 ContextLimitReached 的路径。** 默认 75% 不构成已生效的自动压缩保证。
 
-HumanPolicy 为 `{"approval_required": string[]}`，默认空数组。ErrorPolicy 只有 `max_consecutive_errors: u32`，默认 3，没有旧注释提到的 `mode: Suspend` 字段。可恢复错误超过上限才终止，即默认第 4 次触发；0 关闭上限。非工具错误回灌为 user 消息，工具错误回灌为 tool_result；无错误的工具轮会清零错误计数。
+HumanPolicy 为 `{"approval_required": string[]}`，默认空数组。ErrorPolicy 只有 `max_consecutive_errors: u32`，默认 3，没有旧注释提到的 `mode: Suspend` 字段。只有 LLM 可纠正的错误（`output_parse`、`policy_rejected`、`tool_failed`）参与计数：按逻辑轮计数，同一轮多个工具错误只计 1，最多反馈 N 次，连续第 N+1 次终止，即默认第 4 次触发；0 关闭上限。整轮无可纠正错误才清零，推理请求成功本身不清零。输出协议错误回灌为 user 消息，工具 / Policy 错误按 call_id 回灌为 tool_result。Provider、运行时、快照、内部错误不计数，直接结束 run。
 
 ## 5. AiMessage 输入与历史格式
 
@@ -369,22 +369,19 @@ PendingToolCall 形状为 `{call: {name, args, call_id}, eta_ms?: u64}`；args �
 
 | 时机 | 实际顺序 |
 | --- | --- |
-| 新 run | 写 request.json → 写 Running 且索引为空的 state → 构造依赖/上下文 → 写初始 snapshot → 更新 state 的索引 |
-| 每次推理前 | hook 写下一 snapshot；**不更新 state 索引**；写失败被忽略 |
-| 每次 outcome 返回后 | 写 ctx.snapshot → 更新内存中的索引和时间 → 按 outcome 写 state |
-| 终态 | 在上述 state 已写为 Completed 后，再写 final.json |
-| 压缩 resume | 再写传入的压缩前 snapshot → 以内存中的 rewritten history resume → 清 last_suspend_kind 并写 state；**不更新 snapshot 索引** |
+| 新 run | 写 request.json → 写 Running 且索引为空的 state → 构造依赖/上下文 → 写初始 snapshot → 写带索引的 state |
+| 每次推理前 | hook 写下一 snapshot → 写带新索引的 state。任一步失败 ⇒ 不发起推理，`step()` 返回 `RuntimeFailure`，上下文留在内存 |
+| 每次 outcome 返回后 | 写 ctx.snapshot → （终态）写 final.json → 按 outcome 写 state。任一步失败 ⇒ `CommitFailed{stage}`，outcome 与快照留在 `pending_outcome()`，`retry_commit()` 只补写未完成阶段 |
+| 压缩 resume | 写压缩后的 snapshot 并提交索引 → 以 rewritten history resume → 清 last_suspend_kind 并写 state |
 
 state 和 final 使用“临时文件 + 同目录 rename”：临时名分别是 `state.json.tmp`、`final.json.tmp`。snapshot 使用 `path.with_extension("snap.json.tmp")`，实际临时名为 **`0001.snap.snap.json.tmp`**。request.json 直接写入，没有临时文件。CLI `--output` 文件也直接覆盖写入。
 
-这些写入没有 fsync，没有跨文件事务。可能出现：
+rename 保证单文件替换的崩溃一致性；没有 fsync，不保证断电持久性；没有跨文件事务。仍可能出现：
 
-- Running state 尚无快照，或指向旧快照；更晚的推理前快照成为未被 state 引用的文件。
-- state 已 Completed，但 final.json 尚未存在。
-- 压缩后的历史尚未成为可恢复的快照；状态标记已经清除。
-- 进程在工具副作用完成后、有效检查点提交前退出，恢复会重复推理或工具调用。
+- final.json 已写、state 仍为 Running：`resume_or_new` 识别后只补齐 state（索引指向最新快照、Completed），不重跑推理。
+- 进程在工具副作用完成后、下一个推理前检查点提交前退出，恢复会重复该段推理或工具调用。
 
-因此当前实现**不保证 exactly-once，也不保证不重复扣费**。检查点应解释为“可能重放的恢复位置”，不能作为外部副作用提交凭证。
+因此当前实现**不保证 exactly-once，也不保证不重复扣费**。检查点应解释为“可能重放的恢复位置”，不能作为外部副作用提交凭证；工具幂等性属于 adapter。
 
 ## 7. outcome 与 final.json 协议
 
@@ -395,7 +392,7 @@ CLI 输出和 `outcomes/final.json` 使用相同的 `LLMContextOutcome` JSON，�
 | kind | 字段 | 是否归档 final.json |
 | --- | --- | --- |
 | `done` | `output`、`usage`、`response`、`trace`；可选 `reason`、`behavior_result` | 是 |
-| `error` | `error: LLMComputeError`、`usage` | 是 |
+| `error` | `error: LLMComputeError`、`usage`、`trace` | 是 |
 | `budget_exhausted` | `which`、`usage`；可选 `partial: ContextOutput` | 是 |
 | `pending_tool` | `pending: PendingToolCall[]`、`snapshot`；可选 `deadline_ms` | 否 |
 | `context_limit_reached` | `which`、`usage`、`accumulated`、`snapshot`；可选 `deadline_ms` | 否，driver 收到后尝试压缩 |
@@ -429,7 +426,7 @@ trace 字段：
 
 - `trace_id: string`，通常为 run_id。
 - `latency_ms: u64`，从 state.started_at_ms 到完成的耗时，恢复停机时间计入。
-- `tool_trace?: ToolExecRecord[]`，非空时写出。每条为 `tool_name: string`、`call_id: string`、`ok: boolean`、`duration_ms: u64`、可选 `error: string`。
+- `tool_trace?: ToolExecRecord[]`，非空时写出。每条为 `tool_name: string`、`call_id: string`、`status: "succeeded" | "failed" | "unknown" | "not_executed"`、`duration_ms: u64`、可选 `error: string`。`unknown` 表示派发基础设施在调用可能已开始后失败，`not_executed` 表示批次中止或被 Policy 拒绝而未派发。`error` outcome 同样携带 `trace`。
 - `llm_task_ids?: string[]`，非空时写出。finish_done 会从 state 中取走此列表，因此 Done 后另存的 snapshot.state 不再带该列表。
 
 恢复时 tool_trace 和 last_response 重新初始化，没有完整历史恢复；不能把最终 trace 当成所有恢复阶段的完整审计日志。
@@ -456,22 +453,27 @@ trace 字段：
 
 ### 7.3 LLMComputeError
 
-| error.kind | 附加字段 |
-| --- | --- |
-| `timeout` | 无 |
-| `cancelled` | 无 |
-| `provider` | `message: string` |
-| `output_parse` | `message: string` |
-| `policy_rejected` | `message: string` |
-| `tool_failed` | `tool: string`、`call_id: string`、`message: string` |
-| `snapshot_corrupted` | `message: string` |
-| `internal` | `message: string` |
+| error.kind | 附加字段 | 来源 | 是否曾喂回 LLM |
+| --- | --- | --- | --- |
+| `timeout` | 无 | provider | 否 |
+| `cancelled` | 无 | provider | 否 |
+| `provider` | `failure: "transient" \| "permanent" \| "unknown"`、`message: string` | provider | 否 |
+| `output_parse` | `message: string` | llm_output | 是（自纠正上限耗尽） |
+| `policy_rejected` | `message: string` | tool | 是 |
+| `tool_failed` | `tool: string`、`call_id: string`、`message: string` | tool | 是 |
+| `tool_runtime` | `tool`、`call_id`、`message`、`effect_unknown: boolean` | runtime | 否 |
+| `checkpoint` | `stage: "before_inference" \| "outcome_boundary"`、`message: string` | runtime | 否 |
+| `snapshot_corrupted` | `message: string` | snapshot | 否 |
+| `internal` | `message: string` | internal | 否 |
+
+`failure` 只有 `transient` 表示上层可以安全重跑；`unknown` 不等于可重试。`tool_runtime` / `checkpoint` 不会进入 final.json：`step()` 把它们转成 `RuntimeFailure` 并保留内存上下文（见 §8.4）。
 
 ```json
 {
   "kind": "error",
-  "error": {"kind": "provider", "message": "aicc llm.chat failed"},
-  "usage": {}
+  "error": {"kind": "provider", "failure": "transient", "message": "aicc llm.chat failed"},
+  "usage": {},
+  "trace": {"trace_id": "20260510-103045-a7f3", "latency_ms": 12}
 }
 ```
 
@@ -537,6 +539,13 @@ read request.json 的结果供 LocalLLMContext 保留和压缩配置使用；实
 | Interrupted | Suspended | Interrupted | 返回给调用方 |
 
 `step()` 每次消耗持有的底层 ctx；返回后不能直接再次 step，除非 driver 内部已完成压缩 resume。再次误调得到 NoActiveContext。`drive_to_terminal` 名称虽然含 terminal，也可以返回挂起态。
+
+`step()` 的两类失败返回不在上表内：
+
+| 情况 | 返回 | 目录状态 | 恢复入口 |
+| --- | --- | --- | --- |
+| waist 返回 `error.kind ∈ {checkpoint, tool_runtime}` | `Err(RuntimeFailure { error })` | 不写任何文件，state 仍 Running | 上下文留在内存；修复后再次 `step()`。checkpoint 情况只重做保存再推理，不重放已执行工具 |
+| outcome 已算出，snapshot / final / state 任一阶段写失败 | `Err(CommitFailed { stage })` | 已完成的阶段保留 | `pending_outcome()` 读取结果；`retry_commit()` 只补写剩余阶段，不重新 `run()`；期间 `step()` 返回 `CommitPending` |
 
 压缩失败、目录 IO 失败不自动写 Error outcome，不自动将 run 标为 Completed。
 
@@ -646,6 +655,8 @@ stdin 是纯文本，不是 JSON；保留换行和空白，不 trim。零字节 
 | 成功 Done，未指定 output | pretty outcome JSON，末尾换行 | run 信息 | 0 |
 | 非 Done outcome，未指定 output | **仍先输出该 outcome JSON** | run 信息；`run_local_llm failed: non-done outcome: <kind>` | 1 |
 | 指定 output 且写成功 | 不输出 outcome JSON | run 信息；`outcome written to <path>`；非 Done 时再输出失败行 | Done 为 0，其它为 1 |
+| outcome 已算出但目录提交失败 | 仍输出 / 写出该 outcome JSON | `run_local_llm: outcome computed but not committed: ...` | 3 |
+| 轮前 checkpoint 或工具派发基础设施失败 | 无 outcome | `run_local_llm: runtime failure, run kept resumable: ...`；run 仍为 Running，可 resume | 4 |
 | 输入读取、初始化、锁、恢复、压缩或写文件失败 | 不保证有 outcome | `run_local_llm failed: ...` | 1 |
 
 run 创建/恢复成功后，stderr 输出 `run_local_llm: dir=<path> run_id=<id>`。初始化失败可能发生在创建 run 前，因此不一定有这条日志。依赖自身也可能输出日志，stderr 不是机器结构化协议。
@@ -654,11 +665,15 @@ run 创建/恢复成功后，stderr 输出 `run_local_llm: dir=<path> run_id=<id
 
 读取结果的推荐条件为：**退出码 0 且 outcome.kind 为 done**。不能只判断文件存在，也不能把 Completed 当作成功。
 
-目录/驱动层错误没有 JSON 错误码，Rust 类型及触发条件如下。CLI 将它们的 Display 文本放在 `run_local_llm failed: ` 后，统一退出 1；消费者不应依赖底层 OS 错误文本完全一致。
+目录/驱动层错误没有 JSON 错误码，Rust 类型及触发条件如下。除 `CommitFailed`（退出 3）和 `RuntimeFailure`（退出 4）外，CLI 将它们的 Display 文本放在 `run_local_llm failed: ` 后，退出 1；消费者不应依赖底层 OS 错误文本完全一致。
 
 | Rust 错误类型 | 典型触发条件 |
 | --- | --- |
-| `Io` | 创建、读取、写入、枚举或 rename 失败，包括索引指向的快照文件不存在 |
+| `Io` | 创建、读取、写入、枚举或 rename 失败 |
+| `SnapshotMissing` | state 索引指向的快照文件不存在 |
+| `RuntimeFailure` | waist 因轮前 checkpoint 或工具派发基础设施失败停下，上下文保留在内存 |
+| `CommitFailed` | outcome 已算出，snapshot / final / state 提交失败；`retry_commit()` 补写 |
+| `CommitPending` / `NoPendingCommit` | 有未提交 outcome 时调用 `step()`，或无未提交 outcome 时调用 `retry_commit()` |
 | `Serialization` | request/state/snapshot/outcome 序列化或实际读取对象的反序列化失败；扫描 state 时的失败另按 §3.2 跳过 |
 | `RunningRunExists` | new_run 发现已有 Running |
 | `SemanticHashMismatch` | incoming_request 与选中 Running 的 state 哈希不同 |
@@ -758,7 +773,7 @@ CLI 本身没有 `--api-key`、`--endpoint` 或专属环境变量协议，认证
 | 响应格式 | force_json 时 Json，否则 Text |
 | disable_capabilities | 非空时写入 requirements.extra.disable_capabilities |
 
-AICC `Succeeded` 必须带 result；`Failed` 转 provider error；`Running` 也转 provider error，**不轮询 task**。fallbacks 参数被忽略。错误再按底层可恢复错误策略处理，不保证一次 AICC 失败就立即结束 run。
+AICC `Succeeded` 必须带 result；`Failed` 转 `provider{failure=unknown}`；`Running` 转 `provider{failure=permanent}`，**不轮询 task**。kRPC 传输错误按变体归类：`S2sTransientError` ⇒ transient；token / 权限 / 服务无效等 ⇒ permanent；其余 ⇒ unknown。fallbacks 参数被忽略。任何 provider 错误都直接结束 run，不喂回模型，也不由 waist 重试。
 
 上下文恢复重新连接 AICC，不恢复旧 HTTP/RPC 请求或远端生成任务；当前 adapter 没有远端取消实现。
 
@@ -835,8 +850,8 @@ agent_tool run_local_llm \
 
 | 项目 | Rust 当前事实 | TS 建议 |
 | --- | --- | --- |
-| 轮前恢复 | 有轮前快照，但索引未提交，恢复可能回到早得多的位置 | 将可恢复检查点和索引提交作为一个明确流程 |
-| final 提交 | 先 Completed，再 final，存在缺失 final 窗口 | 定义 final/snapshot/state 的提交顺序和半提交恢复规则 |
+| 轮前恢复 | 轮前快照与索引一起提交，恢复定位到最近一次已提交的轮前快照；工具执行后到下一次提交前仍是重放窗口 | 保持同样的提交流程，明确工具幂等责任 |
+| final 提交 | 顺序为 snapshot → final → state；Completed 必有 final；final 存在而 state 为 Running 的半提交由 resume_or_new 补齐 | 保持同样的顺序和半提交修复规则 |
 | request hash | Rust 专用 u64，非规范化序列化 | 定义版本化、可跨语言计算的字符串摘要 |
 | run_id | 时间派生后缀，无冲突检测 | 使用抗冲突 ID，并保证新建不能覆盖已有目录 |
 | context limit | 保存阈值，没有实际触发分支 | 明确 token/window 来源，实现触发与压缩无进展退出 |

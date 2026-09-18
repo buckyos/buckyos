@@ -15,7 +15,7 @@
 //! top of [`build_session_deps`] when the Behavior Loop is enabled for a
 //! given behavior.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -34,10 +34,10 @@ use ::agent_tool::{AgentToolManager, AgentToolResult, AgentToolStatus, SessionRu
 use llm_context::{
     behavior_loop::{LLMResultParser, StepRenderer},
     deps::{
-        LLMContextDeps, LlmClient, LlmInferenceRequest, PolicyEngine, ToolManager, ToolSpecLite,
-        TurnHook, WorkEvent, WorklogSink,
+        LLMContextDeps, LlmClient, LlmInferenceRequest, PolicyEngine, ToolDispatchError,
+        ToolManager, ToolSpecLite, TurnHook, WorkEvent, WorklogSink,
     },
-    error::LLMComputeError,
+    error::{LLMComputeError, ProviderFailure},
     observation::Observation,
     request::LLMContextRequest,
     state::LLMContextSnapshot,
@@ -181,27 +181,52 @@ impl LlmClient for AiccLlmClient {
         // aicc adapter can pick them up when it adds fallback wiring.
         let _ = fallbacks;
 
-        let aicc = self
-            .client()
-            .await
-            .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
+        let aicc = self.client().await.map_err(provider_error_from_rpc)?;
         let resp = aicc
             .call_method(ai_methods::LLM_CHAT, request)
             .await
-            .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
+            .map_err(provider_error_from_rpc)?;
 
         match resp.status {
             AiMethodStatus::Succeeded => resp.result.ok_or_else(|| {
-                LLMComputeError::Provider(
-                    "aicc returned status=succeeded without result".to_string(),
+                LLMComputeError::provider(
+                    ProviderFailure::Unknown,
+                    "aicc returned status=succeeded without result",
                 )
             }),
             AiMethodStatus::Running => resolve_async_aicc_result(resp.task_id.as_str()).await,
-            AiMethodStatus::Failed => {
-                Err(LLMComputeError::Provider("aicc status=failed".to_string()))
-            }
+            AiMethodStatus::Failed => Err(LLMComputeError::provider(
+                ProviderFailure::Unknown,
+                format!(
+                    "aicc status=failed task_id={} event_ref={}",
+                    resp.task_id,
+                    resp.event_ref.as_deref().unwrap_or("")
+                ),
+            )),
         }
     }
+}
+
+/// Map a kRPC transport / auth error onto the provider failure classes the
+/// waist and the session dispatch on. Anything not positively known to be
+/// transient or permanent is `Unknown`, which is never auto-retried.
+pub(crate) fn provider_error_from_rpc(err: RPCErrors) -> LLMComputeError {
+    let failure = match &err {
+        RPCErrors::S2sTransientError(_) => ProviderFailure::Transient,
+        RPCErrors::InvalidToken(_)
+        | RPCErrors::TokenExpired(_)
+        | RPCErrors::NoPermission(_)
+        | RPCErrors::InvalidPassword
+        | RPCErrors::UserNotFound(_)
+        | RPCErrors::UnknownMethod(_)
+        | RPCErrors::ServiceNotValid(_)
+        | RPCErrors::S2sPermanentError(_) => ProviderFailure::Permanent,
+        RPCErrors::ReasonError(_)
+        | RPCErrors::ParseRequestError(_)
+        | RPCErrors::ParserResponseError(_)
+        | RPCErrors::KeyNotExist(_) => ProviderFailure::Unknown,
+    };
+    LLMComputeError::provider(failure, err.to_string())
 }
 
 /// Block until an AICC-side async task reaches a terminal state and return
@@ -212,23 +237,27 @@ impl LlmClient for AiccLlmClient {
 async fn resolve_async_aicc_result(task_id: &str) -> Result<AiResponse, LLMComputeError> {
     let task_id = task_id.trim();
     if task_id.is_empty() {
-        return Err(LLMComputeError::Provider(
-            "aicc response status=running but task_id is empty".to_string(),
+        return Err(LLMComputeError::provider(
+            ProviderFailure::Unknown,
+            "aicc response status=running but task_id is empty",
         ));
     }
 
-    let runtime = get_buckyos_api_runtime()
-        .map_err(|err| LLMComputeError::Internal(format!("load buckyos runtime failed: {err}")))?;
+    let runtime = get_buckyos_api_runtime().map_err(provider_error_from_rpc)?;
     let task = runtime
         .wait_for_task_end_kevent(task_id)
         .await
-        .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
+        .map_err(provider_error_from_rpc)?;
 
     if task.outcome != Some(TaskOutcome::Succeeded) {
-        return Err(LLMComputeError::Provider(format!(
-            "aicc task {} ended with outcome {:?}",
-            task_id, task.outcome
-        )));
+        let failure = match task.outcome {
+            Some(TaskOutcome::Canceled) => return Err(LLMComputeError::Cancelled),
+            _ => ProviderFailure::Unknown,
+        };
+        return Err(LLMComputeError::provider(
+            failure,
+            format!("aicc task {} ended with outcome {:?}", task_id, task.outcome),
+        ));
     }
 
     let payload = task
@@ -239,27 +268,36 @@ async fn resolve_async_aicc_result(task_id: &str) -> Result<AiResponse, LLMCompu
     let task_data = match buckyos_api::parse_typed_task_data("aicc.compute", payload) {
         Ok(TypedTaskData::AiccCompute(data)) => data,
         _ => {
-            return Err(LLMComputeError::Provider(format!(
-                "aicc task {} terminated without typed aicc.compute payload",
-                task_id
-            )))
+            return Err(LLMComputeError::provider(
+                ProviderFailure::Unknown,
+                format!(
+                    "aicc task {} terminated without typed aicc.compute payload",
+                    task_id
+                ),
+            ))
         }
     };
     let output = task_data
         .result
         .and_then(|result| result.output)
         .ok_or_else(|| {
-            LLMComputeError::Provider(format!(
-                "aicc task {} terminated without aicc output payload",
-                task_id
-            ))
+            LLMComputeError::provider(
+                ProviderFailure::Unknown,
+                format!(
+                    "aicc task {} terminated without aicc output payload",
+                    task_id
+                ),
+            )
         })?;
     let summary_value = output.get("summary").cloned().unwrap_or(output);
     serde_json::from_value::<AiResponse>(summary_value).map_err(|err| {
-        LLMComputeError::Provider(format!(
-            "decode AiResponse from aicc task {} output failed: {err}",
-            task_id
-        ))
+        LLMComputeError::provider(
+            ProviderFailure::Unknown,
+            format!(
+                "decode AiResponse from aicc task {} output failed: {err}",
+                task_id
+            ),
+        )
     })
 }
 
@@ -303,9 +341,14 @@ impl OpendanToolAdapter {
     }
 }
 
+/// `AgentToolError` only carries failures the LLM can react to (unknown
+/// tool, invalid arguments, a command that could not run in the workspace),
+/// so every manager error is surfaced as `Observation::Error`. Transports
+/// that can tell an infrastructure fault apart must report it as
+/// `ToolDispatchError` themselves.
 #[async_trait]
 impl ToolManager for OpendanToolAdapter {
-    async fn call_tool(&self, mut call: AiToolCall) -> Observation {
+    async fn call_tool(&self, mut call: AiToolCall) -> Result<Observation, ToolDispatchError> {
         let mut ctx = self.ctx.clone();
         ctx.step_idx = self.step_idx.fetch_add(1, Ordering::Relaxed);
         let call_id = call.call_id.clone();
@@ -319,14 +362,14 @@ impl ToolManager for OpendanToolAdapter {
         } else {
             call.args.remove("from_user_did");
         }
-        match self.manager.call_tool(&ctx, call).await {
+        Ok(match self.manager.call_tool(&ctx, call).await {
             Ok(result) => result_to_observation(call_id, result),
             Err(err) => Observation::Error {
                 call_id,
                 message: err.to_string(),
                 tool_result: None,
             },
-        }
+        })
     }
 
     fn list_tool_specs(&self) -> Vec<ToolSpecLite> {
@@ -761,6 +804,37 @@ impl WorklogSink for OpenDanWorklogSink {
                 json!({"trace_id": trace_id, "error": &error}),
                 Some(self.i18n.render("status.parse_error", &[("error", error)])),
             ),
+            WorkEvent::ToolDispatchFailed {
+                trace_id,
+                tool,
+                call_id,
+                message,
+                effect_unknown,
+            } => (
+                "ToolDispatchFailed",
+                "error",
+                json!({
+                    "trace_id": trace_id,
+                    "tool": &tool,
+                    "call_id": call_id,
+                    "message": &message,
+                    "effect_unknown": effect_unknown,
+                }),
+                Some(self.i18n.render(
+                    "status.tool_failed",
+                    &[("tool", tool), ("message", message)],
+                )),
+            ),
+            WorkEvent::CheckpointFailed {
+                trace_id,
+                stage,
+                error,
+            } => (
+                "CheckpointFailed",
+                "error",
+                json!({"trace_id": trace_id, "stage": stage, "error": &error}),
+                Some(self.i18n.render("status.llm_error", &[("error", error)])),
+            ),
             WorkEvent::ContextRewritten {
                 trace_id,
                 from_messages,
@@ -830,6 +904,9 @@ impl WorklogSink for OpenDanWorklogSink {
 /// `TurnHook` that flushes the latest `LLMContextSnapshot` to disk before
 /// every LLM inference. Pair with `session/.meta/state.snap`.
 ///
+/// This is the session's critical checkpoint: a failed write is returned to
+/// the waist, which then does not start the inference (see `TurnHook`).
+///
 /// Sync I/O is intentional — the waist blocks on this hook, and tokio's
 /// `spawn_blocking` would add overhead for a small JSON write. If profiling
 /// shows the write dominates latency, switch to a bounded channel + writer
@@ -844,34 +921,33 @@ impl SessionSnapshotHook {
     }
 }
 
+/// Write `snapshot` to `path` with tmp + same-directory rename. The rename
+/// makes the replacement atomic against a crash mid-write; it does not
+/// fsync, so durability against power loss is not promised.
+pub(crate) fn write_snapshot_file(
+    path: &Path,
+    snapshot: &LLMContextSnapshot,
+) -> std::result::Result<(), String> {
+    let bytes =
+        serde_json::to_vec(snapshot).map_err(|err| format!("snapshot serialize failed: {err}"))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("snapshot mkdir {} failed: {err}", parent.display()))?;
+    }
+    let tmp = path.with_extension("snap.tmp");
+    std::fs::write(&tmp, &bytes)
+        .map_err(|err| format!("snapshot write {} failed: {err}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .map_err(|err| format!("snapshot rename to {} failed: {err}", path.display()))?;
+    Ok(())
+}
+
 impl TurnHook for SessionSnapshotHook {
-    fn before_inference(&self, snapshot: &LLMContextSnapshot) {
-        let bytes = match serde_json::to_vec(snapshot) {
-            Ok(v) => v,
-            Err(err) => {
-                warn!("opendan.snapshot: serialize failed: {err}");
-                return;
-            }
-        };
-        if let Some(parent) = self.path.parent() {
-            if let Err(err) = std::fs::create_dir_all(parent) {
-                warn!("opendan.snapshot: mkdir {} failed: {err}", parent.display());
-                return;
-            }
-        }
-        // tmp + rename for crash-consistency: a half-written `state.snap`
-        // would prevent the session from recovering on next boot.
-        let tmp = self.path.with_extension("snap.tmp");
-        if let Err(err) = std::fs::write(&tmp, &bytes) {
-            warn!("opendan.snapshot: write {} failed: {err}", tmp.display());
-            return;
-        }
-        if let Err(err) = std::fs::rename(&tmp, &self.path) {
-            warn!(
-                "opendan.snapshot: rename to {} failed: {err}",
-                self.path.display()
-            );
-        }
+    fn before_inference(&self, snapshot: &LLMContextSnapshot) -> std::result::Result<(), String> {
+        write_snapshot_file(&self.path, snapshot).map_err(|err| {
+            warn!("opendan.snapshot: pre-inference checkpoint failed: {err}");
+            err
+        })
     }
 }
 

@@ -203,7 +203,7 @@ impl HistoryEvent {
                 Some(usage.clone()),
                 Some(format!("budget exhausted: {which:?}")),
             ),
-            LLMContextOutcome::Error { error, usage } => (
+            LLMContextOutcome::Error { error, usage, .. } => (
                 OutcomeKind::Error,
                 None,
                 Some(usage.clone()),
@@ -1280,6 +1280,17 @@ fn render_observation(observation: &Observation) -> String {
         Observation::Error { message, .. } => message.clone(),
         Observation::Pending { call_id, .. } => format!("pending: {call_id}"),
         Observation::Cancelled { reason, .. } => format!("cancelled: {reason}"),
+        Observation::Unresolved {
+            reason,
+            effect_unknown,
+            ..
+        } => {
+            if *effect_unknown {
+                format!("unresolved (result unknown): {reason}")
+            } else {
+                format!("not executed: {reason}")
+            }
+        }
     }
 }
 

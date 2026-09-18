@@ -6,11 +6,12 @@ use buckyos_api::{AiContent, AiMessage, AiResponse, AiRole, AiToolCall, AiUsage,
 use serde_json::json;
 
 use crate::deps::{
-    LLMContextDeps, LlmClient, LlmInferenceRequest, ToolManager, ToolSpecLite, TurnHook,
+    LLMContextDeps, LlmClient, LlmInferenceRequest, ToolDispatchError, ToolManager, ToolSpecLite,
+    TurnHook,
 };
-use crate::error::LLMComputeError;
-use crate::observation::Observation;
-use crate::outcome::{ContextOutput, LLMContextOutcome, ResumeFill};
+use crate::error::{CheckpointStage, LLMComputeError, ProviderFailure};
+use crate::observation::{Observation, ToolExecStatus};
+use crate::outcome::{BudgetKind, ContextOutput, LLMContextOutcome, ResumeFill};
 use crate::request::{
     ContextOwnerRef, LLMContextRequest, ModelPolicy, OutputSpec, ToolMode, ToolPolicy,
 };
@@ -95,7 +96,10 @@ impl LlmClient for RecoverOnceLlm {
         let mut failed = self.failed.lock().unwrap();
         if !*failed {
             *failed = true;
-            return Err(LLMComputeError::Provider("temporary aicc failure".into()));
+            return Err(LLMComputeError::provider(
+                ProviderFailure::Transient,
+                "temporary aicc failure",
+            ));
         }
         Ok(self.response.clone())
     }
@@ -105,15 +109,15 @@ struct EchoTools;
 
 #[async_trait]
 impl ToolManager for EchoTools {
-    async fn call_tool(&self, call: AiToolCall) -> Observation {
+    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError> {
         let value = serde_json::to_value(&call.args).unwrap_or(serde_json::Value::Null);
-        Observation::Success {
+        Ok(Observation::Success {
             call_id: call.call_id,
             content: json!({ "echo": value }),
             bytes: 0,
             truncated: false,
             tool_result: None,
-        }
+        })
     }
 
     fn list_tool_specs(&self) -> Vec<ToolSpecLite> {
@@ -247,7 +251,7 @@ async fn one_tool_round_then_done() {
     }
     assert_eq!(trace.tool_trace.len(), 1);
     assert_eq!(trace.tool_trace[0].tool_name, "echo");
-    assert!(trace.tool_trace[0].ok);
+    assert!(trace.tool_trace[0].ok());
 }
 
 #[tokio::test]
@@ -340,8 +344,9 @@ struct CountingHook {
 }
 
 impl TurnHook for CountingHook {
-    fn before_inference(&self, _snapshot: &LLMContextSnapshot) {
+    fn before_inference(&self, _snapshot: &LLMContextSnapshot) -> Result<(), String> {
         *self.count.lock().unwrap() += 1;
+        Ok(())
     }
 }
 
@@ -440,6 +445,7 @@ async fn interrupt_yields_interrupted_outcome_with_pre_inference_snapshot() {
         snap_before.state.accumulated.len()
     );
     assert!(snapshot.state.pending_tool_calls.is_empty());
+    assert_eq!(snapshot.state.consecutive_errors, 0);
 }
 
 #[tokio::test]
@@ -630,10 +636,37 @@ async fn behavior_turn_tail_renders_after_inherited_steps_and_clears_after_infer
 }
 
 #[tokio::test]
-async fn behavior_loop_keeps_recoverable_error_out_of_system_messages() {
+async fn behavior_loop_provider_failure_ends_run_without_second_inference() {
     let llm = Arc::new(RecoverOnceLlm::new(text_response(
         "<response><thinking>recovered</thinking><next_behavior>END</next_behavior></response>",
     )));
+    let mut req = base_request();
+    req.behavior_name = "do".into();
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
+        .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+        .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+    let mut ctx = LLMContext::new(req, deps);
+
+    let outcome = ctx.run().await;
+    let LLMContextOutcome::Error { error, .. } = outcome else {
+        panic!("expected Error, got {outcome:?}");
+    };
+    assert_eq!(
+        error,
+        LLMComputeError::provider(ProviderFailure::Transient, "temporary aicc failure")
+    );
+    assert_eq!(llm.seen().len(), 1, "waist must not re-infer after a provider failure");
+    assert_eq!(ctx.snapshot().state.consecutive_errors, 0);
+}
+
+#[tokio::test]
+async fn behavior_loop_parse_error_feeds_back_as_user_message_and_recovers() {
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+        text_response(""),
+        text_response(
+            "<response><thinking>recovered</thinking><next_behavior>END</next_behavior></response>",
+        ),
+    ]));
     let mut req = base_request();
     req.behavior_name = "do".into();
     req.input = vec![
@@ -653,12 +686,11 @@ async fn behavior_loop_keeps_recoverable_error_out_of_system_messages() {
     let retry_messages = &seen[1];
     let error_messages: Vec<&AiMessage> = retry_messages
         .iter()
-        .filter(|m| m.text_content().contains("error: llm provider failed"))
+        .filter(|m| m.text_content().contains("parse failed"))
         .collect();
     assert_eq!(error_messages.len(), 1);
     assert_eq!(error_messages[0].role, AiRole::User);
     assert_eq!(retry_messages[0].role, AiRole::System);
-    assert_eq!(retry_messages[0].text_content(), "static system prompt");
     assert!(
         retry_messages
             .iter()
@@ -666,6 +698,12 @@ async fn behavior_loop_keeps_recoverable_error_out_of_system_messages() {
             .all(|m| m.role != AiRole::System),
         "only the static system prefix may use AiRole::System"
     );
+    let snapshot = ctx.snapshot();
+    assert_eq!(snapshot.state.steps.len(), 2);
+    assert!(matches!(
+        snapshot.state.steps[0].action_results.as_slice(),
+        [Observation::Error { .. }]
+    ));
 }
 
 #[tokio::test]
@@ -847,4 +885,713 @@ async fn behavior_loop_ignores_next_behavior_when_sendmsg_exists() {
         snapshot.state.steps[1].next_behavior.as_deref(),
         Some("END")
     );
+}
+
+// =====================================================================
+// Error-handling scenarios (notepads/llm-context-error-handling-todo.md §10)
+// =====================================================================
+
+/// Scripted responses / errors, recording every request like `RecordingLlm`.
+struct ScriptedRecordingLlm {
+    script: Mutex<Vec<Result<AiResponse, LLMComputeError>>>,
+    seen: Mutex<Vec<Vec<AiMessage>>>,
+}
+
+impl ScriptedRecordingLlm {
+    fn new(script: Vec<AiResponse>) -> Self {
+        Self::with_results(script.into_iter().map(Ok).collect())
+    }
+
+    fn with_results(script: Vec<Result<AiResponse, LLMComputeError>>) -> Self {
+        Self {
+            script: Mutex::new(script),
+            seen: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn seen(&self) -> Vec<Vec<AiMessage>> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl LlmClient for ScriptedRecordingLlm {
+    async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
+        self.seen.lock().unwrap().push(req.messages);
+        let mut guard = self.script.lock().unwrap();
+        if guard.is_empty() {
+            return Err(LLMComputeError::Internal("script empty".into()));
+        }
+        guard.remove(0)
+    }
+}
+
+/// Tool manager scripted by tool name: `fail:*` is a business error,
+/// `dispatch:*` is an infrastructure failure with unknown effect, anything
+/// else succeeds. Counts every dispatch attempt.
+struct ScriptedTools {
+    calls: Mutex<Vec<String>>,
+}
+
+impl ScriptedTools {
+    fn new() -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ToolManager for ScriptedTools {
+    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError> {
+        self.calls.lock().unwrap().push(call.name.clone());
+        if call.name.starts_with("dispatch:") {
+            return Err(ToolDispatchError::effect_unknown("sandbox connection lost"));
+        }
+        if call.name.starts_with("fail:") {
+            return Ok(Observation::Error {
+                call_id: call.call_id,
+                message: "bad args".to_string(),
+                tool_result: None,
+            });
+        }
+        Ok(Observation::Success {
+            call_id: call.call_id,
+            content: json!("ok"),
+            bytes: 2,
+            truncated: false,
+            tool_result: None,
+        })
+    }
+
+    fn list_tool_specs(&self) -> Vec<ToolSpecLite> {
+        ["a", "fail:b", "dispatch:b", "c", "exec_bash"]
+            .iter()
+            .map(|name| ToolSpecLite {
+                name: (*name).to_string(),
+                description: String::new(),
+                args_schema: json!({}),
+            })
+            .collect()
+    }
+}
+
+fn call(name: &str, id: &str) -> AiToolCall {
+    AiToolCall {
+        name: name.into(),
+        args: HashMap::new(),
+        call_id: id.into(),
+    }
+}
+
+fn tool_result_text(message: &AiMessage) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            AiContent::ToolResult { content, .. } => Some(
+                content
+                    .iter()
+                    .filter_map(|part| match part {
+                        buckyos_api::AiToolResultContent::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn statuses(trace: &crate::outcome::ContextRunTrace) -> Vec<(String, ToolExecStatus)> {
+    trace
+        .tool_trace
+        .iter()
+        .map(|r| (r.tool_name.clone(), r.status))
+        .collect()
+}
+
+#[tokio::test]
+async fn provider_failure_ends_run_without_feedback_or_second_inference() {
+    let llm = Arc::new(RecoverOnceLlm::new(text_response("never reached")));
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools));
+    let mut ctx = LLMContext::new(base_request(), deps);
+
+    let LLMContextOutcome::Error { error, .. } = ctx.run().await else {
+        panic!("expected Error");
+    };
+    assert_eq!(
+        error,
+        LLMComputeError::provider(ProviderFailure::Transient, "temporary aicc failure")
+    );
+    assert_eq!(llm.seen().len(), 1);
+    let snapshot = ctx.snapshot();
+    assert_eq!(snapshot.state.accumulated, base_request().input);
+    assert_eq!(snapshot.state.consecutive_errors, 0);
+}
+
+#[tokio::test]
+async fn permanent_provider_error_and_adapter_internal_are_terminal() {
+    for err in [
+        LLMComputeError::provider(ProviderFailure::Permanent, "invalid api key"),
+        LLMComputeError::Internal("adapter bug".into()),
+        LLMComputeError::Cancelled,
+        LLMComputeError::Timeout,
+    ] {
+        let llm = Arc::new(ScriptedRecordingLlm::with_results(vec![
+            Err(err.clone()),
+            Ok(text_response("never reached")),
+        ]));
+        let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools));
+        let mut ctx = LLMContext::new(base_request(), deps);
+        let outcome = ctx.run().await;
+        let LLMContextOutcome::Error { error, .. } = outcome else {
+            panic!("expected Error for {err:?}, got {outcome:?}");
+        };
+        assert_eq!(error, err);
+        assert_eq!(llm.seen().len(), 1);
+        assert_eq!(ctx.snapshot().state.consecutive_errors, 0);
+    }
+}
+
+#[tokio::test]
+async fn strict_json_parse_error_is_fed_back_then_corrected() {
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+        AiResponse {
+            message: AiMessage::text(AiRole::Assistant, "not json"),
+            usage: Some(AiUsage {
+                input_tokens: Some(1),
+                output_tokens: Some(1),
+                total_tokens: Some(2),
+                request_units: None,
+            }),
+            ..Default::default()
+        },
+        AiResponse {
+            message: AiMessage::text(AiRole::Assistant, r#"{"answer": 42}"#),
+            usage: Some(AiUsage {
+                input_tokens: Some(1),
+                output_tokens: Some(1),
+                total_tokens: Some(3),
+                request_units: None,
+            }),
+            ..Default::default()
+        },
+    ]));
+    let mut req = base_request();
+    req.output = OutputSpec::Json {
+        schema: None,
+        strict: true,
+    };
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools));
+    let mut ctx = LLMContext::new(req, deps);
+
+    let LLMContextOutcome::Done { output, usage, .. } = ctx.run().await else {
+        panic!("expected Done");
+    };
+    assert_eq!(
+        output,
+        ContextOutput::Json {
+            content: json!({"answer": 42})
+        }
+    );
+    assert_eq!(usage.total_tokens, Some(5));
+    let seen = llm.seen();
+    assert_eq!(seen.len(), 2);
+    let retry = &seen[1];
+    assert_eq!(retry[retry.len() - 2].role, AiRole::Assistant);
+    assert_eq!(retry[retry.len() - 2].text_content(), "not json");
+    assert_eq!(retry[retry.len() - 1].role, AiRole::User);
+    assert!(retry[retry.len() - 1]
+        .text_content()
+        .contains("output parse failed"));
+}
+
+#[tokio::test]
+async fn persistent_strict_json_errors_terminate_on_fourth_failure() {
+    let llm = Arc::new(ScriptedRecordingLlm::new(
+        (0..6).map(|_| text_response("still not json")).collect(),
+    ));
+    let mut req = base_request();
+    req.output = OutputSpec::Json {
+        schema: None,
+        strict: true,
+    };
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools));
+    let mut ctx = LLMContext::new(req, deps);
+
+    let LLMContextOutcome::Error { error, .. } = ctx.run().await else {
+        panic!("expected Error");
+    };
+    assert!(matches!(error, LLMComputeError::OutputParse(_)));
+    assert_eq!(llm.seen().len(), 4, "3 feedbacks, the 4th failure terminates");
+    assert_eq!(ctx.snapshot().state.consecutive_errors, 4);
+}
+
+#[tokio::test]
+async fn behavior_parse_errors_terminate_on_fourth_failure() {
+    let llm = Arc::new(ScriptedRecordingLlm::new(
+        (0..6).map(|_| text_response("")).collect(),
+    ));
+    let mut req = base_request();
+    req.behavior_name = "do".into();
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
+        .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+        .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+    let mut ctx = LLMContext::new(req, deps);
+
+    let LLMContextOutcome::Error { error, .. } = ctx.run().await else {
+        panic!("expected Error");
+    };
+    assert!(matches!(error, LLMComputeError::OutputParse(_)));
+    assert_eq!(llm.seen().len(), 4);
+}
+
+#[tokio::test]
+async fn multiple_tool_errors_in_one_round_count_as_one_failure() {
+    let tools = Arc::new(ScriptedTools::new());
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+        tool_response(
+            None,
+            vec![call("fail:b", "c-1"), call("fail:b", "c-2"), call("fail:b", "c-3")],
+        ),
+        text_response("gave up on tools"),
+    ]));
+    let mut req = base_request();
+    req.error_policy.max_consecutive_errors = 2;
+    let deps = LLMContextDeps::new(llm.clone(), tools.clone());
+    let mut ctx = LLMContext::new(req, deps);
+
+    let LLMContextOutcome::Done { trace, .. } = ctx.run().await else {
+        panic!("expected Done: three failed calls are one failed round");
+    };
+    assert_eq!(tools.calls().len(), 3, "traditional loop runs the whole batch");
+    assert_eq!(trace.tool_trace.len(), 3);
+    assert!(trace
+        .tool_trace
+        .iter()
+        .all(|r| r.status == ToolExecStatus::Failed));
+    assert_eq!(ctx.snapshot().state.consecutive_errors, 1);
+}
+
+#[tokio::test]
+async fn successful_inference_does_not_reset_consecutive_errors() {
+    let tools = Arc::new(ScriptedTools::new());
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+        tool_response(None, vec![call("fail:b", "c-1")]),
+        tool_response(None, vec![call("fail:b", "c-2")]),
+        tool_response(None, vec![call("fail:b", "c-3")]),
+        tool_response(None, vec![call("fail:b", "c-4")]),
+        text_response("never reached"),
+    ]));
+    let deps = LLMContextDeps::new(llm.clone(), tools);
+    let mut ctx = LLMContext::new(base_request(), deps);
+
+    let LLMContextOutcome::Error { error, trace, .. } = ctx.run().await else {
+        panic!("expected Error after the 4th consecutive failed round");
+    };
+    assert!(matches!(error, LLMComputeError::ToolFailed { .. }));
+    assert_eq!(llm.seen().len(), 4);
+    assert_eq!(trace.tool_trace.len(), 4);
+}
+
+#[tokio::test]
+async fn clean_tool_round_resets_consecutive_errors() {
+    let tools = Arc::new(ScriptedTools::new());
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+        tool_response(None, vec![call("fail:b", "c-1")]),
+        tool_response(None, vec![call("a", "c-2")]),
+        text_response("done"),
+    ]));
+    let deps = LLMContextDeps::new(llm.clone(), tools);
+    let mut ctx = LLMContext::new(base_request(), deps);
+    assert!(matches!(ctx.run().await, LLMContextOutcome::Done { .. }));
+    assert_eq!(ctx.snapshot().state.consecutive_errors, 0);
+}
+
+#[tokio::test]
+async fn policy_rejection_keeps_transcript_paired_and_is_correctable() {
+    struct RejectOnce {
+        rejected: Mutex<bool>,
+    }
+    #[async_trait]
+    impl crate::deps::PolicyEngine for RejectOnce {
+        async fn gate_tool_calls(
+            &self,
+            _request: &LLMContextRequest,
+            calls: Vec<AiToolCall>,
+        ) -> Result<Vec<AiToolCall>, String> {
+            let mut rejected = self.rejected.lock().unwrap();
+            if !*rejected {
+                *rejected = true;
+                return Err("tool `a` needs approval".to_string());
+            }
+            Ok(calls)
+        }
+    }
+    let tools = Arc::new(ScriptedTools::new());
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+        tool_response(None, vec![call("a", "c-1"), call("c", "c-2")]),
+        tool_response(None, vec![call("c", "c-3")]),
+        text_response("done"),
+    ]));
+    let deps = LLMContextDeps::new(llm.clone(), tools.clone()).with_policy(Arc::new(RejectOnce {
+        rejected: Mutex::new(false),
+    }));
+    let mut ctx = LLMContext::new(base_request(), deps);
+
+    let LLMContextOutcome::Done { trace, .. } = ctx.run().await else {
+        panic!("expected Done");
+    };
+    assert_eq!(tools.calls(), vec!["c".to_string()]);
+    let seen = llm.seen();
+    assert_eq!(seen.len(), 3);
+    let second = &seen[1];
+    let tool_results: Vec<&AiMessage> = second.iter().filter(|m| m.role == AiRole::Tool).collect();
+    assert_eq!(tool_results.len(), 2, "every rejected call is answered");
+    assert!(tool_results
+        .iter()
+        .all(|m| tool_result_text(m).contains("policy rejected")));
+    assert_eq!(
+        statuses(&trace),
+        vec![
+            ("a".to_string(), ToolExecStatus::NotExecuted),
+            ("c".to_string(), ToolExecStatus::NotExecuted),
+            ("c".to_string(), ToolExecStatus::Succeeded),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn tool_dispatch_failure_stops_batch_and_keeps_partial_results() {
+    let tools = Arc::new(ScriptedTools::new());
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+        tool_response(
+            None,
+            vec![call("a", "c-1"), call("dispatch:b", "c-2"), call("c", "c-3")],
+        ),
+        text_response("never reached in this run"),
+    ]));
+    let deps = LLMContextDeps::new(llm.clone(), tools.clone());
+    let mut ctx = LLMContext::new(base_request(), deps);
+
+    let LLMContextOutcome::Error { error, trace, .. } = ctx.run().await else {
+        panic!("expected Error");
+    };
+    assert_eq!(
+        error,
+        LLMComputeError::ToolRuntime {
+            tool: "dispatch:b".into(),
+            call_id: "c-2".into(),
+            message: "sandbox connection lost".into(),
+            effect_unknown: true,
+        }
+    );
+    assert!(!error.llm_correctable());
+    assert_eq!(tools.calls(), vec!["a".to_string(), "dispatch:b".to_string()]);
+    assert_eq!(
+        statuses(&trace),
+        vec![
+            ("a".to_string(), ToolExecStatus::Succeeded),
+            ("dispatch:b".to_string(), ToolExecStatus::Unknown),
+            ("c".to_string(), ToolExecStatus::NotExecuted),
+        ]
+    );
+    assert_eq!(llm.seen().len(), 1);
+
+    // The transcript stays paired: A's result, B unresolved, C not executed.
+    let snapshot = ctx.snapshot();
+    let tail: Vec<&AiMessage> = snapshot
+        .state
+        .accumulated
+        .iter()
+        .filter(|m| m.role == AiRole::Tool)
+        .collect();
+    assert_eq!(tail.len(), 3);
+    assert!(tool_result_text(tail[1]).contains("result unknown"));
+    assert!(tool_result_text(tail[2]).contains("not executed"));
+    assert_eq!(snapshot.state.consecutive_errors, 0);
+
+    // The runtime may resume; nothing already executed is replayed.
+    let llm2 = Arc::new(ScriptedRecordingLlm::new(vec![text_response("recovered")]));
+    let deps2 = LLMContextDeps::new(llm2.clone(), tools.clone());
+    let mut resumed = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps2)
+        .expect("paired transcript is resumable");
+    assert!(matches!(resumed.run().await, LLMContextOutcome::Done { .. }));
+    assert_eq!(tools.calls().len(), 2, "A and B are not re-executed");
+}
+
+#[tokio::test]
+async fn behavior_actions_stop_after_first_business_error_and_record_skipped() {
+    let tools = Arc::new(ScriptedTools::new());
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+        text_response(
+            r#"<response>
+<thinking>three actions</thinking>
+<actions><exec_bash>echo a</exec_bash><exec_bash>echo b</exec_bash><exec_bash>echo c</exec_bash></actions>
+</response>"#,
+        ),
+        text_response("<response><thinking>saw it</thinking><next_behavior>END</next_behavior></response>"),
+    ]));
+    struct FailSecond {
+        tools: Arc<ScriptedTools>,
+    }
+    #[async_trait]
+    impl ToolManager for FailSecond {
+        async fn call_tool(&self, mut c: AiToolCall) -> Result<Observation, ToolDispatchError> {
+            if c.call_id == "2" {
+                c.name = "fail:exec_bash".into();
+            }
+            self.tools.call_tool(c).await
+        }
+    }
+    let mut req = base_request();
+    req.behavior_name = "do".into();
+    let deps = LLMContextDeps::new(
+        llm.clone(),
+        Arc::new(FailSecond {
+            tools: tools.clone(),
+        }),
+    )
+    .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+    .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+    let mut ctx = LLMContext::new(req, deps);
+
+    let LLMContextOutcome::Done { trace, .. } = ctx.run().await else {
+        panic!("expected Done");
+    };
+    assert_eq!(tools.calls().len(), 2, "action C is not dispatched");
+    assert_eq!(
+        statuses(&trace)
+            .into_iter()
+            .map(|(_, s)| s)
+            .collect::<Vec<_>>(),
+        vec![
+            ToolExecStatus::Succeeded,
+            ToolExecStatus::Failed,
+            ToolExecStatus::NotExecuted
+        ]
+    );
+    let snapshot = ctx.snapshot();
+    let step = &snapshot.state.steps[0];
+    assert_eq!(step.actions.len(), 3);
+    assert!(matches!(step.action_results[0], Observation::Success { .. }));
+    assert!(matches!(step.action_results[1], Observation::Error { .. }));
+    assert!(matches!(
+        step.action_results[2],
+        Observation::Unresolved {
+            effect_unknown: false,
+            ..
+        }
+    ));
+    let seen = llm.seen();
+    assert!(seen[1]
+        .iter()
+        .any(|m| m.role == AiRole::User && m.text_content().contains("Not executed")));
+}
+
+#[tokio::test]
+async fn behavior_action_dispatch_failure_ends_run_with_sedimented_partial_step() {
+    let tools = Arc::new(ScriptedTools::new());
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+        text_response(
+            r#"<response>
+<thinking>two actions</thinking>
+<actions><exec_bash>echo a</exec_bash><exec_bash>echo b</exec_bash></actions>
+</response>"#,
+        ),
+        text_response("never reached"),
+    ]));
+    struct DispatchFailFirst {
+        tools: Arc<ScriptedTools>,
+    }
+    #[async_trait]
+    impl ToolManager for DispatchFailFirst {
+        async fn call_tool(&self, mut c: AiToolCall) -> Result<Observation, ToolDispatchError> {
+            if c.call_id == "1" {
+                c.name = "dispatch:exec_bash".into();
+            }
+            self.tools.call_tool(c).await
+        }
+    }
+    let mut req = base_request();
+    req.behavior_name = "do".into();
+    let deps = LLMContextDeps::new(
+        llm.clone(),
+        Arc::new(DispatchFailFirst {
+            tools: tools.clone(),
+        }),
+    )
+    .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+    .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+    let mut ctx = LLMContext::new(req, deps);
+
+    let LLMContextOutcome::Error { error, trace, .. } = ctx.run().await else {
+        panic!("expected Error");
+    };
+    assert!(matches!(
+        error,
+        LLMComputeError::ToolRuntime {
+            effect_unknown: true,
+            ..
+        }
+    ));
+    assert_eq!(tools.calls().len(), 1);
+    assert_eq!(llm.seen().len(), 1);
+    assert_eq!(
+        statuses(&trace)
+            .into_iter()
+            .map(|(_, s)| s)
+            .collect::<Vec<_>>(),
+        vec![ToolExecStatus::Unknown, ToolExecStatus::NotExecuted]
+    );
+    let snapshot = ctx.snapshot();
+    let step = snapshot.state.last_step.as_ref().expect("partial step kept");
+    assert_eq!(step.action_results.len(), 2);
+    assert!(matches!(
+        step.action_results[0],
+        Observation::Unresolved {
+            effect_unknown: true,
+            ..
+        }
+    ));
+    assert_eq!(snapshot.state.consecutive_errors, 0);
+}
+
+#[tokio::test]
+async fn turn_hook_failure_blocks_inference_and_keeps_snapshot_resumable() {
+    struct FailingHook;
+    impl TurnHook for FailingHook {
+        fn before_inference(&self, _snapshot: &LLMContextSnapshot) -> Result<(), String> {
+            Err("disk full".to_string())
+        }
+    }
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![text_response("hello")]));
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
+        .with_turn_hook(Arc::new(FailingHook));
+    let mut ctx = LLMContext::new(base_request(), deps);
+    let before = ctx.snapshot();
+
+    let LLMContextOutcome::Error { error, .. } = ctx.run().await else {
+        panic!("expected Error");
+    };
+    assert_eq!(
+        error,
+        LLMComputeError::Checkpoint {
+            stage: CheckpointStage::BeforeInference,
+            message: "disk full".into(),
+        }
+    );
+    assert!(error.infra_retry_safe());
+    assert_eq!(llm.seen().len(), 0, "no inference is paid for");
+    let after = ctx.snapshot();
+    assert_eq!(after.state.accumulated, before.state.accumulated);
+
+    // Once the store is healthy again, only the checkpoint is redone.
+    let count = Arc::new(Mutex::new(0));
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools)).with_turn_hook(Arc::new(
+        CountingHook {
+            count: count.clone(),
+        },
+    ));
+    let mut resumed = LLMContext::resume(after, ResumeFill::ResumeFromMidRun, deps)
+        .expect("checkpoint failure leaves a resumable snapshot");
+    assert!(matches!(resumed.run().await, LLMContextOutcome::Done { .. }));
+    assert_eq!(*count.lock().unwrap(), 1);
+    assert_eq!(llm.seen().len(), 1);
+}
+
+#[tokio::test]
+async fn turn_hook_failure_in_behavior_mode_surfaces_as_checkpoint_error() {
+    struct FailingHook;
+    impl TurnHook for FailingHook {
+        fn before_inference(&self, _snapshot: &LLMContextSnapshot) -> Result<(), String> {
+            Err("disk full".to_string())
+        }
+    }
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![text_response("hello")]));
+    let mut req = base_request();
+    req.behavior_name = "do".into();
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
+        .with_turn_hook(Arc::new(FailingHook))
+        .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+        .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+    let mut ctx = LLMContext::new(req, deps);
+    let LLMContextOutcome::Error { error, .. } = ctx.run().await else {
+        panic!("expected Error");
+    };
+    assert!(matches!(error, LLMComputeError::Checkpoint { .. }));
+    assert_eq!(llm.seen().len(), 0);
+}
+
+#[tokio::test]
+async fn resume_rejects_history_with_unanswered_tool_calls() {
+    let req = base_request();
+    let mut state = LLMContextState::from_request(&req, 1);
+    state.accumulated.push(AiMessage::new(
+        AiRole::Assistant,
+        vec![AiContent::tool_use("c-1", "echo", HashMap::new())],
+    ));
+    let snapshot = LLMContextSnapshot {
+        request: req,
+        state,
+    };
+    let deps = LLMContextDeps::new(
+        Arc::new(ScriptedLlm::new(vec![text_response("x")])),
+        Arc::new(EchoTools),
+    );
+    let err = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps)
+        .err()
+        .expect("unanswered tool call must be rejected");
+    assert!(matches!(err, LLMComputeError::SnapshotCorrupted(_)));
+}
+
+#[tokio::test]
+async fn behavior_inner_context_inherits_outer_budget() {
+    let usage = |total: u64| {
+        Some(AiUsage {
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: Some(total),
+            request_units: None,
+        })
+    };
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+        AiResponse {
+            message: AiMessage::text(
+                AiRole::Assistant,
+                "<response><thinking>go</thinking><actions><exec_bash>echo a</exec_bash></actions></response>",
+            ),
+            usage: usage(8),
+            ..Default::default()
+        },
+        AiResponse {
+            message: AiMessage::text(
+                AiRole::Assistant,
+                "<response><thinking>done</thinking><next_behavior>END</next_behavior></response>",
+            ),
+            usage: usage(8),
+            ..Default::default()
+        },
+    ]));
+    let mut req = base_request();
+    req.behavior_name = "do".into();
+    req.budget.max_total_tokens = Some(10);
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
+        .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+        .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+    let mut ctx = LLMContext::new(req, deps);
+
+    let outcome = ctx.run().await;
+    let LLMContextOutcome::BudgetExhausted { which, usage, .. } = outcome else {
+        panic!("expected BudgetExhausted, got {outcome:?}");
+    };
+    assert_eq!(which, BudgetKind::Tokens);
+    assert_eq!(usage.total_tokens, Some(16));
 }

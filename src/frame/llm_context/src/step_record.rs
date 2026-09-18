@@ -331,6 +331,20 @@ fn render_one_action_result_full(
                 ),
             )
         }
+        Observation::Unresolved {
+            reason,
+            effect_unknown,
+            ..
+        } => {
+            let (body, _) = clip(reason.as_str(), max_body_chars.max(512));
+            with_action_title_id(
+                action,
+                RenderedActionResult::output(
+                    format!("Run {command}"),
+                    unresolved_body(*effect_unknown, &body),
+                ),
+            )
+        }
     }
 }
 
@@ -418,6 +432,20 @@ fn render_one_action_result_compact(
                 )
             }
         }
+        Observation::Unresolved {
+            reason,
+            effect_unknown,
+            ..
+        } => {
+            let (body, _) = clip(reason.as_str(), max_body_chars);
+            with_action_title_id(
+                action,
+                RenderedActionResult::output(
+                    format!("Run {command}"),
+                    unresolved_body(*effect_unknown, body.trim()),
+                ),
+            )
+        }
     }
 }
 
@@ -460,6 +488,30 @@ fn render_unpaired_action_result(obs: &Observation, max_body_chars: usize) -> Re
             let (body, _) = clip(reason.as_str(), max_body_chars.max(512));
             RenderedActionResult::output("Step result".to_string(), format!("Cancelled: {body}"))
         }
+        Observation::Unresolved {
+            reason,
+            effect_unknown,
+            ..
+        } => {
+            let (body, _) = clip(reason.as_str(), max_body_chars.max(512));
+            RenderedActionResult::output(
+                "Step result".to_string(),
+                unresolved_body(*effect_unknown, &body),
+            )
+        }
+    }
+}
+
+fn unresolved_body(effect_unknown: bool, body: &str) -> String {
+    let label = if effect_unknown {
+        "Unresolved (result unknown, side effects unconfirmed)"
+    } else {
+        "Not executed"
+    };
+    if body.is_empty() {
+        label.to_string()
+    } else {
+        format!("{label}: {body}")
     }
 }
 

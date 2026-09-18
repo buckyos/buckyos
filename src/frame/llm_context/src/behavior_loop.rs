@@ -330,6 +330,11 @@ pub struct StepResultHookOutput {
     pub skip_next_inference: bool,
 }
 
+/// Post-step extension point. Failure contract: an `Err` is always treated
+/// as a degradable failure — the loop logs it and renders the default
+/// observation. Implementations therefore must not commit state (consume
+/// inputs, advance cursors) before they can return `Ok`; anything that must
+/// block progress on failure belongs in `TurnHook::before_inference`.
 #[async_trait]
 pub trait StepResultHook: Send + Sync {
     async fn on_behavior_step_ob(

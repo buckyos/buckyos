@@ -114,9 +114,16 @@ pub enum LLMContextOutcome {
         usage: AiUsage,
     },
 
+    /// Terminal failure. `error.source()` tells the runtime who owns the
+    /// recovery: `Runtime` errors (`Checkpoint`, `ToolRuntime`) leave the
+    /// in-memory snapshot valid and resumable via `ResumeFromMidRun`, every
+    /// other source means the run is spent. `trace` keeps the tool audit of
+    /// the aborted run, including calls that were never dispatched.
     Error {
         error: LLMComputeError,
         usage: AiUsage,
+        #[serde(default)]
+        trace: ContextRunTrace,
     },
 
     ContextLimitReached {

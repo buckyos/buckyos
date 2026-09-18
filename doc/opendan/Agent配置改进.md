@@ -617,7 +617,7 @@ PATH = SessionExecBin : AgentBin : RuntimeBin : SystemBin : <inherited>
 |---|---|---|
 | `[on_context_limit_reached]` | `compress_then_continue` | 上下文满 ⇒ 压缩后继续 |
 | `[on_llm_message_compress]` | `context_window_ratio` | 一轮完成后按 context window 使用率自动压缩；不写则不启用自动压缩 |
-| `[on_provider_failed]` | `fallback_behavior`(带 `target = "<name>"`) | provider 失败 ⇒ 切到 target |
+| `[on_provider_failed]` | `fallback_behavior`(带 `target = "<name>"`) | 仅 provider 来源的终态错误(请求失败 / 超时 / 取消)⇒ 切到 target;输出协议、工具、运行时错误不触发 |
 | `[on_interrupt_graceful]` | `cancel_pending_tools_then_continue` | 收到 graceful 中断 ⇒ 注入 Cancelled 后继续 |
 | `[on_interrupt_discard]` | `end` | 收到 discard 中断 ⇒ 直接结束 process |
 

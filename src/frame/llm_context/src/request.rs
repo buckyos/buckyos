@@ -119,8 +119,11 @@ impl Default for ToolPolicy {
 pub enum OutputSpec {
     /// Free-form text, caller parses it themselves.
     Text,
-    /// Force JSON. Optional schema is informational for now; strict mode is
-    /// declared but enforcement depth depends on the provider adapter.
+    /// Force JSON. `schema` is forwarded to the provider adapter only — the
+    /// waist does not validate the parsed value against it. `strict = true`
+    /// makes a JSON parse failure an LLM-correctable `OutputParse` error
+    /// (bounded by `ErrorPolicy`); `strict = false` returns the raw text as
+    /// `ContextOutput::Text` instead.
     Json {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         schema: Option<Value>,
@@ -188,13 +191,19 @@ pub struct HumanPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ErrorPolicy {
-    /// Recoverable errors are folded into the accumulated history as a
-    /// tool/user observation so the LLM can self-correct. Once the count
-    /// of consecutive recoverable errors exceeds `max_consecutive_errors`,
-    /// the loop escalates to a terminal `Outcome::Error`.
+    /// LLM-correctable errors (`LLMComputeError::llm_correctable`) are fed
+    /// back into the history so the next inference can self-correct. The
+    /// counter increments once per failed logical round (one inference and
+    /// its tool batch, or one behavior step), no matter how many calls in
+    /// that round failed, and resets only after a round completes without
+    /// any correctable error. A successful provider request by itself does
+    /// not reset it.
     ///
-    /// Safety net against "feed error → see error → produce same error"
-    /// loops. 0 disables the cap (not recommended).
+    /// `N` means at most `N` error feedbacks; the `N+1`-th consecutive
+    /// failure ends the run with `Outcome::Error`. `0` disables the cap and
+    /// leaves only the budget as a stop condition (not recommended).
+    /// Provider, runtime, snapshot and internal errors never touch this
+    /// counter: they end the run immediately.
     pub max_consecutive_errors: u32,
 }
 
@@ -206,12 +215,23 @@ impl Default for ErrorPolicy {
     }
 }
 
-/// Classification of an error after waist sees it. `Fatal` cannot be
-/// overridden by `ErrorPolicy.mode`.
+/// Classification of an error after waist sees it. Derived exhaustively
+/// from `LLMComputeError::llm_correctable`; `Fatal` cannot be overridden by
+/// `ErrorPolicy`.
 #[derive(Debug, Clone)]
 pub enum ErrorClass {
     Recoverable(crate::error::LLMComputeError),
     Fatal(crate::error::LLMComputeError),
+}
+
+impl From<crate::error::LLMComputeError> for ErrorClass {
+    fn from(err: crate::error::LLMComputeError) -> Self {
+        if err.llm_correctable() {
+            ErrorClass::Recoverable(err)
+        } else {
+            ErrorClass::Fatal(err)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

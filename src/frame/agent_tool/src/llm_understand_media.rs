@@ -598,7 +598,7 @@ fn build_outcome_result(
             },
             CLI_EXIT_ERROR,
         ),
-        LLMContextOutcome::Error { error, usage } => {
+        LLMContextOutcome::Error { error, usage, .. } => {
             log::error!(
                 "llm_understand_media: llm outcome error: {}; work_dir={} run_id={} goal={}",
                 error,
@@ -1403,12 +1403,15 @@ struct NoopToolManager;
 
 #[async_trait]
 impl ToolManager for NoopToolManager {
-    async fn call_tool(&self, call: buckyos_api::AiToolCall) -> llm_context::Observation {
-        llm_context::Observation::Error {
+    async fn call_tool(
+        &self,
+        call: buckyos_api::AiToolCall,
+    ) -> Result<llm_context::Observation, llm_context::ToolDispatchError> {
+        Ok(llm_context::Observation::Error {
             call_id: call.call_id,
             message: "tools are disabled in llm_understand_media".to_string(),
             tool_result: None,
-        }
+        })
     }
 }
 

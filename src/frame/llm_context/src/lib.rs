@@ -30,10 +30,10 @@ pub use behavior_loop::{
 pub use context_loop::LLMContext;
 pub use deps::{
     AllowAllPolicy, ByteHeuristicTokenizer, LLMContextDeps, LlmClient, LlmInferenceRequest,
-    NoopWorklogSink, PolicyEngine, Tokenizer, ToolManager, ToolSpecLite, TurnHook, WorkEvent,
-    WorklogSink,
+    NoopWorklogSink, PolicyEngine, Tokenizer, ToolDispatchError, ToolManager, ToolSpecLite,
+    TurnHook, WorkEvent, WorklogSink,
 };
-pub use error::LLMComputeError;
+pub use error::{CheckpointStage, ErrorSource, LLMComputeError, ProviderFailure};
 pub use interrupt::{InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle};
 pub use msg_parser::{
     ai_message_to_msg_object, ai_message_to_msg_object_with_base,
@@ -47,7 +47,8 @@ pub use msg_parser::{
     PermissiveAttachmentValidator, SystemControlCommand, PROVIDER_MSG_METADATA,
 };
 pub use observation::{
-    Observation, PendingToolCall, ToolExecRecord, ToolResultStatusView, ToolResultView,
+    Observation, PendingToolCall, ToolExecRecord, ToolExecStatus, ToolResultStatusView,
+    ToolResultView,
 };
 pub use outcome::{
     BudgetKind, ContextLimitKind, ContextOutput, ContextRunTrace, LLMContextOutcome, ResumeFill,

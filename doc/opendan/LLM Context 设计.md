@@ -88,7 +88,7 @@ intent → effect → observation → intent → effect → observation → ... 
 |---|---|---|---|
 | **intent** | `OutputSpec::Json` 解析出的结构化产物（典型字段 `tool_calls / do_actions`）或 provider-native tool_calls | LLM | waist 主循环 → ToolManager |
 | **effect** | `ToolManager::call_tool` 内部的实际动作 | ToolManager（effect 实现层） | 外部世界 |
-| **observation** | `Observation::{Success \| Error \| Pending \| Cancelled}` | ToolManager | waist 主循环 → 喂回下一轮 LLM |
+| **observation** | `Observation::{Success \| Error \| Pending \| Cancelled \| Unresolved}` | ToolManager（`Unresolved` 由 waist 在批次中断时补齐） | waist 主循环 → 喂回下一轮 LLM |
 
 **为什么不把 function call 抬成一等公民**：function call 是 provider-specific wire format（OpenAI tool_calls / Anthropic tool_use / Gemini function_call / 本地模型经常没有原生支持各家细节都不同），抬上来立刻丢掉 provider 中立性。provider adapter 负责把各家 wire format 归一化成 `AiResponseSummary.tool_calls: Vec<AiToolCall>`，waist 只看到归一化后的列表。
 
@@ -246,7 +246,19 @@ pub enum Observation {
     Pending { call_id },
     /// 仅允许 session 层 interrupt pending tool 时通过 ResumeFill::ToolResults 注入
     Cancelled { call_id, reason },
+    /// 调度器没有为该调用产生结果：effect_unknown=true 表示基础设施在调用可能已
+    /// 开始后失败（副作用不可确认）；false 表示批次在它开始前被中止。只由 waist
+    /// 写入，用于让 transcript 与 StepRecord 保持配对、可审计。
+    Unresolved { call_id, reason, effect_unknown },
 }
+
+/// ToolManager 边界：业务失败走 Ok(Observation::Error)，基础设施故障走 Err。
+/// Err 会让 waist 立即停止派发本轮剩余调用，保留已得结果，以
+/// LLMComputeError::ToolRuntime 结束本次 run 交给 Runtime 处理。
+trait ToolManager {
+    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError>;
+}
+pub struct ToolDispatchError { message: String, effect_unknown: bool }
 
 pub struct PendingToolCall {
     pub call: AiToolCall,                // name + args + call_id 三件套
@@ -295,33 +307,55 @@ pub enum ContextThreshold {
 
 两者可以同时设置：前者必须 fail，后者可以被 scheduler 重整后 resume。
 
-### 3.6 ErrorPolicy
+### 3.6 ErrorPolicy 与错误模型
 
 ```rust
 pub struct ErrorPolicy {
-    /// 连续 Recoverable 错误超限后升级为终态 Error，防止"调错 → 看到 → 再调错"死循环。
+    /// 最多提供 N 次错误反馈；连续第 N+1 次失败升级为终态 Error。
+    /// 计数单位是"逻辑轮"（一次推理 + 它的工具批次，或一个 behavior step），
+    /// 同轮多个工具错误只计 1；只有整轮无可纠正错误才清零，推理请求成功本身不清零。
+    /// 0 关闭上限（只剩预算兜底，不推荐）。
     pub max_consecutive_errors: u32,   // 默认 3
 }
 
-pub enum ErrorClass {
-    Recoverable(LLMComputeError),     // 喂回 observation，下一轮 LLM 自我修复
-    Fatal(LLMComputeError),           // 直接走 Outcome::Error 终态
+pub enum LLMComputeError {
+    Timeout, Cancelled,
+    Provider { failure: Transient | Permanent | Unknown, message },
+    OutputParse(msg), PolicyRejected(msg),
+    ToolFailed { tool, call_id, message },
+    ToolRuntime { tool, call_id, message, effect_unknown },     // 派发基础设施故障
+    Checkpoint { stage: BeforeInference | OutcomeBoundary, message }, // 关键持久化失败
+    SnapshotCorrupted(msg), Internal(msg),
 }
+// 三个正交维度，Runtime 按它们分发，不解析 message 文本：
+//   source()           Provider | LlmOutput | Tool | Runtime | Snapshot | Internal
+//   llm_correctable()  是否喂回 LLM 自纠正（只有 OutputParse / PolicyRejected / ToolFailed）
+//   infra_retry_safe() 上层重跑是否不会重复副作用（Timeout / Provider Transient /
+//                      Checkpoint / ToolRuntime{effect_unknown=false}）
 ```
 
-| 错误来源 | 默认 Class |
-|---|---|
-| LLM 输出格式错误 / JSON schema 校验失败 | Recoverable |
-| 工具参数错误 / 执行错误 / PolicyEngine 拒绝 | Recoverable |
-| Provider 临时不可用（容错层兜底失败后上抛） | Recoverable |
-| Provider 永久错误（鉴权 / 模型 ID 错） | Fatal |
-| Snapshot 损坏 / call_id mismatch | Fatal |
+`ErrorClass::{Recoverable, Fatal}` 由 `llm_correctable()` 穷尽推导，没有默认分支；新增错误种类必须显式决定。
+
+| 故障 | 主要恢复责任方 | 是否反馈给 LLM | 核心循环行为 |
+|---|---|---|---|
+| Provider 临时故障 / 网络 / 超时 | adapter，其后由调度器决定是否再跑 | 否 | adapter 有界容错耗尽后结束本次 run（`Error{Provider{Transient}}` / `Timeout`），waist 不再隐式重推理 |
+| Provider 鉴权 / 模型不存在 / 非法配置 | 配置管理 / 上层 Runtime | 否 | 直接结束本次 run（`Provider{Permanent}`），不消耗自纠正次数；`Unknown` 同样结束且不视为可安全重试 |
+| LLM 输出不符合声明协议（严格 JSON 解析失败、Behavior 解析失败、超过 max_calls_per_round） | LLM 自纠正 | 是 | 失败输出留在 transcript，追加诊断，受 ErrorPolicy 与预算限制 |
+| 工具参数 / 业务执行失败 / Policy 拒绝 | LLM 调整计划 | 是 | 对应 call_id 记录 observation 后再推理；传统 loop 跑完整批次，Behavior Action 首错停止并把未执行项记为 `Unresolved` |
+| 工具派发基础设施故障、结果未知 | 工具 adapter / Runtime | 否 | 立即停止派发，已知结果保留、未执行项配对为 `Unresolved`，以 `Error{ToolRuntime}` 结束；快照仍可 resume，是否继续由 Runtime 决定，不自动重放 |
+| 轮前 checkpoint 失败 | 持久化层 / Runtime | 否 | `TurnHook` 返回 Err ⇒ 不发起推理，`Error{Checkpoint}`；状态仍是 s0，可只重试保存再 resume |
+| 普通 worklog 失败 | 日志实现 | 否 | best effort，不进上下文、不计数、不改 outcome |
+| 快照损坏 / ResumeFill 不匹配 / 未配对的 tool_use | Runtime / 调用方 | 否 | `resume()` 返回 `SnapshotCorrupted`，拒绝恢复 |
+| 编程错误 / 状态不变量损坏 | 开发者 | 否 | `Internal`，终止本次 run |
+| 主动 interrupt | 调度器 | 不作为故障 | `Interrupted` + s0 快照，不计数 |
 
 **纪律**：
-- Fatal 不可被 ErrorPolicy 改写。
-- run 中被 `InferenceAbortToken` 触发的 cancelled 不走 ErrorPolicy，收敛到 `Outcome::Interrupted`。
-- Recoverable 错误喂回的 `AiMessage` 形态由 effect 层决定（waist 只规定 role ∈ {tool, system}）。
-- Provider retry / 退避 / fallback chain 都在 adapter 内部，**waist 自己绝不在外面再做一层 retry**。
+- Fatal 不可被 ErrorPolicy 改写；`infer()` 返回的任何错误都不会喂回 LLM。
+- run 中被 `InferenceAbortToken` 触发的 cancelled 不走 ErrorPolicy，收敛到 `Outcome::Interrupted`；没有 interrupt 信号的 Provider `Cancelled` 是 Provider 故障。
+- 可纠正错误的反馈只用 role ∈ {tool, user}：工具 / Policy 错误以 tool_result 配对到 call_id，输出协议错误以 user 消息追加；静态 system 前缀之外不再出现 system 消息。
+- `Outcome::Error` 携带 `trace`，其中 `tool_trace[].status ∈ {succeeded, failed, unknown, not_executed}` 记录批次中每个调用的最终状态。
+- `OutputSpec::Json.schema` 只透传给 provider；waist 只做 JSON 解析，不做 schema 校验，JSON 解析成功不等于 schema 校验成功。
+- Provider retry / 退避 / fallback chain 都在 adapter 内部，**waist 自己绝不在外面再做一层 retry**；上层若要重跑，是显式决策，不通过伪造 observation 触发。
 
 ---
 
@@ -341,8 +375,8 @@ pub enum LLMContextOutcome {
         trace: ContextRunTrace,
         behavior_result: Option<LLMBehaviorResult>,   // Behavior Loop 产物；传统 Loop 为 None
     },
-    /// 终态：异常
-    Error { error: LLMComputeError, usage: AiUsage },
+    /// 终态：异常。error.source()==Runtime 时内存快照仍有效，可 ResumeFromMidRun
+    Error { error: LLMComputeError, usage: AiUsage, trace: ContextRunTrace },
     /// 终态：预算红线击穿
     BudgetExhausted { which: BudgetKind, partial: Option<ContextOutput>, usage: AiUsage },
 
@@ -650,11 +684,13 @@ pub struct LLMContextState {
 pub trait TurnHook: Send + Sync {
     /// 每次 LLM inference 之前同步回调。snapshot 是 LLMContext 的完整冻结。
     /// 必须 fast / 不可 panic / 不可修改 snapshot。
-    fn before_inference(&self, snapshot: &LLMContextSnapshot);
+    /// Err(reason) ⇒ waist 不发起推理，以 Error{Checkpoint{BeforeInference}} 结束本次 run。
+    fn before_inference(&self, snapshot: &LLMContextSnapshot) -> Result<(), String>;
 }
 ```
 
-- 不注入也合法。注入后 L4 可在每轮推理前落盘，做到"重启不重复扣已付费推理"。
+- 不注入也合法（纯内存运行）。一旦注入即承担关键 checkpoint：写失败不能继续 infer；此时 waist 状态仍是交给 hook 的那份 s0，Runtime 只需重试保存并 `ResumeFromMidRun`，不会重放任何副作用。
+- 只承担观测职责的 hook 应自己吞错并返回 Ok。
 - snapshot 落到哪 / 加密 / 压缩 / 归档全部是 effect 层私事（§A.4）。
 - 各 L4 调用频率诉求不同：OneShot 每次都落、workflow 节点采样、agent 长会话按轮数采样——scheduler 政策，waist 不裁决。
 
@@ -684,8 +720,9 @@ loop {
 **纪律**：
 
 - L4 必须能区分"崩在挂起态"与"崩在运行中"：前者用 `ToolResults` / `RewrittenHistory`，后者用 `ResumeFromMidRun`。waist 在 resume 里做一致性校验拦截误用。
-- "崩在挂起态 + 无外部 fill" 不能用 `ResumeFromMidRun` 兜底——会返回 `SnapshotCorrupted`。
-- outcome 边界 snapshot 之后、TurnHook 之前进程崩溃（罕见但存在）会重跑该轮 inference + 工具调用。**ToolManager / provider 的幂等性是 effect 层私事**。
+- "崩在挂起态 + 无外部 fill" 不能用 `ResumeFromMidRun` 兜底——会返回 `SnapshotCorrupted`；accumulated 里存在未配对的 `tool_use` 同样被拒绝。
+- L4 要区分"算出 outcome"和"outcome 已提交"：边界写入失败时保留已算出的 outcome 与内存快照，只重试保存，不重新 `run()`。
+- checkpoint 不能独自保证不重复扣费、不重复执行副作用：TurnHook 写盘之后、工具执行完成之后到下一个 checkpoint 之间崩溃，恢复会重跑该段 inference / 工具调用。**ToolManager / provider 的幂等性是 effect 层私事**。Behavior 模式下 TurnHook 收到的是内层传统上下文的快照（不含 StepRecord 流），外层步骤状态只在 outcome 边界由 L4 提交。
 
 ---
 
@@ -705,27 +742,28 @@ LLMContext::new(req, deps)
 run_inner():
   loop:
     ├─> check wallclock budget → BudgetExhausted?
-    ├─> turn_hook.before_inference(snapshot)               // §9.2
-    ├─> snapshot_before_inference = snapshot()             // s0 for Interrupted
+    ├─> s0 = snapshot()                                    // for TurnHook / Interrupted
+    ├─> turn_hook.before_inference(s0)? → Err ⇒ Error{Checkpoint}, no inference   // §9.2
     ├─> if abort.is_aborted(): return Interrupted(s0)
     ├─> tokio::select!:
     │     - cancelled() → Interrupted(s0)
     │     - llm.infer(req) → response
-    │         ├─ provider error after fault-tolerance →
-    │         │     handle_error(class) → Recoverable feeds back; Fatal → Error
+    │         ├─ any Err (adapter tolerance exhausted) → Error{err}, never fed back
     │         └─ ok → continue
     ├─> account usage; check token budget → BudgetExhausted?
     ├─> if context_yield_threshold reached: ContextLimitReached
-    ├─> if no tool_calls or ToolMode::None: → Done
-    ├─> policy.gate_tool_calls() → Recoverable on reject
+    ├─> if no tool_calls or ToolMode::None:
+    │     → Done; strict JSON parse failure ⇒ push output + diagnostic, bump, next round
+    ├─> too many calls / policy reject ⇒ push assistant msg + error tool_result per call, bump
     ├─> push assistant_tool_call message
     ├─> for each call:
-    │     observation = tools.call_tool(call)
-    │     match observation:
-    │       Pending → (deferred 路径尚未闭环)
-    │       Success → push tool message
-    │       Error   → feed back as observation, count consecutive_errors
-    │       Cancelled → internal error (inline 返回非法)
+    │     match tools.call_tool(call):
+    │       Err(dispatch) → record Unknown/NotExecuted, answer rest as Unresolved,
+    │                       Error{ToolRuntime}
+    │       Ok(Success)   → push tool message
+    │       Ok(Error)     → push tool message, remember round_error (batch continues)
+    │       Ok(Pending|Cancelled|Unresolved) → contract violation ⇒ Internal
+    ├─> round_error? bump once per round : reset consecutive_errors
     ├─> rounds_left -= 1; if 0: BudgetExhausted(ToolRounds)
     └─> next round
 ```
@@ -819,7 +857,7 @@ src/frame/llm_context/src/
 - provider-specific cancel 协议（HTTP abort / SDK cancel / stream close）—— waist 只规定 `InferenceAbortToken` 语义，映射属于 adapter。
 - **LLMContext 承载方式**（in-process lib / thunk / 跨设备 RPC）—— scheduler 部署选择，不是 waist 属性。三种共享 100% 执行语义（§2.1）。
 - **上下文压缩策略**（summarize / sliding window / hierarchical recall / drop-oldest / 换模型）—— 拒绝进 waist。waist 只暴露 `ContextLimitReached` 这个事实信号，策略属于 scheduler 在 resume 时通过 `RewrittenHistory` 提供。Behavior Loop 的 `HistoryCompressor` 同理：是注入的 trait，不是字段。
-- **错误归一化的 wire format**：错误 message 字段结构、是否带 stack trace / hint、人类可读 prompt 措辞，都是 effect 层与对应 L4 的协议。waist 只规定 Recoverable 错误必须以合法 `AiMessage` 形态（role ∈ {tool, system}）进入 accumulated。
+- **错误归一化的 wire format**：错误 message 字段结构、是否带 stack trace / hint、人类可读 prompt 措辞，都是 effect 层与对应 L4 的协议。waist 只规定 Recoverable 错误必须以合法 `AiMessage` 形态（role ∈ {tool, user}）进入 accumulated。
 - **ToolManager / 工具实现内部的 retry**：单个 tool 的重试（HTTP 5xx 重发等）属于 ToolManager 私事，waist 把每次 `call_tool` 的最终结果当一次 `Observation`。
 - **RPC 服务接口 tool 化策略 / 系统状态路径化（read_file 抽象）**：ToolManager 把后端服务暴露给 LLM 的协议，与 waist 解耦。
 

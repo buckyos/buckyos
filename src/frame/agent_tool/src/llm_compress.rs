@@ -1160,12 +1160,13 @@ mod tests {
         async fn call_tool(
             &self,
             call: buckyos_api::AiToolCall,
-        ) -> llm_context::observation::Observation {
-            llm_context::observation::Observation::Error {
+        ) -> Result<llm_context::observation::Observation, llm_context::deps::ToolDispatchError>
+        {
+            Ok(llm_context::observation::Observation::Error {
                 call_id: call.call_id,
                 message: "stub".to_string(),
                 tool_result: None,
-            }
+            })
         }
     }
 

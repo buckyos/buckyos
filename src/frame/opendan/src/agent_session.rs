@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, match_event_patterns, parse_typed_task_data, AiContent, AiMessage,
@@ -27,6 +27,7 @@ use llm_context::{
         HistoryInputRecord, SendMessageRecord, StepRecord, StepResultHook, StepResultHookOutput,
     },
     context_loop::LLMContext,
+    error::ErrorSource,
     interrupt::LLMContextInterruptHandle,
     observation::Observation,
     outcome::{ContextOutput, LLMContextOutcome, ResumeFill},
@@ -2175,7 +2176,7 @@ impl AgentSession {
         completions: &[(String, Observation, String, String)],
     ) -> Result<NextAction> {
         let snapshot = self
-            .try_load_snapshot()
+            .try_load_snapshot()?
             .ok_or_else(|| anyhow!("no snapshot to resume against"))?;
         let pending_order: Vec<String> = snapshot
             .state
@@ -2316,7 +2317,7 @@ impl AgentSession {
     /// No-op when there are no pending tool calls — the session is already
     /// at an outcome boundary; there is nothing to interrupt.
     async fn execute_interrupt(&self, mode: InterruptMode) -> Result<()> {
-        let snapshot = match self.try_load_snapshot() {
+        let snapshot = match self.try_load_snapshot()? {
             Some(s) => s,
             None => {
                 info!(
@@ -2495,7 +2496,7 @@ impl AgentSession {
         // — including the partial assistant text — in `state.accumulated`.
         let _outcome = ctx.run().await;
         let final_snapshot = ctx.snapshot();
-        self.persist_snapshot(&final_snapshot).await;
+        self.persist_snapshot(&final_snapshot).await?;
         Ok(())
     }
 
@@ -2531,7 +2532,7 @@ impl AgentSession {
             );
         }
         snapshot.state.pending_tool_calls.clear();
-        self.persist_snapshot(&snapshot).await;
+        self.persist_snapshot(&snapshot).await?;
         Ok(())
     }
 
@@ -2665,48 +2666,24 @@ impl AgentSession {
     /// PendingTool outcome path so a restart can resume from the freshest
     /// view — the TurnHook write happens *before* inference, which would
     /// miss the freshly-populated `pending_tool_calls`.
-    async fn persist_snapshot(&self, snapshot: &LLMContextSnapshot) {
+    async fn persist_snapshot(&self, snapshot: &LLMContextSnapshot) -> Result<()> {
         self.persist_snapshot_to(&self.state_snap_path, snapshot)
-            .await;
+            .await
     }
 
     /// Lower-level: write a snapshot to a specific path (used by
     /// independent-mode per-behavior snapshot files). Same crash-consistency
-    /// guarantees as `persist_snapshot` (tmp + rename).
-    async fn persist_snapshot_to(&self, path: &Path, snapshot: &LLMContextSnapshot) {
-        let bytes = match serde_json::to_vec(snapshot) {
-            Ok(v) => v,
-            Err(err) => {
-                warn!(
-                    "opendan.session[{}]: snapshot serialize failed: {err}",
-                    self.session_id
-                );
-                return;
-            }
-        };
-        if let Some(parent) = path.parent() {
-            if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                warn!(
-                    "opendan.session[{}]: snapshot mkdir failed: {err}",
-                    self.session_id
-                );
-                return;
-            }
-        }
-        let tmp = path.with_extension("snap.tmp");
-        if let Err(err) = tokio::fs::write(&tmp, &bytes).await {
-            warn!(
-                "opendan.session[{}]: snapshot write failed: {err}",
-                self.session_id
-            );
-            return;
-        }
-        if let Err(err) = tokio::fs::rename(&tmp, path).await {
-            warn!(
-                "opendan.session[{}]: snapshot rename failed: {err}",
-                self.session_id
-            );
-        }
+    /// guarantees as `persist_snapshot` (tmp + rename). This is a critical
+    /// commit: callers must not switch behavior, dispatch follow-up work or
+    /// report the state as persisted when it fails.
+    async fn persist_snapshot_to(&self, path: &Path, snapshot: &LLMContextSnapshot) -> Result<()> {
+        crate::ai_runtime::write_snapshot_file(path, snapshot).map_err(|err| {
+            anyhow!(
+                "session[{}] snapshot commit to {} failed: {err}",
+                self.session_id,
+                path.display()
+            )
+        })
     }
 
     /// Look up the session class config for this session, falling back to
@@ -3298,6 +3275,7 @@ impl AgentSession {
                                 which
                             )),
                             usage: snapshot.state.usage.clone(),
+                            trace: Default::default(),
                         };
                         self.history
                             .record_run_diff(
@@ -3361,7 +3339,7 @@ impl AgentSession {
                     // so a crash mid-compress doesn't lose the rewrite.
                     let mut prepared = snapshot;
                     prepared.state.accumulated = rewritten.clone();
-                    self.persist_snapshot(&prepared).await;
+                    self.persist_snapshot(&prepared).await?;
                     ctx = LLMContext::resume(
                         prepared,
                         ResumeFill::RewrittenHistory { history: rewritten },
@@ -3480,7 +3458,7 @@ impl AgentSession {
             ));
         }
 
-        let Some(mut snapshot) = self.try_load_snapshot() else {
+        let Some(mut snapshot) = self.try_load_snapshot()? else {
             return Ok(ManualCompressOutcome::NoSnapshot);
         };
         if !snapshot.state.pending_tool_calls.is_empty() {
@@ -3575,7 +3553,7 @@ impl AgentSession {
             })
             .await;
         snapshot.state.accumulated = rewritten;
-        self.persist_snapshot(&snapshot).await;
+        self.persist_snapshot(&snapshot).await?;
         Ok(ManualCompressOutcome::Applied {
             before_messages,
             after_messages,
@@ -3838,7 +3816,7 @@ impl AgentSession {
             );
         }
 
-        if let Some(snapshot) = self.try_load_snapshot() {
+        if let Some(snapshot) = self.try_load_snapshot()? {
             if snapshot.state.pending_tool_calls.is_empty() {
                 // Resume from the snapshot's persisted message stream.
                 // Refresh only non-message request policy here; `on_init`
@@ -3969,34 +3947,55 @@ impl AgentSession {
         deps.with_step_result_hook(Arc::new(hook))
     }
 
-    fn try_load_snapshot(&self) -> Option<LLMContextSnapshot> {
+    /// `Ok(None)` when no snapshot exists; `Err` when one exists but cannot
+    /// be read or decoded. A corrupt snapshot is never silently downgraded to
+    /// a fresh run — the caller reports it and the operator decides.
+    fn try_load_snapshot(&self) -> Result<Option<LLMContextSnapshot>> {
         self.try_load_snapshot_from(&self.state_snap_path)
     }
 
     /// Read-only access to the session's most-recently-persisted snapshot.
     /// Returns `None` when no snapshot exists yet (fresh session, or one
-    /// that has been `discard_snapshot`-ed). Intended for prompt-rendering
-    /// consumers (e.g. fork sub-context history injection) — do **not** use
-    /// this for resumption; that goes through `build_or_resume`.
+    /// that has been `discard_snapshot`-ed) or when it cannot be read.
+    /// Intended for prompt-rendering consumers (e.g. fork sub-context
+    /// history injection) — do **not** use this for resumption; that goes
+    /// through `build_or_resume`.
     pub fn try_load_snapshot_for_prompt(&self) -> Option<LLMContextSnapshot> {
-        self.try_load_snapshot()
-    }
-
-    /// Lower-level: load a snapshot from a specific path. Returns `None` on
-    /// missing-file (silent) or unreadable / malformed (warns).
-    fn try_load_snapshot_from(&self, path: &Path) -> Option<LLMContextSnapshot> {
-        let bytes = std::fs::read(path).ok()?;
-        match serde_json::from_slice::<LLMContextSnapshot>(&bytes) {
-            Ok(s) => Some(s),
+        match self.try_load_snapshot() {
+            Ok(snapshot) => snapshot,
             Err(err) => {
                 warn!(
-                    "opendan.session[{}]: snapshot at {} unreadable: {err}",
-                    self.session_id,
-                    path.display()
+                    "opendan.session[{}]: snapshot unavailable for prompt rendering: {err:#}",
+                    self.session_id
                 );
                 None
             }
         }
+    }
+
+    /// Lower-level: load a snapshot from a specific path. Missing file ⇒
+    /// `Ok(None)`; read I/O error or malformed content ⇒ `Err`.
+    fn try_load_snapshot_from(&self, path: &Path) -> Result<Option<LLMContextSnapshot>> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(anyhow!(
+                    "session[{}] snapshot at {} unreadable: {err}",
+                    self.session_id,
+                    path.display()
+                ))
+            }
+        };
+        serde_json::from_slice::<LLMContextSnapshot>(&bytes)
+            .map(Some)
+            .map_err(|err| {
+                anyhow!(
+                    "session[{}] snapshot at {} corrupted: {err}",
+                    self.session_id,
+                    path.display()
+                )
+            })
     }
 
     /// Resolve the per-process snapshot path for an independent-mode entry
@@ -4378,7 +4377,9 @@ impl AgentSession {
                                 self.session_id
                             );
                         }
-                        self.persist_snapshot(&final_snapshot).await;
+                        self.persist_snapshot(&final_snapshot)
+                            .await
+                            .context("outcome computed but snapshot commit failed")?;
                         self.feedback_task_waiting_for_input(&final_snapshot, Some(trimmed))
                             .await;
                         return Ok(NextAction::WaitForMsg);
@@ -4422,7 +4423,9 @@ impl AgentSession {
                         self.session_id
                     );
                 }
-                self.persist_snapshot(&final_snapshot).await;
+                self.persist_snapshot(&final_snapshot)
+                    .await
+                    .context("outcome computed but snapshot commit failed")?;
                 if matches!(self.kind, SessionKind::Ui) {
                     Ok(NextAction::WaitForMsg)
                 } else {
@@ -4435,8 +4438,11 @@ impl AgentSession {
             } => {
                 // Persist the snapshot first — `pending_tool_calls` is the
                 // load-bearing field for the resume path, and the TurnHook
-                // pre-inference write would have missed it.
-                self.persist_snapshot(&snapshot).await;
+                // pre-inference write would have missed it. No task is
+                // dispatched unless this commit succeeds.
+                self.persist_snapshot(&snapshot)
+                    .await
+                    .context("PendingTool snapshot commit failed; no task dispatched")?;
 
                 let dispatcher = TaskDispatch::from_runtime(self.runtime.task_mgr.clone());
                 // §4.7.2 — same runtime-injected `from_user_did` rule
@@ -4537,41 +4543,58 @@ impl AgentSession {
                 }
                 Ok(NextAction::WaitForMsg)
             }
-            LLMContextOutcome::Error { error, .. } => {
-                // `[on_provider_failed]` hook: when configured, swap behavior
-                // to the named fallback (e.g. a smaller-model safe-mode) and
-                // continue the next turn there. Unset / Default ⇒ surface
-                // the error and park the session (historical behavior).
-                match behavior_hooks::resolve_provider_failed(behavior.on_provider_failed.as_ref())
-                {
-                    Ok(ProviderFailedOutcome::FallbackBehavior { target }) => {
-                        warn!(
-                            "opendan.session[{}]: provider failed ({}); on_provider_failed → fallback_behavior `{target}`",
-                            self.session_id, error
-                        );
-                        self.discard_snapshot();
-                        self.meta.lock().await.current_behavior = target.clone();
-                        if let Err(err) = self.flush_meta().await {
+            LLMContextOutcome::Error { error, .. } => match error.source() {
+                // `[on_provider_failed]` hook: only provider failures may
+                // swap behavior to the named fallback (e.g. a smaller-model
+                // safe-mode). Unset / Default ⇒ surface the error and park
+                // the session.
+                ErrorSource::Provider => {
+                    match behavior_hooks::resolve_provider_failed(
+                        behavior.on_provider_failed.as_ref(),
+                    ) {
+                        Ok(ProviderFailedOutcome::FallbackBehavior { target }) => {
                             warn!(
-                                "opendan.session[{}]: flush after provider-fail fallback failed: {err:#}",
-                                self.session_id
+                                "opendan.session[{}]: provider failed ({}); on_provider_failed → fallback_behavior `{target}`",
+                                self.session_id, error
                             );
+                            self.discard_snapshot();
+                            self.meta.lock().await.current_behavior = target.clone();
+                            self.flush_meta()
+                                .await
+                                .context("flush after provider-fail fallback")?;
+                            Ok(NextAction::WaitForMsg)
                         }
-                        Ok(NextAction::WaitForMsg)
-                    }
-                    Ok(ProviderFailedOutcome::Default) | Err(_) => {
-                        let _ = self
-                            .reply_tx
-                            .send(SessionReply::Error {
-                                message: error.to_string(),
-                            })
-                            .await;
-                        self.feedback_task_failed(error.to_string()).await;
-                        self.discard_snapshot();
-                        Ok(NextAction::WaitForMsg)
+                        Ok(ProviderFailedOutcome::Default) | Err(_) => {
+                            self.report_turn_error(&error).await;
+                            self.discard_snapshot();
+                            Ok(NextAction::WaitForMsg)
+                        }
                     }
                 }
-            }
+                // Runtime failures (checkpoint / tool dispatch) leave the
+                // in-memory snapshot valid and the on-disk one untouched:
+                // keep it so the operator can resume, never treat it as a
+                // provider outage, and do not dispatch anything further.
+                ErrorSource::Runtime => {
+                    warn!(
+                        "opendan.session[{}]: runtime failure, snapshot kept for recovery: {}",
+                        self.session_id, error
+                    );
+                    self.report_turn_error(&error).await;
+                    Ok(NextAction::WaitForMsg)
+                }
+                // Self-correction exhausted / snapshot inconsistency /
+                // programming error: the run is spent. Surface the error and
+                // start the next turn fresh.
+                ErrorSource::LlmOutput
+                | ErrorSource::Tool
+                | ErrorSource::Snapshot
+                | ErrorSource::Internal => {
+                    self.report_turn_error(&error).await;
+                    self.discard_snapshot();
+                    Ok(NextAction::WaitForMsg)
+                }
+            },
             LLMContextOutcome::ContextLimitReached { which, .. } => {
                 // Should not happen — `run_one_round` intercepts
                 // ContextLimitReached and either resumes via
@@ -4600,7 +4623,9 @@ impl AgentSession {
                 // so persisting it lets the next turn pick up via
                 // `ResumeFromMidRun`. We park the session waiting for either
                 // a new user message or an explicit resume.
-                self.persist_snapshot(&snapshot).await;
+                self.persist_snapshot(&snapshot)
+                    .await
+                    .context("interrupted snapshot commit failed")?;
                 let _ = self
                     .reply_tx
                     .send(SessionReply::Error {
@@ -4612,6 +4637,16 @@ impl AgentSession {
                 Ok(NextAction::WaitForMsg)
             }
         }
+    }
+
+    async fn report_turn_error(&self, error: &llm_context::error::LLMComputeError) {
+        let _ = self
+            .reply_tx
+            .send(SessionReply::Error {
+                message: error.to_string(),
+            })
+            .await;
+        self.feedback_task_failed(error.to_string()).await;
     }
 
     async fn task_binding(&self) -> Option<crate::session_model::AgentTaskBinding> {
@@ -5035,7 +5070,7 @@ impl AgentSession {
                         &final_snapshot,
                     )
                     .await;
-                    self.persist_snapshot(&final_snapshot).await;
+                    self.persist_snapshot(&final_snapshot).await?;
                     return Ok(match self.kind {
                         SessionKind::Ui => NextAction::WaitForMsg,
                         _ => NextAction::End,
@@ -5266,7 +5301,7 @@ impl AgentSession {
             forbid_next_behavior: false,
         };
         let rebuilt = apply_overrides_to_snapshot(final_snapshot, overrides);
-        self.persist_snapshot(&rebuilt).await;
+        self.persist_snapshot(&rebuilt).await?;
         Ok(())
     }
 
@@ -5286,7 +5321,7 @@ impl AgentSession {
         };
         let parent_path = self.behavior_snap_path(&parent_entry)?;
         self.persist_snapshot_to(&parent_path, &final_snapshot)
-            .await;
+            .await?;
 
         let request = self.fresh_request_for(new_cfg).await?;
         let mut state = LLMContextState::from_request(&request, now_ms());
@@ -5299,7 +5334,7 @@ impl AgentSession {
         state.next_action_id = final_snapshot.state.next_action_id;
 
         self.persist_snapshot(&LLMContextSnapshot { request, state })
-            .await;
+            .await?;
 
         {
             let mut meta = self.meta.lock().await;
@@ -5338,11 +5373,11 @@ impl AgentSession {
         };
         let parent_path = self.behavior_snap_path(&parent_entry)?;
         self.persist_snapshot_to(&parent_path, &final_snapshot)
-            .await;
+            .await?;
 
         // 2. Resume (or build fresh) the child process's snapshot.
         let child_path = self.behavior_snap_path(&new_cfg.meta.name)?;
-        let child_snap = if let Some(loaded) = self.try_load_snapshot_from(&child_path) {
+        let child_snap = if let Some(loaded) = self.try_load_snapshot_from(&child_path)? {
             // Existing stream — keep its system / accumulated / steps, just
             // reset the ephemeral counters so the new "turn under this
             // process" starts with a clean budget.
@@ -5363,7 +5398,7 @@ impl AgentSession {
             let state = LLMContextState::from_request(&request, now_ms());
             LLMContextSnapshot { request, state }
         };
-        self.persist_snapshot(&child_snap).await;
+        self.persist_snapshot(&child_snap).await?;
 
         // 3. Push parent frame, update active-process tracking.
         {
@@ -5413,9 +5448,9 @@ impl AgentSession {
         // Fork children are one-shot calls; only their report is returned to
         // the parent, so their internal stream is intentionally discarded.
         if !parent_frame.fork {
-            if let Ok(child_path) = self.behavior_snap_path(&child_entry) {
-                self.persist_snapshot_to(&child_path, &final_snapshot).await;
-            }
+            let child_path = self.behavior_snap_path(&child_entry)?;
+            self.persist_snapshot_to(&child_path, &final_snapshot)
+                .await?;
         }
 
         // Restore parent's snapshot to state.snap. If the file vanished
@@ -5425,8 +5460,8 @@ impl AgentSession {
         let parent_path = self.behavior_snap_path(&parent_frame.entry).ok();
         let mut parent_restored = false;
         if let Some(path) = &parent_path {
-            if let Some(parent_snap) = self.try_load_snapshot_from(path) {
-                self.persist_snapshot(&parent_snap).await;
+            if let Some(parent_snap) = self.try_load_snapshot_from(path)? {
+                self.persist_snapshot(&parent_snap).await?;
                 parent_restored = true;
             }
         }
@@ -5543,7 +5578,7 @@ impl AgentSession {
         sub_behavior_name: &str,
         loop_mode: LoopMode,
     ) -> Result<ContextOutput> {
-        let parent_snap = self.try_load_snapshot().ok_or_else(|| {
+        let parent_snap = self.try_load_snapshot()?.ok_or_else(|| {
             anyhow!(
                 "fork_and_run: session[{}] has no parent snapshot — fork must be invoked mid-turn",
                 self.session_id

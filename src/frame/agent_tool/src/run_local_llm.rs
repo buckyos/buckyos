@@ -26,6 +26,10 @@
 //!     [--output <path>]                    # 把 final outcome 写到文件（不写则只打印）
 //! ```
 //!
+//! 退出码:0 = Done;1 = 计算完成但 outcome 非 Done,或一般错误;2 = 参数错误;
+//! 3 = outcome 已算出(已输出)但目录提交失败;4 = 运行时故障(轮前 checkpoint
+//! 或工具派发基础设施失败),run 仍可 resume。
+//!
 //! 至少要提供 `--user` / `--system` / `--input-file` / `--input-stdin` /
 //! `--append` 中的一项；前四个 flag 互相可以叠加构成初始 input，`--append`
 //! 是"接着上一轮跑"的独立路径，跟那四个互斥。
@@ -54,8 +58,10 @@ use buckyos_api::{
     value_to_object_map, AiMessage, AiMethodRequest, AiMethodStatus, AiPayload, AiResponse, AiRole,
     AiToolSpec, BuckyOSRuntimeType, Capability, ModelSpec, Requirements, RespFormat,
 };
+use ::kRPC::RPCErrors;
 use llm_context::{
-    LLMComputeError, LLMContextOutcome, LlmClient, LlmInferenceRequest, ToolMode, ToolPolicy,
+    LLMComputeError, LLMContextOutcome, LlmClient, LlmInferenceRequest, ProviderFailure,
+    ToolMode, ToolPolicy,
 };
 
 use crate::local_llm_context::{Compressor, LocalLLMContextError};
@@ -86,14 +92,37 @@ pub async fn run_subcommand(args: Vec<String>) -> i32 {
 
     match run(opts).await {
         Ok(()) => 0,
-        Err(err) => {
+        Err(RunError::CommitFailed(err)) => {
+            eprintln!("run_local_llm: outcome computed but not committed: {err}");
+            EXIT_COMMIT_FAILED
+        }
+        Err(RunError::RuntimeFailure(err)) => {
+            eprintln!("run_local_llm: runtime failure, run kept resumable: {err}");
+            EXIT_RUNTIME_FAILURE
+        }
+        Err(RunError::Other(err)) => {
             eprintln!("run_local_llm failed: {err}");
             1
         }
     }
 }
 
-async fn run(opts: CliOpts) -> Result<(), Box<dyn std::error::Error>> {
+const EXIT_COMMIT_FAILED: i32 = 3;
+const EXIT_RUNTIME_FAILURE: i32 = 4;
+
+enum RunError {
+    CommitFailed(LocalLLMContextError),
+    RuntimeFailure(LocalLLMContextError),
+    Other(Box<dyn std::error::Error>),
+}
+
+impl<E: Into<Box<dyn std::error::Error>>> From<E> for RunError {
+    fn from(err: E) -> Self {
+        RunError::Other(err.into())
+    }
+}
+
+async fn run(opts: CliOpts) -> Result<(), RunError> {
     // 1. 构造 OneShotRequest —— 走 --append 还是常规 input flag 是两条路。
     let mut request = if let Some(text) = opts.append.as_ref() {
         if opts.system.is_some()
@@ -182,9 +211,20 @@ async fn run(opts: CliOpts) -> Result<(), Box<dyn std::error::Error>> {
         ctx.run_id()
     );
 
-    // 5. 跑到终态 / 挂起
+    // 5. 跑到终态 / 挂起。提交失败时 outcome 仍可读,照常输出后用独立退出码
+    //    报告;运行时故障没有 outcome,run 保持可 resume。
     let compressor = KeepTailCompressor { tail: 8 };
-    let outcome = ctx.drive_to_terminal(&compressor).await?;
+    let (outcome, commit_error) = match ctx.drive_to_terminal(&compressor).await {
+        Ok(outcome) => (outcome, None),
+        Err(err @ LocalLLMContextError::CommitFailed { .. }) => match ctx.pending_outcome() {
+            Some(outcome) => (outcome.clone(), Some(err)),
+            None => return Err(RunError::CommitFailed(err)),
+        },
+        Err(err @ LocalLLMContextError::RuntimeFailure { .. }) => {
+            return Err(RunError::RuntimeFailure(err))
+        }
+        Err(err) => return Err(err.into()),
+    };
 
     // 6. 输出
     let pretty = serde_json::to_string_pretty(&outcome)?;
@@ -193,6 +233,10 @@ async fn run(opts: CliOpts) -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("outcome written to {}", path.display());
     } else {
         println!("{pretty}");
+    }
+
+    if let Some(err) = commit_error {
+        return Err(RunError::CommitFailed(err));
     }
 
     // 终态非 Done 视作"业务失败"——返回非零退出码方便脚本判断
@@ -581,32 +625,62 @@ impl LlmClient for AiccLlmClient {
         );
 
         let runtime = get_buckyos_api_runtime()
-            .map_err(|e| LLMComputeError::Provider(format!("get buckyos runtime failed: {e}")))?;
+            .map_err(|e| provider_error_from_rpc("get buckyos runtime failed", e))?;
         let client = runtime
             .get_aicc_client()
             .await
-            .map_err(|e| LLMComputeError::Provider(format!("get aicc client failed: {e}")))?;
+            .map_err(|e| provider_error_from_rpc("get aicc client failed", e))?;
         let response = client
             .call_method(ai_methods::LLM_CHAT, request)
             .await
-            .map_err(|e| LLMComputeError::Provider(format!("aicc llm.chat failed: {e}")))?;
+            .map_err(|e| provider_error_from_rpc("aicc llm.chat failed", e))?;
 
         match response.status {
             AiMethodStatus::Succeeded => response.result.ok_or_else(|| {
-                LLMComputeError::Provider("aicc llm.chat succeeded but result is empty".to_string())
+                LLMComputeError::provider(
+                    ProviderFailure::Unknown,
+                    "aicc llm.chat succeeded but result is empty",
+                )
             }),
-            AiMethodStatus::Failed => Err(LLMComputeError::Provider(format!(
-                "aicc llm.chat failed: task_id={}, event_ref={}",
-                response.task_id,
-                response.event_ref.as_deref().unwrap_or("")
-            ))),
-            AiMethodStatus::Running => Err(LLMComputeError::Provider(format!(
-                "aicc llm.chat returned async task `{}`; run_local_llm dev tool does \
-                 not poll async tasks — use a synchronous-capable model",
-                response.task_id
-            ))),
+            AiMethodStatus::Failed => Err(LLMComputeError::provider(
+                ProviderFailure::Unknown,
+                format!(
+                    "aicc llm.chat failed: task_id={}, event_ref={}",
+                    response.task_id,
+                    response.event_ref.as_deref().unwrap_or("")
+                ),
+            )),
+            AiMethodStatus::Running => Err(LLMComputeError::provider(
+                ProviderFailure::Permanent,
+                format!(
+                    "aicc llm.chat returned async task `{}`; run_local_llm dev tool does \
+                     not poll async tasks — use a synchronous-capable model",
+                    response.task_id
+                ),
+            )),
         }
     }
+}
+
+/// kRPC 错误 → provider 失败类别。只把明确的临时 / 永久错误归类,其余一律
+/// `Unknown`(不会被当成可安全重试)。
+fn provider_error_from_rpc(context: &str, err: RPCErrors) -> LLMComputeError {
+    let failure = match &err {
+        RPCErrors::S2sTransientError(_) => ProviderFailure::Transient,
+        RPCErrors::InvalidToken(_)
+        | RPCErrors::TokenExpired(_)
+        | RPCErrors::NoPermission(_)
+        | RPCErrors::InvalidPassword
+        | RPCErrors::UserNotFound(_)
+        | RPCErrors::UnknownMethod(_)
+        | RPCErrors::ServiceNotValid(_)
+        | RPCErrors::S2sPermanentError(_) => ProviderFailure::Permanent,
+        RPCErrors::ReasonError(_)
+        | RPCErrors::ParseRequestError(_)
+        | RPCErrors::ParserResponseError(_)
+        | RPCErrors::KeyNotExist(_) => ProviderFailure::Unknown,
+    };
+    LLMComputeError::provider(failure, format!("{context}: {err}"))
 }
 
 // =========================================================================

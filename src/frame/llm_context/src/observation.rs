@@ -102,6 +102,17 @@ pub enum Observation {
     /// still external to this call's observation, but the *resolution* of
     /// the call is "user / session cancelled, please move on".
     Cancelled { call_id: String, reason: String },
+    /// The dispatcher produced no result for this call. `effect_unknown =
+    /// true`: the infrastructure failed while the call may have been running,
+    /// so its side effects cannot be confirmed. `effect_unknown = false`: the
+    /// round was aborted before this call started. Never produced by a
+    /// `ToolManager`; the waist records it when a batch is cut short so the
+    /// transcript stays paired and auditable. Not an LLM-correctable error.
+    Unresolved {
+        call_id: String,
+        reason: String,
+        effect_unknown: bool,
+    },
 }
 
 impl Observation {
@@ -111,6 +122,7 @@ impl Observation {
             Observation::Error { call_id, .. } => call_id,
             Observation::Pending { call_id, .. } => call_id,
             Observation::Cancelled { call_id, .. } => call_id,
+            Observation::Unresolved { call_id, .. } => call_id,
         }
     }
 }
@@ -123,13 +135,36 @@ pub struct PendingToolCall {
     pub eta_ms: Option<u64>,
 }
 
-/// Audit record for one tool call attempt. Lives in `ContextRunTrace.tool_trace`.
+/// Final state of one tool call attempt as seen by the waist.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecStatus {
+    /// Ran and returned `Observation::Success`.
+    Succeeded,
+    /// Ran and returned `Observation::Error` (business failure).
+    Failed,
+    /// Dispatch infrastructure failed while the call may have been running;
+    /// side effects cannot be confirmed.
+    Unknown,
+    /// The round was aborted before this call was dispatched.
+    NotExecuted,
+}
+
+/// Audit record for one tool call attempt. Lives in `ContextRunTrace.tool_trace`
+/// and is carried by both `Done` and `Error` outcomes so an aborted batch can
+/// still be audited.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolExecRecord {
     pub tool_name: String,
     pub call_id: String,
-    pub ok: bool,
+    pub status: ToolExecStatus,
     pub duration_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+impl ToolExecRecord {
+    pub fn ok(&self) -> bool {
+        self.status == ToolExecStatus::Succeeded
+    }
 }

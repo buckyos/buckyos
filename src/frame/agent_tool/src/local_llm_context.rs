@@ -47,6 +47,26 @@
 //! "看到 next_behavior 字段就切状态" / "把 tool_calls 解出来重路由"
 //! 的提议,都属于 `LLMAgentContext` 而不是 OneShot**。
 //!
+//! ## 失败语义(计算 vs 提交)
+//!
+//! `step()` 把"算出 outcome"和"outcome 已提交到目录"分开:
+//!
+//! - **轮前 checkpoint 失败**(`TurnHook` 写 snapshot / state 失败):waist 不会
+//!   发起推理,返回 `Outcome::Error { Checkpoint }`。`step()` 把它转成
+//!   [`LocalLLMContextError::RuntimeFailure`],保留内存中的 `LLMContext`;
+//!   存储恢复后再次调用 `step()` 只会重做 checkpoint,不重做任何已发生的推理或工具。
+//! - **工具派发基础设施失败**(`Outcome::Error { ToolRuntime }`):同样返回
+//!   `RuntimeFailure` 并保留上下文;transcript 已把未执行/结果未知的调用配对记录,
+//!   由 caller 决定是否继续 `step()`。
+//! - **outcome 边界提交失败**:已算出的 outcome 与快照保存在
+//!   [`LocalLLMContext::pending_outcome`],返回 [`LocalLLMContextError::CommitFailed`]
+//!   并指明失败阶段;caller 修复存储后调用 [`LocalLLMContext::retry_commit`]
+//!   只补写数据,不会再次 `ctx.run()`。
+//!
+//! 终态提交顺序是 **snapshot → outcomes/final.json → state.json(Completed)**:
+//! 只要 state 是 Completed,final.json 一定存在;反过来 final.json 存在但 state
+//! 仍为 Running 的半提交,会在 `resume_or_new` 里被识别并补齐,不会重跑。
+//!
 //! ## 目录布局(crash-recovery 持久化)
 //!
 //! 同一个 `dir` 可以承载**多次**完整的 OneShot run,每次一个子目录:
@@ -128,8 +148,10 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use llm_context::deps::{
-    LLMContextDeps, LlmClient, NoopWorklogSink, ToolManager, ToolSpecLite, TurnHook, WorklogSink,
+    LLMContextDeps, LlmClient, NoopWorklogSink, ToolDispatchError, ToolManager, ToolSpecLite,
+    TurnHook, WorklogSink,
 };
+use llm_context::error::{ErrorSource, LLMComputeError};
 use llm_context::observation::Observation;
 use llm_context::outcome::{LLMContextOutcome, ResumeFill};
 use llm_context::request::{
@@ -317,6 +339,21 @@ pub enum RunStatus {
     Completed,
 }
 
+/// outcome 边界提交的阶段,按执行顺序排列。
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CommitStage {
+    Snapshot,
+    Outcome,
+    State,
+}
+
+struct PendingCommit {
+    outcome: LLMContextOutcome,
+    snapshot: LLMContextSnapshot,
+    snapshot_idx: Option<u32>,
+    outcome_written: bool,
+}
+
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SuspendKind {
     PendingTool,
@@ -349,8 +386,13 @@ pub struct LocalLLMContext {
     /// 当前 run 的 id(`<dir>/runs/<run_id>/`)。
     run_id: String,
 
-    /// run 级元数据,镜像 `<run>/state.json`。
-    meta: RunMetaState,
+    /// run 级元数据,镜像 `<run>/state.json`。与轮前 checkpoint hook 共享:
+    /// hook 每次落盘后把 `latest_snapshot_idx` 一起提交到 state.json,
+    /// 恢复入口因此能定位到最近一次已提交的轮前快照。
+    meta: Arc<Mutex<RunMetaState>>,
+
+    /// outcome 已算出但目录提交未完成时的暂存;见 [`Self::retry_commit`]。
+    pending_commit: Option<PendingCommit>,
 
     /// 当前正在跑的 waist 进程上下文。
     ///
@@ -411,26 +453,30 @@ impl LocalLLMContext {
         // 写 request.json + state.json 初稿
         write_run_request(&dir, &run_id, &request)?;
         write_run_state(&dir, &meta)?;
+        let meta = Arc::new(Mutex::new(meta));
 
         // 构造 deps + waist LLMContext。注入 TurnHook 让 waist 在每轮 LLM
-        // 推理前把当前 snapshot 写盘——这是"crash recovery 不重复扣费"的关键
-        // 落点(§3.12 / §6.6)。
-        let deps = build_deps(&dir, &run_id, llm.clone(), snapshot_store.clone())?;
+        // 推理前把当前 snapshot 写盘并提交索引——这是"crash recovery 不重复
+        // 扣费"的关键落点(§3.12 / §6.6);写失败时 waist 不会发起推理。
+        let deps = build_deps(
+            &dir,
+            &run_id,
+            llm.clone(),
+            snapshot_store.clone(),
+            meta.clone(),
+        )?;
         let waist_req = request.lower_to_waist(&run_id);
         let ctx = LLMContext::new(waist_req, deps);
 
         // **启动前快照** —— crash recovery 粒度纪律的第一个落盘点。
         let s = ctx.snapshot();
-        let idx = snapshot_store.put_next(&s)?;
-        let mut meta = meta;
-        meta.latest_snapshot_idx = Some(idx);
-        meta.last_updated_unix_ms = now_unix_ms();
-        write_run_state(&dir, &meta)?;
+        commit_snapshot_index(&dir, &meta, snapshot_store.as_ref(), &s)?;
 
         Ok(Self {
             dir,
             run_id,
             meta,
+            pending_commit: None,
             ctx: Some(ctx),
             snapshot_store,
             request,
@@ -468,6 +514,9 @@ impl LocalLLMContext {
                 // 解决:把 new_run 拆成 lock-free 的内部函数,或者让 acquire_dir_lock
                 // 幂等(同进程重入返回 Ok)。当前实现采用后者,见 acquire_dir_lock 注释。
                 drop_lock_if_held(&dir);
+                Self::new_run(dir, request, llm)
+            }
+            Some(existing) if Self::repair_half_committed_run(&dir, &existing)? => {
                 Self::new_run(dir, request, llm)
             }
             Some(existing) => {
@@ -528,7 +577,14 @@ impl LocalLLMContext {
             });
         }
 
-        let deps = build_deps(&dir, &run_id, llm.clone(), snapshot_store.clone())?;
+        let meta = Arc::new(Mutex::new(meta));
+        let deps = build_deps(
+            &dir,
+            &run_id,
+            llm.clone(),
+            snapshot_store.clone(),
+            meta.clone(),
+        )?;
         let ctx =
             LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps).map_err(|e| {
                 LocalLLMContextError::CorruptedRun {
@@ -541,11 +597,46 @@ impl LocalLLMContext {
             dir,
             run_id,
             meta,
+            pending_commit: None,
             ctx: Some(ctx),
             snapshot_store,
             request,
             llm,
         })
+    }
+
+    /// 终态提交顺序是 snapshot → final.json → state.json。进程在 final.json
+    /// 写完、state.json 仍为 Running 时崩溃,会留下"已完成但未提交"的 run:
+    /// 这里只补齐 state(索引指向最新快照、状态 Completed),不重跑推理。
+    /// 返回 `true` 表示该 run 已被补齐,不再是可 resume 的运行中 run。
+    fn repair_half_committed_run(
+        dir: &Path,
+        meta: &RunMetaState,
+    ) -> Result<bool, LocalLLMContextError> {
+        let run_dir = dir.join("runs").join(&meta.run_id);
+        let final_path = run_dir.join("outcomes").join("final.json");
+        if !final_path.is_file() {
+            return Ok(false);
+        }
+        let bytes = std::fs::read(&final_path)?;
+        serde_json::from_slice::<LLMContextOutcome>(&bytes).map_err(|e| {
+            LocalLLMContextError::CorruptedRun {
+                run_id: meta.run_id.clone(),
+                reason: format!("final.json exists but is unreadable: {e}"),
+            }
+        })?;
+        let store = FileSnapshotStore::new(run_dir);
+        let mut repaired = meta.clone();
+        repaired.latest_snapshot_idx = store.list()?.last().copied().or(meta.latest_snapshot_idx);
+        repaired.status = RunStatus::Completed;
+        repaired.last_suspend_kind = None;
+        repaired.last_updated_unix_ms = now_unix_ms();
+        write_run_state(dir, &repaired)?;
+        log::warn!(
+            "local_llm_context: run `{}` had final.json but state=Running; committed state as Completed without re-running",
+            meta.run_id
+        );
+        Ok(true)
     }
 
     /// **核心 driver**:一路跑到终态或外部挂起态。
@@ -630,18 +721,28 @@ impl LocalLLMContext {
             &self.run_id,
             self.llm.clone(),
             self.snapshot_store.clone(),
+            self.meta.clone(),
         )?;
         Ok(LlmSummarizeCompressor::new(deps, model_alias, target))
     }
 
-    /// **单步驱动**:跑一次 `LLMContext::run().await`,落盘,刷新 meta。
+    /// **单步驱动**:跑一次 `LLMContext::run().await`,提交到目录,刷新 meta。
     ///
     /// 通常通过 [`Self::drive_to_terminal`] 调用;暴露出来给需要逐步驱动
     /// 的高级 caller(例:测试、嵌入 workflow 的 leaf node)。
     ///
-    /// 调完之后 `self.ctx` 在挂起态下会变 `None`(等待 resume);终态下
-    /// 也变 `None`(对象一次性消耗)。
+    /// 返回值:
+    /// - `Ok(outcome)`:outcome 已完整提交。挂起态 / 终态下 `self.ctx` 变 `None`。
+    /// - `Err(RuntimeFailure)`:waist 因 checkpoint / 工具派发基础设施失败停下,
+    ///   没有产生新的副作用;上下文保留在内存中,修复后可再次 `step()`。
+    /// - `Err(CommitFailed)`:outcome 已算出但目录提交失败;通过
+    ///   [`Self::pending_outcome`] 读取结果,修复后 [`Self::retry_commit`]。
     pub async fn step(&mut self) -> Result<LLMContextOutcome, LocalLLMContextError> {
+        if self.pending_commit.is_some() {
+            return Err(LocalLLMContextError::CommitPending {
+                run_id: self.run_id.clone(),
+            });
+        }
         let mut ctx = self
             .ctx
             .take()
@@ -649,49 +750,108 @@ impl LocalLLMContext {
 
         let outcome = ctx.run().await;
 
-        // **每个 outcome 边界落盘**(crash recovery 纪律)。
-        let idx = self.snapshot_store.put_next(&ctx.snapshot())?;
-        self.meta.latest_snapshot_idx = Some(idx);
-        self.meta.last_updated_unix_ms = now_unix_ms();
-
-        // 按 outcome 形态更新 status / last_suspend_kind。
-        match &outcome {
-            LLMContextOutcome::Done { .. }
-            | LLMContextOutcome::Error { .. }
-            | LLMContextOutcome::BudgetExhausted { .. } => {
-                self.meta.status = RunStatus::Completed;
-                self.meta.last_suspend_kind = None;
-                write_run_state(&self.dir, &self.meta)?;
-                write_run_outcome(&self.dir, &self.run_id, &outcome)?;
-                // ctx 已经 take,且终态不可 resume → 保持 None。
-            }
-            LLMContextOutcome::PendingTool { .. } => {
-                self.meta.status = RunStatus::Suspended;
-                self.meta.last_suspend_kind = Some(SuspendKind::PendingTool);
-                write_run_state(&self.dir, &self.meta)?;
-            }
-            LLMContextOutcome::ContextLimitReached { .. } => {
-                // 注意:不把 status 改成 Suspended——`drive_to_terminal` 会立刻
-                // 在外面消化掉。如果 caller 用 `step()` 自己驱动,会看到这个
-                // outcome 但 status 仍是 Running,这是有意的:context limit 不是
-                // "等外部输入"的真正挂起,只是 waist 让 scheduler 决定压缩策略
-                // 的让出点。
-                self.meta.last_suspend_kind = Some(SuspendKind::ContextLimitReached);
-                write_run_state(&self.dir, &self.meta)?;
-            }
-            LLMContextOutcome::Interrupted { .. } => {
-                // §3.13:scheduler 从 run 外部抢占了本轮 inference。
-                // snapshot 是 s0(本轮 inference 前的状态),恢复路径与"运行
-                // 中崩溃"共享 `ResumeFromMidRun` 语义。把 status 标成 Suspended
-                // 并记下 SuspendKind::Interrupted,让 resume_or_new 看到时能区
-                // 分"挂起态崩溃"与"正常运行中崩溃"。
-                self.meta.status = RunStatus::Suspended;
-                self.meta.last_suspend_kind = Some(SuspendKind::Interrupted);
-                write_run_state(&self.dir, &self.meta)?;
+        if let LLMContextOutcome::Error { error, .. } = &outcome {
+            if error.source() == ErrorSource::Runtime {
+                let error = error.clone();
+                self.ctx = Some(ctx);
+                return Err(LocalLLMContextError::RuntimeFailure {
+                    run_id: self.run_id.clone(),
+                    error,
+                });
             }
         }
 
-        Ok(outcome)
+        // **每个 outcome 边界提交**(crash recovery 纪律)。
+        self.pending_commit = Some(PendingCommit {
+            outcome,
+            snapshot: ctx.snapshot(),
+            snapshot_idx: None,
+            outcome_written: false,
+        });
+        self.commit_pending()
+    }
+
+    /// 上一次 `step()` 因提交失败而暂存的 outcome。
+    pub fn pending_outcome(&self) -> Option<&LLMContextOutcome> {
+        self.pending_commit.as_ref().map(|p| &p.outcome)
+    }
+
+    /// 重试上一次失败的 outcome 提交:只补写尚未完成的阶段,不会再次
+    /// 运行 `LLMContext`。
+    pub fn retry_commit(&mut self) -> Result<LLMContextOutcome, LocalLLMContextError> {
+        if self.pending_commit.is_none() {
+            return Err(LocalLLMContextError::NoPendingCommit {
+                run_id: self.run_id.clone(),
+            });
+        }
+        self.commit_pending()
+    }
+
+    fn commit_pending(&mut self) -> Result<LLMContextOutcome, LocalLLMContextError> {
+        let run_id = self.run_id.clone();
+        let commit_err = |stage: CommitStage, err: LocalLLMContextError| {
+            LocalLLMContextError::CommitFailed {
+                run_id: run_id.clone(),
+                stage,
+                reason: err.to_string(),
+            }
+        };
+        let pending = self
+            .pending_commit
+            .as_mut()
+            .expect("commit_pending requires a pending commit");
+
+        if pending.snapshot_idx.is_none() {
+            let idx = self
+                .snapshot_store
+                .put_next(&pending.snapshot)
+                .map_err(|e| commit_err(CommitStage::Snapshot, e))?;
+            pending.snapshot_idx = Some(idx);
+        }
+
+        let terminal = pending.outcome.is_terminal();
+        if terminal && !pending.outcome_written {
+            write_run_outcome(&self.dir, &self.run_id, &pending.outcome)
+                .map_err(|e| commit_err(CommitStage::Outcome, e))?;
+            pending.outcome_written = true;
+        }
+
+        let mut meta = self.meta.lock().expect("run meta lock poisoned").clone();
+        meta.latest_snapshot_idx = pending.snapshot_idx;
+        meta.last_updated_unix_ms = now_unix_ms();
+        match &pending.outcome {
+            LLMContextOutcome::Done { .. }
+            | LLMContextOutcome::Error { .. }
+            | LLMContextOutcome::BudgetExhausted { .. } => {
+                meta.status = RunStatus::Completed;
+                meta.last_suspend_kind = None;
+            }
+            LLMContextOutcome::PendingTool { .. } => {
+                meta.status = RunStatus::Suspended;
+                meta.last_suspend_kind = Some(SuspendKind::PendingTool);
+            }
+            LLMContextOutcome::ContextLimitReached { .. } => {
+                // 不把 status 改成 Suspended——`drive_to_terminal` 会立刻在外面
+                // 消化掉。用 `step()` 自己驱动的 caller 会看到这个 outcome 但
+                // status 仍是 Running:context limit 不是"等外部输入"的挂起,
+                // 只是 waist 让 scheduler 决定压缩策略的让出点。
+                meta.last_suspend_kind = Some(SuspendKind::ContextLimitReached);
+            }
+            LLMContextOutcome::Interrupted { .. } => {
+                // §3.13:snapshot 是 s0,恢复与"运行中崩溃"共享 `ResumeFromMidRun`
+                // 语义;标成 Suspended + Interrupted 让 resume_or_new 能区分。
+                meta.status = RunStatus::Suspended;
+                meta.last_suspend_kind = Some(SuspendKind::Interrupted);
+            }
+        }
+        write_run_state(&self.dir, &meta).map_err(|e| commit_err(CommitStage::State, e))?;
+        *self.meta.lock().expect("run meta lock poisoned") = meta;
+
+        let pending = self
+            .pending_commit
+            .take()
+            .expect("pending commit present");
+        Ok(pending.outcome)
     }
 
     /// 内部:处理 `ContextLimitReached` 之后用压缩后的 history 继续。
@@ -705,11 +865,19 @@ impl LocalLLMContext {
             &self.run_id,
             self.llm.clone(),
             self.snapshot_store.clone(),
+            self.meta.clone(),
         )?;
         // **resume 前落盘**(crash recovery 第二个落点)。
-        self.snapshot_store.put_next(&snapshot)?;
+        let mut prepared = snapshot;
+        prepared.state.accumulated = rewritten.clone();
+        commit_snapshot_index(
+            &self.dir,
+            &self.meta,
+            self.snapshot_store.as_ref(),
+            &prepared,
+        )?;
         let ctx = LLMContext::resume(
-            snapshot,
+            prepared,
             ResumeFill::RewrittenHistory { history: rewritten },
             deps,
         )
@@ -718,9 +886,11 @@ impl LocalLLMContext {
             reason: format!("resume with RewrittenHistory failed: {e}"),
         })?;
         self.ctx = Some(ctx);
-        self.meta.last_suspend_kind = None;
-        self.meta.last_updated_unix_ms = now_unix_ms();
-        write_run_state(&self.dir, &self.meta)?;
+        let mut meta = self.meta.lock().expect("run meta lock poisoned").clone();
+        meta.last_suspend_kind = None;
+        meta.last_updated_unix_ms = now_unix_ms();
+        write_run_state(&self.dir, &meta)?;
+        *self.meta.lock().expect("run meta lock poisoned") = meta;
         Ok(())
     }
 
@@ -734,8 +904,8 @@ impl LocalLLMContext {
         &self.dir
     }
 
-    pub fn meta(&self) -> &RunMetaState {
-        &self.meta
+    pub fn meta(&self) -> RunMetaState {
+        self.meta.lock().expect("run meta lock poisoned").clone()
     }
 
     pub fn request(&self) -> &OneShotRequest {
@@ -969,7 +1139,17 @@ impl SnapshotStore for FileSnapshotStore {
     }
 
     fn get(&self, idx: u32) -> Result<LLMContextSnapshot, LocalLLMContextError> {
-        let bytes = std::fs::read(self.path_for(idx))?;
+        let path = self.path_for(idx);
+        let bytes = std::fs::read(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                LocalLLMContextError::SnapshotMissing {
+                    idx,
+                    path: path.display().to_string(),
+                }
+            } else {
+                LocalLLMContextError::Io(e)
+            }
+        })?;
         serde_json::from_slice(&bytes)
             .map_err(|e| LocalLLMContextError::Serialization(e.to_string()))
     }
@@ -1023,6 +1203,27 @@ pub enum LocalLLMContextError {
     },
     #[error("no active LLMContext; either already terminated or awaiting external resume")]
     NoActiveContext,
+    #[error("snapshot {idx} missing at {path}")]
+    SnapshotMissing { idx: u32, path: String },
+    #[error(
+        "run `{run_id}` stopped on a runtime failure ({error}); context kept in memory, call `step()` again once the runtime is healthy"
+    )]
+    RuntimeFailure {
+        run_id: String,
+        error: LLMComputeError,
+    },
+    #[error(
+        "run `{run_id}` outcome computed but commit failed at stage {stage:?}: {reason}; call `retry_commit()` to finish"
+    )]
+    CommitFailed {
+        run_id: String,
+        stage: CommitStage,
+        reason: String,
+    },
+    #[error("run `{run_id}` has an uncommitted outcome; call `retry_commit()` before `step()`")]
+    CommitPending { run_id: String },
+    #[error("run `{run_id}` has no pending commit to retry")]
+    NoPendingCommit { run_id: String },
     #[error("compressor failed: {0}")]
     CompressorFailed(String),
     #[error("cannot prepare follow-up request: {hint}")]
@@ -1142,29 +1343,59 @@ fn build_deps(
     run_id: &str,
     llm: Arc<dyn LlmClient>,
     snapshot_store: Arc<dyn SnapshotStore>,
+    meta: Arc<Mutex<RunMetaState>>,
 ) -> Result<LLMContextDeps, LocalLLMContextError> {
     let tools: Arc<dyn ToolManager> = Arc::new(LocalDirToolManager::new(
         dir.to_path_buf(),
         run_id.to_string(),
     )?);
     let worklog: Arc<dyn WorklogSink> = Arc::new(NoopWorklogSink);
-    let hook: Arc<dyn TurnHook> = Arc::new(SnapshotPersistingTurnHook { snapshot_store });
+    let hook: Arc<dyn TurnHook> = Arc::new(SnapshotPersistingTurnHook {
+        dir: dir.to_path_buf(),
+        snapshot_store,
+        meta,
+    });
     Ok(LLMContextDeps::new(llm, tools)
         .with_worklog(worklog)
         .with_turn_hook(hook))
 }
 
-/// `TurnHook` 实现:每轮 LLM 推理前把当前 snapshot 落盘。落盘失败时仅吞掉
-/// 错误——hook 不允许中断 waist 主循环(§3.12 约束)。最坏情况下当前轮的
-/// snapshot 会丢失,但 outcome 边界还会再写一次,所以崩溃恢复仍然安全,
-/// 只是恢复粒度退化到 outcome 边界。
+/// 写一份 snapshot 并把它的 idx 提交到 state.json。两步都成功才算 checkpoint
+/// 完成;任一步失败都返回错误,内存中的 meta 不变。
+fn commit_snapshot_index(
+    dir: &Path,
+    meta: &Mutex<RunMetaState>,
+    snapshot_store: &dyn SnapshotStore,
+    snapshot: &LLMContextSnapshot,
+) -> Result<u32, LocalLLMContextError> {
+    let idx = snapshot_store.put_next(snapshot)?;
+    let mut next = meta.lock().expect("run meta lock poisoned").clone();
+    next.latest_snapshot_idx = Some(idx);
+    next.last_updated_unix_ms = now_unix_ms();
+    write_run_state(dir, &next)?;
+    *meta.lock().expect("run meta lock poisoned") = next;
+    Ok(idx)
+}
+
+/// `TurnHook` 实现:每轮 LLM 推理前把当前 snapshot 落盘并提交索引。这是
+/// OneShot 的关键 checkpoint:失败会让 waist 放弃本轮推理并返回
+/// `Checkpoint` 错误,`step()` 再把它转成 `RuntimeFailure` 交给 caller。
 struct SnapshotPersistingTurnHook {
+    dir: PathBuf,
     snapshot_store: Arc<dyn SnapshotStore>,
+    meta: Arc<Mutex<RunMetaState>>,
 }
 
 impl TurnHook for SnapshotPersistingTurnHook {
-    fn before_inference(&self, snapshot: &LLMContextSnapshot) {
-        let _ = self.snapshot_store.put_next(snapshot);
+    fn before_inference(&self, snapshot: &LLMContextSnapshot) -> Result<(), String> {
+        commit_snapshot_index(
+            &self.dir,
+            &self.meta,
+            self.snapshot_store.as_ref(),
+            snapshot,
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -1258,20 +1489,23 @@ impl LocalDirToolManager {
     }
 }
 
+/// `AgentToolError` 只表达 LLM 能应对的失败(工具不存在、参数非法、命令无法
+/// 在 workspace 内执行),所以全部映射成 `Observation::Error`;基础设施故障
+/// 通道 `ToolDispatchError` 留给能区分传输层故障的 adapter。
 #[async_trait]
 impl ToolManager for LocalDirToolManager {
-    async fn call_tool(&self, call: AiToolCall) -> Observation {
+    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError> {
         let call_id = call.call_id.clone();
         let mut ctx = self.session_template.clone();
         ctx.step_idx = self.step_idx.fetch_add(1, Ordering::SeqCst) + 1;
-        match self.inner.call_tool(&ctx, call).await {
+        Ok(match self.inner.call_tool(&ctx, call).await {
             Ok(result) => map_result_to_observation(call_id, result),
             Err(e) => Observation::Error {
                 call_id,
                 message: e.to_string(),
                 tool_result: None,
             },
-        }
+        })
     }
 
     fn list_tool_specs(&self) -> Vec<ToolSpecLite> {
@@ -1337,6 +1571,341 @@ fn map_result_to_observation(call_id: String, result: AgentToolResult) -> Observ
 // 后续待办(本 L4 自己能闭环的,已不依赖 waist)
 // =========================================================================
 //
-// 1. **轮前落盘的失败可观测性** —— `SnapshotPersistingTurnHook::before_inference`
-//    当前吞掉 IO 错误以保持"hook 不打断主循环"约束。后续可以挂一个 log::warn
-//    + 计数器,让 ops 能看到"轮前落盘最近失败次数"。
+// 1. **写入持久性** —— snapshot / state / final 都是 tmp + rename,没有 fsync;
+//    崩溃一致性有保证,断电持久性没有。
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use buckyos_api::{AiResponse, AiRole};
+    use llm_context::deps::LlmInferenceRequest;
+    use llm_context::error::{CheckpointStage, ProviderFailure};
+
+    use super::*;
+
+    struct ScriptedLlm {
+        script: Mutex<Vec<Result<AiResponse, LLMComputeError>>>,
+        seen: Mutex<Vec<Vec<AiMessage>>>,
+        block_when_empty: bool,
+    }
+
+    impl ScriptedLlm {
+        fn new(script: Vec<Result<AiResponse, LLMComputeError>>) -> Arc<Self> {
+            Arc::new(Self {
+                script: Mutex::new(script),
+                seen: Mutex::new(Vec::new()),
+                block_when_empty: false,
+            })
+        }
+
+        fn blocking_after(script: Vec<Result<AiResponse, LLMComputeError>>) -> Arc<Self> {
+            Arc::new(Self {
+                script: Mutex::new(script),
+                seen: Mutex::new(Vec::new()),
+                block_when_empty: true,
+            })
+        }
+
+        fn calls(&self) -> usize {
+            self.seen.lock().unwrap().len()
+        }
+
+        fn seen(&self) -> Vec<Vec<AiMessage>> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl LlmClient for ScriptedLlm {
+        async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
+            self.seen.lock().unwrap().push(req.messages);
+            let next = self.script.lock().unwrap().pop();
+            match next {
+                Some(result) => result,
+                None if self.block_when_empty => std::future::pending().await,
+                None => Err(LLMComputeError::Internal("script exhausted".into())),
+            }
+        }
+    }
+
+    fn script(items: Vec<Result<AiResponse, LLMComputeError>>) -> Vec<Result<AiResponse, LLMComputeError>> {
+        items.into_iter().rev().collect()
+    }
+
+    fn request() -> OneShotRequest {
+        OneShotRequest::new(
+            "test",
+            vec![AiMessage::text(AiRole::User, "run the command")],
+        )
+    }
+
+    fn echo_call(id: &str) -> AiToolCall {
+        let mut args = HashMap::new();
+        args.insert("command".to_string(), serde_json::json!("echo hi"));
+        AiToolCall {
+            name: "exec_bash".into(),
+            args,
+            call_id: id.into(),
+        }
+    }
+
+    fn run_dir(ctx: &LocalLLMContext) -> PathBuf {
+        ctx.dir().join("runs").join(ctx.run_id())
+    }
+
+    fn read_state(ctx: &LocalLLMContext) -> RunMetaState {
+        let bytes = std::fs::read(run_dir(ctx).join("state.json")).unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn break_dir(path: &Path) {
+        if path.exists() {
+            std::fs::remove_dir_all(path).unwrap();
+        }
+        std::fs::write(path, b"not a directory").unwrap();
+    }
+
+    fn heal_dir(path: &Path) {
+        std::fs::remove_file(path).unwrap();
+        std::fs::create_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn checkpoint_failure_blocks_inference_and_step_retries_only_checkpoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = ScriptedLlm::new(script(vec![Ok(AiResponse::text("done"))]));
+        let mut ctx = LocalLLMContext::new_run(tmp.path(), request(), llm.clone()).unwrap();
+        let snapshots = run_dir(&ctx).join("snapshots");
+        break_dir(&snapshots);
+
+        let err = ctx.step().await.err().expect("checkpoint must fail");
+        match err {
+            LocalLLMContextError::RuntimeFailure { error, .. } => assert!(matches!(
+                error,
+                LLMComputeError::Checkpoint {
+                    stage: CheckpointStage::BeforeInference,
+                    ..
+                }
+            )),
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(llm.calls(), 0, "no inference is paid for");
+        assert_eq!(read_state(&ctx).status, RunStatus::Running);
+        assert!(ctx.pending_outcome().is_none());
+
+        heal_dir(&snapshots);
+        let outcome = ctx.step().await.expect("retry after storage recovered");
+        assert!(matches!(outcome, LLMContextOutcome::Done { .. }));
+        assert_eq!(llm.calls(), 1);
+        let state = read_state(&ctx);
+        assert_eq!(state.status, RunStatus::Completed);
+        assert!(run_dir(&ctx).join("outcomes").join("final.json").is_file());
+        let idx = state.latest_snapshot_idx.unwrap();
+        assert!(snapshots.join(format!("{idx:04}.snap.json")).is_file());
+    }
+
+    #[tokio::test]
+    async fn outcome_commit_failure_keeps_outcome_and_retry_does_not_rerun() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = ScriptedLlm::new(script(vec![Ok(AiResponse::text("done"))]));
+        let mut ctx = LocalLLMContext::new_run(tmp.path(), request(), llm.clone()).unwrap();
+        let outcomes = run_dir(&ctx).join("outcomes");
+        break_dir(&outcomes);
+
+        let err = ctx.step().await.err().expect("outcome commit must fail");
+        assert!(matches!(
+            err,
+            LocalLLMContextError::CommitFailed {
+                stage: CommitStage::Outcome,
+                ..
+            }
+        ));
+        assert_eq!(llm.calls(), 1);
+        assert!(matches!(
+            ctx.pending_outcome(),
+            Some(LLMContextOutcome::Done { .. })
+        ));
+        assert_eq!(read_state(&ctx).status, RunStatus::Running);
+        assert!(matches!(
+            ctx.step().await,
+            Err(LocalLLMContextError::CommitPending { .. })
+        ));
+        let snapshots_before = ctx.snapshot_store.list().unwrap();
+
+        heal_dir(&outcomes);
+        let outcome = ctx.retry_commit().expect("retry only writes");
+        assert!(matches!(outcome, LLMContextOutcome::Done { .. }));
+        assert_eq!(llm.calls(), 1, "retry must not re-run the context");
+        assert_eq!(ctx.snapshot_store.list().unwrap(), snapshots_before);
+        assert!(outcomes.join("final.json").is_file());
+        let state = read_state(&ctx);
+        assert_eq!(state.status, RunStatus::Completed);
+        assert_eq!(state.latest_snapshot_idx, snapshots_before.last().copied());
+        assert!(ctx.pending_outcome().is_none());
+        assert!(matches!(
+            ctx.retry_commit(),
+            Err(LocalLLMContextError::NoPendingCommit { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn snapshot_stage_failure_is_reported_and_retried() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = ScriptedLlm::new(script(vec![Ok(AiResponse::text("done"))]));
+        let mut ctx = LocalLLMContext::new_run(tmp.path(), request(), llm.clone()).unwrap();
+        let snapshots = run_dir(&ctx).join("snapshots");
+
+        struct BreakOnInfer {
+            inner: Arc<ScriptedLlm>,
+            path: PathBuf,
+        }
+        #[async_trait]
+        impl LlmClient for BreakOnInfer {
+            async fn infer(
+                &self,
+                req: LlmInferenceRequest,
+            ) -> Result<AiResponse, LLMComputeError> {
+                let result = self.inner.infer(req).await;
+                break_dir(&self.path);
+                result
+            }
+        }
+        ctx.llm = Arc::new(BreakOnInfer {
+            inner: llm.clone(),
+            path: snapshots.clone(),
+        });
+        ctx.ctx = Some(LLMContext::new(
+            ctx.request.lower_to_waist(&ctx.run_id),
+            build_deps(
+                &ctx.dir,
+                &ctx.run_id,
+                ctx.llm.clone(),
+                ctx.snapshot_store.clone(),
+                ctx.meta.clone(),
+            )
+            .unwrap(),
+        ));
+
+        let err = ctx.step().await.err().expect("snapshot commit must fail");
+        assert!(matches!(
+            err,
+            LocalLLMContextError::CommitFailed {
+                stage: CommitStage::Snapshot,
+                ..
+            }
+        ));
+        assert!(!run_dir(&ctx).join("outcomes").join("final.json").exists());
+        heal_dir(&snapshots);
+        assert!(matches!(
+            ctx.retry_commit().unwrap(),
+            LLMContextOutcome::Done { .. }
+        ));
+        assert_eq!(llm.calls(), 1);
+        assert_eq!(read_state(&ctx).status, RunStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn pre_inference_checkpoint_commits_index_and_resume_skips_executed_tools() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = ScriptedLlm::blocking_after(script(vec![Ok(AiResponse::from_parts(
+            None,
+            vec![echo_call("c-1")],
+            vec![],
+        ))]));
+        let mut ctx = LocalLLMContext::new_run(tmp.path(), request(), llm.clone()).unwrap();
+        let run_id = ctx.run_id().to_string();
+
+        // Second inference never returns: simulate a crash mid-run by
+        // dropping the in-flight step.
+        let stepped = tokio::time::timeout(Duration::from_secs(5), ctx.step()).await;
+        assert!(stepped.is_err(), "second inference should still be blocked");
+        assert_eq!(llm.calls(), 2);
+        let state = read_state(&ctx);
+        assert_eq!(state.status, RunStatus::Running);
+        let committed_idx = state.latest_snapshot_idx.unwrap();
+        assert_eq!(
+            committed_idx,
+            *ctx.snapshot_store.list().unwrap().last().unwrap(),
+            "pre-inference checkpoint must commit its index"
+        );
+        drop(ctx);
+
+        let llm2 = ScriptedLlm::new(script(vec![Ok(AiResponse::text("after resume"))]));
+        let mut resumed = LocalLLMContext::resume_or_new(tmp.path(), request(), llm2.clone())
+            .expect("resume from the checkpoint");
+        assert_eq!(resumed.run_id(), run_id);
+        let outcome = resumed.step().await.unwrap();
+        assert!(matches!(outcome, LLMContextOutcome::Done { .. }));
+        let first = &llm2.seen()[0];
+        assert!(
+            first.iter().any(|m| m.role == AiRole::Tool),
+            "resume must continue after the executed tool round, not replay it"
+        );
+        assert_eq!(read_state(&resumed).status, RunStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn provider_failure_is_committed_as_terminal_without_retry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = ScriptedLlm::new(script(vec![Err(LLMComputeError::provider(
+            ProviderFailure::Transient,
+            "aicc down",
+        ))]));
+        let mut ctx = LocalLLMContext::new_run(tmp.path(), request(), llm.clone()).unwrap();
+        let outcome = ctx.step().await.unwrap();
+        let LLMContextOutcome::Error { error, .. } = outcome else {
+            panic!("expected Error");
+        };
+        assert!(matches!(error, LLMComputeError::Provider { .. }));
+        assert_eq!(llm.calls(), 1);
+        assert_eq!(read_state(&ctx).status, RunStatus::Completed);
+        assert!(run_dir(&ctx).join("outcomes").join("final.json").is_file());
+    }
+
+    #[tokio::test]
+    async fn half_committed_run_is_repaired_instead_of_resumed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = ScriptedLlm::new(script(vec![Ok(AiResponse::text("done"))]));
+        let mut ctx = LocalLLMContext::new_run(tmp.path(), request(), llm.clone()).unwrap();
+        ctx.step().await.unwrap();
+        let old_run_id = ctx.run_id().to_string();
+        let mut state = read_state(&ctx);
+        state.status = RunStatus::Running;
+        state.latest_snapshot_idx = Some(1);
+        write_run_state(tmp.path(), &state).unwrap();
+        drop(ctx);
+
+        let llm2 = ScriptedLlm::new(script(vec![]));
+        let fresh = LocalLLMContext::resume_or_new(tmp.path(), request(), llm2.clone()).unwrap();
+        assert_ne!(fresh.run_id(), old_run_id);
+        assert_eq!(llm2.calls(), 0);
+        let bytes = std::fs::read(tmp.path().join("runs").join(&old_run_id).join("state.json"))
+            .unwrap();
+        let repaired: RunMetaState = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(repaired.status, RunStatus::Completed);
+        let store = FileSnapshotStore::new(tmp.path().join("runs").join(&old_run_id));
+        assert_eq!(
+            repaired.latest_snapshot_idx,
+            store.list().unwrap().last().copied()
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_snapshot_is_reported_distinctly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = ScriptedLlm::new(script(vec![]));
+        let ctx = LocalLLMContext::new_run(tmp.path(), request(), llm.clone()).unwrap();
+        let mut state = read_state(&ctx);
+        state.latest_snapshot_idx = Some(42);
+        write_run_state(tmp.path(), &state).unwrap();
+        drop(ctx);
+        let err = LocalLLMContext::resume_or_new(tmp.path(), request(), llm)
+            .err()
+            .unwrap();
+        assert!(matches!(err, LocalLLMContextError::SnapshotMissing { idx: 42, .. }));
+    }
+}

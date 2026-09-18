@@ -393,7 +393,7 @@ fn build_outcome_result(
             };
             (result, CLI_EXIT_ERROR)
         }
-        LLMContextOutcome::Error { error, usage } => {
+        LLMContextOutcome::Error { error, usage, .. } => {
             let details = json!({
                 "work_dir": work_dir_str,
                 "run_id": run_id,

@@ -12,7 +12,7 @@ use buckyos_api::{AiMessage, AiResponse, AiToolCall};
 use serde_json::Value;
 
 use crate::behavior_loop::{LLMResultParser, StepRenderer, StepResultHook};
-use crate::error::LLMComputeError;
+use crate::error::{CheckpointStage, LLMComputeError};
 use crate::interrupt::InferenceAbortToken;
 use crate::observation::Observation;
 use crate::request::{LLMContextRequest, ToolPolicy};
@@ -59,12 +59,46 @@ pub trait LlmClient: Send + Sync {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError>;
 }
 
+/// Failure of the tool dispatch infrastructure itself (sandbox unreachable,
+/// transport broken, dispatcher panic caught at the boundary). Distinct from
+/// a tool that ran and reported an error — that is `Observation::Error`.
+///
+/// `effect_unknown` must be `true` whenever the call may have started; the
+/// waist then records the result as unknown and never replays the call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolDispatchError {
+    pub message: String,
+    pub effect_unknown: bool,
+}
+
+impl ToolDispatchError {
+    pub fn not_started(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            effect_unknown: false,
+        }
+    }
+
+    pub fn effect_unknown(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            effect_unknown: true,
+        }
+    }
+}
+
 /// Effect-side dispatcher. Implementations bridge to whatever tool
 /// substrate the scheduler owns (Agent tool manager, MCP, sandbox, ...).
 #[async_trait]
 pub trait ToolManager: Send + Sync {
     /// Run one tool call and return a normalised observation.
-    async fn call_tool(&self, call: AiToolCall) -> Observation;
+    ///
+    /// `Ok(Observation::Error)` is a business failure the LLM can react to
+    /// (bad arguments, command exited non-zero, tool not found). `Err` is an
+    /// infrastructure failure: the waist stops dispatching the remaining
+    /// calls of the round, keeps the results already obtained, and ends the
+    /// run with `LLMComputeError::ToolRuntime` for the runtime to handle.
+    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError>;
 
     /// Specs advertised to the LLM. Returning empty is fine — callers can
     /// also disable tool dispatch via `ToolPolicy.mode = None`.
@@ -142,6 +176,22 @@ pub enum WorkEvent {
         trace_id: Option<String>,
         error: String,
     },
+    /// Tool dispatch infrastructure failed (see `ToolDispatchError`). The
+    /// remaining calls of the round were not dispatched.
+    ToolDispatchFailed {
+        trace_id: Option<String>,
+        tool: String,
+        call_id: String,
+        message: String,
+        effect_unknown: bool,
+    },
+    /// A critical checkpoint could not be committed; the run stopped
+    /// without starting the next inference.
+    CheckpointFailed {
+        trace_id: Option<String>,
+        stage: CheckpointStage,
+        error: String,
+    },
     ContextRewritten {
         trace_id: Option<String>,
         from_messages: usize,
@@ -172,17 +222,23 @@ pub trait Tokenizer: Send + Sync {
 
 /// Per-turn hook invoked **before** every LLM inference (§3.12 of the design
 /// doc). The hook receives a read-only view of the current snapshot, so an L4
-/// persistence layer can flush it to disk and achieve "no double-bill on
-/// crash" semantics.
+/// persistence layer can flush it to disk before the next inference is paid
+/// for.
 ///
 /// Constraints:
 /// - Hook implementations should be fast — the waist blocks the inference
 ///   until the hook returns, so any I/O lengthens end-to-end latency.
-/// - Hooks must not panic. Internal failure modes (e.g. write errors) are an
-///   effect-side concern; the waist does not surface them.
+/// - Hooks must not panic. A failed critical checkpoint is reported through
+///   `Err(reason)`: the waist then does **not** start the inference and ends
+///   the run with `LLMComputeError::Checkpoint { stage: BeforeInference }`.
+///   The snapshot handed to the hook is exactly the state the run stopped
+///   at, so the runtime can retry the checkpoint and resume with
+///   `ResumeFill::ResumeFromMidRun` without replaying any side effect.
 /// - Hooks receive `&LLMContextSnapshot` and must not mutate waist state.
+/// - Runs without a hook are legal; best-effort observers that must never
+///   block progress should log and return `Ok(())`.
 pub trait TurnHook: Send + Sync {
-    fn before_inference(&self, snapshot: &LLMContextSnapshot);
+    fn before_inference(&self, snapshot: &LLMContextSnapshot) -> Result<(), String>;
 }
 
 /// No-op worklog sink. Useful for tests and `OneShot` scenarios.
