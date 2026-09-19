@@ -3,6 +3,7 @@
 ## 协议文档
 
 - [run_local_llm SDK 化：目录与命令行协议基线](local_llm_context_protocol.md)：工具 SDK 化范围、Rust 协议现状与 TS 设计参考；Rust 库改造另行处理。
+- [xllm Rust SDK 参考](xllm_rust_sdk.md)：按 xllm PRD 重写后的 Rust `local_llm_context` SDK / `agent_tool xllm` CLI 的协议摘要（Run 目录格式、状态机、退出码、提示词组装），供 TS 版本对照实现。
 
 ## 背景
 

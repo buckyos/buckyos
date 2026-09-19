@@ -112,8 +112,11 @@ pub fn now_ms() -> u64 {
 pub use llm_compress::{compress, LlmSummarizeCompressor, DEFAULT_KEEP_RECENT_MESSAGES};
 pub use llm_understand_media::{LlmUnderstandMediaTool, TOOL_LLM_UNDERSTAND_MEDIA};
 pub use local_llm_context::{
-    Compressor, FileSnapshotStore, LocalLLMContext, OneShotRequest, RunMetaState, RunStatus,
-    SnapshotStore, SuspendKind, DEFAULT_CONTEXT_YIELD_RATIO, DEFAULT_MAX_CONSECUTIVE_ERRORS,
+    AiccLlmClient, Attachment, DefaultLlmClientFactory, EffectiveConfig, EffectiveTools,
+    ExtractedValue, LlmClientFactory, LoopModel, OpenAiLlmClient, ProviderKind, ResultFormat,
+    ResumeLimits, ResumeStart, RunEvent, RunLogLevel, RunObserver, RunOutcome, RunPhase,
+    RunRecord, RunStatus, RunStore, RunSummary, TaskInput, TaskOverrides, XllmDeps, XllmError,
+    XllmResult, XllmRun, XllmTask, DEFAULT_CONTEXT_YIELD_RATIO, DEFAULT_MAX_CONSECUTIVE_ERRORS,
 };
 pub use workspace::{
     ExternalWorkspaceBinding, ExternalWorkspaceRuntimeBackend, ExternalWorkspaceServiceConfig,

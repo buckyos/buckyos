@@ -6,21 +6,22 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use buckyos_api::{get_buckyos_api_runtime, AiContent, AiMessage, AiRole, ResourceRef};
 use llm_context::deps::{LLMContextDeps, ToolManager};
-use llm_context::{
-    ContextOutput, LLMContextOutcome, LlmClient, ModelPolicy, OutputSpec, ToolMode, ToolPolicy,
-};
+use llm_context::{ContextOutput, LlmClient};
 use ndn_lib::FileObject;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
-use crate::run_local_llm::{ensure_buckyos_runtime, AiccLlmClient};
+use crate::local_llm_context::{
+    ensure_buckyos_runtime, AiccLlmClient, LoopModel, RunOutcome, TaskInput, TaskOverrides,
+    XllmDeps, XllmRun, XllmTask,
+};
 use crate::{
     cli_error_result, llm_compress, render_cli_output, AgentTool, AgentToolError,
-    AgentToolPendingReason, AgentToolResult, AgentToolStatus, CallingConventions, LocalLLMContext,
-    OneShotRequest, SessionRuntimeContext, ToolSpec, AGENT_TOOL_PROTOCOL_VERSION, CLI_EXIT_ERROR,
-    CLI_EXIT_SUCCESS, CLI_EXIT_USAGE,
+    AgentToolPendingReason, AgentToolResult, AgentToolStatus, CallingConventions,
+    SessionRuntimeContext, ToolSpec, AGENT_TOOL_PROTOCOL_VERSION, CLI_EXIT_ERROR, CLI_EXIT_SUCCESS,
+    CLI_EXIT_USAGE,
 };
 
 pub const TOOL_LLM_UNDERSTAND_MEDIA: &str = "llm_understand_media";
@@ -325,21 +326,34 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
 
     let parent_history_count = purified.len();
     let compressed_history_count = compressed.len();
-    let request = build_request(&opts, media_content, model_alias.clone(), compressed);
+    let input = build_input(&opts, media_content, compressed);
     let work_dir = opts
         .work_dir
         .clone()
         .unwrap_or_else(|| default_work_dir(&opts.goal));
-    let mut ctx = match LocalLLMContext::resume_or_new(work_dir.clone(), request, llm) {
-        Ok(ctx) => ctx,
+    let overrides = media_overrides(&opts, model_alias.clone(), work_dir.clone());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let xllm_deps = XllmDeps::default().with_llm(llm);
+    let prepared =
+        match XllmTask::prepare(&cwd, TaskInput::structured(input), overrides, &xllm_deps).await {
+            Ok(p) => p,
+            Err(err) => {
+                return (
+                    build_error_result(&opts, format!("prepare task failed: {err}")),
+                    CLI_EXIT_ERROR,
+                );
+            }
+        };
+    let mut run = match XllmRun::start(prepared, xllm_deps).await {
+        Ok(r) => r,
         Err(err) => {
             return (
-                build_error_result(&opts, format!("LocalLLMContext init failed: {err}")),
+                build_error_result(&opts, format!("start run failed: {err}")),
                 CLI_EXIT_ERROR,
             );
         }
     };
-    let run_id = ctx.run_id().to_string();
+    let run_id = run.run_id().to_string();
     eprintln!(
         "llm_understand_media: work_dir={} run_id={}",
         work_dir.display(),
@@ -359,12 +373,10 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         opts.goal
     );
 
-    let compressor =
-        crate::LlmSummarizeCompressor::new(deps, opts.summary_model.clone(), opts.target_tokens);
-    let outcome = match ctx.drive_to_terminal(&compressor).await {
+    let outcome = match run.execute().await {
         Ok(outcome) => outcome,
         Err(err) => {
-            let message = format!("drive_to_terminal failed: {err}");
+            let message = format!("execute failed: {err}");
             log::error!(
                 "llm_understand_media: {}; work_dir={} run_id={} goal={}",
                 message,
@@ -381,227 +393,213 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
     build_outcome_result(outcome, &mime, &work_dir, &run_id, &opts.goal, &media_id)
 }
 
-fn build_request(
+/// 媒体侧 context 的执行配置：无工具、JSON 报告、关闭 web_search。
+fn media_overrides(opts: &RunOpts, model_alias: String, work_dir: PathBuf) -> TaskOverrides {
+    TaskOverrides {
+        model: Some(model_alias),
+        loop_model: Some(LoopModel::FunctionCall),
+        tools: Some(false),
+        max_tokens: Some(opts.max_completion_tokens),
+        runs_dir: Some(work_dir),
+        json: true,
+        json_schema: Some(report_schema()),
+        disable_capabilities: vec!["web_search".to_string()],
+        ..Default::default()
+    }
+}
+
+fn build_input(
     opts: &RunOpts,
     media_content: Vec<AiContent>,
-    model_alias: String,
     parent_history: Vec<AiMessage>,
-) -> OneShotRequest {
+) -> Vec<AiMessage> {
     let mut input = Vec::with_capacity(parent_history.len() + 2);
     input.push(AiMessage::text(AiRole::System, SYSTEM_PROMPT));
     input.extend(parent_history);
     let mut user_content = media_content;
     user_content.push(AiContent::text(format!("Goal: {}", opts.goal)));
     input.push(AiMessage::new(AiRole::User, user_content));
-
-    let mut req = OneShotRequest::new(opts.goal.clone(), input);
-    req.model_policy = Some(ModelPolicy {
-        preferred: model_alias,
-        fallbacks: Vec::new(),
-        temperature: Some(0.0),
-        max_completion_tokens: Some(opts.max_completion_tokens),
-        provider_options: None,
-    });
-    req.tool_policy = Some(ToolPolicy {
-        mode: ToolMode::None,
-        action_mode: ToolMode::None,
-        max_rounds: 0,
-        max_calls_per_round: 0,
-        disable_capabilities: vec!["web_search".to_string()],
-        allow_deferred: false,
-        ..ToolPolicy::default()
-    });
-    req.output = Some(OutputSpec::Json {
-        schema: Some(report_schema()),
-        strict: false,
-    });
-    req.budget = Some(llm_context::request::BudgetSpec {
-        max_total_tokens: Some(
-            opts.target_tokens
-                .saturating_add(opts.max_completion_tokens),
-        ),
-        max_completion_tokens: Some(opts.max_completion_tokens),
-        ..Default::default()
-    });
-    req
+    input
 }
 
 fn build_outcome_result(
-    outcome: LLMContextOutcome,
+    outcome: RunOutcome,
     mime: &str,
     work_dir: &PathBuf,
     run_id: &str,
     goal: &str,
     media_id: &str,
 ) -> (AgentToolResult, i32) {
+    let record = outcome.record().clone();
+    let usage = record.usage.total();
+    let latency_ms = record.updated_at_ms.saturating_sub(record.created_at_ms);
     match outcome {
-        LLMContextOutcome::Done {
-            output,
-            trace,
-            usage,
-            ..
-        } => match parse_report_output(&output) {
-            Ok(report) => {
-                log::info!(
-                    "llm_understand_media: completed; work_dir={} run_id={} mime={} media_id={} confidence={:?} conclusion={}",
-                    work_dir.display(),
-                    run_id,
-                    mime,
-                    media_id,
-                    report.confidence,
-                    truncate_for_summary(&report.conclusion, 200)
-                );
-                let rendered = render_report(&report);
-                let summary = truncate_for_summary(&report.conclusion, 200);
-                (
-                    AgentToolResult {
-                        agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-                        tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
-                        cmd_name: None,
-                        status: AgentToolStatus::Success,
-                        task_id: None,
-                        pending_reason: None,
-                        check_after: None,
-                        estimated_wait: None,
-                        title: format!("{TOOL_LLM_UNDERSTAND_MEDIA} => done"),
-                        summary,
-                        details: serde_json::to_value(&report).unwrap_or_else(|_| json!({})),
-                        cmd_args: None,
-                        return_code: Some(0),
-                        partial_output: None,
-                        output: Some(rendered),
-                    },
-                    CLI_EXIT_SUCCESS,
-                )
+        RunOutcome::Completed(_) => {
+            let raw = record
+                .result
+                .as_ref()
+                .map(|r| r.raw.clone())
+                .unwrap_or_default();
+            let output = match serde_json::from_str::<Value>(raw.trim()) {
+                Ok(content) => ContextOutput::Json { content },
+                Err(_) => ContextOutput::Text { content: raw },
+            };
+            match parse_report_output(&output) {
+                Ok(report) => {
+                    log::info!(
+                        "llm_understand_media: completed; work_dir={} run_id={} mime={} media_id={} confidence={:?} conclusion={}",
+                        work_dir.display(),
+                        run_id,
+                        mime,
+                        media_id,
+                        report.confidence,
+                        truncate_for_summary(&report.conclusion, 200)
+                    );
+                    let rendered = render_report(&report);
+                    let summary = truncate_for_summary(&report.conclusion, 200);
+                    (
+                        AgentToolResult {
+                            agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                            tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
+                            cmd_name: None,
+                            status: AgentToolStatus::Success,
+                            task_id: None,
+                            pending_reason: None,
+                            check_after: None,
+                            estimated_wait: None,
+                            title: format!("{TOOL_LLM_UNDERSTAND_MEDIA} => done"),
+                            summary,
+                            details: serde_json::to_value(&report).unwrap_or_else(|_| json!({})),
+                            cmd_args: None,
+                            return_code: Some(0),
+                            partial_output: None,
+                            output: Some(rendered),
+                        },
+                        CLI_EXIT_SUCCESS,
+                    )
+                }
+                Err(err) => {
+                    let raw_output = output_to_text(&output);
+                    let raw_output_chars = raw_output.chars().count();
+                    let raw_output_preview =
+                        truncate_for_summary(&raw_output, RAW_OUTPUT_LOG_PREVIEW_CHARS);
+                    let output_kind = context_output_kind(&output);
+                    let final_outcome_path = run_final_outcome_path(work_dir, run_id);
+                    let raw_output_path = match write_parse_error_raw_output(
+                        work_dir,
+                        run_id,
+                        &raw_output,
+                    ) {
+                        Ok(path) => Some(path),
+                        Err(write_err) => {
+                            log::warn!(
+                                "llm_understand_media: write parse error raw output failed: {}; work_dir={} run_id={}",
+                                write_err,
+                                work_dir.display(),
+                                run_id
+                            );
+                            None
+                        }
+                    };
+                    log::error!(
+                        "llm_understand_media: parse understanding report failed: {}; work_dir={} run_id={} mime={} output_kind={} raw_output_chars={} raw_output_preview={:?} final_outcome_path={} raw_output_path={} goal={}",
+                        err,
+                        work_dir.display(),
+                        run_id,
+                        mime,
+                        output_kind,
+                        raw_output_chars,
+                        raw_output_preview,
+                        final_outcome_path.display(),
+                        raw_output_path
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "<unwritten>".to_string()),
+                        goal
+                    );
+                    (
+                        AgentToolResult {
+                            agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                            tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
+                            cmd_name: None,
+                            status: AgentToolStatus::Error,
+                            task_id: None,
+                            pending_reason: None,
+                            check_after: None,
+                            estimated_wait: None,
+                            title: format!("{TOOL_LLM_UNDERSTAND_MEDIA} => parse_error"),
+                            summary: format!("parse understanding report failed: {err}"),
+                            details: json!({
+                                "error": err,
+                                "mime": mime,
+                                "work_dir": work_dir.display().to_string(),
+                                "run_id": run_id,
+                                "output_kind": output_kind,
+                                "raw_output": raw_output,
+                                "raw_output_chars": raw_output_chars,
+                                "raw_output_preview": raw_output_preview,
+                                "raw_output_path": raw_output_path
+                                    .as_ref()
+                                    .map(|path| path.display().to_string()),
+                                "final_outcome_path": final_outcome_path.display().to_string(),
+                                "usage": usage,
+                                "latency_ms": latency_ms,
+                            }),
+                            cmd_args: None,
+                            return_code: None,
+                            partial_output: None,
+                            output: None,
+                        },
+                        CLI_EXIT_ERROR,
+                    )
+                }
             }
-            Err(err) => {
-                let raw_output = output_to_text(&output);
-                let raw_output_chars = raw_output.chars().count();
-                let raw_output_preview =
-                    truncate_for_summary(&raw_output, RAW_OUTPUT_LOG_PREVIEW_CHARS);
-                let output_kind = context_output_kind(&output);
-                let final_outcome_path = run_final_outcome_path(work_dir, run_id);
-                let raw_output_path = match write_parse_error_raw_output(
-                    work_dir,
-                    run_id,
-                    &raw_output,
-                ) {
-                    Ok(path) => Some(path),
-                    Err(write_err) => {
-                        log::warn!(
-                            "llm_understand_media: write parse error raw output failed: {}; work_dir={} run_id={}",
-                            write_err,
-                            work_dir.display(),
-                            run_id
-                        );
-                        None
-                    }
-                };
-                log::error!(
-                    "llm_understand_media: parse understanding report failed: {}; work_dir={} run_id={} mime={} output_kind={} raw_output_chars={} raw_output_preview={:?} final_outcome_path={} raw_output_path={} goal={}",
-                    err,
-                    work_dir.display(),
-                    run_id,
-                    mime,
-                    output_kind,
-                    raw_output_chars,
-                    raw_output_preview,
-                    final_outcome_path.display(),
-                    raw_output_path
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "<unwritten>".to_string()),
-                    goal
-                );
-                (
-                    AgentToolResult {
-                        agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-                        tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
-                        cmd_name: None,
-                        status: AgentToolStatus::Error,
-                        task_id: None,
-                        pending_reason: None,
-                        check_after: None,
-                        estimated_wait: None,
-                        title: format!("{TOOL_LLM_UNDERSTAND_MEDIA} => parse_error"),
-                        summary: format!("parse understanding report failed: {err}"),
-                        details: json!({
-                            "error": err,
-                            "mime": mime,
-                            "work_dir": work_dir.display().to_string(),
-                            "run_id": run_id,
-                            "output_kind": output_kind,
-                            "raw_output": raw_output,
-                            "raw_output_chars": raw_output_chars,
-                            "raw_output_preview": raw_output_preview,
-                            "raw_output_path": raw_output_path
-                                .as_ref()
-                                .map(|path| path.display().to_string()),
-                            "final_outcome_path": final_outcome_path.display().to_string(),
-                            "usage": usage,
-                            "latency_ms": trace.latency_ms,
-                        }),
-                        cmd_args: None,
-                        return_code: None,
-                        partial_output: None,
-                        output: None,
-                    },
-                    CLI_EXIT_ERROR,
-                )
-            }
-        },
-        LLMContextOutcome::PendingTool { pending, .. } => (
-            AgentToolResult {
-                agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-                tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
-                cmd_name: None,
-                status: AgentToolStatus::Pending,
-                task_id: None,
-                pending_reason: Some(AgentToolPendingReason::LongRunning),
-                check_after: None,
-                estimated_wait: None,
-                title: format!("{TOOL_LLM_UNDERSTAND_MEDIA} => pending_tool"),
-                summary: format!("pending {} tool call(s)", pending.len()),
-                details: json!({ "pending": pending }),
-                cmd_args: None,
-                return_code: None,
-                partial_output: None,
-                output: None,
-            },
-            CLI_EXIT_SUCCESS,
-        ),
-        LLMContextOutcome::BudgetExhausted {
-            which,
-            partial,
-            usage,
-        } => (
-            AgentToolResult {
-                agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-                tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
-                cmd_name: None,
-                status: AgentToolStatus::Error,
-                task_id: None,
-                pending_reason: None,
-                check_after: None,
-                estimated_wait: None,
-                title: format!("{TOOL_LLM_UNDERSTAND_MEDIA} => budget_exhausted"),
-                summary: format!("budget exhausted ({which:?})"),
-                details: json!({
-                    "outcome": "budget_exhausted",
-                    "which": which,
-                    "usage": usage,
-                }),
-                cmd_args: None,
-                return_code: None,
-                partial_output: partial.as_ref().map(output_to_text),
-                output: None,
-            },
-            CLI_EXIT_ERROR,
-        ),
-        LLMContextOutcome::Error { error, usage, .. } => {
+        }
+        RunOutcome::Paused(_) | RunOutcome::Interrupted(_) => {
+            let reason = record
+                .last_error
+                .as_ref()
+                .map(|e| e.message.clone())
+                .or_else(|| record.interrupt_reason.clone())
+                .unwrap_or_else(|| record.status.label().to_string());
+            (
+                AgentToolResult {
+                    agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                    tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
+                    cmd_name: None,
+                    status: AgentToolStatus::Pending,
+                    task_id: Some(run_id.to_string()),
+                    pending_reason: Some(AgentToolPendingReason::LongRunning),
+                    check_after: None,
+                    estimated_wait: None,
+                    title: format!("{TOOL_LLM_UNDERSTAND_MEDIA} => {}", record.status.as_str()),
+                    summary: format!("run {}: {reason}", record.status.label()),
+                    details: json!({
+                        "outcome": record.status.as_str(),
+                        "reason": reason,
+                        "usage": usage,
+                        "work_dir": work_dir.display().to_string(),
+                        "run_id": run_id,
+                        "resume": record.resume_command(),
+                    }),
+                    cmd_args: None,
+                    return_code: None,
+                    partial_output: None,
+                    output: None,
+                },
+                CLI_EXIT_SUCCESS,
+            )
+        }
+        RunOutcome::LimitReached(_) | RunOutcome::Failed(_) => {
+            let reason = record
+                .limit_reason
+                .clone()
+                .or_else(|| record.last_error.as_ref().map(|e| e.message.clone()))
+                .unwrap_or_else(|| record.status.label().to_string());
             log::error!(
-                "llm_understand_media: llm outcome error: {}; work_dir={} run_id={} goal={}",
-                error,
+                "llm_understand_media: llm outcome {}: {}; work_dir={} run_id={} goal={}",
+                record.status.as_str(),
+                reason,
                 work_dir.display(),
                 run_id,
                 goal
@@ -616,12 +614,12 @@ fn build_outcome_result(
                     pending_reason: None,
                     check_after: None,
                     estimated_wait: None,
-                    title: format!("{TOOL_LLM_UNDERSTAND_MEDIA} => error"),
-                    summary: format!("llm error: {error}"),
+                    title: format!("{TOOL_LLM_UNDERSTAND_MEDIA} => {}", record.status.as_str()),
+                    summary: format!("{}: {reason}", record.status.label()),
                     details: json!({
-                        "error": format!("{error}"),
-                        "error_detail": serde_json::to_value(&error)
-                            .unwrap_or_else(|_| json!({ "message": format!("{error}") })),
+                        "outcome": record.status.as_str(),
+                        "error": reason,
+                        "error_detail": record.last_error,
                         "mime": mime,
                         "work_dir": work_dir.display().to_string(),
                         "run_id": run_id,
@@ -635,46 +633,6 @@ fn build_outcome_result(
                 CLI_EXIT_ERROR,
             )
         }
-        LLMContextOutcome::ContextLimitReached { which, .. } => (
-            AgentToolResult {
-                agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-                tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
-                cmd_name: None,
-                status: AgentToolStatus::Error,
-                task_id: None,
-                pending_reason: None,
-                check_after: None,
-                estimated_wait: None,
-                title: format!("{TOOL_LLM_UNDERSTAND_MEDIA} => context_limit_reached"),
-                summary: format!("context limit surfaced unexpectedly: {which:?}"),
-                details: json!({ "which": format!("{which:?}") }),
-                cmd_args: None,
-                return_code: None,
-                partial_output: None,
-                output: None,
-            },
-            CLI_EXIT_ERROR,
-        ),
-        LLMContextOutcome::Interrupted { reason, usage, .. } => (
-            AgentToolResult {
-                agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-                tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
-                cmd_name: None,
-                status: AgentToolStatus::Pending,
-                task_id: None,
-                pending_reason: Some(AgentToolPendingReason::LongRunning),
-                check_after: None,
-                estimated_wait: None,
-                title: format!("{TOOL_LLM_UNDERSTAND_MEDIA} => interrupted"),
-                summary: format!("inference interrupted: {reason}"),
-                details: json!({ "reason": reason, "usage": usage }),
-                cmd_args: None,
-                return_code: None,
-                partial_output: None,
-                output: None,
-            },
-            CLI_EXIT_SUCCESS,
-        ),
     }
 }
 
@@ -1284,11 +1242,7 @@ fn context_output_kind(output: &ContextOutput) -> &'static str {
 }
 
 fn run_final_outcome_path(work_dir: &Path, run_id: &str) -> PathBuf {
-    work_dir
-        .join("runs")
-        .join(run_id)
-        .join("outcomes")
-        .join("final.json")
+    work_dir.join(run_id).join("run.json")
 }
 
 fn write_parse_error_raw_output(
@@ -1296,7 +1250,7 @@ fn write_parse_error_raw_output(
     run_id: &str,
     raw_output: &str,
 ) -> std::io::Result<PathBuf> {
-    let outcomes_dir = work_dir.join("runs").join(run_id).join("outcomes");
+    let outcomes_dir = work_dir.join(run_id);
     std::fs::create_dir_all(&outcomes_dir)?;
     let path = outcomes_dir.join("parse_error_raw_output.txt");
     std::fs::write(&path, raw_output)?;
@@ -1553,7 +1507,7 @@ fn normalize_completion_tokens(value: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{AiResponse, AiToolResultContent, AiUsage};
+    use buckyos_api::{AiToolResultContent, AiUsage};
 
     #[test]
     fn purify_history_omits_media_payloads() {
@@ -1637,23 +1591,25 @@ mod tests {
             max_completion_tokens: DEFAULT_MAX_COMPLETION_TOKENS,
         };
 
-        let request = build_request(
+        let input = build_input(
             &opts,
             vec![AiContent::image(ResourceRef::Base64 {
                 mime: "image/png".to_string(),
                 data_base64: "AAAA".to_string(),
             })],
-            DEFAULT_MODEL_ALIAS.to_string(),
             Vec::new(),
         );
-
-        let model_policy = request.model_policy.expect("model policy");
-        assert_eq!(model_policy.max_completion_tokens, Some(2_048));
-        assert_eq!(model_policy.provider_options, None);
-        let tool_policy = request.tool_policy.expect("tool policy");
-        assert_eq!(tool_policy.mode, ToolMode::None);
-        assert_eq!(tool_policy.action_mode, ToolMode::None);
-        assert!(tool_policy
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0].role, AiRole::System);
+        let overrides = media_overrides(
+            &opts,
+            DEFAULT_MODEL_ALIAS.to_string(),
+            PathBuf::from("/tmp/x"),
+        );
+        assert_eq!(overrides.max_tokens, Some(2_048));
+        assert_eq!(overrides.tools, Some(false));
+        assert!(overrides.json);
+        assert!(overrides
             .disable_capabilities
             .contains(&"web_search".to_string()));
     }
@@ -1666,23 +1622,12 @@ mod tests {
             "max_completion_tokens": 16384
         }))
         .expect("caller-selected media budget should be accepted");
-        let request = build_request(
+        let overrides = media_overrides(
             &opts,
-            vec![AiContent::image(ResourceRef::Base64 {
-                mime: "image/jpeg".to_string(),
-                data_base64: "AAAA".to_string(),
-            })],
             DEFAULT_MODEL_ALIAS.to_string(),
-            Vec::new(),
+            PathBuf::from("/tmp/x"),
         );
-        assert_eq!(
-            request.model_policy.unwrap().max_completion_tokens,
-            Some(16_384)
-        );
-        assert_eq!(
-            request.budget.unwrap().max_total_tokens,
-            Some(DEFAULT_TARGET_TOKENS + 16_384)
-        );
+        assert_eq!(overrides.max_tokens, Some(16_384));
     }
 
     #[test]
@@ -1797,13 +1742,8 @@ mod tests {
                 data_base64: "AAAA".to_string(),
             }),
         ];
-        let request = build_request(
-            &opts,
-            media_content,
-            DEFAULT_MODEL_ALIAS.to_string(),
-            Vec::new(),
-        );
-        let user = request.input.last().expect("user message");
+        let input = build_input(&opts, media_content, Vec::new());
+        let user = input.last().expect("user message");
         assert!(matches!(
             &user.content[0],
             AiContent::Text { text } if text.contains("1.250 seconds")
@@ -1822,26 +1762,26 @@ mod tests {
         ));
         let run_id = "20260524-234831-test";
         let raw = "{\n  \"observations\": [";
-        let outcome = LLMContextOutcome::Done {
-            reason: None,
-            output: ContextOutput::Text {
-                content: raw.to_string(),
-            },
-            usage: AiUsage {
-                input_tokens: Some(1),
-                output_tokens: Some(2),
-                total_tokens: Some(3),
-                request_units: None,
-            },
-            response: AiResponse::text(raw),
-            trace: llm_context::ContextRunTrace {
-                trace_id: run_id.to_string(),
-                latency_ms: 12,
-                tool_trace: Vec::new(),
-                llm_task_ids: Vec::new(),
-            },
-            behavior_result: None,
-        };
+        let mut record = crate::local_llm_context::RunRecord::synthetic(
+            run_id,
+            &work_dir,
+            crate::local_llm_context::RunStatus::Completed,
+        );
+        record.result = Some(crate::local_llm_context::RunResultRecord {
+            raw: raw.to_string(),
+            extracted: None,
+            extract_error: None,
+            json_valid: None,
+            json_error: None,
+            response_model: None,
+        });
+        record.usage.main = Some(AiUsage {
+            input_tokens: Some(1),
+            output_tokens: Some(2),
+            total_tokens: Some(3),
+            request_units: None,
+        });
+        let outcome = RunOutcome::Completed(record);
 
         let (result, exit_code) = build_outcome_result(
             outcome,
@@ -1861,7 +1801,7 @@ mod tests {
         assert!(result.details["final_outcome_path"]
             .as_str()
             .unwrap()
-            .ends_with("outcomes/final.json"));
+            .ends_with("run.json"));
 
         let _ = std::fs::remove_dir_all(work_dir);
     }

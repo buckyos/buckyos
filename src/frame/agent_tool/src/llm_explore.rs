@@ -6,7 +6,7 @@
 //! - `--description` (objective): 写进 worklog,不进 prompt。
 //! - `--prompt`     (user content): 实际给 LLM 看的任务说明。
 //!
-//! 我们在一个本地目录上起一个 [`LocalLLMContext`],预装好 Read / Glob /
+//! 我们在一个本地目录上起一个 xllm Run（`local_llm_context`）,预装好 bash 工具组 /
 //! Grep / exec_bash 等只读 / 读写工具,把这套 system prompt 钉在第一条
 //! 消息上,然后 `drive_to_terminal`,把最终的助手输出整理成
 //! `AgentToolResult` 写到 stdout。
@@ -39,22 +39,23 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use buckyos_api::{AiMessage, AiRole};
-use llm_context::{ContextOutput, LLMContextOutcome, LlmClient, ModelPolicy, ToolMode, ToolPolicy};
+use llm_context::LlmClient;
 use serde_json::{json, Value};
 
-use crate::run_local_llm::{ensure_buckyos_runtime, AiccLlmClient, KeepTailCompressor};
+use crate::local_llm_context::{
+    ensure_buckyos_runtime, AiccLlmClient, LoopModel, RunOutcome, TaskInput, TaskOverrides,
+    XllmDeps, XllmRun, XllmTask,
+};
 use crate::{
     cli_error_result, render_cli_output, AgentToolError, AgentToolPendingReason, AgentToolResult,
-    AgentToolStatus, LocalLLMContext, OneShotRequest, AGENT_TOOL_PROTOCOL_VERSION, CLI_EXIT_ERROR,
-    CLI_EXIT_SUCCESS, CLI_EXIT_USAGE,
+    AgentToolStatus, AGENT_TOOL_PROTOCOL_VERSION, CLI_EXIT_ERROR, CLI_EXIT_SUCCESS, CLI_EXIT_USAGE,
 };
 
 const TOOL_NAME: &str = "llm_explore";
 const DEFAULT_MODEL_ALIAS: &str = "llm.summary";
 const DEFAULT_MAX_ROUNDS: u32 = 16;
 
-/// 钉在每个 llm_explore run 上的 system prompt。来自 agent_tool 仓库内
-/// `agent_tool/src/llm_explore.rs` 的设计注释。
+/// 钉在每个 llm_explore run 上的 system prompt。
 const SYSTEM_PROMPT: &str = "\
 You are a file search specialist. You excel at thoroughly navigating and exploring codebases.
 
@@ -64,11 +65,10 @@ Your strengths:
 - Reading and analyzing file contents
 
 Guidelines:
-- Use Glob/find for broad file pattern matching
-- Use Grep/grep for searching file contents with regex
-- Use Read when you know the specific file path you need to read
-- Use exec_bash ONLY for read-only operations: Glob, Grep, read_file, ls, git status, git log, git diff, find, cat, head, tail
-- NEVER use exec_bash for mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or file modifications
+- Use `exec` with find / grep / ls / git for broad discovery
+- Use `read_file` when you know the specific file path you need to read
+- Use `exec` ONLY for read-only operations: ls, find, grep, cat, head, tail, git status, git log, git diff
+- NEVER run mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or modify files
 - Adapt your search approach based on the thoroughness level specified by the caller
 - Communicate your final report directly as a regular message - do NOT attempt to create files
 
@@ -89,8 +89,10 @@ pub async fn run_subcommand(args: Vec<String>) -> i32 {
         }
         Err(ParseError::Bad(msg)) => {
             eprintln!("error: {msg}\n\n{}", USAGE);
-            let err = AgentToolError::InvalidArgs(msg);
-            emit_result(&cli_error_result(Some(TOOL_NAME), &err));
+            emit_result(&cli_error_result(
+                Some(TOOL_NAME),
+                &AgentToolError::InvalidArgs(msg),
+            ));
             return CLI_EXIT_USAGE;
         }
     };
@@ -106,17 +108,25 @@ fn emit_result(result: &AgentToolResult) {
 }
 
 async fn run(opts: CliOpts) -> (AgentToolResult, i32) {
-    let work_dir = match prepare_work_dir(&opts) {
-        Ok(dir) => dir,
-        Err(err) => {
-            return (
-                build_error_result(None, &opts, &format!("prepare work dir failed: {err}")),
-                CLI_EXIT_ERROR,
-            );
-        }
+    // 1) 工作目录（探索根）与 Runs 目录。
+    let root_dir = match opts.root_dir.clone() {
+        Some(p) => p,
+        None => match std::env::current_dir() {
+            Ok(p) => p,
+            Err(err) => {
+                return (
+                    build_error_result(None, &opts, &format!("cannot resolve cwd: {err}")),
+                    CLI_EXIT_ERROR,
+                )
+            }
+        },
     };
+    let work_dir = opts
+        .work_dir
+        .clone()
+        .unwrap_or_else(|| default_work_dir(&opts.description));
 
-    // 1) BuckyOS runtime + AICC client.
+    // 2) BuckyOS runtime + AICC client.
     if let Err(err) = ensure_buckyos_runtime().await {
         return (
             build_error_result(
@@ -128,106 +138,63 @@ async fn run(opts: CliOpts) -> (AgentToolResult, i32) {
         );
     }
     let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new());
+    let deps = XllmDeps::default().with_llm(llm);
 
-    // 2) OneShotRequest:system prompt + 用户 prompt + model + tools=All。
-    let request = build_request(&opts);
-
-    // 3) 起 / resume LocalLLMContext。同一个 work_dir 多次跑同一组 args 时
-    //    会自动 resume(基于 semantic_hash);第二次给不一样的 prompt 会
-    //    被拒绝,这是上层 `resume_or_new` 的设计意图,不在本工具里 hack 掉。
-    let mut ctx = match LocalLLMContext::resume_or_new(work_dir.clone(), request, llm) {
-        Ok(c) => c,
+    // 3) 结构化输入：system prompt + user prompt；工具 = bash 组（function_call）。
+    let input = TaskInput::structured(vec![
+        AiMessage::text(AiRole::System, SYSTEM_PROMPT),
+        AiMessage::text(AiRole::User, opts.prompt.clone()),
+    ]);
+    let overrides = TaskOverrides {
+        model: Some(
+            opts.model
+                .clone()
+                .unwrap_or_else(|| DEFAULT_MODEL_ALIAS.to_string()),
+        ),
+        loop_model: Some(LoopModel::FunctionCall),
+        tools: Some(true),
+        max_rounds: Some(DEFAULT_MAX_ROUNDS),
+        runs_dir: Some(work_dir.clone()),
+        ..Default::default()
+    };
+    let prepared = match XllmTask::prepare(&root_dir, input, overrides, &deps).await {
+        Ok(p) => p,
         Err(err) => {
             return (
-                build_error_result(
-                    Some(&work_dir),
-                    &opts,
-                    &format!("LocalLLMContext init failed: {err}"),
-                ),
+                build_error_result(Some(&work_dir), &opts, &format!("prepare failed: {err}")),
                 CLI_EXIT_ERROR,
-            );
+            )
         }
     };
-    let run_id = ctx.run_id().to_string();
+    let mut run = match XllmRun::start(prepared, deps).await {
+        Ok(r) => r,
+        Err(err) => {
+            return (
+                build_error_result(Some(&work_dir), &opts, &format!("start run failed: {err}")),
+                CLI_EXIT_ERROR,
+            )
+        }
+    };
+    let run_id = run.run_id().to_string();
     eprintln!(
         "llm_explore: work_dir={} run_id={}",
         work_dir.display(),
         run_id
     );
 
-    // 4) drive_to_terminal。压缩策略复用 run_local_llm 里那个简单的
-    //    "保留 system + 最近 N 条"——够用,不引二级 LLM 调用。
-    let compressor = KeepTailCompressor::new(8);
-    let outcome = match ctx.drive_to_terminal(&compressor).await {
+    // 4) 执行到本次停止点。
+    let outcome = match run.execute().await {
         Ok(o) => o,
         Err(err) => {
             return (
-                build_error_result(
-                    Some(&work_dir),
-                    &opts,
-                    &format!("drive_to_terminal failed: {err}"),
-                ),
+                build_error_result(Some(&work_dir), &opts, &format!("execute failed: {err}")),
                 CLI_EXIT_ERROR,
-            );
+            )
         }
     };
 
     // 5) 把 outcome 翻译成 AgentToolResult。
     build_outcome_result(&work_dir, &run_id, &opts, outcome)
-}
-
-// =========================================================================
-// work_dir 处理
-// =========================================================================
-
-/// 准备 work_dir。如果调用方给了 `--root-dir`,在 `work_dir/workspace`
-/// 处创建一个指向 root_dir 的符号链接,让 LocalLLMContext 的工具集
-/// (Read/Glob/Grep/exec_bash)直接 sandbox 在那个目录下。
-///
-/// 选符号链接而不是改 LocalLLMContext 的接口:LocalLLMContext 的工作目录
-/// 布局有自己的 invariants(state.json / snapshots / .lock 都靠固定的
-/// `<dir>/workspace` 子路径),从外面 inject 一个 workspace 路径破坏面太大;
-/// `ensure_dir_layout` 调 `create_dir_all`,对一个已经存在并指向目录的
-/// symlink 会返回 Ok,所以预先建好符号链接就能"借壳"完成接管。
-fn prepare_work_dir(opts: &CliOpts) -> std::io::Result<PathBuf> {
-    let work_dir = match opts.work_dir.as_ref() {
-        Some(p) => p.clone(),
-        None => default_work_dir(&opts.description),
-    };
-    std::fs::create_dir_all(&work_dir)?;
-
-    let workspace = work_dir.join("workspace");
-    let root = match opts.root_dir.as_ref() {
-        Some(p) => p.clone(),
-        None => std::env::current_dir()?,
-    };
-    let root = root.canonicalize().unwrap_or(root);
-
-    // 如果 workspace 已经存在且指向预期目录,不动它(resume 场景)。
-    let workspace_meta = std::fs::symlink_metadata(&workspace).ok();
-    match workspace_meta {
-        None => {
-            #[cfg(unix)]
-            {
-                std::os::unix::fs::symlink(&root, &workspace)?;
-            }
-            #[cfg(not(unix))]
-            {
-                // Windows fallback:不建 symlink,把 root 直接当 workspace。
-                // 由于 LocalLLMContext 自己会 create_dir_all,这里就让它建空目录,
-                // 用户会感知到"工具看到的是空 workspace"——比静默失败好。
-                let _ = &root;
-                std::fs::create_dir_all(&workspace)?;
-            }
-        }
-        Some(meta) if meta.file_type().is_symlink() => {
-            // 已经是 symlink,假定之前一次的 run 留下来的,沿用。
-        }
-        Some(_) => {
-            // 已经是真实目录(可能是上一次没传 --root-dir 起的 run),沿用。
-        }
-    }
-    Ok(work_dir)
 }
 
 fn default_work_dir(description: &str) -> PathBuf {
@@ -250,34 +217,6 @@ fn default_work_dir(description: &str) -> PathBuf {
 }
 
 // =========================================================================
-// OneShotRequest 构造
-// =========================================================================
-
-fn build_request(opts: &CliOpts) -> OneShotRequest {
-    let input = vec![
-        AiMessage::text(AiRole::System, SYSTEM_PROMPT),
-        AiMessage::text(AiRole::User, opts.prompt.clone()),
-    ];
-    let mut req = OneShotRequest::new(opts.description.clone(), input);
-    req.model_policy = Some(ModelPolicy {
-        preferred: opts
-            .model
-            .clone()
-            .unwrap_or_else(|| DEFAULT_MODEL_ALIAS.to_string()),
-        fallbacks: Vec::new(),
-        temperature: None,
-        max_completion_tokens: None,
-        provider_options: None,
-    });
-    req.tool_policy = Some(ToolPolicy {
-        mode: ToolMode::All,
-        max_rounds: DEFAULT_MAX_ROUNDS,
-        ..ToolPolicy::default()
-    });
-    req
-}
-
-// =========================================================================
 // outcome → AgentToolResult
 // =========================================================================
 
@@ -285,18 +224,18 @@ fn build_outcome_result(
     work_dir: &Path,
     run_id: &str,
     opts: &CliOpts,
-    outcome: LLMContextOutcome,
+    outcome: RunOutcome,
 ) -> (AgentToolResult, i32) {
     let work_dir_str = work_dir.display().to_string();
+    let record = outcome.record().clone();
+    let usage = record.usage.total();
     match outcome {
-        LLMContextOutcome::Done {
-            output,
-            response,
-            trace,
-            usage,
-            ..
-        } => {
-            let content = output_to_text(&output);
+        RunOutcome::Completed(_) => {
+            let content = record
+                .result
+                .as_ref()
+                .and_then(|r| r.extracted.as_ref().map(|e| e.to_output_text()))
+                .unwrap_or_default();
             let details = json!({
                 "work_dir": work_dir_str,
                 "run_id": run_id,
@@ -304,197 +243,106 @@ fn build_outcome_result(
                 "outcome": "done",
                 "content": content,
                 "usage": usage,
-                "latency_ms": trace.latency_ms,
-                "llm_task_ids": trace.llm_task_ids,
-                "response": response,
+                "latency_ms": record.updated_at_ms.saturating_sub(record.created_at_ms),
+                "artifacts": record.artifacts,
             });
             let summary = if content.trim().is_empty() {
                 format!("done (run_id={run_id})")
             } else {
                 truncate_for_summary(&content, 200)
             };
-            let result = AgentToolResult {
-                agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-                tool: Some(TOOL_NAME.to_string()),
-                cmd_name: None,
-                status: AgentToolStatus::Success,
-                task_id: None,
-                pending_reason: None,
-                check_after: None,
-                estimated_wait: None,
-                title: format!("{TOOL_NAME} => done"),
-                summary,
-                details,
-                cmd_args: None,
-                return_code: Some(0),
-                partial_output: None,
-                output: Some(content),
-            };
-            (result, CLI_EXIT_SUCCESS)
+            (
+                AgentToolResult {
+                    agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                    tool: Some(TOOL_NAME.to_string()),
+                    cmd_name: None,
+                    status: AgentToolStatus::Success,
+                    task_id: None,
+                    pending_reason: None,
+                    check_after: None,
+                    estimated_wait: None,
+                    title: format!("{TOOL_NAME} => done"),
+                    summary,
+                    details,
+                    cmd_args: None,
+                    return_code: Some(0),
+                    partial_output: None,
+                    output: Some(content),
+                },
+                CLI_EXIT_SUCCESS,
+            )
         }
-        LLMContextOutcome::PendingTool { pending, .. } => {
+        RunOutcome::Paused(_) | RunOutcome::Interrupted(_) => {
+            let reason = record
+                .last_error
+                .as_ref()
+                .map(|e| e.message.clone())
+                .or_else(|| record.interrupt_reason.clone())
+                .unwrap_or_else(|| "paused".to_string());
             let details = json!({
                 "work_dir": work_dir_str,
                 "run_id": run_id,
                 "description": opts.description,
-                "outcome": "pending_tool",
-                "pending": pending,
-            });
-            let result = AgentToolResult {
-                agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-                tool: Some(TOOL_NAME.to_string()),
-                cmd_name: None,
-                status: AgentToolStatus::Pending,
-                task_id: Some(run_id.to_string()),
-                pending_reason: Some(AgentToolPendingReason::LongRunning),
-                check_after: None,
-                estimated_wait: None,
-                title: format!("{TOOL_NAME} => pending_tool"),
-                summary: format!("pending {} tool call(s)", pending.len()),
-                details,
-                cmd_args: None,
-                return_code: None,
-                partial_output: None,
-                output: None,
-            };
-            (result, CLI_EXIT_SUCCESS)
-        }
-        LLMContextOutcome::BudgetExhausted {
-            which,
-            partial,
-            usage,
-        } => {
-            let partial_text = partial.as_ref().map(output_to_text);
-            let details = json!({
-                "work_dir": work_dir_str,
-                "run_id": run_id,
-                "description": opts.description,
-                "outcome": "budget_exhausted",
-                "which": which,
-                "usage": usage,
-                "partial": partial_text,
-            });
-            let result = AgentToolResult {
-                agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-                tool: Some(TOOL_NAME.to_string()),
-                cmd_name: None,
-                status: AgentToolStatus::Error,
-                task_id: None,
-                pending_reason: None,
-                check_after: None,
-                estimated_wait: None,
-                title: format!("{TOOL_NAME} => budget_exhausted"),
-                summary: format!("budget exhausted ({:?})", which),
-                details,
-                cmd_args: None,
-                return_code: None,
-                partial_output: partial_text,
-                output: None,
-            };
-            (result, CLI_EXIT_ERROR)
-        }
-        LLMContextOutcome::Error { error, usage, .. } => {
-            let details = json!({
-                "work_dir": work_dir_str,
-                "run_id": run_id,
-                "description": opts.description,
-                "outcome": "error",
-                "error": format!("{error}"),
-                "usage": usage,
-            });
-            let result = AgentToolResult {
-                agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-                tool: Some(TOOL_NAME.to_string()),
-                cmd_name: None,
-                status: AgentToolStatus::Error,
-                task_id: None,
-                pending_reason: None,
-                check_after: None,
-                estimated_wait: None,
-                title: format!("{TOOL_NAME} => error"),
-                summary: format!("llm error: {error}"),
-                details,
-                cmd_args: None,
-                return_code: None,
-                partial_output: None,
-                output: None,
-            };
-            (result, CLI_EXIT_ERROR)
-        }
-        LLMContextOutcome::ContextLimitReached { which, .. } => {
-            // drive_to_terminal 内部应当已经消化掉 ContextLimitReached;
-            // 跑到这里说明 compressor 链路坏了或被 caller 用 step() 显式 surface。
-            let details = json!({
-                "work_dir": work_dir_str,
-                "run_id": run_id,
-                "description": opts.description,
-                "outcome": "context_limit_reached",
-                "which": format!("{:?}", which),
-            });
-            let result = AgentToolResult {
-                agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-                tool: Some(TOOL_NAME.to_string()),
-                cmd_name: None,
-                status: AgentToolStatus::Error,
-                task_id: None,
-                pending_reason: None,
-                check_after: None,
-                estimated_wait: None,
-                title: format!("{TOOL_NAME} => context_limit_reached"),
-                summary: format!("context limit surfaced unexpectedly: {:?}", which),
-                details,
-                cmd_args: None,
-                return_code: None,
-                partial_output: None,
-                output: None,
-            };
-            (result, CLI_EXIT_ERROR)
-        }
-        LLMContextOutcome::Interrupted {
-            reason,
-            usage,
-            abort,
-            ..
-        } => {
-            // §3.13:run 被外部 interrupt handle 抢占。run id 仍有效 —— caller
-            // 可以重新打开 LocalLLMContext 走 ResumeFromMidRun 继续推进。
-            // CLI 层把它表达成 pending,任务可由外部重启。
-            let details = json!({
-                "work_dir": work_dir_str,
-                "run_id": run_id,
-                "description": opts.description,
-                "outcome": "interrupted",
+                "outcome": record.status.as_str(),
                 "reason": reason,
                 "usage": usage,
-                "abort": abort,
+                "resume": record.resume_command(),
             });
-            let result = AgentToolResult {
-                agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
-                tool: Some(TOOL_NAME.to_string()),
-                cmd_name: None,
-                status: AgentToolStatus::Pending,
-                task_id: Some(run_id.to_string()),
-                pending_reason: Some(AgentToolPendingReason::LongRunning),
-                check_after: None,
-                estimated_wait: None,
-                title: format!("{TOOL_NAME} => interrupted"),
-                summary: format!("inference interrupted: {reason}"),
-                details,
-                cmd_args: None,
-                return_code: None,
-                partial_output: None,
-                output: None,
-            };
-            (result, CLI_EXIT_SUCCESS)
+            (
+                AgentToolResult {
+                    agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                    tool: Some(TOOL_NAME.to_string()),
+                    cmd_name: None,
+                    status: AgentToolStatus::Pending,
+                    task_id: Some(run_id.to_string()),
+                    pending_reason: Some(AgentToolPendingReason::LongRunning),
+                    check_after: None,
+                    estimated_wait: None,
+                    title: format!("{TOOL_NAME} => {}", record.status.as_str()),
+                    summary: format!("run {}: {reason}", record.status.label()),
+                    details,
+                    cmd_args: None,
+                    return_code: None,
+                    partial_output: None,
+                    output: None,
+                },
+                CLI_EXIT_SUCCESS,
+            )
         }
-    }
-}
-
-fn output_to_text(output: &ContextOutput) -> String {
-    match output {
-        ContextOutput::Text { content } => content.clone(),
-        ContextOutput::Json { content } => {
-            serde_json::to_string_pretty(content).unwrap_or_else(|_| content.to_string())
+        RunOutcome::LimitReached(_) | RunOutcome::Failed(_) => {
+            let reason = record
+                .limit_reason
+                .clone()
+                .or_else(|| record.last_error.as_ref().map(|e| e.message.clone()))
+                .unwrap_or_else(|| record.status.label().to_string());
+            let details = json!({
+                "work_dir": work_dir_str,
+                "run_id": run_id,
+                "description": opts.description,
+                "outcome": record.status.as_str(),
+                "error": reason,
+                "usage": usage,
+            });
+            (
+                AgentToolResult {
+                    agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
+                    tool: Some(TOOL_NAME.to_string()),
+                    cmd_name: None,
+                    status: AgentToolStatus::Error,
+                    task_id: None,
+                    pending_reason: None,
+                    check_after: None,
+                    estimated_wait: None,
+                    title: format!("{TOOL_NAME} => {}", record.status.as_str()),
+                    summary: format!("{}: {reason}", record.status.label()),
+                    details,
+                    cmd_args: None,
+                    return_code: None,
+                    partial_output: None,
+                    output: None,
+                },
+                CLI_EXIT_ERROR,
+            )
         }
     }
 }
@@ -549,12 +397,10 @@ Required:
   --prompt <text>        User instruction handed to the LLM as the user message
 
 Options:
-  --root-dir <path>      Exploration root directory (default: PWD).
-                         Symlinked into <work_dir>/workspace so the LLM's tools
-                         (Read/Glob/Grep/exec_bash) sandbox in this tree.
-  --work-dir <path>      LocalLLMContext working directory; persists snapshots,
-                         worklog, and run state. Default: $TMPDIR/llm_explore-
-                         <ts>-<sanitized-description>.
+  --root-dir <path>      Exploration root directory (default: PWD). The LLM's
+                         tools (read_file/write_file/edit_file/exec) work here.
+  --work-dir <path>      Runs directory for the xllm run record and snapshots.
+                         Default: $TMPDIR/llm_explore-<ts>-<sanitized-description>.
   --model <alias>        AICC model alias (default: llm.summary).
   -h, --help             Show this help.
 "#;

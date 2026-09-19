@@ -1,427 +1,178 @@
-//! 使用 buckyos 的 aicc 服务，来驱动 local llm。
+//! `xllm` 命令行入口（`agent_tool xllm ...`；`run_local_llm` 为兼容别名）。
 //!
-//! 这是 `agent_tool` 二进制的一个 dev/test 子命令，可以通过命令行来指定
-//! local llm dir，以及关键的 Input 的构造。主要用作 DV Test 环境下
-//! `llm_context::LocalLLMContext` 的端到端测试驱动。
+//! 这是 `product/xllm/PRD.md` 命令面的 Rust 参考实现：所有任务语义都由
+//! [`crate::local_llm_context`] 提供，这里只做 argv / stdin → SDK 请求，
+//! SDK 结果 → stdout / stderr / 退出码 的映射。
 //!
-//! ## 用法
+//! ## 退出码
 //!
-//! ```text
-//!   agent_tool run_local_llm \
-//!     --dir <local-llm-dir> \
-//!     [--model <alias>]     \              # AICC model alias（除非 --append，否则必填）
-//!     [--objective <text>]  \              # 任务目标（写进 worklog，不进 prompt）
-//!     [--system <text>]     \              # 追加一条 system message
-//!     [--user <text>]       \              # 追加一条 user message
-//!     [--input-file <path>] \              # 读取 JSON 数组（Vec<AiMessage>）作为初始历史
-//!     [--input-stdin]       \              # 把 stdin 当作一条 user message
-//!     [--append <text>]     \              # 把 text 当作 user message 追加到上一轮 Completed
-//!                                          #   run 之后并起新一轮（与其它输入 flag / --new 互斥）
-//!     [--temperature <f>]   \              # 采样温度
-//!     [--max-tokens <n>]    \              # max_completion_tokens
-//!     [--max-rounds <n>]    \              # ToolPolicy.max_rounds（默认 8）
-//!     [--no-tools]          \              # ToolPolicy.mode = None（默认 All）
-//!     [--json]              \              # 强制 JSON 输出
-//!     [--new]               \              # 强制新 run（默认 resume_or_new）
-//!     [--output <path>]                    # 把 final outcome 写到文件（不写则只打印）
-//! ```
-//!
-//! 退出码:0 = Done;1 = 计算完成但 outcome 非 Done,或一般错误;2 = 参数错误;
-//! 3 = outcome 已算出(已输出)但目录提交失败;4 = 运行时故障(轮前 checkpoint
-//! 或工具派发基础设施失败),run 仍可 resume。
-//!
-//! 至少要提供 `--user` / `--system` / `--input-file` / `--input-stdin` /
-//! `--append` 中的一项；前四个 flag 互相可以叠加构成初始 input，`--append`
-//! 是"接着上一轮跑"的独立路径，跟那四个互斥。
-//!
-//! ## 设计要点
-//!
-//! 1. **LlmClient 适配**：通过 `AiccLlmClient` 把 waist 侧的
-//!    `LlmInferenceRequest` 翻译成 AICC 的 `AiMethodRequest`（capability =
-//!    Llm，method = `llm.chat`），返回的 `AiResponse` 直接 forward
-//!    给 waist。Running 状态本工具不做轮询（DV test 用的是同步模型），
-//!    遇到时直接报错让 caller 排查。
-//!
-//! 2. **Compressor**：使用最简单的 `KeepTailCompressor` —— 保留 `system`
-//!    消息加上最后 N 条非 system 消息。够测，不引入二级 LLM 调用。
-//!
-//! 3. **runtime 注入**：通过 `buckyos_api::init_buckyos_api_runtime`
-//!    （`FrameService` 类型）初始化运行时，复用 `get_aicc_client()`。
-//!    DV test 环境会注入合适的 zone / token，让 kRPC 能拨到 aicc。
+//! | 码 | 含义 |
+//! | --- | --- |
+//! | 0 | 任务正常完成且结果已交付；查询命令成功读取记录 |
+//! | 1 | 任务终态失败（不可恢复错误 / 达到限制），或查询目标不存在、记录损坏 |
+//! | 2 | 参数、配置、输入预检错误；尚未建立 Run |
+//! | 3 | 可恢复错误：本次命令失败，任务已暂停，可 resume |
+//! | 4 | 用户中断，进度已保存 |
+//! | 5 | 任务已完成但 `--output` 写入失败（可用 `xllm result` 重新导出） |
+//! | 6 | 任务已完成但结果提取 / `--json` 校验失败（原文已保存） |
 
-use std::path::PathBuf;
+use std::io::{IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
 
-use async_trait::async_trait;
-use buckyos_api::{
-    ai_methods, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime,
-    value_to_object_map, AiMessage, AiMethodRequest, AiMethodStatus, AiPayload, AiResponse, AiRole,
-    AiToolSpec, BuckyOSRuntimeType, Capability, ModelSpec, Requirements, RespFormat,
+use crate::local_llm_context::{
+    build_result_view, export_result, list_runs, load_run, ExtractedValue, LoopModel, ProviderKind,
+    ResultFormat, ResumeLimits, ResumeStart, RunEvent, RunLogLevel, RunObserver, RunOutcome,
+    RunPhase, RunRecord, RunStatus, RunStore, RunSummary, TaskInput, TaskOverrides, XllmDeps,
+    XllmError, XllmRun, XllmTask, DEFAULT_RUNS_DIR,
 };
-use ::kRPC::RPCErrors;
-use llm_context::{
-    LLMComputeError, LLMContextOutcome, LlmClient, LlmInferenceRequest, ProviderFailure,
-    ToolMode, ToolPolicy,
-};
+pub use crate::local_llm_context::{ensure_buckyos_runtime, AiccLlmClient};
 
-use crate::local_llm_context::{Compressor, LocalLLMContextError};
-use crate::{LocalLLMContext, OneShotRequest};
-use serde_json::{json, Value};
-use tokio::fs;
-use tokio::io::AsyncReadExt;
+pub const EXIT_OK: i32 = 0;
+pub const EXIT_TASK_FAILED: i32 = 1;
+pub const EXIT_USAGE: i32 = 2;
+pub const EXIT_PAUSED: i32 = 3;
+pub const EXIT_INTERRUPTED: i32 = 4;
+pub const EXIT_OUTPUT_FAILED: i32 = 5;
+pub const EXIT_RESULT_INVALID: i32 = 6;
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+const USAGE: &str = r#"xllm — one-shot LLM task runner (AICC ↔ Agent boundary)
+
+Usage:
+  xllm "question" [options]               run a new task with a clean context
+  xllm --select <group> ["question"]      run a prompt group's default task
+  xllm "task one" | xllm "task two"       chain: stdin becomes material / request
+  xllm --image ./photo.png "what is it?"  images (repeatable), --file for text
+  xllm --tools "index the docs dir"       enable tools (read/write/edit/exec)
+  xllm list [--limit N]                   recent runs of the working directory
+  xllm status [--run <id>]                run status, effective config, resumability
+  xllm result [--run <id>]                re-export a saved result (no model call)
+  xllm --resume [--run <id>]              continue an interrupted / paused run
+
+Input:
+  "question" | --user <text>   task request (one of them, once)
+  --system <text>              full custom business prompt (runtime protocol kept)
+  --select <name>              choose a prompt group from .llm_context
+  --file <path>                text material (repeatable, order kept)
+  --image <path|url>           image material (png/jpeg/webp; repeatable)
+  --input-file <path>          structured input: JSON array of messages
+  --dir <path>                 working directory (default: cwd)
+  --runs-dir <path>            runs directory (default: .llm_context or ~/.xllm/runs)
+
+Model:
+  --provider buckyos|openai    --model <name>    --file-model <name>
+  --loop-model function_call|behavior
+  --tools | --no-tools         override every file-level tool switch
+
+Limits:
+  --max-tokens <n>  --max-rounds <n>  --timeout <secs>  --llm-timeout <secs>
+
+Output:
+  --result-format raw|result.<path>   extract from the final response
+  --json                              require the extracted result to be JSON
+  --format text|json                  plain answer or structured CLI result
+  --output <path>                     save the output instead of printing it
+  --run-logs debug|info|warn|result   stderr verbosity
+
+Other:
+  --run <id>  (with --resume / status / result)   --limit <n> (list)
+  --help, --version
+
+Exit codes: 0 done · 1 failed/limit · 2 usage/config · 3 paused (resumable) ·
+4 interrupted · 5 output write failed · 6 result invalid
+"#;
+
+const SHORT_USAGE: &str = r#"usage: xllm "question" [options]
+       xllm --select <group> | xllm list | xllm status | xllm result | xllm --resume
+No task request: pass a question, --user, a group with default_user, or pipe input.
+Run `xllm --help` for all options."#;
 
 // =========================================================================
-// 子命令入口
+// 入口
 // =========================================================================
 
-/// Dispatch entry, called by `lib::run_process` when argv[1] == "run_local_llm".
-/// `args` 是去掉 `agent_tool run_local_llm` 之后的剩余参数。直接 println /
-/// eprintln 到 stdout / stderr，返回 process exit code。
 pub async fn run_subcommand(args: Vec<String>) -> i32 {
     let opts = match CliOpts::parse(&args) {
         Ok(opts) => opts,
         Err(ParseError::Help) => {
-            print!("{}", USAGE);
-            return 0;
+            print!("{USAGE}");
+            return EXIT_OK;
+        }
+        Err(ParseError::Version) => {
+            println!("xllm {VERSION}");
+            return EXIT_OK;
         }
         Err(ParseError::Bad(msg)) => {
-            eprintln!("error: {msg}\n\n{}", USAGE);
-            return 2;
+            eprintln!("xllm: error: {msg}\n\n{SHORT_USAGE}");
+            return EXIT_USAGE;
         }
     };
-
-    match run(opts).await {
-        Ok(()) => 0,
-        Err(RunError::CommitFailed(err)) => {
-            eprintln!("run_local_llm: outcome computed but not committed: {err}");
-            EXIT_COMMIT_FAILED
-        }
-        Err(RunError::RuntimeFailure(err)) => {
-            eprintln!("run_local_llm: runtime failure, run kept resumable: {err}");
-            EXIT_RUNTIME_FAILURE
-        }
-        Err(RunError::Other(err)) => {
-            eprintln!("run_local_llm failed: {err}");
-            1
-        }
-    }
-}
-
-const EXIT_COMMIT_FAILED: i32 = 3;
-const EXIT_RUNTIME_FAILURE: i32 = 4;
-
-enum RunError {
-    CommitFailed(LocalLLMContextError),
-    RuntimeFailure(LocalLLMContextError),
-    Other(Box<dyn std::error::Error>),
-}
-
-impl<E: Into<Box<dyn std::error::Error>>> From<E> for RunError {
-    fn from(err: E) -> Self {
-        RunError::Other(err.into())
-    }
-}
-
-async fn run(opts: CliOpts) -> Result<(), RunError> {
-    // 1. 构造 OneShotRequest —— 走 --append 还是常规 input flag 是两条路。
-    let mut request = if let Some(text) = opts.append.as_ref() {
-        if opts.system.is_some()
-            || opts.user.is_some()
-            || opts.input_file.is_some()
-            || opts.input_stdin
-            || opts.force_new
-        {
-            return Err("--append is mutually exclusive with --system / --user / \
-                        --input-file / --input-stdin / --new"
-                .into());
-        }
-        // 从上一轮 Completed run 继承 objective / policies / 累积历史，再 push
-        // 这一条新 user 消息。CLI 后面的 tuning override 还会覆盖一遍。
-        LocalLLMContext::prepare_followup_request(
-            &opts.dir,
-            AiMessage::text(AiRole::User, text.clone()),
-        )?
-    } else {
-        let input = build_input_messages(&opts).await?;
-        if input.is_empty() {
-            return Err(
-                "no input messages — provide at least one of --system / --user / \
-                        --input-file / --input-stdin / --append"
-                    .into(),
-            );
-        }
-        OneShotRequest::new(
-            opts.objective
-                .clone()
-                .unwrap_or_else(|| "run_local_llm dev test".to_string()),
-            input,
-        )
-    };
-
-    // 2. CLI tuning overrides
-    //
-    // --model 没给只在 --append 路径下合法（CLI 解析器已经强制过），此时让
-    // model_policy 沿用 prior request.json 的值。其它 tuning flag 是 CLI 的
-    // 既有行为：始终用 CLI 值覆盖（含默认值）。
-    if let Some(m) = opts.model.as_ref() {
-        request.model_policy = Some(llm_context::ModelPolicy {
-            preferred: m.clone(),
-            fallbacks: Vec::new(),
-            temperature: opts.temperature,
-            max_completion_tokens: opts.max_tokens,
-            provider_options: None,
-        });
-    }
-    request.tool_policy = Some(ToolPolicy {
-        mode: if opts.no_tools {
-            ToolMode::None
-        } else {
-            ToolMode::All
-        },
-        max_rounds: opts.max_rounds.unwrap_or(8),
-        ..ToolPolicy::default()
-    });
-    if opts.force_json {
-        request.output = Some(llm_context::OutputSpec::Json {
-            schema: None,
-            strict: false,
-        });
-    }
-    if let Some(obj) = opts.objective.as_ref() {
-        // 显式给了就覆盖 inherited objective；没给就保留（无论 inherited 还是默认串）。
-        request.objective = obj.clone();
-    }
-
-    // 3. 初始化运行时 → 包装成 LlmClient
-    ensure_buckyos_runtime().await?;
-    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new());
-
-    // 4. 启动 LocalLLMContext
-    //
-    // --append 永远走 new_run：每一轮对话独立 run_id，审计链清晰；
-    // semantic_hash 也不会因为 input 多了一条而跟旧 run 冲突。
-    let mut ctx = if opts.force_new || opts.append.is_some() {
-        LocalLLMContext::new_run(opts.dir.clone(), request, llm)?
-    } else {
-        LocalLLMContext::resume_or_new(opts.dir.clone(), request, llm)?
-    };
-    eprintln!(
-        "run_local_llm: dir={} run_id={}",
-        opts.dir.display(),
-        ctx.run_id()
-    );
-
-    // 5. 跑到终态 / 挂起。提交失败时 outcome 仍可读,照常输出后用独立退出码
-    //    报告;运行时故障没有 outcome,run 保持可 resume。
-    let compressor = KeepTailCompressor { tail: 8 };
-    let (outcome, commit_error) = match ctx.drive_to_terminal(&compressor).await {
-        Ok(outcome) => (outcome, None),
-        Err(err @ LocalLLMContextError::CommitFailed { .. }) => match ctx.pending_outcome() {
-            Some(outcome) => (outcome.clone(), Some(err)),
-            None => return Err(RunError::CommitFailed(err)),
-        },
-        Err(err @ LocalLLMContextError::RuntimeFailure { .. }) => {
-            return Err(RunError::RuntimeFailure(err))
-        }
-        Err(err) => return Err(err.into()),
-    };
-
-    // 6. 输出
-    let pretty = serde_json::to_string_pretty(&outcome)?;
-    if let Some(path) = opts.output.as_ref() {
-        fs::write(path, pretty.as_bytes()).await?;
-        eprintln!("outcome written to {}", path.display());
-    } else {
-        println!("{pretty}");
-    }
-
-    if let Some(err) = commit_error {
-        return Err(RunError::CommitFailed(err));
-    }
-
-    // 终态非 Done 视作"业务失败"——返回非零退出码方便脚本判断
-    match outcome {
-        LLMContextOutcome::Done { .. } => Ok(()),
-        other => Err(format!("non-done outcome: {}", outcome_tag(&other)).into()),
-    }
-}
-
-fn outcome_tag(o: &LLMContextOutcome) -> &'static str {
-    match o {
-        LLMContextOutcome::Done { .. } => "done",
-        LLMContextOutcome::PendingTool { .. } => "pending_tool",
-        LLMContextOutcome::BudgetExhausted { .. } => "budget_exhausted",
-        LLMContextOutcome::Error { .. } => "error",
-        LLMContextOutcome::ContextLimitReached { .. } => "context_limit_reached",
-        LLMContextOutcome::Interrupted { .. } => "interrupted",
+    match opts.command {
+        Command::List => run_list(&opts).await,
+        Command::Status => run_status(&opts).await,
+        Command::Result => run_result(&opts).await,
+        Command::Resume => run_resume(opts).await,
+        Command::New => run_new(opts).await,
     }
 }
 
 // =========================================================================
-// CLI 参数解析
+// 参数
 // =========================================================================
 
-const USAGE: &str = r#"Usage: run_local_llm --dir <path> [--model <alias>] [options]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Command {
+    New,
+    Resume,
+    List,
+    Status,
+    Result,
+}
 
-Required:
-  --dir <path>           Local LLM context working directory
-  --model <alias>        AICC model alias (e.g. "gpt-4o", "default-llm")
-                         Required unless --append is used (then inherited from
-                         the prior run unless overridden).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliFormat {
+    Text,
+    Json,
+}
 
-Input (at least one required):
-  --system <text>        Prepend a system message
-  --user <text>          Append a user message
-  --input-file <path>    Load Vec<AiMessage> from JSON file
-  --input-stdin          Read stdin as a single user message
-  --append <text>        Continue the dir's latest Completed run by appending
-                         this as a new user message. Inherits objective/policies
-                         from the prior run.json (CLI tuning flags still
-                         override). Mutually exclusive with --system/--user/
-                         --input-file/--input-stdin/--new.
-
-Tuning:
-  --objective <text>     Free-form objective (worklog only, not in prompt)
-  --temperature <f>      Sampling temperature
-  --max-tokens <n>       max_completion_tokens
-  --max-rounds <n>       ToolPolicy.max_rounds (default 8)
-  --no-tools             Disable tool loop (ToolPolicy.mode = None)
-  --json                 Force JSON output
-
-Resume:
-  --new                  Force a fresh run (default: resume_or_new)
-
-Output:
-  --output <path>        Write final outcome JSON to file
-  -h, --help             Show this help
-"#;
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CliOpts {
-    dir: PathBuf,
-    /// `None` 只在 `--append` 模式下合法——会从 prior run 的 request.json
-    /// 继承 model_policy。否则解析阶段就会报错。
-    model: Option<String>,
-
-    objective: Option<String>,
-    system: Option<String>,
+    command: Command,
+    question: Option<String>,
     user: Option<String>,
+    system: Option<String>,
+    select: Option<String>,
+    files: Vec<PathBuf>,
+    images: Vec<String>,
+    attachments: Vec<crate::local_llm_context::Attachment>,
     input_file: Option<PathBuf>,
-    input_stdin: bool,
-    /// `--append <text>` 的值。Some 时走 follow-up run 路径,与其它 input
-    /// flag / `--new` 互斥(在 `run()` 里 enforce)。
-    append: Option<String>,
-
-    temperature: Option<f32>,
+    dir: Option<PathBuf>,
+    runs_dir: Option<PathBuf>,
+    provider: Option<ProviderKind>,
+    model: Option<String>,
+    file_model: Option<String>,
+    loop_model: Option<LoopModel>,
+    tools: Option<bool>,
+    run: Option<String>,
     max_tokens: Option<u32>,
     max_rounds: Option<u32>,
-    no_tools: bool,
-    force_json: bool,
-
-    force_new: bool,
+    timeout: Option<u64>,
+    llm_timeout: Option<u64>,
+    run_logs: Option<RunLogLevel>,
+    result_format: Option<ResultFormat>,
+    json: bool,
+    format: CliFormat,
     output: Option<PathBuf>,
+    limit: usize,
 }
 
 enum ParseError {
     Help,
+    Version,
     Bad(String),
-}
-
-impl CliOpts {
-    fn parse(args: &[String]) -> Result<Self, ParseError> {
-        let mut dir: Option<PathBuf> = None;
-        let mut model: Option<String> = None;
-        let mut objective = None;
-        let mut system = None;
-        let mut user = None;
-        let mut input_file = None;
-        let mut input_stdin = false;
-        let mut append: Option<String> = None;
-        let mut temperature = None;
-        let mut max_tokens = None;
-        let mut max_rounds = None;
-        let mut no_tools = false;
-        let mut force_json = false;
-        let mut force_new = false;
-        let mut output = None;
-
-        let mut idx = 0;
-        while idx < args.len() {
-            let tok = args[idx].as_str();
-            match tok {
-                "-h" | "--help" => return Err(ParseError::Help),
-                "--dir" => {
-                    dir = Some(PathBuf::from(next_value(args, &mut idx, "--dir")?));
-                }
-                "--model" => model = Some(next_value(args, &mut idx, "--model")?),
-                "--objective" => objective = Some(next_value(args, &mut idx, "--objective")?),
-                "--system" => system = Some(next_value(args, &mut idx, "--system")?),
-                "--user" => user = Some(next_value(args, &mut idx, "--user")?),
-                "--input-file" => {
-                    input_file = Some(PathBuf::from(next_value(args, &mut idx, "--input-file")?));
-                }
-                "--input-stdin" => input_stdin = true,
-                "--append" => append = Some(next_value(args, &mut idx, "--append")?),
-                "--temperature" => {
-                    let v = next_value(args, &mut idx, "--temperature")?;
-                    temperature = Some(
-                        v.parse::<f32>()
-                            .map_err(|e| ParseError::Bad(format!("invalid --temperature: {e}")))?,
-                    );
-                }
-                "--max-tokens" => {
-                    let v = next_value(args, &mut idx, "--max-tokens")?;
-                    max_tokens = Some(
-                        v.parse::<u32>()
-                            .map_err(|e| ParseError::Bad(format!("invalid --max-tokens: {e}")))?,
-                    );
-                }
-                "--max-rounds" => {
-                    let v = next_value(args, &mut idx, "--max-rounds")?;
-                    max_rounds = Some(
-                        v.parse::<u32>()
-                            .map_err(|e| ParseError::Bad(format!("invalid --max-rounds: {e}")))?,
-                    );
-                }
-                "--no-tools" => no_tools = true,
-                "--json" => force_json = true,
-                "--new" => force_new = true,
-                "--output" => {
-                    output = Some(PathBuf::from(next_value(args, &mut idx, "--output")?));
-                }
-                other => {
-                    return Err(ParseError::Bad(format!("unknown flag `{other}`")));
-                }
-            }
-            idx += 1;
-        }
-
-        let dir = dir.ok_or_else(|| ParseError::Bad("missing --dir".into()))?;
-        // --model 在 --append 模式下可省略(从 prior run 继承);其它路径下必填。
-        if model.is_none() && append.is_none() {
-            return Err(ParseError::Bad(
-                "missing --model (required unless --append is set)".into(),
-            ));
-        }
-
-        Ok(Self {
-            dir,
-            model,
-            objective,
-            system,
-            user,
-            input_file,
-            input_stdin,
-            append,
-            temperature,
-            max_tokens,
-            max_rounds,
-            no_tools,
-            force_json,
-            force_new,
-            output,
-        })
-    }
 }
 
 fn next_value(args: &[String], idx: &mut usize, flag: &str) -> Result<String, ParseError> {
@@ -431,307 +182,1176 @@ fn next_value(args: &[String], idx: &mut usize, flag: &str) -> Result<String, Pa
         .ok_or_else(|| ParseError::Bad(format!("missing value for {flag}")))
 }
 
-async fn build_input_messages(
-    opts: &CliOpts,
-) -> Result<Vec<AiMessage>, Box<dyn std::error::Error>> {
-    let mut msgs: Vec<AiMessage> = Vec::new();
-
-    if let Some(sys) = opts.system.as_ref() {
-        msgs.push(AiMessage::text(AiRole::System, sys.clone()));
-    }
-
-    if let Some(path) = opts.input_file.as_ref() {
-        let bytes = fs::read(path).await?;
-        let loaded: Vec<AiMessage> =
-            serde_json::from_slice(&bytes).map_err(|e| format!("parse {}: {e}", path.display()))?;
-        msgs.extend(loaded);
-    }
-
-    if let Some(u) = opts.user.as_ref() {
-        msgs.push(AiMessage::text(AiRole::User, u.clone()));
-    }
-
-    if opts.input_stdin {
-        let mut buf = String::new();
-        tokio::io::stdin().read_to_string(&mut buf).await?;
-        if !buf.is_empty() {
-            msgs.push(AiMessage::text(AiRole::User, buf));
-        }
-    }
-
-    Ok(msgs)
+fn parse_num<T: std::str::FromStr>(v: &str, flag: &str) -> Result<T, ParseError> {
+    v.parse::<T>()
+        .map_err(|_| ParseError::Bad(format!("invalid value for {flag}: `{v}`")))
 }
 
-// =========================================================================
-// AICC runtime 接入
-// =========================================================================
-
-pub(crate) async fn ensure_buckyos_runtime() -> Result<(), Box<dyn std::error::Error>> {
-    // 优先复用已经初始化的 runtime（被外层 harness 注入的场景），否则按
-    // AppClient 类型初始化一个 —— 这是 DV Test 容器里 buckyos 进程的
-    // 通用约定（参见 agent_tool_cli_dev::build_task_manager_client）。
-    if get_buckyos_api_runtime().is_ok() {
-        return Ok(());
+fn set_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), ParseError> {
+    if slot.is_some() {
+        return Err(ParseError::Bad(format!("{flag} may be given only once")));
     }
-
-    let runtime = init_buckyos_api_runtime("buckycli", None, BuckyOSRuntimeType::AppClient).await?;
-    set_buckyos_api_runtime(runtime)?;
+    *slot = Some(value);
     Ok(())
 }
 
-// =========================================================================
-// AICC → LlmClient 适配
-// =========================================================================
+impl CliOpts {
+    fn parse(args: &[String]) -> Result<Self, ParseError> {
+        use crate::local_llm_context::Attachment;
+        let mut o = CliOpts {
+            command: Command::New,
+            question: None,
+            user: None,
+            system: None,
+            select: None,
+            files: Vec::new(),
+            images: Vec::new(),
+            attachments: Vec::new(),
+            input_file: None,
+            dir: None,
+            runs_dir: None,
+            provider: None,
+            model: None,
+            file_model: None,
+            loop_model: None,
+            tools: None,
+            run: None,
+            max_tokens: None,
+            max_rounds: None,
+            timeout: None,
+            llm_timeout: None,
+            run_logs: None,
+            result_format: None,
+            json: false,
+            format: CliFormat::Text,
+            output: None,
+            limit: 20,
+        };
+        let mut resume = false;
+        let mut idx = 0;
+        let mut positional_seen = false;
+        while idx < args.len() {
+            let tok = args[idx].as_str();
+            match tok {
+                "-h" | "--help" => return Err(ParseError::Help),
+                "--version" | "-V" => return Err(ParseError::Version),
+                "list" | "status" | "result" if idx == 0 => {
+                    o.command = match tok {
+                        "list" => Command::List,
+                        "status" => Command::Status,
+                        _ => Command::Result,
+                    };
+                }
+                "--user" => {
+                    let v = next_value(args, &mut idx, "--user")?;
+                    set_once(&mut o.user, v, "--user")?;
+                }
+                "--system" => {
+                    let v = next_value(args, &mut idx, "--system")?;
+                    set_once(&mut o.system, v, "--system")?;
+                }
+                "--select" => {
+                    let v = next_value(args, &mut idx, "--select")?;
+                    set_once(&mut o.select, v, "--select")?;
+                }
+                "--file" => {
+                    let v = PathBuf::from(next_value(args, &mut idx, "--file")?);
+                    o.files.push(v.clone());
+                    o.attachments.push(Attachment::File { path: v });
+                }
+                "--image" => {
+                    let v = next_value(args, &mut idx, "--image")?;
+                    o.images.push(v.clone());
+                    o.attachments.push(Attachment::Image { source: v });
+                }
+                "--input-file" => {
+                    let v = PathBuf::from(next_value(args, &mut idx, "--input-file")?);
+                    set_once(&mut o.input_file, v, "--input-file")?;
+                }
+                "--dir" => {
+                    let v = PathBuf::from(next_value(args, &mut idx, "--dir")?);
+                    set_once(&mut o.dir, v, "--dir")?;
+                }
+                "--runs-dir" => {
+                    let v = PathBuf::from(next_value(args, &mut idx, "--runs-dir")?);
+                    set_once(&mut o.runs_dir, v, "--runs-dir")?;
+                }
+                "--provider" => {
+                    let v = next_value(args, &mut idx, "--provider")?;
+                    let k = ProviderKind::parse(&v).ok_or_else(|| {
+                        ParseError::Bad(format!("--provider must be buckyos or openai, got `{v}`"))
+                    })?;
+                    set_once(&mut o.provider, k, "--provider")?;
+                }
+                "--model" => {
+                    let v = next_value(args, &mut idx, "--model")?;
+                    set_once(&mut o.model, v, "--model")?;
+                }
+                "--file-model" => {
+                    let v = next_value(args, &mut idx, "--file-model")?;
+                    set_once(&mut o.file_model, v, "--file-model")?;
+                }
+                "--loop-model" => {
+                    let v = next_value(args, &mut idx, "--loop-model")?;
+                    let l = LoopModel::parse(&v).ok_or_else(|| {
+                        ParseError::Bad(format!(
+                            "--loop-model must be function_call or behavior, got `{v}`"
+                        ))
+                    })?;
+                    set_once(&mut o.loop_model, l, "--loop-model")?;
+                }
+                "--tools" => {
+                    if o.tools == Some(false) {
+                        return Err(ParseError::Bad(
+                            "--tools and --no-tools are mutually exclusive".into(),
+                        ));
+                    }
+                    o.tools = Some(true);
+                }
+                "--no-tools" => {
+                    if o.tools == Some(true) {
+                        return Err(ParseError::Bad(
+                            "--tools and --no-tools are mutually exclusive".into(),
+                        ));
+                    }
+                    o.tools = Some(false);
+                }
+                "--resume" => resume = true,
+                "--run" => {
+                    let v = next_value(args, &mut idx, "--run")?;
+                    set_once(&mut o.run, v, "--run")?;
+                }
+                "--max-tokens" => {
+                    let v = next_value(args, &mut idx, "--max-tokens")?;
+                    set_once(
+                        &mut o.max_tokens,
+                        parse_num(&v, "--max-tokens")?,
+                        "--max-tokens",
+                    )?;
+                }
+                "--max-rounds" => {
+                    let v = next_value(args, &mut idx, "--max-rounds")?;
+                    set_once(
+                        &mut o.max_rounds,
+                        parse_num(&v, "--max-rounds")?,
+                        "--max-rounds",
+                    )?;
+                }
+                "--timeout" => {
+                    let v = next_value(args, &mut idx, "--timeout")?;
+                    set_once(&mut o.timeout, parse_num(&v, "--timeout")?, "--timeout")?;
+                }
+                "--llm-timeout" => {
+                    let v = next_value(args, &mut idx, "--llm-timeout")?;
+                    set_once(
+                        &mut o.llm_timeout,
+                        parse_num(&v, "--llm-timeout")?,
+                        "--llm-timeout",
+                    )?;
+                }
+                "--run-logs" => {
+                    let v = next_value(args, &mut idx, "--run-logs")?;
+                    let l = RunLogLevel::parse(&v).ok_or_else(|| {
+                        ParseError::Bad(format!(
+                            "--run-logs must be debug, info, warn or result, got `{v}`"
+                        ))
+                    })?;
+                    set_once(&mut o.run_logs, l, "--run-logs")?;
+                }
+                "--result-format" => {
+                    let v = next_value(args, &mut idx, "--result-format")?;
+                    let f = ResultFormat::parse(&v).map_err(|e| ParseError::Bad(e.to_string()))?;
+                    set_once(&mut o.result_format, f, "--result-format")?;
+                }
+                "--json" => o.json = true,
+                "--format" => {
+                    let v = next_value(args, &mut idx, "--format")?;
+                    o.format = match v.as_str() {
+                        "text" => CliFormat::Text,
+                        "json" => CliFormat::Json,
+                        other => {
+                            return Err(ParseError::Bad(format!(
+                                "--format must be text or json, got `{other}`"
+                            )))
+                        }
+                    };
+                }
+                "--output" => {
+                    let v = PathBuf::from(next_value(args, &mut idx, "--output")?);
+                    set_once(&mut o.output, v, "--output")?;
+                }
+                "--limit" => {
+                    let v = next_value(args, &mut idx, "--limit")?;
+                    o.limit = parse_num(&v, "--limit")?;
+                }
+                other if other.starts_with('-') && other.len() > 1 => {
+                    return Err(ParseError::Bad(format!("unknown flag `{other}`")));
+                }
+                positional => {
+                    if positional_seen {
+                        return Err(ParseError::Bad(format!(
+                            "unexpected extra argument `{positional}`; quote the question as one argument"
+                        )));
+                    }
+                    positional_seen = true;
+                    o.question = Some(positional.to_string());
+                }
+            }
+            idx += 1;
+        }
+        if resume {
+            o.command = Command::Resume;
+        }
+        if o.question.is_some() && o.user.is_some() {
+            return Err(ParseError::Bad(
+                "a positional question and --user are mutually exclusive".into(),
+            ));
+        }
+        if o.select.is_some() && o.system.is_some() {
+            return Err(ParseError::Bad(
+                "--select and --system are mutually exclusive".into(),
+            ));
+        }
+        match o.command {
+            Command::New => {
+                if o.run.is_some() {
+                    return Err(ParseError::Bad(
+                        "--run only applies to --resume / status / result; a new task gets its own run id".into(),
+                    ));
+                }
+            }
+            Command::Resume => {
+                if o.question.is_some()
+                    || o.user.is_some()
+                    || o.system.is_some()
+                    || o.select.is_some()
+                    || !o.attachments.is_empty()
+                    || o.input_file.is_some()
+                {
+                    return Err(ParseError::Bad(
+                        "--resume continues the original task; it does not accept a question, --user, --system, --select, --input-file or attachments".into(),
+                    ));
+                }
+            }
+            Command::List | Command::Status | Command::Result => {
+                if o.question.is_some() || o.user.is_some() {
+                    return Err(ParseError::Bad(format!(
+                        "`{}` is a subcommand; to ask that as a question use --user",
+                        match o.command {
+                            Command::List => "list",
+                            Command::Status => "status",
+                            _ => "result",
+                        }
+                    )));
+                }
+            }
+        }
+        Ok(o)
+    }
 
-pub(crate) struct AiccLlmClient;
+    fn workdir(&self) -> Result<PathBuf, String> {
+        match &self.dir {
+            Some(d) => {
+                let base = std::env::current_dir().map_err(|e| e.to_string())?;
+                let p = if d.is_absolute() {
+                    d.clone()
+                } else {
+                    base.join(d)
+                };
+                p.canonicalize()
+                    .map_err(|e| format!("--dir {}: {e}", d.display()))
+            }
+            None => std::env::current_dir().map_err(|e| format!("cannot resolve cwd: {e}")),
+        }
+    }
 
-impl AiccLlmClient {
-    pub(crate) fn new() -> Self {
-        Self
+    fn overrides(&self) -> TaskOverrides {
+        TaskOverrides {
+            provider: self.provider,
+            model: self.model.clone(),
+            file_model: self.file_model.clone(),
+            loop_model: self.loop_model,
+            tools: self.tools,
+            select: self.select.clone(),
+            system: self.system.clone(),
+            max_tokens: self.max_tokens,
+            max_rounds: self.max_rounds,
+            timeout_secs: self.timeout,
+            llm_timeout_secs: self.llm_timeout,
+            run_logs: self.run_logs,
+            result_format: self.result_format.clone(),
+            runs_dir: self.runs_dir.clone(),
+            json: self.json,
+            json_schema: None,
+            disable_capabilities: Vec::new(),
+        }
+    }
+
+    fn resume_limits(&self) -> ResumeLimits {
+        ResumeLimits {
+            max_tokens: self.max_tokens,
+            max_rounds: self.max_rounds,
+            timeout_secs: self.timeout,
+            llm_timeout_secs: self.llm_timeout,
+        }
+    }
+
+    fn log_level(&self) -> RunLogLevel {
+        self.run_logs.unwrap_or(RunLogLevel::Info)
     }
 }
 
-fn build_aicc_llm_options(
-    temperature: Option<f32>,
-    max_completion_tokens: Option<u32>,
-    force_json: bool,
-    json_schema: Option<Value>,
-    provider_options: Option<Value>,
-) -> Value {
-    let mut options = serde_json::Map::new();
-    if let Some(temperature) = temperature {
-        options.insert("temperature".into(), json!(temperature));
-    }
-    if let Some(max_completion_tokens) = max_completion_tokens {
-        options.insert("max_tokens".into(), json!(max_completion_tokens));
-    }
-    if force_json {
-        if let Some(schema) = json_schema {
-            options.insert("response_schema".into(), schema);
+// =========================================================================
+// stderr 观察者（F09）
+// =========================================================================
+
+struct StderrObserver {
+    level: RunLogLevel,
+}
+
+impl RunObserver for StderrObserver {
+    fn on_event(&self, run_id: &str, event: RunEvent) {
+        let (min, line) = match event {
+            RunEvent::Phase { phase, detail } => (
+                // 等待模型的阶段由 LlmStarted 事件单独播报，避免重复。
+                if phase == RunPhase::WaitingModel {
+                    RunLogLevel::Debug
+                } else {
+                    RunLogLevel::Info
+                },
+                if detail.is_empty() {
+                    format!("[{run_id}] {}", phase.label())
+                } else {
+                    format!("[{run_id}] {}: {detail}", phase.label())
+                },
+            ),
+            RunEvent::LlmStarted { model } => {
+                (RunLogLevel::Info, format!("[{run_id}] 等待模型 {model} …"))
+            }
+            RunEvent::LlmFinished { ok, elapsed_ms } => (
+                RunLogLevel::Info,
+                format!(
+                    "[{run_id}] 模型返回 ({}, {:.1}s)",
+                    if ok { "ok" } else { "failed" },
+                    elapsed_ms as f64 / 1000.0
+                ),
+            ),
+            RunEvent::ToolStarted { name, call_id } => (
+                RunLogLevel::Info,
+                format!("[{run_id}] 执行工具 {name} ({call_id})"),
+            ),
+            RunEvent::ToolFinished {
+                name,
+                call_id,
+                ok,
+                duration_ms,
+            } => (
+                RunLogLevel::Info,
+                format!(
+                    "[{run_id}] 工具 {name} ({call_id}) {} ({duration_ms} ms)",
+                    if ok { "完成" } else { "失败" }
+                ),
+            ),
+            RunEvent::Warning(msg) => (RunLogLevel::Warn, format!("[{run_id}] warning: {msg}")),
+            RunEvent::Debug(msg) => (RunLogLevel::Debug, format!("[{run_id}] debug: {msg}")),
+        };
+        // level 顺序：Debug < Info < Warn < Result；事件的 min 级别小于等于配置才显示。
+        let show = match self.level {
+            RunLogLevel::Debug => true,
+            RunLogLevel::Info => min >= RunLogLevel::Info,
+            RunLogLevel::Warn => min >= RunLogLevel::Warn,
+            RunLogLevel::Result => false,
+        };
+        if show {
+            eprintln!("{line}");
         }
     }
-    if let Some(extra) = provider_options {
-        match extra {
-            Value::Object(extra) => options.extend(extra),
-            extra => {
-                options.insert("provider_options".into(), extra);
+}
+
+fn diag(level: RunLogLevel, msg: &str) {
+    if level != RunLogLevel::Result {
+        eprintln!("xllm: {msg}");
+    }
+}
+
+// =========================================================================
+// 新任务
+// =========================================================================
+
+/// 只有真正的管道 / 文件重定向才自动读到 EOF；终端、socket、`/dev/null`
+/// 等一律视为“没有管道输入”，避免在没有上游的情况下挂起等待。
+fn read_piped_stdin() -> Result<Option<String>, String> {
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return Ok(None);
+    }
+    #[cfg(unix)]
+    let (is_fifo, is_file) = {
+        use std::os::unix::fs::FileTypeExt;
+        match std::fs::metadata("/dev/stdin") {
+            Ok(md) => (md.file_type().is_fifo(), md.file_type().is_file()),
+            Err(_) => (false, false),
+        }
+    };
+    #[cfg(not(unix))]
+    let (is_fifo, is_file) = (true, false);
+    if !is_fifo && !is_file {
+        return Ok(None);
+    }
+    let mut buf = String::new();
+    stdin
+        .lock()
+        .read_to_string(&mut buf)
+        .map_err(|e| format!("cannot read stdin: {e}"))?;
+    if buf.trim().is_empty() {
+        if is_fifo {
+            return Err(
+                "stdin pipe delivered no usable input; check the upstream command and its exit status"
+                    .into(),
+            );
+        }
+        return Ok(None);
+    }
+    Ok(Some(buf))
+}
+
+fn read_structured_input(path: &Path) -> Result<Vec<buckyos_api::AiMessage>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("--input-file {}: {e}", path.display()))?;
+    serde_json::from_slice::<Vec<buckyos_api::AiMessage>>(&bytes).map_err(|e| {
+        format!(
+            "--input-file {}: expected a JSON array of messages: {e}",
+            path.display()
+        )
+    })
+}
+
+fn exit_code_for_error(err: &XllmError) -> i32 {
+    match err {
+        XllmError::Config { .. }
+        | XllmError::Input(_)
+        | XllmError::Capability(_)
+        | XllmError::Tools(_)
+        | XllmError::Template { .. } => EXIT_USAGE,
+        XllmError::RunNotFound { .. }
+        | XllmError::RunTerminal { .. }
+        | XllmError::NotResumable { .. }
+        | XllmError::CorruptedRun { .. } => EXIT_TASK_FAILED,
+        XllmError::RunBusy { .. } | XllmError::WorkdirBusy { .. } => EXIT_USAGE,
+        XllmError::Storage(_) | XllmError::Io(_) => EXIT_TASK_FAILED,
+        XllmError::Extract(_) => EXIT_RESULT_INVALID,
+        XllmError::Compressor(_) | XllmError::Other(_) => EXIT_TASK_FAILED,
+    }
+}
+
+fn store_for(opts: &CliOpts, workdir: &Path) -> RunStore {
+    if let Some(p) = &opts.runs_dir {
+        let base = std::env::current_dir().unwrap_or_else(|_| workdir.to_path_buf());
+        return RunStore::disk(crate::local_llm_context::resolve_config_path(
+            &p.display().to_string(),
+            &base,
+        ));
+    }
+    // 只读命令沿用目录配置里的 runs_dir，否则默认位置。
+    let layers = crate::local_llm_context::load_config_layers(workdir).unwrap_or_default();
+    let merged = crate::local_llm_context::merge_config_layers(&layers).unwrap_or_default();
+    match merged.runs_dir {
+        Some(crate::local_llm_context::RunsDirSetting::Path { path }) => RunStore::disk(path),
+        Some(crate::local_llm_context::RunsDirSetting::Disabled) => RunStore::memory(),
+        None => RunStore::disk(crate::local_llm_context::resolve_config_path(
+            DEFAULT_RUNS_DIR,
+            workdir,
+        )),
+    }
+}
+
+async fn run_new(opts: CliOpts) -> i32 {
+    let level = opts.log_level();
+    let workdir = match opts.workdir() {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("xllm: error: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let mut input = TaskInput {
+        user: opts.question.clone().or_else(|| opts.user.clone()),
+        attachments: opts.attachments.clone(),
+        stdin: None,
+        structured: None,
+        base_dir: std::env::current_dir().ok(),
+    };
+    if let Some(p) = &opts.input_file {
+        match read_structured_input(p) {
+            Ok(msgs) => input.structured = Some(msgs),
+            Err(e) => {
+                eprintln!("xllm: error: {e}");
+                return EXIT_USAGE;
+            }
+        }
+    } else {
+        match read_piped_stdin() {
+            Ok(s) => input.stdin = s,
+            Err(e) => {
+                eprintln!("xllm: error: {e}");
+                return EXIT_USAGE;
             }
         }
     }
-    Value::Object(options)
-}
+    let nothing_given = input.user.is_none()
+        && input.stdin.is_none()
+        && input.structured.is_none()
+        && opts.select.is_none()
+        && input.attachments.is_empty();
 
-#[async_trait]
-impl LlmClient for AiccLlmClient {
-    async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
-        let LlmInferenceRequest {
-            messages,
-            model_alias,
-            fallbacks: _,
-            temperature,
-            max_completion_tokens,
-            force_json,
-            json_schema,
-            provider_options,
-            disable_capabilities,
-            tool_specs,
-            allow_tool_calls,
-            // The dev tool talks to AICC via a synchronous `call_method`
-            // without a native cancel hook; the waist still drops the
-            // returned future on abort, so the scheduler is unblocked even
-            // if the remote keeps generating tokens. See §3.13 for the
-            // contract that lets a provider opt-in to real remote cancel.
-            abort: _,
-        } = req;
-
-        // tool specs：waist ToolSpecLite → AICC AiToolSpec
-        let aicc_tool_specs: Vec<AiToolSpec> = if allow_tool_calls {
-            tool_specs
-                .into_iter()
-                .map(|spec| AiToolSpec {
-                    name: spec.name,
-                    description: spec.description,
-                    args_schema: value_to_object_map(spec.args_schema),
-                    output_schema: json!({}),
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        // payload.options：把 temperature / max_tokens 透传给底层 provider
-        let options_value = Some(build_aicc_llm_options(
-            temperature,
-            max_completion_tokens,
-            force_json,
-            json_schema,
-            provider_options,
-        ));
-
-        let payload = AiPayload {
-            text: None,
-            messages,
-            tool_specs: aicc_tool_specs,
-            resources: Vec::new(),
-            input_json: None,
-            options: options_value,
-        };
-
-        let mut must_features = Vec::new();
-        if allow_tool_calls && !payload.tool_specs.is_empty() {
-            must_features.push("tool_calling".to_string());
+    let deps = XllmDeps::default().with_observer(Arc::new(StderrObserver { level }));
+    let prepared = match XllmTask::prepare(&workdir, input, opts.overrides(), &deps).await {
+        Ok(p) => p,
+        Err(err) => {
+            if nothing_given && matches!(err, XllmError::Input(_)) {
+                eprintln!("{SHORT_USAGE}");
+                return EXIT_USAGE;
+            }
+            eprintln!("xllm: error: {err}\n(no run was created)");
+            return exit_code_for_error(&err);
         }
-        if force_json {
-            must_features.push("json_output".to_string());
-        }
-
-        let mut requirements_extra = None;
-        if !disable_capabilities.is_empty() {
-            let mut obj = match requirements_extra.take() {
-                Some(Value::Object(obj)) => obj,
-                Some(other) => {
-                    let mut obj = serde_json::Map::new();
-                    obj.insert("provider_options".to_string(), other);
-                    obj
-                }
-                None => serde_json::Map::new(),
-            };
-            obj.insert(
-                "disable_capabilities".to_string(),
-                json!(disable_capabilities),
-            );
-            requirements_extra = Some(Value::Object(obj));
-        }
-
-        let requirements = Requirements {
-            required: Default::default(),
-            must_features,
-            max_latency_ms: None,
-            max_cost_usd: None,
-            resp_format: if force_json {
-                RespFormat::Json
-            } else {
-                RespFormat::Text
-            },
-            extra: requirements_extra,
-        };
-
-        let request = AiMethodRequest::new(
-            Capability::Llm,
-            ModelSpec::new(model_alias.clone(), None),
-            requirements,
-            payload,
-            None,
-        );
-
-        let runtime = get_buckyos_api_runtime()
-            .map_err(|e| provider_error_from_rpc("get buckyos runtime failed", e))?;
-        let client = runtime
-            .get_aicc_client()
-            .await
-            .map_err(|e| provider_error_from_rpc("get aicc client failed", e))?;
-        let response = client
-            .call_method(ai_methods::LLM_CHAT, request)
-            .await
-            .map_err(|e| provider_error_from_rpc("aicc llm.chat failed", e))?;
-
-        match response.status {
-            AiMethodStatus::Succeeded => response.result.ok_or_else(|| {
-                LLMComputeError::provider(
-                    ProviderFailure::Unknown,
-                    "aicc llm.chat succeeded but result is empty",
-                )
-            }),
-            AiMethodStatus::Failed => Err(LLMComputeError::provider(
-                ProviderFailure::Unknown,
-                format!(
-                    "aicc llm.chat failed: task_id={}, event_ref={}",
-                    response.task_id,
-                    response.event_ref.as_deref().unwrap_or("")
-                ),
-            )),
-            AiMethodStatus::Running => Err(LLMComputeError::provider(
-                ProviderFailure::Permanent,
-                format!(
-                    "aicc llm.chat returned async task `{}`; run_local_llm dev tool does \
-                     not poll async tasks — use a synchronous-capable model",
-                    response.task_id
-                ),
-            )),
-        }
-    }
-}
-
-/// kRPC 错误 → provider 失败类别。只把明确的临时 / 永久错误归类,其余一律
-/// `Unknown`(不会被当成可安全重试)。
-fn provider_error_from_rpc(context: &str, err: RPCErrors) -> LLMComputeError {
-    let failure = match &err {
-        RPCErrors::S2sTransientError(_) => ProviderFailure::Transient,
-        RPCErrors::InvalidToken(_)
-        | RPCErrors::TokenExpired(_)
-        | RPCErrors::NoPermission(_)
-        | RPCErrors::InvalidPassword
-        | RPCErrors::UserNotFound(_)
-        | RPCErrors::UnknownMethod(_)
-        | RPCErrors::ServiceNotValid(_)
-        | RPCErrors::S2sPermanentError(_) => ProviderFailure::Permanent,
-        RPCErrors::ReasonError(_)
-        | RPCErrors::ParseRequestError(_)
-        | RPCErrors::ParserResponseError(_)
-        | RPCErrors::KeyNotExist(_) => ProviderFailure::Unknown,
     };
-    LLMComputeError::provider(failure, format!("{context}: {err}"))
+    let mut run = match XllmRun::start(prepared, deps).await {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("xllm: error: {err}\n(no run was created)");
+            return exit_code_for_error(&err);
+        }
+    };
+    diag(
+        level,
+        &format!(
+            "run {} started (workdir {}, runs {})",
+            run.run_id(),
+            workdir.display(),
+            run.store()
+                .runs_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(memory)".into())
+        ),
+    );
+    execute_and_deliver(&opts, &mut run).await
 }
 
-// =========================================================================
-// Compressor：保留 system + 最后 N 条
-// =========================================================================
-
-pub(crate) struct KeepTailCompressor {
-    tail: usize,
+async fn execute_and_deliver(opts: &CliOpts, run: &mut XllmRun) -> i32 {
+    let level = opts.log_level();
+    let interrupter = run.interrupter();
+    let run_id = run.run_id().to_string();
+    let ctrl_c = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            eprintln!("xllm: interrupt requested; saving progress of run {run_id} …");
+            interrupter.interrupt("user interrupt (Ctrl-C)");
+            if tokio::signal::ctrl_c().await.is_ok() {
+                eprintln!("xllm: second interrupt; exiting without waiting");
+                std::process::exit(EXIT_INTERRUPTED);
+            }
+        }
+    });
+    let outcome = run.execute().await;
+    ctrl_c.abort();
+    let outcome = match outcome {
+        Ok(o) => o,
+        Err(err) => {
+            eprintln!(
+                "xllm: error: {err}\nrun {} may still be resumable: {}",
+                run.run_id(),
+                run.record().resume_command()
+            );
+            return EXIT_TASK_FAILED;
+        }
+    };
+    let store = run.store().clone();
+    deliver_outcome(opts, &store, outcome, level)
 }
 
-impl KeepTailCompressor {
-    pub(crate) fn new(tail: usize) -> Self {
-        Self { tail }
+fn deliver_outcome(
+    opts: &CliOpts,
+    store: &RunStore,
+    outcome: RunOutcome,
+    level: RunLogLevel,
+) -> i32 {
+    let record = outcome.record().clone();
+    let summary = store.summarize(&record);
+    match &outcome {
+        RunOutcome::Completed(_) => {
+            if let Some(u) = record.usage.total() {
+                diag(
+                    level,
+                    &format!(
+                        "run {} completed; tokens in={} out={} total={}",
+                        record.run_id,
+                        u.input_tokens
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "?".into()),
+                        u.output_tokens
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "?".into()),
+                        u.total_tokens
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "?".into())
+                    ),
+                );
+            } else {
+                diag(level, &format!("run {} completed", record.run_id));
+            }
+            if !record.artifacts.is_empty() {
+                diag(
+                    level,
+                    &format!("artifacts: {}", record.artifacts.join(", ")),
+                );
+            }
+            deliver_completed(opts, &record, &summary, None)
+        }
+        RunOutcome::Paused(_) => {
+            let err = record.last_error.clone();
+            eprintln!(
+                "xllm: run {} paused ({}): {}",
+                record.run_id,
+                err.as_ref()
+                    .map(|e| e.kind.as_str())
+                    .unwrap_or("recoverable error"),
+                err.as_ref().map(|e| e.message.as_str()).unwrap_or("")
+            );
+            if let Some(c) = err.as_ref().and_then(|e| e.condition.clone()) {
+                eprintln!("xllm: to continue: {c}");
+            }
+            eprintln!("xllm: resume with: {}", record.resume_command());
+            emit_json_if_requested(opts, &record, &summary);
+            EXIT_PAUSED
+        }
+        RunOutcome::Interrupted(_) => {
+            eprintln!(
+                "xllm: run {} interrupted ({}); progress saved under {}",
+                record.run_id,
+                record.interrupt_reason.as_deref().unwrap_or("interrupted"),
+                record.runs_dir.as_deref().unwrap_or("(memory)")
+            );
+            eprintln!("xllm: resume with: {}", record.resume_command());
+            emit_json_if_requested(opts, &record, &summary);
+            EXIT_INTERRUPTED
+        }
+        RunOutcome::Failed(_) => {
+            eprintln!(
+                "xllm: run {} failed: {}",
+                record.run_id,
+                record
+                    .last_error
+                    .as_ref()
+                    .map(|e| e.message.as_str())
+                    .unwrap_or("unrecoverable error")
+            );
+            emit_json_if_requested(opts, &record, &summary);
+            EXIT_TASK_FAILED
+        }
+        RunOutcome::LimitReached(_) => {
+            eprintln!(
+                "xllm: run {} stopped: {}",
+                record.run_id,
+                record.limit_reason.as_deref().unwrap_or("limit reached")
+            );
+            if !record.artifacts.is_empty() {
+                eprintln!("xllm: artifacts so far: {}", record.artifacts.join(", "));
+            }
+            emit_json_if_requested(opts, &record, &summary);
+            EXIT_TASK_FAILED
+        }
     }
 }
 
-#[async_trait]
-impl Compressor for KeepTailCompressor {
-    async fn compress(
-        &self,
-        accumulated: Vec<AiMessage>,
-        _dir: &std::path::Path,
-    ) -> Result<Vec<AiMessage>, LocalLLMContextError> {
-        let (sys, rest): (Vec<_>, Vec<_>) = accumulated
-            .into_iter()
-            .partition(|m| m.role == AiRole::System);
-        let kept_tail = if rest.len() > self.tail {
-            rest[rest.len() - self.tail..].to_vec()
+fn emit_json_if_requested(opts: &CliOpts, record: &RunRecord, summary: &RunSummary) {
+    if opts.format == CliFormat::Json {
+        let view = build_result_view(record, summary, opts.result_format.as_ref());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&view).unwrap_or_else(|_| "{}".into())
+        );
+    }
+}
+
+/// 已完成任务的交付：提取 → --json 校验 → --format 包装 → stdout / --output。
+fn deliver_completed(
+    opts: &CliOpts,
+    record: &RunRecord,
+    summary: &RunSummary,
+    fmt_override: Option<&ResultFormat>,
+) -> i32 {
+    let fmt = fmt_override.or(opts.result_format.as_ref());
+    let extracted: Result<ExtractedValue, XllmError> = match fmt {
+        Some(f) => export_result(record, Some(f)),
+        None => match &record.result {
+            Some(r) => match (&r.extracted, &r.extract_error) {
+                (Some(v), _) => Ok(v.clone()),
+                (None, Some(e)) => Err(XllmError::Extract(e.clone())),
+                (None, None) => Err(XllmError::Extract("no extracted result".into())),
+            },
+            None => Err(XllmError::Other("run has no final response".into())),
+        },
+    };
+    let json_required = opts.json || (fmt_override.is_none() && record.config.json);
+    let (payload_text, code) = match extracted {
+        Ok(v) => {
+            if json_required {
+                match v.as_json() {
+                    Ok(jv) => (
+                        serde_json::to_string_pretty(&jv).unwrap_or_else(|_| jv.to_string()),
+                        EXIT_OK,
+                    ),
+                    Err(e) => {
+                        eprintln!(
+                            "xllm: run {} completed but the result is not valid JSON: {e}\n(raw response saved; re-export with `xllm result --run {}`)",
+                            record.run_id, record.run_id
+                        );
+                        (String::new(), EXIT_RESULT_INVALID)
+                    }
+                }
+            } else {
+                (v.to_output_text(), EXIT_OK)
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "xllm: run {} completed but result extraction failed: {e}\n(raw response saved; re-export with `xllm result --run {} --result-format raw`)",
+                record.run_id, record.run_id
+            );
+            (String::new(), EXIT_RESULT_INVALID)
+        }
+    };
+    let output_text = match opts.format {
+        CliFormat::Json => {
+            let view = build_result_view(record, summary, fmt);
+            serde_json::to_string_pretty(&view).unwrap_or_else(|_| "{}".into())
+        }
+        CliFormat::Text => {
+            if code != EXIT_OK {
+                return code;
+            }
+            payload_text
+        }
+    };
+    match &opts.output {
+        Some(path) => {
+            if code != EXIT_OK && opts.format == CliFormat::Text {
+                return code;
+            }
+            if let Err(e) = std::fs::write(path, output_text.as_bytes()) {
+                eprintln!(
+                    "xllm: task {} completed, but saving to {} failed: {e}\n(re-export with `xllm result --run {} --output <path>`)",
+                    record.run_id,
+                    path.display(),
+                    record.run_id
+                );
+                return EXIT_OUTPUT_FAILED;
+            }
+            diag(
+                opts.log_level(),
+                &format!("output saved to {}", path.display()),
+            );
+            code
+        }
+        None => {
+            let mut out = std::io::stdout().lock();
+            let _ = out.write_all(output_text.as_bytes());
+            if !output_text.ends_with('\n') {
+                let _ = out.write_all(b"\n");
+            }
+            let _ = out.flush();
+            code
+        }
+    }
+}
+
+// =========================================================================
+// resume / list / status / result
+// =========================================================================
+
+fn fmt_time(ms: u64) -> String {
+    let t = UNIX_EPOCH + Duration::from_millis(ms);
+    chrono::DateTime::<chrono::Local>::from(t)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
+}
+
+async fn run_resume(opts: CliOpts) -> i32 {
+    let level = opts.log_level();
+    let workdir = match opts.workdir() {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("xllm: error: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let store = store_for(&opts, &workdir);
+    let deps = XllmDeps::default().with_observer(Arc::new(StderrObserver { level }));
+    let start = XllmRun::resume(
+        &store,
+        opts.run.as_deref(),
+        Some(&workdir),
+        opts.resume_limits(),
+        deps,
+    )
+    .await;
+    match start {
+        Ok(ResumeStart::Terminal(record)) => {
+            let summary = store.summarize(&record);
+            diag(
+                level,
+                &format!(
+                    "run {} is already {}; showing the saved result",
+                    record.run_id,
+                    record.status.label()
+                ),
+            );
+            match record.status {
+                RunStatus::Completed => deliver_completed(&opts, &record, &summary, None),
+                _ => {
+                    print_status_text(&record, &summary);
+                    emit_json_if_requested(&opts, &record, &summary);
+                    EXIT_OK
+                }
+            }
+        }
+        Ok(ResumeStart::Run(mut run)) => {
+            let rec = run.record();
+            diag(
+                level,
+                &format!(
+                    "resuming run {} (saved {}, workdir {}); next: {}",
+                    rec.run_id,
+                    fmt_time(rec.updated_at_ms),
+                    rec.workdir,
+                    if rec.latest_snapshot_idx.is_some() {
+                        "retry the unfinished model request"
+                    } else {
+                        "analyze attachments / first model request"
+                    }
+                ),
+            );
+            execute_and_deliver(&opts, &mut run).await
+        }
+        Err(err) => {
+            eprintln!(
+                "xllm: error: {err} (runs directory: {})",
+                store
+                    .runs_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(memory)".into())
+            );
+            exit_code_for_error(&err)
+        }
+    }
+}
+
+async fn run_list(opts: &CliOpts) -> i32 {
+    let workdir = match opts.workdir() {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("xllm: error: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let store = store_for(opts, &workdir);
+    match list_runs(&store, Some(&workdir), opts.limit) {
+        Ok(items) => {
+            if opts.format == CliFormat::Json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".into())
+                );
+                return EXIT_OK;
+            }
+            if items.is_empty() {
+                eprintln!(
+                    "xllm: no runs for {} under {}",
+                    workdir.display(),
+                    store
+                        .runs_dir()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "(memory)".into())
+                );
+                return EXIT_OK;
+            }
+            for it in items {
+                println!(
+                    "{}  {:<20}  {}  {}  {}{}",
+                    it.run_id,
+                    it.status_label,
+                    fmt_time(it.updated_at_ms),
+                    if it.resumable { "resumable" } else { "-" },
+                    it.summary,
+                    if it.stale_running {
+                        "  (process exited)"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            EXIT_OK
+        }
+        Err(err) => {
+            eprintln!("xllm: error: {err}");
+            exit_code_for_error(&err)
+        }
+    }
+}
+
+fn select_record(opts: &CliOpts, store: &RunStore, workdir: &Path) -> Result<RunRecord, XllmError> {
+    match &opts.run {
+        Some(id) => store.read_record(id),
+        None => {
+            crate::local_llm_context::latest_run(store, Some(workdir), false)?.ok_or_else(|| {
+                XllmError::RunNotFound {
+                    run_id: "(latest)".into(),
+                    runs_dir: store
+                        .runs_dir()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "(memory)".into()),
+                }
+            })
+        }
+    }
+}
+
+fn print_status_text(record: &RunRecord, summary: &RunSummary) {
+    println!("run:            {}", record.run_id);
+    println!(
+        "status:         {}{}{}",
+        summary.status_label,
+        if summary.is_terminal {
+            " (terminal)"
         } else {
-            rest
-        };
-        let mut out = sys;
-        out.extend(kept_tail);
-        Ok(out)
+            ""
+        },
+        if summary.stale_running {
+            " — process exited"
+        } else {
+            ""
+        }
+    );
+    println!("summary:        {}", record.summary);
+    println!("workdir:        {}", record.workdir);
+    println!(
+        "runs dir:       {}",
+        record.runs_dir.as_deref().unwrap_or("(memory)")
+    );
+    println!("created:        {}", fmt_time(record.created_at_ms));
+    println!("updated:        {}", fmt_time(record.updated_at_ms));
+    let c = &record.config;
+    println!(
+        "provider/model: {} / {}{}",
+        c.provider.effective_kind().as_str(),
+        c.model,
+        c.file_model
+            .as_ref()
+            .map(|f| format!(" (file_model {f})"))
+            .unwrap_or_default()
+    );
+    println!(
+        "loop/tools:     {} / {}{}",
+        c.loop_model.as_str(),
+        if c.tools.enabled {
+            let names = c.tools.all_names();
+            if names.is_empty() {
+                "enabled (no tools)".to_string()
+            } else {
+                names.join(", ")
+            }
+        } else {
+            "disabled".to_string()
+        },
+        if c.tools.tools2actions {
+            " (tools2actions)"
+        } else {
+            ""
+        }
+    );
+    println!(
+        "limits:         max_rounds={} timeout={}s llm_timeout={}s max_tokens={}",
+        c.limits.max_rounds,
+        c.limits.timeout_secs,
+        c.limits.llm_timeout_secs,
+        c.limits
+            .max_tokens
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "model default".into())
+    );
+    println!("result_format:  {}", c.result_format.as_string());
+    if !c.config_files.is_empty() {
+        println!("config files:   {}", c.config_files.join(" → "));
     }
+    let mut src: Vec<String> = c
+        .sources
+        .iter()
+        .filter(|(k, _)| !k.contains("session_token") && !k.contains("api_key"))
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    src.sort();
+    if !src.is_empty() {
+        println!("sources:        {}", src.join("; "));
+    }
+    if let Some(e) = &record.last_error {
+        println!(
+            "last error:     [{}] {}{}",
+            e.phase,
+            e.message,
+            if e.recoverable { " (recoverable)" } else { "" }
+        );
+        if let Some(c) = &e.condition {
+            println!("to continue:    {c}");
+        }
+    }
+    if let Some(r) = &record.limit_reason {
+        println!("limit:          {r}");
+    }
+    if let Some(r) = &record.interrupt_reason {
+        println!("interrupted:    {r}");
+    }
+    if !record.artifacts.is_empty() {
+        println!("artifacts:      {}", record.artifacts.join(", "));
+    }
+    if let Some(u) = record.usage.total() {
+        println!(
+            "usage:          in={} out={} total={} requests={}",
+            u.input_tokens
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into()),
+            u.output_tokens
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into()),
+            u.total_tokens
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into()),
+            record.usage.llm_requests
+        );
+    }
+    println!(
+        "resumable:      {}{}",
+        if summary.resumable { "yes" } else { "no" },
+        if summary.resumable {
+            format!(" — {}", record.resume_command())
+        } else {
+            String::new()
+        }
+    );
+}
+
+async fn run_status(opts: &CliOpts) -> i32 {
+    let workdir = match opts.workdir() {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("xllm: error: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let store = store_for(opts, &workdir);
+    let record = match select_record(opts, &store, &workdir) {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("xllm: error: {err}");
+            return exit_code_for_error(&err);
+        }
+    };
+    let (record, summary) = match load_run(&store, &record.run_id) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("xllm: error: {err}");
+            return exit_code_for_error(&err);
+        }
+    };
+    if opts.format == CliFormat::Json {
+        let view = build_result_view(&record, &summary, None);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "result": view,
+                "input": record.input,
+                "config": record.config,
+                "prompt": record.prompt,
+            }))
+            .unwrap_or_else(|_| "{}".into())
+        );
+        return EXIT_OK;
+    }
+    print_status_text(&record, &summary);
+    EXIT_OK
+}
+
+async fn run_result(opts: &CliOpts) -> i32 {
+    let workdir = match opts.workdir() {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("xllm: error: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let store = store_for(opts, &workdir);
+    let record = match select_record(opts, &store, &workdir) {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("xllm: error: {err}");
+            return exit_code_for_error(&err);
+        }
+    };
+    let summary = store.summarize(&record);
+    if record.result.is_none() {
+        eprintln!(
+            "xllm: run {} has no final response yet (status: {})",
+            record.run_id, summary.status_label
+        );
+        emit_json_if_requested(opts, &record, &summary);
+        return EXIT_TASK_FAILED;
+    }
+    deliver_completed(opts, &record, &summary, opts.result_format.as_ref())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn parse(args: &[&str]) -> Result<CliOpts, String> {
+        CliOpts::parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>()).map_err(|e| match e
+        {
+            ParseError::Bad(m) => m,
+            ParseError::Help => "help".into(),
+            ParseError::Version => "version".into(),
+        })
+    }
+
     #[test]
-    fn aicc_options_preserve_json_schema() {
-        let schema = json!({
-            "type": "object",
-            "required": ["answer"],
-            "properties": { "answer": { "type": "string" } }
-        });
-        let options =
-            build_aicc_llm_options(Some(0.0), Some(2048), true, Some(schema.clone()), None);
-        assert_eq!(options["response_schema"], schema);
-        assert_eq!(options["max_tokens"], json!(2048));
+    fn positional_question_and_user_are_exclusive() {
+        let err = parse(&["hello", "--user", "x"]).unwrap_err();
+        assert!(err.contains("mutually exclusive"));
+        let ok = parse(&["hello world"]).unwrap();
+        assert_eq!(ok.question.as_deref(), Some("hello world"));
+        assert_eq!(ok.command, Command::New);
+    }
+
+    #[test]
+    fn subcommands_and_resume_rules() {
+        assert_eq!(parse(&["list", "--limit", "3"]).unwrap().limit, 3);
+        assert_eq!(
+            parse(&["status", "--run", "abc"]).unwrap().command,
+            Command::Status
+        );
+        assert!(parse(&["--resume", "question"]).is_err());
+        assert!(parse(&["--run", "abc", "question"]).is_err());
+        assert!(parse(&["--tools", "--no-tools"]).is_err());
+        assert!(parse(&["--select", "a", "--system", "b"]).is_err());
+        assert!(parse(&["--user", "a", "--user", "b"]).is_err());
+        assert_eq!(parse(&["--resume"]).unwrap().command, Command::Resume);
+    }
+
+    #[test]
+    fn attachments_keep_command_order() {
+        use crate::local_llm_context::Attachment;
+        let o = parse(&[
+            "--image", "a.png", "--file", "b.txt", "--image", "c.png", "q",
+        ])
+        .unwrap();
+        assert_eq!(o.attachments.len(), 3);
+        assert!(matches!(&o.attachments[1], Attachment::File { path } if path.ends_with("b.txt")));
     }
 }

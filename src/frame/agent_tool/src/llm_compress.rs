@@ -73,7 +73,7 @@ use sha2::{Digest, Sha256};
 use llm_context::deps::{LLMContextDeps, LlmInferenceRequest};
 use llm_context::error::LLMComputeError;
 
-use crate::local_llm_context::{Compressor, LocalLLMContextError};
+use crate::local_llm_context::{Compressor, XllmError};
 use crate::{AgentHistoryShowLevel, AgentToolResult, AgentToolStatus, AGENT_TOOL_PROTOCOL_VERSION};
 
 /// 兼容旧调用方的尾部消息数常量；当前实现按 pair 使用
@@ -1116,7 +1116,7 @@ impl Compressor for LlmSummarizeCompressor {
         &self,
         accumulated: Vec<AiMessage>,
         _dir: &Path,
-    ) -> Result<Vec<AiMessage>, LocalLLMContextError> {
+    ) -> Result<Vec<AiMessage>, XllmError> {
         compress(
             &accumulated,
             &self.deps,
@@ -1125,7 +1125,7 @@ impl Compressor for LlmSummarizeCompressor {
             None,
         )
         .await
-        .map_err(|e| LocalLLMContextError::CompressorFailed(e.to_string()))
+        .map_err(|e| XllmError::Compressor(e.to_string()))
     }
 }
 

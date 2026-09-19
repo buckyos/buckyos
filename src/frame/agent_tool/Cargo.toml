@@ -25,6 +25,7 @@ hex = { workspace = true }
 blake3 = { workspace = true }
 fs2 = { workspace = true }
 percent-encoding = { workspace = true }
+serde_yaml = "0.9"
 
 [dev-dependencies]
 tempfile = { workspace = true }
