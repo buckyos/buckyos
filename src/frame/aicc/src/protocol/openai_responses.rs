@@ -2274,7 +2274,10 @@ fn encode_audio_transcription(
             "OpenAI transcription codec only exposes its canonical JSON result",
         ));
     }
-    let resource = multipart_resource(&request.audio, call.context, "audio-input.bin")?;
+    let mut resource = call.context.materialized_resource(&request.audio)?.clone();
+    if resource.file_name.is_none() {
+        resource.file_name = Some(default_audio_input_file_name(&resource.mime).to_string());
+    }
     let mut body = MultipartBody::new(16, call.context.limits.max_request_bytes)?;
     body.push(MultipartPart::file(
         "file",
@@ -2318,6 +2321,18 @@ fn encode_audio_transcription(
         }
     }
     multipart_request(call, Method::POST, "audio/transcriptions", body)
+}
+
+fn default_audio_input_file_name(mime: &str) -> &'static str {
+    match mime.split(';').next().unwrap_or(mime).trim() {
+        "audio/mpeg" | "audio/mp3" => "audio-input.mp3",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "audio-input.wav",
+        "audio/mp4" | "audio/x-m4a" => "audio-input.m4a",
+        "audio/ogg" => "audio-input.ogg",
+        "audio/flac" | "audio/x-flac" => "audio-input.flac",
+        "audio/webm" => "audio-input.webm",
+        _ => "audio-input.bin",
+    }
 }
 
 fn decode_audio_transcription(response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
@@ -3573,6 +3588,32 @@ mod tests {
         };
         assert_eq!(output.value["segments"][0]["text"], "hello");
         assert_eq!(output.usage.unwrap().total_tokens, Some(3));
+    }
+
+    #[test]
+    fn audio_transcription_derives_file_extension_from_mime() {
+        let audio = PublicResourceRef::base64("audio/mpeg".to_string(), STANDARD.encode(b"audio"));
+        let materialized_context = context_with_resource(&audio, b"audio", "audio/mpeg", None);
+        let transcription = AudioSpeechRecognitionRequest::new("ignored@instance", audio);
+        let wire = registry()
+            .encode(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
+                ApiType::AudioSpeechRecognition,
+                &input(AiccCall::AudioSpeechRecognition(transcription)),
+                &materialized_context,
+            )
+            .unwrap();
+        let GoldenBody::Multipart(parts) = ProtocolContractHarness::default()
+            .request(&wire)
+            .unwrap()
+            .body
+        else {
+            panic!("expected multipart")
+        };
+        let file = parts.iter().find(|part| part.name == "file").unwrap();
+        assert_eq!(file.mime.as_deref(), Some("audio/mpeg"));
+        assert_eq!(file.file_name.as_deref(), Some("audio-input.mp3"));
     }
 
     #[tokio::test]

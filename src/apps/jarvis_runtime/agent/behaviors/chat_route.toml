@@ -108,6 +108,7 @@ tool_whitelist = [
   "set_memroy",
   "read",
   "exec_bash",
+  "materialize_resource",
   "llm_understand_media"
 ]
 

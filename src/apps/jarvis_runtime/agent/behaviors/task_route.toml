@@ -58,6 +58,7 @@ tool_whitelist = [
   "create_worksession",
   "read",
   "exec_bash",
+  "materialize_resource",
   "llm_understand_media"
 ]
 

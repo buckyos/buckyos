@@ -4,7 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
-use buckyos_api::{get_buckyos_api_runtime, AiContent, AiMessage, AiRole, ResourceRef};
+use buckyos_api::{
+    get_buckyos_api_runtime, AiContent, AiMessage, AiMethodStatus, AiRole, ApiType,
+    AudioSpeechRecognitionRequest, ResourceRef, RouteResolveRequest,
+};
 use llm_context::deps::{LLMContextDeps, ToolManager};
 use llm_context::{ContextOutput, LlmClient};
 use ndn_lib::FileObject;
@@ -27,6 +30,8 @@ use crate::{
 pub const TOOL_LLM_UNDERSTAND_MEDIA: &str = "llm_understand_media";
 
 const DEFAULT_MODEL_ALIAS: &str = "llm.vision";
+const DEFAULT_AUDIO_ANALYSIS_MODEL_ALIAS: &str = "llm.chat";
+const DEFAULT_AUDIO_ASR_MODEL_ALIAS: &str = "audio.asr";
 const DEFAULT_SUMMARY_MODEL_ALIAS: &str = "llm.summary";
 const DEFAULT_TARGET_TOKENS: u32 = 24_000;
 const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 2_048;
@@ -34,19 +39,19 @@ const RAW_OUTPUT_LOG_PREVIEW_CHARS: usize = 2_000;
 const DEFAULT_VIDEO_FRAME_COUNT: usize = 8;
 const MAX_VIDEO_FRAME_COUNT: usize = 16;
 
-const SYSTEM_PROMPT: &str = r#"You are OpenDAN's controlled attachment-understanding side context.
+const SYSTEM_PROMPT: &str = r#"You are OpenDAN's controlled media-understanding side context.
 
-You must inspect the target attachment and answer the user's goal as a JSON object with exactly these fields:
+You must inspect the target media resource and answer the requested goal as a JSON object with exactly these fields:
 - observations: array of objects with id and description.
 - reasoning: string.
 - conclusion: string.
 - confidence: one of "Observed", "Inferred", "Uncertain".
 
 Rules:
-1. Produce observations first in causal order. Observations are objective facts observable in the attachment. Each observation must have a stable id such as "obs-1".
+1. Produce observations first in causal order. Observations are objective facts observable in the media resource. Each observation must have a stable id such as "obs-1".
 2. Reasoning must come after observations and must only cite facts that trace to observation ids. If a step needs information not in observations, mark it as speculation.
 3. Conclusions that cannot be derived only from observations must be marked in reasoning as speculation and reflected by confidence "Inferred" or "Uncertain".
-4. Do not invent attachment details to support a likely answer.
+4. Do not invent media details to support a likely answer.
 5. For audio, distinguish clearly intelligible speech from a sound that merely resembles speech. An exact transcription is "Observed" only when the words are clearly audible and supported by an observation that explicitly states the speech is unambiguous. If the clip is short, noisy, ambiguous, or could instead be a non-speech sound, mark any proposed transcription "Uncertain" and present it only as a candidate, not as an observed fact.
 6. Return only JSON. Do not call tools."#;
 
@@ -91,7 +96,7 @@ impl AgentTool for LlmUnderstandMediaTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_LLM_UNDERSTAND_MEDIA.to_string(),
-            description: "Understand an attachment through a controlled LLM side context. Archives must be extracted first; other formats are forwarded to the selected model and fail if it does not support them. Accepts media, goal, and max_completion_tokens only. media is either a stored object ({kind:\"named_object\", obj_id:\"cyfile:…\"}), a url, or a local file ({kind:\"local_file\", path:\"/abs/path\"}); use the local-file form for artifacts an earlier exec_bash produced.".to_string(),
+            description: "Understand a media resource through a controlled LLM side context. Archives must be extracted first; other formats are forwarded to the selected model and fail if it does not support them. media is either a stored object ({kind:\"named_object\", obj_id:\"cyfile:…\"}), a URL, or a local file ({kind:\"local_file\", path:\"/abs/path\"}); use the local-file form for artifacts an earlier exec_bash produced.".to_string(),
             args_schema: json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -292,10 +297,11 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
     };
     let mime = resolved_media.mime.clone();
     let resolved_source_kind = resource_source_kind(&resolved_media.source);
-    let media_content = match prepare_media_content(resolved_media).await {
-        Ok(content) => content,
-        Err(err) => return (build_error_result(&opts, err), CLI_EXIT_ERROR),
-    };
+    let media_content =
+        match prepare_media_content(resolved_media, opts.session_id.as_deref()).await {
+            Ok(content) => content,
+            Err(err) => return (build_error_result(&opts, err), CLI_EXIT_ERROR),
+        };
 
     let model_alias = match opts.model.clone().or_else(|| route_model(&mime)) {
         Some(model) => model,
@@ -905,7 +911,7 @@ fn json_type_name(value: &Value) -> &'static str {
 /// Find the file a caller meant by a local path.
 ///
 /// `exec_bash` runs inside the session workspace — `<agent_root>/sessions/<id>`,
-/// which is also where uploaded attachments live — while the agent process
+/// which is also where session media inputs live — while the agent process
 /// itself starts in the install root. A model that has just written
 /// `frame008.png` therefore names it relative to a directory that is *not* the
 /// process CWD. Try the process-relative path first, then the session
@@ -1274,6 +1280,10 @@ fn is_video_mime(mime: &str) -> bool {
     mime.starts_with("video/")
 }
 
+fn is_audio_mime(mime: &str) -> bool {
+    mime.starts_with("audio/")
+}
+
 fn is_archive_mime(mime: &str) -> bool {
     matches!(
         mime,
@@ -1302,6 +1312,8 @@ fn route_model(mime: &str) -> Option<String> {
         configured_model("LLM_UNDERSTAND_MEDIA_VIDEO_MODEL")
     } else if is_image_mime(mime) {
         configured_model("LLM_UNDERSTAND_MEDIA_IMAGE_MODEL")
+    } else if is_audio_mime(mime) {
+        configured_model("LLM_UNDERSTAND_MEDIA_AUDIO_MODEL")
     } else if is_archive_mime(mime) {
         return None;
     } else {
@@ -1309,23 +1321,38 @@ fn route_model(mime: &str) -> Option<String> {
     };
     specific
         .or_else(|| configured_model("LLM_UNDERSTAND_MEDIA_MODEL"))
-        .or_else(|| Some(DEFAULT_MODEL_ALIAS.to_string()))
+        .or_else(|| Some(default_model_alias(mime).to_string()))
 }
 
-async fn prepare_media_content(media: ResolvedMedia) -> Result<Vec<AiContent>, String> {
+fn default_model_alias(mime: &str) -> &'static str {
+    if is_audio_mime(mime) {
+        DEFAULT_AUDIO_ANALYSIS_MODEL_ALIAS
+    } else {
+        DEFAULT_MODEL_ALIAS
+    }
+}
+
+async fn prepare_media_content(
+    media: ResolvedMedia,
+    session_id: Option<&str>,
+) -> Result<Vec<AiContent>, String> {
     if is_image_mime(&media.mime) {
         return Ok(vec![AiContent::image(media.source)]);
     }
+    if is_audio_mime(&media.mime) {
+        let transcript = transcribe_audio(media.source, session_id).await?;
+        return Ok(audio_transcript_content(&transcript));
+    }
     if is_archive_mime(&media.mime) {
         return Err(format!(
-            "archive attachment mime `{}` must be extracted first",
+            "archive media mime `{}` must be extracted first",
             media.mime
         ));
     }
     if !is_video_mime(&media.mime) {
         return Ok(vec![AiContent::Document {
             source: media.source,
-            title: Some("attachment input".to_string()),
+            title: Some("media input".to_string()),
         }]);
     }
 
@@ -1340,6 +1367,73 @@ async fn prepare_media_content(media: ResolvedMedia) -> Result<Vec<AiContent>, S
         content.push(AiContent::image(frame));
     }
     Ok(content)
+}
+
+async fn transcribe_audio(source: ResourceRef, session_id: Option<&str>) -> Result<String, String> {
+    let runtime = get_buckyos_api_runtime()
+        .map_err(|err| format!("get buckyos runtime for audio transcription failed: {err}"))?;
+    let client = runtime
+        .get_aicc_client()
+        .await
+        .map_err(|err| format!("get aicc client for audio transcription failed: {err}"))?;
+
+    let mut route_request = RouteResolveRequest::new(
+        ApiType::AudioSpeechRecognition,
+        DEFAULT_AUDIO_ASR_MODEL_ALIAS,
+    );
+    route_request.session_id = session_id.map(str::to_string);
+    let route = client
+        .route_resolve(route_request)
+        .await
+        .map_err(|err| format!("resolve audio.asr model failed: {err}"))?;
+
+    let mut request = AudioSpeechRecognitionRequest::new(route.selected_exact_model, source);
+    request.session_id = session_id.map(str::to_string);
+    let response = client
+        .audio_speech_recognition(request)
+        .await
+        .map_err(|err| format!("aicc audio.asr failed: {err}"))?;
+
+    match response.status {
+        AiMethodStatus::Succeeded => {
+            let text = response
+                .text
+                .filter(|text| !text.trim().is_empty())
+                .or_else(|| {
+                    let text = response
+                        .segments
+                        .iter()
+                        .map(|segment| segment.text.trim())
+                        .filter(|text| !text.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    (!text.is_empty()).then_some(text)
+                })
+                .ok_or_else(|| "audio.asr succeeded but returned an empty transcript".to_string())?;
+            Ok(text)
+        }
+        AiMethodStatus::Failed => Err(format!(
+            "audio.asr failed: task_id={}, event_ref={}, error={}",
+            response.task_id,
+            response.event_ref.as_deref().unwrap_or(""),
+            response
+                .error
+                .as_ref()
+                .and_then(|error| serde_json::to_string(error).ok())
+                .unwrap_or_else(|| "<none>".to_string())
+        )),
+        AiMethodStatus::Running => Err(format!(
+            "audio.asr returned async task `{}`; llm_understand_media requires an immediate transcription",
+            response.task_id
+        )),
+    }
+}
+
+fn audio_transcript_content(transcript: &str) -> Vec<AiContent> {
+    vec![AiContent::text(format!(
+        "Audio preprocessing result from automatic speech recognition. This evidence covers intelligible speech only; it does not identify music, ambient sounds, emotion, or the scene unless those are stated in the transcript.\n\nTranscript:\n{}",
+        transcript.trim()
+    ))]
 }
 
 async fn extract_video_frames(media: &ResolvedMedia) -> Result<Vec<(f64, ResourceRef)>, String> {
@@ -2066,7 +2160,7 @@ mod tests {
     }
 
     #[test]
-    fn non_archive_attachment_mime_routes_to_model_and_sniffs_common_containers() {
+    fn non_archive_media_mime_routes_to_model_and_sniffs_common_containers() {
         assert!(route_model("video/mp4").is_some());
         assert!(route_model("audio/mpeg").is_some());
         assert!(route_model("application/pdf").is_some());
@@ -2083,25 +2177,25 @@ mod tests {
             sniff_archive_mime(b"PK\x03\x04archive"),
             Some("application/zip")
         );
+        assert_eq!(default_model_alias("audio/mpeg"), "llm.chat");
+        assert_eq!(default_model_alias("image/png"), "llm.vision");
     }
 
     #[tokio::test]
-    async fn non_archive_attachments_are_forwarded_inline() {
-        for mime in [
-            "audio/mpeg",
-            "application/pdf",
-            "text/plain",
-            "application/octet-stream",
-        ] {
-            let content = prepare_media_content(ResolvedMedia {
-                source: ResourceRef::Base64 {
+    async fn document_resources_are_forwarded_inline() {
+        for mime in ["application/pdf", "text/plain", "application/octet-stream"] {
+            let content = prepare_media_content(
+                ResolvedMedia {
+                    source: ResourceRef::Base64 {
+                        mime: mime.to_string(),
+                        data_base64: "AAAA".to_string(),
+                    },
                     mime: mime.to_string(),
-                    data_base64: "AAAA".to_string(),
                 },
-                mime: mime.to_string(),
-            })
+                None,
+            )
             .await
-            .expect("non-archive attachment should be forwarded");
+            .expect("non-archive media should be forwarded");
             assert!(matches!(
                 &content[0],
                 AiContent::Document {
@@ -2111,16 +2205,30 @@ mod tests {
             ));
         }
 
-        let err = prepare_media_content(ResolvedMedia {
-            source: ResourceRef::Base64 {
+        let err = prepare_media_content(
+            ResolvedMedia {
+                source: ResourceRef::Base64 {
+                    mime: "application/zip".to_string(),
+                    data_base64: "AAAA".to_string(),
+                },
                 mime: "application/zip".to_string(),
-                data_base64: "AAAA".to_string(),
             },
-            mime: "application/zip".to_string(),
-        })
+            None,
+        )
         .await
         .expect_err("archives must be extracted before understanding");
         assert!(err.contains("must be extracted first"));
+    }
+
+    #[test]
+    fn audio_transcript_is_forwarded_as_text_with_scope_limit() {
+        let content = audio_transcript_content(" hello world ");
+        assert_eq!(content.len(), 1);
+        let AiContent::Text { text } = &content[0] else {
+            panic!("audio transcript must become text content");
+        };
+        assert!(text.contains("speech only"));
+        assert!(text.ends_with("Transcript:\nhello world"));
     }
 
     #[test]
