@@ -801,7 +801,7 @@ mod tests {
                 ),
                 (
                     "gemini".to_owned(),
-                    "28:0dd1880215811ae88d63198690a01a2df6035b997d43e11ba596aeb92e7d022d"
+                    "28:9d79cebf00631821f3026f0ab2f97418a79d0fd6c858938ee8c8344a5873e5c0"
                         .to_owned()
                 ),
                 (

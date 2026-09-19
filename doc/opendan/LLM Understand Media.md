@@ -287,7 +287,9 @@ model = "llm.video"
 
 - v0 只启用 `image/* -> llm.vision` 与 `video/*`（本地抽帧后按图片转发）；`Document` 类 MIME 直接以 document block 转发。
 - `audio/*` 自 2026-09-18 起按 `AiContent::Audio` 原样转发（不再降级成 `Document`，也**不再回退到 `llm.vision`**）。默认路由目标即上表的 `llm.audio`；`LLM_UNDERSTAND_MEDIA_AUDIO_MODEL` 可覆盖为某个具体模型（例如 `glm-4-voice`）。两者都不可用时工具返回明确的 `no model route for media mime` 错误。
-- `llm.audio` 已由 AICC 内置逻辑模型定义注册（`service/model_defaults.rs`）：`min_line` 硬过滤 `audio = true`，且使用 `strict` fallback，因此音频**不会**被静默降级到只支持文本的模型。候选来自 provider 元数据 `capabilities.audio`；目前只有 `glm-4-voice` 打了这个标记。
+- `llm.audio` 已由 AICC 内置逻辑模型定义注册（`service/model_defaults.rs`）：`min_line` 硬过滤 `audio = true`，且使用 `strict` fallback，因此音频**不会**被静默降级到只支持文本的模型。候选来自 provider 元数据 `capabilities.audio`。
+- 打了 `capabilities.audio` 的模型：`glm-4-voice`（`glm-chat`）以及 Gemini 的 12 个 LLM（`gemini-interactions`）。但 `builtin_logical_tree_overlay()` 里的 `audio` 节点目前只显式挂了 `glm_voice`，所以 `llm.audio` 的实际候选仍然只有 `glm-4-voice`；其余带标记的模型只是让能力声明真实可见，要让它们参与 `llm.audio` 分流必须先在 overlay 里显式挂载。
+- 标记能生效的前提是适配器 binding 也声明了 `audio`（见 `doc/aicc/driver_metadata_schema.md` 的 `capabilities` and the adapter gate）；`claude-messages` / `minimax-messages` 不支持音频输入，因此不声明。
 - 上表中的 `llm.media` / `llm.document` / `llm.video` 仍是设计稿：AICC 侧尚未注册这些逻辑模型名，当前生效的是 `image/*`+`video/*` → `llm.vision`、`audio/*` → `llm.audio`，其余 MIME 走 document block。
 - `model` 是 AICC 逻辑模型名，最终 exact provider / model 由 AICC route policy 解析。
 - `default_model` 仅在 MIME 已识别但没有更具体 route 时使用；MIME 无法识别时不盲目 fallback。
