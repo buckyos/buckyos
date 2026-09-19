@@ -383,9 +383,7 @@ mod tests {
             .iter()
             .find(|rule| {
                 rule.match_rule
-                    == Some(crate::matching::MatchRule::Shorthand(
-                        "gpt-5.6-sol*".into(),
-                    ))
+                    == Some(crate::matching::MatchRule::Shorthand("gpt-5.6-sol*".into()))
             })
             .expect("gpt-5.6-sol* has a price entry");
         assert_eq!(sol_price.pricing.input_token, Some(0.000004));

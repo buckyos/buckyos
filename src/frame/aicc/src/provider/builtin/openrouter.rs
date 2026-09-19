@@ -131,13 +131,16 @@ impl ProviderDiscovery for OpenRouterDiscovery {
             {
                 supported_features.insert(features::JSON_SCHEMA.to_owned());
             }
-            if model.architecture.as_ref().is_some_and(|architecture| {
-                architecture
-                    .input_modalities
-                    .iter()
-                    .any(|item| item == "image")
-            }) {
+            let input_modalities = model
+                .architecture
+                .as_ref()
+                .map(|architecture| architecture.input_modalities.as_slice())
+                .unwrap_or_default();
+            if input_modalities.iter().any(|item| item == "image") {
                 supported_features.insert(features::VISION.to_owned());
+            }
+            if input_modalities.iter().any(|item| item == "audio") {
+                supported_features.insert(features::AUDIO.to_owned());
             }
             let rerank = model.architecture.as_ref().is_some_and(|architecture| {
                 architecture
@@ -231,8 +234,9 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
         amount: None,
         rules: Vec::new(),
         tiers: None,
-    
-        time_windows: Vec::new(),}))
+
+        time_windows: Vec::new(),
+    }))
 }
 
 fn parse_nonnegative_price(name: &str, value: Option<&str>) -> ProviderResult<Option<f64>> {

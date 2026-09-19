@@ -1237,6 +1237,13 @@ pub mod features {
     /// Audio-input capability marker; pairs `ModelRequirement::audio` with the
     /// `capabilities.audio` boolean on model metadata.
     pub const AUDIO: &str = "audio";
+    /// Extended-thinking marker; pairs the `capabilities.reasoning` boolean on
+    /// model metadata with codecs that can carry an `AiContent::Thinking` block.
+    pub const REASONING: &str = "reasoning";
+    /// Streaming marker. Unlike the others this one is never hand-declared: the
+    /// inventory derives it from `ExecutionMode::Stream`, so a model whose
+    /// binding can stream keeps its `capabilities.streaming` boolean.
+    pub const STREAMING: &str = "streaming";
     pub const ASR: &str = "asr";
     pub const VIDEO_UNDERSTAND: &str = "video_understand";
 }

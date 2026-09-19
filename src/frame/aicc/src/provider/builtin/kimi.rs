@@ -135,7 +135,7 @@ impl ProviderDiscovery for KimiDiscovery {
                 supported_features.insert(features::VISION.to_owned());
             }
             if model.supports_reasoning.unwrap_or(false) {
-                supported_features.insert("reasoning".to_owned());
+                supported_features.insert(features::REASONING.to_owned());
             }
             models.insert(
                 model.id.clone(),

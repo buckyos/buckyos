@@ -48,8 +48,9 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
                 [
                     buckyos_api::features::TOOL_CALL,
                     buckyos_api::features::JSON_SCHEMA,
-                    "reasoning",
+                    buckyos_api::features::REASONING,
                     buckyos_api::features::VISION,
+                    buckyos_api::features::AUDIO,
                 ],
             ),
             binding(
@@ -65,12 +66,12 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
             binding(
                 ApiType::ImageTextToImage,
                 [ExecutionMode::Immediate, ExecutionMode::Stream],
-                ["image_generation"],
+                [buckyos_api::features::IMAGE_GENERATION],
             ),
             binding(
                 ApiType::ImageImageToImage,
                 [ExecutionMode::Immediate, ExecutionMode::Stream],
-                ["image_generation"],
+                [buckyos_api::features::IMAGE_GENERATION],
             ),
             binding(
                 ApiType::AgentComputerUse,
@@ -94,7 +95,7 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
         vec![binding(
             ApiType::ImageTextToImage,
             [ExecutionMode::Immediate],
-            std::iter::empty::<&str>(),
+            [buckyos_api::features::IMAGE_GENERATION],
         )],
         false,
     );
@@ -104,12 +105,12 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
             binding(
                 ApiType::ImageImageToImage,
                 [ExecutionMode::Immediate],
-                std::iter::empty::<&str>(),
+                [buckyos_api::features::IMAGE_GENERATION],
             ),
             binding(
                 ApiType::ImageInpaint,
                 [ExecutionMode::Immediate],
-                std::iter::empty::<&str>(),
+                [buckyos_api::features::IMAGE_GENERATION],
             ),
         ],
         false,

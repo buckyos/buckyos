@@ -90,6 +90,8 @@ Provider 不能自定义方法名，只能声明自己支持标准集合中的�
 
 `enabled_capabilities` / `disabled_capabilities` 表达本次路由后模型可用能力与请求禁用能力。能力判断使用结构化 `ModelRequirement` / `ModelDisable`，最终能力是 Model Driver、Protocol Adapter 与 Provider discovery 的交集。
 
+交集中 Protocol Adapter 那一层就是 operation binding 的 `supported_features`：适配器只放行它真能运输的能力名，元数据里多写的能力会被剔除，并且**必须**打 WARN 日志（不允许静默丢弃——`llm.audio` 曾因 `audio` 被静默剔除而候选集为空）。`streaming` 不由适配器手写，而是从 binding 的 `ExecutionMode::Stream` 派生。判定顺序与例外见 `driver_metadata_schema.md` 的 `capabilities` and the adapter gate。
+
 ### 1.4 数据面复用 BuckyOS ResourceRef / FileObject Meta
 
 AICC 不引入私有 Object Store。非结构化数据通过当前 `ResourceRef` 传递：
@@ -1024,7 +1026,7 @@ Response mapping：每张图片生成 `AiArtifact`，宽高、media type 等写�
 
 OpenAI 渠道的 operation 由最终解析后的 metadata/Provider Rules 决定：
 
-- GPT Image / DALL·E 等图片模型使用 Image API operation；
+- GPT Image / DALL·E 等图片模型使用 Image API operation；`images.generate` / `images.edit` / `image_generation.create` 这些 operation 的 binding 同样声明 `image_generation`，否则元数据里的 `capabilities.image_generation` 会在 inventory 解析阶段被剔除；
 - 声明 `capabilities.image_generation=true` 的 GPT-5 系列主线模型使用 Responses `image_generation` tool；
 - 不得根据模型名、调用方是否传 feature 或 endpoint URL 在 adapter 中临时猜测路径。
 

@@ -191,6 +191,37 @@ an intrinsic capability. Unknown models enter conservative fallback and do not
 claim tool calling, JSON output, web search, vision, audio input or image
 generation.
 
+### `capabilities` and the adapter gate
+
+A boolean in `capabilities` is a claim, not a permission. It reaches an
+inventory only when the Protocol Adapter serving the model declares the same
+name in its operation binding's `supported_features`: the inventory is the
+intersection of the Model Driver declaration, the adapter binding and Provider
+discovery. A name no adapter declares is dropped, and the drop is logged instead
+of applied silently:
+
+```
+aicc inventory: glm/glm-4-voice via adapter `glm-chat` declares unsupported capabilities, dropped: [web_search]
+```
+
+- `streaming` is never written by hand. It is derived from the binding's
+  execution modes, so an operation that supports `ExecutionMode::Stream` lets
+  every model on it keep `capabilities.streaming`.
+- A capability name that no codec transports is inert for routing.
+  `web_search` is in that state today: metadata declares it, no codec encodes a
+  web-search tool, so it is dropped on every inventory build.
+- Adding a capability therefore also means touching the codecs: a
+  `buckyos_api::features` constant plus every operation binding that genuinely
+  transports it. The contract is pinned by
+  `builtin_llm_bindings_declare_the_features_their_codecs_transport` and
+  `declared_audio_survives_when_the_adapter_transports_it` in `aicc`.
+
+Audio input is the worked example: the chat-completions family declares `audio`
+because a dialect may carry it through `encode_audio_content` (GLM does; the
+base dialect reports `UnsupportedOperation`), Gemini declares it for inline
+audio parts, OpenAI Responses declares it for `input_audio`, and the Claude
+family does not, because it rejects `AiContent::Audio` outright.
+
 ## Variants
 
 Variants define semantic identities and their origin-provider fallback lowering:

@@ -148,7 +148,14 @@ impl OperationCodec for FakeCodec {
     }
 
     fn execution_modes(&self) -> BTreeSet<ExecutionMode> {
-        BTreeSet::from([ExecutionMode::Immediate])
+        // Mirror the descriptor so a fixture can declare `Stream` too; the
+        // registry rejects a codec whose modes do not match its binding.
+        self.descriptor
+            .bindings
+            .iter()
+            .filter(|binding| binding.api_type == self.api_type())
+            .flat_map(|binding| binding.execution_modes.iter().copied())
+            .collect()
     }
 
     fn encode(&self, _call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
@@ -373,8 +380,9 @@ fn discovery(model_id: &str) -> ProviderDiscoverySnapshot {
                 amount: None,
                 rules: vec![],
                 tiers: None,
-            
-                time_windows: Vec::new(),}),
+
+                time_windows: Vec::new(),
+            }),
         }],
     }
 }
@@ -1756,4 +1764,201 @@ fn backoff_is_bounded_and_fingerprint_is_order_independent() {
         model_list_fingerprint(&first),
         model_list_fingerprint(&second)
     );
+}
+
+// ---------------------------------------------------------------------------
+// Capability gating
+//
+// A `capabilities.*` boolean in model metadata is read by
+// `missing_requirements`, so the adapter gate must neither invent capabilities
+// nor drop them silently. Every case below is derived from the outage where
+// `llm.audio` resolved to an empty candidate set because `audio` was dropped
+// without a log line.
+// ---------------------------------------------------------------------------
+
+/// Catalog whose single `gpt-test` model declares exactly `declared`.
+fn catalog_with_capabilities(declared: serde_json::Value) -> Arc<CatalogSnapshot> {
+    let model_driver: ModelDriverCatalog = serde_json::from_value(serde_json::json!({
+        "format": "buckyos.aicc.model-driver-catalog",
+        "schema_version": 1,
+        "schema_revision": 0,
+        "model_driver_id": "openai",
+        "revision_seq": 7,
+        "models": [{
+            "id": "gpt-test",
+            "api_types": ["llm"],
+            "logical_mounts": ["llm.test"],
+            "capabilities": declared
+        }],
+        "patterns": [],
+        "defaults": {},
+        "variants": [],
+        "version_rules": []
+    }))
+    .unwrap();
+    let provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
+        "format": "buckyos.aicc.provider-rules-catalog",
+        "schema_version": 1,
+        "schema_revision": 0,
+        "revision_seq": 7,
+        "provider_profile_id": "openai",
+        "metadata_drivers": ["openai"],
+        "models": [{"id": "gpt-test", "operations": {"llm": "responses.create"}}],
+        "patterns": [],
+        "variants": []
+    }))
+    .unwrap();
+    Arc::new(
+        CatalogSnapshot::build(
+            7,
+            CatalogDocuments {
+                model_drivers: vec![model_driver],
+                provider_rules: vec![provider_rules],
+                known_providers: vec![],
+            },
+            &CatalogBuildOptions::default(),
+        )
+        .unwrap(),
+    )
+}
+
+/// Adapter whose `responses.create` Llm binding advertises `features` and
+/// supports `modes`.
+fn codecs_with_llm_binding(features: &[&str], modes: &[ExecutionMode]) -> Arc<CodecRegistry> {
+    let descriptor = OperationDescriptor {
+        operation_id: "responses.create".into(),
+        bindings: vec![OperationBinding {
+            api_type: ApiType::Llm,
+            capability: ApiType::Llm.capability(),
+            supported_features: features
+                .iter()
+                .map(|feature| (*feature).to_owned())
+                .collect(),
+            execution_modes: modes.iter().copied().collect(),
+        }],
+        supports_cancel: false,
+        supports_webhook: false,
+        max_request_bytes: 1024,
+        max_response_bytes: 1024,
+    };
+    let adapter = AdapterDescriptor {
+        protocol_family_id: "openai".into(),
+        protocol_adapter_id: "openai-responses".into(),
+        interface_generation: "responses-v1".into(),
+        base_adapter_id: None,
+        status: AdapterStatus::Stable,
+        probe_priority: 0,
+        probe_path: Some("probe".to_owned()),
+        credential: crate::protocol::AdapterCredentialContract::bearer(),
+        operations: BTreeMap::from([("responses.create".into(), descriptor.clone())]),
+    };
+    let mut registry = CodecRegistry::default();
+    registry
+        .register(adapter, vec![Arc::new(FakeCodec { descriptor })])
+        .unwrap();
+    Arc::new(registry)
+}
+
+/// Discovery snapshot with the discovery-side feature gate disabled, so the
+/// adapter is the only thing deciding which capabilities survive.
+fn discovery_without_feature_gate(model_id: &str) -> ProviderDiscoverySnapshot {
+    let mut snapshot = discovery(model_id);
+    snapshot.models[0].supported_features = None;
+    snapshot
+}
+
+fn surviving_capabilities(
+    declared: serde_json::Value,
+    adapter_features: &[&str],
+    modes: &[ExecutionMode],
+) -> BTreeMap<String, Value> {
+    let inventory = InventoryBuilder::build(
+        &profile(),
+        &instance("primary"),
+        discovery_without_feature_gate("gpt-test"),
+        &catalog_with_capabilities(declared),
+        &codecs_with_llm_binding(adapter_features, modes),
+    )
+    .unwrap();
+    assert_eq!(inventory.models.len(), 1);
+    inventory.models[0].capabilities.clone()
+}
+
+#[test]
+fn declared_audio_survives_when_the_adapter_transports_it() {
+    let capabilities = surviving_capabilities(
+        serde_json::json!({"vision": true, "audio": true, "max_context_tokens": 8192}),
+        &[buckyos_api::features::VISION, buckyos_api::features::AUDIO],
+        &[ExecutionMode::Immediate],
+    );
+    assert_eq!(capabilities["audio"], Value::Bool(true));
+    assert_eq!(capabilities["vision"], Value::Bool(true));
+    assert_eq!(capabilities["max_context_tokens"], Value::from(8192));
+}
+
+#[test]
+fn declared_audio_is_dropped_when_the_adapter_cannot_transport_it() {
+    let capabilities = surviving_capabilities(
+        serde_json::json!({"audio": true}),
+        &[buckyos_api::features::VISION],
+        &[ExecutionMode::Immediate],
+    );
+    assert!(!capabilities.contains_key("audio"));
+}
+
+#[test]
+fn streaming_follows_the_execution_mode_not_the_adapter_feature_list() {
+    let streamed = surviving_capabilities(
+        serde_json::json!({"streaming": true}),
+        &[],
+        &[ExecutionMode::Immediate, ExecutionMode::Stream],
+    );
+    assert_eq!(streamed["streaming"], Value::Bool(true));
+
+    let immediate_only = surviving_capabilities(
+        serde_json::json!({"streaming": true}),
+        &[],
+        &[ExecutionMode::Immediate],
+    );
+    assert!(!immediate_only.contains_key("streaming"));
+}
+
+#[test]
+fn dropped_capabilities_are_reported_and_numeric_ones_are_spared() {
+    let mut capabilities = BTreeMap::from([
+        ("audio".to_owned(), Value::Bool(true)),
+        ("web_search".to_owned(), Value::Bool(true)),
+        ("max_context_tokens".to_owned(), Value::from(8192)),
+        ("vision".to_owned(), Value::Bool(false)),
+    ]);
+    let adapter_features = BTreeSet::from([buckyos_api::features::AUDIO.to_owned()]);
+    let dropped = retain_supported_features(&mut capabilities, &adapter_features, None);
+    assert_eq!(dropped, vec!["web_search".to_owned()]);
+    assert!(!capabilities.contains_key("web_search"));
+    // Numeric capabilities are never filtered by the adapter gate.
+    assert_eq!(capabilities["max_context_tokens"], Value::from(8192));
+    // A `false` boolean claims nothing, so it is left untouched.
+    assert_eq!(capabilities["vision"], Value::Bool(false));
+    assert_eq!(capabilities["audio"], Value::Bool(true));
+}
+
+#[test]
+fn discovery_feature_gate_still_narrows_declared_capabilities() {
+    let mut capabilities = BTreeMap::from([
+        ("audio".to_owned(), Value::Bool(true)),
+        ("vision".to_owned(), Value::Bool(true)),
+    ]);
+    let adapter_features = BTreeSet::from([
+        buckyos_api::features::AUDIO.to_owned(),
+        buckyos_api::features::VISION.to_owned(),
+    ]);
+    let discovery_features = BTreeSet::from([buckyos_api::features::AUDIO.to_owned()]);
+    let dropped = retain_supported_features(
+        &mut capabilities,
+        &adapter_features,
+        Some(&discovery_features),
+    );
+    assert_eq!(dropped, vec!["vision".to_owned()]);
+    assert!(capabilities.contains_key("audio"));
+    assert!(!capabilities.contains_key("vision"));
 }

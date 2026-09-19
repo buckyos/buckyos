@@ -25,10 +25,15 @@ const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 pub(super) fn minimax_media_registration() -> (Vec<OperationDescriptor>, CodecRegistration) {
     let t2a = immediate_operation(T2A_OPERATION_ID, &[ApiType::AudioTextToSpeech]);
-    let image = immediate_operation(
+    let mut image = immediate_operation(
         IMAGE_OPERATION_ID,
         &[ApiType::ImageTextToImage, ApiType::ImageImageToImage],
     );
+    for binding in &mut image.bindings {
+        binding
+            .supported_features
+            .insert(buckyos_api::features::IMAGE_GENERATION.to_owned());
+    }
     let music = immediate_operation(MUSIC_OPERATION_ID, &[ApiType::AudioMusic]);
     let video = OperationDescriptor {
         operation_id: VIDEO_OPERATION_ID.to_string(),

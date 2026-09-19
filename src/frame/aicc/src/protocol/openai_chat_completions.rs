@@ -368,10 +368,18 @@ pub(crate) fn openai_chat_completions_operation_descriptor() -> OperationDescrip
         ApiType::Llm,
         [ExecutionMode::Immediate, ExecutionMode::Stream],
     );
+    // `AUDIO` and `REASONING` are part of the family contract, not of every
+    // dialect: audio rides on `OpenAiChatCompletionsDialect::encode_audio_content`
+    // (the base implementation reports `UnsupportedOperation`, GLM implements it)
+    // and reasoning rides on the `reasoning_content` field the decoder already
+    // reads. Declaring them here keeps metadata declarations intact; whether a
+    // given request is actually transportable is still decided per dialect.
     binding.supported_features = BTreeSet::from([
         features::TOOL_CALL.to_string(),
         features::JSON_SCHEMA.to_string(),
         features::VISION.to_string(),
+        features::AUDIO.to_string(),
+        features::REASONING.to_string(),
     ]);
     let mut vision_ocr = OperationBinding::new(ApiType::VisionOcr, [ExecutionMode::Immediate]);
     vision_ocr.supported_features = BTreeSet::from([features::VISION.to_string()]);

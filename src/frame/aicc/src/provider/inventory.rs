@@ -825,14 +825,35 @@ impl InventoryBuilder {
                     .binding(api_type)
                     .map_err(|error| ProviderError::Inventory(error.to_string()))?;
                 adapter_features.extend(binding.supported_features.iter().cloned());
+                // `streaming` is an execution mode, not a codec feature, so no
+                // adapter lists it by hand: an operation that can stream implies
+                // every model on it may declare `capabilities.streaming`.
+                if binding
+                    .execution_modes
+                    .contains(&crate::protocol::ExecutionMode::Stream)
+                {
+                    adapter_features.insert(buckyos_api::features::STREAMING.to_owned());
+                }
                 api_types.push(api_type);
                 operations.insert(api_type_name, operation_id);
             }
-            retain_supported_features(
+            let dropped_features = retain_supported_features(
                 &mut capabilities,
                 &adapter_features,
                 discovered.supported_features.as_ref(),
             );
+            if !dropped_features.is_empty() {
+                // Metadata asked for capabilities this adapter cannot carry.
+                // Never drop them silently: that is what turned a routing bug
+                // into a user-visible outage with no log line to point at.
+                log::warn!(
+                    "aicc inventory: {}/{} via adapter `{}` declares unsupported capabilities, dropped: [{}]",
+                    model_driver_id,
+                    origin_model_id,
+                    instance.protocol_adapter_id,
+                    dropped_features.join(", ")
+                );
+            }
             api_types.sort_by_key(|api_type| api_type.typed_method());
             if discovered.availability != ModelAvailability::Available || discovered.deprecated {
                 api_types.clear();

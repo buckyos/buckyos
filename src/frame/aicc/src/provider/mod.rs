@@ -652,18 +652,29 @@ fn resolve_operation(
     }
 }
 
+/// Drops capability booleans the transport cannot honour, returning their
+/// names so the caller can log them. Numeric capabilities (`max_context_tokens`
+/// and friends) are never filtered. Callers must not swallow the returned list:
+/// a silently dropped `audio`/`vision`/`tool_call` marker reads as "model does
+/// not support this" and quietly empties a routing candidate set.
 fn retain_supported_features(
     capabilities: &mut BTreeMap<String, Value>,
     adapter_features: &BTreeSet<String>,
     discovery_features: Option<&BTreeSet<String>>,
-) {
+) -> Vec<String> {
+    let mut dropped = Vec::new();
     capabilities.retain(|name, value| {
         if !value.as_bool().unwrap_or(false) {
             return true;
         }
-        adapter_features.contains(name)
-            && discovery_features.is_none_or(|features| features.contains(name))
+        let supported = adapter_features.contains(name)
+            && discovery_features.is_none_or(|features| features.contains(name));
+        if !supported {
+            dropped.push(name.clone());
+        }
+        supported
     });
+    dropped
 }
 
 fn model_list_fingerprint(models: &[DiscoveredModel]) -> String {

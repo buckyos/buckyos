@@ -521,9 +521,10 @@ mod tests {
     use super::*;
     use crate::catalog::CatalogKind;
     use crate::protocol::{
-        FAL_QUEUE_ADAPTER_ID, FAL_QUEUE_OPERATION_ID, GLM_CHAT_ADAPTER_ID, KIMI_CHAT_ADAPTER_ID,
-        MINIMAX_MESSAGES_ADAPTER_ID, OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-        OPENAI_RESPONSES_ADAPTER_ID, OPENROUTER_RESPONSES_ADAPTER_ID,
+        CLAUDE_MESSAGES_ADAPTER_ID, FAL_QUEUE_ADAPTER_ID, FAL_QUEUE_OPERATION_ID,
+        GEMINI_ADAPTER_ID, GLM_CHAT_ADAPTER_ID, KIMI_CHAT_ADAPTER_ID, MINIMAX_MESSAGES_ADAPTER_ID,
+        OPENAI_CHAT_COMPLETIONS_ADAPTER_ID, OPENAI_RESPONSES_ADAPTER_ID,
+        OPENROUTER_RESPONSES_ADAPTER_ID,
     };
     use crate::provider::{
         CredentialReference, InventoryBuilder, ModelAvailability, ProviderConnectionInput,
@@ -628,6 +629,83 @@ mod tests {
             .is_ok());
     }
 
+    /// An adapter's `supported_features` is what lets a `capabilities.*` boolean
+    /// from model metadata reach the inventory, and the inventory is what routing
+    /// admits on. A stale list silently empties a candidate set instead of
+    /// failing loudly: `llm.audio` had exactly one candidate in the whole fleet
+    /// (`glm-4-voice`) and lost it because the chat-completions binding never
+    /// declared `audio`.
+    #[test]
+    fn builtin_llm_bindings_declare_the_features_their_codecs_transport() {
+        let registry = registry();
+        let codecs = registry.codecs();
+
+        let llm_features = |adapter_id: &str| -> BTreeSet<String> {
+            codecs
+                .adapter(adapter_id)
+                .unwrap_or_else(|| panic!("adapter `{adapter_id}` is not registered"))
+                .operations
+                .values()
+                .flat_map(|operation| operation.bindings.iter())
+                .filter(|binding| binding.api_type == ApiType::Llm)
+                .flat_map(|binding| binding.supported_features.iter().cloned())
+                .collect()
+        };
+
+        // Audio input is transported by the chat-completions family (via
+        // `encode_audio_content`, which GLM implements), by Gemini's inline
+        // audio parts, and by the Responses `input_audio` block.
+        for adapter_id in [
+            OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+            GLM_CHAT_ADAPTER_ID,
+            KIMI_CHAT_ADAPTER_ID,
+            GEMINI_ADAPTER_ID,
+            OPENAI_RESPONSES_ADAPTER_ID,
+        ] {
+            assert!(
+                llm_features(adapter_id).contains(buckyos_api::features::AUDIO),
+                "`{adapter_id}` transports audio input but does not declare `audio`"
+            );
+        }
+
+        // Claude maps `AiContent::Audio` to `UnsupportedOperation`, and the
+        // MiniMax adapter is derived from it, so neither may advertise audio.
+        for adapter_id in [CLAUDE_MESSAGES_ADAPTER_ID, MINIMAX_MESSAGES_ADAPTER_ID] {
+            assert!(
+                !llm_features(adapter_id).contains(buckyos_api::features::AUDIO),
+                "`{adapter_id}` must not advertise `audio`"
+            );
+        }
+
+        // Reasoning travels as an `AiContent::Thinking` block, which every Llm
+        // codec maps; structured output is carried by all but the Responses path
+        // that never had to declare it separately.
+        for adapter_id in [
+            OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+            GLM_CHAT_ADAPTER_ID,
+            GEMINI_ADAPTER_ID,
+            OPENAI_RESPONSES_ADAPTER_ID,
+            CLAUDE_MESSAGES_ADAPTER_ID,
+        ] {
+            assert!(
+                llm_features(adapter_id).contains(buckyos_api::features::REASONING),
+                "`{adapter_id}` carries thinking blocks but does not declare `reasoning`"
+            );
+        }
+        for adapter_id in [
+            OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
+            GLM_CHAT_ADAPTER_ID,
+            GEMINI_ADAPTER_ID,
+            OPENAI_RESPONSES_ADAPTER_ID,
+            CLAUDE_MESSAGES_ADAPTER_ID,
+        ] {
+            assert!(
+                llm_features(adapter_id).contains(buckyos_api::features::JSON_SCHEMA),
+                "`{adapter_id}` maps structured output but does not declare `json_schema`"
+            );
+        }
+    }
+
     #[test]
     fn builtin_metadata_inventory_and_mounts_match_golden() {
         let catalog = MetadataSources {
@@ -707,15 +785,15 @@ mod tests {
             BTreeMap::from([
                 (
                     "claude".to_owned(),
-                    "5:2d1e605c90b0f6aff837c7fb1b0d27e634d07bd97987697a4b78d31ee3b81df2".to_owned()
+                    "5:5e3db037471a6a51868179fb1d472ae1877f4b85e7947240a2acf073f6b7477a".to_owned()
                 ),
                 (
                     "deepseek".to_owned(),
-                    "3:1adead8cb4da22a0a844bfead8416f14a0c7e627fba9a4134b985178580e5557".to_owned()
+                    "3:2ede56963a8cf2720c6f0dd55a83bc443978c23fe0ea9b7a4b3ee0b20810d4e2".to_owned()
                 ),
                 (
                     "doubao".to_owned(),
-                    "1:c054587853f80372caf82eaac075f91fab1d7f5b8d0f2bfe9167b9fdb56d019c".to_owned()
+                    "1:48c3a5c9a1e04ca4608b105bcd423ba3b0447fa64a305baec20a33dcdbafabee".to_owned()
                 ),
                 (
                     "fal".to_owned(),
@@ -723,32 +801,32 @@ mod tests {
                 ),
                 (
                     "gemini".to_owned(),
-                    "28:2d2e0ea7dce142aaef4f1e3f6d7ed83e11a4d9eb4c5ac3a9f89594b4dfa54b82"
+                    "28:0dd1880215811ae88d63198690a01a2df6035b997d43e11ba596aeb92e7d022d"
                         .to_owned()
                 ),
                 (
                     "glm".to_owned(),
-                    "60:1f1a9f9444aa324b9a1382b3431ce34629625897b1332b758cd2424e6c7d443a"
+                    "60:4dd67fcdb016834f4752b9a9410c45ab99f7e2ed2066ddc14064590659a4afcf"
                         .to_owned()
                 ),
                 (
                     "kimi".to_owned(),
-                    "2:bbd95d92bef225aa080c8914667f255d278529032c0ef45110ef643cbc4b804a".to_owned()
+                    "2:4faf1e256bde12eb23f08c9ef048e21772100b752c40beae6435be928a1d4294".to_owned()
                 ),
                 (
                     "minimax".to_owned(),
-                    "19:889ef13b059216f0855dbc1fcb5571e10433c5dd21007096c6c3daad74a27340"
+                    "19:9c15201342e96b099539c484b61c45aa800503c43ef07c77425bca6e2b523228"
                         .to_owned()
                 ),
                 (
                     "openai".to_owned(),
-                    "15:1881225103e252c6dd28206ca5c18aa94ca0cccc3b4d599b788c18508be9ed58"
+                    "15:0573d6c90f82c6e6bf2707cfb4a216c6893bd8e706f15c0c49b0914405ad31f7"
                         .to_owned()
                 ),
                 ("openrouter".to_owned(), "dynamic".to_owned()),
                 (
                     "qwen".to_owned(),
-                    "4:6a457f72a703c9f859f015977ecfc74e587d06d46e45d55b753f795f64f088c3".to_owned()
+                    "4:de396f84df7cf2e5ebc70595361c019569afd8395041b6863325e258080661f7".to_owned()
                 ),
                 ("sn".to_owned(), "dynamic".to_owned())
             ])

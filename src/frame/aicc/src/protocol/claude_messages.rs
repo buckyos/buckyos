@@ -256,10 +256,16 @@ pub(crate) fn claude_messages_operation_descriptor() -> OperationDescriptor {
         ApiType::Llm,
         [ExecutionMode::Immediate, ExecutionMode::Stream],
     );
+    // `JSON_SCHEMA` is carried through `apply_response_format`
+    // (`output_config.format`) and `REASONING` through the `thinking` blocks the
+    // codec already maps. Audio is deliberately absent: `AiContent::Audio` is
+    // rejected with `UnsupportedOperation` on this protocol family.
     binding.supported_features = BTreeSet::from([
         features::TOOL_CALL.to_string(),
+        features::JSON_SCHEMA.to_string(),
         features::VISION.to_string(),
         features::PLAN.to_string(),
+        features::REASONING.to_string(),
     ]);
     OperationDescriptor {
         operation_id: CLAUDE_MESSAGES_OPERATION_ID.to_string(),
