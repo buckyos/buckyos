@@ -2037,7 +2037,10 @@ fn encode_operation_get(input: &NativeTaskInput<'_>) -> ProtocolResultValue<Http
 
 fn validate_operation_name(value: &str) -> ProtocolResultValue<String> {
     let value = value.trim_start_matches('/');
-    if !value.starts_with("operations/")
+    let has_valid_scope = value.starts_with("operations/")
+        || (value.starts_with("models/") && value.contains("/operations/"))
+        || (value.starts_with("publishers/google/models/") && value.contains("/operations/"));
+    if !has_valid_scope
         || value.len() > 512
         || !value
             .bytes()
@@ -3044,6 +3047,18 @@ mod tests {
             .unwrap()
             .url
             .ends_with("/v1beta/operations/video-1"));
+        let scoped_lifecycle = NativeTaskInput {
+            operation: NativeTaskOperation::Status,
+            remote_task_id: Some("models/veo-test/operations/video-1"),
+            codec_input: None,
+            resolved_parameters: &empty,
+            context: &ctx,
+        };
+        assert!(codec
+            .encode_native(&scoped_lifecycle)
+            .unwrap()
+            .url
+            .ends_with("/v1beta/models/veo-test/operations/video-1"));
         let NativeTaskOutput::Result(output) = codec.decode_native(NativeTaskOperation::Result, response(StatusCode::OK, "application/json", json!({"done":true,"response":{"outputs":[{"type":"video","mime_type":"video/mp4","data":STANDARD.encode(b"mp4")}]}}))).await.unwrap() else { panic!("expected result") };
         assert_eq!(output.artifacts.len(), 1);
         let NativeTaskOutput::Result(output) = codec.decode_native(NativeTaskOperation::Result, response(StatusCode::OK, "application/json", json!({"done":true,"response":{"generateVideoResponse":{"generatedSamples":[{"video":{"uri":"https://example.com/video"}}]}}}))).await.unwrap() else { panic!("expected result") };

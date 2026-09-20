@@ -10,7 +10,7 @@
       "id": "claude-fable-5-1",
       "parameter_scale": "fable",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.claude", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}", "vision.caption", "vision.caption.claude", "vision.caption.{model}", "vision.ocr", "vision.ocr.claude", "vision.ocr.{model}"],
       "capabilities": {
         "max_context_tokens": 1000000,
         "max_output_tokens": 131072,
@@ -26,7 +26,7 @@
       "id": "claude-fable-5",
       "parameter_scale": "fable",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.claude", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}", "vision.caption", "vision.caption.claude", "vision.caption.{model}", "vision.ocr", "vision.ocr.claude", "vision.ocr.{model}"],
       "capabilities": {
         "max_context_tokens": 1000000,
         "max_output_tokens": 131072,
@@ -42,7 +42,7 @@
       "id": "claude-opus-5",
       "parameter_scale": "opus",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.claude", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}", "vision.caption", "vision.caption.claude", "vision.caption.{model}", "vision.ocr", "vision.ocr.claude", "vision.ocr.{model}"],
       "capabilities": {
         "max_context_tokens": 1000000,
         "max_output_tokens": 131072,
@@ -58,7 +58,7 @@
       "id": "claude-sonnet-5",
       "parameter_scale": "sonnet",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.claude", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}", "vision.caption", "vision.caption.claude", "vision.caption.{model}", "vision.ocr", "vision.ocr.claude", "vision.ocr.{model}"],
       "capabilities": {
         "max_context_tokens": 1000000,
         "max_output_tokens": 131072,
@@ -74,7 +74,7 @@
       "id": "claude-haiku-4-5-20251001",
       "parameter_scale": "haiku",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.claude", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}", "vision.caption", "vision.caption.claude", "vision.caption.{model}", "vision.ocr", "vision.ocr.claude", "vision.ocr.{model}"],
       "capabilities": {
         "max_context_tokens": 200000,
         "max_output_tokens": 65536,

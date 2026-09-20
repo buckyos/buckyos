@@ -9,7 +9,7 @@
     {
       "id": "gemini-3.8-flash",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
-      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}", "vision.ocr", "vision.ocr.gemini", "vision.ocr.{model}", "vision.caption", "vision.caption.gemini", "vision.caption.{model}", "vision.detect", "vision.detect.gemini", "vision.detect.{model}", "vision.segment", "vision.segment.gemini", "vision.segment.{model}", "audio.asr", "audio.asr.gemini", "audio.asr.{model}"],
       "capabilities": {
         "max_context_tokens": 1048576,
         "max_output_tokens": 65536,
@@ -24,59 +24,60 @@
     {
       "id": "gemini-3.7-flash",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
-      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}", "vision.ocr", "vision.ocr.gemini", "vision.ocr.{model}", "vision.caption", "vision.caption.gemini", "vision.caption.{model}", "vision.detect", "vision.detect.gemini", "vision.detect.{model}", "vision.segment", "vision.segment.gemini", "vision.segment.{model}", "audio.asr", "audio.asr.gemini", "audio.asr.{model}"],
       "capabilities": { "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true }
     },
     {
       "id": "gemini-3.6-flash",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
-      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}", "vision.ocr", "vision.ocr.gemini", "vision.ocr.{model}", "vision.caption", "vision.caption.gemini", "vision.caption.{model}", "vision.detect", "vision.detect.gemini", "vision.detect.{model}", "vision.segment", "vision.segment.gemini", "vision.segment.{model}", "audio.asr", "audio.asr.gemini", "audio.asr.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "web_search": true, "vision": true, "reasoning": true }
     },
     {
       "id": "gemini-3.5-flash",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
-      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}", "vision.ocr", "vision.ocr.gemini", "vision.ocr.{model}", "vision.caption", "vision.caption.gemini", "vision.caption.{model}", "vision.detect", "vision.detect.gemini", "vision.detect.{model}", "vision.segment", "vision.segment.gemini", "vision.segment.{model}", "audio.asr", "audio.asr.gemini", "audio.asr.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "web_search": true, "vision": true, "reasoning": true }
     },
     {
       "id": "gemini-3.5-flash-lite",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
-      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}", "vision.ocr", "vision.ocr.gemini", "vision.ocr.{model}", "vision.caption", "vision.caption.gemini", "vision.caption.{model}", "vision.detect", "vision.detect.gemini", "vision.detect.{model}", "vision.segment", "vision.segment.gemini", "vision.segment.{model}", "audio.asr", "audio.asr.gemini", "audio.asr.{model}"],
       "capabilities": { "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true }
     },
     {
       "id": "gemini-3.1-flash-lite",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
-      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}", "vision.ocr", "vision.ocr.gemini", "vision.ocr.{model}", "vision.caption", "vision.caption.gemini", "vision.caption.{model}", "vision.detect", "vision.detect.gemini", "vision.detect.{model}", "vision.segment", "vision.segment.gemini", "vision.segment.{model}", "audio.asr", "audio.asr.gemini", "audio.asr.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "web_search": true, "vision": true, "reasoning": true }
     },
     {
       "id": "gemini-3.1-pro-preview",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
-      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}", "vision.ocr", "vision.ocr.gemini", "vision.ocr.{model}", "vision.caption", "vision.caption.gemini", "vision.caption.{model}", "vision.detect", "vision.detect.gemini", "vision.detect.{model}", "vision.segment", "vision.segment.gemini", "vision.segment.{model}", "audio.asr", "audio.asr.gemini", "audio.asr.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true }
     },
     {
       "id": "gemini-3-pro-preview",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
-      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}", "vision.ocr", "vision.ocr.gemini", "vision.ocr.{model}", "vision.caption", "vision.caption.gemini", "vision.caption.{model}", "vision.detect", "vision.detect.gemini", "vision.detect.{model}", "vision.segment", "vision.segment.gemini", "vision.segment.{model}", "audio.asr", "audio.asr.gemini", "audio.asr.{model}"],
       "capabilities": { "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true }
     },
     {
       "id": "gemini-3-flash-preview",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
-      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}", "vision.ocr", "vision.ocr.gemini", "vision.ocr.{model}", "vision.caption", "vision.caption.gemini", "vision.caption.{model}", "vision.detect", "vision.detect.gemini", "vision.detect.{model}", "vision.segment", "vision.segment.gemini", "vision.segment.{model}", "audio.asr", "audio.asr.gemini", "audio.asr.{model}"],
       "capabilities": { "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true }
     },
     {
       "id": "gemini-2.5-flash",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
-      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}", "vision.ocr", "vision.ocr.gemini", "vision.ocr.{model}", "vision.caption", "vision.caption.gemini", "vision.caption.{model}", "vision.detect", "vision.detect.gemini", "vision.detect.{model}", "vision.segment", "vision.segment.gemini", "vision.segment.{model}", "audio.asr", "audio.asr.gemini", "audio.asr.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "web_search": true, "vision": true, "reasoning": true }
     },
     {
       "id": "gemini-2.5-flash-lite",
+      "exclude": true,
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
       "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true }
@@ -84,7 +85,7 @@
     {
       "id": "gemini-2.5-pro",
       "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
-      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}"],
+      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}", "vision.ocr", "vision.ocr.gemini", "vision.ocr.{model}", "vision.caption", "vision.caption.gemini", "vision.caption.{model}", "vision.detect", "vision.detect.gemini", "vision.detect.{model}", "vision.segment", "vision.segment.gemini", "vision.segment.{model}", "audio.asr", "audio.asr.gemini", "audio.asr.{model}"],
       "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 65536, "streaming": true, "tool_call": true, "json_schema": true, "web_search": true, "vision": true, "reasoning": true }
     },
     {
