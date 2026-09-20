@@ -290,6 +290,16 @@ TextToImageInvokeResponse
 
 每类接口应根据领域输入输出定义强类型结构，而不是统一塞入 `input_json`。
 
+#### Provider URL artifact reader
+
+Provider 输出 URL 时，typed response 仍返回 `ResourceRef::Url`。AICC 同时登记 URL 的 tenant、ProviderInstance、Adapter 和 artifact id；调用方按需调用：
+
+```text
+open_artifact_url_reader(url, artifact_id?) -> async byte reader
+```
+
+网络调用对应 `POST /kapi/aicc/artifact/open`，JSON body 为 `url` 和可选 `artifact_id`，成功响应直接流式返回 bytes。AICC 只处理自己登记的 Provider artifact URL；普通 URL 明确返回未登记，由调用方自行处理。读取不需要 `task_id`，不得按 host 反推 Provider。
+
 ## 6. 逻辑模型名与物理模型名边界
 
 逻辑模型名：

@@ -11,7 +11,7 @@
 
 ## 1. 冻结结论
 
-1. AICC 对外只有 BuckyOS kRPC 服务契约，不暴露 Provider 厂商 HTTP 协议。
+1. AICC 控制与推理接口使用 BuckyOS kRPC；Provider URL artifact 另有受鉴权的流式 data endpoint，但不暴露 Provider 厂商 HTTP 协议。
 2. `AiccClient`、`AiccHandler`、`AiccServerHandler` 和公共 DTO 属于 SDK 契约；`frame/aicc` 内所有 `pub(crate) trait` 只属于内部替换点。
 3. 公共 method 决定请求 schema；`ApiType` 决定模型能力与 Provider operation 绑定；`Capability` 仅为粗粒度分组。三者不能互换。
 4. Protocol Adapter 的复用单位是 `(protocol_adapter_id, operation_id, api_type)`，不是 Provider 品牌。
@@ -28,6 +28,7 @@
 | service name | `aicc` |
 | service port | `4040` |
 | NodeGateway 入口 | `POST /kapi/aicc` |
+| artifact data endpoint | `POST /kapi/aicc/artifact/open` |
 | 请求 | `RPCRequest { method, params, sys }` |
 | 响应 | 与请求相同 `seq`、`trace_id` 的 `RPCResponse` |
 
@@ -83,6 +84,7 @@ AiccServerHandler<T: AiccHandler>
 | protocol | `OperationCodec` | immediate/stream 请求编码和响应解码 |
 | protocol | `NativeTaskCodec` | submit/status/result/cancel 原生任务协议 |
 | protocol | `ProtocolAdapterPlugin` | 向 `CodecRegistry` 原子注册 descriptor 与 codec |
+| protocol | `ArtifactDownloadProtocol` | Adapter 级 URL artifact 下载请求/响应协议；默认实现可复用，特殊协议按 adapter 覆写 |
 | execution | `ExecutionStore`, `TaskManagerPort`, `ProviderExecutionPort`, `UsageCompletionPort` | 幂等执行、TaskMgr 桥接、Provider 执行和一次性用量入账 |
 | resource | `ResourceAuthorizer`, `ResourceStore`, `UrlResourceFetcher` | `ResourceRef` 鉴权、物化和 artifact 写入 |
 
@@ -128,6 +130,12 @@ public DTO / AiccCall
 ```
 
 编码器接收 canonical request、已解析参数、已物化资源、endpoint、credential 和 limits。凭据不得进入 Debug、route trace、task data 或用户响应。
+
+### 4.3 URL artifact 下载
+
+`open_artifact_url_reader(url, artifact_id?)` 的职责链冻结为：service 按精确 URL 查询持久来源并校验 tenant/可选 artifact id，找到原 ProviderInstance，ProviderInstance 解析自己的 credential，再按 `protocol_adapter_id` 调用 `CodecRegistry` 的 artifact 下载协议。默认 `ArtifactDownloadProtocol` 只允许与 Provider base URL 同 origin 的 HTTP(S) URL，使用 Provider credential 发起 GET，并返回有大小上限的异步 byte stream。
+
+Adapter 默认复用该实现。只有认证 header、URL 变换、请求 method 或响应 envelope 确实不同的协议，才注册自定义 `ArtifactDownloadProtocol`；不得为每个 Provider 品牌复制下载函数。未登记 URL 不进入 Adapter，AICC 不按 host 猜测 Provider。
 
 ## 5. 执行与任务语义
 

@@ -26,12 +26,14 @@ Known Provider / Provider Profile
 | --- | --- | --- |
 | Provider Profile / Known Provider | 展示、默认 adapter、连接字段、凭据 contract、discovery behavior | 模型固有能力、wire codec |
 | Provider Rules | 渠道 model -> origin model、operation、request lowering、渠道限制/价格 | 原厂模型固有能力、凭据明文 |
-| Protocol Adapter | 官方 wire、认证形态、错误、stream/native task 状态机 | Provider Instance 配置、逻辑模型目录 |
+| Protocol Adapter | 官方 wire、认证形态、错误、stream/native task 状态机、URL artifact 下载协议 | Provider Instance 配置、逻辑模型目录 |
 | Model Driver | 原厂模型 API type、能力、variant、逻辑挂点、版本语义 | 渠道 endpoint/operation |
 | Discovery | 某实例当前实际模型、可用性、动态能力/价格 | 静态语义真相 |
 | Provider Instance | base URL、credential refs、region/workspace/account、enabled、实例规则 | 共享 adapter/driver 定义 |
 
 禁止按 Provider 品牌复制整套协议，也禁止在 runtime 中按模型名前缀猜测能力或 operation。
+
+Provider URL artifact 的下载同样遵守组合边界：AICC 登记 URL 来源；`ProviderInstance::open_artifact_url_reader` 只负责解析实例 credential 和选择实例 adapter；Adapter 提供可复用的默认下载协议。只有真正不兼容的 adapter 才覆写 `ArtifactDownloadProtocol`，Provider builtin 模块不得复制通用 GET/stream 实现。
 
 ## 2. Runtime 装配
 
@@ -75,6 +77,7 @@ Beta 2.2 内置 Provider Profile 基线：
 - descriptor 完全一致时继承基础 codec；
 - 普通 endpoint、模型映射、参数默认值、字段删除/改名优先写 Provider Rules；
 - 特殊 body、header、SSE、原生 task、错误 envelope 才写 codec/dialect；
+- artifact 下载默认复用同 origin + Provider credential + GET 的 Adapter 实现，只有真实 wire 差异才注册覆写；
 - 基础 adapter 不得出现派生 Provider 品牌分支；
 - 新历史接口只有在真实 Provider operation 需要时才加入。
 
@@ -103,6 +106,7 @@ Provider 停止、禁用、删除、reload 替换或服务退出时，必须先�
 - `base_url` 必须是无 userinfo/query/fragment 的绝对 HTTP(S) URL。
 - Debug、管理 API、golden request、trace、task data 与错误正文必须脱敏。
 - 协议 probe 的认证、限流、服务端错误不能误判为“不支持 adapter”并触发代际 fallback。
+- URL artifact 只允许通过已登记来源回到原 ProviderInstance；ProviderInstance 和 Adapter 都不得接受 service 未校验的任意 URL。
 
 ## 7. Provider 新增/修改流程
 

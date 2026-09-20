@@ -28,6 +28,134 @@ impl RuntimeProviderExecutionPort {
         }
     }
 
+    async fn remember_artifact_url_sources(
+        storage: &AiccStorage,
+        provider_instance_name: &str,
+        protocol_adapter_id: &str,
+        context: &ResourceAccessContext,
+        output: &ProtocolOutput,
+    ) -> Result<(), ProtocolError> {
+        for artifact in &output.artifacts {
+            let buckyos_api::ResourceRef::Url { url, .. } = &artifact.resource else {
+                continue;
+            };
+            storage
+                .remember_artifact_url_source(&ArtifactUrlSourceRecord {
+                    url: url.clone(),
+                    provider_instance_name: provider_instance_name.to_owned(),
+                    protocol_adapter_id: protocol_adapter_id.to_owned(),
+                    artifact_id: artifact
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("artifact_id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .or_else(|| Some(artifact.name.clone())),
+                    tenant_id: context.tenant_id.clone(),
+                    user_id: context.caller_id.clone(),
+                    caller_app_id: None,
+                    request_id: context.request_id.clone(),
+                    created_at_ms: now_ms() as i64,
+                })
+                .await
+                .map_err(|_| {
+                    ProtocolError::invalid_configuration("artifact URL source registration failed")
+                })?;
+        }
+        Ok(())
+    }
+
+    async fn remember_call_artifact_urls(
+        &self,
+        call: &ResolvedProviderCall,
+        output: &ProtocolOutput,
+    ) -> Result<(), ProtocolError> {
+        let has_url = output
+            .artifacts
+            .iter()
+            .any(|artifact| matches!(artifact.resource, buckyos_api::ResourceRef::Url { .. }));
+        if !has_url {
+            return Ok(());
+        }
+        let context = call.resource_access_context.as_ref().ok_or_else(|| {
+            ProtocolError::invalid_configuration("artifact URL context is missing")
+        })?;
+        Self::remember_artifact_url_sources(
+            self.storage.as_ref(),
+            &call.provider_instance_name,
+            &call.protocol_adapter_id,
+            context,
+            output,
+        )
+        .await
+    }
+
+    pub(crate) async fn open_artifact_url_reader(
+        &self,
+        tenant_id: &str,
+        url: &str,
+        artifact_id: Option<&str>,
+    ) -> Result<crate::protocol::ArtifactUrlReader, AiccError> {
+        let source = self
+            .storage
+            .artifact_url_source(url)
+            .await
+            .map_err(|_| {
+                AiccError::new(
+                    AiccErrorCode::InternalError,
+                    "artifact URL source lookup failed",
+                )
+            })?
+            .ok_or_else(|| {
+                AiccError::new(
+                    AiccErrorCode::ResourceInvalid,
+                    "URL is not a registered Provider artifact",
+                )
+            })?;
+        if source.tenant_id != tenant_id {
+            return Err(AiccError::new(
+                AiccErrorCode::PolicyDenied,
+                "Provider artifact belongs to another tenant",
+            ));
+        }
+        if artifact_id.is_some_and(|artifact_id| source.artifact_id.as_deref() != Some(artifact_id))
+        {
+            return Err(AiccError::new(
+                AiccErrorCode::ResourceInvalid,
+                "artifact ID does not match the registered Provider artifact",
+            ));
+        }
+        let snapshot = self.runtime.capture().await;
+        let provider = snapshot
+            .providers
+            .get(&source.provider_instance_name)
+            .ok_or_else(|| {
+                AiccError::new(
+                    AiccErrorCode::NoProviderAvailable,
+                    "artifact ProviderInstance is unavailable",
+                )
+            })?;
+        if provider.config.protocol_adapter_id != source.protocol_adapter_id {
+            return Err(AiccError::new(
+                AiccErrorCode::ProviderError,
+                "artifact ProviderInstance Adapter has changed",
+            ));
+        }
+        provider
+            .open_artifact_url_reader(self.codecs.as_ref(), url)
+            .await
+            .map_err(|error| AiccError {
+                code: AiccErrorCode::ProviderError,
+                message: error.message,
+                provider_code: error.provider_code,
+                retriable: matches!(
+                    error.kind,
+                    ProtocolErrorKind::Timeout | ProtocolErrorKind::Transport
+                ),
+                details: None,
+            })
+    }
+
     async fn materialize_embedding_output(
         &self,
         call: &ResolvedProviderCall,
@@ -596,6 +724,9 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                                 .map_err(ProviderStartFailure::after_accept)?;
                             let output = Self::validate_computer_output(call, output)
                                 .map_err(ProviderStartFailure::after_accept)?;
+                            self.remember_call_artifact_urls(call, &output)
+                                .await
+                                .map_err(ProviderStartFailure::after_accept)?;
                             Ok(ProviderExecution::Immediate(output))
                         }
                         _ => Err(ProviderStartFailure::after_accept(
@@ -631,8 +762,18 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                         .await
                         .map_err(ProviderStartFailure::after_accept)?;
                     let source = call.context.state_coordinate.clone();
-                    let events = stream.events.map(move |event| {
-                        event.map(|mut event| {
+                    let storage = self.storage.clone();
+                    let provider_instance_name = call.provider_instance_name.clone();
+                    let protocol_adapter_id = call.protocol_adapter_id.clone();
+                    let resource_context = call.resource_access_context.clone();
+                    let events = stream.events.then(move |event| {
+                        let source = source.clone();
+                        let storage = storage.clone();
+                        let provider_instance_name = provider_instance_name.clone();
+                        let protocol_adapter_id = protocol_adapter_id.clone();
+                        let resource_context = resource_context.clone();
+                        async move {
+                            let mut event = event?;
                             match &mut event {
                                 ProtocolEvent::Delta(value) | ProtocolEvent::Progress(value) => {
                                     crate::protocol::bind_provider_state_source(value, &source);
@@ -644,8 +785,30 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                                     );
                                 }
                             }
-                            event
-                        })
+                            if let ProtocolEvent::Final(output) = &event {
+                                if output.artifacts.iter().any(|artifact| {
+                                    matches!(
+                                        artifact.resource,
+                                        buckyos_api::ResourceRef::Url { .. }
+                                    )
+                                }) {
+                                    let context = resource_context.as_ref().ok_or_else(|| {
+                                        ProtocolError::invalid_configuration(
+                                            "artifact URL context is missing",
+                                        )
+                                    })?;
+                                    Self::remember_artifact_url_sources(
+                                        storage.as_ref(),
+                                        &provider_instance_name,
+                                        &protocol_adapter_id,
+                                        context,
+                                        output,
+                                    )
+                                    .await?;
+                                }
+                            }
+                            Ok(event)
+                        }
                     });
                     Ok(ProviderExecution::Stream(ProtocolStream {
                         events: Box::pin(events),
@@ -795,6 +958,19 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                             )
                             .await
                             .map_err(NativeTaskResumeError::Protocol)?;
+                        Self::remember_artifact_url_sources(
+                            self.storage.as_ref(),
+                            &binding.provider_instance_name,
+                            &binding.protocol_adapter_id,
+                            &binding
+                                .resume
+                                .as_ref()
+                                .ok_or(NativeTaskResumeError::CredentialUnavailable)?
+                                .resource_access_context,
+                            &output,
+                        )
+                        .await
+                        .map_err(NativeTaskResumeError::Protocol)?;
                         Ok(NativeTaskPoll::Complete(output))
                     }
                     _ => Err(NativeTaskResumeError::Protocol(

@@ -21,18 +21,32 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Once;
 
 const SERVICE_NAME: &str = "aicc";
-const STORAGE_SCHEMA_VERSION: i64 = 2;
+const STORAGE_SCHEMA_VERSION: i64 = 3;
 const INVENTORY_SCHEMA_VERSION: i64 = 1;
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 1_000;
 static INSTALL_DRIVERS: Once = Once::new();
 
 const SCHEMA_META: &str = "CREATE TABLE IF NOT EXISTS aicc_schema_meta (schema_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)";
-const MIGRATIONS: &[(i64, &str)] = &[(1, SCHEMA), (2, USAGE_PROJECTIONS)];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, SCHEMA),
+    (2, USAGE_PROJECTIONS),
+    (3, ARTIFACT_URL_SOURCES),
+];
 const USAGE_PROJECTIONS: &str = r#"
 ALTER TABLE aicc_usage_event ADD COLUMN finance_amount REAL;
 ALTER TABLE aicc_usage_event ADD COLUMN finance_currency TEXT;
 ALTER TABLE aicc_usage_event ADD COLUMN finance_valid INTEGER NOT NULL DEFAULT 0;
+"#;
+const ARTIFACT_URL_SOURCES: &str = r#"
+CREATE TABLE aicc_artifact_url_source (
+ url_hash TEXT PRIMARY KEY, url TEXT NOT NULL,
+ provider_instance_name TEXT NOT NULL, protocol_adapter_id TEXT NOT NULL,
+ artifact_id TEXT,
+ tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, caller_app_id TEXT NOT NULL,
+ request_id TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
+CREATE INDEX idx_aicc_artifact_url_source_tenant ON aicc_artifact_url_source(tenant_id, created_at_ms);
+CREATE INDEX idx_aicc_artifact_url_source_provider ON aicc_artifact_url_source(provider_instance_name, created_at_ms);
 "#;
 
 const SCHEMA: &str = r#"
@@ -171,6 +185,19 @@ impl InventoryLkgsRecord {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArtifactUrlSourceRecord {
+    pub url: String,
+    pub provider_instance_name: String,
+    pub protocol_adapter_id: String,
+    pub artifact_id: Option<String>,
+    pub tenant_id: String,
+    pub user_id: String,
+    pub caller_app_id: Option<String>,
+    pub request_id: String,
+    pub created_at_ms: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -423,6 +450,88 @@ impl AiccStorage {
             .fetch_optional(&self.pool)
             .await?
             .map(|row| row.get("tenant_id")))
+    }
+
+    pub(crate) async fn remember_artifact_url_source(
+        &self,
+        record: &ArtifactUrlSourceRecord,
+    ) -> StorageResult<()> {
+        if [
+            record.url.as_str(),
+            record.provider_instance_name.as_str(),
+            record.protocol_adapter_id.as_str(),
+            record.tenant_id.as_str(),
+            record.user_id.as_str(),
+            record.request_id.as_str(),
+        ]
+        .iter()
+        .any(|value| value.trim().is_empty())
+            || record.created_at_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "artifact URL source fields are invalid".into(),
+            ));
+        }
+        let url_hash = sha256_hex(record.url.as_bytes());
+        let sql = self.sql(
+            "INSERT INTO aicc_artifact_url_source
+             (url_hash,url,provider_instance_name,protocol_adapter_id,artifact_id,tenant_id,user_id,
+              caller_app_id,request_id,created_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(url_hash) DO NOTHING",
+        );
+        sqlx::query(&sql)
+            .bind(url_hash)
+            .bind(&record.url)
+            .bind(&record.provider_instance_name)
+            .bind(&record.protocol_adapter_id)
+            .bind(&record.artifact_id)
+            .bind(&record.tenant_id)
+            .bind(&record.user_id)
+            .bind(record.caller_app_id.as_deref().unwrap_or_default())
+            .bind(&record.request_id)
+            .bind(record.created_at_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn artifact_url_source(
+        &self,
+        url: &str,
+    ) -> StorageResult<Option<ArtifactUrlSourceRecord>> {
+        if url.trim().is_empty() {
+            return Err(StorageError::InvalidRecord(
+                "artifact URL must not be empty".into(),
+            ));
+        }
+        let sql = self.sql(
+            "SELECT url,provider_instance_name,protocol_adapter_id,artifact_id,tenant_id,user_id,
+                    caller_app_id,request_id,created_at_ms
+             FROM aicc_artifact_url_source WHERE url_hash=?",
+        );
+        let row = sqlx::query(&sql)
+            .bind(sha256_hex(url.as_bytes()))
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let stored_url: String = row.get("url");
+        if stored_url != url {
+            return Ok(None);
+        }
+        let caller_app_id: String = row.get("caller_app_id");
+        Ok(Some(ArtifactUrlSourceRecord {
+            url: stored_url,
+            provider_instance_name: row.get("provider_instance_name"),
+            protocol_adapter_id: row.get("protocol_adapter_id"),
+            artifact_id: row.get("artifact_id"),
+            tenant_id: row.get("tenant_id"),
+            user_id: row.get("user_id"),
+            caller_app_id: (!caller_app_id.is_empty()).then_some(caller_app_id),
+            request_id: row.get("request_id"),
+            created_at_ms: row.get("created_at_ms"),
+        }))
     }
 
     pub(crate) async fn upsert_inventory(&self, record: &InventoryLkgsRecord) -> StorageResult<()> {
@@ -1661,6 +1770,33 @@ mod tests {
             .unwrap();
         let error = storage.migrate().await.unwrap_err();
         assert!(error.to_string().contains("latest supported"));
+    }
+
+    #[tokio::test]
+    async fn artifact_url_source_round_trips_exact_url_and_scope() {
+        let db = db().await;
+        let record = ArtifactUrlSourceRecord {
+            url: "https://provider.example/files/one?token=secret".into(),
+            provider_instance_name: "provider-main".into(),
+            protocol_adapter_id: "provider-adapter".into(),
+            artifact_id: Some("video.mp4".into()),
+            tenant_id: "tenant-a".into(),
+            user_id: "user-a".into(),
+            caller_app_id: Some("app-a".into()),
+            request_id: "request-a".into(),
+            created_at_ms: 10,
+        };
+        db.remember_artifact_url_source(&record).await.unwrap();
+        assert_eq!(
+            db.artifact_url_source(&record.url).await.unwrap(),
+            Some(record)
+        );
+        assert_eq!(
+            db.artifact_url_source("https://provider.example/files/two")
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[tokio::test]

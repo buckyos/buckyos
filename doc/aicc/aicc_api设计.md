@@ -292,6 +292,10 @@ Helper 使用与对应 typed inference 相同的业务字段，只把 `exact_mod
 Provider 原生扩展只允许放入带 Provider namespace 的 `ProviderState` 或明确定义的扩展字段。Provider adapter 必须保持 content block 顺序；无法归一但需要多轮恢复的原生 block 保存为 opaque ProviderState。
 
 AICC 为 typed inference 生成并返回的 Named Object artifact 归当前认证 tenant 所有；AICC 在后续请求中解析这类 artifact 时必须校验 tenant 一致，跨 tenant 引用必须拒绝。这一约束不把调用方自有或全局内容寻址的 NDM 对象改成 AICC 私有对象；外部资源仍按 Resource 层的原有授权规则处理。
+
+Provider 返回的 URL artifact 继续以 `ResourceRef::Url` 出现在 typed result 中，AICC 不在结果解码阶段提前下载。AICC 必须同时持久登记 URL、artifact id、ProviderInstance、Adapter 和 tenant 来源。调用方需要内容时调用 `open_artifact_url_reader(url, artifact_id?)`；AICC 先按精确 URL 查询来源并校验 tenant，可选 `artifact_id` 只作为附加一致性校验，然后由登记的 ProviderInstance 通过其 Adapter 下载协议返回异步字节流。未登记的普通 URL 返回 `resource_invalid`，AICC 不猜测 URL host、Provider 或下载协议，也不充当通用代理。
+
+跨进程读取使用流式 HTTP data endpoint：`POST /kapi/aicc/artifact/open`，请求 body 为 `{ "url": string, "artifact_id"?: string }`，身份来自 `X-Auth` 或 `Authorization: Bearer`，成功响应 body 是 artifact byte stream。该 endpoint 不把二进制包装进 kRPC JSON，也不改变 `ResourceRef` schema。
 ### 2.5 流式与进度观察
 
 AICC 不为 streaming 引入独立协议层，也不在 method schema 中定义 Provider wire 字段 `stream: true`、token delta event、image step、video frame 等中间态字段。`route.resolve`、全部 typed inference request 和两个 Helper request 使用统一的 canonical `execution_mode`：

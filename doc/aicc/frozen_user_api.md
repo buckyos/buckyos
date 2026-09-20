@@ -150,7 +150,9 @@ LLM 消息使用 `AiMessage { role, content[] }` 的 content-block 模型，不�
 { "kind": "named_object", "obj_id": "<BuckyOS ObjId>" }
 ```
 
-URL 会经过服务端策略、大小与 MIME 校验；Named Object 会做租户鉴权。较大输出应返回 `ResourceRef`/artifact，而不是把二进制放入诊断或错误字段。
+输入 URL 会经过服务端策略、大小与 MIME 校验；Named Object 会做租户鉴权。较大输出应返回 `ResourceRef`/artifact，而不是把二进制放入诊断或错误字段。
+
+Provider 输出的 `ResourceRef::Url` 不保证可匿名下载。AICC 在返回结果时登记其来源，调用方通过 `open_artifact_url_reader(url, artifact_id?)` 按需读取；`artifact_id` 可省略，不使用 `task_id`。跨进程入口固定为 `POST /kapi/aicc/artifact/open`，成功响应是原始字节流。AICC 只打开已登记且属于当前 tenant 的 Provider URL；未登记普通 URL 不处理，跨 tenant 或 artifact id 不匹配必须拒绝。
 
 ## 6. 响应与任务
 

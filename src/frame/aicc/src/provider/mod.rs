@@ -29,10 +29,13 @@ use crate::matching::MatchContext;
 use crate::model::{
     InventoryModel, InventoryModelVariant, ModelUid, ProviderInventory as ModelProviderInventory,
 };
-use crate::protocol::{CodecRegistry, CredentialKind, ResolvedCredential};
+use crate::protocol::{
+    ArtifactUrlReader, CodecContext, CodecLimits, CodecRegistry, CredentialKind, HttpTransport,
+    HttpTransportConfig, ProtocolError, ProtocolErrorKind, ProtocolResultValue, ResolvedCredential,
+};
 use crate::storage::{AiccStorage, InventoryLkgsRecord};
 use async_trait::async_trait;
-use buckyos_api::{AiCost, ApiType};
+use buckyos_api::{AiCost, ApiType, ProviderStateCoordinate};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -519,6 +522,48 @@ impl ExecutableProviderInstance {
 
     pub(crate) async fn quota_observation(&self) -> ProviderQuotaObservation {
         self.runtime.quota_observation().await
+    }
+
+    pub(crate) async fn open_artifact_url_reader(
+        &self,
+        codecs: &CodecRegistry,
+        url: &str,
+    ) -> ProtocolResultValue<ArtifactUrlReader> {
+        let credential = self.resolve_credential().await.map_err(|_| {
+            ProtocolError::new(
+                ProtocolErrorKind::Authentication,
+                "Provider artifact credential is unavailable",
+            )
+        })?;
+        let max_response_bytes = 1024 * 1024 * 1024;
+        let limits = CodecLimits {
+            request_timeout: self.config.request_timeout,
+            max_request_bytes: 1024,
+            max_response_bytes,
+        };
+        let context = CodecContext {
+            base_url: self.config.base_url.clone(),
+            state_coordinate: ProviderStateCoordinate {
+                normalized_base_url: crate::protocol::normalize_provider_base_url(
+                    &self.config.base_url,
+                )?,
+                adapter_type: self.config.protocol_adapter_id.clone(),
+                origin_provider: self.profile.provider_profile_id.clone(),
+                origin_model: "artifact".to_owned(),
+            },
+            credential: Some(credential),
+            resources: BTreeMap::new(),
+            limits: limits.clone(),
+        };
+        let transport = HttpTransport::new(HttpTransportConfig {
+            request_timeout: limits.request_timeout,
+            max_request_bytes: limits.max_request_bytes,
+            max_response_bytes: limits.max_response_bytes,
+            ..HttpTransportConfig::default()
+        })?;
+        codecs
+            .open_artifact_url_reader(&self.config.protocol_adapter_id, url, &context, &transport)
+            .await
     }
 }
 

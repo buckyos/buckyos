@@ -6,6 +6,7 @@ use super::{
 use async_trait::async_trait;
 use buckyos_api::{AiccCall, ApiType, Capability, ProviderStateCoordinate, ResourceRef};
 use bytes::Bytes;
+use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use reqwest::{Method, StatusCode};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -319,6 +320,96 @@ pub(crate) struct CodecContext {
     pub limits: CodecLimits,
 }
 
+pub(crate) struct ArtifactUrlReader {
+    pub content_type: Option<String>,
+    pub content_length: Option<u64>,
+    pub body: super::HttpByteStream,
+}
+
+impl std::fmt::Debug for ArtifactUrlReader {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ArtifactUrlReader")
+            .field("content_type", &self.content_type)
+            .field("content_length", &self.content_length)
+            .field("body", &"<stream>")
+            .finish()
+    }
+}
+
+#[async_trait]
+pub(crate) trait ArtifactDownloadProtocol: Send + Sync {
+    fn encode_download(
+        &self,
+        url: &str,
+        context: &CodecContext,
+    ) -> ProtocolResultValue<HttpRequest> {
+        let target = reqwest::Url::parse(url)
+            .map_err(|_| ProtocolError::invalid_request("artifact URL is invalid"))?;
+        let base = reqwest::Url::parse(&context.base_url)
+            .map_err(|_| ProtocolError::invalid_configuration("codec base URL is invalid"))?;
+        if !matches!(target.scheme(), "http" | "https")
+            || !target.username().is_empty()
+            || target.password().is_some()
+            || target.fragment().is_some()
+            || target.scheme() != base.scheme()
+            || target.host_str() != base.host_str()
+            || target.port_or_known_default() != base.port_or_known_default()
+        {
+            return Err(ProtocolError::invalid_request(
+                "artifact URL is outside the Provider origin",
+            ));
+        }
+        let mut request = HttpRequest::new(Method::GET, target.to_string());
+        context.validate()?;
+        let credential = context.credential.as_ref().ok_or_else(|| {
+            ProtocolError::new(
+                ProtocolErrorKind::Authentication,
+                "artifact download credential is missing",
+            )
+        })?;
+        credential.apply(&mut request.headers)?;
+        request.timeout = Some(context.limits.request_timeout);
+        request.max_request_bytes = Some(context.limits.max_request_bytes);
+        request.max_response_bytes = Some(context.limits.max_response_bytes);
+        Ok(request)
+    }
+
+    async fn decode_download(
+        &self,
+        response: StreamingHttpResponse,
+    ) -> ProtocolResultValue<ArtifactUrlReader> {
+        if !response.status.is_success() {
+            return Err(ProtocolError::new(
+                super::protocol_error_kind_from_http_status(response.status),
+                "Provider artifact download failed",
+            )
+            .with_request_id(Some(response.request_id))
+            .with_retry_after(response.retry_after));
+        }
+        let content_type = response
+            .headers
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let content_length = response
+            .headers
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse().ok());
+        Ok(ArtifactUrlReader {
+            content_type,
+            content_length,
+            body: response.body,
+        })
+    }
+}
+
+struct DefaultArtifactDownloadProtocol;
+
+#[async_trait]
+impl ArtifactDownloadProtocol for DefaultArtifactDownloadProtocol {}
+
 impl std::fmt::Debug for CodecContext {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -533,6 +624,7 @@ struct RegisteredOperation {
 pub(crate) struct CodecRegistry {
     adapters: BTreeMap<String, AdapterDescriptor>,
     operations: HashMap<(String, String, ApiType), RegisteredOperation>,
+    artifact_download_protocols: BTreeMap<String, Arc<dyn ArtifactDownloadProtocol>>,
 }
 
 pub(crate) trait ProtocolAdapterPlugin: Send + Sync {
@@ -755,6 +847,64 @@ impl CodecRegistry {
             ));
         }
         self.register_codecs(descriptor, overrides)
+    }
+
+    pub(crate) fn register_artifact_download_protocol(
+        &mut self,
+        adapter_id: &str,
+        protocol: Arc<dyn ArtifactDownloadProtocol>,
+    ) -> ProtocolResultValue<()> {
+        if !self.adapters.contains_key(adapter_id) {
+            return Err(ProtocolError::new(
+                ProtocolErrorKind::UnknownAdapter,
+                "artifact download protocol references an unknown adapter",
+            ));
+        }
+        if self
+            .artifact_download_protocols
+            .insert(adapter_id.to_owned(), protocol)
+            .is_some()
+        {
+            return Err(ProtocolError::new(
+                ProtocolErrorKind::DuplicateAdapter,
+                "artifact download protocol is already registered",
+            ));
+        }
+        Ok(())
+    }
+
+    fn artifact_download_protocol(
+        &self,
+        adapter_id: &str,
+    ) -> ProtocolResultValue<Option<Arc<dyn ArtifactDownloadProtocol>>> {
+        let adapter = self.adapter(adapter_id).ok_or_else(|| {
+            ProtocolError::new(
+                ProtocolErrorKind::UnknownAdapter,
+                "protocol adapter is not registered",
+            )
+        })?;
+        if let Some(protocol) = self.artifact_download_protocols.get(adapter_id) {
+            return Ok(Some(protocol.clone()));
+        }
+        match adapter.base_adapter_id.as_deref() {
+            Some(base_adapter_id) => self.artifact_download_protocol(base_adapter_id),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn open_artifact_url_reader(
+        &self,
+        adapter_id: &str,
+        url: &str,
+        context: &CodecContext,
+        transport: &super::HttpTransport,
+    ) -> ProtocolResultValue<ArtifactUrlReader> {
+        let protocol = self
+            .artifact_download_protocol(adapter_id)?
+            .unwrap_or_else(|| Arc::new(DefaultArtifactDownloadProtocol));
+        let request = protocol.encode_download(url, context)?;
+        let response = transport.send_streaming(request).await?;
+        protocol.decode_download(response).await
     }
 
     fn validate_adapter_identity(&self, descriptor: &AdapterDescriptor) -> ProtocolResultValue<()> {
@@ -1134,6 +1284,24 @@ mod tests {
     struct FakeCodec {
         descriptor: OperationDescriptor,
         api_type: ApiType,
+    }
+
+    struct CustomArtifactDownload;
+
+    #[async_trait]
+    impl ArtifactDownloadProtocol for CustomArtifactDownload {
+        fn encode_download(
+            &self,
+            url: &str,
+            context: &CodecContext,
+        ) -> ProtocolResultValue<HttpRequest> {
+            let mut request = DefaultArtifactDownloadProtocol.encode_download(url, context)?;
+            request.headers.insert(
+                "x-artifact-protocol",
+                reqwest::header::HeaderValue::from_static("custom"),
+            );
+            Ok(request)
+        }
     }
 
     #[async_trait]
@@ -1769,6 +1937,70 @@ mod tests {
             assert!(!rendered.contains("first-secret"));
             assert!(!rendered.contains("second-secret"));
         }
+    }
+
+    #[test]
+    fn default_artifact_download_is_same_origin_and_applies_provider_credential() {
+        let mut context = context("https://generativelanguage.googleapis.com/v1beta", "unused");
+        context.credential = Some(
+            ResolvedCredential::named_header("test", "x-goog-api-key", "gemini-secret").unwrap(),
+        );
+        let request = DefaultArtifactDownloadProtocol
+            .encode_download(
+                "https://generativelanguage.googleapis.com/v1beta/files/file-1:download?alt=media",
+                &context,
+            )
+            .unwrap();
+        assert_eq!(request.method, Method::GET);
+        assert_eq!(request.headers["x-goog-api-key"], "gemini-secret");
+        assert_eq!(
+            request.max_response_bytes,
+            Some(context.limits.max_response_bytes)
+        );
+        assert!(DefaultArtifactDownloadProtocol
+            .encode_download("https://example.com/private", &context)
+            .is_err());
+    }
+
+    #[test]
+    fn derived_adapter_inherits_custom_artifact_download_protocol() {
+        let operation = operation(
+            "responses.create",
+            vec![OperationBinding::new(
+                ApiType::Llm,
+                [ExecutionMode::Immediate],
+            )],
+        );
+        let mut registry = CodecRegistry::default();
+        registry
+            .register(
+                adapter("base", operation.clone()),
+                vec![Arc::new(FakeCodec {
+                    descriptor: operation.clone(),
+                    api_type: ApiType::Llm,
+                })],
+            )
+            .unwrap();
+        registry
+            .register_artifact_download_protocol("base", Arc::new(CustomArtifactDownload))
+            .unwrap();
+        let mut derived = adapter("derived", operation);
+        derived.base_adapter_id = Some("base".to_owned());
+        registry
+            .register_derived(derived, CodecRegistration::default())
+            .unwrap();
+
+        let protocol = registry
+            .artifact_download_protocol("derived")
+            .unwrap()
+            .unwrap();
+        let request = protocol
+            .encode_download(
+                "https://one.example/artifact",
+                &context("https://one.example", "secret"),
+            )
+            .unwrap();
+        assert_eq!(request.headers["x-artifact-protocol"], "custom");
     }
 
     #[test]

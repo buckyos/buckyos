@@ -62,6 +62,14 @@ impl RuntimeProvider {
     pub(crate) async fn health(&self) -> crate::provider::ProviderHealth {
         self.executable.health().await
     }
+
+    pub(crate) async fn open_artifact_url_reader(
+        &self,
+        codecs: &crate::protocol::CodecRegistry,
+        url: &str,
+    ) -> crate::protocol::ProtocolResultValue<crate::protocol::ArtifactUrlReader> {
+        self.executable.open_artifact_url_reader(codecs, url).await
+    }
 }
 
 impl std::fmt::Debug for RuntimeProvider {

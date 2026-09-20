@@ -68,12 +68,13 @@ use buckyos_http_server::{
 };
 use buckyos_kit::KVAction;
 use bytes::Bytes;
-use futures_util::{stream, StreamExt};
-use http::{Method, Version};
-use http_body_util::combinators::BoxBody;
+use futures_util::{stream, StreamExt, TryStreamExt};
+use http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
+use http::{Method, StatusCode, Version};
+use http_body_util::{combinators::BoxBody, BodyExt};
 use kRPC::{RPCContext, RPCErrors, RPCRequest};
 use kRPC::{RPCHandler, RPCResponse};
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -133,7 +134,7 @@ use crate::settings::{
     AiccSettings, MetadataSourceManager, ProductionMetadataOverrideLoader, ProductionRuntimeInputs,
     ProviderLifecyclePolicy, ProviderSettings, SettingsDocument,
 };
-use crate::storage::{AiccStorage, RouteTraceRecord};
+use crate::storage::{AiccStorage, ArtifactUrlSourceRecord, RouteTraceRecord};
 use cloud_update::{
     CloudUpdateClientProfile, CloudUpdateConfig, CloudUpdateManager, NdnCloudObjectFetcher,
 };
@@ -144,6 +145,16 @@ use model_defaults::{builtin_logical_model_definitions, builtin_logical_tree_ove
 const RESOURCE_INFO: &str = "obj://config/services/aicc/info";
 const RESOURCE_SETTINGS: &str = "obj://config/services/aicc/settings";
 const CLOUD_UPDATE_CONFIG_KEY: &str = "services/aicc/driver_metadata_update";
+const ARTIFACT_OPEN_PATH: &str = "/kapi/aicc/artifact/open";
+const MAX_ARTIFACT_OPEN_REQUEST_BYTES: usize = 32 * 1024;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArtifactOpenRequest {
+    url: String,
+    #[serde(default)]
+    artifact_id: Option<String>,
+}
 
 struct AiccHttpServer {
     handler: AiccServerHandler<AiccService>,
@@ -154,6 +165,143 @@ impl AiccHttpServer {
         Self {
             handler: AiccServerHandler::new(service),
         }
+    }
+
+    fn session_token(request: &http::Request<BoxBody<Bytes, ServerError>>) -> Option<String> {
+        request
+            .headers()
+            .get("X-Auth")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                request
+                    .headers()
+                    .get(AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("Bearer "))
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            })
+    }
+
+    fn artifact_error_response(
+        error: AiccError,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let status = match error.code {
+            AiccErrorCode::InvalidRequest => StatusCode::BAD_REQUEST,
+            AiccErrorCode::ResourceInvalid => StatusCode::NOT_FOUND,
+            AiccErrorCode::PolicyDenied => StatusCode::FORBIDDEN,
+            AiccErrorCode::NoProviderAvailable => StatusCode::SERVICE_UNAVAILABLE,
+            _ => StatusCode::BAD_GATEWAY,
+        };
+        let bytes = serde_json::to_vec(&error).map_err(|error| {
+            server_err!(
+                ServerErrorCode::InvalidData,
+                "serialize artifact error response failed: {}",
+                error
+            )
+        })?;
+        Ok(http::Response::builder()
+            .status(status)
+            .header(CONTENT_TYPE, "application/json")
+            .body(BoxBody::new(
+                http_body_util::Full::new(Bytes::from(bytes)).map_err(|never| match never {}),
+            ))
+            .map_err(|error| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "build artifact error response failed: {}",
+                    error
+                )
+            })?)
+    }
+
+    async fn open_artifact(
+        &self,
+        request: http::Request<BoxBody<Bytes, ServerError>>,
+    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        let token = match Self::session_token(&request) {
+            Some(token) => token,
+            None => {
+                return Self::artifact_error_response(AiccError::new(
+                    AiccErrorCode::PolicyDenied,
+                    "session token is required",
+                ))
+            }
+        };
+        let body = request.into_body().collect().await.map_err(|error| {
+            server_err!(
+                ServerErrorCode::BadRequest,
+                "read artifact open request failed: {}",
+                error
+            )
+        })?;
+        let body = body.to_bytes();
+        if body.len() > MAX_ARTIFACT_OPEN_REQUEST_BYTES {
+            return Self::artifact_error_response(AiccError::new(
+                AiccErrorCode::InvalidRequest,
+                "artifact open request is too large",
+            ));
+        }
+        let input: ArtifactOpenRequest = match serde_json::from_slice(&body) {
+            Ok(input) => input,
+            Err(_) => {
+                return Self::artifact_error_response(AiccError::new(
+                    AiccErrorCode::InvalidRequest,
+                    "artifact open request is invalid",
+                ))
+            }
+        };
+        let mut context = RPCContext::default();
+        context.token = Some(token);
+        let reader = match self
+            .handler
+            .0
+            .open_artifact_url_reader(&input.url, input.artifact_id.as_deref(), context)
+            .await
+        {
+            Ok(reader) => reader,
+            Err(error) => return Self::artifact_error_response(error),
+        };
+        let content_type = reader
+            .content_type
+            .as_deref()
+            .unwrap_or("application/octet-stream");
+        let stream = reader.body.map_err(|error| {
+            std::io::Error::other(format!(
+                "Provider artifact stream failed: {}",
+                error.message
+            ))
+        });
+        let body = reqwest::Body::wrap_stream(stream);
+        let mut response = http::Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, content_type)
+            .header(CACHE_CONTROL, "no-store");
+        if let Some(content_length) = reader.content_length {
+            response = response.header(CONTENT_LENGTH, content_length);
+        }
+        response
+            .body(
+                BodyExt::map_err(body, |error| {
+                    server_err!(
+                        ServerErrorCode::InvalidData,
+                        "Provider artifact stream failed: {}",
+                        error
+                    )
+                })
+                .boxed(),
+            )
+            .map_err(|error| {
+                server_err!(
+                    ServerErrorCode::InvalidData,
+                    "build artifact stream response failed: {}",
+                    error
+                )
+            })
     }
 }
 
@@ -175,6 +323,9 @@ impl HttpServer for AiccHttpServer {
         request: http::Request<BoxBody<Bytes, ServerError>>,
         info: StreamInfo,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        if request.method() == Method::POST && request.uri().path() == ARTIFACT_OPEN_PATH {
+            return self.open_artifact(request).await;
+        }
         if request.method() == Method::POST {
             return serve_http_by_rpc_handler(request, info, self).await;
         }
@@ -344,17 +495,18 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
     let service_runtime: Arc<dyn ServiceRuntime> =
         Arc::new(RuntimeServiceAdapter::new(runtime.clone(), codecs.clone()));
     let model_health = Arc::new(ModelHealthRegistry::default());
+    let provider_execution = Arc::new(RuntimeProviderExecutionPort::new(
+        runtime.clone(),
+        codecs.clone(),
+        resource_store.clone(),
+        url_fetcher.clone(),
+        storage.clone(),
+        model_health.clone(),
+    ));
     let execution = Arc::new(ExecutionEngine::new(
         storage.clone(),
         Arc::new(TaskManagerExecutionPort::new()),
-        Arc::new(RuntimeProviderExecutionPort::new(
-            runtime.clone(),
-            codecs.clone(),
-            resource_store.clone(),
-            url_fetcher.clone(),
-            storage.clone(),
-            model_health.clone(),
-        )),
+        provider_execution.clone(),
         storage.clone(),
     ));
     let recovery = execution.clone();
@@ -393,7 +545,8 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         )),
     )
     .with_execution(execution)
-    .with_inference(inference);
+    .with_inference(inference)
+    .with_artifact_url_reader(provider_execution);
     serve_service(service, runtime, cloud_update, provider_events).await
 }
 
@@ -509,6 +662,7 @@ pub(crate) struct AiccService {
     metadata: Arc<dyn DriverMetadataPort>,
     execution: Option<Arc<ExecutionEngine>>,
     inference: Option<Arc<dyn InferencePort>>,
+    artifact_url_reader: Option<Arc<RuntimeProviderExecutionPort>>,
     settings_mutation: Mutex<()>,
 }
 
@@ -532,6 +686,7 @@ impl AiccService {
             metadata,
             execution: None,
             inference: None,
+            artifact_url_reader: None,
             settings_mutation: Mutex::new(()),
         }
     }
@@ -544,6 +699,37 @@ impl AiccService {
     pub(crate) fn with_inference(mut self, inference: Arc<dyn InferencePort>) -> Self {
         self.inference = Some(inference);
         self
+    }
+
+    pub(crate) fn with_artifact_url_reader(
+        mut self,
+        artifact_url_reader: Arc<RuntimeProviderExecutionPort>,
+    ) -> Self {
+        self.artifact_url_reader = Some(artifact_url_reader);
+        self
+    }
+
+    async fn open_artifact_url_reader(
+        &self,
+        url: &str,
+        artifact_id: Option<&str>,
+        context: RPCContext,
+    ) -> Result<crate::protocol::ArtifactUrlReader, AiccError> {
+        let caller = self
+            .authorize(&context, "read", RESOURCE_INFO)
+            .await
+            .map_err(|_| {
+                AiccError::new(AiccErrorCode::PolicyDenied, "artifact access is denied")
+            })?;
+        let reader = self.artifact_url_reader.as_ref().ok_or_else(|| {
+            AiccError::new(
+                AiccErrorCode::InternalError,
+                "artifact URL reader is unavailable",
+            )
+        })?;
+        reader
+            .open_artifact_url_reader(&caller.tenant_id, url, artifact_id)
+            .await
     }
 
     async fn authorize(
