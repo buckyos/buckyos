@@ -33,7 +33,6 @@ pub mod llm_explore;
 pub mod llm_tool_carft;
 pub mod llm_understand_media;
 pub mod local_llm_context;
-pub mod materialize_resource;
 pub mod path_utils;
 pub mod run_local_llm;
 pub mod runtime_context;
@@ -119,7 +118,6 @@ pub use local_llm_context::{
     RunRecord, RunStatus, RunStore, RunSummary, TaskInput, TaskOverrides, XllmDeps, XllmError,
     XllmResult, XllmRun, XllmTask, DEFAULT_CONTEXT_YIELD_RATIO, DEFAULT_MAX_CONSECUTIVE_ERRORS,
 };
-pub use materialize_resource::{MaterializeResourceTool, TOOL_MATERIALIZE_RESOURCE};
 pub use workspace::{
     ExternalWorkspaceBinding, ExternalWorkspaceRuntimeBackend, ExternalWorkspaceServiceConfig,
     LocalWorkspaceLock, LocalWorkspaceSessionBinding, ManagedExternalWorkspaceBackend,

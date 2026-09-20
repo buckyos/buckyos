@@ -23,7 +23,8 @@
     "extend_video": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts extend_video",
     "upscale_video": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts upscale_video",
     "ai_provider": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts ai_provider",
-    "ai_quota": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts ai_quota"
+    "ai_quota": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts ai_quota",
+    "materialize_resource": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts materialize_resource"
   },
   "compilerOptions": {
     "lib": ["deno.window", "dom", "esnext"]

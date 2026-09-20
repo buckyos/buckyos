@@ -648,7 +648,7 @@ mod tests {
             "do not use their output to choose providers, choose models, or set `--model`",
             "AICC routing owns those decisions",
             "named_object:<obj_id>",
-            "call `materialize_resource` with the original ResourceRef",
+            "run `materialize_resource 'named_object:<complete_typed_object_id>'",
             "Preserve the exact attachment identity across retries",
             "Never search the workspace for a similarly named file",
             "Provider status is not a recovery action",

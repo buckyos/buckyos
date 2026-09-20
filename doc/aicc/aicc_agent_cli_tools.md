@@ -128,6 +128,12 @@ URL 输入通过 `--url` 或参数值的 URL scheme 识别，转换为：
 
 输出文件不存在时创建，存在时覆盖。CLI 不做交互确认，因为这些工具面向 Agent 自动化。
 
+Provider 返回的 `ResourceRef::Url` 可能要求 Provider credential，CLI 不直接匿名下载这类
+URL。CLI 先将 URL 交给 `POST /kapi/aicc/artifact/open`；AICC 只对已登记且属于当前 tenant
+的 URL 返回流，由原 ProviderInstance 的 Adapter 完成读取。仅当 AICC 明确返回 `404`
+（URL 未登记）时，CLI 才把它视为普通公开 URL 直接下载；鉴权失败和 Provider 下载失败不得
+绕过 AICC 重试。该读取接口只需要 URL 和可选 `artifact_id`，不需要 `task_id`。
+
 异步任务返回 `running` 后，CLI 每 5 秒向 stderr 写一行结构化进度心跳：前缀为
 `__BUCKYOS_AGENT_PROGRESS__`，后面紧跟 JSON，包含协议版本、AICC method、stage、task_id
 和 elapsed_ms。stdout 仍只写最终 `AgentToolResult`。其中 `task_id` 是 TaskMgr 2.0 的正式
@@ -560,6 +566,26 @@ ai_quota --method images.generate
 ```
 
 映射到 `quota.query`。
+
+### 7.3 `materialize_resource`
+
+将非本地 `ResourceRef` 保存为当前 workspace 中的本地文件，供 ffmpeg 等本地命令继续处理。
+
+```bash
+materialize_resource 'named_object:cyfile:...' inputs/audio.mp3
+materialize_resource 'https://example.com/input.wav' inputs/audio.wav --mime audio/wav
+```
+
+参数：
+
+```text
+materialize_resource <resource> <output_path>
+  --mime <mime_type>
+```
+
+支持 `named_object:<typed_object_id>`、直接的 `cyfile:` / `chunk:` typed ID、HTTP(S) URL
+和 data URL。命令保留完整 typed object ID，目标文件已存在时拒绝覆盖。它不创建 AICC
+推理任务，只复用 SDK 的 ResourceRef 读取能力。
 
 ---
 

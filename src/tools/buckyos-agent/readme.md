@@ -94,7 +94,7 @@ deno run --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json \
 `ocr_image` / `caption_image` / `detect_image` / `segment_image`
 `text_to_speech` / `speech_to_text` / `gen_music` / `enhance_audio`
 `gen_video` / `img2video` / `video2video` / `extend_video` / `upscale_video`
-`ai_provider list|health` / `ai_quota`
+`ai_provider list|health` / `ai_quota` / `materialize_resource`
 
 每个命令的 `--help` 列出参数。
 
@@ -116,6 +116,7 @@ CLI 始终将 `AgentToolResult` JSON 写到 stdout（与 `src/frame/agent_tool` 
 
 - 输入文件：本地路径 → base64；`http(s)://...` → URL；`named_object:<obj_id>` → NamedObject
 - 输出 artifact：`named_object` 走 `ndm_proxy.openReader` 拉取并落盘；URL/base64 直接写文件
+- 资源落盘：`materialize_resource named_object:<obj_id> <output_path>`；目标文件已存在时拒绝覆盖
 
 ### 环境变量
 

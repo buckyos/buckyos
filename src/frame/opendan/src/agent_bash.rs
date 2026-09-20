@@ -35,8 +35,7 @@ use agent_did_object_lib::{
 use agent_tool::{
     AgentToolError, AgentToolManager, BashRunOutput, BashRunRequest, BashRunner, BashTarget,
     BinOverlayConfig, EditFileTool, ExecBashTool, FileToolConfig, LlmBashConfig,
-    LlmUnderstandMediaTool, MaterializeResourceTool, NoopFileWriteAudit, SessionRuntimeContext,
-    WriteFileTool,
+    LlmUnderstandMediaTool, NoopFileWriteAudit, SessionRuntimeContext, WriteFileTool,
 };
 use buckyos_api::get_buckyos_api_runtime;
 use serde::Deserialize;
@@ -536,9 +535,6 @@ pub fn build_default_tool_manager(
     );
     let _ = manager.register_typed_tool(WriteFileTool::new(file_cfg.clone(), audit.clone()));
     let _ = manager.register_typed_tool(EditFileTool::new(file_cfg, audit));
-    let _ = manager.register_tool(MaterializeResourceTool::new(
-        fs_roots.workspace_root.clone(),
-    ));
     let _ = manager.register_tool(LlmUnderstandMediaTool::new());
 
     Arc::new(manager)
@@ -1227,7 +1223,6 @@ mod tests {
         for name in [
             "exec_bash",
             "read",
-            "materialize_resource",
             "llm_understand_media",
         ] {
             assert!(manager.has_tool(name), "tool {name} not registered");
