@@ -674,15 +674,11 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
             candidate_count_before_filter: evaluated.before_count,
             candidate_count_after_filter,
             filtered_candidates: evaluated.filtered,
-            ranked_candidates: if self.policy.policy().explain.value {
-                ranked
-                    .iter()
-                    .enumerate()
-                    .map(|(index, candidate)| ranked_trace(candidate, index == 0))
-                    .collect()
-            } else {
-                Vec::new()
-            },
+            ranked_candidates: ranked
+                .iter()
+                .enumerate()
+                .map(|(index, candidate)| ranked_trace(candidate, index == 0))
+                .collect(),
             fallback_applied: was_fallback,
             fallback_chain,
             scheduler_profile: scheduler_profile_name(&profile).into(),
@@ -1966,11 +1962,10 @@ mod tests {
     }
 
     #[test]
-    fn tie_break_is_deterministic_and_trace_is_redacted() {
+    fn tie_break_is_deterministic_and_trace_persists_ranked_candidates() {
         let patch = RoutingPolicyPatch {
             route: AiccPolicyConfig {
                 profile: Some(LockedValue::new(AiccSchedulerProfile::Balanced)),
-                explain: Some(LockedValue::new(true)),
                 scheduler_profiles: Some(LockedValue::new(AiccSchedulerProfileConfig {
                     balanced: Some(AiccSchedulerProfileWeights {
                         preference: 1.0,

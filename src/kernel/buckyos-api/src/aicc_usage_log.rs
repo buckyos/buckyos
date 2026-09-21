@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::aicc_client::{ai_methods, AiUsage, Money, RouteTrace};
+use crate::aicc_client::{ai_methods, AiUsage, Money};
 use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 
 /// Logical name of the aicc usage-log rdb instance. The scheduler writes this
@@ -291,7 +291,7 @@ pub struct AiccRouteTraceEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_instance_name: Option<String>,
     pub api_type: String,
-    pub route_trace_json: RouteTrace,
+    pub route_trace_json: Value,
     pub created_at_ms: i64,
 }
 

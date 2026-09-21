@@ -1292,13 +1292,14 @@ interface UserFacingRouteSummary {
 
 > 协议层 `RouteResolveResponse.route_trace` 当前序列化为 JSON `Value` 承载上述字段，尚未提升为对外 typed struct；Rust 内部以结构化 trace 填充。
 
-`ranked_candidates` 只在 `policy.explain = true` 或开发模式返回，用于解释“为什么没选另一个候选”。生产默认 trace 可以省略该字段。`user_summary` 由后端根据 RouteTrace 和固定模板派生，UI 不应自行解析 `score_breakdown` 来生成用户可见文案。`reason_short` 必须来自预设模板，例如“按最高质量策略选择”“同优先级内成本最低”“命中 session 绑定”“高隐私策略只允许本地 Provider”。
+`ranked_candidates` 必须写入服务端 Route Trace Audit，用于解释“为什么没选另一个候选”。对外响应仍可根据 `policy.explain` 或运行模式决定是否暴露详细 trace。`user_summary` 由后端根据 RouteTrace 和固定模板派生，UI 不应自行解析 `score_breakdown` 来生成用户可见文案。`reason_short` 必须来自预设模板，例如“按最高质量策略选择”“同优先级内成本最低”“命中 session 绑定”“高隐私策略只允许本地 Provider”。
 
 ### 13.3 Trace 暴露方式
 
 1. 默认在 response metadata 中返回简要 trace；
-2. 开发模式或 `policy.explain = true` 时返回详细 trace；
-3. 生产环境可只记录服务端日志，避免泄露 Provider 策略细节；
+2. Route Trace Audit 在服务端持久化详细 trace；
+3. 开发模式或 `policy.explain = true` 时可在响应中返回详细 trace；
+4. 生产响应可只返回简要信息，避免泄露 Provider 策略细节；
 4. UI 可展示“使用了哪个模型/Provider”和“为何选择”。
 
 ---

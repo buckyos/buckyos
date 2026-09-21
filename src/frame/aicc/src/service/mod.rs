@@ -1221,6 +1221,8 @@ fn runtime_admin_snapshot(
                 "operations": model.operations,
                 "inventory_revision": model.inventory_revision,
             })).collect::<Vec<_>>(),
+            "directory": model_directory_json(&snapshot.models),
+            "logical_definitions": logical_definitions_json(&snapshot.models),
             "generation": snapshot.generation,
         }),
         routing: snapshot.settings.session_config.clone().unwrap_or_default(),
@@ -1228,6 +1230,73 @@ fn runtime_admin_snapshot(
         inventory_revision,
         provider_health,
     }
+}
+
+fn model_directory_json(models: &crate::model::ModelRegistry) -> Value {
+    let visible_paths = visible_logical_paths(models);
+    let directory = models
+        .logical_model_views()
+        .into_iter()
+        .filter(|logical| visible_paths.contains(&logical.path))
+        .map(|logical| {
+            let items = logical
+                .items
+                .into_iter()
+                .map(|item| {
+                    (
+                        item.name,
+                        json!({
+                            "target": item.target,
+                            "weight": item.weight,
+                        }),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>();
+            (logical.path, Value::Object(items))
+        })
+        .collect::<serde_json::Map<_, _>>();
+    Value::Object(directory)
+}
+
+fn logical_definitions_json(models: &crate::model::ModelRegistry) -> Value {
+    let visible_paths = visible_logical_paths(models);
+    Value::Array(
+        models
+            .logical_model_views()
+            .into_iter()
+            .filter(|logical| visible_paths.contains(&logical.path))
+            .map(|logical| {
+                json!({
+                    "path": logical.path,
+                    "api_type": logical.api_type,
+                    "min_line": logical.min_line,
+                    "disable_line": logical.disable_line,
+                    "default_options": logical.default_options,
+                    "scheduler_profile": logical.scheduler_profile,
+                    "fallback": logical.fallback,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn visible_logical_paths(models: &crate::model::ModelRegistry) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+    for logical in models.logical_model_views() {
+        if logical.items.is_empty() {
+            continue;
+        }
+        let mut current = Some(logical.path.as_str());
+        while let Some(path) = current {
+            paths.insert(path.to_string());
+            current = parent_logical_path(path);
+        }
+    }
+    paths
+}
+
+fn parent_logical_path(path: &str) -> Option<&str> {
+    path.rfind('.').map(|index| &path[..index])
 }
 
 fn provider_credentials_configured(credentials: &ProviderCredentials) -> bool {

@@ -181,6 +181,7 @@ interface RawModelMetadata {
   provider_actual_model_id?: unknown
   provider_options?: unknown
   exact_model?: unknown
+  variant?: unknown
   model_driver?: unknown
   parameter_scale?: unknown
   api_types?: unknown
@@ -787,9 +788,12 @@ class BuckyOSAiccProvider implements AiccDataProvider {
   }
 
   async refreshProviderModels(id: string): Promise<void> {
-    await this.call('provider.refresh_models', {
+    const result = await this.call<{ ok?: unknown; reason?: unknown; error?: unknown }>('provider.refresh_models', {
       provider_instance_name: id,
     }, { requireSession: true })
+    if (result.ok !== true) {
+      throw new Error(asNonEmptyString(result.reason, asNonEmptyString(result.error, 'aicc.provider_refresh_models_failed')))
+    }
   }
 
   async updateProviderKey(provider: ProviderView, apiKey: string): Promise<void> {
@@ -1257,17 +1261,23 @@ function toRouteTraces(raw: RawTraceQueryResponse): RouteTrace[] {
 }
 
 function toRouteTrace(value: unknown, index: number): RouteTrace | null {
-  const trace = asRecord(value)
+  const raw = asRecord(value)
+  const traceEvent = asRecord(raw.trace)
+  const embeddedTrace = asRecord(traceEvent.route_trace_json)
+  const trace = Object.keys(traceEvent).length > 0
+    ? { ...embeddedTrace, ...traceEvent, ...raw }
+    : raw
   const requestedModel = asOptionalString(trace.requested_model)
   if (!requestedModel) return null
   const selectedExactModel = asOptionalString(trace.selected_exact_model)
+    ?? asOptionalString(trace.final_model)
   const rankedCandidates = toRankedCandidates(trace.ranked_candidates)
   const selectedPricingSnapshot = toRoutePricingSnapshot(trace.pricing_snapshot ?? trace.pricing)
     ?? rankedCandidates.find((candidate) => candidate.selected)?.pricing_snapshot
     ?? rankedCandidates.find((candidate) => candidate.exact_model === selectedExactModel)?.pricing_snapshot
   return {
-    request_id: asNonEmptyString(trace.request_id, `route-trace-${index}`),
-    session_id: asOptionalString(trace.session_id),
+    request_id: asNonEmptyString(trace.request_id, asNonEmptyString(trace.trace_id, `route-trace-${index}`)),
+    session_id: asOptionalString(trace.session_id ?? trace.task_id),
     api_type: normalizeApiType(trace.api_type),
     requested_model: requestedModel,
     requested_model_type: trace.requested_model_type === 'exact' ? 'exact' : 'logical',
@@ -1724,6 +1734,7 @@ function toModelMetadata(
     provider_actual_model_id: asOptionalString(raw.origin_model_id ?? raw.provider_actual_model_id),
     provider_options: raw.provider_options,
     exact_model: exactModel,
+    variant: asOptionalString(raw.variant),
     model_driver: asNonEmptyString(raw.model_driver_id ?? raw.model_driver, providerDriver),
     parameter_scale: asOptionalString(raw.parameter_scale),
     api_types: apiTypes,
@@ -1886,10 +1897,53 @@ function logicalTreeFromDirectory(
 function logicalTreeFromModels(models: ModelMetadata[]): LogicalNode[] {
   const modelIndex = buildModelIndex(models)
   const mountPaths = Array.from(modelIndex.byMount.keys()).sort()
-  return mountPaths.map((path) => {
+  const nodesByPath = new Map<string, LogicalNode>()
+  const rootNodes: LogicalNode[] = []
+
+  const ensureNode = (path: string): LogicalNode => {
+    const existing = nodesByPath.get(path)
+    if (existing) return existing
+
     const apiType = inferApiType(path)
-    return toMountNode(path, apiType, modelIndex.byMount.get(path) ?? [])
-  })
+    const node: LogicalNode = {
+      path,
+      label: labelFromPath(path),
+      level: path.includes('.') ? 'L3' : 'L2',
+      api_type: apiType,
+      exact_model_weights: {},
+      resolved_exact_model: resolveModelForPath(path, modelIndex),
+      children: [],
+    }
+    nodesByPath.set(path, node)
+
+    const parentPath = parentLogicalPath(path)
+    if (parentPath) {
+      const parent = ensureNode(parentPath)
+      parent.children = appendUniqueNode(parent.children ?? [], node)
+    } else {
+      rootNodes.push(node)
+    }
+    return node
+  }
+
+  for (const path of mountPaths) {
+    const node = ensureNode(path)
+    const childPaths = new Set((node.children ?? []).map((child) => child.path))
+    for (const model of modelIndex.byMount.get(path) ?? []) {
+      if (childPaths.has(model.exact_model)) continue
+      node.children = [...(node.children ?? []), toExactModelNode(model, node.api_type)]
+      childPaths.add(model.exact_model)
+    }
+  }
+
+  for (const node of nodesByPath.values()) {
+    node.children = (node.children ?? []).sort((left, right) => {
+      if (left.level !== right.level) return left.level === 'L1' ? 1 : -1
+      return left.path.localeCompare(right.path)
+    })
+  }
+
+  return rootNodes.sort(compareLogicalRoot)
 }
 
 function toMountNode(path: string, apiType: ApiType | undefined, models: ModelMetadata[]): LogicalNode {

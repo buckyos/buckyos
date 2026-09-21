@@ -107,6 +107,7 @@ export function RouteTraceAuditPanel({
   const [traceNextCursor, setTraceNextCursor] = useState<string | undefined>()
   const [traceTotalCount, setTraceTotalCount] = useState(snapshotTraces.length)
   const [tracePageIndex, setTracePageIndex] = useState(0)
+  const [tracePageCursors, setTracePageCursors] = useState<Array<string | undefined>>([undefined])
   const [traceLoading, setTraceLoading] = useState(false)
   const [traceError, setTraceError] = useState<'initial' | 'more' | null>(null)
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
@@ -141,21 +142,25 @@ export function RouteTraceAuditPanel({
     async function loadInitialTraces() {
       setTraceLoading(true)
       try {
-        const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE, ...params })
-        if (seq !== traceRequestSeqRef.current) return
-        setTraces(page.traces)
-        setTraceNextCursor(page.nextCursor)
-        setTraceTotalCount(page.totalCount ?? page.traces.length)
-        setTracePageIndex(0)
-        setTraceError(null)
+        const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE, ...traceQueryParams })
+        if (!cancelled) {
+          setTraces(page.traces)
+          setTraceNextCursor(page.nextCursor)
+          setTraceTotalCount(page.totalCount ?? page.traces.length)
+          setTracePageIndex(0)
+          setTracePageCursors([undefined, page.nextCursor])
+          setTraceError(null)
+        }
       } catch (error) {
         console.error('aicc.trace.query usage audit failed', error)
-        if (seq !== traceRequestSeqRef.current) return
-        setTraces(snapshotTraces)
-        setTraceNextCursor(snapshotTraces.length >= ROUTE_TRACE_PAGE_SIZE ? String(ROUTE_TRACE_PAGE_SIZE) : undefined)
-        setTraceTotalCount(snapshotTraces.length)
-        setTracePageIndex(0)
-        setTraceError('initial')
+        if (!cancelled) {
+          setTraces(snapshotTraces)
+          setTraceNextCursor(snapshotTraces.length >= ROUTE_TRACE_PAGE_SIZE ? String(ROUTE_TRACE_PAGE_SIZE) : undefined)
+          setTraceTotalCount(snapshotTraces.length)
+          setTracePageIndex(0)
+          setTracePageCursors([undefined])
+          setTraceError('initial')
+        }
       } finally {
         if (seq === traceRequestSeqRef.current) setTraceLoading(false)
       }
@@ -178,19 +183,26 @@ export function RouteTraceAuditPanel({
     if (traceLoading) return
     const seq = ++traceRequestSeqRef.current
     const nextPageIndex = Math.max(0, pageIndex)
+    const cursor = tracePageCursors[nextPageIndex]
+    if (nextPageIndex > 0 && !cursor) return
     setTraceLoading(true)
     setTraceError(null)
     try {
       const page = await store.queryRouteTraces({
         limit: ROUTE_TRACE_PAGE_SIZE,
-        cursor: nextPageIndex > 0 ? String(nextPageIndex * ROUTE_TRACE_PAGE_SIZE) : undefined,
-        ...currentTraceQueryParams(),
+        cursor,
+        ...traceQueryParams,
       })
       if (seq !== traceRequestSeqRef.current) return
       setTraces(page.traces)
       setTraceNextCursor(page.nextCursor)
       setTraceTotalCount(page.totalCount ?? page.traces.length)
       setTracePageIndex(nextPageIndex)
+      setTracePageCursors((current) => {
+        const next = current.slice(0, nextPageIndex + 1)
+        next[nextPageIndex + 1] = page.nextCursor
+        return next
+      })
     } catch (error) {
       console.error('aicc.trace.query usage audit page failed', error)
       if (seq !== traceRequestSeqRef.current) return

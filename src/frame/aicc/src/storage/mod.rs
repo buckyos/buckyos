@@ -1007,7 +1007,7 @@ impl AiccStorage {
         Ok(QueryRouteTraceResponse {
             traces: records
                 .into_iter()
-                .map(serde_json::to_value)
+                .map(route_trace_record_to_value)
                 .collect::<Result<Vec<_>, _>>()?,
             next_cursor,
             total_count: Some(from_i64(total_count)?),
@@ -1354,6 +1354,61 @@ fn trace_from_row(row: AnyRow) -> StorageResult<RouteTraceRecord> {
         scheduler_profile: row.try_get("scheduler_profile")?,
         outcome: row.try_get("outcome")?,
     })
+}
+
+fn route_trace_record_to_value(record: RouteTraceRecord) -> StorageResult<Value> {
+    let mut value = serde_json::to_value(record.trace.route_trace_json)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("trace_id".to_string(), Value::String(record.trace.trace_id));
+        object.insert("tenant_id".to_string(), Value::String(record.trace.tenant_id));
+        if let Some(caller_app_id) = record.trace.caller_app_id {
+            object.insert("caller_app_id".to_string(), Value::String(caller_app_id));
+        }
+        object.insert("task_id".to_string(), Value::String(record.trace.task_id));
+        object.insert(
+            "request_model".to_string(),
+            Value::String(record.trace.request_model),
+        );
+        if let Some(selected_exact_model) = record.trace.selected_exact_model {
+            object.insert(
+                "selected_exact_model".to_string(),
+                Value::String(selected_exact_model),
+            );
+        }
+        if let Some(provider_instance_name) = record.trace.provider_instance_name {
+            object.insert(
+                "provider_instance_name".to_string(),
+                Value::String(provider_instance_name),
+            );
+        }
+        object.insert("api_type".to_string(), Value::String(record.trace.api_type));
+        object.insert(
+            "created_at_ms".to_string(),
+            Value::Number(record.trace.created_at_ms.into()),
+        );
+        if let Some(request_id) = record.request_id {
+            object.insert("request_id".to_string(), Value::String(request_id));
+        }
+        if let Some(route_id) = record.route_id {
+            object.insert("route_id".to_string(), Value::String(route_id));
+        }
+        if let Some(provider_trace_id) = record.provider_trace_id {
+            object.insert(
+                "provider_trace_id".to_string(),
+                Value::String(provider_trace_id),
+            );
+        }
+        if let Some(scheduler_profile) = record.scheduler_profile {
+            object.insert(
+                "scheduler_profile".to_string(),
+                Value::String(scheduler_profile),
+            );
+        }
+        if let Some(outcome) = record.outcome {
+            object.insert("outcome".to_string(), Value::String(outcome));
+        }
+    }
+    Ok(value)
 }
 
 fn audit_from_row(row: AnyRow) -> StorageResult<AuditEvent> {
@@ -1740,7 +1795,7 @@ mod tests {
         NativeTaskResumeDescriptor, PinnedPricingBasis, PinnedPricingSnapshot, ResumeCredential,
         ResumeCredentialKind,
     };
-    use buckyos_api::{AiCost, ApiType, RouteTrace, UsageQueryBucket, UsageQueryFilters};
+    use buckyos_api::{AiCost, ApiType, UsageQueryBucket, UsageQueryFilters};
     use serde_json::json;
 
     async fn db() -> AiccStorage {
@@ -2408,7 +2463,15 @@ mod tests {
                 selected_exact_model: Some("gpt-5@openai-primary".into()),
                 provider_instance_name: Some("openai-primary".into()),
                 api_type: "llm".into(),
-                route_trace_json: RouteTrace::default(),
+                route_trace_json: json!({
+                    "request_id": "request-1",
+                    "api_type": "llm",
+                    "requested_model": "llm.chat",
+                    "requested_model_type": "logical",
+                    "selected_exact_model": "gpt-5@openai-primary",
+                    "selected_provider_instance_name": "openai-primary",
+                    "ranked_candidates": []
+                }),
                 created_at_ms: 100,
             },
             request_id: Some("request-1".into()),
@@ -2476,7 +2539,7 @@ mod tests {
         assert_eq!(audits.events[0].trace_id.as_deref(), Some("trace-1"));
         assert_eq!(
             traces.traces[0]
-                .pointer("/trace/trace_id")
+                .pointer("/trace_id")
                 .and_then(Value::as_str),
             Some("trace-1")
         );

@@ -36,6 +36,7 @@ export interface ModelMetadata {
   provider_actual_model_id?: string
   provider_options?: unknown
   exact_model: string
+  variant?: string
   model_driver: string
   parameter_scale?: string
   api_types: ApiType[]

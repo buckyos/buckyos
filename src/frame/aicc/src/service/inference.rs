@@ -460,7 +460,7 @@ impl InferencePort for RuntimeInferencePort {
                         routed.decision.selected.provider_instance_name.clone(),
                     ),
                     api_type: routed.decision.trace.api_type.clone(),
-                    route_trace_json: public_route_trace(&routed.decision),
+                    route_trace_json: public_route_trace_json(&routed.decision)?,
                     created_at_ms: now_ms() as i64,
                 },
                 request_id: Some(routed.request_id.clone()),
@@ -795,6 +795,11 @@ fn public_route_trace(decision: &RouteDecision) -> RouteTrace {
         attempts: Vec::new(),
         final_model: Some(decision.selected.exact_model.clone()),
     }
+}
+
+fn public_route_trace_json(decision: &RouteDecision) -> Result<Value, RPCErrors> {
+    serde_json::to_value(&decision.trace)
+        .map_err(|error| inference_error(AiccErrorCode::InternalError, error.to_string()))
 }
 
 fn inference_response(
