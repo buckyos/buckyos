@@ -71,8 +71,17 @@ resume：终态只返回记录（附带限制参数则报 `RunTerminal`）；非
 
 `--format json` 输出 `XllmResult`（runid、状态、是否终态/可恢复、answer、artifacts、usage、error、Provider/模型/实际返回模型、resume 命令）。
 
-## 8. 验证
+## 8. buckyos Provider 的登录方式
+
+`ensure_buckyos_runtime` 按顺序选择身份（`BUCKYOS_APP_ID` 可覆盖默认的 `buckycli`）：
+
+1. 设置了 `BUCKYOS_APPCLIENT_SESSION_TOKEN`：AppClient，直接使用该会话（OpenDAN 给工具注入的方式）。
+2. 在 OOD 本机且能读到设备密钥（`/opt/buckyos/security/<device>/authentication.private.pem`）：以 KernelService 语义初始化（服务地址走 127.0.0.1），用设备密钥签 `sub = iss = 设备名` 的登录断言，经 node gateway（默认 3180 端口）上的 verify-hub 换取正式会话后登录。`buckycli` 在 RBAC 中属于 kernel 角色，system-config 与 AICC 均接受。DV Test 环境下 root 直接运行即可，不需要 dev 目录或额外环境变量。
+3. 否则：AppClient，用 `$BUCKYOS_DEV_HOME` / `~/.buckycli` 下的用户私钥签断言，经 verify-hub 换会话；该路径要求所选 app 已安装在 zone 中（否则 verify-hub 返回 `AppAccessDenied`）。
+
+## 9. 验证
 
 - `cargo test -p agent_tool --lib local_llm_context`（SDK，ScriptedLlm 驱动，覆盖配置合并、section 组装、工具优先级、behavior/function_call 循环、暂停与恢复、锁、文件模型阶段等）。
 - `cargo test -p agent_tool --lib run_local_llm`（CLI 参数规则）。
-- 端到端：用一个 OpenAI 兼容的 mock HTTP 服务（返回 `choices[0].message` 与可选 `tool_calls`），在 `.llm_context` 里配置 `provider.type: openai`、`base_url`、`api_key_env`，即可跑通新任务、管道串联、工具循环、`--json`、暂停/resume、`--output`、list/status/result。
+- 真实环境：在 DV Test 的 OOD 上以 root 运行 `agent_tool xllm "问题"`，即走上面第 2 种登录方式。
+- 端到端（无 BuckyOS）：用一个 OpenAI 兼容的 mock HTTP 服务（返回 `choices[0].message` 与可选 `tool_calls`），在 `.llm_context` 里配置 `provider.type: openai`、`base_url`、`api_key_env`，即可跑通新任务、管道串联、工具循环、`--json`、暂停/resume、`--output`、list/status/result。

@@ -3918,13 +3918,146 @@ impl LlmClientFactory for DefaultLlmClientFactory {
     }
 }
 
-/// 初始化（或复用）BuckyOS API runtime。
+/// 初始化（或复用）BuckyOS API runtime，并完成登录。
+///
+/// 登录身份按以下顺序决定（可用 `BUCKYOS_APP_ID` 覆盖默认的 `buckycli`）：
+/// 1. 设置了 `BUCKYOS_APPCLIENT_SESSION_TOKEN`：AppClient，直接使用该会话（OpenDAN
+///    给工具注入的方式）。
+/// 2. 在 OOD 本机且能读到设备私钥（`/opt/buckyos/security/...`）：以内核服务身份
+///    （KernelService 语义，服务地址走 127.0.0.1）用设备私钥签登录断言，system-config 把它当作内核引导
+///    断言接受，`buckycli` 在 RBAC 中属于 kernel 角色；这是 DV Test 环境下最直接的
+///    方式。
+/// 3. 否则：AppClient，用 dev 目录（`$BUCKYOS_DEV_HOME` / `~/.buckycli`）里的用户
+///    私钥签断言，先到 verify-hub 换会话再登录（需要该 app 已安装在 zone 中）。
 pub async fn ensure_buckyos_runtime() -> Result<(), Box<dyn std::error::Error>> {
     if get_buckyos_api_runtime().is_ok() {
         return Ok(());
     }
-    let runtime = init_buckyos_api_runtime("buckycli", None, BuckyOSRuntimeType::AppClient).await?;
+    let app_id = std::env::var("BUCKYOS_APP_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "buckycli".to_string());
+    let has_token = std::env::var("BUCKYOS_APPCLIENT_SESSION_TOKEN")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
+    if !has_token {
+        // 2. OOD 本机：内核服务身份 + 设备私钥。服务型 runtime 要求存在
+        //    `<APP_ID>_SESSION_TOKEN` 环境变量；留空表示“没有预置会话，用设备私钥登录”。
+        let token_key = buckyos_api::get_service_session_token_env_key(app_id.as_str());
+        if std::env::var_os(&token_key).is_none() {
+            std::env::set_var(&token_key, "");
+        }
+        match init_buckyos_api_runtime(app_id.as_str(), None, BuckyOSRuntimeType::KernelService)
+            .await
+        {
+            Ok(mut runtime) => match Box::pin(bootstrap_service_session(&mut runtime))
+                .await
+                .map_err(|e| e.to_string())
+            {
+                Ok(()) => {
+                    Box::pin(runtime.login()).await?;
+                    set_buckyos_api_runtime(runtime)?;
+                    return Ok(());
+                }
+                Err(e) => {
+                    log::info!(
+                        "xllm: device-key login unavailable ({e}); falling back to AppClient login"
+                    );
+                }
+            },
+            Err(e) => {
+                log::info!(
+                    "xllm: service-style runtime init failed ({e}); falling back to AppClient login"
+                );
+            }
+        }
+    }
+
+    // 1 / 3. AppClient。
+    let mut runtime =
+        init_buckyos_api_runtime(app_id.as_str(), None, BuckyOSRuntimeType::AppClient).await?;
+    Box::pin(bootstrap_appclient_session(&mut runtime)).await?;
+    Box::pin(runtime.login()).await?;
     set_buckyos_api_runtime(runtime)?;
+    Ok(())
+}
+
+/// OOD 本机的服务身份：用设备密钥签一份 `sub = iss = 设备名` 的登录断言，通过
+/// node gateway 上的 verify-hub 换取正式会话（system-config 只接受 verify-hub 会话或
+/// node-daemon 签发的引导断言）。
+async fn bootstrap_service_session(
+    runtime: &mut buckyos_api::BuckyOSRuntime,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !runtime.session_token.read().await.trim().is_empty() {
+        return Ok(());
+    }
+    runtime.load_device_private_key()?;
+    let (Some(key), Some(device)) = (
+        runtime.device_private_key.as_ref(),
+        runtime.device_config.as_ref(),
+    ) else {
+        return Err("device config or signing key missing".into());
+    };
+    let (jwt, _) = buckyos_api::generate_service_login_assertion(
+        device.name.as_str(),
+        runtime.app_id.as_str(),
+        device.name.as_str(),
+        key,
+    )?;
+    let target = runtime.get_auth_target()?;
+    let port = std::env::var("BUCKYOS_NODE_GATEWAY_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(3180);
+    let url = format!("http://127.0.0.1:{port}/kapi/verify-hub");
+    let krpc = ::kRPC::kRPC::new_with_timeout_secs(&url, None, 30);
+    let verify_hub = buckyos_api::VerifyHubClient::new(krpc);
+    let pair = verify_hub.login_by_jwt(jwt.as_str(), target).await?;
+    *runtime.session_token.write().await = pair.session_token;
+    *runtime.refresh_token.write().await = pair.refresh_token;
+    Ok(())
+}
+
+/// AppClient 且没有会话时：用本地私钥签登录断言，到 verify-hub 换取正式会话。
+async fn bootstrap_appclient_session(
+    runtime: &mut buckyos_api::BuckyOSRuntime,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !runtime.session_token.read().await.trim().is_empty() {
+        return Ok(());
+    }
+    let target = runtime.get_auth_target()?;
+    let jwt = if let (Some(key), Some(user_id)) =
+        (runtime.user_private_key.as_ref(), runtime.user_id.as_ref())
+    {
+        buckyos_api::generate_user_login_assertion(user_id, runtime.app_id.as_str(), key)?.0
+    } else {
+        if let Err(e) = runtime.load_device_private_key() {
+            log::info!("xllm: no user or device private key, login needs a session token: {e}");
+            return Ok(());
+        }
+        let (Some(key), Some(device)) = (
+            runtime.device_private_key.as_ref(),
+            runtime.device_config.as_ref(),
+        ) else {
+            return Ok(());
+        };
+        let Some(owner) = runtime.app_owner_id.as_deref() else {
+            return Ok(());
+        };
+        buckyos_api::generate_service_login_assertion(
+            owner,
+            runtime.app_id.as_str(),
+            device.name.as_str(),
+            key,
+        )?
+        .0
+    };
+    let verify_hub = runtime.get_verify_hub_client().await?;
+    let pair = verify_hub.login_by_jwt(jwt.as_str(), target).await?;
+    *runtime.session_token.write().await = pair.session_token;
+    *runtime.refresh_token.write().await = pair.refresh_token;
     Ok(())
 }
 
