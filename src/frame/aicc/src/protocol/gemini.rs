@@ -923,46 +923,9 @@ fn apply_interaction_parameters(
                 "resolved Gemini parameter `{name}` is not supported"
             )));
         }
-        let value = if name == "generation_config" {
-            normalize_generation_config(value)?
-        } else {
-            value.clone()
-        };
-        body.insert(name.clone(), value);
+        body.insert(name.clone(), value.clone());
     }
     Ok(())
-}
-
-fn normalize_generation_config(value: &Value) -> ProtocolResultValue<Value> {
-    let mut generation = value
-        .as_object()
-        .ok_or_else(|| {
-            ProtocolError::invalid_request("Gemini generation_config must be an object")
-        })?
-        .clone();
-    if let Some(budget) = generation.remove("thinking_budget") {
-        if !generation.contains_key("thinking_level") {
-            generation.insert(
-                "thinking_level".to_string(),
-                Value::String(gemini_thinking_level_from_budget(&budget)?),
-            );
-        }
-    }
-    Ok(Value::Object(generation))
-}
-
-fn gemini_thinking_level_from_budget(value: &Value) -> ProtocolResultValue<String> {
-    let budget = value.as_i64().ok_or_else(|| {
-        ProtocolError::invalid_request("Gemini thinking_budget must be an integer")
-    })?;
-    let level = if budget <= 1_024 {
-        "low"
-    } else if budget <= 8_192 {
-        "medium"
-    } else {
-        "high"
-    };
-    Ok(level.to_string())
 }
 
 fn validate_interaction_body(body: &Map<String, Value>) -> ProtocolResultValue<()> {
@@ -2665,6 +2628,7 @@ mod tests {
             vec![AiMessage::text(AiRole::User, "hello")],
         );
         request.temperature = Some(0.7);
+        request.top_p = Some(0.9);
         let input = CodecInput {
             canonical_request: AiccCall::ChatCompletionsCreate(request),
             resolved_parameters: BTreeMap::from([(
@@ -2685,7 +2649,7 @@ mod tests {
     }
 
     #[test]
-    fn interaction_lowers_gemini_25_thinking_budget() {
+    fn interaction_accepts_native_thinking_level() {
         let request = LlmChatInvokeRequest::new(
             "ignored@google",
             vec![AiMessage::text(AiRole::User, "think")],
@@ -2699,7 +2663,7 @@ mod tests {
                 ),
                 (
                     "generation_config".to_string(),
-                    json!({"thinking_budget": 24576}),
+                    json!({"thinking_level": "high"}),
                 ),
             ]),
         };
@@ -2713,11 +2677,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(value["generation_config"]["thinking_level"], "high");
-        assert!(value["generation_config"].get("thinking_budget").is_none());
     }
 
     #[test]
-    fn interaction_lowers_legacy_thinking_budget() {
+    fn interaction_rejects_thinking_budget_provider_options() {
         let request = LlmChatInvokeRequest::new(
             "ignored@google",
             vec![AiMessage::text(AiRole::User, "think")],
@@ -2732,7 +2695,7 @@ mod tests {
                 ),
             ]),
         };
-        let value = encode_interaction(
+        let error = encode_interaction(
             &CodecCall {
                 api_type: ApiType::Llm,
                 input: &input,
@@ -2740,13 +2703,7 @@ mod tests {
             },
             ApiType::Llm,
         )
-        .unwrap();
-        assert_eq!(value["generation_config"]["thinking_level"], "low");
-        assert!(value["generation_config"].get("thinking_budget").is_none());
-
-        let invalid =
-            json!({"model": "gemini-3.8-flash", "generation_config": {"thinking_budget": 400}});
-        let error = validate_interaction_body(invalid.as_object().unwrap()).unwrap_err();
+        .unwrap_err();
         assert_eq!(error.kind, ProtocolErrorKind::InvalidRequest);
     }
 
