@@ -58,7 +58,9 @@ tool_whitelist = [
   "create_worksession",
   "read",
   "exec_bash",
-  "llm_understand_media"
+  "llm_understand_media",
+  "make_exact_model",
+  "parse_exact_model"
 ]
 
 

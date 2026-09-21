@@ -964,6 +964,68 @@ fn deliver_completed(
     }
 }
 
+async fn load_task_error(
+    runtime: &buckyos_api::BuckyOSRuntime,
+    task_id: &str,
+) -> Option<TaskError> {
+    let client = match runtime.get_task_mgr_client().await {
+        Ok(client) => client,
+        Err(error) => {
+            log::warn!(
+                "aicc helper.llm_chat failed: load task error skipped; get task-manager client failed; task_id={task_id}; error={error}"
+            );
+            return None;
+        }
+    };
+
+    let task = match client.get_task(task_id).await {
+        Ok(task) => task,
+        Err(error) => {
+            log::warn!(
+                "aicc helper.llm_chat failed: get task failed; task_id={task_id}; error={error}"
+            );
+            return None;
+        }
+    };
+
+    if task.error.is_none() {
+        log::warn!(
+            "aicc helper.llm_chat failed: task has no error; task_id={task_id}; phase={:?}",
+            task.phase
+        );
+    }
+
+    task.error
+}
+
+fn format_aicc_failed_message(
+    task_id: &str,
+    event_ref: Option<&str>,
+    task_error: Option<&TaskError>,
+) -> String {
+    let mut message = format!(
+        "aicc helper.llm_chat failed: task_id={}, event_ref={}",
+        task_id,
+        event_ref.unwrap_or("")
+    );
+    if let Some(error) = task_error {
+        message.push_str(", error=");
+        message.push_str(&format_task_error(error));
+    }
+    message
+}
+
+fn format_task_error(error: &TaskError) -> String {
+    let mut message = format!("{}: {}", error.code, error.message);
+    if let Some(detail) = error.detail.as_ref() {
+        if let Ok(detail_json) = serde_json::to_string(detail) {
+            message.push_str(", detail=");
+            message.push_str(&detail_json);
+        }
+    }
+    message
+}
+
 fn aicc_response_format(force_json: bool, json_schema: Option<Value>) -> Option<LlmResponseFormat> {
     force_json.then(|| match json_schema {
         Some(schema) => {
@@ -1362,5 +1424,25 @@ mod tests {
         .unwrap();
         assert_eq!(o.attachments.len(), 3);
         assert!(matches!(&o.attachments[1], Attachment::File { path } if path.ends_with("b.txt")));
+    }
+
+    #[test]
+    fn aicc_failed_message_includes_task_error_detail() {
+        let error = TaskError {
+            code: "provider_error".to_string(),
+            message: "Gemini http_error: model unavailable".to_string(),
+            detail: Some(json!({
+                "provider_code": "404",
+                "message": "use models/gemini-3.1-pro-preview"
+            })),
+        };
+
+        let message = format_aicc_failed_message("t-1", Some("/task_mgr/t-1"), Some(&error));
+
+        assert!(message.contains("task_id=t-1"));
+        assert!(message.contains("provider_error"));
+        assert!(message.contains("Gemini http_error: model unavailable"));
+        assert!(message.contains("gemini-3.1-pro-preview"));
+        assert!(message.contains("\"provider_code\":\"404\""));
     }
 }
