@@ -212,7 +212,7 @@ mod canonical_contract_tests {
                 },
                 AiContent::ProviderState {
                     source: ProviderStateCoordinate {
-                        normalized_base_url: "https://api.openai.com/v1".to_string(),
+                        provider_profile_id: "openai".to_string(),
                         adapter_type: "openai-responses".to_string(),
                         origin_provider: "openai".to_string(),
                         origin_model: "gpt-test".to_string(),
@@ -223,6 +223,10 @@ mod canonical_contract_tests {
             ],
         );
         let value = serde_json::to_value(&message).unwrap();
+        assert_eq!(
+            value["content"][2]["source"]["provider_profile_id"],
+            "openai"
+        );
         assert_eq!(serde_json::from_value::<AiMessage>(value).unwrap(), message);
 
         let resource = named_object();
@@ -2140,7 +2144,7 @@ pub enum AiContent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderStateCoordinate {
-    pub normalized_base_url: String,
+    pub provider_profile_id: String,
     pub adapter_type: String,
     pub origin_provider: String,
     pub origin_model: String,
@@ -2149,7 +2153,7 @@ pub struct ProviderStateCoordinate {
 impl ProviderStateCoordinate {
     pub fn unbound() -> Self {
         Self {
-            normalized_base_url: String::new(),
+            provider_profile_id: String::new(),
             adapter_type: String::new(),
             origin_provider: String::new(),
             origin_model: String::new(),
@@ -2157,7 +2161,7 @@ impl ProviderStateCoordinate {
     }
 
     pub fn is_bound(&self) -> bool {
-        !self.normalized_base_url.is_empty()
+        !self.provider_profile_id.is_empty()
             && !self.adapter_type.is_empty()
             && !self.origin_provider.is_empty()
             && !self.origin_model.is_empty()

@@ -189,8 +189,8 @@ AICC 应尽量把不同 AI 服务来源的结果整理成一致格式，使调�
 
 跨服务来源切换时，历史消息中的 Provider 原生状态必须按三档处理：
 
-1. 状态来源和转换目标都使用 `<normalized_base_url, adapter_type, origin_provider, origin_model>`；Provider Instance 与 API Key 不进入坐标。
-2. 来源四元组与目标完全一致时才允许按目标 Adapter 原样还原；跨实例、原厂或模型均必须执行到目标结构的转换。
+1. 状态来源和转换目标都使用 `<provider_profile_id, adapter_type, origin_provider, origin_model>`；Provider Instance、Base URL 与 API Key 不进入坐标。即使原 Provider Instance 已删除，仍可根据稳定的 `provider_profile_id` 判定来源 Provider。
+2. 来源四元组与目标完全一致时才允许按目标 Adapter 原样还原；跨 Provider Profile、Adapter、原厂或模型均必须执行到目标结构的转换。同一 Profile 下的不同 Provider Instance 不触发转换。
 3. 通用转换只能提取公开文本、摘要、拒绝说明或已规范化内容；不得读取或暴露加密状态、密钥、原始私有 payload。无法安全转换的 opaque 状态必须跳过，不得伪造目标 Provider 私有状态。
 4. `origin_provider` 和 `origin_model` 在库存刷新阶段完成映射。ProviderState 使用阶段不得再执行原厂推断或 unresolved/ambiguity 分支。
 

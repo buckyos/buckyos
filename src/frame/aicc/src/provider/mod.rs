@@ -544,9 +544,7 @@ impl ExecutableProviderInstance {
         let context = CodecContext {
             base_url: self.config.base_url.clone(),
             state_coordinate: ProviderStateCoordinate {
-                normalized_base_url: crate::protocol::normalize_provider_base_url(
-                    &self.config.base_url,
-                )?,
+                provider_profile_id: self.profile.provider_profile_id.clone(),
                 adapter_type: self.config.protocol_adapter_id.clone(),
                 origin_provider: self.profile.provider_profile_id.clone(),
                 origin_model: "artifact".to_owned(),

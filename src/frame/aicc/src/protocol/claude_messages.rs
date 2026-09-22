@@ -1470,7 +1470,7 @@ mod tests {
         CodecContext {
             base_url: "https://api.anthropic.com/v1".to_string(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
-                normalized_base_url: "https://api.anthropic.com/v1".into(),
+                provider_profile_id: "claude".into(),
                 adapter_type: "claude-messages".into(),
                 origin_provider: "anthropic".into(),
                 origin_model: "test-model".into(),

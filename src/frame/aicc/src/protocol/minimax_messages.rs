@@ -328,7 +328,7 @@ mod tests {
         CodecContext {
             base_url: "https://api.minimax.io/anthropic".to_owned(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
-                normalized_base_url: "https://api.minimax.io/anthropic".into(),
+                provider_profile_id: "minimax".into(),
                 adapter_type: "minimax-messages".into(),
                 origin_provider: "minimax".into(),
                 origin_model: "test-model".into(),

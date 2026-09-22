@@ -101,7 +101,7 @@ mod tests {
     #[test]
     fn binds_and_compares_the_complete_provider_state_coordinate() {
         let source = ProviderStateCoordinate {
-            normalized_base_url: "https://gateway.example/v1".to_string(),
+            provider_profile_id: "anthropic".to_string(),
             adapter_type: "openai-responses".to_string(),
             origin_provider: "anthropic".to_string(),
             origin_model: "claude-sonnet".to_string(),
@@ -121,5 +121,9 @@ mod tests {
         let mut different_adapter = source.clone();
         different_adapter.adapter_type = "claude-messages".to_string();
         assert!(!provider_state_is_native(&source, &different_adapter));
+
+        let mut different_profile = source.clone();
+        different_profile.provider_profile_id = "openrouter".to_string();
+        assert!(!provider_state_is_native(&source, &different_profile));
     }
 }

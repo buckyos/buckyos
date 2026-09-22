@@ -678,7 +678,7 @@ mod tests {
         CodecContext {
             base_url: "https://example.test/v1".to_owned(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
-                normalized_base_url: "https://example.test/v1".into(),
+                provider_profile_id: "test".into(),
                 adapter_type: "openai-chat-completions".into(),
                 origin_provider: "test".into(),
                 origin_model: "test-model".into(),

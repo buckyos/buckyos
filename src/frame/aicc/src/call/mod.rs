@@ -7,8 +7,8 @@ use crate::error::{CallLoweringError, CatalogResolveError, ModelRegistryError};
 use crate::matching::MatchContext;
 use crate::model::ExactModelName;
 use crate::protocol::{
-    normalize_provider_base_url, CodecContext, CodecInput, CodecLimits, CodecRegistry,
-    CredentialAudit, ExecutionMode, ResolvedCredential,
+    CodecContext, CodecInput, CodecLimits, CodecRegistry, CredentialAudit, ExecutionMode,
+    ResolvedCredential,
 };
 use crate::resource::ResourceAccessContext;
 use crate::routing::{RouteDecision, SelectedRoute};
@@ -469,12 +469,10 @@ impl<'a> CallResolver<'a> {
         let credential = target.credential.audit().clone();
         let credential_reference = target.credential_reference;
         let credential_header_name = target.credential_header_name;
-        let normalized_base_url = normalize_provider_base_url(&target.base_url)
-            .map_err(|error| CallLoweringError::InvalidCanonicalRequest(error.to_string()))?;
         let context = CodecContext {
             base_url: target.base_url,
             state_coordinate: buckyos_api::ProviderStateCoordinate {
-                normalized_base_url,
+                provider_profile_id: decision.selected.provider_profile_id.clone(),
                 adapter_type: decision.selected.protocol_adapter_id.clone(),
                 origin_provider: decision.selected.model_driver_id.clone(),
                 origin_model: decision.selected.origin_model_id.clone(),
@@ -1540,7 +1538,7 @@ mod tests {
         assert_eq!(
             lowered.context.state_coordinate,
             buckyos_api::ProviderStateCoordinate {
-                normalized_base_url: "https://api.openai.test/v1".to_string(),
+                provider_profile_id: "openai".to_string(),
                 adapter_type: "openai-responses".to_string(),
                 origin_provider: "openai".to_string(),
                 origin_model: "gpt-5.2".to_string(),

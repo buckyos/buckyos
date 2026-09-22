@@ -1448,7 +1448,7 @@ mod tests {
                     AiContent::text(text),
                     AiContent::ProviderState {
                         source: buckyos_api::ProviderStateCoordinate {
-                            normalized_base_url: "https://openrouter.ai/api/v1".to_string(),
+                            provider_profile_id: "openrouter".to_string(),
                             adapter_type: "openrouter-chat-completions".to_string(),
                             origin_provider: "openai".to_string(),
                             origin_model: "test-model".to_string(),

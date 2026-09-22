@@ -405,7 +405,7 @@ T1.5 必须增加同一对话连续调用中的跨模型切换矩阵，覆盖：
   x <target provider, target model>
 ```
 
-矩阵按 ProviderState 四元组 `<normalized_base_url, adapter_type, origin_provider, origin_model>` 归类；同协议且状态结构无差异的物理模型可合并为代表模型，但合并依据必须写入 manifest。每个矩阵 cell 至少构造两轮同一 session 的调用：第一轮产生可回放历史，第二轮强制切换到 target 单元并验证请求可被 target Mock 接受。只有四元组完全一致的状态可原样回放，其余状态必须按目标结构转换或安全跳过；同一四元组的 cell 也必须保留。
+矩阵按 ProviderState 四元组 `<provider_profile_id, adapter_type, origin_provider, origin_model>` 归类；同协议且状态结构无差异的物理模型可合并为代表模型，但合并依据必须写入 manifest。每个矩阵 cell 至少构造两轮同一 session 的调用：第一轮产生可回放历史，第二轮强制切换到 target 单元并验证请求可被 target Mock 接受。只有四元组完全一致的状态可原样回放，其余状态必须按目标结构转换或安全跳过；同一四元组的 cell 也必须保留。
 
 T1.5 runner 必须对 OpenAI、OpenRouter、Claude 和 Gemini 的 LLM 历史回放单元派生 source/target 四元组 switch 矩阵，并记录转换前后的完整坐标；不能只记录 Provider namespace。
 

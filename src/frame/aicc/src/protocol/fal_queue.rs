@@ -704,7 +704,7 @@ mod tests {
         CodecContext {
             base_url: "https://queue.fal.run".to_string(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
-                normalized_base_url: "https://queue.fal.run".into(),
+                provider_profile_id: "fal".into(),
                 adapter_type: "fal-queue".into(),
                 origin_provider: "fal".into(),
                 origin_model: "test-model".into(),

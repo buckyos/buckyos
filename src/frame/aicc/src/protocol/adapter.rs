@@ -1462,7 +1462,7 @@ mod tests {
         CodecContext {
             base_url: base_url.to_string(),
             state_coordinate: ProviderStateCoordinate {
-                normalized_base_url: base_url.trim_end_matches('/').to_string(),
+                provider_profile_id: "test".into(),
                 adapter_type: "test".into(),
                 origin_provider: "test".into(),
                 origin_model: "test-model".into(),

@@ -580,10 +580,7 @@ impl RuntimeProviderExecutionPort {
             CodecContext {
                 base_url: resume.base_url.clone(),
                 state_coordinate: buckyos_api::ProviderStateCoordinate {
-                    normalized_base_url: crate::protocol::normalize_provider_base_url(
-                        &resume.base_url,
-                    )
-                    .map_err(NativeTaskResumeError::Protocol)?,
+                    provider_profile_id: provider.profile.provider_profile_id.clone(),
                     adapter_type: binding.protocol_adapter_id.clone(),
                     origin_provider: model.model_driver_id.clone(),
                     origin_model: model.origin_model_id.clone(),

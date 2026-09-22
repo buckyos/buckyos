@@ -2703,7 +2703,7 @@ mod tests {
         CodecContext {
             base_url: "https://api.openai.com/v1".to_string(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
-                normalized_base_url: "https://api.openai.com/v1".into(),
+                provider_profile_id: "openai".into(),
                 adapter_type: OPENAI_RESPONSES_ADAPTER_ID.into(),
                 origin_provider: "openai".into(),
                 origin_model: "test-model".into(),

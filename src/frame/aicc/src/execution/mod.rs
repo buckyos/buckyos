@@ -2061,7 +2061,7 @@ mod tests {
             context: CodecContext {
                 base_url: "https://fake.invalid".into(),
                 state_coordinate: buckyos_api::ProviderStateCoordinate {
-                    normalized_base_url: "https://fake.invalid".into(),
+                    provider_profile_id: "fake".into(),
                     adapter_type: "fake-adapter".into(),
                     origin_provider: "fake".into(),
                     origin_model: "model".into(),

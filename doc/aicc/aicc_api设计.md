@@ -568,9 +568,10 @@ pub enum AiContent {
 ```
 
 `ProviderState.source` 是状态来源坐标，固定为
-`<normalized_base_url, adapter_type, origin_provider, origin_model>`。它不包含
-Provider Instance 或 API Key：多个实例只要规范化 URL、Adapter、原厂和原始模型均相同，
-就处于同一状态坐标；同一 URL 暴露多个兼容协议时由 `adapter_type` 区分。
+`<provider_profile_id, adapter_type, origin_provider, origin_model>`。它不包含
+Provider Instance、Base URL 或 API Key：多个实例只要 Provider Profile、Adapter、原厂和原始模型均相同，
+就处于同一状态坐标；同一 Profile 暴露多个兼容协议时由 `adapter_type` 区分。Profile ID
+会随 ProviderState 持久化，因此原 Provider Instance 删除后仍可判断跨 Provider 转换。
 `provider` 仅标识 opaque payload 的 wire 格式 namespace，原生 item 类型继续由
 `value` 自描述。
 

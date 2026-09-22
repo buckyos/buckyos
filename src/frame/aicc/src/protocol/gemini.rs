@@ -2416,7 +2416,7 @@ mod tests {
         CodecContext {
             base_url: "https://generativelanguage.googleapis.com".to_string(),
             state_coordinate: buckyos_api::ProviderStateCoordinate {
-                normalized_base_url: "https://generativelanguage.googleapis.com".into(),
+                provider_profile_id: "gemini".into(),
                 adapter_type: "gemini-interactions".into(),
                 origin_provider: "gemini".into(),
                 origin_model: "test-model".into(),
