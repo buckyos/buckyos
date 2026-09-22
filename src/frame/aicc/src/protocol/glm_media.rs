@@ -132,6 +132,7 @@ impl NativeTaskCodec for GlmVideoCodec {
                     result_ref: (state == NativeTaskState::Succeeded)
                         .then(|| required_string(&value, "id"))
                         .transpose()?,
+                    result_artifacts: Default::default(),
                 })
             }
             NativeTaskOperation::Result => decode_result(&value),

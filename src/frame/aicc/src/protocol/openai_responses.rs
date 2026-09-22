@@ -5,7 +5,7 @@ use super::{
     NativeTaskHandle, NativeTaskInput, NativeTaskOperation, NativeTaskOutput, NativeTaskState,
     OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolErrorKind,
     ProtocolEvent, ProtocolExecution, ProtocolOutput, ProtocolResultValue, ProtocolStream,
-    SseConfig, SseFrame, SseFramer, SseStreamEnd, StreamingHttpResponse,
+    ProviderArtifactRef, SseConfig, SseFrame, SseFramer, SseStreamEnd, StreamingHttpResponse,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -23,7 +23,7 @@ use reqwest::{Method, StatusCode, Url};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub(crate) const OPENAI_RESPONSES_ADAPTER_ID: &str = "openai-responses";
 pub(crate) const OPENAI_RESPONSES_OPERATION_ID: &str = "responses.create";
@@ -145,6 +145,11 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
                 [ExecutionMode::NativeTask],
                 std::iter::empty::<&str>(),
             ),
+            binding(
+                ApiType::VideoToVideo,
+                [ExecutionMode::NativeTask],
+                std::iter::empty::<&str>(),
+            ),
         ],
         true,
     );
@@ -221,7 +226,11 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
             videos.clone(),
             ApiType::VideoTextToVideo,
         )),
-        Arc::new(OpenAiVideoCodec::new(videos, ApiType::VideoImageToVideo)),
+        Arc::new(OpenAiVideoCodec::new(
+            videos.clone(),
+            ApiType::VideoImageToVideo,
+        )),
+        Arc::new(OpenAiVideoCodec::new(videos, ApiType::VideoToVideo)),
     ];
     (
         descriptor,
@@ -1596,6 +1605,7 @@ fn openai_http_error(
         format!("OpenAI {label}: {message}"),
     )
     .with_provider_code(provider_code)
+    .with_http_status(status.as_u16())
     .with_request_id(Some(request_id.to_string()))
     .with_retry_after(retry_after)
 }
@@ -2493,67 +2503,77 @@ fn encode_video_submit(
     let codec_input = input.codec_input.ok_or_else(|| {
         ProtocolError::invalid_request("OpenAI video submit requires a canonical request")
     })?;
-    let (prompt, duration_seconds, resolution, image) =
-        match (&codec_input.canonical_request, api_type) {
-            (AiccCall::VideoTextToVideo(request), ApiType::VideoTextToVideo) => {
-                if request.aspect_ratio.is_some()
-                    || request.generate_audio == Some(true)
-                    || request.seed.is_some()
-                    || request
-                        .output
-                        .as_ref()
-                        .is_some_and(|output| output.fps.is_some())
-                {
-                    return Err(ProtocolError::new(
-                        ProtocolErrorKind::UnsupportedOperation,
-                        "OpenAI video generation received an unsupported hard parameter",
-                    ));
-                }
-                (
-                    request.prompt.clone(),
-                    request.duration_seconds,
-                    request.resolution.clone(),
-                    None,
-                )
-            }
-            (AiccCall::VideoImageToVideo(request), ApiType::VideoImageToVideo) => {
-                if request.aspect_ratio.is_some() {
-                    return Err(ProtocolError::new(
-                        ProtocolErrorKind::UnsupportedOperation,
-                        "OpenAI image-to-video requires a resolved size instead of aspect_ratio",
-                    ));
-                }
-                (
-                    request.prompt.clone(),
-                    request.duration_seconds,
-                    request.resolution.clone(),
-                    Some(&request.image),
-                )
-            }
-            _ => {
-                return Err(ProtocolError::invalid_request(
-                    "OpenAI video codec received the wrong canonical request",
+    if let (AiccCall::VideoToVideo(request), ApiType::VideoToVideo) =
+        (&codec_input.canonical_request, api_type)
+    {
+        if request.preserve_motion.is_some() || request.time_range.is_some() {
+            return Err(ProtocolError::new(
+                ProtocolErrorKind::UnsupportedOperation,
+                "OpenAI video editing does not support preserve_motion or time_range",
+            ));
+        }
+        let resource = input.context.materialized_resource(&request.video)?;
+        if let Some(artifact_id) = &resource.provider_artifact_id {
+            let mut http_request = HttpRequest::new(
+                Method::POST,
+                endpoint(&input.context.base_url, "videos/edits")?,
+            );
+            http_request.body = HttpBody::Json(json!({
+                "video": {"id": artifact_id},
+                "prompt": request.prompt,
+            }));
+            return finish_request(&mut http_request, input.context);
+        }
+        let mut body = MultipartBody::new(16, input.context.limits.max_request_bytes)?;
+        body.push(MultipartPart::file(
+            "video",
+            resource.bytes.clone(),
+            resource
+                .file_name
+                .clone()
+                .unwrap_or_else(|| "source-video.mp4".to_string()),
+            resource.mime.clone(),
+        ))?;
+        body.push(MultipartPart::bytes(
+            "model",
+            required_parameter(input.resolved_parameters, "provider_model_id")?,
+        ))?;
+        body.push(MultipartPart::bytes("prompt", request.prompt.clone()))?;
+        return multipart_request_context(input.context, Method::POST, "videos/edits", body);
+    }
+    let (prompt, image) = match (&codec_input.canonical_request, api_type) {
+        (AiccCall::VideoTextToVideo(request), ApiType::VideoTextToVideo) => {
+            if request.generate_audio == Some(true)
+                || request.seed.is_some()
+                || request
+                    .output
+                    .as_ref()
+                    .is_some_and(|output| output.fps.is_some())
+            {
+                return Err(ProtocolError::new(
+                    ProtocolErrorKind::UnsupportedOperation,
+                    "OpenAI video generation received an unsupported hard parameter",
                 ));
             }
-        };
+            (request.prompt.clone(), None)
+        }
+        (AiccCall::VideoImageToVideo(request), ApiType::VideoImageToVideo) => {
+            (request.prompt.clone(), Some(&request.image))
+        }
+        _ => {
+            return Err(ProtocolError::invalid_request(
+                "OpenAI video codec received the wrong canonical request",
+            ));
+        }
+    };
     let model = required_parameter(input.resolved_parameters, "provider_model_id")?;
     let mut body = MultipartBody::new(16, input.context.limits.max_request_bytes)?;
     body.push(MultipartPart::bytes("model", model))?;
     body.push(MultipartPart::bytes("prompt", prompt))?;
-    if let Some(seconds) = input
-        .resolved_parameters
-        .get("seconds")
-        .map(value_string)
-        .or_else(|| duration_seconds.map(format_duration_seconds))
-    {
+    if let Some(seconds) = input.resolved_parameters.get("seconds").map(value_string) {
         body.push(MultipartPart::bytes("seconds", seconds))?;
     }
-    if let Some(size) = input
-        .resolved_parameters
-        .get("size")
-        .map(value_string)
-        .or(resolution)
-    {
+    if let Some(size) = input.resolved_parameters.get("size").map(value_string) {
         body.push(MultipartPart::bytes("size", size))?;
     }
     if let Some(image) = image {
@@ -2568,14 +2588,6 @@ fn encode_video_submit(
         ))?;
     }
     multipart_request_context(input.context, Method::POST, "videos", body)
-}
-
-fn format_duration_seconds(value: f64) -> String {
-    if value.fract() == 0.0 {
-        format!("{value:.0}")
-    } else {
-        value.to_string()
-    }
 }
 
 fn native_request(
@@ -2618,16 +2630,93 @@ fn decode_video_submit(response: HttpResponse) -> ProtocolResultValue<NativeTask
     handle.state = decode_video_state(&value)?;
     handle.poll_after = response.retry_after.or(Some(Duration::from_secs(1)));
     handle.cancel_supported = true;
+    handle.result_artifacts.insert(
+        "video".to_string(),
+        ProviderArtifactRef::new(handle.remote_task_id.clone(), video_expires_at_ms(&value)?),
+    );
     Ok(NativeTaskOutput::Submitted(handle))
 }
 
 fn decode_video_status(response: HttpResponse) -> ProtocolResultValue<NativeTaskOutput> {
     let value: Value = response.json(DEFAULT_MAX_RESPONSE_BYTES)?;
+    let state = decode_video_state(&value)?;
+    if state == NativeTaskState::Failed {
+        return Err(openai_video_job_error(&value));
+    }
+    let artifact_id = required_string(&value, "id", "OpenAI video job")?;
     Ok(NativeTaskOutput::Status {
-        state: decode_video_state(&value)?,
+        state,
         retry_after: response.retry_after,
         result_ref: None,
+        result_artifacts: BTreeMap::from([(
+            "video".to_string(),
+            ProviderArtifactRef::new(artifact_id, video_expires_at_ms(&value)?),
+        )]),
     })
+}
+
+fn openai_video_job_error(value: &Value) -> ProtocolError {
+    let error = value.get("error").filter(|value| !value.is_null());
+    let provider_code = error
+        .and_then(|error| error.get("code"))
+        .and_then(|value| match value {
+            Value::String(value) => Some(value.clone()),
+            Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        });
+    let message = error
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or("OpenAI video job failed");
+    let label = provider_code.as_deref().unwrap_or("video_job_failed");
+    let misalignment = error
+        .and_then(|error| error.get("misalignment"))
+        .filter(|misalignment| !misalignment.is_null())
+        .map(|misalignment| match misalignment {
+            Value::String(misalignment) => misalignment.clone(),
+            misalignment => misalignment.to_string(),
+        })
+        .filter(|misalignment| !misalignment.trim().is_empty());
+    let message = match misalignment {
+        Some(misalignment) => format!("OpenAI {label}: {message} (misalignment: {misalignment})"),
+        None => format!("OpenAI {label}: {message}"),
+    };
+    ProtocolError::new(ProtocolErrorKind::ProviderRejected, message)
+        .with_provider_code(provider_code)
+}
+
+fn video_expires_at_ms(value: &Value) -> ProtocolResultValue<Option<i64>> {
+    if let Some(expires_at) = value.get("expires_at").filter(|value| !value.is_null()) {
+        let seconds = expires_at.as_i64().ok_or_else(|| {
+            ProtocolError::invalid_response("OpenAI video expires_at must be Unix seconds")
+        })?;
+        return unix_seconds_to_millis(seconds).map(Some);
+    }
+    let created_at = value
+        .get("created_at")
+        .and_then(Value::as_i64)
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64
+        });
+    let expires_at = created_at.checked_add(48 * 60 * 60).ok_or_else(|| {
+        ProtocolError::invalid_response("OpenAI video fallback expiry is out of range")
+    })?;
+    unix_seconds_to_millis(expires_at).map(Some)
+}
+
+fn unix_seconds_to_millis(seconds: i64) -> ProtocolResultValue<i64> {
+    if seconds < 0 {
+        return Err(ProtocolError::invalid_response(
+            "OpenAI video timestamp must not be negative",
+        ));
+    }
+    seconds
+        .checked_mul(1_000)
+        .ok_or_else(|| ProtocolError::invalid_response("OpenAI video timestamp is out of range"))
 }
 
 fn decode_video_state(value: &Value) -> ProtocolResultValue<NativeTaskState> {
@@ -2692,7 +2781,8 @@ mod tests {
     };
     use buckyos_api::{
         AiOutputOptions, AiToolSpec, ComputerEnvironment, ComputerUseRequest, EmbeddingTextRequest,
-        MaskSemantics, VideoImageToVideoRequest, VideoTextToVideoRequest, Viewport, VoiceSpec,
+        MaskSemantics, VideoImageToVideoRequest, VideoTextToVideoRequest, VideoToVideoRequest,
+        Viewport, VoiceSpec,
     };
     use bytes::Bytes;
     use futures_util::{stream, StreamExt};
@@ -3687,11 +3777,95 @@ mod tests {
             .iter()
             .any(|part| part.name == "input_reference" && part.bytes == b"image"));
 
+        let source_video =
+            PublicResourceRef::base64("video/mp4".to_string(), STANDARD.encode(b"source-video"));
+        let mut video_context = context_with_resource(
+            &source_video,
+            b"source-video",
+            "video/mp4",
+            Some("source.mp4"),
+        );
+        video_context
+            .resources
+            .get_mut(crate::resource::ResourceKey::from_ref(&source_video).as_str())
+            .unwrap()
+            .provider_artifact_id = Some("video_source".to_string());
+        let video_codec_input = input(AiccCall::VideoToVideo(VideoToVideoRequest::new(
+            "ignored@instance",
+            source_video.clone(),
+            "change the color palette".to_string(),
+        )));
+        let video_parameters =
+            BTreeMap::from([("provider_model_id".to_string(), json!("sora-test"))]);
+        let video_submit = NativeTaskInput {
+            operation: NativeTaskOperation::Submit,
+            remote_task_id: None,
+            codec_input: Some(&video_codec_input),
+            resolved_parameters: &video_parameters,
+            context: &video_context,
+        };
+        let request = registry
+            .encode_native(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_OPERATION_ID,
+                ApiType::VideoToVideo,
+                &video_submit,
+            )
+            .unwrap();
+        assert_eq!(request.url, "https://api.openai.com/v1/videos/edits");
+        let GoldenBody::Json(body) = ProtocolContractHarness::default()
+            .request(&request)
+            .unwrap()
+            .body
+        else {
+            panic!("expected video edit JSON")
+        };
+        assert_eq!(body["video"]["id"], "video_source");
+
+        let mut upload_context = video_context.clone();
+        upload_context
+            .resources
+            .get_mut(crate::resource::ResourceKey::from_ref(&source_video).as_str())
+            .unwrap()
+            .provider_artifact_id = None;
+        let video_upload_submit = NativeTaskInput {
+            operation: NativeTaskOperation::Submit,
+            remote_task_id: None,
+            codec_input: Some(&video_codec_input),
+            resolved_parameters: &video_parameters,
+            context: &upload_context,
+        };
+        let request = registry
+            .encode_native(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_OPERATION_ID,
+                ApiType::VideoToVideo,
+                &video_upload_submit,
+            )
+            .unwrap();
+        let GoldenBody::Multipart(parts) = ProtocolContractHarness::default()
+            .request(&request)
+            .unwrap()
+            .body
+        else {
+            panic!("expected uploaded video edit multipart")
+        };
+        assert!(parts.iter().any(|part| {
+            part.name == "video"
+                && part.bytes == b"source-video"
+                && part.file_name.as_deref() == Some("source.mp4")
+        }));
+        assert!(parts
+            .iter()
+            .any(|part| part.name == "model" && part.bytes == b"sora-test"));
+
         let response = ProtocolContractHarness::default()
             .response(
                 StatusCode::OK,
                 &[("retry-after", "1")],
-                Bytes::from_static(br#"{"id":"video_1","status":"queued"}"#),
+                Bytes::from_static(
+                    br#"{"id":"video_1","status":"queued","expires_at":1712697600}"#,
+                ),
                 "request-video",
                 UNIX_EPOCH,
             )
@@ -3710,8 +3884,85 @@ mod tests {
             panic!("expected submitted")
         };
         assert_eq!(handle.remote_task_id, "video_1");
+        assert_eq!(
+            handle
+                .result_artifacts
+                .get("video")
+                .map(|artifact| artifact.id.as_str()),
+            Some("video_1")
+        );
         assert_eq!(handle.state, NativeTaskState::Queued);
         assert!(handle.cancel_supported);
+        assert_eq!(
+            handle.result_artifacts["video"].expires_at_ms,
+            Some(1_712_697_600_000)
+        );
+
+        let status = ProtocolContractHarness::default()
+            .response(
+                StatusCode::OK,
+                &[],
+                Bytes::from_static(
+                    br#"{"id":"video_1","status":"completed","expires_at":1712697700}"#,
+                ),
+                "request-status",
+                UNIX_EPOCH,
+            )
+            .unwrap();
+        let NativeTaskOutput::Status {
+            result_artifacts, ..
+        } = registry
+            .decode_native(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_OPERATION_ID,
+                ApiType::VideoTextToVideo,
+                NativeTaskOperation::Status,
+                status,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected status")
+        };
+        assert_eq!(
+            result_artifacts["video"].expires_at_ms,
+            Some(1_712_697_700_000)
+        );
+        let failed_status = ProtocolContractHarness::default()
+            .response(
+                StatusCode::OK,
+                &[],
+                Bytes::from_static(
+                    br#"{"id":"video_2","status":"failed","error":{"code":"safety_violation","message":"The prompt was rejected","misalignment":"policy"}}"#,
+                ),
+                "request-failed-status",
+                UNIX_EPOCH,
+            )
+            .unwrap();
+        let error = registry
+            .decode_native(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_VIDEOS_OPERATION_ID,
+                ApiType::VideoTextToVideo,
+                NativeTaskOperation::Status,
+                failed_status,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, ProtocolErrorKind::ProviderRejected);
+        assert_eq!(error.provider_code.as_deref(), Some("safety_violation"));
+        assert_eq!(
+            error.message,
+            "OpenAI safety_violation: The prompt was rejected (misalignment: policy)"
+        );
+        assert_eq!(
+            video_expires_at_ms(&json!({
+                "created_at": 1_712_697_600_i64,
+                "expires_at": null
+            }))
+            .unwrap(),
+            Some(1_712_870_400_000)
+        );
 
         for (operation, method, suffix) in [
             (NativeTaskOperation::Status, Method::GET, ""),

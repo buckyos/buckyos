@@ -306,6 +306,7 @@ pub(crate) struct ProtocolError {
     pub kind: ProtocolErrorKind,
     pub message: String,
     pub provider_code: Option<String>,
+    pub http_status: Option<u16>,
     pub request_id: Option<String>,
     pub retry_after: Option<Duration>,
 }
@@ -485,6 +486,7 @@ impl ProtocolError {
             kind,
             message: message.into(),
             provider_code: None,
+            http_status: None,
             request_id: None,
             retry_after: None,
         }
@@ -497,6 +499,11 @@ impl ProtocolError {
 
     pub(crate) fn with_provider_code(mut self, provider_code: Option<String>) -> Self {
         self.provider_code = provider_code;
+        self
+    }
+
+    pub(crate) fn with_http_status(mut self, http_status: u16) -> Self {
+        self.http_status = Some(http_status);
         self
     }
 

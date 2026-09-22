@@ -257,6 +257,7 @@ pub(crate) struct MaterializedResource {
     pub bytes: Bytes,
     pub mime: String,
     pub file_name: Option<String>,
+    pub provider_artifact_id: Option<String>,
 }
 
 impl std::fmt::Debug for MaterializedResource {
@@ -266,6 +267,10 @@ impl std::fmt::Debug for MaterializedResource {
             .field("byte_len", &self.bytes.len())
             .field("mime", &self.mime)
             .field("file_name", &self.file_name)
+            .field(
+                "has_provider_artifact_id",
+                &self.provider_artifact_id.is_some(),
+            )
             .finish()
     }
 }
@@ -286,7 +291,13 @@ impl MaterializedResource {
             bytes: bytes.into(),
             mime,
             file_name,
+            provider_artifact_id: None,
         })
+    }
+
+    pub(crate) fn with_provider_artifact_id(mut self, artifact_id: Option<String>) -> Self {
+        self.provider_artifact_id = artifact_id;
+        self
     }
 }
 
@@ -586,6 +597,7 @@ pub(crate) enum NativeTaskOutput {
         state: NativeTaskState,
         retry_after: Option<Duration>,
         result_ref: Option<String>,
+        result_artifacts: BTreeMap<String, super::ProviderArtifactRef>,
     },
     Result(ProtocolOutput),
     Cancelled {
@@ -1421,6 +1433,7 @@ mod tests {
                         state,
                         retry_after,
                         result_ref: None,
+                        result_artifacts: BTreeMap::new(),
                     })
                 }
                 NativeTaskOperation::Result => Ok(NativeTaskOutput::Result(ProtocolOutput::new(

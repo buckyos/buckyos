@@ -53,7 +53,7 @@ canonical `ApiType` 序列化值以协议 schema 为准：LLM chat 为 `llm`，c
 | `audio.music` | prompt、duration、instrumental、lyrics、seed、output | async task、audio artifact、structure | duration 越界、异步任务失败 |
 | `audio.enhance` | audio、task、strength、return_stems | enhanced audio artifact、stems | task 不支持 |
 | `video.txt2video` | prompt、duration、aspect_ratio、resolution、generate_audio、seed | async task、video artifact | operation timeout、Provider started 后不跨 Provider 重试 |
-| `video.img2video` | image、prompt、duration、resolution | async task、video artifact | image invalid |
+| `video.img2video` | image、prompt、duration、aspect_ratio、resolution | async task、video artifact | image invalid |
 | `video.video2video` | video、prompt、preserve_motion、time_range | async task、video artifact | time_range 越界 |
 | `video.extend` | video、prompt、continuation_handle、duration | async task、video artifact | continuation_handle 缺失或不匹配 |
 | `video.upscale` | video、target_resolution、denoise、sharpen、output | async task、video artifact | target_resolution 不支持 |

@@ -723,11 +723,13 @@ mod tests {
                 ),
                 (
                     "gemini".to_owned(),
-                    "26:b6c5f36a7e54bb59c6304a75c83f08a682022b16aa999809ca6b1292b8fa404a".to_owned()
+                    "26:e3b77210882747c4c478ab6bd48bc4bdb990498a9a04c70e198afe4cbdb020d2"
+                        .to_owned()
                 ),
                 (
                     "glm".to_owned(),
-                    "46:21834a76909a74ad83bc30e84c408d6bba0dc5ba2e8cbb7019eee0e4f595078e".to_owned()
+                    "46:21834a76909a74ad83bc30e84c408d6bba0dc5ba2e8cbb7019eee0e4f595078e"
+                        .to_owned()
                 ),
                 (
                     "kimi".to_owned(),
@@ -735,24 +737,20 @@ mod tests {
                 ),
                 (
                     "minimax".to_owned(),
-                    "19:889ef13b059216f0855dbc1fcb5571e10433c5dd21007096c6c3daad74a27340".to_owned()
+                    "19:889ef13b059216f0855dbc1fcb5571e10433c5dd21007096c6c3daad74a27340"
+                        .to_owned()
                 ),
                 (
                     "openai".to_owned(),
-                    "15:f1724559551a7edd0c46bc5fbdc7c12b7c17ce05ca8b68347fc446cc0ca117ab".to_owned()
+                    "15:a2024fafdf9d7b6e171f2eda9f2576ff0771904047529da78d5816b2ebddd22e"
+                        .to_owned()
                 ),
-                (
-                    "openrouter".to_owned(),
-                    "dynamic".to_owned()
-                ),
+                ("openrouter".to_owned(), "dynamic".to_owned()),
                 (
                     "qwen".to_owned(),
                     "4:6a457f72a703c9f859f015977ecfc74e587d06d46e45d55b753f795f64f088c3".to_owned()
                 ),
-                (
-                    "sn".to_owned(),
-                    "dynamic".to_owned()
-                )
+                ("sn".to_owned(), "dynamic".to_owned())
             ])
         );
     }

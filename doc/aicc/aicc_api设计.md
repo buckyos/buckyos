@@ -295,6 +295,10 @@ AICC 为 typed inference 生成并返回的 Named Object artifact 归当前认�
 
 Provider 返回的 URL artifact 继续以 `ResourceRef::Url` 出现在 typed result 中，AICC 不在结果解码阶段提前下载。AICC 必须同时持久登记 URL、artifact id、ProviderInstance、Adapter 和 tenant 来源。调用方需要内容时调用 `open_artifact_url_reader(url, artifact_id?)`；AICC 先按精确 URL 查询来源并校验 tenant，可选 `artifact_id` 只作为附加一致性校验，然后由登记的 ProviderInstance 通过其 Adapter 下载协议返回异步字节流。未登记的普通 URL 返回 `resource_invalid`，AICC 不猜测 URL host、Provider 或下载协议，也不充当通用代理。
 
+Provider 为图片、视频、音频等内容返回的原生对象 ID 由 Adapter 显式绑定到对应 artifact，并可同时声明绝对 `expires_at_ms`。AICC 以解码或下载后的原始内容字节直接计算 SHA-256，不拼接 MIME、文件名、tenant 或其他盐，并建立 `content_digest + provider_instance_name + origin_provider -> artifact_id + expires_at_ms` 映射。映射在所有用户间共享，但 ProviderInstance 与模型原厂必须同时一致；这既隔离不同账号，也防止聚合 ProviderInstance 内不同原厂模型互相传入 opaque ID。后续调用物化源资源时只查询当前目标实例和模型原厂，且只返回未过期 ID；到期记录在查询时删除，未命中时不构造或猜测 ID。`expires_at_ms = NULL` 表示 Provider 未声明期限，不代表永久有效。Base64 内容先解码再计算；Provider URL 结果先登记 ID、期限和空摘要，调用方完整读取内容至 EOF 后才对实际下载字节计算摘要并补全映射，下载失败或提前停止不登记。该映射是 AICC 内部状态，不改变公共 `ResourceRef`，也不把摘要、Provider ID 或期限暴露给调用方。
+
+生命周期策略属于 Adapter：优先采用 Provider 响应明确给出的绝对过期时间。OpenAI Videos 的 `expires_at` 按 Unix 秒转换；字段缺失或为空时，根据 OpenAI `/v1/videos` 可下载资产保留 48 小时的规则，以响应 `created_at + 48h` 作为保守期限，响应也缺少 `created_at` 时才以本地接收时间为起点。该 48 小时兜底不得套用到其他 Provider。Provider 使用缓存 ID 返回明确的 HTTP 404 时，AICC 删除与本次内容摘要、ProviderInstance、`origin_provider` 和 ID 全部匹配的记录；当前调用仍返回原 Provider 错误，下一次调用回退为传内容本身。
+
 跨进程读取使用流式 HTTP data endpoint：`POST /kapi/aicc/artifact/open`，请求 body 为 `{ "url": string, "artifact_id"?: string }`，身份来自 `X-Auth` 或 `Authorization: Bearer`，成功响应 body 是 artifact byte stream。该 endpoint 不把二进制包装进 kRPC JSON，也不改变 `ResourceRef` schema。
 ### 2.5 流式与进度观察
 

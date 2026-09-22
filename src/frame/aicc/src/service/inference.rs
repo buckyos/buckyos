@@ -278,11 +278,35 @@ impl RuntimeInferencePort {
             .map_err(resource_rpc_error)?;
         for resource in materialized {
             let parts = resource.into_codec_parts().map_err(resource_rpc_error)?;
+            let content_digest = format!(
+                "sha256:{}",
+                Sha256::digest(&parts.bytes)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            );
+            let provider_artifact_id = self
+                .storage
+                .provider_artifact_id(
+                    &content_digest,
+                    &call.provider_instance_name,
+                    &call.context.state_coordinate.origin_provider,
+                    now_ms() as i64,
+                )
+                .await
+                .map_err(|_| {
+                    inference_error(
+                        AiccErrorCode::InternalError,
+                        "Provider artifact ID lookup failed",
+                    )
+                })?;
             call.context.resources.insert(
                 parts.key.into_string(),
-                CodecMaterializedResource::new(parts.bytes, parts.mime, parts.file_name).map_err(
-                    |error| inference_error(AiccErrorCode::ResourceInvalid, error.to_string()),
-                )?,
+                CodecMaterializedResource::new(parts.bytes, parts.mime, parts.file_name)
+                    .map_err(|error| {
+                        inference_error(AiccErrorCode::ResourceInvalid, error.to_string())
+                    })?
+                    .with_provider_artifact_id(provider_artifact_id),
             );
         }
         Ok(())

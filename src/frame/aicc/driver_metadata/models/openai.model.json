@@ -140,14 +140,14 @@
     },
     {
       "id": "sora-2",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video", "video.txt2video.openai", "video.txt2video.{model}", "video.img2video", "video.img2video.openai", "video.img2video.{model}"]
+      "api_types": ["video.txt2video", "video.img2video", "video.video2video"],
+      "logical_mounts": ["video.txt2video", "video.txt2video.openai", "video.txt2video.{model}", "video.img2video", "video.img2video.openai", "video.img2video.{model}", "video.video2video", "video.video2video.openai", "video.video2video.{model}"]
     },
     {
       "id": "sora-2-pro",
       "parameter_scale": "pro",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video", "video.txt2video.openai", "video.txt2video.{model}", "video.img2video", "video.img2video.openai", "video.img2video.{model}"]
+      "api_types": ["video.txt2video", "video.img2video", "video.video2video"],
+      "logical_mounts": ["video.txt2video", "video.txt2video.openai", "video.txt2video.{model}", "video.img2video", "video.img2video.openai", "video.img2video.{model}", "video.video2video", "video.video2video.openai", "video.video2video.{model}"]
     }
   ],
   "patterns": [

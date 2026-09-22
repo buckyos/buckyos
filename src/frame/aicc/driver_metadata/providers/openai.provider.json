@@ -58,8 +58,49 @@
         "audio.tts": "audio.speech",
         "audio.asr": "audio.transcriptions",
         "video.txt2video": "videos.create",
-        "video.img2video": "videos.create"
-      }
+        "video.img2video": "videos.create",
+        "video.video2video": "videos.create"
+      },
+      "request_rules": [
+        {
+          "when": { "api_type": "video.txt2video", "operation": "videos.create" },
+          "canonical_fields": {
+            "/duration_seconds": {
+              "converter": "openai_video_duration_v1",
+              "fallback": { "action": "omit" }
+            },
+            "/aspect_ratio": {
+              "converter": "omit",
+              "fallback": { "action": "omit" }
+            },
+            "/resolution": {
+              "converter": "openai_video_resolution_v1",
+              "fallback": { "action": "omit" }
+            },
+            "/output/fps": {
+              "converter": "omit",
+              "fallback": { "action": "omit" }
+            }
+          }
+        },
+        {
+          "when": { "api_type": "video.img2video", "operation": "videos.create" },
+          "canonical_fields": {
+            "/duration_seconds": {
+              "converter": "openai_video_duration_v1",
+              "fallback": { "action": "omit" }
+            },
+            "/aspect_ratio": {
+              "converter": "omit",
+              "fallback": { "action": "omit" }
+            },
+            "/resolution": {
+              "converter": "openai_video_resolution_v1",
+              "fallback": { "action": "omit" }
+            }
+          }
+        }
+      ]
     }
   ],
   "variants": [

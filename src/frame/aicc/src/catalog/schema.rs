@@ -559,6 +559,8 @@ pub(crate) struct NarrowedCapabilities {
 pub(crate) struct RequestRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<MatchRule>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub canonical_fields: BTreeMap<String, CanonicalFieldMapping>,
     #[serde(default)]
     pub defaults: BTreeMap<String, Value>,
     #[serde(default)]

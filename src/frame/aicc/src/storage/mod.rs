@@ -21,33 +21,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Once;
 
 const SERVICE_NAME: &str = "aicc";
-const STORAGE_SCHEMA_VERSION: i64 = 3;
+const STORAGE_SCHEMA_VERSION: i64 = 1;
 const INVENTORY_SCHEMA_VERSION: i64 = 1;
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 1_000;
 static INSTALL_DRIVERS: Once = Once::new();
 
 const SCHEMA_META: &str = "CREATE TABLE IF NOT EXISTS aicc_schema_meta (schema_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)";
-const MIGRATIONS: &[(i64, &str)] = &[
-    (1, SCHEMA),
-    (2, USAGE_PROJECTIONS),
-    (3, ARTIFACT_URL_SOURCES),
-];
-const USAGE_PROJECTIONS: &str = r#"
-ALTER TABLE aicc_usage_event ADD COLUMN finance_amount REAL;
-ALTER TABLE aicc_usage_event ADD COLUMN finance_currency TEXT;
-ALTER TABLE aicc_usage_event ADD COLUMN finance_valid INTEGER NOT NULL DEFAULT 0;
-"#;
-const ARTIFACT_URL_SOURCES: &str = r#"
-CREATE TABLE aicc_artifact_url_source (
- url_hash TEXT PRIMARY KEY, url TEXT NOT NULL,
- provider_instance_name TEXT NOT NULL, protocol_adapter_id TEXT NOT NULL,
- artifact_id TEXT,
- tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, caller_app_id TEXT NOT NULL,
- request_id TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
-CREATE INDEX idx_aicc_artifact_url_source_tenant ON aicc_artifact_url_source(tenant_id, created_at_ms);
-CREATE INDEX idx_aicc_artifact_url_source_provider ON aicc_artifact_url_source(provider_instance_name, created_at_ms);
-"#;
+const MIGRATIONS: &[(i64, &str)] = &[(1, SCHEMA)];
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS aicc_schema_meta (
@@ -65,7 +46,9 @@ CREATE TABLE IF NOT EXISTS aicc_usage_event (
  caller_app_id TEXT, task_id TEXT NOT NULL, trace_id TEXT, idempotency_key TEXT, method TEXT NOT NULL,
  capability TEXT NOT NULL, request_model TEXT NOT NULL, provider_instance_name TEXT NOT NULL,
  provider_model TEXT NOT NULL, input_tokens BIGINT, output_tokens BIGINT, total_tokens BIGINT,
- request_units BIGINT, usage_json TEXT NOT NULL, finance_snapshot_json TEXT, created_at_ms BIGINT NOT NULL);
+ request_units BIGINT, usage_json TEXT NOT NULL, finance_snapshot_json TEXT,
+ finance_amount REAL, finance_currency TEXT, finance_valid INTEGER NOT NULL DEFAULT 0,
+ created_at_ms BIGINT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time ON aicc_usage_event(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time ON aicc_usage_event(tenant_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_trace_time ON aicc_usage_event(trace_id, created_at_ms);
@@ -100,6 +83,21 @@ CREATE TABLE IF NOT EXISTS aicc_artifact_scope (
  obj_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
  caller_app_id TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_aicc_artifact_scope_tenant ON aicc_artifact_scope(tenant_id, created_at_ms);
+CREATE TABLE IF NOT EXISTS aicc_artifact_url_source (
+ url_hash TEXT PRIMARY KEY, url TEXT NOT NULL,
+ provider_instance_name TEXT NOT NULL, protocol_adapter_id TEXT NOT NULL,
+ origin_provider TEXT NOT NULL, artifact_id TEXT, content_digest TEXT, expires_at_ms BIGINT,
+ tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, caller_app_id TEXT NOT NULL,
+ request_id TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_aicc_artifact_url_source_tenant ON aicc_artifact_url_source(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_artifact_url_source_provider ON aicc_artifact_url_source(provider_instance_name, created_at_ms);
+CREATE TABLE IF NOT EXISTS aicc_provider_artifact_id (
+ content_digest TEXT NOT NULL, provider_instance_name TEXT NOT NULL,
+ origin_provider TEXT NOT NULL, artifact_id TEXT NOT NULL,
+ expires_at_ms BIGINT, created_at_ms BIGINT NOT NULL,
+ PRIMARY KEY (content_digest, provider_instance_name, origin_provider));
+CREATE INDEX IF NOT EXISTS idx_aicc_provider_artifact_id_provider
+ ON aicc_provider_artifact_id(provider_instance_name, origin_provider, created_at_ms);
 CREATE TABLE IF NOT EXISTS aicc_audit_event (
  audit_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, caller_app_id TEXT, event_type TEXT NOT NULL,
  trace_id TEXT, request_id TEXT, task_id TEXT, route_id TEXT, provider_trace_id TEXT,
@@ -192,11 +190,24 @@ pub(crate) struct ArtifactUrlSourceRecord {
     pub url: String,
     pub provider_instance_name: String,
     pub protocol_adapter_id: String,
+    pub origin_provider: String,
     pub artifact_id: Option<String>,
+    pub content_digest: Option<String>,
+    pub expires_at_ms: Option<i64>,
     pub tenant_id: String,
     pub user_id: String,
     pub caller_app_id: Option<String>,
     pub request_id: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderArtifactIdRecord {
+    pub content_digest: String,
+    pub provider_instance_name: String,
+    pub origin_provider: String,
+    pub artifact_id: String,
+    pub expires_at_ms: Option<i64>,
     pub created_at_ms: i64,
 }
 
@@ -460,12 +471,20 @@ impl AiccStorage {
             record.url.as_str(),
             record.provider_instance_name.as_str(),
             record.protocol_adapter_id.as_str(),
+            record.origin_provider.as_str(),
             record.tenant_id.as_str(),
             record.user_id.as_str(),
             record.request_id.as_str(),
         ]
         .iter()
         .any(|value| value.trim().is_empty())
+            || record
+                .content_digest
+                .as_deref()
+                .is_some_and(|digest| !valid_content_digest(digest))
+            || record
+                .expires_at_ms
+                .is_some_and(|expires_at_ms| expires_at_ms < 0)
             || record.created_at_ms < 0
         {
             return Err(StorageError::InvalidRecord(
@@ -475,8 +494,9 @@ impl AiccStorage {
         let url_hash = sha256_hex(record.url.as_bytes());
         let sql = self.sql(
             "INSERT INTO aicc_artifact_url_source
-             (url_hash,url,provider_instance_name,protocol_adapter_id,artifact_id,tenant_id,user_id,
-              caller_app_id,request_id,created_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?)
+             (url_hash,url,provider_instance_name,protocol_adapter_id,origin_provider,artifact_id,
+              content_digest,expires_at_ms,tenant_id,user_id,caller_app_id,request_id,created_at_ms)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(url_hash) DO NOTHING",
         );
         sqlx::query(&sql)
@@ -484,7 +504,10 @@ impl AiccStorage {
             .bind(&record.url)
             .bind(&record.provider_instance_name)
             .bind(&record.protocol_adapter_id)
+            .bind(&record.origin_provider)
             .bind(&record.artifact_id)
+            .bind(&record.content_digest)
+            .bind(record.expires_at_ms)
             .bind(&record.tenant_id)
             .bind(&record.user_id)
             .bind(record.caller_app_id.as_deref().unwrap_or_default())
@@ -498,15 +521,16 @@ impl AiccStorage {
     pub(crate) async fn artifact_url_source(
         &self,
         url: &str,
+        now_ms: i64,
     ) -> StorageResult<Option<ArtifactUrlSourceRecord>> {
-        if url.trim().is_empty() {
+        if url.trim().is_empty() || now_ms < 0 {
             return Err(StorageError::InvalidRecord(
                 "artifact URL must not be empty".into(),
             ));
         }
         let sql = self.sql(
-            "SELECT url,provider_instance_name,protocol_adapter_id,artifact_id,tenant_id,user_id,
-                    caller_app_id,request_id,created_at_ms
+            "SELECT url,provider_instance_name,protocol_adapter_id,origin_provider,artifact_id,
+                    content_digest,expires_at_ms,tenant_id,user_id,caller_app_id,request_id,created_at_ms
              FROM aicc_artifact_url_source WHERE url_hash=?",
         );
         let row = sqlx::query(&sql)
@@ -520,18 +544,216 @@ impl AiccStorage {
         if stored_url != url {
             return Ok(None);
         }
+        let expires_at_ms: Option<i64> = row.get("expires_at_ms");
+        if expires_at_ms.is_some_and(|expires_at_ms| expires_at_ms <= now_ms) {
+            let delete =
+                self.sql("DELETE FROM aicc_artifact_url_source WHERE url_hash=? AND url=?");
+            sqlx::query(&delete)
+                .bind(sha256_hex(url.as_bytes()))
+                .bind(url)
+                .execute(&self.pool)
+                .await?;
+            return Ok(None);
+        }
         let caller_app_id: String = row.get("caller_app_id");
         Ok(Some(ArtifactUrlSourceRecord {
             url: stored_url,
             provider_instance_name: row.get("provider_instance_name"),
             protocol_adapter_id: row.get("protocol_adapter_id"),
+            origin_provider: row.get("origin_provider"),
             artifact_id: row.get("artifact_id"),
+            content_digest: row.get("content_digest"),
+            expires_at_ms,
             tenant_id: row.get("tenant_id"),
             user_id: row.get("user_id"),
             caller_app_id: (!caller_app_id.is_empty()).then_some(caller_app_id),
             request_id: row.get("request_id"),
             created_at_ms: row.get("created_at_ms"),
         }))
+    }
+
+    pub(crate) async fn remember_provider_artifact_id(
+        &self,
+        record: &ProviderArtifactIdRecord,
+    ) -> StorageResult<()> {
+        if [
+            record.content_digest.as_str(),
+            record.provider_instance_name.as_str(),
+            record.origin_provider.as_str(),
+            record.artifact_id.as_str(),
+        ]
+        .iter()
+        .any(|value| value.trim().is_empty())
+            || !valid_content_digest(&record.content_digest)
+            || record
+                .expires_at_ms
+                .is_some_and(|expires_at_ms| expires_at_ms < 0)
+            || record.created_at_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "Provider artifact ID fields are invalid".into(),
+            ));
+        }
+        if record
+            .expires_at_ms
+            .is_some_and(|expires_at_ms| expires_at_ms <= record.created_at_ms)
+        {
+            return self
+                .forget_provider_artifact_id(
+                    &record.content_digest,
+                    &record.provider_instance_name,
+                    &record.origin_provider,
+                    &record.artifact_id,
+                )
+                .await;
+        }
+        let sql = self.sql(
+            "INSERT INTO aicc_provider_artifact_id
+             (content_digest,provider_instance_name,origin_provider,artifact_id,expires_at_ms,created_at_ms)
+             VALUES (?,?,?,?,?,?)
+             ON CONFLICT(content_digest,provider_instance_name,origin_provider) DO UPDATE SET
+              artifact_id=excluded.artifact_id,expires_at_ms=excluded.expires_at_ms,
+              created_at_ms=excluded.created_at_ms",
+        );
+        sqlx::query(&sql)
+            .bind(&record.content_digest)
+            .bind(&record.provider_instance_name)
+            .bind(&record.origin_provider)
+            .bind(&record.artifact_id)
+            .bind(record.expires_at_ms)
+            .bind(record.created_at_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn provider_artifact_id(
+        &self,
+        content_digest: &str,
+        provider_instance_name: &str,
+        origin_provider: &str,
+        now_ms: i64,
+    ) -> StorageResult<Option<String>> {
+        if [content_digest, provider_instance_name, origin_provider]
+            .iter()
+            .any(|value| value.trim().is_empty())
+            || !valid_content_digest(content_digest)
+            || now_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "Provider artifact ID lookup fields are invalid".into(),
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        let delete = self.sql(
+            "DELETE FROM aicc_provider_artifact_id
+             WHERE content_digest=? AND provider_instance_name=? AND origin_provider=?
+               AND expires_at_ms IS NOT NULL AND expires_at_ms<=?",
+        );
+        sqlx::query(&delete)
+            .bind(content_digest)
+            .bind(provider_instance_name)
+            .bind(origin_provider)
+            .bind(now_ms)
+            .execute(&mut *tx)
+            .await?;
+        let select = self.sql(
+            "SELECT artifact_id FROM aicc_provider_artifact_id
+             WHERE content_digest=? AND provider_instance_name=? AND origin_provider=?",
+        );
+        let artifact_id = sqlx::query_scalar(&select)
+            .bind(content_digest)
+            .bind(provider_instance_name)
+            .bind(origin_provider)
+            .fetch_optional(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(artifact_id)
+    }
+
+    pub(crate) async fn forget_provider_artifact_id(
+        &self,
+        content_digest: &str,
+        provider_instance_name: &str,
+        origin_provider: &str,
+        artifact_id: &str,
+    ) -> StorageResult<()> {
+        if [
+            content_digest,
+            provider_instance_name,
+            origin_provider,
+            artifact_id,
+        ]
+        .iter()
+        .any(|value| value.trim().is_empty())
+            || !valid_content_digest(content_digest)
+        {
+            return Err(StorageError::InvalidRecord(
+                "Provider artifact ID invalidation fields are invalid".into(),
+            ));
+        }
+        let sql = self.sql(
+            "DELETE FROM aicc_provider_artifact_id
+             WHERE content_digest=? AND provider_instance_name=? AND origin_provider=?
+               AND artifact_id=?",
+        );
+        sqlx::query(&sql)
+            .bind(content_digest)
+            .bind(provider_instance_name)
+            .bind(origin_provider)
+            .bind(artifact_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn complete_artifact_url_digest(
+        &self,
+        source: &ArtifactUrlSourceRecord,
+        content_digest: &str,
+        completed_at_ms: i64,
+    ) -> StorageResult<()> {
+        if !valid_content_digest(content_digest) || completed_at_ms < 0 {
+            return Err(StorageError::InvalidRecord(
+                "artifact URL content digest is invalid".into(),
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        let update = self.sql(
+            "UPDATE aicc_artifact_url_source SET content_digest=?
+             WHERE url_hash=? AND url=?",
+        );
+        sqlx::query(&update)
+            .bind(content_digest)
+            .bind(sha256_hex(source.url.as_bytes()))
+            .bind(&source.url)
+            .execute(&mut *tx)
+            .await?;
+        if let Some(artifact_id) = source.artifact_id.as_deref().filter(|_| {
+            !source
+                .expires_at_ms
+                .is_some_and(|expires_at_ms| expires_at_ms <= completed_at_ms)
+        }) {
+            let insert = self.sql(
+                "INSERT INTO aicc_provider_artifact_id
+                 (content_digest,provider_instance_name,origin_provider,artifact_id,expires_at_ms,created_at_ms)
+                 VALUES (?,?,?,?,?,?)
+                 ON CONFLICT(content_digest,provider_instance_name,origin_provider) DO UPDATE SET
+                  artifact_id=excluded.artifact_id,expires_at_ms=excluded.expires_at_ms,
+                  created_at_ms=excluded.created_at_ms",
+            );
+            sqlx::query(&insert)
+                .bind(content_digest)
+                .bind(&source.provider_instance_name)
+                .bind(&source.origin_provider)
+                .bind(artifact_id)
+                .bind(source.expires_at_ms)
+                .bind(source.created_at_ms)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     pub(crate) async fn upsert_inventory(&self, record: &InventoryLkgsRecord) -> StorageResult<()> {
@@ -1372,7 +1594,10 @@ fn route_trace_record_to_value(record: RouteTraceRecord) -> StorageResult<Value>
     let mut value = serde_json::to_value(record.trace.route_trace_json)?;
     if let Some(object) = value.as_object_mut() {
         object.insert("trace_id".to_string(), Value::String(record.trace.trace_id));
-        object.insert("tenant_id".to_string(), Value::String(record.trace.tenant_id));
+        object.insert(
+            "tenant_id".to_string(),
+            Value::String(record.trace.tenant_id),
+        );
         if let Some(caller_app_id) = record.trace.caller_app_id {
             object.insert("caller_app_id".to_string(), Value::String(caller_app_id));
         }
@@ -1773,6 +1998,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
             output
         })
 }
+
+fn valid_content_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    })
+}
 fn to_i64(value: u64) -> StorageResult<i64> {
     i64::try_from(value).map_err(|_| StorageError::InvalidRecord("integer overflow".into()))
 }
@@ -1846,7 +2080,10 @@ mod tests {
             url: "https://provider.example/files/one?token=secret".into(),
             provider_instance_name: "provider-main".into(),
             protocol_adapter_id: "provider-adapter".into(),
+            origin_provider: "openai".into(),
             artifact_id: Some("video.mp4".into()),
+            content_digest: None,
+            expires_at_ms: None,
             tenant_id: "tenant-a".into(),
             user_id: "user-a".into(),
             caller_app_id: Some("app-a".into()),
@@ -1855,14 +2092,203 @@ mod tests {
         };
         db.remember_artifact_url_source(&record).await.unwrap();
         assert_eq!(
-            db.artifact_url_source(&record.url).await.unwrap(),
-            Some(record)
+            db.artifact_url_source(&record.url, 10).await.unwrap(),
+            Some(record.clone())
         );
         assert_eq!(
-            db.artifact_url_source("https://provider.example/files/two")
+            db.artifact_url_source("https://provider.example/files/two", 10)
                 .await
                 .unwrap(),
             None
+        );
+
+        let expiring = ArtifactUrlSourceRecord {
+            url: "https://provider.example/files/expiring".into(),
+            expires_at_ms: Some(20),
+            ..record
+        };
+        db.remember_artifact_url_source(&expiring).await.unwrap();
+        assert!(db
+            .artifact_url_source(&expiring.url, 19)
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            db.artifact_url_source(&expiring.url, 20).await.unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_artifact_ids_are_shared_and_scoped_by_instance_and_origin() {
+        let db = db().await;
+        let record = ProviderArtifactIdRecord {
+            content_digest: format!("sha256:{}", "ab".repeat(32)),
+            provider_instance_name: "aggregator-primary".into(),
+            origin_provider: "openai".into(),
+            artifact_id: "video_123".into(),
+            expires_at_ms: None,
+            created_at_ms: 10,
+        };
+        db.remember_provider_artifact_id(&record).await.unwrap();
+        assert_eq!(
+            db.provider_artifact_id(
+                &record.content_digest,
+                &record.provider_instance_name,
+                &record.origin_provider,
+                10,
+            )
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("video_123")
+        );
+        assert_eq!(
+            db.provider_artifact_id(
+                &record.content_digest,
+                &record.provider_instance_name,
+                "gemini",
+                10,
+            )
+            .await
+            .unwrap(),
+            None
+        );
+
+        let stale = ProviderArtifactIdRecord {
+            artifact_id: "stale-video".into(),
+            expires_at_ms: Some(9),
+            ..record.clone()
+        };
+        db.remember_provider_artifact_id(&stale).await.unwrap();
+        assert_eq!(
+            db.provider_artifact_id(
+                &record.content_digest,
+                &record.provider_instance_name,
+                &record.origin_provider,
+                10,
+            )
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("video_123")
+        );
+
+        db.forget_provider_artifact_id(
+            &record.content_digest,
+            &record.provider_instance_name,
+            &record.origin_provider,
+            "different-id",
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .provider_artifact_id(
+                &record.content_digest,
+                &record.provider_instance_name,
+                &record.origin_provider,
+                10,
+            )
+            .await
+            .unwrap()
+            .is_some());
+        db.forget_provider_artifact_id(
+            &record.content_digest,
+            &record.provider_instance_name,
+            &record.origin_provider,
+            &record.artifact_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            db.provider_artifact_id(
+                &record.content_digest,
+                &record.provider_instance_name,
+                &record.origin_provider,
+                10,
+            )
+            .await
+            .unwrap(),
+            None
+        );
+
+        let expiring = ProviderArtifactIdRecord {
+            content_digest: format!("sha256:{}", "ef".repeat(32)),
+            artifact_id: "video_expiring".into(),
+            expires_at_ms: Some(20),
+            ..record.clone()
+        };
+        db.remember_provider_artifact_id(&expiring).await.unwrap();
+        assert_eq!(
+            db.provider_artifact_id(
+                &expiring.content_digest,
+                &expiring.provider_instance_name,
+                &expiring.origin_provider,
+                19,
+            )
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("video_expiring")
+        );
+        assert_eq!(
+            db.provider_artifact_id(
+                &expiring.content_digest,
+                &expiring.provider_instance_name,
+                &expiring.origin_provider,
+                20,
+            )
+            .await
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.provider_artifact_id(
+                &record.content_digest,
+                "another-aggregator",
+                &record.origin_provider,
+                10,
+            )
+            .await
+            .unwrap(),
+            None
+        );
+
+        let mut pending = ArtifactUrlSourceRecord {
+            url: "https://provider.example/files/generated".into(),
+            provider_instance_name: record.provider_instance_name.clone(),
+            protocol_adapter_id: "aggregator-adapter".into(),
+            origin_provider: record.origin_provider.clone(),
+            artifact_id: Some("video_456".into()),
+            content_digest: None,
+            expires_at_ms: Some(100),
+            tenant_id: "tenant-b".into(),
+            user_id: "user-b".into(),
+            caller_app_id: None,
+            request_id: "request-b".into(),
+            created_at_ms: 11,
+        };
+        db.remember_artifact_url_source(&pending).await.unwrap();
+        let downloaded_digest = format!("sha256:{}", "cd".repeat(32));
+        db.complete_artifact_url_digest(&pending, &downloaded_digest, 12)
+            .await
+            .unwrap();
+        pending.content_digest = Some(downloaded_digest.clone());
+        assert_eq!(
+            db.artifact_url_source(&pending.url, 12).await.unwrap(),
+            Some(pending)
+        );
+        assert_eq!(
+            db.provider_artifact_id(
+                &downloaded_digest,
+                &record.provider_instance_name,
+                &record.origin_provider,
+                12,
+            )
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("video_456")
         );
     }
 
@@ -2023,6 +2449,7 @@ mod tests {
         let fingerprint = sha256_hex(reference.as_bytes())[..16].to_string();
         PinnedProviderTask {
             runtime_generation: 7,
+            origin_provider: "openai".into(),
             exact_model: "gpt-5:reasoning@openai-primary".into(),
             provider_model_id: "gpt-5".into(),
             provider_instance_name: "openai-primary".into(),
@@ -2030,6 +2457,7 @@ mod tests {
             operation: "responses.create".into(),
             api_type: ApiType::Llm,
             remote_task_id: Some("remote-1".into()),
+            result_artifacts: BTreeMap::new(),
             cancel_supported: true,
             resume: Some(NativeTaskResumeDescriptor {
                 base_url: "https://openai-primary.invalid/v1".into(),

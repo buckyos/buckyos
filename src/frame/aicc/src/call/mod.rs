@@ -1,6 +1,6 @@
 use crate::canonical::{
-    resolve_canonical_field, resolve_missing_canonical_field, CanonicalFieldMapping,
-    CanonicalMatchQuality,
+    resolve_canonical_field, resolve_missing_canonical_field, CanonicalFieldConverter,
+    CanonicalFieldMapping, CanonicalMatchQuality,
 };
 use crate::catalog::{CatalogSnapshot, Pricing, ResolvedProviderRule};
 use crate::error::{CallLoweringError, CatalogResolveError, ModelRegistryError};
@@ -17,7 +17,7 @@ use buckyos_api::{
     ResourceRef,
 };
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
@@ -372,6 +372,10 @@ impl<'a> CallResolver<'a> {
         let mut canonical_fields = model.semantics.canonical_fields.unwrap_or_default();
         if let Some(rule) = &provider_rule {
             canonical_fields.extend(rule.action.canonical_fields.clone());
+            let canonical_context = request_match_context(api_name, &operation, &normalized);
+            for request_rule in rule.matching_request_rules(&canonical_context) {
+                canonical_fields.extend(request_rule.canonical_fields.clone());
+            }
         }
         let canonical_provider_options =
             apply_canonical_mappings(&mut canonical_json, &mut normalized, &canonical_fields)?;
@@ -859,10 +863,12 @@ fn apply_canonical_mappings(
     mappings: &BTreeMap<String, CanonicalFieldMapping>,
 ) -> Result<BTreeMap<String, Value>, CallLoweringError> {
     let mut provider_options = BTreeMap::new();
+    let original_canonical = canonical.clone();
     for (pointer, mapping) in mappings {
         let (resolved, strict) = match canonical.pointer(pointer).cloned() {
             Some(value) => {
-                let requirement = inferred_canonical_requirement(value);
+                let requirement =
+                    inferred_canonical_requirement(pointer, value, &original_canonical, mapping);
                 let strict = requirement.strict;
                 (resolve_canonical_field(Some(mapping), &requirement), strict)
             }
@@ -922,7 +928,22 @@ fn set_pointer(
     Ok(())
 }
 
-fn inferred_canonical_requirement(value: Value) -> CanonicalFieldRequirement {
+fn inferred_canonical_requirement(
+    pointer: &str,
+    value: Value,
+    canonical: &Value,
+    mapping: &CanonicalFieldMapping,
+) -> CanonicalFieldRequirement {
+    if pointer == "/resolution"
+        && mapping.converter == CanonicalFieldConverter::OpenaiVideoResolutionV1
+    {
+        if let Some(aspect_ratio) = canonical.pointer("/aspect_ratio").cloned() {
+            return CanonicalFieldRequirement::new(json!({
+                "resolution": value,
+                "aspect_ratio": aspect_ratio
+            }));
+        }
+    }
     CanonicalFieldRequirement::new(value)
 }
 
@@ -1205,7 +1226,10 @@ mod tests {
     use crate::protocol::{openai_responses_adapter, CodecRegistry};
     use crate::provider::claude_messages_adapter;
     use crate::routing::{RouteModelKind, RoutingTrace, ScoreBreakdown, UserFacingRouteSummary};
-    use buckyos_api::{AiMessage, AiRole, EmbeddingTextRequest, LlmChatInvokeRequest};
+    use buckyos_api::{
+        AiMessage, AiOutputOptions, AiRole, EmbeddingTextRequest, LlmChatInvokeRequest,
+        VideoTextToVideoRequest,
+    };
     use serde_json::json;
     use std::time::Duration;
 
@@ -1467,6 +1491,23 @@ mod tests {
         }
     }
 
+    fn video_decision() -> RouteDecision {
+        let mut route = decision("sora-2-pro@openai-main");
+        route.selected.exact_model = "sora-2-pro@openai-main".into();
+        route.selected.model_uid = "openai:sora-2-pro:openai-responses".into();
+        route.selected.provider_instance_name = "openai-main".into();
+        route.selected.provider_model_id = "sora-2-pro".into();
+        route.selected.origin_model_id = "sora-2-pro".into();
+        route.selected.operation = "videos.create".into();
+        route.selected.enabled_capabilities = Vec::new();
+        route.trace.api_type = "video.txt2video".into();
+        route.trace.requested_model = "sora-2-pro@openai-main".into();
+        route.trace.selected_exact_model = "sora-2-pro@openai-main".into();
+        route.trace.selected_provider_instance_name = "openai-main".into();
+        route.trace.user_summary.display_name = "sora-2-pro@openai-main".into();
+        route
+    }
+
     fn target(secret: &str) -> ProviderCallTarget {
         ProviderCallTarget {
             provider_rules_id: Some("openai".into()),
@@ -1571,6 +1612,50 @@ mod tests {
         assert_eq!(
             lowered.input.resolved_parameters.get("provider_model_id"),
             Some(&json!("gpt-5.2"))
+        );
+    }
+
+    #[test]
+    fn openai_video_rules_normalize_size_seconds_and_fps() {
+        let catalog = metadata_snapshot();
+        let codecs = codecs();
+        let resolver = CallResolver::new(&catalog, &codecs);
+        let mut request = VideoTextToVideoRequest::new(
+            "sora-2-pro@openai-main",
+            "stick figure exercise".to_string(),
+        );
+        request.duration_seconds = Some(1.0);
+        request.aspect_ratio = Some("16:9".to_string());
+        request.resolution = Some("720p".to_string());
+        request.output = Some(AiOutputOptions {
+            fps: Some(24),
+            ..Default::default()
+        });
+        let call = AiccCall::VideoTextToVideo(request);
+
+        let lowered = resolver
+            .lower(&video_decision(), &call, target("credential-secret"))
+            .unwrap();
+
+        assert_eq!(lowered.operation, "videos.create");
+        assert_eq!(lowered.execution_mode, ExecutionMode::NativeTask);
+        assert_eq!(
+            lowered.input.resolved_parameters.get("seconds"),
+            Some(&json!("4"))
+        );
+        assert_eq!(
+            lowered.input.resolved_parameters.get("size"),
+            Some(&json!("1280x720"))
+        );
+        let AiccCall::VideoTextToVideo(rewritten) = &lowered.input.canonical_request else {
+            panic!("expected video text-to-video request")
+        };
+        assert_eq!(rewritten.duration_seconds, Some(4.0));
+        assert_eq!(rewritten.aspect_ratio.as_deref(), None);
+        assert_eq!(rewritten.resolution.as_deref(), Some("720p"));
+        assert_eq!(
+            rewritten.output.as_ref().and_then(|output| output.fps),
+            None
         );
     }
 
@@ -1912,7 +1997,7 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         assert_eq!(golden, documented);
-        assert_eq!(golden.len(), 77);
+        assert_eq!(golden.len(), 82);
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(
             golden.contains(&"openai|openai-responses|agent.computer_use|responses.create".into())

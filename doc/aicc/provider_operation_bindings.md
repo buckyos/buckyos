@@ -35,9 +35,13 @@ gemini|gemini-interactions|embedding.text|models.embedContent
 gemini|gemini-interactions|image.img2img|interactions.create
 gemini|gemini-interactions|image.txt2img|interactions.create
 gemini|gemini-interactions|llm|interactions.create
+gemini|gemini-interactions|video.extend|interactions.create
 gemini|gemini-interactions|video.extend|models.predictLongRunning
+gemini|gemini-interactions|video.img2video|interactions.create
 gemini|gemini-interactions|video.img2video|models.predictLongRunning
+gemini|gemini-interactions|video.txt2video|interactions.create
 gemini|gemini-interactions|video.txt2video|models.predictLongRunning
+gemini|gemini-interactions|video.video2video|interactions.create
 gemini|gemini-interactions|video.video2video|models.predictLongRunning
 gemini|gemini-interactions|vision.caption|interactions.create
 gemini|gemini-interactions|vision.detect|interactions.create
@@ -74,6 +78,7 @@ openai|openai-responses|image.txt2img|responses.create
 openai|openai-responses|llm|responses.create
 openai|openai-responses|video.img2video|videos.create
 openai|openai-responses|video.txt2video|videos.create
+openai|openai-responses|video.video2video|videos.create
 openai|openai-responses|vision.caption|responses.create
 openai|openai-responses|vision.ocr|responses.create
 openrouter|openrouter-responses|embedding.text|embeddings.create

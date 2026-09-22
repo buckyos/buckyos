@@ -379,6 +379,7 @@ fn decode_status(response: HttpResponse) -> ProtocolResultValue<NativeTaskOutput
         state,
         retry_after,
         result_ref: None,
+        result_artifacts: BTreeMap::new(),
     })
 }
 

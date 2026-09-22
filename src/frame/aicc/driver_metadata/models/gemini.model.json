@@ -59,9 +59,10 @@
     },
     {
       "id": "gemini-3-pro-preview",
-      "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
-      "logical_mounts": ["llm.gemini", "llm.{driver}.{model}", "vision.ocr", "vision.ocr.gemini", "vision.ocr.{model}", "vision.caption", "vision.caption.gemini", "vision.caption.{model}", "vision.detect", "vision.detect.gemini", "vision.detect.{model}", "vision.segment", "vision.segment.gemini", "vision.segment.{model}", "audio.asr", "audio.asr.gemini", "audio.asr.{model}"],
-      "capabilities": { "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true }
+      "exclude": true,
+      "api_types": [],
+      "logical_mounts": [],
+      "capabilities": {}
     },
     {
       "id": "gemini-3-flash-preview",
@@ -157,20 +158,26 @@
     },
     {
       "id": "veo-3.1-generate-preview",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}"],
+      "api_types": ["video.txt2video", "video.img2video", "video.extend"],
+      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.extend.gemini", "video.extend.{model}"],
       "capabilities": {}
     },
     {
       "id": "veo-3.1-lite-generate-preview",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}"],
+      "api_types": ["video.txt2video", "video.img2video", "video.extend"],
+      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.extend.gemini", "video.extend.{model}"],
       "capabilities": {}
     },
     {
       "id": "gemini-omni-1.1-flash",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
       "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.video2video.gemini", "video.video2video.{model}", "video.extend.gemini", "video.extend.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "lyria-3.5",
+      "api_types": ["audio.music"],
+      "logical_mounts": ["audio.music.gemini", "audio.music.{model}"],
       "capabilities": {}
     },
     {
@@ -213,7 +220,6 @@
     { "id": "gemini-3.5-flash-lite", "pricing": { "currency": "USD", "input_token": 3e-07, "output_token": 2.5e-06, "cache_input_token": 3e-08 } },
     { "id": "gemini-3.1-flash-lite", "pricing": { "currency": "USD", "input_token": 2.5e-07, "output_token": 1.5e-06, "cache_input_token": 2.5000000000000002e-08 } },
     { "id": "gemini-3.1-pro-preview", "pricing": { "currency": "USD", "input_token": 2e-06, "output_token": 1.2e-05, "cache_input_token": 2.0000000000000002e-07, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 200000, "input_token": 2e-06, "output_token": 1.2e-05, "cache_input_token": null }, { "up_to": null, "input_token": 4e-06, "output_token": 1.8e-05, "cache_input_token": null }] } } },
-    { "id": "gemini-3-pro-preview", "pricing": { "currency": "USD", "input_token": 2e-06, "output_token": 1.2e-05, "cache_input_token": 2.0000000000000002e-07, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 200000, "input_token": 2e-06, "output_token": 1.2e-05, "cache_input_token": null }, { "up_to": null, "input_token": 4e-06, "output_token": 1.8e-05, "cache_input_token": null }] } } },
     { "id": "gemini-3-flash-preview", "pricing": { "currency": "USD", "input_token": 5e-07, "output_token": 3e-06, "cache_input_token": 5.0000000000000004e-08 } },
     { "id": "gemini-2.5-flash", "pricing": { "currency": "USD", "input_token": 3e-07, "output_token": 2.5e-06, "cache_input_token": 3e-08 } },
     { "id": "gemini-2.5-flash-lite", "pricing": { "currency": "USD", "input_token": 1.0000000000000001e-07, "output_token": 4.0000000000000003e-07 } },
@@ -226,6 +232,7 @@
     { "id": "veo-3.1-generate-preview", "pricing": { "currency": "USD", "amount": 0.2, "unit": "request" } },
     { "id": "veo-3.1-lite-generate-preview", "pricing": { "currency": "USD", "amount": 0.03, "unit": "request" } },
     { "id": "gemini-omni-1.1-flash", "pricing": { "currency": "USD", "input_token": 1.5e-06, "output_token": 9e-06 } },
+    { "id": "lyria-3.5", "pricing": { "currency": "USD", "amount": 0.08, "unit": "request" } },
     { "id": "lyria-3-pro-preview", "pricing": { "currency": "USD", "amount": 0.08, "unit": "request" } },
     { "id": "lyria-3-clip-preview", "pricing": { "currency": "USD", "amount": 0.04, "unit": "request" } },
     { "id": "gemini-embedding-2", "pricing": { "currency": "USD", "input_token": 2.0000000000000002e-07 } },
@@ -240,10 +247,10 @@
   "variants": [
     { "name": "reasoning-none", "match": { "origin_model_id": ["gemini-2.5-flash-lite"] }, "mount_suffix": "reasoning-none", "provider_options": {} },
     { "name": "reasoning-mini", "match": { "origin_model_id": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite-image"] }, "mount_suffix": "reasoning-mini", "provider_options": { "generation_config": { "thinking_level": "minimal" } } },
-    { "name": "reasoning-low", "match": { "origin_model_id": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"] }, "mount_suffix": "reasoning-low", "provider_options": { "generation_config": { "thinking_level": "low" } } },
+    { "name": "reasoning-low", "match": { "origin_model_id": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"] }, "mount_suffix": "reasoning-low", "provider_options": { "generation_config": { "thinking_level": "low" } } },
     { "name": "reasoning-medium", "match": { "origin_model_id": ["gemini-3.8-flash", "gemini-2.5-flash"] }, "mount_suffix": "reasoning-medium", "provider_options": { "generation_config": { "thinking_level": "high" } } },
     { "name": "reasoning-medium", "match": { "origin_model_id": ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash-lite", "gemini-2.5-pro"] }, "mount_suffix": "reasoning-medium", "provider_options": { "generation_config": { "thinking_level": "medium" } } },
-    { "name": "reasoning-high", "match": { "origin_model_id": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-image", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"] }, "mount_suffix": "reasoning-high", "provider_options": { "generation_config": { "thinking_level": "high" } } }
+    { "name": "reasoning-high", "match": { "origin_model_id": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-image", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"] }, "mount_suffix": "reasoning-high", "provider_options": { "generation_config": { "thinking_level": "high" } } }
   ],
   "version_rules": [
     { "id": "gemini-flash", "family": "gemini", "tier": "flash", "match": "gemini-*", "tier_tokens": ["flash"], "exclude_tier_tokens": ["lite", "image", "tts", "transcribe", "omni"], "version_rank": { "prefix": "gemini" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.gemini-flash", "version_mount": "llm.gemini.{model}" },

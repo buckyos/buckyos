@@ -1082,8 +1082,12 @@ fn builtin_logical_definitions_make_llm_chat_routable_with_glm_only() {
         .and_then(|value| value.as_object())
         .unwrap();
     assert_eq!(chat["glm"]["target"], "llm.glm");
-    assert!(!chat.values().any(|item| item["target"] == "llm.deepseek-flash"));
-    assert!(!chat.values().any(|item| item["target"] == "llm.doubao-lite"));
+    assert!(!chat
+        .values()
+        .any(|item| item["target"] == "llm.deepseek-flash"));
+    assert!(!chat
+        .values()
+        .any(|item| item["target"] == "llm.doubao-lite"));
     assert!(directory.get("llm.deepseek-flash").is_none());
     assert!(directory.get("llm.doubao-lite").is_none());
 }

@@ -26,11 +26,7 @@ pub(super) fn validate_model_driver(
         catalog.models.iter().map(|rule| rule.id.as_str()),
     )?;
     validate_model_semantics(&catalog.model_driver_id, &catalog.defaults)?;
-    validate_model_pricing(
-        &catalog.model_driver_id,
-        &catalog.model_pricing,
-        false,
-    )?;
+    validate_model_pricing(&catalog.model_driver_id, &catalog.model_pricing, false)?;
     for rule in &catalog.models {
         validate_model_semantics(&catalog.model_driver_id, &model_rule_semantics!(rule))?;
     }
@@ -231,11 +227,7 @@ pub(super) fn validate_provider_rules(
     for rule in &catalog.patterns {
         validate_provider_rule_data(&catalog.provider_profile_id, rule)?;
     }
-    validate_model_pricing(
-        &catalog.provider_profile_id,
-        &catalog.model_pricing,
-        true,
-    )?;
+    validate_model_pricing(&catalog.provider_profile_id, &catalog.model_pricing, true)?;
     for variant in &catalog.variants {
         validate_nonempty_field(
             CatalogKind::ProviderRules,
@@ -311,6 +303,7 @@ fn validate_provider_rule_data(
                 });
             }
         }
+        validate_canonical_fields(owner, &request_rule.canonical_fields)?;
     }
     validate_canonical_fields(owner, rule.canonical_fields())?;
     for value in rule.remove_api_types().iter().chain(rule.remove_features()) {

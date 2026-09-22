@@ -83,7 +83,7 @@ pub(crate) use provider_state::{
 };
 pub(crate) use result::{
     NativeTaskHandle, NativeTaskState, ProtocolEvent, ProtocolExecution, ProtocolOutput,
-    ProtocolStream,
+    ProtocolStream, ProviderArtifactRef,
 };
 #[cfg(test)]
 pub(crate) use sse::SseEvent;

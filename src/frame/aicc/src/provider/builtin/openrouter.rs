@@ -231,8 +231,9 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
         amount: None,
         rules: Vec::new(),
         tiers: None,
-    
-        time_windows: Vec::new(),}))
+
+        time_windows: Vec::new(),
+    }))
 }
 
 fn parse_nonnegative_price(name: &str, value: Option<&str>) -> ProviderResult<Option<f64>> {

@@ -316,6 +316,7 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
                     state,
                     retry_after,
                     result_ref,
+                    result_artifacts: BTreeMap::new(),
                 })
             }
             NativeTaskOperation::Result => {

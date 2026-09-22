@@ -134,7 +134,9 @@ use crate::settings::{
     AiccSettings, MetadataSourceManager, ProductionMetadataOverrideLoader, ProductionRuntimeInputs,
     ProviderLifecyclePolicy, ProviderSettings, SettingsDocument,
 };
-use crate::storage::{AiccStorage, ArtifactUrlSourceRecord, RouteTraceRecord};
+use crate::storage::{
+    AiccStorage, ArtifactUrlSourceRecord, ProviderArtifactIdRecord, RouteTraceRecord,
+};
 use cloud_update::{
     CloudUpdateClientProfile, CloudUpdateConfig, CloudUpdateManager, NdnCloudObjectFetcher,
 };

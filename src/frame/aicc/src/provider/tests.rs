@@ -373,8 +373,9 @@ fn discovery(model_id: &str) -> ProviderDiscoverySnapshot {
                 amount: None,
                 rules: vec![],
                 tiers: None,
-            
-                time_windows: Vec::new(),}),
+
+                time_windows: Vec::new(),
+            }),
         }],
     }
 }

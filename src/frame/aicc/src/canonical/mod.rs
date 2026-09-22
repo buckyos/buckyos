@@ -6,10 +6,13 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CanonicalFieldConverter {
+    Omit,
     Passthrough,
     Prompt,
     OpenaiTtsVoiceV1,
     OpenaiTtsVoiceV2,
+    OpenaiVideoDurationV1,
+    OpenaiVideoResolutionV1,
     GeminiTtsVoiceV1,
     GlmTtsVoiceV1,
     MinimaxTtsVoiceV1,
@@ -123,6 +126,11 @@ fn convert_canonical_field(
     requirement: &CanonicalFieldRequirement,
 ) -> ResolvedCanonicalField {
     match resolver {
+        CanonicalFieldConverter::Omit => ResolvedCanonicalField {
+            quality: CanonicalMatchQuality::Exact,
+            resolution: None,
+            omit: true,
+        },
         CanonicalFieldConverter::Passthrough => {
             resolved(CanonicalMatchQuality::Exact, requirement.value.clone())
         }
@@ -133,10 +141,91 @@ fn convert_canonical_field(
         },
         CanonicalFieldConverter::OpenaiTtsVoiceV1 => resolve_openai_tts_voice_v1(requirement),
         CanonicalFieldConverter::OpenaiTtsVoiceV2 => resolve_openai_tts_voice_v2(requirement),
+        CanonicalFieldConverter::OpenaiVideoDurationV1 => {
+            resolve_openai_video_duration(requirement)
+        }
+        CanonicalFieldConverter::OpenaiVideoResolutionV1 => {
+            resolve_openai_video_resolution(requirement)
+        }
         CanonicalFieldConverter::GeminiTtsVoiceV1 => resolve_gemini_voice(requirement),
         CanonicalFieldConverter::GlmTtsVoiceV1 => resolve_glm_voice(requirement),
         CanonicalFieldConverter::MinimaxTtsVoiceV1 => resolve_minimax_voice(requirement),
     }
+}
+
+fn resolve_openai_video_resolution(
+    requirement: &CanonicalFieldRequirement,
+) -> ResolvedCanonicalField {
+    let Some((aspect_ratio, resolution)) = parse_openai_video_shape(&requirement.value) else {
+        return unsupported();
+    };
+    let Some(size) = openai_video_size(aspect_ratio, resolution) else {
+        return unsupported();
+    };
+    let fuzzy = resolution != "720p";
+    if fuzzy && !requirement.allow_fuzzy {
+        return unsupported();
+    }
+    resolved_with_options(
+        if fuzzy {
+            CanonicalMatchQuality::Fuzzy
+        } else {
+            CanonicalMatchQuality::Exact
+        },
+        json!(resolution),
+        BTreeMap::from([("size".to_owned(), json!(size))]),
+    )
+}
+
+fn parse_openai_video_shape(value: &Value) -> Option<(&str, &str)> {
+    let object = value.as_object()?;
+    let aspect_ratio = object.get("aspect_ratio")?.as_str()?;
+    let resolution = object.get("resolution")?.as_str()?;
+    Some((aspect_ratio, resolution))
+}
+
+fn openai_video_size(aspect_ratio: &str, resolution: &str) -> Option<&'static str> {
+    match (aspect_ratio, resolution) {
+        ("16:9", "720p") => Some("1280x720"),
+        ("9:16", "720p") => Some("720x1280"),
+        ("16:9", "1080p" | "4k") => Some("1792x1024"),
+        ("9:16", "1080p" | "4k") => Some("1024x1792"),
+        _ => None,
+    }
+}
+
+fn resolve_openai_video_duration(
+    requirement: &CanonicalFieldRequirement,
+) -> ResolvedCanonicalField {
+    let Some(requested) = requirement
+        .value
+        .as_f64()
+        .or_else(|| requirement.value.as_str()?.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+    else {
+        return unsupported();
+    };
+    let normalized = [4.0_f64, 8.0, 12.0]
+        .into_iter()
+        .min_by(|left, right| {
+            (requested - *left)
+                .abs()
+                .total_cmp(&(requested - *right).abs())
+        })
+        .expect("OpenAI video duration set is not empty");
+    let exact = requested == normalized;
+    if !exact && !requirement.allow_fuzzy {
+        return unsupported();
+    }
+    resolved_with_options(
+        if exact {
+            CanonicalMatchQuality::Exact
+        } else {
+            CanonicalMatchQuality::Fuzzy
+        },
+        json!(normalized),
+        BTreeMap::from([("seconds".to_owned(), json!(format!("{normalized:.0}")))]),
+    )
 }
 
 fn apply_fallback(
@@ -749,6 +838,75 @@ mod tests {
         .unwrap();
         assert_eq!(mapping.fallback, CanonicalFallback::Omit);
         assert!(mapping.validate().is_ok());
+        assert_eq!(
+            serde_json::to_value(CanonicalFieldConverter::OpenaiVideoDurationV1).unwrap(),
+            json!("openai_video_duration_v1")
+        );
+        assert_eq!(
+            serde_json::to_value(CanonicalFieldConverter::OpenaiVideoResolutionV1).unwrap(),
+            json!("openai_video_resolution_v1")
+        );
+    }
+
+    #[test]
+    fn openai_video_duration_normalizes_user_values() {
+        let mapping =
+            CanonicalFieldMapping::required(CanonicalFieldConverter::OpenaiVideoDurationV1);
+        let normalized =
+            resolve_canonical_field(Some(&mapping), &CanonicalFieldRequirement::new(json!(2)));
+        assert_eq!(normalized.quality, CanonicalMatchQuality::Fuzzy);
+        let resolution = normalized.resolution.unwrap();
+        assert_eq!(resolution.resolved, json!(4.0));
+        assert_eq!(resolution.provider_options["seconds"], json!("4"));
+
+        let exact =
+            resolve_canonical_field(Some(&mapping), &CanonicalFieldRequirement::new(json!(8)));
+        assert_eq!(exact.quality, CanonicalMatchQuality::Exact);
+        assert_eq!(exact.resolution.unwrap().provider_options["seconds"], "8");
+
+        let strict =
+            resolve_canonical_field(Some(&mapping), &CanonicalFieldRequirement::strict(json!(2)));
+        assert_eq!(strict.quality, CanonicalMatchQuality::Unsupported);
+    }
+
+    #[test]
+    fn openai_video_resolution_normalizes_aspect_and_resolution() {
+        let mapping =
+            CanonicalFieldMapping::required(CanonicalFieldConverter::OpenaiVideoResolutionV1);
+        let normalized = resolve_canonical_field(
+            Some(&mapping),
+            &CanonicalFieldRequirement::new(json!({
+                "aspect_ratio": "16:9",
+                "resolution": "720p"
+            })),
+        );
+        assert_eq!(normalized.quality, CanonicalMatchQuality::Exact);
+        assert_eq!(
+            normalized.resolution.unwrap().provider_options["size"],
+            json!("1280x720")
+        );
+
+        let fuzzy = resolve_canonical_field(
+            Some(&mapping),
+            &CanonicalFieldRequirement::new(json!({
+                "aspect_ratio": "9:16",
+                "resolution": "1080p"
+            })),
+        );
+        assert_eq!(fuzzy.quality, CanonicalMatchQuality::Fuzzy);
+        assert_eq!(
+            fuzzy.resolution.unwrap().provider_options["size"],
+            "1024x1792"
+        );
+
+        let strict = resolve_canonical_field(
+            Some(&mapping),
+            &CanonicalFieldRequirement::strict(json!({
+                "aspect_ratio": "9:16",
+                "resolution": "1080p"
+            })),
+        );
+        assert_eq!(strict.quality, CanonicalMatchQuality::Unsupported);
     }
 
     #[test]

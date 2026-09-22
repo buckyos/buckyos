@@ -1,7 +1,6 @@
 use crate::call::ResolvedProviderCall;
 use crate::catalog::{
-    Pricing, PricingTierStep, PricingTiers, PricingTimeWindow, PricingUnit,
-    TierDimension, TierMode,
+    Pricing, PricingTierStep, PricingTiers, PricingTimeWindow, PricingUnit, TierDimension, TierMode,
 };
 use crate::error::NativeTaskResumeError;
 use crate::protocol::{
@@ -173,6 +172,7 @@ impl TryFrom<ProtocolOutput> for ExecutionOutput {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PinnedProviderTask {
     pub runtime_generation: u64,
+    pub origin_provider: String,
     pub exact_model: String,
     pub provider_model_id: String,
     pub provider_instance_name: String,
@@ -180,6 +180,7 @@ pub(crate) struct PinnedProviderTask {
     pub operation: String,
     pub api_type: ApiType,
     pub remote_task_id: Option<String>,
+    pub result_artifacts: BTreeMap<String, crate::protocol::ProviderArtifactRef>,
     pub cancel_supported: bool,
     pub resume: Option<NativeTaskResumeDescriptor>,
     pub pricing: Option<PinnedPricingSnapshot>,
@@ -189,6 +190,7 @@ impl PinnedProviderTask {
     fn from_call(runtime_generation: u64, call: &ResolvedProviderCall) -> Result<Self, AiccError> {
         Ok(Self {
             runtime_generation,
+            origin_provider: call.context.state_coordinate.origin_provider.clone(),
             exact_model: call.exact_model.clone(),
             provider_model_id: call.provider_model_id.clone(),
             provider_instance_name: call.provider_instance_name.clone(),
@@ -196,6 +198,7 @@ impl PinnedProviderTask {
             operation: call.operation.clone(),
             api_type: call.api_type,
             remote_task_id: None,
+            result_artifacts: BTreeMap::new(),
             cancel_supported: false,
             resume: None,
             pricing: PinnedPricingSnapshot::from_call(call)?,
@@ -410,10 +413,7 @@ struct TokenRates {
 impl TokenRates {
     fn apply(&self, usage: &AiUsage) -> Option<f64> {
         let input_tokens = usage.input_tokens?;
-        let cached_tokens = usage
-            .cache_read_input_tokens
-            .unwrap_or(0)
-            .min(input_tokens);
+        let cached_tokens = usage.cache_read_input_tokens.unwrap_or(0).min(input_tokens);
         let uncached_tokens = input_tokens - cached_tokens;
         let input = self
             .input_token
@@ -468,7 +468,8 @@ fn tier_quantity(dimension: TierDimension, usage: &AiUsage) -> Option<f64> {
         TierDimension::OutputTokens => usage.output_tokens? as f64,
         TierDimension::TotalTokens => usage
             .total_tokens
-            .or_else(|| usage.input_tokens?.checked_add(usage.output_tokens?))? as f64,
+            .or_else(|| usage.input_tokens?.checked_add(usage.output_tokens?))?
+            as f64,
         TierDimension::ContextTokens => {
             usage.input_tokens? as f64 + usage.output_tokens.unwrap_or(0) as f64
         }
@@ -657,11 +658,8 @@ pub(crate) trait ExecutionStore: Send + Sync {
         state: ExecutionState,
         binding: PinnedProviderTask,
     ) -> Result<bool, AiccError>;
-    async fn stage_output(
-        &self,
-        task_id: &str,
-        output: ExecutionOutput,
-    ) -> Result<bool, AiccError>;
+    async fn stage_output(&self, task_id: &str, output: ExecutionOutput)
+        -> Result<bool, AiccError>;
     async fn try_complete(&self, task_id: &str, output: ExecutionOutput)
         -> Result<bool, AiccError>;
     async fn try_fail(&self, task_id: &str, error: AiccError) -> Result<bool, AiccError>;
@@ -1100,6 +1098,7 @@ impl ExecutionEngine {
                             return self.finish_failure(&record.task_id, error).await;
                         }
                         binding.remote_task_id = Some(handle.remote_task_id.clone());
+                        binding.result_artifacts = handle.result_artifacts.clone();
                         binding.cancel_supported = handle.cancel_supported;
                         binding.resume = Some(resume);
                         let state = ExecutionState::from(handle.state);
@@ -1304,7 +1303,10 @@ impl ExecutionEngine {
 
     pub(crate) async fn recover(&self) -> Result<Vec<ExecutionReceipt>, AiccError> {
         let records = self.store.recoverable().await?;
-        let task_ids: Vec<String> = records.iter().map(|record| record.task_id.clone()).collect();
+        let task_ids: Vec<String> = records
+            .iter()
+            .map(|record| record.task_id.clone())
+            .collect();
         let results = join_all(records.iter().map(|record| async move {
             if let Some(output) = &record.output {
                 return self
@@ -1664,10 +1666,10 @@ impl From<ProtocolErrorKind> for ExecutionState {
 
 #[cfg(test)]
 mod tests {
-    use crate::catalog::PricingWeekday;
     use super::*;
     use crate::call::{LoweringRevisions, PricingSource, ResolvedPricing};
     use crate::catalog::Pricing;
+    use crate::catalog::PricingWeekday;
     use crate::protocol::{
         CodecContext, CodecInput, CodecLimits, CredentialAudit, CredentialKind, ExecutionMode,
         NativeTaskHandle, ResolvedCredential,
@@ -2139,8 +2141,20 @@ mod tests {
 
     #[test]
     fn time_window_honours_weekday_filter() {
-        let thursday = time_window("09:00", "12:00", Some(vec![PricingWeekday::Thu]), None, None);
-        let monday = time_window("09:00", "12:00", Some(vec![PricingWeekday::Mon]), None, None);
+        let thursday = time_window(
+            "09:00",
+            "12:00",
+            Some(vec![PricingWeekday::Thu]),
+            None,
+            None,
+        );
+        let monday = time_window(
+            "09:00",
+            "12:00",
+            Some(vec![PricingWeekday::Mon]),
+            None,
+            None,
+        );
         assert!(time_window_matches(&thursday, at(3600)));
         assert!(!time_window_matches(&monday, at(3600)));
     }
@@ -2215,8 +2229,9 @@ mod tests {
                 amount: None,
                 rules: Vec::new(),
                 tiers: None,
-            
-                time_windows: Vec::new(),}),
+
+                time_windows: Vec::new(),
+            }),
             matched_amount: None,
             estimated_cost: Some(buckyos_api::Money::new(777.0, "USD")),
         };
@@ -2237,8 +2252,9 @@ mod tests {
                 amount: Some(amount),
                 rules: Vec::new(),
                 tiers: None,
-            
-                time_windows: Vec::new(),}),
+
+                time_windows: Vec::new(),
+            }),
             matched_amount: None,
             estimated_cost: None,
         };
@@ -2321,7 +2337,9 @@ mod tests {
         let below = pricing.completion_cost(&token_usage(1_000, 1_000)).unwrap();
         assert!((below.amount - (1_000.0 * 6e-6 + 1_000.0 * 24e-6)).abs() < 1e-12);
         // 40K input crosses into the second step; the entire input is repriced at 8.
-        let above = pricing.completion_cost(&token_usage(40_000, 1_000)).unwrap();
+        let above = pricing
+            .completion_cost(&token_usage(40_000, 1_000))
+            .unwrap();
         assert!((above.amount - (40_000.0 * 8e-6 + 1_000.0 * 28e-6)).abs() < 1e-12);
     }
 
@@ -2353,7 +2371,9 @@ mod tests {
             },
         };
         let boundary = 32 * 1024;
-        let just_below = pricing.completion_cost(&token_usage(boundary - 1, 0)).unwrap();
+        let just_below = pricing
+            .completion_cost(&token_usage(boundary - 1, 0))
+            .unwrap();
         assert!((just_below.amount - ((boundary - 1) as f64 * 6e-6)).abs() < 1e-12);
         let at_boundary = pricing.completion_cost(&token_usage(boundary, 0)).unwrap();
         assert!((at_boundary.amount - (boundary as f64 * 8e-6)).abs() < 1e-12);

@@ -28,13 +28,15 @@ impl RuntimeProviderExecutionPort {
         }
     }
 
-    async fn remember_artifact_url_sources(
+    async fn remember_provider_artifacts(
         storage: &AiccStorage,
         provider_instance_name: &str,
         protocol_adapter_id: &str,
+        origin_provider: &str,
         context: &ResourceAccessContext,
-        output: &ProtocolOutput,
+        output: &mut ProtocolOutput,
     ) -> Result<(), ProtocolError> {
+        let provider_artifact_refs = output.take_provider_artifact_refs();
         for artifact in &output.artifacts {
             let buckyos_api::ResourceRef::Url { url, .. } = &artifact.resource else {
                 continue;
@@ -44,13 +46,14 @@ impl RuntimeProviderExecutionPort {
                     url: url.clone(),
                     provider_instance_name: provider_instance_name.to_owned(),
                     protocol_adapter_id: protocol_adapter_id.to_owned(),
-                    artifact_id: artifact
-                        .metadata
-                        .as_ref()
-                        .and_then(|metadata| metadata.get("artifact_id"))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                        .or_else(|| Some(artifact.name.clone())),
+                    origin_provider: origin_provider.to_owned(),
+                    artifact_id: provider_artifact_refs
+                        .get(&artifact.name)
+                        .map(|artifact_ref| artifact_ref.id.clone()),
+                    content_digest: None,
+                    expires_at_ms: provider_artifact_refs
+                        .get(&artifact.name)
+                        .and_then(|artifact_ref| artifact_ref.expires_at_ms),
                     tenant_id: context.tenant_id.clone(),
                     user_id: context.caller_id.clone(),
                     caller_app_id: None,
@@ -62,32 +65,77 @@ impl RuntimeProviderExecutionPort {
                     ProtocolError::invalid_configuration("artifact URL source registration failed")
                 })?;
         }
+        for (artifact_name, artifact_ref) in provider_artifact_refs {
+            let Some(content_digest) = output
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.name == artifact_name)
+                .and_then(|artifact| artifact.metadata.as_ref())
+                .and_then(|metadata| metadata.get("digest"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            storage
+                .remember_provider_artifact_id(&ProviderArtifactIdRecord {
+                    content_digest,
+                    provider_instance_name: provider_instance_name.to_owned(),
+                    origin_provider: origin_provider.to_owned(),
+                    artifact_id: artifact_ref.id,
+                    expires_at_ms: artifact_ref.expires_at_ms,
+                    created_at_ms: now_ms() as i64,
+                })
+                .await
+                .map_err(|_| {
+                    ProtocolError::invalid_configuration("Provider artifact ID registration failed")
+                })?;
+        }
         Ok(())
     }
 
-    async fn remember_call_artifact_urls(
+    async fn remember_call_provider_artifacts(
         &self,
         call: &ResolvedProviderCall,
-        output: &ProtocolOutput,
+        output: &mut ProtocolOutput,
     ) -> Result<(), ProtocolError> {
-        let has_url = output
-            .artifacts
-            .iter()
-            .any(|artifact| matches!(artifact.resource, buckyos_api::ResourceRef::Url { .. }));
-        if !has_url {
+        if output.artifacts.is_empty() {
             return Ok(());
         }
-        let context = call.resource_access_context.as_ref().ok_or_else(|| {
-            ProtocolError::invalid_configuration("artifact URL context is missing")
-        })?;
-        Self::remember_artifact_url_sources(
+        let context = call
+            .resource_access_context
+            .as_ref()
+            .ok_or_else(|| ProtocolError::invalid_configuration("artifact context is missing"))?;
+        Self::remember_provider_artifacts(
             self.storage.as_ref(),
             &call.provider_instance_name,
             &call.protocol_adapter_id,
+            &call.context.state_coordinate.origin_provider,
             context,
             output,
         )
         .await
+    }
+
+    async fn forget_rejected_provider_artifacts(&self, call: &ResolvedProviderCall) {
+        for resource in call.context.resources.values() {
+            let Some(artifact_id) = resource.provider_artifact_id.as_deref() else {
+                continue;
+            };
+            let content_digest = format!("sha256:{:x}", Sha256::digest(&resource.bytes));
+            if let Err(error) = self
+                .storage
+                .forget_provider_artifact_id(
+                    &content_digest,
+                    &call.provider_instance_name,
+                    &call.context.state_coordinate.origin_provider,
+                    artifact_id,
+                )
+                .await
+            {
+                log::warn!("failed to invalidate rejected Provider artifact ID: {error}");
+            }
+        }
     }
 
     pub(crate) async fn open_artifact_url_reader(
@@ -98,7 +146,7 @@ impl RuntimeProviderExecutionPort {
     ) -> Result<crate::protocol::ArtifactUrlReader, AiccError> {
         let source = self
             .storage
-            .artifact_url_source(url)
+            .artifact_url_source(url, now_ms() as i64)
             .await
             .map_err(|_| {
                 AiccError::new(
@@ -141,7 +189,7 @@ impl RuntimeProviderExecutionPort {
                 "artifact ProviderInstance Adapter has changed",
             ));
         }
-        provider
+        let mut reader = provider
             .open_artifact_url_reader(self.codecs.as_ref(), url)
             .await
             .map_err(|error| AiccError {
@@ -153,7 +201,47 @@ impl RuntimeProviderExecutionPort {
                     ProtocolErrorKind::Timeout | ProtocolErrorKind::Transport
                 ),
                 details: None,
-            })
+            })?;
+        if source.content_digest.is_none() {
+            let storage = self.storage.clone();
+            let completion_source = source.clone();
+            reader.body = Box::pin(stream::unfold(
+                (reader.body, Sha256::new(), false),
+                move |(mut body, mut hasher, failed)| {
+                    let storage = storage.clone();
+                    let source = completion_source.clone();
+                    async move {
+                        if failed {
+                            return None;
+                        }
+                        match body.next().await {
+                            Some(Ok(bytes)) => {
+                                hasher.update(&bytes);
+                                Some((Ok(bytes), (body, hasher, false)))
+                            }
+                            Some(Err(error)) => Some((Err(error), (body, hasher, true))),
+                            None => {
+                                let content_digest = format!("sha256:{:x}", hasher.finalize());
+                                if let Err(error) = storage
+                                    .complete_artifact_url_digest(
+                                        &source,
+                                        &content_digest,
+                                        now_ms() as i64,
+                                    )
+                                    .await
+                                {
+                                    log::warn!(
+                                        "failed to persist Provider artifact digest: {error}"
+                                    );
+                                }
+                                None
+                            }
+                        }
+                    }
+                },
+            ));
+        }
+        Ok(reader)
     }
 
     async fn materialize_embedding_output(
@@ -317,20 +405,22 @@ impl RuntimeProviderExecutionPort {
         .map_err(|_| ProtocolError::invalid_configuration("artifact writer is unavailable"))?;
 
         for index in 0..output.artifacts.len() {
-            let (old_resource, name, mime, bytes) = match &output.artifacts[index].resource {
-                buckyos_api::ResourceRef::Base64 { mime, data_base64 } => {
-                    let bytes = BASE64_STANDARD.decode(data_base64).map_err(|_| {
-                        ProtocolError::invalid_response("inline artifact is not valid base64")
-                    })?;
-                    (
-                        output.artifacts[index].resource.clone(),
-                        output.artifacts[index].name.clone(),
-                        mime.clone(),
-                        bytes,
-                    )
-                }
-                _ => continue,
-            };
+            let (old_resource, name, mime, bytes, previous_metadata) =
+                match &output.artifacts[index].resource {
+                    buckyos_api::ResourceRef::Base64 { mime, data_base64 } => {
+                        let bytes = BASE64_STANDARD.decode(data_base64).map_err(|_| {
+                            ProtocolError::invalid_response("inline artifact is not valid base64")
+                        })?;
+                        (
+                            output.artifacts[index].resource.clone(),
+                            output.artifacts[index].name.clone(),
+                            mime.clone(),
+                            bytes,
+                            output.artifacts[index].metadata.clone(),
+                        )
+                    }
+                    _ => continue,
+                };
             let mut artifact = manager
                 .write_artifact(
                     context,
@@ -366,6 +456,16 @@ impl RuntimeProviderExecutionPort {
             replace_resource_ref_value(&mut output.value, &old_resource, &artifact.resource)?;
             if artifact.mime.is_none() {
                 artifact.mime = Some(mime);
+            }
+            if let Some(Value::Object(previous)) = previous_metadata {
+                let metadata = artifact
+                    .metadata
+                    .get_or_insert_with(|| Value::Object(Map::new()));
+                if let Some(metadata) = metadata.as_object_mut() {
+                    for (name, value) in previous {
+                        metadata.entry(name).or_insert(value);
+                    }
+                }
             }
             append_materialized_artifact_metadata(
                 &mut output.value,
@@ -713,16 +813,16 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                                 .materialize_embedding_output(call, output)
                                 .await
                                 .map_err(ProviderStartFailure::after_accept)?;
-                            let output = self
+                            let mut output = self
                                 .materialize_inline_artifact_output(call, output)
+                                .await
+                                .map_err(ProviderStartFailure::after_accept)?;
+                            self.remember_call_provider_artifacts(call, &mut output)
                                 .await
                                 .map_err(ProviderStartFailure::after_accept)?;
                             let output = Self::map_rerank_output(call, output)
                                 .map_err(ProviderStartFailure::after_accept)?;
                             let output = Self::validate_computer_output(call, output)
-                                .map_err(ProviderStartFailure::after_accept)?;
-                            self.remember_call_artifact_urls(call, &output)
-                                .await
                                 .map_err(ProviderStartFailure::after_accept)?;
                             Ok(ProviderExecution::Immediate(output))
                         }
@@ -782,22 +882,18 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                                     );
                                 }
                             }
-                            if let ProtocolEvent::Final(output) = &event {
-                                if output.artifacts.iter().any(|artifact| {
-                                    matches!(
-                                        artifact.resource,
-                                        buckyos_api::ResourceRef::Url { .. }
-                                    )
-                                }) {
+                            if let ProtocolEvent::Final(output) = &mut event {
+                                if !output.artifacts.is_empty() {
                                     let context = resource_context.as_ref().ok_or_else(|| {
                                         ProtocolError::invalid_configuration(
-                                            "artifact URL context is missing",
+                                            "artifact context is missing",
                                         )
                                     })?;
-                                    Self::remember_artifact_url_sources(
+                                    Self::remember_provider_artifacts(
                                         storage.as_ref(),
                                         &provider_instance_name,
                                         &protocol_adapter_id,
+                                        &source.origin_provider,
                                         context,
                                         output,
                                     )
@@ -906,6 +1002,9 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                 now_ms(),
             ),
             Err(failure) => {
+                if failure.error.http_status == Some(404) {
+                    self.forget_rejected_provider_artifacts(call).await;
+                }
                 let kind = health_failure_kind(&failure.error);
                 self.model_health.record_failure(
                     &call.exact_model,
@@ -929,7 +1028,10 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
             .await?
         {
             NativeTaskOutput::Status {
-                state, result_ref, ..
+                state,
+                result_ref,
+                result_artifacts,
+                ..
             } if state == crate::protocol::NativeTaskState::Succeeded => {
                 let mut result_binding = binding.clone();
                 if let Some(result_ref) = result_ref {
@@ -943,7 +1045,10 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                     )
                     .await?
                 {
-                    NativeTaskOutput::Result(output) => {
+                    NativeTaskOutput::Result(mut output) => {
+                        let mut artifact_refs = binding.result_artifacts.clone();
+                        artifact_refs.extend(result_artifacts);
+                        output.bind_provider_artifact_refs(&artifact_refs);
                         let output = self
                             .materialize_inline_artifact_output_with_context(
                                 &binding
@@ -955,16 +1060,18 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                             )
                             .await
                             .map_err(NativeTaskResumeError::Protocol)?;
-                        Self::remember_artifact_url_sources(
+                        let mut output = output;
+                        Self::remember_provider_artifacts(
                             self.storage.as_ref(),
                             &binding.provider_instance_name,
                             &binding.protocol_adapter_id,
+                            &binding.origin_provider,
                             &binding
                                 .resume
                                 .as_ref()
                                 .ok_or(NativeTaskResumeError::CredentialUnavailable)?
                                 .resource_access_context,
-                            &output,
+                            &mut output,
                         )
                         .await
                         .map_err(NativeTaskResumeError::Protocol)?;
