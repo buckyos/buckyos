@@ -345,6 +345,10 @@ mod tests {
             rules.patterns[0].operations["image.img2img"],
             OPENAI_RESPONSES_OPERATION_ID
         );
+        assert!(rules.patterns[0]
+            .request_rules
+            .iter()
+            .any(|rule| rule.remove == ["/temperature", "/top_p"]));
         let general = rules
             .patterns
             .iter()

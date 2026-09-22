@@ -657,6 +657,11 @@ pub(crate) trait ExecutionStore: Send + Sync {
         state: ExecutionState,
         binding: PinnedProviderTask,
     ) -> Result<bool, AiccError>;
+    async fn stage_output(
+        &self,
+        task_id: &str,
+        output: ExecutionOutput,
+    ) -> Result<bool, AiccError>;
     async fn try_complete(&self, task_id: &str, output: ExecutionOutput)
         -> Result<bool, AiccError>;
     async fn try_fail(&self, task_id: &str, error: AiccError) -> Result<bool, AiccError>;
@@ -1299,11 +1304,16 @@ impl ExecutionEngine {
 
     pub(crate) async fn recover(&self) -> Result<Vec<ExecutionReceipt>, AiccError> {
         let records = self.store.recoverable().await?;
-        let task_ids: Vec<String> = records
-            .iter()
-            .map(|record| record.task_id.clone())
-            .collect();
-        let results = join_all(task_ids.iter().map(|task_id| self.drive_native(task_id))).await;
+        let task_ids: Vec<String> = records.iter().map(|record| record.task_id.clone()).collect();
+        let results = join_all(records.iter().map(|record| async move {
+            if let Some(output) = &record.output {
+                return self
+                    .commit_staged_success(&record.task_id, output.clone())
+                    .await;
+            }
+            self.drive_native(&record.task_id).await
+        }))
+        .await;
         let mut receipts = Vec::with_capacity(results.len());
         for (task_id, result) in task_ids.into_iter().zip(results) {
             match result {
@@ -1519,9 +1529,23 @@ impl ExecutionEngine {
         {
             return self.finish_failure(task_id, error).await;
         }
-        if self.store.try_complete(task_id, output.clone()).await? {
-            self.tasks.commit_result(task_id, &output).await?;
+        if !self.store.stage_output(task_id, output.clone()).await? {
+            self.remove_active(task_id);
+            return self.current_receipt(task_id).await;
         }
+        self.commit_staged_success(task_id, output).await
+    }
+
+    async fn commit_staged_success(
+        &self,
+        task_id: &str,
+        output: ExecutionOutput,
+    ) -> Result<ExecutionReceipt, AiccError> {
+        if let Err(error) = self.tasks.commit_result(task_id, &output).await {
+            self.remove_active(task_id);
+            return Err(error);
+        }
+        self.store.try_complete(task_id, output.clone()).await?;
         self.remove_active(task_id);
         self.current_receipt(task_id).await
     }
@@ -1703,6 +1727,20 @@ mod tests {
             })
         }
 
+        async fn stage_output(
+            &self,
+            task_id: &str,
+            output: ExecutionOutput,
+        ) -> Result<bool, AiccError> {
+            self.mutate(task_id, |record| {
+                if record.state.is_terminal() {
+                    return false;
+                }
+                record.output = Some(output);
+                true
+            })
+        }
+
         async fn try_complete(
             &self,
             task_id: &str,
@@ -1783,6 +1821,7 @@ mod tests {
         trace_by_task: Mutex<BTreeMap<String, Option<String>>>,
         events: Mutex<Vec<(String, ExecutionState, Value)>>,
         completed: Mutex<Vec<(String, Option<String>)>>,
+        commit_error: Mutex<Option<AiccError>>,
         failed: Mutex<Vec<(String, Option<String>)>>,
         cancelled: Mutex<Vec<(String, Option<String>)>>,
     }
@@ -1842,6 +1881,9 @@ mod tests {
             task_id: &str,
             _output: &ExecutionOutput,
         ) -> Result<(), AiccError> {
+            if let Some(error) = self.commit_error.lock().unwrap().clone() {
+                return Err(error);
+            }
             self.completed
                 .lock()
                 .unwrap()
@@ -2485,6 +2527,39 @@ mod tests {
         assert!(events.iter().all(|(_, _, data)| {
             data.pointer("/aicc/trace_id").and_then(Value::as_str) == Some("trace-1")
         }));
+        assert_eq!(tasks.completed.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn taskmgr_commit_failure_keeps_execution_recoverable() {
+        let providers = Arc::new(FakeProviders::default());
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(output(
+                "ok",
+            ))));
+        let (engine, store, tasks, usage) = make_engine(providers.clone());
+        *tasks.commit_error.lock().unwrap() = Some(aicc_error(
+            AiccErrorCode::InternalError,
+            "taskmgr unavailable",
+            true,
+        ));
+
+        let error = engine.execute(request(call("primary"))).await.unwrap_err();
+        assert_eq!(error.message, "taskmgr unavailable");
+        let record = store.get_task("task-1").await.unwrap().unwrap();
+        assert_eq!(record.state, ExecutionState::Running);
+        assert!(record.output.is_some());
+        assert_eq!(store.recoverable().await.unwrap().len(), 1);
+        assert_eq!(usage.writes.lock().unwrap().len(), 1);
+        assert!(tasks.completed.lock().unwrap().is_empty());
+
+        *tasks.commit_error.lock().unwrap() = None;
+        let receipts = engine.recover().await.unwrap();
+        assert_eq!(receipts[0].state, ExecutionState::Succeeded);
+        assert_eq!(providers.starts.lock().unwrap().len(), 1);
         assert_eq!(tasks.completed.lock().unwrap().len(), 1);
     }
 

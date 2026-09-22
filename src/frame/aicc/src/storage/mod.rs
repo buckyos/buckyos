@@ -1158,6 +1158,18 @@ impl ExecutionStore for AiccStorage {
         .map_err(storage_error)
     }
 
+    async fn stage_output(
+        &self,
+        task_id: &str,
+        output: ExecutionOutput,
+    ) -> Result<bool, AiccError> {
+        self.mutate_execution(task_id, |record| {
+            record.output = Some(output);
+        })
+        .await
+        .map_err(storage_error)
+    }
+
     async fn try_complete(
         &self,
         task_id: &str,

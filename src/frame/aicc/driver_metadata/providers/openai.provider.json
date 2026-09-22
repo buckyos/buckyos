@@ -29,7 +29,13 @@
         "image.txt2img": "responses.create",
         "image.img2img": "responses.create",
         "agent.computer_use": "responses.create"
-      }
+      },
+      "request_rules": [
+        {
+          "when": { "/reasoning/effort": { "not": "none" } },
+          "remove": ["/temperature", "/top_p"]
+        }
+      ]
     },
     {
       "match": "tts-*",

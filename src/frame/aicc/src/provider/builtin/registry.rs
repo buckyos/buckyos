@@ -707,7 +707,7 @@ mod tests {
             BTreeMap::from([
                 (
                     "claude".to_owned(),
-                    "5:2d1e605c90b0f6aff837c7fb1b0d27e634d07bd97987697a4b78d31ee3b81df2".to_owned()
+                    "5:704897f72265b326a4e652367638ad3d5c9db1d1dac237f0fe26324c2da8f381".to_owned()
                 ),
                 (
                     "deepseek".to_owned(),
@@ -723,7 +723,7 @@ mod tests {
                 ),
                 (
                     "gemini".to_owned(),
-                    "28:2d2e0ea7dce142aaef4f1e3f6d7ed83e11a4d9eb4c5ac3a9f89594b4dfa54b82".to_owned()
+                    "26:b6c5f36a7e54bb59c6304a75c83f08a682022b16aa999809ca6b1292b8fa404a".to_owned()
                 ),
                 (
                     "glm".to_owned(),
@@ -739,7 +739,7 @@ mod tests {
                 ),
                 (
                     "openai".to_owned(),
-                    "15:1881225103e252c6dd28206ca5c18aa94ca0cccc3b4d599b788c18508be9ed58".to_owned()
+                    "15:f1724559551a7edd0c46bc5fbdc7c12b7c17ce05ca8b68347fc446cc0ca117ab".to_owned()
                 ),
                 (
                     "openrouter".to_owned(),
