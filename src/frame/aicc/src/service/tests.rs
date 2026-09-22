@@ -1075,6 +1075,17 @@ fn builtin_logical_definitions_make_llm_chat_routable_with_glm_only() {
         candidates.candidates[0].paths[0].logical_paths,
         vec!["llm.chat", "llm.glm"]
     );
+
+    let directory = model_directory_json(&registry);
+    let chat = directory
+        .get("llm.chat")
+        .and_then(|value| value.as_object())
+        .unwrap();
+    assert_eq!(chat["glm"]["target"], "llm.glm");
+    assert!(!chat.values().any(|item| item["target"] == "llm.deepseek-flash"));
+    assert!(!chat.values().any(|item| item["target"] == "llm.doubao-lite"));
+    assert!(directory.get("llm.deepseek-flash").is_none());
+    assert!(directory.get("llm.doubao-lite").is_none());
 }
 
 #[test]
@@ -1244,6 +1255,31 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
         .unwrap();
     assert!(chat.items.iter().any(|item| item.target == "llm.qwen-plus"));
     assert!(chat.items.iter().any(|item| item.target == "llm.minimax"));
+    let directory = model_directory_json(&registry);
+    assert!(directory.get("llm").is_some());
+    assert!(directory.get("llm.chat").is_some());
+    assert!(directory.get("image.txt2img").is_some());
+    assert!(directory.get("audio.tts").is_some());
+    assert!(directory.get("video.txt2video").is_some());
+    let definition_paths = logical_definitions_json(&registry)
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|definition| definition["path"].as_str().map(str::to_owned))
+        .collect::<BTreeSet<_>>();
+    assert!(definition_paths.contains("image.txt2img"));
+    assert!(definition_paths.contains("audio.tts"));
+    assert!(definition_paths.contains("video.txt2video"));
+    let directory_chat = directory
+        .get("llm.chat")
+        .and_then(|value| value.as_object())
+        .unwrap();
+    assert!(!directory_chat
+        .values()
+        .any(|item| item["target"] == "llm.qwen-plus"));
+    assert!(!directory_chat
+        .values()
+        .any(|item| item["target"] == "llm.minimax"));
 
     let inventory = ModelProviderInventory {
         provider_instance_name: "primary".to_string(),
