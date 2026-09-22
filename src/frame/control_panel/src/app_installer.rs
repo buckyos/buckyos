@@ -707,9 +707,6 @@ impl AppInstaller {
                 "lifecycle task installation identity changed".to_string(),
             ));
         }
-        self.ensure_runtime_has_no_agent_bindings(&spec.app_instance_id)
-            .await?;
-
         let task_mgr = self.task_mgr_client().await?;
         task_mgr.runner_start(&task_id).await?;
         self.enable_safe_cancel(&task_id).await?;
