@@ -82,6 +82,11 @@ export type AcceptanceCase = {
   switch_source_model_id?: string;
   switch_target_provider_driver?: string;
   switch_target_contract_id?: string;
+  artifact_source_provider_driver?: string;
+  artifact_source_contract_id?: string;
+  artifact_source_api_type?: string;
+  artifact_source_model_id?: string;
+  artifact_target_expect_provider_id?: boolean;
 };
 
 export type ProviderModel = {
@@ -209,6 +214,7 @@ export type MatrixCell = {
   api_type: string;
   method: string;
   variant?: "embedding_large_artifact";
+  generated_artifact_source_api_type?: string;
   baseline_status: CapabilityRule["status"];
   input_kinds: string[];
   output_kinds: string[];

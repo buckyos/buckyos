@@ -419,6 +419,16 @@ T1.5 必须把近期线上失败沉淀为跨 Provider 回归用例，而不能�
 - Claude canonical JSON Schema 必须 lowering 到 `output_config.format`；Claude 5 Mock 必须拒绝 `thinking.type=enabled` 和 `budget_tokens`，并验证旧配置已转换为 adaptive thinking 且不覆盖显式 effort。
 - Provider 返回图片、音频、视频、OCR/segment 等媒体 artifact 时，不论 Provider driver 是 Gemini、OpenAI、Fal、MiniMax 还是其他实现，AICC 提交给 TaskMgr 的最终 result 必须使用 `NamedObject` 或 URL 等稳定资源引用，不得保留 inline base64 导致 TaskMgr result 提交失败或 task 停留在非终态。
 
+对会生成图片、视频、音频等可二次创作内容的 Provider，T1.5 协议契约还必须显式声明内容标识能力。声明必须来自具体 adapter 对应的 Provider 官方协议，而不是从 AICC 实现、metadata 或历史日志推断；官方资料未明确返回可复用标识或未声明可用标识作为输入时，该协议点必须标记为不支持，不得猜测。契约至少包含：
+
+- 哪些 API type 的响应会返回 Provider 原生内容标识，例如 `id`、`file_id`、`fileId`、`name`、operation ID 或官方明确说明可作为后续输入的 opaque handle。
+- 哪些 API type 可在二次创作输入中携带该标识。
+- 标识有效期、所属 Provider/original_provider、adapter/API version、origin model 或 operation 约束。
+- 同 Provider instance 且 original_provider 坐标一致时，是否必须优先复用前次生成内容标识。
+- Provider instance 或 original_provider 任一不同、adapter/API version 不匹配、标识过期或官方未声明可复用时，必须禁止携带该标识，并回退到物化后的 `NamedObject`/URL/文件内容输入或明确失败。
+
+凡契约声明支持内容标识的生成型 success cell，T1.5 必须派生二次创作回归用例：先通过 source API 生成 artifact 并登记内容标识，再以 target API 进行二次创作。`same_provider_artifact_id` 用例必须断言 target wire request 使用官方声明的原生标识；`cross_provider_artifact_id` 用例必须断言 target wire request 不泄漏也不复用 source Provider 的原生标识。Mock Provider 必须 fail-closed 地拒绝未声明的内容标识字段、错误 id 字段名和跨协议 id 形态。
+
 ### 8.5 正常请求与响应
 
 每个适用矩阵单元至少逐字段验证：
@@ -429,6 +439,7 @@ T1.5 必须把近期线上失败沉淀为跨 Provider 回归用例，而不能�
 - 文本、结构化内容、tool/schema、URL、base64、multipart、文件上传及官方支持的资源引用。
 - streaming event、异步 submit/poll/cancel、operation ID 和终态协议。
 - 官方正常响应到 AICC typed response、task、usage、finish reason、tool call 和 artifact 的映射。
+- Provider 返回内容标识时，必须验证该标识按 artifact name 或官方结果结构绑定到 AICC artifact，并在提交 TaskMgr result 前去除仅供内部复用的敏感原生标识；报告只记录标识存在性和脱敏摘要。
 - 对所有携带 provider-native history 的协议，至少一个 cell 必须使用 Mock 第一轮官方响应的 typed message 构造第二轮请求，执行真实 `decode -> canonical history -> encode`，并比较完整原生单元；只手工拼 canonical 历史不能作为 round-trip 通过证据。
 - TaskMgr 终态 result 的 artifact/resource 表示必须可追踪、可下载或可授权读取；T1.5 中所有产生 artifact 的成功用例都要断言 result 已提交成功且不包含 inline base64 资源。
 
@@ -454,6 +465,7 @@ Mock Provider 必须先按官方 schema 校验请求，再返回官方格式响�
 - 每个启用 Provider driver 的全部已实现 adapter/API version 和 API type 都有明确结果。
 - 每个可独立调用的 metadata variant 都有独立协议结果。
 - 同一 session 的 `<source provider, source model> x <target provider, target model>` 切换矩阵有明确结果，并覆盖同 Provider/model、同 Provider 不同 model、不同 Provider 同能力、不同 Provider 不同协议四类代表路径。
+- 对官方协议声明支持内容标识的生成/二次创作组合，same-provider 和 cross-provider/original-provider 的内容标识复用矩阵有明确结果。
 - 所有请求在独立高保真 Mock 中通过官方 schema 和逐字段断言。
 - 正常响应、streaming、异步任务及官方错误分支均正确映射。
 - 测试证据能追溯到 Provider 官方资料，且未以 AICC 文档或实现生成期望值。
@@ -473,6 +485,7 @@ T2 baseline 的一条记录对应一个 `ProviderInstance × model × API-Type` 
 - provider model ID、exact model、canonical API type 和 method。
 - 模型 active 状态、官方能力证据 URL、检查时间和证据摘要。
 - 最小输入 fixture、确定性断言或版本化语义 rubric。
+- 对二次创作 API，如官方协议和 AICC 能力声明表明同一物理模型或同一 Provider instance 可由生成型 API 产生输入 artifact，baseline 必须记录 `generated_artifact_source_api_type` 或等价前置来源；未声明可复用内容标识时只记录普通资源前置，不得要求原生 id 复用。
 - 最大调用次数、最大重试次数、timeout 和预计成本。
 - 对应 case id 和覆盖状态。
 
@@ -506,6 +519,8 @@ Provider driver 是 instance 的归属与报告分组字段，不增加覆盖维
 
 T2 不覆盖同一 API type 的格式全集、多输入规模边界、参数排列、streaming/非 streaming 双路径、错误响应或资源传输形态；这些属于 T1.5。压缩包和多轮组合任务属于 T3。
 
+对于图片、视频、音频等生成内容的二次创作 API，如果同一 Provider instance 的同一 active 基础物理模型同时支持生成型 source API 和 target 二次创作 API，T2 runner 应为 target 单元执行一个最小生成前置：先调用 source API 获得真实 artifact，再将该 artifact 作为 target 输入。该前置调用计入真实调用次数、成本、usage 和 artifact 清理账本，但不增加 `ProviderInstance × model × API-Type` 主矩阵单元数量。T2 只验证真实链路中生成物可被 target API 消费并产生正确输出；是否使用 provider 原生内容标识、具体字段名和跨 Provider 禁用规则由 T1.5 的 wire 契约断言。
+
 各 canonical API type 的推理正确性目标如下：
 
 `chat.completions.create` 是 AICC 的 provider-neutral LLM typed inference 接口，也是 LLM typed inference 的唯一 kRPC method。底层 wire API 的正确性由 T1.5 验证。
@@ -515,7 +530,7 @@ T2 不覆盖同一 API type 的格式全集、多输入规模边界、参数排�
 - `embedding.multimodal`：最小文本与图片输入到同一 embedding space 的有效向量。
 - `rerank`：query 与内联/resource documents 到有序 document ID、index 和 score。
 - `image.txt2img`：文本到图片。
-- `image.img2img`：单图加最短文本到图片。
+- `image.img2img`：单图加最短文本到图片；同 Provider/model 支持时优先使用 `image.txt2img` 前置生成物作为输入。
 - `image.inpaint`：原图、mask 和文本到图片。
 - `image.upscale`：图片到高分辨率图片。
 - `image.bg_remove`：图片到透明背景图片或前景 mask，按 method schema 判定。
@@ -526,12 +541,12 @@ T2 不覆盖同一 API type 的格式全集、多输入规模边界、参数排�
 - `audio.tts`：文本到语音音频。
 - `audio.asr`：语音音频到文本、时间戳和 speaker 信息，后两项按官方能力判定。
 - `audio.music`：文本或参考音频到音乐音频。
-- `audio.enhance`：音频到降噪、分离、修复或增强后的音频，具体 operation 按官方能力判定。
+- `audio.enhance`：音频到降噪、分离、修复或增强后的音频，具体 operation 按官方能力判定；同 Provider/model 支持时可使用 `audio.tts` 前置生成物作为输入。
 - `video.txt2video`：文本到视频。
-- `video.img2video`：图片加文本到视频。
-- `video.video2video`：视频加文本或控制参数到视频。
-- `video.extend`：可续作视频及其 Provider/source operation 状态到延长视频。
-- `video.upscale`：视频到高分辨率视频。
+- `video.img2video`：图片加文本到视频；同 Provider/model 支持时可使用 `image.txt2img` 前置生成物作为输入。
+- `video.video2video`：视频加文本或控制参数到视频；同 Provider/model 支持时优先使用 `video.txt2video` 前置生成物作为输入。
+- `video.extend`：可续作视频及其 Provider/source operation 状态到延长视频；同 Provider/model 支持时必须使用 `video.txt2video` 前置生成物或其可审计 continuation source。
+- `video.upscale`：视频到高分辨率视频；同 Provider/model 支持时可使用 `video.txt2video` 前置生成物作为输入。
 - `agent.computer_use`：最小受控环境中的单个可验证动作；只有正式启用时才执行。
 - 新增 canonical API 必须定义一个最小正确性用例后再进入 T2 baseline。
 
@@ -544,6 +559,7 @@ T2 不覆盖同一 API type 的格式全集、多输入规模边界、参数排�
 - 请求命中 baseline 指定的 Provider instance 和 exact model。
 - Provider 返回真实 operation/request ID，或有其他可审计证据证明发生了线上调用。
 - task 达到正确终态，输出 schema、消息类型、artifact MIME 和可读性符合该 API type。
+- 对含生成前置的二次创作单元，source task、source artifact、target task、Provider operation/request ID、exact model、Provider instance 和资源引用必须在报告中关联；如果 adapter 复用了 provider 原生内容标识，报告只能记录脱敏摘要和复用命中，不得泄露完整标识。
 - 推理结果通过 9.4 节规定的确定性断言或语义 rubric。
 - usage、cost、trace 和 Provider operation ID 归因到目标 instance、模型和 API type。
 
@@ -678,9 +694,9 @@ Jarvis 必须限制解压目标路径、文件数、单文件大小、总大小�
 - 同一 session 历史路由软优先及硬约束导致的重新路由。
 - 同一 session 内显式或由硬约束触发切换不同 Provider/model，并验证跨 Provider/model 历史回放不会因旧 provider_state、tool call/result 或响应块差异导致请求失败。
 
-“同 Provider 二次创作”必须验证 `provider_task_ref`、source task ID、Provider operation ID、exact model、Provider instance、continuation options 和输入 artifact 引用被保存和恢复；不支持原生续作时必须合理降级并向用户明确说明。
+“同 Provider 二次创作”必须验证 `provider_task_ref`、source task ID、Provider operation ID、exact model、Provider instance、original_provider、continuation options、输入 artifact 引用和可复用内容标识命中状态被保存和恢复；只有 Provider instance 与 original_provider 坐标一致且 adapter 协议声明支持时，才允许复用前次生成的原生内容标识。不支持原生续作、坐标不一致或标识不可用时，必须合理降级为物化资源输入或向用户明确说明。
 
-T3 的跨 Provider/model 多轮场景只做代表性真实链路覆盖，完整组合矩阵由 T1.5 Mock 层承担。T3 必须至少覆盖一次从文本/工具调用型 LLM 切换到另一 Provider/model 继续对话，以及一次从生成媒体的 Provider/model 切换到另一个 Provider/model 消费历史生成物；报告必须能关联切换前后的 session、AICC task、exact model、Provider instance、provider_state 降级结果和用户可见输出。
+T3 的跨 Provider/model 多轮场景只做代表性真实链路覆盖，完整组合矩阵由 T1.5 Mock 层承担。T3 必须至少覆盖一次从文本/工具调用型 LLM 切换到另一 Provider/model 继续对话，以及一次从生成媒体的 Provider/model 切换到另一个 Provider/model 消费历史生成物；报告必须能关联切换前后的 session、AICC task、exact model、Provider instance、original_provider、provider_state 降级结果、内容标识禁用或降级结果和用户可见输出。
 
 ### 10.7 消息与投递语义
 

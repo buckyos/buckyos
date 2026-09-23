@@ -91,6 +91,13 @@ export type ProviderProtocolContract = {
   success_fixture?: Record<string, unknown>;
   async_result_fixture?: Record<string, unknown>;
   success_fixture_base64?: string;
+  provider_artifact_identity?: {
+    returns_api_types: string[];
+    accepts_api_types: string[];
+    id_fields: string[];
+    same_provider_reuse: "required";
+    cross_provider_reuse: "forbidden";
+  };
   official_sources: string[];
   evidence_summary: string;
 };
@@ -400,6 +407,42 @@ export function validateProviderProtocolCatalog(
         ) {
           throw new Error(
             `${id}.minimax_music.non_instrumental_requires_lyrics_or_optimizer must be a boolean`,
+          );
+        }
+      }
+      if (contract.provider_artifact_identity !== undefined) {
+        const identity = object(
+          contract.provider_artifact_identity,
+          `${id}.provider_artifact_identity`,
+        );
+        const returnsApiTypes = stringArray(
+          identity.returns_api_types,
+          `${id}.provider_artifact_identity.returns_api_types`,
+        );
+        const acceptsApiTypes = stringArray(
+          identity.accepts_api_types,
+          `${id}.provider_artifact_identity.accepts_api_types`,
+        );
+        stringArray(
+          identity.id_fields,
+          `${id}.provider_artifact_identity.id_fields`,
+        );
+        if (
+          returnsApiTypes.some((apiType) => !(contract.api_types as string[]).includes(apiType)) ||
+          acceptsApiTypes.some((apiType) => !(contract.api_types as string[]).includes(apiType))
+        ) {
+          throw new Error(
+            `${id}.provider_artifact_identity api types must be declared by the contract`,
+          );
+        }
+        if (identity.same_provider_reuse !== "required") {
+          throw new Error(
+            `${id}.provider_artifact_identity.same_provider_reuse is invalid`,
+          );
+        }
+        if (identity.cross_provider_reuse !== "forbidden") {
+          throw new Error(
+            `${id}.provider_artifact_identity.cross_provider_reuse is invalid`,
           );
         }
       }
@@ -1538,6 +1581,73 @@ export function buildT15Manifest(
             response_fixture: `${contract.id}.success`,
           } as AcceptanceCase);
         }
+        const artifactIdentity = contract.provider_artifact_identity;
+        if (
+          artifactIdentity?.accepts_api_types.includes(apiType) &&
+          artifactIdentity.returns_api_types.length > 0
+        ) {
+          const sourceApiType = artifactIdentity.returns_api_types[0];
+          cases.push({
+            ...common,
+            case_id: caseId(
+              `t1.5.${provider.provider_driver}.${contract.id}.${apiType}.generated-artifact-id.same-provider`,
+            ),
+            tags: [
+              ...common.tags!,
+              "generated_artifact_id",
+              "same_provider_artifact_id",
+            ],
+            mock_scenario: "success",
+            expected_wire_fixture:
+              `${contract.id}.request.generated-artifact-id.same-provider`,
+            response_fixture: `${contract.id}.success`,
+            artifact_source_provider_driver: provider.provider_driver,
+            artifact_source_contract_id: contract.id,
+            artifact_source_api_type: sourceApiType,
+            artifact_source_model_id: provider.test_model_ids[sourceApiType],
+            artifact_target_expect_provider_id: true,
+          } as AcceptanceCase);
+          const crossProvider = catalog.providers.find((candidate) =>
+            candidate.provider_driver !== provider.provider_driver &&
+            candidate.contracts.some((candidateContract) =>
+              candidateContract.api_types.includes(apiType)
+            )
+          );
+          const crossContract = crossProvider?.contracts.find((candidateContract) =>
+            candidateContract.api_types.includes(apiType)
+          );
+          if (crossProvider && crossContract) {
+            cases.push({
+              ...common,
+              case_id: caseId(
+                `t1.5.artifact-id.${provider.provider_driver}.${contract.id}.${sourceApiType}.to.${crossProvider.provider_driver}.${crossContract.id}.${apiType}.cross-provider`,
+              ),
+              tags: [
+                "provider_protocol",
+                crossProvider.provider_driver,
+                crossContract.protocol_adapter_id,
+                apiType,
+                "generated_artifact_id",
+                "cross_provider_artifact_id",
+              ],
+              provider_driver: crossProvider.provider_driver,
+              provider_instance: `t15-${crossProvider.provider_driver}`,
+              expected_provider_instance: `t15-${crossProvider.provider_driver}`,
+              protocol_contract_id: crossContract.id,
+              protocol_adapter_id: crossContract.protocol_adapter_id,
+              provider_api_version: crossContract.api_version,
+              mock_scenario: "success",
+              expected_wire_fixture:
+                `${crossContract.id}.request.generated-artifact-id.cross-provider`,
+              response_fixture: `${crossContract.id}.success`,
+              artifact_source_provider_driver: provider.provider_driver,
+              artifact_source_contract_id: contract.id,
+              artifact_source_api_type: sourceApiType,
+              artifact_source_model_id: provider.test_model_ids[sourceApiType],
+              artifact_target_expect_provider_id: false,
+            } as AcceptanceCase);
+          }
+        }
         const primaryApiType = contract.api_types[0];
         if (apiType === primaryApiType && contract.stream_protocol) {
           cases.push({
@@ -1774,6 +1884,7 @@ export function buildT15Manifest(
       !testCase.tags.includes("tool_history") &&
       !testCase.tags.includes("structured_output") &&
       !testCase.tags.includes("task_result_artifact") &&
+      !testCase.tags.includes("generated_artifact_id") &&
       !testCase.tags.includes("custom_provider")
     ).map((testCase) => ({
       ...testCase,

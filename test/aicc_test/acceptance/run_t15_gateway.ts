@@ -32,6 +32,7 @@ import { defectFromFailure, writeReport } from "./report.ts";
 import { inventoriesFromModelsList } from "./inventory.ts";
 import { runPreflight } from "./preflight.ts";
 import { withMockQuotaTruth } from "./quota_transaction.ts";
+import { methodsForApiType } from "./canonical.ts";
 import type {
   AcceptanceCase,
   AcceptanceReport,
@@ -83,6 +84,7 @@ type CaseResult = {
 type T15TypedOptions = {
   sessionId?: string;
   historyMessage?: Record<string, unknown>;
+  sourceResource?: Record<string, unknown>;
   foreignProviderState?: {
     provider: string;
     value: Record<string, unknown>;
@@ -760,7 +762,7 @@ export function buildT15TypedParams(
       return {
         ...common,
         prompt: "Preserve the image",
-        images: [resource("image/png")],
+        images: [typedOptions.sourceResource ?? resource("image/png")],
       };
     case "image.inpaint":
       return {
@@ -1018,6 +1020,43 @@ function canonicalJson(value: unknown): unknown {
 
 function sameJsonSemantics(left: unknown, right: unknown): boolean {
   return JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
+}
+
+function artifactSources(value: unknown, depth = 0): Array<Record<string, unknown>> {
+  if (depth > 8 || value === null || value === undefined) return [];
+  if (Array.isArray(value)) return value.flatMap((item) => artifactSources(item, depth + 1));
+  if (typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  const source = record.source && typeof record.source === "object" && !Array.isArray(record.source)
+    ? record.source as Record<string, unknown>
+    : undefined;
+  const found = source && (
+      typeof source.obj_id === "string" ||
+      typeof source.url === "string" ||
+      typeof source.data_base64 === "string"
+    )
+    ? [source]
+    : [];
+  return [...found, ...Object.values(record).flatMap((child) => artifactSources(child, depth + 1))];
+}
+
+function firstReusableArtifact(value: unknown): Record<string, unknown> {
+  const source = artifactSources(value).find((candidate) =>
+    typeof candidate.obj_id === "string" ||
+    typeof candidate.url === "string" ||
+    typeof candidate.data_base64 === "string"
+  );
+  if (!source) {
+    throw new Error("generated artifact source did not expose a reusable resource reference");
+  }
+  return source;
+}
+
+function containsString(value: unknown, needle: string): boolean {
+  if (typeof value === "string") return value.includes(needle);
+  if (Array.isArray(value)) return value.some((item) => containsString(item, needle));
+  if (!value || typeof value !== "object") return false;
+  return Object.values(value).some((item) => containsString(item, needle));
 }
 
 export function assertT15ResponseMapping(
@@ -1549,6 +1588,154 @@ async function executeProviderSwitchCase(
   };
 }
 
+async function executeGeneratedArtifactCase(
+  session: GatewaySession,
+  catalog: ProviderProtocolCatalog,
+  testCase: AcceptanceCase,
+  sourceInventory: ProviderInventory,
+  targetInventory: ProviderInventory,
+  controlUrl: string,
+  runId: string,
+  timeoutMs: number,
+): Promise<CaseResult> {
+  const started = Date.now();
+  const startedAt = new Date(started).toISOString();
+  const sourceProvider = testCase.artifact_source_provider_driver!;
+  const sourceContractId = testCase.artifact_source_contract_id!;
+  const sourceApiType = testCase.artifact_source_api_type!;
+  const sourceCase: AcceptanceCase = {
+    ...testCase,
+    case_id: `${testCase.case_id}.source`,
+    tags: testCase.tags.filter((tag) =>
+      !["generated_artifact_id", "same_provider_artifact_id", "cross_provider_artifact_id"].includes(tag)
+    ),
+    provider_driver: sourceProvider,
+    provider_instance: sourceInventory.provider_instance_name,
+    expected_provider_instance: sourceInventory.provider_instance_name,
+    protocol_contract_id: sourceContractId,
+    api_type: sourceApiType,
+    method: methodsForApiType(sourceApiType)[0] ?? sourceApiType,
+    mock_scenario: "success",
+    expected_error_class: null,
+  };
+  testCase.provider_instance = targetInventory.provider_instance_name;
+  testCase.expected_provider_instance = targetInventory.provider_instance_name;
+  let sourceExactModel: string | undefined;
+  let targetExactModel: string | undefined;
+  let failed: unknown;
+  let sourceRequests: Awaited<ReturnType<typeof capturedRequests>> = [];
+  let targetRequests: Awaited<ReturnType<typeof capturedRequests>> = [];
+  try {
+    sourceInventory = await refreshProviderInventory(
+      session,
+      catalog,
+      sourceProvider,
+      sourceInventory.provider_instance_name,
+      controlUrl,
+      runId,
+      timeoutMs,
+    );
+    targetInventory = await refreshProviderInventory(
+      session,
+      catalog,
+      testCase.provider_driver!,
+      targetInventory.provider_instance_name,
+      controlUrl,
+      runId,
+      timeoutMs,
+    );
+    sourceExactModel = exactModel(catalog, sourceCase, sourceInventory);
+    await selectMock(controlUrl, sourceCase, `${runId}:artifact-source`);
+    const sourceResult = await session.aicc.call(
+      sourceCase.method,
+      buildT15TypedParams(
+        sourceApiType,
+        sourceExactModel,
+        runId,
+        "immediate",
+        `${testCase.case_id}.source-artifact`,
+      ),
+    ) as Record<string, unknown>;
+    const sourceTerminal = await terminal(
+      session,
+      sourceResult,
+      Math.min(timeoutMs, testCase.timeout_ms),
+    );
+    sourceRequests = await capturedRequests(controlUrl);
+    const sourceResource = firstReusableArtifact(sourceTerminal);
+
+    targetExactModel = exactModel(catalog, testCase, targetInventory);
+    await selectMock(controlUrl, testCase, `${runId}:artifact-target`);
+    const targetResult = await session.aicc.call(
+      testCase.method,
+      buildT15TypedParams(
+        testCase.api_type!,
+        targetExactModel,
+        runId,
+        testCase.execution_mode,
+        `${testCase.case_id}.target-artifact`,
+        { sourceResource },
+      ),
+    ) as Record<string, unknown>;
+    const targetTerminal = await terminal(
+      session,
+      targetResult,
+      Math.min(timeoutMs, testCase.timeout_ms),
+    );
+    targetRequests = await capturedRequests(controlUrl);
+    assertT15ResponseMapping(
+      testCase.api_type!,
+      targetTerminal,
+      protocolContract(catalog, testCase.provider_driver!, testCase.protocol_contract_id!),
+    );
+  } catch (error) {
+    failed = error;
+  }
+  const sourceValidationErrors = sourceRequests.flatMap((request) =>
+    request.validation_errors ?? []
+  );
+  const targetValidationErrors = targetRequests.flatMap((request) =>
+    request.validation_errors ?? []
+  );
+  const diagnostics: string[] = [];
+  if (sourceRequests.length === 0) diagnostics.push("artifact source mock received no request");
+  if (targetRequests.length === 0) diagnostics.push("artifact target mock received no request");
+  if (sourceValidationErrors.length > 0) {
+    diagnostics.push(`source wire contract violations: ${JSON.stringify(sourceValidationErrors)}`);
+  }
+  if (targetValidationErrors.length > 0) {
+    diagnostics.push(`target wire contract violations: ${JSON.stringify(targetValidationErrors)}`);
+  }
+  const targetBody = targetRequests.find((request) => request.body)?.body;
+  const hasProviderArtifactId = containsString(targetBody, "gemini_image_mock_1");
+  if (testCase.artifact_target_expect_provider_id && !hasProviderArtifactId) {
+    diagnostics.push("same provider/original_provider did not reuse generated content provider artifact id");
+  }
+  if (testCase.artifact_target_expect_provider_id === false && hasProviderArtifactId) {
+    diagnostics.push("cross provider/original_provider leaked a generated content provider artifact id");
+  }
+  if (failed) diagnostics.push(String(failed));
+  return {
+    case_id: testCase.case_id,
+    provider_driver: testCase.provider_driver,
+    provider_instance: targetInventory.provider_instance_name,
+    exact_model: targetExactModel,
+    api_type: testCase.api_type ?? undefined,
+    method: testCase.method,
+    protocol_contract_id: testCase.protocol_contract_id,
+    scenario: testCase.mock_scenario,
+    status: diagnostics.length === 0 ? "passed" : "failed",
+    diagnostic: [
+      `source_provider=${sourceProvider}`,
+      sourceExactModel ? `source_exact_model=${sourceExactModel}` : undefined,
+      ...diagnostics,
+    ].filter(Boolean).join("; ") || undefined,
+    captured_requests: sourceRequests.length + targetRequests.length,
+    started_at: startedAt,
+    elapsed_ms: Date.now() - started,
+  };
+}
+
 export function variantCells(
   catalog: ProviderProtocolCatalog,
   inventory: ProviderInventory,
@@ -1661,6 +1848,11 @@ async function main(): Promise<void> {
         testCase.switch_source_provider_driver ?? "",
       );
     }
+    if (testCase.tags.includes("cross_provider_artifact_id")) {
+      return selectedProviders.has(
+        testCase.artifact_source_provider_driver ?? "",
+      );
+    }
     return true;
   };
   const requestedCase = (testCase: AcceptanceCase) =>
@@ -1669,13 +1861,15 @@ async function main(): Promise<void> {
     requestedCase,
   );
   const providerSwitchCases = scopedStaticManifest.filter((testCase) =>
-    testCase.tags.includes("provider_switch_matrix")
+    testCase.tags.includes("provider_switch_matrix") ||
+    testCase.tags.includes("cross_provider_artifact_id")
   );
   const switchProviderDrivers = new Set(
     providerSwitchCases.flatMap((testCase) =>
       [
         testCase.provider_driver,
         testCase.switch_source_provider_driver,
+        testCase.artifact_source_provider_driver,
       ].filter((driver): driver is string =>
         typeof driver === "string" && driver.length > 0
       )
@@ -1813,6 +2007,7 @@ async function main(): Promise<void> {
       )
         .filter((testCase) => testCase.provider_driver === driver)
         .filter((testCase) => !testCase.tags.includes("provider_switch_matrix"))
+        .filter((testCase) => !testCase.tags.includes("cross_provider_artifact_id"))
         .filter((testCase) => !testCase.tags.includes("custom_provider"))
         .filter(requestedCase);
       for (const testCase of manifest) plannedCaseIds.add(testCase.case_id);
@@ -1879,15 +2074,26 @@ async function main(): Promise<void> {
               );
             }
             results.push(
-              await executeCase(
-                session!,
-                catalog,
-                testCase,
-                effectiveInventory,
-                input.mockControlUrl,
-                runId,
-                input.timeoutMs,
-              ),
+              testCase.tags.includes("same_provider_artifact_id")
+                ? await executeGeneratedArtifactCase(
+                  session!,
+                  catalog,
+                  testCase,
+                  effectiveInventory,
+                  effectiveInventory,
+                  input.mockControlUrl,
+                  runId,
+                  input.timeoutMs,
+                )
+                : await executeCase(
+                  session!,
+                  catalog,
+                  testCase,
+                  effectiveInventory,
+                  input.mockControlUrl,
+                  runId,
+                  input.timeoutMs,
+                ),
             );
             if (testCase.tags.includes("cloud_update")) {
               const cleanup = await cloudFixture!.publish({
@@ -1950,7 +2156,8 @@ async function main(): Promise<void> {
             plannedCaseIds.add(testCase.case_id);
             unmatchedCaseIds.delete(testCase.case_id);
             const sourceInventory = providerInventories.get(
-              testCase.switch_source_provider_driver!,
+              testCase.switch_source_provider_driver ??
+                testCase.artifact_source_provider_driver!,
             );
             const targetInventory = providerInventories.get(
               testCase.provider_driver!,
@@ -1962,16 +2169,27 @@ async function main(): Promise<void> {
             }
             session = await refreshLogin(input, session!);
             results.push(
-              await executeProviderSwitchCase(
-                session!,
-                catalog,
-                testCase,
-                sourceInventory,
-                targetInventory,
-                input.mockControlUrl,
-                runId,
-                input.timeoutMs,
-              ),
+              testCase.tags.includes("cross_provider_artifact_id")
+                ? await executeGeneratedArtifactCase(
+                  session!,
+                  catalog,
+                  testCase,
+                  sourceInventory,
+                  targetInventory,
+                  input.mockControlUrl,
+                  runId,
+                  input.timeoutMs,
+                )
+                : await executeProviderSwitchCase(
+                  session!,
+                  catalog,
+                  testCase,
+                  sourceInventory,
+                  targetInventory,
+                  input.mockControlUrl,
+                  runId,
+                  input.timeoutMs,
+                ),
             );
           }
         },

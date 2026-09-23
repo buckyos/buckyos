@@ -315,7 +315,8 @@
             "allowed_fields": ["image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences", "thinking_level", "thinking_summaries", "tool_choice", "transcription_config", "video_config"],
             "thinking_level_values": ["minimal", "low", "medium", "high"]
           },
-          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.1-flash-image", "steps": [{ "type": "model_output", "content": [{ "type": "image", "mime_type": "image/png", "data": "iVBORw0KGgo=" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.1-flash-image", "steps": [{ "type": "model_output", "content": [{ "type": "image", "id": "gemini_image_mock_1", "mime_type": "image/png", "data": "iVBORw0KGgo=" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "provider_artifact_identity": { "returns_api_types": ["image.txt2img"], "accepts_api_types": ["image.img2img"], "id_fields": ["id", "file_id", "fileId", "name"], "same_provider_reuse": "required", "cross_provider_reuse": "forbidden" },
           "official_sources": ["https://ai.google.dev/gemini-api/docs/image-generation", "https://ai.google.dev/gemini-api/docs/api-errors"],
           "evidence_summary": "Gemini image generation and editing use POST /v1beta/interactions with model/input and return image content blocks."
         },

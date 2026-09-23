@@ -66,6 +66,7 @@ import { JudgeError, runJudge, selectJudgeModel } from "./judge.ts";
 import { bindOfficialCatalogInstances, fetchOfficialCatalogs } from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import { inventoriesFromModelsList } from "./inventory.ts";
+import { methodsForApiType } from "./canonical.ts";
 import {
   startNdnFixtureService,
   type NdnFixtureService,
@@ -1313,26 +1314,52 @@ async function executeAcceptance(input: {
     );
     const continuationPrerequisites = new Map<string, Promise<ResourceRef>>();
     const continuationResource = (cell: typeof executableCells[number]): Promise<ResourceRef> => {
-      const existing = continuationPrerequisites.get(cell.exact_model);
+      const sourceApiType = cell.generated_artifact_source_api_type ??
+        (cell.api_type === "video.extend" ? "video.txt2video" : undefined);
+      if (!sourceApiType) throw new Error(`${cell.case_id} has no generated artifact source api_type`);
+      const key = `${cell.exact_model}:${sourceApiType}`;
+      const existing = continuationPrerequisites.get(key);
       if (existing) return existing;
       const pending = scheduler.execute(cell.provider_driver, async () => {
         if (actualCalls >= options.maxRealCalls) {
-          throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before video.extend prerequisite`);
+          throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before generated artifact prerequisite`);
         }
+        const sourceMethod = methodsForApiType(sourceApiType)[0] ?? sourceApiType;
         const estimate = estimatedCellCost(cell, options.estimatedCostPerCallUsd);
         const reservation = costBudget.reserve(estimate);
         const started = Date.now();
         actualCalls += 1;
         try {
-          const prerequisiteRequest = structuredClone(preparedRequests.get(cell.case_id)!);
-          const payload = prerequisiteRequest.payload as Record<string, unknown>;
-          payload.input_json = {
-            prompt: "A paper plane moving across a desk, continuous steady motion",
-            duration_seconds: 4,
+          const prerequisiteCell = {
+            ...cell,
+            case_id: `${cell.case_id}.generated-artifact-source.${sourceApiType}`,
+            api_type: sourceApiType,
+            method: sourceMethod,
+            input_kinds: sourceApiType.startsWith("image.") ? ["text"]
+              : sourceApiType.startsWith("audio.") ? ["text"]
+              : sourceApiType.startsWith("video.") ? ["text"]
+              : cell.input_kinds,
+            output_kinds: sourceApiType.startsWith("image.") ? ["image"]
+              : sourceApiType.startsWith("audio.") ? ["audio"]
+              : sourceApiType.startsWith("video.") ? ["video"]
+              : cell.output_kinds,
+            generated_artifact_source_api_type: undefined,
           };
-          payload.resources = [];
-          prerequisiteRequest.idempotency_key = `${runId}:continuation:${cell.exact_model}`;
-          const initial = await session.aicc.call("video.txt2video", prerequisiteRequest) as AiMethodResponse;
+          const prerequisiteRequest = buildExactRequest({
+            cell: prerequisiteCell,
+            runId,
+            fixtures: options.fixtures,
+          });
+          const payload = prerequisiteRequest.payload as Record<string, unknown>;
+          if (sourceApiType === "video.txt2video") {
+            payload.input_json = {
+              prompt: "A paper plane moving across a desk, continuous steady motion",
+              duration_seconds: 4,
+            };
+            payload.resources = [];
+          }
+          prerequisiteRequest.idempotency_key = `${runId}:continuation:${sourceApiType}:${cell.exact_model}`;
+          const initial = await session.aicc.call(sourceMethod, prerequisiteRequest) as AiMethodResponse;
           const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
           const artifacts = await validateTerminalArtifacts({
             terminal,
@@ -1349,13 +1376,13 @@ async function executeAcceptance(input: {
           const finance = extractFinance(terminal);
           costBudget.settle(reservation, finance.actualCostUsd);
           financialEntries.push({
-            case_id: `t2.prerequisite.video_continuation.${cell.exact_model}`,
+            case_id: `t2.prerequisite.generated_artifact.${sourceApiType}.${cell.exact_model}`,
             attempt: 1,
             provider_driver: cell.provider_driver,
             provider_instance: cell.provider_instance,
             exact_model: cell.exact_model,
-            api_type: "video.txt2video",
-            method: "video.txt2video",
+            api_type: sourceApiType,
+            method: sourceMethod,
             started_at: new Date(started).toISOString(),
             status: "passed",
             usage: finance.usage,
@@ -1370,13 +1397,13 @@ async function executeAcceptance(input: {
         } catch (error) {
           costBudget.settle(reservation);
           financialEntries.push({
-            case_id: `t2.prerequisite.video_continuation.${cell.exact_model}`,
+            case_id: `t2.prerequisite.generated_artifact.${sourceApiType}.${cell.exact_model}`,
             attempt: 1,
             provider_driver: cell.provider_driver,
             provider_instance: cell.provider_instance,
             exact_model: cell.exact_model,
-            api_type: "video.txt2video",
-            method: "video.txt2video",
+            api_type: sourceApiType,
+            method: sourceMethod,
             started_at: new Date(started).toISOString(),
             status: "failed",
             estimated_cost_usd: estimate,
@@ -1385,7 +1412,7 @@ async function executeAcceptance(input: {
           throw error;
         }
       });
-      continuationPrerequisites.set(cell.exact_model, pending);
+      continuationPrerequisites.set(key, pending);
       return pending;
     };
     const executed = await Promise.all(executableCells.map(async (cell) => {
@@ -1410,7 +1437,7 @@ async function executeAcceptance(input: {
         let reservation: CostReservation | undefined;
         let reservationSettled = false;
         try {
-          if (cell.api_type === "video.extend") {
+          if (cell.generated_artifact_source_api_type || cell.api_type === "video.extend") {
             const generatedVideo = await continuationResource(cell);
             request = structuredClone(request);
             (request.payload as Record<string, unknown>).resources = [generatedVideo];

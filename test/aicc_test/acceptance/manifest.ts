@@ -359,6 +359,17 @@ function defaultOutputCombinations(apiType: string, declared: string[]): string[
   return [[canonical[apiType] ?? declared[0] ?? "structured"]];
 }
 
+function generatedArtifactSourceApiType(apiType: string, declared: Set<string>): string | undefined {
+  if (apiType === "image.img2img" && declared.has("image.txt2img")) return "image.txt2img";
+  if (apiType === "video.img2video" && declared.has("image.txt2img")) return "image.txt2img";
+  if (
+    ["video.video2video", "video.extend", "video.upscale"].includes(apiType) &&
+    declared.has("video.txt2video")
+  ) return "video.txt2video";
+  if (apiType === "audio.enhance" && declared.has("audio.tts")) return "audio.tts";
+  return undefined;
+}
+
 export function analyzeProviderMatrix(args: {
   baseline: ProviderBaseline;
   officialInventories: ProviderInventory[];
@@ -455,6 +466,7 @@ export function analyzeProviderMatrix(args: {
           provider_model_id: model.provider_model_id,
           api_type: apiType,
           method,
+          generated_artifact_source_api_type: generatedArtifactSourceApiType(apiType, declared),
           baseline_status: normalizedStatus(rule, model.provider_model_id),
           input_kinds: inputKinds,
           output_kinds: outputKinds,
