@@ -243,25 +243,57 @@ pub fn prepare_overlay_env(
         merged.insert(key.clone(), value.clone());
     }
 
+    let base_path = merged
+        .get("PATH")
+        .cloned()
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_default();
+    let mut path = ensure_system_path_entries(&base_path);
+
     let active = overlay.active_layers();
     if !active.is_empty() {
-        let base_path = merged
-            .get("PATH")
-            .cloned()
-            .or_else(|| std::env::var("PATH").ok())
-            .unwrap_or_default();
         // Walk layers from lowest precedence (end) to highest (front) so each
         // `prepend_path_entry` call leaves the higher-priority layer at the
         // very front of the resulting PATH string.
-        let mut path = base_path;
         for layer in active.iter().rev() {
             let entry = layer.to_string_lossy().to_string();
             path = prepend_path_entry(&entry, &path);
         }
-        merged.insert("PATH".to_string(), path);
     }
+    merged.insert("PATH".to_string(), path);
 
     merged.into_iter().collect()
+}
+
+fn ensure_system_path_entries(base_path: &str) -> String {
+    const SYSTEM_PATH_ENTRIES: [&str; 6] = [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+    ];
+
+    let mut path = base_path.trim().to_string();
+    for entry in SYSTEM_PATH_ENTRIES {
+        path = append_path_entry(entry, &path);
+    }
+    path
+}
+
+fn append_path_entry(entry: &str, base_path: &str) -> String {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return base_path.to_string();
+    }
+    if base_path.is_empty() {
+        return entry.to_string();
+    }
+    if base_path.split(':').any(|item| item == entry) {
+        return base_path.to_string();
+    }
+    format!("{base_path}:{entry}")
 }
 
 fn prepend_path_entry(entry: &str, base_path: &str) -> String {
@@ -1195,7 +1227,10 @@ mod tests {
             .find(|(k, _)| k == "PATH")
             .map(|(_, v)| v.clone())
             .unwrap();
-        assert_eq!(path2, "/p");
+        assert_eq!(
+            path2,
+            "/p:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        );
     }
 
     #[test]
@@ -1213,7 +1248,21 @@ mod tests {
             .unwrap();
         assert_eq!(
             path,
-            "/a/session:/a/agent:/a/runtime:/a/system:/usr/bin:/bin"
+            "/a/session:/a/agent:/a/runtime:/a/system:/usr/bin:/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin"
+        );
+    }
+
+    #[test]
+    fn overlay_env_adds_system_bins_when_path_missing() {
+        let env = prepare_overlay_env(&BinOverlayConfig::disabled(), &[]);
+        let path = env
+            .iter()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            path.split(':').any(|entry| entry == "/usr/bin"),
+            "got PATH={path}"
         );
     }
 }
