@@ -1590,9 +1590,10 @@ async fn reload_publishes_current_settings_without_persisting() {
 
 #[test]
 fn task_manager_errors_are_redacted() {
-    let error = task_manager_error(RPCErrors::ReasonError(
-        "upstream response contained top-secret".to_string(),
-    ));
+    let error = task_manager_error(
+        "runner_complete task_id=t-secret",
+        RPCErrors::ReasonError("upstream response contained top-secret".to_string()),
+    );
     assert_eq!(error.message, "TaskMgr operation failed");
     assert!(!format!("{error:?}").contains("top-secret"));
 }

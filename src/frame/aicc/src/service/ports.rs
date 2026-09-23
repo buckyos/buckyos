@@ -372,20 +372,26 @@ impl TaskManagerExecutionPort {
         Self
     }
 
-    async fn client(&self) -> Result<TaskManagerClient, buckyos_api::AiccError> {
+    async fn client(&self, operation: &str) -> Result<TaskManagerClient, buckyos_api::AiccError> {
         get_buckyos_api_runtime()
-            .map_err(task_manager_error)?
+            .map_err(|err| task_manager_error(format!("{operation}.runtime"), err))?
             .get_task_mgr_client()
             .await
-            .map_err(task_manager_error)
+            .map_err(|err| task_manager_error(format!("{operation}.get_task_mgr_client"), err))
     }
 }
 
 #[async_trait]
 impl TaskManagerPort for TaskManagerExecutionPort {
     async fn ensure_task(&self, spec: TaskSpec) -> Result<TaskBinding, buckyos_api::AiccError> {
+        let operation = format!(
+            "create_delegated_task method={} trace_id={} idempotency_key={}",
+            spec.method,
+            spec.trace_id.as_deref().unwrap_or("<none>"),
+            spec.idempotency_key
+        );
         let task = self
-            .client()
+            .client(&operation)
             .await?
             .create_delegated_task(CreateDelegatedTaskReq {
                 task_id: None,
@@ -403,9 +409,12 @@ impl TaskManagerPort for TaskManagerExecutionPort {
                 creator: ActorRef::new(
                     spec.user_id,
                     spec.caller_app_id.ok_or_else(|| {
-                        task_manager_error(RPCErrors::ReasonError(
-                            "AICC task caller app identity is unavailable".to_string(),
-                        ))
+                        task_manager_error(
+                            operation.clone(),
+                            RPCErrors::ReasonError(
+                                "AICC task caller app identity is unavailable".to_string(),
+                            ),
+                        )
                     })?,
                 ),
                 runner_app_instance_id: None,
@@ -420,7 +429,7 @@ impl TaskManagerPort for TaskManagerExecutionPort {
                 message: None,
             })
             .await
-            .map_err(task_manager_error)?;
+            .map_err(|err| task_manager_error(operation, err))?;
         Ok(TaskBinding {
             event_ref: buckyos_api::task_mgr_task_event_path(&task.task_id),
             task_id: task.task_id,
@@ -434,18 +443,20 @@ impl TaskManagerPort for TaskManagerExecutionPort {
         data: Value,
     ) -> Result<(), buckyos_api::AiccError> {
         if matches!(state, ExecutionState::Running) {
-            self.client()
+            let operation = format!("runner_start task_id={task_id}");
+            self.client(&operation)
                 .await?
                 .runner_start(task_id)
                 .await
-                .map_err(task_manager_error)?;
+                .map_err(|err| task_manager_error(operation, err))?;
         }
-        self.client()
+        let operation = format!("runner_progress task_id={task_id} state={state:?}");
+        self.client(&operation)
             .await?
             .runner_progress(task_id, Some(data), None)
             .await
             .map(|_| ())
-            .map_err(task_manager_error)
+            .map_err(|err| task_manager_error(operation, err))
     }
 
     async fn commit_result(
@@ -453,7 +464,8 @@ impl TaskManagerPort for TaskManagerExecutionPort {
         task_id: &str,
         output: &ExecutionOutput,
     ) -> Result<(), buckyos_api::AiccError> {
-        self.client()
+        let operation = format!("runner_complete task_id={task_id}");
+        self.client(&operation)
             .await?
             .runner_complete(
                 task_id,
@@ -470,7 +482,7 @@ impl TaskManagerPort for TaskManagerExecutionPort {
             )
             .await
             .map(|_| ())
-            .map_err(task_manager_error)
+            .map_err(|err| task_manager_error(operation, err))
     }
 
     async fn fail_task(
@@ -478,7 +490,12 @@ impl TaskManagerPort for TaskManagerExecutionPort {
         task_id: &str,
         error: &buckyos_api::AiccError,
     ) -> Result<(), buckyos_api::AiccError> {
-        self.client()
+        let operation = format!(
+            "runner_fail task_id={} error_code={}",
+            task_id,
+            error.code.as_str()
+        );
+        self.client(&operation)
             .await?
             .runner_fail(
                 task_id,
@@ -488,7 +505,7 @@ impl TaskManagerPort for TaskManagerExecutionPort {
             )
             .await
             .map(|_| ())
-            .map_err(task_manager_error)
+            .map_err(|err| task_manager_error(operation, err))
     }
 
     async fn cancel_task(
@@ -497,7 +514,10 @@ impl TaskManagerPort for TaskManagerExecutionPort {
         user_id: &str,
         caller_app_id: &str,
     ) -> Result<(), buckyos_api::AiccError> {
-        let client = self.client().await?;
+        let operation = format!(
+            "request_delegated_control action=cancel task_id={task_id} user_id={user_id} caller_app_id={caller_app_id}"
+        );
+        let client = self.client(&operation).await?;
         let request_id = format!("aicc-cancel-{}", next_inference_id());
         let requested = client
             .request_delegated_control(RequestDelegatedControlReq {
@@ -508,13 +528,17 @@ impl TaskManagerPort for TaskManagerExecutionPort {
                 expected_revision: None,
             })
             .await
-            .map_err(task_manager_error)?;
+            .map_err(|err| task_manager_error(operation.clone(), err))?;
         let task = match requested {
             RequestControlResult::Task { task } => task,
             RequestControlResult::Batch { .. } => {
-                return Err(task_manager_error(RPCErrors::ReasonError(
-                    "TaskMgr returned a batch result for a single task cancellation".to_string(),
-                )));
+                return Err(task_manager_error(
+                    operation,
+                    RPCErrors::ReasonError(
+                        "TaskMgr returned a batch result for a single task cancellation"
+                            .to_string(),
+                    ),
+                ));
             }
         };
         let app_instance_id = match &task.executor {
@@ -523,6 +547,10 @@ impl TaskManagerPort for TaskManagerExecutionPort {
             } => app_instance_id.clone(),
             _ => None,
         };
+        let ack_operation = format!(
+            "ack_control action=cancel task_id={} request_id={request_id}",
+            task.task_id
+        );
         client
             .ack_control(AckControlReq {
                 envelope: RunnerWriteEnvelope {
@@ -537,6 +565,6 @@ impl TaskManagerPort for TaskManagerExecutionPort {
             })
             .await
             .map(|_| ())
-            .map_err(task_manager_error)
+            .map_err(|err| task_manager_error(ack_operation, err))
     }
 }

@@ -958,7 +958,10 @@ fn to_rpc_error(error: impl std::fmt::Display) -> RPCErrors {
     RPCErrors::ReasonError(error.to_string())
 }
 
-fn task_manager_error(error: RPCErrors) -> buckyos_api::AiccError {
+fn task_manager_error(
+    operation: impl std::fmt::Display,
+    error: RPCErrors,
+) -> buckyos_api::AiccError {
     if error
         .to_string()
         .contains(buckyos_api::TASK_ERR_IDEMPOTENCY_CONFLICT)
@@ -968,7 +971,11 @@ fn task_manager_error(error: RPCErrors) -> buckyos_api::AiccError {
             "idempotency key was already used with a different canonical request body",
         );
     }
-    log::warn!("TaskMgr operation failed for AICC runner: {error}");
+    log::warn!(
+        "TaskMgr operation failed for AICC runner: operation=\"{}\" error=\"{}\"",
+        operation,
+        error
+    );
     buckyos_api::AiccError::new(
         buckyos_api::AiccErrorCode::InternalError,
         "TaskMgr operation failed",
