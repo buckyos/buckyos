@@ -142,8 +142,8 @@ export function RouteTraceAuditPanel({
     async function loadInitialTraces() {
       setTraceLoading(true)
       try {
-        const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE, ...traceQueryParams })
-        if (!cancelled) {
+        const page = await store.queryRouteTraces({ limit: ROUTE_TRACE_PAGE_SIZE, ...params })
+        if (seq === traceRequestSeqRef.current) {
           setTraces(page.traces)
           setTraceNextCursor(page.nextCursor)
           setTraceTotalCount(page.totalCount ?? page.traces.length)
@@ -153,7 +153,7 @@ export function RouteTraceAuditPanel({
         }
       } catch (error) {
         console.error('aicc.trace.query usage audit failed', error)
-        if (!cancelled) {
+        if (seq === traceRequestSeqRef.current) {
           setTraces(snapshotTraces)
           setTraceNextCursor(snapshotTraces.length >= ROUTE_TRACE_PAGE_SIZE ? String(ROUTE_TRACE_PAGE_SIZE) : undefined)
           setTraceTotalCount(snapshotTraces.length)
@@ -191,7 +191,7 @@ export function RouteTraceAuditPanel({
       const page = await store.queryRouteTraces({
         limit: ROUTE_TRACE_PAGE_SIZE,
         cursor,
-        ...traceQueryParams,
+        ...currentTraceQueryParams(),
       })
       if (seq !== traceRequestSeqRef.current) return
       setTraces(page.traces)

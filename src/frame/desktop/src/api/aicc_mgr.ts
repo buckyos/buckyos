@@ -694,7 +694,6 @@ class BuckyOSAiccProvider implements AiccDataProvider {
   private settingsRevision = 0
 
   async fetchSnapshot(): Promise<StoreSnapshot> {
-    const seq = ++this.fetchSeq
     const dashboardRange = localTrailingDaysRange(30)
     const todayRange = localTodayRange()
     const monthRange = localCurrentMonthRange()
@@ -971,6 +970,17 @@ class BuckyOSAiccProvider implements AiccDataProvider {
       traces,
       nextCursor: asOptionalString(raw.next_cursor),
       totalCount: asOptionalNumber(raw.total_count) ?? asOptionalNumber(raw.total) ?? traces.length,
+    }
+  }
+
+  // Same best-effort contract as the dashboard usage slices: a failed trace
+  // query must not block the whole snapshot.
+  private async queryRouteTracesOrEmpty(params: RouteTracesQuery): Promise<RouteTracesPage> {
+    try {
+      return await this.queryRouteTraces(params)
+    } catch (error) {
+      console.error('aicc.trace.query failed', error)
+      return { traces: [] }
     }
   }
 
