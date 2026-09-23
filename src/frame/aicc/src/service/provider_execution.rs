@@ -117,25 +117,58 @@ impl RuntimeProviderExecutionPort {
         .await
     }
 
-    async fn forget_rejected_provider_artifacts(&self, call: &ResolvedProviderCall) {
-        for resource in call.context.resources.values() {
-            let Some(artifact_id) = resource.provider_artifact_id.as_deref() else {
-                continue;
-            };
-            let content_digest = format!("sha256:{:x}", Sha256::digest(&resource.bytes));
-            if let Err(error) = self
-                .storage
-                .forget_provider_artifact_id(
-                    &content_digest,
-                    &call.provider_instance_name,
-                    &call.context.state_coordinate.origin_provider,
-                    artifact_id,
-                )
-                .await
-            {
-                log::warn!("failed to invalidate rejected Provider artifact ID: {error}");
-            }
+    fn uses_provider_artifact_id(call: &ResolvedProviderCall) -> bool {
+        call.context
+            .resources
+            .values()
+            .any(|resource| resource.provider_artifact_id.is_some())
+    }
+
+    fn without_provider_artifact_ids(call: &ResolvedProviderCall) -> ResolvedProviderCall {
+        let mut call = call.clone();
+        for resource in call.context.resources.values_mut() {
+            resource.provider_artifact_id = None;
         }
+        call
+    }
+
+    fn should_retry_without_provider_artifact_id(error: &ProtocolError) -> bool {
+        if error.kind != ProtocolErrorKind::InvalidRequest {
+            return false;
+        }
+        let mut text = error.message.to_ascii_lowercase();
+        if let Some(provider_code) = &error.provider_code {
+            text.push(' ');
+            text.push_str(&provider_code.to_ascii_lowercase());
+        }
+        let mentions_media_ref = [
+            "artifact",
+            "file",
+            "video",
+            "media",
+            "uri",
+            "url",
+            "id",
+            "reference",
+        ]
+        .iter()
+        .any(|needle| text.contains(needle));
+        let mentions_invalid_ref = [
+            "invalid",
+            "not found",
+            "not_found",
+            "expired",
+            "expire",
+            "unsupported",
+            "does not exist",
+            "missing",
+            "unrecognized",
+            "unknown",
+            "malformed",
+        ]
+        .iter()
+        .any(|needle| text.contains(needle));
+        mentions_media_ref && mentions_invalid_ref
     }
 
     pub(crate) async fn open_artifact_url_reader(
@@ -752,6 +785,225 @@ impl RuntimeProviderExecutionPort {
         }
         Ok(output)
     }
+
+    async fn start_once(
+        &self,
+        call: &ResolvedProviderCall,
+        cancellation: &crate::protocol::Cancellation,
+    ) -> Result<ProviderExecution, ProviderStartFailure> {
+        let descriptor = self
+            .codecs
+            .operation_descriptor(&call.protocol_adapter_id, &call.operation, call.api_type)
+            .and_then(|operation| {
+                operation
+                    .binding(call.api_type)
+                    .map(|binding| (operation.supports_cancel, binding.execution_modes.clone()))
+            })
+            .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+        let execution_mode = Self::execution_mode(call.execution_mode, &descriptor.1)
+            .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+        let transport = Self::transport(&call.context.limits)
+            .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+        match execution_mode {
+            ExecutionMode::Immediate => {
+                let request = self
+                    .codecs
+                    .encode(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                        &call.input,
+                        &call.context,
+                    )
+                    .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+                let response = Self::send_cancelable(cancellation, transport.send(request))
+                    .await
+                    .map_err(ProviderStartFailure::after_accept)?;
+                let decoded = self
+                    .codecs
+                    .decode(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                        response,
+                    )
+                    .await
+                    .map_err(ProviderStartFailure::after_accept)?;
+                match decoded {
+                    crate::protocol::ProtocolExecution::Immediate(output) => {
+                        let mut output = output;
+                        crate::protocol::bind_provider_state_source(
+                            &mut output.value,
+                            &call.context.state_coordinate,
+                        );
+                        let output = self
+                            .materialize_embedding_output(call, output)
+                            .await
+                            .map_err(ProviderStartFailure::after_accept)?;
+                        let mut output = self
+                            .materialize_inline_artifact_output(call, output)
+                            .await
+                            .map_err(ProviderStartFailure::after_accept)?;
+                        self.remember_call_provider_artifacts(call, &mut output)
+                            .await
+                            .map_err(ProviderStartFailure::after_accept)?;
+                        let output = Self::map_rerank_output(call, output)
+                            .map_err(ProviderStartFailure::after_accept)?;
+                        let output = Self::validate_computer_output(call, output)
+                            .map_err(ProviderStartFailure::after_accept)?;
+                        Ok(ProviderExecution::Immediate(output))
+                    }
+                    _ => Err(ProviderStartFailure::after_accept(
+                        ProtocolError::invalid_response(
+                            "buffered Provider response returned an unexpected execution mode",
+                        ),
+                    )),
+                }
+            }
+            ExecutionMode::Stream => {
+                let request = self
+                    .codecs
+                    .encode(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                        &call.input,
+                        &call.context,
+                    )
+                    .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+                let response =
+                    Self::send_cancelable(cancellation, transport.send_streaming(request))
+                        .await
+                        .map_err(ProviderStartFailure::after_accept)?;
+                let stream = self
+                    .codecs
+                    .decode_stream(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                        response,
+                    )
+                    .await
+                    .map_err(ProviderStartFailure::after_accept)?;
+                let source = call.context.state_coordinate.clone();
+                let storage = self.storage.clone();
+                let provider_instance_name = call.provider_instance_name.clone();
+                let protocol_adapter_id = call.protocol_adapter_id.clone();
+                let resource_context = call.resource_access_context.clone();
+                let events = stream.events.then(move |event| {
+                    let source = source.clone();
+                    let storage = storage.clone();
+                    let provider_instance_name = provider_instance_name.clone();
+                    let protocol_adapter_id = protocol_adapter_id.clone();
+                    let resource_context = resource_context.clone();
+                    async move {
+                        let mut event = event?;
+                        match &mut event {
+                            ProtocolEvent::Delta(value) | ProtocolEvent::Progress(value) => {
+                                crate::protocol::bind_provider_state_source(value, &source);
+                            }
+                            ProtocolEvent::Final(output) => {
+                                crate::protocol::bind_provider_state_source(
+                                    &mut output.value,
+                                    &source,
+                                );
+                            }
+                        }
+                        if let ProtocolEvent::Final(output) = &mut event {
+                            if !output.artifacts.is_empty() {
+                                let context = resource_context.as_ref().ok_or_else(|| {
+                                    ProtocolError::invalid_configuration(
+                                        "artifact context is missing",
+                                    )
+                                })?;
+                                Self::remember_provider_artifacts(
+                                    storage.as_ref(),
+                                    &provider_instance_name,
+                                    &protocol_adapter_id,
+                                    &source.origin_provider,
+                                    context,
+                                    output,
+                                )
+                                .await?;
+                            }
+                        }
+                        Ok(event)
+                    }
+                });
+                Ok(ProviderExecution::Stream(ProtocolStream {
+                    events: Box::pin(events),
+                }))
+            }
+            ExecutionMode::NativeTask => {
+                let request = self
+                    .codecs
+                    .encode_native(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                        &NativeTaskInput {
+                            operation: NativeTaskOperation::Submit,
+                            remote_task_id: None,
+                            codec_input: Some(&call.input),
+                            resolved_parameters: &call.input.resolved_parameters,
+                            context: &call.context,
+                        },
+                    )
+                    .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+                let response = Self::send_cancelable(cancellation, transport.send(request))
+                    .await
+                    .map_err(ProviderStartFailure::after_accept)?;
+                let output = self
+                    .codecs
+                    .decode_native(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                        NativeTaskOperation::Submit,
+                        response,
+                    )
+                    .await
+                    .map_err(ProviderStartFailure::after_accept)?;
+                let NativeTaskOutput::Submitted(handle) = output else {
+                    return Err(ProviderStartFailure::after_accept(
+                        ProtocolError::invalid_response(
+                            "native submit returned a non-submit result",
+                        ),
+                    ));
+                };
+                let credential =
+                    call.context
+                        .credential
+                        .as_ref()
+                        .map(|credential| ResumeCredential {
+                            reference: call.credential_reference.clone(),
+                            kind: resume_credential_kind(credential.audit().kind),
+                            header_name: call.credential_header_name.clone(),
+                            fingerprint: credential_fingerprint(&call.credential_reference),
+                        });
+                Ok(ProviderExecution::NativeTask {
+                    handle,
+                    resume: NativeTaskResumeDescriptor {
+                        base_url: call.context.base_url.clone(),
+                        credential,
+                        resource_access_context: call.resource_access_context.clone().ok_or_else(
+                            || {
+                                ProviderStartFailure::after_accept(
+                                    ProtocolError::invalid_configuration(
+                                        "native task resource context is missing",
+                                    ),
+                                )
+                            },
+                        )?,
+                        resolved_parameters: call.input.resolved_parameters.clone(),
+                        request_timeout_ms: call.context.limits.request_timeout.as_millis() as u64,
+                        max_request_bytes: call.context.limits.max_request_bytes as u64,
+                        max_response_bytes: call.context.limits.max_response_bytes as u64,
+                    },
+                })
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -763,223 +1015,22 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
         cancellation: crate::protocol::Cancellation,
     ) -> Result<ProviderExecution, ProviderStartFailure> {
         let started = Instant::now();
-        let result = async {
-            let descriptor = self
-                .codecs
-                .operation_descriptor(&call.protocol_adapter_id, &call.operation, call.api_type)
-                .and_then(|operation| {
-                    operation
-                        .binding(call.api_type)
-                        .map(|binding| (operation.supports_cancel, binding.execution_modes.clone()))
-                })
-                .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-            let execution_mode = Self::execution_mode(call.execution_mode, &descriptor.1)
-                .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-            let transport = Self::transport(&call.context.limits)
-                .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-            match execution_mode {
-                ExecutionMode::Immediate => {
-                    let request = self
-                        .codecs
-                        .encode(
-                            &call.protocol_adapter_id,
-                            &call.operation,
-                            call.api_type,
-                            &call.input,
-                            &call.context,
-                        )
-                        .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-                    let response = Self::send_cancelable(&cancellation, transport.send(request))
-                        .await
-                        .map_err(ProviderStartFailure::after_accept)?;
-                    let decoded = self
-                        .codecs
-                        .decode(
-                            &call.protocol_adapter_id,
-                            &call.operation,
-                            call.api_type,
-                            response,
-                        )
-                        .await
-                        .map_err(ProviderStartFailure::after_accept)?;
-                    match decoded {
-                        crate::protocol::ProtocolExecution::Immediate(output) => {
-                            let mut output = output;
-                            crate::protocol::bind_provider_state_source(
-                                &mut output.value,
-                                &call.context.state_coordinate,
-                            );
-                            let output = self
-                                .materialize_embedding_output(call, output)
-                                .await
-                                .map_err(ProviderStartFailure::after_accept)?;
-                            let mut output = self
-                                .materialize_inline_artifact_output(call, output)
-                                .await
-                                .map_err(ProviderStartFailure::after_accept)?;
-                            self.remember_call_provider_artifacts(call, &mut output)
-                                .await
-                                .map_err(ProviderStartFailure::after_accept)?;
-                            let output = Self::map_rerank_output(call, output)
-                                .map_err(ProviderStartFailure::after_accept)?;
-                            let output = Self::validate_computer_output(call, output)
-                                .map_err(ProviderStartFailure::after_accept)?;
-                            Ok(ProviderExecution::Immediate(output))
-                        }
-                        _ => Err(ProviderStartFailure::after_accept(
-                            ProtocolError::invalid_response(
-                                "buffered Provider response returned an unexpected execution mode",
-                            ),
-                        )),
-                    }
-                }
-                ExecutionMode::Stream => {
-                    let request = self
-                        .codecs
-                        .encode(
-                            &call.protocol_adapter_id,
-                            &call.operation,
-                            call.api_type,
-                            &call.input,
-                            &call.context,
-                        )
-                        .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-                    let response =
-                        Self::send_cancelable(&cancellation, transport.send_streaming(request))
-                            .await
-                            .map_err(ProviderStartFailure::after_accept)?;
-                    let stream = self
-                        .codecs
-                        .decode_stream(
-                            &call.protocol_adapter_id,
-                            &call.operation,
-                            call.api_type,
-                            response,
-                        )
-                        .await
-                        .map_err(ProviderStartFailure::after_accept)?;
-                    let source = call.context.state_coordinate.clone();
-                    let storage = self.storage.clone();
-                    let provider_instance_name = call.provider_instance_name.clone();
-                    let protocol_adapter_id = call.protocol_adapter_id.clone();
-                    let resource_context = call.resource_access_context.clone();
-                    let events = stream.events.then(move |event| {
-                        let source = source.clone();
-                        let storage = storage.clone();
-                        let provider_instance_name = provider_instance_name.clone();
-                        let protocol_adapter_id = protocol_adapter_id.clone();
-                        let resource_context = resource_context.clone();
-                        async move {
-                            let mut event = event?;
-                            match &mut event {
-                                ProtocolEvent::Delta(value) | ProtocolEvent::Progress(value) => {
-                                    crate::protocol::bind_provider_state_source(value, &source);
-                                }
-                                ProtocolEvent::Final(output) => {
-                                    crate::protocol::bind_provider_state_source(
-                                        &mut output.value,
-                                        &source,
-                                    );
-                                }
-                            }
-                            if let ProtocolEvent::Final(output) = &mut event {
-                                if !output.artifacts.is_empty() {
-                                    let context = resource_context.as_ref().ok_or_else(|| {
-                                        ProtocolError::invalid_configuration(
-                                            "artifact context is missing",
-                                        )
-                                    })?;
-                                    Self::remember_provider_artifacts(
-                                        storage.as_ref(),
-                                        &provider_instance_name,
-                                        &protocol_adapter_id,
-                                        &source.origin_provider,
-                                        context,
-                                        output,
-                                    )
-                                    .await?;
-                                }
-                            }
-                            Ok(event)
-                        }
-                    });
-                    Ok(ProviderExecution::Stream(ProtocolStream {
-                        events: Box::pin(events),
-                    }))
-                }
-                ExecutionMode::NativeTask => {
-                    let request = self
-                        .codecs
-                        .encode_native(
-                            &call.protocol_adapter_id,
-                            &call.operation,
-                            call.api_type,
-                            &NativeTaskInput {
-                                operation: NativeTaskOperation::Submit,
-                                remote_task_id: None,
-                                codec_input: Some(&call.input),
-                                resolved_parameters: &call.input.resolved_parameters,
-                                context: &call.context,
-                            },
-                        )
-                        .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
-                    let response = Self::send_cancelable(&cancellation, transport.send(request))
-                        .await
-                        .map_err(ProviderStartFailure::after_accept)?;
-                    let output = self
-                        .codecs
-                        .decode_native(
-                            &call.protocol_adapter_id,
-                            &call.operation,
-                            call.api_type,
-                            NativeTaskOperation::Submit,
-                            response,
-                        )
-                        .await
-                        .map_err(ProviderStartFailure::after_accept)?;
-                    let NativeTaskOutput::Submitted(handle) = output else {
-                        return Err(ProviderStartFailure::after_accept(
-                            ProtocolError::invalid_response(
-                                "native submit returned a non-submit result",
-                            ),
-                        ));
-                    };
-                    let credential =
-                        call.context
-                            .credential
-                            .as_ref()
-                            .map(|credential| ResumeCredential {
-                                reference: call.credential_reference.clone(),
-                                kind: resume_credential_kind(credential.audit().kind),
-                                header_name: call.credential_header_name.clone(),
-                                fingerprint: credential_fingerprint(&call.credential_reference),
-                            });
-                    Ok(ProviderExecution::NativeTask {
-                        handle,
-                        resume: NativeTaskResumeDescriptor {
-                            base_url: call.context.base_url.clone(),
-                            credential,
-                            resource_access_context: call
-                                .resource_access_context
-                                .clone()
-                                .ok_or_else(|| {
-                                    ProviderStartFailure::after_accept(
-                                        ProtocolError::invalid_configuration(
-                                            "native task resource context is missing",
-                                        ),
-                                    )
-                                })?,
-                            resolved_parameters: call.input.resolved_parameters.clone(),
-                            request_timeout_ms: call.context.limits.request_timeout.as_millis()
-                                as u64,
-                            max_request_bytes: call.context.limits.max_request_bytes as u64,
-                            max_response_bytes: call.context.limits.max_response_bytes as u64,
-                        },
-                    })
-                }
-            }
+        let mut result = self.start_once(call, &cancellation).await;
+        let retry_call;
+        if Self::uses_provider_artifact_id(call)
+            && result.as_ref().err().is_some_and(|failure| {
+                Self::should_retry_without_provider_artifact_id(&failure.error)
+            })
+        {
+            log::warn!(
+                "Provider rejected cached artifact reference; retrying once with raw resource bytes: provider={} model={} api_type={:?}",
+                call.provider_instance_name,
+                call.exact_model,
+                call.api_type
+            );
+            retry_call = Self::without_provider_artifact_ids(call);
+            result = self.start_once(&retry_call, &cancellation).await;
         }
-        .await;
         let result = match result {
             Ok(ProviderExecution::Stream(stream)) => {
                 Ok(ProviderExecution::Stream(observed_protocol_stream(
@@ -1002,9 +1053,6 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                 now_ms(),
             ),
             Err(failure) => {
-                if failure.error.http_status == Some(404) {
-                    self.forget_rejected_provider_artifacts(call).await;
-                }
                 let kind = health_failure_kind(&failure.error);
                 self.model_health.record_failure(
                     &call.exact_model,
@@ -1231,5 +1279,24 @@ mod tests {
 
         let timeout = ProtocolError::new(ProtocolErrorKind::Timeout, "timed out");
         assert_eq!(health_failure_kind(&timeout), HealthFailureKind::Transient);
+    }
+
+    #[test]
+    fn artifact_reference_retry_detection_is_narrow() {
+        let expired = ProtocolError::invalid_request("video id expired");
+        assert!(RuntimeProviderExecutionPort::should_retry_without_provider_artifact_id(&expired));
+
+        let missing = ProtocolError::invalid_request("file reference not found");
+        assert!(RuntimeProviderExecutionPort::should_retry_without_provider_artifact_id(&missing));
+
+        let context_length = ProtocolError::invalid_request("context_length_exceeded");
+        assert!(
+            !RuntimeProviderExecutionPort::should_retry_without_provider_artifact_id(
+                &context_length
+            )
+        );
+
+        let auth = ProtocolError::new(ProtocolErrorKind::Authentication, "invalid API key");
+        assert!(!RuntimeProviderExecutionPort::should_retry_without_provider_artifact_id(&auth));
     }
 }

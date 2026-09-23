@@ -300,6 +300,17 @@ impl RuntimeInferencePort {
                         "Provider artifact ID lookup failed",
                     )
                 })?;
+            if let Some(artifact_id) = provider_artifact_id.as_deref() {
+                log::info!(
+                    "provider_artifact_id_hit: artifact_id={} content_digest={} provider_instance_name={} origin_provider={} exact_model={} resource_key={}",
+                    artifact_id,
+                    content_digest,
+                    call.provider_instance_name,
+                    call.context.state_coordinate.origin_provider,
+                    call.exact_model,
+                    parts.key.as_str()
+                );
+            }
             call.context.resources.insert(
                 parts.key.into_string(),
                 CodecMaterializedResource::new(parts.bytes, parts.mime, parts.file_name)
