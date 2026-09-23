@@ -21,6 +21,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
+use buckyos_api::{LlmResponseFormat, TaskError};
+use serde_json::Value;
+
 use crate::local_llm_context::{
     build_result_view, export_result, list_runs, load_run, ExtractedValue, LoopModel, ProviderKind,
     ResultFormat, ResumeLimits, ResumeStart, RunEvent, RunLogLevel, RunObserver, RunOutcome,

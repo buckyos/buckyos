@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use buckyos_api::{
-    AiContent, AiMessage, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiUsage,
+    AiContent, AiCost, AiMessage, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiUsage,
 };
 use serde_json::Value;
 

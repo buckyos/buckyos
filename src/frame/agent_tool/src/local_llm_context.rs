@@ -62,10 +62,10 @@ use ::kRPC::RPCErrors;
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use buckyos_api::{
-    ai_methods, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime,
-    value_to_object_map, AiContent, AiMessage, AiMethodRequest, AiMethodStatus, AiPayload,
-    AiResponse, AiRole, AiToolCall, AiToolSpec, AiUsage, BuckyOSRuntimeType, Capability, ModelSpec,
-    Requirements, ResourceRef, RespFormat,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AiContent,
+    AiMessage, AiMethodStatus, AiResponse, AiRole, AiToolCall, AiToolSpec, AiUsage,
+    AiccExecutionMode, BuckyOSRuntimeType, HelperModelRequirement, LlmChatHelperRequest,
+    LlmResponseFormat, ModelDisable, ResourceRef,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -4086,6 +4086,7 @@ impl Default for AiccLlmClient {
     }
 }
 
+#[allow(dead_code)]
 fn build_aicc_llm_options(
     temperature: Option<f32>,
     max_completion_tokens: Option<u32>,
@@ -4120,6 +4121,7 @@ fn build_aicc_llm_options(
 impl LlmClient for AiccLlmClient {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
         let LlmInferenceRequest {
+            trace_id,
             messages,
             model_alias,
             fallbacks: _,
@@ -4134,65 +4136,64 @@ impl LlmClient for AiccLlmClient {
             abort: _,
         } = req;
 
-        let aicc_tool_specs: Vec<AiToolSpec> = if allow_tool_calls {
+        // Tool catalogue (only advertised when the policy lets the LLM call tools).
+        let advertised_tools: Vec<AiToolSpec> = if allow_tool_calls {
             tool_specs
                 .into_iter()
                 .map(|spec| AiToolSpec {
+                    tool_type: "function".to_string(),
                     name: spec.name,
                     description: spec.description,
-                    args_schema: value_to_object_map(spec.args_schema),
-                    output_schema: json!({}),
+                    args_json_schema: spec.args_schema,
+                    output_schema: None,
                 })
                 .collect()
         } else {
             Vec::new()
         };
-        let options_value = Some(build_aicc_llm_options(
-            temperature,
-            max_completion_tokens,
-            force_json,
-            json_schema,
-            provider_options,
-        ));
-        let payload = AiPayload {
-            text: None,
-            messages,
-            tool_specs: aicc_tool_specs,
-            resources: Vec::new(),
-            input_json: None,
-            options: options_value,
-        };
-        let mut must_features = Vec::new();
-        if allow_tool_calls && !payload.tool_specs.is_empty() {
-            must_features.push("tool_calling".to_string());
+        let _ = provider_options;
+        let mut disable = ModelDisable::default();
+        for feature in disable_capabilities {
+            disable.set_feature_disabled(&feature);
         }
-        if force_json {
-            must_features.push("json_output".to_string());
-        }
-        let requirements_extra = if disable_capabilities.is_empty() {
-            None
+        let response_format = if force_json {
+            match json_schema {
+                Some(schema) => Some(LlmResponseFormat::json_schema(
+                    Some("llm_response".to_string()),
+                    schema,
+                    None,
+                )),
+                None => Some(LlmResponseFormat::json_object()),
+            }
         } else {
-            Some(json!({ "disable_capabilities": disable_capabilities }))
+            None
         };
-        let requirements = Requirements {
-            required: Default::default(),
-            must_features,
-            max_latency_ms: None,
-            max_cost_usd: None,
-            resp_format: if force_json {
-                RespFormat::Json
-            } else {
-                RespFormat::Text
+        let request = LlmChatHelperRequest {
+            logical_model: model_alias,
+            trace_id,
+            execution_mode: AiccExecutionMode::Immediate,
+            requirements: HelperModelRequirement {
+                tool_call: allow_tool_calls && !advertised_tools.is_empty(),
+                json_schema: force_json,
+                ..Default::default()
             },
-            extra: requirements_extra,
+            disable,
+            policy: None,
+            messages,
+            tools: advertised_tools,
+            response_format,
+            temperature: temperature.map(f64::from),
+            top_p: None,
+            max_output_tokens: max_completion_tokens.map(u64::from),
+            seed: None,
+            stop: Vec::new(),
+            output: None,
+            idempotency_key: None,
+            task_options: None,
+            session_overlay: None,
+            session_id: None,
         };
-        let request = AiMethodRequest::new(
-            Capability::Llm,
-            ModelSpec::new(model_alias.clone(), None),
-            requirements,
-            payload,
-            None,
-        );
+
         let runtime = get_buckyos_api_runtime()
             .map_err(|e| provider_error_from_rpc("get buckyos runtime failed", e))?;
         if let Some(token) = &self.session_token {
@@ -4206,20 +4207,30 @@ impl LlmClient for AiccLlmClient {
             .await
             .map_err(|e| provider_error_from_rpc("get aicc client failed", e))?;
         let response = client
-            .call_method(ai_methods::LLM_CHAT, request)
+            .helper_llm_chat(request)
             .await
-            .map_err(|e| provider_error_from_rpc("aicc llm.chat failed", e))?;
+            .map_err(|e| provider_error_from_rpc("aicc helper.llm_chat failed", e))?;
         match response.status {
-            AiMethodStatus::Succeeded => response.result.ok_or_else(|| {
-                LLMComputeError::provider(
-                    ProviderFailure::Unknown,
-                    "aicc llm.chat succeeded but result is empty",
-                )
-            }),
+            AiMethodStatus::Succeeded => {
+                let message = response.message.ok_or_else(|| {
+                    LLMComputeError::provider(
+                        ProviderFailure::Unknown,
+                        "aicc helper.llm_chat succeeded but message is empty",
+                    )
+                })?;
+                Ok(AiResponse {
+                    message,
+                    usage: response.usage,
+                    cost: response.cost,
+                    finish_reason: response.finish_reason,
+                    provider_task_ref: response.provider_task_ref,
+                    extra: None,
+                })
+            }
             AiMethodStatus::Failed => Err(LLMComputeError::provider(
                 ProviderFailure::Unknown,
                 format!(
-                    "aicc llm.chat failed: task_id={}, event_ref={}",
+                    "aicc helper.llm_chat failed: task_id={}, event_ref={}",
                     response.task_id,
                     response.event_ref.as_deref().unwrap_or("")
                 ),
@@ -4227,7 +4238,7 @@ impl LlmClient for AiccLlmClient {
             AiMethodStatus::Running => Err(LLMComputeError::provider(
                 ProviderFailure::Permanent,
                 format!(
-                    "aicc llm.chat returned async task `{}`; xllm does not poll async tasks — use a synchronous-capable model",
+                    "aicc helper.llm_chat returned async task `{}`; xllm does not poll async tasks — use a synchronous-capable model",
                     response.task_id
                 ),
             )),
@@ -4538,6 +4549,7 @@ impl LlmClient for OpenAiLlmClient {
                 output_tokens: u.get("completion_tokens").and_then(Value::as_u64),
                 total_tokens: u.get("total_tokens").and_then(Value::as_u64),
                 request_units: Some(1),
+                ..Default::default()
             });
         }
         if let Some(model) = parsed.get("model").and_then(Value::as_str) {
@@ -4661,7 +4673,7 @@ pub struct RunResultRecord {
     pub response_model: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main: Option<AiUsage>,
@@ -4674,12 +4686,7 @@ pub struct UsageRecord {
 }
 
 fn add_usage(base: &mut Option<AiUsage>, extra: &AiUsage) {
-    let mut cur = base.clone().unwrap_or(AiUsage {
-        input_tokens: None,
-        output_tokens: None,
-        total_tokens: None,
-        request_units: None,
-    });
+    let mut cur = base.clone().unwrap_or_default();
     fn add(a: &mut Option<u64>, b: Option<u64>) {
         if let Some(b) = b {
             *a = Some(a.unwrap_or(0) + b);
@@ -6569,6 +6576,7 @@ impl XllmRun {
             parts.push(AiContent::image(src.clone()));
         }
         let req = LlmInferenceRequest {
+            trace_id: None,
             messages: vec![
                 AiMessage::text(
                     AiRole::System,

@@ -50,6 +50,15 @@ use crate::worklog::{WorklogAppendCtx, WorklogService};
 // LlmClient — aicc adapter
 // =====================================================================
 
+/// Map the waist's `force_json` / `json_schema` request onto aicc's typed
+/// response-format contract.
+fn aicc_response_format(force_json: bool, json_schema: Option<Value>) -> Option<LlmResponseFormat> {
+    force_json.then(|| match json_schema {
+        Some(schema) => LlmResponseFormat::json_schema(Some("llm_response".to_string()), schema, None),
+        None => LlmResponseFormat::json_object(),
+    })
+}
+
 /// `LlmClient` over `AiccClient`. One `infer()` acquires one short-session
 /// client and performs one `helper.llm_chat` round-trip; adapter retry / fallback
 /// happens inside aicc, not here.
@@ -164,12 +173,22 @@ impl LlmClient for AiccLlmClient {
             .map_err(provider_error_from_rpc)?;
 
         match resp.status {
-            AiMethodStatus::Succeeded => resp.result.ok_or_else(|| {
-                LLMComputeError::provider(
-                    ProviderFailure::Unknown,
-                    "aicc returned status=succeeded without result",
-                )
-            }),
+            AiMethodStatus::Succeeded => {
+                let message = resp.message.ok_or_else(|| {
+                    LLMComputeError::provider(
+                        ProviderFailure::Unknown,
+                        "aicc returned status=succeeded without message",
+                    )
+                })?;
+                Ok(AiResponse {
+                    message,
+                    usage: resp.usage,
+                    cost: resp.cost,
+                    finish_reason: resp.finish_reason,
+                    provider_task_ref: resp.provider_task_ref,
+                    extra: None,
+                })
+            }
             AiMethodStatus::Running => resolve_async_aicc_result(resp.task_id.as_str()).await,
             AiMethodStatus::Failed => Err(LLMComputeError::provider(
                 ProviderFailure::Unknown,

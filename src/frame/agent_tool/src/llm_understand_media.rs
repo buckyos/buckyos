@@ -943,7 +943,7 @@ fn resolve_local_file_path(raw: &Path, session_id: Option<&str>) -> Result<PathB
 
 fn local_path_candidates(raw: &Path, session_id: Option<&str>) -> Vec<PathBuf> {
     let mut agent_roots = Vec::new();
-    if let Some(agent_root) = env_path(OPENDAN_AGENT_ROOT_ENV) {
+    if let Some(agent_root) = env_path(crate::runtime_context::OPENDAN_AGENT_ROOT_ENV) {
         agent_roots.push(agent_root);
     }
     // The agent process does not always carry `OPENDAN_AGENT_ROOT`; recover the
