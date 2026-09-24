@@ -348,14 +348,12 @@ mod wp08d_tests {
                 inventory.protocol_adapter_id,
                 profile.default_protocol_adapter_id
             );
-            assert!(!inventory.models.is_empty());
-            let main = inventory
+            let discovered = inventory
                 .models
                 .iter()
-                .find(|model| model.operations.contains_key("llm"))
+                .find(|model| model.operations.get("llm") == Some(&expected_operation.to_owned()))
                 .unwrap();
-            assert_eq!(main.model_driver_id, expected_driver);
-            assert_eq!(main.operations["llm"], expected_operation);
+            assert_eq!(discovered.model_driver_id, expected_driver);
         }
     }
 

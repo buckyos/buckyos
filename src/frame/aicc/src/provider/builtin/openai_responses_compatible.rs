@@ -635,7 +635,10 @@ mod tests {
             assert!(catalog.known_provider(profile_id).is_some());
             let rules = catalog.provider_rules(profile_id).unwrap();
             assert_eq!(
-                rules.patterns[0].operations.get("llm"),
+                rules
+                    .patterns
+                    .iter()
+                    .find_map(|rule| rule.operations.get("llm")),
                 Some(&OPENAI_RESPONSES_OPERATION_ID.to_owned())
             );
             assert!(catalog.model_driver(profile_id).is_some());
@@ -738,18 +741,36 @@ mod tests {
     fn provider_rules_are_loaded_without_rust_generated_revisions() {
         for provider in openai_responses_compatible_builtin_providers() {
             let rules = provider.provider_rules(7);
-            assert_eq!(rules.revision_seq, 1);
-            assert!(rules.models.is_empty());
-            assert_eq!(rules.patterns.len(), 1);
             assert_eq!(
-                rules.patterns[0].operations.get("llm"),
+                rules.revision_seq,
+                if matches!(
+                    provider.profile.provider_profile_id.as_str(),
+                    DOUBAO_PROFILE_ID | QWEN_PROFILE_ID
+                ) {
+                    2
+                } else {
+                    1
+                }
+            );
+            assert!(rules.models.is_empty());
+            let expected_patterns = match provider.profile.provider_profile_id.as_str() {
+                DOUBAO_PROFILE_ID => 3,
+                QWEN_PROFILE_ID => 5,
+                _ => 1,
+            };
+            assert_eq!(rules.patterns.len(), expected_patterns);
+            assert_eq!(
+                rules
+                    .patterns
+                    .iter()
+                    .find_map(|rule| rule.operations.get("llm")),
                 Some(&OPENAI_RESPONSES_OPERATION_ID.to_string())
             );
         }
         assert!(deepseek().provider_rules(99).patterns[0].request_rules[0]
             .remove
             .contains(&"/store".to_owned()));
-        assert!(qwen().provider_rules(99).patterns[0].request_rules[0]
+        assert!(qwen().provider_rules(99).patterns[4].request_rules[0]
             .remove
             .contains(&"/background".to_owned()));
     }
@@ -853,6 +874,12 @@ mod tests {
             codecs
                 .register_codecs(base_descriptor, base_registration)
                 .unwrap();
+            for (descriptor, registration) in [
+                crate::protocol::doubao_media_adapter(),
+                crate::protocol::qwen_media_adapter(),
+            ] {
+                codecs.register_codecs(descriptor, registration).unwrap();
+            }
             for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
                 codecs.register_derived(descriptor, registration).unwrap();
             }
@@ -878,6 +905,10 @@ mod tests {
                 auto_sync_models: true,
                 instance_rules: None,
             };
+            let mut models = vec![catalog_model(model_id.to_owned())];
+            if profile_id == DOUBAO_PROFILE_ID {
+                models.push(catalog_model("deepseek-v4-flash".to_owned()));
+            }
             let inventory = InventoryBuilder::build(
                 &provider.profile,
                 &instance,
@@ -885,7 +916,7 @@ mod tests {
                     revision: Some("fixture-v1".to_owned()),
                     discovered_at_ms: 1,
                     health: ProviderHealthState::Healthy,
-                    models: vec![catalog_model(model_id.to_owned())],
+                    models,
                 },
                 &catalog,
                 &codecs,

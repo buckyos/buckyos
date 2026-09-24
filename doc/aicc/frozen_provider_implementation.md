@@ -53,6 +53,22 @@ Beta 2.2 不声明通用 Provider quota API：各厂商尚无统一且已验证�
 未接入生产装配的 quota observer 注入点；将来只有在某个 Provider 有官方协议、codec 和验收用例时
 再按 Provider 增加实现。
 
+后续接入按以下边界实施，而不是恢复测试专用的任意 observer：
+
+1. Known Provider 通过稳定 behavior ID 选择专用 quota reader；reader 与 discovery 一样属于
+   Provider 行为注册表，不进入通用协议 codec，也不按 profile 名写运行时分支。
+2. reader 返回统一 observation：`state`、剩余 request units、带币种的剩余金额、reset time、
+   observed time 和 source。余额查询失败或过期映射为 `unknown/query_failed` 并 fail-open；只有明确
+   `exhausted` 才过滤该 Provider 候选。
+3. observation 按 Provider instance 缓存并 single-flight 刷新，路由热路径只读取快照，不在每次
+   inference 中同步访问厂商余额接口。本地预算与 Provider quota 分开保存；只有币种相同时才比较金额。
+4. 第一个候选实现是 OpenRouter 的官方 `GET /api/v1/key`，它能用当前 API key 返回 USD
+   `limit_remaining` 与免费模型请求限制；`/credits` 需要 management key，不复用推理凭据。完成
+   buffered/timeout/rate-limit/过期缓存合同测试前，生产状态继续明确为 `unsupported`。
+
+参考：[OpenRouter current API key](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key)、
+[OpenRouter limits](https://openrouter.ai/docs/api-reference/limits)。
+
 ## 3. 内置范围
 
 Beta 2.2 内置 Provider Profile 基线：

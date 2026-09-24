@@ -160,7 +160,7 @@ pub(super) fn provider_quota(provider: Option<&ProviderQuotaObservation>) -> Quo
             };
         }
     };
-    let remaining_cost = provider.remaining_cost_usd.as_ref().and_then(|cost| {
+    let remaining_cost = provider.remaining_cost.as_ref().and_then(|cost| {
         (cost.amount.is_finite() && cost.amount >= 0.0 && !cost.currency.trim().is_empty())
             .then(|| buckyos_api::Money::new(cost.amount, cost.currency.clone()))
     });
@@ -243,7 +243,7 @@ pub(super) fn combine_quota(
             ProviderQuotaObservationState::QueryFailed => state,
         };
         remaining_units = minimum_option(remaining_units, provider.remaining_request_units);
-        if let Some(provider_cost) = &provider.remaining_cost_usd {
+        if let Some(provider_cost) = &provider.remaining_cost {
             if !provider_cost.amount.is_finite()
                 || provider_cost.amount < 0.0
                 || provider_cost.currency.trim().is_empty()

@@ -5,6 +5,7 @@ mod claude_messages;
 #[cfg(test)]
 mod contract;
 mod derived_responses;
+mod doubao_media;
 mod fal_queue;
 mod gemini;
 mod glm_media;
@@ -14,6 +15,7 @@ mod openai_chat_completions;
 mod openai_responses;
 pub(crate) mod openrouter_decisions;
 mod provider_state;
+mod qwen_media;
 mod result;
 mod sn_openai;
 mod sse;
@@ -59,6 +61,7 @@ pub(crate) use derived_responses::{
     openai_responses_compatible_adapters, DEEPSEEK_RESPONSES_ADAPTER_ID,
     OPENROUTER_RESPONSES_ADAPTER_ID,
 };
+pub(crate) use doubao_media::{doubao_media_adapter, DOUBAO_MEDIA_ADAPTER_ID};
 pub(crate) use fal_queue::fal_queue_adapter;
 #[cfg(test)]
 pub(crate) use fal_queue::{FAL_QUEUE_ADAPTER_ID, FAL_QUEUE_OPERATION_ID};
@@ -90,6 +93,7 @@ pub(crate) use openai_responses::{
 pub(crate) use provider_state::{
     bind_provider_state_source, foreign_provider_state_text, provider_state_is_native,
 };
+pub(crate) use qwen_media::{qwen_media_adapter, QWEN_MEDIA_ADAPTER_ID};
 pub(crate) use result::{
     NativeTaskHandle, NativeTaskState, ProtocolEvent, ProtocolExecution, ProtocolOutput,
     ProtocolStream, ProviderArtifactRef,

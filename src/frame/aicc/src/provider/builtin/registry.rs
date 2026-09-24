@@ -775,7 +775,7 @@ mod tests {
             .map(|adapter| adapter.protocol_adapter_id.as_str())
             .collect::<BTreeSet<_>>();
         assert_eq!(codecs.adapters().len(), adapter_ids.len());
-        assert_eq!(adapter_ids.len(), 15);
+        assert_eq!(adapter_ids.len(), 17);
         for profile in registry.profiles() {
             assert!(adapter_ids.contains(profile.default_protocol_adapter_id.as_str()));
         }
@@ -993,10 +993,7 @@ mod tests {
 
         assert_eq!(binding.profile.provider_profile_id, "vendor");
         assert_eq!(binding.profile.discovery_mode, DiscoveryMode::MachineApi);
-        assert_eq!(
-            binding.profile.default_inventory.unwrap().models[0].provider_model_id,
-            "vendor-model"
-        );
+        assert!(binding.profile.default_inventory.is_none());
     }
 
     #[test]
@@ -1152,7 +1149,7 @@ mod tests {
             })
             .unwrap();
         let inventory = binding.profile.default_inventory.unwrap();
-        assert_eq!(inventory.revision.as_deref(), Some("catalog-fal-1"));
+        assert_eq!(inventory.revision.as_deref(), Some("catalog-fal-2"));
         assert_eq!(inventory.models.len(), 4);
         assert!(inventory
             .models

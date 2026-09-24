@@ -1357,16 +1357,19 @@ mod tests {
 
     fn all_codecs() -> CodecRegistry {
         use crate::protocol::{
-            fal_queue_adapter, gemini_interactions_adapter, glm_chat_adapter, glm_media_adapter,
-            kimi_chat_adapter, minimax_media_adapter, minimax_messages_adapter,
+            doubao_media_adapter, fal_queue_adapter, gemini_interactions_adapter, glm_chat_adapter,
+            glm_media_adapter, kimi_chat_adapter, minimax_media_adapter, minimax_messages_adapter,
             openai_chat_completions_adapter, openai_responses_compatible_adapters,
-            openrouter_responses_adapter,
+            openrouter_responses_adapter, qwen_media_adapter,
         };
         use crate::provider::register_sn_openai_adapter;
 
         let mut registry = CodecRegistry::default();
         let (responses, registration) = openai_responses_adapter();
         registry.register_codecs(responses, registration).unwrap();
+        for (descriptor, registration) in [doubao_media_adapter(), qwen_media_adapter()] {
+            registry.register_codecs(descriptor, registration).unwrap();
+        }
         for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
             registry.register_derived(descriptor, registration).unwrap();
         }
@@ -2022,7 +2025,7 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         assert_eq!(golden, documented);
-        assert_eq!(golden.len(), 84);
+        assert_eq!(golden.len(), 92);
         assert!(golden.contains(&"typesafe|typesafe-systemone|decision|systemone.evaluate".into()));
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(

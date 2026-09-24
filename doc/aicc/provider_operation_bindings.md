@@ -10,7 +10,13 @@ claude|claude-messages|vision.ocr|messages.create
 deepseek|deepseek-responses|llm|responses.create
 deepseek|deepseek-responses|vision.caption|responses.create
 deepseek|deepseek-responses|vision.ocr|responses.create
+doubao|doubao-responses|image.img2img|ark.images.generate
+doubao|doubao-responses|image.txt2img|ark.images.generate
 doubao|doubao-responses|llm|responses.create
+doubao|doubao-responses|video.extend|ark.contents.generate
+doubao|doubao-responses|video.img2video|ark.contents.generate
+doubao|doubao-responses|video.txt2video|ark.contents.generate
+doubao|doubao-responses|video.video2video|ark.contents.generate
 doubao|doubao-responses|vision.caption|responses.create
 doubao|doubao-responses|vision.ocr|responses.create
 fal|fal-queue|audio.asr|queue.submit
@@ -85,7 +91,11 @@ openrouter|openrouter-responses|decision|decisions.create
 openrouter|openrouter-responses|embedding.text|embeddings.create
 openrouter|openrouter-responses|llm|responses.create
 openrouter|openrouter-responses|rerank|rerank.create
+qwen|qwen-responses|image.img2img|dashscope.image_edit
+qwen|qwen-responses|image.txt2img|dashscope.image_synthesis
 qwen|qwen-responses|llm|responses.create
+qwen|qwen-responses|video.img2video|dashscope.video_synthesis
+qwen|qwen-responses|video.txt2video|dashscope.video_synthesis
 sn|sn-openai|llm|responses.create
 typesafe|typesafe-systemone|decision|systemone.evaluate
 <!-- END GENERATED BINDINGS -->

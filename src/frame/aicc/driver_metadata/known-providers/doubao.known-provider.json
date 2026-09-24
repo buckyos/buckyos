@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 1,
+  "revision_seq": 2,
   "catalog_id": "doubao",
   "providers": [
     {
