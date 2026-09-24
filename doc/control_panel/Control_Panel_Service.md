@@ -150,7 +150,8 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 
 | 方法 | 说明 |
 |---|---|
-| `agent.list` / `agent.get` | 列出/查询 Agent 身份；`agent.list` 会补充匹配的用户 Agent spec 摘要 |
+| `agent.list` | 合并顶层 Agent 身份与 `users/{owner}/agents/{agent_id}/spec`，按 AgentId 去重；只有用户 AgentSpec 的 Agent（如预置 Jarvis）也会返回 DID、文档快照、用户级 settings 与 binding 摘要 |
+| `agent.get` | 查询顶层 Agent 身份文档与 settings |
 | `agent.create` | 事务创建 doc+settings+key |
 | `agent.update` / `agent.delete` | 更新/删除 |
 | `agent.profile.get` / `agent.profile.set` | Agent profile |

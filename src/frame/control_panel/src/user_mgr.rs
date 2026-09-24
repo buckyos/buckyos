@@ -499,23 +499,40 @@ async fn load_agent_runtime_info(agent_id: &str) -> Value {
     }
 }
 
-async fn load_agent_spec(
+async fn load_agent_specs(
     client: &SystemConfigClient,
     user_ids: &[String],
-    agent_id: &str,
-) -> Option<(String, AgentSpec)> {
+) -> Result<HashMap<String, (String, AgentSpec)>, RPCErrors> {
+    let mut specs = HashMap::new();
     for user_id in user_ids {
-        let spec_path = format!("users/{}/agents/{}/spec", user_id, agent_id);
-        match client.get(&spec_path).await {
-            Ok(spec_val) => match serde_json::from_str::<AgentSpec>(&spec_val.value) {
-                Ok(spec) if spec.validate().is_ok() => return Some((user_id.clone(), spec)),
-                Err(error) => warn!("Failed to parse agent spec `{}`: {}", spec_path, error),
-                Ok(_) => warn!("Invalid agent spec at `{}`", spec_path),
-            },
-            Err(_) => continue,
+        let prefix = format!("users/{}/agents", user_id);
+        let agent_ids = client.list(&prefix).await.map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "Failed to list agents for '{}': {}",
+                user_id, error
+            ))
+        })?;
+        for agent_id in agent_ids {
+            let spec_path = format!("{}/{}/spec", prefix, agent_id);
+            match client.get(&spec_path).await {
+                Ok(spec_val) => match serde_json::from_str::<AgentSpec>(&spec_val.value) {
+                    Ok(spec) if spec.validate().is_ok() && spec.agent_id.as_str() == agent_id => {
+                        specs.entry(agent_id).or_insert((user_id.clone(), spec));
+                    }
+                    Err(error) => warn!("Failed to parse agent spec `{}`: {}", spec_path, error),
+                    Ok(_) => warn!("Invalid agent spec at `{}`", spec_path),
+                },
+                Err(SystemConfigError::KeyNotFound(_)) => continue,
+                Err(error) => {
+                    return Err(RPCErrors::ReasonError(format!(
+                        "Failed to load agent spec '{}': {}",
+                        spec_path, error
+                    )))
+                }
+            }
         }
     }
-    None
+    Ok(specs)
 }
 
 fn merge_agent_spec(agent_info: &mut Value, owner_user_id: &str, spec: &AgentSpec) {
@@ -1664,20 +1681,24 @@ impl ControlPanelServer {
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
 
-        let agent_ids = client
+        let mut agent_ids = client
             .list("agents")
             .await
             .map_err(|e| RPCErrors::ReasonError(format!("Failed to list agents: {}", e)))?;
-        let user_ids = match client.list("users").await {
-            Ok(user_ids) => user_ids,
-            Err(error) => {
-                warn!("Failed to list users while loading agent specs: {}", error);
-                Vec::new()
-            }
-        };
+        let user_ids = client.list("users").await.map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "Failed to list users while loading agent specs: {}",
+                error
+            ))
+        })?;
+        let specs = load_agent_specs(&client, &user_ids).await?;
+        agent_ids.extend(specs.keys().cloned());
+        agent_ids.sort();
+        agent_ids.dedup();
 
         let mut agents: Vec<Value> = Vec::new();
         for agent_id in &agent_ids {
+            let spec = specs.get(agent_id);
             let doc_path = format!("agents/{}/doc", agent_id);
             let mut agent_info = match client.get(&doc_path).await {
                 Ok(val) => {
@@ -1687,15 +1708,31 @@ impl ControlPanelServer {
                         json!({ "agent_id": agent_id })
                     }
                 }
-                Err(_) => {
-                    json!({ "agent_id": agent_id })
-                }
+                Err(_) => match spec {
+                    Some((_, spec)) => serde_json::to_value(&spec.agent_doc).map_err(|error| {
+                        RPCErrors::ReasonError(format!("Serialize agent doc failed: {}", error))
+                    })?,
+                    None => json!({ "agent_id": agent_id }),
+                },
             };
             if agent_info.get("agent_id").is_none() {
                 agent_info["agent_id"] = json!(agent_id);
             }
             let settings_path = format!("agents/{}/settings", agent_id);
-            if let Ok(settings_val) = client.get(&settings_path).await {
+            let settings_val = match client.get(&settings_path).await {
+                Ok(value) => Some(value),
+                Err(_) => match spec {
+                    Some((owner_user_id, _)) => client
+                        .get(&format!(
+                            "users/{}/agents/{}/settings",
+                            owner_user_id, agent_id
+                        ))
+                        .await
+                        .ok(),
+                    None => None,
+                },
+            };
+            if let Some(settings_val) = settings_val {
                 if let Ok(settings) = serde_json::from_str::<Value>(&settings_val.value) {
                     if !include_deleted
                         && settings
@@ -1709,9 +1746,8 @@ impl ControlPanelServer {
                     agent_info["settings"] = settings;
                 }
             }
-            if let Some((owner_user_id, spec)) = load_agent_spec(&client, &user_ids, agent_id).await
-            {
-                merge_agent_spec(&mut agent_info, &owner_user_id, &spec);
+            if let Some((owner_user_id, spec)) = spec {
+                merge_agent_spec(&mut agent_info, owner_user_id, spec);
             }
             if include_runtime {
                 agent_info["runtime"] = load_agent_runtime_info(agent_id).await;

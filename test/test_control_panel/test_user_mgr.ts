@@ -112,7 +112,7 @@ function visibleSystemContactFromDetail(
 }
 
 // Derived from the DV zone config (src/kernel/scheduler/src/system_config_builder.rs)
-const DV_DEFAULT_AGENT_ID = "jarvis";
+const DV_DEFAULT_AGENT_ID = getEnv("BUCKYOS_TEST_AGENT_ID", "jarvis.test.buckyos.io");
 // Fake sha256 hash for change_password — format doesn't matter to the backend,
 // it only stores the string verbatim (no login happens after this point).
 const FAKE_PW_HASH_B =
