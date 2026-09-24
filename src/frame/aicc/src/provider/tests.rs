@@ -577,7 +577,8 @@ fn routed_catalog() -> Arc<CatalogSnapshot> {
                     {"op": "lowercase"},
                     {
                         "op": "alias",
-                        "table": "origin_provider_aliases"
+                        "table": "origin_provider_aliases",
+                        "on_missing": "keep"
                     }
                 ],
                 "model": [{"op": "trim"}]
@@ -1270,6 +1271,94 @@ fn inventory_uses_provider_origin_mapping_to_select_unique_driver() {
     );
     assert_eq!(inventory.models[0].origin_model_id, "shared-model");
     assert_eq!(inventory.models[0].model_driver_id, "claude");
+}
+
+#[test]
+fn inventory_unknown_origin_uses_isolated_conservative_fallback() {
+    let mut profile = profile();
+    profile.provider_profile_id = "openrouter".into();
+    let mut instance = instance("router");
+    instance.provider_profile_id = "openrouter".into();
+    instance.provider_rules_id = Some("openrouter".into());
+    let mut discovered = discovery("anthropic/shared-model");
+    discovered.models[0].origin_model_id = Some("shared-model".into());
+    for vendor in ["aion-labs", "unknown-vendor"] {
+        let mut model = discovered.models[0].clone();
+        model.provider_model_id = format!("{vendor}/shared-model");
+        discovered.models.push(model);
+    }
+
+    let catalog = routed_catalog();
+    let inventory =
+        InventoryBuilder::build(&profile, &instance, discovered, &catalog, &codecs()).unwrap();
+    assert_eq!(inventory.models.len(), 3);
+    let known = inventory
+        .models
+        .iter()
+        .find(|model| model.provider_model_id == "anthropic/shared-model")
+        .unwrap();
+    assert_eq!(known.model_driver_id, "claude");
+    assert_eq!(known.capabilities["tool_call"], serde_json::json!(true));
+    for model in inventory
+        .models
+        .iter()
+        .filter(|model| model.provider_model_id != known.provider_model_id)
+    {
+        assert_eq!(model.model_driver_id, "unclassified");
+        assert_eq!(model.origin_model_id, model.provider_model_id);
+        assert_eq!(model.api_types, vec![ApiType::Llm]);
+        assert_eq!(model.operations["llm"], "responses.create");
+        assert_ne!(
+            model.capabilities.get("tool_call"),
+            Some(&serde_json::json!(true))
+        );
+        assert_ne!(
+            model.capabilities.get("json_schema"),
+            Some(&serde_json::json!(true))
+        );
+        assert!(model.variants.is_empty());
+        assert_eq!(model.model_catalog_revision, None);
+        assert_eq!(
+            model.pricing.as_ref().unwrap().source,
+            PricingSource::Discovery
+        );
+    }
+    assert_eq!(
+        inventory
+            .models
+            .iter()
+            .map(|model| &model.model_uid)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        3
+    );
+    ModelRegistry::build(
+        &catalog,
+        &[inventory.as_model_inventory()],
+        Vec::new(),
+        RegistryLayers::default(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn inventory_still_rejects_conflicting_discovery_origin() {
+    let mut profile = profile();
+    profile.provider_profile_id = "openrouter".into();
+    let mut instance = instance("router");
+    instance.provider_profile_id = "openrouter".into();
+    instance.provider_rules_id = Some("openrouter".into());
+    let mut discovered = discovery("anthropic/shared-model");
+    discovered.models[0].origin_model_id = Some("different-model".into());
+    let error = InventoryBuilder::build(
+        &profile,
+        &instance,
+        discovered,
+        &routed_catalog(),
+        &codecs(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, ProviderError::Inventory(message) if message.contains("conflicts")));
 }
 
 #[tokio::test]

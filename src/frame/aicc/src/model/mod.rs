@@ -567,7 +567,9 @@ impl ModelRegistry {
                 ));
             }
             for model in &inventory.models {
-                if catalog.model_driver(&model.model_driver_id).is_none() {
+                if model.model_driver_id != "unclassified"
+                    && catalog.model_driver(&model.model_driver_id).is_none()
+                {
                     return Err(ModelRegistryError::UnknownModelDriver(
                         model.model_driver_id.clone(),
                     ));

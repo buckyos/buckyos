@@ -1,5 +1,6 @@
 use super::*;
 use crate::canonical::CanonicalFieldMapping;
+use crate::error::CatalogResolveError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -674,8 +675,12 @@ impl InventoryBuilder {
             let mapped_origin = rules
                 .filter(|rules| !rules.origin_mappings.is_empty())
                 .map(|_| catalog.resolve_provider_origin(rules_id, &discovered.provider_model_id))
-                .transpose()
-                .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+                .transpose();
+            let (mapped_origin, unknown_origin) = match mapped_origin {
+                Ok(origin) => (origin, false),
+                Err(CatalogResolveError::UnknownOriginProvider { .. }) => (None, true),
+                Err(error) => return Err(ProviderError::Inventory(error.to_string())),
+            };
             if let (Some(discovered_origin), Some(mapped_origin)) = (
                 discovered.origin_model_id.as_deref(),
                 mapped_origin.as_ref(),
@@ -687,11 +692,15 @@ impl InventoryBuilder {
                     )));
                 }
             }
-            let origin_model_id = mapped_origin
-                .as_ref()
-                .map(|origin| origin.origin_model_id.clone())
-                .or_else(|| discovered.origin_model_id.clone())
-                .unwrap_or_else(|| discovered.provider_model_id.clone());
+            let origin_model_id = if unknown_origin {
+                discovered.provider_model_id.clone()
+            } else {
+                mapped_origin
+                    .as_ref()
+                    .map(|origin| origin.origin_model_id.clone())
+                    .or_else(|| discovered.origin_model_id.clone())
+                    .unwrap_or_else(|| discovered.provider_model_id.clone())
+            };
             let origin_model_id = instance_rules
                 .origin_model_overrides
                 .get(&discovered.provider_model_id)
@@ -699,7 +708,8 @@ impl InventoryBuilder {
                 .unwrap_or(origin_model_id);
             let mapped_candidate_drivers = mapped_origin
                 .as_ref()
-                .map(|origin| vec![origin.model_driver_id.clone()]);
+                .map(|origin| vec![origin.model_driver_id.clone()])
+                .or_else(|| unknown_origin.then(Vec::new));
             let candidate_drivers = mapped_candidate_drivers
                 .as_deref()
                 .or_else(|| rules.and_then(|rules| rules.metadata_drivers.as_deref()));
@@ -854,15 +864,19 @@ impl InventoryBuilder {
             )
             .map_err(|error| ProviderError::Inventory(error.to_string()))?
             .as_stable_string();
-            let effective_variants = catalog
-                .effective_model_variants(
-                    catalog.provider_rules(rules_id).map(|_| rules_id),
-                    &model_driver_id,
-                    &dimensions,
-                )
-                .map_err(|error| ProviderError::Inventory(error.to_string()))?;
+            let effective_variants = if conservative_fallback {
+                Vec::new()
+            } else {
+                catalog
+                    .effective_model_variants(
+                        catalog.provider_rules(rules_id).map(|_| rules_id),
+                        &model_driver_id,
+                        &dimensions,
+                    )
+                    .map_err(|error| ProviderError::Inventory(error.to_string()))?
+                    .variants
+            };
             let mut variants = effective_variants
-                .variants
                 .into_iter()
                 .map(|variant| InventoryModelVariant {
                     name: variant.name().to_owned(),

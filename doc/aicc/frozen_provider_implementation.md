@@ -96,6 +96,8 @@ Provider 实时 discovery
 
 机器 discovery 失败不能让已经存在的 LKGS 消失。refresh 失败保留旧 inventory 和 applied seq，并更新 health；不完整结果不能部分提交。未知模型进入保守 fallback，不自动宣称 tool、JSON、vision 等能力。
 
+聚合 Provider discovery 返回未收录的原厂时，该模型进入 `unclassified` 保守 fallback，保留完整 `provider_model_id` 作为身份，不搜索其他原厂的同名模型或加载其 variants；不能因此阻断整个 Provider 或 AICC 启动。映射冲突等配置错误仍然拒绝构建。
+
 Provider 停止、禁用、删除、reload 替换或服务退出时，必须先阻止新刷新，再停止并等待后台循环；旧 generation 不得在退出后提交 inventory 或 health。
 
 ## 6. 凭据与安全
