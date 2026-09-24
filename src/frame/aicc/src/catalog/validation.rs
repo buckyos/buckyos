@@ -210,6 +210,19 @@ pub(super) fn validate_provider_rules(
         catalog.schema_version,
         catalog.schema_revision,
     )?;
+    validate_unique_nonempty(
+        CatalogKind::ProviderRules,
+        &catalog.provider_profile_id,
+        "custom_provider_adapters",
+        catalog.custom_provider_adapters.iter().map(String::as_str),
+    )?;
+    if catalog.schema_revision == 0 && !catalog.custom_provider_adapters.is_empty() {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: catalog.provider_profile_id.clone(),
+            field: "schema_revision",
+            reason: "custom_provider_adapters requires schema_revision 1".to_owned(),
+        });
+    }
     if let Some(drivers) = &catalog.metadata_drivers {
         validate_unique_nonempty(
             CatalogKind::ProviderRules,

@@ -2265,7 +2265,9 @@ function toProviderSetupCatalog(
     .filter((item): item is NonNullable<typeof item> => item !== null)
   const families = new Set<string>()
   for (const item of Array.isArray(adapters.adapters) ? adapters.adapters : []) {
-    const family = asOptionalString(asRecord(item).protocol_family_id)
+    const adapter = asRecord(item)
+    if (adapter.custom_provider_selectable !== true) continue
+    const family = asOptionalString(adapter.protocol_family_id)
     if (family) families.add(family)
   }
   return {

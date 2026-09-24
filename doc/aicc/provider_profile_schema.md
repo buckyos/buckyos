@@ -128,6 +128,17 @@ Provider Profile/Rules 必须在路由前得到一个确定的 Adapter 和 opera
 由 `openai-chat-completions + glm-media` 组成，`minimax-messages` 由
 `claude-messages + minimax-media` 组成；GLM/MiniMax 复合 Adapter 使用自己的
 `protocol_family_id`，不再冒充 OpenAI/Claude。Registry 要求组件先注册且引用不可悬空，
+但这两个 family 只供内置 Known Provider 使用。Provider Rules JSON 通过
+`custom_provider_adapters` 精确列出允许用户自定义 Provider 复用的 Adapter；该数组默认为
+空，可以随 catalog 云更新。`protocol_adapter.list` 根据当前 catalog snapshot 为每个
+Adapter 计算 `custom_provider_selectable`，表单只汇总该值为 `true` 的 Adapter 所属
+family，后端也必须拒绝显式提交未列入数组的 Adapter。当前只有
+`openai.provider.json`、`claude.provider.json`、`gemini.provider.json` 开放各自通用基础
+Adapter；GLM、MiniMax、FAL 及具体渠道派生 Adapter 均不进入选择列表。
+
+GLM/MiniMax 的 LLM wire 差异仍优先通过各自 `.provider.json` 的 request rules、
+operation 映射和 converter 表达；独立 family 的主要理由是它们还组合了无法由通用
+规则安全表达的图片、语音、音乐和异步视频协议，而不是文本接口本身与基础协议完全不同。
 `protocol_adapter.list` 会返回组件关系。一次路由仍在调用前得到唯一的
 `composite adapter + operation + codec`，不会运行时试探或静默切换。
 
@@ -217,6 +228,7 @@ variant 名称是 Model Driver 与 Provider Rules 共用的封闭词汇表，Mod
 
 | 用途 | 配置字段 |
 | --- | --- |
+| 允许自定义 Provider 复用的协议 Adapter | `custom_provider_adapters` |
 | 限定参与匹配的 Model Driver metadata | `metadata_drivers` |
 | Provider 厂商 slug 映射 | `origin_provider_aliases` |
 | `provider_model_id` 到原厂身份的确定性映射 | `origin_mappings` |
@@ -250,6 +262,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 
 ```json
 {
+  "custom_provider_adapters": [],
   "metadata_drivers": [],
   "static_inventory_models": [],
   "origin_provider_aliases": {},
@@ -261,6 +274,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 }
 ```
 
+- `custom_provider_adapters`：允许用户自定义 Provider 复用的已注册 Adapter ID；省略或空数组表示不开放。每项必须属于该 Provider 默认 Adapter 的 family，且不能被其它 Provider Rules 重复开放。
 - `metadata_drivers`：参与匹配的 Model Driver 列表；省略时搜索系统当前安装的全部 Model Driver。
 - `static_inventory_models`：Provider `/models` 暂时不能枚举、但厂商文档确认可通过专用接口调用的 `provider_model_id` 列表；专用 discovery 可将其与机器发现结果取并集。通常应为空，仅作为临时补丁，方便后续拆卸。
 - `origin_provider_aliases`：Provider 命名中的厂商 slug 到 Model Driver 名称的映射。

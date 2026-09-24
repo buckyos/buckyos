@@ -334,8 +334,7 @@ impl ProviderValidator for RuntimeProviderValidator {
                 let family = request.protocol_family_id.as_deref().unwrap_or_default();
                 let mut selected = None;
                 for candidate in builtins
-                    .codecs()
-                    .probe_candidates(family)
+                    .custom_provider_probe_candidates(family)
                     .map_err(to_rpc_error)?
                 {
                     let candidate_binding = builtins

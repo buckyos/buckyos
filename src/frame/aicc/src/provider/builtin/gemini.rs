@@ -588,7 +588,7 @@ mod tests {
     #[test]
     fn rules_bind_inventory_to_the_gemini_base_adapter() {
         let catalog = CatalogSnapshot::from_current_files(
-            1,
+            2,
             gemini_catalog_files(),
             &CatalogBuildOptions::default(),
         )

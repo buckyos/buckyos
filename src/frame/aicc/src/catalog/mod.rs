@@ -398,6 +398,14 @@ impl CatalogSnapshot {
         self.provider_rules.get(id).map(|catalog| &catalog.document)
     }
 
+    pub(crate) fn custom_provider_adapter_ids(&self) -> BTreeSet<String> {
+        self.known_providers()
+            .filter_map(|provider| provider.provider_rules_id.as_deref())
+            .filter_map(|rules_id| self.provider_rules(rules_id))
+            .flat_map(|rules| rules.custom_provider_adapters.iter().cloned())
+            .collect()
+    }
+
     pub(crate) fn known_provider(&self, provider_profile_id: &str) -> Option<&KnownProvider> {
         let (catalog_id, position) = self.known_provider_index.get(provider_profile_id)?;
         self.known_provider_catalogs

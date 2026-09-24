@@ -4061,6 +4061,7 @@ pub struct ProtocolAdapterOperation {
 pub struct ProtocolAdapterView {
     pub protocol_family_id: String,
     pub protocol_adapter_id: String,
+    pub custom_provider_selectable: bool,
     pub interface_generation: String,
     pub status: ProtocolAdapterStatus,
     pub probe_priority: u32,

@@ -436,6 +436,8 @@ pub(crate) struct ProviderRulesCatalog {
     pub schema_revision: u32,
     pub revision_seq: u64,
     pub provider_profile_id: String,
+    #[serde(default)]
+    pub custom_provider_adapters: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_drivers: Option<Vec<String>>,
     #[serde(default)]

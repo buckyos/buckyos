@@ -1,9 +1,10 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
-  "revision_seq": 1,
+  "schema_revision": 1,
+  "revision_seq": 2,
   "provider_profile_id": "openai",
+  "custom_provider_adapters": ["openai-responses", "openai-chat-completions"],
   "metadata_drivers": ["openai"],
   "origin_provider_aliases": {},
   "origin_mappings": [],

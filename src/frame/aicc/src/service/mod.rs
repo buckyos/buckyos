@@ -1211,7 +1211,10 @@ fn runtime_admin_snapshot(
                 })
                 .collect(),
         },
-        protocol_adapters: protocol_adapter_response(codecs),
+        protocol_adapters: protocol_adapter_response(
+            codecs,
+            &snapshot.catalog.custom_provider_adapter_ids(),
+        ),
         models: json!({
             "models": snapshot.models.model_views().into_iter().map(|model| json!({
                 "exact_model": model.exact_model,
@@ -1380,13 +1383,18 @@ fn provider_health_state(health: ProviderHealthState) -> ProviderInstanceHealthS
     }
 }
 
-fn protocol_adapter_response(codecs: &CodecRegistry) -> ProtocolAdapterListResponse {
+fn protocol_adapter_response(
+    codecs: &CodecRegistry,
+    custom_provider_adapter_ids: &BTreeSet<String>,
+) -> ProtocolAdapterListResponse {
     ProtocolAdapterListResponse {
         adapters: codecs
             .adapters()
             .map(|adapter| buckyos_api::ProtocolAdapterView {
                 protocol_family_id: adapter.protocol_family_id.clone(),
                 protocol_adapter_id: adapter.protocol_adapter_id.clone(),
+                custom_provider_selectable: custom_provider_adapter_ids
+                    .contains(&adapter.protocol_adapter_id),
                 interface_generation: adapter.interface_generation.clone(),
                 status: match adapter.status {
                     AdapterStatus::Stable => buckyos_api::ProtocolAdapterStatus::Stable,
