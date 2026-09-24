@@ -20,7 +20,6 @@ jobs:
     name: AIOS amd64 and aarch64
     runs-on: ubuntu-24.04
     env:
-      AIOS_CONTEXT_DIR: ${{ runner.temp }}/aios-context
       MUSL_TOOLCHAIN_BASE_URL: https://github.com/musl-cc/musl.cc/releases/download/v0.0.1
       MUSL_TOOLCHAIN_SHA512_X86_64: 52abd1a56e670952116e35d1a62e048a9b6160471d988e16fa0e1611923dd108a581d2e00874af5eb04e4968b1ba32e0eb449a1f15c3e4d5240ebe09caf5a9f3
       MUSL_TOOLCHAIN_SHA512_AARCH64: 8695ff86979cdf30fbbcd33061711f5b1ebc3c48a87822b9ca56cde6d3a22abd4dab30fdcd1789ac27c6febbaeb9e5bde59d79d66552fae53d54cc1377a19272
@@ -85,6 +84,8 @@ jobs:
       uses: docker/setup-buildx-action@v4
     - name: Prepare AIOS Docker contexts
       id: context
+      env:
+        AIOS_CONTEXT_DIR: ${{ runner.temp }}/aios-context
       run: |
         set -euo pipefail
         bash ./build_aios --prepare-context "$AIOS_CONTEXT_DIR" --image paios/aios
@@ -94,7 +95,7 @@ jobs:
       uses: docker/build-push-action@v7
       with:
         builder: ${{ steps.buildx.outputs.name }}
-        context: ${{ env.AIOS_CONTEXT_DIR }}/amd64
+        context: ${{ runner.temp }}/aios-context/amd64
         platforms: linux/amd64
         push: true
         tags: |
@@ -111,7 +112,7 @@ jobs:
       uses: docker/build-push-action@v7
       with:
         builder: ${{ steps.buildx.outputs.name }}
-        context: ${{ env.AIOS_CONTEXT_DIR }}/aarch64
+        context: ${{ runner.temp }}/aios-context/aarch64
         platforms: linux/arm64
         push: true
         tags: |

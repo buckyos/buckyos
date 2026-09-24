@@ -19,8 +19,6 @@ jobs:
   build:
     name: ExtTool amd64 and aarch64
     runs-on: ubuntu-24.04
-    env:
-      EXTTOOL_CONTEXT_DIR: ${{ runner.temp }}/exttool-context
     steps:
     - name: Checkout
       uses: actions/checkout@v6
@@ -38,6 +36,8 @@ jobs:
       uses: docker/setup-buildx-action@v4
     - name: Prepare ExtTool Docker contexts
       id: context
+      env:
+        EXTTOOL_CONTEXT_DIR: ${{ runner.temp }}/exttool-context
       run: |
         set -euo pipefail
         bash ./build_exttool --prepare-context "$EXTTOOL_CONTEXT_DIR" --image paios/exttool
@@ -47,7 +47,7 @@ jobs:
       uses: docker/build-push-action@v7
       with:
         builder: ${{ steps.buildx.outputs.name }}
-        context: ${{ env.EXTTOOL_CONTEXT_DIR }}/amd64
+        context: ${{ runner.temp }}/exttool-context/amd64
         platforms: linux/amd64
         push: true
         tags: |
@@ -61,7 +61,7 @@ jobs:
       uses: docker/build-push-action@v7
       with:
         builder: ${{ steps.buildx.outputs.name }}
-        context: ${{ env.EXTTOOL_CONTEXT_DIR }}/aarch64
+        context: ${{ runner.temp }}/exttool-context/aarch64
         platforms: linux/arm64
         push: true
         tags: |
