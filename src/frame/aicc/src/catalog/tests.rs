@@ -937,6 +937,7 @@ fn schema_revision_required_features_and_references_are_validated() {
     let mut revision_one_static_inventory = provider_rules();
     revision_one_static_inventory["schema_revision"] = json!(1);
     revision_one_static_inventory["static_inventory_models"] = json!(["gpt-special"]);
+    revision_one_static_inventory["models"] = json!([]);
     let mut files = complete_files();
     files[1] = file(CatalogKind::ProviderRules, revision_one_static_inventory);
     let snapshot = build(files).unwrap();
@@ -947,6 +948,17 @@ fn schema_revision_required_features_and_references_are_validated() {
             .static_inventory_models,
         vec!["gpt-special".to_owned()]
     );
+
+    let mut uncovered_static_inventory = provider_rules();
+    uncovered_static_inventory["schema_revision"] = json!(1);
+    uncovered_static_inventory["static_inventory_models"] = json!(["claude-special"]);
+    uncovered_static_inventory["models"] = json!([]);
+    let mut files = complete_files();
+    files[1] = file(CatalogKind::ProviderRules, uncovered_static_inventory);
+    assert!(matches!(
+        build(files),
+        Err(CatalogBuildError::InvalidValue { field, .. }) if field == "static_inventory_models"
+    ));
 
     let mut revision_zero_custom_adapters = provider_rules();
     revision_zero_custom_adapters["custom_provider_adapters"] = json!(["openai-responses"]);

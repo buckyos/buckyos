@@ -37,8 +37,8 @@ Kimi / GLM / DeepSeek / 豆包（火山方舟）/ Qwen（阿里云百炼）
 | Kimi | Chat Completions | `openai/chat_completions` | `partial`、思考内容、缓存 key、图片/视频 content 扩展 |
 | GLM | Chat Completions | `openai/chat_completions` | `thinking`、`reasoning_content`、`tool_stream`、JWT 可选鉴权和原生异步 API |
 | DeepSeek | Responses | `openai/responses` | thinking/reasoning 约束及兼容差异；官方另有 Chat Completions 和 Anthropic 接口，但首版不因此重复实现 |
-| 豆包 | Responses | `openai/responses` | 方舟 `/api/v3` 基址、内置工具、模型/接入点语义及原生媒体任务 |
-| Qwen | Responses | `openai/responses` | region/workspace 基址、参数支持子集、session cache header；原生媒体异步任务 |
+| 豆包 | Responses | `openai/responses` | 方舟 `/api/v3` 基址、内置工具，以及方舟实际发现且可唯一解析的聚合模型/接入点语义；Seedream 图片和 Seedance 原生媒体任务 |
+| Qwen | Responses | `openai/responses` | region/workspace 基址、参数支持子集、session cache header；DashScope 原生图片和视频异步任务 |
 
 依据：
 
@@ -179,7 +179,7 @@ protocol/
 │   ├── minimax_media
 │   ├── glm_async
 │   ├── doubao_media
-│   └── dashscope_media
+│   └── qwen_media
 └── dialect
     ├── openrouter_responses
     ├── minimax_messages
@@ -207,7 +207,7 @@ ResolvedProviderCall
 
 | Dialect | Base | 只负责 |
 | --- | --- | --- |
-| `openrouter-responses` | `openai-responses` | OpenRouter routing 参数和 ProviderState namespace |
+| `openrouter-responses` | `openai-responses` | OpenRouter routing 参数、ProviderState namespace，以及 `usage.cost` 的 USD 合同 |
 | `minimax-messages` | `claude-messages` | 兼容差异、`base_resp`、MiniMax content 扩展 |
 | `kimi-chat` | `openai-chat-completions` | partial/cache/reasoning 与多模态扩展 |
 | `glm-chat` | `openai-chat-completions` | thinking、tool stream、reasoning 与错误扩展 |
@@ -221,7 +221,7 @@ ResolvedProviderCall
 
 `protocol::task` 只提供生命周期算法，不假设字段名。每个原生 operation 显式映射厂商状态到 `Submitted | Queued | Running | Succeeded | Failed | Cancelled`。
 
-fal Queue、MiniMax video、GLM async、豆包媒体和 Qwen/DashScope 媒体共享 deadline/backoff/cancel/idempotency 机制，但各自保留 submit/status/result/cancel codec。任务开始后绑定原 Provider runtime 和 Adapter，不跨 Provider 重试。
+fal Queue、MiniMax video、GLM async、豆包媒体和 Qwen/DashScope 媒体共享该生命周期机制，各自保留 submit/status/result wire codec；仅在厂商 operation 明确声明时才开放 cancel。任务开始后绑定原 Provider runtime 和 Adapter，不跨 Provider 重试。
 
 ## 5. `provider` 模块
 
@@ -257,8 +257,8 @@ Protocol Adapter 通过 `ProtocolAdapterPlugin` 注册。构建脚本自动扫�
 | Kimi | Kimi Chat dialect | Kimi Models API；价格由 Provider Rules |
 | GLM | GLM Chat dialect + native async | 有官方机器接口时 discovery，否则 catalog；不得爬取文档页 |
 | DeepSeek | DeepSeek Responses dialect | 有官方机器接口时 discovery，否则 catalog；动态价格优先、静态规则 fallback |
-| 豆包 | Doubao Responses dialect + native media | 可调用模型/接入点由官方 API 或实例配置获得，catalog 补足稳定语义 |
-| Qwen | Qwen Responses dialect + native media | region/workspace 参与 endpoint；其余事实由官方 API 或 catalog/rules 给出 |
+| 豆包 | Doubao Responses dialect + native media | 可调用模型/接入点由方舟官方 API 或实例配置获得；不限定 `doubao` Model Driver，但只接纳方舟实际返回且在已安装 Model Driver 中可唯一解析的模型；`ep-*` 仍须实例显式给出原厂模型映射 |
+| Qwen | Qwen Responses dialect + native media | region/workspace 参与 endpoint；DashScope 图片和视频任务使用原生 `/api/v1`；其余事实由官方 API 或 catalog/rules 给出 |
 
 Discovery 只采信官方机器接口，不能抓网页或读取 SDK 内置列表构造库存。动态 discovery 返回 availability、remote methods、deprecated、health 和实时价格；Model Driver 仍是稳定语义真相源。
 

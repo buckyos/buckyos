@@ -39,6 +39,12 @@ const DEFAULT_MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    openai_responses_adapter_with_reported_cost_currency(None)
+}
+
+pub(super) fn openai_responses_adapter_with_reported_cost_currency(
+    reported_cost_currency: Option<&'static str>,
+) -> (AdapterDescriptor, CodecRegistration) {
     let responses = operation(
         OPENAI_RESPONSES_OPERATION_ID,
         vec![
@@ -182,26 +188,35 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
         operations,
     };
     let operation_codecs: Vec<Arc<dyn OperationCodec>> = vec![
-        Arc::new(OpenAiResponsesCodec::new(responses.clone(), ApiType::Llm)),
+        Arc::new(OpenAiResponsesCodec::new(
+            responses.clone(),
+            ApiType::Llm,
+            reported_cost_currency,
+        )),
         Arc::new(OpenAiResponsesCodec::new(
             responses.clone(),
             ApiType::VisionOcr,
+            reported_cost_currency,
         )),
         Arc::new(OpenAiResponsesCodec::new(
             responses.clone(),
             ApiType::VisionCaption,
+            reported_cost_currency,
         )),
         Arc::new(OpenAiResponsesCodec::new(
             responses.clone(),
             ApiType::ImageTextToImage,
+            reported_cost_currency,
         )),
         Arc::new(OpenAiResponsesCodec::new(
             responses.clone(),
             ApiType::ImageImageToImage,
+            reported_cost_currency,
         )),
         Arc::new(OpenAiResponsesCodec::new(
             responses,
             ApiType::AgentComputerUse,
+            reported_cost_currency,
         )),
         Arc::new(OpenAiEmbeddingCodec::new(embeddings)),
         Arc::new(OpenAiImageCodec::new(
@@ -271,13 +286,19 @@ fn binding(
 struct OpenAiResponsesCodec {
     descriptor: OperationDescriptor,
     api_type: ApiType,
+    reported_cost_currency: Option<&'static str>,
 }
 
 impl OpenAiResponsesCodec {
-    fn new(descriptor: OperationDescriptor, api_type: ApiType) -> Self {
+    fn new(
+        descriptor: OperationDescriptor,
+        api_type: ApiType,
+        reported_cost_currency: Option<&'static str>,
+    ) -> Self {
         Self {
             descriptor,
             api_type,
+            reported_cost_currency,
         }
     }
 }
@@ -332,13 +353,13 @@ impl OperationCodec for OpenAiResponsesCodec {
     async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
         ensure_success(&response)?;
         if is_sse(response.headers.get(CONTENT_TYPE)) {
-            return decode_buffered_responses_stream(response);
+            return decode_buffered_responses_stream(response, self.reported_cost_currency);
         }
         let value: Value = response.json(self.descriptor.max_response_bytes)?;
         let output = if self.api_type == ApiType::AgentComputerUse {
-            decode_computer_use_response(&value)?
+            decode_computer_use_response(&value, self.reported_cost_currency)?
         } else {
-            decode_response_object(&value)?
+            decode_response_object(&value, self.reported_cost_currency)?
         };
         Ok(ProtocolExecution::Immediate(
             normalize_responses_api_output(output, self.api_type),
@@ -366,7 +387,12 @@ impl OperationCodec for OpenAiResponsesCodec {
             )
             .with_request_id(Some(response.request_id)));
         }
-        responses_protocol_stream(response, self.descriptor.max_response_bytes).await
+        responses_protocol_stream(
+            response,
+            self.descriptor.max_response_bytes,
+            self.reported_cost_currency,
+        )
+        .await
     }
 }
 
@@ -562,7 +588,10 @@ fn encode_responses_computer_use(
     Ok(Value::Object(body))
 }
 
-fn decode_computer_use_response(response: &Value) -> ProtocolResultValue<ProtocolOutput> {
+fn decode_computer_use_response(
+    response: &Value,
+    reported_cost_currency: Option<&str>,
+) -> ProtocolResultValue<ProtocolOutput> {
     if response.get("status").and_then(Value::as_str) == Some("failed") {
         return Err(response_failure(response));
     }
@@ -595,7 +624,7 @@ fn decode_computer_use_response(response: &Value) -> ProtocolResultValue<Protoco
             "actions": actions,
             "requires_next_observation": true
         }),
-        usage: decode_usage(response.get("usage"))?,
+        usage: decode_usage(response.get("usage"), reported_cost_currency)?,
         artifacts: Vec::new(),
     })
 }
@@ -1025,7 +1054,10 @@ fn image_generation_tool(
     Ok(Value::Object(tool))
 }
 
-fn decode_response_object(response: &Value) -> ProtocolResultValue<ProtocolOutput> {
+fn decode_response_object(
+    response: &Value,
+    reported_cost_currency: Option<&str>,
+) -> ProtocolResultValue<ProtocolOutput> {
     let status = response
         .get("status")
         .and_then(Value::as_str)
@@ -1074,7 +1106,7 @@ fn decode_response_object(response: &Value) -> ProtocolResultValue<ProtocolOutpu
     });
     Ok(ProtocolOutput {
         value,
-        usage: decode_usage(response.get("usage"))?,
+        usage: decode_usage(response.get("usage"), reported_cost_currency)?,
         artifacts,
     })
 }
@@ -1216,7 +1248,10 @@ fn provider_state(value: Value) -> AiContent {
     }
 }
 
-fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
+fn decode_usage(
+    value: Option<&Value>,
+    reported_cost_currency: Option<&str>,
+) -> ProtocolResultValue<Option<AiUsage>> {
     let Some(value) = value else {
         return Ok(None);
     };
@@ -1247,11 +1282,14 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         video_seconds: None,
         request_units: None,
         characters: None,
-        cost: decode_reported_cost(value)?,
+        cost: decode_reported_cost(value, reported_cost_currency)?,
     }))
 }
 
-fn decode_reported_cost(value: &Value) -> ProtocolResultValue<Option<buckyos_api::AiCost>> {
+fn decode_reported_cost(
+    value: &Value,
+    reported_cost_currency: Option<&str>,
+) -> ProtocolResultValue<Option<buckyos_api::AiCost>> {
     let Some(cost) = value.get("cost") else {
         return Ok(None);
     };
@@ -1263,7 +1301,10 @@ fn decode_reported_cost(value: &Value) -> ProtocolResultValue<Option<buckyos_api
     } else {
         (
             cost.as_f64(),
-            value.get("cost_currency").and_then(Value::as_str),
+            value
+                .get("cost_currency")
+                .and_then(Value::as_str)
+                .or(reported_cost_currency),
         )
     };
     let (Some(amount), Some(currency)) = (amount, currency) else {
@@ -1285,6 +1326,7 @@ fn decode_reported_cost(value: &Value) -> ProtocolResultValue<Option<buckyos_api
 
 fn decode_buffered_responses_stream(
     response: HttpResponse,
+    reported_cost_currency: Option<&str>,
 ) -> ProtocolResultValue<ProtocolExecution> {
     let mut framer = SseFramer::new(SseConfig {
         termination_markers: Vec::new(),
@@ -1292,10 +1334,10 @@ fn decode_buffered_responses_stream(
     })?;
     let mut events = Vec::new();
     for frame in framer.push(&response.body)? {
-        events.extend(decode_response_frame(frame)?);
+        events.extend(decode_response_frame(frame, reported_cost_currency)?);
     }
     for frame in framer.finish(SseStreamEnd::EndOfStream)? {
-        events.extend(decode_response_frame(frame)?);
+        events.extend(decode_response_frame(frame, reported_cost_currency)?);
     }
     require_final_event(&events)?;
     Ok(ProtocolExecution::Stream(ProtocolStream {
@@ -1306,6 +1348,7 @@ fn decode_buffered_responses_stream(
 async fn responses_protocol_stream(
     response: StreamingHttpResponse,
     max_response_bytes: usize,
+    reported_cost_currency: Option<&'static str>,
 ) -> ProtocolResultValue<ProtocolStream> {
     let request_id = response.request_id.clone();
     let retry_after = response.retry_after;
@@ -1334,7 +1377,7 @@ async fn responses_protocol_stream(
         request_id,
         retry_after,
     };
-    let events = stream::unfold(state, |mut state| async move {
+    let events = stream::unfold(state, move |mut state| async move {
         loop {
             if let Some(event) = state.pending.pop_front() {
                 if state.final_seen {
@@ -1358,7 +1401,7 @@ async fn responses_protocol_stream(
             }
             match state.frames.next().await {
                 Some(Ok(SseFrame::Event(event))) => {
-                    match decode_response_frame(SseFrame::Event(event)) {
+                    match decode_response_frame(SseFrame::Event(event), reported_cost_currency) {
                         Ok(events) => state.pending.extend(events.into_iter().map(Ok)),
                         Err(error) => {
                             state.finished = true;
@@ -1398,7 +1441,10 @@ async fn responses_protocol_stream(
     })
 }
 
-fn decode_response_frame(frame: SseFrame) -> ProtocolResultValue<Vec<ProtocolEvent>> {
+fn decode_response_frame(
+    frame: SseFrame,
+    reported_cost_currency: Option<&str>,
+) -> ProtocolResultValue<Vec<ProtocolEvent>> {
     let SseFrame::Event(event) = frame else {
         return match frame {
             SseFrame::StreamEnd(_) => Ok(Vec::new()),
@@ -1458,6 +1504,7 @@ fn decode_response_frame(frame: SseFrame) -> ProtocolResultValue<Vec<ProtocolEve
             })?;
             Ok(vec![ProtocolEvent::Final(decode_response_object(
                 response,
+                reported_cost_currency,
             )?)])
         }
         "response.incomplete" => {
@@ -1466,6 +1513,7 @@ fn decode_response_frame(frame: SseFrame) -> ProtocolResultValue<Vec<ProtocolEve
             })?;
             Ok(vec![ProtocolEvent::Final(decode_response_object(
                 response,
+                reported_cost_currency,
             )?)])
         }
         "response.failed" | "error" => {
@@ -1934,7 +1982,7 @@ impl OperationCodec for OpenAiImageCodec {
             .collect();
         Ok(ProtocolExecution::Immediate(ProtocolOutput {
             value: json!({"images": images, "provider_states": []}),
-            usage: decode_usage(value.get("usage"))?,
+            usage: decode_usage(value.get("usage"), None)?,
             artifacts,
         }))
     }
@@ -2395,7 +2443,7 @@ fn decode_audio_transcription(response: HttpResponse) -> ProtocolResultValue<Pro
         .and_then(|usage| usage.get("type"))
         .and_then(Value::as_str)
     {
-        Some("tokens") => decode_usage(value.get("usage"))?,
+        Some("tokens") => decode_usage(value.get("usage"), None)?,
         Some("duration") => Some(AiUsage {
             audio_seconds: value
                 .pointer("/usage/seconds")

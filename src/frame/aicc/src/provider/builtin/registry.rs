@@ -680,7 +680,7 @@ mod tests {
             .map(|adapter| adapter.protocol_adapter_id.as_str())
             .collect::<BTreeSet<_>>();
         assert_eq!(codecs.adapters().len(), adapter_ids.len());
-        assert_eq!(adapter_ids.len(), 15);
+        assert_eq!(adapter_ids.len(), 17);
         for profile in registry.profiles() {
             assert!(adapter_ids.contains(profile.default_protocol_adapter_id.as_str()));
         }
@@ -801,51 +801,24 @@ mod tests {
         assert_eq!(
             golden,
             BTreeMap::from([
-                (
-                    "claude".to_owned(),
-                    "5:e98c6bc42b8f3fd8b5c4dea0e0582795a9a18ce99d34d2d073d4fb472ce364d1".to_owned()
-                ),
-                (
-                    "deepseek".to_owned(),
-                    "3:1adead8cb4da22a0a844bfead8416f14a0c7e627fba9a4134b985178580e5557".to_owned()
-                ),
-                (
-                    "doubao".to_owned(),
-                    "1:c054587853f80372caf82eaac075f91fab1d7f5b8d0f2bfe9167b9fdb56d019c".to_owned()
-                ),
+                ("claude".to_owned(), "dynamic".to_owned()),
+                ("deepseek".to_owned(), "dynamic".to_owned()),
+                ("doubao".to_owned(), "dynamic".to_owned()),
                 (
                     "fal".to_owned(),
-                    "4:05760592a1391867052b6b68348099c6008dc8998d2fc8b5f957c96bb280a2d0".to_owned()
+                    "4:bb2910b9ed756e6ffc0d869b49c2ab72cf08eb716674abde2f5ae72471242095".to_owned()
                 ),
-                (
-                    "gemini".to_owned(),
-                    "26:64ff06f20907e5a3d7674895f88e42200aff18cc95bb15e99c184b3e8f8fb52a"
-                        .to_owned()
-                ),
+                ("gemini".to_owned(), "dynamic".to_owned()),
                 (
                     "glm".to_owned(),
-                    "46:21834a76909a74ad83bc30e84c408d6bba0dc5ba2e8cbb7019eee0e4f595078e"
+                    "16:3a8995bbe4d76a69d0a96dfc1f8e3482217a7eacf9495648e1e4e5405030322e"
                         .to_owned()
                 ),
-                (
-                    "kimi".to_owned(),
-                    "2:bbd95d92bef225aa080c8914667f255d278529032c0ef45110ef643cbc4b804a".to_owned()
-                ),
-                (
-                    "minimax".to_owned(),
-                    "19:889ef13b059216f0855dbc1fcb5571e10433c5dd21007096c6c3daad74a27340"
-                        .to_owned()
-                ),
-                (
-                    "openai".to_owned(),
-                    "15:f8ed0d8e9c255968d5d342319b20ee825fac1bfa29917b88f155c0c4ba241793"
-                        .to_owned()
-                ),
+                ("kimi".to_owned(), "dynamic".to_owned()),
+                ("minimax".to_owned(), "dynamic".to_owned()),
+                ("openai".to_owned(), "dynamic".to_owned()),
                 ("openrouter".to_owned(), "dynamic".to_owned()),
-                (
-                    "qwen".to_owned(),
-                    "4:6a457f72a703c9f859f015977ecfc74e587d06d46e45d55b753f795f64f088c3".to_owned()
-                ),
+                ("qwen".to_owned(), "dynamic".to_owned()),
                 ("sn".to_owned(), "dynamic".to_owned())
             ])
         );
@@ -942,10 +915,7 @@ mod tests {
 
         assert_eq!(binding.profile.provider_profile_id, "vendor");
         assert_eq!(binding.profile.discovery_mode, DiscoveryMode::MachineApi);
-        assert_eq!(
-            binding.profile.default_inventory.unwrap().models[0].provider_model_id,
-            "vendor-model"
-        );
+        assert!(binding.profile.default_inventory.is_none());
     }
 
     #[test]
@@ -1095,7 +1065,7 @@ mod tests {
             })
             .unwrap();
         let inventory = binding.profile.default_inventory.unwrap();
-        assert_eq!(inventory.revision.as_deref(), Some("catalog-fal-1"));
+        assert_eq!(inventory.revision.as_deref(), Some("catalog-fal-2"));
         assert_eq!(inventory.models.len(), 4);
         assert!(inventory
             .models

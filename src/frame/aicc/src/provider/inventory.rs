@@ -1,5 +1,6 @@
 use super::*;
 use crate::canonical::CanonicalFieldMapping;
+use crate::model::UNCLASSIFIED_MODEL_DRIVER_ID;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -284,7 +285,7 @@ pub(crate) enum ProviderQuotaObservationState {
 pub(crate) struct ProviderQuotaObservation {
     pub state: ProviderQuotaObservationState,
     pub remaining_request_units: Option<u64>,
-    pub remaining_cost_usd: Option<AiCost>,
+    pub remaining_cost: Option<AiCost>,
     pub reset_at_ms: Option<i64>,
     pub observed_at_ms: i64,
     pub source: String,
@@ -451,32 +452,10 @@ pub(crate) fn catalog_only_inventory(
     provider_profile_id: &str,
 ) -> Option<ProviderDiscoverySnapshot> {
     let rules = catalog.provider_rules(provider_profile_id)?;
-    let excluded = rules
-        .models
+    let models = rules
+        .static_inventory_models
         .iter()
-        .filter(|model| model.exclude)
-        .map(|model| model.id.as_str())
-        .collect::<BTreeSet<_>>();
-    let mut model_ids = rules
-        .models
-        .iter()
-        .filter(|model| !model.exclude)
-        .map(|model| model.id.clone())
-        .collect::<BTreeSet<_>>();
-    if let Some(model_drivers) = &rules.metadata_drivers {
-        for model_driver_id in model_drivers {
-            if let Some(driver) = catalog.model_driver(model_driver_id) {
-                model_ids.extend(
-                    driver
-                        .models
-                        .iter()
-                        .map(|model| model.id.clone())
-                        .filter(|model_id| !excluded.contains(model_id.as_str())),
-                );
-            }
-        }
-    }
-    let models = model_ids
+        .cloned()
         .into_iter()
         .map(|provider_model_id| DiscoveredModel {
             provider_model_id,
@@ -541,6 +520,10 @@ pub(crate) struct ProviderInventoryModel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<InventoryPricing>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_latency_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_catalog_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_rules_revision: Option<u64>,
@@ -599,6 +582,17 @@ impl ProviderInventorySnapshot {
                                 .and_then(|pricing| serde_json::to_value(pricing).ok())
                                 .unwrap_or(Value::Null),
                         ),
+                        (
+                            "estimated_latency_ms".into(),
+                            model
+                                .estimated_latency_ms
+                                .map(Value::from)
+                                .unwrap_or(Value::Null),
+                        ),
+                        (
+                            "quality_score".into(),
+                            model.quality_score.map(Value::from).unwrap_or(Value::Null),
+                        ),
                     ]),
                     operations: model.operations.clone(),
                 })
@@ -613,19 +607,43 @@ impl InventoryBuilder {
     pub(crate) fn build(
         profile: &ProviderProfile,
         instance: &ProviderInstanceConfig,
-        discovery: ProviderDiscoverySnapshot,
+        mut discovery: ProviderDiscoverySnapshot,
         catalog: &CatalogSnapshot,
         codecs: &CodecRegistry,
     ) -> ProviderResult<ProviderInventorySnapshot> {
-        validate_discovery(&discovery)?;
-        let adapter = codecs
-            .adapter(&instance.protocol_adapter_id)
-            .ok_or_else(|| ProviderError::UnknownAdapter(instance.protocol_adapter_id.clone()))?;
         let rules_id = instance
             .provider_rules_id
             .as_deref()
             .unwrap_or(&profile.provider_profile_id);
         let rules = catalog.provider_rules(rules_id);
+        if let Some(rules) = rules {
+            let discovered_ids = discovery
+                .models
+                .iter()
+                .map(|model| model.provider_model_id.clone())
+                .collect::<BTreeSet<_>>();
+            discovery.models.extend(
+                rules
+                    .static_inventory_models
+                    .iter()
+                    .filter(|model_id| !discovered_ids.contains(*model_id))
+                    .cloned()
+                    .map(|provider_model_id| DiscoveredModel {
+                        provider_model_id,
+                        origin_model_id: None,
+                        api_types: None,
+                        supported_features: None,
+                        remote_methods: None,
+                        availability: ModelAvailability::Available,
+                        deprecated: false,
+                        pricing: None,
+                    }),
+            );
+        }
+        validate_discovery(&discovery)?;
+        let adapter = codecs
+            .adapter(&instance.protocol_adapter_id)
+            .ok_or_else(|| ProviderError::UnknownAdapter(instance.protocol_adapter_id.clone()))?;
         let instance_rules = instance.instance_rules.clone().unwrap_or_default();
         let fingerprint = model_list_fingerprint(&discovery.models);
         let mut models = Vec::new();
@@ -710,17 +728,16 @@ impl InventoryBuilder {
             if resolved.semantics.exclude.unwrap_or(false) {
                 continue;
             }
-            let conservative_fallback = resolved.model_driver_id.is_none();
             let model_driver_id = resolved
                 .model_driver_id
                 .clone()
-                .unwrap_or_else(|| "unclassified".to_owned());
+                .unwrap_or_else(|| UNCLASSIFIED_MODEL_DRIVER_ID.to_owned());
             version_rule_refs.insert(
                 discovered.provider_model_id.clone(),
                 resolved.semantics.version_rules.clone(),
             );
             let mut static_api_types = resolved.semantics.api_types.unwrap_or_default();
-            if conservative_fallback && static_api_types.is_empty() {
+            if static_api_types.is_empty() {
                 static_api_types = discovered
                     .api_types
                     .as_ref()
@@ -738,6 +755,8 @@ impl InventoryBuilder {
                 source: PricingSource::ModelDriver,
                 value,
             });
+            let mut estimated_latency_ms = resolved.semantics.estimated_latency_ms;
+            let quality_score = resolved.semantics.quality_score;
             let mut provider_rules_revision = None;
             let operation_overrides = if let Some(rule) = &provider_rule {
                 let narrowed = rule.action.narrow(&static_api_types, &capabilities);
@@ -750,6 +769,7 @@ impl InventoryBuilder {
                         value: value.clone(),
                     });
                 }
+                estimated_latency_ms = rule.action.estimated_latency_ms.or(estimated_latency_ms);
                 provider_rules_revision = Some(rule.catalog_revision_seq);
                 &rule.action.operations
             } else {
@@ -874,6 +894,8 @@ impl InventoryBuilder {
                 deprecated: discovered.deprecated,
                 remote_methods: discovered.remote_methods,
                 pricing,
+                estimated_latency_ms,
+                quality_score,
                 model_catalog_revision: resolved.catalog_revision_seq,
                 provider_rules_revision,
             });

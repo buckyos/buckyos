@@ -1656,7 +1656,7 @@ fn quota_combines_budget_usage_and_provider_minimum() {
     let provider = ProviderQuotaObservation {
         state: ProviderQuotaObservationState::Normal,
         remaining_request_units: Some(8),
-        remaining_cost_usd: Some(buckyos_api::AiCost {
+        remaining_cost: Some(buckyos_api::AiCost {
             amount: 0.5,
             currency: "USD".to_string(),
         }),
@@ -1710,7 +1710,7 @@ fn quota_rejects_invalid_local_finance_but_ignores_provider_failure() {
     let failed = ProviderQuotaObservation {
         state: ProviderQuotaObservationState::QueryFailed,
         remaining_request_units: None,
-        remaining_cost_usd: None,
+        remaining_cost: None,
         reset_at_ms: None,
         observed_at_ms: 1,
         source: "provider-api".to_string(),
@@ -1734,7 +1734,7 @@ fn unavailable_provider_quota_is_unknown_and_exhausted_is_preserved() {
     let unsupported = ProviderQuotaObservation {
         state: ProviderQuotaObservationState::Unsupported,
         remaining_request_units: None,
-        remaining_cost_usd: None,
+        remaining_cost: None,
         reset_at_ms: None,
         observed_at_ms: 1,
         source: "unsupported".to_string(),
@@ -1748,7 +1748,7 @@ fn unavailable_provider_quota_is_unknown_and_exhausted_is_preserved() {
     let exhausted = ProviderQuotaObservation {
         state: ProviderQuotaObservationState::Exhausted,
         remaining_request_units: Some(0),
-        remaining_cost_usd: None,
+        remaining_cost: None,
         reset_at_ms: None,
         observed_at_ms: 1,
         source: "provider-api".to_string(),
@@ -1764,7 +1764,7 @@ fn exhausted_provider_overrides_normal_budget() {
     let exhausted = ProviderQuotaObservation {
         state: ProviderQuotaObservationState::Exhausted,
         remaining_request_units: Some(0),
-        remaining_cost_usd: None,
+        remaining_cost: None,
         reset_at_ms: None,
         observed_at_ms: 1,
         source: "provider-api".to_string(),

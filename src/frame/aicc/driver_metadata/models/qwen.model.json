@@ -3,7 +3,7 @@
   "schema_version": 1,
   "schema_revision": 1,
   "model_driver_id": "qwen",
-  "revision_seq": 1,
+  "revision_seq": 2,
   "required_features": [],
   "models": [
     {
@@ -53,6 +53,34 @@
     }
   ],
   "patterns": [
+    {
+      "match": "qwen-image*",
+      "parameter_scale": "image",
+      "api_types": ["image.txt2img", "image.img2img"],
+      "logical_mounts": ["image.txt2img.qwen", "image.txt2img.{model}", "image.img2img.qwen", "image.img2img.{model}"],
+      "capabilities": {}
+    },
+    {
+      "match": "wan*-t2i*",
+      "parameter_scale": "image",
+      "api_types": ["image.txt2img"],
+      "logical_mounts": ["image.txt2img.qwen", "image.txt2img.{model}"],
+      "capabilities": {}
+    },
+    {
+      "match": "wan*-i2v*",
+      "parameter_scale": "video",
+      "api_types": ["video.img2video"],
+      "logical_mounts": ["video.img2video.qwen", "video.img2video.{model}"],
+      "capabilities": {}
+    },
+    {
+      "match": "wan*-t2v*",
+      "parameter_scale": "video",
+      "api_types": ["video.txt2video"],
+      "logical_mounts": ["video.txt2video.qwen", "video.txt2video.{model}"],
+      "capabilities": {}
+    },
     {
       "match": "qwen3.8-max*",
       "parameter_scale": "max",

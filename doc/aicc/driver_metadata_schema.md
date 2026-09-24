@@ -164,8 +164,10 @@ for the common case it is only `"match": "gpt-*"`:
   name) or `match` (wildcard). An exact `id` always wins; otherwise the first
   matching wildcard applies. The lookup is independent of whether the concrete
   model matched an exact entry or a pattern.
-- scheduling hints: `estimated_latency_ms`, `quality_score`, `latency_class`
-  and `cost_class`.
+- scheduling hints: `estimated_latency_ms` and `quality_score`. They are copied
+  into inventory and are used only when runtime observations are unavailable.
+  Currency-free `cost_class` and non-numeric `latency_class` are intentionally
+  unsupported; cost uses typed pricing and latency uses milliseconds.
 
 Provider Rules may only reduce the capabilities declared here; they cannot add
 an intrinsic capability. Unknown models enter conservative fallback and do not

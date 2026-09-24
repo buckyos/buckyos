@@ -1,9 +1,8 @@
 use super::{
-    openai_responses_adapter, AdapterDescriptor, AdapterStatus, CodecCall, CodecInput,
-    CodecRegistration, ExecutionMode, HttpRequest, HttpResponse, OperationCodec,
-    OperationDescriptor, ProtocolError, ProtocolEvent, ProtocolExecution, ProtocolOutput,
-    ProtocolResultValue, ProtocolStream, StreamingHttpResponse, OPENAI_RESPONSES_ADAPTER_ID,
-    OPENAI_RESPONSES_OPERATION_ID,
+    AdapterDescriptor, AdapterStatus, CodecCall, CodecInput, CodecRegistration, ExecutionMode,
+    HttpRequest, HttpResponse, OperationCodec, OperationDescriptor, ProtocolError, ProtocolEvent,
+    ProtocolExecution, ProtocolOutput, ProtocolResultValue, ProtocolStream, StreamingHttpResponse,
+    OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID,
 };
 use async_trait::async_trait;
 use buckyos_api::ApiType;
@@ -104,7 +103,11 @@ pub(crate) fn openai_responses_compatible_adapters(
 pub(crate) fn responses_dialect_adapter(
     dialect: ResponsesDialectKind,
 ) -> ProtocolResultValue<(AdapterDescriptor, CodecRegistration)> {
-    let (base_descriptor, mut base_registration) = openai_responses_adapter();
+    let reported_cost_currency = (dialect == ResponsesDialectKind::OpenRouter).then_some("USD");
+    let (base_descriptor, mut base_registration) =
+        super::openai_responses::openai_responses_adapter_with_reported_cost_currency(
+            reported_cost_currency,
+        );
     let operation = base_descriptor
         .operations
         .get(OPENAI_RESPONSES_OPERATION_ID)
@@ -120,7 +123,7 @@ pub(crate) fn responses_dialect_adapter(
         .ok_or_else(|| ProtocolError::invalid_configuration("Responses LLM codec is missing"))?;
     let base_codec = base_registration.operation_codecs.swap_remove(codec_index);
     let contract = dialect.contract();
-    let descriptor = AdapterDescriptor {
+    let mut descriptor = AdapterDescriptor {
         protocol_family_id: base_descriptor.protocol_family_id,
         protocol_adapter_id: contract.protocol_adapter_id.to_string(),
         interface_generation: "responses-v1".to_string(),
@@ -137,13 +140,42 @@ pub(crate) fn responses_dialect_adapter(
         descriptor: operation,
         base: base_codec,
     });
-    Ok((
-        descriptor,
-        CodecRegistration {
-            operation_codecs: vec![codec],
-            native_task_codecs: Vec::new(),
-        },
-    ))
+    let mut registration = CodecRegistration {
+        operation_codecs: vec![codec],
+        native_task_codecs: Vec::new(),
+    };
+    let media = match dialect {
+        ResponsesDialectKind::Doubao => Some((
+            "doubao",
+            super::DOUBAO_MEDIA_ADAPTER_ID,
+            super::doubao_media::doubao_media_registration(),
+        )),
+        ResponsesDialectKind::Qwen => Some((
+            "qwen",
+            super::QWEN_MEDIA_ADAPTER_ID,
+            super::qwen_media::qwen_media_registration(),
+        )),
+        _ => None,
+    };
+    if let Some((family, component_id, (operations, media_registration))) = media {
+        descriptor.protocol_family_id = family.to_owned();
+        descriptor.component_adapter_ids = vec![
+            OPENAI_RESPONSES_ADAPTER_ID.to_owned(),
+            component_id.to_owned(),
+        ];
+        for operation in operations {
+            descriptor
+                .operations
+                .insert(operation.operation_id.clone(), operation);
+        }
+        registration
+            .operation_codecs
+            .extend(media_registration.operation_codecs);
+        registration
+            .native_task_codecs
+            .extend(media_registration.native_task_codecs);
+    }
+    Ok((descriptor, registration))
 }
 
 struct ResponsesDialectCodec {
@@ -448,7 +480,10 @@ fn rewrite_value_namespace(value: &mut Value, namespace: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{CodecContext, CodecLimits, CodecRegistry, HttpBody, ResolvedCredential};
+    use crate::protocol::{
+        openai_responses_adapter, CodecContext, CodecLimits, CodecRegistry, HttpBody,
+        ResolvedCredential,
+    };
     use buckyos_api::{AiContent, AiMessage, AiRole, AiccCall, LlmChatInvokeRequest};
     use reqwest::header::AUTHORIZATION;
     use serde_json::json;
@@ -495,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn derived_adapters_declare_base_overrides_and_only_llm_operation() {
+    fn derived_adapters_declare_base_and_provider_media_components() {
         let adapters = openai_responses_compatible_adapters().unwrap();
         assert_eq!(adapters.len(), 3);
         for (descriptor, registration) in adapters {
@@ -503,12 +538,25 @@ mod tests {
                 descriptor.base_adapter_id.as_deref(),
                 Some(OPENAI_RESPONSES_ADAPTER_ID)
             );
-            assert_eq!(descriptor.operations.len(), 1);
             assert!(descriptor
                 .operations
                 .contains_key(OPENAI_RESPONSES_OPERATION_ID));
-            assert_eq!(registration.operation_codecs.len(), 1);
-            assert!(registration.native_task_codecs.is_empty());
+            if descriptor.protocol_adapter_id == DEEPSEEK_RESPONSES_ADAPTER_ID {
+                assert_eq!(descriptor.operations.len(), 1);
+                assert_eq!(registration.operation_codecs.len(), 1);
+                assert!(registration.native_task_codecs.is_empty());
+            } else {
+                let expected_operations =
+                    if descriptor.protocol_adapter_id == QWEN_RESPONSES_ADAPTER_ID {
+                        4
+                    } else {
+                        3
+                    };
+                assert_eq!(descriptor.operations.len(), expected_operations);
+                assert!(registration.operation_codecs.len() >= 1);
+                assert!(!registration.native_task_codecs.is_empty());
+                assert_eq!(descriptor.component_adapter_ids.len(), 2);
+            }
         }
         assert_eq!(
             ResponsesDialectKind::DeepSeek.contract().override_points,
@@ -534,6 +582,12 @@ mod tests {
         registry
             .register_codecs(base_descriptor, base_registration)
             .unwrap();
+        for (descriptor, registration) in [
+            super::super::doubao_media_adapter(),
+            super::super::qwen_media_adapter(),
+        ] {
+            registry.register_codecs(descriptor, registration).unwrap();
+        }
         for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
             registry.register_derived(descriptor, registration).unwrap();
         }
@@ -575,6 +629,31 @@ mod tests {
             assert_eq!(request.url, "https://provider.example/v1/responses");
             assert!(request.headers.contains_key(AUTHORIZATION));
         }
+    }
+
+    #[tokio::test]
+    async fn openrouter_assigns_usd_to_reported_numeric_cost() {
+        let (_, registration) =
+            responses_dialect_adapter(ResponsesDialectKind::OpenRouter).unwrap();
+        let response = HttpResponse {
+            status: reqwest::StatusCode::OK,
+            headers: reqwest::header::HeaderMap::new(),
+            body: bytes::Bytes::from_static(
+                br#"{"id":"resp_1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2,"cost":0.001}}"#,
+            ),
+            request_id: "request-1".into(),
+            retry_after: None,
+        };
+        let ProtocolExecution::Immediate(output) = registration.operation_codecs[0]
+            .decode(response)
+            .await
+            .unwrap()
+        else {
+            panic!("expected immediate response")
+        };
+        let cost = output.usage.unwrap().cost.unwrap();
+        assert_eq!(cost.amount, 0.001);
+        assert_eq!(cost.currency, "USD");
     }
 
     #[test]

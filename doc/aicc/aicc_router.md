@@ -431,8 +431,6 @@ models:
       local: false
       privacy: cloud
       quality_score: 0.95
-      latency_class: normal
-      cost_class: high
     pricing:
       currency: USD
       input_token: 0.0000000
@@ -863,8 +861,7 @@ logical_tree:
 6. 当包月额度用尽且进入超额价格时，应动态调整候选评分；
 7. 如果 Provider 暴露 `CostEstimateOutput` 接口，调度器必须以该接口返回值作为成本评分唯一来源；
 8. inventory 中的 `pricing` 只作为 UI 展示和 cost estimate 缺失时的静态 fallback，不应与动态 cost estimate 同时参与评分；
-9. `cost_class` 是展示字段和最后兜底分类，不参与正常调度评分；
-10. Provider 无法提供动态成本估算时，应使用管理员配置默认成本或静态 `pricing`，再退化到 `cost_class` 映射。
+9. Provider 无法提供动态成本估算时，应使用管理员配置默认成本或带币种的静态 `pricing`；缺少二者时成本保持 unknown，不用无币种的分类值猜测。
 
 建议 Provider 暴露：
 
@@ -1432,8 +1429,7 @@ providers:
           local: false
           privacy: cloud
           quality_score: 0.95
-          latency_class: normal
-          cost_class: high
+          estimated_latency_ms: 3000
 
   - provider_instance_name: openai_backup
     models:
@@ -1453,8 +1449,7 @@ providers:
           local: false
           privacy: cloud
           quality_score: 0.93
-          latency_class: normal
-          cost_class: high
+          estimated_latency_ms: 3500
 
   - provider_instance_name: anthropic
     models:
@@ -1473,8 +1468,7 @@ providers:
           local: false
           privacy: cloud
           quality_score: 0.94
-          latency_class: normal
-          cost_class: high
+          estimated_latency_ms: 3200
 
   - provider_instance_name: local
     models:
@@ -1493,8 +1487,7 @@ providers:
           local: true
           privacy: local
           quality_score: 0.72
-          latency_class: fast
-          cost_class: low
+          estimated_latency_ms: 800
 ```
 
 ### 15.3 调度 Profile 配置

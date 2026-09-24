@@ -34,7 +34,7 @@
 | Claude | [Models and pricing](https://platform.claude.com/docs/en/about-claude/models/overview) | 可精确表达的模型静态 USD token/cache 单价 |
 | Gemini | [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) | token 单价、图像按张价（分档已验证，不再按每百万输出 token 误当每张）与 TTS 按 token 价；同一模型按模态、服务档位和媒体规格变化的其余部分为 unknown |
 | Fal | [Model API pricing](https://fal.ai/docs/documentation/model-apis/pricing) | 四个 endpoint 按 compute-second / audio-second / megapixel 计价；动态变化的 endpoint 仍为 unknown |
-| OpenRouter | [Usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting) | `/models` USD 动态价格用于估算，响应 `usage.cost` 用于实际结算并优先于估算 |
+| OpenRouter | [Usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting) | `/models` USD 动态价格用于估算；响应自动携带 `usage.cost`，无需旧式 `usage.include`。OpenRouter dialect 按官方合同为无币种的数值 cost 补 `USD`，实际费用优先于估算；基础 OpenAI-compatible codec 不猜币种 |
 | MiniMax | [Pay-as-you-go pricing](https://platform.minimax.io/docs/guides/pricing-paygo) | token 单价、按字符的语音价、按张图像价与按算力秒视频价进入 metadata（国际站 USD）；国内站 CNY 价格需另行核对 |
 | Kimi | [Moonshot platform](https://platform.moonshot.ai/docs/) | 未取得可与当前模型唯一对应的官方价格时为 unknown |
 | GLM | [Official pricing](https://bigmodel.cn/pricing) | CNY 价已按官网逐模型录入：token 单价、按次/按秒价与按输入长度分档价 |

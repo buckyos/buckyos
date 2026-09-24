@@ -1,7 +1,8 @@
 use crate::protocol::{
-    claude_messages_adapter, fal_queue_adapter, gemini_interactions_adapter, glm_media_adapter,
-    minimax_media_adapter, openai_chat_completions_adapter, openai_responses_adapter,
-    CodecRegistry, ProtocolAdapterPlugin, ProtocolResultValue,
+    claude_messages_adapter, doubao_media_adapter, fal_queue_adapter, gemini_interactions_adapter,
+    glm_media_adapter, minimax_media_adapter, openai_chat_completions_adapter,
+    openai_responses_adapter, qwen_media_adapter, CodecRegistry, ProtocolAdapterPlugin,
+    ProtocolResultValue,
 };
 
 pub(super) struct Plugin;
@@ -16,6 +17,8 @@ impl ProtocolAdapterPlugin for Plugin {
             fal_queue_adapter(),
             glm_media_adapter(),
             minimax_media_adapter(),
+            doubao_media_adapter(),
+            qwen_media_adapter(),
         ] {
             registry.register_codecs(descriptor, codecs)?;
         }

@@ -86,10 +86,6 @@ pub(crate) struct ModelSemantics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality_score: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub latency_class: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cost_class: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_rules: Option<Vec<String>>,
 }
 
@@ -121,11 +117,6 @@ impl ModelSemantics {
             pricing: None,
             estimated_latency_ms: rule.estimated_latency_ms.or(self.estimated_latency_ms),
             quality_score: rule.quality_score.or(self.quality_score),
-            latency_class: rule
-                .latency_class
-                .clone()
-                .or_else(|| self.latency_class.clone()),
-            cost_class: rule.cost_class.clone().or_else(|| self.cost_class.clone()),
             version_rules: rule
                 .version_rules
                 .clone()
@@ -170,10 +161,6 @@ macro_rules! define_model_rule {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub quality_score: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub latency_class: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub cost_class: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version_rules: Option<Vec<String>>,
         }
     };
@@ -201,8 +188,6 @@ macro_rules! model_rule_semantics {
             pricing: None,
             estimated_latency_ms: $rule.estimated_latency_ms,
             quality_score: $rule.quality_score,
-            latency_class: $rule.latency_class.clone(),
-            cost_class: $rule.cost_class.clone(),
             version_rules: $rule.version_rules.clone(),
         }
     };
@@ -479,10 +464,6 @@ macro_rules! define_provider_rule {
         pub remove_features: BTreeSet<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub estimated_latency_ms: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub latency_class: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub cost_class: Option<String>,
         }
     };
 }
@@ -508,8 +489,6 @@ pub(crate) struct ProviderRuleAction {
     pub remove_api_types: BTreeSet<String>,
     pub remove_features: BTreeSet<String>,
     pub estimated_latency_ms: Option<u64>,
-    pub latency_class: Option<String>,
-    pub cost_class: Option<String>,
 }
 
 macro_rules! provider_rule_action {
@@ -524,8 +503,6 @@ macro_rules! provider_rule_action {
             remove_api_types: $rule.remove_api_types.clone(),
             remove_features: $rule.remove_features.clone(),
             estimated_latency_ms: $rule.estimated_latency_ms,
-            latency_class: $rule.latency_class.clone(),
-            cost_class: $rule.cost_class.clone(),
         }
     };
 }

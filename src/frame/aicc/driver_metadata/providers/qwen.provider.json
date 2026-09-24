@@ -2,13 +2,29 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 1,
+  "revision_seq": 2,
   "provider_profile_id": "qwen",
   "metadata_drivers": ["qwen"],
   "origin_provider_aliases": {},
   "origin_mappings": [],
   "models": [],
   "patterns": [
+    {
+      "match": "qwen-image*",
+      "operations": { "image.txt2img": "dashscope.image_synthesis", "image.img2img": "dashscope.image_edit" }
+    },
+    {
+      "match": "wan*-t2i*",
+      "operations": { "image.txt2img": "dashscope.image_synthesis" }
+    },
+    {
+      "match": "wan*-i2v*",
+      "operations": { "video.img2video": "dashscope.video_synthesis" }
+    },
+    {
+      "match": "wan*-t2v*",
+      "operations": { "video.txt2video": "dashscope.video_synthesis" }
+    },
     {
       "match": "*",
       "operations": { "llm": "responses.create" },

@@ -2,13 +2,20 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 1,
+  "revision_seq": 2,
   "provider_profile_id": "doubao",
-  "metadata_drivers": ["doubao"],
   "origin_provider_aliases": {},
   "origin_mappings": [],
   "models": [],
   "patterns": [
+    {
+      "match": "doubao-seedream-*",
+      "operations": { "image.txt2img": "ark.images.generate", "image.img2img": "ark.images.generate" }
+    },
+    {
+      "match": "doubao-seedance-*",
+      "operations": { "video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate" }
+    },
     {
       "match": "*",
       "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }

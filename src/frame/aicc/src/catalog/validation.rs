@@ -940,6 +940,24 @@ pub(super) fn validate_references(
         }
     }
     for (owner, catalog) in provider_rules {
+        for model_id in &catalog.document.static_inventory_models {
+            let mut context = MatchContext::new();
+            context.insert(
+                "provider_model_id".to_owned(),
+                Value::String(model_id.clone()),
+            );
+            if !catalog.exact_index.contains_key(model_id)
+                && catalog.patterns.first_match(&context).is_none()
+            {
+                return Err(CatalogBuildError::InvalidValue {
+                    owner: owner.clone(),
+                    field: "static_inventory_models",
+                    reason: format!(
+                        "static model {model_id:?} must be covered by provider.models or provider.patterns"
+                    ),
+                });
+            }
+        }
         if let Some(drivers) = &catalog.document.metadata_drivers {
             for target in drivers {
                 require_model_driver(model_drivers, owner, "metadata_drivers", target)?;

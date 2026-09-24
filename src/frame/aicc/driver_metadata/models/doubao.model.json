@@ -3,7 +3,7 @@
   "schema_version": 1,
   "schema_revision": 1,
   "model_driver_id": "doubao",
-  "revision_seq": 1,
+  "revision_seq": 2,
   "required_features": [],
   "models": [
     {
@@ -20,6 +20,20 @@
     }
   ],
   "patterns": [
+    {
+      "match": "doubao-seedream-*",
+      "parameter_scale": "image",
+      "api_types": ["image.txt2img", "image.img2img"],
+      "logical_mounts": ["image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.doubao", "image.img2img.{model}"],
+      "capabilities": {}
+    },
+    {
+      "match": "doubao-seedance-*",
+      "parameter_scale": "video",
+      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "capabilities": {}
+    },
     {
       "match": "doubao-seed-2-0-pro-*",
       "parameter_scale": "pro",

@@ -13,6 +13,7 @@ use std::error::Error;
 use std::fmt;
 
 pub(crate) const DEFAULT_FALLBACK_DEPTH_LIMIT: usize = 5;
+pub(crate) const UNCLASSIFIED_MODEL_DRIVER_ID: &str = "unclassified";
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct ExactModelName {
@@ -567,7 +568,9 @@ impl ModelRegistry {
                 ));
             }
             for model in &inventory.models {
-                if catalog.model_driver(&model.model_driver_id).is_none() {
+                if model.model_driver_id != UNCLASSIFIED_MODEL_DRIVER_ID
+                    && catalog.model_driver(&model.model_driver_id).is_none()
+                {
                     return Err(ModelRegistryError::UnknownModelDriver(
                         model.model_driver_id.clone(),
                     ));
@@ -1828,6 +1831,17 @@ mod tests {
             ),
             Err(ModelRegistryError::UnknownModelDriver(_))
         ));
+
+        let mut unclassified = inventory_model("fallback", true);
+        unclassified.model_driver_id = UNCLASSIFIED_MODEL_DRIVER_ID.to_owned();
+        unclassified.logical_mounts.clear();
+        assert!(ModelRegistry::build(
+            &catalog(),
+            &[inventory("fallback-provider", vec![unclassified])],
+            Vec::new(),
+            RegistryLayers::default()
+        )
+        .is_ok());
     }
 
     #[test]

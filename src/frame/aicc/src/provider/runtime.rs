@@ -35,7 +35,7 @@ impl ProviderRuntime {
         ProviderQuotaObservation {
             state: ProviderQuotaObservationState::Unsupported,
             remaining_request_units: None,
-            remaining_cost_usd: None,
+            remaining_cost: None,
             reset_at_ms: None,
             observed_at_ms: now_ms().unwrap_or(0),
             source: "unsupported".into(),

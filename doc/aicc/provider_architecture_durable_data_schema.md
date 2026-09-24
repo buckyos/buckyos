@@ -130,7 +130,7 @@ Content Schema：
 - `patterns: ProviderModelRule[]`，每项使用统一 `MatchRule`，有序、首个命中生效
 - `variants: ProviderVariantRule[]`
 
-ProviderModelRule 可包含 `match`、`exclude`、`operations`、`provider_options`、`request_rules`、`pricing`、`remove_api_types`、`remove_features`、`estimated_latency_ms`、`latency_class`、`cost_class`。`match` 通常是匹配 `provider_model_id` 的 wildcard 字符串，需要联合 `origin_model_id`、Model Driver、variant 或 API type 时才使用对象。request/pricing 条件也复用同一 `MatchRule`。`pricing` 直接保存该渠道模型的静态价格和条件计价规则。配置只能收窄 Model Driver 能力。
+ProviderModelRule 可包含 `match`、`exclude`、`operations`、`provider_options`、`request_rules`、`remove_api_types`、`remove_features`、`estimated_latency_ms`。`match` 通常是匹配 `provider_model_id` 的 wildcard 字符串，需要联合 `origin_model_id`、Model Driver、variant 或 API type 时才使用对象。request/pricing 条件也复用同一 `MatchRule`。静态价格位于顶层 `model_pricing`，避免 exact 技术规则遮蔽 pattern。配置只能收窄 Model Driver 能力。
 
 `metadata_drivers` 缺失表示搜索系统当前安装的全部 Model Driver；显式空数组表示不匹配任何 Model Driver。每个官方支持的 Provider 厂商（包括内置专用 Provider）都必须有独立文件。
 

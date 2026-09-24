@@ -116,7 +116,7 @@ mod tests {
         );
 
         let rules = fal_provider_rules(7);
-        assert_eq!(rules.revision_seq, 1);
+        assert_eq!(rules.revision_seq, 2);
         assert_eq!(
             rules.patterns[0].operations["video.img2video"],
             FAL_QUEUE_OPERATION_ID

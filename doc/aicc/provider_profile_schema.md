@@ -242,7 +242,7 @@ variant 名称是 Model Driver 与 Provider Rules 共用的封闭词汇表，Mod
 | 按峰谷时段分时计价 | `model_pricing[].pricing.time_windows` |
 | 模型使用的具体接口 | `operations` |
 | Provider 无法提供的模型能力 | `remove_api_types` / `remove_features` |
-| 渠道延迟和成本提示 | `estimated_latency_ms` / `latency_class` / `cost_class` |
+| 渠道延迟提示 | `estimated_latency_ms`；只有毫秒数值进入调度 |
 
 Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固有能力。
 
@@ -257,6 +257,8 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 ```
 
 `{}` 只承诺标准协议和标准模型名，不做 prefix/suffix stripping、vendor alias、moving alias 或其它重命名。系统按原始 `provider_model_id` 在全部 Model Driver 中执行 exact → pattern 匹配；唯一命中某个 Driver 后再合并该 Driver 的 defaults，零命中走 conservative fallback，多重命中拒绝。各 Driver 的 defaults 不能单独用于跨 Driver 猜测原厂。
+
+conservative fallback 保留 discovery 声明的 API types；discovery 未声明时仅回退为 `llm`，并使用保留身份 `unclassified`。该模型可以按 exact model 调用，但没有 Model Driver logical mounts、variants 或静态能力，不会伪装成任一厂商模型。
 
 当一个 Provider 需要以下可选字段时，它已经拥有厂商规则，不再属于纯 `{}` 语义；应创建或更新官方 `.provider.json`：
 
@@ -276,7 +278,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 
 - `custom_provider_adapters`：允许用户自定义 Provider 复用的已注册 Adapter ID；省略或空数组表示不开放。每项必须属于该 Provider 默认 Adapter 的 family，且不能被其它 Provider Rules 重复开放。
 - `metadata_drivers`：参与匹配的 Model Driver 列表；省略时搜索系统当前安装的全部 Model Driver。
-- `static_inventory_models`：Provider `/models` 暂时不能枚举、但厂商文档确认可通过专用接口调用的 `provider_model_id` 列表；专用 discovery 可将其与机器发现结果取并集。通常应为空，仅作为临时补丁，方便后续拆卸。
+- `static_inventory_models`：无视模型发现结果、始终并入 inventory 的 `provider_model_id` 列表；每项必须同时存在于 `models[]`，由 catalog 引用校验保证规则和静态清单一致。`models[]` 本身只是全量精确规则，不会自动产生 inventory 模型，其中仅由 discovery 启用的模型不要放入 `static_inventory_models`。
 - `origin_provider_aliases`：Provider 命名中的厂商 slug 到 Model Driver 名称的映射。
 - `origin_mappings`：可以从命名确定性解析原厂身份时使用的特殊映射。
 - `models`：按完整 `provider_model_id` 精确匹配的 Provider 规则。
@@ -308,8 +310,6 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 | `remove_api_types` | `[]` | 删除当前 Provider 无法提供的 API type | 新增 |
 | `remove_features` | `[]` | 删除当前 Provider 无法提供的 feature | 新增 |
 | `estimated_latency_ms` | 无 | 渠道默认延迟估计 | 从 Model Driver metadata 移入 |
-| `latency_class` | 无 | 渠道延迟分类 | 从 Model Driver metadata 移入 |
-| `cost_class` | 无 | 渠道成本分类 | 从 Model Driver metadata 移入 |
 
 `model_pricing` 是与 `models` / `patterns` 并列的顶层数组，不属于单个模型规则。把价格从模型
 规则里拆出来，是为了让"哪些模型走哪个接口、带哪些默认参数"继续由 `patterns` 通配批量声明，

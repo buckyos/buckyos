@@ -647,10 +647,18 @@ async fn candidate_runtime_states(
                         )
                     }),
                 p50_latency_ms: observed.p50_latency_ms,
-                p95_latency_ms: observed.p95_latency_ms,
+                p95_latency_ms: observed.p95_latency_ms.or_else(|| {
+                    model
+                        .attributes
+                        .get("estimated_latency_ms")
+                        .and_then(Value::as_f64)
+                }),
                 error_rate_5m: observed.error_rate_5m,
                 recent_failures: observed.recent_failures,
-                quality_score: None,
+                quality_score: model
+                    .attributes
+                    .get("quality_score")
+                    .and_then(Value::as_f64),
                 cache_hit_probability: None,
             };
             (model.exact_model, state)

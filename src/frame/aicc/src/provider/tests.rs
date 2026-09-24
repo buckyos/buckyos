@@ -352,7 +352,7 @@ fn catalog_with_revision(revision_seq: u64, context_tokens: u64) -> Arc<CatalogS
     let model_driver: ModelDriverCatalog = serde_json::from_value(serde_json::json!({
         "format": "buckyos.aicc.model-driver-catalog",
         "schema_version": 1,
-        "schema_revision": 0,
+        "schema_revision": 1,
         "model_driver_id": "openai",
         "revision_seq": revision_seq,
         "models": [{
@@ -375,7 +375,7 @@ fn catalog_with_revision(revision_seq: u64, context_tokens: u64) -> Arc<CatalogS
     let provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
         "format": "buckyos.aicc.provider-rules-catalog",
         "schema_version": 1,
-        "schema_revision": 0,
+        "schema_revision": 1,
         "revision_seq": revision_seq,
         "provider_profile_id": "openai",
         "metadata_drivers": ["openai"],
@@ -432,10 +432,11 @@ fn catalog_with_model_ids(revision_seq: u64, model_ids: &[&str]) -> Arc<CatalogS
     let provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
         "format": "buckyos.aicc.provider-rules-catalog",
         "schema_version": 1,
-        "schema_revision": 0,
+        "schema_revision": 1,
         "revision_seq": revision_seq,
         "provider_profile_id": "vendor",
         "metadata_drivers": ["vendor"],
+        "static_inventory_models": model_ids,
         "models": provider_models,
         "patterns": [],
         "variants": []
@@ -983,7 +984,7 @@ async fn quota_view_ignores_untrusted_discovery_and_reports_provider_quota_unsup
         ProviderQuotaObservationState::Unsupported
     );
     assert_eq!(unsupported.remaining_request_units, None);
-    assert_eq!(unsupported.remaining_cost_usd, None);
+    assert_eq!(unsupported.remaining_cost, None);
     assert_eq!(unsupported.source, "unsupported");
     unsupported_manager.shutdown().await;
 }
@@ -1136,6 +1137,22 @@ fn openai_inventory_satisfies_canonical_tool_and_schema_requirements() {
         .unwrap();
     assert_eq!(candidates.candidates.len(), 1);
     assert!(candidates.admissions.iter().all(|record| record.admitted));
+}
+
+#[test]
+fn unmatched_discovered_model_keeps_discovery_api_type_when_defaults_are_empty() {
+    let inventory = InventoryBuilder::build(
+        &profile(),
+        &instance("primary"),
+        discovery("gpt-legacy-unlisted"),
+        &catalog(),
+        &codecs(),
+    )
+    .unwrap();
+    assert_eq!(inventory.models.len(), 1);
+    assert_eq!(inventory.models[0].model_driver_id, "openai");
+    assert_eq!(inventory.models[0].api_types, vec![ApiType::Llm]);
+    assert_eq!(inventory.as_model_inventory().models.len(), 1);
 }
 
 #[test]

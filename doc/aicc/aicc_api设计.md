@@ -1741,8 +1741,7 @@ Fallback：
         "provider_type": "cloud_api",
         "privacy": "public_cloud",
         "quality_score": 0.95,
-        "latency_class": "normal",
-        "cost_class": "high"
+        "estimated_latency_ms": 3000
       },
       "pricing": {},
       "health": {
