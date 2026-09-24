@@ -1,0 +1,137 @@
+name: Build and Publish AIOS Images
+
+on:
+  workflow_call:
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-aios
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: AIOS amd64 and aarch64
+    runs-on: ubuntu-24.04
+    env:
+      AIOS_CONTEXT_DIR: ${{ runner.temp }}/aios-context
+      MUSL_TOOLCHAIN_BASE_URL: https://github.com/musl-cc/musl.cc/releases/download/v0.0.1
+      MUSL_TOOLCHAIN_SHA512_X86_64: 52abd1a56e670952116e35d1a62e048a9b6160471d988e16fa0e1611923dd108a581d2e00874af5eb04e4968b1ba32e0eb449a1f15c3e4d5240ebe09caf5a9f3
+      MUSL_TOOLCHAIN_SHA512_AARCH64: 8695ff86979cdf30fbbcd33061711f5b1ebc3c48a87822b9ca56cde6d3a22abd4dab30fdcd1789ac27c6febbaeb9e5bde59d79d66552fae53d54cc1377a19272
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+    - name: Login to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang libclang-dev llvm-dev cmake pkg-config
+        pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git@main"
+    - name: Cache musl toolchains
+      id: musl-toolchain-cache
+      uses: actions/cache@v5
+      with:
+        path: ${{ runner.temp }}/aios-musl-toolchains
+        key: aios-musl-cc-v0.0.1-${{ env.MUSL_TOOLCHAIN_SHA512_X86_64 }}-${{ env.MUSL_TOOLCHAIN_SHA512_AARCH64 }}
+    - name: Install full musl C/C++ toolchains
+      if: ${{ steps.musl-toolchain-cache.outputs.cache-hit != 'true' }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/aios-musl-toolchains"
+        for target in x86_64 aarch64; do
+          archive="$RUNNER_TEMP/$target-linux-musl-cross.tgz"
+          if [[ "$target" == "x86_64" ]]; then
+            checksum="$MUSL_TOOLCHAIN_SHA512_X86_64"
+          else
+            checksum="$MUSL_TOOLCHAIN_SHA512_AARCH64"
+          fi
+          curl --fail --location --retry 3 --output "$archive" "$MUSL_TOOLCHAIN_BASE_URL/$target-linux-musl-cross.tgz"
+          printf '%s  %s\n' "$checksum" "$archive" | sha512sum --check --strict
+          tar --extract --gzip --file="$archive" --directory="$RUNNER_TEMP/aios-musl-toolchains" --no-same-owner
+        done
+    - name: Verify full musl C/C++ toolchains
+      run: |
+        set -euo pipefail
+        for target in x86_64 aarch64; do
+          tool_bin="$RUNNER_TEMP/aios-musl-toolchains/$target-linux-musl-cross/bin"
+          echo "$tool_bin" >> "$GITHUB_PATH"
+          export PATH="$tool_bin:$PATH"
+          for tool in gcc g++ ar ranlib; do
+            command -v "$target-linux-musl-$tool"
+          done
+          test "$("$target-linux-musl-g++" -dumpmachine)" = "$target-linux-musl"
+        done
+    - name: Setup ARM64 emulation
+      uses: docker/setup-qemu-action@v4
+      with:
+        platforms: arm64
+    - name: Setup Docker Buildx
+      id: buildx
+      uses: docker/setup-buildx-action@v4
+    - name: Prepare AIOS Docker contexts
+      id: context
+      run: |
+        set -euo pipefail
+        bash ./build_aios --prepare-context "$AIOS_CONTEXT_DIR" --image paios/aios
+        cat "$AIOS_CONTEXT_DIR/metadata.env" >> "$GITHUB_OUTPUT"
+    - name: Build and push AIOS amd64
+      id: amd64
+      uses: docker/build-push-action@v7
+      with:
+        builder: ${{ steps.buildx.outputs.name }}
+        context: ${{ env.AIOS_CONTEXT_DIR }}/amd64
+        platforms: linux/amd64
+        push: true
+        tags: |
+          paios/aios:${{ steps.context.outputs.version }}-amd64
+          paios/aios:latest-amd64
+        build-args: |
+          TARGET_ARCH=amd64
+          IMAGE_VERSION=${{ steps.context.outputs.version }}
+          SOURCE_REVISION=${{ steps.context.outputs.revision }}
+          BUILD_CREATED=${{ steps.context.outputs.created }}
+          OPENDAN_SHA256=${{ steps.context.outputs.amd64_sha256 }}
+    - name: Build and push AIOS aarch64
+      id: aarch64
+      uses: docker/build-push-action@v7
+      with:
+        builder: ${{ steps.buildx.outputs.name }}
+        context: ${{ env.AIOS_CONTEXT_DIR }}/aarch64
+        platforms: linux/arm64
+        push: true
+        tags: |
+          paios/aios:${{ steps.context.outputs.version }}-aarch64
+          paios/aios:latest-aarch64
+        build-args: |
+          TARGET_ARCH=aarch64
+          IMAGE_VERSION=${{ steps.context.outputs.version }}
+          SOURCE_REVISION=${{ steps.context.outputs.revision }}
+          BUILD_CREATED=${{ steps.context.outputs.created }}
+          OPENDAN_SHA256=${{ steps.context.outputs.aarch64_sha256 }}
+    - name: Publish AIOS multi-arch manifests
+      env:
+        VERSION: ${{ steps.context.outputs.version }}
+        AMD64_DIGEST: ${{ steps.amd64.outputs.digest }}
+        AARCH64_DIGEST: ${{ steps.aarch64.outputs.digest }}
+      run: |
+        set -euo pipefail
+        docker buildx imagetools create \
+          --tag "paios/aios:$VERSION" \
+          --tag "paios/aios:latest" \
+          "paios/aios@$AMD64_DIGEST" \
+          "paios/aios@$AARCH64_DIGEST"

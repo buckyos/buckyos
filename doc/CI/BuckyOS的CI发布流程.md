@@ -40,6 +40,55 @@ git checkout到正确的版本，然后编译运行
 
 ## buckyos系统的构建与发布
 
+### AIOS 镜像 CI
+
+`.github/workflows/build-all.yml` 在推送到 `main` 时，先比较本次 push 前后的提交，
+仅在 AIOS 相关文件变化时调用 `build-aios.yml` 编译并发布 AIOS。手动触发始终构建 AIOS；
+首次推送或无法找到对比基准时也会构建。其他平台的构建仍按原有规则执行。
+该 workflow 在 Ubuntu runner 上准备两个架构的
+musl C/C++ 工具链和 ARM64 容器模拟环境，执行
+`bash ./build_aios --prepare-context "$RUNNER_TEMP/aios-context" --image paios/aios`
+编译 Rust 二进制并导出两个架构的 Docker 构建上下文。
+随后由 `docker/build-push-action` 分别构建和推送镜像，再使用其返回的 digest 合并多架构 manifest。
+
+`--prepare-context <dir>` 要求输出目录尚不存在，生成 `<dir>/amd64/`、`<dir>/aarch64/`
+及 `metadata.env`（版本、源码提交、构建时间和各架构 OpenDAN SHA-256）。
+此模式不调用 Docker，不能与 `--push` 同时使用；本地仍可使用 `build_aios --push` 直接构建发布。
+
+检测范围配置在 `build-all.yml` 的 `Detect AIOS changes` 步骤中，包括 `build_aios`、
+`publish/aios/`、OpenDAN 及其本地 Rust 依赖、`src/tools/buckyos-agent/`、Rust 补丁、
+Cargo 清单与锁文件、版本号、工程配置以及这两个 workflow。
+新增本地源码依赖时需要同步更新路径列表。外部仓库的 `main` 更新不会触发本仓库的路径检测，
+需要通过手动触发重新构建。
+
+仓库需要配置 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN` Actions secrets，账号/token
+必须有 Docker Hub `paios/aios` 的推送权限。缺少凭据时 AIOS job 会直接失败。
+
+版本取自 `src/VERSION`，发布 `<version>-amd64`、`<version>-aarch64`、
+`latest-amd64`、`latest-aarch64`，以及 `<version>` 和 `latest` 多架构 manifest。
+两个架构在同一个 job 内构建，AIOS 发布流程通过 concurrency 串行执行，避免同时更新同一组标签。
+手动触发的 `enable_tests` 控制原有各平台的 Cargo 测试；AIOS 保留生成的 Dockerfile 中的镜像构建检查。
+
+### ExtTool 镜像 CI
+
+`build-all.yml` 同时检测 ExtTool 变更，路径包括 `build_exttool`、`publish/exttool/`、
+`src/VERSION`、`build-all.yml` 和 `build-exttool.yml`。相关文件变化才调用 `build-exttool.yml`；
+手动触发、首次推送或无法找到对比基准时始终构建。AIOS 和 ExtTool 分别判断是否需要构建。
+
+ExtTool 不需要 Rust 或 musl 工具链。workflow 执行
+`bash ./build_exttool --prepare-context "$RUNNER_TEMP/exttool-context" --image paios/exttool`，
+导出两个架构的 Dockerfile、FreeCAD 安装脚本及 `metadata.env`（版本和各架构 FreeCAD 下载地址）。
+输出目录必须尚不存在，导出模式不调用 Docker，不能与 `--push` 同时使用。
+本地仍可使用 `build_exttool --push`。
+
+登录、ARM64 模拟、Buildx 初始化和镜像构建推送使用与 AIOS 相同的 Docker 官方 Actions，
+两架构构建成功后按返回的 digest 合并 manifest。发布到 `paios/exttool`，标签规则与 AIOS 相同，
+版本取自 `src/VERSION`。复用 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，凭据需有
+`paios/exttool` 的推送权限。ExtTool 使用独立的发布 concurrency group。
+
+FreeCAD 下载地址沿用 `build_exttool` 的配置；当前 aarch64 地址为空，因此 ARM64 镜像提供
+会报告未安装的 FreeCAD 占位命令。后续启用 ARM64 FreeCAD 时应更新脚本中的对应地址。
+
 我们构建的发布目标有
 
 - deb/rpm 全新安装包 (最好是一个下载安装脚本，总是可以在最新版上)

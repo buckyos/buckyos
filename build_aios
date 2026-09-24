@@ -25,6 +25,7 @@ WORKSPACE_PACKAGES=()
 EXTRA_APT_PACKAGES=()
 SELECTED_ARCHES=()
 PUSH=0
+PREPARE_CONTEXT_DIR=""
 INSTALL_WORKSPACE_TOOLS=1
 ENTRYPOINT_SOURCE="$ROOT_DIR/publish/aios/entrypoint.sh"
 BUCKYOS_AGENT_TOOLS_SOURCE="$SRC_DIR/tools/buckyos-agent"
@@ -38,7 +39,7 @@ AIOS_BUILD_CREATED=""
 
 usage() {
   cat <<'EOF'
-Usage: ./build_aios [--push] [--image <name>] [--tag <tag>] [--runtime-only] [--arch <arch>] [--apt-package <name>] [--reuse-cargo-target] [--cargo-target-dir <dir>]
+Usage: ./build_aios [--push] [--prepare-context <dir>] [--image <name>] [--tag <tag>] [--runtime-only] [--arch <arch>] [--apt-package <name>] [--reuse-cargo-target] [--cargo-target-dir <dir>]
 
 Builds the OpenDAN binary with cargo for:
   - amd64   -> x86_64-unknown-linux-musl
@@ -52,6 +53,9 @@ Then packages each binary into an Ubuntu-based Docker image:
 
 Options:
   --push          Push arch-specific images and create multi-arch manifests
+  --prepare-context <dir>
+                  Compile and export Docker contexts plus metadata.env to a new directory;
+                  skip Docker build/push. Cannot be combined with --push.
   --image <name>  Override image name, default: devenv.json["aios"] or paios/aios
   --tag <tag>     Override version tag, default: src/VERSION
   --runtime-only  Install only required runtime dependencies in the image
@@ -74,6 +78,10 @@ while [[ $# -gt 0 ]]; do
     --push)
       PUSH=1
       shift
+      ;;
+    --prepare-context)
+      PREPARE_CONTEXT_DIR="${2:?--prepare-context requires an output directory}"
+      shift 2
       ;;
     --image)
       IMAGE_NAME="$2"
@@ -1211,6 +1219,18 @@ main() {
     exit 1
   fi
 
+  if [[ -n "$PREPARE_CONTEXT_DIR" ]]; then
+    if [[ "$PUSH" -eq 1 ]]; then
+      echo "--prepare-context cannot be combined with --push" >&2
+      exit 1
+    fi
+    if [[ "$PREPARE_CONTEXT_DIR" != /* ]]; then
+      PREPARE_CONTEXT_DIR="$ROOT_DIR/$PREPARE_CONTEXT_DIR"
+    fi
+    mkdir -p "$(dirname "$PREPARE_CONTEXT_DIR")"
+    mkdir "$PREPARE_CONTEXT_DIR"
+  fi
+
   resolve_default_image_name
   resolve_version_tag
   resolve_build_metadata
@@ -1237,8 +1257,10 @@ main() {
     cargo_target_mode="ephemeral"
   fi
 
-  prepare_docker_config "$tmp_root"
-  ensure_buildx_support "${target_arches[@]}"
+  if [[ -z "$PREPARE_CONTEXT_DIR" ]]; then
+    prepare_docker_config "$tmp_root"
+    ensure_buildx_support "${target_arches[@]}"
+  fi
 
   log "Version tag: $VERSION_TAG"
   log "Source revision: $AIOS_SOURCE_REVISION"
@@ -1261,7 +1283,7 @@ main() {
   fi
 
   for arch in "${target_arches[@]}"; do
-    local context_dir="$tmp_root/$arch"
+    local context_dir="${PREPARE_CONTEXT_DIR:-$tmp_root}/$arch"
     local dockerfile_path="$context_dir/Dockerfile"
     local platform
 
@@ -1272,8 +1294,23 @@ main() {
     cp -R "$buckyos_agent_package_dir" "$context_dir/buckyos-agent"
     cp "$AICC_TOOL_LAUNCHER_SOURCE" "$context_dir/aicc-tool-launcher"
     render_dockerfile "$dockerfile_path"
-    build_image "$arch" "$context_dir" "$platform" "$dockerfile_path"
+    if [[ -z "$PREPARE_CONTEXT_DIR" ]]; then
+      build_image "$arch" "$context_dir" "$platform" "$dockerfile_path"
+    fi
   done
+
+  if [[ -n "$PREPARE_CONTEXT_DIR" ]]; then
+    {
+      printf 'version=%s\n' "$VERSION_TAG"
+      printf 'revision=%s\n' "$AIOS_SOURCE_REVISION"
+      printf 'created=%s\n' "$AIOS_BUILD_CREATED"
+      for arch in "${target_arches[@]}"; do
+        printf '%s_sha256=%s\n' "$arch" "$(sha256_file "$PREPARE_CONTEXT_DIR/$arch/opendan")"
+      done
+    } > "$PREPARE_CONTEXT_DIR/metadata.env"
+    log "Prepared Docker contexts and metadata.env at $PREPARE_CONTEXT_DIR"
+    return
+  fi
 
   if [[ "$PUSH" -eq 1 ]]; then
     publish_manifests

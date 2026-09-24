@@ -20,6 +20,7 @@ VERSION_TAG="${VERSION_TAG:-}"
 SUPPORTED_ARCHES=("amd64" "aarch64")
 SELECTED_ARCHES=()
 PUSH=0
+PREPARE_CONTEXT_DIR=""
 
 # FreeCAD AppImage URLs — picked by target arch. Override via env at build
 # time (FREECAD_APPIMAGE_URL_AMD64 / _AARCH64) to pin a specific release or
@@ -30,7 +31,7 @@ PUSH=0
 
 usage() {
   cat <<'EOF'
-Usage: ./build_exttool [--push] [--image <name>] [--tag <tag>] [--arch <arch>]
+Usage: ./build_exttool [--push] [--prepare-context <dir>] [--image <name>] [--tag <tag>] [--arch <arch>]
 
 Builds the paios/exttool Docker image that seeds the `buckyos-exttool`
 named volume with:
@@ -46,6 +47,9 @@ variant when running the one-shot seeder:
 
 Options:
   --push          Push arch-specific images and create multi-arch manifests
+  --prepare-context <dir>
+                  Export Docker contexts plus metadata.env to a new directory;
+                  skip Docker build/push. Cannot be combined with --push.
   --image <name>  Override image name (default: devenv.json["exttool"] or paios/exttool)
   --tag <tag>     Override version tag (default: src/VERSION)
   --arch <arch>   Build only one arch (amd64|aarch64); repeatable
@@ -60,6 +64,10 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --push) PUSH=1; shift ;;
+    --prepare-context)
+      PREPARE_CONTEXT_DIR="${2:?--prepare-context requires an output directory}"
+      shift 2
+      ;;
     --image) IMAGE_NAME="$2"; shift 2 ;;
     --tag) VERSION_TAG="$2"; shift 2 ;;
     --arch) SELECTED_ARCHES+=("$2"); shift 2 ;;
@@ -216,7 +224,7 @@ publish_manifests() {
 }
 
 main() {
-  local tmp_root context_dir
+  local tmp_root context_dir resolved_arches
   local -a target_arches
 
   if [[ ! -f "$EXTTOOL_DIR/Dockerfile" ]]; then
@@ -228,12 +236,25 @@ main() {
 
   resolve_default_image_name
   resolve_version_tag
-  mapfile -t target_arches < <(resolve_selected_arches)
+  resolved_arches="$(resolve_selected_arches)"
+  mapfile -t target_arches <<< "$resolved_arches"
 
-  tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/build_exttool.XXXXXX")"
-  trap "rm -rf '$tmp_root'" EXIT
-
-  ensure_buildx_support "${target_arches[@]}"
+  if [[ -n "$PREPARE_CONTEXT_DIR" ]]; then
+    if [[ "$PUSH" -eq 1 ]]; then
+      echo "--prepare-context cannot be combined with --push" >&2
+      exit 1
+    fi
+    if [[ "$PREPARE_CONTEXT_DIR" != /* ]]; then
+      PREPARE_CONTEXT_DIR="$ROOT_DIR/$PREPARE_CONTEXT_DIR"
+    fi
+    mkdir -p "$(dirname "$PREPARE_CONTEXT_DIR")"
+    mkdir "$PREPARE_CONTEXT_DIR"
+    tmp_root="$PREPARE_CONTEXT_DIR"
+  else
+    tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/build_exttool.XXXXXX")"
+    trap "rm -rf '$tmp_root'" EXIT
+    ensure_buildx_support "${target_arches[@]}"
+  fi
 
   log "Version tag: $VERSION_TAG"
   log "Image repo:  $IMAGE_NAME"
@@ -244,8 +265,21 @@ main() {
     mkdir -p "$context_dir"
     cp "$EXTTOOL_DIR/Dockerfile" "$context_dir/Dockerfile"
     cp "$EXTTOOL_DIR/install_freecad.sh" "$context_dir/install_freecad.sh"
-    build_image_for_arch "$arch" "$context_dir"
+    if [[ -z "$PREPARE_CONTEXT_DIR" ]]; then
+      build_image_for_arch "$arch" "$context_dir"
+    fi
   done
+
+  if [[ -n "$PREPARE_CONTEXT_DIR" ]]; then
+    {
+      printf 'version=%s\n' "$VERSION_TAG"
+      for arch in "${target_arches[@]}"; do
+        printf '%s_freecad_url=%s\n' "$arch" "$(freecad_url_for_arch "$arch")"
+      done
+    } > "$PREPARE_CONTEXT_DIR/metadata.env"
+    log "Prepared Docker contexts and metadata.env at $PREPARE_CONTEXT_DIR"
+    return
+  fi
 
   if [[ "$PUSH" -eq 1 ]]; then publish_manifests; fi
 

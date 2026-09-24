@@ -12,6 +12,102 @@ on:
         default: false
 
 jobs:
+  detect-image-changes:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      aios_changed: ${{ steps.changes.outputs.changed }}
+      exttool_changed: ${{ steps.exttool.outputs.changed }}
+    steps:
+    - name: Checkout
+      if: ${{ github.event_name == 'push' }}
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+    - name: Detect AIOS changes
+      id: changes
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        BEFORE: ${{ github.event.before }}
+        AFTER: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        if [[ "$EVENT_NAME" == "workflow_dispatch" ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        paths=(
+          .github/workflows/build-all.yml
+          .github/workflows/build-aios.yml
+          build_aios
+          publish/aios/
+          src/frame/opendan/
+          src/frame/agent_tool/
+          src/frame/agent_tool_cli_dev/
+          src/frame/agent-did-object-lib/
+          src/frame/llm_context/
+          src/kernel/buckyos-api/
+          src/tools/buckyos-agent/
+          src/patches/
+          src/Cargo.toml
+          src/Cargo.lock
+          src/VERSION
+          src/bucky_project.yaml
+        )
+        if git diff --quiet "$BEFORE" "$AFTER" -- "${paths[@]}"; then
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+        else
+          status=$?
+          if [[ "$status" -ne 1 ]]; then
+            exit "$status"
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi
+    - name: Detect ExtTool changes
+      id: exttool
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        BEFORE: ${{ github.event.before }}
+        AFTER: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        if [[ "$EVENT_NAME" == "workflow_dispatch" ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        paths=(
+          .github/workflows/build-all.yml
+          .github/workflows/build-exttool.yml
+          build_exttool
+          publish/exttool/
+          src/VERSION
+        )
+        if git diff --quiet "$BEFORE" "$AFTER" -- "${paths[@]}"; then
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+        else
+          status=$?
+          if [[ "$status" -ne 1 ]]; then
+            exit "$status"
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi
+  build-aios:
+    needs: detect-image-changes
+    if: ${{ needs.detect-image-changes.outputs.aios_changed == 'true' }}
+    uses: ./.github/workflows/build-aios.yml
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+  build-exttool:
+    needs: detect-image-changes
+    if: ${{ needs.detect-image-changes.outputs.exttool_changed == 'true' }}
+    uses: ./.github/workflows/build-exttool.yml
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
   build-windows:
     strategy:
       fail-fast: false
