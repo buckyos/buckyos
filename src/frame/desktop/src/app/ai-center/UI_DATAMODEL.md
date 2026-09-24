@@ -64,7 +64,7 @@ The transform is O(n + c log c), where `n` is the returned row count and `c` is 
 | UI field | Method | Backend field |
 | --- | --- | --- |
 | Known provider profiles | `provider.catalog` | `providers[]` |
-| Custom protocol families | `protocol_adapter.list` | unique `adapters[].protocol_family_id` |
+| Custom protocol families | `protocol_adapter.list` | unique `adapters[custom_provider_selectable=true].protocol_family_id` |
 | Provider instances | `provider.list` | `providers[]` |
 | Provider revision | `provider.list` | `settings_revision` |
 | Provider credential/status update | `provider.update` | typed update request |

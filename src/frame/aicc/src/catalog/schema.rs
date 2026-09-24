@@ -504,6 +504,8 @@ pub(crate) struct ProviderRulesCatalog {
     #[serde(default)]
     pub reported_cost: Option<ReportedCostPolicy>,
     #[serde(default)]
+    pub custom_provider_adapters: Vec<String>,
+    #[serde(default)]
     pub static_inventory_models: Vec<String>,
     #[serde(default)]
     pub supplemental_inventory_api_types: BTreeSet<String>,

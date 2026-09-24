@@ -4,6 +4,7 @@
   "schema_revision": 1,
   "revision_seq": 1,
   "provider_profile_id": "gemini",
+  "custom_provider_adapters": ["gemini-interactions"],
   "models": [
     {
       "id": "gemini-3.1-flash-tts-preview",

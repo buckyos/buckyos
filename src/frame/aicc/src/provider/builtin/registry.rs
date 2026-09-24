@@ -12,9 +12,7 @@ use crate::provider::{
     ProviderFieldMode, ProviderFieldSchema, ProviderInstanceConfig, ProviderProfile,
     ProviderResult, RefreshPolicy,
 };
-#[cfg(test)]
-use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,6 +103,7 @@ pub(crate) struct BuiltinProviderRequest<'a> {
 pub(crate) struct BuiltinProviderRegistry {
     providers: BTreeMap<String, BuiltinProviderRegistration>,
     codecs: Arc<CodecRegistry>,
+    custom_provider_adapter_ids: BTreeSet<String>,
     transport_config: HttpTransportConfig,
     dynamic_login_resolvers: BTreeMap<String, Arc<dyn DynamicLoginCredentialResolver>>,
 }
@@ -149,6 +148,8 @@ impl BuiltinProviderRegistry {
             })
             .collect();
         let codecs = Arc::new(builtin_codec_registry()?);
+        let custom_provider_adapter_ids =
+            configured_custom_provider_adapters(catalog, codecs.as_ref())?;
         let dynamic_login_resolvers: BTreeMap<_, Arc<dyn DynamicLoginCredentialResolver>> =
             BTreeMap::from([(
                 "sn".to_owned(),
@@ -160,6 +161,7 @@ impl BuiltinProviderRegistry {
         Ok(Self {
             providers,
             codecs,
+            custom_provider_adapter_ids,
             transport_config,
             dynamic_login_resolvers,
         })
@@ -171,6 +173,29 @@ impl BuiltinProviderRegistry {
 
     pub(crate) fn codecs(&self) -> Arc<CodecRegistry> {
         self.codecs.clone()
+    }
+
+    pub(crate) fn custom_provider_adapter_ids(&self) -> &BTreeSet<String> {
+        &self.custom_provider_adapter_ids
+    }
+
+    pub(crate) fn custom_provider_probe_candidates(
+        &self,
+        protocol_family_id: &str,
+    ) -> ProviderResult<Vec<String>> {
+        let candidates = self
+            .codecs
+            .probe_candidates(protocol_family_id)
+            .map_err(|error| ProviderError::InvalidConfiguration(error.to_string()))?
+            .into_iter()
+            .filter(|adapter_id| self.custom_provider_adapter_ids.contains(adapter_id))
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Err(ProviderError::InvalidConfiguration(format!(
+                "protocol family `{protocol_family_id}` is not enabled for custom providers"
+            )));
+        }
+        Ok(candidates)
     }
 
     pub(crate) fn dynamic_login_resolver(&self) -> Arc<dyn DynamicLoginCredentialResolver> {
@@ -192,6 +217,16 @@ impl BuiltinProviderRegistry {
             .codecs
             .adapter(request.protocol_adapter_id)
             .ok_or_else(|| ProviderError::UnknownAdapter(request.protocol_adapter_id.to_owned()))?;
+        if registration.supports_any_adapter
+            && !self
+                .custom_provider_adapter_ids
+                .contains(request.protocol_adapter_id)
+        {
+            return Err(ProviderError::InvalidConfiguration(format!(
+                "protocol adapter `{}` is reserved for a built-in provider",
+                request.protocol_adapter_id
+            )));
+        }
         if !registration.supports_any_adapter
             && registration.profile.default_protocol_adapter_id != request.protocol_adapter_id
         {
@@ -363,6 +398,47 @@ impl BuiltinProviderRegistry {
         };
         Ok(Arc::new(FallbackDiscovery::new(primary, fallback)))
     }
+}
+
+fn configured_custom_provider_adapters(
+    catalog: &CatalogSnapshot,
+    codecs: &CodecRegistry,
+) -> ProviderResult<BTreeSet<String>> {
+    let mut configured = BTreeSet::new();
+    for provider in catalog.known_providers() {
+        let Some(rules_id) = provider.provider_rules_id.as_deref() else {
+            continue;
+        };
+        let Some(rules) = catalog.provider_rules(rules_id) else {
+            continue;
+        };
+        let provider_adapter = codecs
+            .adapter(&provider.protocol_adapter_id)
+            .ok_or_else(|| {
+                ProviderError::InvalidConfiguration(format!(
+                    "known provider `{}` references unknown adapter `{}`",
+                    provider.provider_profile_id, provider.protocol_adapter_id
+                ))
+            })?;
+        for adapter_id in &rules.custom_provider_adapters {
+            let adapter = codecs.adapter(adapter_id).ok_or_else(|| {
+                ProviderError::InvalidConfiguration(format!(
+                    "provider rules `{rules_id}` expose unknown custom-provider adapter `{adapter_id}`"
+                ))
+            })?;
+            if adapter.protocol_family_id != provider_adapter.protocol_family_id {
+                return Err(ProviderError::InvalidConfiguration(format!(
+                    "provider rules `{rules_id}` cannot expose adapter `{adapter_id}` from another protocol family"
+                )));
+            }
+            if !configured.insert(adapter_id.clone()) {
+                return Err(ProviderError::InvalidConfiguration(format!(
+                    "custom-provider adapter `{adapter_id}` is exposed by more than one provider rules catalog"
+                )));
+            }
+        }
+    }
+    Ok(configured)
 }
 
 pub(crate) fn custom_profile_for_adapter(
@@ -548,9 +624,10 @@ mod tests {
     use super::*;
     use crate::catalog::CatalogKind;
     use crate::protocol::{
-        FAL_QUEUE_ADAPTER_ID, FAL_QUEUE_OPERATION_ID, GLM_CHAT_ADAPTER_ID, KIMI_CHAT_ADAPTER_ID,
-        MINIMAX_MESSAGES_ADAPTER_ID, OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
-        OPENAI_RESPONSES_ADAPTER_ID, OPENROUTER_RESPONSES_ADAPTER_ID,
+        CLAUDE_MESSAGES_ADAPTER_ID, FAL_QUEUE_ADAPTER_ID, FAL_QUEUE_OPERATION_ID,
+        GEMINI_ADAPTER_ID, GLM_CHAT_ADAPTER_ID, KIMI_CHAT_ADAPTER_ID, MINIMAX_MESSAGES_ADAPTER_ID,
+        OPENAI_CHAT_COMPLETIONS_ADAPTER_ID, OPENAI_RESPONSES_ADAPTER_ID,
+        OPENROUTER_RESPONSES_ADAPTER_ID,
     };
     use crate::provider::{
         CredentialReference, InventoryBuilder, ModelAvailability, ProviderConnectionInput,
@@ -558,7 +635,7 @@ mod tests {
     };
     use crate::settings::{load_builtin_metadata, MetadataFile, MetadataSource, MetadataSources};
     use buckyos_api::ApiType;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::collections::BTreeSet;
 
     fn configured_inventory() -> ProviderDiscoverySnapshot {
@@ -702,6 +779,25 @@ mod tests {
         for profile in registry.profiles() {
             assert!(adapter_ids.contains(profile.default_protocol_adapter_id.as_str()));
         }
+        let custom_provider_families = registry
+            .custom_provider_adapter_ids()
+            .iter()
+            .filter_map(|adapter_id| codecs.adapter(adapter_id))
+            .map(|adapter| adapter.protocol_family_id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            custom_provider_families,
+            BTreeSet::from(["claude", "gemini", "openai"])
+        );
+        assert_eq!(
+            registry.custom_provider_adapter_ids(),
+            &BTreeSet::from([
+                CLAUDE_MESSAGES_ADAPTER_ID.to_owned(),
+                GEMINI_ADAPTER_ID.to_owned(),
+                OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_owned(),
+                OPENAI_RESPONSES_ADAPTER_ID.to_owned(),
+            ])
+        );
         for adapter_id in [
             OPENAI_RESPONSES_ADAPTER_ID,
             OPENAI_CHAT_COMPLETIONS_ADAPTER_ID,
@@ -956,6 +1052,37 @@ mod tests {
                 .provider_rules(&profile.provider_profile_id)
                 .is_some());
         }
+    }
+
+    #[test]
+    fn cloud_provider_rules_control_custom_provider_adapter_visibility() {
+        let mut openai_rules: Value = serde_json::from_slice(include_bytes!(
+            "../../../driver_metadata/providers/openai.provider.json"
+        ))
+        .unwrap();
+        openai_rules["revision_seq"] = json!(3);
+        openai_rules["custom_provider_adapters"] = json!([OPENAI_RESPONSES_ADAPTER_ID]);
+        let cloud = MetadataFile::parse(
+            MetadataSource::Cloud,
+            CatalogKind::ProviderRules,
+            serde_json::to_vec(&openai_rules).unwrap(),
+        )
+        .unwrap();
+        let catalog = MetadataSources {
+            builtin: load_builtin_metadata().unwrap(),
+            cloud: vec![cloud],
+            ..MetadataSources::default()
+        }
+        .build_snapshot(3, &crate::catalog::CatalogBuildOptions::default())
+        .unwrap();
+        let registry = builtin_provider_registry(catalog.as_ref()).unwrap();
+
+        assert!(registry
+            .custom_provider_adapter_ids()
+            .contains(OPENAI_RESPONSES_ADAPTER_ID));
+        assert!(!registry
+            .custom_provider_adapter_ids()
+            .contains(OPENAI_CHAT_COMPLETIONS_ADAPTER_ID));
     }
 
     #[test]
@@ -1214,12 +1341,12 @@ mod tests {
     }
 
     #[test]
-    fn custom_provider_has_production_binding_without_builtin_catalog() {
+    fn custom_provider_only_accepts_public_protocol_adapters() {
         let registry = registry();
         let binding = registry
             .resolve(BuiltinProviderRequest {
                 provider_profile_id: CUSTOM_PROVIDER_PROFILE_ID,
-                protocol_adapter_id: MINIMAX_MESSAGES_ADAPTER_ID,
+                protocol_adapter_id: OPENAI_RESPONSES_ADAPTER_ID,
                 auth_mode: ProviderAuthMode::ApiKey,
                 credential_kind: None,
                 configured_inventory: Some(configured_inventory()),
@@ -1230,11 +1357,8 @@ mod tests {
             binding.profile.provider_profile_id,
             CUSTOM_PROVIDER_PROFILE_ID
         );
-        assert_eq!(binding.profile.credential.kind, CredentialKind::NamedHeader);
-        assert_eq!(
-            binding.profile.credential.header_name.as_deref(),
-            Some("x-api-key")
-        );
+        assert_eq!(binding.profile.credential.kind, CredentialKind::Bearer);
+        assert_eq!(binding.profile.credential.header_name, None);
         assert_eq!(binding.instance_rules, Some(Default::default()));
         assert_eq!(
             binding
@@ -1291,7 +1415,6 @@ mod tests {
                 CredentialKind::NamedHeader,
                 Some("x-goog-api-key"),
             ),
-            (FAL_QUEUE_ADAPTER_ID, CredentialKind::FalKey, None),
         ] {
             let binding = registry
                 .resolve(BuiltinProviderRequest {
@@ -1304,6 +1427,28 @@ mod tests {
                 .unwrap();
             assert_eq!(binding.profile.credential.kind, kind);
             assert_eq!(binding.profile.credential.header_name.as_deref(), header);
+        }
+
+        for adapter in [
+            GLM_CHAT_ADAPTER_ID,
+            MINIMAX_MESSAGES_ADAPTER_ID,
+            FAL_QUEUE_ADAPTER_ID,
+            OPENROUTER_RESPONSES_ADAPTER_ID,
+        ] {
+            let result = registry.resolve(BuiltinProviderRequest {
+                provider_profile_id: CUSTOM_PROVIDER_PROFILE_ID,
+                protocol_adapter_id: adapter,
+                auth_mode: ProviderAuthMode::ApiKey,
+                credential_kind: None,
+                configured_inventory: Some(configured_inventory()),
+            });
+            assert!(matches!(
+                result,
+                Err(ProviderError::InvalidConfiguration(message))
+                    if message == format!(
+                        "protocol adapter `{adapter}` is reserved for a built-in provider"
+                    )
+            ));
         }
     }
 

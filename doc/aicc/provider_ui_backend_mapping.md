@@ -9,6 +9,7 @@ Provider Wizard 打开时通过 `provider.catalog` 一次性读取已知 Provide
 | `KnownProviderProfile.provider_profile_id` | `provider_profile_id` | Provider catalog | 渠道规则与展示身份 |
 | `KnownProviderProfile.protocol_adapter_id` | `protocol_adapter_id` | catalog + runtime registry | backend 校验 adapter 已注册 |
 | `ProtocolAdapter.protocol_family_id` | `protocol_family_id` | runtime registry | OpenAI、Claude、Gemini 协议族；不是可执行 Adapter |
+| `ProtocolAdapter.custom_provider_selectable` | custom family visibility | Provider Rules catalog + runtime registry | 由 `*.provider.json` 的 `custom_provider_adapters` 推导；只有值为 `true` 的 Adapter 才参与自定义 Provider family 列表 |
 | custom Provider draft family | `protocol_family_id` | `provider.validate/add/update` request | 用户可理解的协议大类；仅用于接入解析 |
 | `ProtocolAdapter.base_adapter_id` | `base_adapter_id` | runtime registry | 只读展示语义子类关系；SN 为 `sn-openai -> openai-responses` |
 | `KnownProviderProfile.base_url` | `base_url` | Provider catalog default | 仅作表单初值，用户可修正 |
@@ -30,7 +31,7 @@ Provider Wizard 打开时通过 `provider.catalog` 一次性读取已知 Provide
 - 请求失败显示可重试错误；空 catalog 与请求失败分开呈现。
 - 保存、连接测试和模型 refresh 失败后保留用户输入。
 - SN 表单根据 `auth.mode` 显示 API Key 或动态登录字段，不同时提交两套凭据；动态 token 永不返回 UI。
-- 官方 Profile 默认新接口。添加自定义 Provider 时，UI 只要求用户识别协议族，不显示 API 代际选择；后端接入测试先测官方新接口，再测已注册历史接口，并只读展示最终识别结果。该流程只发生在创建/更新阶段，推理运行时不重新探测或降级。
+- 官方 Profile 默认新接口。添加自定义 Provider 时，UI 只汇总 `custom_provider_selectable=true` 的 Adapter 所属协议族，当前为 OpenAI、Claude、Gemini；GLM、MiniMax 等内置复合 family 不显示。UI 不显示 API 代际选择；后端接入测试先测官方新接口，再测已注册历史接口，并只读展示最终识别结果，同时拒绝绕过 UI 提交内部 Adapter。该流程只发生在创建/更新阶段，推理运行时不重新探测或降级。
 
 ## Performance boundary
 

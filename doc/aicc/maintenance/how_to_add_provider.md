@@ -63,7 +63,7 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 
 不使用 Provider family section、`instances[]` 包装、`provider_driver`、settings 中的 `endpoint`、section 级 token、`features` 或字段别名。`base_url` 是 Provider Instance settings 的正式字段；Profile 默认值只用于创建表单，不能覆盖实例显式配置。
 
-用户通过管理 RPC 添加自定义 Provider 时可以只提交协议族、`base_url` 和凭据；registry 解析族默认 Adapter。需要指定已注册的历史/派生协议时可同时提交 `protocol_adapter_id`，但它必须属于所给协议族。例如：
+用户通过管理 RPC 添加自定义 Provider 时可以只提交协议族、`base_url` 和凭据；registry 解析族默认 Adapter。自定义 Provider 表单只展示至少包含一个 `custom_provider_selectable=true` Adapter 的协议族，该值由当前 Provider Rules JSON 的 `custom_provider_adapters` 数组推导。需要指定已注册的历史协议时可同时提交 `protocol_adapter_id`，但它必须属于所给协议族且被该数组开放；GLM、MiniMax 等内置复合 Adapter 以及渠道派生 Adapter 默认不接受显式提交。例如：
 
 ```json
 {

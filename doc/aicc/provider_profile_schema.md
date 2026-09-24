@@ -204,6 +204,7 @@ Model Driver v2 声明精确模型 ID、API/能力、LLM 规格和 supported_eff
 
 | 字段 | 职责 |
 | --- | --- |
+| `custom_provider_adapters` | 允许 Custom Provider 选用的同协议族 Adapter 白名单 |
 | `static_inventory_models` | 明确的渠道库存，不从技术/价格规则推导 |
 | `supplemental_inventory_api_types` | 动态查询未覆盖、允许静态补充的 API 集合 |
 | `models` / `patterns` | operation、参数、排除、能力收窄 |
@@ -226,6 +227,7 @@ native 使用 base；其他预设为 `reasoning-{effort}`，包括 minimal 和 t
 ```
 
 目标必须是存在的精确 `driver/model_id`。无效 override 是终止失败，不继续通用匹配。实例和 Provider 主动排除不算 unmatched。
+Custom Provider 只能选择 Provider Rules 的 `custom_provider_adapters` 显式开放的 Adapter；每个 Adapter 必须与声明它的内置 Provider 属于同一 protocol family，且不能被多个 Provider Rules 重复开放。
 
 ## 5. 模型规则
 
