@@ -2257,18 +2257,12 @@ fn render_action_usage(tool: &ResolvedTool) -> String {
         format!(" {}", attrs.join(" "))
     };
     let form = if let Some(b) = &body_arg {
-        let b_desc = props
-            .get(b)
-            .and_then(|v| v.get("description"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
         if child_tags.is_empty() {
             format!(
-                "<{n}{a}><![CDATA[{b}: {d}]]></{n}>",
+                "<{n}{a}><![CDATA[<{b} value>]]></{n}>",
                 n = tool.name,
                 a = attr_str,
-                b = b,
-                d = b_desc
+                b = b
             )
         } else {
             format!(
@@ -2290,6 +2284,13 @@ fn render_action_usage(tool: &ResolvedTool) -> String {
         )
     };
     let mut lines = vec![format!("- {form}")];
+    if let Some(b) = &body_arg {
+        if child_tags.is_empty() {
+            lines.push(format!(
+                "  Body/CDATA contains only the raw value of `{b}`; do not include the field name or a `{b}:` prefix."
+            ));
+        }
+    }
     let desc = tool.description.trim();
     if !desc.is_empty() {
         lines.push(format!("  {desc}"));
@@ -3061,7 +3062,7 @@ impl XllmActionParser {
                             args.entry(k).or_insert(v);
                         }
                     } else if let Some(b) = body_arg {
-                        args.insert(b, Value::String(text));
+                        args.entry(b).or_insert(Value::String(text));
                     } else {
                         args.insert("body".to_string(), Value::String(text));
                     }
@@ -7861,6 +7862,65 @@ there]]></write_file>
     }
 
     #[test]
+    fn action_usage_and_parser_agree_on_raw_body_values() {
+        let tool = ResolvedTool {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "File path"}},
+                "required": ["path"]
+            }),
+            source: "test".into(),
+        };
+        let parser = XllmActionParser::new(&[tool.clone()]);
+        for action in [
+            r#"<read_file path="fixture.txt"><![CDATA[]]></read_file>"#,
+            r#"<read_file path="fixture.txt"><![CDATA[   ]]></read_file>"#,
+            r#"<read_file path="fixture.txt"/>"#,
+            "<read_file><![CDATA[fixture.txt]]></read_file>",
+            "<read_file><path>fixture.txt</path></read_file>",
+        ] {
+            let response =
+                AiResponse::text(format!("<response><actions>{action}</actions></response>"));
+            let parsed = parser.parse(&response).unwrap();
+            assert_eq!(
+                parsed.do_actions[0].args["path"],
+                json!("fixture.txt"),
+                "{action}"
+            );
+        }
+        let usage = render_action_usage(&tool);
+        let example = usage.lines().next().unwrap().strip_prefix("- ").unwrap();
+        assert!(example.contains("<![CDATA[<path value>]]>"), "{usage}");
+        let response = AiResponse::text(format!(
+            "<response><actions>{}</actions></response>",
+            example.replace("<path value>", "fixture.txt")
+        ));
+        assert_eq!(
+            parser.parse(&response).unwrap().do_actions[0].args["path"],
+            json!("fixture.txt")
+        );
+
+        let parser = XllmActionParser::new(&[ResolvedTool {
+            name: "write_file".into(),
+            args_schema: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                "required": ["path", "content"]
+            }),
+            ..tool
+        }]);
+        for content in ["", "   ", "path: fixture.txt"] {
+            let response = AiResponse::text(format!(
+                r#"<response><actions><write_file path="out.txt"><![CDATA[{content}]]></write_file></actions></response>"#
+            ));
+            let parsed = parser.parse(&response).unwrap();
+            assert_eq!(parsed.do_actions[0].args["content"], json!(content));
+        }
+    }
+
+    #[test]
     fn result_extraction_json_xml_and_errors() {
         let fmt = ResultFormat::parse("result.report").unwrap();
         let v = extract_result(r#"{"report":"评审结论","n":1}"#, &fmt).unwrap();
@@ -8334,6 +8394,59 @@ there]]></write_file>
     }
 
     #[tokio::test]
+    async fn behavior_file_actions_respect_arguments_and_persist_round_limit() {
+        let env = Env::new();
+        env.write(
+            "project/.llm_context",
+            "loop_model: behavior\nmax_rounds: 2\ntools:\n  enabled: true\n  tools2actions: true\n",
+        );
+        std::fs::write(env.workdir.join("fixture.txt"), "behavior-fixture-3142").unwrap();
+        let llm = ScriptedLlm::new(vec![
+            text(r#"<response><actions><read_file path="fixture.txt"><![CDATA[]]></read_file></actions></response>"#),
+            text("<response><actions><read_file><![CDATA[missing.txt]]></read_file></actions></response>"),
+            text(r#"<response><actions><write_file path="excess.txt"><![CDATA[excess]]></write_file></actions><next_behavior>END</next_behavior></response>"#),
+        ]);
+        let outcome = env
+            .run(
+                TaskInput::question("read fixture"),
+                env.overrides(),
+                llm.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, RunOutcome::LimitReached(_)),
+            "{:?}",
+            outcome.status()
+        );
+        assert_eq!(llm.calls(), 3);
+        assert!(user_text(&llm.seen()[1]).contains("behavior-fixture-3142"));
+        assert!(!env.workdir.join("excess.txt").exists());
+        let record = outcome.record();
+        assert!(record.limit_reason.as_ref().unwrap().contains("round"));
+        let snapshot = env
+            .store()
+            .get_snapshot(&record.run_id, record.latest_snapshot_idx.unwrap())
+            .unwrap();
+        assert_eq!(snapshot.state.rounds_left, 0);
+        let steps: Vec<_> = snapshot
+            .state
+            .steps
+            .iter()
+            .chain(snapshot.state.last_step.iter())
+            .collect();
+        assert_eq!(steps.len(), 2);
+        assert!(matches!(
+            steps[0].action_results[0],
+            Observation::Success { .. }
+        ));
+        assert!(matches!(
+            steps[1].action_results[0],
+            Observation::Error { .. }
+        ));
+    }
+
+    #[tokio::test]
     async fn json_flag_is_validated_after_extraction() {
         let env = Env::new();
         let o = env
@@ -8675,52 +8788,64 @@ there]]></write_file>
 
     #[tokio::test]
     async fn resume_limits_raise_rounds_without_resetting_consumed() {
-        let env = Env::new();
-        let llm = ScriptedLlm::new(vec![
-            tool_call("exec", json!({"command":"echo one"}), "c1"),
-            Err(LLMComputeError::provider(ProviderFailure::Transient, "x")),
-        ]);
-        let o = env
-            .run(
-                TaskInput::question("q"),
-                TaskOverrides {
-                    tools: Some(true),
-                    max_rounds: Some(2),
-                    ..env.overrides()
+        for behavior in [false, true] {
+            let env = Env::new();
+            if behavior {
+                env.write(
+                    "project/.llm_context",
+                    "loop_model: behavior\ntools:\n  tools2actions: true\n",
+                );
+            }
+            let llm = ScriptedLlm::new(vec![
+                if behavior {
+                    text("<response><actions><exec><![CDATA[echo one]]></exec></actions></response>")
+                } else {
+                    tool_call("exec", json!({"command":"echo one"}), "c1")
                 },
-                llm,
+                Err(LLMComputeError::provider(ProviderFailure::Transient, "x")),
+            ]);
+            let o = env
+                .run(
+                    TaskInput::question("q"),
+                    TaskOverrides {
+                        tools: Some(true),
+                        max_rounds: Some(2),
+                        ..env.overrides()
+                    },
+                    llm,
+                )
+                .await
+                .unwrap();
+            assert!(matches!(o, RunOutcome::Paused(_)));
+            let run_id = o.record().run_id.clone();
+            let snap = env
+                .store()
+                .get_snapshot(&run_id, o.record().latest_snapshot_idx.unwrap())
+                .unwrap();
+            assert_eq!(snap.state.rounds_left, 1);
+            let ResumeStart::Run(run) = XllmRun::resume(
+                &env.store(),
+                Some(&run_id),
+                None,
+                ResumeLimits {
+                    max_rounds: Some(5),
+                    timeout_secs: Some(42),
+                    ..Default::default()
+                },
+                env.deps(ScriptedLlm::new(vec![])),
             )
             .await
-            .unwrap();
-        assert!(matches!(o, RunOutcome::Paused(_)));
-        let run_id = o.record().run_id.clone();
-        let snap = env
-            .store()
-            .get_snapshot(&run_id, o.record().latest_snapshot_idx.unwrap())
-            .unwrap();
-        assert_eq!(snap.state.rounds_left, 1);
-        let ResumeStart::Run(run) = XllmRun::resume(
-            &env.store(),
-            Some(&run_id),
-            None,
-            ResumeLimits {
-                max_rounds: Some(5),
-                timeout_secs: Some(42),
-                ..Default::default()
-            },
-            env.deps(ScriptedLlm::new(vec![])),
-        )
-        .await
-        .unwrap() else {
-            panic!()
-        };
-        let rec = run.record();
-        assert_eq!(rec.config.limits.max_rounds, 5);
-        assert_eq!(rec.config.limits.timeout_secs, 42);
-        // 新快照会在下一次推理前提交；这里直接检查内存中的上下文状态。
-        let s = run.ctx.as_ref().unwrap().snapshot();
-        assert_eq!(s.state.rounds_left, 4, "consumed round is not refunded");
-        assert_eq!(s.request.budget.max_wallclock_ms, Some(42_000));
+            .unwrap() else {
+                panic!()
+            };
+            let rec = run.record();
+            assert_eq!(rec.config.limits.max_rounds, 5);
+            assert_eq!(rec.config.limits.timeout_secs, 42);
+            // 新快照会在下一次推理前提交；这里直接检查内存中的上下文状态。
+            let s = run.ctx.as_ref().unwrap().snapshot();
+            assert_eq!(s.state.rounds_left, 4, "consumed round is not refunded");
+            assert_eq!(s.request.budget.max_wallclock_ms, Some(42_000));
+        }
     }
 
     #[test]

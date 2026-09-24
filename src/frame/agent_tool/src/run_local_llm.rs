@@ -1384,6 +1384,7 @@ async fn run_result(opts: &CliOpts) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn parse(args: &[&str]) -> Result<CliOpts, String> {
         CliOpts::parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>()).map_err(|e| match e

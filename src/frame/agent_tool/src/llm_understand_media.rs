@@ -2288,7 +2288,7 @@ mod tests {
             input_tokens: Some(1),
             output_tokens: Some(2),
             total_tokens: Some(3),
-            request_units: None,
+            ..Default::default()
         });
         let outcome = RunOutcome::Completed(record);
 

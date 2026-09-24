@@ -135,12 +135,12 @@ struct FailingTools;
 
 #[async_trait]
 impl ToolManager for FailingTools {
-    async fn call_tool(&self, call: AiToolCall) -> Observation {
-        Observation::Error {
+    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError> {
+        Ok(Observation::Error {
             call_id: call.call_id,
             message: "boom".into(),
             tool_result: None,
-        }
+        })
     }
 
     fn list_tool_specs(&self) -> Vec<ToolSpecLite> {
@@ -1201,7 +1201,7 @@ async fn strict_json_parse_error_is_fed_back_then_corrected() {
                 input_tokens: Some(1),
                 output_tokens: Some(1),
                 total_tokens: Some(2),
-                request_units: None,
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -1211,7 +1211,7 @@ async fn strict_json_parse_error_is_fed_back_then_corrected() {
                 input_tokens: Some(1),
                 output_tokens: Some(1),
                 total_tokens: Some(3),
-                request_units: None,
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -1685,13 +1685,141 @@ async fn resume_rejects_history_with_unanswered_tool_calls() {
 }
 
 #[tokio::test]
+async fn behavior_actions_consume_rounds_even_on_business_failure() {
+    for max_rounds in [0, 2] {
+        for fail in [false, true] {
+            let response = text_response(
+                "<response><actions><exec_bash>echo action</exec_bash></actions></response>",
+            );
+            let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+                response;
+                max_rounds as usize + 1
+            ]));
+            let tools: Arc<dyn ToolManager> = if fail {
+                Arc::new(FailingTools)
+            } else {
+                Arc::new(EchoTools)
+            };
+            let mut req = base_request();
+            req.tool_policy.max_rounds = max_rounds;
+            let deps = LLMContextDeps::new(llm.clone(), tools)
+                .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+                .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+            let mut ctx = LLMContext::new(req, deps);
+            let outcome = ctx.run().await;
+            assert!(
+                matches!(
+                    outcome,
+                    LLMContextOutcome::BudgetExhausted {
+                        which: BudgetKind::ToolRounds,
+                        ..
+                    }
+                ),
+                "max_rounds={max_rounds}, fail={fail}: {outcome:?}"
+            );
+            let state = ctx.snapshot().state;
+            assert_eq!(state.rounds_left, 0);
+            let steps: Vec<_> = state.steps.iter().chain(state.last_step.iter()).collect();
+            assert_eq!(steps.len(), max_rounds as usize);
+            for step in steps {
+                assert_eq!(step.action_results.len(), 1);
+                assert_eq!(
+                    matches!(step.action_results[0], Observation::Error { .. }),
+                    fail
+                );
+            }
+            assert_eq!(llm.seen().len(), max_rounds as usize + 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn behavior_action_batch_uses_one_round_and_allows_final_response() {
+    for terminal_with_actions in [false, true] {
+        let terminal = if terminal_with_actions {
+            "<next_behavior>END</next_behavior>"
+        } else {
+            ""
+        };
+        let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+            text_response(&format!(
+                "<response><actions><exec_bash>echo a</exec_bash><exec_bash>echo b</exec_bash></actions>{terminal}</response>"
+            )),
+            text_response("<response><next_behavior>END</next_behavior></response>"),
+        ]));
+        let mut req = base_request();
+        req.tool_policy.max_rounds = 1;
+        let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
+            .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+            .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+        let mut ctx = LLMContext::new(req, deps);
+        let outcome = ctx.run().await;
+        let LLMContextOutcome::Done { trace, .. } = outcome else {
+            panic!("expected Done, got {outcome:?}");
+        };
+        assert_eq!(trace.tool_trace.len(), 2);
+        assert_eq!(ctx.snapshot().state.rounds_left, 0);
+        assert_eq!(llm.seen().len(), if terminal_with_actions { 1 } else { 2 });
+    }
+}
+
+#[tokio::test]
+async fn behavior_native_tools_and_actions_share_rounds_across_steps() {
+    let native = tool_response(
+        None,
+        vec![AiToolCall {
+            name: "echo".into(),
+            args: HashMap::new(),
+            call_id: "native".into(),
+        }],
+    );
+    let action =
+        text_response("<response><actions><exec_bash>echo action</exec_bash></actions></response>");
+    for max_rounds in [1, 2, 3, 4] {
+        let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+            native.clone(),
+            action.clone(),
+            native.clone(),
+            action.clone(),
+            text_response("<response><next_behavior>END</next_behavior></response>"),
+        ]));
+        let mut req = base_request();
+        req.tool_policy.max_rounds = max_rounds;
+        let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
+            .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+            .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+        let mut ctx = LLMContext::new(req, deps);
+        let outcome = ctx.run().await;
+        if max_rounds == 4 {
+            let LLMContextOutcome::Done { trace, .. } = outcome else {
+                panic!("expected Done, got {outcome:?}");
+            };
+            assert_eq!(trace.tool_trace.len(), 4);
+        } else {
+            assert!(
+                matches!(
+                    outcome,
+                    LLMContextOutcome::BudgetExhausted {
+                        which: BudgetKind::ToolRounds,
+                        ..
+                    }
+                ),
+                "max_rounds={max_rounds}: {outcome:?}"
+            );
+        }
+        assert_eq!(ctx.snapshot().state.rounds_left, 0);
+        assert_eq!(llm.seen().len(), max_rounds as usize + 1);
+    }
+}
+
+#[tokio::test]
 async fn behavior_inner_context_inherits_outer_budget() {
     let usage = |total: u64| {
         Some(AiUsage {
             input_tokens: None,
             output_tokens: None,
             total_tokens: Some(total),
-            request_units: None,
+            ..Default::default()
         })
     };
     let llm = Arc::new(ScriptedRecordingLlm::new(vec![

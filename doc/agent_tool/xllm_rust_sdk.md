@@ -39,6 +39,10 @@ user = 任务要求（显式 > 组默认 > stdin）→ 附件（命令顺序；�
 
 behavior 协议（`XllmActionParser`）：`<response><thinking/><actions>…</actions><report/></response>`；动作标签集由本次生效 actions 决定，属性→参数，正文→`command`/`content` 等正文参数或 JSON；**没有动作且带 `<report>` 的回复即为最终答案**。
 
+正文/CDATA 直接承载参数值，不加字段名或 `字段名:` 前缀。例如读取文件使用 `<read_file><![CDATA[fixture.txt]]></read_file>`，也可使用 `<read_file path="fixture.txt"/>`。同一个正文参数已通过属性给出时保留属性值，空 CDATA 不会覆盖它；未通过属性给出的正文参数仍支持空字符串（例如写入空文件）和原始空白。
+
+`max_rounds` 是原生 tools 与 behavior actions 共用的工具轮数预算：每个实际派发的 action 批次消耗一轮，同一步多个 action 只计一轮，工具业务失败也计入；behavior 各步内的原生工具循环沿用剩余额度。额度耗尽后仍允许模型返回无工具的最终答案，再请求工具或 action 则进入 `limit_reached`，不会执行超额调用。
+
 ## 5. Run 记录
 
 ```

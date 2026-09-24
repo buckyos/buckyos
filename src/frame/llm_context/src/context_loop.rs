@@ -883,6 +883,16 @@ impl LLMContext {
                 self.prepare_step(StepRecord::from_result(result), step_started_at_ms);
             new_step.assistant_message = Some(response.message.clone());
 
+            if !new_step.actions.is_empty() && self.state.rounds_left == 0 {
+                return LLMContextOutcome::BudgetExhausted {
+                    which: BudgetKind::ToolRounds,
+                    partial: Some(ContextOutput::Text {
+                        content: response.message.text_content(),
+                    }),
+                    usage: self.state.usage.clone(),
+                };
+            }
+
             // 3a. Honor `forbid_next_behavior`: a fork sub-ctx must terminate
             //     into its own caller, not jump to a sibling behavior. We
             //     scrub the slot before any "terminal: next_behavior pinned"
@@ -998,6 +1008,9 @@ impl LLMContext {
             let mut fatal: Option<LLMComputeError> = None;
             let mut error_to_bump: Option<LLMComputeError> = None;
 
+            if !actions.is_empty() {
+                self.state.rounds_left = self.state.rounds_left.saturating_sub(1);
+            }
             for idx in 0..actions.len() {
                 let action = actions[idx].clone();
                 let started = now_ms();
@@ -1259,6 +1272,7 @@ impl LLMContext {
         inner.state.usage = self.state.usage.clone();
         inner.state.started_at_ms = self.state.started_at_ms;
         inner.state.consecutive_errors = self.state.consecutive_errors;
+        inner.state.rounds_left = self.state.rounds_left;
         let outcome = inner.run_inner().await;
 
         // Always take back whatever the inner spent and recorded, even on
@@ -1266,6 +1280,7 @@ impl LLMContext {
         self.tool_trace.append(&mut inner.tool_trace);
         self.state.llm_task_ids.append(&mut inner.state.llm_task_ids);
         self.state.consecutive_errors = inner.state.consecutive_errors;
+        self.state.rounds_left = inner.state.rounds_left;
         self.state.usage = inner.state.usage.clone();
 
         match outcome {
