@@ -684,17 +684,22 @@ async fn load_trust_public_key_from_source(iss: &str) -> Result<TrustedKey> {
             }
             Err(RPCErrors::KeyNotExist(_)) => {
                 //load device config from system config service(not from name-lib)
-                let device_config = control_panel_client.get_device_config(iss).await;
-                if device_config.is_err() {
-                    warn!(
-                        "load user/device {} config from system config service failed",
-                        iss
-                    );
-                    return Err(RPCErrors::ReasonError(
-                        "User or device config not found".to_string(),
-                    ));
-                }
-                let device_config = device_config.unwrap();
+                let device_config = match control_panel_client.get_device_config(iss).await {
+                    Ok(device_config) => device_config,
+                    Err(RPCErrors::KeyNotExist(_)) => {
+                        warn!("user/device {} config not found in system config", iss);
+                        return Err(RPCErrors::ReasonError(
+                            "User or device config not found".to_string(),
+                        ));
+                    }
+                    Err(err) => {
+                        warn!(
+                            "load device {} doc from system config service failed: {}",
+                            iss, err
+                        );
+                        return Err(err);
+                    }
+                };
                 let result_device_key =
                     device_config
                         .get_auth_key(None)

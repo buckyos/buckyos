@@ -1148,8 +1148,17 @@ impl ControlPanelServer {
             let device = ControlPanelClient::from_shared(system_config_client)
                 .get_device_config(username.as_str())
                 .await
-                .map_err(|error| {
-                    RPCErrors::InvalidToken(format!("failed to load device identity: {}", error))
+                .map_err(|error| match error {
+                    // Only a device that really is not registered invalidates the
+                    // session; a failed system_config read is retryable and must not
+                    // look like a bad token to the caller.
+                    RPCErrors::KeyNotExist(path) => RPCErrors::InvalidToken(format!(
+                        "failed to load device identity: device doc {} not found",
+                        path
+                    )),
+                    other => {
+                        RPCErrors::ReasonError(format!("failed to load device identity: {}", other))
+                    }
                 })?;
             return Ok(Some(RpcAuthPrincipal {
                 username,

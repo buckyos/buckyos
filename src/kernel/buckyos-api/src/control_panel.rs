@@ -2,6 +2,7 @@ use crate::app_mgr::*;
 use crate::system_config::*;
 use crate::{AppDoc, AppInstanceId, AppType, SelectorType};
 use ::kRPC::*;
+use log::warn;
 use name_lib::{DIDDocumentTrait, DeviceDocument, DeviceInfo, EncodedDocument, OwnerDocument, DID};
 pub use name_lib::{
     ProfileContact, ProfileLink, ProfilePrivacyRule, ProfileVisibility, UserPrivateProfile,
@@ -14,6 +15,27 @@ use std::sync::Arc;
 pub const CONTROL_PANEL_SERVICE_NAME: &str = "control-panel";
 pub const CONTROL_PANEL_SERVICE_UNIQUE_ID: &str = "control-panel";
 pub const CONTROL_PANEL_SERVICE_PORT: u16 = 4020;
+
+const DEVICE_DOC_RETRY_DELAY_MS: u64 = 500;
+
+fn is_transient_system_config_error(error: &SystemConfigError) -> bool {
+    matches!(
+        error,
+        SystemConfigError::ReasonError(_) | SystemConfigError::Timeout(_)
+    )
+}
+
+/// Map a system_config read failure to RPCErrors without losing its category:
+/// only a real missing key becomes `KeyNotExist`.
+fn system_config_read_error(path: &str, error: SystemConfigError) -> RPCErrors {
+    match error {
+        SystemConfigError::KeyNotFound(_) => RPCErrors::KeyNotExist(path.to_string()),
+        SystemConfigError::NoPermission(reason) => {
+            RPCErrors::NoPermission(format!("read {} failed: {}", path, reason))
+        }
+        other => RPCErrors::ReasonError(format!("read {} failed: {}", path, other)),
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(try_from = "String", into = "String")]
@@ -225,17 +247,33 @@ impl ControlPanelClient {
         Ok(device_info)
     }
 
+    /// Returns `RPCErrors::KeyNotExist` only when the device doc is really absent.
+    /// Transport / timeout failures are retried once and then surface as
+    /// `RPCErrors::ReasonError`, so callers can tell "no such device" from
+    /// "system_config could not be read this time".
     pub async fn get_device_config(&self, device_id: &str) -> Result<DeviceDocument> {
         let device_doc_path = format!("devices/{}/doc", device_id);
-        let get_result = self
+        let mut get_result = self
             .system_config_client
             .get(device_doc_path.as_str())
             .await;
-        if get_result.is_err() {
-            return Err(RPCErrors::ReasonError("Trust key  not found".to_string()));
+        if let Err(error) = &get_result {
+            if is_transient_system_config_error(error) {
+                warn!(
+                    "load device doc {} failed, retrying once: {}",
+                    device_doc_path, error
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(DEVICE_DOC_RETRY_DELAY_MS))
+                    .await;
+                get_result = self
+                    .system_config_client
+                    .get(device_doc_path.as_str())
+                    .await;
+            }
         }
+        let get_result =
+            get_result.map_err(|error| system_config_read_error(&device_doc_path, error))?;
 
-        let get_result = get_result.unwrap();
         let device_doc: EncodedDocument = EncodedDocument::from_str(get_result.value.clone())
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
         let device_doc: DeviceDocument = DeviceDocument::decode(&device_doc, None)
@@ -246,12 +284,12 @@ impl ControlPanelClient {
 
     pub async fn get_user_config(&self, user_id: &str) -> Result<OwnerDocument> {
         let user_doc_path = format!("users/{}/doc", user_id);
-        let get_result = self.system_config_client.get(user_doc_path.as_str()).await;
-        if get_result.is_err() {
-            return Err(RPCErrors::KeyNotExist(user_doc_path));
-        }
+        let get_result = self
+            .system_config_client
+            .get(user_doc_path.as_str())
+            .await
+            .map_err(|error| system_config_read_error(&user_doc_path, error))?;
 
-        let get_result = get_result.unwrap();
         let user_doc: OwnerDocument = serde_json::from_str(&get_result.value)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
@@ -335,4 +373,42 @@ pub fn generate_control_panel_service_doc() -> AppDoc {
     .selector_type(SelectorType::Single)
     .build()
     .unwrap()
+}
+
+#[cfg(test)]
+mod system_config_read_error_tests {
+    use super::*;
+
+    #[test]
+    fn only_missing_key_maps_to_key_not_exist() {
+        let path = "devices/ood1/doc";
+        assert!(matches!(
+            system_config_read_error(path, SystemConfigError::KeyNotFound(path.to_string())),
+            RPCErrors::KeyNotExist(p) if p == path
+        ));
+        assert!(matches!(
+            system_config_read_error(path, SystemConfigError::ReasonError("timeout".to_string())),
+            RPCErrors::ReasonError(msg) if msg.contains(path) && msg.contains("timeout")
+        ));
+        assert!(matches!(
+            system_config_read_error(path, SystemConfigError::NoPermission("denied".to_string())),
+            RPCErrors::NoPermission(_)
+        ));
+    }
+
+    #[test]
+    fn transient_errors_are_retryable() {
+        assert!(is_transient_system_config_error(
+            &SystemConfigError::ReasonError("rpc timeout".to_string())
+        ));
+        assert!(is_transient_system_config_error(
+            &SystemConfigError::Timeout("15s".to_string())
+        ));
+        assert!(!is_transient_system_config_error(
+            &SystemConfigError::KeyNotFound("devices/ood1/doc".to_string())
+        ));
+        assert!(!is_transient_system_config_error(
+            &SystemConfigError::NoPermission("denied".to_string())
+        ));
+    }
 }
