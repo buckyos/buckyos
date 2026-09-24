@@ -25,7 +25,7 @@ WP-01 至 WP-17 的模块单测入口与验收职责保持如下映射；T1/T1.5
 | 工作包 | 模块单测入口 | 覆盖边界 |
 |---|---|---|
 | WP-01 | `cd src && cargo test -p buckyos-api`；`cargo test -p buckyos-api --test aicc_client_test` | Rust canonical DTO、Client/Handler dispatch、序列化与稳定错误映射 |
-| WP-01TS | WebSDK 上游的 canonical AICC 测试；本仓通过 `src/apps/sys_test/package.json` 与本目录 lockfile 固定 `092009c...` | TypeScript method/DTO/export 与 Rust contract 对齐；本仓不复制 WebSDK 源码 |
+| WP-01TS | WebSDK 上游的 canonical AICC 测试；本仓依赖 `buckyos/buckyos-websdk` 的 `main` 分支 | TypeScript method/DTO/export 与 Rust contract 对齐；本仓不复制 WebSDK 源码 |
 | WP-02 | `cd src && cargo test -p aicc matching` | MatchRule 编译、字段约束、组合与脱敏 trace |
 | WP-03 | `cd src && cargo test -p aicc catalog` | catalog 加载、编译、revision、冲突和 snapshot |
 | WP-04 | `cd src && cargo test -p aicc model` | model registry、logical directory、variant 与能力交集 |
