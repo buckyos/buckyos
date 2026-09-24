@@ -4,9 +4,10 @@ use crate::app_loader::{
     docker_image_tar_candidates_for_arch, docker_missing_text, docker_runtime_matches_deployment,
     docker_runtime_matches_target, exttool_prepare_lock, inspect_docker_image_layout,
     normalize_digest, parse_docker_container_inspect, resolve_aios_image_repo_from_paths,
-    AppLoader, CommandSpec, ControlOperation, DockerRuntimeIdentity, PlatformArch, PlatformOs,
-    PlatformTarget, RuntimeType, DOCKER_LABEL_APP_DOC_OBJECT_ID, DOCKER_LABEL_IMAGE_DIGEST,
-    DOCKER_LABEL_PKG_ID, DOCKER_LABEL_PKG_OBJID, DOCKER_LABEL_SPEC_GENERATION,
+    AppLoader, CommandSpec, ControlOperation, DockerCommandRunner, DockerExecOutcome,
+    DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget, RuntimeType,
+    DOCKER_LABEL_APP_DOC_OBJECT_ID, DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_ID,
+    DOCKER_LABEL_PKG_OBJID, DOCKER_LABEL_SPEC_GENERATION,
 };
 use crate::run_item::ControlRuntItemErrors;
 use buckyos_api::{
@@ -20,7 +21,9 @@ use package_lib::PackageId;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
 fn assert_programs(commands: &[CommandSpec], expected: &[&str]) {
@@ -1196,5 +1199,162 @@ fn exttool_prepare_lock_is_process_wide_and_exclusive() {
     assert!(
         guard.try_lock().is_ok(),
         "the ExtTool guard must be released once the holder is done"
+    );
+}
+
+#[derive(Clone)]
+struct FakeDockerState {
+    log: Arc<Mutex<Vec<String>>>,
+    image_pulled: Arc<AtomicBool>,
+    volume_created: Arc<AtomicBool>,
+}
+
+fn fake_docker_runner(state: FakeDockerState) -> DockerCommandRunner {
+    Arc::new(move |args: Vec<String>| {
+        let state = state.clone();
+        Box::pin(async move {
+            state
+                .log
+                .lock()
+                .unwrap()
+                .push(format!("docker {}", args.join(" ")));
+            fake_docker_outcome(&args, &state).await
+        })
+    })
+}
+
+fn missing_object(object: &str) -> DockerExecOutcome {
+    DockerExecOutcome {
+        ok: false,
+        stdout: String::new(),
+        stderr: format!("Error response from daemon: get {object}: no such volume"),
+    }
+}
+
+async fn fake_docker_outcome(args: &[String], state: &FakeDockerState) -> DockerExecOutcome {
+    let sub = args.first().map(String::as_str).unwrap_or("");
+    let second = args.get(1).map(String::as_str).unwrap_or("");
+    if sub == "volume" && second == "inspect" {
+        if state.volume_created.load(Ordering::SeqCst) {
+            DockerExecOutcome {
+                ok: true,
+                stdout: "buckyos-exttool\n".to_string(),
+                stderr: String::new(),
+            }
+        } else {
+            missing_object(args.get(2).map(String::as_str).unwrap_or(""))
+        }
+    } else if sub == "volume" && second == "create" {
+        state.volume_created.store(true, Ordering::SeqCst);
+        DockerExecOutcome {
+            ok: true,
+            stdout: format!("{}\n", args.get(2).map(String::as_str).unwrap_or("")),
+            stderr: String::new(),
+        }
+    } else if sub == "images" {
+        DockerExecOutcome {
+            ok: true,
+            stdout: if state.image_pulled.load(Ordering::SeqCst) {
+                "4c1a2e5b\n".to_string()
+            } else {
+                String::new()
+            },
+            stderr: String::new(),
+        }
+    } else if sub == "pull" {
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        state.image_pulled.store(true, Ordering::SeqCst);
+        DockerExecOutcome {
+            ok: true,
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    } else if sub == "run" {
+        DockerExecOutcome {
+            ok: true,
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    } else {
+        panic!("fake docker received an unexpected command: {args:?}");
+    }
+}
+
+fn count_entries(entries: &[String], needle: &str) -> usize {
+    entries
+        .iter()
+        .filter(|entry| entry.contains(needle))
+        .count()
+}
+
+#[tokio::test]
+async fn concurrent_prepare_exttool_volume_runs_pull_and_seed_exactly_once() {
+    let state = FakeDockerState {
+        log: Arc::new(Mutex::new(Vec::new())),
+        image_pulled: Arc::new(AtomicBool::new(false)),
+        volume_created: Arc::new(AtomicBool::new(false)),
+    };
+    let runner = fake_docker_runner(state.clone());
+
+    let platform = PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64);
+    let agent_loader = build_agent_loader(platform).with_docker_command_runner(runner.clone());
+    let host_script_loader = AppLoader::new_for_local(
+        "desktop-tool",
+        LocalAppInstanceConfig {
+            target_state: ServiceInstanceState::Started,
+            enable: true,
+            app_doc: build_local_service_doc(),
+            user_id: "alice".to_string(),
+            install_config: ServiceSpecConfig::default(),
+        },
+    )
+    .with_platform(platform)
+    .with_container_support_override(false)
+    .with_docker_command_runner(runner);
+
+    let prepare_both = async {
+        tokio::join!(
+            agent_loader.prepare_exttool_volume(),
+            host_script_loader.prepare_exttool_volume()
+        )
+    };
+    let (agent_result, host_script_result) =
+        tokio::time::timeout(Duration::from_secs(5), prepare_both)
+            .await
+            .expect("both prepares should finish promptly");
+    assert!(
+        agent_result.is_ok(),
+        "agent prepare failed: {agent_result:?}"
+    );
+    assert!(
+        host_script_result.is_ok(),
+        "host script prepare failed: {host_script_result:?}"
+    );
+
+    let entries = state.log.lock().unwrap().clone();
+    assert_eq!(
+        count_entries(&entries, "volume inspect"),
+        2,
+        "both callers must run their own volume check: {entries:?}"
+    );
+    assert_eq!(
+        count_entries(&entries, "images -q paios/exttool"),
+        2,
+        "both callers must run their own image check: {entries:?}"
+    );
+    assert_eq!(
+        count_entries(&entries, "pull paios/exttool"),
+        1,
+        "the slow image pull must happen exactly once: {entries:?}"
+    );
+    assert_eq!(
+        count_entries(&entries, "volume create buckyos-exttool"),
+        1,
+        "the volume must be created exactly once: {entries:?}"
+    );
+    assert_eq!(
+        count_entries(&entries, "run --rm -v buckyos-exttool:"),
+        1,
+        "the volume seeding run must happen exactly once: {entries:?}"
     );
 }
