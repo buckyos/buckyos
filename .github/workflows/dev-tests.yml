@@ -305,6 +305,21 @@ jobs:
         shell: pwsh
         run: python .\make_local_pkg.py show-target --arch ${{ matrix.arch }}
 
+      - name: Prepare SDK/Tool distribution (Unix)
+        if: ${{ runner.os != 'Windows' }}
+        working-directory: ./src
+        env:
+          SDK_TOOL_WORK_DIR: ${{ runner.temp }}/sdk-tool-distribution
+        run: python3 tools/prepare_sdk_tool_distribution.py --work-dir "$SDK_TOOL_WORK_DIR"
+
+      - name: Prepare SDK/Tool distribution (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        working-directory: ./src
+        shell: pwsh
+        env:
+          SDK_TOOL_WORK_DIR: ${{ runner.temp }}/sdk-tool-distribution
+        run: python tools/prepare_sdk_tool_distribution.py --work-dir $env:SDK_TOOL_WORK_DIR
+
       - name: Build single-node environment and run test_rbac (Unix)
         if: ${{ runner.os != 'Windows' }}
         shell: bash
