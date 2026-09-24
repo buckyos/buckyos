@@ -62,25 +62,12 @@ const DEVENV_JSON_EXTTOOL_KEY: &str = "exttool";
 /// /opt/buckyos/tools/ tree into the empty volume.
 const DEFAULT_EXTTOOL_IMAGE_REPO: &str = "paios/exttool";
 
-/// Process-wide single-flight guard for ExtTool volume preparation.
-///
-/// [`AppLoader`] is constructed per app instance, and `node_main` deploys a
-/// node's apps with `for_each_concurrent`, so two deploys can reach
-/// `prepare_exttool_volume` at the same time. Both would observe the image as
-/// missing and launch a `docker pull` for it. Serialising the whole
-/// check/pull/seed sequence keeps that work to a single execution; other
-/// callers re-check under the guard and return once the image and volume are
-/// in place.
 static EXTTOOL_PREPARE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 pub(crate) fn exttool_prepare_lock() -> &'static tokio::sync::Mutex<()> {
     EXTTOOL_PREPARE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
-/// Result of a docker invocation as a test seam chooses to simulate it;
-/// `ok: false` is converted into an actually-failing `ExitStatus` by
-/// [`docker_exit_status`] so the existing success/missing handling of
-/// [`CommandOutput`] keeps working unchanged.
 pub(crate) struct DockerExecOutcome {
     pub(crate) ok: bool,
     pub(crate) stdout: String,
@@ -2101,7 +2088,6 @@ impl AppLoader {
     /// ExtTool mount", so apps that don't need baked tools still start —
     /// and once the image becomes reachable a later deploy will seed the
     /// volume cleanly, instead of being locked into an empty one forever.
-    /// Docker command dispatch going through the optional test runner.
     async fn run_docker(&self, args: &[String]) -> Result<CommandOutput> {
         if let Some(runner) = self.docker_command_runner.as_ref() {
             let executed = runner(args.to_vec()).await;
@@ -2120,8 +2106,6 @@ impl AppLoader {
         self.prepare_exttool_volume_serialised().await
     }
 
-    /// Body of [`Self::prepare_exttool_volume`]; always called with
-    /// `EXTTOOL_PREPARE_LOCK` held.
     async fn prepare_exttool_volume_serialised(&self) -> Result<()> {
         let volume_exists = self
             .check_docker_volume_exists(DEFAULT_EXTTOOL_VOLUME_NAME)

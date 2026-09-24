@@ -1177,11 +1177,6 @@ fn web_app_type_is_rejected_by_runtime_selector() {
 
 #[test]
 fn exttool_prepare_lock_is_process_wide_and_exclusive() {
-    // `prepare_exttool_volume` is reached from a per-app `AppLoader`, while
-    // `node_main` deploys a node's apps with `for_each_concurrent`. The guard
-    // therefore has to be one process-wide lock: if it ever becomes
-    // per-instance, two concurrent deploys would each launch their own
-    // `docker pull` for `paios/exttool` again (see buckyos#616).
     let guard = exttool_prepare_lock();
     assert!(
         std::ptr::eq(guard, exttool_prepare_lock()),
