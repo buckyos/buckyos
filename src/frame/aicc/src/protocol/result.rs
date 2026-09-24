@@ -1,6 +1,7 @@
 use super::{ProtocolError, ProtocolResultValue};
-use buckyos_api::{AiArtifact, AiUsage};
+use buckyos_api::{AiArtifact, AiMethodStatus, AiUsage, ApiType};
 use futures_util::Stream;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -71,6 +72,53 @@ impl ProtocolOutput {
         }
     }
 
+    pub(crate) fn validate_canonical_type(&self, api_type: ApiType) -> ProtocolResultValue<()> {
+        let object = self.value.as_object().ok_or_else(|| {
+            ProtocolError::invalid_response("canonical provider output must be an object")
+        })?;
+        let mut response = object.clone();
+        response.insert("task_id".to_owned(), Value::String("validation".to_owned()));
+        response.insert(
+            "status".to_owned(),
+            serde_json::to_value(AiMethodStatus::Succeeded).expect("AiMethodStatus must serialize"),
+        );
+        let response = Value::Object(response);
+        macro_rules! validate {
+            ($response_type:ty) => {
+                validate_response::<$response_type>(api_type, response)
+            };
+        }
+        match api_type {
+            ApiType::Llm => validate!(buckyos_api::LlmChatInvokeResponse),
+            ApiType::EmbeddingText => validate!(buckyos_api::EmbeddingTextResponse),
+            ApiType::EmbeddingMultimodal => validate!(buckyos_api::EmbeddingMultimodalResponse),
+            ApiType::Rerank => validate!(buckyos_api::RerankResponse),
+            ApiType::ImageTextToImage => validate!(buckyos_api::TextToImageInvokeResponse),
+            ApiType::ImageImageToImage => validate!(buckyos_api::ImageToImageResponse),
+            ApiType::ImageInpaint => validate!(buckyos_api::ImageInpaintResponse),
+            ApiType::ImageUpscale => validate!(buckyos_api::ImageUpscaleResponse),
+            ApiType::ImageBackgroundRemove => {
+                validate!(buckyos_api::ImageBackgroundRemoveResponse)
+            }
+            ApiType::VisionOcr => validate!(buckyos_api::VisionOcrResponse),
+            ApiType::VisionCaption => validate!(buckyos_api::VisionCaptionResponse),
+            ApiType::VisionDetect => validate!(buckyos_api::VisionDetectResponse),
+            ApiType::VisionSegment => validate!(buckyos_api::VisionSegmentResponse),
+            ApiType::AudioTextToSpeech => validate!(buckyos_api::AudioTextToSpeechResponse),
+            ApiType::AudioSpeechRecognition => {
+                validate!(buckyos_api::AudioSpeechRecognitionResponse)
+            }
+            ApiType::AudioMusic => validate!(buckyos_api::AudioMusicResponse),
+            ApiType::AudioEnhance => validate!(buckyos_api::AudioEnhanceResponse),
+            ApiType::VideoTextToVideo => validate!(buckyos_api::VideoTextToVideoResponse),
+            ApiType::VideoImageToVideo => validate!(buckyos_api::VideoImageToVideoResponse),
+            ApiType::VideoToVideo => validate!(buckyos_api::VideoToVideoResponse),
+            ApiType::VideoExtend => validate!(buckyos_api::VideoExtendResponse),
+            ApiType::VideoUpscale => validate!(buckyos_api::VideoUpscaleResponse),
+            ApiType::AgentComputerUse => validate!(buckyos_api::ComputerUseResponse),
+        }
+    }
+
     pub(crate) fn take_provider_artifact_refs(&mut self) -> BTreeMap<String, ProviderArtifactRef> {
         self.artifacts
             .iter_mut()
@@ -90,6 +138,20 @@ impl ProtocolOutput {
             })
             .collect()
     }
+}
+
+fn validate_response<T: DeserializeOwned>(
+    api_type: ApiType,
+    response: Value,
+) -> ProtocolResultValue<()> {
+    serde_json::from_value::<T>(response)
+        .map(|_| ())
+        .map_err(|error| {
+            ProtocolError::invalid_response(format!(
+                "canonical output does not match {} response: {error}",
+                api_type.typed_method()
+            ))
+        })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -226,5 +288,17 @@ mod tests {
             "sha256:abc"
         );
         assert!(output.take_provider_artifact_refs().is_empty());
+    }
+
+    #[test]
+    fn canonical_output_is_checked_against_the_selected_api_type() {
+        let valid = ProtocolOutput::new(serde_json::json!({"images": []}));
+        valid
+            .validate_canonical_type(ApiType::ImageTextToImage)
+            .unwrap();
+        let invalid = ProtocolOutput::new(serde_json::json!({"images": "not-an-array"}));
+        assert!(invalid
+            .validate_canonical_type(ApiType::ImageTextToImage)
+            .is_err());
     }
 }

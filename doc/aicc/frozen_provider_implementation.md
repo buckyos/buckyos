@@ -26,7 +26,7 @@ Known Provider / Provider Profile
 | --- | --- | --- |
 | Provider Profile / Known Provider | 展示、默认 adapter、连接字段、凭据 contract、discovery behavior | 模型固有能力、wire codec |
 | Provider Rules | 渠道 model -> origin model、operation、request lowering、渠道限制/价格 | 原厂模型固有能力、凭据明文 |
-| Protocol Adapter | 官方 wire、认证形态、错误、stream/native task 状态机、URL artifact 下载协议 | Provider Instance 配置、逻辑模型目录 |
+| Protocol Adapter | 官方 wire、认证形态、错误、stream/native task 状态机、URL artifact 下载协议，以及复合 Adapter 的显式组件关系 | Provider Instance 配置、逻辑模型目录 |
 | Model Driver | 原厂模型 API type、能力、variant、逻辑挂点、版本语义 | 渠道 endpoint/operation |
 | Discovery | 某实例当前实际模型、可用性、动态能力/价格 | 静态语义真相 |
 | Provider Instance | base URL、credential refs、region/workspace/account、enabled、实例规则 | 共享 adapter/driver 定义 |
@@ -39,7 +39,7 @@ Provider URL artifact 的下载同样遵守组合边界：AICC 登记 URL 来源
 
 1. metadata source manager 解析四层来源并构建完整 `CatalogSnapshot`。
 2. `BuiltinProviderRegistry` 从 catalog 的 Known Provider 构造 Profile、连接 contract 与 discovery behavior。
-3. `CodecRegistry` 通过 `src/protocol/plugins/*.rs` 自动发现并注册 adapter plugin。
+3. `CodecRegistry` 通过 `src/protocol/plugins/*.rs` 自动发现并注册 adapter plugin；复合 Adapter 的 `component_adapter_ids` 必须全部已注册。
 4. settings 中每个 `ProviderSettings` 选择 profile、adapter、认证和实例参数。
 5. registry 校验 profile 是否允许该 adapter、credential contract 是否一致、连接字段是否合法。
 6. discovery 首选机器接口；失败时按配置使用 catalog-only/static inventory fallback。
@@ -47,6 +47,11 @@ Provider URL artifact 的下载同样遵守组合边界：AICC 登记 URL 来源
 8. inventory 与 `metadata_applied_seq` 原子提交 LKGS；runtime 捕获不可变 Provider/Model snapshot 后再发布。
 
 推理请求只能使用已发布 snapshot。refresh、reload 或 metadata converge 不能原地修改正在执行的调用。
+
+Beta 2.2 不声明通用 Provider quota API：各厂商尚无统一且已验证的额度查询协议，因此运行时
+明确返回 `unsupported`，额度真相只来自 system-config 的本地预算与持久化 usage。代码中不保留
+未接入生产装配的 quota observer 注入点；将来只有在某个 Provider 有官方协议、codec 和验收用例时
+再按 Provider 增加实现。
 
 ## 3. 内置范围
 

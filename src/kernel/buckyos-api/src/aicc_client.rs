@@ -1854,12 +1854,12 @@ impl<T> LockedValue<T> {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct Money {
+pub struct AiCost {
     pub amount: f64,
     pub currency: String,
 }
 
-impl Money {
+impl AiCost {
     pub fn new(amount: f64, currency: impl Into<String>) -> Self {
         Self {
             amount,
@@ -1867,6 +1867,8 @@ impl Money {
         }
     }
 }
+
+pub type Money = AiCost;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -2707,12 +2709,6 @@ impl AiUsage {
             cost: None,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AiCost {
-    pub amount: f64,
-    pub currency: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -4358,6 +4354,8 @@ pub struct ProtocolAdapterView {
     pub probe_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_adapter_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub component_adapter_ids: Vec<String>,
     #[serde(default)]
     pub operations: Vec<ProtocolAdapterOperation>,
 }

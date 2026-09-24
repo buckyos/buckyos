@@ -100,17 +100,19 @@ derived protocol_adapter_id
 
 初始 registry 关系至少包括：
 
-| `protocol_family_id` | `protocol_adapter_id` | `base_adapter_id` | 定位 |
-| --- | --- | --- | --- |
-| `openai` | `openai-responses` | 无 | OpenAI 官方默认的新接口实现 |
-| `openai` | `openai-chat-completions` | 无 | 首个真实需求出现时才注册，之后由兼容 Provider 共享的 Chat Completions 实现 |
-| `openai` | `openai-completions` | 无 | 首个真实需求出现时才注册，之后由兼容 Provider 共享的旧 Text Completions 实现 |
-| `claude` | `claude-messages` | 无 | Claude 官方默认 Messages 实现 |
-| `claude` | `claude-completions` | 无 | 按首次真实需求实现，之后在协议族内共享 |
-| `gemini` | `gemini-interactions` | 无 | Gemini 官方默认的新接口实现 |
-| `gemini` | `gemini-generate-content` | 无 | 按首次真实需求实现，之后在协议族内共享 |
-| `openai` | `sn-openai` | `openai-responses` | SN 鉴权扩展，当前复用 Responses 实现 |
-| `openai` | `openrouter-responses` | `openai-responses` | OpenRouter 渠道扩展，复用 OpenResponses 兼容接口 |
+| `protocol_family_id` | `protocol_adapter_id` | `base_adapter_id` | `component_adapter_ids` | 定位 |
+| --- | --- | --- | --- | --- |
+| `openai` | `openai-responses` | 无 | 无 | OpenAI 官方默认的新接口实现 |
+| `openai` | `openai-chat-completions` | 无 | 无 | 首个真实需求出现时才注册，之后由兼容 Provider 共享的 Chat Completions 实现 |
+| `openai` | `openai-completions` | 无 | 无 | 首个真实需求出现时才注册，之后由兼容 Provider 共享的旧 Text Completions 实现 |
+| `claude` | `claude-messages` | 无 | 无 | Claude 官方默认 Messages 实现 |
+| `claude` | `claude-completions` | 无 | 无 | 按首次真实需求实现，之后在协议族内共享 |
+| `gemini` | `gemini-interactions` | 无 | 无 | Gemini 官方默认的新接口实现 |
+| `gemini` | `gemini-generate-content` | 无 | 无 | 按首次真实需求实现，之后在协议族内共享 |
+| `openai` | `sn-openai` | `openai-responses` | 无 | SN 鉴权扩展，当前复用 Responses 实现 |
+| `openai` | `openrouter-responses` | `openai-responses` | 无 | OpenRouter 渠道扩展，复用 OpenResponses 兼容接口 |
+| `glm` | `glm-chat` | `openai-chat-completions` | `openai-chat-completions`, `glm-media` | GLM 多协议复合 Adapter |
+| `minimax` | `minimax-messages` | `claude-messages` | `claude-messages`, `minimax-media` | MiniMax 多协议复合 Adapter |
 
 新接口 Adapter 与兼容 Adapter 是平级实现。兼容 Adapter 不继承新接口 Adapter，也不通过调用新接口失败后回退旧接口。两者只允许复用低层、无状态且协议中立的组件，例如 HTTP transport、SSE framing、通用 JSON/错误工具和 AICC normalized IR；endpoint path、request schema、response event、错误映射和能力声明保持各自内聚。
 
@@ -122,8 +124,13 @@ Provider Profile/Rules 必须在路由前得到一个确定的 Adapter 和 opera
 Adapter 是该 Provider 的可执行协议边界，可以注册多个按 operation 分派的
 `OperationCodec`/`NativeTaskCodec`，每个 codec 可委托不同的基础协议实现。MiniMax 的
 Messages、T2A、图片、音乐和视频即按此方式组合；OpenRouter 的 Responses、embedding、rerank 与 alpha Decisions 也按
-operation 显式组合。这样仍满足“Provider 可持有多个 protocol client”，同时保证一次路由
-在调用前得到唯一的 `adapter + operation + codec`，避免运行时试探或静默切换。
+operation 显式组合。每套独立 wire 协议先注册可单独测试和复用的 Adapter，再由 Provider 的复合 Adapter 通过
+`component_adapter_ids` 显式声明组件，并按 operation 绑定对应 codec。当前 `glm-chat`
+由 `openai-chat-completions + glm-media` 组成，`minimax-messages` 由
+`claude-messages + minimax-media` 组成；GLM/MiniMax 复合 Adapter 使用自己的
+`protocol_family_id`，不再冒充 OpenAI/Claude。Registry 要求组件先注册且引用不可悬空，
+`protocol_adapter.list` 会返回组件关系。一次路由仍在调用前得到唯一的
+`composite adapter + operation + codec`，不会运行时试探或静默切换。
 
 ### 2.1.1 可执行绑定表的事实源
 

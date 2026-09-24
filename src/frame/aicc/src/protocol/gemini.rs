@@ -108,6 +108,7 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
         protocol_adapter_id: GEMINI_ADAPTER_ID.to_string(),
         interface_generation: "interactions-v1beta".to_string(),
         base_adapter_id: None,
+        component_adapter_ids: Vec::new(),
         status: AdapterStatus::Preview,
         probe_priority: 0,
         probe_path: Some("interactions".to_owned()),

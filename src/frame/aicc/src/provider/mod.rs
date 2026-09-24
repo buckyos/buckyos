@@ -3,20 +3,20 @@ mod inventory;
 mod runtime;
 
 #[cfg(test)]
+pub(crate) use crate::protocol::{claude_messages_adapter, register_sn_openai_adapter};
+#[cfg(test)]
 pub(crate) use builtin::openai_catalog_files;
 pub(crate) use builtin::{
-    builtin_provider_codecs, builtin_provider_registry, claude_messages_adapter,
-    register_sn_openai_adapter, resolve_sn_provider_instance_with_config, BuiltinProviderRequest,
-    SnCredentialBroker, SnProviderInstanceInput,
+    builtin_provider_codecs, builtin_provider_registry, resolve_sn_provider_instance_with_config,
+    BuiltinProviderRequest, SnCredentialBroker, SnProviderInstanceInput,
 };
 pub(crate) use inventory::{
     catalog_only_inventory, CatalogOnlyDiscovery, CredentialResolver, DiscoveredModel,
     DiscoveryContext, FallbackDiscovery, InventoryBuilder, ModelAvailability, PricingSource,
     ProviderConnectionContract, ProviderConnectionInput, ProviderDiscovery,
     ProviderDiscoverySnapshot, ProviderFieldMode, ProviderFieldSchema, ProviderHealthState,
-    ProviderInstanceConfig, ProviderInventorySnapshot, ProviderQuotaContext, ProviderQuotaLevel,
-    ProviderQuotaObservation, ProviderQuotaObservationState, ProviderQuotaObserver,
-    ProviderQuotaReading, ResolvedProviderConnection, StaticCredentialResolver,
+    ProviderInstanceConfig, ProviderInventorySnapshot, ProviderQuotaObservation,
+    ProviderQuotaObservationState, ResolvedProviderConnection, StaticCredentialResolver,
 };
 use runtime::ProviderRuntime;
 pub(crate) use runtime::ProviderRuntimeManager;
@@ -607,21 +607,6 @@ fn validate_discovery(discovery: &ProviderDiscoverySnapshot) -> ProviderResult<(
 fn validate_pricing(pricing: &Pricing) -> ProviderResult<()> {
     crate::catalog::validate_pricing("discovery", pricing)
         .map_err(|error| ProviderError::DiscoveryResponse(error.to_string()))
-}
-
-fn validate_quota_reading(reading: ProviderQuotaReading) -> ProviderResult<ProviderQuotaReading> {
-    if reading.remaining_cost_usd.as_ref().is_some_and(|value| {
-        value.currency.trim().is_empty()
-            || value.currency.trim() != value.currency
-            || !value.amount.is_finite()
-            || value.amount < 0.0
-    }) || reading.reset_at_ms.is_some_and(|value| value < 0)
-    {
-        return Err(ProviderError::InvalidConfiguration(
-            "provider quota observation contains an invalid value".into(),
-        ));
-    }
-    Ok(reading)
 }
 
 fn resolve_operation(

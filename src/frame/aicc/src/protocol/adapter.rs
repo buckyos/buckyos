@@ -139,6 +139,7 @@ pub(crate) struct AdapterDescriptor {
     pub protocol_adapter_id: String,
     pub interface_generation: String,
     pub base_adapter_id: Option<String>,
+    pub component_adapter_ids: Vec<String>,
     pub status: AdapterStatus,
     pub probe_priority: u32,
     pub probe_path: Option<String>,
@@ -180,6 +181,26 @@ impl AdapterDescriptor {
                     "adapter cannot use itself as its base",
                 ));
             }
+        }
+        let mut components = BTreeSet::new();
+        for component_adapter_id in &self.component_adapter_ids {
+            validate_id("component adapter", component_adapter_id)?;
+            if component_adapter_id == &self.protocol_adapter_id
+                || !components.insert(component_adapter_id)
+            {
+                return Err(ProtocolError::invalid_configuration(
+                    "component adapter IDs must be unique and cannot reference the composite",
+                ));
+            }
+        }
+        if self
+            .base_adapter_id
+            .as_ref()
+            .is_some_and(|base| !components.is_empty() && !components.contains(base))
+        {
+            return Err(ProtocolError::invalid_configuration(
+                "a composite adapter must include its base adapter as a component",
+            ));
         }
         if self.probe_path.as_ref().is_some_and(|path| {
             path.is_empty()
@@ -933,9 +954,19 @@ impl CodecRegistry {
                     "base protocol adapter is not registered",
                 )
             })?;
-            if base.protocol_family_id != descriptor.protocol_family_id {
+            if base.protocol_family_id != descriptor.protocol_family_id
+                && descriptor.component_adapter_ids.is_empty()
+            {
                 return Err(ProtocolError::invalid_configuration(
                     "derived and base adapters must belong to the same protocol family",
+                ));
+            }
+        }
+        for component_adapter_id in &descriptor.component_adapter_ids {
+            if !self.adapters.contains_key(component_adapter_id) {
+                return Err(ProtocolError::new(
+                    super::ProtocolErrorKind::UnknownAdapter,
+                    "component protocol adapter is not registered",
                 ));
             }
         }
@@ -1463,6 +1494,7 @@ mod tests {
             protocol_adapter_id: id.to_string(),
             interface_generation: "v1".to_string(),
             base_adapter_id: None,
+            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 0,
             probe_path: Some("probe".to_owned()),

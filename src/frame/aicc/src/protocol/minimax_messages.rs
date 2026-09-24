@@ -51,10 +51,14 @@ pub(crate) fn minimax_messages_adapter() -> (AdapterDescriptor, CodecRegistratio
             .map(|operation| (operation.operation_id.clone(), operation)),
     );
     let descriptor = AdapterDescriptor {
-        protocol_family_id: "claude".to_owned(),
+        protocol_family_id: "minimax".to_owned(),
         protocol_adapter_id: MINIMAX_MESSAGES_ADAPTER_ID.to_owned(),
         interface_generation: "messages-2023-06-01-minimax".to_owned(),
         base_adapter_id: Some(CLAUDE_MESSAGES_ADAPTER_ID.to_owned()),
+        component_adapter_ids: vec![
+            CLAUDE_MESSAGES_ADAPTER_ID.to_owned(),
+            super::MINIMAX_MEDIA_ADAPTER_ID.to_owned(),
+        ],
         status: AdapterStatus::Stable,
         probe_priority: 200,
         probe_path: None,

@@ -1,10 +1,10 @@
 use super::minimax_messages::validate_minimax_response;
 use super::{
-    CodecCall, CodecContext, CodecRegistration, CredentialKind, ExecutionMode, HttpBody,
-    HttpRequest, HttpResponse, MaterializedResource, NativeTaskCodec, NativeTaskHandle,
-    NativeTaskInput, NativeTaskOperation, NativeTaskOutput, NativeTaskState, OperationBinding,
-    OperationCodec, OperationDescriptor, ProtocolError, ProtocolErrorKind, ProtocolExecution,
-    ProtocolOutput, ProtocolResultValue,
+    AdapterDescriptor, AdapterStatus, CodecCall, CodecContext, CodecRegistration, CredentialKind,
+    ExecutionMode, HttpBody, HttpRequest, HttpResponse, MaterializedResource, NativeTaskCodec,
+    NativeTaskHandle, NativeTaskInput, NativeTaskOperation, NativeTaskOutput, NativeTaskState,
+    OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolErrorKind,
+    ProtocolExecution, ProtocolOutput, ProtocolResultValue,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const T2A_OPERATION_ID: &str = "t2a.create";
+pub(crate) const MINIMAX_MEDIA_ADAPTER_ID: &str = "minimax-media";
 const IMAGE_OPERATION_ID: &str = "image_generation.create";
 const VIDEO_OPERATION_ID: &str = "video_generation.create";
 const MUSIC_OPERATION_ID: &str = "music_generation.create";
@@ -70,6 +71,28 @@ pub(super) fn minimax_media_registration() -> (Vec<OperationDescriptor>, CodecRe
             operation_codecs,
             native_task_codecs,
         },
+    )
+}
+
+pub(crate) fn minimax_media_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    let (operations, registration) = minimax_media_registration();
+    (
+        AdapterDescriptor {
+            protocol_family_id: "minimax".to_owned(),
+            protocol_adapter_id: MINIMAX_MEDIA_ADAPTER_ID.to_owned(),
+            interface_generation: "v1".to_owned(),
+            base_adapter_id: None,
+            component_adapter_ids: Vec::new(),
+            status: AdapterStatus::Stable,
+            probe_priority: 200,
+            probe_path: None,
+            credential: super::AdapterCredentialContract::named_header("x-api-key"),
+            operations: operations
+                .into_iter()
+                .map(|operation| (operation.operation_id.clone(), operation))
+                .collect(),
+        },
+        registration,
     )
 }
 
