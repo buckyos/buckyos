@@ -335,6 +335,8 @@ mod tests {
         let mut codecs = CodecRegistry::default();
         let (descriptor, registration) = openai_chat_completions_adapter();
         codecs.register_codecs(descriptor, registration).unwrap();
+        let (descriptor, registration) = crate::protocol::glm_media_adapter();
+        codecs.register_codecs(descriptor, registration).unwrap();
         let (descriptor, registration) = glm_chat_adapter();
         codecs.register_derived(descriptor, registration).unwrap();
         let discovery = normalize_glm_chat_discovery(ProviderDiscoverySnapshot {

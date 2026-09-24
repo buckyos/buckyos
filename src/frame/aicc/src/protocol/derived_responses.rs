@@ -78,6 +78,7 @@ impl ResponsesDialectKind {
         }
     }
 
+    #[cfg(test)]
     fn provider_namespace(self) -> &'static str {
         match self {
             Self::DeepSeek => "deepseek",
@@ -124,6 +125,7 @@ pub(crate) fn responses_dialect_adapter(
         protocol_adapter_id: contract.protocol_adapter_id.to_string(),
         interface_generation: "responses-v1".to_string(),
         base_adapter_id: Some(contract.base_adapter_id.to_string()),
+        component_adapter_ids: Vec::new(),
         status: AdapterStatus::Stable,
         probe_priority: 200,
         probe_path: None,
@@ -131,7 +133,7 @@ pub(crate) fn responses_dialect_adapter(
         operations: BTreeMap::from([(operation.operation_id.clone(), operation.clone())]),
     };
     let codec: Arc<dyn OperationCodec> = Arc::new(ResponsesDialectCodec {
-        dialect,
+        dialect: dialect_strategy(dialect),
         descriptor: operation,
         base: base_codec,
     });
@@ -145,9 +147,153 @@ pub(crate) fn responses_dialect_adapter(
 }
 
 struct ResponsesDialectCodec {
-    dialect: ResponsesDialectKind,
+    dialect: Arc<dyn ResponsesDialectStrategy>,
     descriptor: OperationDescriptor,
     base: Arc<dyn OperationCodec>,
+}
+
+#[derive(Default)]
+struct PreparedDialectRequest {
+    body_extensions: BTreeMap<String, Value>,
+    session_cache: Option<Value>,
+}
+
+trait ResponsesDialectStrategy: Send + Sync {
+    fn provider_namespace(&self) -> &'static str;
+
+    fn prepare_parameters(
+        &self,
+        _parameters: &mut BTreeMap<String, Value>,
+    ) -> ProtocolResultValue<PreparedDialectRequest> {
+        Ok(PreparedDialectRequest::default())
+    }
+
+    fn transform_request(
+        &self,
+        _call: &CodecCall<'_>,
+        request: HttpRequest,
+        _prepared: PreparedDialectRequest,
+    ) -> ProtocolResultValue<HttpRequest> {
+        Ok(request)
+    }
+}
+
+struct StandardDialect(&'static str);
+
+impl ResponsesDialectStrategy for StandardDialect {
+    fn provider_namespace(&self) -> &'static str {
+        self.0
+    }
+}
+
+struct DeepSeekDialect;
+
+impl ResponsesDialectStrategy for DeepSeekDialect {
+    fn provider_namespace(&self) -> &'static str {
+        "deepseek"
+    }
+
+    fn transform_request(
+        &self,
+        call: &CodecCall<'_>,
+        mut request: HttpRequest,
+        _prepared: PreparedDialectRequest,
+    ) -> ProtocolResultValue<HttpRequest> {
+        let base = Url::parse(&call.context.base_url)
+            .map_err(|_| ProtocolError::invalid_configuration("DeepSeek base URL is invalid"))?;
+        if base.path().trim_matches('/').is_empty() {
+            let mut endpoint = base;
+            endpoint.set_path("/responses");
+            request.url = endpoint.to_string();
+        }
+        Ok(request)
+    }
+}
+
+struct OpenRouterDialect;
+
+impl ResponsesDialectStrategy for OpenRouterDialect {
+    fn provider_namespace(&self) -> &'static str {
+        "openrouter"
+    }
+
+    fn prepare_parameters(
+        &self,
+        parameters: &mut BTreeMap<String, Value>,
+    ) -> ProtocolResultValue<PreparedDialectRequest> {
+        Ok(PreparedDialectRequest {
+            body_extensions: take_openrouter_parameters(parameters)?,
+            session_cache: None,
+        })
+    }
+
+    fn transform_request(
+        &self,
+        _call: &CodecCall<'_>,
+        mut request: HttpRequest,
+        prepared: PreparedDialectRequest,
+    ) -> ProtocolResultValue<HttpRequest> {
+        if prepared.body_extensions.is_empty() {
+            return Ok(request);
+        }
+        let super::HttpBody::Json(body) = &mut request.body else {
+            return Err(ProtocolError::invalid_configuration(
+                "OpenRouter Responses request body is not JSON",
+            ));
+        };
+        let body = body.as_object_mut().ok_or_else(|| {
+            ProtocolError::invalid_configuration(
+                "OpenRouter Responses request body is not an object",
+            )
+        })?;
+        body.extend(prepared.body_extensions);
+        Ok(request)
+    }
+}
+
+struct QwenDialect;
+
+impl ResponsesDialectStrategy for QwenDialect {
+    fn provider_namespace(&self) -> &'static str {
+        "qwen"
+    }
+
+    fn prepare_parameters(
+        &self,
+        parameters: &mut BTreeMap<String, Value>,
+    ) -> ProtocolResultValue<PreparedDialectRequest> {
+        Ok(PreparedDialectRequest {
+            body_extensions: BTreeMap::new(),
+            session_cache: parameters.remove(QWEN_SESSION_CACHE_PARAMETER),
+        })
+    }
+
+    fn transform_request(
+        &self,
+        _call: &CodecCall<'_>,
+        mut request: HttpRequest,
+        prepared: PreparedDialectRequest,
+    ) -> ProtocolResultValue<HttpRequest> {
+        if let Some(enabled) = prepared.session_cache {
+            let enabled = enabled.as_bool().ok_or_else(|| {
+                ProtocolError::invalid_request("Qwen session_cache must be a boolean")
+            })?;
+            request.headers.insert(
+                HeaderName::from_static(QWEN_SESSION_CACHE_HEADER),
+                HeaderValue::from_static(if enabled { "enable" } else { "disable" }),
+            );
+        }
+        Ok(request)
+    }
+}
+
+fn dialect_strategy(dialect: ResponsesDialectKind) -> Arc<dyn ResponsesDialectStrategy> {
+    match dialect {
+        ResponsesDialectKind::DeepSeek => Arc::new(DeepSeekDialect),
+        ResponsesDialectKind::Doubao => Arc::new(StandardDialect("doubao")),
+        ResponsesDialectKind::OpenRouter => Arc::new(OpenRouterDialect),
+        ResponsesDialectKind::Qwen => Arc::new(QwenDialect),
+    }
 }
 
 #[async_trait]
@@ -166,16 +312,7 @@ impl OperationCodec for ResponsesDialectCodec {
 
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
         let mut parameters = call.input.resolved_parameters.clone();
-        let openrouter_parameters = if self.dialect == ResponsesDialectKind::OpenRouter {
-            take_openrouter_parameters(&mut parameters)?
-        } else {
-            BTreeMap::new()
-        };
-        let session_cache = if self.dialect == ResponsesDialectKind::Qwen {
-            parameters.remove(QWEN_SESSION_CACHE_PARAMETER)
-        } else {
-            None
-        };
+        let prepared = self.dialect.prepare_parameters(&mut parameters)?;
         let input = CodecInput {
             canonical_request: call.input.canonical_request.clone(),
             resolved_parameters: parameters,
@@ -185,40 +322,8 @@ impl OperationCodec for ResponsesDialectCodec {
             input: &input,
             context: call.context,
         };
-        let mut request = self.base.encode(&delegated)?;
-        if !openrouter_parameters.is_empty() {
-            let super::HttpBody::Json(body) = &mut request.body else {
-                return Err(ProtocolError::invalid_configuration(
-                    "OpenRouter Responses request body is not JSON",
-                ));
-            };
-            let body = body.as_object_mut().ok_or_else(|| {
-                ProtocolError::invalid_configuration(
-                    "OpenRouter Responses request body is not an object",
-                )
-            })?;
-            body.extend(openrouter_parameters);
-        }
-        if self.dialect == ResponsesDialectKind::DeepSeek {
-            let base = Url::parse(&call.context.base_url).map_err(|_| {
-                ProtocolError::invalid_configuration("DeepSeek base URL is invalid")
-            })?;
-            if base.path().trim_matches('/').is_empty() {
-                let mut endpoint = base;
-                endpoint.set_path("/responses");
-                request.url = endpoint.to_string();
-            }
-        }
-        if let Some(enabled) = session_cache {
-            let enabled = enabled.as_bool().ok_or_else(|| {
-                ProtocolError::invalid_request("Qwen session_cache must be a boolean")
-            })?;
-            request.headers.insert(
-                HeaderName::from_static(QWEN_SESSION_CACHE_HEADER),
-                HeaderValue::from_static(if enabled { "enable" } else { "disable" }),
-            );
-        }
-        Ok(request)
+        let request = self.base.encode(&delegated)?;
+        self.dialect.transform_request(call, request, prepared)
     }
 
     async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {

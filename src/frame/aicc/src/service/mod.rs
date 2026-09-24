@@ -1232,6 +1232,11 @@ fn runtime_admin_snapshot(
             })).collect::<Vec<_>>(),
             "directory": model_directory_json(&snapshot.models),
             "logical_definitions": logical_definitions_json(&snapshot.models),
+            "catalog_models": snapshot.catalog.catalog_model_mounts(),
+            "catalog_patterns": snapshot.catalog.model_drivers().map(|driver| json!({
+                "model_driver_id": driver.model_driver_id,
+                "patterns": driver.patterns,
+            })).collect::<Vec<_>>(),
             "generation": snapshot.generation,
         }),
         routing: snapshot.settings.session_config.clone().unwrap_or_default(),
@@ -1391,6 +1396,7 @@ fn protocol_adapter_response(codecs: &CodecRegistry) -> ProtocolAdapterListRespo
                 probe_priority: adapter.probe_priority,
                 probe_path: adapter.probe_path.clone(),
                 base_adapter_id: adapter.base_adapter_id.clone(),
+                component_adapter_ids: adapter.component_adapter_ids.clone(),
                 operations: adapter
                     .operations
                     .values()

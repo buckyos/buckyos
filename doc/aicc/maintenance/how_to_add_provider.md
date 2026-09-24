@@ -112,8 +112,8 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 - 恒等命名的 provider 不配置映射。
 
 Provider 不提供价格或价格无法由现有 schema 精确表达时，价格保持未知。禁止为了让
-`finance_complete` 变为 true 而填写估算常量。OpenRouter `/models` 与响应 `usage.cost`
-当前按其官方约定使用 USD；响应给出的实际金额优先于本地估算。
+`finance_complete` 变为 true 而填写估算常量。动态目录价格必须携带币种；响应费用只有在
+同时携带金额和币种时才作为实际金额使用，否则回退到本地定价并保留财务完整性状态。
 各内置 Provider 的事实源和静态/动态/unknown 决策见
 [`../provider_pricing_sources.md`](../provider_pricing_sources.md)。
 

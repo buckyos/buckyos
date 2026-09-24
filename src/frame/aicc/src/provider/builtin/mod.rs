@@ -126,9 +126,11 @@ fn builtin_catalog_files(catalog_ids: &[&str]) -> Vec<crate::catalog::CurrentCat
         .collect()
 }
 
+#[cfg(test)]
+pub(crate) use crate::protocol::SN_OPENAI_ADAPTER_ID;
 use claude::CLAUDE_SPEC;
 #[allow(unused_imports)]
-pub(crate) use claude::{claude_discovery, claude_messages_adapter, CLAUDE_PROVIDER_PROFILE_ID};
+pub(crate) use claude::{claude_discovery, CLAUDE_PROVIDER_PROFILE_ID};
 #[allow(unused_imports)]
 pub(crate) use fal::FAL_PROVIDER_PROFILE_ID;
 #[allow(unused_imports)]
@@ -170,9 +172,9 @@ pub(crate) use registry::{
 };
 #[allow(unused_imports)]
 pub(crate) use sn::{
-    register_sn_openai_adapter, resolve_sn_provider_instance_with_config, SnCredentialBroker,
-    SnDiscovery, SnDynamicLoginResolver, SnProviderInstanceInput, SN_DYNAMIC_LOGIN_PROFILE_ID,
-    SN_OPENAI_ADAPTER_ID, SN_PROVIDER_PROFILE_ID,
+    resolve_sn_provider_instance_with_config, SnCredentialBroker, SnDiscovery,
+    SnDynamicLoginResolver, SnProviderInstanceInput, SN_DYNAMIC_LOGIN_PROFILE_ID,
+    SN_PROVIDER_PROFILE_ID,
 };
 
 #[cfg(test)]
@@ -295,6 +297,8 @@ mod wp08d_tests {
         codecs.register_codecs(base, registration).unwrap();
         let (base, registration) = crate::protocol::openai_responses_adapter();
         codecs.register_codecs(base, registration).unwrap();
+        let (media, registration) = crate::protocol::glm_media_adapter();
+        codecs.register_codecs(media, registration).unwrap();
         for (descriptor, registration) in [
             openrouter_responses_adapter(),
             kimi_chat_adapter(),

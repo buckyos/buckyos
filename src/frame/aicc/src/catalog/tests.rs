@@ -1089,3 +1089,42 @@ fn malformed_files_and_duplicate_identities_fail_atomically() {
         ModelMatchKind::Pattern
     );
 }
+
+#[test]
+fn logical_mounts_are_available_without_a_provider_instance() {
+    let driver = model_driver(
+        "openai",
+        json!([{
+            "id": "gpt-test",
+            "api_types": ["llm"],
+            "logical_mounts": ["llm.{driver}.{model}", "llm.openai"]
+        }]),
+        json!([]),
+    );
+    let snapshot = build(vec![file(CatalogKind::ModelDriver, driver)]).unwrap();
+    let view = snapshot.logical_mounts_for("openai", "gpt-test").unwrap();
+    assert_eq!(view.origin_model_id, "gpt-test");
+    assert_eq!(
+        view.logical_mounts,
+        vec!["llm.openai".to_owned(), "llm.openai.gpt-test".to_owned()]
+    );
+}
+
+#[test]
+fn invalid_logical_mount_templates_fail_at_catalog_load() {
+    let driver = model_driver(
+        "openai",
+        json!([{
+            "id": "gpt-test",
+            "logical_mounts": ["llm.{unknown}"]
+        }]),
+        json!([]),
+    );
+    assert!(matches!(
+        build(vec![file(CatalogKind::ModelDriver, driver)]),
+        Err(CatalogBuildError::InvalidValue {
+            field: "logical_mounts",
+            ..
+        })
+    ));
+}

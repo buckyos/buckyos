@@ -54,6 +54,7 @@ export type ProviderProtocolContract = {
   required_headers?: Record<string, string>;
   content_type: string;
   required_body_fields: string[];
+  required_body_fields_by_api_type?: Record<string, string[]>;
   allowed_body_fields: string[];
   body_field_types: Record<
     string,
@@ -80,7 +81,8 @@ export type ProviderProtocolContract = {
     | "fal_queue"
     | "minimax_video"
     | "google_lro"
-    | "openai_video";
+    | "openai_video"
+    | "glm_video";
   async_steps?: Array<{
     name: "poll" | "result" | "cancel";
     http_method: string;
@@ -217,7 +219,7 @@ export function validateProviderProtocolCatalog(
       nonEmptyString(apiType, `${driver}.test_model_ids key`);
       nonEmptyString(modelId, `${driver}.test_model_ids.${apiType}`);
     }
-    if (["openai", "claude", "google-gemini", "fal"].includes(driver)) {
+    if (provider.official_first_party_model_ids !== undefined) {
       const officialModelIds = object(
         provider.official_first_party_model_ids,
         `${driver}.official_first_party_model_ids`,
@@ -337,6 +339,35 @@ export function validateProviderProtocolCatalog(
           throw new Error(
             `${id} required field ${required} has no type schema`,
           );
+        }
+      }
+      if (contract.required_body_fields_by_api_type !== undefined) {
+        const conditional = object(
+          contract.required_body_fields_by_api_type,
+          `${id}.required_body_fields_by_api_type`,
+        );
+        for (const [apiType, rawFields] of Object.entries(conditional)) {
+          if (!(contract.api_types as string[]).includes(apiType)) {
+            throw new Error(
+              `${id}.required_body_fields_by_api_type.${apiType} is not declared by the contract`,
+            );
+          }
+          const fields = stringArray(
+            rawFields,
+            `${id}.required_body_fields_by_api_type.${apiType}`,
+          );
+          for (const field of fields) {
+            if (!allowed.has(field)) {
+              throw new Error(
+                `${id} conditional required field ${field} is not allowed`,
+              );
+            }
+            if (!bodyFieldTypes[field]) {
+              throw new Error(
+                `${id} conditional required field ${field} has no type schema`,
+              );
+            }
+          }
         }
       }
       for (const [field, rawTypes] of Object.entries(bodyFieldTypes)) {
@@ -691,6 +722,7 @@ export function validateProviderAuxiliaryRequest(
 export function validateProviderRequest(
   contract: ProviderProtocolContract,
   request: CapturedProviderRequest,
+  apiType = contract.api_types[0],
 ): string[] {
   const errors: string[] = [];
   if (request.method.toUpperCase() !== contract.http_method.toUpperCase()) {
@@ -736,7 +768,11 @@ export function validateProviderRequest(
     return errors;
   }
   const body = request.body as Record<string, unknown>;
-  for (const field of contract.required_body_fields) {
+  const requiredFields = [
+    ...contract.required_body_fields,
+    ...(contract.required_body_fields_by_api_type?.[apiType] ?? []),
+  ];
+  for (const field of requiredFields) {
     if (body[field] === undefined || body[field] === null) {
       errors.push(`missing body field ${field}`);
     }
@@ -757,7 +793,7 @@ export function validateProviderRequest(
       errors.push(`body field ${field} has invalid type`);
     }
   }
-  validateNestedProviderBody(contract, body, errors);
+  validateNestedProviderBody(contract, body, errors, requiredFields);
   return errors;
 }
 
@@ -771,8 +807,9 @@ function validateNestedProviderBody(
   contract: ProviderProtocolContract,
   body: Record<string, unknown>,
   errors: string[],
+  requiredFields = contract.required_body_fields,
 ): void {
-  for (const field of contract.required_body_fields) {
+  for (const field of requiredFields) {
     if (typeof body[field] === "string" && !(body[field] as string).trim()) {
       errors.push(`body field ${field} must be a non-empty string`);
     }

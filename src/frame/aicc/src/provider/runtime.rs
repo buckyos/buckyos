@@ -5,7 +5,6 @@ pub(super) struct ProviderRuntime {
     profile: Arc<ProviderProfile>,
     discovery: Arc<dyn ProviderDiscovery>,
     credential_resolver: Arc<dyn CredentialResolver>,
-    quota_observer: Option<Arc<dyn ProviderQuotaObserver>>,
     catalog: Arc<RwLock<Arc<CatalogSnapshot>>>,
     codecs: Arc<CodecRegistry>,
     store: Arc<dyn ProviderInventoryStore>,
@@ -33,51 +32,13 @@ impl ProviderRuntime {
     }
 
     pub(super) async fn quota_observation(&self) -> ProviderQuotaObservation {
-        let observed_at_ms = now_ms().unwrap_or(0);
-        let Some(observer) = &self.quota_observer else {
-            return ProviderQuotaObservation {
-                state: ProviderQuotaObservationState::Unsupported,
-                remaining_request_units: None,
-                remaining_cost_usd: None,
-                reset_at_ms: None,
-                observed_at_ms,
-                source: "unsupported".into(),
-            };
-        };
-        let source = observer.source().to_owned();
-        let reading = match self.resolve_credential().await {
-            Ok(credential) => {
-                observer
-                    .observe(&ProviderQuotaContext {
-                        profile: &self.profile,
-                        instance: &self.config,
-                        credential: &credential,
-                    })
-                    .await
-            }
-            Err(error) => Err(error),
-        };
-        match reading.and_then(validate_quota_reading) {
-            Ok(reading) => ProviderQuotaObservation {
-                state: match reading.state {
-                    ProviderQuotaLevel::Normal => ProviderQuotaObservationState::Normal,
-                    ProviderQuotaLevel::NearLimit => ProviderQuotaObservationState::NearLimit,
-                    ProviderQuotaLevel::Exhausted => ProviderQuotaObservationState::Exhausted,
-                },
-                remaining_request_units: reading.remaining_request_units,
-                remaining_cost_usd: reading.remaining_cost_usd,
-                reset_at_ms: reading.reset_at_ms,
-                observed_at_ms,
-                source,
-            },
-            Err(_) => ProviderQuotaObservation {
-                state: ProviderQuotaObservationState::QueryFailed,
-                remaining_request_units: None,
-                remaining_cost_usd: None,
-                reset_at_ms: None,
-                observed_at_ms,
-                source,
-            },
+        ProviderQuotaObservation {
+            state: ProviderQuotaObservationState::Unsupported,
+            remaining_request_units: None,
+            remaining_cost_usd: None,
+            reset_at_ms: None,
+            observed_at_ms: now_ms().unwrap_or(0),
+            source: "unsupported".into(),
         }
     }
 
@@ -310,7 +271,6 @@ impl ProviderRuntime {
 pub(crate) struct ProviderRuntimeManager {
     profiles: BTreeMap<String, Arc<ProviderProfile>>,
     credential_resolver: Arc<dyn CredentialResolver>,
-    quota_observers: BTreeMap<String, Arc<dyn ProviderQuotaObserver>>,
     catalog: Arc<RwLock<Arc<CatalogSnapshot>>>,
     codecs: Arc<CodecRegistry>,
     store: Arc<dyn ProviderInventoryStore>,
@@ -343,7 +303,6 @@ impl ProviderRuntimeManager {
         Ok(Self {
             profiles: profile_map,
             credential_resolver,
-            quota_observers: BTreeMap::new(),
             catalog: Arc::new(RwLock::new(catalog)),
             codecs,
             store,
@@ -353,28 +312,6 @@ impl ProviderRuntimeManager {
             generations: Mutex::new(BTreeMap::new()),
             lifecycle_lock: Mutex::new(()),
         })
-    }
-
-    pub(crate) fn with_quota_observers(
-        mut self,
-        observers: impl IntoIterator<Item = (String, Arc<dyn ProviderQuotaObserver>)>,
-    ) -> ProviderResult<Self> {
-        for (provider_profile_id, observer) in observers {
-            if !self.profiles.contains_key(&provider_profile_id) {
-                return Err(ProviderError::UnknownProfile(provider_profile_id));
-            }
-            validate_id("quota source", observer.source())?;
-            if self
-                .quota_observers
-                .insert(provider_profile_id.clone(), observer)
-                .is_some()
-            {
-                return Err(ProviderError::InvalidConfiguration(format!(
-                    "duplicate quota observer for provider profile `{provider_profile_id}`"
-                )));
-            }
-        }
-        Ok(self)
     }
 
     pub(crate) async fn registry(&self) -> Arc<ProviderRegistry> {
@@ -644,10 +581,6 @@ impl ProviderRuntimeManager {
             profile: profile.clone(),
             discovery,
             credential_resolver: self.credential_resolver.clone(),
-            quota_observer: self
-                .quota_observers
-                .get(&profile.provider_profile_id)
-                .cloned(),
             catalog: self.catalog.clone(),
             codecs: self.codecs.clone(),
             store: self.store.clone(),

@@ -105,8 +105,18 @@ pub(super) fn validate_model_driver(
             "version_rules.current_mount",
             &rule.current_mount,
         )?;
+        validate_logical_mount_template(
+            &catalog.model_driver_id,
+            "version_rules.current_mount",
+            &rule.current_mount,
+        )?;
         validate_nonempty_field(
             CatalogKind::ModelDriver,
+            &catalog.model_driver_id,
+            "version_rules.version_mount",
+            &rule.version_mount,
+        )?;
+        validate_logical_mount_template(
             &catalog.model_driver_id,
             "version_rules.version_mount",
             &rule.version_mount,
@@ -114,6 +124,11 @@ pub(super) fn validate_model_driver(
         for mount in &rule.auto_mounts {
             validate_nonempty_field(
                 CatalogKind::ModelDriver,
+                &catalog.model_driver_id,
+                "version_rules.auto_mounts",
+                mount,
+            )?;
+            validate_logical_mount_template(
                 &catalog.model_driver_id,
                 "version_rules.auto_mounts",
                 mount,
@@ -127,6 +142,11 @@ fn validate_model_semantics(
     owner: &str,
     semantics: &ModelSemantics,
 ) -> Result<(), CatalogBuildError> {
+    if let Some(mounts) = &semantics.logical_mounts {
+        for mount in mounts {
+            validate_logical_mount_template(owner, "logical_mounts", mount)?;
+        }
+    }
     if let Some(score) = semantics.quality_score {
         if !score.is_finite() || !(0.0..=1.0).contains(&score) {
             return Err(CatalogBuildError::InvalidValue {
@@ -148,6 +168,31 @@ fn validate_model_semantics(
     }
     if let Some(mappings) = &semantics.canonical_fields {
         validate_canonical_fields(owner, mappings)?;
+    }
+    Ok(())
+}
+
+fn validate_logical_mount_template(
+    owner: &str,
+    field: &'static str,
+    template: &str,
+) -> Result<(), CatalogBuildError> {
+    let expanded = template
+        .replace("{driver}", "driver")
+        .replace("{model}", "model");
+    if expanded.is_empty()
+        || expanded.trim() != expanded
+        || expanded.contains('@')
+        || expanded.contains('{')
+        || expanded.contains('}')
+        || expanded.split('.').any(str::is_empty)
+        || expanded.chars().any(char::is_whitespace)
+    {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: owner.to_owned(),
+            field,
+            reason: format!("invalid logical mount template {template:?}"),
+        });
     }
     Ok(())
 }
@@ -885,6 +930,30 @@ pub(super) fn validate_references(
         if let Some(drivers) = &catalog.document.metadata_drivers {
             for target in drivers {
                 require_model_driver(model_drivers, owner, "metadata_drivers", target)?;
+            }
+            for model_id in &catalog.document.static_inventory_models {
+                let mut matches = Vec::new();
+                for driver_id in drivers {
+                    let driver = &model_drivers[driver_id];
+                    let exact = driver.exact_index.contains_key(model_id);
+                    let mut context = MatchContext::new();
+                    context.insert(
+                        "origin_model_id".to_owned(),
+                        Value::String(model_id.clone()),
+                    );
+                    if exact || driver.patterns.first_match(&context).is_some() {
+                        matches.push(driver_id.clone());
+                    }
+                }
+                if matches.len() != 1 {
+                    return Err(CatalogBuildError::InvalidValue {
+                        owner: owner.clone(),
+                        field: "static_inventory_models",
+                        reason: format!(
+                            "static model {model_id:?} must resolve to exactly one metadata driver, matched {matches:?}"
+                        ),
+                    });
+                }
             }
         }
         for target in catalog.document.origin_provider_aliases.values() {

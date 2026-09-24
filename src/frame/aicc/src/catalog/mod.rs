@@ -41,6 +41,15 @@ const MODEL_DRIVER_SUPPORTED_SCHEMA_REVISION: u32 = 1;
 const PROVIDER_RULES_SUPPORTED_SCHEMA_REVISION: u32 = 1;
 const KNOWN_PROVIDER_SUPPORTED_SCHEMA_REVISION: u32 = 1;
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct CatalogModelMountView {
+    pub model_driver_id: String,
+    pub origin_model_id: String,
+    pub api_types: BTreeSet<String>,
+    pub logical_mounts: Vec<String>,
+    pub excluded: bool,
+}
+
 #[derive(Clone, Debug)]
 struct CompiledModelDriverCatalog {
     document: ModelDriverCatalog,
@@ -325,6 +334,64 @@ impl CatalogSnapshot {
 
     pub(crate) fn model_driver(&self, id: &str) -> Option<&ModelDriverCatalog> {
         self.model_drivers.get(id).map(|catalog| &catalog.document)
+    }
+
+    pub(crate) fn model_drivers(&self) -> impl Iterator<Item = &ModelDriverCatalog> {
+        self.model_drivers.values().map(|catalog| &catalog.document)
+    }
+
+    pub(crate) fn logical_mounts_for(
+        &self,
+        model_driver_id: &str,
+        origin_model_id: &str,
+    ) -> Result<CatalogModelMountView, CatalogResolveError> {
+        let candidates = vec![model_driver_id.to_owned()];
+        let mut dimensions = MatchContext::new();
+        dimensions.insert(
+            "model_driver_id".to_owned(),
+            Value::String(model_driver_id.to_owned()),
+        );
+        let resolved = self.resolve_model(origin_model_id, Some(&candidates), &dimensions)?;
+        let resolved_driver_id = resolved
+            .model_driver_id
+            .clone()
+            .unwrap_or_else(|| model_driver_id.to_owned());
+        let mut logical_mounts = resolved
+            .semantics
+            .logical_mounts
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|mount| {
+                expand_logical_mount_template(&mount, &resolved_driver_id, origin_model_id)
+            })
+            .collect::<Vec<_>>();
+        logical_mounts.sort();
+        logical_mounts.dedup();
+        Ok(CatalogModelMountView {
+            model_driver_id: resolved_driver_id,
+            origin_model_id: origin_model_id.to_owned(),
+            api_types: resolved.semantics.api_types.unwrap_or_default(),
+            logical_mounts,
+            excluded: resolved.semantics.exclude.unwrap_or(false),
+        })
+    }
+
+    pub(crate) fn catalog_model_mounts(&self) -> Vec<CatalogModelMountView> {
+        let mut views = self
+            .model_drivers()
+            .flat_map(|driver| {
+                driver.models.iter().filter_map(|model| {
+                    self.logical_mounts_for(&driver.model_driver_id, &model.id)
+                        .ok()
+                })
+            })
+            .collect::<Vec<_>>();
+        views.sort_by(|left, right| {
+            (&left.model_driver_id, &left.origin_model_id)
+                .cmp(&(&right.model_driver_id, &right.origin_model_id))
+        });
+        views
     }
 
     pub(crate) fn provider_rules(&self, id: &str) -> Option<&ProviderRulesCatalog> {
@@ -787,6 +854,27 @@ impl CatalogSnapshot {
             None => Ok(self.model_drivers.keys().cloned().collect()),
         }
     }
+}
+
+pub(crate) fn expand_logical_mount_template(
+    template: &str,
+    driver_id: &str,
+    model_id: &str,
+) -> String {
+    template
+        .replace("{driver}", &logical_mount_segment(driver_id))
+        .replace("{model}", &logical_mount_segment(model_id))
+}
+
+fn logical_mount_segment(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('/')
+        .split(|ch: char| matches!(ch, '/' | '_' | '.' | '-'))
+        .filter(|part| !part.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 fn resolved_model(

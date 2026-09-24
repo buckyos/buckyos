@@ -1,10 +1,10 @@
 use super::{
-    openai_responses_adapter, CodecRegistration, HttpBody, HttpRequest, HttpResponse,
-    NativeTaskCodec, NativeTaskHandle, NativeTaskInput, NativeTaskOperation, NativeTaskOutput,
-    NativeTaskState, OperationBinding, OperationDescriptor, ProtocolError, ProtocolErrorKind,
-    ProtocolOutput, ProtocolResultValue, OPENAI_AUDIO_SPEECH_OPERATION_ID,
-    OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID, OPENAI_EMBEDDINGS_OPERATION_ID,
-    OPENAI_IMAGES_GENERATE_OPERATION_ID,
+    openai_responses_adapter, AdapterDescriptor, AdapterStatus, CodecRegistration, HttpBody,
+    HttpRequest, HttpResponse, NativeTaskCodec, NativeTaskHandle, NativeTaskInput,
+    NativeTaskOperation, NativeTaskOutput, NativeTaskState, OperationBinding, OperationDescriptor,
+    ProtocolError, ProtocolErrorKind, ProtocolOutput, ProtocolResultValue,
+    OPENAI_AUDIO_SPEECH_OPERATION_ID, OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
+    OPENAI_EMBEDDINGS_OPERATION_ID, OPENAI_IMAGES_GENERATE_OPERATION_ID,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const GLM_VIDEOS_OPERATION_ID: &str = "videos.generate";
+pub(crate) const GLM_MEDIA_ADAPTER_ID: &str = "glm-media";
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -65,6 +66,31 @@ pub(super) fn glm_media_registration() -> (Vec<OperationDescriptor>, CodecRegist
     ]);
     operations.push(video);
     (operations, registration)
+}
+
+pub(crate) fn glm_media_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    let (operations, registration) = glm_media_registration();
+    (
+        AdapterDescriptor {
+            protocol_family_id: "glm".to_owned(),
+            protocol_adapter_id: GLM_MEDIA_ADAPTER_ID.to_owned(),
+            interface_generation: "v4".to_owned(),
+            base_adapter_id: None,
+            component_adapter_ids: Vec::new(),
+            status: AdapterStatus::Stable,
+            probe_priority: 200,
+            probe_path: None,
+            credential: super::AdapterCredentialContract {
+                kind: super::CredentialKind::GlmJwt,
+                header_name: None,
+            },
+            operations: operations
+                .into_iter()
+                .map(|operation| (operation.operation_id.clone(), operation))
+                .collect(),
+        },
+        registration,
+    )
 }
 
 #[derive(Clone)]
@@ -271,8 +297,11 @@ fn decode_result(value: &Value) -> ProtocolResultValue<NativeTaskOutput> {
             metadata: video.get("cover_image_url").cloned(),
         });
     }
+    let video = resources.into_iter().next().ok_or_else(|| {
+        ProtocolError::invalid_response("GLM video result must contain at least one video")
+    })?;
     Ok(NativeTaskOutput::Result(ProtocolOutput {
-        value: json!({"videos": resources}),
+        value: json!({"video": video}),
         usage: Some(AiUsage::request_units(1)),
         artifacts,
     }))

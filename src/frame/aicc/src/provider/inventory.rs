@@ -269,20 +269,6 @@ pub(crate) struct DiscoveryContext<'a> {
     pub credential: &'a ResolvedCredential,
 }
 
-pub(crate) struct ProviderQuotaContext<'a> {
-    pub profile: &'a ProviderProfile,
-    pub instance: &'a ProviderInstanceConfig,
-    pub credential: &'a ResolvedCredential,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ProviderQuotaLevel {
-    Normal,
-    NearLimit,
-    Exhausted,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ProviderQuotaObservationState {
@@ -295,15 +281,6 @@ pub(crate) enum ProviderQuotaObservationState {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderQuotaReading {
-    pub state: ProviderQuotaLevel,
-    pub remaining_request_units: Option<u64>,
-    pub remaining_cost_usd: Option<AiCost>,
-    pub reset_at_ms: Option<i64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct ProviderQuotaObservation {
     pub state: ProviderQuotaObservationState,
     pub remaining_request_units: Option<u64>,
@@ -311,16 +288,6 @@ pub(crate) struct ProviderQuotaObservation {
     pub reset_at_ms: Option<i64>,
     pub observed_at_ms: i64,
     pub source: String,
-}
-
-#[async_trait]
-pub(crate) trait ProviderQuotaObserver: Send + Sync {
-    fn source(&self) -> &'static str;
-
-    async fn observe(
-        &self,
-        context: &ProviderQuotaContext<'_>,
-    ) -> ProviderResult<ProviderQuotaReading>;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -697,6 +664,17 @@ impl InventoryBuilder {
                 .get(&discovered.provider_model_id)
                 .cloned()
                 .unwrap_or(origin_model_id);
+            if profile.provider_profile_id == "doubao"
+                && discovered.provider_model_id.starts_with("ep-")
+                && !instance_rules
+                    .origin_model_overrides
+                    .contains_key(&discovered.provider_model_id)
+            {
+                return Err(ProviderError::InvalidConfiguration(format!(
+                    "Doubao endpoint model {:?} requires instance_rules.origin_model_overrides to name its origin model",
+                    discovered.provider_model_id
+                )));
+            }
             let mapped_candidate_drivers = mapped_origin
                 .as_ref()
                 .map(|origin| vec![origin.model_driver_id.clone()]);

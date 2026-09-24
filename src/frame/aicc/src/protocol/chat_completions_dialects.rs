@@ -282,6 +282,11 @@ pub(crate) fn glm_chat_adapter() -> (AdapterDescriptor, CodecRegistration) {
     registration
         .native_task_codecs
         .extend(media_registration.native_task_codecs);
+    descriptor.protocol_family_id = "glm".to_owned();
+    descriptor.component_adapter_ids = vec![
+        OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_owned(),
+        super::GLM_MEDIA_ADAPTER_ID.to_owned(),
+    ];
     (descriptor, registration)
 }
 
@@ -304,6 +309,7 @@ fn derived_adapter(
             protocol_adapter_id: adapter_id.to_owned(),
             interface_generation: "v1".to_owned(),
             base_adapter_id: Some(OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_owned()),
+            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 200,
             probe_path: None,
@@ -638,8 +644,9 @@ fn nonempty_string(value: &Value) -> bool {
 mod tests {
     use super::*;
     use crate::protocol::{
-        openai_chat_completions_adapter, CodecContext, CodecInput, CodecLimits, CodecRegistry,
-        HttpBody, HttpResponse, ResolvedCredential, OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+        glm_media_adapter, openai_chat_completions_adapter, CodecContext, CodecInput, CodecLimits,
+        CodecRegistry, HttpBody, HttpResponse, ResolvedCredential,
+        OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
     };
     use buckyos_api::{
         AiMessage, AiccCall, ApiType, LlmChatInvokeRequest, RerankDocument, RerankRequest,
@@ -654,6 +661,8 @@ mod tests {
         registry.register_codecs(base, codecs).unwrap();
         let (base, codecs) = openai_responses_adapter();
         registry.register_codecs(base, codecs).unwrap();
+        let (media, codecs) = glm_media_adapter();
+        registry.register_codecs(media, codecs).unwrap();
         registry.register_derived(derived.0, derived.1).unwrap();
         registry
     }

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-09-13.1",
-  "checked_at": "2026-09-13",
+  "revision": "official-provider-protocols-2026-09-23.1",
+  "checked_at": "2026-09-23",
   "providers": [
     {
       "provider_driver": "openai",
@@ -172,8 +172,9 @@
           "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
           "content_type": "multipart/form-data",
           "required_body_fields": ["model", "prompt"],
+          "required_body_fields_by_api_type": { "video.img2video": ["input_reference"] },
           "allowed_body_fields": ["model", "prompt", "input_reference", "seconds", "size"],
-          "body_field_types": { "model": ["string"], "prompt": ["string"] },
+          "body_field_types": { "model": ["string"], "prompt": ["string"], "input_reference": ["object"] },
           "async_protocol": "openai_video",
           "async_steps": [
             { "name": "poll", "http_method": "GET", "path": "/v1/videos/{operation_id}" },
@@ -566,10 +567,11 @@
           "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
           "content_type": "application/json",
           "required_body_fields": ["model", "prompt"],
+          "required_body_fields_by_api_type": { "image.img2img": ["subject_reference"] },
           "allowed_body_fields": ["model", "prompt", "aspect_ratio", "height", "width", "response_format", "n", "prompt_optimizer", "subject_reference"],
-          "body_field_types": { "model": ["string"], "prompt": ["string"] },
+          "body_field_types": { "model": ["string"], "prompt": ["string"], "subject_reference": ["array"] },
           "success_fixture": { "id": "minimax_mock_1", "data": { "image_urls": ["http://mock/artifacts/image.png"] }, "metadata": { "failed_count": "0", "success_count": "1" }, "base_resp": { "status_code": 0, "status_msg": "success" } },
-          "official_sources": ["https://platform.minimax.io/docs/api-reference/image-generation-t2i"],
+          "official_sources": ["https://platform.minimax.io/docs/api-reference/image-generation-t2i", "https://platform.minimax.io/docs/api-reference/image-generation-i2i"],
           "evidence_summary": "MiniMax image generation uses POST /v1/image_generation with model/prompt and returns data.image_urls."
         },
         {
@@ -583,8 +585,9 @@
           "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
           "content_type": "application/json",
           "required_body_fields": ["model", "prompt"],
+          "required_body_fields_by_api_type": { "video.img2video": ["first_frame_image"] },
           "allowed_body_fields": ["model", "prompt", "first_frame_image", "last_frame_image", "subject_reference", "duration", "resolution", "prompt_optimizer", "fast_pretreatment", "callback_url"],
-          "body_field_types": { "model": ["string"], "prompt": ["string"] },
+          "body_field_types": { "model": ["string"], "prompt": ["string"], "first_frame_image": ["string"] },
           "async_protocol": "minimax_video",
           "async_steps": [
             { "name": "poll", "http_method": "GET", "path": "/v1/query/video_generation", "required_query_fields": ["task_id"] },
@@ -732,7 +735,13 @@
       "official_first_party_model_ids": {
         "llm": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash", "glm-4.5v", "glm-4-32b-0414-128k"],
         "vision.ocr": ["glm-5.3-flash", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5v"],
-        "vision.caption": ["glm-5.3-flash", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5v"]
+        "vision.caption": ["glm-5.3-flash", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5v"],
+        "embedding.text": ["embedding-3", "embedding-2"],
+        "image.txt2img": ["glm-image", "cogview-4-250304", "cogview-4", "cogview-3-flash"],
+        "audio.tts": ["glm-tts"],
+        "audio.asr": ["glm-asr-2512"],
+        "video.txt2video": ["cogvideox-3", "cogvideox-flash", "viduq1-text"],
+        "video.img2video": ["cogvideox-3", "cogvideox-flash", "viduq1-image", "viduq1-start-end", "vidu2-image", "vidu2-start-end", "vidu2-reference"]
       },
       "official_variant_sources": ["https://docs.z.ai/api-reference/llm/chat-completion", "https://docs.z.ai/guides/vlm/glm-5.3-flash", "https://docs.z.ai/guides/vlm/glm-4.6v"],
       "official_variant_rules": [{
@@ -742,7 +751,7 @@
           "reasoning-none": { "thinking": { "type": "disabled" } }
         }
       }],
-      "test_model_ids": { "llm": "glm-5.1", "vision.ocr": "glm-5.3-flash", "vision.caption": "glm-5.3-flash" },
+      "test_model_ids": { "llm": "glm-5.1", "vision.ocr": "glm-5.3-flash", "vision.caption": "glm-5.3-flash", "embedding.text": "embedding-3", "image.txt2img": "glm-image", "audio.tts": "glm-tts", "audio.asr": "glm-asr-2512", "video.txt2video": "cogvideox-3", "video.img2video": "cogvideox-3" },
       "contracts": [{
         "id": "glm.chat-completions.v4",
         "protocol_adapter_id": "glm-chat",
@@ -760,6 +769,91 @@
         "success_fixture": { "id": "glm_mock_1", "request_id": "req_mock_1", "created": 1770000000, "model": "glm-5.1", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827", "reasoning_content": "" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7 } },
         "official_sources": ["https://docs.z.ai/api-reference/llm/chat-completion", "https://docs.bigmodel.cn/cn/api/api-code"],
         "evidence_summary": "GLM Chat Completion uses POST /api/paas/v4/chat/completions with Bearer authentication and JSON model/messages; streaming is standard SSE terminated by [DONE]."
+      }, {
+        "id": "glm.embeddings.v4",
+        "protocol_adapter_id": "glm-chat",
+        "api_version": "v4",
+        "api_types": ["embedding.text"],
+        "operation": "embeddings.create",
+        "http_method": "POST",
+        "path": "/api/paas/v4/embeddings",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "encoding_format", "dimensions", "user"],
+        "body_field_types": { "model": ["string"], "input": ["string", "array"] },
+        "success_fixture": { "object": "list", "data": [{ "object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3] }], "model": "embedding-3", "usage": { "prompt_tokens": 2, "total_tokens": 2 } },
+        "official_sources": ["https://docs.z.ai/api-reference/embeddings/embedding"],
+        "evidence_summary": "GLM embeddings use the v4 embeddings endpoint and OpenAI-compatible request and response envelopes."
+      }, {
+        "id": "glm.images.generations.v4",
+        "protocol_adapter_id": "glm-chat",
+        "api_version": "v4",
+        "api_types": ["image.txt2img"],
+        "operation": "images.generate",
+        "http_method": "POST",
+        "path": "/api/paas/v4/images/generations",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "prompt"],
+        "allowed_body_fields": ["model", "prompt", "n", "quality", "size", "style", "response_format", "user"],
+        "body_field_types": { "model": ["string"], "prompt": ["string"] },
+        "success_fixture": { "created": 1770000000, "data": [{ "url": "http://mock/artifacts/glm.png" }], "usage": { "input_tokens": 2, "output_tokens": 1, "total_tokens": 3 } },
+        "official_sources": ["https://docs.z.ai/api-reference/image-generation/generate-image"],
+        "evidence_summary": "GLM image generation uses the v4 images/generations endpoint with an OpenAI-compatible JSON envelope."
+      }, {
+        "id": "glm.audio.speech.v4",
+        "protocol_adapter_id": "glm-chat",
+        "api_version": "v4",
+        "api_types": ["audio.tts"],
+        "operation": "audio.speech",
+        "http_method": "POST",
+        "path": "/api/paas/v4/audio/speech",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input", "voice"],
+        "allowed_body_fields": ["model", "input", "voice", "response_format", "speed"],
+        "body_field_types": { "model": ["string"], "input": ["string"], "voice": ["string", "object"] },
+        "success_content_type": "audio/mpeg",
+        "success_fixture_base64": "SUQzAwAAAAA=",
+        "official_sources": ["https://docs.z.ai/api-reference/audio/speech"],
+        "evidence_summary": "GLM speech generation uses the v4 audio/speech endpoint and returns encoded audio bytes."
+      }, {
+        "id": "glm.audio.transcriptions.v4",
+        "protocol_adapter_id": "glm-chat",
+        "api_version": "v4",
+        "api_types": ["audio.asr"],
+        "operation": "audio.transcriptions",
+        "http_method": "POST",
+        "path": "/api/paas/v4/audio/transcriptions",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "multipart/form-data",
+        "required_body_fields": ["file", "model"],
+        "allowed_body_fields": ["file", "model", "language", "prompt", "response_format", "temperature"],
+        "body_field_types": { "file": ["object"], "model": ["string"] },
+        "success_fixture": { "text": "BUCKYOS-AICC-4827", "usage": { "type": "tokens", "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://docs.z.ai/api-reference/audio/transcriptions"],
+        "evidence_summary": "GLM transcription uses the v4 multipart audio/transcriptions endpoint."
+      }, {
+        "id": "glm.videos.generations.v4",
+        "protocol_adapter_id": "glm-chat",
+        "api_version": "v4",
+        "api_types": ["video.txt2video", "video.img2video"],
+        "operation": "videos.generate",
+        "http_method": "POST",
+        "path": "/api/paas/v4/videos/generations",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "prompt"],
+        "required_body_fields_by_api_type": { "video.img2video": ["image_url"] },
+        "allowed_body_fields": ["model", "prompt", "image_url", "duration", "size"],
+        "body_field_types": { "model": ["string"], "prompt": ["string"], "image_url": ["string", "array"], "duration": ["number"], "size": ["string"] },
+        "async_protocol": "glm_video",
+        "async_steps": [{ "name": "poll", "http_method": "GET", "path": "/api/paas/v4/async-result/{operation_id}" }, { "name": "result", "http_method": "GET", "path": "/api/paas/v4/async-result/{operation_id}" }],
+        "success_fixture": { "id": "glm_video_mock_1", "task_status": "PROCESSING" },
+        "async_result_fixture": { "id": "glm_video_mock_1", "task_status": "SUCCESS", "video_result": [{ "url": "http://mock/artifacts/result.mp4" }] },
+        "official_sources": ["https://docs.z.ai/api-reference/video-generation/generate-video", "https://docs.z.ai/api-reference/video-generation/query-video-generation-task"],
+        "evidence_summary": "GLM video generation submits to videos/generations and polls async-result until video_result is available."
       }]
     },
     {

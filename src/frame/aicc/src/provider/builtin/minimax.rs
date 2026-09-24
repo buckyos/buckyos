@@ -64,8 +64,9 @@ mod tests {
     use super::*;
     use crate::catalog::CatalogBuildOptions;
     use crate::protocol::{
-        minimax_messages_adapter, minimax_messages_dialect_contract, CodecRegistry,
-        CLAUDE_MESSAGES_ADAPTER_ID, CLAUDE_MESSAGES_OPERATION_ID, MINIMAX_MESSAGES_ADAPTER_ID,
+        claude_messages_adapter, minimax_messages_adapter, minimax_messages_dialect_contract,
+        CodecRegistry, CLAUDE_MESSAGES_ADAPTER_ID, CLAUDE_MESSAGES_OPERATION_ID,
+        MINIMAX_MESSAGES_ADAPTER_ID,
     };
     use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
 
@@ -151,10 +152,14 @@ mod tests {
 
     #[test]
     fn derived_registration_depends_one_way_on_the_unchanged_base_adapter() {
-        let (base_descriptor, base_registration) = super::super::claude_messages_adapter();
+        let (base_descriptor, base_registration) = claude_messages_adapter();
         let mut registry = CodecRegistry::default();
         registry
             .register_codecs(base_descriptor, base_registration)
+            .unwrap();
+        let (media_descriptor, media_registration) = crate::protocol::minimax_media_adapter();
+        registry
+            .register_codecs(media_descriptor, media_registration)
             .unwrap();
         let (derived_descriptor, derived_registration) = minimax_messages_adapter();
         registry
@@ -164,7 +169,7 @@ mod tests {
         assert!(registry.adapter(CLAUDE_MESSAGES_ADAPTER_ID).is_some());
         assert!(registry.adapter(MINIMAX_MESSAGES_ADAPTER_ID).is_some());
 
-        let (base_descriptor, base_registration) = super::super::claude_messages_adapter();
+        let (base_descriptor, base_registration) = claude_messages_adapter();
         let mut base_only = CodecRegistry::default();
         base_only
             .register_codecs(base_descriptor, base_registration)

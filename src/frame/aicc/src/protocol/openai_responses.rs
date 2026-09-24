@@ -174,6 +174,7 @@ pub(crate) fn openai_responses_adapter() -> (AdapterDescriptor, CodecRegistratio
         protocol_adapter_id: OPENAI_RESPONSES_ADAPTER_ID.to_string(),
         interface_generation: "responses-v1".to_string(),
         base_adapter_id: None,
+        component_adapter_ids: Vec::new(),
         status: AdapterStatus::Stable,
         probe_priority: 0,
         probe_path: Some("responses".to_owned()),
@@ -1246,12 +1247,26 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         video_seconds: None,
         request_units: None,
         characters: None,
-        cost: decode_reported_usd_cost(value)?,
+        cost: decode_reported_cost(value)?,
     }))
 }
 
-fn decode_reported_usd_cost(value: &Value) -> ProtocolResultValue<Option<buckyos_api::AiCost>> {
-    let Some(amount) = value.get("cost").and_then(Value::as_f64) else {
+fn decode_reported_cost(value: &Value) -> ProtocolResultValue<Option<buckyos_api::AiCost>> {
+    let Some(cost) = value.get("cost") else {
+        return Ok(None);
+    };
+    let (amount, currency) = if let Some(cost) = cost.as_object() {
+        (
+            cost.get("amount").and_then(Value::as_f64),
+            cost.get("currency").and_then(Value::as_str),
+        )
+    } else {
+        (
+            cost.as_f64(),
+            value.get("cost_currency").and_then(Value::as_str),
+        )
+    };
+    let (Some(amount), Some(currency)) = (amount, currency) else {
         return Ok(None);
     };
     if !amount.is_finite() || amount < 0.0 {
@@ -1259,10 +1274,13 @@ fn decode_reported_usd_cost(value: &Value) -> ProtocolResultValue<Option<buckyos
             "reported usage cost must be finite and non-negative",
         ));
     }
-    Ok(Some(buckyos_api::AiCost {
-        amount,
-        currency: "USD".to_owned(),
-    }))
+    let currency = currency.trim().to_ascii_uppercase();
+    if currency.is_empty() {
+        return Err(ProtocolError::invalid_response(
+            "reported usage cost currency must not be empty",
+        ));
+    }
+    Ok(Some(buckyos_api::AiCost { amount, currency }))
 }
 
 fn decode_buffered_responses_stream(
@@ -3119,7 +3137,7 @@ mod tests {
                         {"type":"image_generation_call","id":"ig_1","status":"completed","result":"aW1hZ2U=","output_format":"png"},
                         {"type":"web_search_call","id":"ws_1","status":"completed"}
                       ],
-                      "usage":{"input_tokens":5,"output_tokens":7,"total_tokens":12,"cost":0.0125,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":3}}
+                      "usage":{"input_tokens":5,"output_tokens":7,"total_tokens":12,"cost":0.0125,"cost_currency":"USD","input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":3}}
                     }"#,
                 ),
                 "request-1",

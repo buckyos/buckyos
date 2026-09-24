@@ -1,5 +1,6 @@
-use crate::protocol::{CodecRegistry, ProtocolAdapterPlugin, ProtocolResultValue};
-use crate::provider::register_sn_openai_adapter;
+use crate::protocol::{
+    register_sn_openai_adapter, CodecRegistry, ProtocolAdapterPlugin, ProtocolResultValue,
+};
 
 pub(super) struct Plugin;
 

@@ -162,6 +162,7 @@ impl OpenAiChatCompletionsCodec {
             protocol_adapter_id: OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_string(),
             interface_generation: OPENAI_CHAT_COMPLETIONS_GENERATION.to_string(),
             base_adapter_id: None,
+            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 100,
             probe_path: Some("chat/completions".to_owned()),
@@ -1046,15 +1047,40 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         video_seconds: None,
         request_units: None,
         characters: None,
-        cost: value
-            .get("cost")
-            .and_then(Value::as_f64)
-            .filter(|amount| amount.is_finite() && *amount >= 0.0)
-            .map(|amount| buckyos_api::AiCost {
-                amount,
-                currency: "USD".to_owned(),
-            }),
+        cost: decode_reported_cost(value)?,
     }))
+}
+
+fn decode_reported_cost(value: &Value) -> ProtocolResultValue<Option<buckyos_api::AiCost>> {
+    let Some(cost) = value.get("cost") else {
+        return Ok(None);
+    };
+    let (amount, currency) = if let Some(cost) = cost.as_object() {
+        (
+            cost.get("amount").and_then(Value::as_f64),
+            cost.get("currency").and_then(Value::as_str),
+        )
+    } else {
+        (
+            cost.as_f64(),
+            value.get("cost_currency").and_then(Value::as_str),
+        )
+    };
+    let (Some(amount), Some(currency)) = (amount, currency) else {
+        return Ok(None);
+    };
+    if !amount.is_finite() || amount < 0.0 {
+        return Err(ProtocolError::invalid_response(
+            "reported usage cost must be finite and non-negative",
+        ));
+    }
+    let currency = currency.trim().to_ascii_uppercase();
+    if currency.is_empty() {
+        return Err(ProtocolError::invalid_response(
+            "reported usage cost currency must not be empty",
+        ));
+    }
+    Ok(Some(buckyos_api::AiCost { amount, currency }))
 }
 
 fn normalized_output(
@@ -1718,6 +1744,7 @@ mod tests {
                 protocol_adapter_id: FAKE_DERIVED_ADAPTER_ID.to_string(),
                 interface_generation: "fake-v1".to_string(),
                 base_adapter_id: Some(OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_string()),
+                component_adapter_ids: Vec::new(),
                 status: AdapterStatus::Stable,
                 probe_priority: 200,
                 probe_path: Some("chat/completions".to_owned()),

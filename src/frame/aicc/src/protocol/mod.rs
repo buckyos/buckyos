@@ -14,11 +14,15 @@ mod openai_chat_completions;
 mod openai_responses;
 mod provider_state;
 mod result;
+mod sn_openai;
 mod sse;
 mod task;
 mod transport;
 
+pub(crate) use sn_openai::{register_sn_openai_adapter, SN_OPENAI_ADAPTER_ID};
+
 use minimax_media::minimax_media_registration;
+pub(crate) use minimax_media::{minimax_media_adapter, MINIMAX_MEDIA_ADAPTER_ID};
 
 pub(crate) use crate::error::{
     protocol_error_kind_from_http_status, ProtocolError, ProtocolErrorKind, ProtocolResultValue,
@@ -42,7 +46,9 @@ pub(crate) use chat_completions_dialects::{
 };
 #[cfg(test)]
 pub(crate) use claude_messages::CLAUDE_MESSAGES_OPERATION_ID;
-pub(crate) use claude_messages::{ClaudeMessagesCodec, CLAUDE_MESSAGES_ADAPTER_ID};
+pub(crate) use claude_messages::{
+    claude_messages_adapter, ClaudeMessagesCodec, CLAUDE_MESSAGES_ADAPTER_ID,
+};
 #[cfg(test)]
 pub(crate) use contract::{GoldenBody, ProtocolContractHarness};
 #[cfg(test)]
@@ -60,6 +66,7 @@ pub(crate) use gemini::{
     GEMINI_PREDICT_LONG_RUNNING_OPERATION_ID,
 };
 pub(crate) use gemini::{gemini_interactions_adapter, GEMINI_ADAPTER_ID};
+pub(crate) use glm_media::{glm_media_adapter, GLM_MEDIA_ADAPTER_ID};
 pub(crate) use minimax_messages::minimax_messages_adapter;
 #[cfg(test)]
 pub(crate) use minimax_messages::{minimax_messages_dialect_contract, MINIMAX_MESSAGES_ADAPTER_ID};

@@ -233,6 +233,9 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
       if (url.pathname === "/__mock/select" && request.method === "POST") {
         const parsed = JSON.parse((await bodyBytes(request)).toString("utf8")) as Selection;
         const contract = protocolContract(catalog, parsed.provider_driver, parsed.contract_id);
+        if (parsed.api_type && !contract.api_types.includes(parsed.api_type)) {
+          return json(response, 400, { error: "api_type is not declared by the selected contract" });
+        }
         const scenarios = new Set([
           "success",
           "malformed_response",
@@ -313,7 +316,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
       }
       if (!selection) return json(response, 409, { error: "select a Provider contract before calling the mock" });
       const contract = protocolContract(catalog, selection.provider_driver, selection.contract_id);
-      const captureAuxiliary = () => {
+      const captureAuxiliary = (asyncStep?: AuditRecord["async_step"]) => {
         const captured = {
           method: request.method ?? "",
           pathname: url.pathname,
@@ -329,7 +332,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           query: Object.fromEntries(captured.query),
           headers: safeHeaders(request.headers),
           body: null,
-          async_step: validation.step?.name,
+          async_step: asyncStep ?? validation.step?.name,
           validation_errors: validation.errors,
         });
         return validation.errors;
@@ -381,6 +384,52 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           : selection.scenario === "async_poll_timeout"
           ? { task_id: "minimax_video_mock_1", status: "Processing", base_resp: { status_code: 0, status_msg: "success" } }
           : { task_id: "minimax_video_mock_1", status: "Success", file_id: "minimax_file_mock_1", base_resp: { status_code: 0, status_msg: "success" } });
+      }
+      if (
+        contract.async_protocol === "glm_video" &&
+        url.pathname === "/api/paas/v4/async-result/glm_video_mock_1" &&
+        request.method === "GET"
+      ) {
+        const priorGlmRequests = requests.filter((captured) =>
+          captured.selection.contract_id === selection!.contract_id &&
+          captured.pathname === url.pathname &&
+          captured.method === "GET"
+        );
+        const step = priorGlmRequests.length === 0 ||
+            selection.scenario === "async_failed" ||
+            selection.scenario === "async_poll_timeout"
+          ? "poll"
+          : "result";
+        const errors = captureAuxiliary(step);
+        if (errors.length > 0) {
+          return json(response, 400, {
+            type: "t15_mock_contract_violation",
+            errors,
+          });
+        }
+        if (selection.scenario === "async_failed") {
+          return json(response, 200, {
+            id: "glm_video_mock_1",
+            task_status: "FAIL",
+          });
+        }
+        if (selection.scenario === "async_poll_timeout") {
+          return json(response, 200, {
+            id: "glm_video_mock_1",
+            task_status: "PROCESSING",
+          });
+        }
+        const result = rewriteMockUrls(
+          contract.async_result_fixture ?? {},
+          request.headers.host ?? "127.0.0.1",
+          url.pathname.replace(/^\//, ""),
+        ) as Record<string, unknown>;
+        if (selection.scenario === "async_artifact_unavailable") {
+          result.video_result = [{
+            url: `http://${request.headers.host}/artifacts/unavailable.mp4`,
+          }];
+        }
+        return json(response, 200, result);
       }
       if (contract.async_protocol === "google_lro" && url.pathname === "/v1beta/operations/gemini_mock_1" && request.method === "GET") {
         const errors = captureAuxiliary();
@@ -444,7 +493,11 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         headers: new Headers(request.headers as Record<string, string>),
         body: parsedBody,
       };
-      const validationErrors = validateProviderRequest(contract, captured);
+      const validationErrors = validateProviderRequest(
+        contract,
+        captured,
+        selection.api_type ?? contract.api_types[0],
+      );
       requests.push({
         received_at: new Date().toISOString(),
         selection,

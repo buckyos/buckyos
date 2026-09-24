@@ -1343,9 +1343,10 @@ mod tests {
 
     fn all_codecs() -> CodecRegistry {
         use crate::protocol::{
-            fal_queue_adapter, gemini_interactions_adapter, glm_chat_adapter, kimi_chat_adapter,
-            minimax_messages_adapter, openai_chat_completions_adapter,
-            openai_responses_compatible_adapters, openrouter_responses_adapter,
+            fal_queue_adapter, gemini_interactions_adapter, glm_chat_adapter, glm_media_adapter,
+            kimi_chat_adapter, minimax_media_adapter, minimax_messages_adapter,
+            openai_chat_completions_adapter, openai_responses_compatible_adapters,
+            openrouter_responses_adapter,
         };
         use crate::provider::register_sn_openai_adapter;
 
@@ -1359,6 +1360,8 @@ mod tests {
 
         let (claude, registration) = claude_messages_adapter();
         registry.register_codecs(claude, registration).unwrap();
+        let (media, registration) = minimax_media_adapter();
+        registry.register_codecs(media, registration).unwrap();
         let (minimax, registration) = minimax_messages_adapter();
         registry.register_derived(minimax, registration).unwrap();
 
@@ -1366,6 +1369,8 @@ mod tests {
         registry.register_codecs(gemini, registration).unwrap();
         let (chat, registration) = openai_chat_completions_adapter();
         registry.register_codecs(chat, registration).unwrap();
+        let (media, registration) = glm_media_adapter();
+        registry.register_codecs(media, registration).unwrap();
         for (descriptor, registration) in [
             openrouter_responses_adapter(),
             kimi_chat_adapter(),

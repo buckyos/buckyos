@@ -603,7 +603,7 @@ mod tests {
             .map(|adapter| adapter.protocol_adapter_id.as_str())
             .collect::<BTreeSet<_>>();
         assert_eq!(codecs.adapters().len(), adapter_ids.len());
-        assert_eq!(adapter_ids.len(), 13);
+        assert_eq!(adapter_ids.len(), 15);
         for profile in registry.profiles() {
             assert!(adapter_ids.contains(profile.default_protocol_adapter_id.as_str()));
         }

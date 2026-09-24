@@ -21,6 +21,7 @@ use reqwest::StatusCode;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 
 pub(crate) const CLAUDE_PROTOCOL_FAMILY_ID: &str = "claude";
 pub(crate) const CLAUDE_MESSAGES_ADAPTER_ID: &str = "claude-messages";
@@ -30,6 +31,22 @@ pub(crate) const CLAUDE_MESSAGES_VERSION: &str = "2023-06-01";
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const CLAUDE_PROVIDER_NAMESPACE: &str = "claude";
+
+pub(crate) fn claude_messages_adapter() -> (AdapterDescriptor, super::CodecRegistration) {
+    let codec = ClaudeMessagesCodec::new();
+    let descriptor = codec.adapter_descriptor();
+    (
+        descriptor,
+        super::CodecRegistration {
+            operation_codecs: vec![
+                Arc::new(codec),
+                Arc::new(ClaudeMessagesCodec::new_for(ApiType::VisionOcr)),
+                Arc::new(ClaudeMessagesCodec::new_for(ApiType::VisionCaption)),
+            ],
+            native_task_codecs: Vec::new(),
+        },
+    )
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ClaudeMessagesCodec {
@@ -58,6 +75,7 @@ impl ClaudeMessagesCodec {
             protocol_adapter_id: CLAUDE_MESSAGES_ADAPTER_ID.to_string(),
             interface_generation: CLAUDE_MESSAGES_VERSION.to_string(),
             base_adapter_id: None,
+            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 0,
             probe_path: Some("messages".to_owned()),

@@ -153,6 +153,7 @@ function t15ProviderRequest(
   contract: ProviderProtocolContract,
   model: string,
   extraBody: Record<string, unknown> = {},
+  apiType = contract.api_types[0],
 ): { url: string; init: RequestInit } {
   let path = contract.path.replaceAll("{model}", encodeURIComponent(model));
   const headers = new Headers(contract.required_headers ?? {});
@@ -166,8 +167,12 @@ function t15ProviderRequest(
     );
     path = `${url.pathname}${url.search}`;
   }
+  const requiredFields = [
+    ...contract.required_body_fields,
+    ...(contract.required_body_fields_by_api_type?.[apiType] ?? []),
+  ];
   const fields = Object.fromEntries(
-    contract.required_body_fields.map((field) => [
+    requiredFields.map((field) => [
       field,
       t15FieldValue(field, contract, model),
     ]),
@@ -2711,52 +2716,92 @@ test("T1.5 Provider mock serves every contract for all 12 Providers", async (con
 
   for (const provider of catalog.providers) {
     for (const contract of provider.contracts) {
-      const selected = await fetch(`${baseUrl}/__mock/select`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          provider_driver: provider.provider_driver,
-          contract_id: contract.id,
-          scenario: "success",
-        }),
-      });
-      assert.equal(
-        selected.status,
-        200,
-        `${provider.provider_driver}/${contract.id} selection`,
-      );
-      const model = provider.test_model_ids[contract.api_types[0]];
-      const providerRequest = t15ProviderRequest(baseUrl, contract, model);
-      const response = await fetch(providerRequest.url, providerRequest.init);
-      assert.equal(
-        response.status,
-        200,
-        `${provider.provider_driver}/${contract.id}: ${await response.clone()
-          .text()}`,
-      );
-      const audit = await (await fetch(`${baseUrl}/__mock/requests`))
-        .json() as {
-          requests: Array<
-            { headers: Record<string, string>; validation_errors: string[] }
-          >;
-        };
-      assert.equal(
-        audit.requests.length,
-        1,
-        `${provider.provider_driver}/${contract.id} audit count`,
-      );
-      assert.deepEqual(
-        audit.requests[0].validation_errors,
-        [],
-        `${provider.provider_driver}/${contract.id} wire validation`,
-      );
-      const authHeader = contract.auth.kind === "header"
-        ? contract.auth.name.toLowerCase()
-        : undefined;
-      if (authHeader) {
-        assert.equal(audit.requests[0].headers[authHeader], "[REDACTED]");
+      for (const apiType of contract.api_types) {
+        const selected = await fetch(`${baseUrl}/__mock/select`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            provider_driver: provider.provider_driver,
+            contract_id: contract.id,
+            api_type: apiType,
+            scenario: "success",
+          }),
+        });
+        assert.equal(
+          selected.status,
+          200,
+          `${provider.provider_driver}/${contract.id} selection`,
+        );
+        const model = provider.test_model_ids[apiType];
+        const providerRequest = t15ProviderRequest(
+          baseUrl,
+          contract,
+          model,
+          {},
+          apiType,
+        );
+        const response = await fetch(providerRequest.url, providerRequest.init);
+        assert.equal(
+          response.status,
+          200,
+          `${provider.provider_driver}/${contract.id}/${apiType}: ${await response.clone()
+            .text()}`,
+        );
+        const audit = await (await fetch(`${baseUrl}/__mock/requests`))
+          .json() as {
+            requests: Array<
+              { headers: Record<string, string>; validation_errors: string[] }
+            >;
+          };
+        assert.equal(
+          audit.requests.length,
+          1,
+          `${provider.provider_driver}/${contract.id}/${apiType} audit count`,
+        );
+        assert.deepEqual(
+          audit.requests[0].validation_errors,
+          [],
+          `${provider.provider_driver}/${contract.id}/${apiType} wire validation`,
+        );
+        const authHeader = contract.auth.kind === "header"
+          ? contract.auth.name.toLowerCase()
+          : undefined;
+        if (authHeader) {
+          assert.equal(audit.requests[0].headers[authHeader], "[REDACTED]");
+        }
       }
     }
+  }
+});
+
+test("T1.5 shared endpoints require API-specific media fields", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  for (const [providerDriver, contractId, apiType, requiredField] of [
+    ["openai", "openai.videos.v1", "video.img2video", "input_reference"],
+    ["minimax", "minimax.image-generation.v1", "image.img2img", "subject_reference"],
+    ["minimax", "minimax.video-generation.v1", "video.img2video", "first_frame_image"],
+    ["glm", "glm.videos.generations.v4", "video.img2video", "image_url"],
+  ] as const) {
+    const contract = protocolContract(catalog, providerDriver, contractId);
+    const headers = new Headers({ "content-type": contract.content_type });
+    headers.set(contract.auth.name, `${contract.auth.prefix}t15-secret`);
+    const body = Object.fromEntries(
+      contract.required_body_fields.map((field) => [
+        field,
+        t15FieldValue(field, contract, "mock-model"),
+      ]),
+    );
+    const errors = validateProviderRequest(contract, {
+      method: contract.http_method,
+      pathname: contract.path,
+      query: new URLSearchParams(),
+      headers,
+      body,
+    }, apiType);
+    assert.ok(
+      errors.includes(`missing body field ${requiredField}`),
+      `${contractId}/${apiType} accepted a request without ${requiredField}`,
+    );
   }
 });
 
@@ -3093,7 +3138,13 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
   );
   assert.deepEqual(
     new Set(asyncContracts.map(({ contract }) => contract.async_protocol)),
-    new Set(["openai_video", "google_lro", "fal_queue", "minimax_video"]),
+    new Set([
+      "openai_video",
+      "google_lro",
+      "fal_queue",
+      "minimax_video",
+      "glm_video",
+    ]),
   );
 
   for (const { provider, contract } of asyncContracts) {
@@ -3104,6 +3155,7 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
         body: JSON.stringify({
           provider_driver: provider.provider_driver,
           contract_id: contract.id,
+          api_type: contract.api_types[0],
           scenario: "async_success",
         }),
       })).status,
@@ -3126,6 +3178,8 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
           "{operation_id}",
           contract.async_protocol === "google_lro"
             ? "gemini_mock_1"
+            : contract.async_protocol === "glm_video"
+            ? "glm_video_mock_1"
             : "video_mock_1",
         );
       const url = new URL(`${baseUrl}${path}`);
