@@ -35,7 +35,7 @@ Behavior Loop 解开这三处耦合,但**没有引入新执行核**——它在�
 | D1 | 外层 state 双结构 | `state.steps: Vec<StepRecord>`(历史,可压缩)+ `state.last_step: Option<StepRecord>`(当前热数据,verbatim 渲染);外层 `state.accumulated` 恒空 |
 | D2 | ToolMgr / ActionMgr **同签名**,不引新 trait | Agent Tool 已为 Action 化做好准备;Action 层就是 ToolMgr 实例的另一种装配,Behavior Loop 几乎不配 ToolMgr,而是配一个 action 视图的 ToolMgr |
 | D3 | StepRecord 渲染成 `assistant(意图) + user(结果)` 一对 | 喂给 LLM 的结构是 `system(include user_init target) + [History Steps 经压缩渲染] + LastStep assistant + LastStep user`;严格 user/assistant 交替,贴合 LLM 训练分布,无 provider alternation workaround |
-| D4 | next_behavior 是 terminal 信号 | parser 产出 `next_behavior: Option<String>`,`is_some()` 即 terminal;无单独 `terminal` bool;字符串语义("END" 等)归上层 worksession,loop 不解释 |
+| D4 | next_behavior 是 terminal 信号 | parser 产出 `next_behavior: Option<String>`,`is_some()` 即 terminal;无单独 `terminal` bool;字符串语义("END" 等)归上层 worksession,loop 不解释——**唯一例外**是字面量 `END`(2026-09-18 修正:`END` 与 `<actions>` 同现时不得静默丢弃,否则模型永远不收敛;见 `doc/opendan/Agent Actions.md` §2.2) |
 | D5 | Snapshot schema 待 Behavior Loop 落定后再冻结 | 研发期间不背向前兼容包袱;但相关结构始终保持 `Serialize`/`Deserialize` derive |
 | D6 | **Behavior step = 一次内层传统 LLMContext run** | 外层每个 step iteration 启一个内层 LLMContext(无 parser/renderer/compressor),内层跑到 Done,Done.response 给外层 parser 解析,产出 StepRecord。Function 层细节(多轮 tool)被内层吃掉;无 tool_mgr 的纯 Action 场景退化为内层单次 inference |
 | D7 | 研发期内层不允许 yield | 内层 WaitInput / PendingTool / ContextLimitReached 一律转 Fatal 上抛外层。Snapshot 嵌套留以后 |

@@ -38,8 +38,12 @@ const BOOLEAN_FLAGS = new Set(["no-fallback", "json"]);
 
 function parseProfile(value: string): Profile {
   const v = value.toLowerCase();
-  if (v === "cheap" || v === "fast" || v === "balanced" || v === "quality") return v;
-  throw new ArgError(`--profile must be cheap|fast|balanced|quality, got ${value}`);
+  if (v === "cheap" || v === "fast" || v === "balanced" || v === "quality") {
+    return v;
+  }
+  throw new ArgError(
+    `--profile must be cheap|fast|balanced|quality, got ${value}`,
+  );
 }
 
 export const COMMON_OPTIONS_HELP = `
@@ -72,7 +76,10 @@ export class HelpRequested extends Error {
 // Parses argv into positional + flag map. Flags are `--name [value]`. A flag
 // that appears in BOOLEAN_FLAGS or has no following non-flag token is treated
 // as a boolean switch.
-export function parseArgs(argv: string[], booleanFlags: Set<string> = BOOLEAN_FLAGS): ParsedArgs {
+export function parseArgs(
+  argv: string[],
+  booleanFlags: Set<string> = BOOLEAN_FLAGS,
+): ParsedArgs {
   const positional: string[] = [];
   const flags = new Map<string, string | true>();
   let i = 0;
@@ -118,13 +125,17 @@ export function parseArgs(argv: string[], booleanFlags: Set<string> = BOOLEAN_FL
   const maxCost = flags.get("max-cost");
   if (typeof maxCost === "string") {
     const n = Number(maxCost);
-    if (!Number.isFinite(n) || n < 0) throw new ArgError(`--max-cost invalid: ${maxCost}`);
+    if (!Number.isFinite(n) || n < 0) {
+      throw new ArgError(`--max-cost invalid: ${maxCost}`);
+    }
     common.maxCostUsd = n;
   }
   const maxLat = flags.get("max-latency-ms");
   if (typeof maxLat === "string") {
     const n = Number(maxLat);
-    if (!Number.isFinite(n) || n < 0) throw new ArgError(`--max-latency-ms invalid: ${maxLat}`);
+    if (!Number.isFinite(n) || n < 0) {
+      throw new ArgError(`--max-latency-ms invalid: ${maxLat}`);
+    }
     common.maxLatencyMs = n;
   }
   const idem = flags.get("idempotency-key");
@@ -134,42 +145,62 @@ export function parseArgs(argv: string[], booleanFlags: Set<string> = BOOLEAN_FL
   const timeout = flags.get("timeout");
   if (typeof timeout === "string") {
     const n = Number(timeout);
-    if (!Number.isFinite(n) || n <= 0) throw new ArgError(`--timeout invalid: ${timeout}`);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new ArgError(`--timeout invalid: ${timeout}`);
+    }
     common.timeoutMs = n * 1000;
   }
 
   return { positional, flags, common };
 }
 
-export function requireString(flags: Map<string, string | true>, name: string): string | undefined {
+export function requireString(
+  flags: Map<string, string | true>,
+  name: string,
+): string | undefined {
   const v = flags.get(name);
   if (typeof v === "string") return v;
   if (v === true) throw new ArgError(`--${name} requires a value`);
   return undefined;
 }
 
-export function flagInt(flags: Map<string, string | true>, name: string): number | undefined {
+export function flagInt(
+  flags: Map<string, string | true>,
+  name: string,
+): number | undefined {
   const v = requireString(flags, name);
   if (v === undefined) return undefined;
   const n = Number(v);
-  if (!Number.isFinite(n) || Math.floor(n) !== n) throw new ArgError(`--${name} must be integer, got ${v}`);
+  if (!Number.isFinite(n) || Math.floor(n) !== n) {
+    throw new ArgError(`--${name} must be integer, got ${v}`);
+  }
   return n;
 }
 
-export function flagFloat(flags: Map<string, string | true>, name: string): number | undefined {
+export function flagFloat(
+  flags: Map<string, string | true>,
+  name: string,
+): number | undefined {
   const v = requireString(flags, name);
   if (v === undefined) return undefined;
   const n = Number(v);
-  if (!Number.isFinite(n)) throw new ArgError(`--${name} must be a number, got ${v}`);
+  if (!Number.isFinite(n)) {
+    throw new ArgError(`--${name} must be a number, got ${v}`);
+  }
   return n;
 }
 
-export function flagBool(flags: Map<string, string | true>, name: string): boolean {
+export function flagBool(
+  flags: Map<string, string | true>,
+  name: string,
+): boolean {
   return flags.get(name) === true;
 }
 
 // Drop the known-common flags from the map so commands can detect leftovers.
-export function consumeCommon(flags: Map<string, string | true>): Map<string, string | true> {
+export function consumeCommon(
+  flags: Map<string, string | true>,
+): Map<string, string | true> {
   const out = new Map(flags);
   for (const k of COMMON_FLAGS) out.delete(k);
   return out;
@@ -188,7 +219,11 @@ import {
   EXIT_SUCCESS,
 } from "./result.ts";
 
-export function parseArgvOrExit(tool: string, help: string, argv: string[]): ParsedArgs {
+export function parseArgvOrExit(
+  tool: string,
+  help: string,
+  argv: string[],
+): ParsedArgs {
   try {
     return parseArgs(argv);
   } catch (err) {
@@ -204,9 +239,11 @@ export function parseArgvOrExit(tool: string, help: string, argv: string[]): Par
   }
 }
 
-// Re-throw helper for the per-flag validation phase. Build your input_json
-// inside a try {} block, catch ArgError, hand it here.
+// Re-throw helper for the per-command canonical request validation phase.
 export function bailArgError(tool: string, err: Error | string): never {
   const msg = typeof err === "string" ? err : err.message;
-  emitAndExit(errorResult(tool, `${tool} => arg_error`, msg, { error: msg }), EXIT_ARG_ERROR);
+  emitAndExit(
+    errorResult(tool, `${tool} => arg_error`, msg, { error: msg }),
+    EXIT_ARG_ERROR,
+  );
 }

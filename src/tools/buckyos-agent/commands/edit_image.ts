@@ -13,13 +13,14 @@ import {
   requireString,
 } from "../lib/cli.ts";
 import { initRuntime } from "../lib/runtime.ts";
+import { callAicc, commonPolicyOptions, describeFailure } from "../lib/aicc.ts";
+import type { TypedRequestMap } from "../lib/aicc.ts";
 import {
-  callAicc,
-  commonPolicyOptions,
-  describeFailure,
-  requestNamedObjectOutput,
-} from "../lib/aicc.ts";
-import { pickArtifact, resolveInputResource, saveArtifactToPath, suffixPathByMime } from "../lib/io.ts";
+  pickArtifact,
+  resolveInputResource,
+  saveArtifactToPath,
+  suffixPathByMime,
+} from "../lib/io.ts";
 import {
   bailAiccError,
   bailAiccFailed,
@@ -36,7 +37,8 @@ import {
 const TOOL = "edit_image";
 const METHOD = "image.img2img";
 
-export const HELP = `Usage: edit_image <input_image> <prompt> <output_image> [options]
+export const HELP =
+  `Usage: edit_image <input_image> <prompt> <output_image> [options]
 
 Options:
   --strength <0.0-1.0>
@@ -55,26 +57,34 @@ export async function run(argv: string[]): Promise<never> {
   // 1. 参数
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
   if (parsed.positional.length < 3) {
-    emitAndExit(errorResult(TOOL, `${TOOL} => arg_error`, HELP, { error: "missing positional" }), EXIT_ARG_ERROR);
+    emitAndExit(
+      errorResult(TOOL, `${TOOL} => arg_error`, HELP, {
+        error: "missing positional",
+      }),
+      EXIT_ARG_ERROR,
+    );
   }
   const [srcImage, prompt, outputPath] = parsed.positional;
 
-  // 2. input_json + 输入图片 resource
-  const input: Record<string, unknown> = { prompt };
+  // 2. canonical typed request + 输入图片 resource
+  const request = { images: [], prompt } as TypedRequestMap[typeof METHOD];
   let inputResource;
   try {
     const strength = flagFloat(parsed.flags, "strength");
     if (strength !== undefined) {
-      if (strength < 0 || strength > 1) throw new ArgError(`--strength must be in [0,1]`);
-      input.strength = strength;
+      if (strength < 0 || strength > 1) {
+        throw new ArgError(`--strength must be in [0,1]`);
+      }
+      request.strength = strength;
     }
     const mime = formatToMime(requireString(parsed.flags, "format"));
-    if (mime) input.output = { media_type: mime };
+    if (mime) request.output = { media_type: mime };
     // resolveInputResource 把字符串映射成 ResourceRef:
     //   "named_object:<obj_id>" / "chunk:<obj_id>"  → named_object
     //   "http(s)://..." / "data:..."                → url
     //   其他路径                                     → 本地读 + base64 (小文件用)
     inputResource = await resolveInputResource(srcImage, "image/*");
+    request.images = [inputResource];
   } catch (err) {
     if (err instanceof ArgError) bailArgError(TOOL, err);
     bailIoError(TOOL, undefined, err);
@@ -82,18 +92,22 @@ export async function run(argv: string[]): Promise<never> {
 
   // 3 + 4. 运行时 + AICC
   let runtime;
-  try { runtime = await initRuntime(); } catch (err) { bailRuntimeError(TOOL, err); }
+  try {
+    runtime = await initRuntime();
+  } catch (err) {
+    bailRuntimeError(TOOL, err);
+  }
   let call;
   try {
     call = await callAicc(runtime, {
-      capability: "image",
       method: METHOD,
-      modelAlias: parsed.common.model ?? METHOD,
-      inputJson: requestNamedObjectOutput(input),
-      resources: [inputResource],
+      model: parsed.common.model ?? METHOD,
+      request,
       ...commonPolicyOptions(parsed.common),
     });
-  } catch (err) { bailAiccError(TOOL, METHOD, err); }
+  } catch (err) {
+    bailAiccError(TOOL, METHOD, err);
+  }
   if (call.status === "failed" || !call.summary) {
     bailAiccFailed(TOOL, METHOD, call.taskId, describeFailure(call));
   }
@@ -104,8 +118,15 @@ export async function run(argv: string[]): Promise<never> {
   // deno-lint-ignore no-explicit-any
   const ndmProxy = (ndm_proxy as any).createNdmProxyClient();
   let saved;
-  try { saved = await saveArtifactToPath(artifact, suffixPathByMime(outputPath, "image/png"), ndmProxy); }
-  catch (err) { bailIoError(TOOL, call.taskId, err); }
+  try {
+    saved = await saveArtifactToPath(
+      artifact,
+      suffixPathByMime(outputPath, "image/png"),
+      ndmProxy,
+    );
+  } catch (err) {
+    bailIoError(TOOL, call.taskId, err);
+  }
 
   // 6. emit
   emitAndExit(
@@ -113,7 +134,12 @@ export async function run(argv: string[]): Promise<never> {
       method: METHOD,
       capability: "image",
       task_id: call.taskId,
-      files: [{ path: saved.path, mime: saved.mime ?? null, bytes: saved.bytes, source_kind: saved.source_kind }],
+      files: [{
+        path: saved.path,
+        mime: saved.mime ?? null,
+        bytes: saved.bytes,
+        source_kind: saved.source_kind,
+      }],
     }),
     EXIT_SUCCESS,
   );

@@ -1,7 +1,7 @@
 # AICC Agent CLI Tools
 
-版本：`v0.1-draft`
-更新基线：`2026-05-12`
+版本：`v0.2`
+更新基线：`2026-09-04`
 
 本文定义一组面向 Agent 的 AI 能力 CLI。CLI 是 AICC kRPC API 的薄封装，用于让 Agent 在 shell / workflow / task runner 中直接调用典型 AI 能力，例如：
 
@@ -70,7 +70,7 @@ gen_video "prompt" result.mp4
 --no-fallback
 --idempotency-key <key>
 --trace-id <trace_id>
---json                       输出完整 AiMethodResponse JSON 到 stdout
+--json                       输出完整 typed response JSON 到 stdout
 --timeout <seconds>          当前 CLI 进程最长等待时间
 ```
 
@@ -124,9 +124,15 @@ URL 输入通过 `--url` 或参数值的 URL scheme 识别，转换为：
 1. 单文件输出命令把第一个匹配 artifact 下载到指定路径。
 2. 多文件输出命令要求输出目录。
 3. 结构化结果写 JSON 文件；如果未指定输出文件，则写 stdout。
-4. `--json` 时不做精简输出，直接输出完整 `AiMethodResponse`。
+4. `--json` 时不做精简输出，直接输出完整 canonical typed response。
 
 输出文件不存在时创建，存在时覆盖。CLI 不做交互确认，因为这些工具面向 Agent 自动化。
+
+Provider 返回的 `ResourceRef::Url` 可能要求 Provider credential，CLI 不直接匿名下载这类
+URL。CLI 先将 URL 交给 `POST /kapi/aicc/artifact/open`；AICC 只对已登记且属于当前 tenant
+的 URL 返回流，由原 ProviderInstance 的 Adapter 完成读取。仅当 AICC 明确返回 `404`
+（URL 未登记）时，CLI 才把它视为普通公开 URL 直接下载；鉴权失败和 Provider 下载失败不得
+绕过 AICC 重试。该读取接口只需要 URL 和可选 `artifact_id`，不需要 `task_id`。
 
 异步任务返回 `running` 后，CLI 每 5 秒向 stderr 写一行结构化进度心跳：前缀为
 `__BUCKYOS_AGENT_PROGRESS__`，后面紧跟 JSON，包含协议版本、AICC method、stage、task_id
@@ -154,7 +160,7 @@ URL 输入通过 `--url` 或参数值的 URL scheme 识别，转换为：
 
 ### 3.1 `gen_image`
 
-文生图。映射到 `image.txt2img`。
+文生图。调用 `helper.text_to_image`，默认逻辑模型为 `image.txt2img`。
 
 ```bash
 gen_image "A precise product photo of a matte black desk lamp." result.png
@@ -322,7 +328,7 @@ detect_image <image> <output_json>
   --classes <class1,class2,...>
   --threshold <float>
   --bbox-format <xywh>
-  --bbox-unit <px|ratio>
+  --bbox-unit <px|relative>
 ```
 
 ### 4.4 `segment_image`
@@ -360,17 +366,16 @@ text_to_speech "你好，欢迎使用 AICC。" result.mp3
 
 ```text
 text_to_speech <text> <output_audio>
-  --voice-id <id>
   --lang <language_tag>
   --gender <male|female|neutral>
-  --style <style>
-  --speaker-similarity-required
+  --style <AICC voice style>
+  --instructions <text>
   --speed <float>
   --format <mp3|wav|ogg>
   --sample-rate <hz>
 ```
 
-如果传入 `--voice-id --speaker-similarity-required`，CLI 应默认设置 strict route，避免跨 Provider fallback 导致声音不一致。
+CLI 只构造 Provider/Model 无关的 `VoiceSpec`，不接受 Provider 原生 voice ID，也不在 voice 数据中混入路由匹配策略。
 
 ### 5.2 `speech_to_text`
 
@@ -540,7 +545,7 @@ Provider 查询。
 
 ```bash
 ai_provider list
-ai_provider health
+ai_provider health <exact_model>
 ```
 
 映射到：
@@ -548,7 +553,7 @@ ai_provider health
 | command | AICC method |
 |---|---|
 | `ai_provider list` | `provider.list` |
-| `ai_provider health` | `provider.health` |
+| `ai_provider health <exact_model>` | `provider.health` |
 
 ### 7.2 `ai_quota`
 
@@ -557,10 +562,30 @@ Quota 查询。
 ```bash
 ai_quota
 ai_quota --capability image
-ai_quota --method image.txt2img
+ai_quota --method images.generate
 ```
 
 映射到 `quota.query`。
+
+### 7.3 `materialize_resource`
+
+将非本地 `ResourceRef` 保存为当前 workspace 中的本地文件，供 ffmpeg 等本地命令继续处理。
+
+```bash
+materialize_resource 'named_object:cyfile:...' inputs/audio.mp3
+materialize_resource 'https://example.com/input.wav' inputs/audio.wav --mime audio/wav
+```
+
+参数：
+
+```text
+materialize_resource <resource> <output_path>
+  --mime <mime_type>
+```
+
+支持 `named_object:<typed_object_id>`、直接的 `cyfile:` / `chunk:` typed ID、HTTP(S) URL
+和 data URL。命令保留完整 typed object ID，目标文件已存在时拒绝覆盖。它不创建 AICC
+推理任务，只复用 SDK 的 ResourceRef 读取能力。
 
 ---
 
@@ -569,10 +594,10 @@ ai_quota --method image.txt2img
 | CLI | AICC method | capability | 默认 logical_model |
 |---|---|---|---|
 | `gen_image` | `helper.text_to_image` | `image` | `image.txt2img` |
-| `edit_image` | `helper.edit_image` | `image` | `image.img2img` |
-| `inpaint_image` | `helper.edit_image` | `image` | `image.inpaint` |
-| `upscale_image` | `helper.upscale_image` | `image` | `image.upscale` |
-| `remove_bg` | `helper.remove_background` | `image` | `image.bg_remove` |
+| `edit_image` | `image.img2img` | `image` | `image.img2img` |
+| `inpaint_image` | `image.inpaint` | `image` | `image.inpaint` |
+| `upscale_image` | `image.upscale` | `image` | `image.upscale` |
+| `remove_bg` | `image.bg_remove` | `image` | `image.bg_remove` |
 | `ocr_image` | `vision.ocr` | `vision` | `vision.ocr` |
 | `caption_image` | `vision.caption` | `vision` | `vision.caption` |
 | `detect_image` | `vision.detect` | `vision` | `vision.detect` |
@@ -598,9 +623,9 @@ ai_quota --method image.txt2img
   "method": "helper.text_to_image",
   "params": {
     "logical_model": "image.txt2img",
-    "requirements": {
-      "resp_format": "text"
-    },
+    "requirements": {},
+    "disable": {},
+    "trace_id": "<trace_id>",
     "prompt": "prompt",
     "n": 1,
     "aspect_ratio": "1:1",
@@ -613,12 +638,11 @@ ai_quota --method image.txt2img
       "allow_fallback": true,
       "runtime_failover": true
     }
-  },
-  "sys": [1001, "<session_token>", "<trace_id>"]
+  }
 }
 ```
 
-同步成功后，CLI 从 `result.artifacts[0].resource` 取生成图片并写入 `result.png`。
+同步成功后，CLI 从 typed response 的 `images[0]` 取生成图片并写入 `result.png`。异步成功时从 TaskMgr 2.0 `result.result.output.artifacts` 读取产物。
 
 ---
 
@@ -646,11 +670,12 @@ CLI 默认连接本机 NodeGateway：
 http://127.0.0.1:3180/kapi/aicc
 ```
 
-可通过环境变量覆盖：
+OpenDAN 使用 AppClient session token 并通过宿主机 NodeGateway 访问服务；本地模式使用 SDK 的标准登录流程。相关环境变量：
 
 ```text
-AICC_ENDPOINT
-BUCKYOS_SESSION_TOKEN
+BUCKYOS_APPCLIENT_SESSION_TOKEN
+BUCKYOS_HOST_GATEWAY
+BUCKYOS_NODE_GATEWAY_PORT
 AICC_DEFAULT_PROFILE
 AICC_DEFAULT_TIMEOUT  # milliseconds; default 900000
 ```
@@ -662,7 +687,7 @@ AICC_DEFAULT_TIMEOUT  # milliseconds; default 900000
 ```json
 {
   "ok": true,
-  "method": "image.txt2img",
+  "method": "helper.text_to_image",
   "task_id": "aicc-001",
   "status": "succeeded",
   "outputs": [
@@ -680,7 +705,7 @@ AICC_DEFAULT_TIMEOUT  # milliseconds; default 900000
 ```json
 {
   "ok": false,
-  "method": "image.txt2img",
+  "method": "helper.text_to_image",
   "error": {
     "code": "route_failed",
     "message": "no provider available"
@@ -709,7 +734,7 @@ AICC_DEFAULT_TIMEOUT  # milliseconds; default 900000
 ## 11. 非目标
 
 1. 不设计新的 REST AI API。
-2. 不在 CLI 中实现 Provider 专有参数透传，除非放入 `--provider-extra <json>`。
+2. 不在 CLI 中实现 Provider 专有参数透传。
 3. 不实现 `chat`、`completion`、`ask`、`reason` 等原始 LLM 推理命令。
 4. 不在 CLI 内做复杂模型选择逻辑；路由决策属于 AICC。
 5. 不为每个 Provider 设计独立命令。

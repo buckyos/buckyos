@@ -93,6 +93,38 @@ pub struct MessageCenter {
 }
 
 impl MessageCenter {
+    async fn authorize_mailbox_owner(
+        owner: &DID,
+        ctx: &RPCContext,
+    ) -> std::result::Result<(), RPCErrors> {
+        let Some(token) = ctx
+            .token
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            return Ok(());
+        };
+        let verified = get_buckyos_api_runtime()?
+            .verify_trusted_session_token(token)
+            .await?;
+        let user_id = verified
+            .sub
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| RPCErrors::InvalidToken("session token has no subject".to_string()))?;
+        let caller = if user_id.starts_with("did:") {
+            user_id.to_string()
+        } else {
+            format!("did:bns:{user_id}")
+        };
+        if owner.to_string() != caller {
+            return Err(RPCErrors::NoPermission(
+                "mailbox owner does not match authenticated user".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Resolve the msg-center rdb instance from the service spec and build a
     /// MessageCenter. Both `ContactMgr` and the msg-box share the same pool.
     pub async fn open_from_service_spec() -> std::result::Result<Self, RPCErrors> {

@@ -1928,7 +1928,7 @@ fn update_managed_sn_ai_provider(
         )?,
         Err(err) => {
             warn!(
-                "disable managed SN AI provider because Zone SN endpoint is invalid: {}",
+                "keep managed SN AI provider unchanged because Zone SN endpoint is invalid: {}",
                 err
             );
             reconcile_managed_sn_ai_provider(&current_settings, Err(err), None)?

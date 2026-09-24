@@ -28,11 +28,11 @@ Kimi / GLM / DeepSeek / 豆包（火山方舟）/ Qwen（阿里云百炼）
 
 | Provider | 首版主接口 | 可复用协议模块 | 必须隔离的厂商差异 |
 | --- | --- | --- | --- |
-| OpenAI | Responses | `openai/responses` | 官方 endpoint、Bearer key、模型发现；专用 image/audio/video API 独立 operation |
+| OpenAI | Responses | `openai/responses` | 官方 endpoint、Bearer key、模型发现；专用 image/audio/video API 与 Responses computer tool 独立 operation |
 | Claude | Messages | `claude/messages` | `x-api-key`、`anthropic-version`、content block 与 SSE event |
 | Gemini | Interactions | `gemini/interactions` | `x-goog-api-key`、interaction/event 结构、Files/Gen Media/Live 等独立接口 |
 | fal | Queue API | `fal/queue` | `Authorization: Key`、endpoint 即模型、submit/status/result/cancel/webhook、模型特定输入输出 |
-| OpenRouter | Chat Completions | `openai/chat_completions` | 路由参数、归因 header、渠道 metadata、富模型目录与实时价格 |
+| OpenRouter | Responses | `openai/responses` | 路由参数、ProviderState namespace、富模型目录与实时价格 |
 | MiniMax | Anthropic-compatible Messages | `claude/messages` | `/anthropic` 基址、兼容差异、`base_resp`；speech/image/video/music 为原生接口 |
 | Kimi | Chat Completions | `openai/chat_completions` | `partial`、思考内容、缓存 key、图片/视频 content 扩展 |
 | GLM | Chat Completions | `openai/chat_completions` | `thinking`、`reasoning_content`、`tool_stream`、JWT 可选鉴权和原生异步 API |
@@ -46,7 +46,7 @@ Kimi / GLM / DeepSeek / 豆包（火山方舟）/ Qwen（阿里云百炼）
 - Claude 原生协议是 [Messages API](https://platform.claude.com/docs/en/api/messages)，认证还要求 API key 和 API version header；
 - Gemini 已将 [Interactions API](https://ai.google.dev/gemini-api/docs/interactions-overview) 作为新项目默认接口，`generateContent` 保持支持但已属于历史接口；
 - fal 官方推荐持久化 [Queue API](https://fal.ai/docs/documentation/model-apis/inference/queue)，完整生命周期包含提交、状态、结果、取消和 webhook；
-- OpenRouter 官方入口仍是 [Chat Completions](https://openrouter.ai/docs/quickstart)，其 [Models API](https://openrouter.ai/docs/guides/overview/models) 还返回架构、渠道和价格信息；
+- OpenRouter 官方提供 [Responses](https://openrouter.ai/docs/api/api-reference/responses/create-responses) 入口，其 [Models API](https://openrouter.ai/docs/guides/overview/models) 还返回架构、渠道和价格信息；
 - MiniMax 文档推荐 [Anthropic-compatible Messages](https://platform.minimax.io/docs/api-reference/text-chat-anthropic)，媒体能力具有自己的异步接口；
 - Kimi 当前主要提供 [Chat Completions](https://platform.kimi.com/docs/api/chat)；
 - GLM 的主文本接口是 [Chat Completions](https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E5%AF%B9%E8%AF%9D%E8%A1%A5%E5%85%A8)，并另外提供原生异步调用；
@@ -70,6 +70,16 @@ HTTP/SSE/JSON/异步轮询基础设施
 
 禁止建立一个按 Provider ID、URL 或模型名分支的“万能 OpenAI-compatible Adapter”。基础 codec 不知道哪些厂商在复用它。
 
+这一约束适用于整个实现，不只适用于基础 codec：不得把模型名、模型名前缀或 Provider 厂商名作为特征硬编码到条件分支、路由表或默认参数选择逻辑中。模型和厂商差异应优先由 Model Driver metadata、Provider Profile 和 Provider Rules 配置表达；运行时只根据解析后的能力、规则、`protocol_adapter_id` 和 operation 执行。只有配置 schema 无法表达的真实协议差异才允许进入独立 Adapter 或 dialect 代码，其注册和选择也必须基于显式配置身份，不能重新通过模型名或厂商名猜测。
+
+未被官方 catalog 收录的 `custom` Provider 使用空 Provider Rules `{}`。用户选择的协议族只确定 Adapter；模型归属使用 discovery 返回的原始模型名，在全部 Model Driver 的 exact/pattern 规则中要求唯一命中。只有命中后才使用该 Driver defaults；不做渠道前后缀、alias 或其它隐式改名。Known Provider 的 origin mapping 不得泄漏给 `custom` Provider。
+
+Catalog loader 对 `builtin`、`cloud`、`local`、`system-config` 四个来源按 `(catalog_kind, catalog_id)` 做整文件选择，优先级为 `system-config > local > cloud > builtin`。同一身份不做字段或规则 merge；某个高优先级来源未提供的其它身份仍从低优先级来源进入有效 snapshot。
+
+四层来源是 metadata source manager 的私有实现边界。该管理模块独占各来源的路径或 key、文件枚举、revision 捕获、整文件选择、校验及不可变 snapshot 发布。builtin 源文件统一保存在 `src/frame/aicc/driver_metadata/`，只由该管理模块集中编译嵌入；各 Provider builtin 模块不得分别 `include_*` metadata，也不得导出 catalog 文件集合。只有负责改变某一来源的管理模块可以接触该来源的写入位置，例如云更新模块驱动 cloud 文件更新；所有普通消费者只接收已发布的当前有效 `Arc<CatalogSnapshot>`。
+
+Service 启动模块是进程组合根，但不是 metadata 来源组合器。它只向 metadata source manager 提供平台能力和管理端口，并装配后者返回的生产 `RuntimeInputs`/`RuntimeSnapshot`；不得传入 builtin、cloud、local 或 system-config 文件集合。Provider runtime 枚举有效 snapshot 中的全部 Known Provider，并为普通 Profile 按其 Adapter 协议族装配标准模型发现行为；机器发现失败时才使用配置/catalog 静态 inventory。行为注册表只覆盖必须由代码实现的 credential/discovery 差异和 codec/dialect，不得作为 Provider ID 白名单。
+
 ### 2.2 operation 是最小协议复用单位
 
 一个 Adapter 由若干 operation 组合，而不是一个文件包揽厂商全部 API。例如 OpenAI Provider 可以同时绑定：
@@ -80,13 +90,14 @@ openai.embeddings.create
 openai.images.generate / edit
 openai.audio.transcribe / speech
 openai.videos.create / status / content / cancel
+openai.responses.computer
 ```
 
 只有 request、response、stream 和错误语义相同的 operation 才共享 codec。仅仅都使用 HTTP、JSON 或异步任务，不足以合并成同一个协议实现。
 
 ### 2.3 历史接口按真实需求加入一次
 
-首版已经存在真实需求：OpenRouter、Kimi 和 GLM 的官方主入口仍为 Chat Completions，因此实现一份协议族级 `openai-chat-completions`。三家复用这一份 codec，各自只实现差异。
+首版已经存在真实需求：Kimi 和 GLM 的官方主入口为 Chat Completions，因此实现一份协议族级 `openai-chat-completions`。OpenRouter 改为复用 `openai-responses` codec，仅实现渠道差异。
 
 Gemini `generateContent` 等其它历史接口不能为了“兼容完整”预先加入。第一个实际 Provider/operation 确认需要时，新增一份共享历史 Adapter；后续使用同一接口的 Provider 复用它。新旧 Adapter 平级且互不 fallback，只共享更低层基础设施和 canonical IR。
 
@@ -96,9 +107,9 @@ Gemini `generateContent` 等其它历史接口不能为了“兼容完整”预�
 
 1. Profile 数据：base URL、固定 header、credential 类型、默认 Adapter；
 2. Provider Rules：模型映射、operation、参数映射/删除、能力收窄和价格规则；
-3. dialect 代码：基础 schema 无法表达的请求、流事件、错误或任务状态差异。
+3. dialect 差异：首先由 `.provider.json` 的有界规则声明；只有基础 schema 无法安全表达的请求/响应 wire 变换、流事件、认证算法、错误或任务状态机差异才进入代码。
 
-只存在前两类差异时直接引用基础 Adapter，不创建空壳子类。需要第三类时使用独立 `protocol_adapter_id` 和 `base_adapter_id`，语义上是基础 Adapter 的子类，实现可采用组合或委托。
+只存在前两类差异时直接引用基础 Adapter，不创建空壳子类。遇到第三类差异时也必须先判断能否扩展统一且受限的 Provider Rules schema；确认不适合声明化后，才使用独立 `protocol_adapter_id` 和 `base_adapter_id`，语义上是基础 Adapter 的子类，实现可采用组合或委托。Dialect 代码不得保存模型清单、operation 映射、请求默认值、参数删除表、能力收窄或静态价格等常规数据。
 
 ### 2.5 不用通用扩展 map 掩盖协议差异
 
@@ -122,7 +133,7 @@ aicc
 ├── call             RouteDecision 到 ResolvedProviderCall 的唯一 lowering
 ├── execution        immediate/stream/task、取消、幂等、TaskMgr bridge
 ├── resource         ResourceRef 鉴权、限制和最后一跳物化
-├── storage          inventory LKGS、usage/audit/task 关联存储接口
+├── storage          inventory LKGS、usage/audit/task、session exact-model 历史与 AICC artifact 租户归属
 └── observability    metrics、trace、审计、诊断和脱敏
 ```
 
@@ -170,7 +181,7 @@ protocol/
 │   ├── doubao_media
 │   └── dashscope_media
 └── dialect
-    ├── openrouter_chat
+    ├── openrouter_responses
     ├── minimax_messages
     ├── kimi_chat
     ├── glm_chat
@@ -196,7 +207,7 @@ ResolvedProviderCall
 
 | Dialect | Base | 只负责 |
 | --- | --- | --- |
-| `openrouter-openai` | `openai-chat-completions` | provider routing、归因/metadata header、渠道结果扩展 |
+| `openrouter-responses` | `openai-responses` | OpenRouter routing 参数和 ProviderState namespace |
 | `minimax-messages` | `claude-messages` | 兼容差异、`base_resp`、MiniMax content 扩展 |
 | `kimi-chat` | `openai-chat-completions` | partial/cache/reasoning 与多模态扩展 |
 | `glm-chat` | `openai-chat-completions` | thinking、tool stream、reasoning 与错误扩展 |
@@ -204,7 +215,7 @@ ResolvedProviderCall
 | `doubao-responses` | `openai-responses` | 方舟内置工具、事件与参数差异 |
 | `qwen-responses` | `openai-responses` | 支持参数子集、session cache、事件差异 |
 
-每个 dialect 必须声明 `base_adapter_id`、覆盖点和不支持能力，且不能复制基础 request schema、SSE parser 和 contract tests。若官方 wire 行为可完全由 Profile/Rules 表达，应删除该 dialect 并直接绑定 base。
+每个 dialect 必须声明 `base_adapter_id`、覆盖点和不支持能力，且不能复制基础 request schema、SSE parser 和 contract tests。实现前必须先用 `.provider.json` 表达参数、header、operation、能力限制等可声明差异；统一 schema 能表达时应删除 dialect 并直接绑定 base。现有 schema 不足不自动构成写代码的理由，应先评审是否值得增加一个有界、可复用、可校验的声明字段。
 
 ### 4.3 原生异步协议
 
@@ -218,13 +229,8 @@ fal Queue、MiniMax video、GLM async、豆包媒体和 Qwen/DashScope 媒体共
 
 ```text
 provider/
-├── profile          Provider Profile descriptor
-├── rules            Provider Rules 编译结果
-├── instance         settings 与运行态组合
-├── registry         ExecutableProviderInstance 不可变索引
-├── discovery        openai/claude/gemini/openrouter models 与 catalog_only
-├── inventory        build、LKGS、seq 收敛、refresh loop
-├── lifecycle        start/stop/replace 与迟到写保护
+├── mod.rs           Profile、运行 registry 与 lifecycle
+├── inventory.rs     typed connection/discovery、库存 build 与 Model Driver 匹配
 └── builtin
     ├── openai       ├── claude      ├── gemini
     ├── fal          ├── openrouter  ├── minimax
@@ -232,7 +238,11 @@ provider/
     ├── doubao       └── qwen
 ```
 
-`builtin/<provider>` 是装配模块，不是协议实现。它只提供稳定 ID、默认 endpoint 模板、区域/workspace 和 credential schema、discovery、operation/Adapter 默认绑定、catalog 入口及必要 dialect/native module 注册。
+`builtin/<provider>` 是专用行为实现，不是协议实现、配置真相源或完整 Provider 清单。Known Provider metadata 用 `discovery_behavior_id` 及可选 dynamic-login/connection behavior ID 选择 registry 实现；registry 不按 Provider ID 分派。通用行为也使用稳定 ID，新增复用者无需改 Rust。显示信息、默认 `base_url`、区域/workspace schema、credential 的声明信息、模型映射、operation/Adapter 选择、请求规则、能力收窄和静态价格等常规内容来自该 Provider 独立的 `.provider.json` 或 Known Provider catalog，不得在 Rust 中重复构造生产用 catalog。
+
+`service/` 的组合根只保留启动装配、service 状态和共享小工具；`management.rs`、`ports.rs`、`inference.rs`、`provider_execution.rs`、`quota.rs`、`settings_runtime.rs` 与 `model_defaults.rs` 分别拥有管理 RPC、系统端口适配、推理入口、Provider wire 执行、额度聚合、settings/runtime 装配和逻辑模型工厂。`provider/mod.rs` 保存 Provider 契约，`provider/runtime.rs` 保存刷新状态机和生命周期管理器，`provider/inventory.rs` 保存库存构建。`catalog/schema.rs` 保存 typed catalog 文档，`catalog/mod.rs` 负责 snapshot/索引/解析，`catalog/validation.rs` 负责 schema 与引用校验。上述子模块均使用显式 re-export，禁止星号 re-export 扩大 crate 内可见面。
+
+Protocol Adapter 通过 `ProtocolAdapterPlugin` 注册。构建脚本自动扫描 `protocol/plugins/*.rs` 并生成确定顺序的插件表，因此新增 wire protocol 的代码注册点就是新增插件文件；Provider registry 不再维护 Adapter 厂商列表。
 
 ### 5.2 首版装配矩阵
 
@@ -241,8 +251,8 @@ provider/
 | OpenAI | Responses + embeddings/images/audio/videos | `/v1/models`；价格由 Provider Rules，动态事实优先 |
 | Claude | Messages | Claude Models API；价格由 Provider Rules |
 | Gemini | Interactions + embeddings/files/gen-media | Gemini Models API；价格由 Provider Rules |
-| fal | Queue | catalog 给出 model endpoint；运行时探测可用性，schema 保持 model-specific |
-| OpenRouter | OpenRouter Chat dialect | Models API；使用动态模型、能力和实时价格 |
+| fal | Queue | 四个暂未接入原厂 Provider 的 endpoint 临时归属 fal；其它配置随 fal 官方事实调整 |
+| OpenRouter | OpenRouter Responses dialect | Models API；使用动态模型、能力和实时价格 |
 | MiniMax | MiniMax Messages dialect + native media | Anthropic-compatible Models API；媒体由 catalog/rules 补充 |
 | Kimi | Kimi Chat dialect | Kimi Models API；价格由 Provider Rules |
 | GLM | GLM Chat dialect + native async | 有官方机器接口时 discovery，否则 catalog；不得爬取文档页 |
@@ -261,7 +271,7 @@ Discovery 只采信官方机器接口，不能抓网页或读取 SDK 内置列�
 | `Authorization: Key` | fal |
 | derived short-lived token | GLM JWT，可选；由 credential provider 生成 |
 
-固定 API version、session cache、归因等 header 不是 credential，分别由基础 Adapter、dialect 或 Profile 负责。日志和 trace 只能记录 credential 类型与匿名引用。
+固定 API version、session cache、归因等 header 不是 credential，应优先由基础 Adapter 的协议常量或 `.provider.json` 的受限声明负责；只有需要运行时计算、签名或状态关联时才由 dialect 代码生成。日志和 trace 只能记录 credential 类型与匿名引用。
 
 ## 6. 核心边界
 
@@ -339,13 +349,15 @@ base codec  -> transport + resolved credential + IR
 
 禁止 `protocol -> routing`、`model -> provider`、基础 codec 引用 dialect、按 Provider ID 选择分支，或通过全局 `AIComputeCenter` 绕过边界。
 
+不建立独立顶层 `admission` 模块。模型能力门限、逻辑目录 admission 和 auto-mount 由 Model Registry 负责；quota、budget、privacy、trust 等请求级硬约束在 routing 内部策略层集中判定，Router 只消费判定结果和可解释原因，不直接读取 quota 或安全配置。
+
 ## 8. 测试划分
 
 ```text
 tests/
 ├── protocol_contract      每个 API 代际/operation 一套 golden + stream contract
 ├── dialect_contract       基础合同复用 + 仅厂商差异断言
-├── provider_builtin       11 家装配、credential、endpoint、discovery fixture
+├── provider_builtin       11 家装配、credential、base_url、discovery fixture
 ├── provider_inventory     LKGS、seq、refresh、Stop、迟到写
 ├── routing                exact/logical、能力过滤、fallback、trace
 ├── runtime_snapshot       add/reload/refresh 与并发请求
@@ -353,13 +365,15 @@ tests/
 └── resource_security      鉴权、限制、上传和脱敏
 ```
 
-OpenRouter/Kimi/GLM 共同运行 Chat Completions 基础合同；DeepSeek/豆包/Qwen 共同运行 Responses 基础合同；MiniMax 运行 Claude Messages 基础合同。每个 dialect 只增加官方差异断言。在线 smoke test 使用独立 credential，不进入默认 `cargo test`。
+Kimi/GLM 共同运行 Chat Completions 基础合同；OpenRouter/DeepSeek/豆包/Qwen 共同运行 Responses 基础合同；MiniMax 运行 Claude Messages 基础合同。每个 dialect 只增加官方差异断言。在线 smoke test 使用独立 credential，不进入默认 `cargo test`。
+
+以上是编码期间必须完成的模块单元测试。模块编码和单元测试完成后才进入集成测试：先补齐并完成 T1/T1.5，再补齐并完成 T2/T3。历史维护材料中的 L1-L4 只表示旧测试拆分，不作为 Beta 2.2 发布门禁名称。
 
 ## 9. 实施顺序
 
 1. canonical IR、error、HTTP/SSE、credential 和 task polling；
 2. `openai-responses`、`claude-messages`、`gemini-interactions`；
-3. 因 OpenRouter/Kimi/GLM 的真实需求实现一份 `openai-chat-completions`；
+3. 因 Kimi/GLM 的真实需求实现一份 `openai-chat-completions`，OpenRouter 复用 `openai-responses`；
 4. 11 个轻量 builtin Provider 装配和 discovery；
 5. 用合同测试判断七个候选 dialect，能用数据表达的差异不写代码；
 6. fal Queue 和首版实际 ApiType 所需的专用/原生 operation；

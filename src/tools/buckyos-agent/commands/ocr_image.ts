@@ -1,19 +1,39 @@
 // ocr_image — vision.ocr
 // Doc: aicc_agent_cli_tools.md §4.1
-// 这是 "text out" 类型的配方：不下载二进制 artifact，从 AiResponse.message
-// 的 text 派生视图直接拿
-// 文本。详细 6 步注释见 gen_image.ts。
+// 这是 "text out" 类型的配方：直接读取 canonical typed response 的 text。
+// 详细 6 步注释见 gen_image.ts。
 
 import {
-  ArgError, bailArgError, COMMON_OPTIONS_HELP, flagBool, parseArgvOrExit, requireString,
+  ArgError,
+  bailArgError,
+  COMMON_OPTIONS_HELP,
+  flagBool,
+  parseArgvOrExit,
+  requireString,
 } from "../lib/cli.ts";
 import { initRuntime } from "../lib/runtime.ts";
 import { callAicc, commonPolicyOptions, describeFailure } from "../lib/aicc.ts";
-import { resolveInputResource, writeJsonFile, writeTextFile } from "../lib/io.ts";
-import { aiResponseArtifacts, aiResponseText } from "../lib/types.ts";
+import type { TypedRequestMap } from "../lib/aicc.ts";
 import {
-  bailAiccError, bailAiccFailed, bailIoError, bailRuntimeError,
-  emitAndExit, errorResult, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
+  resolveInputResource,
+  writeJsonFile,
+  writeTextFile,
+} from "../lib/io.ts";
+import {
+  aiResponseArtifacts,
+  aiResponseData,
+  aiResponseText,
+} from "../lib/types.ts";
+import {
+  bailAiccError,
+  bailAiccFailed,
+  bailIoError,
+  bailRuntimeError,
+  emitAndExit,
+  errorResult,
+  EXIT_ARG_ERROR,
+  EXIT_SUCCESS,
+  successResult,
 } from "../lib/result.ts";
 
 const TOOL = "ocr_image";
@@ -35,55 +55,74 @@ const ARTIFACT = new Set(["plain_text", "alto_json"]);
 export async function run(argv: string[]): Promise<never> {
   const parsed = parseArgvOrExit(TOOL, HELP, argv);
   if (parsed.positional.length < 1) {
-    emitAndExit(errorResult(TOOL, `${TOOL} => arg_error`, HELP, { error: "missing positional" }), EXIT_ARG_ERROR);
+    emitAndExit(
+      errorResult(TOOL, `${TOOL} => arg_error`, HELP, {
+        error: "missing positional",
+      }),
+      EXIT_ARG_ERROR,
+    );
   }
   const [doc, outText] = parsed.positional;
   const jsonOut = requireString(parsed.flags, "json-output");
 
-  const input: Record<string, unknown> = {};
+  const request = {
+    document: undefined,
+  } as unknown as TypedRequestMap[typeof METHOD];
   let inputResource;
   try {
     const level = requireString(parsed.flags, "level");
     if (level !== undefined) {
       if (!LEVEL.has(level)) throw new ArgError(`--level invalid: ${level}`);
-      input.level = level;
+      request.level = level;
     }
     const lang = requireString(parsed.flags, "lang");
-    if (lang !== undefined) input.languages = lang.split(",").map((s) => s.trim()).filter(Boolean);
-    if (flagBool(parsed.flags, "layout")) input.include_layout = true;
+    if (lang !== undefined) {
+      request.language_hints = lang.split(",").map((s) => s.trim()).filter(
+        Boolean,
+      );
+    }
+    if (flagBool(parsed.flags, "layout")) request.return_layout = true;
     const artifact = requireString(parsed.flags, "artifact");
     if (artifact !== undefined) {
-      if (!ARTIFACT.has(artifact)) throw new ArgError(`--artifact invalid: ${artifact}`);
-      input.artifact = artifact;
+      if (!ARTIFACT.has(artifact)) {
+        throw new ArgError(`--artifact invalid: ${artifact}`);
+      }
+      request.return_artifacts = [artifact];
     }
     inputResource = await resolveInputResource(doc);
+    request.document = inputResource;
   } catch (err) {
     if (err instanceof ArgError) bailArgError(TOOL, err);
     bailIoError(TOOL, undefined, err);
   }
 
   let runtime;
-  try { runtime = await initRuntime(); } catch (err) { bailRuntimeError(TOOL, err); }
+  try {
+    runtime = await initRuntime();
+  } catch (err) {
+    bailRuntimeError(TOOL, err);
+  }
   let call;
   try {
     call = await callAicc(runtime, {
-      capability: "vision",
       method: METHOD,
-      modelAlias: parsed.common.model ?? METHOD,
-      inputJson: input,
-      resources: [inputResource],
+      model: parsed.common.model ?? METHOD,
+      request,
       ...commonPolicyOptions(parsed.common),
     });
-  } catch (err) { bailAiccError(TOOL, METHOD, err); }
+  } catch (err) {
+    bailAiccError(TOOL, METHOD, err);
+  }
   if (call.status === "failed" || !call.summary) {
     bailAiccFailed(TOOL, METHOD, call.taskId, describeFailure(call));
   }
 
-  // 文本类 method 主要从 message 的 text 派生视图拿结果；如果有结构化 layout，
-  // 会出现在 response.extra 里。
+  // 文本和结构化 layout 都直接来自 canonical typed response。
   const text = aiResponseText(call.summary);
   const artifacts = aiResponseArtifacts(call.summary);
-  const files: Array<{ path: string; bytes: number; mime: string; source_kind: string }> = [];
+  const files: Array<
+    { path: string; bytes: number; mime: string; source_kind: string }
+  > = [];
   try {
     if (outText) {
       await writeTextFile(outText, text);
@@ -95,7 +134,7 @@ export async function run(argv: string[]): Promise<never> {
       });
     }
     if (jsonOut) {
-      const body = { text, extra: call.summary.extra ?? null, artifacts };
+      const body = { text, data: aiResponseData(call.summary), artifacts };
       await writeJsonFile(jsonOut, body);
       files.push({
         path: jsonOut,
@@ -104,7 +143,9 @@ export async function run(argv: string[]): Promise<never> {
         source_kind: "inline_json",
       });
     }
-  } catch (err) { bailIoError(TOOL, call.taskId, err); }
+  } catch (err) {
+    bailIoError(TOOL, call.taskId, err);
+  }
 
   emitAndExit(
     successResult(
@@ -112,9 +153,11 @@ export async function run(argv: string[]): Promise<never> {
       `${TOOL} => done`,
       outText ? `${TOOL} wrote ${outText}` : truncate(text, 120),
       {
-        method: METHOD, capability: "vision", task_id: call.taskId,
+        method: METHOD,
+        capability: "vision",
+        task_id: call.taskId,
         files,
-        extra: call.summary.extra ?? null,
+        data: aiResponseData(call.summary),
       },
       outText ? undefined : text,
     ),

@@ -5,10 +5,10 @@ import { isManagedSnProvider, type AuthStatus, type ProviderView } from '../../.
 import { useI18n } from '../../../../i18n/provider'
 
 const providerIcons: Record<string, typeof Network> = {
-  sn_router: Network,
+  sn: Network,
   openai: Zap,
-  anthropic: Cpu,
-  google: Globe,
+  claude: Cpu,
+  gemini: Globe,
   openrouter: Cloud,
   custom: Server,
 }
@@ -53,7 +53,7 @@ export function ProviderCard({ provider, selected, onClick }: ProviderCardProps)
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <LongField value={provider.config.name} className="text-sm font-medium" copyable={false} />
         <LongField
-          value={`${provider.config.provider_instance_name}/${provider.config.provider_driver}`}
+          value={`${provider.config.provider_instance_name}/${provider.config.provider_profile_id}`}
           className="text-[11px]"
           tone="muted"
           copyable={false}

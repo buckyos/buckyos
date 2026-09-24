@@ -1,36 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  MOCK_PROVIDER_MANAGEMENT_ROUTES,
+  MOCK_PROVIDER_SCENARIOS,
+  type MockProviderScenario as Scenario,
+} from "./mock_provider_contract.ts";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-
-type Scenario =
-  | "success"
-  | "stream_success"
-  | "async_success"
-  | "async_failed"
-  | "async_pending"
-  | "bad_request"
-  | "unauthorized"
-  | "forbidden"
-  | "not_found"
-  | "idempotency_conflict"
-  | "rate_limit"
-  | "provider_5xx"
-  | "connection_failed"
-  | "timeout_short"
-  | "timeout_long"
-  | "malformed_response"
-  | "wrong_mime"
-  | "missing_usage"
-  | "safety_blocked"
-  | "quota_exhausted"
-  | "invalid_resource"
-  | "embedding_dimension_mismatch"
-  | "embedding_row_count_mismatch"
-  | "embedding_order_mismatch"
-  | "embedding_nonfinite"
-  | "rerank_missing_score"
-  | "rerank_document_id_mismatch"
-  | "rerank_result_count_mismatch";
 
 type RecordedRequest = {
   id: number;
@@ -45,6 +20,7 @@ type RecordedRequest = {
 type State = {
   defaultScenario: Scenario;
   scenarios: Map<string, Scenario>;
+  pathScenarios: Map<string, Scenario>;
   provider: {
     health: string;
     quota: string;
@@ -61,6 +37,7 @@ type State = {
 const state: State = {
   defaultScenario: "success",
   scenarios: new Map(),
+  pathScenarios: new Map(),
   provider: {
     health: "available",
     quota: "normal",
@@ -74,36 +51,7 @@ const state: State = {
   operations: new Map(),
 };
 
-const VALID_SCENARIOS = new Set<Scenario>([
-  "success",
-  "stream_success",
-  "async_success",
-  "async_failed",
-  "async_pending",
-  "bad_request",
-  "unauthorized",
-  "forbidden",
-  "not_found",
-  "idempotency_conflict",
-  "rate_limit",
-  "provider_5xx",
-  "connection_failed",
-  "timeout_short",
-  "timeout_long",
-  "malformed_response",
-  "wrong_mime",
-  "missing_usage",
-  "safety_blocked",
-  "quota_exhausted",
-  "invalid_resource",
-  "embedding_dimension_mismatch",
-  "embedding_row_count_mismatch",
-  "embedding_order_mismatch",
-  "embedding_nonfinite",
-  "rerank_missing_score",
-  "rerank_document_id_mismatch",
-  "rerank_result_count_mismatch",
-]);
+const VALID_SCENARIOS = new Set<Scenario>(MOCK_PROVIDER_SCENARIOS);
 
 function parsePort(args: string[]): number {
   const index = args.indexOf("--port");
@@ -161,6 +109,10 @@ function scenarioFrom(request: IncomingMessage, body: Json | null): Scenario {
   if (typeof requestId === "string" && state.scenarios.has(requestId)) {
     return state.scenarios.get(requestId)!;
   }
+  const pathScenario = [...state.pathScenarios.entries()]
+    .sort(([left], [right]) => right.length - left.length)
+    .find(([prefix]) => (request.url ?? "").startsWith(prefix));
+  if (pathScenario) return pathScenario[1];
   const header = request.headers["x-aicc-mock-scenario"];
   if (typeof header === "string" && VALID_SCENARIOS.has(header as Scenario)) {
     return header as Scenario;
@@ -229,8 +181,8 @@ function requestsToolCall(body: Json | null): boolean {
   const bodyObject = object(body);
   return Array.isArray(bodyObject?.tools) && bodyObject.tools.some((tool) => {
     const value = object(tool);
-    return value.type === "function" || value.name === "echo_marker" ||
-      object(value.function)?.name === "echo_marker";
+    return value !== null && (value.type === "function" || value.name === "echo_marker" ||
+      object(value.function)?.name === "echo_marker");
   });
 }
 
@@ -261,7 +213,20 @@ function errorResponse(response: ServerResponse, scenario: Scenario): boolean {
 }
 
 function openAiResponse(body: Json | null, includeUsage: boolean, scenario: Scenario = "success"): Json {
-  const output: Json[] = requestsToolCall(body)
+  const bodyObject = object(body);
+  const computerUse = Array.isArray(bodyObject?.tools) && bodyObject.tools.some((tool) =>
+    object(tool)?.type === "computer"
+  );
+  const output: Json[] = computerUse
+    ? [{
+      type: "computer_call",
+      id: `computer_mock_${state.calls}`,
+      call_id: `computer_call_mock_${state.calls}`,
+      status: "completed",
+      action: { type: "click", button: "left", x: 640, y: 360 },
+      pending_safety_checks: [],
+    }]
+    : requestsToolCall(body)
     ? [{
       type: "function_call",
       id: `fc_mock_${state.calls}`,
@@ -383,6 +348,8 @@ async function management(
   path: string,
   body: Json | null,
 ): Promise<boolean> {
+  const matches = (route: { method: string; path: string }) =>
+    path === route.path && request.method === route.method;
   if (path.startsWith("/__mock/fixtures/") && request.method === "GET") {
     const name = path.slice("/__mock/fixtures/".length);
     if (name.endsWith(".png")) {
@@ -404,13 +371,14 @@ async function management(
       return true;
     }
   }
-  if (path === "/__mock/health" && request.method === "GET") {
+  if (matches(MOCK_PROVIDER_MANAGEMENT_ROUTES.health)) {
     json(response, 200, { ok: true, ...state.provider });
     return true;
   }
-  if (path === "/__mock/reset" && request.method === "POST") {
+  if (matches(MOCK_PROVIDER_MANAGEMENT_ROUTES.reset)) {
     state.defaultScenario = "success";
     state.scenarios.clear();
+    state.pathScenarios.clear();
     state.requests = [];
     state.calls = 0;
     state.errors = 0;
@@ -419,7 +387,7 @@ async function management(
     json(response, 200, { ok: true });
     return true;
   }
-  if (path === "/__mock/scenario" && request.method === "POST") {
+  if (matches(MOCK_PROVIDER_MANAGEMENT_ROUTES.scenario)) {
     const input = object(body);
     const scenario = input?.scenario;
     if (typeof scenario !== "string" || !VALID_SCENARIOS.has(scenario as Scenario)) {
@@ -429,13 +397,15 @@ async function management(
     const requestId = input?.request_id;
     if (typeof requestId === "string" && requestId) {
       state.scenarios.set(requestId, scenario as Scenario);
+    } else if (typeof input?.path_prefix === "string" && input.path_prefix.startsWith("/")) {
+      state.pathScenarios.set(input.path_prefix, scenario as Scenario);
     } else {
       state.defaultScenario = scenario as Scenario;
     }
     json(response, 200, { ok: true });
     return true;
   }
-  if (path === "/__mock/provider_state" && request.method === "POST") {
+  if (matches(MOCK_PROVIDER_MANAGEMENT_ROUTES.providerState)) {
     const input = object(body);
     if (typeof input?.health === "string") state.provider.health = input.health;
     if (typeof input?.quota === "string") state.provider.quota = input.quota;
@@ -448,11 +418,11 @@ async function management(
     json(response, 200, { ok: true, ...state.provider });
     return true;
   }
-  if (path === "/__mock/requests" && request.method === "GET") {
+  if (matches(MOCK_PROVIDER_MANAGEMENT_ROUTES.requests)) {
     json(response, 200, { requests: state.requests as unknown as Json });
     return true;
   }
-  if (path === "/__mock/metrics" && request.method === "GET") {
+  if (matches(MOCK_PROVIDER_MANAGEMENT_ROUTES.metrics)) {
     json(response, 200, {
       calls: state.calls,
       errors: state.errors,
@@ -489,18 +459,51 @@ async function providerResponse(
     return;
   }
   const includeUsage = scenario !== "missing_usage";
+  if (path === "/api/v1/models") {
+    json(response, 200, {
+      data: [
+        {
+          id: "cohere/rerank-v3.5",
+          canonical_slug: "cohere/rerank-v3.5",
+          supported_parameters: ["top_n"],
+          architecture: { input_modalities: ["text"], output_modalities: ["rerank"] },
+          pricing: null,
+          expiration_date: null,
+        },
+      ],
+    });
+    return;
+  }
   if (path === "/v1/models") {
+    if (request.headers["anthropic-version"] || request.headers["x-api-key"]) {
+      const minimax = !request.headers["anthropic-version"];
+      const modelIds = minimax
+        ? ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"]
+        : ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"];
+      json(response, 200, {
+        data: modelIds.map((id) => ({
+          id,
+          created_at: "2026-07-24T00:00:00Z",
+          display_name: id,
+          type: "model",
+        })),
+        first_id: modelIds[0],
+        has_more: false,
+        last_id: modelIds[modelIds.length - 1] ?? "",
+      });
+      return;
+    }
     json(response, 200, {
       object: "list",
       data: [
         { id: "gpt-4o-mini", object: "model", owned_by: "mock" },
-        { id: "gpt-5.4", object: "model", owned_by: "mock" },
+        { id: "gpt-5.6", object: "model", owned_by: "mock" },
+        { id: "gpt-5.3-codex", object: "model", owned_by: "mock" },
         { id: "text-embedding-3-small", object: "model", owned_by: "mock" },
-        { id: "gpt-image-1", object: "model", owned_by: "mock" },
-        { id: "whisper-1", object: "model", owned_by: "mock" },
-        { id: "tts-1", object: "model", owned_by: "mock" },
-        { id: "sora-2", object: "model", owned_by: "mock" },
-        { id: "sora-mock-pattern", object: "model", owned_by: "mock" },
+        { id: "gpt-image-2", object: "model", owned_by: "mock" },
+        { id: "gpt-transcribe", object: "model", owned_by: "mock" },
+        { id: "gpt-4o-mini-tts", object: "model", owned_by: "mock" },
+        { id: "gpt-5.6-luna-mock", object: "model", owned_by: "mock" },
       ],
       has_more: false,
     });
@@ -535,7 +538,7 @@ async function providerResponse(
           supportedGenerationMethods: ["predictLongRunning"],
         },
         {
-          name: "models/gemini-omni-flash-preview",
+          name: "models/gemini-omni-1.1-flash",
           displayName: "Gemini Omni Mock",
           supportedGenerationMethods: ["generateContent", "predictLongRunning"],
         },
@@ -552,6 +555,52 @@ async function providerResponse(
   if (path === "/v1/responses") {
     if (scenario === "stream_success" || object(body)?.stream === true) streamOpenAi(response);
     else json(response, 200, openAiResponse(body, includeUsage, scenario));
+    return;
+  }
+  if (path === "/api/v1/rerank") {
+    const documents = Array.isArray(object(body)?.documents)
+      ? object(body)!.documents as Json[]
+      : [];
+    const results = documents.map((document, index) => ({
+      index,
+      document: { text: document },
+      relevance_score: index === 1 ? 0.99 : 0.01,
+    })).sort((left, right) => right.relevance_score - left.relevance_score);
+    json(response, 200, {
+      id: `rerank_mock_${state.calls}`,
+      model: model(body),
+      results,
+      usage: { search_units: 1, total_tokens: 12 },
+    });
+    return;
+  }
+  if (path === "/v1beta/interactions" || path === "/interactions") {
+    const serialized = JSON.stringify(body);
+    const structured = JSON.stringify({
+      text: "BUCKYOS-AICC-4827",
+      captions: [{ text: "BUCKYOS-AICC-4827", confidence: 0.99 }],
+      detections: [{
+        label: "marker",
+        score: 0.99,
+        bbox: { format: "xywh", unit: "relative", x: 0.1, y: 0.1, width: 0.8, height: 0.8 },
+      }],
+      masks: [{
+        id: "marker",
+        score: 0.99,
+        mask: { format: "polygon", points: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9]] },
+      }],
+    });
+    const output: Json = serialized.includes("audio") || serialized.includes("speech")
+      ? { type: "audio", data: "UklGRm1vY2stYXVkaW8tV0FWRQ==", mime_type: "audio/wav" }
+      : { type: "text", text: structured };
+    json(response, 200, {
+      id: `interaction_mock_${state.calls}`,
+      object: "interaction",
+      status: "completed",
+      model: model(body),
+      outputs: [output],
+      ...(includeUsage ? { usage: { total_input_tokens: 10, total_output_tokens: 5, total_tokens: 15 } } : {}),
+    });
     return;
   }
   if (path === "/v1/chat/completions") {
@@ -585,14 +634,17 @@ async function providerResponse(
     json(response, 200, {
       created: 1,
       data: [{
-        url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
       }],
       ...(includeUsage ? { usage: usage() } : {}),
     });
     return;
   }
   if (path === "/v1/audio/transcriptions") {
-    json(response, 200, { text: "今天的测试编号是四八二七", ...(includeUsage ? { usage: usage() } : {}) });
+    json(response, 200, {
+      text: "今天的测试编号是四八二七",
+      ...(includeUsage ? { usage: { type: "duration", seconds: 1 } } : {}),
+    });
     return;
   }
   if (path === "/v1/audio/speech") {
@@ -608,7 +660,10 @@ async function providerResponse(
     return;
   }
   if (/:embedContent$/.test(path)) {
-    json(response, 200, { embedding: { values: [0.1, 0.2, 0.3, 0.4] } });
+    json(response, 200, {
+      embedding: { values: [0.1, 0.2, 0.3, 0.4] },
+      usageMetadata: { promptTokenCount: 1, totalTokenCount: 1 },
+    });
     return;
   }
   if (/:batchEmbedContents$/.test(path)) {
@@ -655,9 +710,22 @@ async function providerResponse(
       });
     return;
   }
+  if (/^\/fal-ai\/.+\/requests\/[^/]+\/status$/.test(path)) {
+    const operation = state.operations.get(path) ?? { polls: 0, scenario };
+    operation.polls += 1;
+    state.operations.set(path, operation);
+    json(response, 200, { status: operation.polls < 2 ? "IN_PROGRESS" : "COMPLETED" });
+    return;
+  }
+  if (/^\/fal-ai\/.+\/requests\/[^/]+$/.test(path)) {
+    const mime = path.includes("video") ? "video/mp4" : path.includes("deepfilter") ? "audio/wav" : "image/png";
+    const output = { url: `https://mock.invalid/output.${mime.split("/")[1]}`, content_type: mime };
+    json(response, 200, path.includes("deepfilter") ? { audio_file: output } : { output });
+    return;
+  }
   if (path.startsWith("/fal-ai/")) {
     const requestId = `fal-mock-${state.calls}`;
-    state.operations.set(`/queue/requests/${requestId}/status`, { polls: 0, scenario });
+    state.operations.set(`${path}/requests/${requestId}/status`, { polls: 0, scenario });
     json(response, 200, { request_id: requestId, status: "IN_QUEUE" });
     return;
   }
@@ -710,7 +778,10 @@ const host = parseHost(args);
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    const providerPath = url.pathname.replace(/^\/instance-[ab](?=\/)/, "");
+    const providerPath = url.pathname.replace(
+      /^\/instance-(?:a|b|openrouter|custom-(?:openai|claude|gemini))(?=\/)/,
+      "",
+    );
     const body = request.method === "POST" ? await readJson(request) : null;
     if (await management(request, response, url.pathname, body)) return;
     const scenario = scenarioFrom(request, body);

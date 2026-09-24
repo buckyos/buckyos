@@ -33,11 +33,11 @@
 
 | Provider | Workflow |
 |---|---|
-| OpenAI | 每个模型执行 `llm.chat` 多轮 + JSON schema + tool call + image/audio 或 embedding 子步骤 |
-| Claude | 每个模型执行多模态 `llm.chat` + tool use + vision caption/OCR fallback |
-| Google Gemini | 每个模型执行多模态 `llm.chat` + embedding/multimodal 或 image/video operation |
+| OpenAI | 每个模型执行 `chat.completions.create` 多轮 + JSON schema + tool call + image/audio 或 embedding 子步骤 |
+| Claude | 每个模型执行多模态 `chat.completions.create` + tool use + vision caption/OCR fallback |
+| Google Gemini | 每个模型执行多模态 `chat.completions.create` + embedding/multimodal 或 image/video operation |
 | fal | 每个模型执行 `image.upscale` / `image.bg_remove` / `audio.enhance` / `video.upscale` 中匹配能力的异步任务 + artifact 读取 |
-| OpenRouter | 每个模型执行 `llm.chat` 复杂 JSON 输出 + OpenAI-compatible 兼容字段检查 |
+| OpenRouter | 每个模型通过 AICC `chat.completions.create` 执行 OpenRouter Responses wire 调用及复杂 JSON 输出检查 |
 | SN AI Provider | 每个模型分别执行 API Key 和动态登录 workflow，验证 token 刷新、Provider 归因、usage、trace 和 free credit 归因 |
 
 ## 2. 执行命令约定
@@ -201,7 +201,6 @@ requires_api_key = false
 
 - `allow_real_model_calls` 默认为 `false`。只有显式设为 `true` 才允许发起真实模型调用。
 - `matrix_mode=full_cartesian` 时，runner 必须按 `api_type × method × 标准逻辑目录路径 × Provider × model` 生成 L4 用例。
-- 兼容旧配置 `matrix_mode=provider_model_cartesian` 时，runner 必须在报告中标记为降级模式，并明确列出未覆盖的 `api_type`、`method`、`logical_path` 维度；发布强覆盖不得使用该降级模式。
 - `max_attempts_per_case` 默认为 `3`；只有首轮失败的用例才继续执行第 2 / 第 3 次 attempt。
 - Provider `enabled=true` 但缺 key 时，用例标记 `skipped`；发布强覆盖模式下，缺 key 可在 preflight 直接失败。
 - Gemini Provider Instance 必须引用明确的 `provider_profile_id`、`protocol_adapter_id` 和对应 `model_driver_id`，不读取 family section 别名。
@@ -220,7 +219,7 @@ L4 runner 应把被测环境视为一次性资源，推荐流程：
 4. 使用 group template 生成临时 group 配置，最小建议为 `SN + alice-ood1`；需要多 Provider 节点或 gateway 冗余时再扩展节点。
 5. 执行 `create_vms` / `install` / `start`，并等待 gateway、system-config、verify-hub、scheduler、task-manager、AICC 全部可访问。
 6. 宿主机 runner 通过 gateway 登录并获取测试 token，后续所有 L4 调用都经 gateway 访问 `/kapi/aicc` 和相关 task / artifact 接口。
-7. 写入真实 Provider settings，触发 `reload_settings`，调用 `models.list` 并读取最终生效逻辑目录，生成 `api_type × method × logical_path × Provider × model` 矩阵。
+7. 写入真实 Provider settings，触发 `service.reload_settings`，调用 `models.list` 并读取最终生效逻辑目录，生成 `api_type × method × logical_path × Provider × model` 矩阵。
 8. 运行 L4 矩阵用例并收集报告。
 9. 默认执行 `stop` / `clean_vms` 清理临时 group；除非显式 `keep_on_failure=true`，失败环境也必须清理。
 
@@ -229,4 +228,3 @@ L4 runner 应把被测环境视为一次性资源，推荐流程：
 - runner 只能清理自己创建且带有本次 `run_id` 标签或命名前缀的 group / VM。
 - 清理前应把必要日志、AICC settings 脱敏摘要、`models.list` 输出和失败 attempt 摘要复制到报告目录。
 - 清理失败不能覆盖测试结论，应记录为 `cleanup_failed` warning，并列出残留 group / VM 名称。
-

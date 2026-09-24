@@ -32,7 +32,7 @@ RPC `method` 是公开方法名；`api_type` 是路由操作类型。两者不�
 {
   "method": "route.resolve",
   "params": {
-    "api_type": "llm.chat",
+    "api_type": "llm",
     "logical_model": "llm.plan",
     "requirements": { "tool_call": true, "json_schema": true },
     "policy": { "profile": "quality" }
@@ -97,12 +97,12 @@ Helper 接受逻辑模型和对应业务字段，内部完成一次 route + type
 ## 3. Typed inference methods
 
 - LLM：`chat.completions.create`
-- Embedding：`embeddings.create`
-- Rerank：`rerank.create`
-- Image：`images.generate`、`images.edit`、`images.upscale`、`images.remove_background`
+- Embedding：`embedding.text`、`embedding.multimodal`
+- Rerank：`rerank`
+- Image：`images.generate`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove`
 - Vision：`vision.ocr`、`vision.caption`
-- Audio：`audio.speech.create`、`audio.transcriptions.create`、`audio.music.create`、`audio.enhance`
-- Video：`videos.generate`、`videos.transform`、`videos.extend`、`videos.upscale`
+- Audio：`audio.tts`、`audio.asr`、`audio.music`、`audio.enhance`
+- Video：`video.txt2video`、`video.img2video`、`video.video2video`、`video.extend`、`video.upscale`
 - Agent：`agent.computer_use`
 
 资源输入统一使用 `ResourceRef`，输出统一使用 artifact/FileObject 引用。业务结果不得塞入脱敏后的诊断字段。
@@ -133,4 +133,4 @@ Helper 接受逻辑模型和对应业务字段，内部完成一次 route + type
 
 常见稳定错误包括 `no_provider_available`、`logical_model_not_found`、`exact_model_not_found`、`operation_not_supported`、`context_too_long`、`resource_invalid`、`provider_start_failed` 和 `cancel_not_confirmed`。
 
-`route.resolve` 可以返回有序候选；某个 exact model 调用失败后，由调用方重新选择候选或重新路由。typed inference 本身不静默换模型。
+`route.resolve` 可以返回有序候选。typed inference 对逻辑模型调用按 `aicc_router.md` 的错误分类先做同模型重试，再在 `runtime_failover` 允许时切换到下一候选；显式 exact model 默认不产生其它候选，因此仍不会隐式换模型，只有显式启用 exact-model fallback 时例外。

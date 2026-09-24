@@ -58,11 +58,15 @@ Table: `aicc_usage_event`
 |---|---|---:|---|
 | `event_id` | TEXT PK | NO | Stable usage event id. |
 | `tenant_id` | TEXT | NO | User / tenant identity from RPC context. |
+| `user_id` | TEXT | NO | Authenticated user identity from RPC context. |
 | `caller_app_id` | TEXT | YES | Caller app id if available. |
 | `task_id` | TEXT | NO | AICC external task id. |
+| `trace_id` | TEXT | YES | Canonical AICC trace id shared with routing, task data, progress events, and route trace. |
 | `idempotency_key` | TEXT | YES | Request idempotency key if provided. |
+| `method` | TEXT | NO | Canonical typed/helper method. |
 | `capability` | TEXT | NO | AICC capability, such as `LlmRouter` or `Text2Image`. |
 | `request_model` | TEXT | NO | Logical model requested by caller, such as `llm.plan.default`. |
+| `provider_instance_name` | TEXT | NO | Selected Provider Instance identity. |
 | `provider_model` | TEXT | NO | Resolved provider model. This field should contain enough information to identify provider, instance, and real model. |
 | `input_tokens` | INTEGER | YES | Input token count when available. |
 | `output_tokens` | INTEGER | YES | Output token count when available. |
@@ -76,6 +80,10 @@ Indexes:
 
 - `idx_aicc_usage_event_time` on `created_at_ms`
 - `idx_aicc_usage_event_tenant_time` on `(tenant_id, created_at_ms)`
+- `idx_aicc_usage_event_trace_time` on `(trace_id, created_at_ms)`
+- `idx_aicc_usage_event_user_time` on `(user_id, created_at_ms)`
+- `idx_aicc_usage_event_method_time` on `(method, created_at_ms)`
+- `idx_aicc_usage_event_provider_instance_time` on `(provider_instance_name, created_at_ms)`
 - `idx_aicc_usage_event_model_time` on `(provider_model, created_at_ms)`
 - `idx_aicc_usage_event_request_model_time` on `(request_model, created_at_ms)`
 
@@ -131,12 +139,13 @@ Output:
 
 - `total_requests`
 - aggregated usage values
-- optional aggregated `finance_amount` when event `finance_snapshot_json.amount` is numeric and comparable
+- `finance_totals`: valid finance snapshots grouped by normalized currency and sorted by currency
+- `finance_complete`: false when any event lacks a valid finance snapshot or a currency subtotal overflows; valid subtotals remain available
 - grouped rows when grouping is set
 - bucketed rows when a time bucket is set
 - raw events when requested
 - `next_cursor` when more raw events are available
-- optional aggregated financial snapshot fields only when the data is numeric and comparable
+- zero events return an empty `finance_totals` with `finance_complete=true`
 
 Required common queries:
 
@@ -161,7 +170,12 @@ For LLM calls it should include token usage when available:
 
 The token fields must also be copied to top-level columns so SQL can aggregate common statistics without parsing JSON.
 
-For non-token providers, `usage_json` must still represent usage in a normalized way. `request_units` can be used as the first generic top-level metric. A future extension may add more top-level unit fields, such as image count, audio seconds, video seconds, or tool calls, when SQL aggregation needs them.
+For non-token providers, `usage_json` represents usage with `request_units`,
+`image_units`, `audio_seconds`, and `video_seconds`. Token usage additionally records
+cache-read, cache-write, and reasoning token counts. Provider-reported cost remains a
+currency-bearing object. The dedicated SQL projection keeps the stable aggregate
+columns; detailed dimensions remain authoritative in `usage_json` until a concrete
+indexed query requires a schema migration.
 
 ## 9. Finance Snapshot Semantics
 

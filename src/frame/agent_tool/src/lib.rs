@@ -22,6 +22,7 @@ use tokio::time::{timeout, Duration};
 pub mod agent_attention_signal;
 pub mod agent_memory;
 pub mod agent_notebook;
+pub mod aicc_model_tools;
 pub mod dcrontab_tool;
 pub mod file_tools;
 pub mod glob_tool;
@@ -61,6 +62,10 @@ pub use agent_memory::{
     AgentMemory, AgentMemoryConfig, AgentMemoryError, Envelope as AgentMemoryEnvelope, LoadItem,
     LoadOptions, MemoryHint, MemoryHintBudget, MemoryHintType, MemoryRecallOptions, Preamble,
     VerifyReport,
+};
+pub use aicc_model_tools::{
+    MakeExactModelArgs, MakeExactModelOutput, MakeExactModelTool, ParseExactModelArgs,
+    ParseExactModelOutput, ParseExactModelTool, TOOL_MAKE_EXACT_MODEL, TOOL_PARSE_EXACT_MODEL,
 };
 pub use dcrontab_tool::{DcrontabTool, TOOL_DCRONTAB};
 pub use file_tools::{

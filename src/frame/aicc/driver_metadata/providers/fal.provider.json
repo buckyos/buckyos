@@ -1,0 +1,48 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "provider_profile_id": "fal",
+  "metadata_drivers": ["fal"],
+  "models": [
+    {
+      "id": "fal-ai/esrgan",
+      "operations": { "image.upscale": "queue.submit" }
+    },
+    {
+      "id": "fal-ai/imageutils/rembg",
+      "operations": { "image.bg_remove": "queue.submit" }
+    },
+    {
+      "id": "fal-ai/deepfilternet3",
+      "operations": { "audio.enhance": "queue.submit" }
+    },
+    {
+      "id": "fal-ai/video-upscaler",
+      "operations": { "video.upscale": "queue.submit" }
+    }
+  ],
+  "patterns": [
+    {
+      "match": "*",
+      "operations": {
+        "image.txt2img": "queue.submit",
+        "image.img2img": "queue.submit",
+        "image.inpaint": "queue.submit",
+        "image.upscale": "queue.submit",
+        "image.bg_remove": "queue.submit",
+        "audio.tts": "queue.submit",
+        "audio.asr": "queue.submit",
+        "audio.music": "queue.submit",
+        "audio.enhance": "queue.submit",
+        "video.txt2video": "queue.submit",
+        "video.img2video": "queue.submit",
+        "video.video2video": "queue.submit",
+        "video.extend": "queue.submit",
+        "video.upscale": "queue.submit"
+      },
+      "latency_class": "async"
+    }
+  ]
+}

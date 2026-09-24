@@ -1,0 +1,111 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 1,
+  "schema_revision": 1,
+  "model_driver_id": "claude",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "claude-fable-5-1",
+      "parameter_scale": "fable",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}", "vision.caption", "vision.caption.claude", "vision.caption.{model}", "vision.ocr", "vision.ocr.claude", "vision.ocr.{model}"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "version_rules": ["claude-fable"]
+    },
+    {
+      "id": "claude-fable-5",
+      "parameter_scale": "fable",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}", "vision.caption", "vision.caption.claude", "vision.caption.{model}", "vision.ocr", "vision.ocr.claude", "vision.ocr.{model}"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "version_rules": ["claude-fable"]
+    },
+    {
+      "id": "claude-opus-5",
+      "parameter_scale": "opus",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}", "vision.caption", "vision.caption.claude", "vision.caption.{model}", "vision.ocr", "vision.ocr.claude", "vision.ocr.{model}"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "version_rules": ["claude-opus"]
+    },
+    {
+      "id": "claude-sonnet-5",
+      "parameter_scale": "sonnet",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}", "vision.caption", "vision.caption.claude", "vision.caption.{model}", "vision.ocr", "vision.ocr.claude", "vision.ocr.{model}"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "version_rules": ["claude-sonnet"]
+    },
+    {
+      "id": "claude-haiku-4-5-20251001",
+      "parameter_scale": "haiku",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.claude", "llm.{driver}.{model}", "vision.caption", "vision.caption.claude", "vision.caption.{model}", "vision.ocr", "vision.ocr.claude", "vision.ocr.{model}"],
+      "capabilities": {
+        "max_context_tokens": 200000,
+        "max_output_tokens": 65536,
+        "streaming": true,
+        "tool_call": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "version_rules": ["claude-haiku"]
+    }
+  ],
+  "patterns": [],
+  "model_pricing": [
+    { "id": "claude-fable-5-1", "pricing": { "currency": "USD", "input_token": 1e-05, "output_token": 5e-05, "cache_input_token": 2.5e-07 } },
+    { "id": "claude-fable-5", "pricing": { "currency": "USD", "input_token": 1e-05, "output_token": 5e-05, "cache_input_token": 1e-06 } },
+    { "id": "claude-opus-5", "pricing": { "currency": "USD", "input_token": 5e-06, "output_token": 2.5e-05, "cache_input_token": 5e-07 } },
+    { "id": "claude-sonnet-5", "pricing": { "currency": "USD", "input_token": 2e-06, "output_token": 1e-05, "cache_input_token": 2.0000000000000002e-07 } },
+    { "id": "claude-haiku-4-5-20251001", "pricing": { "currency": "USD", "input_token": 1e-06, "output_token": 5e-06, "cache_input_token": 1.0000000000000001e-07 } }
+  ],
+  "defaults": { "api_types": [], "capabilities": {} },
+  "variants": [
+    { "name": "reasoning-low", "match": { "origin_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"] }, "provider_options": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "low" } } },
+    { "name": "reasoning-medium", "match": { "origin_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"] }, "provider_options": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "medium" } } },
+    { "name": "reasoning-high", "match": { "origin_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"] }, "provider_options": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "high" } } },
+    { "name": "reasoning-xhigh", "match": { "origin_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"] }, "provider_options": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "xhigh" } } },
+    { "name": "reasoning-max", "match": { "origin_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"] }, "provider_options": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "max" } } }
+  ],
+  "version_rules": [
+    { "id": "claude-fable", "family": "claude", "tier": "fable", "match": "claude-fable-*", "tier_tokens": ["fable"], "version_rank": { "prefix": "claude-fable" }, "stability": { "unstable_tokens": ["preview", "beta"], "current_requires_stable": true }, "current_mount": "llm.fable", "version_mount": "llm.claude.{model}" },
+    { "id": "claude-opus", "family": "claude", "tier": "opus", "match": "claude-opus-*", "tier_tokens": ["opus"], "version_rank": { "prefix": "claude-opus" }, "stability": { "unstable_tokens": ["preview", "beta"], "current_requires_stable": true }, "current_mount": "llm.opus", "version_mount": "llm.claude.{model}" },
+    { "id": "claude-sonnet", "family": "claude", "tier": "sonnet", "match": "claude-sonnet-*", "tier_tokens": ["sonnet"], "version_rank": { "prefix": "claude-sonnet" }, "stability": { "unstable_tokens": ["preview", "beta"], "current_requires_stable": true }, "current_mount": "llm.sonnet", "version_mount": "llm.claude.{model}" },
+    { "id": "claude-haiku", "family": "claude", "tier": "haiku", "match": "claude-haiku-*", "tier_tokens": ["haiku"], "version_rank": { "prefix": "claude-haiku" }, "stability": { "unstable_tokens": ["preview", "beta"], "current_requires_stable": true }, "current_mount": "llm.haiku", "version_mount": "llm.claude.{model}" }
+  ]
+}

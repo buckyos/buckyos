@@ -43,7 +43,7 @@ const DEFAULT_OOD_ID: &str = "ood1";
 const DEFAULT_JARVIS_APP_DID: &str = "did:bns:jarvis.buckyos";
 const PROFILE_SYSTEM_CONTACT_KEY: &str = "system_contact";
 const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
-const SN_AI_PROVIDER_ACTIVATION_KEY: &str = "sn-ai-provider-activated";
+const MANAGED_SN_PROVIDER_INSTANCE_NAME: &str = "sn-ai-provider-default";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct SnAiProviderEndpoints {
@@ -102,118 +102,85 @@ pub(crate) fn reconcile_managed_sn_ai_provider(
     user_name: Option<&str>,
 ) -> Result<Option<Value>> {
     let mut next = current.clone();
-    let valid_config = match (endpoints.as_ref(), user_name.map(str::trim)) {
-        (Ok(endpoints), Some(user_name)) if !user_name.is_empty() => Some((*endpoints, user_name)),
-        _ => None,
-    };
     let Some(root) = next.as_object_mut() else {
         return Ok(None);
     };
-    let activated = root
-        .get(SN_AI_PROVIDER_ACTIVATION_KEY)
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if !activated {
-        return Ok(None);
-    }
-    if !root.contains_key("sn-ai-provider") {
-        let Some((endpoints, user_name)) = valid_config else {
-            return Ok(None);
-        };
-        root.insert(
-            "sn-ai-provider".to_string(),
-            json!({
-                "enabled": true,
-                "api_token": "",
-                "alias_map": {},
-                "instances": [managed_sn_ai_provider_instance(endpoints, user_name)]
-            }),
-        );
-        return Ok(Some(next));
-    }
-    let Some(provider) = root
-        .get_mut("sn-ai-provider")
-        .and_then(Value::as_object_mut)
-    else {
+    let Some(providers) = root.get_mut("providers").and_then(Value::as_array_mut) else {
         return Ok(None);
     };
-    if provider.get("enabled").and_then(Value::as_bool) != Some(true) {
-        return Ok(None);
-    }
-    if provider
-        .get("instances")
-        .and_then(Value::as_array)
-        .is_none()
-    {
-        if valid_config.is_none() {
-            return Ok(None);
-        }
-        provider.insert("instances".to_string(), json!([]));
-    }
-    let instances = provider
-        .get_mut("instances")
-        .and_then(Value::as_array_mut)
-        .expect("instances was normalized to an array");
-
-    let mut managed_found = false;
+    let (endpoints, user_name) = match (endpoints, user_name.map(str::trim)) {
+        (Ok(endpoints), Some(user_name)) if !user_name.is_empty() => (endpoints, user_name),
+        _ => return Ok(None),
+    };
     let mut changed = false;
-    for instance in instances.iter_mut().filter_map(Value::as_object_mut) {
-        let is_managed =
-            instance.get("provider_driver").and_then(Value::as_str) == Some("sn-ai-provider");
-        if !is_managed {
+    for provider in providers.iter_mut().filter_map(Value::as_object_mut) {
+        if provider
+            .get("provider_instance_name")
+            .and_then(Value::as_str)
+            != Some(MANAGED_SN_PROVIDER_INSTANCE_NAME)
+        {
             continue;
         }
-        managed_found = true;
-        if let Ok(endpoints) = endpoints {
-            if instance.get("base_url").and_then(Value::as_str)
-                != Some(endpoints.responses_url.as_str())
-            {
-                instance.insert(
-                    "base_url".to_string(),
-                    Value::String(endpoints.responses_url.clone()),
-                );
-                changed = true;
-            }
-            if instance.get("login_url").and_then(Value::as_str)
-                != Some(endpoints.login_url.as_str())
-            {
-                instance.insert(
-                    "login_url".to_string(),
-                    Value::String(endpoints.login_url.clone()),
-                );
-                changed = true;
-            }
-            if let Some(user_name) = user_name.map(str::trim).filter(|value| !value.is_empty()) {
-                if instance.get("user_name").and_then(Value::as_str) != Some(user_name) {
-                    instance.insert(
-                        "user_name".to_string(),
-                        Value::String(user_name.to_string()),
-                    );
-                    changed = true;
-                }
-            }
+        if provider.get("enabled").and_then(Value::as_bool) == Some(false) {
+            return Ok(None);
         }
-    }
-
-    if !managed_found {
-        let Some((endpoints, user_name)) = valid_config else {
+        if provider.get("provider_profile_id").and_then(Value::as_str) != Some("sn")
+            || provider.get("protocol_adapter_id").and_then(Value::as_str) != Some("sn-openai")
+        {
+            return Ok(None);
+        }
+        if provider.get("base_url").and_then(Value::as_str)
+            != Some(endpoints.responses_url.as_str())
+        {
+            provider.insert(
+                "base_url".to_string(),
+                Value::String(endpoints.responses_url.clone()),
+            );
+            changed = true;
+        }
+        if provider.get("account").and_then(Value::as_str) != Some(user_name) {
+            provider.insert("account".to_string(), Value::String(user_name.to_string()));
+            changed = true;
+        }
+        let Some(auth) = provider.get_mut("auth").and_then(Value::as_object_mut) else {
             return Ok(None);
         };
-        instances.push(managed_sn_ai_provider_instance(endpoints, user_name));
-        changed = true;
+        if auth.get("mode").and_then(Value::as_str) != Some("dynamic_login")
+            || auth.get("login_profile").and_then(Value::as_str) != Some("device_jwt")
+        {
+            return Ok(None);
+        }
+        if auth.get("login_endpoint").and_then(Value::as_str) != Some(endpoints.login_url.as_str())
+        {
+            auth.insert(
+                "login_endpoint".to_string(),
+                Value::String(endpoints.login_url.clone()),
+            );
+            changed = true;
+        }
+        return Ok(changed.then_some(next));
     }
-
-    Ok(changed.then_some(next))
+    Ok(None)
 }
 
 fn managed_sn_ai_provider_instance(endpoints: &SnAiProviderEndpoints, user_name: &str) -> Value {
     json!({
-        "provider_instance_name": "sn-ai-provider-default",
+        "provider_instance_name": MANAGED_SN_PROVIDER_INSTANCE_NAME,
         "provider_type": "cloud_api",
-        "provider_driver": "sn-ai-provider",
+        "provider_profile_id": "sn",
+        "protocol_adapter_id": "sn-openai",
+        "provider_rules_id": "sn",
         "base_url": endpoints.responses_url,
-        "login_url": endpoints.login_url,
-        "user_name": user_name,
+        "credentials": {
+            "device_token_ref": "runtime://device-jwt"
+        },
+        "auth": {
+            "mode": "dynamic_login",
+            "login_profile": "device_jwt",
+            "login_endpoint": endpoints.login_url
+        },
+        "account": user_name,
+        "enabled": true,
         "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
     })
 }
@@ -855,138 +822,80 @@ fn build_zone_user_contact_settings(
     }))
 }
 
-#[cfg(all(test, any()))]
-fn build_aicc_settings(config: &StartConfigSummary) -> Value {
-    let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai"))
-        .expect("test SN AI endpoint must be valid");
-    build_aicc_settings_with_endpoints(config, Some(&endpoints))
-}
-
 fn build_aicc_settings_with_endpoints(
     config: &StartConfigSummary,
     sn_ai_provider_endpoints: Option<&SnAiProviderEndpoints>,
 ) -> Value {
-    let mut settings = serde_json::Map::new();
-    let mut openai_alias_map = serde_json::Map::new();
-    let mut openai_instances = Vec::<Value>::new();
-    let sn_ai_provider_alias_map = serde_json::Map::new();
-    let mut sn_ai_provider_instances = Vec::<Value>::new();
-    let openai_api_token =
-        trim_to_option(config.ai_provider_config.openai_api_token.as_str()).unwrap_or_default();
-
-    if !openai_api_token.is_empty() {
-        openai_alias_map.insert("gpt-fast".to_string(), json!("gpt-5-mini"));
-        openai_alias_map.insert("gpt-plan".to_string(), json!("gpt-5"));
-        openai_instances.push(json!({
-            "instance_id": "openai-default",
-            "provider_type": "openai",
-            "base_url": "https://api.openai.com/v1",
+    let mut providers = Vec::new();
+    let configured = [
+        (
+            "openai-default",
+            "openai",
+            "openai-responses",
+            "https://api.openai.com/v1",
+            config.ai_provider_config.openai_api_token.as_str(),
+        ),
+        (
+            "claude-default",
+            "claude",
+            "claude-messages",
+            "https://api.anthropic.com/v1",
+            config.ai_provider_config.claude_api_token.as_str(),
+        ),
+        (
+            "gemini-default",
+            "gemini",
+            "gemini-interactions",
+            "https://generativelanguage.googleapis.com/v1beta",
+            config.ai_provider_config.google_api_token.as_str(),
+        ),
+        (
+            "openrouter-default",
+            "openrouter",
+            "openrouter-responses",
+            "https://openrouter.ai/api/v1",
+            config.ai_provider_config.openrouter_api_token.as_str(),
+        ),
+        (
+            "glm-default",
+            "glm",
+            "glm-chat",
+            "https://api.z.ai/api/paas/v4",
+            config.ai_provider_config.glm_api_token.as_str(),
+        ),
+    ];
+    for (instance_name, profile_id, adapter_id, base_url, token) in configured {
+        let Some(token) = trim_to_option(token) else {
+            continue;
+        };
+        providers.push(json!({
+            "provider_instance_name": instance_name,
+            "provider_type": "cloud_api",
+            "provider_profile_id": profile_id,
+            "protocol_adapter_id": adapter_id,
+            "provider_rules_id": profile_id,
+            "base_url": base_url,
+            "credentials": {
+                "api_token": {
+                    "locked": token
+                }
+            },
+            "enabled": true,
             "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
-            "models": ["gpt-5", "gpt-5-mini", "gpt-5-nono", "gpt-5-pro"],
-            "default_model": "gpt-5-mini",
-            "image_models": ["dall-e-3", "dall-e-2"],
-            "default_image_model": "dall-e-3",
-            "features": ["plan", "json_output", "tool_calling", "web_search"]
+            "auto_sync_models": true
         }));
     }
 
     if config.llm_router_enabled() {
         let endpoints = sn_ai_provider_endpoints
             .expect("SN AI endpoints are validated before building enabled provider settings");
-        let instance = managed_sn_ai_provider_instance(endpoints, config.user_name.as_str());
-        sn_ai_provider_instances.push(instance);
-        settings.insert(SN_AI_PROVIDER_ACTIVATION_KEY.to_string(), Value::Bool(true));
+        providers.push(managed_sn_ai_provider_instance(
+            endpoints,
+            config.user_name.as_str(),
+        ));
     }
 
-    if !openai_instances.is_empty() {
-        settings.insert(
-            "openai".to_string(),
-            json!({
-                "enabled": true,
-                "api_token": openai_api_token,
-                "alias_map": Value::Object(openai_alias_map),
-                "instances": openai_instances
-            }),
-        );
-    }
-
-    if !sn_ai_provider_instances.is_empty() {
-        settings.insert(
-            "sn-ai-provider".to_string(),
-            json!({
-                "enabled": true,
-                "api_token": "",
-                "alias_map": Value::Object(sn_ai_provider_alias_map),
-                "instances": sn_ai_provider_instances
-            }),
-        );
-    }
-
-    if let Some(api_token) = trim_to_option(config.ai_provider_config.google_api_token.as_str()) {
-        settings.insert(
-            "google".to_string(),
-            json!({
-                "enabled": true,
-                "api_token": api_token,
-                "alias_map": {
-                    "gemini-ops": "gemini-2.5-flash"
-                },
-                "instances": [
-                    {
-                        "instance_id": "google-gemini-default",
-                        "provider_type": "google-gemini",
-                        "base_url": "https://generativelanguage.googleapis.com/v1beta",
-                        "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
-                        "models": ["gemini-2.5-flash", "gemini-2.5-pro"],
-                        "default_model": "gemini-2.5-flash",
-                        "image_models": [
-                            "gemini-2.0-flash-exp-image-generation",
-                            "gemini-2.5-flash-image-preview"
-                        ],
-                        "default_image_model": "gemini-2.5-flash-image-preview",
-                        "features": ["plan", "json_output"]
-                    }
-                ]
-            }),
-        );
-    }
-
-    if let Some(api_token) = trim_to_option(config.ai_provider_config.claude_api_token.as_str()) {
-        settings.insert(
-            "claude".to_string(),
-            json!({
-                "enabled": true,
-                "api_token": api_token,
-                "alias_map": {
-                    "claude-reasoning": "claude-3-7-sonnet-20250219"
-                },
-                "instances": [
-                    {
-                        "instance_id": "claude-default",
-                        "provider_type": "claude",
-                        "base_url": "https://api.anthropic.com/v1",
-                        "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
-                        "models": ["claude-3-7-sonnet-20250219", "claude-3-5-haiku-20241022"],
-                        "default_model": "claude-3-7-sonnet-20250219",
-                        "features": ["plan", "json_output", "tool_calling"]
-                    }
-                ]
-            }),
-        );
-    }
-
-    if settings.is_empty() {
-        json!({
-            "openai": {
-                "enabled": false,
-                "api_token": "",
-                "alias_map": {},
-                "instances": []
-            }
-        })
-    } else {
-        Value::Object(settings)
-    }
+    json!({ "providers": providers })
 }
 
 fn read_default_device_subject() -> String {
@@ -1210,6 +1119,59 @@ impl StartConfigSummary {
 mod beta22_tests {
     use super::*;
 
+    fn assert_no_legacy_aicc_fields(value: &Value) {
+        match value {
+            Value::Object(fields) => {
+                for (field, value) in fields {
+                    assert!(
+                        !matches!(
+                            field.as_str(),
+                            "provider_driver"
+                                | "instance_id"
+                                | "api_key"
+                                | "instances"
+                                | "models"
+                                | "features"
+                                | "alias_map"
+                        ),
+                        "legacy AICC field `{field}` remains in {value}"
+                    );
+                    assert_no_legacy_aicc_fields(value);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    assert_no_legacy_aicc_fields(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn assert_canonical_aicc_settings(value: &Value) {
+        assert_no_legacy_aicc_fields(value);
+        let root = value.as_object().unwrap();
+        assert!(
+            root.keys()
+                .all(|field| matches!(field.as_str(), "providers" | "session_config"))
+        );
+        for provider in root["providers"].as_array().unwrap() {
+            assert!(provider["provider_instance_name"].is_string());
+            assert!(provider["provider_profile_id"].is_string());
+            assert!(provider["protocol_adapter_id"].is_string());
+            assert!(provider["base_url"].is_string());
+            let credentials = provider["credentials"].as_object().unwrap();
+            assert!(!credentials.is_empty());
+            assert!(credentials.iter().any(|(field, value)| {
+                (field.ends_with("_ref") && value.as_str().is_some_and(|value| !value.is_empty()))
+                    || value
+                        .get("locked")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.is_empty())
+            }));
+        }
+    }
+
     fn start_config() -> StartConfigSummary {
         StartConfigSummary::from_value(&json!({
             "user_name": "alice",
@@ -1339,55 +1301,139 @@ mod beta22_tests {
     }
 
     #[test]
-    fn aicc_settings_persist_sn_router_activation() {
+    fn aicc_empty_settings_use_canonical_provider_array() {
+        let settings = build_aicc_settings_with_endpoints(&start_config(), None);
+
+        assert_eq!(settings, json!({"providers": []}));
+        assert_canonical_aicc_settings(&settings);
+    }
+
+    #[test]
+    fn checked_in_aicc_dev_and_rootfs_settings_are_canonical() {
+        let dev: Value = serde_json::from_str(include_str!("../../../dev_configs/aicc.json"))
+            .expect("dev AICC settings must be valid JSON");
+        assert_canonical_aicc_settings(&dev);
+
+        let rootfs: toml::Value = toml::from_str(include_str!(
+            "../../../rootfs/etc/scheduler/buckyos_boot.toml.sample"
+        ))
+        .expect("rootfs boot sample must be valid TOML");
+        let raw = rootfs["services/aicc/settings"]
+            .as_str()
+            .expect("rootfs boot sample must contain AICC settings");
+        let settings: Value =
+            serde_json::from_str(raw).expect("rootfs AICC settings must contain valid JSON");
+        assert_canonical_aicc_settings(&settings);
+    }
+
+    #[test]
+    fn aicc_settings_lock_configured_provider_credentials() {
+        let mut config = start_config();
+        config.ai_provider_config = AIProviderConfigSummary {
+            openai_api_token: "openai-secret".to_string(),
+            claude_api_token: "claude-secret".to_string(),
+            google_api_token: "gemini-secret".to_string(),
+            openrouter_api_token: "openrouter-secret".to_string(),
+            glm_api_token: "glm-secret".to_string(),
+        };
+
+        let settings = build_aicc_settings_with_endpoints(&config, None);
+        let providers = settings["providers"].as_array().unwrap();
+
+        assert_eq!(providers.len(), 5);
+        assert_eq!(providers[0]["provider_profile_id"], "openai");
+        assert_eq!(providers[1]["protocol_adapter_id"], "claude-messages");
+        assert_eq!(providers[2]["provider_profile_id"], "gemini");
+        assert_eq!(providers[3]["provider_profile_id"], "openrouter");
+        assert_eq!(providers[4]["protocol_adapter_id"], "glm-chat");
+        assert_eq!(
+            providers[0]["credentials"]["api_token"]["locked"],
+            "openai-secret"
+        );
+        assert_canonical_aicc_settings(&settings);
+    }
+
+    #[test]
+    fn aicc_settings_add_canonical_managed_sn_provider() {
         let mut config = start_config();
         config.enabled_features.llm_router = true;
         let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
 
         let settings = build_aicc_settings_with_endpoints(&config, Some(&endpoints));
+        let provider = &settings["providers"][0];
 
-        assert_eq!(settings[SN_AI_PROVIDER_ACTIVATION_KEY], true);
-        assert_eq!(settings["sn-ai-provider"]["enabled"], true);
+        assert_eq!(provider["provider_profile_id"], "sn");
+        assert_eq!(provider["protocol_adapter_id"], "sn-openai");
+        assert_eq!(provider["auth"]["mode"], "dynamic_login");
+        assert_eq!(provider["auth"]["login_profile"], "device_jwt");
+        assert_eq!(provider["account"], "alice");
+        assert_eq!(
+            provider["credentials"]["device_token_ref"],
+            "runtime://device-jwt"
+        );
+        assert_canonical_aicc_settings(&settings);
     }
 
     #[test]
     fn reconcile_does_not_activate_unrequested_sn_router() {
         let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
 
-        let reconciled =
-            reconcile_managed_sn_ai_provider(&json!({}), Ok(&endpoints), Some("did:bns:alice"))
-                .unwrap();
+        let reconciled = reconcile_managed_sn_ai_provider(
+            &json!({"providers": []}),
+            Ok(&endpoints),
+            Some("did:bns:alice"),
+        )
+        .unwrap();
 
         assert!(reconciled.is_none());
     }
 
     #[test]
-    fn reconcile_restores_activated_sn_router_section() {
+    fn reconcile_updates_only_the_canonical_managed_sn_provider() {
+        let old_endpoints = derive_sn_ai_provider_endpoints(Some("old-sn.buckyos.ai")).unwrap();
         let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
-        let current = json!({ (SN_AI_PROVIDER_ACTIVATION_KEY): true });
+        let current = json!({
+            "providers": [
+                managed_sn_ai_provider_instance(&old_endpoints, "old-user"),
+                {
+                    "provider_instance_name": "custom-sn",
+                    "provider_type": "cloud_api",
+                    "provider_profile_id": "sn",
+                    "protocol_adapter_id": "sn-openai",
+                    "provider_rules_id": "sn",
+                    "base_url": "https://custom.example/v1",
+                    "credentials": {"api_token": {"locked": "secret"}},
+                    "enabled": true
+                }
+            ]
+        });
 
         let reconciled =
             reconcile_managed_sn_ai_provider(&current, Ok(&endpoints), Some("did:bns:alice"))
                 .unwrap()
                 .unwrap();
 
-        assert_eq!(reconciled["sn-ai-provider"]["enabled"], true);
         assert_eq!(
-            reconciled["sn-ai-provider"]["instances"][0]["user_name"],
-            "did:bns:alice"
+            reconciled["providers"][0]["base_url"],
+            endpoints.responses_url
+        );
+        assert_eq!(
+            reconciled["providers"][0]["auth"]["login_endpoint"],
+            endpoints.login_url
+        );
+        assert_eq!(reconciled["providers"][0]["account"], "did:bns:alice");
+        assert_eq!(
+            reconciled["providers"][1]["base_url"],
+            "https://custom.example/v1"
         );
     }
 
     #[test]
     fn reconcile_preserves_explicitly_disabled_sn_router() {
         let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
-        let current = json!({
-            (SN_AI_PROVIDER_ACTIVATION_KEY): true,
-            "sn-ai-provider": {
-                "enabled": false,
-                "instances": []
-            }
-        });
+        let mut provider = managed_sn_ai_provider_instance(&endpoints, "did:bns:alice");
+        provider["enabled"] = json!(false);
+        let current = json!({"providers": [provider]});
 
         let reconciled =
             reconcile_managed_sn_ai_provider(&current, Ok(&endpoints), Some("did:bns:alice"))
@@ -1397,16 +1443,10 @@ mod beta22_tests {
     }
 
     #[test]
-    fn reconcile_keeps_activated_config_when_endpoint_is_temporarily_invalid() {
+    fn reconcile_keeps_managed_config_when_endpoint_is_temporarily_invalid() {
+        let endpoints = derive_sn_ai_provider_endpoints(Some("sn.example")).unwrap();
         let current = json!({
-            (SN_AI_PROVIDER_ACTIVATION_KEY): true,
-            "sn-ai-provider": {
-                "enabled": true,
-                "instances": [{
-                    "provider_driver": "sn-ai-provider",
-                    "base_url": "https://sn.example/api/v1/ai/"
-                }]
-            }
+            "providers": [managed_sn_ai_provider_instance(&endpoints, "did:bns:alice")]
         });
         let endpoint_error = anyhow!("temporary endpoint error");
 

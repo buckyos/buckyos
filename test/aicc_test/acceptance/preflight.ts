@@ -1,10 +1,11 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assertCanonicalCompleteness,
-  parseCanonicalApiTypesFromRust,
+  parseCanonicalAssociationsFromRequirements,
+  parseCanonicalApiTypesFromRequirements,
 } from "./canonical.ts";
 import { buildStaticManifest } from "./cases.ts";
 import {
@@ -12,6 +13,16 @@ import {
   validateCaseManifest,
   validateProviderBaseline,
 } from "./manifest.ts";
+import {
+  buildT15Manifest,
+  loadProviderProtocolCatalog,
+  protocolContracts,
+  REQUIRED_T15_PROVIDER_DRIVERS,
+} from "./provider_protocol_contracts.ts";
+import {
+  MOCK_PROVIDER_CONTRACT_VERSION,
+  validateMockProviderContract,
+} from "./mock_provider_contract.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -20,6 +31,8 @@ export type PreflightResult = {
   baseline_revision: string;
   canonical_api_types: number;
   static_cases: number;
+  t15_cases: number;
+  mock_provider_contract_version: number;
   provider_drivers: string[];
 };
 
@@ -33,22 +46,76 @@ function canonicalCheckoutBytes(bytes: Buffer): Buffer {
 }
 
 export async function runPreflight(): Promise<PreflightResult> {
+  validateMockProviderContract();
   const baselineRaw = JSON.parse(
     await readFile(join(here, "provider_capability_baseline.json"), "utf8"),
   );
   const baseline = validateProviderBaseline(baselineRaw);
-  const rustSource = await readFile(
-    join(repoRoot, "src/frame/aicc/src/model_types.rs"),
+  const requirementsSource = await readFile(
+    join(repoRoot, "doc/aicc/aicc_e2e_test_requirements.md"),
     "utf8",
   );
-  const sourceApiTypes = parseCanonicalApiTypesFromRust(rustSource);
-  assertCanonicalCompleteness({ sourceApiTypes, baseline });
+  const sourceAssociations = parseCanonicalAssociationsFromRequirements(requirementsSource);
+  const sourceApiTypes = parseCanonicalApiTypesFromRequirements(requirementsSource);
+  assertCanonicalCompleteness({ sourceAssociations, baseline });
   const cases = validateCaseManifest(buildStaticManifest());
+  const coveredT1ApiTypes = new Set(cases.filter((testCase) => testCase.layer === "T1" &&
+    testCase.tags.includes("api_type")).flatMap((testCase) => testCase.api_type ? [testCase.api_type] : []));
+  const missingT1ApiTypes = sourceApiTypes.filter((apiType) => !coveredT1ApiTypes.has(apiType));
+  if (missingT1ApiTypes.length > 0) {
+    throw new Error(`T1 routing manifest missing canonical API types: ${missingT1ApiTypes.join(", ")}`);
+  }
+  const protocolCatalog = await loadProviderProtocolCatalog();
+  const t15Cases = validateCaseManifest(buildT15Manifest(protocolCatalog));
+  const coveredT15ApiTypes = new Set(protocolContracts(protocolCatalog).flatMap((contract) => contract.api_types));
+  const applicableApiTypes = new Set(baseline.providers.flatMap((provider) =>
+    provider.rules.flatMap((rule) => rule.api_types)
+  ));
+  const missingT15ApiTypes = [...applicableApiTypes].filter((apiType) => !coveredT15ApiTypes.has(apiType));
+  if (missingT15ApiTypes.length > 0) {
+    throw new Error(`T1.5 protocol contracts missing applicable API types: ${missingT15ApiTypes.join(", ")}`);
+  }
+  const protocolProvidersByDriver = new Map(protocolCatalog.providers.map((provider) => [
+    provider.provider_driver,
+    provider,
+  ]));
+  for (const provider of baseline.providers) {
+    const protocolProvider = protocolProvidersByDriver.get(provider.provider_driver);
+    if (!protocolProvider) {
+      throw new Error(`${provider.provider_driver} has no T1.5 protocol provider`);
+    }
+    if (provider.provider_profile_id !== protocolProvider.provider_profile_id) {
+      throw new Error(`${provider.provider_driver} provider_profile_id differs between baselines`);
+    }
+    const contractedAdapters = new Set(
+      protocolProvider.contracts.map((contract) => contract.protocol_adapter_id),
+    );
+    if (provider.protocol_adapter_ids.length !== contractedAdapters.size ||
+      provider.protocol_adapter_ids.some((adapterId) => !contractedAdapters.has(adapterId))) {
+      throw new Error(`${provider.provider_driver} protocol_adapter_ids differ between baselines`);
+    }
+    if (provider.capability_source_provider) continue;
+    const requiredApiTypes = new Set(provider.rules.flatMap((rule) => rule.api_types));
+    const covered = new Set(protocolProvider.contracts.flatMap((contract) => contract.api_types));
+    const missing = [...requiredApiTypes].filter((apiType) => !covered.has(apiType));
+    if (missing.length > 0) {
+      throw new Error(`${provider.provider_driver} T1.5 contracts missing API types: ${missing.join(", ")}`);
+    }
+  }
+  const contractIds = new Set(protocolContracts(protocolCatalog).map((contract) => contract.id));
+  for (const contract of protocolContracts(protocolCatalog)) {
+    if (contract.base_contract_id && !contractIds.has(contract.base_contract_id)) {
+      throw new Error(`${contract.id} references missing base contract ${contract.base_contract_id}`);
+    }
+  }
   assertTaxonomyConstants();
 
   const fixtureManifest = JSON.parse(
     await readFile(join(here, "fixture_manifest.json"), "utf8"),
-  ) as { fixtures?: unknown[] };
+  ) as { schema_version?: unknown; fixtures?: unknown[] };
+  if (fixtureManifest.schema_version !== 1) {
+    throw new Error("unsupported fixture manifest schema_version");
+  }
   if (!Array.isArray(fixtureManifest.fixtures) || fixtureManifest.fixtures.length === 0) {
     throw new Error("fixture manifest is empty");
   }
@@ -63,8 +130,16 @@ export async function runPreflight(): Promise<PreflightResult> {
     if (fixtureIds.has(id)) throw new Error(`duplicate fixture id: ${id}`);
     fixtureIds.add(id);
     if (!Array.isArray(fixture.facts) || fixture.facts.length === 0 ||
-        !Array.isArray(fixture.cases) || fixture.cases.length === 0) {
+        fixture.facts.some((fact) => typeof fact !== "string" || !fact) ||
+        !Array.isArray(fixture.cases) || fixture.cases.length === 0 ||
+        fixture.cases.some((testCase) => typeof testCase !== "string" || !testCase)) {
       throw new Error(`fixture facts/cases are empty: ${id}`);
+    }
+    if (!Number.isInteger(fixture.size) || Number(fixture.size) < 0 ||
+      typeof fixture.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(fixture.sha256) ||
+      typeof fixture.path !== "string" || !fixture.path ||
+      typeof fixture.source !== "string" || !fixture.source) {
+      throw new Error(`fixture schema is invalid: ${id}`);
     }
     if (typeof fixture.mime !== "string" || !fixture.mime.includes("/")) {
       throw new Error(`fixture MIME is invalid: ${id}`);
@@ -103,32 +178,20 @@ export async function runPreflight(): Promise<PreflightResult> {
     throw new Error(`fixture manifest missing required coverage: ${missingFixtures.join(", ")}`);
   }
 
-  const metadataDir = join(repoRoot, "src/frame/aicc/driver_metadata");
-  const metadataFiles = (await readdir(metadataDir)).filter((name) =>
-    name.endsWith(".json")
-  );
-  const metadataDrivers = new Set<string>();
-  for (const name of metadataFiles) {
-    const value = JSON.parse(await readFile(join(metadataDir, name), "utf8"));
-    if (typeof value.provider_driver === "string") {
-      metadataDrivers.add(value.provider_driver);
-    }
-  }
   const baselineDrivers = new Set(
     baseline.providers.map((provider) => provider.provider_driver),
   );
-  const missing = [...metadataDrivers].filter((driver) => !baselineDrivers.has(driver));
+  const missing = REQUIRED_T15_PROVIDER_DRIVERS.filter((driver) => !baselineDrivers.has(driver));
   if (missing.length > 0) {
-    throw new Error(`provider baseline missing built-in drivers: ${missing.join(", ")}`);
-  }
-  if (!baselineDrivers.has("sn-ai-provider")) {
-    throw new Error("provider baseline missing sn-ai-provider");
+    throw new Error(`provider baseline missing required drivers: ${missing.join(", ")}`);
   }
 
   return {
     baseline_revision: baseline.baseline_revision,
     canonical_api_types: sourceApiTypes.length,
     static_cases: cases.length,
+    t15_cases: t15Cases.length,
+    mock_provider_contract_version: MOCK_PROVIDER_CONTRACT_VERSION,
     provider_drivers: [...baselineDrivers].sort(),
   };
 }

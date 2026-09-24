@@ -1,0 +1,226 @@
+use super::super::{
+    validate_discovery, CatalogOnlyDiscovery, ProviderDiscovery, ProviderDiscoverySnapshot,
+    ProviderResult,
+};
+#[cfg(test)]
+use super::super::{DiscoveryMode, ProviderConnectionContract, ProviderProfile};
+#[cfg(test)]
+use crate::catalog::{CatalogKind, CurrentCatalogFile, ProviderRulesCatalog};
+#[cfg(test)]
+use crate::protocol::{CredentialKind, FAL_QUEUE_ADAPTER_ID};
+use std::sync::Arc;
+
+pub(crate) const FAL_PROVIDER_PROFILE_ID: &str = "fal";
+
+#[cfg(test)]
+pub(crate) fn fal_profile() -> ProviderProfile {
+    super::builtin_profile(FAL_PROVIDER_PROFILE_ID, DiscoveryMode::CatalogOnly)
+}
+
+#[cfg(test)]
+pub(crate) fn fal_known_provider() -> crate::catalog::KnownProvider {
+    super::builtin_known_provider(FAL_PROVIDER_PROFILE_ID)
+}
+
+#[cfg(test)]
+pub(crate) fn fal_connection_contract() -> ProviderConnectionContract {
+    super::builtin_connection_contract(FAL_PROVIDER_PROFILE_ID)
+}
+
+#[cfg(test)]
+pub(crate) fn fal_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
+    super::builtin_provider_rules(FAL_PROVIDER_PROFILE_ID)
+}
+
+#[cfg(test)]
+pub(crate) fn fal_catalog_files() -> Vec<CurrentCatalogFile> {
+    super::builtin_catalog_files(&[FAL_PROVIDER_PROFILE_ID])
+}
+
+pub(crate) fn fal_discovery(
+    configured_inventory: ProviderDiscoverySnapshot,
+) -> ProviderResult<Arc<dyn ProviderDiscovery>> {
+    validate_discovery(&configured_inventory)?;
+    Ok(Arc::new(CatalogOnlyDiscovery::new(configured_inventory)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::{CatalogBuildOptions, CatalogSnapshot};
+    use crate::protocol::{
+        fal_queue_adapter, CodecRegistry, ResolvedCredential, FAL_QUEUE_OPERATION_ID,
+    };
+    use crate::provider::{
+        CredentialReference, DiscoveredModel, DiscoveryContext, InventoryBuilder,
+        ModelAvailability, ProviderHealthState, ProviderInstanceConfig,
+    };
+    use buckyos_api::ApiType;
+    use serde_json::json;
+    use std::collections::BTreeSet;
+
+    fn model<const N: usize>(provider_model_id: &str, api_types: [ApiType; N]) -> DiscoveredModel {
+        DiscoveredModel {
+            provider_model_id: provider_model_id.to_owned(),
+            origin_model_id: None,
+            api_types: Some(api_types.into_iter().collect()),
+            supported_features: Some(BTreeSet::new()),
+            remote_methods: Some(BTreeSet::from([FAL_QUEUE_OPERATION_ID.to_owned()])),
+            availability: ModelAvailability::Available,
+            deprecated: false,
+            pricing: None,
+        }
+    }
+
+    fn instance() -> ProviderInstanceConfig {
+        ProviderInstanceConfig {
+            provider_instance_name: "fal-main".to_owned(),
+            provider_profile_id: FAL_PROVIDER_PROFILE_ID.to_owned(),
+            protocol_adapter_id: FAL_QUEUE_ADAPTER_ID.to_owned(),
+            base_url: fal_connection_contract().default_base_url,
+            credential: CredentialReference {
+                reference: "secret://fal/main".to_owned(),
+            },
+            credential_kind: None,
+            provider_rules_id: Some(FAL_PROVIDER_PROFILE_ID.to_owned()),
+            region: None,
+            workspace: None,
+            account: None,
+            request_timeout: std::time::Duration::from_secs(120),
+            auto_sync_models: true,
+            instance_rules: None,
+        }
+    }
+
+    #[test]
+    fn provider_information_and_rules_come_from_builtin_catalog_files() {
+        let profile = fal_profile();
+        profile.validate().unwrap();
+        assert_eq!(profile.provider_profile_id, FAL_PROVIDER_PROFILE_ID);
+        assert_eq!(profile.default_protocol_adapter_id, FAL_QUEUE_ADAPTER_ID);
+        assert_eq!(profile.credential.kind, CredentialKind::FalKey);
+        assert_eq!(profile.discovery_mode, DiscoveryMode::CatalogOnly);
+        assert!(profile.default_inventory.is_none());
+
+        let known = fal_known_provider();
+        assert_eq!(known.base_url, "https://queue.fal.run");
+        assert_eq!(known.ui_hints["credential"]["prefix"], "Key");
+        assert_eq!(
+            known.ui_hints["instance_fields"]["workspace"],
+            json!({"mode": "unsupported"})
+        );
+        let connection = fal_connection_contract();
+        assert_eq!(
+            connection.resolve(Default::default()).unwrap().base_url,
+            "https://queue.fal.run"
+        );
+
+        let rules = fal_provider_rules(7);
+        assert_eq!(rules.revision_seq, 1);
+        assert_eq!(
+            rules.patterns[0].operations["video.img2video"],
+            FAL_QUEUE_OPERATION_ID
+        );
+        assert_eq!(rules.metadata_drivers, Some(vec!["fal".to_owned()]));
+        assert_eq!(rules.models.len(), 4);
+
+        let files = fal_catalog_files();
+        assert_eq!(files.len(), 3);
+        assert!(files
+            .iter()
+            .any(|file| file.kind == CatalogKind::ModelDriver));
+        let catalog =
+            CatalogSnapshot::from_current_files(2, files, &CatalogBuildOptions::default()).unwrap();
+        assert!(catalog.known_provider(FAL_PROVIDER_PROFILE_ID).is_some());
+        assert!(catalog.provider_rules(FAL_PROVIDER_PROFILE_ID).is_some());
+        assert_eq!(
+            catalog
+                .model_driver(FAL_PROVIDER_PROFILE_ID)
+                .unwrap()
+                .models
+                .len(),
+            4
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_inventory_is_validated_for_catalog_only_discovery() {
+        let profile = fal_profile();
+        let instance = instance();
+        let configured = ProviderDiscoverySnapshot {
+            revision: Some("configured-v1".to_owned()),
+            discovered_at_ms: 1,
+            health: ProviderHealthState::Healthy,
+            models: vec![
+                model("vendor/image-upscaler", [ApiType::ImageUpscale]),
+                model("vendor/audio-enhancer", [ApiType::AudioEnhance]),
+                model("vendor/video-upscaler", [ApiType::VideoUpscale]),
+            ],
+        };
+        let credential = ResolvedCredential::fal_key("secret://fal/main", "secret").unwrap();
+        let snapshot = fal_discovery(configured.clone())
+            .unwrap()
+            .discover(&DiscoveryContext {
+                profile: &profile,
+                instance: &instance,
+                credential: &credential,
+            })
+            .await
+            .unwrap();
+        assert_eq!(snapshot, configured);
+
+        let duplicate = ProviderDiscoverySnapshot {
+            revision: None,
+            discovered_at_ms: 1,
+            health: ProviderHealthState::Healthy,
+            models: vec![
+                model("same", [ApiType::ImageUpscale]),
+                model("same", [ApiType::VideoUpscale]),
+            ],
+        };
+        assert!(fal_discovery(duplicate).is_err());
+    }
+
+    #[test]
+    fn configured_rules_and_adapter_build_complete_inventory_identity() {
+        let files = fal_catalog_files();
+        let catalog =
+            CatalogSnapshot::from_current_files(2, files, &CatalogBuildOptions::default()).unwrap();
+        let (descriptor, registration) = fal_queue_adapter();
+        let mut codecs = CodecRegistry::default();
+        codecs.register_codecs(descriptor, registration).unwrap();
+        let inventory = InventoryBuilder::build(
+            &fal_profile(),
+            &instance(),
+            ProviderDiscoverySnapshot {
+                revision: Some("fixture-v1".to_owned()),
+                discovered_at_ms: 1,
+                health: ProviderHealthState::Healthy,
+                models: vec![
+                    model("fal-ai/esrgan", [ApiType::ImageUpscale]),
+                    model("fal-ai/imageutils/rembg", [ApiType::ImageBackgroundRemove]),
+                    model("fal-ai/deepfilternet3", [ApiType::AudioEnhance]),
+                    model("fal-ai/video-upscaler", [ApiType::VideoUpscale]),
+                ],
+            },
+            &catalog,
+            &codecs,
+        )
+        .unwrap();
+        assert_eq!(inventory.models.len(), 4);
+        assert!(inventory
+            .models
+            .iter()
+            .all(|model| model.model_driver_id == "fal"));
+        assert_eq!(
+            inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == "fal-ai/video-upscaler")
+                .unwrap()
+                .operations["video.upscale"],
+            FAL_QUEUE_OPERATION_ID
+        );
+        assert_eq!(inventory.protocol_adapter_id, FAL_QUEUE_ADAPTER_ID);
+    }
+}

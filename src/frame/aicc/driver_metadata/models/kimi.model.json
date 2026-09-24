@@ -1,0 +1,67 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 1,
+  "schema_revision": 1,
+  "model_driver_id": "kimi",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "kimi-k2.5",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.kimi", "llm.{driver}.{model}", "vision.ocr.kimi", "vision.ocr.{model}", "vision.caption.kimi", "vision.caption.{model}"],
+      "capabilities": {
+        "max_context_tokens": 262144,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      }
+    },
+    {
+      "id": "kimi-k2.6",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.kimi", "llm.{driver}.{model}", "vision.ocr.kimi", "vision.ocr.{model}", "vision.caption.kimi", "vision.caption.{model}"],
+      "capabilities": {
+        "max_context_tokens": 262144,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      }
+    }
+  ],
+  "patterns": [
+    {
+      "match": "kimi-k*-code*",
+      "parameter_scale": "code",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.kimi", "llm.{driver}.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true
+      },
+      "version_rules": ["kimi-code", "kimi-code-highspeed"]
+    }
+  ],
+  "model_pricing": [
+    { "id": "kimi-k2.5", "pricing": { "currency": "CNY", "input_token": 4e-06, "output_token": 2.1e-05, "cache_input_token": 7e-07 } },
+    { "id": "kimi-k2.6", "pricing": { "currency": "CNY", "input_token": 6.5e-06, "output_token": 2.7e-05, "cache_input_token": 1.1e-06 } },
+    { "id": "kimi-k2.7-code", "pricing": { "currency": "CNY", "input_token": 6.5e-06, "output_token": 2.7e-05, "cache_input_token": 1.3e-06 } },
+    { "id": "kimi-k2.7-code-highspeed", "pricing": { "currency": "CNY", "input_token": 1.3e-05, "output_token": 5.4e-05, "cache_input_token": 2.6e-06 } }
+  ],
+  "defaults": { "version_rules": ["kimi-general", "kimi-code", "kimi-code-highspeed"] },
+  "variants": [
+    { "name": "reasoning-medium", "match": { "origin_model_id": ["kimi-k2.5", "kimi-k2.6"] }, "provider_options": { "thinking": { "type": "enabled" } } },
+    { "name": "reasoning-none", "match": { "origin_model_id": ["kimi-k2.5", "kimi-k2.6"] }, "provider_options": { "thinking": { "type": "disabled" } } }
+  ],
+  "version_rules": [
+    { "id": "kimi-general", "family": "kimi", "tier": "general", "match": "kimi-k*", "exclude_tier_tokens": ["code", "highspeed"], "version_rank": { "prefix": "kimi-k" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.kimi", "version_mount": "llm.kimi.{model}" },
+    { "id": "kimi-code", "family": "kimi", "tier": "code", "match": "kimi-k*-code*", "tier_tokens": ["code"], "exclude_tier_tokens": ["highspeed"], "version_rank": { "prefix": "kimi-k" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.kimi-code", "version_mount": "llm.kimi.{model}" },
+    { "id": "kimi-code-highspeed", "family": "kimi", "tier": "code-highspeed", "match": "kimi-k*-code-highspeed*", "tier_tokens": ["code", "highspeed"], "version_rank": { "prefix": "kimi-k" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.kimi-code-highspeed", "version_mount": "llm.kimi.{model}" }
+  ]
+}

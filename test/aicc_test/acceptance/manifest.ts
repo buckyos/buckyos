@@ -3,7 +3,6 @@ import {
   RESULT_STATUSES,
   type AcceptanceCase,
   type CapabilityRule,
-  type DocumentFormatCoverageRecord,
   type MatrixCell,
   type ProviderBaseline,
   type ProviderInventory,
@@ -12,11 +11,6 @@ import { CANONICAL_API_TYPES, methodsForApiType } from "./canonical.ts";
 import { reconcileOfficialAndAiccInventories } from "./inventory_reconciliation.ts";
 
 const CASE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
-export const DOCUMENT_FORMAT_CANDIDATES = [
-  "txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx",
-  "html", "xml", "json", "yaml", "rtf", "epub", "source",
-] as const;
-
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -44,7 +38,7 @@ export function validateCaseManifest(value: unknown): AcceptanceCase[] {
     if (!CASE_ID_PATTERN.test(caseId)) throw new Error(`invalid case_id ${caseId}`);
     if (seen.has(caseId)) throw new Error(`duplicate case_id ${caseId}`);
     seen.add(caseId);
-    if (!(["T1", "T2", "T3"] as unknown[]).includes(raw.layer)) {
+    if (!(["T1", "T1.5", "T2", "T3"] as unknown[]).includes(raw.layer)) {
       throw new Error(`${caseId}.layer is invalid`);
     }
     if (!(["P0", "P1", "P2"] as unknown[]).includes(raw.priority)) {
@@ -55,10 +49,23 @@ export function validateCaseManifest(value: unknown): AcceptanceCase[] {
     requireString(raw.user, `${caseId}.user`);
     requireString(raw.session, `${caseId}.session`);
     requireString(raw.method, `${caseId}.method`);
+    if (!(raw.execution_mode === "immediate" || raw.execution_mode === "stream")) {
+      throw new Error(`${caseId}.execution_mode is invalid`);
+    }
+    if (raw.api_type !== null) {
+      const apiType = requireString(raw.api_type, `${caseId}.api_type`);
+      if (!CANONICAL_API_TYPES.includes(apiType as never)) {
+        throw new Error(`${caseId}.api_type is not canonical`);
+      }
+      if (raw.method !== "route.resolve" &&
+        !methodsForApiType(apiType).includes(String(raw.method) as never)) {
+        throw new Error(`${caseId}.method is not valid for api_type ${apiType}`);
+      }
+    }
     requireStringArray(raw.required_capabilities, `${caseId}.required_capabilities`);
     requireStringArray(raw.disabled_capabilities, `${caseId}.disabled_capabilities`);
     requireStringArray(raw.fixtures, `${caseId}.fixtures`);
-    requireStringArray(raw.semantic_rubric, `${caseId}.semantic_rubric`);
+    const semanticRubric = requireStringArray(raw.semantic_rubric, `${caseId}.semantic_rubric`);
     requireStringArray(raw.cleanup, `${caseId}.cleanup`);
     if (!isObject(raw.expected_output)) {
       throw new Error(`${caseId}.expected_output must be an object`);
@@ -85,13 +92,35 @@ export function validateCaseManifest(value: unknown): AcceptanceCase[] {
     if (!Number.isFinite(raw.estimated_cost_usd) || Number(raw.estimated_cost_usd) < 0) {
       throw new Error(`${caseId}.estimated_cost_usd must be non-negative`);
     }
+    if (raw.layer === "T1.5") {
+      for (const field of [
+        "protocol_contract_id",
+        "protocol_evidence_revision",
+        "protocol_adapter_id",
+        "provider_api_version",
+        "expected_wire_fixture",
+        "response_fixture",
+      ]) {
+        requireString(raw[field], `${caseId}.${field}`);
+      }
+      if (semanticRubric.length !== 0) {
+        throw new Error(`${caseId}.semantic_rubric must be empty for T1.5`);
+      }
+      if ((raw.tags as string[]).includes("official_error")) {
+        requireString(raw.expected_aicc_error_code, `${caseId}.expected_aicc_error_code`);
+        requireString(raw.expected_provider_error_code, `${caseId}.expected_provider_error_code`);
+        if (typeof raw.expected_retriable !== "boolean") {
+          throw new Error(`${caseId}.expected_retriable must be boolean`);
+        }
+      }
+    }
     return raw as AcceptanceCase;
   });
 }
 
 export function validateProviderBaseline(value: unknown): ProviderBaseline {
   if (!isObject(value)) throw new Error("provider baseline must be an object");
-  if (value.schema_version !== 2) throw new Error("unsupported baseline schema_version");
+  if (value.schema_version !== 3) throw new Error("unsupported baseline schema_version");
   requireString(value.baseline_revision, "baseline_revision");
   requireString(value.checked_at, "checked_at");
   const canonical = requireStringArray(value.canonical_api_types, "canonical_api_types");
@@ -105,6 +134,15 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
     const driver = requireString(rawProvider.provider_driver, "provider_driver");
     if (drivers.has(driver)) throw new Error(`duplicate provider baseline ${driver}`);
     drivers.add(driver);
+    requireString(rawProvider.provider_profile_id, `${driver}.provider_profile_id`);
+    const adapterIds = requireStringArray(rawProvider.protocol_adapter_ids, `${driver}.protocol_adapter_ids`);
+    const modelDriverIds = requireStringArray(rawProvider.model_driver_ids, `${driver}.model_driver_ids`);
+    if (adapterIds.length === 0 || new Set(adapterIds).size !== adapterIds.length) {
+      throw new Error(`${driver}.protocol_adapter_ids must be non-empty and unique`);
+    }
+    if (modelDriverIds.length === 0 || new Set(modelDriverIds).size !== modelDriverIds.length) {
+      throw new Error(`${driver}.model_driver_ids must be non-empty and unique`);
+    }
     if (!isObject(rawProvider.official_catalog)) {
       throw new Error(`${driver}.official_catalog must be an object`);
     }
@@ -217,6 +255,14 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
           throw new Error(`${driver} uses unknown api_type ${apiType}`);
         }
       }
+      const expectedMethods = new Set(
+        (rule.api_types as string[]).flatMap((apiType) => methodsForApiType(apiType)),
+      );
+      const declaredMethods = new Set(rule.methods as string[]);
+      if (expectedMethods.size !== declaredMethods.size ||
+        [...expectedMethods].some((method) => !declaredMethods.has(method))) {
+        throw new Error(`${driver}.${String(rule.model_pattern)} has invalid method/api_type association`);
+      }
     }
   }
   for (const rawProvider of value.providers) {
@@ -313,6 +359,17 @@ function defaultOutputCombinations(apiType: string, declared: string[]): string[
   return [[canonical[apiType] ?? declared[0] ?? "structured"]];
 }
 
+function generatedArtifactSourceApiType(apiType: string, declared: Set<string>): string | undefined {
+  if (apiType === "image.img2img" && declared.has("image.txt2img")) return "image.txt2img";
+  if (apiType === "video.img2video" && declared.has("image.txt2img")) return "image.txt2img";
+  if (
+    ["video.video2video", "video.extend", "video.upscale"].includes(apiType) &&
+    declared.has("video.txt2video")
+  ) return "video.txt2video";
+  if (apiType === "audio.enhance" && declared.has("audio.tts")) return "audio.tts";
+  return undefined;
+}
+
 export function analyzeProviderMatrix(args: {
   baseline: ProviderBaseline;
   officialInventories: ProviderInventory[];
@@ -322,7 +379,6 @@ export function analyzeProviderMatrix(args: {
   cells: MatrixCell[];
   mismatches: string[];
   coverage: import("./types.ts").ModelCoverageRecord[];
-  documentCoverage: DocumentFormatCoverageRecord[];
 } {
   const selected = args.selectedDrivers?.length
     ? new Set(args.selectedDrivers)
@@ -331,12 +387,17 @@ export function analyzeProviderMatrix(args: {
     args.baseline.providers.map((profile) => [profile.provider_driver, profile]),
   );
   const cells: MatrixCell[] = [];
-  const documentCoverage: DocumentFormatCoverageRecord[] = [];
   const errors: string[] = [];
+  const basePhysicalInventories = (inventories: ProviderInventory[]) => inventories.map((inventory) => ({
+    ...inventory,
+    models: inventory.models.filter((model) =>
+      !model.provider_actual_model_id && !model.provider_model_id.includes(":")
+    ),
+  }));
   const reconciled = reconcileOfficialAndAiccInventories({
     baseline: args.baseline,
-    officialInventories: args.officialInventories,
-    aiccInventories: args.aiccInventories,
+    officialInventories: basePhysicalInventories(args.officialInventories),
+    aiccInventories: basePhysicalInventories(args.aiccInventories),
   });
   errors.push(...reconciled.mismatches);
   for (const inventory of reconciled.inventories) {
@@ -356,6 +417,7 @@ export function analyzeProviderMatrix(args: {
       continue;
     }
     for (const model of inventory.models) {
+      if (model.provider_actual_model_id || model.provider_model_id.includes(":")) continue;
       const rule = capabilityProfile.rules.find((candidate) =>
         globMatches(candidate.model_pattern, model.provider_model_id)
       );
@@ -367,20 +429,6 @@ export function analyzeProviderMatrix(args: {
       }
       const declared = new Set(model.api_types);
       const official = new Set(rule.api_types);
-      if (rule.input_kinds.includes("document")) {
-        const supported = new Set(rule.document_formats ?? []);
-        for (const format of DOCUMENT_FORMAT_CANDIDATES) {
-          documentCoverage.push({
-            provider_driver: inventory.provider_driver,
-            provider_instance: inventory.provider_instance_name,
-            exact_model: model.exact_model,
-            provider_model_id: model.provider_model_id,
-            format,
-            status: supported.has(format) ? "supported" : "not_applicable",
-            source_urls: rule.source_urls,
-          });
-        }
-      }
       for (const apiType of declared) {
         if (!official.has(apiType)) {
           errors.push(
@@ -390,6 +438,7 @@ export function analyzeProviderMatrix(args: {
       }
       for (const apiType of official) {
         if (!declared.has(apiType)) {
+          if (profile.capability_source_provider) continue;
           errors.push(
             `official_supported_but_aicc_missing ${model.exact_model} ${apiType}`,
           );
@@ -398,65 +447,41 @@ export function analyzeProviderMatrix(args: {
         const methods = rule.methods.length > 0
           ? rule.methods.filter((method) => methodsForApiType(apiType).includes(method))
           : [...methodsForApiType(apiType)];
-        for (const method of methods) {
-          const variants = apiType.startsWith("embedding.")
-            ? ["default", "embedding_large_artifact"] as const
-            : ["default"] as const;
-          const ioProfile = rule.api_io?.[apiType];
-          const inputVariants = ioProfile?.input_combinations ??
-            defaultInputCombinations(apiType, rule.input_kinds);
-          const outputVariants = ioProfile?.output_combinations ??
-            defaultOutputCombinations(apiType, rule.output_kinds);
-          for (const variant of variants) {
-            const largeTextInput = inputVariants.find((combination) =>
-              combination.length === 1 && combination[0] === "text"
-            ) ?? ["text"];
-            const variantInputs = variant === "embedding_large_artifact"
-              ? [largeTextInput]
-              : inputVariants;
-            for (const inputKinds of variantInputs) {
-            for (const outputKinds of outputVariants) {
-            const documentFormats = inputKinds.includes("document")
-              ? rule.document_formats ?? []
-              : [undefined];
-            const resourceRepresentations = inputKinds.some((kind) =>
-              ["document", "image", "audio", "video", "mask"].includes(kind)
-            ) ? ["url", "base64", "named_object"] as const : [undefined];
-            for (const documentFormat of documentFormats) {
-            for (const resourceRepresentation of resourceRepresentations) {
-            cells.push({
-            case_id: `t2.${inventory.provider_driver}.${inventory.provider_instance_name}.${model.provider_model_id}.${method}.${variant}.in-${inputKinds.join("-")}.out-${outputKinds.join("-")}${documentFormat ? `.doc-${documentFormat}` : ""}${resourceRepresentation ? `.res-${resourceRepresentation}` : ""}`
-              .toLowerCase().replace(/[^a-z0-9._-]+/g, "-"),
-            provider_driver: inventory.provider_driver,
-            provider_instance: inventory.provider_instance_name,
-            exact_model: model.exact_model,
-            provider_model_id: model.provider_model_id,
-            api_type: apiType,
-            method,
-            variant,
-            baseline_status: normalizedStatus(rule, model.provider_model_id),
-            input_kinds: inputKinds,
-            output_kinds: outputKinds,
-            resource_representation: resourceRepresentation,
-            document_format: documentFormat,
-            source_urls: rule.source_urls,
-            estimated_cost_usd: model.pricing?.currency?.toUpperCase() === "USD" &&
-                typeof model.pricing.estimated_cost === "number" &&
-                Number.isFinite(model.pricing.estimated_cost) &&
-                model.pricing.estimated_cost >= 0
-              ? model.pricing.estimated_cost
-              : undefined,
-          });
-            }
-            }
-            }
-            }
-          }
+        const method = methods[0];
+        if (!method) {
+          errors.push(`missing canonical method for ${model.exact_model} ${apiType}`);
+          continue;
         }
+        const ioProfile = rule.api_io?.[apiType];
+        const inputKinds = (ioProfile?.input_combinations ??
+          defaultInputCombinations(apiType, rule.input_kinds))[0];
+        const outputKinds = (ioProfile?.output_combinations ??
+          defaultOutputCombinations(apiType, rule.output_kinds))[0];
+        cells.push({
+          case_id: `t2.${inventory.provider_driver}.${inventory.provider_instance_name}.${model.provider_model_id}.${apiType}`
+            .toLowerCase().replace(/[^a-z0-9._-]+/g, "-"),
+          provider_driver: inventory.provider_driver,
+          provider_instance: inventory.provider_instance_name,
+          exact_model: model.exact_model,
+          provider_model_id: model.provider_model_id,
+          api_type: apiType,
+          method,
+          generated_artifact_source_api_type: generatedArtifactSourceApiType(apiType, declared),
+          baseline_status: normalizedStatus(rule, model.provider_model_id),
+          input_kinds: inputKinds,
+          output_kinds: outputKinds,
+          source_urls: rule.source_urls,
+          estimated_cost_usd: model.pricing?.currency?.toUpperCase() === "USD" &&
+              typeof model.pricing.estimated_cost === "number" &&
+              Number.isFinite(model.pricing.estimated_cost) &&
+              model.pricing.estimated_cost >= 0
+            ? model.pricing.estimated_cost
+            : undefined,
+        });
       }
     }
   }
-  return { cells, mismatches: errors, coverage: reconciled.coverage, documentCoverage };
+  return { cells, mismatches: errors, coverage: reconciled.coverage };
 }
 
 export function buildProviderMatrix(args: {

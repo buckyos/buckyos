@@ -116,7 +116,7 @@ gate。** 当前 executor adapter 注册情况（见
 覆盖的一期能力：
 
 - `service::aicc.vision.caption` / `vision.ocr` / `vision.detect`
-- `service::aicc.llm.chat`
+- `service::aicc.helper.llm_chat`
 - `service::aicc.image.upscale` / `image.bg_remove`
 - `human_confirm` 步骤
 - `branch` 与 `parallel` 控制节点
@@ -219,7 +219,7 @@ gate。** 当前 executor adapter 注册情况（见
       "id": "summarize_review",
       "name": "Summarize Review",
       "type": "autonomous",
-      "executor": "service::aicc.llm.chat",
+      "executor": "service::aicc.helper.llm_chat",
       "idempotent": true,
       "skippable": false,
       "input": {
@@ -334,7 +334,7 @@ gate。** 当前 executor adapter 注册情况（见
       "id": "rejected_marker",
       "name": "Rejected Marker",
       "type": "autonomous",
-      "executor": "service::aicc.llm.chat",
+      "executor": "service::aicc.helper.llm_chat",
       "idempotent": true,
       "skippable": false,
       "input": {
@@ -363,7 +363,7 @@ gate。** 当前 executor adapter 注册情况（见
       "id": "completed_marker",
       "name": "Completed Marker",
       "type": "autonomous",
-      "executor": "service::aicc.llm.chat",
+      "executor": "service::aicc.helper.llm_chat",
       "idempotent": true,
       "skippable": false,
       "input": {
@@ -752,7 +752,7 @@ ExecutorRegistry 找不到 adapter，对应 step 会落到通用错误路径。
       "id": "echo_tags",
       "name": "Echo Tags",
       "type": "autonomous",
-      "executor": "service::aicc.llm.chat",
+      "executor": "service::aicc.helper.llm_chat",
       "idempotent": true,
       "input": {
         "model": "llm.chat.default",
@@ -918,7 +918,7 @@ ExecutorRegistry 找不到 adapter，对应 step 会落到通用错误路径。
       "id": "echo_caption",
       "name": "Echo Caption",
       "type": "autonomous",
-      "executor": "service::aicc.llm.chat",
+      "executor": "service::aicc.helper.llm_chat",
       "idempotent": true,
       "input": {
         "model": "llm.chat.default",

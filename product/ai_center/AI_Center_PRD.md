@@ -1034,7 +1034,7 @@ type ModelMetadata = {
   provider_model_id: string
   exact_model: string                            // "claude-opus-4.7@anthropic"
   parameter_scale?: string
-  api_types: ApiType[]                           // "llm.chat" | "embedding.text" | "image.txt2img" | ...
+  api_types: ApiType[]                           // "llm" | "embedding.text" | "image.txt2img" | ...
   logical_mounts: string[]                       // 挂到哪些 L2 逻辑挂点，如 ["llm.opus"]
   capabilities: {
     streaming: boolean

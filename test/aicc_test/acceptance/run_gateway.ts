@@ -8,7 +8,13 @@ import {
   tomlString,
   tomlStrings,
 } from "../../jarvis_media_dv/config.ts";
-import { loginGateway, type GatewaySession, type RpcClient } from "./gateway.ts";
+import {
+  callChatCompletions,
+  callInference,
+  loginGateway,
+  type GatewaySession,
+  type RpcClient,
+} from "./gateway.ts";
 import { analyzeProviderMatrix, validateProviderBaseline } from "./manifest.ts";
 import {
   assertResponseShape,
@@ -59,6 +65,8 @@ import {
 import { JudgeError, runJudge, selectJudgeModel } from "./judge.ts";
 import { bindOfficialCatalogInstances, fetchOfficialCatalogs } from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
+import { inventoriesFromModelsList } from "./inventory.ts";
+import { methodsForApiType } from "./canonical.ts";
 import {
   startNdnFixtureService,
   type NdnFixtureService,
@@ -307,7 +315,7 @@ async function loadDefaultFixtures(
   };
   for (const [kind, fixture] of Object.entries(defaults) as Array<[
     Exclude<keyof FixtureRefs, "documents">,
-    { path: string; mime: string },
+    { path: string; mime: string; url?: string },
   ]>) {
     const configured = loaded[kind];
     const configuredPath = configured && "kind" in configured && configured.kind === "url" &&
@@ -374,6 +382,7 @@ async function parseOptions(args: string[]): Promise<Options> {
     "fal",
     "minimax",
     "openrouter",
+    "glm",
     "sn-ai-provider",
   ]) {
     const configured = tomlString(config, `official_catalog_credentials.${driver}.api_token`);
@@ -555,7 +564,7 @@ async function parseOptions(args: string[]): Promise<Options> {
 function normalizeInventories(raw: unknown): ProviderInventory[] {
   if (!raw || typeof raw !== "object") throw new Error("models.list returned non-object");
   const providers = (raw as { providers?: unknown }).providers;
-  if (!Array.isArray(providers)) throw new Error("models.list.providers must be an array");
+  if (!Array.isArray(providers)) return inventoriesFromModelsList(raw);
   return providers.map((value) => {
     const provider = value as ProviderInventory;
     if (!provider.provider_driver || !provider.provider_instance_name || !Array.isArray(provider.models)) {
@@ -678,11 +687,20 @@ async function waitForTask(
           `task ${response.task_id} ended ${task.outcome}: ${JSON.stringify(compactFailure(task.error) ?? {})}`,
         );
       }
+      const output = task.result?.result?.output;
+      if (!output || typeof output !== "object" || Array.isArray(output)) {
+        throw new Error(`task ${response.task_id} completed without an AICC result output`);
+      }
+      const execution = output as Record<string, unknown>;
+      const value = execution.value;
       return {
+        ...(value && typeof value === "object" && !Array.isArray(value) ? value : {}),
         task_id: auditTaskId(task, response.task_id),
         task_manager_id: response.task_id,
         status: "succeeded",
-        result: task.result?.result?.output,
+        usage: execution.usage,
+        cost: execution.cost,
+        artifacts: execution.artifacts,
         event_ref: response.event_ref,
       };
     }
@@ -766,6 +784,10 @@ function artifactSources(value: unknown, depth = 0): Array<Record<string, unknow
     ? [{ ...source, _content_type: record.type }]
     : [];
   return [...found, ...Object.values(record).flatMap((child) => artifactSources(child, depth + 1))];
+}
+
+function requiresUploadedFixtures(apiType: string): boolean {
+  return apiType !== "llm" && apiType !== "embedding";
 }
 
 function decodeBase64(value: string): Uint8Array {
@@ -1127,7 +1149,7 @@ async function executeAcceptance(input: {
       outbound_message_ids: [],
       artifact_ids: [],
       attempts: [{
-        attempt: 0,
+        attempt: 1,
         started_at: new Date().toISOString(),
         elapsed_ms: 0,
         status: "skipped",
@@ -1173,7 +1195,7 @@ async function executeAcceptance(input: {
         outbound_message_ids: [],
         artifact_ids: [],
         attempts: [{
-          attempt: 0,
+          attempt: 1,
           started_at: new Date().toISOString(),
           elapsed_ms: 0,
           status: "skipped",
@@ -1202,7 +1224,7 @@ async function executeAcceptance(input: {
         outbound_message_ids: [],
         artifact_ids: [],
         attempts: [{
-          attempt: 0,
+          attempt: 1,
           started_at: new Date().toISOString(),
           elapsed_ms: 0,
           status: "skipped",
@@ -1214,37 +1236,6 @@ async function executeAcceptance(input: {
     }
   }
   const executableCells = selectedCells.filter((cell) => preparedRequests.has(cell.case_id));
-  const relevantDocumentCoverage = requestedCases.size === 0
-    ? matrix.documentCoverage
-    : matrix.documentCoverage.filter((record) => [...requestedCases].some((caseId) =>
-      caseId.includes(`.${record.provider_model_id.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}.`)
-    ));
-  for (const record of relevantDocumentCoverage.filter((item) => item.status === "not_applicable")) {
-    const caseId = `t2.${record.provider_driver}.${record.provider_instance}.${record.provider_model_id}.document_format.${record.format}`
-      .toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
-    cases.push({
-      run_id: runId,
-      case_id: caseId,
-      layer: "T2",
-      status: "not_applicable",
-      provider_driver: record.provider_driver,
-      provider_instance: record.provider_instance,
-      exact_model: record.exact_model,
-      api_type: "llm",
-      method: "official_capability_baseline",
-      outbound_message_ids: [],
-      artifact_ids: [],
-      attempts: [{
-        attempt: 0,
-        started_at: new Date().toISOString(),
-        elapsed_ms: 0,
-        status: "not_applicable",
-        diagnostic: `official documentation does not list ${record.format}; ${record.source_urls.join(", ")}`,
-        estimated_cost_usd: 0,
-        cost_status: "not_called",
-      }],
-    });
-  }
   const plannedCases = executableCells.length;
   const judgedCells = options.judgeEnabled
     ? executableCells.filter((cell) => semanticRubric(cell).length > 0)
@@ -1287,7 +1278,8 @@ async function executeAcceptance(input: {
   let executeRealModelCalls = options.allowRealModelCalls;
   if (executeRealModelCalls && plannedCalls > 0) {
     executeRealModelCalls = await confirmRealModelCalls(options.assumeYes);
-    if (executeRealModelCalls) {
+    const uploadFixtures = selectedCells.some((cell) => requiresUploadedFixtures(cell.api_type));
+    if (executeRealModelCalls && uploadFixtures) {
       ndnFixtureService = await startNdnFixtureService({
         gatewayUrl: options.gatewayUrl,
         runId,
@@ -1305,7 +1297,7 @@ async function executeAcceptance(input: {
         ndnFixtureService.publicBaseUrl,
         uploadedFixtureIds,
       );
-    } else {
+    } else if (!executeRealModelCalls) {
       console.log("[cancelled] real model calls were not started");
     }
   }
@@ -1322,26 +1314,52 @@ async function executeAcceptance(input: {
     );
     const continuationPrerequisites = new Map<string, Promise<ResourceRef>>();
     const continuationResource = (cell: typeof executableCells[number]): Promise<ResourceRef> => {
-      const existing = continuationPrerequisites.get(cell.exact_model);
+      const sourceApiType = cell.generated_artifact_source_api_type ??
+        (cell.api_type === "video.extend" ? "video.txt2video" : undefined);
+      if (!sourceApiType) throw new Error(`${cell.case_id} has no generated artifact source api_type`);
+      const key = `${cell.exact_model}:${sourceApiType}`;
+      const existing = continuationPrerequisites.get(key);
       if (existing) return existing;
       const pending = scheduler.execute(cell.provider_driver, async () => {
         if (actualCalls >= options.maxRealCalls) {
-          throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before video.extend prerequisite`);
+          throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before generated artifact prerequisite`);
         }
+        const sourceMethod = methodsForApiType(sourceApiType)[0] ?? sourceApiType;
         const estimate = estimatedCellCost(cell, options.estimatedCostPerCallUsd);
         const reservation = costBudget.reserve(estimate);
         const started = Date.now();
         actualCalls += 1;
         try {
-          const prerequisiteRequest = structuredClone(preparedRequests.get(cell.case_id)!);
-          const payload = prerequisiteRequest.payload as Record<string, unknown>;
-          payload.input_json = {
-            prompt: "A paper plane moving across a desk, continuous steady motion",
-            duration_seconds: 4,
+          const prerequisiteCell = {
+            ...cell,
+            case_id: `${cell.case_id}.generated-artifact-source.${sourceApiType}`,
+            api_type: sourceApiType,
+            method: sourceMethod,
+            input_kinds: sourceApiType.startsWith("image.") ? ["text"]
+              : sourceApiType.startsWith("audio.") ? ["text"]
+              : sourceApiType.startsWith("video.") ? ["text"]
+              : cell.input_kinds,
+            output_kinds: sourceApiType.startsWith("image.") ? ["image"]
+              : sourceApiType.startsWith("audio.") ? ["audio"]
+              : sourceApiType.startsWith("video.") ? ["video"]
+              : cell.output_kinds,
+            generated_artifact_source_api_type: undefined,
           };
-          payload.resources = [];
-          prerequisiteRequest.idempotency_key = `${runId}:continuation:${cell.exact_model}`;
-          const initial = await session.aicc.call("video.txt2video", prerequisiteRequest) as AiMethodResponse;
+          const prerequisiteRequest = buildExactRequest({
+            cell: prerequisiteCell,
+            runId,
+            fixtures: options.fixtures,
+          });
+          const payload = prerequisiteRequest.payload as Record<string, unknown>;
+          if (sourceApiType === "video.txt2video") {
+            payload.input_json = {
+              prompt: "A paper plane moving across a desk, continuous steady motion",
+              duration_seconds: 4,
+            };
+            payload.resources = [];
+          }
+          prerequisiteRequest.idempotency_key = `${runId}:continuation:${sourceApiType}:${cell.exact_model}`;
+          const initial = await session.aicc.call(sourceMethod, prerequisiteRequest) as AiMethodResponse;
           const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
           const artifacts = await validateTerminalArtifacts({
             terminal,
@@ -1358,13 +1376,13 @@ async function executeAcceptance(input: {
           const finance = extractFinance(terminal);
           costBudget.settle(reservation, finance.actualCostUsd);
           financialEntries.push({
-            case_id: `t2.prerequisite.video_continuation.${cell.exact_model}`,
+            case_id: `t2.prerequisite.generated_artifact.${sourceApiType}.${cell.exact_model}`,
             attempt: 1,
             provider_driver: cell.provider_driver,
             provider_instance: cell.provider_instance,
             exact_model: cell.exact_model,
-            api_type: "video.txt2video",
-            method: "video.txt2video",
+            api_type: sourceApiType,
+            method: sourceMethod,
             started_at: new Date(started).toISOString(),
             status: "passed",
             usage: finance.usage,
@@ -1379,13 +1397,13 @@ async function executeAcceptance(input: {
         } catch (error) {
           costBudget.settle(reservation);
           financialEntries.push({
-            case_id: `t2.prerequisite.video_continuation.${cell.exact_model}`,
+            case_id: `t2.prerequisite.generated_artifact.${sourceApiType}.${cell.exact_model}`,
             attempt: 1,
             provider_driver: cell.provider_driver,
             provider_instance: cell.provider_instance,
             exact_model: cell.exact_model,
-            api_type: "video.txt2video",
-            method: "video.txt2video",
+            api_type: sourceApiType,
+            method: sourceMethod,
             started_at: new Date(started).toISOString(),
             status: "failed",
             estimated_cost_usd: estimate,
@@ -1394,7 +1412,7 @@ async function executeAcceptance(input: {
           throw error;
         }
       });
-      continuationPrerequisites.set(cell.exact_model, pending);
+      continuationPrerequisites.set(key, pending);
       return pending;
     };
     const executed = await Promise.all(executableCells.map(async (cell) => {
@@ -1419,7 +1437,7 @@ async function executeAcceptance(input: {
         let reservation: CostReservation | undefined;
         let reservationSettled = false;
         try {
-          if (cell.api_type === "video.extend") {
+          if (cell.generated_artifact_source_api_type || cell.api_type === "video.extend") {
             const generatedVideo = await continuationResource(cell);
             request = structuredClone(request);
             (request.payload as Record<string, unknown>).resources = [generatedVideo];
@@ -1430,7 +1448,7 @@ async function executeAcceptance(input: {
             }
             reservation = costBudget.reserve(attemptEstimate);
             actualCalls += 1;
-            return await session.aicc.call(cell.method, request) as AiMethodResponse;
+            return await callInference(session.aicc, cell.method, request) as AiMethodResponse;
           });
           const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
           assertResponseShape(cell, terminal);
@@ -1507,7 +1525,7 @@ async function executeAcceptance(input: {
                   if (actualCalls >= options.maxRealCalls) throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before Judge`);
                   judgeReservation = costBudget.reserve(judgeEstimate);
                   actualCalls += 1;
-                  return await session.aicc.call("llm.chat", request) as AiMethodResponse;
+                  return await callChatCompletions(session.aicc, request) as AiMethodResponse;
                 }),
               });
               const judgeFinance = extractFinance(verdict.terminalResponse);
@@ -1520,7 +1538,7 @@ async function executeAcceptance(input: {
                 provider_instance: judgeProviderInstance ?? judgeModel,
                 exact_model: judgeModel,
                 api_type: "llm",
-                method: "llm.chat",
+                method: "chat.completions.create",
                 started_at: new Date(judgeStarted).toISOString(),
                 status: verdict.passed ? "passed" : "failed",
                 usage: judgeFinance.usage,
@@ -1551,7 +1569,7 @@ async function executeAcceptance(input: {
                   provider_instance: judgeProviderInstance ?? judgeModel,
                   exact_model: judgeModel,
                   api_type: "llm",
-                  method: "llm.chat",
+                  method: "chat.completions.create",
                   started_at: new Date(judgeStarted).toISOString(),
                   status: "failed",
                   estimated_cost_usd: judgeEstimate,
@@ -1635,7 +1653,7 @@ async function executeAcceptance(input: {
         outbound_message_ids: [],
         artifact_ids: [],
         attempts: [{
-          attempt: 0,
+          attempt: 1,
           started_at: new Date().toISOString(),
           elapsed_ms: 0,
           status: "skipped",
@@ -1913,7 +1931,6 @@ async function executeAcceptance(input: {
     finance,
     cases,
     model_coverage: matrix.coverage,
-    document_format_coverage: matrix.documentCoverage,
     product_defects: [
       ...cases.filter((item) =>
         item.status === "failed" && item.case_id.startsWith("t2.preflight.baseline_mismatch.")
@@ -1984,7 +2001,6 @@ async function executeAcceptance(input: {
       })),
     })),
     model_coverage: matrix.coverage,
-    document_format_coverage: matrix.documentCoverage,
     shard: { index: options.shardIndex, count: options.shardCount },
     executed_matrix: selectedCells.map((cell) => ({
       case_id: cell.case_id,
@@ -1993,11 +2009,8 @@ async function executeAcceptance(input: {
       exact_model: cell.exact_model,
       api_type: cell.api_type,
       method: cell.method,
-      variant: cell.variant ?? "default",
       input_kinds: cell.input_kinds,
       output_kinds: cell.output_kinds,
-      resource_representation: cell.resource_representation ?? null,
-      document_format: cell.document_format ?? null,
       normalized_status: cell.baseline_status,
       source_urls: cell.source_urls,
     })),

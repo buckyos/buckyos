@@ -1,0 +1,19 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "provider_profile_id": "kimi",
+  "metadata_drivers": ["kimi"],
+  "models": [],
+  "patterns": [
+    {
+      "match": "*",
+      "operations": { "llm": "chat.completions.create", "vision.ocr": "chat.completions.create", "vision.caption": "chat.completions.create" }
+    }
+  ],
+  "variants": [
+    { "model_driver": "kimi", "variant": "reasoning-medium", "match": { "provider_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "reasoning-medium" }, "provider_options": { "thinking": { "type": "enabled" } } },
+    { "model_driver": "kimi", "variant": "reasoning-none", "match": { "provider_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "reasoning-none" }, "provider_options": { "thinking": { "type": "disabled" } } }
+  ]
+}

@@ -1,0 +1,3000 @@
+use crate::error::{StorageError, StorageResult};
+use crate::execution::{
+    ExecutionOutput, ExecutionRecord, ExecutionState, ExecutionStore, IdempotencyClaim,
+    PinnedProviderTask, UsageCompletion, UsageCompletionPort,
+};
+use async_trait::async_trait;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use buckyos_api::{
+    ai_methods, get_rdb_instance, AiUsage, AiccError, AiccErrorCode, AiccRouteTraceEvent,
+    AiccUsageEvent, Money, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
+    QueryUsageResponse, RdbBackend, UsageAggregate, UsageBucketedRow, UsageGroupedRow,
+    UsageQueryFilters, UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange,
+    AICC_USAGE_LOG_RDB_INSTANCE_ID,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use sqlx::any::{install_default_drivers, AnyPoolOptions, AnyRow};
+use sqlx::{Any, AnyPool, Executor, QueryBuilder, Row};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Once;
+
+const SERVICE_NAME: &str = "aicc";
+const STORAGE_SCHEMA_VERSION: i64 = 1;
+const INVENTORY_SCHEMA_VERSION: i64 = 1;
+const DEFAULT_LIMIT: usize = 100;
+const MAX_LIMIT: usize = 1_000;
+static INSTALL_DRIVERS: Once = Once::new();
+
+const SCHEMA_META: &str = "CREATE TABLE IF NOT EXISTS aicc_schema_meta (schema_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)";
+const MIGRATIONS: &[(i64, &str)] = &[(1, SCHEMA)];
+
+const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS aicc_schema_meta (
+ schema_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL);
+CREATE TABLE IF NOT EXISTS aicc_provider_inventory_lkgs (
+ provider_instance_name TEXT PRIMARY KEY, schema_version INTEGER NOT NULL DEFAULT 1,
+ provider_profile_id TEXT NOT NULL, protocol_adapter_id TEXT NOT NULL,
+ provider_model_list_fingerprint TEXT NOT NULL, metadata_applied_seq BIGINT NOT NULL,
+ inventory_revision TEXT, discovered_at_ms BIGINT NOT NULL, snapshot_json TEXT NOT NULL,
+ snapshot_sha256 TEXT NOT NULL, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_aicc_provider_inventory_lkgs_updated ON aicc_provider_inventory_lkgs(updated_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_provider_inventory_lkgs_metadata ON aicc_provider_inventory_lkgs(metadata_applied_seq);
+CREATE TABLE IF NOT EXISTS aicc_usage_event (
+ event_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
+ caller_app_id TEXT, task_id TEXT NOT NULL, trace_id TEXT, idempotency_key TEXT, method TEXT NOT NULL,
+ capability TEXT NOT NULL, request_model TEXT NOT NULL, provider_instance_name TEXT NOT NULL,
+ provider_model TEXT NOT NULL, input_tokens BIGINT, output_tokens BIGINT, total_tokens BIGINT,
+ request_units BIGINT, usage_json TEXT NOT NULL, finance_snapshot_json TEXT,
+ finance_amount REAL, finance_currency TEXT, finance_valid INTEGER NOT NULL DEFAULT 0,
+ created_at_ms BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time ON aicc_usage_event(created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time ON aicc_usage_event(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_trace_time ON aicc_usage_event(trace_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_user_time ON aicc_usage_event(user_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_method_time ON aicc_usage_event(method, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_provider_instance_time ON aicc_usage_event(provider_instance_name, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_model_time ON aicc_usage_event(provider_model, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_request_model_time ON aicc_usage_event(request_model, created_at_ms);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_task ON aicc_usage_event(tenant_id, task_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_idem ON aicc_usage_event(tenant_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS aicc_execution_record (
+ tenant_id TEXT NOT NULL, method TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+ task_id TEXT NOT NULL UNIQUE, body_fingerprint TEXT NOT NULL, state TEXT NOT NULL,
+ record_json TEXT NOT NULL, created_at_ms BIGINT NOT NULL, expires_at_ms BIGINT NOT NULL,
+ PRIMARY KEY (tenant_id, method, idempotency_key));
+CREATE INDEX IF NOT EXISTS idx_aicc_execution_record_state ON aicc_execution_record(state, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_execution_record_expiry ON aicc_execution_record(expires_at_ms);
+CREATE TABLE IF NOT EXISTS aicc_route_trace_event (
+ trace_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, caller_app_id TEXT, task_id TEXT NOT NULL,
+ request_id TEXT, route_id TEXT, provider_trace_id TEXT, request_model TEXT NOT NULL,
+ selected_exact_model TEXT, provider_instance_name TEXT, api_type TEXT NOT NULL,
+ scheduler_profile TEXT, outcome TEXT, route_trace_json TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_time ON aicc_route_trace_event(created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_tenant_time ON aicc_route_trace_event(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_event_task_time ON aicc_route_trace_event(task_id, created_at_ms);
+CREATE TABLE IF NOT EXISTS aicc_session_route_history (
+ tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, caller_app_id TEXT NOT NULL,
+ session_id TEXT NOT NULL, selected_exact_model TEXT NOT NULL, updated_at_ms BIGINT NOT NULL,
+ PRIMARY KEY (tenant_id, user_id, caller_app_id, session_id));
+CREATE INDEX IF NOT EXISTS idx_aicc_session_route_history_updated ON aicc_session_route_history(updated_at_ms);
+CREATE TABLE IF NOT EXISTS aicc_artifact_scope (
+ obj_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
+ caller_app_id TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_aicc_artifact_scope_tenant ON aicc_artifact_scope(tenant_id, created_at_ms);
+CREATE TABLE IF NOT EXISTS aicc_artifact_url_source (
+ url_hash TEXT PRIMARY KEY, url TEXT NOT NULL,
+ provider_instance_name TEXT NOT NULL, protocol_adapter_id TEXT NOT NULL,
+ origin_provider TEXT NOT NULL, artifact_id TEXT, content_digest TEXT, expires_at_ms BIGINT,
+ tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, caller_app_id TEXT NOT NULL,
+ request_id TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_aicc_artifact_url_source_tenant ON aicc_artifact_url_source(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_artifact_url_source_provider ON aicc_artifact_url_source(provider_instance_name, created_at_ms);
+CREATE TABLE IF NOT EXISTS aicc_provider_artifact_id (
+ content_digest TEXT NOT NULL, provider_instance_name TEXT NOT NULL,
+ origin_provider TEXT NOT NULL, artifact_id TEXT NOT NULL,
+ expires_at_ms BIGINT, created_at_ms BIGINT NOT NULL,
+ PRIMARY KEY (content_digest, provider_instance_name, origin_provider));
+CREATE INDEX IF NOT EXISTS idx_aicc_provider_artifact_id_provider
+ ON aicc_provider_artifact_id(provider_instance_name, origin_provider, created_at_ms);
+CREATE TABLE IF NOT EXISTS aicc_audit_event (
+ audit_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, caller_app_id TEXT, event_type TEXT NOT NULL,
+ trace_id TEXT, request_id TEXT, task_id TEXT, route_id TEXT, provider_trace_id TEXT,
+ provider_instance_name TEXT, exact_model TEXT, data_json TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_time ON aicc_audit_event(created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_tenant_time ON aicc_audit_event(tenant_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_trace_time ON aicc_audit_event(trace_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_aicc_audit_event_task_time ON aicc_audit_event(task_id, created_at_ms);
+"#;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct InventoryLkgsRecord {
+    pub provider_instance_name: String,
+    pub schema_version: i64,
+    pub provider_profile_id: String,
+    pub protocol_adapter_id: String,
+    pub provider_model_list_fingerprint: String,
+    pub metadata_applied_seq: u64,
+    pub inventory_revision: Option<String>,
+    pub discovered_at_ms: i64,
+    pub snapshot: Value,
+    pub snapshot_sha256: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+impl InventoryLkgsRecord {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        provider_instance_name: impl Into<String>,
+        provider_profile_id: impl Into<String>,
+        protocol_adapter_id: impl Into<String>,
+        fingerprint: impl Into<String>,
+        metadata_applied_seq: u64,
+        inventory_revision: Option<String>,
+        discovered_at_ms: i64,
+        snapshot: Value,
+        now_ms: i64,
+    ) -> StorageResult<Self> {
+        let snapshot_json = serde_json::to_string(&snapshot)?;
+        let record = Self {
+            provider_instance_name: provider_instance_name.into(),
+            schema_version: 1,
+            provider_profile_id: provider_profile_id.into(),
+            protocol_adapter_id: protocol_adapter_id.into(),
+            provider_model_list_fingerprint: fingerprint.into(),
+            metadata_applied_seq,
+            inventory_revision,
+            discovered_at_ms,
+            snapshot,
+            snapshot_sha256: sha256_hex(snapshot_json.as_bytes()),
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    fn validate(&self) -> StorageResult<()> {
+        if self.provider_instance_name.trim().is_empty()
+            || self.provider_profile_id.trim().is_empty()
+            || self.protocol_adapter_id.trim().is_empty()
+            || self.provider_model_list_fingerprint.trim().is_empty()
+        {
+            return Err(StorageError::InvalidRecord(
+                "inventory identity is empty".into(),
+            ));
+        }
+        if self.schema_version != INVENTORY_SCHEMA_VERSION
+            || self.discovered_at_ms < 0
+            || self.created_at_ms < 0
+            || self.updated_at_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "invalid inventory schema or timestamp".into(),
+            ));
+        }
+        let json = serde_json::to_string(&self.snapshot)?;
+        if sha256_hex(json.as_bytes()) != self.snapshot_sha256 {
+            return Err(StorageError::InvalidRecord(
+                "inventory digest mismatch".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArtifactUrlSourceRecord {
+    pub url: String,
+    pub provider_instance_name: String,
+    pub protocol_adapter_id: String,
+    pub origin_provider: String,
+    pub artifact_id: Option<String>,
+    pub content_digest: Option<String>,
+    pub expires_at_ms: Option<i64>,
+    pub tenant_id: String,
+    pub user_id: String,
+    pub caller_app_id: Option<String>,
+    pub request_id: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderArtifactIdRecord {
+    pub content_digest: String,
+    pub provider_instance_name: String,
+    pub origin_provider: String,
+    pub artifact_id: String,
+    pub expires_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProviderCompletion {
+    pub event_id: String,
+    pub tenant_id: String,
+    pub user_id: String,
+    pub caller_app_id: Option<String>,
+    pub task_id: String,
+    pub trace_id: Option<String>,
+    pub idempotency_key: Option<String>,
+    pub method: String,
+    pub capability: String,
+    pub request_model: String,
+    pub provider_instance_name: String,
+    pub provider_model: String,
+    pub usage: Option<AiUsage>,
+    pub finance_snapshot: Option<Value>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UsageWriteOutcome {
+    Inserted,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct RouteTraceRecord {
+    pub trace: AiccRouteTraceEvent,
+    pub request_id: Option<String>,
+    pub route_id: Option<String>,
+    pub provider_trace_id: Option<String>,
+    pub scheduler_profile: Option<String>,
+    pub outcome: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct AuditEvent {
+    pub audit_id: String,
+    pub tenant_id: String,
+    pub caller_app_id: Option<String>,
+    pub event_type: String,
+    pub trace_id: Option<String>,
+    pub request_id: Option<String>,
+    pub task_id: Option<String>,
+    pub route_id: Option<String>,
+    pub provider_trace_id: Option<String>,
+    pub provider_instance_name: Option<String>,
+    pub exact_model: Option<String>,
+    pub data: Value,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AuditQuery {
+    pub tenant_id: String,
+    pub event_types: Vec<String>,
+    pub trace_ids: Vec<String>,
+    pub request_ids: Vec<String>,
+    pub task_ids: Vec<String>,
+    pub route_ids: Vec<String>,
+    pub provider_trace_ids: Vec<String>,
+    pub start_time_ms: Option<i64>,
+    pub end_time_ms: Option<i64>,
+    pub limit: Option<u32>,
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct AuditQueryResult {
+    pub events: Vec<AuditEvent>,
+    pub next_cursor: Option<String>,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RetentionResult {
+    pub route_traces_deleted: u64,
+    pub audit_events_deleted: u64,
+}
+
+pub(crate) struct AiccStorage {
+    pool: AnyPool,
+    backend: RdbBackend,
+}
+
+impl AiccStorage {
+    pub(crate) async fn open(connection: &str, backend: RdbBackend) -> StorageResult<Self> {
+        INSTALL_DRIVERS.call_once(install_default_drivers);
+        let connections = if backend == RdbBackend::Sqlite && connection.contains(":memory:") {
+            1
+        } else {
+            8
+        };
+        let pool = AnyPoolOptions::new()
+            .max_connections(connections)
+            .connect(connection)
+            .await?;
+        let storage = Self { pool, backend };
+        storage.migrate().await?;
+        Ok(storage)
+    }
+
+    async fn migrate(&self) -> StorageResult<()> {
+        self.pool.execute(SCHEMA_META).await?;
+        let version: Option<i64> = sqlx::query_scalar(
+            "SELECT schema_version FROM aicc_schema_meta WHERE schema_key='aicc'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let mut version = version.unwrap_or(0);
+        if version > STORAGE_SCHEMA_VERSION {
+            return Err(StorageError::InvalidRecord(format!(
+                "unsupported AICC storage schema version {version}; latest supported is {STORAGE_SCHEMA_VERSION}"
+            )));
+        }
+        for (target, schema) in MIGRATIONS {
+            if *target <= version {
+                continue;
+            }
+            let mut transaction = self.pool.begin().await?;
+            for statement in schema
+                .split(';')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                transaction.execute(statement).await?;
+            }
+            let update = self.sql(
+                "INSERT INTO aicc_schema_meta (schema_key,schema_version,updated_at_ms)
+                 VALUES ('aicc',?,0) ON CONFLICT(schema_key) DO UPDATE SET schema_version=excluded.schema_version,updated_at_ms=excluded.updated_at_ms",
+            );
+            sqlx::query(&update)
+                .bind(*target)
+                .execute(&mut *transaction)
+                .await?;
+            transaction.commit().await?;
+            version = *target;
+        }
+        if version != STORAGE_SCHEMA_VERSION {
+            return Err(StorageError::InvalidRecord(format!(
+                "incomplete AICC storage migration at version {version}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn open_from_service_spec() -> StorageResult<Self> {
+        let instance = get_rdb_instance(SERVICE_NAME, None, AICC_USAGE_LOG_RDB_INSTANCE_ID)
+            .await
+            .map_err(|e| StorageError::InvalidRecord(e.to_string()))?;
+        Self::open(&instance.connection, instance.backend).await
+    }
+
+    pub(crate) async fn session_exact_model(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        caller_app_id: Option<&str>,
+        session_id: &str,
+    ) -> StorageResult<Option<String>> {
+        let sql = self.sql(
+            "SELECT selected_exact_model FROM aicc_session_route_history
+             WHERE tenant_id=? AND user_id=? AND caller_app_id=? AND session_id=?",
+        );
+        Ok(sqlx::query(&sql)
+            .bind(tenant_id)
+            .bind(user_id)
+            .bind(caller_app_id.unwrap_or_default())
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| row.get("selected_exact_model")))
+    }
+
+    pub(crate) async fn remember_session_exact_model(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        caller_app_id: Option<&str>,
+        session_id: &str,
+        selected_exact_model: &str,
+        updated_at_ms: i64,
+    ) -> StorageResult<()> {
+        if [tenant_id, user_id, session_id, selected_exact_model]
+            .iter()
+            .any(|value| value.trim().is_empty())
+            || session_id.len() > 512
+            || updated_at_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "session route history is invalid".into(),
+            ));
+        }
+        let sql = self.sql(
+            "INSERT INTO aicc_session_route_history
+             (tenant_id,user_id,caller_app_id,session_id,selected_exact_model,updated_at_ms)
+             VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,user_id,caller_app_id,session_id)
+             DO UPDATE SET selected_exact_model=excluded.selected_exact_model,
+                           updated_at_ms=excluded.updated_at_ms",
+        );
+        sqlx::query(&sql)
+            .bind(tenant_id)
+            .bind(user_id)
+            .bind(caller_app_id.unwrap_or_default())
+            .bind(session_id)
+            .bind(selected_exact_model)
+            .bind(updated_at_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn remember_artifact_scope(
+        &self,
+        obj_id: &str,
+        tenant_id: &str,
+        user_id: &str,
+        caller_app_id: Option<&str>,
+        created_at_ms: i64,
+    ) -> StorageResult<()> {
+        if [obj_id, tenant_id, user_id]
+            .iter()
+            .any(|value| value.trim().is_empty())
+            || created_at_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "artifact scope fields are invalid".into(),
+            ));
+        }
+        let sql = self.sql(
+            "INSERT INTO aicc_artifact_scope
+             (obj_id,tenant_id,user_id,caller_app_id,created_at_ms) VALUES (?,?,?,?,?)
+             ON CONFLICT(obj_id) DO NOTHING",
+        );
+        sqlx::query(&sql)
+            .bind(obj_id)
+            .bind(tenant_id)
+            .bind(user_id)
+            .bind(caller_app_id.unwrap_or_default())
+            .bind(created_at_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn artifact_tenant(&self, obj_id: &str) -> StorageResult<Option<String>> {
+        let sql = self.sql("SELECT tenant_id FROM aicc_artifact_scope WHERE obj_id=?");
+        Ok(sqlx::query(&sql)
+            .bind(obj_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| row.get("tenant_id")))
+    }
+
+    pub(crate) async fn remember_artifact_url_source(
+        &self,
+        record: &ArtifactUrlSourceRecord,
+    ) -> StorageResult<()> {
+        if [
+            record.url.as_str(),
+            record.provider_instance_name.as_str(),
+            record.protocol_adapter_id.as_str(),
+            record.origin_provider.as_str(),
+            record.tenant_id.as_str(),
+            record.user_id.as_str(),
+            record.request_id.as_str(),
+        ]
+        .iter()
+        .any(|value| value.trim().is_empty())
+            || record
+                .content_digest
+                .as_deref()
+                .is_some_and(|digest| !valid_content_digest(digest))
+            || record
+                .expires_at_ms
+                .is_some_and(|expires_at_ms| expires_at_ms < 0)
+            || record.created_at_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "artifact URL source fields are invalid".into(),
+            ));
+        }
+        let url_hash = sha256_hex(record.url.as_bytes());
+        let sql = self.sql(
+            "INSERT INTO aicc_artifact_url_source
+             (url_hash,url,provider_instance_name,protocol_adapter_id,origin_provider,artifact_id,
+              content_digest,expires_at_ms,tenant_id,user_id,caller_app_id,request_id,created_at_ms)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(url_hash) DO NOTHING",
+        );
+        sqlx::query(&sql)
+            .bind(url_hash)
+            .bind(&record.url)
+            .bind(&record.provider_instance_name)
+            .bind(&record.protocol_adapter_id)
+            .bind(&record.origin_provider)
+            .bind(&record.artifact_id)
+            .bind(&record.content_digest)
+            .bind(record.expires_at_ms)
+            .bind(&record.tenant_id)
+            .bind(&record.user_id)
+            .bind(record.caller_app_id.as_deref().unwrap_or_default())
+            .bind(&record.request_id)
+            .bind(record.created_at_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn artifact_url_source(
+        &self,
+        url: &str,
+        now_ms: i64,
+    ) -> StorageResult<Option<ArtifactUrlSourceRecord>> {
+        if url.trim().is_empty() || now_ms < 0 {
+            return Err(StorageError::InvalidRecord(
+                "artifact URL must not be empty".into(),
+            ));
+        }
+        let sql = self.sql(
+            "SELECT url,provider_instance_name,protocol_adapter_id,origin_provider,artifact_id,
+                    content_digest,expires_at_ms,tenant_id,user_id,caller_app_id,request_id,created_at_ms
+             FROM aicc_artifact_url_source WHERE url_hash=?",
+        );
+        let row = sqlx::query(&sql)
+            .bind(sha256_hex(url.as_bytes()))
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let stored_url: String = row.get("url");
+        if stored_url != url {
+            return Ok(None);
+        }
+        let expires_at_ms: Option<i64> = row.get("expires_at_ms");
+        if expires_at_ms.is_some_and(|expires_at_ms| expires_at_ms <= now_ms) {
+            let delete =
+                self.sql("DELETE FROM aicc_artifact_url_source WHERE url_hash=? AND url=?");
+            sqlx::query(&delete)
+                .bind(sha256_hex(url.as_bytes()))
+                .bind(url)
+                .execute(&self.pool)
+                .await?;
+            return Ok(None);
+        }
+        let caller_app_id: String = row.get("caller_app_id");
+        Ok(Some(ArtifactUrlSourceRecord {
+            url: stored_url,
+            provider_instance_name: row.get("provider_instance_name"),
+            protocol_adapter_id: row.get("protocol_adapter_id"),
+            origin_provider: row.get("origin_provider"),
+            artifact_id: row.get("artifact_id"),
+            content_digest: row.get("content_digest"),
+            expires_at_ms,
+            tenant_id: row.get("tenant_id"),
+            user_id: row.get("user_id"),
+            caller_app_id: (!caller_app_id.is_empty()).then_some(caller_app_id),
+            request_id: row.get("request_id"),
+            created_at_ms: row.get("created_at_ms"),
+        }))
+    }
+
+    pub(crate) async fn remember_provider_artifact_id(
+        &self,
+        record: &ProviderArtifactIdRecord,
+    ) -> StorageResult<()> {
+        if [
+            record.content_digest.as_str(),
+            record.provider_instance_name.as_str(),
+            record.origin_provider.as_str(),
+            record.artifact_id.as_str(),
+        ]
+        .iter()
+        .any(|value| value.trim().is_empty())
+            || !valid_content_digest(&record.content_digest)
+            || record
+                .expires_at_ms
+                .is_some_and(|expires_at_ms| expires_at_ms < 0)
+            || record.created_at_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "Provider artifact ID fields are invalid".into(),
+            ));
+        }
+        if record
+            .expires_at_ms
+            .is_some_and(|expires_at_ms| expires_at_ms <= record.created_at_ms)
+        {
+            return self
+                .forget_provider_artifact_id(
+                    &record.content_digest,
+                    &record.provider_instance_name,
+                    &record.origin_provider,
+                    &record.artifact_id,
+                )
+                .await;
+        }
+        let sql = self.sql(
+            "INSERT INTO aicc_provider_artifact_id
+             (content_digest,provider_instance_name,origin_provider,artifact_id,expires_at_ms,created_at_ms)
+             VALUES (?,?,?,?,?,?)
+             ON CONFLICT(content_digest,provider_instance_name,origin_provider) DO UPDATE SET
+              artifact_id=excluded.artifact_id,expires_at_ms=excluded.expires_at_ms,
+              created_at_ms=excluded.created_at_ms",
+        );
+        sqlx::query(&sql)
+            .bind(&record.content_digest)
+            .bind(&record.provider_instance_name)
+            .bind(&record.origin_provider)
+            .bind(&record.artifact_id)
+            .bind(record.expires_at_ms)
+            .bind(record.created_at_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn provider_artifact_id(
+        &self,
+        content_digest: &str,
+        provider_instance_name: &str,
+        origin_provider: &str,
+        now_ms: i64,
+    ) -> StorageResult<Option<String>> {
+        if [content_digest, provider_instance_name, origin_provider]
+            .iter()
+            .any(|value| value.trim().is_empty())
+            || !valid_content_digest(content_digest)
+            || now_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "Provider artifact ID lookup fields are invalid".into(),
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        let delete = self.sql(
+            "DELETE FROM aicc_provider_artifact_id
+             WHERE content_digest=? AND provider_instance_name=? AND origin_provider=?
+               AND expires_at_ms IS NOT NULL AND expires_at_ms<=?",
+        );
+        sqlx::query(&delete)
+            .bind(content_digest)
+            .bind(provider_instance_name)
+            .bind(origin_provider)
+            .bind(now_ms)
+            .execute(&mut *tx)
+            .await?;
+        let select = self.sql(
+            "SELECT artifact_id FROM aicc_provider_artifact_id
+             WHERE content_digest=? AND provider_instance_name=? AND origin_provider=?",
+        );
+        let artifact_id = sqlx::query_scalar(&select)
+            .bind(content_digest)
+            .bind(provider_instance_name)
+            .bind(origin_provider)
+            .fetch_optional(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(artifact_id)
+    }
+
+    pub(crate) async fn forget_provider_artifact_id(
+        &self,
+        content_digest: &str,
+        provider_instance_name: &str,
+        origin_provider: &str,
+        artifact_id: &str,
+    ) -> StorageResult<()> {
+        if [
+            content_digest,
+            provider_instance_name,
+            origin_provider,
+            artifact_id,
+        ]
+        .iter()
+        .any(|value| value.trim().is_empty())
+            || !valid_content_digest(content_digest)
+        {
+            return Err(StorageError::InvalidRecord(
+                "Provider artifact ID invalidation fields are invalid".into(),
+            ));
+        }
+        let sql = self.sql(
+            "DELETE FROM aicc_provider_artifact_id
+             WHERE content_digest=? AND provider_instance_name=? AND origin_provider=?
+               AND artifact_id=?",
+        );
+        sqlx::query(&sql)
+            .bind(content_digest)
+            .bind(provider_instance_name)
+            .bind(origin_provider)
+            .bind(artifact_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn complete_artifact_url_digest(
+        &self,
+        source: &ArtifactUrlSourceRecord,
+        content_digest: &str,
+        completed_at_ms: i64,
+    ) -> StorageResult<()> {
+        if !valid_content_digest(content_digest) || completed_at_ms < 0 {
+            return Err(StorageError::InvalidRecord(
+                "artifact URL content digest is invalid".into(),
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        let update = self.sql(
+            "UPDATE aicc_artifact_url_source SET content_digest=?
+             WHERE url_hash=? AND url=?",
+        );
+        sqlx::query(&update)
+            .bind(content_digest)
+            .bind(sha256_hex(source.url.as_bytes()))
+            .bind(&source.url)
+            .execute(&mut *tx)
+            .await?;
+        if let Some(artifact_id) = source.artifact_id.as_deref().filter(|_| {
+            !source
+                .expires_at_ms
+                .is_some_and(|expires_at_ms| expires_at_ms <= completed_at_ms)
+        }) {
+            let insert = self.sql(
+                "INSERT INTO aicc_provider_artifact_id
+                 (content_digest,provider_instance_name,origin_provider,artifact_id,expires_at_ms,created_at_ms)
+                 VALUES (?,?,?,?,?,?)
+                 ON CONFLICT(content_digest,provider_instance_name,origin_provider) DO UPDATE SET
+                  artifact_id=excluded.artifact_id,expires_at_ms=excluded.expires_at_ms,
+                  created_at_ms=excluded.created_at_ms",
+            );
+            sqlx::query(&insert)
+                .bind(content_digest)
+                .bind(&source.provider_instance_name)
+                .bind(&source.origin_provider)
+                .bind(artifact_id)
+                .bind(source.expires_at_ms)
+                .bind(source.created_at_ms)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn upsert_inventory(&self, record: &InventoryLkgsRecord) -> StorageResult<()> {
+        record.validate()?;
+        let sql = self.sql("INSERT INTO aicc_provider_inventory_lkgs
+          (provider_instance_name,schema_version,provider_profile_id,protocol_adapter_id,
+           provider_model_list_fingerprint,metadata_applied_seq,inventory_revision,discovered_at_ms,
+           snapshot_json,snapshot_sha256,created_at_ms,updated_at_ms)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider_instance_name) DO UPDATE SET
+           schema_version=excluded.schema_version,provider_profile_id=excluded.provider_profile_id,
+           protocol_adapter_id=excluded.protocol_adapter_id,
+           provider_model_list_fingerprint=excluded.provider_model_list_fingerprint,
+           metadata_applied_seq=excluded.metadata_applied_seq,inventory_revision=excluded.inventory_revision,
+           discovered_at_ms=excluded.discovered_at_ms,snapshot_json=excluded.snapshot_json,
+           snapshot_sha256=excluded.snapshot_sha256,updated_at_ms=excluded.updated_at_ms");
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(&sql)
+            .bind(&record.provider_instance_name)
+            .bind(record.schema_version)
+            .bind(&record.provider_profile_id)
+            .bind(&record.protocol_adapter_id)
+            .bind(&record.provider_model_list_fingerprint)
+            .bind(to_i64(record.metadata_applied_seq)?)
+            .bind(&record.inventory_revision)
+            .bind(record.discovered_at_ms)
+            .bind(serde_json::to_string(&record.snapshot)?)
+            .bind(&record.snapshot_sha256)
+            .bind(record.created_at_ms)
+            .bind(record.updated_at_ms)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn load_inventory(
+        &self,
+        name: &str,
+    ) -> StorageResult<Option<InventoryLkgsRecord>> {
+        let sql =
+            self.sql("SELECT * FROM aicc_provider_inventory_lkgs WHERE provider_instance_name=?");
+        let Some(row) = sqlx::query(&sql)
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(None);
+        };
+        match inventory_from_row(row).and_then(|r| {
+            r.validate()?;
+            Ok(r)
+        }) {
+            Ok(record) => Ok(Some(record)),
+            Err(_) => {
+                let sql = self
+                    .sql("DELETE FROM aicc_provider_inventory_lkgs WHERE provider_instance_name=?");
+                sqlx::query(&sql).bind(name).execute(&self.pool).await?;
+                Ok(None)
+            }
+        }
+    }
+
+    pub(crate) async fn write_provider_completion(
+        &self,
+        completion: ProviderCompletion,
+    ) -> StorageResult<UsageWriteOutcome> {
+        let usage = completion.usage.unwrap_or_default();
+        let event = AiccUsageEvent {
+            event_id: completion.event_id,
+            tenant_id: completion.tenant_id,
+            user_id: completion.user_id,
+            caller_app_id: completion.caller_app_id,
+            task_id: completion.task_id,
+            trace_id: completion.trace_id,
+            idempotency_key: completion.idempotency_key,
+            method: completion.method,
+            capability: completion.capability,
+            request_model: completion.request_model,
+            provider_instance_name: completion.provider_instance_name,
+            provider_model: completion.provider_model,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total_tokens,
+            request_units: usage.request_units,
+            usage_json: usage,
+            finance_snapshot_json: completion.finance_snapshot,
+            created_at_ms: completion.created_at_ms,
+        };
+        self.write_usage(&event).await
+    }
+
+    async fn write_usage(&self, e: &AiccUsageEvent) -> StorageResult<UsageWriteOutcome> {
+        if [
+            &e.event_id,
+            &e.tenant_id,
+            &e.user_id,
+            &e.task_id,
+            &e.method,
+            &e.capability,
+            &e.request_model,
+            &e.provider_instance_name,
+            &e.provider_model,
+        ]
+        .iter()
+        .any(|v| v.trim().is_empty())
+            || e.trace_id.as_ref().is_some_and(|v| v.trim().is_empty())
+            || e.created_at_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "usage attribution is incomplete".into(),
+            ));
+        }
+        if !ai_methods::is_ai_method(&e.method) {
+            return Err(StorageError::InvalidRecord(
+                "usage method is not canonical".into(),
+            ));
+        }
+        let finance = e.finance_snapshot_json.as_ref().and_then(valid_finance);
+        let sql = self.sql("INSERT INTO aicc_usage_event
+          (event_id,tenant_id,user_id,caller_app_id,task_id,trace_id,idempotency_key,method,capability,
+           request_model,provider_instance_name,provider_model,input_tokens,output_tokens,total_tokens,
+           request_units,usage_json,finance_snapshot_json,finance_amount,finance_currency,finance_valid,created_at_ms)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING");
+        let result = sqlx::query(&sql)
+            .bind(&e.event_id)
+            .bind(&e.tenant_id)
+            .bind(&e.user_id)
+            .bind(&e.caller_app_id)
+            .bind(&e.task_id)
+            .bind(&e.trace_id)
+            .bind(&e.idempotency_key)
+            .bind(&e.method)
+            .bind(&e.capability)
+            .bind(&e.request_model)
+            .bind(&e.provider_instance_name)
+            .bind(&e.provider_model)
+            .bind(opt_i64(e.input_tokens)?)
+            .bind(opt_i64(e.output_tokens)?)
+            .bind(opt_i64(e.total_tokens)?)
+            .bind(opt_i64(e.request_units)?)
+            .bind(serde_json::to_string(&e.usage_json)?)
+            .bind(
+                e.finance_snapshot_json
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
+            )
+            .bind(finance.as_ref().map(|(amount, _)| *amount))
+            .bind(finance.as_ref().map(|(_, currency)| currency.as_str()))
+            .bind(i64::from(finance.is_some()))
+            .bind(e.created_at_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(if result.rows_affected() == 1 {
+            UsageWriteOutcome::Inserted
+        } else {
+            UsageWriteOutcome::Duplicate
+        })
+    }
+
+    async fn claim_execution(&self, initial: &ExecutionRecord) -> StorageResult<IdempotencyClaim> {
+        validate_initial_execution(initial)?;
+        let record_json = serde_json::to_string(initial)?;
+        let sql = self.sql(
+            "INSERT INTO aicc_execution_record
+             (tenant_id,method,idempotency_key,task_id,body_fingerprint,state,record_json,
+              created_at_ms,expires_at_ms) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+        );
+        let inserted = sqlx::query(&sql)
+            .bind(&initial.scope.tenant_id)
+            .bind(&initial.scope.method)
+            .bind(&initial.scope.key)
+            .bind(&initial.task_id)
+            .bind(&initial.body_fingerprint)
+            .bind(state_name(initial.state))
+            .bind(record_json)
+            .bind(to_i64(initial.created_at_ms)?)
+            .bind(to_i64(initial.expires_at_ms)?)
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            == 1;
+        if inserted {
+            return Ok(IdempotencyClaim::Created(initial.clone()));
+        }
+        let Some(existing) = self
+            .execution_by_scope(
+                &initial.scope.tenant_id,
+                &initial.scope.method,
+                &initial.scope.key,
+            )
+            .await?
+        else {
+            return Err(StorageError::InvalidRecord(
+                "execution task ID is already bound to another idempotency scope".into(),
+            ));
+        };
+        Ok(if existing.body_fingerprint == initial.body_fingerprint {
+            IdempotencyClaim::Existing(existing)
+        } else {
+            IdempotencyClaim::Conflict
+        })
+    }
+
+    async fn execution_by_scope(
+        &self,
+        tenant_id: &str,
+        method: &str,
+        key: &str,
+    ) -> StorageResult<Option<ExecutionRecord>> {
+        let sql = self.sql(
+            "SELECT state,record_json FROM aicc_execution_record
+             WHERE tenant_id=? AND method=? AND idempotency_key=?",
+        );
+        sqlx::query(&sql)
+            .bind(tenant_id)
+            .bind(method)
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(execution_from_row)
+            .transpose()
+    }
+
+    async fn execution_by_task(&self, task_id: &str) -> StorageResult<Option<ExecutionRecord>> {
+        let sql = self.sql("SELECT state,record_json FROM aicc_execution_record WHERE task_id=?");
+        sqlx::query(&sql)
+            .bind(task_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(execution_from_row)
+            .transpose()
+    }
+
+    async fn mutate_execution(
+        &self,
+        task_id: &str,
+        mutation: impl FnOnce(&mut ExecutionRecord),
+    ) -> StorageResult<bool> {
+        let Some(mut record) = self.execution_by_task(task_id).await? else {
+            return Err(StorageError::InvalidRecord(
+                "execution task does not exist".into(),
+            ));
+        };
+        if execution_is_terminal(record.state) {
+            return Ok(false);
+        }
+        mutation(&mut record);
+        let sql = self.sql(
+            "UPDATE aicc_execution_record SET state=?,record_json=? WHERE task_id=?
+             AND state IN ('submitted','queued','running')",
+        );
+        Ok(sqlx::query(&sql)
+            .bind(state_name(record.state))
+            .bind(serde_json::to_string(&record)?)
+            .bind(task_id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            == 1)
+    }
+
+    async fn recoverable_executions(&self) -> StorageResult<Vec<ExecutionRecord>> {
+        let rows = sqlx::query(
+            "SELECT state,record_json FROM aicc_execution_record
+             WHERE state IN ('submitted','queued','running') ORDER BY created_at_ms,task_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(execution_from_row).collect()
+    }
+
+    pub(crate) async fn query_usage(
+        &self,
+        req: &QueryUsageRequest,
+        now_ms: i64,
+    ) -> StorageResult<QueryUsageResponse> {
+        let (start, end) = time_range(&req.time_range, now_ms)?;
+        let total = self
+            .usage_aggregates(start, end, &req.filters, &[], None)
+            .await?
+            .into_iter()
+            .next()
+            .map(|row| row.aggregate)
+            .unwrap_or_default();
+        let grouped = if req.group_by.is_empty() {
+            Vec::new()
+        } else {
+            self.usage_aggregates(start, end, &req.filters, &req.group_by, None)
+                .await?
+                .into_iter()
+                .map(|row| UsageGroupedRow {
+                    group: row.group,
+                    aggregate: row.aggregate,
+                })
+                .collect()
+        };
+        let buckets = match req.time_bucket {
+            Some(bucket) => self
+                .usage_aggregates(
+                    start,
+                    end,
+                    &req.filters,
+                    &req.group_by,
+                    Some(bucket.span_ms()),
+                )
+                .await?
+                .into_iter()
+                .map(|row| UsageBucketedRow {
+                    bucket_start_ms: row.bucket_start_ms.unwrap_or_default(),
+                    group: row.group,
+                    aggregate: row.aggregate,
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let mut raw = Vec::new();
+        let mut next_cursor = None;
+        if matches!(
+            req.output_mode,
+            UsageQueryOutputMode::Events | UsageQueryOutputMode::SummaryAndEvents
+        ) {
+            let cursor = req.cursor.as_deref().map(decode_cursor).transpose()?;
+            let page_limit = limit(req.limit);
+            let mut query = usage_query(
+                "SELECT * FROM aicc_usage_event WHERE created_at_ms>=".to_owned(),
+                start,
+                end,
+                &req.filters,
+                cursor.as_ref(),
+            );
+            query
+                .push(" ORDER BY created_at_ms DESC,event_id DESC LIMIT ")
+                .push_bind((page_limit + 1) as i64);
+            raw = query
+                .build()
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .map(usage_from_row)
+                .collect::<StorageResult<Vec<_>>>()?;
+            if raw.len() > page_limit {
+                next_cursor = Some(encode_cursor(
+                    raw[page_limit - 1].created_at_ms,
+                    &raw[page_limit - 1].event_id,
+                ));
+                raw.truncate(page_limit);
+            }
+        }
+        Ok(QueryUsageResponse {
+            total,
+            grouped,
+            buckets,
+            events: raw,
+            next_cursor,
+        })
+    }
+
+    async fn usage_aggregates(
+        &self,
+        start: i64,
+        end: i64,
+        filters: &UsageQueryFilters,
+        groups: &[UsageQueryGroup],
+        bucket_span_ms: Option<i64>,
+    ) -> StorageResult<Vec<SqlUsageAggregateRow>> {
+        let mut select = String::from("SELECT ");
+        if let Some(span) = bucket_span_ms {
+            select.push_str(&format!(
+                "(created_at_ms / {span}) * {span} AS bucket_start_ms,"
+            ));
+        }
+        for group in groups {
+            select.push_str(group.as_key());
+            select.push(',');
+        }
+        select.push_str(
+            "finance_currency,COUNT(*) AS total_requests,\
+             COALESCE(SUM(COALESCE(input_tokens,0)),0) AS input_tokens,\
+             COALESCE(SUM(COALESCE(output_tokens,0)),0) AS output_tokens,\
+             COALESCE(SUM(COALESCE(total_tokens,0)),0) AS total_tokens,\
+             COALESCE(SUM(CASE WHEN request_units IS NULL OR request_units<1 THEN 1 ELSE request_units END),0) AS request_units,\
+             COALESCE(SUM(CASE WHEN finance_valid=1 THEN finance_amount ELSE 0 END),0.0) AS finance_amount,\
+             COALESCE(SUM(finance_valid),0) AS valid_finance_count \
+             FROM aicc_usage_event WHERE created_at_ms>=",
+        );
+        let mut query = usage_query(select, start, end, filters, None);
+        query.push(" GROUP BY ");
+        if let Some(span) = bucket_span_ms {
+            query.push(format!("(created_at_ms / {span}) * {span},"));
+        }
+        for group in groups {
+            query.push(group.as_key()).push(',');
+        }
+        query.push("finance_currency");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        merge_usage_aggregate_rows(rows, groups, bucket_span_ms.is_some())
+    }
+
+    pub(crate) async fn write_route_trace(&self, r: &RouteTraceRecord) -> StorageResult<()> {
+        if r.trace.trace_id.trim().is_empty()
+            || r.trace.tenant_id.trim().is_empty()
+            || r.trace.task_id.trim().is_empty()
+            || r.trace.created_at_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "trace identity is incomplete".into(),
+            ));
+        }
+        let sql = self.sql("INSERT INTO aicc_route_trace_event
+          (trace_id,tenant_id,caller_app_id,task_id,request_id,route_id,provider_trace_id,
+           request_model,selected_exact_model,provider_instance_name,api_type,scheduler_profile,
+           outcome,route_trace_json,created_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trace_id) DO NOTHING");
+        sqlx::query(&sql)
+            .bind(&r.trace.trace_id)
+            .bind(&r.trace.tenant_id)
+            .bind(&r.trace.caller_app_id)
+            .bind(&r.trace.task_id)
+            .bind(&r.request_id)
+            .bind(&r.route_id)
+            .bind(&r.provider_trace_id)
+            .bind(&r.trace.request_model)
+            .bind(&r.trace.selected_exact_model)
+            .bind(&r.trace.provider_instance_name)
+            .bind(&r.trace.api_type)
+            .bind(&r.scheduler_profile)
+            .bind(&r.outcome)
+            .bind(serde_json::to_string(&r.trace.route_trace_json)?)
+            .bind(r.trace.created_at_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn query_route_traces(
+        &self,
+        tenant: &str,
+        req: &QueryRouteTraceRequest,
+    ) -> StorageResult<QueryRouteTraceResponse> {
+        let cursor = req.cursor.as_deref().map(decode_cursor).transpose()?;
+        let total_count: i64 = route_trace_query(
+            "SELECT COUNT(*) AS total_count FROM aicc_route_trace_event WHERE tenant_id=",
+            tenant,
+            req,
+            None,
+        )
+        .build()
+        .fetch_one(&self.pool)
+        .await?
+        .try_get("total_count")?;
+        let page_limit = limit(req.limit);
+        let mut query = route_trace_query(
+            "SELECT * FROM aicc_route_trace_event WHERE tenant_id=",
+            tenant,
+            req,
+            cursor.as_ref(),
+        );
+        query
+            .push(" ORDER BY created_at_ms DESC,trace_id DESC LIMIT ")
+            .push_bind((page_limit + 1) as i64);
+        let rows = query.build().fetch_all(&self.pool).await?;
+        let mut records = rows
+            .into_iter()
+            .map(trace_from_row)
+            .collect::<StorageResult<Vec<_>>>()?;
+        let next_cursor = (records.len() > page_limit).then(|| {
+            encode_cursor(
+                records[page_limit - 1].trace.created_at_ms,
+                &records[page_limit - 1].trace.trace_id,
+            )
+        });
+        records.truncate(page_limit);
+        Ok(QueryRouteTraceResponse {
+            traces: records
+                .into_iter()
+                .map(route_trace_record_to_value)
+                .collect::<Result<Vec<_>, _>>()?,
+            next_cursor,
+            total_count: Some(from_i64(total_count)?),
+        })
+    }
+
+    pub(crate) async fn write_audit_event(&self, e: &AuditEvent) -> StorageResult<()> {
+        if e.audit_id.trim().is_empty()
+            || e.tenant_id.trim().is_empty()
+            || e.event_type.trim().is_empty()
+            || e.trace_id.as_ref().is_some_and(|v| v.trim().is_empty())
+            || e.created_at_ms < 0
+        {
+            return Err(StorageError::InvalidRecord(
+                "audit identity is incomplete".into(),
+            ));
+        }
+        let sql = self.sql("INSERT INTO aicc_audit_event
+          (audit_id,tenant_id,caller_app_id,event_type,trace_id,request_id,task_id,route_id,provider_trace_id,
+           provider_instance_name,exact_model,data_json,created_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(audit_id) DO NOTHING");
+        sqlx::query(&sql)
+            .bind(&e.audit_id)
+            .bind(&e.tenant_id)
+            .bind(&e.caller_app_id)
+            .bind(&e.event_type)
+            .bind(&e.trace_id)
+            .bind(&e.request_id)
+            .bind(&e.task_id)
+            .bind(&e.route_id)
+            .bind(&e.provider_trace_id)
+            .bind(&e.provider_instance_name)
+            .bind(&e.exact_model)
+            .bind(serde_json::to_string(&e.data)?)
+            .bind(e.created_at_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn query_audit(&self, q: &AuditQuery) -> StorageResult<AuditQueryResult> {
+        if q.tenant_id.trim().is_empty() {
+            return Err(StorageError::InvalidRecord("audit tenant is empty".into()));
+        }
+        let mut query = QueryBuilder::<Any>::new("SELECT * FROM aicc_audit_event WHERE tenant_id=");
+        query.push_bind(q.tenant_id.clone());
+        if let Some(start) = q.start_time_ms {
+            query.push(" AND created_at_ms>=").push_bind(start);
+        }
+        if let Some(end) = q.end_time_ms {
+            query.push(" AND created_at_ms<").push_bind(end);
+        }
+        push_in_clause(&mut query, "event_type", &q.event_types);
+        push_in_clause(&mut query, "trace_id", &q.trace_ids);
+        push_in_clause(&mut query, "request_id", &q.request_ids);
+        push_in_clause(&mut query, "task_id", &q.task_ids);
+        push_in_clause(&mut query, "route_id", &q.route_ids);
+        push_in_clause(&mut query, "provider_trace_id", &q.provider_trace_ids);
+        query.push(" ORDER BY created_at_ms DESC,audit_id DESC");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        let cursor = q.cursor.as_deref().map(decode_cursor).transpose()?;
+        let mut events = rows
+            .into_iter()
+            .map(audit_from_row)
+            .collect::<StorageResult<Vec<_>>>()?;
+        events.retain(|e| {
+            audit_matches(e, q) && cursor_allows(e.created_at_ms, &e.audit_id, cursor.as_ref())
+        });
+        let page_limit = limit(q.limit);
+        let next_cursor = (events.len() > page_limit).then(|| {
+            encode_cursor(
+                events[page_limit - 1].created_at_ms,
+                &events[page_limit - 1].audit_id,
+            )
+        });
+        events.truncate(page_limit);
+        Ok(AuditQueryResult {
+            events,
+            next_cursor,
+        })
+    }
+
+    pub(crate) async fn enforce_diagnostic_retention(
+        &self,
+        cutoff_ms: i64,
+    ) -> StorageResult<RetentionResult> {
+        if cutoff_ms < 0 {
+            return Err(StorageError::InvalidRecord(
+                "negative retention cutoff".into(),
+            ));
+        }
+        let trace_sql = self.sql("DELETE FROM aicc_route_trace_event WHERE created_at_ms<?");
+        let audit_sql = self.sql("DELETE FROM aicc_audit_event WHERE created_at_ms<?");
+        let mut tx = self.pool.begin().await?;
+        let traces = sqlx::query(&trace_sql)
+            .bind(cutoff_ms)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        let audits = sqlx::query(&audit_sql)
+            .bind(cutoff_ms)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        Ok(RetentionResult {
+            route_traces_deleted: traces,
+            audit_events_deleted: audits,
+        })
+    }
+
+    fn sql(&self, sql: &str) -> String {
+        if self.backend == RdbBackend::Postgres {
+            placeholders(sql)
+        } else {
+            sql.to_string()
+        }
+    }
+}
+
+#[async_trait]
+impl ExecutionStore for AiccStorage {
+    async fn claim(&self, initial: ExecutionRecord) -> Result<IdempotencyClaim, AiccError> {
+        self.claim_execution(&initial).await.map_err(storage_error)
+    }
+
+    async fn get_task(&self, task_id: &str) -> Result<Option<ExecutionRecord>, AiccError> {
+        self.execution_by_task(task_id).await.map_err(storage_error)
+    }
+
+    async fn set_running(
+        &self,
+        task_id: &str,
+        state: ExecutionState,
+        binding: PinnedProviderTask,
+    ) -> Result<bool, AiccError> {
+        if execution_is_terminal(state) {
+            return Err(AiccError::new(
+                AiccErrorCode::InternalError,
+                "set_running cannot persist a terminal execution state",
+            ));
+        }
+        self.mutate_execution(task_id, |record| {
+            record.state = state;
+            record.binding = Some(binding);
+        })
+        .await
+        .map_err(storage_error)
+    }
+
+    async fn stage_output(
+        &self,
+        task_id: &str,
+        output: ExecutionOutput,
+    ) -> Result<bool, AiccError> {
+        self.mutate_execution(task_id, |record| {
+            record.output = Some(output);
+        })
+        .await
+        .map_err(storage_error)
+    }
+
+    async fn try_complete(
+        &self,
+        task_id: &str,
+        output: ExecutionOutput,
+    ) -> Result<bool, AiccError> {
+        self.mutate_execution(task_id, |record| {
+            record.state = ExecutionState::Succeeded;
+            record.output = Some(output);
+        })
+        .await
+        .map_err(storage_error)
+    }
+
+    async fn try_fail(&self, task_id: &str, error: AiccError) -> Result<bool, AiccError> {
+        self.mutate_execution(task_id, |record| {
+            record.state = if error.code == AiccErrorCode::Cancelled {
+                ExecutionState::Cancelled
+            } else {
+                ExecutionState::Failed
+            };
+            record.error = Some(error);
+        })
+        .await
+        .map_err(storage_error)
+    }
+
+    async fn try_cancel(&self, task_id: &str) -> Result<bool, AiccError> {
+        self.mutate_execution(task_id, |record| {
+            record.state = ExecutionState::Cancelled;
+            record.error = Some(AiccError::new(
+                AiccErrorCode::Cancelled,
+                "task was cancelled",
+            ));
+        })
+        .await
+        .map_err(storage_error)
+    }
+
+    async fn recoverable(&self) -> Result<Vec<ExecutionRecord>, AiccError> {
+        self.recoverable_executions().await.map_err(storage_error)
+    }
+}
+
+#[async_trait]
+impl UsageCompletionPort for AiccStorage {
+    async fn write_once(&self, completion: UsageCompletion) -> Result<(), AiccError> {
+        self.write_provider_completion(ProviderCompletion {
+            event_id: completion.event_id,
+            tenant_id: completion.tenant_id,
+            user_id: completion.user_id,
+            caller_app_id: completion.caller_app_id,
+            task_id: completion.task_id,
+            trace_id: completion.trace_id,
+            idempotency_key: Some(completion.idempotency_key),
+            method: completion.method,
+            capability: completion.capability,
+            request_model: completion.request_model,
+            provider_instance_name: completion.provider_instance_name,
+            provider_model: completion.provider_model,
+            usage: Some(completion.usage),
+            finance_snapshot: completion
+                .finance_snapshot
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|_| {
+                    AiccError::new(
+                        AiccErrorCode::InternalError,
+                        "usage finance snapshot could not be serialized",
+                    )
+                })?,
+            created_at_ms: completion.completed_at_ms,
+        })
+        .await
+        .map(|_| ())
+        .map_err(storage_error)
+    }
+}
+
+fn validate_initial_execution(record: &ExecutionRecord) -> StorageResult<()> {
+    if record.usage_event_id.trim().is_empty()
+        || record.user_id.trim().is_empty()
+        || record.request_model.trim().is_empty()
+        || record.body_fingerprint.trim().is_empty()
+        || record.task_id.trim().is_empty()
+        || record.event_ref.trim().is_empty()
+        || record.scope.tenant_id.trim().is_empty()
+        || record.scope.method.trim().is_empty()
+        || record.scope.key.trim().is_empty()
+        || record.expires_at_ms < record.created_at_ms
+        || record.state != ExecutionState::Submitted
+        || record.binding.is_some()
+        || record.output.is_some()
+        || record.error.is_some()
+    {
+        return Err(StorageError::InvalidRecord(
+            "initial execution record is invalid".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn execution_from_row(row: AnyRow) -> StorageResult<ExecutionRecord> {
+    let record_json: String = row.try_get("record_json")?;
+    Ok(serde_json::from_str(&record_json)?)
+}
+
+fn state_name(state: ExecutionState) -> &'static str {
+    match state {
+        ExecutionState::Submitted => "submitted",
+        ExecutionState::Queued => "queued",
+        ExecutionState::Running => "running",
+        ExecutionState::Succeeded => "succeeded",
+        ExecutionState::Failed => "failed",
+        ExecutionState::Cancelled => "cancelled",
+    }
+}
+
+fn execution_is_terminal(state: ExecutionState) -> bool {
+    matches!(
+        state,
+        ExecutionState::Succeeded | ExecutionState::Failed | ExecutionState::Cancelled
+    )
+}
+
+fn storage_error(_: StorageError) -> AiccError {
+    AiccError::new(
+        AiccErrorCode::InternalError,
+        "persistent AICC storage operation failed",
+    )
+}
+
+fn inventory_from_row(row: AnyRow) -> StorageResult<InventoryLkgsRecord> {
+    let snapshot: String = row.try_get("snapshot_json")?;
+    Ok(InventoryLkgsRecord {
+        provider_instance_name: row.try_get("provider_instance_name")?,
+        schema_version: row.try_get("schema_version")?,
+        provider_profile_id: row.try_get("provider_profile_id")?,
+        protocol_adapter_id: row.try_get("protocol_adapter_id")?,
+        provider_model_list_fingerprint: row.try_get("provider_model_list_fingerprint")?,
+        metadata_applied_seq: from_i64(row.try_get("metadata_applied_seq")?)?,
+        inventory_revision: row.try_get("inventory_revision")?,
+        discovered_at_ms: row.try_get("discovered_at_ms")?,
+        snapshot: serde_json::from_str(&snapshot)?,
+        snapshot_sha256: row.try_get("snapshot_sha256")?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
+fn usage_from_row(row: AnyRow) -> StorageResult<AiccUsageEvent> {
+    let usage: String = row.try_get("usage_json")?;
+    let finance: Option<String> = row.try_get("finance_snapshot_json")?;
+    Ok(AiccUsageEvent {
+        event_id: row.try_get("event_id")?,
+        tenant_id: row.try_get("tenant_id")?,
+        user_id: row.try_get("user_id")?,
+        caller_app_id: row.try_get("caller_app_id")?,
+        task_id: row.try_get("task_id")?,
+        trace_id: row.try_get("trace_id")?,
+        idempotency_key: row.try_get("idempotency_key")?,
+        method: row.try_get("method")?,
+        capability: row.try_get("capability")?,
+        request_model: row.try_get("request_model")?,
+        provider_instance_name: row.try_get("provider_instance_name")?,
+        provider_model: row.try_get("provider_model")?,
+        input_tokens: opt_from_i64(row.try_get("input_tokens")?)?,
+        output_tokens: opt_from_i64(row.try_get("output_tokens")?)?,
+        total_tokens: opt_from_i64(row.try_get("total_tokens")?)?,
+        request_units: opt_from_i64(row.try_get("request_units")?)?,
+        usage_json: serde_json::from_str(&usage)?,
+        finance_snapshot_json: finance.map(|v| serde_json::from_str(&v)).transpose()?,
+        created_at_ms: row.try_get("created_at_ms")?,
+    })
+}
+
+fn trace_from_row(row: AnyRow) -> StorageResult<RouteTraceRecord> {
+    let trace: String = row.try_get("route_trace_json")?;
+    Ok(RouteTraceRecord {
+        trace: AiccRouteTraceEvent {
+            trace_id: row.try_get("trace_id")?,
+            tenant_id: row.try_get("tenant_id")?,
+            caller_app_id: row.try_get("caller_app_id")?,
+            task_id: row.try_get("task_id")?,
+            request_model: row.try_get("request_model")?,
+            selected_exact_model: row.try_get("selected_exact_model")?,
+            provider_instance_name: row.try_get("provider_instance_name")?,
+            api_type: row.try_get("api_type")?,
+            route_trace_json: serde_json::from_str(&trace)?,
+            created_at_ms: row.try_get("created_at_ms")?,
+        },
+        request_id: row.try_get("request_id")?,
+        route_id: row.try_get("route_id")?,
+        provider_trace_id: row.try_get("provider_trace_id")?,
+        scheduler_profile: row.try_get("scheduler_profile")?,
+        outcome: row.try_get("outcome")?,
+    })
+}
+
+fn route_trace_record_to_value(record: RouteTraceRecord) -> StorageResult<Value> {
+    let mut value = serde_json::to_value(record.trace.route_trace_json)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("trace_id".to_string(), Value::String(record.trace.trace_id));
+        object.insert(
+            "tenant_id".to_string(),
+            Value::String(record.trace.tenant_id),
+        );
+        if let Some(caller_app_id) = record.trace.caller_app_id {
+            object.insert("caller_app_id".to_string(), Value::String(caller_app_id));
+        }
+        object.insert("task_id".to_string(), Value::String(record.trace.task_id));
+        object.insert(
+            "request_model".to_string(),
+            Value::String(record.trace.request_model),
+        );
+        if let Some(selected_exact_model) = record.trace.selected_exact_model {
+            object.insert(
+                "selected_exact_model".to_string(),
+                Value::String(selected_exact_model),
+            );
+        }
+        if let Some(provider_instance_name) = record.trace.provider_instance_name {
+            object.insert(
+                "provider_instance_name".to_string(),
+                Value::String(provider_instance_name),
+            );
+        }
+        object.insert("api_type".to_string(), Value::String(record.trace.api_type));
+        object.insert(
+            "created_at_ms".to_string(),
+            Value::Number(record.trace.created_at_ms.into()),
+        );
+        if let Some(request_id) = record.request_id {
+            object.insert("request_id".to_string(), Value::String(request_id));
+        }
+        if let Some(route_id) = record.route_id {
+            object.insert("route_id".to_string(), Value::String(route_id));
+        }
+        if let Some(provider_trace_id) = record.provider_trace_id {
+            object.insert(
+                "provider_trace_id".to_string(),
+                Value::String(provider_trace_id),
+            );
+        }
+        if let Some(scheduler_profile) = record.scheduler_profile {
+            object.insert(
+                "scheduler_profile".to_string(),
+                Value::String(scheduler_profile),
+            );
+        }
+        if let Some(outcome) = record.outcome {
+            object.insert("outcome".to_string(), Value::String(outcome));
+        }
+    }
+    Ok(value)
+}
+
+fn audit_from_row(row: AnyRow) -> StorageResult<AuditEvent> {
+    let data: String = row.try_get("data_json")?;
+    Ok(AuditEvent {
+        audit_id: row.try_get("audit_id")?,
+        tenant_id: row.try_get("tenant_id")?,
+        caller_app_id: row.try_get("caller_app_id")?,
+        event_type: row.try_get("event_type")?,
+        trace_id: row.try_get("trace_id")?,
+        request_id: row.try_get("request_id")?,
+        task_id: row.try_get("task_id")?,
+        route_id: row.try_get("route_id")?,
+        provider_trace_id: row.try_get("provider_trace_id")?,
+        provider_instance_name: row.try_get("provider_instance_name")?,
+        exact_model: row.try_get("exact_model")?,
+        data: serde_json::from_str(&data)?,
+        created_at_ms: row.try_get("created_at_ms")?,
+    })
+}
+
+fn time_range(range: &UsageQueryTimeRange, now: i64) -> StorageResult<(i64, i64)> {
+    let day = 86_400_000i64;
+    let value = match range {
+        UsageQueryTimeRange::Last1d => (now.saturating_sub(day), now),
+        UsageQueryTimeRange::Last7d => (now.saturating_sub(7 * day), now),
+        UsageQueryTimeRange::Last30d => (now.saturating_sub(30 * day), now),
+        UsageQueryTimeRange::Explicit {
+            start_time_ms,
+            end_time_ms,
+        } => (*start_time_ms, *end_time_ms),
+    };
+    if value.0 < 0 || value.1 <= value.0 {
+        Err(StorageError::InvalidRecord("invalid time range".into()))
+    } else {
+        Ok(value)
+    }
+}
+
+fn push_in_clause(query: &mut QueryBuilder<'_, Any>, column: &str, values: &[String]) {
+    if values.is_empty() {
+        return;
+    }
+    query.push(" AND ").push(column).push(" IN (");
+    let mut separated = query.separated(",");
+    for value in values {
+        separated.push_bind(value.clone());
+    }
+    separated.push_unseparated(")");
+}
+
+fn push_like_clause(query: &mut QueryBuilder<'_, Any>, column: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        query
+            .push(" AND LOWER(")
+            .push(column)
+            .push(") LIKE ")
+            .push_bind(format!("%{}%", value.to_lowercase()));
+    }
+}
+
+fn usage_query(
+    select: String,
+    start: i64,
+    end: i64,
+    filters: &UsageQueryFilters,
+    cursor: Option<&(i64, String)>,
+) -> QueryBuilder<'static, Any> {
+    let mut query = QueryBuilder::<Any>::new(select);
+    query
+        .push_bind(start)
+        .push(" AND created_at_ms<")
+        .push_bind(end);
+    push_in_clause(&mut query, "tenant_id", &filters.tenant_ids);
+    push_in_clause(&mut query, "user_id", &filters.user_ids);
+    push_in_clause(&mut query, "caller_app_id", &filters.caller_app_ids);
+    push_like_clause(
+        &mut query,
+        "caller_app_id",
+        filters.caller_app_query.as_deref(),
+    );
+    push_in_clause(&mut query, "request_model", &filters.request_models);
+    push_in_clause(&mut query, "provider_model", &filters.provider_models);
+    push_like_clause(
+        &mut query,
+        "provider_model",
+        filters.provider_model_query.as_deref(),
+    );
+    push_in_clause(
+        &mut query,
+        "provider_instance_name",
+        &filters.provider_instance_names,
+    );
+    push_like_clause(
+        &mut query,
+        "provider_instance_name",
+        filters.provider_instance_query.as_deref(),
+    );
+    push_in_clause(&mut query, "capability", &filters.capabilities);
+    push_in_clause(&mut query, "task_id", &filters.task_ids);
+    push_in_clause(&mut query, "idempotency_key", &filters.idempotency_keys);
+    push_in_clause(&mut query, "method", &filters.methods);
+    if let Some((timestamp, id)) = cursor {
+        query
+            .push(" AND (created_at_ms<")
+            .push_bind(*timestamp)
+            .push(" OR (created_at_ms=")
+            .push_bind(*timestamp)
+            .push(" AND event_id<")
+            .push_bind(id.clone())
+            .push("))");
+    }
+    query
+}
+
+fn route_trace_query(
+    select: &'static str,
+    tenant: &str,
+    req: &QueryRouteTraceRequest,
+    cursor: Option<&(i64, String)>,
+) -> QueryBuilder<'static, Any> {
+    let mut query = QueryBuilder::<Any>::new(select);
+    query.push_bind(tenant.to_owned());
+    if let Some(start) = req.start_time_ms {
+        query.push(" AND created_at_ms>=").push_bind(start);
+    }
+    if let Some(end) = req.end_time_ms {
+        query.push(" AND created_at_ms<").push_bind(end);
+    }
+    push_in_clause(&mut query, "task_id", &req.task_ids);
+    push_in_clause(&mut query, "request_id", &req.request_ids);
+    push_in_clause(&mut query, "api_type", &req.api_types);
+    push_in_clause(
+        &mut query,
+        "provider_instance_name",
+        &req.provider_instance_names,
+    );
+    push_in_clause(
+        &mut query,
+        "selected_exact_model",
+        &req.selected_exact_models,
+    );
+    push_in_clause(&mut query, "scheduler_profile", &req.scheduler_profiles);
+    if let Some(outcome) = &req.outcome {
+        query.push(" AND outcome=").push_bind(outcome.clone());
+    }
+    if let Some(search) = req.query.as_deref() {
+        let search = format!("%{}%", search.to_lowercase());
+        query
+            .push(" AND (LOWER(trace_id) LIKE ")
+            .push_bind(search.clone());
+        for column in [
+            "task_id",
+            "request_id",
+            "route_id",
+            "provider_trace_id",
+            "selected_exact_model",
+            "provider_instance_name",
+        ] {
+            query
+                .push(" OR LOWER(COALESCE(")
+                .push(column)
+                .push(",'')) LIKE ")
+                .push_bind(search.clone());
+        }
+        query.push(")");
+    }
+    if let Some((timestamp, id)) = cursor {
+        query
+            .push(" AND (created_at_ms<")
+            .push_bind(*timestamp)
+            .push(" OR (created_at_ms=")
+            .push_bind(*timestamp)
+            .push(" AND trace_id<")
+            .push_bind(id.clone())
+            .push("))");
+    }
+    query
+}
+
+#[derive(Default)]
+struct SqlUsageAggregateAccumulator {
+    aggregate: UsageAggregate,
+    valid_finance_count: u64,
+    finance: BTreeMap<String, Option<f64>>,
+}
+
+struct SqlUsageAggregateRow {
+    bucket_start_ms: Option<i64>,
+    group: HashMap<String, String>,
+    aggregate: UsageAggregate,
+}
+
+fn merge_usage_aggregate_rows(
+    rows: Vec<AnyRow>,
+    groups: &[UsageQueryGroup],
+    bucketed: bool,
+) -> StorageResult<Vec<SqlUsageAggregateRow>> {
+    let mut merged = BTreeMap::<(Option<i64>, Vec<String>), SqlUsageAggregateAccumulator>::new();
+    for row in rows {
+        let bucket_start_ms = if bucketed {
+            Some(row.try_get("bucket_start_ms")?)
+        } else {
+            None
+        };
+        let values = groups
+            .iter()
+            .map(|group| {
+                row.try_get::<Option<String>, _>(group.as_key())
+                    .map(|value| value.unwrap_or_default())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let total_requests = from_i64(row.try_get("total_requests")?)?;
+        let valid_finance_count = from_i64(row.try_get("valid_finance_count")?)?;
+        let accumulator = merged.entry((bucket_start_ms, values)).or_default();
+        accumulator.aggregate.total_requests += total_requests;
+        accumulator.aggregate.input_tokens += from_i64(row.try_get("input_tokens")?)?;
+        accumulator.aggregate.output_tokens += from_i64(row.try_get("output_tokens")?)?;
+        accumulator.aggregate.total_tokens += from_i64(row.try_get("total_tokens")?)?;
+        accumulator.aggregate.consumed_request_units += from_i64(row.try_get("request_units")?)?;
+        accumulator.valid_finance_count += valid_finance_count;
+        if valid_finance_count > 0 {
+            let currency: Option<String> = row.try_get("finance_currency")?;
+            let amount: f64 = row.try_get("finance_amount")?;
+            if let Some(currency) = currency.filter(|value| !value.is_empty()) {
+                let total = accumulator.finance.entry(currency).or_insert(Some(0.0));
+                if let Some(current) = total {
+                    let next = *current + amount;
+                    if next.is_finite() {
+                        *current = next;
+                    } else {
+                        *total = None;
+                    }
+                }
+            }
+        }
+    }
+    Ok(merged
+        .into_iter()
+        .map(|((bucket_start_ms, values), mut accumulator)| {
+            accumulator.aggregate.finance_complete = accumulator.valid_finance_count
+                == accumulator.aggregate.total_requests
+                && accumulator.finance.values().all(Option::is_some);
+            accumulator.aggregate.finance_totals = accumulator
+                .finance
+                .into_iter()
+                .filter_map(|(currency, amount)| amount.map(|amount| Money::new(amount, currency)))
+                .collect();
+            SqlUsageAggregateRow {
+                bucket_start_ms,
+                group: groups
+                    .iter()
+                    .zip(values)
+                    .map(|(group, value)| (group.as_key().to_owned(), value))
+                    .collect(),
+                aggregate: accumulator.aggregate,
+            }
+        })
+        .collect())
+}
+
+#[cfg(test)]
+fn aggregate<'a>(events: impl IntoIterator<Item = &'a AiccUsageEvent>) -> UsageAggregate {
+    let mut a = UsageAggregate::default();
+    let mut finance = BTreeMap::<String, Option<f64>>::new();
+    for e in events {
+        a.total_requests += 1;
+        a.input_tokens += e.input_tokens.unwrap_or(0);
+        a.output_tokens += e.output_tokens.unwrap_or(0);
+        a.total_tokens += e.total_tokens.unwrap_or(0);
+        a.consumed_request_units += e.request_units.unwrap_or(1).max(1);
+        match e.finance_snapshot_json.as_ref().and_then(valid_finance) {
+            Some((amount, currency)) => {
+                let total = finance.entry(currency).or_insert(Some(0.0));
+                if let Some(current) = total {
+                    let next = *current + amount;
+                    if next.is_finite() {
+                        *current = next;
+                    } else {
+                        *total = None;
+                        a.finance_complete = false;
+                    }
+                }
+            }
+            None => a.finance_complete = false,
+        }
+    }
+    a.finance_totals = finance
+        .into_iter()
+        .filter_map(|(currency, amount)| amount.map(|amount| Money::new(amount, currency)))
+        .collect();
+    a
+}
+
+fn valid_finance(value: &Value) -> Option<(f64, String)> {
+    let amount = value.get("amount")?.as_f64()?;
+    let currency = value.get("currency")?.as_str()?.trim();
+    if !amount.is_finite() || amount < 0.0 || currency.is_empty() {
+        return None;
+    }
+    Some((amount, currency.to_ascii_uppercase()))
+}
+
+fn audit_matches(e: &AuditEvent, q: &AuditQuery) -> bool {
+    q.start_time_ms.is_none_or(|v| e.created_at_ms >= v)
+        && q.end_time_ms.is_none_or(|v| e.created_at_ms < v)
+        && exact(&q.event_types, Some(&e.event_type))
+        && exact(&q.trace_ids, e.trace_id.as_deref())
+        && exact(&q.request_ids, e.request_id.as_deref())
+        && exact(&q.task_ids, e.task_id.as_deref())
+        && exact(&q.route_ids, e.route_id.as_deref())
+        && exact(&q.provider_trace_ids, e.provider_trace_id.as_deref())
+}
+
+fn exact(values: &[String], actual: Option<&str>) -> bool {
+    values.is_empty() || actual.is_some_and(|a| values.iter().any(|v| v == a))
+}
+fn limit(value: Option<u32>) -> usize {
+    value
+        .map(|v| v as usize)
+        .unwrap_or(DEFAULT_LIMIT)
+        .clamp(1, MAX_LIMIT)
+}
+fn encode_cursor(timestamp: i64, id: &str) -> String {
+    URL_SAFE_NO_PAD.encode(format!("{timestamp}\0{id}"))
+}
+fn decode_cursor(value: &str) -> StorageResult<(i64, String)> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| StorageError::InvalidCursor)?;
+    let text = String::from_utf8(bytes).map_err(|_| StorageError::InvalidCursor)?;
+    let (timestamp, id) = text.split_once('\0').ok_or(StorageError::InvalidCursor)?;
+    if id.is_empty() {
+        return Err(StorageError::InvalidCursor);
+    }
+    Ok((
+        timestamp.parse().map_err(|_| StorageError::InvalidCursor)?,
+        id.into(),
+    ))
+}
+fn cursor_allows(timestamp: i64, id: &str, cursor: Option<&(i64, String)>) -> bool {
+    cursor.is_none_or(|(t, i)| timestamp < *t || (timestamp == *t && id < i.as_str()))
+}
+fn sha256_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut output, byte| {
+            let _ = write!(output, "{byte:02x}");
+            output
+        })
+}
+
+fn valid_content_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    })
+}
+fn to_i64(value: u64) -> StorageResult<i64> {
+    i64::try_from(value).map_err(|_| StorageError::InvalidRecord("integer overflow".into()))
+}
+fn opt_i64(value: Option<u64>) -> StorageResult<Option<i64>> {
+    value.map(to_i64).transpose()
+}
+fn from_i64(value: i64) -> StorageResult<u64> {
+    u64::try_from(value).map_err(|_| StorageError::InvalidRecord("negative integer".into()))
+}
+fn opt_from_i64(value: Option<i64>) -> StorageResult<Option<u64>> {
+    value.map(from_i64).transpose()
+}
+fn placeholders(sql: &str) -> String {
+    let mut index = 0;
+    sql.chars()
+        .fold(String::with_capacity(sql.len()), |mut out, c| {
+            if c == '?' {
+                index += 1;
+                out.push('$');
+                out.push_str(&index.to_string())
+            } else {
+                out.push(c)
+            }
+            out
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution::{
+        NativeTaskResumeDescriptor, PinnedPricingBasis, PinnedPricingSnapshot, ResumeCredential,
+        ResumeCredentialKind,
+    };
+    use buckyos_api::{AiCost, ApiType, UsageQueryBucket, UsageQueryFilters};
+    use serde_json::json;
+
+    async fn db() -> AiccStorage {
+        AiccStorage::open("sqlite::memory:", RdbBackend::Sqlite)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn storage_records_its_global_schema_version() {
+        let storage = db().await;
+        let version: i64 = sqlx::query_scalar(
+            "SELECT schema_version FROM aicc_schema_meta WHERE schema_key='aicc'",
+        )
+        .fetch_one(&storage.pool)
+        .await
+        .unwrap();
+        assert_eq!(version, STORAGE_SCHEMA_VERSION);
+    }
+
+    #[tokio::test]
+    async fn storage_rejects_a_future_schema_version_before_business_migrations() {
+        let storage = db().await;
+        sqlx::query("UPDATE aicc_schema_meta SET schema_version=99 WHERE schema_key='aicc'")
+            .execute(&storage.pool)
+            .await
+            .unwrap();
+        let error = storage.migrate().await.unwrap_err();
+        assert!(error.to_string().contains("latest supported"));
+    }
+
+    #[tokio::test]
+    async fn artifact_url_source_round_trips_exact_url_and_scope() {
+        let db = db().await;
+        let record = ArtifactUrlSourceRecord {
+            url: "https://provider.example/files/one?token=secret".into(),
+            provider_instance_name: "provider-main".into(),
+            protocol_adapter_id: "provider-adapter".into(),
+            origin_provider: "openai".into(),
+            artifact_id: Some("video.mp4".into()),
+            content_digest: None,
+            expires_at_ms: None,
+            tenant_id: "tenant-a".into(),
+            user_id: "user-a".into(),
+            caller_app_id: Some("app-a".into()),
+            request_id: "request-a".into(),
+            created_at_ms: 10,
+        };
+        db.remember_artifact_url_source(&record).await.unwrap();
+        assert_eq!(
+            db.artifact_url_source(&record.url, 10).await.unwrap(),
+            Some(record.clone())
+        );
+        assert_eq!(
+            db.artifact_url_source("https://provider.example/files/two", 10)
+                .await
+                .unwrap(),
+            None
+        );
+
+        let expiring = ArtifactUrlSourceRecord {
+            url: "https://provider.example/files/expiring".into(),
+            expires_at_ms: Some(20),
+            ..record
+        };
+        db.remember_artifact_url_source(&expiring).await.unwrap();
+        assert!(db
+            .artifact_url_source(&expiring.url, 19)
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            db.artifact_url_source(&expiring.url, 20).await.unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_artifact_ids_are_shared_and_scoped_by_instance_and_origin() {
+        let db = db().await;
+        let record = ProviderArtifactIdRecord {
+            content_digest: format!("sha256:{}", "ab".repeat(32)),
+            provider_instance_name: "aggregator-primary".into(),
+            origin_provider: "openai".into(),
+            artifact_id: "video_123".into(),
+            expires_at_ms: None,
+            created_at_ms: 10,
+        };
+        db.remember_provider_artifact_id(&record).await.unwrap();
+        assert_eq!(
+            db.provider_artifact_id(
+                &record.content_digest,
+                &record.provider_instance_name,
+                &record.origin_provider,
+                10,
+            )
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("video_123")
+        );
+        assert_eq!(
+            db.provider_artifact_id(
+                &record.content_digest,
+                &record.provider_instance_name,
+                "gemini",
+                10,
+            )
+            .await
+            .unwrap(),
+            None
+        );
+
+        let stale = ProviderArtifactIdRecord {
+            artifact_id: "stale-video".into(),
+            expires_at_ms: Some(9),
+            ..record.clone()
+        };
+        db.remember_provider_artifact_id(&stale).await.unwrap();
+        assert_eq!(
+            db.provider_artifact_id(
+                &record.content_digest,
+                &record.provider_instance_name,
+                &record.origin_provider,
+                10,
+            )
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("video_123")
+        );
+
+        db.forget_provider_artifact_id(
+            &record.content_digest,
+            &record.provider_instance_name,
+            &record.origin_provider,
+            "different-id",
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .provider_artifact_id(
+                &record.content_digest,
+                &record.provider_instance_name,
+                &record.origin_provider,
+                10,
+            )
+            .await
+            .unwrap()
+            .is_some());
+        db.forget_provider_artifact_id(
+            &record.content_digest,
+            &record.provider_instance_name,
+            &record.origin_provider,
+            &record.artifact_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            db.provider_artifact_id(
+                &record.content_digest,
+                &record.provider_instance_name,
+                &record.origin_provider,
+                10,
+            )
+            .await
+            .unwrap(),
+            None
+        );
+
+        let expiring = ProviderArtifactIdRecord {
+            content_digest: format!("sha256:{}", "ef".repeat(32)),
+            artifact_id: "video_expiring".into(),
+            expires_at_ms: Some(20),
+            ..record.clone()
+        };
+        db.remember_provider_artifact_id(&expiring).await.unwrap();
+        assert_eq!(
+            db.provider_artifact_id(
+                &expiring.content_digest,
+                &expiring.provider_instance_name,
+                &expiring.origin_provider,
+                19,
+            )
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("video_expiring")
+        );
+        assert_eq!(
+            db.provider_artifact_id(
+                &expiring.content_digest,
+                &expiring.provider_instance_name,
+                &expiring.origin_provider,
+                20,
+            )
+            .await
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.provider_artifact_id(
+                &record.content_digest,
+                "another-aggregator",
+                &record.origin_provider,
+                10,
+            )
+            .await
+            .unwrap(),
+            None
+        );
+
+        let mut pending = ArtifactUrlSourceRecord {
+            url: "https://provider.example/files/generated".into(),
+            provider_instance_name: record.provider_instance_name.clone(),
+            protocol_adapter_id: "aggregator-adapter".into(),
+            origin_provider: record.origin_provider.clone(),
+            artifact_id: Some("video_456".into()),
+            content_digest: None,
+            expires_at_ms: Some(100),
+            tenant_id: "tenant-b".into(),
+            user_id: "user-b".into(),
+            caller_app_id: None,
+            request_id: "request-b".into(),
+            created_at_ms: 11,
+        };
+        db.remember_artifact_url_source(&pending).await.unwrap();
+        let downloaded_digest = format!("sha256:{}", "cd".repeat(32));
+        db.complete_artifact_url_digest(&pending, &downloaded_digest, 12)
+            .await
+            .unwrap();
+        pending.content_digest = Some(downloaded_digest.clone());
+        assert_eq!(
+            db.artifact_url_source(&pending.url, 12).await.unwrap(),
+            Some(pending)
+        );
+        assert_eq!(
+            db.provider_artifact_id(
+                &downloaded_digest,
+                &record.provider_instance_name,
+                &record.origin_provider,
+                12,
+            )
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("video_456")
+        );
+    }
+
+    #[tokio::test]
+    async fn session_route_history_is_durable_scoped_and_upserted() {
+        let db = db().await;
+        assert_eq!(
+            db.session_exact_model("tenant-a", "user-a", Some("app-a"), "session-1")
+                .await
+                .unwrap(),
+            None
+        );
+        db.remember_session_exact_model(
+            "tenant-a",
+            "user-a",
+            Some("app-a"),
+            "session-1",
+            "gpt-5.6@openai-a",
+            1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            db.session_exact_model("tenant-a", "user-a", Some("app-a"), "session-1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("gpt-5.6@openai-a")
+        );
+        assert_eq!(
+            db.session_exact_model("tenant-b", "user-a", Some("app-a"), "session-1")
+                .await
+                .unwrap(),
+            None
+        );
+        db.remember_session_exact_model(
+            "tenant-a",
+            "user-a",
+            Some("app-a"),
+            "session-1",
+            "gpt-5.6@openai-b",
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            db.session_exact_model("tenant-a", "user-a", Some("app-a"), "session-1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("gpt-5.6@openai-b")
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_scope_records_the_creating_tenant_once() {
+        let db = db().await;
+        db.remember_artifact_scope("cyfile:artifact", "tenant-a", "user-a", Some("app-a"), 1)
+            .await
+            .unwrap();
+        db.remember_artifact_scope("cyfile:artifact", "tenant-b", "user-b", Some("app-b"), 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.artifact_tenant("cyfile:artifact")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("tenant-a")
+        );
+        assert_eq!(db.artifact_tenant("cyfile:missing").await.unwrap(), None);
+    }
+
+    fn completion(id: &str, task: &str, idem: &str, at: i64) -> ProviderCompletion {
+        ProviderCompletion {
+            event_id: id.into(),
+            tenant_id: "tenant-a".into(),
+            user_id: "user-a".into(),
+            caller_app_id: Some("app-a".into()),
+            task_id: task.into(),
+            trace_id: Some(format!("trace-{id}")),
+            idempotency_key: Some(idem.into()),
+            method: ai_methods::CHAT_COMPLETIONS_CREATE.into(),
+            capability: "llm".into(),
+            request_model: "llm.chat".into(),
+            provider_instance_name: "openai-primary".into(),
+            provider_model: "gpt-5:reasoning@openai-primary".into(),
+            usage: Some(AiUsage {
+                input_tokens: Some(10),
+                output_tokens: Some(5),
+                total_tokens: Some(15),
+                request_units: None,
+                ..AiUsage::default()
+            }),
+            finance_snapshot: Some(json!({"amount": 0.25, "currency": "USD"})),
+            created_at_ms: at,
+        }
+    }
+
+    fn usage_event(id: &str, finance: Option<Value>, request_units: Option<u64>) -> AiccUsageEvent {
+        let usage = AiUsage {
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            request_units,
+            ..AiUsage::default()
+        };
+        AiccUsageEvent {
+            event_id: id.into(),
+            tenant_id: "tenant-a".into(),
+            user_id: "user-a".into(),
+            caller_app_id: Some("app-a".into()),
+            task_id: format!("task-{id}"),
+            trace_id: Some(format!("trace-{id}")),
+            idempotency_key: Some(format!("idem-{id}")),
+            method: ai_methods::CHAT_COMPLETIONS_CREATE.into(),
+            capability: "llm".into(),
+            request_model: "llm.chat".into(),
+            provider_instance_name: "openai-primary".into(),
+            provider_model: "gpt-5:reasoning@openai-primary".into(),
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            request_units,
+            usage_json: usage,
+            finance_snapshot_json: finance,
+            created_at_ms: 10_000,
+        }
+    }
+
+    fn execution_record(task_id: &str, key: &str) -> ExecutionRecord {
+        ExecutionRecord {
+            scope: crate::execution::IdempotencyScope::new(
+                "tenant-a",
+                ai_methods::CHAT_COMPLETIONS_CREATE,
+                key,
+            )
+            .unwrap(),
+            usage_event_id: format!("usage-{task_id}"),
+            trace_id: Some(format!("trace-{task_id}")),
+            user_id: "user-a".into(),
+            caller_app_id: Some("app-a".into()),
+            request_model: "llm.chat".into(),
+            body_fingerprint: format!("fingerprint-{task_id}"),
+            task_id: task_id.into(),
+            event_ref: format!("event-{task_id}"),
+            state: ExecutionState::Submitted,
+            binding: None,
+            output: None,
+            error: None,
+            created_at_ms: 10_000,
+            expires_at_ms: 100_000_000,
+        }
+    }
+
+    fn provider_binding() -> PinnedProviderTask {
+        let reference = "system-config://secrets/aicc/openai-primary/api-key".to_string();
+        let fingerprint = sha256_hex(reference.as_bytes())[..16].to_string();
+        PinnedProviderTask {
+            runtime_generation: 7,
+            origin_provider: "openai".into(),
+            exact_model: "gpt-5:reasoning@openai-primary".into(),
+            provider_model_id: "gpt-5".into(),
+            provider_instance_name: "openai-primary".into(),
+            protocol_adapter_id: "openai-responses".into(),
+            operation: "responses.create".into(),
+            api_type: ApiType::Llm,
+            remote_task_id: Some("remote-1".into()),
+            result_artifacts: BTreeMap::new(),
+            cancel_supported: true,
+            resume: Some(NativeTaskResumeDescriptor {
+                base_url: "https://openai-primary.invalid/v1".into(),
+                credential: Some(ResumeCredential {
+                    reference,
+                    kind: ResumeCredentialKind::NamedHeader,
+                    header_name: Some("X-Api-Key".into()),
+                    fingerprint,
+                }),
+                resolved_parameters: BTreeMap::from([
+                    ("provider_model_id".into(), json!("gpt-5")),
+                    ("status_path".into(), json!("/tasks/{task_id}")),
+                    ("result_path".into(), json!("/tasks/{task_id}/result")),
+                    ("cancel_path".into(), json!("/tasks/{task_id}/cancel")),
+                ]),
+                resource_access_context: crate::resource::ResourceAccessContext::new(
+                    "tenant-a",
+                    "alice",
+                    "request-a",
+                )
+                .unwrap(),
+                request_timeout_ms: 30_000,
+                max_request_bytes: 1_048_576,
+                max_response_bytes: 8_388_608,
+            }),
+            pricing: Some(PinnedPricingSnapshot {
+                currency: "USD".into(),
+                basis: PinnedPricingBasis::Tokens {
+                    input_token: Some(0.000_001_25),
+                    cache_input_token: Some(0.000_000_125),
+                    output_token: Some(0.000_01),
+                    tiers: None,
+                },
+            }),
+        }
+    }
+
+    fn execution_output() -> ExecutionOutput {
+        ExecutionOutput {
+            value: json!({"answer": 42}),
+            usage: AiUsage::request_units(1),
+            cost: None,
+            artifacts: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn inventory_round_trip_and_corrupt_row_rebuild() {
+        let db = db().await;
+        let mut record = InventoryLkgsRecord::new(
+            "openai-primary",
+            "openai",
+            "openai-responses",
+            "f1",
+            4,
+            None,
+            10,
+            json!({"models":["gpt-5"]}),
+            10,
+        )
+        .unwrap();
+        db.upsert_inventory(&record).await.unwrap();
+        record.metadata_applied_seq = 5;
+        record.updated_at_ms = 20;
+        db.upsert_inventory(&record).await.unwrap();
+        assert_eq!(
+            db.load_inventory("openai-primary")
+                .await
+                .unwrap()
+                .unwrap()
+                .metadata_applied_seq,
+            5
+        );
+        sqlx::query("UPDATE aicc_provider_inventory_lkgs SET snapshot_sha256='bad'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(db.load_inventory("openai-primary").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn execution_store_persists_claim_binding_and_terminal_cas() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("aicc.db");
+        let connection = format!("sqlite://{}?mode=rwc", path.display());
+        let db = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+
+        let running = execution_record("task-running", "key-running");
+        assert!(matches!(
+            db.claim(running.clone()).await.unwrap(),
+            IdempotencyClaim::Created(_)
+        ));
+        assert!(matches!(
+            db.claim(running.clone()).await.unwrap(),
+            IdempotencyClaim::Existing(existing) if existing == running
+        ));
+        let mut conflicting = running.clone();
+        conflicting.body_fingerprint = "different".into();
+        assert!(matches!(
+            db.claim(conflicting).await.unwrap(),
+            IdempotencyClaim::Conflict
+        ));
+        assert!(db
+            .set_running(
+                &running.task_id,
+                ExecutionState::Running,
+                provider_binding(),
+            )
+            .await
+            .unwrap());
+        drop(db);
+
+        let db = AiccStorage::open(&connection, RdbBackend::Sqlite)
+            .await
+            .unwrap();
+        let restored = db.get_task(&running.task_id).await.unwrap().unwrap();
+        assert_eq!(restored.state, ExecutionState::Running);
+        assert_eq!(restored.binding, Some(provider_binding()));
+        let restored_binding = restored.binding.as_ref().unwrap();
+        assert_eq!(
+            restored_binding.resume.as_ref(),
+            provider_binding().resume.as_ref()
+        );
+        assert_eq!(
+            restored_binding.pricing.as_ref(),
+            provider_binding().pricing.as_ref()
+        );
+        let encoded_binding = serde_json::to_string(restored_binding).unwrap();
+        assert!(encoded_binding.contains("system-config://secrets/aicc/openai-primary/api-key"));
+        assert!(!encoded_binding.contains("plaintext-secret"));
+        assert_eq!(db.recoverable().await.unwrap(), vec![restored]);
+        assert!(db.try_cancel(&running.task_id).await.unwrap());
+        assert!(!db
+            .try_complete(&running.task_id, execution_output())
+            .await
+            .unwrap());
+
+        let completed = execution_record("task-complete", "key-complete");
+        db.claim(completed.clone()).await.unwrap();
+        assert!(db
+            .try_complete(&completed.task_id, execution_output())
+            .await
+            .unwrap());
+        assert_eq!(
+            db.get_task(&completed.task_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            ExecutionState::Succeeded
+        );
+
+        let failed = execution_record("task-failed", "key-failed");
+        db.claim(failed.clone()).await.unwrap();
+        assert!(db
+            .try_fail(
+                &failed.task_id,
+                AiccError::new(AiccErrorCode::ProviderError, "provider failed"),
+            )
+            .await
+            .unwrap());
+        assert_eq!(
+            db.get_task(&failed.task_id).await.unwrap().unwrap().state,
+            ExecutionState::Failed
+        );
+
+        let raced = execution_record("task-raced", "key-raced");
+        db.claim(raced.clone()).await.unwrap();
+        let (complete, cancel) = tokio::join!(
+            db.try_complete(&raced.task_id, execution_output()),
+            db.try_cancel(&raced.task_id)
+        );
+        assert_ne!(complete.unwrap(), cancel.unwrap());
+        assert!(db.recoverable().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn usage_completion_writer_is_durable_and_idempotent() {
+        let db = db().await;
+        let completion = UsageCompletion {
+            event_id: "usage-production".into(),
+            tenant_id: "tenant-a".into(),
+            user_id: "user-a".into(),
+            caller_app_id: Some("app-a".into()),
+            task_id: "task-production".into(),
+            trace_id: Some("trace-production".into()),
+            idempotency_key: "idem-production".into(),
+            method: ai_methods::CHAT_COMPLETIONS_CREATE.into(),
+            capability: "llm".into(),
+            request_model: "llm.chat".into(),
+            provider_instance_name: "openai-primary".into(),
+            provider_model: "gpt-5:reasoning@openai-primary".into(),
+            usage: AiUsage {
+                input_tokens: Some(10),
+                output_tokens: Some(5),
+                total_tokens: Some(15),
+                request_units: None,
+                ..AiUsage::default()
+            },
+            finance_snapshot: Some(AiCost {
+                amount: 0.25,
+                currency: "EUR".into(),
+            }),
+            completed_at_ms: 10_000,
+        };
+        db.write_once(completion.clone()).await.unwrap();
+        db.write_once(completion).await.unwrap();
+
+        let result = db
+            .query_usage(
+                &QueryUsageRequest::new(UsageQueryTimeRange::Explicit {
+                    start_time_ms: 10_000,
+                    end_time_ms: 10_001,
+                }),
+                10_001,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.total.total_requests, 1);
+        assert_eq!(result.total.consumed_request_units, 1);
+        assert_eq!(result.total.finance_totals, vec![Money::new(0.25, "EUR")]);
+        assert!(result.total.finance_complete);
+    }
+
+    #[tokio::test]
+    async fn usage_is_optional_deduplicated_and_queryable() {
+        let db = db().await;
+        let mut missing = completion("e0", "t0", "i0", 9_000);
+        missing.usage = None;
+        assert_eq!(
+            db.write_provider_completion(missing).await.unwrap(),
+            UsageWriteOutcome::Inserted
+        );
+        assert_eq!(
+            db.write_provider_completion(completion("e1", "t1", "i1", 9_000))
+                .await
+                .unwrap(),
+            UsageWriteOutcome::Inserted
+        );
+        assert_eq!(
+            db.write_provider_completion(completion("e2", "t1", "i2", 10_000))
+                .await
+                .unwrap(),
+            UsageWriteOutcome::Duplicate
+        );
+        assert_eq!(
+            db.write_provider_completion(completion("e3", "t3", "i1", 10_000))
+                .await
+                .unwrap(),
+            UsageWriteOutcome::Duplicate
+        );
+        db.write_provider_completion(completion("e4", "t4", "i4", 10_000))
+            .await
+            .unwrap();
+        let request = QueryUsageRequest {
+            time_range: UsageQueryTimeRange::Explicit {
+                start_time_ms: 1,
+                end_time_ms: 20_000,
+            },
+            filters: UsageQueryFilters::default(),
+            group_by: vec![
+                UsageQueryGroup::ProviderInstanceName,
+                UsageQueryGroup::Method,
+                UsageQueryGroup::UserId,
+            ],
+            time_bucket: Some(UsageQueryBucket::Hour),
+            output_mode: UsageQueryOutputMode::SummaryAndEvents,
+            limit: Some(1),
+            cursor: None,
+        };
+        let first = db.query_usage(&request, 20_000).await.unwrap();
+        assert_eq!(first.total.total_requests, 3);
+        assert_eq!(first.total.total_tokens, 30);
+        assert_eq!(first.total.consumed_request_units, 3);
+        assert_eq!(first.total.finance_totals, vec![Money::new(0.75, "USD")]);
+        assert!(first.total.finance_complete);
+        assert_eq!(first.grouped.len(), 1);
+        assert_eq!(first.grouped[0].group["user_id"], "user-a");
+        assert_eq!(
+            first.grouped[0].group["method"],
+            ai_methods::CHAT_COMPLETIONS_CREATE
+        );
+        assert_eq!(
+            first.grouped[0].group["provider_instance_name"],
+            "openai-primary"
+        );
+        assert_eq!(first.grouped[0].aggregate, first.total);
+        assert_eq!(first.buckets.len(), 1);
+        assert_eq!(first.buckets[0].aggregate, first.total);
+        assert_eq!(first.events.len(), 1);
+        assert!(first.next_cursor.is_some());
+        let mut next = request;
+        next.cursor = first.next_cursor;
+        assert_eq!(db.query_usage(&next, 20_000).await.unwrap().events.len(), 1);
+    }
+
+    #[test]
+    fn finance_aggregation_is_currency_explicit_and_fail_closed() {
+        let empty = aggregate(std::iter::empty());
+        assert_eq!(empty, UsageAggregate::default());
+
+        let complete = [
+            usage_event(
+                "one",
+                Some(json!({"amount": 0.25, "currency": " usd "})),
+                None,
+            ),
+            usage_event(
+                "two",
+                Some(json!({"amount": 0.25, "currency": "USD"})),
+                Some(0),
+            ),
+            usage_event(
+                "three",
+                Some(json!({"amount": 0.25, "currency": "usd"})),
+                Some(3),
+            ),
+        ];
+        let complete = aggregate(&complete);
+        assert_eq!(complete.consumed_request_units, 5);
+        assert_eq!(complete.finance_totals, vec![Money::new(0.75, "USD")]);
+        assert!(complete.finance_complete);
+
+        let partial = [
+            usage_event(
+                "priced",
+                Some(json!({"amount": 0.25, "currency": "USD"})),
+                None,
+            ),
+            usage_event("missing", None, None),
+        ];
+        let partial = aggregate(&partial);
+        assert_eq!(partial.finance_totals, vec![Money::new(0.25, "USD")]);
+        assert!(!partial.finance_complete);
+
+        for (id, finance) in [
+            ("negative", json!({"amount": -0.1, "currency": "USD"})),
+            ("not-number", json!({"amount": "0.1", "currency": "USD"})),
+            ("no-amount", json!({"currency": "USD"})),
+            ("no-currency", json!({"amount": 0.1})),
+            ("empty-currency", json!({"amount": 0.1, "currency": " "})),
+        ] {
+            let event = usage_event(id, Some(finance), None);
+            let invalid = aggregate([&event]);
+            assert!(invalid.finance_totals.is_empty(), "{id}");
+            assert!(!invalid.finance_complete, "{id}");
+        }
+
+        let mixed = [
+            usage_event(
+                "dollars",
+                Some(json!({"amount": 0.25, "currency": "USD"})),
+                None,
+            ),
+            usage_event(
+                "euros",
+                Some(json!({"amount": 0.25, "currency": "EUR"})),
+                None,
+            ),
+        ];
+        let mixed = aggregate(&mixed);
+        assert_eq!(
+            mixed.finance_totals,
+            vec![Money::new(0.25, "EUR"), Money::new(0.25, "USD")]
+        );
+        assert!(mixed.finance_complete);
+
+        let overflow = [
+            usage_event(
+                "huge-one",
+                Some(json!({"amount": 1.0e308, "currency": "JPY"})),
+                None,
+            ),
+            usage_event(
+                "huge-two",
+                Some(json!({"amount": 1.0e308, "currency": "JPY"})),
+                None,
+            ),
+            usage_event(
+                "valid-dollars",
+                Some(json!({"amount": 0.5, "currency": "USD"})),
+                None,
+            ),
+        ];
+        let overflow = aggregate(&overflow);
+        assert_eq!(overflow.finance_totals, vec![Money::new(0.5, "USD")]);
+        assert!(!overflow.finance_complete);
+    }
+
+    #[tokio::test]
+    async fn usage_identity_filters_use_half_open_time_range() {
+        let db = db().await;
+        db.write_provider_completion(completion("start", "task-start", "idem-start", 10_000))
+            .await
+            .unwrap();
+        db.write_provider_completion(completion("end", "task-end", "idem-end", 11_000))
+            .await
+            .unwrap();
+        let request = QueryUsageRequest {
+            time_range: UsageQueryTimeRange::Explicit {
+                start_time_ms: 10_000,
+                end_time_ms: 11_000,
+            },
+            filters: UsageQueryFilters {
+                user_ids: vec!["user-a".into()],
+                methods: vec![ai_methods::CHAT_COMPLETIONS_CREATE.into()],
+                provider_instance_names: vec!["openai-primary".into()],
+                ..UsageQueryFilters::default()
+            },
+            group_by: vec![],
+            time_bucket: None,
+            output_mode: UsageQueryOutputMode::Events,
+            limit: None,
+            cursor: None,
+        };
+        let response = db.query_usage(&request, 12_000).await.unwrap();
+        assert_eq!(response.total.total_requests, 1);
+        assert_eq!(response.events[0].event_id, "start");
+
+        let mut invalid = completion("bad", "task-bad", "idem-bad", 12_000);
+        invalid.method = "provider.list".into();
+        assert!(matches!(
+            db.write_provider_completion(invalid).await,
+            Err(StorageError::InvalidRecord(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn trace_audit_are_correlated_and_retained() {
+        let db = db().await;
+        let mut usage = completion("usage-1", "task-1", "idem-1", 100);
+        usage.trace_id = Some("trace-1".into());
+        db.write_provider_completion(usage).await.unwrap();
+        db.write_route_trace(&RouteTraceRecord {
+            trace: AiccRouteTraceEvent {
+                trace_id: "trace-1".into(),
+                tenant_id: "tenant-a".into(),
+                caller_app_id: Some("app-a".into()),
+                task_id: "task-1".into(),
+                request_model: "llm.chat".into(),
+                selected_exact_model: Some("gpt-5@openai-primary".into()),
+                provider_instance_name: Some("openai-primary".into()),
+                api_type: "llm".into(),
+                route_trace_json: json!({
+                    "request_id": "request-1",
+                    "api_type": "llm",
+                    "requested_model": "llm.chat",
+                    "requested_model_type": "logical",
+                    "selected_exact_model": "gpt-5@openai-primary",
+                    "selected_provider_instance_name": "openai-primary",
+                    "ranked_candidates": []
+                }),
+                created_at_ms: 100,
+            },
+            request_id: Some("request-1".into()),
+            route_id: Some("route-1".into()),
+            provider_trace_id: Some("provider-1".into()),
+            scheduler_profile: Some("balanced".into()),
+            outcome: Some("succeeded".into()),
+        })
+        .await
+        .unwrap();
+        db.write_audit_event(&AuditEvent {
+            audit_id: "audit-1".into(),
+            tenant_id: "tenant-a".into(),
+            caller_app_id: None,
+            event_type: "provider.completed".into(),
+            trace_id: Some("trace-1".into()),
+            request_id: Some("request-1".into()),
+            task_id: Some("task-1".into()),
+            route_id: Some("route-1".into()),
+            provider_trace_id: Some("provider-1".into()),
+            provider_instance_name: Some("openai-primary".into()),
+            exact_model: Some("gpt-5@openai-primary".into()),
+            data: json!({"status":"succeeded"}),
+            created_at_ms: 100,
+        })
+        .await
+        .unwrap();
+        let mut usage_query = QueryUsageRequest::new(UsageQueryTimeRange::Explicit {
+            start_time_ms: 100,
+            end_time_ms: 101,
+        });
+        usage_query.output_mode = UsageQueryOutputMode::Events;
+        let usages = db.query_usage(&usage_query, 101).await.unwrap();
+        let traces = db
+            .query_route_traces(
+                "tenant-a",
+                &QueryRouteTraceRequest {
+                    limit: None,
+                    cursor: None,
+                    start_time_ms: None,
+                    end_time_ms: None,
+                    task_ids: vec!["task-1".into()],
+                    request_ids: vec!["request-1".into()],
+                    api_types: vec![],
+                    provider_instance_names: vec![],
+                    selected_exact_models: vec![],
+                    scheduler_profiles: vec![],
+                    query: None,
+                    outcome: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(traces.total_count, Some(1));
+        let audits = db
+            .query_audit(&AuditQuery {
+                tenant_id: "tenant-a".into(),
+                trace_ids: vec!["trace-1".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(usages.events[0].trace_id.as_deref(), Some("trace-1"));
+        assert_eq!(audits.events.len(), 1);
+        assert_eq!(audits.events[0].trace_id.as_deref(), Some("trace-1"));
+        assert_eq!(
+            traces.traces[0]
+                .pointer("/trace_id")
+                .and_then(Value::as_str),
+            Some("trace-1")
+        );
+        let deleted = db.enforce_diagnostic_retention(101).await.unwrap();
+        assert_eq!(
+            deleted,
+            RetentionResult {
+                route_traces_deleted: 1,
+                audit_events_deleted: 1
+            }
+        );
+    }
+
+    #[test]
+    fn postgres_placeholders_are_numbered() {
+        assert_eq!(placeholders("a=? AND b=?"), "a=$1 AND b=$2")
+    }
+}

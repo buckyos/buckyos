@@ -10,11 +10,11 @@
 
 | 类型 | Fixture | 用途 |
 |---|---|---|
-| 图片 | 小 PNG、大 PNG、透明 PNG、JPEG、mask PNG | `image.*`、`vision.*`、多模态 `llm.chat` |
+| 图片 | 小 PNG、大 PNG、透明 PNG、JPEG、mask PNG | `image.*`、`vision.*`、多模态 `chat.completions.create` |
 | 音频 | 短 wav/mp3、长音频、噪声音频 | `audio.tts`、`audio.asr`、`audio.enhance` |
 | 视频 | 短 mp4 或 mock video object | `video.*` |
 | 文档 | text chunk、PDF/image page mock、OCR 样例 | `embedding.text`、`vision.ocr`、`rerank` |
-| 结构化数据 | JSON schema、tool schema、rerank docs | `llm.chat`、`rerank` |
+| 结构化数据 | JSON schema、tool schema、rerank docs | `chat.completions.create`、`rerank` |
 | 大批量数据 | 101 条 embedding items 或超过 1MB 预估响应 | artifact 输出策略 |
 
 每个 fixture 应有固定 digest、media type、size、必要 metadata，便于验证 FileObject meta 和 artifact 输出。
@@ -38,7 +38,7 @@ path = "images/small.png"
 media_type = "image/png"
 size_bytes = 1024
 sha256 = "..."
-used_by = ["image.img2img", "vision.caption", "llm.chat"]
+used_by = ["image.img2img", "vision.caption", "chat.completions.create"]
 
 [[fixtures]]
 id = "mask_png_alpha"
@@ -63,4 +63,3 @@ Fixture 要求：
 - 大文件应尽量使用可生成的 deterministic fixture，或在 runner 中按脚本生成。
 - L4 真实模型使用外部 URL 时，必须在 TOML 中显式配置，不应默认访问不受控 URL。
 - fixture 内容不应包含真实用户数据。
-

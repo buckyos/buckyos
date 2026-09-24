@@ -20,17 +20,15 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
   const { t } = useI18n()
   const store = useAICCStore()
   const [checks, setChecks] = useState<CheckItem[]>([
-    // The first check starts in `checking` right away (the validation
-    // request is issued on mount), so no effect needs to flip it.
-    { key: 'endpoint', label: t('aiCenter.wizard.checkEndpoint', 'Checking endpoint connectivity...'), status: 'checking' },
+    { key: 'base_url', label: t('aiCenter.wizard.checkBaseUrl', 'Checking base URL connectivity...'), status: 'checking' },
     { key: 'auth', label: t('aiCenter.wizard.checkAuth', 'Verifying authentication...'), status: 'pending' },
     { key: 'models', label: t('aiCenter.wizard.checkModels', 'Discovering available models...'), status: 'pending' },
     { key: 'balance', label: t('aiCenter.wizard.checkBalance', 'Checking balance capability...'), status: 'pending' },
   ])
   const [models, setModels] = useState<string[]>([])
 
-  const detailFor = (result: ValidationResult, kind: 'endpoint' | 'auth' | 'models') =>
-    result.error_details?.find((item) => item.kind === kind)?.message
+  const detailFor = (result: ValidationResult, ...kinds: NonNullable<ValidationResult['error_details']>[number]['kind'][]) =>
+    result.error_details?.find((item) => kinds.includes(item.kind))?.message
 
   useEffect(() => {
     let cancelled = false
@@ -40,15 +38,15 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
       if (cancelled) return
       const steps = [
         {
-          key: 'endpoint',
+          key: 'base_url',
           delay: 400,
           update: (): CheckItem => ({
-            key: 'endpoint',
-            label: result.endpoint_reachable
-              ? t('aiCenter.wizard.endpointOk', 'Endpoint reachable')
-              : t('aiCenter.wizard.endpointFail', 'Endpoint not reachable'),
-            status: result.endpoint_reachable ? 'ok' as const : 'error' as const,
-            detail: detailFor(result, 'endpoint'),
+            key: 'base_url',
+            label: result.base_url_reachable
+              ? t('aiCenter.wizard.baseUrlOk', 'Base URL reachable')
+              : t('aiCenter.wizard.baseUrlFail', 'Base URL not reachable'),
+            status: result.base_url_reachable ? 'ok' as const : 'error' as const,
+            detail: detailFor(result, 'base_url'),
           }),
         },
         {
@@ -60,7 +58,7 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
               ? t('aiCenter.wizard.authOk', 'Authentication valid')
               : t('aiCenter.wizard.authFail', 'Authentication failed'),
             status: result.auth_valid ? 'ok' as const : 'error' as const,
-            detail: detailFor(result, 'auth'),
+            detail: detailFor(result, 'authentication'),
           }),
         },
         {
@@ -69,8 +67,8 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
           update: (): CheckItem => ({
             key: 'models',
             label: t('aiCenter.wizard.modelsFound', '{{count}} models discovered', { count: result.models_discovered.length }),
-            status: detailFor(result, 'models') ? 'error' as const : result.models_discovered.length > 0 ? 'ok' as const : 'warning' as const,
-            detail: detailFor(result, 'models'),
+            status: detailFor(result, 'configuration', 'protocol', 'models') ? 'error' as const : result.models_discovered.length > 0 ? 'ok' as const : 'warning' as const,
+            detail: detailFor(result, 'configuration', 'protocol', 'models'),
           }),
         },
         {
@@ -109,13 +107,13 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
     }).catch((error) => {
       if (cancelled) return
       const result: ValidationResult = {
-        endpoint_reachable: false,
+        base_url_reachable: false,
         auth_valid: false,
         models_discovered: [],
         balance_available: false,
         errors: [error instanceof Error ? error.message : 'Validation failed'],
         error_details: [{
-          kind: 'endpoint',
+          kind: 'base_url',
           message: error instanceof Error ? error.message : 'Validation failed',
         }],
       }

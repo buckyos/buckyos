@@ -27,6 +27,7 @@ function makeCase(seed: CaseSeed): AcceptanceCase {
     model_selector: seed.model_selector ?? null,
     api_type: seed.api_type,
     method: seed.method,
+    execution_mode: seed.execution_mode ?? "immediate",
     required_capabilities: seed.required_capabilities ?? [],
     disabled_capabilities: seed.disabled_capabilities ?? [],
     fixtures: seed.fixtures ?? [],
@@ -52,7 +53,7 @@ function makeCase(seed: CaseSeed): AcceptanceCase {
 const ROUTING_CASES: AcceptanceCase[] = [
   ["exact_model_hits_instance", null],
   ["logical_model_selects_candidate", null],
-  ["metadata_variant_lowers_options", null],
+  ["metadata_variant_expands_exact_model", null],
   ["version_exact_rule", null],
   ["version_pattern_rule", null],
   ["version_default_rule", null],
@@ -102,6 +103,22 @@ const ROUTING_CASES: AcceptanceCase[] = [
   expected_error_class: error as string | null,
 }));
 
+const CUSTOM_PROVIDER_CASES: AcceptanceCase[] = [
+  ["openai", "llm", "chat.completions.create"],
+  ["claude", "llm", "chat.completions.create"],
+  ["gemini", "llm", "chat.completions.create"],
+  ["fal", "image.upscale", "image.upscale"],
+].map(([protocol, apiType, method]) => makeCase({
+  case_id: `t1.custom.${protocol}`,
+  layer: "T1",
+  priority: "P0",
+  tags: ["custom_provider", "provider_protocol", String(protocol)],
+  method: String(method),
+  api_type: String(apiType),
+  mock_scenario: "success",
+  expected_error_class: null,
+}));
+
 const PROFILES = [
   "cost_first",
   "latency_first",
@@ -122,13 +139,45 @@ const PROFILE_CASES = PROFILES.map((profile) => makeCase({
   expected_error_class: null,
 }));
 
+const CANONICAL_ROUTING_CASES = CANONICAL_API_TYPES.flatMap((apiType) =>
+  methodsForApiType(apiType).map((method) => makeCase({
+    case_id: `t1.route.api_type.${apiType}.${method}`,
+    layer: "T1",
+    priority: "P0",
+    tags: ["routing", "api_type", apiType],
+    method,
+    api_type: apiType,
+    mock_scenario: `route_api_type_${apiType}`,
+    expected_error_class: null,
+  }))
+);
+
+const PROVIDER_BOUNDARY_TRIGGER_CASES: AcceptanceCase[] = [
+  ["rate_limit_fallback", "rate_limit", null],
+  ["server_error_fallback", "provider_5xx", null],
+  ["connection_failure_fallback", "connection_failed", null],
+  ["timeout_fallback", "timeout_short", null],
+  ["malformed_response_rejected", "malformed_response", "provider_protocol_failed"],
+  ["wrong_mime_rejected", "wrong_mime", "resource_failed"],
+  ["missing_usage_rejected", "missing_usage", "usage_failed"],
+].map(([name, scenario, error]) => makeCase({
+  case_id: `t1.runtime_boundary.${name}`,
+  layer: "T1",
+  priority: "P0",
+  tags: ["routing", "runtime_boundary"],
+  method: "chat.completions.create",
+  api_type: "llm",
+  mock_scenario: scenario as string,
+  expected_error_class: error as string | null,
+}));
+
 const HISTORY_CASES: AcceptanceCase[] = [
   makeCase({
     case_id: "t1.history.same_session_reuses_exact_model",
     layer: "T1",
     priority: "P0",
     tags: ["routing", "history", "soft_preference"],
-    method: "llm.chat",
+    method: "chat.completions.create",
     api_type: "llm",
     session: "history-session-a",
     mock_scenario: "history_exact_model_still_eligible",
@@ -153,7 +202,7 @@ const HISTORY_CASES: AcceptanceCase[] = [
     layer: "T1",
     priority: "P0",
     tags: ["routing", "history", "hard_constraint"],
-    method: "llm.chat",
+    method: "chat.completions.create",
     api_type: "llm",
     session: "history-session-a",
     mock_scenario: `history_${reason}`,
@@ -172,7 +221,7 @@ const HISTORY_CASES: AcceptanceCase[] = [
     layer: "T1",
     priority: "P0",
     tags: ["routing", "history", "isolation"],
-    method: "llm.chat",
+    method: "chat.completions.create",
     api_type: "llm",
     session: "history-session-b",
     mock_scenario: "history_cross_session_isolation",
@@ -181,58 +230,6 @@ const HISTORY_CASES: AcceptanceCase[] = [
     expected_error_class: null,
   }),
 ];
-
-const MOCK_SCENARIOS = [
-  ["success", null],
-  ["stream_success", null],
-  ["async_success", null],
-  ["bad_request", "provider_protocol_failed"],
-  ["unauthorized", "provider_protocol_failed"],
-  ["forbidden", "provider_protocol_failed"],
-  ["not_found", "provider_protocol_failed"],
-  ["idempotency_conflict", "provider_protocol_failed"],
-  ["rate_limit", "provider_runtime_failed"],
-  ["provider_5xx", "provider_runtime_failed"],
-  ["connection_failed", "provider_runtime_failed"],
-  ["timeout_short", "provider_runtime_failed"],
-  ["timeout_long", "provider_runtime_failed"],
-  ["malformed_response", "provider_protocol_failed"],
-  ["wrong_mime", "resource_failed"],
-  ["missing_usage", "usage_failed"],
-] as const;
-
-function protocolScenarioApplies(apiType: string, scenario: string): boolean {
-  if (scenario === "stream_success") return apiType === "llm";
-  if (scenario === "async_success") return apiType.startsWith("video.");
-  return true;
-}
-
-const CANONICAL_CASES = CANONICAL_API_TYPES.flatMap((apiType) =>
-  methodsForApiType(apiType).flatMap((method) =>
-    MOCK_SCENARIOS.filter(([scenario]) => protocolScenarioApplies(apiType, scenario)).map(([scenario, error]) => makeCase({
-      case_id: `t1.protocol.${apiType}.${method}.${scenario}`,
-      layer: "T1",
-      priority: scenario === "success" ? "P0" : "P1",
-      tags: ["provider_protocol", apiType],
-      method,
-      api_type: apiType,
-      mock_scenario: scenario,
-      expected_error_class: error,
-      fixtures: fixtureForApiType(apiType),
-    }))
-  )
-);
-
-function fixtureForApiType(apiType: string): string[] {
-  if (apiType.startsWith("image.") || apiType.startsWith("vision.")) {
-    return ["image_primary_png"];
-  }
-  if (apiType.startsWith("audio.")) return ["audio_speech_wav"];
-  if (apiType.startsWith("video.")) return ["video_fresh_mp4"];
-  if (apiType.startsWith("embedding.")) return ["unique_fact_text"];
-  if (apiType === "rerank") return ["rerank_documents"];
-  return ["unique_fact_text"];
-}
 
 const CROSS_CUTTING_CASES: AcceptanceCase[] = [
   ["task.immediate_succeeded", "success", null],
@@ -265,6 +262,7 @@ const CROSS_CUTTING_CASES: AcceptanceCase[] = [
   ["config.provider_validate_rejects_duplicate", "provider_validate_rejects_duplicate", null],
   ["config.provider_delete_isolation", "provider_delete_isolation", null],
   ["config.provider_update_rollback", "provider_update_rollback", null],
+  ["config.cloud_update_dynamic_catalog", "cloud_update_dynamic_catalog", null],
   ["config.restart_consistency", "restart_consistency", null],
   ["observability.correlation", "correlation", null],
   ["observability.redaction", "redaction", null],
@@ -273,11 +271,13 @@ const CROSS_CUTTING_CASES: AcceptanceCase[] = [
   layer: "T1",
   priority: "P0",
   tags: [String(suffix).split(".")[0]],
-  method: String(suffix).startsWith("config.")
+  method: String(suffix) === "config.cloud_update_dynamic_catalog"
+    ? "driver_metadata_update.set"
+    : String(suffix).startsWith("config.")
     ? "service.reload_settings"
     : ["task.running_succeeded", "task.running_failed", "task.cancelled", "task.terminal_idempotent", "task.reload_recovery", "task.restart_recovery"].includes(String(suffix))
     ? "video.txt2video"
-    : "llm.chat",
+    : "chat.completions.create",
   api_type: String(suffix).startsWith("config.")
     ? null
     : ["task.running_succeeded", "task.running_failed", "task.cancelled", "task.terminal_idempotent", "task.reload_recovery", "task.restart_recovery"].includes(String(suffix))
@@ -287,29 +287,12 @@ const CROSS_CUTTING_CASES: AcceptanceCase[] = [
   expected_error_class: error as string | null,
 }));
 
-const EMBEDDING_PROTOCOL_CASES: AcceptanceCase[] = [
-  ["dimension_mismatch", "embedding_dimension_mismatch"],
-  ["row_count_mismatch", "embedding_row_count_mismatch"],
-  ["item_order_mismatch", "embedding_order_mismatch"],
-  ["nonfinite_value", "embedding_nonfinite"],
-].map(([name, scenario]) => makeCase({
-  case_id: `t1.embedding.${name}`,
-  layer: "T1",
-  priority: "P0",
-  tags: ["provider_protocol", "embedding"],
-  method: "embedding.text",
-  api_type: "embedding.text",
-  mock_scenario: scenario,
-  expected_error_class: "provider_protocol_failed",
-  fixtures: ["unique_fact_text"],
-}));
-
 const EMBEDDING_BOUNDARY_CASES: AcceptanceCase[] = [
   makeCase({
     case_id: "t1.embedding.large_batch_artifact",
     layer: "T1",
     priority: "P0",
-    tags: ["provider_protocol", "embedding", "artifact"],
+    tags: ["typed_boundary", "embedding", "artifact"],
     method: "embedding.text",
     api_type: "embedding.text",
     mock_scenario: "success",
@@ -325,7 +308,7 @@ const EMBEDDING_BOUNDARY_CASES: AcceptanceCase[] = [
     case_id: "t1.embedding.space_mismatch_rejected",
     layer: "T1",
     priority: "P0",
-    tags: ["provider_protocol", "embedding", "routing"],
+    tags: ["typed_boundary", "embedding", "routing"],
     method: "embedding.text",
     api_type: "embedding.text",
     mock_scenario: "success",
@@ -334,31 +317,15 @@ const EMBEDDING_BOUNDARY_CASES: AcceptanceCase[] = [
   }),
 ];
 
-const RERANK_PROTOCOL_CASES: AcceptanceCase[] = [
-  ["score_missing", "rerank_missing_score"],
-  ["document_id_mismatch", "rerank_document_id_mismatch"],
-  ["result_count_mismatch", "rerank_result_count_mismatch"],
-].map(([name, scenario]) => makeCase({
-  case_id: `t1.rerank.${name}`,
-  layer: "T1",
-  priority: "P0",
-  tags: ["provider_protocol", "rerank"],
-  method: "rerank",
-  api_type: "rerank",
-  mock_scenario: scenario,
-  expected_error_class: "provider_protocol_failed",
-  fixtures: ["rerank_documents"],
-}));
-
 export function buildStaticManifest(): AcceptanceCase[] {
   return [
     ...ROUTING_CASES,
+    ...CUSTOM_PROVIDER_CASES,
     ...PROFILE_CASES,
+    ...CANONICAL_ROUTING_CASES,
+    ...PROVIDER_BOUNDARY_TRIGGER_CASES,
     ...HISTORY_CASES,
-    ...CANONICAL_CASES,
     ...CROSS_CUTTING_CASES,
-    ...EMBEDDING_PROTOCOL_CASES,
     ...EMBEDDING_BOUNDARY_CASES,
-    ...RERANK_PROTOCOL_CASES,
   ];
 }

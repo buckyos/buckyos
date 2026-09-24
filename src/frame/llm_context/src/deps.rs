@@ -21,6 +21,7 @@ use crate::state::LLMContextSnapshot;
 /// One inference request sent down to the provider adapter.
 #[derive(Debug, Clone)]
 pub struct LlmInferenceRequest {
+    pub trace_id: Option<String>,
     pub messages: Vec<AiMessage>,
     pub model_alias: String,
     pub fallbacks: Vec<String>,

@@ -126,6 +126,8 @@ AICC 应允许系统接入多个 AI 服务来源，并对每个来源维护以�
 
 服务来源发生变化时，AICC 应能更新可用能力列表，不要求用户重启整个系统。
 
+Provider Profile 和 Model Driver 的身份是开放集合。新增服务来源如果复用客户端已有的 Protocol Adapter，且模型与渠道差异可由现有 metadata schema 表达，必须能够通过配置来源动态加入，不要求发布新的 AICC 客户端；只有新增 API wire protocol 或其它不可声明执行行为时才允许要求客户端升级。
+
 ### 6.4 自动选择与切换
 
 AICC 在选择 AI 服务来源时，应综合以下因素：
@@ -185,6 +187,13 @@ AICC 应尽量把不同 AI 服务来源的结果整理成一致格式，使调�
 
 当某个服务来源返回额外信息时，AICC 可以保留摘要，但必须避免暴露密钥、原始敏感输入和过大的原始响应。
 
+跨服务来源切换时，历史消息中的 Provider 原生状态必须按三档处理：
+
+1. 状态来源和转换目标都使用 `<provider_profile_id, adapter_type, origin_provider, origin_model>`；Provider Instance、Base URL 与 API Key 不进入坐标。即使原 Provider Instance 已删除，仍可根据稳定的 `provider_profile_id` 判定来源 Provider。
+2. 来源四元组与目标完全一致时才允许按目标 Adapter 原样还原；跨 Provider Profile、Adapter、原厂或模型均必须执行到目标结构的转换。同一 Profile 下的不同 Provider Instance 不触发转换。
+3. 通用转换只能提取公开文本、摘要、拒绝说明或已规范化内容；不得读取或暴露加密状态、密钥、原始私有 payload。无法安全转换的 opaque 状态必须跳过，不得伪造目标 Provider 私有状态。
+4. `origin_provider` 和 `origin_model` 在库存刷新阶段完成映射。ProviderState 使用阶段不得再执行原厂推断或 unresolved/ambiguity 分支。
+
 ### 6.9 使用量、成本和预算
 
 AICC 应记录每次成功完成的 AI 使用情况，用于后续账单、统计、预算控制和审计。
@@ -205,6 +214,8 @@ AICC 应记录每次成功完成的 AI 使用情况，用于后续账单、统�
 2. 用户、应用或任务类型的额度限制。
 3. 额度不足时拒绝或改选更低成本能力。
 4. 向用户解释因预算导致的选择变化或失败原因。
+
+额度限制来自管理员或服务商明确配置的预算，以及 Provider 可提供的动态额度状态；调用方设置的成本上限只约束本次请求。未配置本地额度、Provider 不支持余额查询或额度状态未知时，不施加额外额度限制；只有明确耗尽或明确超过已配置预算时才拒绝对应候选。
 
 ### 6.10 隐私与安全
 

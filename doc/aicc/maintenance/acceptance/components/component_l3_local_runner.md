@@ -19,7 +19,7 @@ system_config 写入 settings
 
 用例：
 
-1. 写入 Mock OpenAI Provider Instance，`endpoint` 指向本地 Mock，reload 后 `models.list` 出现 `openai-mock-1`。
+1. 写入 Mock OpenAI Provider Instance，`base_url` 指向本地 Mock，reload 后 `models.list` 出现 `openai-mock-1`。
 2. 禁用 Provider，确认向库存刷新定时任务循环发送 `Stop` 并等待优雅退出；reload 后候选消失，调用返回无候选或策略拒绝，且没有新探测或迟到的 inventory/health 写入。
 3. 修改 Model Driver 的结构化能力，reload 后 `ModelRequirement` 硬过滤结果变化。
 4. 修改 `provider_type` 为 `local_inference` / `cloud_api` / `proxy_unknown`，验证 `local_only` 过滤。
@@ -154,4 +154,3 @@ SN 动态登录用例不要求 API Key，但 SN API Key 用例必须显式提供
 7. 如果 `keep_on_failure=true`，保留临时 group，但必须在报告中写入 group 名、节点名和手工清理命令。
 
 清理失败不能覆盖原始测试失败原因，应作为单独 warning 写入报告。
-

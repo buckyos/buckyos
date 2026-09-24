@@ -456,6 +456,13 @@ mod test {
         assert!(init_map.contains_key("services/repo-service/settings"));
         assert!(init_map.contains_key("services/repo-service/pkg_list"));
         assert!(init_map.contains_key("services/aicc/spec"));
+        let aicc_settings: serde_json::Value = serde_json::from_str(
+            init_map
+                .get("services/aicc/settings")
+                .expect("AICC settings should be initialized"),
+        )
+        .expect("AICC settings should be valid JSON");
+        assert_eq!(aicc_settings, serde_json::json!({"providers": []}));
         assert!(init_map.contains_key("services/msg-center/spec"));
         assert!(init_map.contains_key("services/nfs-server/spec"));
         assert!(init_map.contains_key("services/nfs-server/settings"));

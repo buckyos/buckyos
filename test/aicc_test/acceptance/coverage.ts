@@ -68,28 +68,11 @@ export function buildT1Coverage(
     addBranch(branches, item.case_id.slice(3), [item], reports);
   }
 
-  const protocol = manifest.filter((entry) => entry.case_id.startsWith("t1.protocol."));
-  for (const method of [...new Set(protocol.map((item) => `${item.api_type}/${item.method}`))]) {
-    addBranch(
-      branches,
-      `protocol.method.${method}`,
-      protocol.filter((item) => `${item.api_type}/${item.method}` === method),
-      reports,
-    );
-  }
-  for (const scenario of [...new Set(protocol.map((item) => item.mock_scenario ?? "none"))]) {
-    addBranch(
-      branches,
-      `protocol.scenario.${scenario}`,
-      protocol.filter((item) => (item.mock_scenario ?? "none") === scenario),
-      reports,
-    );
-  }
-
   for (const item of manifest.filter((entry) =>
     entry.case_id.startsWith("t1.task.") || entry.case_id.startsWith("t1.usage.") ||
     entry.case_id.startsWith("t1.security.") || entry.case_id.startsWith("t1.config.") ||
-    entry.case_id.startsWith("t1.observability.") || entry.case_id.startsWith("t1.embedding.")
+    entry.case_id.startsWith("t1.observability.") || entry.case_id.startsWith("t1.embedding.") ||
+    entry.case_id.startsWith("t1.runtime_boundary.")
   )) {
     addBranch(branches, item.case_id.slice(3), [item], reports);
   }
@@ -98,7 +81,8 @@ export function buildT1Coverage(
     ["route_constraints", (item: AcceptanceCase) => item.case_id.startsWith("t1.route.")],
     ["scheduler_profiles", (item: AcceptanceCase) => item.case_id.startsWith("t1.scheduler.profile.")],
     ["history_constraints", (item: AcceptanceCase) => item.case_id.startsWith("t1.history.")],
-    ["api_method_x_mock_scenario", (item: AcceptanceCase) => item.case_id.startsWith("t1.protocol.")],
+    ["canonical_api_routes", (item: AcceptanceCase) => item.case_id.startsWith("t1.route.api_type.")],
+    ["runtime_boundaries", (item: AcceptanceCase) => item.case_id.startsWith("t1.runtime_boundary.")],
     ["cross_cutting", (item: AcceptanceCase) =>
       /t1\.(task|usage|security|config|observability)\./.test(item.case_id)],
     ["embedding_boundaries", (item: AcceptanceCase) => item.case_id.startsWith("t1.embedding.")],

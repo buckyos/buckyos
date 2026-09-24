@@ -22,10 +22,10 @@ use std::sync::Arc;
 use ::kRPC::RPCErrors;
 use async_trait::async_trait;
 use buckyos_api::{
-    ai_methods, features, get_buckyos_api_runtime, value_to_object_map, AiMethodRequest,
-    AiMethodStatus, AiPayload, AiResponse, AiToolCall, AiToolSpec, AiccClient, Capability,
-    KEventClient, ModelSpec, MsgCenterClient, Requirements, RespFormat, TaskDispatcherClient,
-    TaskManagerClient, TaskOutcome, TypedTaskData,
+    get_buckyos_api_runtime, AiMethodStatus, AiResponse, AiToolCall, AiToolSpec, AiccClient,
+    AiccExecutionMode, HelperModelRequirement, KEventClient, LlmChatHelperRequest,
+    LlmResponseFormat, ModelDisable, MsgCenterClient, TaskDispatcherClient, TaskManagerClient,
+    TaskOutcome, TypedTaskData,
 };
 use log::warn;
 use serde_json::{json, Value};
@@ -50,21 +50,38 @@ use crate::worklog::{WorklogAppendCtx, WorklogService};
 // LlmClient — aicc adapter
 // =====================================================================
 
+/// Map the waist's `force_json` / `json_schema` request onto aicc's typed
+/// response-format contract.
+fn aicc_response_format(force_json: bool, json_schema: Option<Value>) -> Option<LlmResponseFormat> {
+    force_json.then(|| match json_schema {
+        Some(schema) => LlmResponseFormat::json_schema(Some("llm_response".to_string()), schema, None),
+        None => LlmResponseFormat::json_object(),
+    })
+}
+
 /// `LlmClient` over `AiccClient`. One `infer()` acquires one short-session
-/// client and performs one `llm.chat` round-trip; adapter retry / fallback
+/// client and performs one `helper.llm_chat` round-trip; adapter retry / fallback
 /// happens inside aicc, not here.
 pub struct AiccLlmClient {
     aicc: Option<Arc<AiccClient>>,
+    session_id: Option<String>,
 }
 
 impl AiccLlmClient {
     pub fn new(aicc: Arc<AiccClient>) -> Self {
-        Self { aicc: Some(aicc) }
+        Self {
+            aicc: Some(aicc),
+            session_id: None,
+        }
     }
 
-    pub fn from_runtime(aicc_override: Option<Arc<AiccClient>>) -> Self {
+    pub fn from_runtime(
+        aicc_override: Option<Arc<AiccClient>>,
+        session_id: Option<String>,
+    ) -> Self {
         Self {
             aicc: aicc_override,
+            session_id,
         }
     }
 
@@ -81,10 +98,11 @@ impl AiccLlmClient {
 impl LlmClient for AiccLlmClient {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
         let LlmInferenceRequest {
+            trace_id,
             messages,
             model_alias,
             fallbacks,
-            temperature,
+            temperature: _,
             max_completion_tokens,
             force_json,
             json_schema,
@@ -107,93 +125,70 @@ impl LlmClient for AiccLlmClient {
                 .map(|spec| AiToolSpec {
                     name: spec.name,
                     description: spec.description,
-                    args_schema: value_to_object_map(spec.args_schema),
-                    output_schema: json!({}),
+                    tool_type: "function".to_string(),
+                    args_json_schema: spec.args_schema,
+                    output_schema: None,
                 })
                 .collect()
         } else {
             Vec::new()
         };
 
-        // provider_options: opaque pass-through merged into payload options.
-        let mut options = serde_json::Map::new();
-        if let Some(t) = temperature {
-            options.insert("temperature".to_string(), Value::from(t));
+        let _ = (fallbacks, provider_options);
+        let mut disable = ModelDisable::default();
+        for feature in disable_capabilities {
+            disable.set_feature_disabled(&feature);
         }
-        if let Some(m) = max_completion_tokens {
-            options.insert("max_completion_tokens".to_string(), Value::from(m));
-        }
-        if let Some(schema) = json_schema {
-            options.insert("json_schema".to_string(), schema);
-        }
-        if let Some(extra) = provider_options {
-            match extra {
-                Value::Object(obj) => {
-                    for (k, v) in obj {
-                        options.insert(k, v);
-                    }
-                }
-                other => {
-                    options.insert("provider_options".to_string(), other);
-                }
-            }
-        }
-
-        let payload = AiPayload::new(
-            None,
+        let response_format = aicc_response_format(force_json, json_schema);
+        let request = LlmChatHelperRequest {
+            logical_model: model_alias,
+            trace_id,
+            execution_mode: AiccExecutionMode::Immediate,
+            requirements: HelperModelRequirement {
+                tool_call: allow_tool_calls && !advertised_tools.is_empty(),
+                json_schema: force_json,
+                ..Default::default()
+            },
+            disable,
+            policy: None,
             messages,
-            advertised_tools,
-            Vec::new(),
-            None,
-            Some(Value::Object(options)),
-        );
-
-        let mut must_features: Vec<String> = Vec::new();
-        if allow_tool_calls && !payload.tool_specs.is_empty() {
-            must_features.push(features::TOOL_CALLING.to_string());
-        }
-        if force_json {
-            must_features.push(features::JSON_OUTPUT.to_string());
-        }
-
-        let extra = if disable_capabilities.is_empty() {
-            None
-        } else {
-            Some(json!({
-                "disable_capabilities": disable_capabilities
-            }))
+            tools: advertised_tools,
+            response_format,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: max_completion_tokens.map(u64::from),
+            seed: None,
+            stop: Vec::new(),
+            output: None,
+            idempotency_key: None,
+            task_options: None,
+            session_overlay: None,
+            session_id: self.session_id.clone(),
         };
-        let mut requirements = Requirements::new(must_features, None, None, extra);
-        if force_json {
-            requirements.resp_format = RespFormat::Json;
-        }
-
-        let request = AiMethodRequest::new(
-            Capability::Llm,
-            ModelSpec::new(model_alias, None),
-            requirements,
-            payload,
-            None,
-        );
-
-        // Fallbacks aren't directly representable in `AiMethodRequest` yet
-        // (model_spec carries a single alias); attach them to options so the
-        // aicc adapter can pick them up when it adds fallback wiring.
-        let _ = fallbacks;
 
         let aicc = self.client().await.map_err(provider_error_from_rpc)?;
         let resp = aicc
-            .call_method(ai_methods::LLM_CHAT, request)
+            .helper_llm_chat(request)
             .await
             .map_err(provider_error_from_rpc)?;
 
         match resp.status {
-            AiMethodStatus::Succeeded => resp.result.ok_or_else(|| {
-                LLMComputeError::provider(
-                    ProviderFailure::Unknown,
-                    "aicc returned status=succeeded without result",
-                )
-            }),
+            AiMethodStatus::Succeeded => {
+                let message = resp.message.ok_or_else(|| {
+                    LLMComputeError::provider(
+                        ProviderFailure::Unknown,
+                        "aicc returned status=succeeded without message",
+                    )
+                })?;
+                Ok(AiResponse {
+                    message,
+                    usage: resp.usage,
+                    cost: resp.cost,
+                    finish_reason: resp.finish_reason,
+                    provider_task_ref: resp.provider_task_ref,
+                    extra: None,
+                })
+            }
             AiMethodStatus::Running => resolve_async_aicc_result(resp.task_id.as_str()).await,
             AiMethodStatus::Failed => Err(LLMComputeError::provider(
                 ProviderFailure::Unknown,
@@ -1100,7 +1095,10 @@ pub fn build_session_deps(runtime: &AgentRuntime, input: SessionDepsInput) -> LL
         session_id: ctx.session_id.clone(),
     };
 
-    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::from_runtime(runtime.aicc.clone()));
+    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::from_runtime(
+        runtime.aicc.clone(),
+        Some(ctx.session_id.clone()),
+    ));
     let tools_adapter: Arc<dyn ToolManager> = Arc::new(OpendanToolAdapter::with_from_user_did(
         tools,
         ctx,

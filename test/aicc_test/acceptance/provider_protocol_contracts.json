@@ -1,0 +1,1038 @@
+{
+  "schema_version": 1,
+  "revision": "official-provider-protocols-2026-09-13.1",
+  "checked_at": "2026-09-13",
+  "providers": [
+    {
+      "provider_driver": "openai",
+      "provider_profile_id": "openai",
+      "endpoint_path": "/v1",
+      "credential_type": "bearer",
+      "official_first_party_model_ids": {
+        "llm": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
+        "vision.ocr": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
+        "vision.caption": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
+        "embedding.text": ["text-embedding-3-small", "text-embedding-3-large"],
+        "image.txt2img": ["gpt-image-2"],
+        "image.img2img": ["gpt-image-2"],
+        "image.inpaint": ["gpt-image-2"],
+        "audio.tts": ["gpt-4o-mini-tts"],
+        "audio.asr": ["gpt-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"],
+        "video.txt2video": ["sora-2", "sora-2-pro"],
+        "video.img2video": ["sora-2", "sora-2-pro"],
+        "agent.computer_use": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+      },
+      "official_variant_sources": [
+        "https://developers.openai.com/api/docs/models/gpt-5.6",
+        "https://developers.openai.com/api/docs/models/gpt-5.5",
+        "https://developers.openai.com/api/docs/models/gpt-5.5-pro",
+        "https://developers.openai.com/api/docs/models/gpt-5.4",
+        "https://developers.openai.com/api/docs/models/gpt-5.4-pro",
+        "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+        "https://developers.openai.com/api/docs/models/gpt-5.4-nano",
+        "https://developers.openai.com/api/docs/models/gpt-5.3-codex"
+      ],
+      "official_variant_rules": [
+        { "model_ids": ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"], "variants": { "reasoning-none": { "reasoning": { "effort": "none" } }, "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } }, "reasoning-max": { "reasoning": { "effort": "max" } } } },
+        { "model_ids": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"], "variants": { "reasoning-none": { "reasoning": { "effort": "none" } }, "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } },
+        { "model_ids": ["gpt-5.5-pro", "gpt-5.4-pro"], "variants": { "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } },
+        { "model_ids": ["gpt-5.3-codex"], "variants": { "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } }
+      ],
+      "test_model_ids": { "llm": "gpt-5.6", "vision.ocr": "gpt-5.6", "vision.caption": "gpt-5.6", "embedding.text": "text-embedding-3-small", "image.txt2img": "gpt-image-2", "image.img2img": "gpt-image-2", "image.inpaint": "gpt-image-2", "audio.tts": "gpt-4o-mini-tts", "audio.asr": "gpt-transcribe", "video.txt2video": "sora-2", "video.img2video": "sora-2", "agent.computer_use": "gpt-5.6" },
+      "contracts": [
+        {
+          "id": "openai.responses.v1",
+          "protocol_adapter_id": "openai-responses",
+          "api_version": "v1",
+          "api_types": ["llm", "vision.ocr", "vision.caption"],
+          "operation": "responses.create",
+          "http_method": "POST",
+          "path": "/v1/responses",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "input"],
+          "allowed_body_fields": ["model", "input", "include", "instructions", "max_output_tokens", "metadata", "parallel_tool_calls", "previous_response_id", "reasoning", "service_tier", "store", "stream", "temperature", "text", "tool_choice", "tools", "top_logprobs", "top_p", "truncation", "user"],
+          "body_field_types": { "model": ["string"], "input": ["string", "array"] },
+          "stream_protocol": "openai_responses",
+          "success_fixture": { "id": "resp_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "reasoning", "id": "rs_t15_4827", "summary": [{ "type": "summary_text", "text": "opaque reasoning" }], "encrypted_content": "opaque-t15-reasoning" }, { "type": "message", "id": "msg_t15_4827", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+          "official_sources": ["https://platform.openai.com/docs/api-reference/responses/create", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
+          "evidence_summary": "Responses create uses POST /v1/responses with Bearer authentication and JSON model/input; response objects contain output and usage."
+        },
+        {
+          "id": "openai.responses.computer.v1",
+          "protocol_adapter_id": "openai-responses",
+          "api_version": "v1",
+          "api_types": ["agent.computer_use"],
+          "operation": "responses.create",
+          "http_method": "POST",
+          "path": "/v1/responses",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "input", "tools"],
+          "allowed_body_fields": ["model", "input", "reasoning", "tools"],
+          "body_field_types": { "model": ["string"], "input": ["array"], "tools": ["array"] },
+          "success_fixture": { "id": "resp_computer_mock_1", "object": "response", "status": "completed", "model": "gpt-5.6", "output": [{ "type": "computer_call", "id": "computer_mock_1", "call_id": "computer_call_mock_1", "status": "completed", "action": { "type": "click", "button": "left", "x": 640, "y": 360 }, "pending_safety_checks": [] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+          "official_sources": ["https://developers.openai.com/api/reference/resources/responses/methods/create", "https://developers.openai.com/api/docs/models/gpt-5.6-sol"],
+          "evidence_summary": "GPT-5.6 computer use is exposed through Responses with the computer tool and computer_call action output."
+        },
+        {
+          "id": "openai.embeddings.v1",
+          "protocol_adapter_id": "openai-responses",
+          "api_version": "v1",
+          "api_types": ["embedding.text"],
+          "operation": "embeddings.create",
+          "http_method": "POST",
+          "path": "/v1/embeddings",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "input"],
+          "allowed_body_fields": ["model", "input", "encoding_format", "dimensions", "user"],
+          "body_field_types": { "model": ["string"], "input": ["string", "array"] },
+          "success_fixture": { "object": "list", "data": [{ "object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3] }], "model": "mock-model", "usage": { "prompt_tokens": 2, "total_tokens": 2 } },
+          "official_sources": ["https://platform.openai.com/docs/api-reference/embeddings/create", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
+          "evidence_summary": "Embedding create uses POST /v1/embeddings with model/input and returns indexed vectors plus token usage."
+        },
+        {
+          "id": "openai.images.generations.v1",
+          "protocol_adapter_id": "openai-responses",
+          "api_version": "v1",
+          "api_types": ["image.txt2img"],
+          "operation": "images.generate",
+          "http_method": "POST",
+          "path": "/v1/images/generations",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "prompt"],
+          "allowed_body_fields": ["model", "prompt", "background", "moderation", "n", "output_compression", "output_format", "quality", "response_format", "size", "style", "user"],
+          "body_field_types": { "model": ["string"], "prompt": ["string"] },
+          "success_fixture": { "created": 1770000000, "data": [{ "b64_json": "aW1hZ2U=" }], "usage": { "input_tokens": 2, "output_tokens": 1, "total_tokens": 3 } },
+          "official_sources": ["https://platform.openai.com/docs/api-reference/images/create", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
+          "evidence_summary": "Image generation uses POST /v1/images/generations with model/prompt and returns image data."
+        },
+        {
+          "id": "openai.images.edits.v1",
+          "protocol_adapter_id": "openai-responses",
+          "api_version": "v1",
+          "api_types": ["image.img2img", "image.inpaint"],
+          "operation": "images.edit",
+          "http_method": "POST",
+          "path": "/v1/images/edits",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "multipart/form-data",
+          "required_body_fields": ["model", "image", "prompt"],
+          "allowed_body_fields": ["model", "image", "mask", "prompt", "background", "input_fidelity", "n", "output_compression", "output_format", "quality", "response_format", "size", "user"],
+          "body_field_types": { "model": ["string"], "image": ["object", "array"], "prompt": ["string"] },
+          "success_fixture": { "created": 1770000000, "data": [{ "b64_json": "aW1hZ2U=" }], "usage": { "input_tokens": 2, "output_tokens": 1, "total_tokens": 3 } },
+          "official_sources": ["https://platform.openai.com/docs/api-reference/images/createEdit", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
+          "evidence_summary": "Image editing uses multipart POST /v1/images/edits with model, image and prompt; mask is used for inpainting."
+        },
+        {
+          "id": "openai.audio.speech.v1",
+          "protocol_adapter_id": "openai-responses",
+          "api_version": "v1",
+          "api_types": ["audio.tts"],
+          "operation": "audio.speech",
+          "http_method": "POST",
+          "path": "/v1/audio/speech",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "input", "voice"],
+          "allowed_body_fields": ["model", "input", "voice", "instructions", "response_format", "speed", "stream_format"],
+          "body_field_types": { "model": ["string"], "input": ["string"], "voice": ["string", "object"] },
+          "success_content_type": "audio/mpeg",
+          "success_fixture_base64": "SUQzAwAAAAA=",
+          "official_sources": ["https://platform.openai.com/docs/api-reference/audio/createSpeech", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
+          "evidence_summary": "Speech create uses POST /v1/audio/speech with model/input/voice and returns audio bytes."
+        },
+        {
+          "id": "openai.audio.transcriptions.v1",
+          "protocol_adapter_id": "openai-responses",
+          "api_version": "v1",
+          "api_types": ["audio.asr"],
+          "operation": "audio.transcriptions",
+          "http_method": "POST",
+          "path": "/v1/audio/transcriptions",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "multipart/form-data",
+          "required_body_fields": ["file", "model"],
+          "allowed_body_fields": ["file", "model", "chunking_strategy", "include", "known_speaker_names", "known_speaker_references", "language", "prompt", "response_format", "stream", "temperature", "timestamp_granularities"],
+          "body_field_types": { "file": ["object"], "model": ["string"] },
+          "success_fixture": { "text": "BUCKYOS-AICC-4827", "usage": { "type": "tokens", "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+          "official_sources": ["https://platform.openai.com/docs/api-reference/audio/createTranscription", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
+          "evidence_summary": "Audio transcription uses multipart POST /v1/audio/transcriptions with file/model and returns transcript text with usage where supported."
+        },
+        {
+          "id": "openai.videos.v1",
+          "protocol_adapter_id": "openai-responses",
+          "api_version": "v1",
+          "api_types": ["video.txt2video", "video.img2video"],
+          "operation": "videos.create",
+          "http_method": "POST",
+          "path": "/v1/videos",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "multipart/form-data",
+          "required_body_fields": ["model", "prompt"],
+          "allowed_body_fields": ["model", "prompt", "input_reference", "seconds", "size"],
+          "body_field_types": { "model": ["string"], "prompt": ["string"] },
+          "async_protocol": "openai_video",
+          "async_steps": [
+            { "name": "poll", "http_method": "GET", "path": "/v1/videos/{operation_id}" },
+            { "name": "result", "http_method": "GET", "path": "/v1/videos/{operation_id}/content" }
+          ],
+          "success_fixture": { "id": "video_mock_1", "object": "video", "model": "mock-model", "status": "queued", "progress": 0, "created_at": 1770000000 },
+          "official_sources": ["https://platform.openai.com/docs/api-reference/videos/create", "https://platform.openai.com/docs/api-reference/videos/retrieve", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
+          "evidence_summary": "Video create posts model/prompt to /v1/videos and returns a video task that is retrieved until completed."
+        }
+      ]
+    },
+    {
+      "provider_driver": "claude",
+      "provider_profile_id": "claude",
+      "endpoint_path": "/v1",
+      "credential_type": "api_key",
+      "official_first_party_model_ids": {
+        "llm": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+        "vision.ocr": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+        "vision.caption": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+      },
+      "official_variant_sources": ["https://platform.claude.com/docs/en/build-with-claude/effort"],
+      "official_variant_rules": [
+        { "model_ids": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"], "variants": { "reasoning-low": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "low" } }, "reasoning-medium": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "medium" } }, "reasoning-high": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "high" } }, "reasoning-xhigh": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "xhigh" } }, "reasoning-max": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "max" } } } }
+      ],
+      "test_model_ids": { "llm": "claude-sonnet-5", "vision.ocr": "claude-sonnet-5", "vision.caption": "claude-sonnet-5" },
+      "contracts": [{
+        "id": "anthropic.messages.2023-06-01",
+        "protocol_adapter_id": "claude-messages",
+        "api_version": "2023-06-01",
+        "api_types": ["llm", "vision.ocr", "vision.caption"],
+        "operation": "messages.create",
+        "http_method": "POST",
+        "path": "/v1/messages",
+        "auth": { "kind": "header", "name": "x-api-key", "prefix": "" },
+        "required_headers": { "anthropic-version": "2023-06-01" },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "messages", "max_tokens"],
+        "allowed_body_fields": ["model", "messages", "max_tokens", "metadata", "output_config", "service_tier", "stop_sequences", "stream", "system", "temperature", "thinking", "tool_choice", "tools", "top_k", "top_p"],
+        "body_field_types": { "model": ["string"], "messages": ["array"], "max_tokens": ["number"] },
+        "thinking": { "allowed_types": ["adaptive"] },
+        "stream_protocol": "claude_messages",
+        "success_fixture": { "id": "msg_mock_1", "type": "message", "role": "assistant", "model": "mock-model", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }], "stop_reason": "end_turn", "stop_sequence": null, "usage": { "input_tokens": 4, "output_tokens": 3 } },
+        "official_sources": ["https://platform.claude.com/docs/en/api/messages/create", "https://platform.claude.com/docs/en/build-with-claude/structured-outputs", "https://platform.claude.com/docs/en/build-with-claude/extended-thinking", "https://platform.claude.com/docs/en/api/errors"],
+        "evidence_summary": "Messages create requires x-api-key, anthropic-version, model/messages/max_tokens; canonical JSON Schema lowers to output_config.format, and Claude 5 uses adaptive rather than budget-based thinking."
+      }]
+    },
+    {
+      "provider_driver": "google-gemini",
+      "provider_profile_id": "gemini",
+      "endpoint_path": "/v1beta",
+      "credential_type": "api_key",
+      "official_first_party_model_ids": {
+        "llm": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"],
+        "vision.ocr": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+        "vision.caption": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+        "vision.detect": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+        "vision.segment": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+        "audio.asr": ["gemini-3.5-transcribe"],
+        "embedding.text": ["gemini-embedding-2", "gemini-embedding-2-preview", "gemini-embedding-001"],
+        "embedding.multimodal": ["gemini-embedding-2", "gemini-embedding-2-preview"],
+        "image.txt2img": ["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-2.5-flash-image"],
+        "image.img2img": ["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-2.5-flash-image"],
+        "audio.tts": ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"],
+        "audio.music": ["lyria-3-pro-preview", "lyria-3-clip-preview"],
+        "video.txt2video": ["veo-3.1-generate-preview", "veo-3.1-lite-generate-preview"],
+        "video.img2video": ["veo-3.1-generate-preview", "veo-3.1-lite-generate-preview"],
+        "video.video2video": ["gemini-omni-1.1-flash"],
+        "video.extend": ["gemini-omni-1.1-flash"]
+      },
+      "official_variant_sources": ["https://ai.google.dev/gemini-api/docs/thinking"],
+      "official_variant_rules": [
+        { "model_ids": ["gemini-2.5-flash", "gemini-2.5-flash-lite"], "variants": { "reasoning-none": { "generation_config": { "thinking_budget": 0 } }, "reasoning-low": { "generation_config": { "thinking_budget": 1024 } }, "reasoning-medium": { "generation_config": { "thinking_budget": 8192 } }, "reasoning-high": { "generation_config": { "thinking_budget": 24576 } } } },
+        { "model_ids": ["gemini-2.5-pro"], "variants": { "reasoning-low": { "generation_config": { "thinking_budget": 1024 } }, "reasoning-medium": { "generation_config": { "thinking_budget": 8192 } }, "reasoning-high": { "generation_config": { "thinking_budget": 24576 } } } },
+        { "model_ids": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"], "variants": { "reasoning-mini": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.1-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-3-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-3.1-flash-lite-image"], "variants": { "reasoning-mini": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
+      ],
+      "test_model_ids": { "llm": "gemini-3.5-flash", "vision.ocr": "gemini-3.5-flash", "vision.caption": "gemini-3.5-flash", "vision.detect": "gemini-3.5-flash", "vision.segment": "gemini-3.5-flash", "audio.asr": "gemini-3.5-transcribe", "embedding.text": "gemini-embedding-2", "embedding.multimodal": "gemini-embedding-2", "image.txt2img": "gemini-3.1-flash-image", "image.img2img": "gemini-3.1-flash-image", "audio.tts": "gemini-3.1-flash-tts-preview", "audio.music": "lyria-3-clip-preview", "video.txt2video": "veo-3.1-generate-preview", "video.img2video": "veo-3.1-generate-preview", "video.video2video": "gemini-omni-1.1-flash", "video.extend": "gemini-omni-1.1-flash" },
+      "contracts": [
+        {
+          "id": "gemini.interactions.v1beta",
+          "protocol_adapter_id": "gemini-interactions",
+          "api_version": "v1beta",
+          "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment"],
+          "operation": "interactions.create",
+          "http_method": "POST",
+          "path": "/v1beta/interactions",
+          "auth": { "kind": "header", "name": "x-goog-api-key", "prefix": "" },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "input"],
+          "allowed_body_fields": ["model", "input", "background", "generation_config", "previous_interaction_id", "response_format", "store", "stream", "system_instruction", "tools"],
+          "body_field_types": { "model": ["string"], "input": ["string", "array"] },
+          "generation_config": {
+            "allowed_fields": ["image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences", "thinking_level", "thinking_summaries", "tool_choice", "transcription_config", "video_config"],
+            "thinking_level_values": ["minimal", "low", "medium", "high"]
+          },
+          "stream_protocol": "gemini_interactions",
+          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "mock-model", "steps": [{ "type": "model_output", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "official_sources": ["https://ai.google.dev/api/interactions-api", "https://ai.google.dev/gemini-api/docs/function-calling", "https://ai.google.dev/gemini-api/docs/api-errors"],
+          "evidence_summary": "Interactions create uses POST /v1beta/interactions with model/input and x-goog-api-key; function_result requires name, call_id and result and must match its preceding function_call."
+        },
+        {
+          "id": "gemini.interactions.transcription.v1beta",
+          "protocol_adapter_id": "gemini-interactions",
+          "api_version": "v1beta",
+          "api_types": ["audio.asr"],
+          "operation": "interactions.create",
+          "http_method": "POST",
+          "path": "/v1beta/interactions",
+          "auth": { "kind": "header", "name": "x-goog-api-key", "prefix": "" },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "input", "generation_config"],
+          "allowed_body_fields": ["model", "input", "generation_config", "store"],
+          "body_field_types": { "model": ["string"], "input": ["string", "array"], "generation_config": ["object"] },
+          "generation_config": {
+            "allowed_fields": ["image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences", "thinking_level", "thinking_summaries", "tool_choice", "transcription_config", "video_config"],
+            "thinking_level_values": ["minimal", "low", "medium", "high"]
+          },
+          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.5-transcribe", "steps": [{ "type": "model_output", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "official_sources": ["https://ai.google.dev/gemini-api/docs/transcribe", "https://ai.google.dev/gemini-api/docs/api-errors"],
+          "evidence_summary": "Gemini transcription uses POST /v1beta/interactions with an audio input and generation_config.transcription_config."
+        },
+        {
+          "id": "gemini.interactions.image.v1beta",
+          "protocol_adapter_id": "gemini-interactions",
+          "api_version": "v1beta",
+          "api_types": ["image.txt2img", "image.img2img"],
+          "operation": "interactions.create",
+          "http_method": "POST",
+          "path": "/v1beta/interactions",
+          "auth": { "kind": "header", "name": "x-goog-api-key", "prefix": "" },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "input"],
+          "allowed_body_fields": ["model", "input", "generation_config", "previous_interaction_id", "response_format", "store", "tools"],
+          "body_field_types": { "model": ["string"], "input": ["string", "array"] },
+          "generation_config": {
+            "allowed_fields": ["image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences", "thinking_level", "thinking_summaries", "tool_choice", "transcription_config", "video_config"],
+            "thinking_level_values": ["minimal", "low", "medium", "high"]
+          },
+          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.1-flash-image", "steps": [{ "type": "model_output", "content": [{ "type": "image", "id": "gemini_image_mock_1", "mime_type": "image/png", "data": "iVBORw0KGgo=" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "provider_artifact_identity": { "returns_api_types": ["image.txt2img"], "accepts_api_types": ["image.img2img"], "id_fields": ["id", "file_id", "fileId", "name"], "same_provider_reuse": "required", "cross_provider_reuse": "forbidden" },
+          "official_sources": ["https://ai.google.dev/gemini-api/docs/image-generation", "https://ai.google.dev/gemini-api/docs/api-errors"],
+          "evidence_summary": "Gemini image generation and editing use POST /v1beta/interactions with model/input and return image content blocks."
+        },
+        {
+          "id": "gemini.interactions.tts.v1beta",
+          "protocol_adapter_id": "gemini-interactions",
+          "api_version": "v1beta",
+          "api_types": ["audio.tts"],
+          "operation": "interactions.create",
+          "http_method": "POST",
+          "path": "/v1beta/interactions",
+          "auth": { "kind": "header", "name": "x-goog-api-key", "prefix": "" },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "input", "response_format", "generation_config"],
+          "allowed_body_fields": ["model", "input", "response_format", "generation_config", "store", "stream"],
+          "body_field_types": { "model": ["string"], "input": ["string", "array"], "response_format": ["object", "array"], "generation_config": ["object"] },
+          "generation_config": {
+            "allowed_fields": ["image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences", "thinking_level", "thinking_summaries", "tool_choice", "transcription_config", "video_config"],
+            "thinking_level_values": ["minimal", "low", "medium", "high"]
+          },
+          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-3.1-flash-tts-preview", "steps": [{ "type": "model_output", "content": [{ "type": "audio", "mime_type": "audio/l16", "data": "UklGRg==" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "official_sources": ["https://ai.google.dev/gemini-api/docs/speech-generation", "https://ai.google.dev/gemini-api/docs/api-errors"],
+          "evidence_summary": "Gemini TTS uses POST /v1beta/interactions with audio response_format and generation_config.speech_config."
+        },
+        {
+          "id": "gemini.interactions.music.v1beta",
+          "protocol_adapter_id": "gemini-interactions",
+          "api_version": "v1beta",
+          "api_types": ["audio.music"],
+          "operation": "interactions.create",
+          "http_method": "POST",
+          "path": "/v1beta/interactions",
+          "auth": { "kind": "header", "name": "x-goog-api-key", "prefix": "" },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "input"],
+          "allowed_body_fields": ["model", "input", "response_format", "store"],
+          "body_field_types": { "model": ["string"], "input": ["string", "array"] },
+          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "lyria-3-clip-preview", "steps": [{ "type": "model_output", "content": [{ "type": "audio", "mime_type": "audio/mpeg", "data": "SUQz" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "official_sources": ["https://ai.google.dev/gemini-api/docs/music-generation", "https://ai.google.dev/gemini-api/docs/api-errors"],
+          "evidence_summary": "Lyria 3 music generation uses POST /v1beta/interactions with model/input and returns audio content."
+        },
+        {
+          "id": "gemini.embed-content.v1beta",
+          "protocol_adapter_id": "gemini-interactions",
+          "api_version": "v1beta",
+          "api_types": ["embedding.text", "embedding.multimodal"],
+          "operation": "models.embedContent",
+          "http_method": "POST",
+          "path": "/v1beta/models/{model}:embedContent",
+          "auth": { "kind": "header", "name": "x-goog-api-key", "prefix": "" },
+          "content_type": "application/json",
+          "required_body_fields": ["content"],
+          "allowed_body_fields": ["content", "model", "outputDimensionality", "taskType", "title"],
+          "body_field_types": { "content": ["object"] },
+          "success_fixture": { "embedding": { "values": [0.1, 0.2, 0.3] } },
+          "official_sources": ["https://ai.google.dev/api/embeddings", "https://ai.google.dev/gemini-api/docs/api-errors"],
+          "evidence_summary": "EmbedContent puts the model in the v1beta path, accepts Content, and returns an embedding values array."
+        },
+        {
+          "id": "gemini.predict-long-running.v1beta",
+          "protocol_adapter_id": "gemini-interactions",
+          "api_version": "v1beta",
+          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "operation": "models.predictLongRunning",
+          "http_method": "POST",
+          "path": "/v1beta/models/{model}:predictLongRunning",
+          "auth": { "kind": "header", "name": "x-goog-api-key", "prefix": "" },
+          "content_type": "application/json",
+          "required_body_fields": ["instances"],
+          "allowed_body_fields": ["instances", "parameters"],
+          "body_field_types": { "instances": ["array"] },
+          "async_protocol": "google_lro",
+          "async_steps": [
+            { "name": "poll", "http_method": "GET", "path": "/v1beta/operations/{operation_id}" }
+          ],
+          "success_fixture": { "name": "operations/gemini_mock_1", "done": false },
+          "official_sources": ["https://ai.google.dev/api/models", "https://ai.google.dev/gemini-api/docs/video", "https://ai.google.dev/gemini-api/docs/api-errors"],
+          "evidence_summary": "Gemini video generation uses models/{model}:predictLongRunning with instances/parameters and returns a pollable operation."
+        }
+      ]
+    },
+    {
+      "provider_driver": "fal",
+      "provider_profile_id": "fal",
+      "endpoint_path": "",
+      "credential_type": "api_key",
+      "official_first_party_model_ids": {
+        "image.upscale": ["fal-ai/esrgan"],
+        "image.bg_remove": ["fal-ai/imageutils/rembg"],
+        "audio.enhance": ["fal-ai/deepfilternet3"],
+        "video.upscale": ["fal-ai/video-upscaler"]
+      },
+      "test_model_ids": { "image.upscale": "fal-ai/esrgan", "image.bg_remove": "fal-ai/imageutils/rembg", "audio.enhance": "fal-ai/deepfilternet3", "video.upscale": "fal-ai/video-upscaler" },
+      "contracts": [
+        {
+          "id": "fal.esrgan.queue-v1",
+          "protocol_adapter_id": "fal-queue",
+          "api_version": "queue-v1",
+          "api_types": ["image.upscale"],
+          "operation": "queue.submit",
+          "http_method": "POST",
+          "path": "/fal-ai/esrgan",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Key " },
+          "content_type": "application/json",
+          "required_body_fields": ["image_url"],
+          "allowed_body_fields": ["image_url", "scale", "tile", "face", "model", "output_format"],
+          "body_field_types": { "image_url": ["string"] },
+          "async_protocol": "fal_queue",
+          "async_steps": [
+            { "name": "poll", "http_method": "GET", "path": "/fal-ai/esrgan/requests/{request_id}/status" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/esrgan/requests/{request_id}" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/esrgan/requests/{request_id}/response" },
+            { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/esrgan/requests/{request_id}/cancel" }
+          ],
+          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
+          "async_result_fixture": { "image": { "url": "http://mock/artifacts/result.png", "content_type": "image/png", "file_name": "result.png", "file_size": 1024, "width": 1024, "height": 1024 } },
+          "official_sources": ["https://fal.ai/models/fal-ai/esrgan/api", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
+          "evidence_summary": "ESRGAN queue submit requires image_url at /fal-ai/esrgan and returns an image result after queue completion."
+        },
+        {
+          "id": "fal.imageutils-rembg.queue-v1",
+          "protocol_adapter_id": "fal-queue",
+          "api_version": "queue-v1",
+          "api_types": ["image.bg_remove"],
+          "operation": "queue.submit",
+          "http_method": "POST",
+          "path": "/fal-ai/imageutils/rembg",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Key " },
+          "content_type": "application/json",
+          "required_body_fields": ["image_url"],
+          "allowed_body_fields": ["image_url", "sync_mode", "crop_to_bbox"],
+          "body_field_types": { "image_url": ["string"] },
+          "async_protocol": "fal_queue",
+          "async_steps": [
+            { "name": "poll", "http_method": "GET", "path": "/fal-ai/imageutils/rembg/requests/{request_id}/status" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/imageutils/rembg/requests/{request_id}" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/imageutils/rembg/requests/{request_id}/response" },
+            { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/imageutils/rembg/requests/{request_id}/cancel" }
+          ],
+          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
+          "async_result_fixture": { "image": { "url": "http://mock/artifacts/result.png", "content_type": "image/png", "file_name": "result.png", "file_size": 1024, "width": 512, "height": 512 } },
+          "official_sources": ["https://fal.ai/docs/model-api-reference/image-generation-api/imageutils", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
+          "evidence_summary": "Imageutils rembg queue submit requires image_url at /fal-ai/imageutils/rembg and returns an image result after queue completion."
+        },
+        {
+          "id": "fal.deepfilternet3.queue-v1",
+          "protocol_adapter_id": "fal-queue",
+          "api_version": "queue-v1",
+          "api_types": ["audio.enhance"],
+          "operation": "queue.submit",
+          "http_method": "POST",
+          "path": "/fal-ai/deepfilternet3",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Key " },
+          "content_type": "application/json",
+          "required_body_fields": ["audio_url"],
+          "allowed_body_fields": ["audio_url", "sync_mode", "audio_format", "bitrate"],
+          "body_field_types": { "audio_url": ["string"] },
+          "async_protocol": "fal_queue",
+          "async_steps": [
+            { "name": "poll", "http_method": "GET", "path": "/fal-ai/deepfilternet3/requests/{request_id}/status" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/deepfilternet3/requests/{request_id}" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/deepfilternet3/requests/{request_id}/response" },
+            { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/deepfilternet3/requests/{request_id}/cancel" }
+          ],
+          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
+          "async_result_fixture": { "audio_file": { "url": "http://mock/artifacts/result.wav", "content_type": "audio/wav", "file_name": "result.wav", "file_size": 2048 }, "timings": { "preprocess": 0.01, "inference": 0.01, "postprocess": 0.01 } },
+          "official_sources": ["https://fal.ai/models/fal-ai/deepfilternet3/api", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
+          "evidence_summary": "DeepFilterNet 3 queue submit requires audio_url at /fal-ai/deepfilternet3 and returns audio_file plus timings after completion."
+        },
+        {
+          "id": "fal.video-upscaler.queue-v1",
+          "protocol_adapter_id": "fal-queue",
+          "api_version": "queue-v1",
+          "api_types": ["video.upscale"],
+          "operation": "queue.submit",
+          "http_method": "POST",
+          "path": "/fal-ai/video-upscaler",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Key " },
+          "content_type": "application/json",
+          "required_body_fields": ["video_url"],
+          "allowed_body_fields": ["video_url", "scale"],
+          "body_field_types": { "video_url": ["string"] },
+          "async_protocol": "fal_queue",
+          "async_steps": [
+            { "name": "poll", "http_method": "GET", "path": "/fal-ai/video-upscaler/requests/{request_id}/status" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/video-upscaler/requests/{request_id}" },
+            { "name": "result", "http_method": "GET", "path": "/fal-ai/video-upscaler/requests/{request_id}/response" },
+            { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/video-upscaler/requests/{request_id}/cancel" }
+          ],
+          "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
+          "async_result_fixture": { "video": { "url": "http://mock/artifacts/result.mp4", "content_type": "video/mp4", "file_name": "result.mp4", "file_size": 4096 } },
+          "official_sources": ["https://fal.ai/models/fal-ai/video-upscaler/api", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
+          "evidence_summary": "Video Upscaler queue submit requires video_url at /fal-ai/video-upscaler, accepts scale, and returns a video result after completion."
+        }
+      ]
+    },
+    {
+      "provider_driver": "minimax",
+      "provider_profile_id": "minimax",
+      "endpoint_path": "/anthropic",
+      "credential_type": "bearer",
+      "test_model_ids": { "llm": "MiniMax-M2.5", "audio.tts": "speech-2.8-hd", "image.txt2img": "image-01", "image.img2img": "image-01", "video.txt2video": "MiniMax-Hailuo-02", "video.img2video": "MiniMax-Hailuo-02", "audio.music": "music-2.6" },
+      "contracts": [
+        {
+          "id": "minimax.anthropic.messages.v1",
+          "protocol_adapter_id": "minimax-messages",
+          "api_version": "anthropic-v1",
+          "api_types": ["llm"],
+          "operation": "messages.create",
+          "http_method": "POST",
+          "path": "/anthropic/v1/messages",
+          "auth": { "kind": "header", "name": "x-api-key", "prefix": "" },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "messages", "max_tokens"],
+          "allowed_body_fields": ["model", "messages", "max_tokens", "stream", "system", "temperature", "thinking", "tool_choice", "tools", "top_p"],
+          "body_field_types": { "model": ["string"], "messages": ["array"], "max_tokens": ["number"] },
+          "stream_protocol": "claude_messages",
+          "success_fixture": { "id": "msg_mock_1", "type": "message", "role": "assistant", "model": "mock-model", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }], "stop_reason": "end_turn", "usage": { "input_tokens": 4, "output_tokens": 3 }, "base_resp": { "status_code": 0, "status_msg": "success" } },
+          "official_sources": ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"],
+          "evidence_summary": "MiniMax Anthropic-compatible text uses /anthropic/v1/messages and the Messages request/response shape."
+        },
+        {
+          "id": "minimax.t2a.v2",
+          "protocol_adapter_id": "minimax-messages",
+          "api_version": "v2",
+          "api_types": ["audio.tts"],
+          "operation": "t2a.create",
+          "http_method": "POST",
+          "path": "/v1/t2a_v2",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "text"],
+          "allowed_body_fields": ["model", "text", "stream", "stream_options", "language_boost", "output_format", "voice_setting", "pronunciation_dict", "audio_setting", "voice_modify", "timbre_weights", "subtitle_enable", "subtitle_type"],
+          "body_field_types": { "model": ["string"], "text": ["string"], "stream": ["boolean"], "stream_options": ["object"], "output_format": ["string"], "voice_setting": ["object"], "pronunciation_dict": ["object"], "audio_setting": ["object"], "voice_modify": ["object"], "timbre_weights": ["array"], "subtitle_enable": ["boolean"], "subtitle_type": ["string"] },
+          "success_fixture": { "data": { "audio": "494433", "status": 2 }, "extra_info": { "usage_characters": 12, "audio_format": "mp3" }, "trace_id": "minimax_mock_1", "base_resp": { "status_code": 0, "status_msg": "success" } },
+          "official_sources": ["https://platform.minimax.io/docs/api-reference/speech-t2a-http"],
+          "evidence_summary": "Synchronous T2A uses POST /v1/t2a_v2 with Bearer auth, model/text, and returns hex audio with base_resp."
+        },
+        {
+          "id": "minimax.image-generation.v1",
+          "protocol_adapter_id": "minimax-messages",
+          "api_version": "v1",
+          "api_types": ["image.txt2img", "image.img2img"],
+          "operation": "image_generation.create",
+          "http_method": "POST",
+          "path": "/v1/image_generation",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "prompt"],
+          "allowed_body_fields": ["model", "prompt", "aspect_ratio", "height", "width", "response_format", "n", "prompt_optimizer", "subject_reference"],
+          "body_field_types": { "model": ["string"], "prompt": ["string"] },
+          "success_fixture": { "id": "minimax_mock_1", "data": { "image_urls": ["http://mock/artifacts/image.png"] }, "metadata": { "failed_count": "0", "success_count": "1" }, "base_resp": { "status_code": 0, "status_msg": "success" } },
+          "official_sources": ["https://platform.minimax.io/docs/api-reference/image-generation-t2i"],
+          "evidence_summary": "MiniMax image generation uses POST /v1/image_generation with model/prompt and returns data.image_urls."
+        },
+        {
+          "id": "minimax.video-generation.v1",
+          "protocol_adapter_id": "minimax-messages",
+          "api_version": "v1",
+          "api_types": ["video.txt2video", "video.img2video"],
+          "operation": "video_generation.create",
+          "http_method": "POST",
+          "path": "/v1/video_generation",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "prompt"],
+          "allowed_body_fields": ["model", "prompt", "first_frame_image", "last_frame_image", "subject_reference", "duration", "resolution", "prompt_optimizer", "fast_pretreatment", "callback_url"],
+          "body_field_types": { "model": ["string"], "prompt": ["string"] },
+          "async_protocol": "minimax_video",
+          "async_steps": [
+            { "name": "poll", "http_method": "GET", "path": "/v1/query/video_generation", "required_query_fields": ["task_id"] },
+            { "name": "result", "http_method": "GET", "path": "/v1/files/retrieve", "required_query_fields": ["file_id"] }
+          ],
+          "success_fixture": { "task_id": "minimax_video_mock_1", "base_resp": { "status_code": 0, "status_msg": "success" } },
+          "official_sources": ["https://platform.minimax.io/docs/api-reference/video-generation-t2v", "https://platform.minimax.io/docs/api-reference/video-generation-fl2v"],
+          "evidence_summary": "MiniMax text/image-to-video submits POST /v1/video_generation and returns task_id."
+        },
+        {
+          "id": "minimax.music-generation.v1",
+          "protocol_adapter_id": "minimax-messages",
+          "api_version": "v1",
+          "api_types": ["audio.music"],
+          "operation": "music_generation.create",
+          "http_method": "POST",
+          "path": "/v1/music_generation",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "prompt"],
+          "allowed_body_fields": ["model", "prompt", "lyrics", "stream", "output_format", "audio_setting", "lyrics_optimizer", "is_instrumental", "audio_url", "audio_base64", "cover_feature_id"],
+          "body_field_types": { "model": ["string"], "prompt": ["string"], "lyrics": ["string"], "stream": ["boolean"], "output_format": ["string"], "audio_setting": ["object"], "lyrics_optimizer": ["boolean"], "is_instrumental": ["boolean"], "audio_url": ["string"], "audio_base64": ["string"], "cover_feature_id": ["string"] },
+          "minimax_music": {
+            "cover_model_ids": ["music-cover", "music-cover-free"],
+            "cover_reference_fields": ["audio_url", "audio_base64", "cover_feature_id"],
+            "non_instrumental_requires_lyrics_or_optimizer": true
+          },
+          "success_fixture": { "data": { "audio": "494433", "status": 2 }, "trace_id": "minimax_music_mock_1", "base_resp": { "status_code": 0, "status_msg": "success" } },
+          "official_sources": ["https://platform.minimax.io/docs/api-reference/music-generation"],
+          "evidence_summary": "MiniMax music generation uses POST /v1/music_generation and returns audio/status with base_resp."
+        }
+      ]
+    },
+    {
+      "provider_driver": "openrouter",
+      "provider_profile_id": "openrouter",
+      "endpoint_path": "/api/v1",
+      "credential_type": "bearer",
+      "official_first_party_model_ids": {
+        "llm": ["openai/gpt-5.6", "openai/gpt-5.5", "openai/gpt-5.4"],
+        "embedding.text": ["openai/text-embedding-3-small"],
+        "rerank": ["cohere/rerank-v3.5"]
+      },
+      "official_variant_sources": ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"],
+      "official_variant_rules": [
+        { "model_ids": ["openai/gpt-5.6"], "variants": { "reasoning-none": { "reasoning": { "effort": "none" } }, "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } }, "reasoning-max": { "reasoning": { "effort": "max" } } } },
+        { "model_ids": ["openai/gpt-5.5", "openai/gpt-5.4"], "variants": { "reasoning-none": { "reasoning": { "effort": "none" } }, "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } }
+      ],
+      "test_model_ids": { "llm": "openai/gpt-5.6", "embedding.text": "openai/text-embedding-3-small", "rerank": "cohere/rerank-v3.5" },
+      "contracts": [{
+        "id": "openrouter.responses.v1",
+        "protocol_adapter_id": "openrouter-responses",
+        "api_version": "v1",
+        "api_types": ["llm"],
+        "operation": "responses.create",
+        "http_method": "POST",
+        "path": "/api/v1/responses",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "background", "cache_control", "debug", "image_config", "include", "max_output_tokens", "max_tool_calls", "metadata", "modalities", "models", "parallel_tool_calls", "plugins", "prompt_cache_key", "provider", "reasoning", "route", "safety_identifier", "service_tier", "session_id", "stop_server_tools_when", "store", "stream", "temperature", "text", "tool_choice", "tools", "top_p", "truncation"],
+        "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "max_output_tokens": ["number"], "temperature": ["number"], "tools": ["array"], "tool_choice": ["string", "object"], "top_p": ["number"], "reasoning": ["object"], "cache_control": ["object"], "debug": ["object"], "image_config": ["object"], "modalities": ["array"], "models": ["array"], "parallel_tool_calls": ["boolean"], "plugins": ["array"], "provider": ["object"], "route": ["string"], "service_tier": ["string"], "session_id": ["string"], "stop_server_tools_when": ["array"] },
+        "stream_protocol": "openai_responses",
+        "success_fixture": { "id": "resp_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "reasoning", "id": "rs_t15_4827", "summary": [{ "type": "summary_text", "text": "opaque reasoning" }], "encrypted_content": "opaque-t15-reasoning" }, { "type": "message", "id": "msg_t15_4827", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://openrouter.ai/docs/api/api-reference/responses/create-responses", "https://openrouter.ai/openapi.yaml"],
+        "evidence_summary": "OpenRouter Responses uses POST /api/v1/responses with Bearer authentication and the OpenResponses model/input, output item, usage, tool, and SSE event shapes."
+      }, {
+        "id": "openrouter.embeddings.v1",
+        "protocol_adapter_id": "openrouter-responses",
+        "api_version": "v1",
+        "api_types": ["embedding.text"],
+        "operation": "embeddings.create",
+        "http_method": "POST",
+        "path": "/api/v1/embeddings",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "dimensions", "encoding_format", "input_type", "provider", "user"],
+        "body_field_types": { "model": ["string"], "input": ["string", "array"] },
+        "success_fixture": { "object": "list", "data": [{ "object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3] }], "model": "openai/text-embedding-3-small", "usage": { "prompt_tokens": 2, "total_tokens": 2 } },
+        "official_sources": ["https://openrouter.ai/docs/api/api-reference/embeddings/submit-an-embedding-request"],
+        "evidence_summary": "OpenRouter embeddings uses POST /api/v1/embeddings with Bearer authentication and OpenAI-compatible model/input and embedding results."
+      }, {
+        "id": "openrouter.rerank.v1",
+        "protocol_adapter_id": "openrouter-responses",
+        "api_version": "v1",
+        "api_types": ["rerank"],
+        "operation": "rerank.create",
+        "http_method": "POST",
+        "path": "/api/v1/rerank",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "query", "documents"],
+        "allowed_body_fields": ["model", "query", "documents", "provider", "top_n"],
+        "body_field_types": { "model": ["string"], "query": ["string"], "documents": ["array"], "top_n": ["number"] },
+        "success_fixture": { "id": "gen-rerank-mock", "model": "cohere/rerank-v3.5", "results": [{ "document": { "text": "BUCKYOS-AICC-4827" }, "index": 1, "relevance_score": 0.99 }, { "document": { "text": "wrong" }, "index": 0, "relevance_score": 0.01 }], "usage": { "search_units": 1, "total_tokens": 12 } },
+        "official_sources": ["https://openrouter.ai/docs/api/api-reference/rerank/create-rerank"],
+        "evidence_summary": "OpenRouter rerank uses POST /api/v1/rerank and returns ordered index/relevance_score results."
+      }]
+    },
+    {
+      "provider_driver": "kimi",
+      "provider_profile_id": "kimi",
+      "endpoint_path": "/v1",
+      "credential_type": "bearer",
+      "official_first_party_model_ids": {
+        "llm": ["kimi-k2.6", "kimi-k2.5"],
+        "vision.ocr": ["kimi-k2.6", "kimi-k2.5"],
+        "vision.caption": ["kimi-k2.6", "kimi-k2.5"]
+      },
+      "official_variant_sources": ["https://platform.kimi.com/docs/api/models-overview", "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"],
+      "official_variant_rules": [{
+        "model_ids": ["kimi-k2.6", "kimi-k2.5"],
+        "variants": {
+          "reasoning-medium": { "thinking": { "type": "enabled" } },
+          "reasoning-none": { "thinking": { "type": "disabled" } }
+        }
+      }],
+      "test_model_ids": { "llm": "kimi-k2.6", "vision.ocr": "kimi-k2.6", "vision.caption": "kimi-k2.6" },
+      "contracts": [{
+        "id": "kimi.chat-completions.v1",
+        "protocol_adapter_id": "kimi-chat",
+        "api_version": "v1",
+        "api_types": ["llm", "vision.ocr", "vision.caption"],
+        "operation": "chat.completions.create",
+        "http_method": "POST",
+        "path": "/v1/chat/completions",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "messages"],
+        "allowed_body_fields": ["model", "messages", "max_tokens", "max_completion_tokens", "response_format", "stop", "stream", "stream_options", "tools", "tool_choice", "thinking", "reasoning_effort", "prompt_cache_key", "temperature", "top_p", "n", "presence_penalty", "frequency_penalty"],
+        "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"], "temperature": ["number"], "top_p": ["number"], "n": ["number"], "presence_penalty": ["number"], "frequency_penalty": ["number"] },
+        "stream_protocol": "openai_chat",
+        "success_fixture": { "id": "cmpl_mock_1", "object": "chat.completion", "created": 1770000000, "model": "kimi-k2.6", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cached_tokens": 0 } },
+        "official_sources": ["https://platform.kimi.com/docs/api/chat", "https://platform.kimi.com/docs/api/errors"],
+        "evidence_summary": "Kimi Chat Completions uses POST /v1/chat/completions with Bearer authentication, JSON model/messages, OpenAI-style choices and data-only SSE terminated by [DONE]."
+      }]
+    },
+    {
+      "provider_driver": "glm",
+      "provider_profile_id": "glm",
+      "endpoint_path": "/api/paas/v4",
+      "credential_type": "bearer",
+      "instance_fields": { "region": "global" },
+      "official_first_party_model_ids": {
+        "llm": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash", "glm-4.5v", "glm-4-32b-0414-128k"],
+        "vision.ocr": ["glm-5.3-flash", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5v"],
+        "vision.caption": ["glm-5.3-flash", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5v"]
+      },
+      "official_variant_sources": ["https://docs.z.ai/api-reference/llm/chat-completion", "https://docs.z.ai/guides/vlm/glm-5.3-flash", "https://docs.z.ai/guides/vlm/glm-4.6v"],
+      "official_variant_rules": [{
+        "model_ids": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash", "glm-4.5v"],
+        "variants": {
+          "reasoning-medium": { "thinking": { "type": "enabled" } },
+          "reasoning-none": { "thinking": { "type": "disabled" } }
+        }
+      }],
+      "test_model_ids": { "llm": "glm-5.1", "vision.ocr": "glm-5.3-flash", "vision.caption": "glm-5.3-flash" },
+      "contracts": [{
+        "id": "glm.chat-completions.v4",
+        "protocol_adapter_id": "glm-chat",
+        "api_version": "v4",
+        "api_types": ["llm", "vision.ocr", "vision.caption"],
+        "operation": "chat.completions.create",
+        "http_method": "POST",
+        "path": "/api/paas/v4/chat/completions",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "messages"],
+        "allowed_body_fields": ["model", "messages", "request_id", "do_sample", "stream", "thinking", "reasoning_effort", "temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice", "response_format", "tool_stream", "user_id"],
+        "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"], "thinking": ["object"] },
+        "stream_protocol": "openai_chat",
+        "success_fixture": { "id": "glm_mock_1", "request_id": "req_mock_1", "created": 1770000000, "model": "glm-5.1", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827", "reasoning_content": "" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://docs.z.ai/api-reference/llm/chat-completion", "https://docs.bigmodel.cn/cn/api/api-code"],
+        "evidence_summary": "GLM Chat Completion uses POST /api/paas/v4/chat/completions with Bearer authentication and JSON model/messages; streaming is standard SSE terminated by [DONE]."
+      }]
+    },
+    {
+      "provider_driver": "deepseek",
+      "provider_profile_id": "deepseek",
+      "endpoint_path": "",
+      "credential_type": "bearer",
+      "official_first_party_model_ids": {
+        "llm": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"],
+        "vision.ocr": ["deepseek-v4-flash-vision-exp"],
+        "vision.caption": ["deepseek-v4-flash-vision-exp"]
+      },
+      "official_variant_sources": ["https://api-docs.deepseek.com/api/create-response/"],
+      "official_variant_rules": [{
+        "model_ids": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"],
+        "variants": {
+          "reasoning-none": { "reasoning": { "effort": "none" } },
+          "reasoning-mini": { "reasoning": { "effort": "minimal" } },
+          "reasoning-low": { "reasoning": { "effort": "low" } },
+          "reasoning-medium": { "reasoning": { "effort": "medium" } },
+          "reasoning-high": { "reasoning": { "effort": "high" } },
+          "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } },
+          "reasoning-max": { "reasoning": { "effort": "max" } }
+        }
+      }],
+      "test_model_ids": { "llm": "deepseek-v4-flash", "vision.ocr": "deepseek-v4-flash-vision-exp", "vision.caption": "deepseek-v4-flash-vision-exp" },
+      "contracts": [{
+        "id": "deepseek.responses.v1",
+        "protocol_adapter_id": "deepseek-responses",
+        "api_version": "v1",
+        "api_types": ["llm", "vision.ocr", "vision.caption"],
+        "operation": "responses.create",
+        "http_method": "POST",
+        "path": "/responses",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "instructions", "max_output_tokens", "reasoning", "stream", "temperature", "text", "tool_choice", "tools", "top_logprobs", "top_p", "user"],
+        "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "reasoning": ["object"] },
+        "stream_protocol": "openai_responses",
+        "success_fixture": { "id": "resp_deepseek_mock_1", "object": "response", "created_at": 1770000000, "status": "completed", "error": null, "incomplete_details": null, "model": "deepseek-v4-flash", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://api-docs.deepseek.com/api/create-response/", "https://api-docs.deepseek.com/quick_start/error_codes/"],
+        "evidence_summary": "DeepSeek Responses uses POST /responses with Bearer authentication and stateless JSON model/input; semantic SSE ends with a response terminal event and no [DONE] marker."
+      }]
+    },
+    {
+      "provider_driver": "doubao",
+      "provider_profile_id": "doubao",
+      "endpoint_path": "/api/v3",
+      "credential_type": "bearer",
+      "instance_fields": { "region": "cn-beijing" },
+      "official_first_party_model_ids": {
+        "llm": ["doubao-seed-2-0-lite-260215"],
+        "vision.ocr": ["doubao-seed-2-0-lite-260215"],
+        "vision.caption": ["doubao-seed-2-0-lite-260215"]
+      },
+      "official_variant_sources": ["https://www.volcengine.com/docs/82379/1795150"],
+      "official_variant_rules": [{
+        "model_ids": ["doubao-seed-2-0-lite-260215"],
+        "variants": { "reasoning-none": { "thinking": { "type": "disabled" } } }
+      }],
+      "test_model_ids": { "llm": "doubao-seed-2-0-lite-260215", "vision.ocr": "doubao-seed-2-0-lite-260215", "vision.caption": "doubao-seed-2-0-lite-260215" },
+      "contracts": [{
+        "id": "doubao.responses.v3",
+        "protocol_adapter_id": "doubao-responses",
+        "api_version": "v3",
+        "api_types": ["llm", "vision.ocr", "vision.caption"],
+        "operation": "responses.create",
+        "http_method": "POST",
+        "path": "/api/v3/responses",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "instructions", "max_output_tokens", "previous_response_id", "reasoning", "store", "stream", "temperature", "text", "thinking", "tool_choice", "tools", "top_p"],
+        "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "reasoning": ["object"], "thinking": ["object"] },
+        "stream_protocol": "openai_responses",
+        "success_fixture": { "created_at": 1770000000, "id": "resp_doubao_mock_1", "model": "doubao-seed-2-0-lite-260215", "object": "response", "output": [{ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }], "status": "completed", "id": "msg_mock_1" }], "status": "completed", "store": false, "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://www.volcengine.com/docs/82379/1958524?lang=zh", "https://www.volcengine.com/docs/82379/1783703?lang=zh", "https://www.volcengine.com/docs/82379/1795150"],
+        "evidence_summary": "Volcano Ark Responses uses POST /api/v3/responses with Bearer authentication and JSON model/input, accepts the object-valued thinking control, and returns an OpenAI-style response object."
+      }]
+    },
+    {
+      "provider_driver": "qwen",
+      "provider_profile_id": "qwen",
+      "endpoint_path": "/compatible-mode/v1",
+      "credential_type": "bearer",
+      "instance_fields": { "region": "cn-beijing", "workspace": "t15-workspace" },
+      "official_first_party_model_ids": { "llm": ["qwen3.6-max-preview", "qwen3.8-2.4t-a95b", "qwen3.8-27b", "qwen3.6-35b-a3b"] },
+      "official_variant_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses"],
+      "official_variant_rules": [{
+        "model_ids": ["qwen3.6-max-preview", "qwen3.8-2.4t-a95b", "qwen3.8-27b", "qwen3.6-35b-a3b"],
+        "variants": {
+          "reasoning-none": { "reasoning": { "effort": "none" } },
+          "reasoning-mini": { "reasoning": { "effort": "minimal" } },
+          "reasoning-low": { "reasoning": { "effort": "low" } },
+          "reasoning-medium": { "reasoning": { "effort": "medium" } },
+          "reasoning-high": { "reasoning": { "effort": "high" } },
+          "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } },
+          "reasoning-max": { "reasoning": { "effort": "max" } }
+        }
+      }],
+      "test_model_ids": { "llm": "qwen3.6-max-preview" },
+      "contracts": [{
+        "id": "qwen.responses.compatible-v1",
+        "protocol_adapter_id": "qwen-responses",
+        "api_version": "compatible-v1",
+        "api_types": ["llm"],
+        "operation": "responses.create",
+        "http_method": "POST",
+        "path": "/compatible-mode/v1/responses",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "instructions", "max_output_tokens", "previous_response_id", "reasoning", "stream", "temperature", "text", "tool_choice", "tools", "top_p", "ocr_options"],
+        "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "reasoning": ["object"] },
+        "stream_protocol": "openai_responses",
+        "success_fixture": { "id": "resp_qwen_mock_1", "object": "response", "created_at": 1770000000, "status": "completed", "model": "qwen3.6-max-preview", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses", "https://www.alibabacloud.com/help/en/model-studio/error-code"],
+        "evidence_summary": "Qwen workspace-compatible Responses uses POST /compatible-mode/v1/responses with Bearer authentication and JSON model/input, returning OpenAI-style response output."
+      }]
+    },
+    {
+      "provider_driver": "sn-ai-provider",
+      "provider_profile_id": "sn",
+      "endpoint_path": "/api/v1/ai",
+      "credential_type": "bearer",
+      "official_first_party_model_ids": {
+        "llm": ["gpt-5.5-pro", "gpt-5.5", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
+        "vision.ocr": ["gpt-5.5-pro", "gpt-5.5", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"],
+        "vision.caption": ["gpt-5.5-pro", "gpt-5.5", "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex"]
+      },
+      "official_variant_sources": [
+        "https://developers.openai.com/api/docs/models/gpt-5.5",
+        "https://developers.openai.com/api/docs/models/gpt-5.5-pro",
+        "https://developers.openai.com/api/docs/models/gpt-5.4",
+        "https://developers.openai.com/api/docs/models/gpt-5.4-pro",
+        "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+        "https://developers.openai.com/api/docs/models/gpt-5.4-nano",
+        "https://developers.openai.com/api/docs/models/gpt-5.3-codex",
+        "https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/CD/cluster_config/release/apps.ts"
+      ],
+      "official_variant_rules": [
+        { "model_ids": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"], "variants": { "reasoning-none": { "reasoning": { "effort": "none" } }, "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } },
+        { "model_ids": ["gpt-5.5-pro", "gpt-5.4-pro"], "variants": { "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } },
+        { "model_ids": ["gpt-5.3-codex"], "variants": { "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } }
+      ],
+      "test_model_ids": { "llm": "gpt-5.5", "vision.ocr": "gpt-5.5", "vision.caption": "gpt-5.5" },
+      "contracts": [{
+        "id": "sn.openai-responses.v1",
+        "protocol_adapter_id": "sn-openai",
+        "base_contract_id": "openai.responses.v1",
+        "api_version": "v1",
+        "api_types": ["llm", "vision.ocr", "vision.caption"],
+        "operation": "responses.create",
+        "http_method": "POST",
+        "path": "/api/v1/ai/responses",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "include", "instructions", "max_output_tokens", "metadata", "parallel_tool_calls", "previous_response_id", "reasoning", "service_tier", "store", "stream", "temperature", "text", "tool_choice", "tools", "top_logprobs", "top_p", "truncation", "user"],
+        "body_field_types": { "model": ["string"], "input": ["string", "array"] },
+        "stream_protocol": "openai_responses",
+        "success_fixture": { "id": "resp_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/http/public.rs", "https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/litellm/mod.rs"],
+        "evidence_summary": "SN public source at f765081 exposes POST /api/v1/ai/responses with Bearer authentication and forwards the Responses JSON/SSE wire to LiteLLM /v1/responses."
+      }]
+    }
+  ],
+  "error_evidence": {
+    "openai": { "applicable_api_versions": ["v1"], "official_sources": ["https://platform.openai.com/docs/guides/error-codes/api-errors"], "evidence_summary": "OpenAI documents HTTP authentication, permission, request, not-found, rate-limit and server error categories with an error envelope." },
+    "claude": { "applicable_api_versions": ["2023-06-01"], "official_sources": ["https://platform.claude.com/docs/en/api/errors"], "evidence_summary": "Anthropic documents status-specific error.type values and the top-level error/request_id envelope." },
+    "google-gemini": { "applicable_api_versions": ["v1", "v1beta"], "official_sources": ["https://ai.google.dev/gemini-api/docs/api-errors"], "evidence_summary": "Gemini documents Google RPC error code/message/status envelopes for request, auth, quota and service failures." },
+    "fal": { "applicable_api_versions": ["queue-v1"], "official_sources": ["https://fal.ai/docs/documentation/model-apis/errors", "https://fal.ai/docs/documentation/model-apis/request-errors"], "evidence_summary": "fal separates typed model-validation detail arrays from flat infrastructure detail/error_type responses and exposes retry/error headers." },
+    "minimax": { "applicable_api_versions": ["v1", "v2", "anthropic-v1"], "official_sources": ["https://platform.minimax.io/docs/api-reference/errorcode"], "evidence_summary": "MiniMax documents Provider application error codes carried by base_resp, including timeout, rate limit, auth, balance, safety and internal errors." },
+    "openrouter": { "applicable_api_versions": ["v1"], "official_sources": ["https://openrouter.ai/docs/api-reference/overview", "https://openrouter.ai/openapi.yaml"], "evidence_summary": "OpenRouter documents numeric HTTP-aligned error codes in its error envelope and upstream Provider failures." },
+    "kimi": { "applicable_api_versions": ["v1"], "official_sources": ["https://platform.kimi.com/docs/api/errors"], "evidence_summary": "Kimi documents error.type/message envelopes for invalid requests, authentication, permissions, missing resources, rate limits, quota and server failures." },
+    "glm": { "applicable_api_versions": ["v4"], "official_sources": ["https://docs.bigmodel.cn/cn/api/api-code", "https://docs.bigmodel.cn/cn/api/rate-limit"], "evidence_summary": "GLM documents an error code/message envelope with HTTP status plus business codes including 1000 authentication, 1210 invalid parameter, 1302 rate limit and 1305 overload." },
+    "deepseek": { "applicable_api_versions": ["v1"], "official_sources": ["https://api-docs.deepseek.com/quick_start/error_codes/"], "evidence_summary": "DeepSeek documents 400 invalid format, 401 authentication, 402 balance, 422 invalid parameters, 429 rate limit and 5xx service failures." },
+    "doubao": { "applicable_api_versions": ["v3"], "official_sources": ["https://www.volcengine.com/docs/82379/1330312?lang=zh"], "evidence_summary": "Volcano Ark documents OpenAI-compatible error envelopes and HTTP-aligned request, authentication, throttling and server failure codes." },
+    "qwen": { "applicable_api_versions": ["compatible-v1"], "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/error-code"], "evidence_summary": "Alibaba Model Studio documents OpenAI-compatible error codes including invalid_request_error, invalid_api_key, access_denied, Throttling and InternalError." },
+    "sn-ai-provider": { "applicable_api_versions": ["v1"], "official_sources": ["https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/http/error.rs"], "evidence_summary": "SN source at f765081 defines HTTP errors as code/message and the 429 insufficient-balance special case as an OpenAI-shaped nested error." }
+  },
+  "error_fixtures": {
+    "openai": [
+      { "scenario": "invalid_request", "status": 400, "body": { "error": { "message": "Invalid request", "type": "invalid_request_error", "param": null, "code": null } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "message": "Invalid authentication", "type": "invalid_request_error", "param": null, "code": "invalid_api_key" } } },
+      { "scenario": "permission", "status": 403, "body": { "error": { "message": "Permission denied", "type": "insufficient_quota", "param": null, "code": null } } },
+      { "scenario": "not_found", "status": 404, "body": { "error": { "message": "Model not found", "type": "invalid_request_error", "param": "model", "code": "model_not_found" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "error": { "message": "Rate limit reached", "type": "rate_limit_error", "param": null, "code": "rate_limit_exceeded" } } },
+      { "scenario": "server_error", "status": 500, "body": { "error": { "message": "Internal server error", "type": "server_error", "param": null, "code": null } } }
+    ],
+    "claude": [
+      { "scenario": "invalid_request", "status": 400, "body": { "type": "error", "error": { "type": "invalid_request_error", "message": "Invalid request" }, "request_id": "req_mock_1" } },
+      { "scenario": "authentication", "status": 401, "body": { "type": "error", "error": { "type": "authentication_error", "message": "Invalid authentication" }, "request_id": "req_mock_1" } },
+      { "scenario": "permission", "status": 403, "body": { "type": "error", "error": { "type": "permission_error", "message": "Permission denied" }, "request_id": "req_mock_1" } },
+      { "scenario": "rate_limit", "status": 429, "body": { "type": "error", "error": { "type": "rate_limit_error", "message": "Rate limit exceeded" }, "request_id": "req_mock_1" } },
+      { "scenario": "overloaded", "status": 529, "body": { "type": "error", "error": { "type": "overloaded_error", "message": "Overloaded" }, "request_id": "req_mock_1" } }
+    ],
+    "google-gemini": [
+      { "scenario": "invalid_argument", "status": 400, "body": { "error": { "code": 400, "message": "Invalid argument", "status": "INVALID_ARGUMENT" } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "code": 401, "message": "Invalid API key", "status": "UNAUTHENTICATED" } } },
+      { "scenario": "permission", "status": 403, "body": { "error": { "code": 403, "message": "Permission denied", "status": "PERMISSION_DENIED" } } },
+      { "scenario": "not_found", "status": 404, "body": { "error": { "code": 404, "message": "Model not found", "status": "NOT_FOUND" } } },
+      { "scenario": "quota", "status": 429, "body": { "error": { "code": 429, "message": "Quota exceeded", "status": "RESOURCE_EXHAUSTED" } } },
+      { "scenario": "unavailable", "status": 503, "body": { "error": { "code": 503, "message": "Service unavailable", "status": "UNAVAILABLE" } } }
+    ],
+    "fal": [
+      { "scenario": "validation", "status": 422, "headers": { "X-Fal-Retryable": "false" }, "body": { "detail": [{ "loc": ["body", "input"], "msg": "Field required", "type": "missing", "url": "https://docs.fal.ai/errors/#missing" }] } },
+      { "scenario": "authentication", "status": 401, "body": { "detail": "Invalid credentials", "error_type": "authentication_error" } },
+      { "scenario": "rate_limit", "status": 429, "headers": { "X-Fal-Error-Type": "runner_scheduling_failure" }, "body": { "detail": "Too many requests", "error_type": "runner_scheduling_failure" } },
+      { "scenario": "unavailable", "status": 503, "headers": { "X-Fal-Error-Type": "runner_scheduling_failure" }, "body": { "detail": "Runner unavailable", "error_type": "runner_scheduling_failure" } }
+    ],
+    "minimax": [
+      { "scenario": "invalid_parameters", "status": 200, "body": { "base_resp": { "status_code": 2013, "status_msg": "invalid parameters" } } },
+      { "scenario": "authentication", "status": 200, "body": { "base_resp": { "status_code": 1004, "status_msg": "authentication failed" } } },
+      { "scenario": "rate_limit", "status": 200, "body": { "base_resp": { "status_code": 1002, "status_msg": "rate limit" } } },
+      { "scenario": "insufficient_balance", "status": 200, "body": { "base_resp": { "status_code": 1008, "status_msg": "insufficient balance" } } },
+      { "scenario": "timeout", "status": 200, "body": { "base_resp": { "status_code": 1001, "status_msg": "request timeout" } } },
+      { "scenario": "content_policy", "status": 200, "body": { "base_resp": { "status_code": 1026, "status_msg": "input sensitive" } } },
+      { "scenario": "server_error", "status": 200, "body": { "base_resp": { "status_code": 1024, "status_msg": "internal error" } } }
+    ],
+    "openrouter": [
+      { "scenario": "invalid_request", "status": 400, "body": { "error": { "code": 400, "message": "Invalid request" } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "code": 401, "message": "Invalid API key" } } },
+      { "scenario": "permission", "status": 403, "body": { "error": { "code": 403, "message": "Permission denied" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "error": { "code": 429, "message": "Rate limit exceeded" } } },
+      { "scenario": "provider_error", "status": 502, "body": { "error": { "code": 502, "message": "Provider error" } } }
+    ],
+    "kimi": [
+      { "scenario": "invalid_request", "status": 400, "body": { "error": { "type": "invalid_request_error", "message": "Invalid request: missing messages" } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "type": "invalid_authentication_error", "message": "Invalid Authentication" } } },
+      { "scenario": "permission", "status": 403, "body": { "error": { "type": "permission_denied_error", "message": "The API you are accessing is not open" } } },
+      { "scenario": "not_found", "status": 404, "body": { "error": { "type": "resource_not_found_error", "message": "Not found the model kimi-missing or Permission denied" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "error": { "type": "rate_limit_reached_error", "message": "Request reached organization max concurrency" } } },
+      { "scenario": "server_error", "status": 500, "body": { "error": { "type": "server_error", "message": "Failed to extract file" } } }
+    ],
+    "glm": [
+      { "scenario": "invalid_parameters", "status": 400, "body": { "error": { "code": "1210", "message": "API call parameters are incorrect" } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "code": "1000", "message": "Authentication failed" } } },
+      { "scenario": "insufficient_balance", "status": 429, "body": { "error": { "code": "1113", "message": "Account balance is insufficient" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "error": { "code": "1302", "message": "Rate limit reached" } } },
+      { "scenario": "overloaded", "status": 429, "body": { "error": { "code": "1305", "message": "The model is overloaded" } } },
+      { "scenario": "server_error", "status": 500, "body": { "error": { "code": "1200", "message": "API call failed" } } }
+    ],
+    "deepseek": [
+      { "scenario": "invalid_format", "status": 400, "body": { "error": { "message": "Invalid request body format", "type": "invalid_request_error", "code": "invalid_format" } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "message": "Authentication failed", "type": "authentication_error", "code": "invalid_api_key" } } },
+      { "scenario": "insufficient_balance", "status": 402, "body": { "error": { "message": "Insufficient balance", "type": "insufficient_balance_error", "code": "insufficient_balance" } } },
+      { "scenario": "invalid_parameters", "status": 422, "body": { "error": { "message": "Invalid parameters", "type": "invalid_request_error", "code": "invalid_parameters" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "error": { "message": "Rate limit reached", "type": "rate_limit_error", "code": "rate_limit_exceeded" } } },
+      { "scenario": "overloaded", "status": 503, "body": { "error": { "message": "Server overloaded", "type": "server_error", "code": "server_overloaded" } } }
+    ],
+    "doubao": [
+      { "scenario": "invalid_request", "status": 400, "body": { "error": { "code": "InvalidParameter", "message": "The request parameter is invalid", "param": "input", "type": "BadRequest" } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "code": "AuthenticationError", "message": "Invalid API key", "param": "", "type": "Unauthorized" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "error": { "code": "RequestBurstTooFast", "message": "System protection triggered by request burst", "param": "", "type": "TooManyRequests" } } },
+      { "scenario": "overloaded", "status": 429, "body": { "error": { "code": "ServerOverloaded", "message": "The service is currently unable to handle additional requests", "param": "", "type": "TooManyRequests" } } },
+      { "scenario": "server_error", "status": 500, "body": { "error": { "code": "InternalServiceError", "message": "Internal service error", "param": "", "type": "InternalServerError" } } }
+    ],
+    "qwen": [
+      { "scenario": "invalid_request", "status": 400, "body": { "error": { "code": "invalid_request_error", "message": "You must provide a model parameter", "type": "invalid_request_error" } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "code": "invalid_api_key", "message": "Incorrect API key provided", "type": "invalid_request_error" } } },
+      { "scenario": "permission", "status": 403, "body": { "error": { "code": "access_denied", "message": "Access denied", "type": "permission_error" } } },
+      { "scenario": "not_found", "status": 404, "body": { "error": { "code": "model_not_supported", "message": "Unsupported model for OpenAI compatibility mode", "type": "invalid_request_error" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "error": { "code": "Throttling.RateQuota", "message": "Requests rate limit exceeded", "type": "rate_limit_error" } } },
+      { "scenario": "server_error", "status": 500, "body": { "error": { "code": "InternalError", "message": "An internal error has occurred", "type": "server_error" } } }
+    ],
+    "sn-ai-provider": [
+      { "scenario": "invalid_argument", "status": 400, "body": { "code": "invalid_argument", "message": "litellm rejected request" } },
+      { "scenario": "authentication", "status": 401, "body": { "code": "unauthorized", "message": "invalid or missing credentials" } },
+      { "scenario": "insufficient_balance", "status": 429, "body": { "error": { "message": "Insufficient credit balance.", "type": "insufficient_balance", "param": null, "code": "429" } } },
+      { "scenario": "unavailable", "status": 503, "body": { "code": "dependency_unavailable", "message": "litellm is unavailable" } },
+      { "scenario": "timeout", "status": 504, "body": { "code": "timeout", "message": "litellm request timed out" } }
+    ]
+  }
+}

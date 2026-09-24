@@ -608,6 +608,13 @@ async fn execute(
                 agent_env_root: env.has_agent_env.then(|| env.agent_env_root.clone()),
             };
             let (result, exit_code) = llm_tool_carft::run_subcommand(req).await;
+            if should_suppress_command_not_found_stdout(&result, exit_code) {
+                return Ok(CliRunOutput {
+                    exit_code,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                });
+            }
             Ok(render_cli_output(&result, exit_code))
         }
         ParsedCommand::Help { tool_name } => Ok(render_cli_output(
@@ -751,6 +758,16 @@ async fn execute(
             ))
         }
     }
+}
+
+fn should_suppress_command_not_found_stdout(result: &AgentToolResult, exit_code: i32) -> bool {
+    exit_code == agent_tool::CLI_EXIT_COMMAND_NOT_FOUND
+        && result.tool.as_deref() == Some("llm_tool_carft")
+        && result
+            .details
+            .get("outcome")
+            .and_then(|value| value.as_str())
+            == Some("skipped")
 }
 
 /// Routes a CliInvocation through `exec` (bash form) or `call` (json
@@ -8547,17 +8564,11 @@ methods = ["x_call"]
         .await
         .expect("run command_not_found proxy");
 
-        // The dispatcher now delegates to `llm_tool_carft::run_subcommand`.
-        // Until step 1 reads behavior cfg, every call falls through with
-        // exit 127 + a structured AgentToolResult on stdout (stderr stays
-        // empty — render_cli_output puts the envelope on stdout). The shell
-        // hook's own `printf 'bash: %s: command not found\n'` is responsible
-        // for re-emitting the canonical error to stderr, not this CLI.
+        // Skipped craft attempts stay silent so bash can emit the canonical
+        // error without protocol JSON polluting stdout.
         assert_eq!(output.exit_code, agent_tool::CLI_EXIT_COMMAND_NOT_FOUND);
         assert!(output.stderr.is_empty());
-        assert!(output.stdout.contains("llm_tool_carft"));
-        assert!(output.stdout.contains("missing_tool"));
-        assert!(output.stdout.contains("skipped"));
+        assert!(output.stdout.is_empty());
     }
 
     #[tokio::test]

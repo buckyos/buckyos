@@ -1156,6 +1156,8 @@ pub struct AiccComputeTaskRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -2068,6 +2070,7 @@ fn parse_aicc_compute_legacy(data: Value) -> Result<AiccComputeTaskData, TaskDat
             version: legacy.aicc.version,
             external_task_id: legacy.aicc.external_task_id,
             tenant_id: legacy.aicc.tenant_id,
+            trace_id: None,
             event_ref: legacy.aicc.event_ref,
             session_id: legacy.aicc.session_id.or(legacy.session_id),
             owner_session_id: legacy.owner_session_id,

@@ -9,10 +9,17 @@
 //
 // Output rules:
 //   - artifact.resource.named_object   → download via ndm_proxy.openReader
-//   - artifact.resource.url            → fetch
+//   - artifact.resource.url            → AICC Provider reader, then public fetch fallback
 //   - artifact.resource.base64         → decode
 
-import { AiArtifact, AiResponse, ResourceRef, aiResponseArtifacts } from "./types.ts";
+import { buckyos } from "buckyos";
+
+import {
+  AiArtifact,
+  AiccInferenceResponse,
+  aiResponseArtifacts,
+  ResourceRef,
+} from "./types.ts";
 
 const MIME_BY_EXT: Record<string, string> = {
   png: "image/png",
@@ -70,12 +77,15 @@ export function isUrl(value: string): boolean {
 }
 
 export function isNamedObjectRef(value: string): boolean {
-  return value.startsWith("named_object:") || value.startsWith("chunk:");
+  return value.startsWith("named_object:") || value.startsWith("cyfile:") ||
+    value.startsWith("chunk:");
 }
 
 function base64FromBytes(bytes: Uint8Array): string {
   let binary = "";
-  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
   return btoa(binary);
 }
 
@@ -103,7 +113,9 @@ export async function resolveInputResource(
   // files small enough to fit in the request envelope.
   const bytes = await Deno.readFile(value);
   const inferredMime = mimeFromPath(value);
-  const mime = mimeHint?.endsWith("/*") ? inferredMime : mimeHint ?? inferredMime;
+  const mime = mimeHint?.endsWith("/*")
+    ? inferredMime
+    : mimeHint ?? inferredMime;
   return { kind: "base64", mime, data_base64: base64FromBytes(bytes) };
 }
 
@@ -112,6 +124,10 @@ export interface SavedOutput {
   bytes: number;
   mime?: string;
   source_kind: string;
+}
+
+export interface SaveResourceOptions {
+  overwrite?: boolean;
 }
 
 async function ensureParentDir(path: string): Promise<void> {
@@ -137,43 +153,118 @@ async function readNamedObject(
   return { bytes, mime };
 }
 
+async function readUrlArtifact(
+  url: string,
+): Promise<{ bytes: Uint8Array; mime?: string }> {
+  const serviceUrl = buckyos.getZoneServiceURL("aicc").replace(/\/$/, "");
+  const rpcClient = buckyos.getServiceRpcClient("aicc");
+  const token = rpcClient.getSessionToken();
+  if (!token) throw new Error("AICC session token is unavailable");
+  const aiccResponse = await fetch(`${serviceUrl}/artifact/open`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-Auth": token,
+    },
+    body: JSON.stringify({ url }),
+  });
+  if (aiccResponse.ok) {
+    return {
+      bytes: new Uint8Array(await aiccResponse.arrayBuffer()),
+      mime: aiccResponse.headers.get("content-type") ?? undefined,
+    };
+  }
+  if (aiccResponse.status !== 404) {
+    throw new Error(
+      `AICC failed to open Provider artifact: ${aiccResponse.status} ${aiccResponse.statusText}`,
+    );
+  }
+  const publicResponse = await fetch(url);
+  if (!publicResponse.ok) {
+    throw new Error(
+      `failed to download public artifact: ${publicResponse.status} ${publicResponse.statusText}`,
+    );
+  }
+  return {
+    bytes: new Uint8Array(await publicResponse.arrayBuffer()),
+    mime: publicResponse.headers.get("content-type") ?? undefined,
+  };
+}
+
 export async function saveArtifactToPath(
   artifact: AiArtifact,
   destPath: string,
   ndmProxy: NdmProxyClient,
 ): Promise<SavedOutput> {
-  const sourceKind = artifact.resource?.kind ?? "unknown";
-  let bytes: Uint8Array;
-  let mime = artifactMime(artifact);
+  return saveResourceToPath(artifact.resource, destPath, ndmProxy, {
+    overwrite: true,
+  }, artifactMime(artifact));
+}
 
-  if (sourceKind === "named_object" && artifact.resource.obj_id) {
-    const r = await readNamedObject(ndmProxy, artifact.resource.obj_id);
+export async function saveResourceToPath(
+  resource: ResourceRef,
+  destPath: string,
+  ndmProxy: NdmProxyClient,
+  options: SaveResourceOptions = {},
+  mimeHint?: string,
+): Promise<SavedOutput> {
+  const sourceKind = resource.kind;
+  let bytes: Uint8Array;
+  let mime = mimeHint ?? resource.mime ?? resource.mime_hint ?? undefined;
+
+  if (resource.kind === "named_object") {
+    const r = await readNamedObject(ndmProxy, resource.obj_id);
     bytes = r.bytes;
     mime = r.mime ?? mime;
-  } else if (sourceKind === "url" && artifact.resource.url) {
-    const resp = await fetch(artifact.resource.url);
-    if (!resp.ok) {
-      throw new Error(
-        `failed to download artifact from ${artifact.resource.url}: ${resp.status} ${resp.statusText}`,
-      );
-    }
-    mime = resp.headers.get("content-type") ?? mime;
-    bytes = new Uint8Array(await resp.arrayBuffer());
-  } else if (sourceKind === "base64" && artifact.resource.data_base64) {
-    bytes = bytesFromBase64(artifact.resource.data_base64);
+  } else if (resource.kind === "url") {
+    const result = await readUrlArtifact(resource.url);
+    mime = result.mime ?? mime;
+    bytes = result.bytes;
+  } else if (resource.kind === "base64") {
+    bytes = bytesFromBase64(resource.data_base64);
   } else {
     throw new Error(`unsupported artifact resource kind: ${sourceKind}`);
   }
 
   await ensureParentDir(destPath);
-  await Deno.writeFile(destPath, bytes);
-  return { path: destPath, bytes: bytes.byteLength, mime, source_kind: sourceKind };
+  const exclusive = options.overwrite === false;
+  let file: Deno.FsFile | undefined;
+  try {
+    file = await Deno.open(destPath, {
+      write: true,
+      create: !exclusive,
+      createNew: exclusive,
+      truncate: !exclusive,
+    });
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const written = await file.write(bytes.subarray(offset));
+      if (written === 0) throw new Error("resource write made no progress");
+      offset += written;
+    }
+  } catch (err) {
+    if (file && exclusive) {
+      try {
+        await Deno.remove(destPath);
+      } catch {
+      }
+    }
+    throw err;
+  } finally {
+    file?.close();
+  }
+  return {
+    path: destPath,
+    bytes: bytes.byteLength,
+    mime,
+    source_kind: sourceKind,
+  };
 }
 
 // Pick the first artifact whose mime matches the desired top-level family
 // ("image" / "audio" / "video"). Falls back to first artifact when no match.
 export function pickArtifact(
-  response: AiResponse,
+  response: AiccInferenceResponse,
   family?: "image" | "audio" | "video",
 ): AiArtifact | null {
   const arts = aiResponseArtifacts(response);
@@ -189,7 +280,10 @@ export function pickArtifact(
 // Append an extension to `path` (chosen by `mime`) if the path has none.
 // Used by single-file output commands so `gen_image foo bar` still produces
 // `bar.png` rather than an extension-less blob.
-export function suffixPathByMime(path: string, mime: string | undefined): string {
+export function suffixPathByMime(
+  path: string,
+  mime: string | undefined,
+): string {
   if (/\.[a-z0-9]{1,8}$/i.test(path)) return path;
   const ext = extFromMime(mime ?? "");
   return ext ? `${path}.${ext}` : path;

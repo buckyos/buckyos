@@ -13,7 +13,7 @@ AICC 不是简单的 `model_name -> provider` 映射。一个调用方传入的 
 - session 或 agent 对逻辑目录的 overlay；
 - 用户对权重、provider、预算、本地优先等策略的配置；
 - provider 运行时状态、价格、延迟、错误率和配额；
-- session sticky binding。
+- tenant/user/app/session 隔离的上次 exact-model 路由历史。
 
 因此需要把概念分层，否则 provider、driver、逻辑目录、用户配置会互相假设彼此存在，导致路由结果不可解释。
 
@@ -33,7 +33,7 @@ Protocol Adapter 只执行已经解析好的 operation
 
 - Model Driver catalog：模型固有 API type、capability、家族、版本、variant 和逻辑挂载的唯一真相源。
 - Provider Rules catalog：渠道模型 ID 到 origin/ModelUID 的映射，以及 operation、request rules、能力收窄和渠道价格规则。
-- Known Provider catalog：管理 UI 使用的服务商默认 endpoint/Profile/adapter。
+- Known Provider catalog：管理 UI 使用的服务商默认 `base_url`/Profile/adapter。
 - Provider Instance：system-config 中的实例私有配置。
 - Provider inventory：实例级 discovery 动态事实与静态能力交集，并保存 LKGS。
 - ModelRegistry：建立 exact model 和逻辑目录索引。
@@ -41,7 +41,12 @@ Protocol Adapter 只执行已经解析好的 operation
 - Provider Call Resolver：产生内部 `ResolvedProviderCall`。
 - Protocol Adapter registry：注册可执行 operation，执行层不解释模型家族。
 
-三类 metadata/catalog 保持独立 schema 和 revision。每个完整发布使用严格递增、不可复用的 manifest `revision_seq` 并声明兼容客户端范围；云端可以按客户端版本、更新通道或灰度分组投放不同兼容版本。版本选择、下载、校验、防回退与文件替换由 NDN 更新链路保证，AICC 不实现 manifest activation。文件替换后 NDN 令 `metadata_target_seq = manifest.revision_seq`；下一次推理前或任一 Provider Instance 定时库存刷新时，AICC 统一收敛所有 `metadata_applied_seq` 落后的 Provider 库存。
+每个模型原厂都必须有独立 `.model.json`，每个官方支持的 Provider 厂商（包括内置专用 Provider）都必须有独立 `.provider.json`。内置 Provider 只把无法声明化的执行逻辑固定在代码中；常规模型事实、渠道规则及能够数据化的 dialect 差异仍由 catalog 管理并参与云更新。未被官方支持的 `custom` Provider 使用空规则 `{}`，按未改写的原始模型名搜索全部 Model Driver；协议族只决定调用协议，不决定模型原厂。
+
+三类 metadata/catalog 保持独立 schema 和 revision。同一 catalog 身份最多可同时有 builtin、cloud、local、system-config 四份当前候选，最终只启用其中一份；云端历史 revision 可以保留，但只有 NDN 当前选中的 cloud revision 参与候选。每个完整 cloud 发布使用严格递增、不可复用的 manifest `revision_seq` 并声明兼容客户端范围；云端可以按客户端版本、更新通道或灰度分组投放不同兼容版本。版本选择、下载、校验、防回退与 cloud 文件替换由 NDN 更新链路保证，AICC 不实现 manifest activation。文件替换后 NDN 令 `metadata_target_seq = manifest.revision_seq`；下一次推理前或任一 Provider Instance 定时库存刷新时，AICC 统一收敛所有 `metadata_applied_seq` 落后的 Provider 库存。
+
+四层来源的具体路径、key、枚举和优先级由 metadata source manager 统一管理。builtin 文件集中保存在 `src/frame/aicc/driver_metadata/` 并由该管理模块编译嵌入，不安装到运行时目录；云更新等管理模块只在改变自己负责的来源时接触该层。其它模块只消费 metadata source manager 发布的当前有效 `CatalogSnapshot`，不能接收或拼装四层候选文件。
+
 ## 3. 核心概念
 
 ### 3.1 物理模型与精确模型名
@@ -139,11 +144,10 @@ exact models[].id
 来源优先级是：
 
 ```text
-builtin
--> current cloud metadata files delivered by NDN
--> local override
--> system-config override
+system-config > local > cloud > builtin
 ```
+
+该优先级按 `(catalog_kind, catalog_id)` 逐文件应用，不是整套来源替换，也不是字段级 merge。同一身份只启用最高优先级来源的完整 JSON；高优先级来源没有的身份继续由低优先级提供。例如 cloud 更新 OpenAI 而没有 MiniMax 时，生效集合包含 cloud OpenAI 和 builtin MiniMax。随后才在每个获选 Model Driver 文件内执行 exact → pattern → defaults → conservative fallback。
 
 这意味着 provider 自发现只需要返回模型 id，driver 决定这个模型 id 在 AICC 里的能力、家族和默认挂载。
 
@@ -198,7 +202,7 @@ llm.long       # 长上下文
 llm.fallback   # 兜底
 ```
 
-用途目录里放的是 items。每个 item 指向一个家族目录、另一个逻辑目录或精确模型，并带有权重。
+用途目录里放的是 items。每个 item 指向一个家族目录、另一个逻辑目录或精确模型，并带有权重。用途树不是当前库存快照，而是模型挂载到逻辑目录树时的静态参照策略；它可以引用暂时没有库存的家族目录，这些分支在展开时自然为空，不会产生候选。后续 Provider inventory 把模型挂到该 family path 时，会自动继承用途目录中已经配置好的路径权重。
 
 例如：
 
@@ -306,13 +310,14 @@ strict_local
 
 ```text
 系统基础逻辑目录       # 随系统升级，不可直接修改
-用户自定义逻辑目录     # 用户可配置，作为 global/session parent
-Agent 默认逻辑目录     # Agent 配置，可作为 session 默认值
-Session 逻辑目录       # 保存到 session，用于本次会话
+系统级 routing config      # services/aicc/settings.session_config，名称保留但语义是 Zone 全局配置
+应用/Agent/会话配置    # 由调用方保存并合成
+Request session_overlay    # 调用方每次 RPC 传入，AICC 不持久化
 Request policy         # 单次请求附带的约束
+AICC session 路由历史  # 只保存上次 selected exact model，不是配置层
 ```
 
-当前 `SessionConfig` 支持：
+当前 `AiccRouteOverlay`（settings 内部字段仍名为 `session_config`）支持：
 
 - `logical_tree`：直接定义逻辑目录树；
 - `logical_profile` / `logical_profiles`：一组 overlay；
@@ -320,9 +325,11 @@ Request policy         # 单次请求附带的约束
 - `global_exact_model_weights`：全局精确模型权重；
 - `provider_weights`：全局 provider instance 权重，`1.0` 为默认，`0.0` 表示禁用该 provider 参与路由；
 - `policy`：全局路由策略；
-- `ttl_seconds` / `revision`：session 配置生命周期和冲突控制。
+- `ttl_seconds` / `revision`：调用方 overlay 元数据；AICC 不持久 request overlay，也不用它们管理 session 历史。
 
-长期持久化位置是 `services/aicc/settings.session_config.provider_weights`。该位置属于 AICC 全局 session parent 配置，不写入 provider inventory，也不修改 driver metadata。Control Panel 通过 `ai.provider.weight.list` / `ai.provider.weight.set` 读写该字段；保存时会校验 provider instance name、weight 非负有限，并触发 AICC `service.reload_settings` 使 `models.list.session_config` 立即反映新权重。
+系统级 Provider 权重的持久位置是 `services/aicc/settings.session_config.provider_weights`。该字段名是现有 settings schema 的内部命名，语义是 Zone 全局 routing config，不是某个应用 session。Control Panel 通过 `routing.get` / `routing.update` 读写 Provider 权重，使用 settings revision CAS，不再使用 `ai.provider.weight.*`。
+
+请求携带 `session_id` 时，AICC 另行在平台 RDB 中按 `(tenant_id, user_id, caller_app_id, session_id)` 持久上次已选 exact model。该记录只是硬约束之后的软优先级，不保存逻辑树、policy、overlay revision 或 TTL。
 
 `LogicalTreeOverlay` 支持：
 
@@ -369,7 +376,7 @@ Request policy         # 单次请求附带的约束
 - 我想把 `llm.chat` 的默认权重调成更便宜；
 - 我想降低某个 provider 的全局权重。
 
-这层应保存到用户配置或 system-config 中，并作为 session 的 parent 或 global config。
+系统级长期配置保存到 system-config；per-user 或 per-conversation 配置由应用保存，调用时合成一个 request `session_overlay`。AICC 不提供 per-user routing config store。
 
 ### 4.3 Agent 默认逻辑目录
 
@@ -380,20 +387,20 @@ Agent 可以定义自己的默认逻辑目录 profile。例如 Jarvis 可以默�
 - 某些 internal task 使用 `llm.summarize`；
 - 对某些工具调用强制要求 `tool_call`。
 
-Agent 默认逻辑目录应保存在 agent 配置中。创建 session 时，Agent 可以把这层配置注入 session。
+Agent 默认逻辑目录应保存在 agent 配置中。发起 AICC 请求前，Agent 把它与应用/会话配置合成最终 `session_overlay`。
 
 ### 4.4 Session 逻辑目录
 
-Session 逻辑目录是会话内临时配置，保存在 session 里。
+Session 逻辑目录是会话内临时配置，保存在调用方的 session store 里，不保存在 AICC。
 
 它适合表达：
 
 - 这个 session 临时使用 `quality_first`；
 - 这个 session 临时禁用某个 provider；
 - 这个 session 临时把 `llm.chat` 指向某个模型；
-- 这个 session 里已经选择的模型保持 sticky。
+- 这个 session 对某些模型或 Provider 的显式偏好。
 
-Session 配置有 revision 和 TTL，适合被 UI 或 Agent 动态更新。
+调用方可在自己的 session store 中实现 revision 和 TTL，并在每次 RPC 传入合成后的 overlay。AICC 只按 `session_id` 保留上次 exact model 软偏好，当前没有该历史的 TTL。
 
 ## 5. Provider 刷新与挂载流程
 
@@ -454,7 +461,7 @@ ModelMetadata {
 
 当前实现对未知模型会使用 conservative fallback：
 
-- 默认 `api_types` 可能回落到 `llm.chat`；
+- 默认 `api_types` 可能回落到 `llm`；
 - 不声明 `tool_call`、`json_schema`、`vision`、`web_search` 等能力；
 - 使用保守的成本、延迟、质量估计；
 - 生成泛化挂载，例如 `llm.chat`、`llm.<driver>`、`llm.<driver>.<model>`。
@@ -531,7 +538,7 @@ gpt-5.2-mini -> llm.gpt-mini / llm.gpt / llm.openai.gpt-5-2-mini
 ```text
 llm.plan -> llm.opus / llm.gemini-pro / llm.qwen-max
 llm.chat -> auto admission 或 llm.gpt-standard
-llm.swift -> llm.haiku / llm.gemini-flash-lite / llm.qwen-small
+llm.swift -> llm.haiku / llm.gemini-flash-lite / llm.qwen-flash
 ```
 
 这样做的好处是：
@@ -555,6 +562,13 @@ llm.swift -> llm.haiku / llm.gemini-flash-lite / llm.qwen-small
 7. 对每个逻辑目录，Registry 根据模型的 `logical_mounts` 和目录 `min_line` 生成默认 items。
 8. 用户/session overlay 在 route 时叠加到默认 items 上。
 
+新版生产实现中，服务构建 `ModelRegistry` 时必须同时注入两类内置路由材料：
+
+1. 内置 `LogicalModelDefinition`：定义 `llm.chat`、`llm.plan`、`llm.code`、`image.txt2img`、`audio.asr` 等标准目录的 `api_type`、`min_line`、`mount_mode`、fallback 和调度 profile。
+2. 内置 factory logical tree：恢复旧版 `default_logical_tree` 的用途目录到家族目录链接，例如 `llm.chat -> llm.gpt-standard / llm.sonnet / llm.gemini-flash / llm.gpt-mini`。它表达默认用途偏好，不枚举当前支持模型集合；空 family 分支可以存在，家族目录里的 exact model 候选由 Provider inventory / Model Driver metadata 在 registry 构建时物化。
+
+因此 `services/aicc/settings.routing_config` 可以为空。它只用于覆盖默认策略，例如 provider 权重、exact model 权重或局部替换目录 items；不能要求用户手动配置后 `llm.chat` 才可用。
+
 如果某个 provider inventory 刷新或校验失败，保持该 provider 的原 inventory 和 `metadata_applied_seq`；其它 provider 只在各自真正完成刷新后推进自己的 applied seq。
 
 ### 5.5 空逻辑目录与 mini line 强制挂载
@@ -567,9 +581,13 @@ llm.swift -> llm.haiku / llm.gemini-flash-lite / llm.qwen-small
 -> 满足则临时挂入该逻辑目录
 ```
 
-当前实现已经具备这个能力的核心：当 `LogicalModelDefinition.mount_mode != manual` 时，`default_items_from_inventories()` 会对该 logical path 执行 `auto_admission`。
+当前实现已经具备这个能力的核心：当 `LogicalModelDefinition.mount_mode != manual` 时，`ModelRegistry` 会对该 logical path 执行 `auto_admission`。
 
 因此，一个目录即使没有 driver metadata 显式 `logical_mounts`，只要它有 `LogicalModelDefinition`，且 `mount_mode=auto/hybrid`，满足 `min_line` 的物理模型也可以被挂入。
+
+此外，Model Driver catalog 的 `version_rules[].auto_mounts` 会在 Provider inventory 构建阶段追加到匹配模型的 `logical_mounts`。这用于表达“某个版本/tier 的模型按能力事实默认应进入哪些用途目录”，例如 OpenAI GPT 规则中的 `llm`、`llm.gpt`、`llm.plan`、`llm.code`。`llm.gpt-standard`、`llm.gpt-pro`、`llm.gpt-mini`、`llm.gpt-nano` 这类 current family mount 只由对应 tier 的 `current_mount` 产生，不能通过 `auto_mounts` 交叉挂载。这些挂点仍会经过 api type namespace 和 logical definition 的 `min_line` 过滤，不能把 LLM 模型挂入 image/audio/video 目录，也不能让不满足 tool/json/context 要求的模型进入 `llm.plan` / `llm.code`。
+
+`auto_mounts` 不是路径权重策略；它只让匹配模型进入对应目录的候选集合，默认 item weight 仍是 `1.0`。用途目录里不同 family 的优先级仍由内置 factory logical tree 或 `routing_config` 的 items / item_overrides 决定。
 
 ## 6. 自动权重控制
 
@@ -795,7 +813,7 @@ policy:
 ### 8.1 输入
 
 ```text
-api_type = llm.chat
+api_type = llm
 model = llm.chat
 session_id = s1
 policy = balanced
@@ -807,9 +825,8 @@ Router 读取：
 
 ```text
 系统基础逻辑目录
-用户自定义配置
-Agent 默认配置
-Session overlay
+系统级 routing config
+调用方合成的 request session_overlay
 Provider inventory default items
 ```
 
@@ -878,7 +895,7 @@ gpt-5.2@openai-backup  cost=0.008 latency=1500 quality=0.9
 
 在 `cost_first` 下可能选择 `openai-backup`。在 `latency_first` 下可能选择 `openai-primary`。
 
-如果 session sticky 已有绑定，且绑定模型仍在候选集合中，会优先使用 sticky binding。
+如果请求携带 `session_id`，且该 tenant/user/app/session 历史模型在通过全部硬过滤后仍在候选集合中，Scheduler 会把它作为软优先项。选路成功后使用本次 exact model upsert 该历史。
 
 ### 8.6 输出
 
@@ -1039,7 +1056,9 @@ global_exact_model_weights:
 ```yaml
 policy:
   profile: cost_first
-  max_estimated_cost_usd: 0.02
+  max_estimated_cost:
+    amount: 0.02
+    currency: USD
 ```
 
 ### 11.4 只允许本地模型

@@ -79,7 +79,7 @@ client.llm_chat({
 实际展开为：
 
 ```text
-route.resolve(api_type="llm.chat", logical_model="llm.chat", requirements, disable, policy)
+route.resolve(api_type="llm", logical_model="llm.chat", requirements, disable, policy)
 chat.completions.create(exact_model=route.selected_exact_model, messages)
 ```
 
@@ -124,7 +124,7 @@ RouteResolveRequest
   estimated_input_tokens
   estimated_output_tokens
   session_id
-  session_profile
+  session_overlay
 ```
 
 输出：
@@ -144,7 +144,6 @@ RouteResolveResponse
   fallback_attempts
   route_trace
   inventory_revision
-  session_config_revision
 ```
 
 其中：
@@ -155,6 +154,7 @@ RouteResolveResponse
 - `provider_model_id` 始终保存 Provider discovery 返回并用于真实调用的原始模型名。
 - `fallback_attempts` 是路由器建议的候选顺序，供 helper 或调用方在失败后自行决定是否重试。
 - `route_trace` 用于解释候选过滤、policy 命中、session overlay、成本/延迟/health 选择原因。
+- `session_overlay` 由调用方每次传入，AICC 不保存；`session_id` 只用于 tenant/user/app/session 隔离的上次 exact-model 路由历史，因此 response 不再包含 `session_config_revision`。
 
 #### TOCTOU 处理原则
 
@@ -201,12 +201,12 @@ operation 按 `method > api_type > adapter default` 解析，并必须存在于 
 
 ```text
 chat.completions.create
-embeddings.create
-rerank.create
-images.generate / images.edit / images.upscale / images.remove_background
+embedding.text / embedding.multimodal
+rerank
+images.generate / image.img2img / image.upscale / image.bg_remove
 vision.ocr / vision.caption / vision.detect / vision.segment
-audio.speech.create / audio.transcriptions.create / audio.music.create / audio.enhance
-videos.generate / videos.transform / videos.extend / videos.upscale
+audio.tts / audio.asr / audio.music / audio.enhance
+video.txt2video / video.img2video / video.video2video / video.extend / video.upscale
 ```
 
 输入示例：
@@ -279,16 +279,26 @@ TextToImageInvokeResponse
 
 后续可以继续拆分：
 
-- `images.edit`
-- `images.inpaint`
-- `images.upscale`
+- `image.img2img`
+- `image.inpaint`
+- `image.upscale`
 - `vision.ocr`
-- `audio.speech.create`
-- `audio.transcriptions.create`
-- `videos.generate`
-- `videos.edit`
+- `audio.tts`
+- `audio.asr`
+- `video.txt2video`
+- `video.video2video`
 
 每类接口应根据领域输入输出定义强类型结构，而不是统一塞入 `input_json`。
+
+#### Provider URL artifact reader
+
+Provider 输出 URL 时，typed response 仍返回 `ResourceRef::Url`。AICC 同时登记 URL 的 tenant、ProviderInstance、Adapter 和 artifact id；调用方按需调用：
+
+```text
+open_artifact_url_reader(url, artifact_id?) -> async byte reader
+```
+
+网络调用对应 `POST /kapi/aicc/artifact/open`，JSON body 为 `url` 和可选 `artifact_id`，成功响应直接流式返回 bytes。AICC 只处理自己登记的 Provider artifact URL；普通 URL 明确返回未登记，由调用方自行处理。读取不需要 `task_id`，不得按 host 反推 Provider。
 
 ## 6. 逻辑模型名与物理模型名边界
 
@@ -302,10 +312,10 @@ TextToImageInvokeResponse
 
 - 只属于 inference data plane。
 - 是一次真实 provider 调用的稳定目标。
-- AICC exact model 形式建议继续使用：
+- AICC exact model 使用冻结形式：
 
 ```text
-provider_model_id@provider_instance_name
+provider_model_id[:variant]@provider_instance_name
 ```
 
 例如：
@@ -337,7 +347,7 @@ Beta 2.2 采用一次性切换，不保留向前兼容：
 2. Helper 改为 `logical_model + typed business fields`，内部严格组合 route 和 typed inference。
 3. SDK、workflow、Agent tools、UI 和 DV tests 同步迁移。
 4. 删除 AICC service 中的 all-in-one methods、`AiMethodRequest`、`model.alias`、`must_features`、`requirements.extra.disable_capabilities` 和 `provider_options` 公共输入。
-5. 管理面只保留 `service.reload_settings`，删除所有兼容别名和错误拼写。
+5. 管理面只保留 `service.reload_settings`；同步更新 `buckyos-api::aicc_client` 和全部调用方，删除 `reload_settings` 旧接口、所有兼容别名和错误拼写。
 6. Provider Profile、Protocol Adapter、Model Driver、Provider Rules、Pricing 和 Known Provider catalog 同时切换到新身份与 schema。
 
 ## 9. 验收约束

@@ -2977,7 +2977,7 @@ mod tests {
                 StepDefinition {
                     id: "fetch".to_string(),
                     name: "Fetch".to_string(),
-                    executor: Some("service::aicc.llm.chat".to_string()),
+                    executor: Some("service::aicc.helper.llm_chat".to_string()),
                     step_type: StepType::Autonomous,
                     input: Some(json!({"prompt": "hello"})),
                     input_schema: None,
@@ -3036,7 +3036,7 @@ mod tests {
                 let executor = executor.clone();
                 let input = input.clone();
                 Box::pin(async move {
-                    if executor.as_str() == "service::aicc.llm.chat" {
+                    if executor.as_str() == "service::aicc.helper.llm_chat" {
                         Ok(json!({ "answer": "ok", "echo": input }))
                     } else {
                         Ok(json!({ "delivered": true, "echo": input }))

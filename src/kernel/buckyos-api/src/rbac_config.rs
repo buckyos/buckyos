@@ -133,6 +133,7 @@ p, admin,obj://config/users/{admin}/apps/{app}/{key},read|write,allow
 p, admin,obj://config/users/{admin}/agents,list|query,allow
 p, admin,obj://config/users/{admin}/agents/{agent}/{key},read|write,allow
 p, admin,obj://config/services/aicc/settings,read|write,allow
+p, admin,obj://config/services/aicc/driver_metadata_update,read|write,allow
 p, admin,obj://config/services/msg-center/settings,read|write,allow
 p, admin,obj://config/services/{service}/instances/{node},write,allow
 p, admin,obj://config/services/*,read,allow
@@ -559,12 +560,14 @@ g, su_alice, su_admin
     }
 
     #[tokio::test]
-    async fn admin_can_write_aicc_settings() {
+    async fn aicc_rbac_allows_calls_but_restricts_settings_to_admin() {
         let _guard = TEST_LOCK.lock().await;
 
         let policy_tail = r#"
 g, alice, admin
 g, bob, users
+g, app:ai-client, app
+g, did:bns:jarvis, agent
 "#;
         let config = build_current_rbac_config(Some(policy_tail));
         rbac::create_enforcer(&config.model, &config.policy)
@@ -582,11 +585,51 @@ g, bob, users
             .await
         );
         assert!(
+            rbac::enforce(
+                "alice",
+                "system:control-panel",
+                "obj://config/services/aicc/driver_metadata_update",
+                "write",
+                None,
+            )
+            .await
+        );
+        assert!(
             !rbac::enforce(
                 "bob",
                 "system:control-panel",
                 "obj://config/services/aicc/settings",
                 "write",
+                None,
+            )
+            .await
+        );
+        assert!(
+            rbac::enforce(
+                "bob",
+                "app:ai-client",
+                "obj://config/services/aicc/info",
+                "read",
+                None,
+            )
+            .await
+        );
+        assert!(
+            rbac::enforce(
+                "bob",
+                "did:bns:jarvis",
+                "obj://config/services/aicc/info",
+                "read",
+                None,
+            )
+            .await
+        );
+        assert!(
+            !rbac::enforce(
+                "bob",
+                "app:ai-client",
+                "obj://config/services/aicc/settings",
+                "read",
                 None,
             )
             .await

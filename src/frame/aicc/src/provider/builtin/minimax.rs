@@ -1,0 +1,174 @@
+#[cfg(test)]
+use super::super::{
+    DiscoveryMode, ProviderConnectionContract, ProviderConnectionInput, ProviderProfile,
+    ProviderResult,
+};
+use super::anthropic_models::{AnthropicModelsDiscovery, AnthropicModelsSpec};
+#[cfg(test)]
+use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
+#[cfg(test)]
+use crate::protocol::CredentialKind;
+use crate::protocol::HttpTransport;
+
+pub(crate) const MINIMAX_PROVIDER_PROFILE_ID: &str = "minimax";
+
+pub(super) const MINIMAX_SPEC: AnthropicModelsSpec = AnthropicModelsSpec {
+    provider_profile_id: MINIMAX_PROVIDER_PROFILE_ID,
+    version_header: false,
+    label: "MiniMax",
+};
+
+#[cfg(test)]
+pub(crate) fn minimax_profile() -> ProviderProfile {
+    super::builtin_profile(MINIMAX_PROVIDER_PROFILE_ID, DiscoveryMode::MachineApi)
+}
+
+#[cfg(test)]
+pub(crate) fn minimax_known_provider() -> crate::catalog::KnownProvider {
+    super::builtin_known_provider(MINIMAX_PROVIDER_PROFILE_ID)
+}
+
+#[cfg(test)]
+pub(crate) fn minimax_connection_contract() -> ProviderConnectionContract {
+    super::builtin_connection_contract(MINIMAX_PROVIDER_PROFILE_ID)
+}
+
+#[cfg(test)]
+pub(crate) fn resolve_minimax_connection(
+    input: ProviderConnectionInput<'_>,
+) -> ProviderResult<super::super::ResolvedProviderConnection> {
+    minimax_connection_contract().resolve(input)
+}
+
+#[cfg(test)]
+pub(crate) fn minimax_provider_rules(_revision_seq: u64) -> ProviderRulesCatalog {
+    super::builtin_provider_rules(MINIMAX_PROVIDER_PROFILE_ID)
+}
+
+#[cfg(test)]
+pub(crate) fn minimax_model_driver() -> ModelDriverCatalog {
+    super::builtin_model_driver(MINIMAX_PROVIDER_PROFILE_ID)
+}
+
+#[cfg(test)]
+pub(crate) fn minimax_catalog_files() -> Vec<CurrentCatalogFile> {
+    super::builtin_catalog_files(&[MINIMAX_PROVIDER_PROFILE_ID])
+}
+
+pub(crate) fn minimax_discovery(transport: HttpTransport) -> AnthropicModelsDiscovery {
+    AnthropicModelsDiscovery::new(MINIMAX_SPEC, transport)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::CatalogBuildOptions;
+    use crate::protocol::{
+        minimax_messages_adapter, minimax_messages_dialect_contract, CodecRegistry,
+        CLAUDE_MESSAGES_ADAPTER_ID, CLAUDE_MESSAGES_OPERATION_ID, MINIMAX_MESSAGES_ADAPTER_ID,
+    };
+    use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
+
+    #[test]
+    fn embedded_catalogs_drive_identity_regions_rules_and_models() {
+        let profile = minimax_profile();
+        let known = minimax_known_provider();
+        let rules = minimax_provider_rules(9);
+        let models = minimax_model_driver();
+        let contract = minimax_messages_dialect_contract();
+        let (adapter, registration) = minimax_messages_adapter();
+
+        assert_eq!(profile.provider_profile_id, MINIMAX_PROVIDER_PROFILE_ID);
+        assert_eq!(
+            profile.default_protocol_adapter_id,
+            MINIMAX_MESSAGES_ADAPTER_ID
+        );
+        assert_eq!(profile.credential.kind, CredentialKind::NamedHeader);
+        assert_eq!(
+            resolve_minimax_connection(Default::default())
+                .unwrap()
+                .base_url,
+            known.base_url
+        );
+        assert_eq!(
+            resolve_minimax_connection(ProviderConnectionInput {
+                region: Some("china"),
+                ..Default::default()
+            })
+            .unwrap()
+            .base_url,
+            known.connection.region_base_urls["china"]
+        );
+        assert!(resolve_minimax_connection(ProviderConnectionInput {
+            region: Some("unknown"),
+            ..Default::default()
+        })
+        .is_err());
+        assert_eq!(
+            known.provider_rules_id.as_deref(),
+            Some(MINIMAX_PROVIDER_PROFILE_ID)
+        );
+        assert_eq!(
+            rules.metadata_drivers,
+            Some(vec![MINIMAX_PROVIDER_PROFILE_ID.to_owned()])
+        );
+        assert_eq!(
+            rules.patterns[0].operations["llm"],
+            CLAUDE_MESSAGES_OPERATION_ID
+        );
+        assert_eq!(rules.patterns[0].request_rules[0].defaults["top_p"], 0.9);
+        assert!(rules.patterns[0].request_rules[0]
+            .remove
+            .contains(&"/stop".to_owned()));
+        assert_eq!(models.model_driver_id, MINIMAX_PROVIDER_PROFILE_ID);
+        assert!(models.models.iter().any(|model| model.id == "MiniMax-M2.7"));
+        assert_eq!(contract.base_adapter_id, CLAUDE_MESSAGES_ADAPTER_ID);
+        assert_eq!(
+            adapter.base_adapter_id.as_deref(),
+            Some(CLAUDE_MESSAGES_ADAPTER_ID)
+        );
+        assert_eq!(registration.operation_codecs.len(), 5);
+        assert_eq!(registration.native_task_codecs.len(), 2);
+        let builtin = minimax_catalog_files()
+            .into_iter()
+            .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let catalog = MetadataSources {
+            builtin,
+            ..MetadataSources::default()
+        }
+        .build_snapshot(2, &CatalogBuildOptions::default())
+        .unwrap();
+        assert!(catalog
+            .known_provider(MINIMAX_PROVIDER_PROFILE_ID)
+            .is_some());
+        assert!(catalog
+            .provider_rules(MINIMAX_PROVIDER_PROFILE_ID)
+            .is_some());
+        assert!(catalog.model_driver(MINIMAX_PROVIDER_PROFILE_ID).is_some());
+    }
+
+    #[test]
+    fn derived_registration_depends_one_way_on_the_unchanged_base_adapter() {
+        let (base_descriptor, base_registration) = super::super::claude_messages_adapter();
+        let mut registry = CodecRegistry::default();
+        registry
+            .register_codecs(base_descriptor, base_registration)
+            .unwrap();
+        let (derived_descriptor, derived_registration) = minimax_messages_adapter();
+        registry
+            .register_codecs(derived_descriptor, derived_registration)
+            .unwrap();
+
+        assert!(registry.adapter(CLAUDE_MESSAGES_ADAPTER_ID).is_some());
+        assert!(registry.adapter(MINIMAX_MESSAGES_ADAPTER_ID).is_some());
+
+        let (base_descriptor, base_registration) = super::super::claude_messages_adapter();
+        let mut base_only = CodecRegistry::default();
+        base_only
+            .register_codecs(base_descriptor, base_registration)
+            .unwrap();
+        assert!(base_only.adapter(CLAUDE_MESSAGES_ADAPTER_ID).is_some());
+    }
+}

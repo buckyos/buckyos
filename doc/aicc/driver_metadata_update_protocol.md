@@ -9,10 +9,12 @@
 
 - Model Driver catalog 保存模型固有能力、家族、variant 和逻辑挂载。
 - Provider Rules catalog 保存渠道模型映射、operation、请求规则、能力收窄及价格规则；价格不再单独发布 Pricing Catalog。
-- Known Provider catalog 保存管理 UI 使用的服务商默认 endpoint、Profile 和 Adapter。
-- Provider Instance 名称、endpoint、凭据、区域、账号和协议选择属于 system-config，catalog 无权修改。
+- Known Provider catalog 保存管理 UI 使用的服务商默认 `base_url`、Profile 和 Adapter。
+- Provider Instance 名称、`base_url`、凭据、区域、账号和协议选择属于 system-config，catalog 无权修改。
 - Provider discovery 产生的 availability、deprecated、remote methods、实时价格和 health 属于实例级动态事实，不写入静态 catalog。
-- 三类 catalog 使用独立文件和 revision，但通过同一个 manifest 发布为完整版本。
+- 三类 catalog 使用独立文件和 revision，但通过同一个 manifest 发布为完整的云来源版本；该版本不需要重复 builtin、local 或 system-config 已有的其它 catalog。
+- 内置专用 Provider 也属于这套发布集合；其 Rust 实现不能替代或旁路对应的 Model Driver、Provider Rules、Known Provider 文件。
+- 新 Provider Profile 只要复用客户端已经注册的 `protocol_adapter_id`，就复用该协议族的标准模型 discovery；Provider Rules `models[]` 或其明确引用的 Model Driver `models[]` 形成 discovery 失败时的静态 inventory。因此它可以仅通过 metadata 发布，不要求升级 AICC 客户端。只有新增或修改 wire protocol codec、标准 discovery 差异、签名认证或动态登录行为时才要求升级客户端实现。
 - 发布结构与文件交付由 NDN 更新链路负责；AICC 不重复实现文件下载、验签、完整性校验或 activation。
 
 ## 2. 发布路径
@@ -49,15 +51,31 @@ Index 格式为 `buckyos.aicc.provider-catalog-index`，至少包含：
 
 ## 4. Manifest
 
-Manifest 格式为 `buckyos.aicc.provider-catalog-manifest`，描述一个完整可用的发布版本，至少包含：
+Manifest 格式为 `buckyos.aicc.provider-catalog-manifest`，描述一个完整可用的云来源发布版本，至少包含：
 
 - `protocol_version: 2`；
 - 全局唯一、严格递增且不可复用的 `revision_seq`；
 - 与 index track 一致的客户端兼容范围和 `required_features`；
 - `files[]`：`catalog_kind`、`catalog_id`、path、schema version、对象 revision 和对象身份；
-- `tombstones[]`：从完整发布集合中删除的 catalog kind/id 及其 revision。
+- `tombstones[]`：从完整 cloud 发布集合中删除的 catalog kind/id 及其 revision。
 
-`catalog_kind` 只允许 `model_driver`、`provider_rules`、`known_provider`。`catalog_kind + catalog_id` 在 manifest 内唯一；未变化文件可以保持自己的 revision 和对象身份，删除必须使用 tombstone。Manifest 指向的三类文件合起来构成该 `revision_seq` 的完整 metadata 文件集合。
+`catalog_kind` 只允许 `model_driver`、`provider_rules`、`known_provider`。`catalog_kind + catalog_id` 在 manifest 内唯一；未变化文件可以保持自己的 revision 和对象身份，删除必须使用 tombstone。Manifest 指向的三类文件合起来构成该 `revision_seq` 的完整云来源文件集合，而不是机器最终生效的全部 metadata。Tombstone 从云来源删除对应身份；若低优先级来源仍有同一身份，该文件会在下一次来源选择时重新显现。
+
+## 4.1 来源选择
+
+AICC 构建 catalog snapshot 时，按 `(catalog_kind, catalog_id)` 独立选择文件，来源优先级固定为：
+
+```text
+system-config > local > cloud > builtin
+```
+
+同一身份只启用最高优先级来源中的完整 JSON 文件，不做字段、数组、规则或默认值合并。高优先级来源中没有某个身份时，继续使用低优先级来源中的该身份；因此 cloud 更新 OpenAI 不会使 builtin MiniMax 失效。最终生效集合是逐身份选择结果的并集，再对整个集合执行 schema、唯一性和跨 catalog 引用校验。
+
+Provider Profile ID 和 Model Driver ID 都是开放命名空间，不是客户端内置枚举。有效 snapshot 中新增的 Known Provider 必须进入 Provider catalog，并由运行时装配为配置型 Provider；不得因 ID 未出现在客户端源码中而忽略。配置型 Provider 使用 Known Provider 声明的已注册 Adapter 执行标准 discovery，并合并 Provider Rules `models[]` 与 `metadata_drivers` 明确引用的 Model Driver exact `models[]` 形成失败时的静态 inventory；Provider Rules 的显式 `exclude` 优先。客户端中已有专用行为实现的 Profile 只能覆盖其 discovery 差异、认证或任务状态机，不能形成阻止其它 Profile 加载的白名单。
+
+来源选择是 metadata source manager 的内部职责。builtin 由该管理模块集中编译嵌入；cloud、local 和 system-config 的具体路径或 key 只对统一 loader 及负责改变相应来源的管理模块可见。Service、Provider、Routing、Execution 等消费者只能读取 metadata source manager 发布的有效 `CatalogSnapshot`，不得接收四层文件集合或自行执行来源选择。
+
+Known Provider 的选择身份是 `catalog_id`。一个文件内包含多个 `providers[]` 时，该文件整体是原子覆盖单元；需要独立更新的 Provider 应使用独立且稳定的 catalog ID/文件。
 
 ## 5. 发布文件内容
 
@@ -73,11 +91,15 @@ Manifest 格式为 `buckyos.aicc.provider-catalog-manifest`，描述一个完整
 
 内容定义渠道模型到原厂 Model Driver/ModelUID 的映射，以及 operation、provider options、request rules、能力收窄、价格和条件计价规则。价格使用规则内的 `pricing` 字段，不使用独立 `pricing_ref` 或 Pricing Catalog。
 
+每个官方支持的 Provider 厂商都必须有独立 Provider Rules 文件，包括内置专用 Provider；发布文件必须包含本协议要求的完整 catalog envelope、身份和 revision。特殊 dialect 的常量、参数差异和能力限制也应优先放在这里；只有无法由受限 schema 安全表达的执行逻辑进入代码。
+
+未被官方 catalog 收录的小型 Provider 或用户自建代理不要求产生伪官方发布文件。用户明确选择兼容协议族后，AICC 为该 `custom` Provider 使用空规则体 `{}`：保留 discovery 返回的原始模型名，在当前全部 Model Driver 中唯一匹配 origin identity，不应用任何渠道改名规则。
+
 ### 5.3 Known Provider
 
 路径：`v2/known-providers/<catalog_id>-<revision_seq>.json`。
 
-内容定义管理 UI 使用的已知服务商默认值，包括 `provider_profile_id`、显示名称、默认 endpoint、`protocol_adapter_id`、可选 `provider_rules_id` 和 UI hints。它不能修改已经存在的 Provider Instance 私有配置。
+内容定义已知服务商的 typed 默认值，包括 `provider_profile_id`、显示名称、默认 `base_url`、`protocol_adapter_id`、`discovery_behavior_id`、可选的动态登录/连接 behavior ID、可选 `provider_rules_id`、默认 credential、credential variants、connection schema 和区域 URL；UI hints 只能承载展示信息。behavior ID 必须由客户端 registry 注册，未知 ID fail closed；它不能修改已经存在的 Provider Instance 私有配置。
 
 ## 6. 版本兼容与防回退
 
@@ -92,11 +114,12 @@ Manifest 格式为 `buckyos.aicc.provider-catalog-manifest`，描述一个完整
 
 ```text
 读取 index，并按客户端版本/通道/灰度分组选择兼容且 revision_seq 更高的 manifest
-  -> 下载并校验 manifest 指定的完整 catalog 文件集合
-  -> 替换当前 metadata 文件并确认新文件已可供 Provider 应用
+  -> 下载并校验 manifest 指定的完整云来源 catalog 文件集合
+  -> 原子替换当前云来源文件并确认新文件已可供 Provider 应用
   -> 发布 metadata_target_seq = manifest.revision_seq
   -> 收到下一次 AICC 推理请求，或进入任一 Provider Instance 定时库存刷新
-  -> 统一加载 target_seq 对应的全部 metadata 更新
+  -> 按 system-config > local > cloud > builtin 对每个 catalog 身份做整文件选择
+  -> 加载本轮有效 metadata snapshot
   -> 收敛所有 applied_seq != target_seq 的 Provider inventory
   -> 每个 Provider 真正完成库存刷新后提交 applied_seq = 本次捕获的 target_seq
   -> 继续原推理或定时库存刷新
@@ -108,11 +131,11 @@ Manifest 格式为 `buckyos.aicc.provider-catalog-manifest`，描述一个完整
 
 ## 8. NDN 更新链路责任
 
-- 读取并验证 index、所选 track、manifest 和 manifest 指定的完整文件集合；
+- 读取并验证 index、所选 track、manifest 和 manifest 指定的完整云来源文件集合；
 - 根据客户端版本、更新通道和灰度分组选择兼容 track；
 - 检查 manifest `revision_seq` 高于本机已接受水位；没有更高兼容版本时保持现状；
-- 保证文件来源可信、内容完整、版本匹配、引用一致且集合可用；
-- 替换当前文件集合并确认新文件可供 Provider 加载；
+- 保证云来源文件可信、内容完整、版本匹配且集合可用；跨来源引用在 AICC 形成有效集合后校验；
+- 替换当前云来源文件集合并确认新文件可供 Provider 加载；
 - 仅在文件就绪后发布 `metadata_target_seq = manifest.revision_seq`。
 
 版本不兼容、序列未前进，或下载、校验、替换、就绪确认任一步失败时，都不得推进目标序列。签名、ObjId、digest、断点续传、具体替换方法和失败恢复属于 NDN 实现；本协议只固定发布结构及交付结果。
@@ -130,7 +153,7 @@ Provider Instance 停止、禁用、删除、被 reload 替换或随 AICC 服务
 
 ## 10. Provider 库存收敛
 
-全局收敛先加载本次捕获的目标序列对应的完整 metadata snapshot，再遍历所有 Provider：
+全局收敛先以本次捕获的云目标序列解析四个来源，加载对应的完整有效 metadata snapshot，再遍历所有 Provider：
 
 1. 读取 Provider 当前 `metadata_applied_seq` 和已保存的 provider model 列表。
 2. 获取本轮可用的 provider model 列表：定时刷新触发的 Provider 使用刚探测的列表，其它 Provider 可以使用已保存列表。

@@ -1,0 +1,20 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "provider_profile_id": "doubao",
+  "metadata_drivers": ["doubao"],
+  "origin_provider_aliases": {},
+  "origin_mappings": [],
+  "models": [],
+  "patterns": [
+    {
+      "match": "*",
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
+    }
+  ],
+  "variants": [
+    { "model_driver": "doubao", "variant": "reasoning-none", "match": { "provider_model_id": "doubao-seed-2-0-*", "variant": "reasoning-none" }, "provider_options": { "thinking": { "type": "disabled" } } }
+  ]
+}

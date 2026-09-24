@@ -1,21 +1,23 @@
-pub mod aicc;
-pub mod aicc_usage_log_db;
-pub mod claude;
-pub mod claude_protocol;
-pub mod complete_request_queue;
-pub mod default_logical_tree;
-pub mod fal;
-pub mod gemini;
-pub mod metadata_resolver;
-pub mod metadata_updater;
-pub mod minimax;
-pub mod model_registry;
-pub mod model_router;
-pub mod model_scheduler;
-pub mod model_session;
-pub mod model_types;
-pub mod openai;
-pub mod openai_protocol;
-pub mod sn_ai_provider;
+pub(crate) mod api;
+pub(crate) mod call;
+pub(crate) mod canonical;
+pub(crate) mod catalog;
+pub(crate) mod error;
+pub(crate) mod execution;
+pub(crate) mod health;
+pub(crate) mod matching;
+pub(crate) mod model;
+#[cfg(test)]
+pub(crate) mod observability;
+pub(crate) mod protocol;
+pub(crate) mod provider;
+pub(crate) mod resource;
+pub(crate) mod routing;
+pub(crate) mod runtime;
+pub(crate) mod service;
+pub(crate) mod settings;
+pub(crate) mod storage;
 
-pub use self::aicc::*;
+pub async fn run_service() -> anyhow::Result<()> {
+    service::run_service().await
+}

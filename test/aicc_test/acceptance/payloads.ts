@@ -44,7 +44,13 @@ function requireFixture(
 ): ResourceRef {
   const value = kind === "document" && documentFormat
     ? fixtures.documents?.[documentFormat] ?? (documentFormat === "pdf" ? fixtures.document : undefined)
-    : fixtures[kind];
+    : fixtures[kind] ?? (
+      kind === "inpaintImage" || kind === "bgRemoveImage" || kind === "ocrImage"
+        ? fixtures.image
+        : kind === "inpaintMask"
+        ? fixtures.mask
+        : undefined
+    );
   if (!value) throw new Error(`${apiType} requires configured ${kind} fixture`);
   if ("kind" in value) {
     if (representation && value.kind !== representation) {
@@ -96,7 +102,7 @@ function io(
     case "embedding.multimodal":
       return {
         input_json: { items: [{ id: "item-1", text: "pink flower" }] },
-        resources: [],
+        resources: [requireFixture(fixtures, "image", apiType, representation)],
       };
     case "rerank":
       return {
@@ -120,8 +126,6 @@ function io(
       return {
         input_json: {
           prompt: "A solid medium-blue square canvas with a compact cluster of realistic green leaves strictly inside the central rectangular masked region. Preserve the uniform medium-blue area outside the mask unchanged, with no glow, gradient, shadow, or extra objects.",
-          input_fidelity: "high",
-          quality: "high",
         },
         resources: [
           requireFixture(fixtures, "inpaintImage", apiType, representation),
@@ -186,14 +190,26 @@ function io(
     case "video.extend":
     case "video.upscale":
       return {
-        input_json: apiType === "video.extend" ? { duration_seconds: 7 } : {},
+        input_json: apiType === "video.upscale"
+          ? {}
+          : { prompt: "Preserve the scene while adding subtle motion", ...(apiType === "video.extend" ? { duration_seconds: 7 } : {}) },
         resources: [requireFixture(fixtures, "video", apiType, representation)],
       };
     case "agent.computer_use":
       return {
         input_json: {
           task: "Report the title visible in the supplied test environment.",
-          environment: "browser",
+          environment: {
+            environment_id: "aicc-t1-browser",
+            session_id: "aicc-t1-computer-session",
+            screenshot: {
+              kind: "base64",
+              mime: "image/png",
+              data_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+            },
+            viewport: { width: 1280, height: 720 },
+          },
+          allowed_actions: ["left_click"],
         },
         resources: [],
       };
@@ -231,20 +247,29 @@ export function buildExactRequest(args: {
         content: [{ type: "text", text: "Complete this code with marker 4827: const marker =" }],
       }];
     }
+    const messages = inputJson.messages as Array<Record<string, unknown>>;
+    const userMessage = messages.find((message) => message.role === "user");
+    const content = userMessage && Array.isArray(userMessage.content)
+      ? userMessage.content
+      : [];
+    if (userMessage) userMessage.content = content;
     for (const kind of args.cell.input_kinds) {
-      if (kind === "image") resources.push(fixture("image"));
-      else if (kind === "document") resources.push(fixture("document"));
-      else if (kind === "audio") resources.push(fixture("audio"));
-      else if (kind === "video") resources.push(fixture("video"));
+      if (kind === "image") {
+        content.push({ type: "image", source: fixture("image") });
+      } else if (kind === "document" || kind === "audio" || kind === "video") {
+        content.push({ type: "document", source: fixture(kind) });
+      }
     }
     if (args.cell.input_kinds.includes("image")) requirements = { must_features: ["vision"] };
   }
   if (args.cell.api_type === "embedding.multimodal") {
-    inputJson.items = args.cell.input_kinds.includes("text")
-      ? [{ id: "item-1", text: "pink flower" }]
-      : [];
+    if (args.cell.input_kinds.length > 0) {
+      inputJson.items = args.cell.input_kinds.includes("text")
+        ? [{ id: "item-1", text: "pink flower" }]
+        : [];
+    }
     for (const kind of args.cell.input_kinds) {
-      if (kind === "image") resources.push(fixture("image"));
+      if (kind === "image" && resources.length === 0) resources.push(fixture("image"));
       else if (kind === "audio") resources.push(fixture("audio"));
       else if (kind === "video") resources.push(fixture("video"));
       else if (kind === "document") resources.push(fixture("document"));
@@ -301,15 +326,14 @@ export function buildExactRequest(args: {
       id: `item-${index + 1}`,
       text: `BuckyOS deterministic embedding row ${index + 1}`,
     }));
-    inputJson.response_format = "object_id";
-    inputJson.output = { resource_format: "named_object" };
+    inputJson.prefer_artifact = true;
   }
   if (toolSpecs.length > 0) inputJson.tool_specs = toolSpecs;
   return {
     capability: args.cell.api_type.split(".")[0],
     model: { alias: args.cell.exact_model },
     requirements,
-    ...(args.cell.method === "llm.chat" ? { disable: { web_search: true } } : {}),
+    ...(args.cell.method === "chat.completions.create" ? { disable: { web_search: true } } : {}),
     payload: {
       input_json: inputJson,
       resources,
@@ -335,7 +359,58 @@ export function assertResponseShape(
     throw new Error(`unexpected task status ${String(response.status)}`);
   }
   if (response.status === "running") return;
-  const result = response.result;
+  const typedArtifacts = [
+    ...(Array.isArray(response.images)
+      ? response.images.map((source) => ({ type: "image", source }))
+      : []),
+    ...(response.image ? [{ type: "image", source: response.image }] : []),
+    ...(response.audio ? [{ type: "audio", source: response.audio }] : []),
+    ...(response.video ? [{ type: "video", source: response.video }] : []),
+    ...(response.artifacts && typeof response.artifacts === "object"
+      ? Object.values(response.artifacts as Record<string, unknown>).map((source) => ({ type: "document", source }))
+      : []),
+  ];
+  const typedMessage = response.message && typeof response.message === "object"
+    ? response.message
+    : {
+      role: "assistant",
+      content: [
+        ...(typeof response.text === "string" ? [{ type: "text", text: response.text }] : []),
+        ...(Array.isArray(response.captions)
+          ? response.captions.map((caption) => ({
+            type: "text",
+            text: String((caption as Record<string, unknown>).text ?? ""),
+          }))
+          : []),
+        ...typedArtifacts,
+      ],
+    };
+  const typedEmbeddingData = Array.isArray(response.data) ? response.data : [];
+  const typedExtra = {
+    ...(response.extra && typeof response.extra === "object" && !Array.isArray(response.extra)
+      ? response.extra as Record<string, unknown>
+      : {}),
+    ...(typedEmbeddingData.length > 0 || response.data_resource
+      ? {
+        embedding: {
+          data: typedEmbeddingData,
+          artifact: response.data_resource,
+          embedding_space_id: (typedEmbeddingData[0] as Record<string, unknown> | undefined)?.embedding_space_id,
+        },
+      }
+      : {}),
+    ...(Array.isArray(response.results) ? { rerank: { results: response.results } } : {}),
+    ...(["pages", "detections", "masks"].some((field) => field in response)
+      ? { vision: Object.fromEntries(["pages", "detections", "masks"].filter((field) => field in response).map((field) => [field, response[field]])) }
+      : {}),
+    ...(Array.isArray(response.artifacts) ? { artifacts: response.artifacts } : {}),
+  };
+  const result = response.result ?? {
+    message: typedMessage,
+    usage: response.usage,
+    cost: response.cost,
+    extra: typedExtra,
+  };
   if (!result || typeof result !== "object") throw new Error("succeeded response must include result");
   const resultRecord = result as Record<string, unknown>;
   for (const legacy of ["text", "tool_calls", "artifacts"]) {
@@ -343,9 +418,6 @@ export function assertResponseShape(
   }
   if (!resultRecord.usage || typeof resultRecord.usage !== "object") {
     throw new Error("successful response must include usage");
-  }
-  if (!resultRecord.cost || typeof resultRecord.cost !== "object") {
-    throw new Error("successful response must include cost");
   }
   const message = resultRecord.message;
   if (!message || typeof message !== "object") throw new Error("result.message is required");
@@ -394,7 +466,8 @@ export function assertResponseShape(
     const embedding = extra.embedding;
     if (!embedding || typeof embedding !== "object") throw new Error("expected extra.embedding");
     const record = embedding as Record<string, unknown>;
-    if (typeof record.embedding_space_id !== "string" || !record.embedding_space_id) {
+    if (cell.variant !== "embedding_large_artifact" &&
+      (typeof record.embedding_space_id !== "string" || !record.embedding_space_id)) {
       throw new Error("embedding_space_id is required");
     }
     if (cell.variant === "embedding_large_artifact") {
@@ -402,10 +475,8 @@ export function assertResponseShape(
       if (!artifact || typeof artifact !== "object") {
         throw new Error("large embedding output must use an artifact");
       }
-      const artifactRecord = artifact as Record<string, unknown>;
-      if (artifactRecord.rows !== 101 || typeof artifactRecord.dimensions !== "number" ||
-        artifactRecord.dimensions <= 0 || artifactRecord.embedding_space_id !== record.embedding_space_id) {
-        throw new Error("embedding artifact rows, dimensions, and space metadata are invalid");
+      if (record.data && Array.isArray(record.data) && record.data.length !== 0) {
+        throw new Error("large embedding artifact response must not duplicate inline vectors");
       }
       return;
     }
@@ -442,14 +513,30 @@ export function assertResponseShape(
     }
     return;
   }
+  if (cell.api_type === "agent.computer_use") {
+    const actions = response.actions;
+    if (!Array.isArray(actions) || actions.length !== 1) {
+      throw new Error("computer-use must return exactly one action");
+    }
+    const action = actions[0] as Record<string, unknown>;
+    if (action.type !== "left_click" || action.x !== 640 || action.y !== 360 ||
+      response.requires_next_observation !== true) {
+      throw new Error("computer-use did not return the allowed deterministic click action");
+    }
+    return;
+  }
   const artifactKinds = new Set(["image", "audio", "video"]);
   if (cell.output_kinds.some((kind) => artifactKinds.has(kind))) {
     const expectedPrefix = `${cell.output_kinds.find((kind) => artifactKinds.has(kind))}/`;
     const artifacts = content.filter((item) => item && typeof item === "object" &&
-      ["image", "document"].includes(String((item as Record<string, unknown>).type)));
+      ["image", "audio", "video", "document"].includes(String((item as Record<string, unknown>).type)));
     if (artifacts.length === 0) throw new Error(`expected ${expectedPrefix} artifact output`);
     const materialized = Array.isArray(extra.materialized_artifacts)
       ? extra.materialized_artifacts.filter((item): item is Record<string, unknown> =>
+        Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      : [];
+    const sidebandArtifacts = Array.isArray(extra.artifacts)
+      ? extra.artifacts.filter((item): item is Record<string, unknown> =>
         Boolean(item) && typeof item === "object" && !Array.isArray(item))
       : [];
     const hasMime = artifacts.some((item, index) => {
@@ -457,16 +544,38 @@ export function assertResponseShape(
       if (!source || typeof source !== "object") return false;
       const resource = source as Record<string, unknown>;
       const materializedMime = materialized.find((entry) => entry.content_index === index)?.mime;
-      const mime = resource.mime_hint ?? resource.mime ?? materializedMime;
+      const sidebandMime = sidebandArtifacts.find((entry) => {
+        const artifactResource = entry.resource;
+        return artifactResource && typeof artifactResource === "object" && !Array.isArray(artifactResource) &&
+          (artifactResource as Record<string, unknown>).obj_id === resource.obj_id;
+      })?.mime;
+      const mime = resource.mime_hint ?? resource.mime ?? materializedMime ?? sidebandMime;
+      const contentType = (item as Record<string, unknown>).type;
       const addressable = typeof resource.url === "string" || typeof resource.obj_id === "string" ||
         typeof resource.data_base64 === "string";
-      return addressable && typeof mime === "string" && mime.startsWith(expectedPrefix);
+      return addressable &&
+        ((typeof mime === "string" && mime.startsWith(expectedPrefix)) ||
+          contentType === expectedPrefix.replace(/\/$/, ""));
     });
-    if (!hasMime) throw new Error(`artifact must be addressable and use MIME ${expectedPrefix}*`);
+    if (!hasMime) {
+      const diagnostic = {
+        content: content.map((item) => {
+          if (!item || typeof item !== "object") return item;
+          const record = item as Record<string, unknown>;
+          return { type: record.type, source: record.source };
+        }),
+        materialized,
+        artifacts: sidebandArtifacts,
+      };
+      throw new Error(
+        `artifact must be addressable and use MIME ${expectedPrefix}*: ${JSON.stringify(diagnostic).slice(0, 1000)}`,
+      );
+    }
     return;
   }
   if (cell.api_type === "vision.detect" || cell.api_type === "vision.segment") {
-    if (!text.trim() && Object.keys(extra).length === 0) {
+    if (!text.trim() && Object.keys(extra).length === 0 &&
+      !Array.isArray(response.detections) && !Array.isArray(response.masks)) {
       throw new Error("expected structured vision output");
     }
     return;

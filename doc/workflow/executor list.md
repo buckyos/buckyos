@@ -50,7 +50,7 @@ FunctionObject / ThunkObject / Node Daemon Runner 是后续阶段的执行基础
 
 `executor` 字段里有两种不同语义：
 
-- **实际 executor 定义**：用 `namespace::name` 表达，例如 `service::aicc.llm.chat`、`http::file-classifier.classify`。这类名字已经能直接定位到一个 adapter 和调用协议。
+- **实际 executor 定义**：用 `namespace::name` 表达，例如 `service::aicc.helper.llm_chat`、`http::file-classifier.classify`。这类名字已经能直接定位到一个 adapter 和调用协议。
 - **语义链接**：用路径表达，例如 `/agent/mia`、`/skill/fs-scanner`、`/tool/image-normalizer`。它们不是最终 executor 定义，而是一个可解析的语义入口。
 
 语义链接必须先通过 executor registry 展开为实际 executor 定义，例如：
@@ -86,7 +86,7 @@ BuckyOS 的标准服务指系统内置、有稳定 RPC schema、整个 Zone 内�
 
 ### 一期执行方式
 
-- DSL：`executor: "service::aicc.llm.chat"`
+- DSL：`executor: "service::aicc.helper.llm_chat"`
 - Expr：`Apply`
 - 编排器：识别 `service::` 前缀，直接通过 buckyos-api RPC client 调用对应服务。
 - 输出：RPC response 作为该 Step 的输出回填。

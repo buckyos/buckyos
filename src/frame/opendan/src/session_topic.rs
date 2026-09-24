@@ -8,6 +8,7 @@ use std::{
 };
 
 use chrono::{SecondsFormat, Utc};
+use log::warn;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -903,6 +904,15 @@ fn normalize_tags(tags: &[TagInput]) -> Result<Vec<TagInput>, SessionTopicError>
                 "`tags[].name` entries must be 48 characters or fewer".to_string(),
             ));
         }
+        let charset_ok = name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-'));
+        if !charset_ok || !name.chars().any(|c| c.is_alphanumeric()) {
+            warn!(
+                "session_topic: dropping tag {name:?} with characters not accepted by recall tag charset"
+            );
+            continue;
+        }
         let reason = raw.reason.trim().to_string();
         if reason.is_empty() {
             return Err(SessionTopicError::InvalidInput(
@@ -1180,6 +1190,19 @@ mod tests {
     fn tag_normalization_requires_reason() {
         let err = normalize_tags(&[tag_input("Design", "   ")]).unwrap_err();
         assert!(matches!(err, SessionTopicError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn tag_normalization_drops_tags_outside_recall_charset() {
+        let tags = normalize_tags(&[
+            tag_input("gen_image", "image generation"),
+            tag_input("focus", "user focus"),
+            tag_input("-", "separator only"),
+            tag_input("phone case", "multiword"),
+        ])
+        .unwrap();
+        let names: Vec<&str> = tags.iter().map(|tag| tag.name.as_str()).collect();
+        assert_eq!(names, vec!["focus", "phone case"]);
     }
 
     #[test]

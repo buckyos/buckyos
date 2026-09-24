@@ -1,12 +1,14 @@
 ﻿# AICC 验收用例拆分索引
 
+> 历史维护资料：本目录保留 L1/L2/L3/L4 名称和旧 case ID，便于追踪已有任务拆分，但它们不是 Beta 2.2 的发布验收层级。当前规范以 [`../../aicc_e2e_test_requirements.md`](../../aicc_e2e_test_requirements.md) 和 `test/aicc_test/acceptance/README.md` 为准：编码期间完成模块单元测试；编码完成后的集成测试先完成 T1/T1.5，再完成 T2/T3。若本目录的矩阵、Provider 范围或执行顺序与当前规范冲突，以当前规范为准。
+
 本目录把 AICC 验收方案拆分为可逐步实现和评审的自包含任务文档。每个拆分文档都携带本任务需要的详细矩阵、字段、case id、命令或判定规则。
 
 ## 阅读规则
 
 - 做某个任务时，先读该任务文档，再读依赖图中它上游的基础文档。
 - 基础文档定义全局约束；组件文档定义 runner / mock / report / gateway 等可复用能力；cases 文档定义具体用例组。
-- 如果同一细节在多个文档出现，以更具体的 cases 或 components 文档为准。
+- 本目录内部同一细节在多个文档出现时，以更具体的 cases 或 components 文档为准；与当前 T1/T1.5/T2/T3 规范冲突时，仍以当前规范为准。
 
 ## 依赖图
 

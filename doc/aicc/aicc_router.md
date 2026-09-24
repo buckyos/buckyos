@@ -125,10 +125,10 @@ flowchart LR
 
 ### 5.1 精确模型名
 
-精确模型名用于明确指定某个 Provider 下的某个模型。建议格式为：
+精确模型名用于明确指定某个 Provider 下的某个模型。冻结格式为：
 
 ```text
-<provider_model_id>@<provider_instance_name>
+<provider_model_id>[:<variant>]@<provider_instance_name>
 ```
 
 示例：
@@ -141,12 +141,12 @@ qwen3@local
 
 解析规则：
 
-1. 以最后一个 `@` 作为分隔符；
+1. 字符串必须且只能包含一个 `@`，以它作为分隔符；
 2. 最后一段是 Provider instance name，是否已注册必须在路由时校验，不能在纯字符串解析阶段假设 Provider 已完成冷启动注册；
 3. Provider instance name 不允许包含 `@`；
-4. 前面的部分作为 Provider 内部模型 ID，可包含 Provider 自己的模型命名字符和 `.`；
+4. 前面的部分作为 Provider 内部模型 ID 和可选 `:variant`；`provider_model_id` 不允许包含 `@`，可包含 Provider 自己的其它模型命名字符和 `.`；
 5. 精确模型名必须结合当前 API 能力类型一起校验，例如 LLM completion、text-to-image 等。
-6. Provider 内部模型 ID 强烈不建议包含 `@`。如果厂商原始模型 ID 包含 `@`，Provider 应提供可读 alias 或转义后的 `provider_model_id`，并在 metadata 中保留原始 ID，避免日志、UI 和错误信息难以阅读。
+6. 如果厂商原始模型 ID 包含 `@`，Provider 必须生成不含 `@` 的 AICC `provider_model_id`，并在 metadata 的独立原始 ID 字段中保留厂商值。
 
 精确模型名语义：
 
@@ -166,7 +166,7 @@ qwen3@local
 
 例如 `gpt-5.1:reasoning-high@openai_primary`。
 
-- variant 字典由 Model Driver Metadata 定义语义身份，不包含 Provider 参数。
+- variant 字典由 Model Driver Metadata 定义语义身份，并可包含原厂默认 `provider_options`；具体 Provider 对该模型有 variant 命中时以 Provider Rules 为准，否则使用该默认值。
 - Provider Rules 把带 variant 的 exact model lower 成原始 `provider_model_id`、operation 和 resolved options。
 - `route.resolve` 输出含 variant 的 `selected_exact_model` 和不带 variant 的原始 `provider_model_id`，不向调用方暴露 `provider_options`。
 - 数据面根据 exact model、canonical request 和当前规则生成内部 `ResolvedProviderCall`。
@@ -357,7 +357,7 @@ Provider inventory 中的 `logical_mounts` 是 Provider 对“自己的真实模
 ```text
 LogicalModelDefinition
   path                 # 逻辑模型路径，如 llm.plan
-  api_type             # 绑定的 API 形态，如 llm.chat
+  api_type             # 绑定的 API 形态，如 llm
   min_line             # ModelRequirement：硬能力门限（admission gate）
   disable_line         # ModelDisable：本次路由禁用的能力
   default_options      # 默认 provider 调用参数
@@ -381,6 +381,8 @@ LogicalModelDefinition
 4. admission check 与 auto-mount 都在 Registry 层完成，Router 只看最终候选。
 5. route trace 会记录每个候选 item 的来源（builtin definition / driver metadata mount / auto admission / manual override / session overlay），并解释模型为何不满足 `min_line`、哪些能力被 `disable_line` 禁用。
 
+生产实现必须在构建 `ModelRegistry` 时装配内置 logical definitions 和内置 factory logical tree。内置树的职责和旧版 `default_logical_tree` 一致：`llm.chat`、`llm.plan`、`llm.code` 等用途目录先按权重链接到 `llm.gpt-standard`、`llm.sonnet`、`llm.gemini-flash` 等家族目录；家族目录再接收 Provider metadata / version rule 生成的挂点。内置树不是当前库存快照，而是模型挂载到逻辑目录树时的静态参照策略；没有库存的家族分支展开为空，后续 Provider inventory 把模型挂到该 family path 时会继承已有路径权重。用户自定义 Provider 的模型也可通过 `mount_mode=auto/hybrid` 和能力线直接进入用途目录。这样普通 Provider 不需要直接声明 `llm.chat`，Jarvis 等调用方仍可稳定请求 `llm.chat`。
+
 > 能力判断的真相源是 Model Driver 静态能力、Protocol Adapter operation 能力和 Provider discovery 动态能力的交集。请求只使用结构化 `ModelRequirement` / `ModelDisable`。
 
 ---
@@ -402,7 +404,7 @@ Provider 需要通过声明式接口返回自身当前可提供的模型及其�
 
 这份模型列表是 Provider 的运行时能力声明，不是 AICC 的静态配置。AICC Registry 应周期性或按需调用 Provider 的 inventory/metadata 接口刷新能力清单，避免出现“厂商新增或下线模型后必须修改 AICC 配置才能生效”的情况。Provider 可以自行决定自己的能力清单何时更新，例如启动时加载、本地模型安装完成后更新、云端 inventory 变化后更新，或凭据/套餐变化后更新。
 
-> **Provider 自发现只负责发现 provider model id；能力 metadata 由 driver metadata resolver 产出。** Provider（如 OpenAI）可以只通过 `/models` 报告模型 id，AICC 的 metadata resolver 再按 driver metadata（builtin → NDN 当前云端文件 → local override → system-config override；匹配优先级 exact → pattern → default → conservative fallback）把它转成最终 `ModelMetadata.capabilities` / `logical_mounts` / `variants`。unknown model 走保守 fallback。云端按客户端版本投放兼容且 manifest `revision_seq` 更高的版本，NDN 保证防回退并在文件替换后令 `metadata_target_seq = manifest.revision_seq`；每个 Provider inventory 保存 `metadata_applied_seq`，推理前或 Provider 定时库存刷新触发所有落后 Provider 的全局收敛。model 列表未变化且 seq 相同时只探测、不重写库存。详见 `driver_metadata_update_protocol.md`。
+> **Provider 自发现只负责发现 provider model id；能力 metadata 由 driver metadata resolver 产出。** Provider（如 OpenAI）可以只通过 `/models` 报告模型 id。AICC 对每个 `(catalog_kind, catalog_id)` 按 `system-config > local > cloud > builtin` 选择最高优先级来源中的完整 JSON，不跨来源 merge；高优先级来源未包含的身份继续使用低优先级文件。例如 cloud OpenAI 与 builtin MiniMax 可以同时生效。Resolver 再在获选 Driver 文件内按 exact → pattern → default → conservative fallback，把模型 id 转成最终 `ModelMetadata.capabilities` / `logical_mounts` / `variants`；unknown model 走保守 fallback。云端按客户端版本投放兼容且 manifest `revision_seq` 更高的 cloud 来源版本，NDN 保证防回退并在文件替换后令 `metadata_target_seq = manifest.revision_seq`；每个 Provider inventory 保存 `metadata_applied_seq`，推理前或 Provider 定时库存刷新触发所有落后 Provider 的全局收敛。model 列表未变化且 seq 相同时只探测、不重写库存。详见 `driver_metadata_update_protocol.md`。
 
 建议接口返回 schema：
 
@@ -414,7 +416,7 @@ models:
     exact_model: gpt-5.2@openai_primary
     parameter_scale: unknown
     api_types:
-      - llm.chat
+      - llm
     logical_mounts:
       - llm.gpt5
     capabilities:
@@ -469,6 +471,8 @@ Provider 应支持 AICC 定期或按需刷新自身模型列表与动态状态�
 8. 多个事件在短时间内到达时，Registry 应 debounce 合并拉取，避免多个 Provider instance 并行启动时形成请求风暴；
 9. 每次成功刷新生成新的 `inventory_revision`，Registry 在事务中切换到新 revision；刷新失败时继续使用上一版可用 inventory 并记录 warning；
 10. Registry 应记录元数据更新时间、来源和 `inventory_revision`，避免使用过期状态进行调度。
+
+所有 Provider（包括 GLM、豆包、FAL、Qwen 和 custom Provider）都必须先执行其 `protocol_adapter_id` 所属协议族的标准模型发现流程。内置 Provider 只有在厂商接口存在协议细节差异时才能重载相应差异；custom Provider 不允许按 Provider 名称选择私有发现实现。只有模型发现请求失败或响应不合法时，Registry 才可使用 Provider instance 显式配置的静态 inventory；未配置时可使用当前有效 Provider Rules 与其明确引用的 Model Driver 构造的静态 inventory。静态兜底结果必须标记为 `degraded`，后续刷新仍应优先重试机器发现接口；机器发现成功后必须以其全量结果替换静态兜底。
 
 ### 7.4 Provider 注册冲突处理
 
@@ -572,7 +576,7 @@ function route(request: AICCRequest): RouteDecision {
 7. `local_only = true` 时候选不是本地 Provider；
 8. 隐私策略不允许将数据发送到云端；
 9. 预算硬限制会被明显突破；
-10. Provider 配额耗尽且不允许超额付费。
+10. Provider 明确报告配额耗尽且不允许超额付费。
 
 ---
 
@@ -597,6 +601,14 @@ Fallback 分为解析期 fallback 和运行时 failover。
 4. Provider 返回模型临时不可用；
 5. 调用失败且 request 可重试；
 6. 调用失败且 policy 允许 failover 到下一个候选。
+
+执行重试分为两个有固定顺序的维度：
+
+1. **同一精确模型重试**：连接中断、timeout、5xx、无效或不完整响应等可能由偶发抖动造成的可重试错误，先对当前 exact model 重试 1 次；存在合法 `Retry-After` 时遵循它，但单次等待最多 2 秒；
+2. **候选切换**：同一模型重试仍失败，且 `runtime_failover = true` 时，切换到路由阶段已经产生的下一个合格候选。模型不存在或已下线、模型临时不可用、quota exhausted 等确定继续调用当前模型无效的错误，不进行同模型重试，直接切换候选；
+3. 400 参数或 schema 错误、401 认证错误、403 权限或内容策略拒绝、409 幂等冲突、取消，以及明确不可重试的 Provider 错误立即终止，不得换模型掩盖调用方或配置错误；
+4. 是否允许切换由路由语义和 effective policy 决定。显式 exact model 默认没有其它候选，因此默认不发生隐式 fallback；只有显式启用 exact-model fallback 并实际解析出候选时才可切换；
+5. Provider 是否已经接收 HTTP 请求不改变上述错误分类。只要 Provider 明确返回 timeout、5xx、quota exhausted、模型不可用等可 failover 错误，就按本节执行；异步 Provider task 已成功提交并取得 remote task ID 后保持 pinned binding，不跨 Provider 重提。
 
 ### 9.2 Fallback 模式
 
@@ -630,7 +642,7 @@ Fallback 分为解析期 fallback 和运行时 failover。
 ```json
 {
   "model": "llm.code",
-  "api_type": "llm.chat"
+  "api_type": "llm"
 }
 ```
 
@@ -669,7 +681,7 @@ logical_tree:
 ```json
 {
   "model": "gpt5@openai",
-  "api_type": "llm.chat"
+  "api_type": "llm"
 }
 ```
 
@@ -733,6 +745,10 @@ logical_tree:
 
 1. **硬过滤**：不满足硬性条件的候选直接剔除；
 2. **软评分**：对剩余候选计算综合分，选择分数最优者。
+
+模型是否有资格进入逻辑目录由 Registry admission 决定；quota、budget、privacy、trust 等请求级硬约束由 routing 内部策略层统一求值后交给 Router。它们不构成独立顶层模块，Router 也不直接读取 quota、安全配置或其它事实源。
+
+Quota 按候选求值。Provider inventory、动态 cost estimate 或 Provider quota 接口是额度状态的主要事实来源；管理员可以额外配置本地预算，并结合 usage 统计计算剩余额度。未配置本地预算、Provider 不支持额度查询、查询失败或返回 `unknown` 时保留候选；只有明确的 `exhausted`、请求额度不足或预计成本超过已配置预算时过滤该候选。一个候选的 quota 不可得不得阻断其它候选进入路由。
 
 示例评分公式：
 
@@ -863,7 +879,7 @@ interface CostEstimateInput {
 }
 
 interface CostEstimateOutput {
-  estimated_cost_usd: number;
+  estimated_cost: { amount: number; currency: string };
   pricing_mode: "per_token" | "subscription" | "free_quota" | "unknown";
   quota_state: "normal" | "near_limit" | "exhausted" | "unknown";
   confidence: number;
@@ -882,14 +898,16 @@ interface CostEstimateOutput {
 | `error_rate_5m` | 可靠性评分。 |
 | `recent_failures` | 临时降权或熔断。 |
 | `queue_depth` | 本地推理或共享服务排队评分。 |
-| `quota_state` | 配额耗尽时硬过滤或降权。 |
+| `quota_state` | `exhausted` 时硬过滤或降权；`unknown` 保留候选。 |
+
+运行时调用结果必须回写到 exact model 和 Provider instance 两级健康窗口。`p50_latency_ms`、`p95_latency_ms`、`error_rate_5m` 使用最近 5 分钟样本计算；延迟评分使用 p50 与 p95 的均值，只有一项可用时使用该项；`recent_failures` 记录连续的可重试失败，成功后清零。调用方参数、认证、权限、策略、幂等冲突等永久错误不得污染 Provider 健康度。模型不存在只将对应 exact model 标记为临时不可用，不应把同一 Provider 的其它模型一并下线。Router 在每次生成候选时读取最新快照：模型不可用、Provider unavailable 和 circuit open 硬过滤；degraded、错误率、连续失败和延迟参与评分降权；动态健康数据缺失时保留候选，除非 request 设置了必须满足的延迟上限。
 
 ### 10.8 熔断与恢复
 
-1. Provider 连续失败达到阈值后进入短期熔断；
+1. Provider instance 或 exact model 连续发生 3 次可重试失败后进入 30 秒短期熔断；
 2. 熔断期间候选应被硬过滤或高额降权；
-3. 熔断到期后允许少量探测流量；
-4. 恢复成功后逐步恢复权重；
+3. 熔断到期后以 degraded 状态恢复探测流量；模型不存在使用 5 分钟 negative cache，到期后同样重新探测；
+4. 一次成功会关闭熔断并清零连续失败；5 分钟窗口内残留的错误率继续参与降权，随旧样本淘汰逐步恢复权重；
 5. 熔断状态必须写入 metrics 和 trace。
 
 ---
@@ -898,7 +916,7 @@ interface CostEstimateOutput {
 
 ### 11.1 Request Overlay 分层
 
-AICC 的 RPC 边界只接收调用方传入的 `session_overlay`。这个 overlay 是应用层已经合成好的最终路由覆盖层；AICC 不读取业务 `session_id`，也不维护 `session_id -> session_config`、route binding、revision 或 TTL。
+AICC 的 RPC 边界接收调用方传入的 `session_overlay`，它是应用层已经合成好的最终路由覆盖层；AICC 不维护 `session_id -> session_config`、route binding、revision 或 TTL。请求可另行携带 `session_id`，AICC 仅用它在 tenant/user/app/session 隔离的持久表中记录上一次实际选中的 exact model，不从中派生或保存 overlay。
 
 系统看到的配置层次固定为：
 
@@ -914,14 +932,16 @@ factory/default route config < system global route config < request session_over
 
 应用层可以在自己内部维护任意层数的配置，例如 app config、agent config、conversation config、用户临时权重等。AICC 不关心这些层如何生成，只要求最终传入的 `session_overlay` 符合 route overlay schema。
 
-### 11.2 行为一致性由应用层表达
+### 11.2 行为一致性与历史软优先
 
-如果应用希望同一对话或同一 agent run 保持一致的 Provider 偏好，应在应用内部保存该偏好，并在后续 RPC 中继续传入相同或递进合成的 `session_overlay`。AICC 每次仍会基于当前 Provider 状态、配额、健康和 overlay 重新生成候选并调度。
+应用层通过 `session_overlay` 表达显式 Provider/policy 偏好。如果传入 `session_id`，AICC 还会把上一次实际选中的 exact model 作为本次调度的软优先级。AICC 每次仍先基于当前 Provider 状态、配额、健康和 policy/overlay 应用全部硬约束；历史模型不合格时必须改选或拒绝。
 
 这种边界带来两个约束：
 
-1. AICC 不提供 session sticky route cache；
+1. AICC 只持久化 session 的 exact-model 路由历史，不持久化 session config/overlay；
 2. AICC 不提供 session config revision conflict 检查；并发合并由应用层或更上层的配置服务负责。
+3. 历史主键是 `(tenant_id, user_id, caller_app_id, session_id)`，相同 `session_id` 在不同租户、用户或应用间不共享；选路成功后以 upsert 更新 `selected_exact_model`。
+4. 当前 Beta 2.2 历史没有 TTL 或自动清理语义；`session_overlay.ttl_seconds/revision` 只是调用方 overlay 数据，不能解释为 AICC 持久历史的过期策略。表结构见 [aicc_runtime_durable_data_schema.md](aicc_runtime_durable_data_schema.md)。
 
 ### 11.3 Request Overlay 与能力类型
 
@@ -1001,7 +1021,7 @@ session_overlay:
 
 ### 12.3 Request 级策略覆盖
 
-标准 request 可携带 `session_overlay`。该 overlay 是调用方在应用内部合成好的最终覆盖层，AICC 只在本次 RPC 中使用，不保存、不按 `session_id` 复用。
+标准 request 可携带 `session_overlay`。该 overlay 是调用方在应用内部合成好的最终覆盖层，AICC 只在本次 RPC 中使用，不保存、不按 `session_id` 复用。这与可选 `session_id` 对应的 exact-model 路由历史是两类独立状态。
 
 Request 级配置不应发明独立的 override 语义，而应使用和系统全局 routing config overlay 兼容的 `AiccRouteOverlay` / `SessionConfig` schema。典型能力包括：
 
@@ -1014,7 +1034,7 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
 
 ```json
 {
-  "api_type": "llm.chat",
+  "api_type": "llm",
   "model": "llm.plan",
   "session_overlay": {
     "global_exact_model_weights": {
@@ -1056,7 +1076,10 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
     "policy": {
       "profile": "quality_first",
       "local_only": false,
-      "max_estimated_cost_usd": 0.05,
+      "max_estimated_cost": {
+        "amount": 0.05,
+        "currency": "USD"
+      },
       "allow_fallback": true,
       "allow_exact_model_fallback": false,
       "runtime_failover": true,
@@ -1084,7 +1107,7 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
 default logical directory config < system_config routing_config < request session_overlay
 ```
 
-`request session_overlay` 是调用方在 RPC 前合成好的最终 overlay。AICC 不维护 `session_id -> config` 的状态，也不关心调用方内部由几层 overlay 组成；应用可以自行把 app-level config、agent-level config、per-conversation config 合并成一个 overlay 后传给 AICC。安全策略、隐私策略、组织策略可以设置为不可被下级覆盖。
+`request session_overlay` 是调用方在 RPC 前合成好的最终 overlay。AICC 不维护 `session_id -> config` 的状态，也不关心调用方内部由几层 overlay 组成；应用可以自行把 app-level config、agent-level config、per-conversation config 合并成一个 overlay 后传给 AICC。`session_id` 只键入隔离的 exact-model 路由历史。安全策略、隐私策略、组织策略可以设置为不可被下级覆盖。
 
 不可覆盖策略使用字段级 lock 表达：
 
@@ -1161,6 +1184,7 @@ LogicalTreeOverlay
 
 ```ts
 interface RouteTrace {
+  trace_id: string;
   request_id: string;
   api_type: string;
   requested_model: string;
@@ -1218,7 +1242,7 @@ interface RouteTrace {
     local: number;
     final_score: number;
   };
-  estimated_cost_usd?: number;
+  estimated_cost?: { amount: number; currency: string };
   runtime_failover_count: number;
   // 逻辑模型定义 / auto-mount / overlay 来源解释（见 §6.7、§12.4）
   logical_item_sources?: Array<{
@@ -1268,13 +1292,14 @@ interface UserFacingRouteSummary {
 
 > 协议层 `RouteResolveResponse.route_trace` 当前序列化为 JSON `Value` 承载上述字段，尚未提升为对外 typed struct；Rust 内部以结构化 trace 填充。
 
-`ranked_candidates` 只在 `policy.explain = true` 或开发模式返回，用于解释“为什么没选另一个候选”。生产默认 trace 可以省略该字段。`user_summary` 由后端根据 RouteTrace 和固定模板派生，UI 不应自行解析 `score_breakdown` 来生成用户可见文案。`reason_short` 必须来自预设模板，例如“按最高质量策略选择”“同优先级内成本最低”“命中 session 绑定”“高隐私策略只允许本地 Provider”。
+`ranked_candidates` 必须写入服务端 Route Trace Audit，用于解释“为什么没选另一个候选”。对外响应仍可根据 `policy.explain` 或运行模式决定是否暴露详细 trace。`user_summary` 由后端根据 RouteTrace 和固定模板派生，UI 不应自行解析 `score_breakdown` 来生成用户可见文案。`reason_short` 必须来自预设模板，例如“按最高质量策略选择”“同优先级内成本最低”“命中 session 绑定”“高隐私策略只允许本地 Provider”。
 
 ### 13.3 Trace 暴露方式
 
 1. 默认在 response metadata 中返回简要 trace；
-2. 开发模式或 `policy.explain = true` 时返回详细 trace；
-3. 生产环境可只记录服务端日志，避免泄露 Provider 策略细节；
+2. Route Trace Audit 在服务端持久化详细 trace；
+3. 开发模式或 `policy.explain = true` 时可在响应中返回详细 trace；
+4. 生产响应可只返回简要信息，避免泄露 Provider 策略细节；
 4. UI 可展示“使用了哪个模型/Provider”和“为何选择”。
 
 ---
@@ -1377,6 +1402,7 @@ routing_config:
 说明：
 
 - 这段 `routing_config` 持久化在 `services/aicc/settings.routing_config`，默认可以为空；AICC 获取系统配置时返回“默认逻辑目录配置 + 这段 system_config 配置”的合并结果。
+- 默认逻辑目录配置由服务内置装配；`services/aicc/settings.routing_config` 只表达运营或用户覆盖，不应成为 `llm.chat` 等标准目录可用性的前提。
 - Provider inventory 声明中的 `logical_mounts` 可作为生成 default items 的输入；显式写在 system/session config 中的 `items` 会完整覆盖 default items，局部修改使用 `item_overrides`。
 - `global_exact_model_weights` 只对已经出现在当前候选集合中的精确模型生效，不会把模型加入候选集合。
 - `items.*.weight` 只在当前逻辑目录的同级 item 中比较；上例中 `llm.plan` 目录下 `llm.gpt5` 优先于 `llm.claude`，但 `llm.gpt5` 内部 Provider 权重不会乘到 `llm.plan` 权重上。
@@ -1393,7 +1419,7 @@ providers:
       - provider_model_id: gpt-5.2
         exact_model: gpt-5.2@openai_primary
         parameter_scale: unknown
-        api_types: [llm.chat]
+        api_types: [llm]
         logical_mounts: [llm.gpt5]
         capabilities:
           tool_call: true
@@ -1414,7 +1440,7 @@ providers:
       - provider_model_id: gpt-5.2
         exact_model: gpt-5.2@openai_backup
         parameter_scale: unknown
-        api_types: [llm.chat]
+        api_types: [llm]
         logical_mounts: [llm.gpt5]
         capabilities:
           tool_call: true
@@ -1435,7 +1461,7 @@ providers:
       - provider_model_id: claude-sonnet
         exact_model: claude-sonnet@anthropic
         parameter_scale: unknown
-        api_types: [llm.chat]
+        api_types: [llm]
         logical_mounts: [llm.claude]
         capabilities:
           tool_call: true
@@ -1455,7 +1481,7 @@ providers:
       - provider_model_id: qwen3
         exact_model: qwen3@local
         parameter_scale: 32B
-        api_types: [llm.chat]
+        api_types: [llm]
         logical_mounts: [llm.local]
         capabilities:
           tool_call: false
@@ -1540,13 +1566,13 @@ scheduler_profiles:
 1. Executor 记录运行时失败；
 2. 如果 `runtime_failover = true` 且 request 可重试，从同一优先级候选或 fallback 后候选中选择下一个；
 3. 如果 failover 导致 Provider 改变，trace 标记 `was_failover = true`；
-4. session binding 必须更新或标记为临时 failover，避免后续请求继续命中已耗尽 Provider。
+4. 该次路由已选 exact model 按 session 历史规则写入；后续请求仍会重新执行配额、健康和 policy 硬过滤，不允许历史偏好越过已耗尽 Provider。
 
 #### 精确模型显式指定
 
 请求 `model = gpt-5.2@openai_primary`：
 
-1. AICC 按最后一个 `@` 解析字符串；
+1. AICC 要求字符串恰好包含一个 `@`，并据此解析；
 2. 路由时校验 Provider instance 是否已注册、模型是否支持当前 API type；
 3. 默认不进入逻辑 fallback，也不使用目录权重；
 4. 如果不可用且未开启 `allow_exact_model_fallback`，返回 `AICC_ROUTE_EXACT_MODEL_UNAVAILABLE`。
@@ -1801,20 +1827,20 @@ scheduler_profiles:
 
 ---
 
-## 21. 待确认决策项
+## 21. 已冻结决策项
 
 | 决策项 | 推荐方案 | 说明 |
 |---|---|---|
-| 精确模型名顺序 | `<provider_model_id>@<provider_instance_name>` | 以最后一个 `@` 分隔 Provider 内部模型 ID 和 Provider instance name；Provider instance name 不包含 `@`，Provider 内部模型 ID 可包含 `@`。 |
-| Provider 内部模型 ID 是否允许 `@` | 强烈不建议，使用 alias 或转义 | 技术上可通过最后一个 `@` 分隔，但会降低日志和 UI 可读性。 |
+| 精确模型名顺序 | `<provider_model_id>[:<variant>]@<provider_instance_name>` | 字符串必须恰好包含一个 `@`；`provider_model_id` 和 Provider instance name 均不包含 `@`。 |
+| Provider 内部模型 ID 是否允许 `@` | 不允许 | 厂商原始模型 ID 含 `@` 时，使用不含 `@` 的 AICC ID，并在 metadata 独立字段保留原始值。 |
 | 目录权重语义 | 目录内同辈优先级，不沿路径相乘 | 符合 UI 心智：角色目录选家族，家族目录选 Provider。 |
 | Provider default items 覆盖 | `items` 完整覆盖，`item_overrides` 局部 patch | 避免 default mount 与 request overlay merge 语义不清。 |
 | 逻辑目录默认 fallback | 普通目录默认 `parent`，敏感目录默认 `strict` | 兼顾可用性和可控性。 |
 | 全局兜底位置 | 使用 `llm.fallback` 或精确模型 | 避免 fallback 到用户无法预测的任意模型。 |
 | 本地/隐私是否作为目录 | 不作为默认目录，作为属性和策略 | 避免目录膨胀，增强策略组合能力。 |
 | 精确模型是否 fallback | 默认不 fallback | 精确模型表达强制 Provider 意图。 |
-| AICC session 状态 | 不维护 `session_id -> config` 或 sticky route cache | 应用层负责 session 与 overlay 的对应关系，AICC 只处理本次 RPC。 |
-| request overlay 并发 | AICC 无共享 session 状态，因此无 revision conflict | 并发合并由应用层或配置服务负责。 |
+| AICC session 状态 | 不维护 `session_id -> config`；持久化 tenant/user/app/session 隔离的上次 exact model | 应用层负责 session 与 overlay 的对应关系；AICC 历史只是硬约束后的软优先。 |
+| request overlay 并发 | AICC 不共享 session config，因此无 overlay revision conflict | 并发合并由应用层或配置服务负责；路由历史使用数据库 upsert。 |
 | 调度成本来源 | 动态 `CostEstimateOutput` 优先且唯一参与评分 | inventory pricing 只作展示或 fallback，避免静态/动态不一致。 |
 | 包月模型成本 | 不视为零成本，使用有效成本/成本地板值 | 避免调度器失控偏向。 |
 

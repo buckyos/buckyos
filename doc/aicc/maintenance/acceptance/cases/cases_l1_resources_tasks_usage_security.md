@@ -10,11 +10,11 @@
 
 | 类型 | Fixture | 用途 |
 |---|---|---|
-| 图片 | 小 PNG、大 PNG、透明 PNG、JPEG、mask PNG | `image.*`、`vision.*`、多模态 `llm.chat` |
+| 图片 | 小 PNG、大 PNG、透明 PNG、JPEG、mask PNG | `image.*`、`vision.*`、多模态 `chat.completions.create` |
 | 音频 | 短 wav/mp3、长音频、噪声音频 | `audio.tts`、`audio.asr`、`audio.enhance` |
 | 视频 | 短 mp4 或 mock video object | `video.*` |
 | 文档 | text chunk、PDF/image page mock、OCR 样例 | `embedding.text`、`vision.ocr`、`rerank` |
-| 结构化数据 | JSON schema、tool schema、rerank docs | `llm.chat`、`rerank` |
+| 结构化数据 | JSON schema、tool schema、rerank docs | `chat.completions.create`、`rerank` |
 | 大批量数据 | 101 条 embedding items 或超过 1MB 预估响应 | artifact 输出策略 |
 
 每个 fixture 应有固定 digest、media type、size、必要 metadata，便于验证 FileObject meta 和 artifact 输出。
@@ -98,7 +98,7 @@
 | `l1_resource_ref_*` | P0 | `url`、`base64`、`named_object`、FileObject meta 推导 |
 | `l1_task_lifecycle_*` | P0 | immediate、async running、final succeeded、failed、cancel |
 | `l1_usage_log_*` | P0 | 成功写 usage、幂等去重、缺 usage 报错、查询聚合 |
-| `l1_method_api_type_canonical_*` | P0 | `method` 与 `api_type` 边界、`llm` vs `llm.chat`、非正式 api_type 拒绝或降级诊断 |
+| `l1_method_api_type_canonical_*` | P0 | `api_type=llm` 与 `method=chat.completions.create` 的边界、非正式 api_type 拒绝 |
 | `l1_control_method_*` | P0 | cancel、reload、models list、usage/quota/provider 查询的 schema 和权限边界 |
 | `l1_security_*` | P0 | `local_only`、`proxy_unknown`、locked policy、trace 脱敏 |
 | `l1_concurrency_*` | P1 | session patch 并发、幂等并发、异步任务并发完成 |
@@ -107,7 +107,7 @@
 
 | 用例族 | 优先级 | 覆盖点 |
 |---|---|---|
-| `l2_client_llm_chat_success` | P0 | AiccClient 构造标准 `llm.chat` 请求并解析成功响应 |
+| `l2_client_llm_chat_success` | P0 | `AiccClient::chat_completions_create` 构造 typed 请求并解析成功响应 |
 | `l2_client_exact_model_no_fallback` | P0 | 精确模型不可用时透传可判断错误 |
 | `l2_client_idempotency_*` | P0 | running / succeeded / failed / conflict 语义 |
 | `l2_client_async_task_*` | P0 | running response、event_ref、最终 task 查询 |
@@ -124,14 +124,13 @@
 | `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload、回滚，以及停止/禁用/删除/替换时库存定时循环的 `Stop` 与优雅退出语义 |
 | `l3_models_list_*` | P0 | `models.list` inventory、完整身份链、逻辑目录、operations、health 脱敏诊断 |
 | `l3_quota_query_*` | P1 | `quota.query` 按 tenant、capability、method 返回预算状态和拒绝路径 |
-| `l3_krpc_llm_chat_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
+| `l3_krpc_chat_completions_create_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
 | `l3_krpc_resource_*` | P0 | `url`、`base64`、`named_object` 输入和 artifact 输出 |
 | `l3_krpc_stream_*` | P0 | Mock streaming chunks、task data progress、final summary |
 | `l3_krpc_async_*` | P0 | image/audio/video 类异步 task 状态闭环 |
 | `l3_krpc_usage_*` | P0 | usage event 写入和查询 |
 | `l3_krpc_failover_*` | P0 | Provider timeout / 5xx / quota exhausted 后 failover |
 | `l3_krpc_security_*` | P0 | local_only、跨用户访问拒绝、脱敏扫描 |
-| `l3_krpc_removed_api_*` | P1 | 已删除 method、旧字段和别名必须被稳定拒绝 |
 
 ### 5.4 L4 Gateway 真实模型验收
 
@@ -165,14 +164,14 @@ L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型
 | `l1_request_overlay_override_route` | L1 | request overlay 覆盖系统配置并改变最终物理路由 |
 | `l1_request_overlay_stateless` | L1 | 不同 request overlay 互不污染，AICC 不保存 session config |
 | `l1_security_local_only_rejects_cloud` | L1 | `local_only` 硬过滤云端 Provider |
-| `l1_provider_openai_chat_success` | L1 | OpenAI-like `llm.chat` 协议转换成功 |
+| `l1_provider_openai_chat_success` | L1 | OpenAI-like `chat.completions.create` 协议转换成功 |
 | `l1_provider_openai_stream_merge` | L1 | Provider streaming chunks 聚合为最终 summary |
 | `l1_resource_ref_json_tags` | L1 | `url`、`base64`、`named_object` JSON tag 正确 |
 | `l1_task_immediate_success` | L1 | 同步成功任务写入 result |
 | `l1_task_async_success` | L1 | 异步任务 running 到 succeeded 闭环 |
 | `l1_usage_success_write_once` | L1 | 成功调用写入 exactly one usage event |
 | `l1_usage_missing_usage_rejected` | L1 | 成功响应缺 usage 被判为协议错误 |
-| `l2_client_llm_chat_success` | L2 | AiccClient 调用 `llm.chat` 成功 |
+| `l2_client_llm_chat_success` | L2 | `AiccClient::chat_completions_create` 调用成功 |
 | `l2_client_idempotency_conflict` | L2 | 同 key 不同 body 返回 idempotency conflict |
 | `l2_client_cancel_unknown_task` | L2 | 取消不存在任务返回可判断错误 |
 
@@ -182,8 +181,8 @@ L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型
 |---|---|---|
 | `l3_settings_reload_mock_openai` | L3 | 写入 Mock settings 后 reload 生效 |
 | `l3_models_list_mock_inventory` | L3 | `models.list` 可看到 Mock Provider inventory |
-| `l3_krpc_llm_chat_text_success` | L3 | kRPC `llm.chat` 纯文本成功 |
-| `l3_krpc_llm_chat_json_schema_success` | L3 | JSON schema 输出可解析 |
+| `l3_krpc_chat_completions_create_text_success` | L3 | kRPC `chat.completions.create` 纯文本成功 |
+| `l3_krpc_chat_completions_create_json_schema_success` | L3 | JSON schema 输出可解析 |
 | `l3_krpc_resource_base64_image` | L3 | base64 图片资源输入成功 |
 | `l3_krpc_resource_named_object_artifact` | L3 | named_object artifact 输出可读取 |
 | `l3_krpc_stream_progress_and_final` | L3 | streaming 中间态写 task data，最终 summary 正确 |
@@ -194,4 +193,3 @@ L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型
 | `l3_krpc_security_no_secret_in_report` | L3 | 报告和 trace 脱敏扫描通过 |
 
 首批 P0 最小集通过后，再扩展到完整 P0/P1/P2 用例矩阵。
-

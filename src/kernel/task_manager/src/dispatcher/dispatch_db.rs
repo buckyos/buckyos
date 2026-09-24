@@ -46,11 +46,16 @@ impl DispatchDb {
         schema: Option<&str>,
     ) -> std::result::Result<Self, String> {
         ensure_any_drivers_installed();
-        let mut opts = AnyPoolOptions::new().max_connections(8);
+        let mut opts = AnyPoolOptions::new().max_connections(if backend == RdbBackend::Sqlite {
+            1
+        } else {
+            8
+        });
         if backend == RdbBackend::Sqlite {
             opts = opts.after_connect(|conn, _meta| {
                 Box::pin(async move {
                     conn.execute("PRAGMA foreign_keys = ON;").await?;
+                    conn.execute("PRAGMA busy_timeout = 5000;").await?;
                     Ok(())
                 })
             });

@@ -22,16 +22,10 @@ fn managed_settings(enabled: bool, base_url: &str) -> Value {
                     "provider_driver": "openai",
                     "base_url": "https://custom.example/v1/"
                 },
-                {
-                    "id": "system-sn-provider",
-                    "provider_driver": "sn-ai-provider",
-                    "base_url": base_url,
-                    "login_url": login_url,
-                    "user_name": "alice"
-                }
-            ]
-        },
-        "unrelated": {"preserved": true}
+                "account": "alice",
+                "enabled": enabled
+            }
+        ]
     })
 }
 
@@ -75,14 +69,13 @@ fn task009_patches_only_the_managed_sn_instance() {
         .unwrap()
         .expect("managed URL should change");
 
-    let instances = next["sn-ai-provider"]["instances"].as_array().unwrap();
-    assert_eq!(instances[0]["base_url"], "https://custom.example/v1/");
-    assert_eq!(instances[1]["base_url"], "https://sn.buckyos.io/api/v1/ai/");
+    let providers = next["providers"].as_array().unwrap();
+    assert_eq!(providers[0]["base_url"], "https://custom.example/v1/");
+    assert_eq!(providers[1]["base_url"], "https://sn.buckyos.io/api/v1/ai/");
     assert_eq!(
-        instances[1]["login_url"],
+        providers[1]["auth"]["login_endpoint"],
         "https://sn.buckyos.io/api/user/login_by_device_token"
     );
-    assert_eq!(next["unrelated"], current["unrelated"]);
 }
 
 #[test]
@@ -104,7 +97,7 @@ fn task009_valid_zone_preserves_explicitly_disabled_provider() {
 }
 
 #[test]
-fn task009_reconciliation_adds_missing_managed_provider() {
+fn task009_reconciliation_does_not_recreate_a_removed_managed_provider() {
     let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.io")).unwrap();
     for current in [
         json!({"sn-ai-provider-activated": true}),
@@ -119,22 +112,9 @@ fn task009_reconciliation_adds_missing_managed_provider() {
             }
         }),
     ] {
-        let next = reconcile_managed_sn_ai_provider(&current, Ok(&endpoints), Some("alice"))
-            .unwrap()
-            .expect("managed provider should be added");
-        let instances = next["sn-ai-provider"]["instances"].as_array().unwrap();
-        let managed = instances
-            .iter()
-            .find(|instance| instance["provider_driver"] == "sn-ai-provider")
-            .expect("managed instance");
-        assert_eq!(managed["provider_instance_name"], "sn-ai-provider-default");
-        assert_eq!(managed["base_url"], "https://sn.buckyos.io/api/v1/ai/");
-        assert_eq!(
-            managed["login_url"],
-            "https://sn.buckyos.io/api/user/login_by_device_token"
-        );
-        assert_eq!(managed["user_name"], "alice");
-        assert_eq!(next["sn-ai-provider"]["enabled"], true);
+        let next =
+            reconcile_managed_sn_ai_provider(&current, Ok(&endpoints), Some("alice")).unwrap();
+        assert!(next.is_none());
     }
 }
 

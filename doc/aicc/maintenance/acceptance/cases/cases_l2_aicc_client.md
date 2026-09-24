@@ -8,10 +8,9 @@
 
 本节同时覆盖标准 AI 推理 method、分层 API method 和控制/管理 method。`method` 是 kRPC schema discriminator；`api_type` 只用于 `route.resolve`、Provider inventory 和逻辑目录过滤。
 
-当前实现里的 canonical `ApiType` 序列化值以代码枚举为准：LLM 为 `llm`，不是 `llm.chat`；chat 的真实调用 method 仍是 `llm.chat`。验收用例必须同时验证：
+canonical `ApiType` 序列化值以协议 schema 为准：LLM chat 为 `llm`，chat 的 typed inference method 为 `chat.completions.create`。验收用例必须验证：
 
 - `route.resolve(api_type="llm")` 可路由到支持 chat 的模型。
-- `route.resolve(api_type="llm.chat")` 的行为必须与当前协议约定一致：若实现尚未接受该别名，应返回稳定、可判断的错误，并在报告中标注为命名兼容缺口。
 - `embedding.multilingual`、`embedding.code` 当前不是正式 `ApiType` 枚举项；如文档或 inventory 中出现，应作为 capability / logical mount / metadata 标签处理，不能当作已支持的标准 `api_type` 误判为缺测。
 
 ### 1.1 LLM
@@ -21,7 +20,6 @@
 | `route.resolve` | `api_type`、逻辑模型名 `logical_model`、requirements、disable、policy | 完整渠道/模型身份、operation、fallback、capabilities、trace | 传入 exact model 被拒、无匹配、多 Driver 冲突 |
 | `chat.completions.create` | `exact_model`、content-block `messages`、tools、response_format | `message: AiMessage`、`tool_calls`、`finish_reason`、usage、route trace | 传入逻辑模型名被拒、primary quota exhausted 不 fallback、无注册 operation |
 | `helper.llm_chat` | 逻辑模型名 + messages | 等价于 `route.resolve` + `chat.completions.create` | 与两阶段行为一致性 |
-| `llm.chat`（legacy） | content-block messages、image/document/tool_use block、tools、response_format JSON schema、generation params | `text`/`message`、`tool_calls`、`finish_reason`、usage、route trace | tool schema 非法、JSON schema 不满足、context too long、feature unsupported |
 
 ### 1.2 Embedding / Rerank
 
@@ -37,7 +35,6 @@
 |---|---|---|---|
 | `images.generate`（typed inference） | `exact_model`、prompt、negative_prompt、size、quality、seed、output | image artifacts，FileObject meta 写 media type / size | 传入逻辑模型名被拒、primary 不 fallback |
 | `helper.text_to_image` | 逻辑模型名 + prompt | 等价于 `route.resolve` + `images.generate` | 与两阶段行为一致性 |
-| `image.txt2img`（legacy） | prompt、negative_prompt、n、aspect_ratio、quality、seed、output | image artifacts，FileObject meta 写 media type / size | output media type 不支持、预算超限 |
 | `image.img2img` | source image、prompt、strength、output | image artifacts | source image invalid、strength 越界 |
 | `image.inpaint` | image、mask、prompt、mask_semantics | image artifacts | mask 缺失、mask semantics 不兼容 |
 | `image.upscale` | image、scale、target size、preserve_faces | image artifact | 目标分辨率不满足、fallback 不能满足硬约束 |
@@ -51,19 +48,19 @@
 
 | Method | 必测输入 | 必测输出 | 异常 |
 |---|---|---|---|
-| `audio.tts` | text、voice contract、speed、output | audio artifact | voice_id 不可 fallback、sample_rate 不支持 |
+| `audio.tts` | text、voice contract、speed、output | audio artifact | voice contract 映射失败、Provider voice ID 不可出现在公开接口、sample_rate 不支持 |
 | `audio.asr` | audio、language、timestamps、diarization、output_formats | transcript、segments、vtt/srt/json artifacts | output format 不支持、音频 meta 缺失 |
 | `audio.music` | prompt、duration、instrumental、lyrics、seed、output | async task、audio artifact、structure | duration 越界、异步任务失败 |
 | `audio.enhance` | audio、task、strength、return_stems | enhanced audio artifact、stems | task 不支持 |
 | `video.txt2video` | prompt、duration、aspect_ratio、resolution、generate_audio、seed | async task、video artifact | operation timeout、Provider started 后不跨 Provider 重试 |
-| `video.img2video` | image、prompt、duration、resolution | async task、video artifact | image invalid |
+| `video.img2video` | image、prompt、duration、aspect_ratio、resolution | async task、video artifact | image invalid |
 | `video.video2video` | video、prompt、preserve_motion、time_range | async task、video artifact | time_range 越界 |
 | `video.extend` | video、prompt、continuation_handle、duration | async task、video artifact | continuation_handle 缺失或不匹配 |
 | `video.upscale` | video、target_resolution、denoise、sharpen、output | async task、video artifact | target_resolution 不支持 |
 
 ### 1.5 Agent Runtime Support
 
-`agent.computer_use` 当前作为占位方向，不作为普通 AICC v0 模型调用的强制真实 Provider 验收项。Mock 阶段只验证 schema、路由目录和安全约束：
+`agent.computer_use` 已对 OpenAI GPT-5.6 通过 Responses `computer` tool 开放。T1/T1.5 必须验证 schema、路由目录、安全约束和官方 wire；真实桌面/浏览器环境的 T2/T3 仍只在当次授权并配置受控环境后执行：
 
 - screenshot resource。
 - viewport。
@@ -76,14 +73,15 @@
 | Method | 必测输入 | 必测输出 | 异常 |
 |---|---|---|---|
 | `cancel` | `task_id`、tenant/session 上下文 | accepted / rejected、原 task 状态可观察、task data / event 记录 cancel 语义 | unknown task、跨 tenant cancel、provider 不支持取消、已完成任务重复取消 |
-| `service.reload_settings` | 空 params | reload 结果、Provider registry / ModelRegistry 重建摘要 | settings 非法、凭据缺失、保留上一版可用配置 |
+| `service.reload_settings` | 空 params | reload 结果、Provider registry / ModelRegistry 重建摘要 | settings 非法、凭据缺失、保留上一版可用配置；`reload_settings` 和错误拼写必须被拒绝 |
 | `models.list` | 空 params、可选诊断过滤参数 | Provider inventory、完整模型/渠道身份、operations、逻辑目录、health 摘要 | registry 为空、敏感字段泄露、损坏 catalog 不应导致服务不可诊断 |
 | `usage.query` | 时间窗口、provider/model/method/api_type 过滤 | 聚合 usage、明细数量、成本/usage 字段、空结果 | 非法时间窗口、无权限、重复幂等记录不应重复计费 |
-| `quota.query` | capability / method、tenant/session 上下文 | 剩余额度、预算状态、限制来源 | 未配置 quota、跨 tenant 查询、非法 method |
+| `quota.query` | capability / method、tenant/session 上下文 | 剩余额度、预算状态、限制来源 | 未配置或不支持时返回 `unknown`、跨 tenant 查询、非法 method |
 | `provider.list` | 可选 provider/type/driver 过滤 | Provider 列表、inventory 摘要、health、capability、pricing 脱敏视图 | 无权限、凭据泄露、Provider 状态异常仍可诊断 |
 | `provider.health` | provider instance / driver | health 状态、最近错误摘要、latency / quota / availability | Provider 不存在、health 过期、敏感错误未脱敏 |
-| `provider.validate` | Provider Instance 草案、endpoint、Profile、Adapter、auth | schema 校验结果、可连接性 / mock 可达性、脱敏诊断 | 凭据缺失、endpoint 非法、未知 Profile/Adapter、不得写入 system_config |
+| `provider.validate` | Provider Instance 草案、base_url、Profile、Adapter、auth | schema 校验结果、可连接性 / mock 可达性、脱敏诊断 | 凭据缺失、base_url 非法、未知 Profile/Adapter、不得写入 system_config |
 | `provider.add` | provider settings、tenant/session 上下文 | system_config 写入、reload 后 `models.list` 可见、审计记录 | 重名冲突、无权限、schema 非法、写入失败回滚 |
+| `provider.update` | Provider Instance、enabled/base_url/credential/Profile/Adapter/discovery patch | revision CAS 写入、enable/disable 与实例替换生命周期、公共 client schema | 实例不存在、revision 冲突、非法 patch、旧 generation 迟到写入 |
 | `provider.delete` | provider instance name、tenant/session 上下文 | system_config 删除、库存定时循环收到幂等 `Stop` 并优雅退出、reload 后候选消失、相关 routing 诊断 | 删除不存在、仍被 policy 锁定引用、无权限、孤儿定时器或停止后迟到写入 |
 | `provider.refresh_models` | provider instance / driver、刷新策略 | model 列表变化时更新库存；target/applied seq 不同时触发所有落后 Provider 收敛；列表未变且 seq 相同时只探测 | Provider 不可达、重建失败不推进 applied seq、目标在刷新中再次变化 |
 
@@ -109,7 +107,7 @@
 | `l1_resource_ref_*` | P0 | `url`、`base64`、`named_object`、FileObject meta 推导 |
 | `l1_task_lifecycle_*` | P0 | immediate、async running、final succeeded、failed、cancel |
 | `l1_usage_log_*` | P0 | 成功写 usage、幂等去重、缺 usage 报错、查询聚合 |
-| `l1_method_api_type_canonical_*` | P0 | `method` 与 `api_type` 边界、`llm` vs `llm.chat`、非正式 api_type 拒绝或降级诊断 |
+| `l1_method_api_type_canonical_*` | P0 | `api_type=llm` 与 `method=chat.completions.create` 的边界、非正式 api_type 拒绝 |
 | `l1_control_method_*` | P0 | cancel、reload、models list、usage/quota/provider 查询的 schema 和权限边界 |
 | `l1_security_*` | P0 | `local_only`、`proxy_unknown`、locked policy、trace 脱敏 |
 | `l1_concurrency_*` | P1 | session patch 并发、幂等并发、异步任务并发完成 |
@@ -118,7 +116,7 @@
 
 | 用例族 | 优先级 | 覆盖点 |
 |---|---|---|
-| `l2_client_llm_chat_success` | P0 | AiccClient 构造标准 `llm.chat` 请求并解析成功响应 |
+| `l2_client_llm_chat_success` | P0 | `AiccClient::chat_completions_create` 构造 typed 请求并解析成功响应 |
 | `l2_client_exact_model_no_fallback` | P0 | 精确模型不可用时透传可判断错误 |
 | `l2_client_idempotency_*` | P0 | running / succeeded / failed / conflict 语义 |
 | `l2_client_async_task_*` | P0 | running response、event_ref、最终 task 查询 |
@@ -135,14 +133,13 @@
 | `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload、回滚，以及停止/禁用/删除/替换时库存定时循环的 `Stop` 与优雅退出语义 |
 | `l3_models_list_*` | P0 | `models.list` inventory、完整身份链、逻辑目录、operations、health 脱敏诊断 |
 | `l3_quota_query_*` | P1 | `quota.query` 按 tenant、capability、method 返回预算状态和拒绝路径 |
-| `l3_krpc_llm_chat_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
+| `l3_krpc_chat_completions_create_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
 | `l3_krpc_resource_*` | P0 | `url`、`base64`、`named_object` 输入和 artifact 输出 |
 | `l3_krpc_stream_*` | P0 | Mock streaming chunks、task data progress、final summary |
 | `l3_krpc_async_*` | P0 | image/audio/video 类异步 task 状态闭环 |
 | `l3_krpc_usage_*` | P0 | usage event 写入和查询 |
 | `l3_krpc_failover_*` | P0 | Provider timeout / 5xx / quota exhausted 后 failover |
 | `l3_krpc_security_*` | P0 | local_only、跨用户访问拒绝、脱敏扫描 |
-| `l3_krpc_removed_api_*` | P1 | 已删除 method、旧字段和别名必须被稳定拒绝 |
 
 ### 2.4 L4 Gateway 真实模型验收
 
@@ -176,14 +173,14 @@ L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型
 | `l1_request_overlay_override_route` | L1 | request overlay 覆盖系统配置并改变最终物理路由 |
 | `l1_request_overlay_stateless` | L1 | 不同 request overlay 互不污染，AICC 不保存 session config |
 | `l1_security_local_only_rejects_cloud` | L1 | `local_only` 硬过滤云端 Provider |
-| `l1_provider_openai_chat_success` | L1 | OpenAI-like `llm.chat` 协议转换成功 |
+| `l1_provider_openai_chat_success` | L1 | OpenAI-like `chat.completions.create` 协议转换成功 |
 | `l1_provider_openai_stream_merge` | L1 | Provider streaming chunks 聚合为最终 summary |
 | `l1_resource_ref_json_tags` | L1 | `url`、`base64`、`named_object` JSON tag 正确 |
 | `l1_task_immediate_success` | L1 | 同步成功任务写入 result |
 | `l1_task_async_success` | L1 | 异步任务 running 到 succeeded 闭环 |
 | `l1_usage_success_write_once` | L1 | 成功调用写入 exactly one usage event |
 | `l1_usage_missing_usage_rejected` | L1 | 成功响应缺 usage 被判为协议错误 |
-| `l2_client_llm_chat_success` | L2 | AiccClient 调用 `llm.chat` 成功 |
+| `l2_client_llm_chat_success` | L2 | `AiccClient::chat_completions_create` 调用成功 |
 | `l2_client_idempotency_conflict` | L2 | 同 key 不同 body 返回 idempotency conflict |
 | `l2_client_cancel_unknown_task` | L2 | 取消不存在任务返回可判断错误 |
 
@@ -193,8 +190,8 @@ L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型
 |---|---|---|
 | `l3_settings_reload_mock_openai` | L3 | 写入 Mock settings 后 reload 生效 |
 | `l3_models_list_mock_inventory` | L3 | `models.list` 可看到 Mock Provider inventory |
-| `l3_krpc_llm_chat_text_success` | L3 | kRPC `llm.chat` 纯文本成功 |
-| `l3_krpc_llm_chat_json_schema_success` | L3 | JSON schema 输出可解析 |
+| `l3_krpc_chat_completions_create_text_success` | L3 | kRPC `chat.completions.create` 纯文本成功 |
+| `l3_krpc_chat_completions_create_json_schema_success` | L3 | JSON schema 输出可解析 |
 | `l3_krpc_resource_base64_image` | L3 | base64 图片资源输入成功 |
 | `l3_krpc_resource_named_object_artifact` | L3 | named_object artifact 输出可读取 |
 | `l3_krpc_stream_progress_and_final` | L3 | streaming 中间态写 task data，最终 summary 正确 |
@@ -205,4 +202,3 @@ L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型
 | `l3_krpc_security_no_secret_in_report` | L3 | 报告和 trace 脱敏扫描通过 |
 
 首批 P0 最小集通过后，再扩展到完整 P0/P1/P2 用例矩阵。
-

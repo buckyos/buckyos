@@ -1,0 +1,48 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "model_driver_id": "fal",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "fal-ai/esrgan",
+      "api_types": ["image.upscale"],
+      "logical_mounts": ["image.upscale", "image.upscale.fal", "image.upscale.fal-ai.esrgan"],
+      "capabilities": {},
+      "estimated_latency_ms": 8000
+    },
+    {
+      "id": "fal-ai/imageutils/rembg",
+      "api_types": ["image.bg_remove"],
+      "logical_mounts": ["image.bg_remove", "image.bg_remove.fal", "image.bg_remove.fal-ai.imageutils.rembg"],
+      "capabilities": {},
+      "estimated_latency_ms": 4000
+    },
+    {
+      "id": "fal-ai/deepfilternet3",
+      "api_types": ["audio.enhance"],
+      "logical_mounts": ["audio.enhance", "audio.enhance.fal", "audio.enhance.fal-ai.deepfilternet3"],
+      "capabilities": {},
+      "estimated_latency_ms": 20000
+    },
+    {
+      "id": "fal-ai/video-upscaler",
+      "api_types": ["video.upscale"],
+      "logical_mounts": ["video.upscale", "video.upscale.fal", "video.upscale.fal-ai.video-upscaler"],
+      "capabilities": {},
+      "estimated_latency_ms": 120000
+    }
+  ],
+  "patterns": [],
+  "model_pricing": [
+    { "id": "fal-ai/esrgan", "pricing": { "currency": "USD", "amount": 0.00111, "unit": "second" } },
+    { "id": "fal-ai/imageutils/rembg", "pricing": { "currency": "USD", "amount": 0.00111, "unit": "second" } },
+    { "id": "fal-ai/deepfilternet3", "pricing": { "currency": "USD", "amount": 0.001, "unit": "audio_second" } },
+    { "id": "fal-ai/video-upscaler", "pricing": { "currency": "USD", "amount": 0.0008, "unit": "megapixel" } }
+  ],
+  "defaults": {},
+  "variants": [],
+  "version_rules": []
+}

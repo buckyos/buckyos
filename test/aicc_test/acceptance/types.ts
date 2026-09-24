@@ -29,8 +29,9 @@ export const FAILURE_CLASSES = [
 
 export type FailureClass = (typeof FAILURE_CLASSES)[number];
 
-export type TestLayer = "T1" | "T2" | "T3";
+export type TestLayer = "T1" | "T1.5" | "T2" | "T3";
 export type Priority = "P0" | "P1" | "P2";
+export type ExecutionMode = "immediate" | "stream";
 
 export type ExpectedOutput = {
   kinds: string[];
@@ -51,6 +52,7 @@ export type AcceptanceCase = {
   model_selector: { kind: "exact" | "logical"; value: string } | null;
   api_type: string | null;
   method: string;
+  execution_mode: ExecutionMode;
   required_capabilities: string[];
   disabled_capabilities: string[];
   fixtures: string[];
@@ -65,6 +67,26 @@ export type AcceptanceCase = {
   max_attempts: number;
   estimated_cost_usd: number;
   cleanup: string[];
+  protocol_contract_id?: string;
+  protocol_evidence_revision?: string;
+  protocol_adapter_id?: string;
+  provider_api_version?: string;
+  expected_wire_fixture?: string;
+  response_fixture?: string;
+  expected_aicc_error_code?: string;
+  expected_provider_error_code?: string;
+  expected_retriable?: boolean;
+  expected_provider_options?: Record<string, unknown>;
+  switch_source_provider_driver?: string;
+  switch_source_contract_id?: string;
+  switch_source_model_id?: string;
+  switch_target_provider_driver?: string;
+  switch_target_contract_id?: string;
+  artifact_source_provider_driver?: string;
+  artifact_source_contract_id?: string;
+  artifact_source_api_type?: string;
+  artifact_source_model_id?: string;
+  artifact_target_expect_provider_id?: boolean;
 };
 
 export type ProviderModel = {
@@ -114,7 +136,11 @@ export type ModelCoverageRule = {
   model_pattern: string;
   action: "exclude" | "alias";
   physical_model_id?: string;
-  reason: "deprecated_or_retiring" | "logical_alias" | "not_physical_model" | "unsupported_canonical_protocol";
+  reason:
+    | "deprecated_or_retiring"
+    | "logical_alias"
+    | "not_physical_model"
+    | "unsupported_canonical_protocol";
   source_urls: string[];
   evidence_summary: string;
 };
@@ -128,7 +154,12 @@ export type ModelCoverageRecord = {
   provider_actual_model_id?: string;
   physical_model_id: string;
   status: "included" | "filtered";
-  reason?: "deprecated_or_retiring" | "logical_alias" | "not_physical_model" | "unsupported_canonical_protocol" | "duplicate_physical_model";
+  reason?:
+    | "deprecated_or_retiring"
+    | "logical_alias"
+    | "not_physical_model"
+    | "unsupported_canonical_protocol"
+    | "duplicate_physical_model";
   retained_exact_model?: string;
   source_urls: string[];
   evidence_summary: string;
@@ -149,6 +180,9 @@ export type ProviderBaseline = {
   canonical_api_types: string[];
   providers: Array<{
     provider_driver: string;
+    provider_profile_id: string;
+    protocol_adapter_ids: string[];
+    model_driver_ids: string[];
     discovery: "official_catalog" | "runtime_catalog" | "internal_inventory";
     official_catalog: OfficialCatalogConfig;
     capability_source_provider?: string;
@@ -179,7 +213,8 @@ export type MatrixCell = {
   provider_model_id: string;
   api_type: string;
   method: string;
-  variant?: "default" | "embedding_large_artifact";
+  variant?: "embedding_large_artifact";
+  generated_artifact_source_api_type?: string;
   baseline_status: CapabilityRule["status"];
   input_kinds: string[];
   output_kinds: string[];
@@ -288,6 +323,14 @@ export type AcceptanceReport = {
   model_coverage?: ModelCoverageRecord[];
   document_format_coverage?: DocumentFormatCoverageRecord[];
   targeted_retest_command?: string;
+  protocol_evidence_revision?: string;
+  official_evidence_checked_at?: string;
+  providers?: string[];
+  limits?: {
+    global_concurrency: number;
+    provider_concurrency: number;
+    provider_min_interval_ms: number;
+  };
   manifest_coverage?: {
     total: number;
     executed: number;

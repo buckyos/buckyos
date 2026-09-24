@@ -125,7 +125,7 @@ export function RoutingPage() {
           setDirectoryView(view)
         }
       } catch (error) {
-        console.error('aicc.models.list logical_path failed', error)
+        console.error('aicc.models.list directory failed', error)
         if (!cancelled) {
           setDirectoryView({
             routingView: {
@@ -174,7 +174,6 @@ export function RoutingPage() {
     ] as const),
     ['local', t('aiCenter.routing.localProvider', 'Local runtime')] as const,
   ]), [providers, t])
-
   const directoryNodes = activeRoutingView.logical_tree
   const scenarios = useMemo(() => buildScenarios(directoryNodes, models, traces), [
     directoryNodes,
@@ -333,6 +332,7 @@ export function RoutingPage() {
               key={scenario.node.path}
               scenario={scenario}
               providerNames={providerNames}
+              isDirectory={isLogicalDirectoryNode(scenario.node)}
               hasChildren={!queryActive && canNavigateIntoPath(routingView.logical_tree, scenario.node.path)}
               selected={selectedScenario?.node.path === scenario.node.path}
               onSelect={() => {
@@ -615,6 +615,24 @@ function DirectoryNavigator({
   onNavigate: (path: string | null) => void
 }) {
   const { t } = useI18n()
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => defaultExpandedDirectoryPaths())
+
+  useEffect(() => {
+    setExpandedPaths(defaultExpandedDirectoryPaths())
+  }, [nodes])
+
+  const toggleExpanded = (path: string) => {
+    setExpandedPaths((current) => {
+      const next = new Set(current)
+      if (next.has(path)) {
+        next.delete(path)
+      } else {
+        next.add(path)
+      }
+      return next
+    })
+  }
+
   return (
     <aside className="sticky top-4 flex max-h-[calc(100dvh-10rem)] min-w-0 flex-col overflow-hidden rounded-xl" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
       <div className="flex items-center justify-between gap-2 px-3 py-2" style={{ borderBottom: '1px solid var(--cp-border)' }}>
@@ -639,6 +657,8 @@ function DirectoryNavigator({
           depth={0}
           currentPath={currentPath}
           selectedPath={selectedPath}
+          expandedPaths={expandedPaths}
+          onToggleExpanded={toggleExpanded}
           onNavigate={onNavigate}
         />
       </div>
@@ -651,12 +671,16 @@ function DirectoryNodeList({
   depth,
   currentPath,
   selectedPath,
+  expandedPaths,
+  onToggleExpanded,
   onNavigate,
 }: {
   nodes: LogicalNode[]
   depth: number
   currentPath: string | null
   selectedPath: string | null
+  expandedPaths: Set<string>
+  onToggleExpanded: (path: string) => void
   onNavigate: (path: string) => void
 }) {
   return (
@@ -664,11 +688,10 @@ function DirectoryNodeList({
       {nodes.filter(isLogicalDirectoryNode).map((node) => {
         const active = node.path === currentPath || node.path === selectedPath
         const children = (node.children ?? []).filter(isLogicalDirectoryNode)
+        const expanded = expandedPaths.has(node.path)
         return (
           <div key={node.path} className="min-w-0">
-            <button
-              type="button"
-              onClick={() => onNavigate(node.path)}
+            <div
               className="flex min-h-8 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-xs"
               title={node.path}
               style={{
@@ -678,15 +701,40 @@ function DirectoryNodeList({
                 border: active ? '1px solid var(--cp-border)' : '1px solid transparent',
               }}
             >
-              {children.length > 0 ? <FolderTree size={13} className="shrink-0" /> : <Box size={13} className="shrink-0" />}
-              <span className="min-w-0 truncate font-mono">{lastPathSegment(node.path)}</span>
-            </button>
-            {children.length > 0 && depth < 3 && (
+              {children.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onToggleExpanded(node.path)
+                  }}
+                  className="inline-flex size-4 shrink-0 items-center justify-center rounded"
+                  style={{ color: 'inherit' }}
+                  aria-label={expanded ? 'Collapse directory' : 'Expand directory'}
+                >
+                  {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                </button>
+              ) : (
+                <span className="size-4 shrink-0" />
+              )}
+              <button
+                type="button"
+                onClick={() => onNavigate(node.path)}
+                className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                style={{ color: 'inherit' }}
+              >
+                <FolderTree size={13} className="shrink-0" />
+                <span className="min-w-0 truncate font-mono">{lastPathSegment(node.path)}</span>
+              </button>
+            </div>
+            {children.length > 0 && expanded && (
               <DirectoryNodeList
                 nodes={children}
                 depth={depth + 1}
                 currentPath={currentPath}
                 selectedPath={selectedPath}
+                expandedPaths={expandedPaths}
+                onToggleExpanded={onToggleExpanded}
                 onNavigate={onNavigate}
               />
             )}
@@ -742,6 +790,7 @@ function RoutingBreadcrumbs({
 function ScenarioCard({
   scenario,
   providerNames,
+  isDirectory,
   hasChildren,
   selected,
   onSelect,
@@ -749,6 +798,7 @@ function ScenarioCard({
 }: {
   scenario: ScenarioView
   providerNames: Map<string, string>
+  isDirectory: boolean
   hasChildren: boolean
   selected: boolean
   onSelect: () => void
@@ -778,36 +828,40 @@ function ScenarioCard({
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex items-start gap-3">
-          {hasChildren ? (
+          {isDirectory ? (
             <button
               type="button"
               onClick={(event) => {
                 event.stopPropagation()
-                onOpen()
+                if (hasChildren) onOpen()
               }}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault()
                   event.stopPropagation()
-                  onOpen()
+                  if (hasChildren) onOpen()
                 }
               }}
-              className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-lg transition-shadow hover:shadow-md"
+              className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${hasChildren ? 'transition-shadow hover:shadow-md' : ''}`}
               style={{
                 background: 'var(--cp-bg)',
                 color: 'var(--cp-accent)',
                 border: '1px solid var(--cp-border)',
+                cursor: hasChildren ? 'pointer' : 'default',
               }}
-              aria-label={`Open ${scenario.node.path}`}
+              aria-label={hasChildren ? `Open ${scenario.node.path}` : scenario.node.path}
+              disabled={!hasChildren}
             >
               <FolderTree size={19} />
-              <span
-                className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full"
-                style={{ background: 'var(--cp-accent)', color: '#fff', border: '2px solid var(--cp-surface)' }}
-                aria-hidden
-              >
-                <ChevronRight size={12} />
-              </span>
+              {hasChildren && (
+                <span
+                  className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full"
+                  style={{ background: 'var(--cp-accent)', color: '#fff', border: '2px solid var(--cp-surface)' }}
+                  aria-hidden
+                >
+                  <ChevronRight size={12} />
+                </span>
+              )}
             </button>
           ) : (
             <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg" style={{ background: 'var(--cp-bg)', color: 'var(--cp-muted)', border: '1px solid var(--cp-border)' }}>
@@ -1054,7 +1108,6 @@ function Fact({ label, value }: { label: string; value: string }) {
 function buildScenarios(nodes: LogicalNode[], models: ModelMetadata[], traces: RouteTrace[]): ScenarioView[] {
   const modelByExact = new Map(models.map((model) => [model.exact_model, model]))
   const scenarios = nodes
-    .filter((node) => node.level !== 'L1')
     .filter((node) => isScenarioNode(node))
     .map((node) => {
       const trace = traces.find((item) => item.resolved_logical_path === node.path || item.requested_model === node.path)
@@ -1250,9 +1303,7 @@ function scenarioScore(node: LogicalNode, model?: ModelMetadata, trace?: RouteTr
 }
 
 function isScenarioNode(node: LogicalNode): boolean {
-  if (node.path === 'llm') return true
-  if (node.level === 'L3') return true
-  return Boolean(node.items && Object.keys(node.items).length > 0)
+  return isLogicalDirectoryNode(node) || isPhysicalModelNode(node)
 }
 
 function flattenNodes(nodes: LogicalNode[]): LogicalNode[] {
@@ -1270,6 +1321,10 @@ function canNavigateIntoPath(nodes: LogicalNode[], path: string): boolean {
 
 function isLogicalDirectoryNode(node: LogicalNode): boolean {
   return !node.locked && !node.path.includes('@')
+}
+
+function isPhysicalModelNode(node: LogicalNode): boolean {
+  return node.locked || node.path.includes('@') || node.level === 'L1'
 }
 
 function findNodeByPath(nodes: LogicalNode[], path: string): LogicalNode | undefined {
@@ -1293,14 +1348,8 @@ function useCaseFromPath(path: string, apiType?: string): UseCaseKind {
   return 'other'
 }
 
-function scenarioTitle(node: LogicalNode, useCase: UseCaseKind): string {
-  if (node.path === 'llm') return 'Chat'
-  if (useCase === 'code') return 'Code'
-  if (useCase === 'plan') return node.path.includes('reason') ? 'Reasoning / Plan' : 'Plan'
-  if (useCase === 'image') return 'Image'
-  if (useCase === 'embed') return 'Embedding'
-  if (useCase === 'vision') return 'Vision'
-  if (useCase === 'audio') return 'Audio'
+function scenarioTitle(node: LogicalNode, _useCase: UseCaseKind): string {
+  if (isLogicalDirectoryNode(node)) return lastPathSegment(node.path)
   return node.label || node.path
 }
 
@@ -1378,6 +1427,10 @@ function breadcrumbPaths(path: string | null): string[] {
 function lastPathSegment(path: string): string {
   const parts = path.split('.')
   return parts[parts.length - 1] || path
+}
+
+function defaultExpandedDirectoryPaths(): Set<string> {
+  return new Set()
 }
 
 function formatQuality(value?: number): string {

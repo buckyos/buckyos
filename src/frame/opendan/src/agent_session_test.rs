@@ -526,6 +526,7 @@ fn compose_turn_message_preserves_message_envelope_boundaries() {
                 ),
             },
             AiContent::ProviderState {
+                source: buckyos_api::ProviderStateCoordinate::unbound(),
                 provider: llm_context::PROVIDER_MSG_METADATA.to_string(),
                 value: serde_json::json!({
                     "attachments": [{
@@ -546,6 +547,7 @@ fn compose_turn_message_preserves_message_envelope_boundaries() {
         vec![
             AiContent::text("second"),
             AiContent::ProviderState {
+                source: buckyos_api::ProviderStateCoordinate::unbound(),
                 provider: llm_context::PROVIDER_MSG_METADATA.to_string(),
                 value: serde_json::json!({
                     "attachments": [],
@@ -1669,6 +1671,27 @@ fn observation_from_task_event_ignores_non_terminal_status() {
     // frequently and the session must wait for the terminal one.
     let payload = serde_json::json!({"to_status": "Running"});
     assert!(observation_from_task_event("c", &payload).is_none());
+}
+
+#[test]
+fn system_event_round_errors_are_not_user_visible() {
+    let trigger = RoundTrigger::SystemEvent {
+        source: "worksession_report".to_string(),
+        event_kind: "worksession_report".to_string(),
+    };
+    assert!(!should_notify_user_on_round_error(Some(&trigger)));
+}
+
+#[test]
+fn user_message_round_errors_remain_user_visible() {
+    let trigger = RoundTrigger::UserMsg {
+        preview: "hello".to_string(),
+    };
+    assert!(should_notify_user_on_round_error(Some(&trigger)));
+    assert!(should_notify_user_on_round_error(Some(
+        &RoundTrigger::Mixed
+    )));
+    assert!(should_notify_user_on_round_error(None));
 }
 
 #[test]
