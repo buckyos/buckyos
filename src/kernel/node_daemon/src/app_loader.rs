@@ -20,7 +20,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 
 const DEFAULT_OPENDAN_SERVICE_PORT: u16 = 4060;
@@ -61,6 +61,28 @@ const DEVENV_JSON_EXTTOOL_KEY: &str = "exttool";
 /// per host with the volume mounted so Docker auto-copies the baked
 /// /opt/buckyos/tools/ tree into the empty volume.
 const DEFAULT_EXTTOOL_IMAGE_REPO: &str = "paios/exttool";
+
+static EXTTOOL_PREPARE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+pub(crate) fn exttool_prepare_lock() -> &'static tokio::sync::Mutex<()> {
+    EXTTOOL_PREPARE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+pub(crate) struct DockerExecOutcome {
+    pub(crate) ok: bool,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+}
+
+pub(crate) type DockerCommandRunner = std::sync::Arc<
+    dyn Fn(
+            Vec<String>,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = DockerExecOutcome> + Send>>
+        + Send
+        + Sync,
+>;
+
 pub(crate) const DOCKER_LABEL_APP_ID: &str = "buckyos.app_id";
 pub(crate) const DOCKER_LABEL_APP_DID: &str = "buckyos.app_did";
 pub(crate) const DOCKER_LABEL_APP_INSTANCE_ID: &str = "buckyos.app_instance_id";
@@ -268,6 +290,7 @@ pub struct AppLoader {
     platform: PlatformTarget,
     support_container_override: Option<bool>,
     worker_image_repo_override: Option<String>,
+    docker_command_runner: Option<DockerCommandRunner>,
     safe_mode: bool,
 }
 
@@ -288,6 +311,7 @@ impl AppLoader {
             platform: PlatformTarget::current(),
             support_container_override: None,
             worker_image_repo_override: None,
+            docker_command_runner: None,
             safe_mode: false,
         }
     }
@@ -300,6 +324,7 @@ impl AppLoader {
             platform: PlatformTarget::current(),
             support_container_override: None,
             worker_image_repo_override: None,
+            docker_command_runner: None,
             safe_mode: false,
         }
     }
@@ -1547,37 +1572,22 @@ impl AppLoader {
             image_ref.clone()
         };
 
-        let output = run_command(
-            "docker",
-            &["pull".to_string(), pull_ref.clone()],
-            None,
-            None,
-        )
-        .await?;
+        let pull_args = vec!["pull".to_string(), pull_ref.clone()];
+        let output = self.run_docker(&pull_args).await?;
         ensure_success("docker pull", &output)?;
 
         if pull_ref != image_name {
-            let image_id_output = run_command(
-                "docker",
-                &["images".to_string(), "-q".to_string(), image_ref.clone()],
-                None,
-                None,
-            )
-            .await?;
+            let image_id_args = vec!["images".to_string(), "-q".to_string(), image_ref.clone()];
+            let image_id_output = self.run_docker(&image_id_args).await?;
             ensure_success("docker images -q", &image_id_output)?;
             let image_id = image_id_output.stdout.trim();
             if !image_id.is_empty() {
-                let tag_output = run_command(
-                    "docker",
-                    &[
-                        "tag".to_string(),
-                        image_id.to_string(),
-                        image_name.to_string(),
-                    ],
-                    None,
-                    None,
-                )
-                .await?;
+                let tag_args = vec![
+                    "tag".to_string(),
+                    image_id.to_string(),
+                    image_name.to_string(),
+                ];
+                let tag_output = self.run_docker(&tag_args).await?;
                 ensure_success("docker tag", &tag_output)?;
             }
         }
@@ -1590,17 +1600,12 @@ impl AppLoader {
         image_name: &str,
         digest: Option<&str>,
     ) -> Result<bool> {
-        let images = run_command(
-            "docker",
-            &[
-                "images".to_string(),
-                "-q".to_string(),
-                image_name.to_string(),
-            ],
-            None,
-            None,
-        )
-        .await?;
+        let args = vec![
+            "images".to_string(),
+            "-q".to_string(),
+            image_name.to_string(),
+        ];
+        let images = self.run_docker(&args).await?;
         ensure_success("docker images -q", &images)?;
         if images.stdout.trim().is_empty() {
             return Ok(false);
@@ -1610,18 +1615,13 @@ impl AppLoader {
             return Ok(true);
         };
 
-        let repo_digest_output = run_command(
-            "docker",
-            &[
-                "image".to_string(),
-                "inspect".to_string(),
-                "--format={{json .RepoDigests}}".to_string(),
-                image_name.to_string(),
-            ],
-            None,
-            None,
-        )
-        .await?;
+        let repo_digest_args = vec![
+            "image".to_string(),
+            "inspect".to_string(),
+            "--format={{json .RepoDigests}}".to_string(),
+            image_name.to_string(),
+        ];
+        let repo_digest_output = self.run_docker(&repo_digest_args).await?;
         ensure_success("docker image inspect RepoDigests", &repo_digest_output)?;
         if let Ok(repo_digests) =
             serde_json::from_str::<Vec<String>>(repo_digest_output.stdout.trim())
@@ -2026,17 +2026,12 @@ impl AppLoader {
     }
 
     async fn check_docker_volume_exists(&self, volume: &str) -> Result<bool> {
-        let output = run_command(
-            "docker",
-            &[
-                "volume".to_string(),
-                "inspect".to_string(),
-                volume.to_string(),
-            ],
-            None,
-            None,
-        )
-        .await?;
+        let args = vec![
+            "volume".to_string(),
+            "inspect".to_string(),
+            volume.to_string(),
+        ];
+        let output = self.run_docker(&args).await?;
         if output.status.success() {
             return Ok(true);
         }
@@ -2050,38 +2045,28 @@ impl AppLoader {
     }
 
     async fn ensure_docker_volume(&self, volume: &str) -> Result<()> {
-        let output = run_command(
-            "docker",
-            &[
-                "volume".to_string(),
-                "create".to_string(),
-                volume.to_string(),
-            ],
-            None,
-            None,
-        )
-        .await?;
+        let args = vec![
+            "volume".to_string(),
+            "create".to_string(),
+            volume.to_string(),
+        ];
+        let output = self.run_docker(&args).await?;
         ensure_success("docker volume create", &output)
     }
 
     async fn seed_exttool_volume(&self, image_name: &str) -> Result<()> {
-        let output = run_command(
-            "docker",
-            &[
-                "run".to_string(),
-                "--rm".to_string(),
-                "-v".to_string(),
-                format!(
-                    "{}:{}",
-                    DEFAULT_EXTTOOL_VOLUME_NAME, WORKER_CONTAINER_EXTTOOL_ROOT
-                ),
-                image_name.to_string(),
-                "true".to_string(),
-            ],
-            None,
-            None,
-        )
-        .await?;
+        let args = vec![
+            "run".to_string(),
+            "--rm".to_string(),
+            "-v".to_string(),
+            format!(
+                "{}:{}",
+                DEFAULT_EXTTOOL_VOLUME_NAME, WORKER_CONTAINER_EXTTOOL_ROOT
+            ),
+            image_name.to_string(),
+            "true".to_string(),
+        ];
+        let output = self.run_docker(&args).await?;
         ensure_success("docker run (exttool seed)", &output)
     }
 
@@ -2103,7 +2088,25 @@ impl AppLoader {
     /// ExtTool mount", so apps that don't need baked tools still start —
     /// and once the image becomes reachable a later deploy will seed the
     /// volume cleanly, instead of being locked into an empty one forever.
-    async fn prepare_exttool_volume(&self) -> Result<()> {
+    async fn run_docker(&self, args: &[String]) -> Result<CommandOutput> {
+        if let Some(runner) = self.docker_command_runner.as_ref() {
+            let executed = runner(args.to_vec()).await;
+            return Ok(CommandOutput {
+                command_line: render_command_for_log("docker", args),
+                status: docker_exit_status(executed.ok),
+                stdout: executed.stdout,
+                stderr: executed.stderr,
+            });
+        }
+        run_command("docker", args, None, None).await
+    }
+
+    pub(crate) async fn prepare_exttool_volume(&self) -> Result<()> {
+        let _guard = exttool_prepare_lock().lock().await;
+        self.prepare_exttool_volume_serialised().await
+    }
+
+    async fn prepare_exttool_volume_serialised(&self) -> Result<()> {
         let volume_exists = self
             .check_docker_volume_exists(DEFAULT_EXTTOOL_VOLUME_NAME)
             .await?;
@@ -2114,23 +2117,39 @@ impl AppLoader {
             .await?
         {
             info!("exttool image {} missing, pulling now", image_name);
+            let pull_started = Instant::now();
             if let Err(pull_error) = self.pull_docker_image(image_name.as_str(), None).await {
                 error!(
-                    "exttool image {} unavailable: {}. Skipping {} volume seed; worker containers will start without the ExtTool mount until the image becomes reachable.",
-                    image_name, pull_error, DEFAULT_EXTTOOL_VOLUME_NAME
+                    "exttool image {} unavailable after {:.1}s: {}. Skipping {} volume seed; worker containers will start without the ExtTool mount until the image becomes reachable.",
+                    image_name,
+                    pull_started.elapsed().as_secs_f64(),
+                    pull_error,
+                    DEFAULT_EXTTOOL_VOLUME_NAME
                 );
                 return Ok(());
             }
+            info!(
+                "exttool image {} pulled in {:.1}s",
+                image_name,
+                pull_started.elapsed().as_secs_f64()
+            );
         }
 
         if !volume_exists {
             self.ensure_docker_volume(DEFAULT_EXTTOOL_VOLUME_NAME)
                 .await?;
             info!(
-                "seeding {} from {}",
+                "seeding {} from {} (copies the image payload; can take several minutes)",
                 DEFAULT_EXTTOOL_VOLUME_NAME, image_name
             );
+            let seed_started = Instant::now();
             self.seed_exttool_volume(image_name.as_str()).await?;
+            info!(
+                "seeded {} from {} in {:.1}s",
+                DEFAULT_EXTTOOL_VOLUME_NAME,
+                image_name,
+                seed_started.elapsed().as_secs_f64()
+            );
         }
 
         Ok(())
@@ -2783,6 +2802,11 @@ impl AppLoader {
     pub(crate) fn test_default_tmp_mount(&self) -> (PathBuf, &'static str) {
         self.default_volume_mounts().remove("/tmp").unwrap()
     }
+
+    pub(crate) fn with_docker_command_runner(mut self, runner: DockerCommandRunner) -> Self {
+        self.docker_command_runner = Some(runner);
+        self
+    }
 }
 
 pub(crate) fn docker_image_tar_candidates_for_arch(
@@ -3311,6 +3335,20 @@ async fn run_command(
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+fn docker_exit_status(ok: bool) -> std::process::ExitStatus {
+    let code = if ok { 0 } else { 1 };
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        return std::process::ExitStatus::from_raw(code * 256);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(code)
+    }
 }
 
 fn ensure_success(step: &str, output: &CommandOutput) -> Result<()> {
