@@ -27,7 +27,7 @@
 /aicc/provider-catalog/v2/known-providers/<id>-<revision_seq>.json
 ```
 
-发布顺序固定为：catalog 内容文件、manifest、index。Index 最后更新，客户端不得扫描目录猜测最新版本。这里没有 `pricing/` 路径；渠道静态价格及条件计价规则直接包含在 Provider Rules 的 `models[].pricing` / `patterns[].pricing` 中。
+发布顺序固定为：catalog 内容文件、manifest、index。Index 最后更新，客户端不得扫描目录猜测最新版本。这里没有 `pricing/` 路径；渠道静态价格及条件计价规则只包含在 Provider Rules 顶层 `model_pricing` 中，与技术规则独立匹配。
 
 ## 3. Index
 
@@ -83,13 +83,13 @@ Known Provider 的选择身份是 `catalog_id`。一个文件内包含多个 `pr
 
 路径：`v2/model-drivers/<model_driver_id>-<revision_seq>.json`。
 
-内容定义原厂模型的静态技术语义，包括 API type、capability、家族、版本规则、variant、逻辑挂载和保守成本估值。不得包含 Provider endpoint、认证、渠道 operation、请求参数或实例动态状态。
+内容定义原厂模型的静态技术语义，包括 API type、capability、家族、版本规则、variant 和逻辑挂载。不得包含 `model_pricing`、兜底成本估值、Provider endpoint、认证、渠道 operation、请求参数或实例动态状态。价格缺失不能由模型语义补齐。
 
 ### 5.2 Provider Rules
 
 路径：`v2/provider-rules/<provider_profile_id>-<revision_seq>.json`。
 
-内容定义渠道模型到原厂 Model Driver/ModelUID 的映射，以及 operation、provider options、request rules、能力收窄、价格和条件计价规则。价格使用规则内的 `pricing` 字段，不使用独立 `pricing_ref` 或 Pricing Catalog。
+内容定义渠道模型到原厂 Model Driver/ModelUID 的映射，以及 operation、provider options、request rules、能力收窄、价格和条件计价规则。已确认适用于渠道的价格使用顶层 `model_pricing[].pricing`，不使用独立 `pricing_ref` 或 Pricing Catalog；缺失时保持 unknown，不发布 Model Driver 兜底价。2026-09-25 已清理 builtin Model Driver 价格配置，运行时拒绝该字段与删除 fallback 尚待实现。
 
 每个官方支持的 Provider 厂商都必须有独立 Provider Rules 文件，包括内置专用 Provider；发布文件必须包含本协议要求的完整 catalog envelope、身份和 revision。特殊 dialect 的常量、参数差异和能力限制也应优先放在这里；只有无法由受限 schema 安全表达的执行逻辑进入代码。
 

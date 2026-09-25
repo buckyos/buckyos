@@ -7,6 +7,8 @@
 
 > 已落地：控制面 / 数据面 API 拆分（`route.resolve` + typed inference，见 §4.2）、精确模型 variant 后缀（§5.1.1）、逻辑模型定义 `min_line` / `disable_line` / `mount_mode` / auto-mount（§6.7）、driver metadata resolver（§7.2）、session 逻辑树 overlay `inherit|replace`（§12.4）、扩展 route trace 来源字段（§13.2）。
 
+> 2026-09-25 LLM 目标修订：采用 `service/model_defaults.rs` 头部契约。§6 的厂商规格/动态家族规则与 §9 的 LLM 回退限制尚待实现；字段和 OpenAI 示例见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)。本文其他通用算法及历史 LLM 示例不表示已完成该迁移；涉及 Auto/Hybrid、跨层权重、父目录回退时，以此目标修订为准。
+
 ---
 
 ## 1. 背景
@@ -166,7 +168,7 @@ qwen3@local
 
 例如 `gpt-5.1:reasoning-high@openai_primary`。
 
-- variant 字典由 Model Driver Metadata 定义语义身份，并可包含原厂默认 `provider_options`；具体 Provider 对该模型有 variant 命中时以 Provider Rules 为准，否则使用该默认值。
+- LLM v2 目标从 Model Driver 的 `supported_efforts` 派生 `reasoning-{effort}` 身份，无需重复 `variants` 表。Protocol Adapter 负责标准 effort 参数转换，Provider Rules 负责渠道映射和限制；两者都不能扩大模型支持的强度。当前 v1 仍使用 Model Driver 显式 variant 及默认 `provider_options`，这部分尚待迁移。
 - Provider Rules 把带 variant 的 exact model lower 成原始 `provider_model_id`、operation 和 resolved options。
 - `route.resolve` 输出含 variant 的 `selected_exact_model` 和不带 variant 的原始 `provider_model_id`，不向调用方暴露 `provider_options`。
 - 数据面根据 exact model、canonical request 和当前规则生成内部 `ResolvedProviderCall`。
@@ -223,34 +225,39 @@ image.txt2image.gpt5
 
 1. **能力优先**：目录表示任务能力、模型用途或模型家族。
 2. **属性不进目录**：本地/云端、隐私级别、价格、延迟等更适合作为候选属性和过滤条件，不应默认成为目录路径。
-3. **越具体越窄**：`llm.code` 的候选范围应小于或等于 `llm`。
-4. **越宽越可 fallback**：`llm` 可作为更宽泛的兜底目录。
-5. **用户可理解**：目录中应保留用户熟悉的模型家族名，例如 `gpt5`，不能只有 `plan`、`swift` 这类抽象别名。
+3. **LLM 根只作命名空间**：通用请求明确选择 `llm.chat` 等功能，不由 `llm` 自动收集模型。
+4. **LLM 回退显式配置**：任务、规格、家族禁止隐式 Parent fallback，原任务的能力约束在回退时仍有效。
+5. **用户可理解**：目录保留按官方模型 ID 归一化的家族名，例如 `llm.gpt-5-6-sol`，并与功能、规格区分。
 6. **支持 Agent 多角色**：Agent 内部可能同时使用 `plan`、`code`、`summary` 等多个逻辑模型名，UI 和配置应支持对这些角色分别设置策略。
 
-### 6.2 推荐 LLM 目录结构
+### 6.2 LLM 目标目录结构
 
 ```text
-llm
-├── plan       # 规划、复杂推理、最高能力优先
-├── code       # 代码生成、代码修改、代码理解
-├── chat       # 通用聊天、问答、用户互动
-├── swift      # 快速响应、低成本、小模型优先
-├── summary    # 文档总结、摘要、压缩上下文
-├── fallback   # 可选：专门的兜底模型目录
-├── gpt5       # 用户熟悉的模型家族或模型名
-├── claude     # 用户熟悉的模型家族或模型名
-└── gemini     # 用户熟悉的模型家族或模型名
+llm                                      # 只作命名空间
+├── plan                                 # 功能目录
+│   └── gpt_pro -> llm.gpt-pro (2.3)      # 功能偏好
+├── chat / code / swift / summarize / …   # 其他功能
+├── fallback                             # 默认空
+├── gpt-pro                              # metadata 声明的规格，零库存也存在
+│   └── gpt_5_6_sol -> llm.gpt-5-6-sol:high (560，推导版本值)
+└── gpt-5-6-sol                           # 与 inventory 相交后产生的模型家族
+    └── :high                            # 固定预设，不是点分子目录
+        ├── gpt-5.6-sol:reasoning-high@provider-a
+        └── gpt-5.6-sol:reasoning-high@provider-b
 ```
 
-说明：
+Model Driver 按原厂组织，声明自己的规格；AICC 不预设统一 lv1～lv5。GPT 有 nano/mini/standard/pro/max 五个通用规格，另有 codex 专用规格。模型条目声明官方 ID、能力、唯一规格及进入该规格时的固定思考预设；完整字段见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)。
 
-- `llm.plan` 可以挂载多个高能力模型，例如 `gpt5@openai`、`claude-opus@anthropic`；
-- `llm.code` 可以挂载适合编码的模型；
-- `llm.swift` 可以挂载 mini、flash、本地小模型等快速模型；
-- `llm.summary` 可以挂载摘要型模型，也可以通过属性过滤区分 local summary 和 cloud summary；
-- `llm.gpt5` 表示“我要 GPT5 这个逻辑模型/模型家族”，但不指定 Provider；
-- `llm` 表示“任何 LLM 候选都可参与调度”，候选范围最大。
+家族路径通常是 `llm.{归一化官方模型ID}`，多个 Provider 的同模型实例在此汇集，不增加规格到家族的权重。家族直选使用声明的默认预设且默认 strict，不升级到其他版本。
+
+### 6.2.1 LLM 两层选择顺序
+
+1. 按原请求和原任务的能力、库存、Provider 状态及调用策略筛选家族预设和实例，跳过空规格。
+2. 按功能到规格的偏好权重选择规格，同权重按规格 ID 稳定排序。
+3. 在该规格中按官方模型 ID 推导的版本值选择最新合格稳定家族（例如 `5.6 -> 560`），旧版兜底；同版本按归一化家族 ID 升序稳定排序。没有合格稳定版且策略允许时才尝试实验版。
+4. 在选中的家族预设内调度物理 instance。规格耗尽后才尝试下一规格；无候选则只执行显式 fallback，否则返回无候选。
+
+功能偏好 `2.3` 与推导版本值 `560` 分层比较，不相乘，也不跨规格比较版本值。后文通用候选打分不能将这两层压平成全局模型评分。固定 `effort` 不能被请求覆盖；不支持所需强度的 Provider 实例不是该强度的候选。
 
 ### 6.3 属性与目录的区分
 
@@ -338,19 +345,15 @@ default items 与覆盖规则：
 3. session config 中的 `item_overrides` 只 patch default items 或父级继承 items 中同名 item，适合用户只调整 weight、禁用某个 Provider 或替换 target。
 4. `items` 和 `item_overrides` 不能在同一个目录节点同时出现；同时出现应返回 `AICC_ROUTE_SESSION_CONFIG_INVALID`。
 
-### 6.6 Provider 挂载建议
+### 6.6 Provider 与 Model Driver 的挂载职责
 
-Provider inventory 中的 `logical_mounts` 是 Provider 对“自己的真实模型适合挂到哪些目录”的声明。AICC 应区分两类挂载：
+LLM 的规格归属由原厂 Model Driver 决定。Provider Rules/discovery 将渠道模型归一到官方身份，提供实际库存、渠道能力限制与预设 lowering；AICC 将这些物理 instance 汇入对应家族。Provider 不自行创建规格、不以 `logical_mounts` 直接进入功能目录。
 
-1. **常规挂载目录**：鼓励 Provider 挂载到模型家族、模型名或能力清晰的目录，例如 `llm.gpt5`、`llm.claude`、`llm.qwen`、`llm.local`。所有拥有对应模型的 Provider 都可以挂载到同一目录，Registry 保留多候选。
-2. **系统默认配置目录**：不鼓励普通 Provider 直接挂载到 `llm.plan`、`llm.code`、`llm.chat` 这类角色目录。AICC 系统全局 routing config 应通过目录 item 把著名家族目录软链接到这些角色目录，例如在 `llm.plan` 下配置 `llm.gpt5` 和 `llm.claude`，再通过权重表达默认优先级。
-
-用户通常只需要调整两类位置：
-
-1. 调整家族目录内部的物理模型优先级，例如在 `llm.gpt5` 下调整不同 Provider 的 GPT 模型权重；
-2. 调整角色目录对家族目录的优先级，例如在 `llm.plan` 下给 `llm.gpt5` 和 `llm.claude` 设置不同权重。
+用户调整功能到规格的偏好，以及家族预设内不同 Provider 的实例偏好。规格到家族的版本顺序从模型 metadata 的官方 ID 推导，不配置独立排序字段；修改任务偏好不需要改模型归档。非 LLM 继续采用各自的语义挂点与 admission 规则。
 
 ### 6.7 逻辑模型定义与自动挂载（LogicalModelDefinition）
+
+本节类型仍供各 API 使用；LLM 目标中的根、功能、规格和家族禁用通用 Auto/Hybrid，只由声明的关系生成候选。
 
 除了 item 软链接，逻辑模型名本身可以有一个 `LogicalModelDefinition`，声明挂载到该逻辑模型名的模型必须满足的能力门限、本次禁用能力、挂载模式等。结构：
 
@@ -381,7 +384,9 @@ LogicalModelDefinition
 4. admission check 与 auto-mount 都在 Registry 层完成，Router 只看最终候选。
 5. route trace 会记录每个候选 item 的来源（builtin definition / driver metadata mount / auto admission / manual override / session overlay），并解释模型为何不满足 `min_line`、哪些能力被 `disable_line` 禁用。
 
-生产实现必须在构建 `ModelRegistry` 时装配内置 logical definitions 和内置 factory logical tree。内置树的职责和旧版 `default_logical_tree` 一致：`llm.chat`、`llm.plan`、`llm.code` 等用途目录先按权重链接到 `llm.gpt-standard`、`llm.sonnet`、`llm.gemini-flash` 等家族目录；家族目录再接收 Provider metadata / version rule 生成的挂点。内置树不是当前库存快照，而是模型挂载到逻辑目录树时的静态参照策略；没有库存的家族分支展开为空，后续 Provider inventory 把模型挂到该 family path 时会继承已有路径权重。用户自定义 Provider 的模型也可通过 `mount_mode=auto/hybrid` 和能力线直接进入用途目录。这样普通 Provider 不需要直接声明 `llm.chat`，Jarvis 等调用方仍可稳定请求 `llm.chat`。
+LLM 目标装配在构建 `ModelRegistry` 时先创建 builtin 功能节点与 metadata 声明的全部规格，再从 metadata 与有效 inventory 的交集创建家族、固定预设和物理实例，最后按 factory/system/user/session 顺序叠加偏好并校验。零 inventory 时规格为空，但功能引用仍可见；最后一个家族实例被移除时，只清理动态节点及引用，保留规格和功能偏好。
+
+每个有效 LLM 规则恰好归入一个规格，规格必须被功能引用或显式标记 `direct_only`。`direct_only` 不得通过任务或 fallback 暗中接入；显式接入任务时须同时解除标记。规格引用、预设、版本顺序和名称冲突等校验不依赖库存数量；失败不得发布部分树。
 
 > 能力判断的真相源是 Model Driver 静态能力、Protocol Adapter operation 能力和 Provider discovery 动态能力的交集。请求只使用结构化 `ModelRequirement` / `ModelDisable`。
 
@@ -617,7 +622,7 @@ Fallback 分为解析期 fallback 和运行时 failover。
 | 模式 | 含义 | 示例 |
 |---|---|---|
 | `strict` | 不 fallback，候选为空即失败。 | 高隐私、强一致性任务。 |
-| `parent` | 向上扩大到父目录继续查找。 | `llm.code` 无候选时尝试 `llm`。 |
+| `parent` | 向上扩大到父目录继续查找；LLM 目标禁止隐式父级回退。 | 非 LLM 按各 API 的规则使用。 |
 | `target_exact` | fallback 到指定精确模型。 | `gpt5@openai`。 |
 | `target_logical` | fallback 到指定逻辑目录。 | `llm.fallback`。 |
 | `disabled` | 显式禁止该节点 fallback。 | 宁可失败，也不串到其他模型。 |
@@ -626,16 +631,16 @@ Fallback 分为解析期 fallback 和运行时 failover。
 
 ### 9.3 推荐默认策略
 
-1. 对普通逻辑目录，默认允许同 namespace 内的 `parent` fallback；
+1. LLM 任务、规格和家族禁止隐式 `parent` fallback，根只作命名空间；其他 API 按各自约束设置；
 2. 对安全、隐私、合规、强模型一致性场景，默认使用 `strict` 或 `disabled`；
-3. 对全局兜底，推荐配置到专用目录 `llm.fallback` 或指定精确模型；
+3. `llm.fallback` 默认空，只接收显式配置；LLM 显式回退仍保留原请求和原任务的能力约束；
 4. 对精确模型名，默认不 fallback，除非 request policy 明确开启；
 5. Fallback 不允许跨 API namespace，例如 `llm.code` 不能 fallback 到 `image.txt2image`；
 6. Fallback 过程中必须记录 trace，便于解释最终模型选择。
 
 ### 9.4 Fallback 链示例
 
-#### 示例一：向父目录 fallback
+#### 示例一：向父目录 fallback（历史示例，不适用于新 LLM 契约）
 
 请求：
 

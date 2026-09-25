@@ -37,7 +37,7 @@ AICC 不应把所有 Provider 都实现成同一种声明式配置，但 Provide
 - 模型名增加固定前后缀的代理服务；
 - 只支持少量 Model Driver 的小型聚合平台；
 - 少量模型需要指定不同 operation；
-- Provider 无法查询实时价格，需要配置渠道默认价格。
+- Provider 无法查询实时价格，但有已核实且适用的渠道静态价格时，可在 Provider Rules 中声明；否则保持 unknown。
 
 正式发布的配置型 Provider 由独立 Known Provider 和 Provider Rules 定义。运行时动态枚举有效 catalog 中的全部 Known Provider，为未注册专用行为的 Profile 按 `protocol_adapter_id` 的协议族装配标准模型发现；发现失败时才合并 Provider Rules `models[]` 与 `metadata_drivers` 明确引用的 Model Driver exact `models[]` 形成静态兜底 inventory。Provider Rules 的显式 `exclude` 优先，pattern 因不能枚举具体模型而只参与匹配。metadata 更新后该兜底 inventory 必须随新 snapshot 重建。Known Provider 引用的 `protocol_adapter_id` 必须已经存在于当前客户端的 runtime registry。
 
@@ -193,6 +193,8 @@ Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯�
 
 ### 3.1 Model Driver metadata 管理
 
+2026-09-25 LLM 目标修订见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)：一个原厂一份 Model Driver，顶层 `specs` 声明规格，主体 `models[]` 定义官方模型 ID、能力以及 `llm` 规格归属、`effort`、`default_effort`、`supported_efforts`；版本排序值从官方模型 ID 推导（如 `5.6 -> 560`），不逐模型配置。AICC 据此生成规格和动态家族，Provider 不维护另一套规格；同一官方模型在不同 Provider 的实例挂入同一个 `llm.{归一化官方模型ID}` 家族。下表与现有 variant 词汇表仍描述 v1 实现，新的字段尚待实现。
+
 | 字段 | 说明 |
 | --- | --- |
 | `models` / `patterns` | 对原厂模型名的 exact/pattern 匹配规则 |
@@ -202,12 +204,16 @@ Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯�
 | `capabilities` | 模型固有能力和上下文限制 |
 | `quality_score` | 与交付渠道无关的模型质量估计 |
 | `version_rules` | 家族、tier、版本排序和稳定性规则 |
-| `variants` | 对模型身份、路由和审计有意义的语义 variant |
-| 默认价格 | 已无此字段：价格统一在顶层 `model_pricing` 表中声明 |
+| `variants` | v1 显式声明语义 variant；LLM v2 从 `supported_efforts` 派生，不再重复配置 |
+| 价格 | 不属于 Model Driver；不声明 `model_pricing`，也不提供默认价格或成本兜底 |
 
-Model Driver 的 variant 定义语义身份，例如 `reasoning-high`，并可携带原厂默认 `provider_options`。配置型 Provider 命中该具体模型的任一 variant 时，由 Provider 配置中的 `variants` 完整定义该模型的 variant 集合和请求参数；完全未命中时才使用 Model Driver 默认值。
+当前 v1 实现中，Model Driver 的 variant 定义语义身份，例如 `reasoning-high`，并可携带原厂默认 `provider_options`。配置型 Provider 命中该具体模型的任一 variant 时，由 Provider 配置中的 `variants` 完整定义该模型的 variant 集合和请求参数；完全未命中时才使用 Model Driver 默认值。LLM v2 目标取消这份 Model Driver `variants` 表及参数兜底。
 
 variant 名称是 Model Driver 与 Provider Rules 共用的封闭词汇表，Model Driver 的 `variants[].name` 和 Provider 的 `variants[].variant` 都必须使用 `driver_metadata_schema.md` 中 Variant naming 定义的统一档位名（`reasoning-none` / `reasoning-mini` / `reasoning-low` / `reasoning-medium` / `reasoning-high` / `reasoning-xhigh` / `reasoning-max`）。厂商自己的档位名（`effort-*`、`thinking-*`、`minimal`、`normal` 等）只能在 `provider_options` 中表达，不得作为 variant 名。
+
+LLM v2 中，Model Driver 只用 `supported_efforts` 声明可用强度，AICC 据此派生 `reasoning-{effort}` 身份；标准参数转换由 Protocol Adapter 负责，Provider Rules 只处理渠道映射和限制。Provider variant 规则命中模型时，其完整集合与模型支持的 effort 取交集；未命中时使用 Adapter 支持的标准转换，不再向 Model Driver 查参数模板，也不要求 Provider 逐模型复制同一套映射。
+
+进入家族固定预设的实例必须能执行其 effort，无法转换或被渠道限制时跳过，不能改用默认强度。Provider variant 不扩大模型支持的强度，也不改变规格归属。`thinking` 派生为 `reasoning-thinking`（须同步扩展校验），`native` 对应不可调节的 base exact model，不附加 effort 参数。规格或固定预设选中后，请求参数和渠道重写均不得静默覆盖其思考强度。以上转换和库存展开尚待实现；当前仅简化 OpenAI v2 配置并更新文档。
 
 ### 3.2 配置型 Provider 管理
 
@@ -263,7 +269,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 - `origin_mappings`：可以从命名确定性解析原厂身份时使用的特殊映射。
 - `models`：按完整 `provider_model_id` 精确匹配的 Provider 规则。
 - `patterns`：有序 Provider 规则；每项的 `match` 通常直接写匹配完整 `provider_model_id` 的 wildcard 字符串，多维条件才写对象。
-- `variants`：将 Model Driver 语义 variant 转换为 Provider 请求参数；variant 名必须使用统一档位名，厂商档位差异写在 `provider_options`。
+- `variants`：将语义 variant 转换为 Provider 请求参数；variant 名必须使用统一档位名，厂商档位差异写在 `provider_options`。LLM v2 中语义身份从模型的 `supported_efforts` 派生，Adapter 已支持的标准转换不要求在此重复声明。
 
 不增加 `refresh_interval_sec`、`on_no_match`、`on_ambiguous`、`failure_policy`、`protocol_adapter` 等程序固定字段。
 
@@ -293,7 +299,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 | `latency_class` | 无 | 渠道延迟分类 | 从 Model Driver metadata 移入 |
 | `cost_class` | 无 | 渠道成本分类 | 从 Model Driver metadata 移入 |
 
-`model_pricing` 是与 `models` / `patterns` 并列的顶层数组，不属于单个模型规则。把价格从模型
+`model_pricing` 只属于 Provider Rules，是与 `models` / `patterns` 并列的顶层数组，不属于单个模型规则。把价格从模型
 规则里拆出来，是为了让"哪些模型走哪个接口、带哪些默认参数"继续由 `patterns` 通配批量声明，
 而"每个模型的单价"逐个精确声明，两者互不牵连：此前为给出差异化价格而新增的精确条目，会同时
 顶掉 `patterns` 的批量技术参数（exact 优先），拆开后不再有这个问题。
@@ -452,7 +458,7 @@ converter 按厂商对字段语义的演进命名，不包含首次采用该规�
 
 ### 5.5 Pricing
 
-价格声明在与 `models` / `patterns` 并列的顶层 `model_pricing` 表中，每项只允许 `id` 与 `match`
+价格只在 Provider Rules 中声明，放在与 `models` / `patterns` 并列的顶层 `model_pricing` 表中，每项只允许 `id` 与 `match`
 二选一：
 
 ```json
@@ -464,8 +470,8 @@ converter 按厂商对字段语义的演进命名，不包含首次采用该规�
 }
 ```
 
-解析顺序固定为：先查精确 `id`，未命中再按声明顺序取第一条命中的 `match`。Model Driver 侧以
-`origin_model_id` 查找，Provider Rules 侧以 `provider_model_id` 查找。查找发生在技术规则解析
+解析顺序固定为：以 `provider_model_id` 先查精确 `id`，未命中再按声明顺序取第一条命中的 `match`。
+Model Driver 不参与价格查找。查找发生在技术规则解析
 之后，与模型本身命中 `models` 还是 `patterns` 无关，因此通配技术规则与逐模型价格可以并存。
 
 `pricing` 本身支持三类正交的计量方式：
@@ -475,7 +481,7 @@ converter 按厂商对字段语义的演进命名，不包含首次采用该规�
 - 非 token 计量：`unit` + `amount`，`unit` 取值 `request`、`image`、`audio_second`、
   `video_second`、`character`、`second`（算力秒）、`megapixel`（百万像素）；同一份 `pricing` 内
   token 字段与 `unit` 互斥；
-- `estimated_cost`：无法精确计算时的默认估值，只作展示与路由参考。
+- `estimated_cost`：仅在有可靠渠道依据时显式声明的估值，只作展示与路由参考，不能用于补造缺失价格或实际账单。
 
 在计量之上还有三种取价修饰：
 
@@ -489,16 +495,16 @@ converter 按厂商对字段语义的演进命名，不包含首次采用该规�
   同一份 `pricing` 内必须一致）。窗口之间不得重叠。
 - `rules`：按**请求参数**选价，在请求前确定，使用与 `request_rules.when` 相同的 `MatchRule`。
   `rules` 使用第一条命中的价格，均未命中时退回外层 `amount` / `estimated_cost`。`rules` 是
-  Provider Rules 专属能力，Model Driver 的 `model_pricing` 声明它会被校验拒绝；`tiers` 与
-  `time_windows` 两侧都可以使用。
+  Provider Rules 专属能力；`tiers` 与 `time_windows` 同样只在 Provider 价格中声明。
+  Model Driver 不接受任何 `model_pricing`，而不只是拒绝其中的条件规则。
 
-例如 GPT Image 按 quality/size 计价：
+以下仅示意 Provider 按 quality/size 计价的结构，金额不是已核验的实际报价：
 
 ```json
 {
   "model_pricing": [
     {
-      "id": "gpt-image-2",
+      "id": "vendor/image-model",
       "pricing": {
         "currency": "USD",
         "unit": "image",
@@ -566,15 +572,25 @@ Provider discovery 获得 provider_model_id
 
 ## 7. 价格优先级
 
-价格优先级由程序固定：
+目标价格优先级由程序固定：
 
 ```text
 Provider 实时 discovery 价格
 > Provider Rules 的 model_pricing（渠道价）
-> Model Driver 的 model_pricing（原厂默认价）
+> unknown（无可靠渠道价格）
 ```
 
-两张 `model_pricing` 表里的静态价格都不能覆盖更新鲜的实时价格；渠道价可以覆盖原厂默认价。
+Provider Rules 的静态价格不能覆盖更新鲜且适用于本次调用的实时价格。Model Driver 不参与
+价格解析，不提供原厂默认价或保守估值兜底；官方直连 Provider 也遵守这一边界。没有匹配价格
+时保持 unknown，不填 0、不视为免费、不从型号或其他渠道推测。只有确认了渠道、币种和计费
+条件的价格才能写入 Provider Rules，不能把删除的 Model Driver 价表直接搬过去。
+
+结算时 Provider 响应中的实际费用优先；没有实际费用且缺少完整适用的价格与用量时，费用仍为
+unknown，不得标记为财务完整。估值与实际费用必须区分。
+
+2026-09-25 配置与文档修订：builtin Model Driver 的价格表已全部移除。当前运行时代码仍有
+Model Driver 价格字段和 fallback，尚待 Review 确认后删除，并同步价格来源展示、库存重建和
+相关测试；此处描述目标行为，不代表实现已经切换。
 
 ## 8. OpenAI 官方 Provider 示例
 
@@ -687,7 +703,7 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 - `models` 按 `id` 覆盖同名 exact rule；
 - `patterns` 出现时整体替换默认有序列表；每项的 `match` 使用统一 `MatchRule`，通常是字符串 wildcard；
 - `origin_mappings` 出现时整体替换，避免合并后产生不可解释的顺序；
-- `variants` 不按静态身份键与 Model Driver 去重。对每个具体模型，先用 `provider_model_id` 在当前 Provider Rules 的 `variants` 中适配；只要命中至少一项，该模型的有效 variant 集合完全采用 Provider 结果；一项都未命中时，才回退到对应 Model Driver 的 `variants`；
+- v1 的 `variants` 不按静态身份键与 Model Driver 去重：具体模型命中 Provider Rules 时完全采用 Provider 集合，否则使用 Model Driver `variants`。LLM v2 目标改为由 `supported_efforts` 派生语义身份，匹配的 Provider 集合只能收窄它；没有 Provider variant 匹配时使用 Adapter 标准转换，不再回退到 Model Driver 参数模板（见 §3.1）；
 - 字段缺失继续使用默认值；
 - `{}` 仅用于 `custom` Provider：使用 Adapter 标准协议行为、保留原始模型名并搜索全部 Model Driver，不启用任何厂商映射。
 

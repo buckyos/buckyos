@@ -4,10 +4,15 @@
 账号套餐、模态或动态 endpoint 影响时保持 unknown；unknown 可以参与保守路由策略和验收
 报告中的估算敞口，但不能生成 `finance_complete=true` 的实际账单。
 
+Model Driver 不保存 `model_pricing`，也不提供原厂默认价或成本估值兜底。2026-09-25 已删除
+全部 builtin Model Driver 价表，未将旧价格自动迁入 Provider Rules。价格只能来自当前渠道的
+discovery、响应，或已确认适用的 Provider Rules；缺失时宁可 unknown，也不使用未经确认的价格。
+运行时仍有旧的 Model Driver 价格字段与 fallback，删除它们尚待 Review 后实现。
+
 ## 当前 schema 可表达的计价口径
 
-价格声明在 `model_pricing` 表（见 `provider_profile_schema.md` 5.5），下列口径都已可表达，
-不再因为"schema 装不下"而留空：
+静态价格只声明在 Provider Rules 的 `model_pricing` 表（见 `provider_profile_schema.md` 5.5）。
+下列口径可以表达，但能表达不等于价格已核实；只有确认渠道、币种和计费条件后才能填写：
 
 | 口径 | 表达方式 |
 |---|---|
@@ -26,30 +31,35 @@
    `completion_cost` 返回 unknown，不会算成 0；
 4. 按次计费的 `tiers`：档位只在 token 计量下参与选档。
 
-## Provider 事实源
+## Provider 价格核验入口
 
-| Provider | 官方事实源 | 当前策略 |
-|---|---|---|
-| OpenAI | [API pricing](https://openai.com/api/pricing/) | 可精确表达的模型静态 USD token 单价与按张图像价；响应实际金额优先 |
-| Claude | [Models and pricing](https://platform.claude.com/docs/en/about-claude/models/overview) | 可精确表达的模型静态 USD token/cache 单价 |
-| Gemini | [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) | token 单价、图像按张价（分档已验证，不再按每百万输出 token 误当每张）与 TTS 按 token 价；同一模型按模态、服务档位和媒体规格变化的其余部分为 unknown |
-| Fal | [Model API pricing](https://fal.ai/docs/documentation/model-apis/pricing) | 四个 endpoint 按 compute-second / audio-second / megapixel 计价；动态变化的 endpoint 仍为 unknown |
-| OpenRouter | [Usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting) | `/models` USD 动态价格用于估算，响应 `usage.cost` 用于实际结算并优先于估算 |
-| MiniMax | [Pay-as-you-go pricing](https://platform.minimax.io/docs/guides/pricing-paygo) | token 单价、按字符的语音价、按张图像价与按算力秒视频价进入 metadata（国际站 USD）；国内站 CNY 价格需另行核对 |
-| Kimi | [Moonshot platform](https://platform.moonshot.ai/docs/) | 未取得可与当前模型唯一对应的官方价格时为 unknown |
-| GLM | [Official pricing](https://bigmodel.cn/pricing) | CNY 价已按官网逐模型录入：token 单价、按次/按秒价与按输入长度分档价 |
-| DeepSeek | [Models and pricing](https://api-docs.deepseek.com/quick_start/pricing) | 峰谷时段用 `time_windows` 表达；官方费率冲突未定论时保持 unknown |
-| Doubao | [Volcano Ark documentation](https://www.volcengine.com/docs/82379) | 按输入长度分档的 CNY 价已录入；与区域、endpoint 及服务规格绑定的部分仍为 unknown |
-| Qwen | [Model Studio pricing](https://help.aliyun.com/en/model-studio/model-pricing) | 按上下文长度分档的 CNY 价已录入；与区域和推理模式绑定的部分仍为 unknown |
-| SN | Provider inventory/usage response | 以 SN 返回的实际渠道模型和费用为事实源；未返回费用时为 unknown |
+以下链接供维护 Provider 渠道价格时核验，不表示相关价格已经配置或仍然有效。本轮保留
+`glm.provider.json` 原有的渠道价格，其余已删除的 Model Driver 价表均未迁移；未重新核验任何
+线上报价。即使官方模型 ID 相同，也不能将官网价格直接用作第三方渠道价格。
+
+| Provider | 核验入口 |
+|---|---|
+| OpenAI | [API pricing](https://openai.com/api/pricing/) |
+| Claude | [Models and pricing](https://platform.claude.com/docs/en/about-claude/models/overview) |
+| Gemini | [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) |
+| Fal | [Model API pricing](https://fal.ai/docs/documentation/model-apis/pricing) |
+| OpenRouter | [Usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting) |
+| MiniMax | [Pay-as-you-go pricing](https://platform.minimax.io/docs/guides/pricing-paygo) |
+| Kimi | [Moonshot platform](https://platform.moonshot.ai/docs/) |
+| GLM | [Official pricing](https://bigmodel.cn/pricing) |
+| DeepSeek | [Models and pricing](https://api-docs.deepseek.com/quick_start/pricing) |
+| Doubao | [Volcano Ark documentation](https://www.volcengine.com/docs/82379) |
+| Qwen | [Model Studio pricing](https://help.aliyun.com/en/model-studio/model-pricing) |
+| SN | Provider inventory/usage response |
 
 ## 结算规则
 
 1. Provider 响应中的带币种实际费用优先。
-2. 没有实际费用时，只有完整匹配本次请求计费条件的 pinned pricing 才可计算费用；分时价在请求
+2. 没有实际费用时，只有完整匹配本次请求计费条件的 pinned pricing 才可计算费用。该价格只能
+   来自 Provider discovery 或适用的 Provider Rules，不能来自 Model Driver；分时价在请求
    时刻钉住，分档价在结算时按真实用量选档。
 3. 不同币种分别聚合，不换算、不直接比较。
 4. 缺失或无法准确表达的价格保持 unknown，不按零处理；免费模型显式写 0，两者不可混淆。
 5. 官方价格变更时必须更新事实源检查日期、metadata golden 和相应协议/计费测试。
 
-事实源核对日期：2026-09-18。
+核验入口沿用 2026-09-18 的记录；本次价格边界修订日期：2026-09-25，不作为报价核验日期。

@@ -151,4 +151,4 @@ codegen-units = 1
 panic = "abort"
 strip = "symbols"
 debug = 0
-incremental = true
+incremental = false

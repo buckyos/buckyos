@@ -19,11 +19,6 @@
       "logical_mounts": ["rerank", "rerank.cohere", "rerank.{driver}.{model}"]
     }
   ],
-  "model_pricing": [
-    { "id": "rerank-v3.5", "pricing": { "currency": "USD", "amount": 0.002, "unit": "request" } },
-    { "id": "rerank-v4.0-fast", "pricing": { "currency": "USD", "unit": "request", "amount": 0.002 } },
-    { "id": "rerank-v4.0-pro", "pricing": { "currency": "USD", "unit": "request", "amount": 0.0025 } }
-  ],
   "defaults": {},
   "variants": [],
   "version_rules": []

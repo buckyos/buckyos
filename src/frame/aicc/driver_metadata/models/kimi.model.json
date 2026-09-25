@@ -48,12 +48,6 @@
       "version_rules": ["kimi-code", "kimi-code-highspeed"]
     }
   ],
-  "model_pricing": [
-    { "id": "kimi-k2.5", "pricing": { "currency": "CNY", "input_token": 4e-06, "output_token": 2.1e-05, "cache_input_token": 7e-07 } },
-    { "id": "kimi-k2.6", "pricing": { "currency": "CNY", "input_token": 6.5e-06, "output_token": 2.7e-05, "cache_input_token": 1.1e-06 } },
-    { "id": "kimi-k2.7-code", "pricing": { "currency": "CNY", "input_token": 6.5e-06, "output_token": 2.7e-05, "cache_input_token": 1.3e-06 } },
-    { "id": "kimi-k2.7-code-highspeed", "pricing": { "currency": "CNY", "input_token": 1.3e-05, "output_token": 5.4e-05, "cache_input_token": 2.6e-06 } }
-  ],
   "defaults": { "version_rules": ["kimi-general", "kimi-code", "kimi-code-highspeed"] },
   "variants": [
     { "name": "reasoning-medium", "match": { "origin_model_id": ["kimi-k2.5", "kimi-k2.6"] }, "provider_options": { "thinking": { "type": "enabled" } } },

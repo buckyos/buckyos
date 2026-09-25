@@ -11,6 +11,10 @@
 - `frozen_provider_implementation.md`：Provider 分解、装配、discovery、inventory、凭据与扩展流程。
 - `frozen_user_api.md`：面向应用、Agent、UI 和运维工具的调用接口与使用约束。
 
+2026-09-25 LLM 设计修订：按厂商声明规格，以官方模型 ID、能力及固定思考预设为 metadata 主体，动态生成 `功能 -> 规格 -> 家族:预设 -> 物理 instance`。Review、边界见 [Model Driver 冻结设计 §3.3](frozen_model_driver_and_logical_model_fs.md#33-llm-厂商规格与模型家族目标)，字段和 OpenAI 示例见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)。OpenAI builtin JSON 已改为 v2 审阅稿，已归规格的模型省略 `logical_mounts`，思考档位从 `supported_efforts` 派生，不再重复声明 `variants`；parser、参数转换和路由实现仍待 Review 确认后修改。
+
+同日价格边界修订：全部 builtin Model Driver 已移除 `model_pricing`。价格只来自 Provider discovery、响应或 Provider Rules；缺失时保持 unknown，不使用原厂默认价兜底。见 [价格优先级](provider_profile_schema.md#7-价格优先级) 和 [价格事实源](provider_pricing_sources.md)。本轮仅更新配置和文档，运行时价格兜底的删除仍待 Review 后实现。
+
 ## 根目录文档
 
 根目录文档用于描述 AICC 的需求、设计目标、协议契约、路由规则、Provider 方案、schema 和验收目标。后续开发需要判断设计约束或工程目标时，应优先阅读这些根目录文档。
@@ -30,6 +34,7 @@
 - `driver_metadata_update_storage.md`：当前 metadata 文件、目标/已应用序列和 Provider inventory 的持久边界。
 - `provider_profile_schema.md`：Provider Profile、Protocol Adapter、Provider Rules、Model Driver 和 Pricing 的目标边界与 schema。
 - `match_rule.md`：Model Driver、Provider Rules、请求/价格条件及发布 track 共用的统一匹配语义，采用字符串优先、多维对象按需展开的配置形式。
+- `driver_metadata_schema.md`：当前 Model Driver v1 字段，以及厂商规格、模型家族与固定预设的 v2 目标契约和 OpenAI 配置示例。
 - `internal_module_architecture.md`：AICC 重构后的内部模块职责、依赖方向、协议代际复用、运行时快照和生命周期边界。
 - `provider_architecture_durable_data_schema.md`：Issue #579 新 Provider 架构的持久数据边界，定义三类 catalog、Provider Instance 外部真相源和实例级 inventory LKGS。
 - `aicc_runtime_durable_data_schema.md`：AICC 运行时持久记录，定义幂等/重启恢复 execution、route trace、session exact-model 历史、artifact 租户归属和 audit 表。

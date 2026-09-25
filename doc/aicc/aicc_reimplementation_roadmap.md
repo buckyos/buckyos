@@ -25,6 +25,8 @@
 4. `doc/aicc/maintenance/`，仅作维护和验收参考；
 5. `doc/aicc/archive/`，不作为实现依据。
 
+2026-09-25 价格边界修订：全部 builtin Model Driver 已移除 `model_pricing`，价格只来自 Provider，缺失时保持 unknown。下文 WP-08 等实现记录中有关 Model Driver 原厂价格的描述仅代表当时状态，不能作为恢复价格兜底的依据。schema、catalog 编译、inventory fallback、价格来源展示和相关测试的删除/调整仍待 Review 后实施，目标规则见 [Provider Schema §7](provider_profile_schema.md#7-价格优先级)。
+
 主要规范入口：
 
 - [`aicc_requirements.md`](aicc_requirements.md)

@@ -97,7 +97,9 @@ Content Schema：
 - `variants: ModelVariant[]`
 - `version_rules: VersionRule[]`
 
-ModelRule 只允许模型技术字段：`id/match`、`parameter_scale`、`api_types`、`logical_mounts`、`capabilities`、`quality_score`、`version_rules` 引用和可选保守默认价格。`match` 遵循 [match_rule.md](match_rule.md)，普通规则直接使用 wildcard 字符串。禁止 endpoint、认证、protocol adapter、operation、Provider 请求参数、availability、实例健康状态和对象内嵌签名。Catalog 文件真实性与完整性由 NDN 文件交付契约保证，AICC 不重复校验。
+ModelRule 只允许模型技术字段：`id/match`、`parameter_scale`、`api_types`、`logical_mounts`、`capabilities`、`quality_score` 和 `version_rules` 引用。`match` 遵循 [match_rule.md](match_rule.md)，普通规则直接使用 wildcard 字符串。Model Driver 禁止 `model_pricing`、默认价格、成本估值兜底、endpoint、认证、protocol adapter、operation、Provider 请求参数、availability、实例健康状态和对象内嵌签名。Catalog 文件真实性与完整性由 NDN 文件交付契约保证，AICC 不重复校验。
+
+2026-09-25 价格边界修订：builtin Model Driver 已全部移除价格表；schema 和库存构建中的旧价格 fallback 尚待 Review 后删除。无渠道价格时保留 unknown，库存重建不得继续沿用旧 Model Driver 价格。
 
 `VersionRule` 用于从一组同 family/tier 模型中选出当前稳定挂点，并补充版本挂点：
 
@@ -129,8 +131,9 @@ Content Schema：
 - `models: ProviderModelRule[]`
 - `patterns: ProviderModelRule[]`，每项使用统一 `MatchRule`，有序、首个命中生效
 - `variants: ProviderVariantRule[]`
+- `model_pricing: ModelPricingRule[]`，可选；独立的渠道价格表
 
-ProviderModelRule 可包含 `match`、`exclude`、`operations`、`provider_options`、`request_rules`、`pricing`、`remove_api_types`、`remove_features`、`estimated_latency_ms`、`latency_class`、`cost_class`。`match` 通常是匹配 `provider_model_id` 的 wildcard 字符串，需要联合 `origin_model_id`、Model Driver、variant 或 API type 时才使用对象。request/pricing 条件也复用同一 `MatchRule`。`pricing` 直接保存该渠道模型的静态价格和条件计价规则。配置只能收窄 Model Driver 能力。
+ProviderModelRule 可包含 `match`、`exclude`、`operations`、`provider_options`、`request_rules`、`remove_api_types`、`remove_features`、`estimated_latency_ms`、`latency_class`、`cost_class`。`match` 通常是匹配 `provider_model_id` 的 wildcard 字符串，需要联合 `origin_model_id`、Model Driver、variant 或 API type 时才使用对象。request/pricing 条件也复用同一 `MatchRule`。静态价格和条件计价规则保存在 Provider Rules 顶层 `model_pricing[].pricing`，与技术规则独立匹配；未确认适用的价格不填写。配置只能收窄 Model Driver 能力。
 
 `metadata_drivers` 缺失表示搜索系统当前安装的全部 Model Driver；显式空数组表示不匹配任何 Model Driver。每个官方支持的 Provider 厂商（包括内置专用 Provider）都必须有独立文件。
 

@@ -36,12 +36,6 @@
     }
   ],
   "patterns": [],
-  "model_pricing": [
-    { "id": "fal-ai/esrgan", "pricing": { "currency": "USD", "amount": 0.00111, "unit": "second" } },
-    { "id": "fal-ai/imageutils/rembg", "pricing": { "currency": "USD", "amount": 0.00111, "unit": "second" } },
-    { "id": "fal-ai/deepfilternet3", "pricing": { "currency": "USD", "amount": 0.001, "unit": "audio_second" } },
-    { "id": "fal-ai/video-upscaler", "pricing": { "currency": "USD", "amount": 0.0008, "unit": "megapixel" } }
-  ],
   "defaults": {},
   "variants": [],
   "version_rules": []

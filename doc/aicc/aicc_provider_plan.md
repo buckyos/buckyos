@@ -80,12 +80,12 @@ Adapter 箭头表示语义上的子类/派生关系，不强制使用语言继�
 
 ## 5. 模型发现与价格
 
-价格事实的来源优先级遵循现有设计：
+价格事实的目标来源优先级：
 
 ```text
 Provider 实时 discovery
   > Provider Rules 的渠道静态价格
-  > Model Driver 的保守成本估值
+  > unknown（无可靠渠道价格）
 ```
 
 - OpenRouter Models API 的模型、能力和实时价格应进入动态 discovery；
@@ -94,6 +94,8 @@ Provider 实时 discovery
 - 运行时枚举合并后 catalog 中的全部 Known Provider；没有专用差异行为的新 Profile 复用已注册 Protocol Adapter 的标准 discovery，并自动合并 Provider Rules exact models 与明确引用的 Model Driver exact models 作为失败兜底，不维护厂商 ID 白名单；
 - 禁止抓取官方文档网页、控制台页面或读取 SDK 私有列表模拟 discovery；
 - Provider 实时价格属于实例动态事实，不写回静态 catalog；静态价格直接位于 Provider Rules，不单独建立 Pricing Catalog。
+
+Model Driver 不保存价格或成本兜底，官方直连渠道也必须由 Provider 提供可靠价格；未知不等于免费。实际结算优先采用 Provider 响应费用，缺少适用价格或用量时保持 unknown。2026-09-25 已从全部 builtin Model Driver 配置删除 `model_pricing`，运行时的旧字段与 fallback 尚待 Review 后删除。
 
 ## 6. 能力开放规则
 

@@ -70,7 +70,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 #### 已实现
 
 - **维护模型事实基线**：当已支持的厂商发布新模型时，项目方可以更新随版本携带的 driver metadata。应补充或修正模型 ID、`api_types`、`capabilities`、上下文长度、`logical_mounts`、是否弃用、替代模型建议等逻辑上较确定的信息。
-- **维护默认运营策略基线**：项目方可以维护默认价格估算、估算延迟、基础健康度、默认推荐权重和 fallback 建议。这些信息确定性弱于模型事实，应允许云端策略或服务商策略覆盖。
+- **维护默认运营策略基线**：项目方可以维护估算延迟、基础健康度、默认推荐权重和 fallback 建议。价格只在渠道与计费条件已确认时维护于 Provider Rules，不在 Model Driver 中保存默认价格估算；无可靠来源时保持 unknown。
 - **维护云端发布内容**：通过 NDN 发布完整、自洽的 cloud 来源文件集合，不要求同步复制或替换 builtin 全集。Manifest 必须分配更高 `revision_seq`、声明客户端兼容范围和 required features，并为仍受支持的旧客户端保留可配置的兼容版本。文件版本、可信性、完整性、防回退和 cloud 来源替换由 NDN 保证；AICC 按 `system-config > local > cloud > builtin` 对每个 catalog 身份选择完整文件，不跨来源 merge，也不维护 manifest activation 或 remote cache。
 - **维护对应测试用例**：模型事实或运营策略更新都必须同步新增或更新验收用例，并明确会影响哪些旧用例。用例应覆盖新模型出现在 inventory、能力字段正确、逻辑目录挂载正确、成本/健康度/权重策略生效、fallback 行为正确。
 - **期望效果**：新 metadata 文件下载、校验、替换完成并就绪后 NDN 才推进目标 seq；下一次推理或 Provider 定时库存刷新统一收敛全部落后库存，每个 Provider 只有在真正完成刷新后才推进自己的 applied seq。
@@ -81,7 +81,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 - **官方云端自动更新服务**：版本发现、文件下载、校验、替换、失败恢复和目标 seq 属于 NDN 能力，AICC 只消费当前文件并维护各 Provider applied seq。NDN 能力不足时应向 NDN 提交 bug。
 - **metadata 可信来源展示**：可信校验属于 NDN；AICC 可以展示 NDN 提供的来源状态，但不重复验签。
-- **动态成本、套餐、免费额度、超额价格**：当前已有成本估算和 quota 字段入口，但多数直连 Provider 仍主要依赖 Provider Rules / Model Driver 中的静态估算，不能完整获取真实套餐与余额。
+- **动态成本、套餐、免费额度、超额价格**：当前已有成本估算和 quota 字段入口，但不能完整获取真实套餐与余额。2026-09-25 已删除 builtin Model Driver 价表，目标只采信 Provider discovery、响应或已确认适用的 Provider Rules 价格；旧的运行时 Model Driver 价格 fallback 仍待删除，不得继续作为维护价格的入口。
 - **真实健康度和熔断恢复**：inventory 和 route 中已有 health / quota / error 相关字段，但完整云端健康度采集、熔断、恢复策略不能按已完成理解。
 - **产品化 Provider 管理 UI**：AI Center PRD / 原型中已有 Provider 管理、Usage / Balance、Routing UI、health / quota 展示等内容，但不能按当前完整产品能力理解。
 

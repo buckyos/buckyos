@@ -87,13 +87,6 @@
     }
   ],
   "patterns": [],
-  "model_pricing": [
-    { "id": "claude-fable-5-1", "pricing": { "currency": "USD", "input_token": 1e-05, "output_token": 5e-05, "cache_input_token": 2.5e-07 } },
-    { "id": "claude-fable-5", "pricing": { "currency": "USD", "input_token": 1e-05, "output_token": 5e-05, "cache_input_token": 1e-06 } },
-    { "id": "claude-opus-5", "pricing": { "currency": "USD", "input_token": 5e-06, "output_token": 2.5e-05, "cache_input_token": 5e-07 } },
-    { "id": "claude-sonnet-5", "pricing": { "currency": "USD", "input_token": 2e-06, "output_token": 1e-05, "cache_input_token": 2.0000000000000002e-07 } },
-    { "id": "claude-haiku-4-5-20251001", "pricing": { "currency": "USD", "input_token": 1e-06, "output_token": 5e-06, "cache_input_token": 1.0000000000000001e-07 } }
-  ],
   "defaults": { "api_types": [], "capabilities": {} },
   "variants": [
     { "name": "reasoning-low", "match": { "origin_model_id": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"] }, "provider_options": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "low" } } },
