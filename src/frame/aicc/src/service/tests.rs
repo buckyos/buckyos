@@ -295,6 +295,17 @@ struct FakeInference {
 
 #[async_trait]
 impl InferencePort for FakeInference {
+    async fn preview_routes(
+        &self,
+        _caller: &AuthorizedCaller,
+        _request: RoutingPreviewRequest,
+    ) -> Result<RoutingPreviewResponse, RPCErrors> {
+        Ok(RoutingPreviewResponse {
+            settings_revision: 0,
+            entries: Vec::new(),
+        })
+    }
+
     async fn resolve_route(
         &self,
         _caller: &AuthorizedCaller,
@@ -1332,7 +1343,10 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
 #[tokio::test]
 async fn service_assembler_builds_with_only_builtin_model_metadata() {
     use crate::runtime::ModelRegistryAssembler;
-    let assembler = ServiceModelAssembler { session: None };
+    let assembler = ServiceModelAssembler {
+        session: None,
+        events: None,
+    };
     let registry = assembler
         .build(Arc::new(crate::model::llm_tests::builtin_catalog()), vec![])
         .await
@@ -1843,9 +1857,12 @@ async fn model_metadata_sources_replace_whole_documents_and_publish_trees_atomic
             _: u64,
             _: ConvergenceTrigger,
         ) -> Result<RuntimePreparedState, RuntimeError> {
-            let models = ServiceModelAssembler { session: None }
-                .build(catalog.clone(), vec![])
-                .await?;
+            let models = ServiceModelAssembler {
+                session: None,
+                events: None,
+            }
+            .build(catalog.clone(), vec![])
+            .await?;
             Ok(RuntimePreparedState {
                 catalog,
                 models,

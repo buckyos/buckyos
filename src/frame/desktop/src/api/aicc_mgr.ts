@@ -3,6 +3,17 @@ import { isMockRuntime } from '../runtime'
 import type { ModelCatalog } from '../app/ai-center/datamodel/model-catalog'
 import { mockModelCatalog } from '../app/ai-center/mock/model-catalog'
 import { MockDataStore } from '../app/ai-center/mock/store'
+import { MockRoutingWorld } from '../app/ai-center/mock/routing'
+import type {
+  AiccEvent,
+  AiccEventFeed,
+  DirectoryKind,
+  RoutePreview,
+  RoutingCommand,
+  RoutingDirectory,
+  RoutingState,
+  RoutingWorkspace,
+} from '../app/ai-center/datamodel/routing'
 import { normalizeFinanceTotals } from '../app/ai-center/datamodel/transforms'
 import { toAiccRpcCallOptions } from './aicc_rpc_options'
 import type {
@@ -316,7 +327,11 @@ interface AiccDataProvider {
   getUsageSummary(): UsageSummary
   getUsageTrend(granularity?: string): UsageTrendPoint[]
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
-  queryRoutingDirectory(path: string | null): Promise<RoutingDirectoryView>
+  fetchRoutingWorkspace(): Promise<RoutingWorkspace>
+  getRoutingState(): Promise<RoutingState>
+  previewRoute(path: string): Promise<RoutePreview>
+  saveRoutingCommands(commands: RoutingCommand[], expectedRevision: number): Promise<RoutingState>
+  listEvents(limit: number): Promise<AiccEventFeed>
   queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage>
   getCloudUpdateSettings(): Promise<CloudUpdateSettings>
   setCloudUpdateSettings(settings: CloudUpdateSettingsUpdate): Promise<CloudUpdateSettings>
@@ -339,7 +354,11 @@ export interface AICCMgr {
   setProviderRoutingWeight(providerInstanceName: string, weight: number): Promise<void>
   validateConnection(draft: WizardDraft): Promise<ValidationResult>
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
-  queryRoutingDirectory(path: string | null): Promise<RoutingDirectoryView>
+  fetchRoutingWorkspace(): Promise<RoutingWorkspace>
+  getRoutingState(): Promise<RoutingState>
+  previewRoute(path: string): Promise<RoutePreview>
+  saveRoutingCommands(commands: RoutingCommand[], expectedRevision: number): Promise<RoutingState>
+  listEvents(limit: number): Promise<AiccEventFeed>
   queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage>
   getCloudUpdateSettings(): Promise<CloudUpdateSettings>
   setCloudUpdateSettings(settings: CloudUpdateSettingsUpdate): Promise<CloudUpdateSettings>
@@ -389,11 +408,6 @@ export interface UsageEventsPage {
   events: StoreSnapshot['usageEvents']
   totalRequests: number
   nextCursor?: string
-}
-
-export interface RoutingDirectoryView {
-  routingView: GlobalRoutingView
-  models: ModelMetadata[]
 }
 
 export interface RouteTracesQuery {
@@ -545,8 +559,32 @@ export class AICCModelStore implements AICCMgr {
     return this.provider.queryUsageEvents(params)
   }
 
-  queryRoutingDirectory(path: string | null): Promise<RoutingDirectoryView> {
-    return this.provider.queryRoutingDirectory(path)
+  fetchRoutingWorkspace(): Promise<RoutingWorkspace> {
+    return this.provider.fetchRoutingWorkspace()
+  }
+
+  getRoutingState(): Promise<RoutingState> {
+    return this.provider.getRoutingState()
+  }
+
+  previewRoute(path: string): Promise<RoutePreview> {
+    return this.provider.previewRoute(path)
+  }
+
+  async saveRoutingCommands(commands: RoutingCommand[], expectedRevision: number): Promise<RoutingState> {
+    try {
+      const state = await this.provider.saveRoutingCommands(commands, expectedRevision)
+      this.snapshotVersion++
+      this.emit()
+      return state
+    } catch (error) {
+      if (isSettingsRevisionConflict(error)) await this.refresh()
+      throw error
+    }
+  }
+
+  listEvents(limit: number): Promise<AiccEventFeed> {
+    return this.provider.listEvents(limit)
   }
 
   queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage> {
@@ -577,6 +615,7 @@ export function createAICCMgr(options: { useMock?: boolean } = {}): AICCMgr {
 
 class MockAiccProvider implements AiccDataProvider {
   private readonly store = new MockDataStore()
+  private readonly routing = new MockRoutingWorld()
   private cloudUpdateSettings: CloudUpdateSettings = {
     enabled: false,
     sourceConfigured: false,
@@ -667,22 +706,28 @@ class MockAiccProvider implements AiccDataProvider {
     }
   }
 
-  async queryRoutingDirectory(path: string | null): Promise<RoutingDirectoryView> {
+  async fetchRoutingWorkspace(): Promise<RoutingWorkspace> {
     const snapshot = this.store.getSnapshot()
-    return {
-      routingView: {
-        ...snapshot.routingView,
-        logical_tree: path
-          ? childLogicalNodes(snapshot.routingView.logical_tree, path)
-          : snapshot.routingView.logical_tree,
-      },
-      models: [
-        ...snapshot.providers
-          .filter((provider) => provider.config.enabled)
-          .flatMap((provider) => provider.status.discovered_models),
-        ...snapshot.localModels,
-      ],
-    }
+    return this.routing.workspace(snapshot, mockModelCatalog(snapshot))
+  }
+
+  async getRoutingState(): Promise<RoutingState> {
+    const snapshot = this.store.getSnapshot()
+    return this.routing.routingState(snapshot, mockModelCatalog(snapshot))
+  }
+
+  async previewRoute(path: string): Promise<RoutePreview> {
+    const snapshot = this.store.getSnapshot()
+    return this.routing.preview(snapshot, mockModelCatalog(snapshot), path)
+  }
+
+  async saveRoutingCommands(commands: RoutingCommand[], expectedRevision: number): Promise<RoutingState> {
+    const snapshot = this.store.getSnapshot()
+    return this.routing.save(snapshot, mockModelCatalog(snapshot), commands, expectedRevision)
+  }
+
+  async listEvents(limit: number): Promise<AiccEventFeed> {
+    return this.routing.eventFeed(limit)
   }
 
   async getCloudUpdateSettings(): Promise<CloudUpdateSettings> {
@@ -886,27 +931,42 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     }
   }
 
-  async queryRoutingDirectory(path: string | null): Promise<RoutingDirectoryView> {
-    const [directory, providerList, routing] = await Promise.all([
+  async fetchRoutingWorkspace(): Promise<RoutingWorkspace> {
+    const [directory, routing, preview] = await Promise.all([
       this.call<RawModelDirectory>('models.list', {}),
-      this.call<RawProviderListResponse>('provider.list', {}),
-      this.call<Record<string, unknown>>('routing.get', {}),
+      this.call<RawRecord>('routing.get', {}),
+      this.call<RawRecord>('routing.preview', {}),
     ])
-    directory.routing_settings = asRecord(routing.routing) as RawRoutingSettings
-    const snapshot = toStoreSnapshot(directory, providerList, [])
+    const state = toRoutingState(routing)
+    this.settingsRevision = state.settingsRevision
+    return { ...state, directories: toRoutingDirectories(directory, preview) }
+  }
+
+  async getRoutingState(): Promise<RoutingState> {
+    const state = toRoutingState(await this.call<RawRecord>('routing.get', {}))
+    this.settingsRevision = state.settingsRevision
+    return state
+  }
+
+  async previewRoute(path: string): Promise<RoutePreview> {
+    const result = await this.call<RawRecord>('routing.preview', { paths: [path], explain: true })
+    const entry = asRecord(Array.isArray(result.entries) ? result.entries[0] : undefined)
+    return toRoutePreview(path, entry)
+  }
+
+  async saveRoutingCommands(commands: RoutingCommand[], expectedRevision: number): Promise<RoutingState> {
+    await this.callWithConflict<RawRecord>('routing.update', {
+      settings_revision: expectedRevision,
+      routing_commands: commands,
+    })
+    return this.getRoutingState()
+  }
+
+  async listEvents(limit: number): Promise<AiccEventFeed> {
+    const result = await this.call<RawRecord>('events.list', { limit })
     return {
-      routingView: path
-        ? {
-          ...snapshot.routingView,
-          logical_tree: childLogicalNodes(snapshot.routingView.logical_tree, path),
-        }
-        : snapshot.routingView,
-      models: [
-        ...snapshot.providers
-          .filter((provider) => provider.config.enabled)
-          .flatMap((provider) => provider.status.discovered_models),
-        ...snapshot.localModels,
-      ],
+      events: toAiccEvents(result.events),
+      activeWarnings: toAiccEvents(result.active_warnings),
     }
   }
 
@@ -1427,11 +1487,155 @@ function toFilteredCandidates(value: unknown): RouteTrace['filtered_candidates']
   return Array.isArray(value)
     ? value.map((item) => {
       const candidate = asRecord(item)
+      const reasons = toFilterReasons(candidate.reasons).map((reason) => reason.code)
       return {
         exact_model: asNonEmptyString(candidate.exact_model, 'unknown-model'),
-        reason: asNonEmptyString(candidate.reason, 'filtered'),
+        reason: reasons.length ? reasons.join(', ') : asNonEmptyString(candidate.reason, 'filtered'),
       }
     })
+    : []
+}
+
+function toFilterReasons(value: unknown): { code: string; summary: string }[] {
+  return Array.isArray(value)
+    ? value.map((item) => {
+      const reason = asRecord(item)
+      const code = asNonEmptyString(reason.code, 'filtered')
+      return { code, summary: asNonEmptyString(reason.summary, code) }
+    })
+    : []
+}
+
+const DIRECTORY_KINDS: DirectoryKind[] = ['task', 'spec', 'family', 'directory']
+
+function toDirectoryKind(value: unknown): DirectoryKind {
+  return DIRECTORY_KINDS.includes(value as DirectoryKind) ? value as DirectoryKind : 'directory'
+}
+
+function toRoutingCommand(value: unknown): RoutingCommand | null {
+  const raw = asRecord(value)
+  const factor = asOptionalNumber(raw.factor)
+  switch (raw.kind) {
+    case 'vendor_factor':
+      return typeof raw.vendor === 'string' && factor != null ? { kind: 'vendor_factor', vendor: raw.vendor, factor } : null
+    case 'spec_factor':
+      return typeof raw.spec === 'string' && factor != null ? { kind: 'spec_factor', spec: raw.spec, factor } : null
+    case 'model_factor':
+      return typeof raw.vendor === 'string' && typeof raw.model === 'string' && factor != null
+        ? { kind: 'model_factor', vendor: raw.vendor, model: raw.model, factor }
+        : null
+    case 'item_weight': {
+      const weight = asOptionalNumber(raw.weight)
+      return typeof raw.path === 'string' && typeof raw.item === 'string' && weight != null
+        ? { kind: 'item_weight', path: raw.path, item: raw.item, weight }
+        : null
+    }
+    default:
+      return null
+  }
+}
+
+function toRoutingCommands(value: unknown): RoutingCommand[] {
+  return Array.isArray(value)
+    ? value.map(toRoutingCommand).filter((command): command is RoutingCommand => command !== null)
+    : []
+}
+
+function toRoutingState(raw: RawRecord): RoutingState {
+  const status = Array.isArray(raw.command_status) ? raw.command_status : []
+  return {
+    settingsRevision: asNumber(raw.settings_revision, 0),
+    commands: toRoutingCommands(asRecord(raw.routing).routing_commands),
+    status: status.flatMap((item) => {
+      const entry = asRecord(item)
+      const command = toRoutingCommand(entry.command)
+      return command
+        ? [{ command, matchedItems: asNumber(entry.matched_items, 0), staleReason: asOptionalString(entry.stale_reason) }]
+        : []
+    }),
+  }
+}
+
+function toRoutingDirectories(directory: RawModelDirectory, preview: RawRecord): RoutingDirectory[] {
+  const definitions = new Map((directory.logical_definitions ?? []).map((definition) => [asOptionalString(definition.path) ?? '', asRecord(definition)]))
+  const items = directory.directory ?? {}
+  const entries = Array.isArray(preview.entries) ? preview.entries.map(asRecord) : []
+  return entries.map((entry) => {
+    const path = asNonEmptyString(entry.path, '')
+    const definition = definitions.get(path) ?? {}
+    return {
+      path,
+      kind: toDirectoryKind(entry.kind ?? definition.kind),
+      apiType: asOptionalString(entry.api_type) ?? asOptionalString(definition.api_type),
+      profile: asOptionalString(definition.scheduler_profile),
+      items: (items[path] ?? []).map((item) => {
+        const weight = asNumber(item.weight, 1)
+        const source = asNonEmptyString(item.source, 'unknown')
+        return {
+          name: asNonEmptyString(item.name, asNonEmptyString(item.target, '')),
+          target: asNonEmptyString(item.target, ''),
+          weight,
+          defaultWeight: asNumber(item.default_weight, weight),
+          source,
+          weightSource: asNonEmptyString(item.weight_source, source),
+        }
+      }),
+      available: asBoolean(entry.available, false),
+      selectedExactModel: asOptionalString(entry.selected_exact_model),
+      error: asOptionalString(entry.error),
+    }
+  }).filter((entry) => entry.path)
+}
+
+function toRoutePreview(path: string, entry: RawRecord): RoutePreview {
+  const trace = asRecord(entry.trace)
+  const steps = Array.isArray(trace.logical_expansion) ? trace.logical_expansion.map(asRecord) : []
+  const ranked = Array.isArray(trace.ranked_candidates) ? trace.ranked_candidates.map(asRecord) : []
+  const filtered = Array.isArray(trace.filtered_candidates) ? trace.filtered_candidates.map(asRecord) : []
+  return {
+    path,
+    available: asBoolean(entry.available, false),
+    selectedExactModel: asOptionalString(entry.selected_exact_model),
+    error: asOptionalString(entry.error),
+    schedulerProfile: asOptionalString(trace.scheduler_profile),
+    expansion: steps.map((step) => ({
+      path: asNonEmptyString(step.logical_path, ''),
+      maxWeight: asOptionalNumber(step.max_weight),
+      items: (Array.isArray(step.items) ? step.items.map(asRecord) : []).map((item) => ({
+        name: asNonEmptyString(item.name, ''),
+        target: asNonEmptyString(item.target, ''),
+        weight: asNumber(item.weight, 0),
+        weightSource: asNonEmptyString(item.weight_source, 'unknown'),
+        state: item.state === 'expanded' || item.state === 'not_expanded' ? item.state : 'unavailable',
+      })),
+    })),
+    ranked: ranked.map((candidate) => ({
+      exactModel: asNonEmptyString(candidate.exact_model, ''),
+      providerInstanceName: asNonEmptyString(candidate.provider_instance_name, ''),
+      defaultOrder: asNumber(candidate.default_order, 0),
+      finalScore: asNumber(candidate.final_score, 0),
+      selected: asBoolean(candidate.selected, false),
+      scoreInputs: toScoreInputs(candidate.score_inputs),
+    })),
+    filtered: filtered.map((candidate) => ({
+      exactModel: asNonEmptyString(candidate.exact_model, ''),
+      reasons: toFilterReasons(candidate.reasons),
+    })),
+    fallbackChain: toFallbackChain(trace.fallback_chain),
+  }
+}
+
+function toAiccEvents(value: unknown): AiccEvent[] {
+  return Array.isArray(value)
+    ? value.map(asRecord).map((event) => ({
+      id: asNumber(event.event_id, 0),
+      createdAtMs: asNumber(event.created_at_ms, 0),
+      level: event.level === 'warning' || event.level === 'error' ? event.level : 'info',
+      kind: asNonEmptyString(event.kind, 'unknown'),
+      message: asNonEmptyString(event.message, ''),
+      details: asRecord(event.details),
+      command: toRoutingCommand(asRecord(event.details).command) ?? undefined,
+    }))
     : []
 }
 
@@ -1606,19 +1810,6 @@ function localDateKey(value: Date): string {
   const month = String(value.getMonth() + 1).padStart(2, '0')
   const day = String(value.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
-}
-
-function childLogicalNodes(nodes: LogicalNode[], path: string): LogicalNode[] {
-  return findLogicalNode(nodes, path)?.children ?? []
-}
-
-function findLogicalNode(nodes: LogicalNode[], path: string): LogicalNode | undefined {
-  for (const node of nodes) {
-    if (node.path === path) return node
-    const child = findLogicalNode(node.children ?? [], path)
-    if (child) return child
-  }
-  return undefined
 }
 
 function toStoreSnapshot(

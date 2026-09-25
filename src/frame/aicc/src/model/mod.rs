@@ -2,8 +2,9 @@ use crate::canonical::CanonicalFieldMapping;
 use crate::catalog::{CatalogSnapshot, LlmModel, ModelStability};
 use crate::error::ModelRegistryError;
 use buckyos_api::{
-    AiccFallbackMode, AiccFallbackRule, AiccLogicalNodeOverlay, AiccLogicalTreeOverlay,
-    AiccPolicyConfig, AiccRouteOverlay, AiccSchedulerProfile, ApiType, LogicalItem, ModelDisable,
+    AiccFallbackMode, AiccFallbackRule, AiccLogicalDirectoryKind, AiccLogicalNodeOverlay,
+    AiccLogicalTreeOverlay, AiccPolicyConfig, AiccRouteOverlay, AiccRoutingCommand,
+    AiccRoutingCommandStatus, AiccSchedulerProfile, ApiType, LogicalItem, ModelDisable,
     ModelItemPatch, ModelRequirement, OverlayMergeMode,
 };
 use serde::{Deserialize, Serialize};
@@ -204,6 +205,7 @@ pub(crate) enum LogicalItemSource {
     ManualOverride,
     UserOverlay,
     SessionOverlay,
+    RoutingCommand,
 }
 
 pub(crate) fn logical_item_source_name(source: LogicalItemSource) -> &'static str {
@@ -214,6 +216,7 @@ pub(crate) fn logical_item_source_name(source: LogicalItemSource) -> &'static st
         LogicalItemSource::ManualOverride => "manual_override",
         LogicalItemSource::UserOverlay => "user_overlay",
         LogicalItemSource::SessionOverlay => "session_overlay",
+        LogicalItemSource::RoutingCommand => "routing_command",
     }
 }
 
@@ -304,6 +307,7 @@ pub(crate) struct LogicalItemView {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LogicalModelView {
     pub path: String,
+    pub kind: AiccLogicalDirectoryKind,
     pub api_type: Option<String>,
     pub mount_mode: Option<MountMode>,
     pub item_count: usize,
@@ -407,6 +411,8 @@ pub(crate) struct ModelRegistry {
     global_exact_model_weights: BTreeMap<String, f64>,
     provider_weights: BTreeMap<String, f64>,
     fallback_depth_limit: usize,
+    known_models: BTreeSet<(String, String)>,
+    command_status: Vec<AiccRoutingCommandStatus>,
 }
 
 impl ModelRegistry {
@@ -427,6 +433,16 @@ impl ModelRegistry {
             global_exact_model_weights: BTreeMap::new(),
             provider_weights: BTreeMap::new(),
             fallback_depth_limit: DEFAULT_FALLBACK_DEPTH_LIMIT,
+            known_models: catalog
+                .model_drivers()
+                .flat_map(|driver| {
+                    driver
+                        .models
+                        .iter()
+                        .map(|model| (driver.model_driver_id.clone(), model.id.clone()))
+                })
+                .collect(),
+            command_status: Vec::new(),
         };
         registry.register_definitions(definitions)?;
         registry.register_specs(catalog)?;
@@ -444,6 +460,12 @@ impl ModelRegistry {
                 registry.apply_route_overlay(layer, source)?;
             }
         }
+        let commands = [layers.factory, layers.system, layers.user, layers.session]
+            .into_iter()
+            .flatten()
+            .flat_map(|layer| layer.routing_commands.iter().cloned())
+            .collect::<Vec<_>>();
+        registry.apply_routing_commands(&commands);
         registry.validate_llm_tree()?;
         registry.validate_fallback_graph()?;
         registry.validate_item_graph()?;
@@ -456,6 +478,12 @@ impl ModelRegistry {
     ) -> Result<Self, ModelRegistryError> {
         let mut registry = self.clone();
         registry.apply_route_overlay(overlay, LogicalItemSource::SessionOverlay)?;
+        if !overlay.routing_commands.is_empty() {
+            let mut status = registry.command_status.clone();
+            registry.apply_routing_commands(&overlay.routing_commands);
+            status.append(&mut registry.command_status);
+            registry.command_status = status;
+        }
         registry.validate_llm_tree()?;
         registry.validate_fallback_graph()?;
         registry.validate_item_graph()?;
@@ -483,6 +511,7 @@ impl ModelRegistry {
             .filter(|(path, node)| !self.family_names.contains(*path) || node.family.is_some())
             .map(|(path, node)| LogicalModelView {
                 path: path.clone(),
+                kind: self.directory_kind(path, node),
                 api_type: node
                     .definition
                     .as_ref()
@@ -526,6 +555,166 @@ impl ModelRegistry {
                 fallback: node.fallback.clone(),
             })
             .collect()
+    }
+
+    pub(crate) fn routing_command_status(&self) -> &[AiccRoutingCommandStatus] {
+        &self.command_status
+    }
+
+    fn directory_kind(&self, path: &str, node: &EffectiveLogicalNode) -> AiccLogicalDirectoryKind {
+        if self.specs.contains_key(path) {
+            AiccLogicalDirectoryKind::Spec
+        } else if node.family.is_some() {
+            AiccLogicalDirectoryKind::Family
+        } else if node.definition.is_some() {
+            AiccLogicalDirectoryKind::Task
+        } else {
+            AiccLogicalDirectoryKind::Directory
+        }
+    }
+
+    pub(crate) fn logical_directory_kind(&self, path: &str) -> Option<AiccLogicalDirectoryKind> {
+        self.logical_nodes
+            .get(path)
+            .map(|node| self.directory_kind(path, node))
+    }
+
+    fn apply_routing_commands(&mut self, commands: &[AiccRoutingCommand]) {
+        let mut leaves = BTreeMap::new();
+        let mut factors = Vec::new();
+        let mut weights = Vec::new();
+        for command in commands {
+            match command {
+                AiccRoutingCommand::ItemWeight { .. } => weights.push(command),
+                _ => factors.push(command),
+            }
+        }
+        let mut status = Vec::new();
+        for command in factors.into_iter().chain(weights) {
+            let stale_reason = command
+                .validate()
+                .err()
+                .or_else(|| self.stale_reason(command));
+            let mut matched_items = 0;
+            if stale_reason.is_none() {
+                let targets = self.command_targets(command, &mut leaves);
+                for (path, index) in targets {
+                    let item = &mut self
+                        .logical_nodes
+                        .get_mut(&path)
+                        .expect("command target node exists")
+                        .items[index];
+                    match command {
+                        AiccRoutingCommand::ItemWeight { weight, .. } => item.weight = *weight,
+                        _ => item.weight *= command.value(),
+                    }
+                    item.weight_source = LogicalItemSource::RoutingCommand;
+                    matched_items += 1;
+                }
+            }
+            status.push(AiccRoutingCommandStatus {
+                command: command.clone(),
+                matched_items,
+                stale_reason,
+            });
+        }
+        self.command_status = status;
+    }
+
+    fn stale_reason(&self, command: &AiccRoutingCommand) -> Option<String> {
+        match command {
+            AiccRoutingCommand::VendorFactor { vendor, .. } => {
+                (!self.known_models.iter().any(|(driver, _)| driver == vendor))
+                    .then(|| format!("vendor {vendor} is not in the model catalog"))
+            }
+            AiccRoutingCommand::SpecFactor { spec, .. } => (!self.specs.contains_key(spec))
+                .then(|| format!("specification {spec} no longer exists")),
+            AiccRoutingCommand::ModelFactor { vendor, model, .. } => {
+                (!self.known_models.contains(&(vendor.clone(), model.clone())))
+                    .then(|| format!("model {vendor}/{model} is not in the model catalog"))
+            }
+            AiccRoutingCommand::ItemWeight { path, item, .. } => match self.logical_nodes.get(path)
+            {
+                None => Some(format!("directory {path} no longer exists")),
+                Some(node) if !node.items.iter().any(|entry| &entry.name == item) => {
+                    Some(format!("item {item} no longer exists in {path}"))
+                }
+                Some(_) => None,
+            },
+        }
+    }
+
+    fn command_targets(
+        &self,
+        command: &AiccRoutingCommand,
+        leaves: &mut BTreeMap<String, BTreeSet<(String, String)>>,
+    ) -> Vec<(String, usize)> {
+        let mut targets = Vec::new();
+        for (path, node) in &self.logical_nodes {
+            for (index, item) in node.items.iter().enumerate() {
+                let base = target_base(&item.target);
+                let matched = match command {
+                    AiccRoutingCommand::ItemWeight {
+                        path: p, item: i, ..
+                    } => p == path && i == &item.name,
+                    AiccRoutingCommand::SpecFactor { spec, .. } => spec == base,
+                    AiccRoutingCommand::VendorFactor { vendor, .. } => {
+                        self.specs
+                            .get(base)
+                            .is_some_and(|(driver, _)| driver == vendor)
+                            || self.owned_by(base, leaves, |(driver, _)| driver == vendor)
+                    }
+                    AiccRoutingCommand::ModelFactor { vendor, model, .. } => {
+                        self.owned_by(base, leaves, |(driver, origin)| {
+                            driver == vendor && origin == model
+                        })
+                    }
+                };
+                if matched {
+                    targets.push((path.clone(), index));
+                }
+            }
+        }
+        targets
+    }
+
+    fn owned_by(
+        &self,
+        target: &str,
+        leaves: &mut BTreeMap<String, BTreeSet<(String, String)>>,
+        owner: impl Fn(&(String, String)) -> bool,
+    ) -> bool {
+        let members = self.target_leaves(target, leaves, &mut BTreeSet::new());
+        !members.is_empty() && members.iter().all(owner)
+    }
+
+    fn target_leaves(
+        &self,
+        target: &str,
+        leaves: &mut BTreeMap<String, BTreeSet<(String, String)>>,
+        stack: &mut BTreeSet<String>,
+    ) -> BTreeSet<(String, String)> {
+        if let Some(model) = self.models.get(target) {
+            return BTreeSet::from([(
+                model.identity.model_driver_id.clone(),
+                model.identity.origin_model_id.clone(),
+            )]);
+        }
+        if let Some(cached) = leaves.get(target) {
+            return cached.clone();
+        }
+        let mut members = BTreeSet::new();
+        if let Some(node) = self.logical_nodes.get(target) {
+            if stack.insert(target.to_owned()) {
+                for item in &node.items {
+                    let base = target_base(&item.target);
+                    members.extend(self.target_leaves(base, leaves, stack));
+                }
+                stack.remove(target);
+            }
+        }
+        leaves.insert(target.to_owned(), members.clone());
+        members
     }
 
     #[cfg(test)]
@@ -1853,6 +2042,14 @@ fn effective_items(items: &[LogicalItem], source: LogicalItemSource) -> Vec<Effe
         .iter()
         .map(|item| EffectiveItem::new(&item.name, &item.target, item.weight, source))
         .collect()
+}
+
+fn target_base(target: &str) -> &str {
+    if target.contains('@') {
+        target
+    } else {
+        target.split(':').next().unwrap_or(target)
+    }
 }
 
 fn empty_candidate_path() -> CandidatePath {

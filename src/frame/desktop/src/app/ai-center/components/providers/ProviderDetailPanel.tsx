@@ -8,7 +8,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { LongField } from '../shared/LongField'
 import { isManagedSnProvider, isSettingsRevisionConflict, type AuthStatus, type ModelMetadata, type ProviderView } from '../../../../api/aicc_mgr'
 
-type TFn = (k: string, f: string) => string
+type TFn = (key: string, fallback?: string, variables?: Record<string, string | number>) => string
 type FilterKey = 'apiType' | 'logicalMount' | 'health' | 'costClass' | 'latencyClass' | 'tier'
 type ProviderDetailSection = 'overview' | 'routing' | 'inventory'
 type MultiFilter = {
@@ -82,7 +82,7 @@ export function ProviderDetailPanel({ provider, routingWeight, onDeleted, onBack
 }
 
 function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }: ProviderDetailPanelProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const store = useAICCStore()
   const isMobile = useMediaQuery('(max-width: 767px)')
   const [activeSection, setActiveSection] = useState<ProviderDetailSection>('overview')
@@ -162,7 +162,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
       .catch((error) => {
         console.error('aicc.setProviderRoutingWeight failed', error)
         setWeightError(isSettingsRevisionConflict(error)
-          ? t('aiCenter.providers.settingsConflict', 'Settings changed elsewhere. The latest settings were loaded; please try again.')
+          ? t('aiCenter.providers.settingsConflict', 'Settings changed elsewhere. The latest values have been loaded; please try again.')
           : t('aiCenter.providers.routingWeightSaveFailed', 'Could not save routing weight.'))
       })
       .finally(() => setSavingWeight(false))
@@ -184,7 +184,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
       setRefreshFeedback({ message: t('aiCenter.providers.modelsRefreshedNow', 'Provider models refreshed just now.'), at: new Date() })
     } catch (error) {
       console.error('aicc.updateProviderKey failed', error)
-      setKeyError(isSettingsRevisionConflict(error) ? t('aiCenter.providers.settingsConflict', 'Settings changed elsewhere. The latest settings were loaded; please try again.') : errorMessage(error, t('aiCenter.providers.updateKeyFailed', 'Could not update API key.')))
+      setKeyError(isSettingsRevisionConflict(error) ? t('aiCenter.providers.settingsConflict', 'Settings changed elsewhere. The latest values have been loaded; please try again.') : errorMessage(error, t('aiCenter.providers.updateKeyFailed', 'Could not update API key.')))
     } finally {
       setUpdatingKey(false)
     }
@@ -217,7 +217,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         : t('aiCenter.providers.disabledSuccess', 'Provider disabled and removed from routing.'))
     } catch (error) {
       console.error('aicc.setProviderEnabled failed', error)
-      setEnabledError(isSettingsRevisionConflict(error) ? t('aiCenter.providers.settingsConflict', 'Settings changed elsewhere. The latest settings were loaded; please try again.') : errorMessage(error, t('aiCenter.providers.toggleFailed', 'Could not update Provider status.')))
+      setEnabledError(isSettingsRevisionConflict(error) ? t('aiCenter.providers.settingsConflict', 'Settings changed elsewhere. The latest values have been loaded; please try again.') : errorMessage(error, t('aiCenter.providers.toggleFailed', 'Could not update Provider status.')))
     } finally {
       setUpdatingEnabled(false)
     }
@@ -264,7 +264,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         ? t('aiCenter.providers.routingUpweighted', 'Upweighted')
         : t('aiCenter.providers.routingDefault', 'Default')
   const providerMetrics: ProviderMetric[] = [
-    { label: t('aiCenter.providers.providerStatus', 'Provider Status'), value: config.name, detail: `${models.length} ${t('aiCenter.providers.models', 'Models')} / ${degradedCount + quotaWarningCount} ${t('aiCenter.providers.issues', 'Issues')}`, tone: degradedCount + quotaWarningCount > 0 ? 'warning' : 'ok' },
+    { label: t('aiCenter.providers.providerStatus', 'Provider Status'), value: config.name, detail: t('aiCenter.providers.statusDetail', '{{models}} models / {{issues}} issues', { models: models.length, issues: degradedCount + quotaWarningCount }), tone: degradedCount + quotaWarningCount > 0 ? 'warning' : 'ok' },
     { label: t('aiCenter.providers.inventoryModels', 'Inventory Models'), value: models.length.toString(), detail: inventory.inventory_revision, tone: 'accent' },
     { label: t('aiCenter.providers.quota', 'Quota'), value: quotaWarningCount ? `${quotaWarningCount}` : '0', detail: quotaWarningCount ? t('aiCenter.providers.quotaWarning', 'needs attention') : t('aiCenter.providers.quotaNormal', 'normal'), tone: quotaWarningCount ? 'warning' : 'ok' },
     { label: t('aiCenter.providers.routingWeight', 'Routing Weight'), value: formatWeight(routingWeight), detail: routingWeightLabel, tone: routingWeight === 0 ? 'warning' : 'accent' },
@@ -461,7 +461,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         className="rounded-xl p-4 flex flex-col gap-3"
         style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
       >
-        <Row label={t('aiCenter.providers.profile', 'Provider Profile')} value={config.provider_profile_id} copyValue={config.provider_profile_id} />
+        <Row label={t('aiCenter.providers.profile', 'Profile')} value={config.provider_profile_id} copyValue={config.provider_profile_id} />
         <Row label={t('aiCenter.providers.adapter', 'Protocol Adapter')} value={config.protocol_adapter_id} copyValue={config.protocol_adapter_id} />
         <Row label={t('aiCenter.providers.enabled', 'Enabled')} value={config.enabled ? t('common.on', 'On') : t('common.off', 'Off')} />
         <Row label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={`${formatWeight(routingWeight)} / ${routingWeightLabel}`} />
@@ -515,7 +515,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
             }}
           >
             <Save size={14} />
-            {savingWeight ? t('common.saving', 'Saving') : t('common.save', 'Save')}
+            {savingWeight ? t('common.saving', 'Saving...') : t('common.save', 'Save')}
           </button>
         </div>
         <div className="grid grid-cols-[1fr_5rem] gap-3 items-center">
@@ -551,13 +551,13 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
       {config.enabled && status.model_sync_status !== 'ok' && (
         <InlineNotice tone="warning">
           <AlertTriangle size={16} style={{ color: 'var(--cp-warning)' }} />
-          <span>{t('aiCenter.providers.syncFailed', 'Last inventory sync failed. Existing models remain usable, but refresh is recommended.')}</span>
+          <span>{t('aiCenter.providers.syncFailedNotice', 'Last inventory sync failed. Existing models remain usable, but refresh is recommended.')}</span>
         </InlineNotice>
       )}
       {keyFeedback && <InlineNotice tone="success">{keyFeedback}</InlineNotice>}
       {refreshFeedback && (
         <InlineNotice tone="success">
-          {refreshFeedback.message} {t('aiCenter.providers.updatedAt', 'Updated at')} {refreshFeedback.at.toLocaleTimeString()}
+          {refreshFeedback.message} {t('aiCenter.providers.updatedAt', 'Updated at')} {refreshFeedback.at.toLocaleTimeString(locale)}
         </InlineNotice>
       )}
       {refreshError && <InlineNotice tone="error">{refreshError}</InlineNotice>}
@@ -888,7 +888,7 @@ function MultiSelectFilter({ label, value, options, onChange }: { label: string;
         <input
           value={value.query}
           onChange={(event) => onChange({ ...value, query: event.target.value })}
-          placeholder={selectedCount > 0 ? `${selectedCount} selected` : 'All'}
+          placeholder={selectedCount > 0 ? t('aiCenter.providers.selectedCount', '{{count}} selected', { count: selectedCount }) : t('common.all', 'All')}
           className="min-w-0 flex-1 rounded-l-lg bg-transparent px-2 py-1.5 text-xs outline-none"
           style={{ color: 'var(--cp-text)' }}
         />
@@ -897,7 +897,7 @@ function MultiSelectFilter({ label, value, options, onChange }: { label: string;
           onClick={() => setOpen((current) => !current)}
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-r-lg"
           style={{ color: selectedCount > 0 ? 'var(--cp-accent)' : 'var(--cp-muted)', borderLeft: '1px solid var(--cp-border)' }}
-          aria-label={`${label} options`}
+          aria-label={t('aiCenter.providers.filterOptions', '{{label}} options', { label })}
         >
           <ChevronDown size={14} />
         </button>
@@ -913,7 +913,7 @@ function MultiSelectFilter({ label, value, options, onChange }: { label: string;
             className="rounded px-2 py-1 text-left text-xs"
             style={{ color: 'var(--cp-accent)' }}
           >
-            All
+            {t('common.all', 'All')}
           </button>
           {visibleOptions.map((option) => (
             <label key={option} className="flex min-h-7 items-center gap-2 rounded px-2 py-1 text-xs" style={{ color: 'var(--cp-text)' }}>
@@ -970,7 +970,7 @@ function ModelInventoryGroup({ group, expanded, onToggle, t }: { group: ModelGro
           className="w-full flex items-center justify-between px-3 py-2 text-xs"
           style={{ color: 'var(--cp-accent)', borderTop: '1px solid var(--cp-border)' }}
         >
-          <span>{group.variants.length} {t('aiCenter.providers.variants', 'variants')}</span>
+          <span>{t('aiCenter.providers.variantCount', '{{count}} variants', { count: group.variants.length })}</span>
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </button>
       )}
@@ -1002,11 +1002,11 @@ function ModelInventoryRow({ model, t, compact = false, groupLabel }: { model: M
         <StatusBadge status={modelHealthVariant(model.health.status)} label={model.health.status} />
       </div>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-3 text-xs">
-        <Chip label={t('aiCenter.providers.quality', 'quality')} value={model.attributes.quality_score?.toString() ?? '-'} />
-        <Chip label={t('aiCenter.providers.tier', 'tier')} value={model.attributes.tier ?? '-'} />
-        <Chip label={t('aiCenter.providers.latency', 'latency')} value={`${model.attributes.latency_class}${model.health.p95_latency_ms ? ` p95 ${model.health.p95_latency_ms}ms` : ''}`} />
-        <Chip label={t('aiCenter.providers.cost', 'cost')} value={formatModelPricing(model)} />
-        <Chip label={t('aiCenter.providers.quota', 'quota')} value={model.health.quota_state} />
+        <Chip label={t('aiCenter.providers.quality', 'Quality')} value={model.attributes.quality_score?.toString() ?? '-'} />
+        <Chip label={t('aiCenter.providers.tier', 'Tier')} value={model.attributes.tier ?? '-'} />
+        <Chip label={t('aiCenter.providers.latency', 'Latency')} value={`${model.attributes.latency_class}${model.health.p95_latency_ms ? ` p95 ${model.health.p95_latency_ms}ms` : ''}`} />
+        <Chip label={t('aiCenter.providers.cost', 'Cost')} value={formatModelPricing(model, t)} />
+        <Chip label={t('aiCenter.providers.quota', 'Quota')} value={model.health.quota_state} />
       </div>
     </div>
   )
@@ -1078,7 +1078,7 @@ function UpdateKeyDialog({
             style={{ background: 'var(--cp-accent)', color: '#fff' }}
           >
             {loading && <RefreshCw size={14} className="animate-spin" />}
-            {loading ? t('common.saving', 'Saving') : t('common.save', 'Save')}
+            {loading ? t('common.saving', 'Saving...') : t('common.save', 'Save')}
           </button>
         </div>
       </div>
@@ -1271,9 +1271,9 @@ function formatWeight(weight: number): string {
   return weight.toFixed(2).replace(/\.?0+$/, '')
 }
 
-function formatModelPricing(model: ModelMetadata): string {
+function formatModelPricing(model: ModelMetadata, t: TFn): string {
   if (model.pricing.estimated_cost_usd != null) {
-    return `$${model.pricing.estimated_cost_usd.toFixed(4)} est.`
+    return t('aiCenter.providers.estimatedPrice', '{{cost}} est.', { cost: `$${model.pricing.estimated_cost_usd.toFixed(4)}` })
   }
   if (model.pricing.input_token_usd != null || model.pricing.output_token_usd != null) {
     const input = model.pricing.input_token_usd != null ? `$${model.pricing.input_token_usd}` : '-'

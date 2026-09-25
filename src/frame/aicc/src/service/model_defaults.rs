@@ -463,8 +463,11 @@ use crate::model::{
 };
 use crate::runtime::ModelRegistryAssembler;
 
+use super::events::AiccEventLog;
+
 pub(super) struct ServiceModelAssembler {
     pub(super) session: Option<buckyos_api::AiccRouteOverlay>,
+    pub(super) events: Option<Arc<AiccEventLog>>,
 }
 
 #[async_trait]
@@ -474,7 +477,7 @@ impl ModelRegistryAssembler for ServiceModelAssembler {
         catalog: Arc<CatalogSnapshot>,
         inventories: Vec<ModelProviderInventory>,
     ) -> Result<Arc<ModelRegistry>, RuntimeError> {
-        ModelRegistry::build(
+        let built = ModelRegistry::build(
             catalog.as_ref(),
             &inventories,
             builtin_logical_model_definitions(),
@@ -483,9 +486,16 @@ impl ModelRegistryAssembler for ServiceModelAssembler {
                 session: self.session.as_ref(),
                 ..RegistryLayers::default()
             },
-        )
-        .map(Arc::new)
-        .map_err(|error| RuntimeError::Backend(error.to_string()))
+        );
+        if let Some(events) = &self.events {
+            match &built {
+                Ok(registry) => events.observe_routing_commands(registry.routing_command_status()),
+                Err(error) => events.observe_registry_error(&error.to_string()),
+            }
+        }
+        built
+            .map(Arc::new)
+            .map_err(|error| RuntimeError::Backend(error.to_string()))
     }
 }
 

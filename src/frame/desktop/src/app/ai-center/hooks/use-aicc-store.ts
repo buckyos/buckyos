@@ -1,3 +1,4 @@
+import useSWR from 'swr'
 import {
   createContext,
   useCallback,
@@ -68,4 +69,10 @@ export function useGlobalRoutingView(): GlobalRoutingView {
 
 export function useRouteTraces(): RouteTrace[] {
   return useStoreSnapshot().routeTraces
+}
+
+export function useRoutingState() {
+  const store = useAICCStore()
+  const version = useSyncExternalStore(store.subscribe, store.getSnapshotVersion)
+  return useSWR(['aicc-routing-state', store, version], () => store.getRoutingState(), { keepPreviousData: true })
 }

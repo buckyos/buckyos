@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import useSWR from 'swr'
 import { useI18n } from '../../i18n/provider'
 import { useAICCStore } from './hooks/use-aicc-store'
+import { WeightFactorControl } from './components/routing/WeightFactorControl'
 import {
   defaultModelFilters, filterModelCatalog, modelCard, modelFiltersSchema, vendorNames,
   type ModelCardView, type ModelFilters,
@@ -132,6 +133,7 @@ function VendorSection({ vendor, showModel }: {
           <ChevronDown size={17} className={`transition-transform ${collapsed ? '-rotate-90' : ''}`} />
         </button>
       </h3>
+      {!collapsed && <WeightFactorControl compact subject={{ kind: 'vendor_factor', vendor: vendor.id, factor: 1 }} label={vendorName} />}
       <div id={`${sectionId}-specs`} hidden={collapsed} role="group" aria-label={t('aiCenter.models.specs')}
         className={collapsed ? 'hidden' : 'flex min-w-0 flex-wrap items-center gap-1.5'}>
         {vendor.specs.map((spec) => (
@@ -150,7 +152,10 @@ function VendorSection({ vendor, showModel }: {
     </header>
     <div id={`${sectionId}-models`} hidden={collapsed} className={collapsed ? 'hidden' : 'flex min-w-0 flex-col gap-3'}>
       {expandedSpec && <div id={`${sectionId}-spec-members`} role="region" aria-labelledby={`${sectionId}-${expandedSpec.id}`} className="rounded-lg px-3 py-2" style={surface}>
-        <p className="mb-2 break-all text-xs" style={muted}>{expandedSpec.path}{expandedSpec.direct_only ? ` · ${t('aiCenter.models.directOnly')}` : ''}</p>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="break-all text-xs" style={muted}>{expandedSpec.path}{expandedSpec.direct_only ? ` · ${t('aiCenter.models.directOnly')}` : ''}</p>
+          <WeightFactorControl compact subject={{ kind: 'spec_factor', spec: expandedSpec.path, factor: 1 }} label={expandedSpec.id} />
+        </div>
         {expandedSpec.members.length ? <>
           <div className="mb-1 flex justify-between gap-3 text-xs" style={muted}><span>{t('aiCenter.models.modelName')}</span><span>{t('aiCenter.models.weight')}</span></div>
           {expandedSpec.members.map((member) => (
@@ -213,6 +218,9 @@ function ModelDetails({ model, onClose }: { model: ModelCardView; onClose: () =>
     <div className="mb-5 flex items-start justify-between gap-3">
       <div className="min-w-0"><p className="mb-1 text-xs" style={muted}>{t('aiCenter.models.details')}</p><h2 id="model-detail-title" className="break-all font-mono text-lg font-semibold">{model.id}</h2></div>
       <button type="button" onClick={onClose} aria-label={t('common.close')} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg" style={surface}><X size={20} /></button>
+    </div>
+    <div className="mb-5">
+      <WeightFactorControl subject={{ kind: 'model_factor', vendor: model.vendorId, model: model.id, factor: 1 }} label={model.id} />
     </div>
     <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       {facts.map(([label, value]) => <div key={label}><dt className="text-xs" style={muted}>{label}</dt><dd className="mt-1 break-all text-sm">{value}</dd></div>)}

@@ -157,7 +157,7 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
               height: 44,
             }}
           >
-            <option value="">{t('aiCenter.wizard.selectProtocolFamily', 'Select protocol family...')}</option>
+            <option value="">{t('aiCenter.wizard.selectProtocolFamily', 'Select a protocol family')}</option>
             {(catalog?.protocol_families ?? []).map((family) => <option key={family.protocol_family_id} value={family.protocol_family_id}>{family.display_name}</option>)}
           </select>
         </div>

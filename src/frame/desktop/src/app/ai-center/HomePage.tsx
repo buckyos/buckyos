@@ -1,6 +1,7 @@
 import { useAIStatus } from './hooks/use-aicc-store'
 import { EnableAIGuide } from './components/home/EnableAIGuide'
 import { UsageDashboard } from './components/home/UsageDashboard'
+import { AiccEventsCard } from './components/home/AiccEventsCard'
 import type { AICenterPage } from './components/layout/Sidebar'
 
 interface HomePageProps {
@@ -14,5 +15,10 @@ export function HomePage({ navigate }: HomePageProps) {
     return <EnableAIGuide onGetStarted={() => navigate('providers/add')} />
   }
 
-  return <UsageDashboard />
+  return (
+    <div className="flex flex-col gap-6">
+      <AiccEventsCard onOpenRouting={() => navigate('routing')} />
+      <UsageDashboard />
+    </div>
+  )
 }

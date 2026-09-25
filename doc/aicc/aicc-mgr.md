@@ -27,7 +27,8 @@ Provider Instance、Provider Profile 和 Protocol Adapter 是不同身份：
 - `provider.refresh_models`
 - `provider.list` / `provider.health`
 - `usage.query` / `trace.query`
-- `routing.get` / `routing.update`
+- `routing.get` / `routing.update` / `routing.preview`
+- `events.list`
 - `driver_metadata_update.get` / `driver_metadata_update.set`
 - `service.reload_settings`
 
@@ -536,7 +537,7 @@ Rust 契约统一定义在 `buckyos-api::aicc_client` 的 `DriverMetadataUpdate*
 
 ### 5.1 `routing.get` / `routing.update`
 
-`routing.get` 返回当前 settings revision 和完整 `AiccRouteOverlay`。`routing.update` 使用调用方读取到的 revision 做 CAS，只替换 `session_config.provider_weights`，其它系统级 routing 字段保持不变。settings 中的内部字段名 `session_config` 不表示 AICC 保存应用 session overlay；请求级 `session_overlay` 始终由调用方传入。
+`routing.get` 返回当前 settings revision、完整 `AiccRouteOverlay`，以及当前 Registry 对每条路由调整命令的应用结果 `command_status`（`command`、`matched_items`、可选 `stale_reason`）。`routing.update` 使用调用方读取到的 revision 做 CAS，只替换请求中出现的字段：`provider_weights` 和/或 `routing_commands`，其它系统级 routing 字段保持不变；两者都缺省时返回 `invalid_request`。settings 中的内部字段名 `session_config` 不表示 AICC 保存应用 session overlay；请求级 `session_overlay` 始终由调用方传入。
 
 `routing.update` request：
 
@@ -545,11 +546,34 @@ Rust 契约统一定义在 `buckyos-api::aicc_client` 的 `DriverMetadataUpdate*
   "settings_revision": 12,
   "provider_weights": {
     "openai-main": 1.5
-  }
+  },
+  "routing_commands": [
+    {"kind": "vendor_factor", "vendor": "claude", "factor": 1.5},
+    {"kind": "spec_factor", "spec": "llm.gpt-pro", "factor": 0.8},
+    {"kind": "model_factor", "vendor": "openai", "model": "gpt-5.6-sol", "factor": 2.0},
+    {"kind": "item_weight", "path": "llm.chat", "item": "gpt-pro", "weight": 3.0}
+  ]
 }
 ```
 
-`provider_weights` 采用完整替换语义，不是 patch；空 map 表示清空全部 Provider 权重。revision 不匹配时返回 `settings_revision_conflict`，并在 `details.expected_revision`、`details.actual_revision` 中返回冲突双方版本。
+`provider_weights` 与 `routing_commands` 都采用完整替换语义，不是 patch；空 map/空数组表示清空。revision 不匹配时返回 `settings_revision_conflict`，并在 `details.expected_revision`、`details.actual_revision` 中返回冲突双方版本。
+
+#### 路由调整命令
+
+逻辑目录树会随 metadata、inventory 刷新自动重建，因此 UI 的路由调整不直接改写目录，而是保存为 `AiccRouteOverlay.routing_commands`。Registry 每次构建（所有 overlay 层合并之后、校验之前）都会重新应用这些命令：
+
+- `vendor_factor` / `spec_factor` / `model_factor`：权重系数，默认 1.0，与匹配 item 的权重相乘；多条系数可叠乘。item 的目标是规格目录（由规格所属 model driver 判定厂商）、或其可达 exact model 全部属于该厂商/模型时匹配。只有同一父目录下的相对权重有意义，因此对同一厂商的全部兄弟项一起乘以系数不会改变它们之间的选择。
+- `item_weight`：手工模式，直接把 `path` 目录下名为 `item` 的子项权重设为 `weight`，在全部系数之后应用，因此覆盖系数结果。
+- 命令引用的对象（厂商、规格、模型、目录或子项）在当前目录树中不存在时，命令不生效也不导致构建失败，`command_status.stale_reason` 给出原因，并产生 `routing_command_stale` 事件；对象恢复后自动重新生效并产生 `routing_command_recovered` 事件。
+- 被命令修改的 item 的 `weight_source` 为 `routing_command`，`default_weight` 保持原默认值。
+
+### 5.2 `routing.preview`
+
+对逻辑目录执行与真实请求相同的两阶段路由（不调用 Provider、不记录 session 历史），用于 UI 观察和测试当前路由配置。request：`{"paths": [...], "explain": false}`，`paths` 为空时预览全部逻辑目录。response 为 `settings_revision` 和 `entries`，每项包含 `path`、`api_type`、`kind`（`task` 用途目录 / `spec` 规格 / `family` 模型家族 / `directory` 其它目录）、`available`、`selected_exact_model`、`error`；`explain=true` 时额外返回完整路由 trace（`logical_expansion`、`ranked_candidates`、`filtered_candidates`、`fallback_chain`、`scheduler_profile` 等）。`models.list` 的 `logical_definitions` 同样带 `kind`。
+
+### 5.3 `events.list`
+
+返回 AICC 值得关注的系统事件，供 AI Center 首页展示。request：`{"limit": 50}`（上限 200）。response：`events`（最新在前的事件历史，内存环形缓冲，最多 200 条，服务重启后清空）和 `active_warnings`（当前仍未解决的告警，例如失效的路由调整命令）。事件字段：`event_id`、`created_at_ms`、`level`（`info`/`warning`/`error`）、`kind`、`message`（英文兜底文案，UI 按 `kind` 本地化）、`details`。当前 `kind`：`routing_command_stale`、`routing_command_recovered`、`routing_commands_updated`、`registry_build_failed`、`registry_recovered`。
 
 ## 6. system_config 事务模型
 

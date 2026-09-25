@@ -111,10 +111,10 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
         auth_valid: false,
         models_discovered: [],
         balance_available: false,
-        errors: [error instanceof Error ? error.message : 'Validation failed'],
+        errors: [error instanceof Error ? error.message : t('aiCenter.wizard.validationFailed', 'Validation failed')],
         error_details: [{
           kind: 'base_url',
-          message: error instanceof Error ? error.message : 'Validation failed',
+          message: error instanceof Error ? error.message : t('aiCenter.wizard.validationFailed', 'Validation failed'),
         }],
       }
       setChecks((prev) => prev.map((item) => ({ ...item, status: 'error' as const })))
@@ -174,7 +174,7 @@ export function StepValidation({ draft, onResult }: StepValidationProps) {
           ))}
           {models.length > 10 && (
             <div className="text-xs pt-1" style={{ color: 'var(--cp-muted)' }}>
-              +{models.length - 10} more
+              {t('aiCenter.wizard.moreModels', '+{{count}} more', { count: models.length - 10 })}
             </div>
           )}
         </div>

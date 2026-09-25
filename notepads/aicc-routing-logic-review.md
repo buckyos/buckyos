@@ -302,3 +302,35 @@ allowed = 对 candidates 执行能力、运行状态、权限、预算等硬过�
 - **UI 未提供编辑**：Ai Center 目前只解析并携带 `default_weight`/`source`/`weight_source`，尚未展示“默认值/覆盖值/来源”，也没有编辑权重的入口。
 - 同一目录被不同约束栈多次访问时，`logical_expansion` 只记录第一次的决策。
 
+
+## 8. AICC WebUI Routing 页面重构（2026-09-25）
+
+§7.3 的"UI 未提供编辑"已解决。路由调整不直接改写逻辑目录，而是保存为命令，目录树每次重建后重新应用。
+
+### 8.1 后端
+
+| 位置 | 改动 |
+|---|---|
+| `buckyos-api/src/aicc_client.rs` | `AiccRouteOverlay.routing_commands: Vec<AiccRoutingCommand>`（`vendor_factor` / `spec_factor` / `model_factor` / `item_weight`）；`RoutingGetResponse.command_status`；`RoutingUpdateRequest` 的 `provider_weights`、`routing_commands` 均为可选、完整替换；新增 `routing.preview`（`RoutingPreviewRequest/Response`，目录 `kind`=task/spec/family/directory）与 `events.list`（`AiccSystemEvent`）。 |
+| `model/mod.rs` | `ModelRegistry::build` 在所有 overlay 层之后、校验之前 `apply_routing_commands`：先乘系数（规格按所属 driver 判定厂商，其它目标按可达 exact model 全部归属判定），再应用 `item_weight`（覆盖系数）；对象不存在时记 `stale_reason` 且不失败；`weight_source = routing_command`。`logical_model_views` 带 `kind`。 |
+| `service/events.rs` | 内存事件环（200 条）；`ServiceModelAssembler` 每次构建 Registry 后比对失效命令集合，发出 `routing_command_stale/recovered`，构建失败发 `registry_build_failed/recovered`；`routing.update` 保存命令时发 `routing_commands_updated`。 |
+| `service/inference.rs` | `preview_routes`：一次快照、一次运行时状态、按 api_type 缓存 quota，逐目录执行真实 Router；`explain` 时返回完整 trace。 |
+
+### 8.2 前端（`src/frame/desktop`）
+
+- `RoutingPage.tsx` 重写：左侧目录列表（默认只显示可用；全部/可用/规格/用途筛选；用途/家族/规格三色图标）；右侧 header 显示胜出模型、胜出路径与原因（唯一候选 / 某评分项最优 / 同分按默认顺序 / 经 fallback）；details 按展开路径显示候选树（可显示未展开项），高级模式只列本目录子项并可手工设权重、"设为胜出"（max+1）、恢复默认；顶部"路由调整"面板列出全部命令及失效警告。
+- Models 页：厂商、规格、模型详情各有权重系数控件（默认 1.0）。
+- 首页新增"系统事件"卡片（活跃告警 + 最近事件，按 `kind` 本地化）。
+- 数据模型 `datamodel/routing.ts`；mock 运行时 `mock/routing.ts` 复刻同一语义。
+- 多语言：AI Center 全部 key 补齐 en/zh（`i18n/ai-center.ts`、`i18n/ai-center-routing.ts`），硬编码文案改走 `t()`，删除旧 Routing 页失效 key。
+
+### 8.3 验证
+
+- `cargo test -p aicc --lib` 496 passed（新增 `routing_commands_scale_and_pin_item_weights_after_every_rebuild` 及 events 2 例）；`cargo test -p buckyos-api --lib` 217 passed；`cargo check --workspace --tests --exclude scheduler` 通过。
+- desktop：`tsc -b`、eslint 通过；`playwright -c playwright.aicc.config.ts` 7 passed（新增 `aicc-routing.spec.ts` 2 例）；`deno test tests/datamodel/aicc-routing.test.ts` 3 passed。
+
+### 8.4 未验证 / 风险
+
+- 未在 DV 环境部署验证 `routing.preview` 的真实耗时（全目录约数百次路由计算）与真实 trace 渲染。
+- 事件仅存内存，服务重启后历史清空（失效命令会在首次构建时重新告警）。
+- `vendor_factor` 对混合厂商目录不生效（只作用于完全属于该厂商的子项），这是有意的语义。

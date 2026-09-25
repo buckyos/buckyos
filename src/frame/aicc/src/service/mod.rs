@@ -1,4 +1,5 @@
 mod cloud_update;
+mod events;
 mod inference;
 mod management;
 mod model_defaults;
@@ -7,6 +8,7 @@ mod provider_execution;
 mod quota;
 mod settings_runtime;
 
+use events::AiccEventLog;
 use inference::{inference_error, next_inference_id, now_ms, AuthenticatedResourceAuthorizer};
 pub(crate) use inference::{
     DriverMetadataPort, ProviderValidator, QuotaQueryPort, RuntimeInferencePort, UsageQueryPort,
@@ -27,14 +29,15 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AckControlReq,
-    ActorRef, AiMethodStatus, AiccCall, AiccError, AiccErrorCode, AiccHandler, AiccRouteTraceEvent,
-    AiccServerHandler, AudioEnhanceRequest, AudioEnhanceResponse, AudioMusicRequest,
-    AudioMusicResponse, AudioSpeechRecognitionRequest, AudioSpeechRecognitionResponse,
-    AudioTextToSpeechRequest, AudioTextToSpeechResponse, BuckyOSRuntimeType, CancelResponse,
-    ComputerUseRequest, ComputerUseResponse, CreateDelegatedTaskReq, DriverMetadataRuntimeApply,
-    DriverMetadataUpdateSetReq, DriverMetadataUpdateSetResponse, DriverMetadataUpdateStatus,
-    DriverMetadataUpdateView, EmbeddingMultimodalRequest, EmbeddingMultimodalResponse,
-    EmbeddingTextRequest, EmbeddingTextResponse, ImageBackgroundRemoveRequest,
+    ActorRef, AiMethodStatus, AiccCall, AiccError, AiccErrorCode, AiccEventLevel, AiccHandler,
+    AiccLogicalDirectoryKind, AiccRouteTraceEvent, AiccServerHandler, AudioEnhanceRequest,
+    AudioEnhanceResponse, AudioMusicRequest, AudioMusicResponse, AudioSpeechRecognitionRequest,
+    AudioSpeechRecognitionResponse, AudioTextToSpeechRequest, AudioTextToSpeechResponse,
+    BuckyOSRuntimeType, CancelResponse, ComputerUseRequest, ComputerUseResponse,
+    CreateDelegatedTaskReq, DriverMetadataRuntimeApply, DriverMetadataUpdateSetReq,
+    DriverMetadataUpdateSetResponse, DriverMetadataUpdateStatus, DriverMetadataUpdateView,
+    EmbeddingMultimodalRequest, EmbeddingMultimodalResponse, EmbeddingTextRequest,
+    EmbeddingTextResponse, EventsListRequest, EventsListResponse, ImageBackgroundRemoveRequest,
     ImageBackgroundRemoveResponse, ImageInpaintRequest, ImageInpaintResponse, ImageToImageRequest,
     ImageToImageResponse, ImageUpscaleRequest, ImageUpscaleResponse, ListModelsRequest,
     LlmChatHelperRequest, LlmChatInvokeRequest, LlmChatInvokeResponse, ProtocolAdapterListRequest,
@@ -52,7 +55,8 @@ use buckyos_api::{
     QuotaQueryRequest, QuotaQueryResponse, QuotaState, RequestControlResult,
     RequestDelegatedControlReq, RerankRequest, RerankResponse, RouteFallbackAttempt,
     RouteResolveRequest, RouteResolveResponse, RouteTrace, RoutingGetRequest, RoutingGetResponse,
-    RoutingUpdateRequest, RoutingUpdateResponse, RunnerWriteEnvelope, ServiceReloadSettingsRequest,
+    RoutingPreviewEntry, RoutingPreviewRequest, RoutingPreviewResponse, RoutingUpdateRequest,
+    RoutingUpdateResponse, RunnerWriteEnvelope, ServiceReloadSettingsRequest,
     ServiceReloadSettingsResponse, SystemConfigClient, SystemConfigError, TaskControlAction,
     TaskExecutor, TaskManagerClient, TextToImageHelperRequest, TextToImageInvokeRequest,
     TextToImageInvokeResponse, UsageQueryOutputMode, UsageQueryTimeRange, VideoExtendRequest,
@@ -483,7 +487,8 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
             .await
             .context("open AICC storage")?,
     );
-    let service_factory = Arc::new(ServiceRuntimeFactory::new(storage.clone()));
+    let events = Arc::new(AiccEventLog::default());
+    let service_factory = Arc::new(ServiceRuntimeFactory::new(storage.clone(), events.clone()));
     let provider_events = service_factory.subscribe_provider_refreshes();
     let factory: Arc<dyn RuntimeFactory> = service_factory;
     let runtime_inputs = ProductionRuntimeInputs::new(metadata_sources, cloud_update.clone());
@@ -548,6 +553,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
     )
     .with_execution(execution)
     .with_inference(inference)
+    .with_events(events)
     .with_artifact_url_reader(provider_execution);
     serve_service(service, runtime, cloud_update, provider_events).await
 }
@@ -603,6 +609,7 @@ pub(crate) struct RuntimeAdminSnapshot {
     pub protocol_adapters: ProtocolAdapterListResponse,
     pub models: Value,
     pub routing: buckyos_api::AiccRouteOverlay,
+    pub routing_command_status: Vec<buckyos_api::AiccRoutingCommandStatus>,
     pub providers: Vec<ProviderInstanceView>,
     pub inventory_revision: String,
     pub provider_health: BTreeMap<String, Value>,
@@ -628,6 +635,12 @@ pub(crate) trait InferencePort: Send + Sync {
         caller: &AuthorizedCaller,
         request: RouteResolveRequest,
     ) -> Result<RouteResolveResponse, RPCErrors>;
+
+    async fn preview_routes(
+        &self,
+        caller: &AuthorizedCaller,
+        request: buckyos_api::RoutingPreviewRequest,
+    ) -> Result<buckyos_api::RoutingPreviewResponse, RPCErrors>;
 
     async fn invoke(&self, caller: &AuthorizedCaller, call: AiccCall) -> Result<Value, RPCErrors>;
 }
@@ -665,6 +678,7 @@ pub(crate) struct AiccService {
     execution: Option<Arc<ExecutionEngine>>,
     inference: Option<Arc<dyn InferencePort>>,
     artifact_url_reader: Option<Arc<RuntimeProviderExecutionPort>>,
+    events: Arc<AiccEventLog>,
     settings_mutation: Mutex<()>,
 }
 
@@ -689,8 +703,14 @@ impl AiccService {
             execution: None,
             inference: None,
             artifact_url_reader: None,
+            events: Arc::new(AiccEventLog::default()),
             settings_mutation: Mutex::new(()),
         }
+    }
+
+    pub(crate) fn with_events(mut self, events: Arc<AiccEventLog>) -> Self {
+        self.events = events;
+        self
     }
 
     pub(crate) fn with_execution(mut self, execution: Arc<ExecutionEngine>) -> Self {
@@ -1261,6 +1281,7 @@ fn runtime_admin_snapshot(
             "generation": snapshot.generation,
         }),
         routing: snapshot.settings.session_config.clone().unwrap_or_default(),
+        routing_command_status: snapshot.models.routing_command_status().to_vec(),
         providers,
         inventory_revision,
         provider_health,
@@ -1381,6 +1402,7 @@ fn logical_definitions_json(models: &crate::model::ModelRegistry) -> Value {
             .map(|logical| {
                 json!({
                     "path": logical.path,
+                    "kind": logical.kind,
                     "api_type": logical.api_type,
                     "min_line": logical.min_line,
                     "disable_line": logical.disable_line,

@@ -51,6 +51,8 @@ pub mod ai_methods {
     pub const TRACE_QUERY: &str = "trace.query";
     pub const ROUTING_GET: &str = "routing.get";
     pub const ROUTING_UPDATE: &str = "routing.update";
+    pub const ROUTING_PREVIEW: &str = "routing.preview";
+    pub const EVENTS_LIST: &str = "events.list";
     pub const PROVIDER_CATALOG: &str = "provider.catalog";
     pub const PROTOCOL_ADAPTER_LIST: &str = "protocol_adapter.list";
     pub const PROVIDER_VALIDATE: &str = "provider.validate";
@@ -109,6 +111,8 @@ pub mod ai_methods {
                 | TRACE_QUERY
                 | ROUTING_GET
                 | ROUTING_UPDATE
+                | ROUTING_PREVIEW
+                | EVENTS_LIST
                 | PROVIDER_CATALOG
                 | PROTOCOL_ADAPTER_LIST
                 | PROVIDER_VALIDATE
@@ -557,9 +561,41 @@ mod canonical_contract_tests {
             ai_methods::TRACE_QUERY,
             ai_methods::ROUTING_GET,
             ai_methods::ROUTING_UPDATE,
+            ai_methods::ROUTING_PREVIEW,
+            ai_methods::EVENTS_LIST,
         ] {
             assert!(ai_methods::is_management_method(method));
         }
+
+        let commands: Vec<AiccRoutingCommand> = serde_json::from_value(json!([
+            {"kind": "vendor_factor", "vendor": "claude", "factor": 1.5},
+            {"kind": "spec_factor", "spec": "llm.gpt-pro", "factor": 0.5},
+            {"kind": "model_factor", "vendor": "openai", "model": "gpt-5.6", "factor": 2.0},
+            {"kind": "item_weight", "path": "llm.chat", "item": "gpt-pro", "weight": 3.0}
+        ]))
+        .unwrap();
+        assert!(commands.iter().all(|command| command.validate().is_ok()));
+        assert!(!commands[0].same_subject(&commands[1]));
+        assert!(serde_json::from_value::<AiccRoutingCommand>(
+            json!({"kind": "vendor_factor", "vendor": "claude", "factor": 1.5, "extra": 1})
+        )
+        .is_err());
+        assert!(AiccRoutingCommand::VendorFactor {
+            vendor: "claude".into(),
+            factor: -1.0
+        }
+        .validate()
+        .is_err());
+        let update = RoutingUpdateRequest::with_routing_commands(3, commands);
+        let value = serde_json::to_value(&update).unwrap();
+        assert!(value.get("provider_weights").is_none());
+        assert_eq!(RoutingUpdateRequest::from_json(value).unwrap(), update);
+        assert!(
+            RoutingPreviewRequest::from_json(json!({"paths": ["llm.chat"], "explain": true}))
+                .is_ok()
+        );
+        assert!(RoutingPreviewRequest::from_json(json!({"unknown": true})).is_err());
+        assert!(EventsListRequest::from_json(json!({"limit": 10})).is_ok());
 
         let request = ProviderAddRequest::new(
             "openai-main",
@@ -609,12 +645,13 @@ mod canonical_contract_tests {
             RoutingUpdateRequest::from_json(serde_json::to_value(clear_request).unwrap())
                 .unwrap()
                 .provider_weights
-                .is_empty()
+                .is_some_and(|weights| weights.is_empty())
         );
 
         let response = RoutingGetResponse {
             settings_revision: 12,
             routing: AiccRouteOverlay::default(),
+            command_status: Vec::new(),
         };
         let value = serde_json::to_value(&response).unwrap();
         assert_eq!(
@@ -844,6 +881,7 @@ mod canonical_contract_tests {
             Ok(RoutingGetResponse {
                 settings_revision: 12,
                 routing: AiccRouteOverlay::default(),
+                command_status: Vec::new(),
             })
         }
 
@@ -856,7 +894,7 @@ mod canonical_contract_tests {
                 ok: true,
                 settings_revision: request.settings_revision + 1,
                 routing: AiccRouteOverlay {
-                    provider_weights: request.provider_weights,
+                    provider_weights: request.provider_weights.unwrap_or_default(),
                     ..Default::default()
                 },
             })
@@ -1923,12 +1961,101 @@ pub struct AiccRouteOverlay {
     pub global_exact_model_weights: BTreeMap<String, f64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_weights: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routing_commands: Vec<AiccRoutingCommand>,
     #[serde(default, skip_serializing_if = "is_default_aicc_policy_config")]
     pub policy: AiccPolicyConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AiccRoutingCommand {
+    VendorFactor {
+        vendor: String,
+        factor: f64,
+    },
+    SpecFactor {
+        spec: String,
+        factor: f64,
+    },
+    ModelFactor {
+        vendor: String,
+        model: String,
+        factor: f64,
+    },
+    ItemWeight {
+        path: String,
+        item: String,
+        weight: f64,
+    },
+}
+
+impl AiccRoutingCommand {
+    pub fn same_subject(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::VendorFactor { vendor: a, .. }, Self::VendorFactor { vendor: b, .. }) => a == b,
+            (Self::SpecFactor { spec: a, .. }, Self::SpecFactor { spec: b, .. }) => a == b,
+            (
+                Self::ModelFactor {
+                    vendor: av,
+                    model: am,
+                    ..
+                },
+                Self::ModelFactor {
+                    vendor: bv,
+                    model: bm,
+                    ..
+                },
+            ) => av == bv && am == bm,
+            (
+                Self::ItemWeight {
+                    path: ap, item: ai, ..
+                },
+                Self::ItemWeight {
+                    path: bp, item: bi, ..
+                },
+            ) => ap == bp && ai == bi,
+            _ => false,
+        }
+    }
+
+    pub fn value(&self) -> f64 {
+        match self {
+            Self::VendorFactor { factor, .. }
+            | Self::SpecFactor { factor, .. }
+            | Self::ModelFactor { factor, .. } => *factor,
+            Self::ItemWeight { weight, .. } => *weight,
+        }
+    }
+
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        let names: &[&str] = match self {
+            Self::VendorFactor { vendor, .. } => &[vendor],
+            Self::SpecFactor { spec, .. } => &[spec],
+            Self::ModelFactor { vendor, model, .. } => &[vendor, model],
+            Self::ItemWeight { path, item, .. } => &[path, item],
+        };
+        if names.iter().any(|name| name.trim().is_empty()) {
+            return Err("routing command subject must not be empty".to_string());
+        }
+        let value = self.value();
+        if !value.is_finite() || value < 0.0 {
+            return Err("routing command value must be finite and non-negative".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AiccRoutingCommandStatus {
+    pub command: AiccRoutingCommand,
+    pub matched_items: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_reason: Option<String>,
 }
 
 fn is_default_aicc_policy_config(policy: &AiccPolicyConfig) -> bool {
@@ -3958,13 +4085,18 @@ impl RoutingGetRequest {
 pub struct RoutingGetResponse {
     pub settings_revision: u64,
     pub routing: AiccRouteOverlay,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command_status: Vec<AiccRoutingCommandStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RoutingUpdateRequest {
     pub settings_revision: u64,
-    pub provider_weights: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_weights: Option<BTreeMap<String, f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_commands: Option<Vec<AiccRoutingCommand>>,
 }
 
 impl_request_json!(RoutingUpdateRequest);
@@ -3973,9 +4105,96 @@ impl RoutingUpdateRequest {
     pub fn new(settings_revision: u64, provider_weights: BTreeMap<String, f64>) -> Self {
         Self {
             settings_revision,
-            provider_weights,
+            provider_weights: Some(provider_weights),
+            routing_commands: None,
         }
     }
+
+    pub fn with_routing_commands(
+        settings_revision: u64,
+        routing_commands: Vec<AiccRoutingCommand>,
+    ) -> Self {
+        Self {
+            settings_revision,
+            provider_weights: None,
+            routing_commands: Some(routing_commands),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RoutingPreviewRequest {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub explain: bool,
+}
+
+impl_request_json!(RoutingPreviewRequest);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiccLogicalDirectoryKind {
+    Task,
+    Spec,
+    Family,
+    Directory,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoutingPreviewEntry {
+    pub path: String,
+    pub api_type: String,
+    pub kind: AiccLogicalDirectoryKind,
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_exact_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoutingPreviewResponse {
+    pub settings_revision: u64,
+    pub entries: Vec<RoutingPreviewEntry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EventsListRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+impl_request_json!(EventsListRequest);
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiccEventLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AiccSystemEvent {
+    pub event_id: u64,
+    pub created_at_ms: u64,
+    pub level: AiccEventLevel,
+    pub kind: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub details: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EventsListResponse {
+    pub events: Vec<AiccSystemEvent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_warnings: Vec<AiccSystemEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -5427,6 +5646,20 @@ impl AiccClient {
         RoutingUpdateResponse
     );
     client_typed_method!(
+        preview_routing,
+        handle_preview_routing,
+        ai_methods::ROUTING_PREVIEW,
+        RoutingPreviewRequest,
+        RoutingPreviewResponse
+    );
+    client_typed_method!(
+        list_events,
+        handle_list_events,
+        ai_methods::EVENTS_LIST,
+        EventsListRequest,
+        EventsListResponse
+    );
+    client_typed_method!(
         query_quota,
         handle_query_quota,
         ai_methods::QUOTA_QUERY,
@@ -5903,6 +6136,26 @@ pub trait AiccHandler: Send + Sync {
         ))
     }
 
+    async fn handle_preview_routing(
+        &self,
+        _request: RoutingPreviewRequest,
+        _ctx: RPCContext,
+    ) -> std::result::Result<RoutingPreviewResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::ROUTING_PREVIEW.to_string(),
+        ))
+    }
+
+    async fn handle_list_events(
+        &self,
+        _request: EventsListRequest,
+        _ctx: RPCContext,
+    ) -> std::result::Result<EventsListResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::EVENTS_LIST.to_string(),
+        ))
+    }
+
     async fn handle_query_quota(
         &self,
         _request: QuotaQueryRequest,
@@ -6266,6 +6519,16 @@ impl<T: AiccHandler> RPCHandler for AiccServerHandler<T> {
             ai_methods::ROUTING_UPDATE => RPCResult::Success(json!(
                 self.0
                     .handle_update_routing(RoutingUpdateRequest::from_json(req.params)?, ctx)
+                    .await?
+            )),
+            ai_methods::ROUTING_PREVIEW => RPCResult::Success(json!(
+                self.0
+                    .handle_preview_routing(RoutingPreviewRequest::from_json(req.params)?, ctx)
+                    .await?
+            )),
+            ai_methods::EVENTS_LIST => RPCResult::Success(json!(
+                self.0
+                    .handle_list_events(EventsListRequest::from_json(req.params)?, ctx)
                     .await?
             )),
             ai_methods::QUOTA_QUERY => RPCResult::Success(json!(

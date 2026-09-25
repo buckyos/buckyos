@@ -690,3 +690,110 @@ fn d09_explicit_fallback_chain_retains_each_task_requirement() {
     assert_eq!(result.fallback_chain.len(), 2);
     assert!(result.candidates.is_empty());
 }
+
+#[test]
+fn routing_commands_scale_and_pin_item_weights_after_every_rebuild() {
+    let anthropic: ModelDriverCatalog = serde_json::from_slice(include_bytes!(
+        "../../driver_metadata/models/anthropic.model.json"
+    ))
+    .unwrap();
+    let catalog = compile(vec![
+        serde_json::from_value(openai_document()).unwrap(),
+        anthropic,
+    ])
+    .unwrap();
+    let stocks = [
+        inventory("openai", "gpt-5.6-sol", "sol", "oa", &["high"]),
+        inventory("claude", "claude-opus-5-5", "opus", "an", &["high"]),
+    ];
+    let mut items = vec![
+        json!({"name":"pro","target":"llm.gpt-pro","weight":2.0}),
+        json!({"name":"opus","target":"llm.claude-opus","weight":2.0}),
+    ];
+    for spec in [
+        "gpt-nano",
+        "gpt-mini",
+        "gpt-standard",
+        "gpt-max",
+        "gpt-codex",
+        "claude-fable",
+        "claude-haiku",
+        "claude-sonnet",
+    ] {
+        items.push(json!({"name":spec,"target":format!("llm.{spec}"),"weight":0.0}));
+    }
+    let tree: AiccRouteOverlay =
+        serde_json::from_value(json!({"logical_tree":{"llm.chat":{"items":items}}})).unwrap();
+    let build = |commands: Value| {
+        let mut user = AiccRouteOverlay::default();
+        user.routing_commands = serde_json::from_value(commands).unwrap();
+        ModelRegistry::build(
+            &catalog,
+            &stocks,
+            vec![definition("llm"), definition("llm.chat")],
+            RegistryLayers {
+                factory: Some(&tree),
+                user: Some(&user),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    };
+    let drivers = |registry: &ModelRegistry| {
+        registry
+            .resolve_candidates("llm.chat", ApiType::Llm)
+            .unwrap()
+            .candidates
+            .iter()
+            .map(|candidate| candidate.model.identity.model_driver_id.clone())
+            .collect::<Vec<_>>()
+    };
+    let chat_item = |registry: &ModelRegistry, name: &str| {
+        registry
+            .logical_model_views()
+            .into_iter()
+            .find(|view| view.path == "llm.chat")
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.name == name)
+            .unwrap()
+    };
+
+    assert_eq!(drivers(&build(json!([]))), ["openai", "claude"]);
+
+    let vendor = build(json!([{"kind":"vendor_factor","vendor":"claude","factor":1.5}]));
+    assert_eq!(drivers(&vendor), ["claude"]);
+    let opus = chat_item(&vendor, "opus");
+    assert_eq!(
+        (opus.weight, opus.default_weight, opus.weight_source),
+        (3.0, 2.0, LogicalItemSource::RoutingCommand)
+    );
+    assert!(vendor.routing_command_status()[0].stale_reason.is_none());
+
+    let model = build(json!([
+        {"kind":"vendor_factor","vendor":"claude","factor":1.5},
+        {"kind":"model_factor","vendor":"openai","model":"gpt-5.6-sol","factor":2.0}
+    ]));
+    assert_eq!(drivers(&model), ["openai"]);
+    assert_eq!(chat_item(&model, "pro").weight, 4.0);
+
+    let pinned = build(json!([
+        {"kind":"item_weight","path":"llm.chat","item":"opus","weight":9.0},
+        {"kind":"spec_factor","spec":"llm.claude-opus","factor":0.1}
+    ]));
+    assert_eq!(chat_item(&pinned, "opus").weight, 9.0);
+    assert_eq!(drivers(&pinned), ["claude"]);
+
+    let stale = build(json!([
+        {"kind":"spec_factor","spec":"llm.gone","factor":2.0},
+        {"kind":"item_weight","path":"llm.chat","item":"missing","weight":1.0},
+        {"kind":"model_factor","vendor":"openai","model":"nope","factor":2.0},
+        {"kind":"vendor_factor","vendor":"nope","factor":2.0}
+    ]));
+    assert_eq!(drivers(&stale), ["openai", "claude"]);
+    assert!(stale
+        .routing_command_status()
+        .iter()
+        .all(|status| status.stale_reason.is_some() && status.matched_items == 0));
+}

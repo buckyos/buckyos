@@ -18,6 +18,7 @@ type TraceFilters = {
   profile: string
 }
 type TimeRangeFilter = 'all' | '24h' | '7d' | '30d' | 'custom'
+type TFn = (key: string, fallback?: string, variables?: Record<string, string | number>) => string
 
 const ROUTE_TRACE_PAGE_SIZE = 20
 // Free text is debounced before it reaches trace.query so typing does not issue an RPC per keystroke.
@@ -366,11 +367,11 @@ export function RouteTraceAuditPanel({
         loadedCount={visibleTraces.length}
         totalCount={traceTotalCount}
         labels={{
-          previous: t('aiCenter.routing.tracePreviousPage', 'Previous'),
-          next: t('aiCenter.routing.traceNextPage', 'Next'),
-          page: t('aiCenter.routing.tracePage', 'Page {{page}}'),
-          loading: t('aiCenter.routing.traceLoading', 'Loading...'),
-          loadMore: t('aiCenter.routing.traceLoadMore', 'Load more'),
+          previous: t('common.previous', 'Previous'),
+          next: t('common.next', 'Next'),
+          page: t('aiCenter.home.pageNumber', 'Page {{page}}'),
+          loading: t('common.loading', 'Loading...'),
+          loadMore: t('common.loadMore', 'Load more'),
           retry: t('common.retry', 'Retry'),
           error: t('aiCenter.routing.traceLoadFailed', 'Failed to load route traces'),
           loaded: t('aiCenter.routing.tracePageLoaded', 'Page {{page}} / loaded {{count}} traces', { page: tracePageIndex + 1, count: traceTotalCount }),
@@ -389,7 +390,7 @@ function TraceAuditCard({
   active: boolean
   onSelect: () => void
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [candidateSection, setCandidateSection] = useState<TraceCandidateSection>('none')
   const [scoreExpanded, setScoreExpanded] = useState(false)
   const [titleExpanded, setTitleExpanded] = useState(false)
@@ -400,7 +401,7 @@ function TraceAuditCard({
     trace.selected_provider_instance_name ? `${t('aiCenter.routing.provider', 'Provider')}: ${trace.selected_provider_instance_name}` : '',
     trace.selected_provider_model_id ? `${t('aiCenter.routing.providerModel', 'Provider model')}: ${trace.selected_provider_model_id}` : '',
     `${t('aiCenter.routing.profile', 'Profile')}: ${trace.scheduler_profile}`,
-    trace.created_at_ms ? formatTraceTime(trace.created_at_ms) : '',
+    trace.created_at_ms ? formatTraceTime(trace.created_at_ms, locale) : '',
     formatTraceDuration(trace),
   ].filter(Boolean)
   const hiddenTraceFields = [
@@ -459,7 +460,7 @@ function TraceAuditCard({
             {trace.warnings.length > 0 && (
               <StatusBadge status="warning" label={t('aiCenter.routing.traceWarnings', '{{count}} warnings', { count: trace.warnings.length })} />
             )}
-            <StatusBadge status={status === 'selected' ? 'ok' : status === 'fallback' ? 'warning' : 'error'} label={status} />
+            <StatusBadge status={status === 'selected' ? 'ok' : status === 'fallback' ? 'warning' : 'error'} label={traceStatusLabel(status, t)} />
           </div>
         </div>
         {titleExpanded && (
@@ -484,7 +485,7 @@ function TraceAuditCard({
       {selectedCandidate && (
         <div className="mt-2 rounded-md p-2 text-xs" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)' }}>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>{candidateWeightSummary(selectedCandidate)}</span>
+            <span>{candidateWeightSummary(selectedCandidate, t)}</span>
             <ScoreButton
               score={selectedCandidate.final_score}
               expanded={scoreExpanded}
@@ -601,8 +602,9 @@ function TraceCandidateRow({
   candidate: RouteTrace['ranked_candidates'][number]
   rank: number
   selected: boolean
-  reason: string
+  reason: 'selected' | 'fallback' | 'ranked'
 }) {
+  const { t } = useI18n()
   const [scoreExpanded, setScoreExpanded] = useState(false)
   return (
     <div
@@ -617,7 +619,7 @@ function TraceCandidateRow({
           <LongField value={`#${rank} ${candidate.exact_model}`} copyable={false} />
         </span>
         <span className="block" style={{ color: 'var(--cp-muted)' }}>
-          {candidateWeightSummary(candidate)}
+          {candidateWeightSummary(candidate, t)}
         </span>
         {scoreExpanded && (
           <ScoreDetails candidate={candidate} estimatedCost={formatPreCallEstimate(candidate.pricing_snapshot)} />
@@ -629,7 +631,7 @@ function TraceCandidateRow({
           expanded={scoreExpanded}
           onClick={() => setScoreExpanded((value) => !value)}
         />
-        <span className="block">{reason}</span>
+        <span className="block">{candidateReasonLabel(reason, t)}</span>
       </span>
     </div>
   )
@@ -719,13 +721,14 @@ function ScoreDetails({
 }
 
 function TraceFilteredCandidateRow({ candidate }: { candidate: RouteTrace['filtered_candidates'][number] }) {
+  const { t } = useI18n()
   return (
     <div className="flex justify-between gap-3 rounded-md px-2 py-1.5 text-xs">
       <span className="min-w-0">
         <LongField value={candidate.exact_model} tone="warning" />
         <span className="block" style={{ color: 'var(--cp-muted)' }}>{candidate.reason}</span>
       </span>
-      <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>filtered</span>
+      <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.routing.candidateFiltered', 'Filtered')}</span>
     </div>
   )
 }
@@ -905,8 +908,8 @@ function traceEmptyStateKind(
   return 'no-matches'
 }
 
-function traceEmptyStateLabel(kind: TraceEmptyStateKind, t: (key: string, fallback: string) => string): string {
-  if (kind === 'load-failed') return t('aiCenter.routing.traceLoadFailed', 'Failed to load traces')
+function traceEmptyStateLabel(kind: TraceEmptyStateKind, t: TFn): string {
+  if (kind === 'load-failed') return t('aiCenter.routing.traceLoadFailed', 'Failed to load route traces')
   if (kind === 'none-yet') return t('aiCenter.routing.traceNoneYet', 'No route traces yet')
   return t('aiCenter.routing.traceNoMatches', 'No traces match current filters')
 }
@@ -923,10 +926,10 @@ function mergeRouteTraces(current: RouteTrace[], next: RouteTrace[]): RouteTrace
   return merged
 }
 
-function formatTraceTime(createdAtMs: number): string {
+function formatTraceTime(createdAtMs: number, locale: string): string {
   const date = new Date(createdAtMs)
   if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleString()
+  return date.toLocaleString(locale)
 }
 
 function formatTraceDuration(trace: RouteTrace): string {
@@ -935,13 +938,37 @@ function formatTraceDuration(trace: RouteTrace): string {
   return `${value}ms`
 }
 
-function candidateWeightSummary(candidate: RouteTrace['ranked_candidates'][number]): string {
+function traceStatusLabel(status: 'selected' | 'fallback' | 'failed', t: TFn): string {
+  if (status === 'selected') return t('aiCenter.routing.traceStatusSelected', 'Selected')
+  if (status === 'fallback') return t('aiCenter.routing.traceStatusFallback', 'Fallback')
+  return t('aiCenter.routing.traceStatusFailed', 'Failed')
+}
+
+function candidateReasonLabel(reason: 'selected' | 'fallback' | 'ranked', t: TFn): string {
+  if (reason === 'selected') return t('aiCenter.routing.candidateSelected', 'Selected')
+  if (reason === 'fallback') return t('aiCenter.routing.candidateFallback', 'Fallback')
+  return t('aiCenter.routing.candidateRanked', 'Ranked')
+}
+
+function weightEffectLabel(effect: string, t: TFn): string {
+  if (effect === 'boost') return t('aiCenter.routing.weightEffectBoost', 'boost')
+  if (effect === 'down') return t('aiCenter.routing.weightEffectDown', 'down')
+  if (effect === 'neutral') return t('aiCenter.routing.weightEffectNeutral', 'neutral')
+  return effect
+}
+
+function candidateWeightSummary(candidate: RouteTrace['ranked_candidates'][number], t: TFn): string {
   const inputs = candidate.preference_score_inputs
   const exact = inputs?.exact_model_weight ?? candidate.exact_model_weight ?? 1
   const provider = inputs?.provider_weight ?? candidate.provider_weight ?? 1
   const combined = inputs?.combined_weight ?? exact * provider
   const providerEffect = inputs?.provider_weight_effect ?? weightEffect(provider)
-  return `exact ${formatWeight(exact)} / provider ${formatWeight(provider)} ${providerEffect} / combined ${formatWeight(combined)}`
+  return t('aiCenter.routing.weightSummary', 'exact {{exact}} / provider {{provider}} {{effect}} / combined {{combined}}', {
+    exact: formatWeight(exact),
+    provider: formatWeight(provider),
+    effect: weightEffectLabel(providerEffect, t),
+    combined: formatWeight(combined),
+  })
 }
 
 function weightEffect(weight: number): string {

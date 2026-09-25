@@ -2,14 +2,16 @@ use super::*;
 
 pub(crate) struct ServiceRuntimeFactory {
     storage: Arc<AiccStorage>,
+    events: Arc<AiccEventLog>,
     provider_refreshes: broadcast::Sender<ProviderRefreshEvent>,
 }
 
 impl ServiceRuntimeFactory {
-    pub(crate) fn new(storage: Arc<AiccStorage>) -> Self {
+    pub(crate) fn new(storage: Arc<AiccStorage>, events: Arc<AiccEventLog>) -> Self {
         let (provider_refreshes, _) = broadcast::channel(64);
         Self {
             storage,
+            events,
             provider_refreshes,
         }
     }
@@ -163,6 +165,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
         }
         let models: Arc<dyn ModelRegistryAssembler> = Arc::new(ServiceModelAssembler {
             session: settings.session_config.clone(),
+            events: Some(self.events.clone()),
         });
         let backend: Arc<dyn RuntimeBackend> =
             Arc::new(ProviderRuntimeBackend::new(manager, models));

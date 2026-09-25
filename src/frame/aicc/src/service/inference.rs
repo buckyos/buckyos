@@ -401,6 +401,134 @@ impl InferencePort for RuntimeInferencePort {
         Ok(route_response(&routed.decision))
     }
 
+    async fn preview_routes(
+        &self,
+        caller: &AuthorizedCaller,
+        request: RoutingPreviewRequest,
+    ) -> Result<RoutingPreviewResponse, RPCErrors> {
+        let snapshot = self.runtime.capture().await;
+        let models = snapshot.models.as_ref();
+        let caller_identity = CallerIdentity {
+            tenant_id: caller.tenant_id.clone(),
+            user_id: caller.user_id.clone(),
+            app_id: caller.app_id.clone(),
+        };
+        let views = models.logical_model_views();
+        let api_types = views
+            .iter()
+            .filter_map(|view| {
+                view.api_type
+                    .as_ref()
+                    .map(|api_type| (view.path.clone(), api_type.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let paths = if request.paths.is_empty() {
+            views
+                .iter()
+                .map(|view| (view.path.clone(), view.kind.clone()))
+                .collect::<Vec<_>>()
+        } else {
+            request
+                .paths
+                .iter()
+                .map(|path| {
+                    (
+                        path.clone(),
+                        models
+                            .logical_directory_kind(path)
+                            .unwrap_or(AiccLogicalDirectoryKind::Directory),
+                    )
+                })
+                .collect()
+        };
+        let runtime_states = candidate_runtime_states(
+            snapshot.as_ref(),
+            caller,
+            self.model_health.as_ref(),
+            None,
+            None,
+        )
+        .await;
+        let provider_names = snapshot
+            .providers
+            .list()
+            .into_iter()
+            .map(|provider| provider.config.provider_instance_name.clone())
+            .collect::<Vec<_>>();
+        let mut quotas = std::collections::HashMap::new();
+        let mut entries = Vec::with_capacity(paths.len());
+        for (path, kind) in paths {
+            let api_type_name = inherited_api_type(&api_types, &path);
+            let mut entry = RoutingPreviewEntry {
+                path: path.clone(),
+                api_type: api_type_name.clone().unwrap_or_default(),
+                kind,
+                available: false,
+                selected_exact_model: None,
+                error: None,
+                trace: None,
+            };
+            let Some(api_type) = api_type_name.and_then(|name| {
+                serde_json::from_value::<buckyos_api::ApiType>(Value::String(name)).ok()
+            }) else {
+                entry.error = Some("logical directory has no API type".to_string());
+                entries.push(entry);
+                continue;
+            };
+            if !quotas.contains_key(&api_type) {
+                let quota = self
+                    .quota
+                    .prepare_route(
+                        &caller_identity,
+                        api_type.capability(),
+                        api_type.typed_method(),
+                        provider_names.clone(),
+                    )
+                    .await
+                    .map_err(|_| {
+                        inference_error(AiccErrorCode::PolicyDenied, "quota scope is invalid")
+                    })?;
+                quotas.insert(api_type, quota);
+            }
+            let policy = match policy_engine_for_route(
+                models,
+                &path,
+                snapshot.settings.session_config.as_ref(),
+                None,
+                quotas[&api_type].clone(),
+            ) {
+                Ok(policy) => policy,
+                Err(error) => {
+                    entry.error = Some(error.to_string());
+                    entries.push(entry);
+                    continue;
+                }
+            };
+            let routing_request = RoutingRequest::new(
+                next_inference_id(),
+                next_inference_id(),
+                path.clone(),
+                api_type,
+                caller_identity.clone(),
+            );
+            match Router::new(models, &policy, &runtime_states).route(&routing_request) {
+                Ok(decision) => {
+                    entry.available = true;
+                    entry.selected_exact_model = Some(decision.selected.exact_model.clone());
+                    if request.explain {
+                        entry.trace = Some(public_route_trace_json(&decision)?);
+                    }
+                }
+                Err(error) => entry.error = Some(error.to_string()),
+            }
+            entries.push(entry);
+        }
+        Ok(RoutingPreviewResponse {
+            settings_revision: snapshot.settings_revision,
+            entries,
+        })
+    }
+
     async fn invoke(&self, caller: &AuthorizedCaller, call: AiccCall) -> Result<Value, RPCErrors> {
         let route_input = route_input_for_call(&call)?;
         let request_model = route_input.model.clone();
@@ -801,6 +929,17 @@ fn call_with_exact_model(call: &AiccCall, exact_model: &str) -> Result<AiccCall,
 fn call_params(call: &AiccCall) -> Result<Value, RPCErrors> {
     call.to_params()
         .map_err(|error| inference_error(AiccErrorCode::InvalidRequest, error.to_string()))
+}
+
+fn inherited_api_type(api_types: &BTreeMap<String, String>, path: &str) -> Option<String> {
+    let mut current = Some(path);
+    while let Some(path) = current {
+        if let Some(api_type) = api_types.get(path) {
+            return Some(api_type.clone());
+        }
+        current = path.rfind('.').map(|index| &path[..index]);
+    }
+    None
 }
 
 fn route_response(decision: &RouteDecision) -> RouteResolveResponse {

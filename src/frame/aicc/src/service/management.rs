@@ -244,6 +244,7 @@ impl AiccHandler for AiccService {
         Ok(RoutingGetResponse {
             settings_revision: snapshot.settings_revision,
             routing: snapshot.routing,
+            command_status: snapshot.routing_command_status,
         })
     }
 
@@ -255,35 +256,96 @@ impl AiccHandler for AiccService {
         let caller = self.authorize(&ctx, "write", RESOURCE_SETTINGS).await?;
         let expected_revision = request.settings_revision;
         let provider_weights = request.provider_weights;
+        let routing_commands = request.routing_commands;
+        if provider_weights.is_none() && routing_commands.is_none() {
+            return Err(invalid_request(
+                "routing update requires provider_weights or routing_commands",
+            ));
+        }
+        if let Some(commands) = &routing_commands {
+            for (index, command) in commands.iter().enumerate() {
+                command.validate().map_err(|reason| {
+                    AiccError::new(AiccErrorCode::InvalidRequest, reason).to_krpc_error()
+                })?;
+                if commands[..index]
+                    .iter()
+                    .any(|previous| previous.same_subject(command))
+                {
+                    return Err(invalid_request(
+                        "routing commands must not repeat the same subject",
+                    ));
+                }
+            }
+        }
+        let command_count = routing_commands.as_ref().map(Vec::len);
         let snapshot = self
             .mutate_settings(&caller, Some(expected_revision), move |settings| {
-                for (provider_instance_name, weight) in &provider_weights {
-                    if !weight.is_finite() || *weight < 0.0 {
-                        return Err(invalid_request(
-                            "provider weight must be finite and non-negative",
-                        ));
-                    }
-                    if !settings
-                        .providers
-                        .iter()
-                        .any(|provider| provider.provider_instance_name == *provider_instance_name)
-                    {
-                        return Err(invalid_request(
-                            "provider weight references an unknown provider",
-                        ));
+                if let Some(provider_weights) = &provider_weights {
+                    for (provider_instance_name, weight) in provider_weights {
+                        if !weight.is_finite() || *weight < 0.0 {
+                            return Err(invalid_request(
+                                "provider weight must be finite and non-negative",
+                            ));
+                        }
+                        if !settings.providers.iter().any(|provider| {
+                            provider.provider_instance_name == *provider_instance_name
+                        }) {
+                            return Err(invalid_request(
+                                "provider weight references an unknown provider",
+                            ));
+                        }
                     }
                 }
-                settings
-                    .session_config
-                    .get_or_insert_with(Default::default)
-                    .provider_weights = provider_weights;
+                let routing = settings.session_config.get_or_insert_with(Default::default);
+                if let Some(provider_weights) = provider_weights {
+                    routing.provider_weights = provider_weights;
+                }
+                if let Some(routing_commands) = routing_commands {
+                    routing.routing_commands = routing_commands;
+                }
                 Ok(())
             })
             .await?;
+        if let Some(count) = command_count {
+            self.events.record(
+                AiccEventLevel::Info,
+                events::EVENT_ROUTING_COMMANDS_UPDATED,
+                format!("routing adjustments updated ({count} active)"),
+                json!({ "count": count, "settings_revision": snapshot.settings_revision }),
+            );
+        }
         Ok(RoutingUpdateResponse {
             ok: true,
             settings_revision: snapshot.settings_revision,
             routing: snapshot.routing,
+        })
+    }
+
+    async fn handle_preview_routing(
+        &self,
+        request: RoutingPreviewRequest,
+        ctx: RPCContext,
+    ) -> Result<RoutingPreviewResponse, RPCErrors> {
+        let caller = self.authorize(&ctx, "read", RESOURCE_INFO).await?;
+        let inference = self.inference.as_ref().ok_or_else(|| {
+            inference_error(
+                AiccErrorCode::InternalError,
+                "inference runtime is unavailable",
+            )
+        })?;
+        inference.preview_routes(&caller, request).await
+    }
+
+    async fn handle_list_events(
+        &self,
+        request: EventsListRequest,
+        ctx: RPCContext,
+    ) -> Result<EventsListResponse, RPCErrors> {
+        self.authorize(&ctx, "read", RESOURCE_INFO).await?;
+        let (events, active_warnings) = self.events.list(request.limit.unwrap_or(50).min(200));
+        Ok(EventsListResponse {
+            events,
+            active_warnings,
         })
     }
 

@@ -21,12 +21,22 @@ function sortedEntries(record: Record<string, number>, limit?: number): Array<[s
   return limit == null ? entries : entries.slice(0, limit)
 }
 
-function candidateWeightSummary(candidate: RouteTrace['ranked_candidates'][number]): string {
+type TFn = (key: string, fallback?: string, variables?: Record<string, string | number>) => string
+
+function usageStatusLabel(status: UsageEvent['status'], t: TFn): string {
+  return status === 'success' ? t('aiCenter.home.usageStatusSuccess', 'Success') : t('aiCenter.home.usageStatusFailed', 'Failed')
+}
+
+function candidateWeightSummary(candidate: RouteTrace['ranked_candidates'][number], t: TFn): string {
   const inputs = candidate.preference_score_inputs
   const exact = inputs?.exact_model_weight ?? candidate.exact_model_weight ?? 1
   const provider = inputs?.provider_weight ?? candidate.provider_weight ?? 1
   const combined = inputs?.combined_weight ?? exact * provider
-  return `exact ${formatWeight(exact)} · provider ${formatWeight(provider)} · combined ${formatWeight(combined)}`
+  return t('aiCenter.home.weightSummary', 'exact {{exact}} · provider {{provider}} · combined {{combined}}', {
+    exact: formatWeight(exact),
+    provider: formatWeight(provider),
+    combined: formatWeight(combined),
+  })
 }
 
 function formatWeight(weight: number): string {
@@ -101,10 +111,10 @@ function formatFinanceTotals(totals: UsageSummary['finance_totals'], expanded = 
   return visible.map((money) => formatMoney(money.amount, money.currency)).join('\n')
 }
 
-function formatLocalTime(value: string): string {
+function formatLocalTime(value: string, locale: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString(undefined, {
+  return date.toLocaleString(locale, {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -196,7 +206,7 @@ function sameFilterText(left: FilterText, right: FilterText): boolean {
 }
 
 export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const store = useAICCStore()
   const status = useAIStatus()
   const providers = useProviders()
@@ -237,8 +247,8 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
   const costValue = formatFinanceTotals(summary.finance_totals, costExpanded)
   const currencyInteraction = hasMultipleCurrencies
     ? costExpanded
-      ? t('aiCenter.home.collapseCurrencies', 'Click to collapse currencies')
-      : t('aiCenter.home.expandCurrencies', '{{count}} currencies · click to expand', { count: summary.finance_totals.length })
+      ? t('aiCenter.home.collapseCurrenciesHint', 'Click to collapse currencies')
+      : t('aiCenter.home.expandCurrenciesHint', '{{count}} currencies · click to expand', { count: summary.finance_totals.length })
     : t('aiCenter.home.costEstimated', 'Estimated from usage events')
   const costSubtitle = summary.finance_complete
     ? currencyInteraction
@@ -390,9 +400,12 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
 
   const balanceSubtitle = balanceProviders
     .map((p) => {
-      const unit = p.account.balance_unit === 'usd' ? '$' : ''
-      const suffix = p.account.balance_unit === 'credit' ? ' Credit' : ''
-      return `${p.config.provider_instance_name}: ${unit}${p.account.balance_value}${suffix}`
+      const amount = p.account.balance_unit === 'usd'
+        ? `$${p.account.balance_value}`
+        : p.account.balance_unit === 'credit'
+          ? t('aiCenter.home.creditAmount', '{{amount}} Credit', { amount: String(p.account.balance_value) })
+          : String(p.account.balance_value)
+      return `${p.config.provider_instance_name}: ${amount}`
     })
     .join(' · ')
 
@@ -492,13 +505,13 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
               icon: <Activity size={18} />,
               title: t('aiCenter.home.status', 'AI Status'),
               value: status.state === 'disabled' ? t('aiCenter.home.disabled', 'Disabled') : t('aiCenter.home.enabled', 'Enabled'),
-              subtitle: `${status.provider_count} Provider instances / ${status.model_count} Models / ${status.health_counts.degraded} degraded`,
+              subtitle: t('aiCenter.home.statusSummary', '{{providers}} Provider instances / {{models}} Models / {{degraded}} degraded', { providers: status.provider_count, models: status.model_count, degraded: status.health_counts.degraded }),
               tone: status.health_counts.degraded > 0 || status.health_counts.unavailable > 0 || status.quota_warnings > 0 ? 'warning' : 'ok',
             },
             {
               icon: <CreditCard size={18} />,
               title: t('aiCenter.home.credit', 'SN Credit'),
-              value: snCredit != null ? `${snCredit} Credit` : t('aiCenter.home.unavailable', 'Not available'),
+              value: snCredit != null ? t('aiCenter.home.creditAmount', '{{amount}} Credit', { amount: snCredit }) : t('aiCenter.home.unavailable', 'Not available'),
               subtitle: snProvider
                 ? t('aiCenter.home.snBalanceUnavailable', 'SN Router does not expose a balance query.')
                 : undefined,
@@ -528,12 +541,12 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
           icon={<Activity size={18} />}
           title={t('aiCenter.home.status', 'AI Status')}
           value={status.state === 'disabled' ? t('aiCenter.home.disabled', 'Disabled') : t('aiCenter.home.enabled', 'Enabled')}
-          subtitle={`${status.provider_count} Provider instances · ${status.model_count} Models · ${status.health_counts.degraded} degraded`}
+          subtitle={t('aiCenter.home.statusSummary', '{{providers}} Provider instances / {{models}} Models / {{degraded}} degraded', { providers: status.provider_count, models: status.model_count, degraded: status.health_counts.degraded })}
         />
         <SummaryCard
           icon={<CreditCard size={18} />}
           title={t('aiCenter.home.credit', 'SN Credit')}
-          value={snCredit != null ? `${snCredit} Credit` : t('aiCenter.home.unavailable', 'Not available')}
+          value={snCredit != null ? t('aiCenter.home.creditAmount', '{{amount}} Credit', { amount: snCredit }) : t('aiCenter.home.unavailable', 'Not available')}
           subtitle={snProvider ? t('aiCenter.home.snBalanceUnavailable', 'SN Router does not expose a balance query.') : undefined}
         />
         <SummaryCard
@@ -565,7 +578,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
               <div key={point.timestamp} className="flex-1 flex flex-col items-center gap-1 min-w-0">
                 <div
                   className="w-full rounded-t-sm"
-                  title={`${point.timestamp}: ${formatTokens(point.tokens)} tokens / ${formatFinanceTotals(point.finance_totals, true)}`}
+                  title={t('aiCenter.home.trendPointTitle', '{{time}}: {{tokens}} tokens / {{cost}}', { time: point.timestamp, tokens: formatTokens(point.tokens), cost: formatFinanceTotals(point.finance_totals, true) })}
                   style={{
                     height: `${Math.max(4, (point.tokens / maxTrendTokens) * (isMobile ? 132 : 180))}px`,
                     background: point.tokens > 0 ? 'var(--cp-accent)' : 'var(--cp-border)',
@@ -585,9 +598,9 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
             {t('aiCenter.home.usageSummary', 'Usage Summary')}
           </h3>
           <div className="grid grid-cols-2 gap-4 items-stretch">
-            <Stat label={t('aiCenter.home.today', 'Today')} value={`${formatTokens(summary.today_tokens)} tokens`} />
-            <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={`${formatTokens(summary.this_month_tokens)} tokens`} />
-            <Stat label={t('aiCenter.home.total', 'Total')} value={`${formatTokens(summary.total_tokens)} tokens`} />
+            <Stat label={t('aiCenter.home.today', 'Today')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.today_tokens) })} />
+            <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.this_month_tokens) })} />
+            <Stat label={t('aiCenter.home.total', 'Total')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.total_tokens) })} />
             <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatFinanceTotals(summary.finance_totals)} />
           </div>
         </section>
@@ -598,9 +611,9 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
           {t('aiCenter.home.usageSummary', 'Usage Summary')}
         </h3>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4 items-stretch">
-          <Stat label={t('aiCenter.home.today', 'Today')} value={`${formatTokens(summary.today_tokens)} tokens`} />
-          <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={`${formatTokens(summary.this_month_tokens)} tokens`} />
-          <Stat label={t('aiCenter.home.total', 'Total')} value={`${formatTokens(summary.total_tokens)} tokens`} />
+          <Stat label={t('aiCenter.home.today', 'Today')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.today_tokens) })} />
+          <Stat label={t('aiCenter.home.thisMonth', 'This Month')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.this_month_tokens) })} />
+          <Stat label={t('aiCenter.home.total', 'Total')} value={t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(summary.total_tokens) })} />
           <Stat label={t('aiCenter.home.requests', 'Requests')} value={summary.total_requests.toString()} />
           <Stat label={t('aiCenter.home.totalCost', 'Total Est. Cost')} value={formatFinanceTotals(summary.finance_totals)} />
         </div>
@@ -789,11 +802,21 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
             </colgroup>
             <thead className="sticky top-0 z-10">
               <tr style={{ background: 'var(--cp-bg)', boxShadow: '0 1px 0 var(--cp-border)' }}>
-                {['Time', 'Provider', 'Exact Model', 'API Type', 'App / Agent', 'Task / Session', 'Tokens', 'Cost', 'Status'].map((h) => (
-                  <th key={h} className="text-left text-xs font-medium px-4 py-2" style={{ color: 'var(--cp-muted)' }}>
+                {([
+                  ['time', t('aiCenter.home.colTime', 'Time')],
+                  ['provider', t('aiCenter.home.colProvider', 'Provider')],
+                  ['model', t('aiCenter.home.colExactModel', 'Exact Model')],
+                  ['apiType', t('aiCenter.home.colApiType', 'API Type')],
+                  ['appAgent', t('aiCenter.home.colAppAgent', 'App / Agent')],
+                  ['taskSession', t('aiCenter.home.taskSession', 'Task / Session')],
+                  ['tokens', t('aiCenter.home.colTokens', 'Tokens')],
+                  ['cost', t('aiCenter.home.colCost', 'Cost')],
+                  ['status', t('aiCenter.home.colStatus', 'Status')],
+                ] as Array<[string, string]>).map(([key, h]) => (
+                  <th key={key} className="text-left text-xs font-medium px-4 py-2" style={{ color: 'var(--cp-muted)' }}>
                     <span className="inline-flex items-center gap-1">
                       {h}
-                      {h === 'Task / Session' && (
+                      {key === 'taskSession' && (
                         <span
                           className="inline-flex"
                           title={t('aiCenter.home.taskSessionTooltip', 'Task / Session is the AICC task id or Agent session id that produced this usage event.')}
@@ -813,7 +836,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
                 const providerDisplayName = usageProviderDisplayName(event, providerNames)
                 return (
                   <tr key={event.id} style={{ borderTop: '1px solid var(--cp-border)' }}>
-                    <td className="px-4 py-2 text-xs whitespace-nowrap" style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp)}</td>
+                    <td className="px-4 py-2 text-xs whitespace-nowrap" style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp, locale)}</td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>
                       <CopyableText
                         value={providerDisplayName}
@@ -844,7 +867,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
                     </td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatTokens(tokens)}</td>
                     <td className="px-4 py-2 text-xs" style={{ color: 'var(--cp-text)' }}>{formatUsageEventMoney(event)}</td>
-                    <td className="px-4 py-2 text-xs" style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>{event.status}</td>
+                    <td className="px-4 py-2 text-xs" style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>{usageStatusLabel(event.status, t)}</td>
                   </tr>
                 )
               })}
@@ -903,7 +926,7 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
               previous: t('common.previous', 'Previous'),
               next: t('common.next', 'Next'),
               page: t('aiCenter.home.pageNumber', 'Page {{page}}'),
-              loading: t('common.loading', 'Loading'),
+              loading: t('common.loading', 'Loading...'),
               loadMore: t('common.loadMore', 'Load more'),
               retry: t('common.retry', 'Retry'),
               error: t('aiCenter.home.usageLoadFailed', 'Could not load usage events.'),
@@ -1123,7 +1146,7 @@ function UsageEventCard({
   providerNames: Map<string, string>
   onOpenTrace: (taskId: string) => void
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [copied, setCopied] = useState(false)
   const tokens = usageTokens(event)
   const providerIdentifier = readableUsageProviderIdentifier(event)
@@ -1134,7 +1157,7 @@ function UsageEventCard({
     `model: ${event.exact_model}`,
     `tokens: ${formatTokens(tokens)}`,
     `cost: ${formatUsageEventMoney(event)}`,
-    `time: ${formatLocalTime(event.timestamp)}`,
+    `time: ${formatLocalTime(event.timestamp, locale)}`,
     `status: ${event.status}`,
     event.session_id ? `task/session: ${event.session_id}` : '',
   ].filter(Boolean).join('\n')
@@ -1166,14 +1189,14 @@ function UsageEventCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp)}</div>
+          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp, locale)}</div>
           <div className="mt-1 text-sm font-medium" style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>
-            {event.status}
+            {usageStatusLabel(event.status, t)}
           </div>
         </div>
         <div className="text-right">
           <div className="text-base font-semibold" style={{ color: 'var(--cp-text)' }}>{formatUsageEventMoney(event)}</div>
-          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{formatTokens(tokens)} tokens</div>
+          <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.home.tokenCount', '{{count}} tokens', { count: formatTokens(tokens) })}</div>
         </div>
       </div>
       <div className="mt-3 grid grid-cols-1 gap-2 text-xs">
@@ -1222,15 +1245,16 @@ function RecentUsageRow({
   event: UsageEvent
   providerNames: Map<string, string>
 }) {
+  const { t, locale } = useI18n()
   const tokens = usageTokens(event)
   const providerDisplayName = usageProviderDisplayName(event, providerNames)
   return (
     <div className="grid grid-cols-1 gap-2 rounded-lg px-3 py-2 text-xs md:grid-cols-[108px_minmax(120px,0.8fr)_minmax(180px,1.2fr)_80px_80px]" style={{ background: 'var(--cp-bg)' }}>
-      <span style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp)}</span>
+      <span style={{ color: 'var(--cp-muted)' }}>{formatLocalTime(event.timestamp, locale)}</span>
       <span className="truncate" title={providerDisplayName} style={{ color: 'var(--cp-text)' }}>{providerDisplayName}</span>
       <span className="truncate font-mono" title={event.exact_model} style={{ color: 'var(--cp-text)' }}>{event.exact_model}</span>
       <span style={{ color: 'var(--cp-muted)' }}>{formatTokens(tokens)}</span>
-      <span style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>{event.status}</span>
+      <span style={{ color: event.status === 'success' ? 'var(--cp-success)' : 'var(--cp-danger)' }}>{usageStatusLabel(event.status, t)}</span>
     </div>
   )
 }
@@ -1289,7 +1313,7 @@ function RecentTraceCard({ trace }: { trace: RouteTrace }) {
       <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(260px,1.2fr)]">
         <div className="min-w-0">
           <div className="truncate text-xs" style={{ color: 'var(--cp-muted)' }}>
-            {trace.requested_model}{' -> '}{trace.selected_exact_model ?? t('aiCenter.home.noExactResolved', 'unresolved')}
+            {trace.requested_model}{' -> '}{trace.selected_exact_model ?? t('aiCenter.home.unresolved', 'unresolved')}
           </div>
           <div className="mt-1 text-sm" style={{ color: 'var(--cp-text)' }}>
             {trace.user_summary?.reason_short}
@@ -1349,12 +1373,13 @@ function RecentTraceCandidate({
   candidate: RouteTrace['ranked_candidates'][number]
   selected: boolean
 }) {
+  const { t } = useI18n()
   return (
     <div className="flex justify-between gap-3 text-xs">
       <span className="min-w-0" style={{ color: selected ? 'var(--cp-accent)' : 'var(--cp-muted)' }}>
         <span className="block truncate">{candidate.exact_model}</span>
         <span className="block" style={{ color: 'var(--cp-muted)' }}>
-          {candidateWeightSummary(candidate)}
+          {candidateWeightSummary(candidate, t)}
         </span>
       </span>
       <span className="shrink-0" style={{ color: 'var(--cp-muted)' }}>{candidate.final_score?.toFixed(2)}</span>
@@ -1579,7 +1604,7 @@ function MultiSelectFilter({
         <input
           value={value.query}
           onChange={(event) => onChange({ ...value, query: event.target.value })}
-          placeholder={selectedCount > 0 ? `${selectedCount} selected` : allLabel}
+          placeholder={selectedCount > 0 ? t('aiCenter.home.selectedCount', '{{count}} selected', { count: selectedCount }) : allLabel}
           className="h-full min-w-0 flex-1 rounded-l-md bg-transparent px-2 text-xs outline-none"
           style={{ color: 'var(--cp-text)' }}
         />
@@ -1588,7 +1613,7 @@ function MultiSelectFilter({
           onClick={() => setOpen((current) => !current)}
           className="flex h-full w-8 shrink-0 items-center justify-center rounded-r-md"
           style={{ color: selectedCount > 0 ? 'var(--cp-accent)' : 'var(--cp-muted)', borderLeft: '1px solid var(--cp-border)' }}
-          aria-label={`${label} options`}
+          aria-label={t('aiCenter.home.filterOptions', '{{label}} options', { label })}
         >
           <ChevronDown size={14} />
         </button>
