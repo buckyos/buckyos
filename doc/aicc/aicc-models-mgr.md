@@ -1077,7 +1077,7 @@ logical_profile:
     - path: llm.chat
       merge_mode: replace
       items:
-        local:
+        - name: local
           target: qwen3@local-llama
           weight: 1.0
 ```
@@ -1095,9 +1095,9 @@ request model alias
   -> exact physical models from provider inventories
   -> mini line admission
   -> user/session overlay
-  -> hard filters
-  -> highest priority path
-  -> scheduler score
+  -> per-directory highest available weight group (hard filters applied while expanding)
+  -> candidate pool
+  -> scheduler score, then default order
   -> sticky binding
   -> selected exact model
 ```

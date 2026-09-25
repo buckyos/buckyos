@@ -374,8 +374,8 @@ pub struct LogicalTreeOverlay {
     pub path: String,
     #[serde(default)]
     pub merge_mode: OverlayMergeMode,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub items: BTreeMap<String, SessionModelItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<SessionModelItem>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub item_overrides: BTreeMap<String, SessionModelItemPatch>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -405,14 +405,16 @@ impl Default for OverlayMergeMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionModelItem {
+    pub name: String,
     pub target: String,
     #[serde(default = "default_model_item_weight")]
     pub weight: f64,
 }
 
 impl SessionModelItem {
-    pub fn new(target: impl Into<String>, weight: f64) -> Self {
+    pub fn new(name: impl Into<String>, target: impl Into<String>, weight: f64) -> Self {
         Self {
+            name: name.into(),
             target: target.into(),
             weight,
         }
@@ -671,12 +673,7 @@ mod tests {
             overlays: vec![LogicalTreeOverlay {
                 path: "llm".to_string(),
                 merge_mode: OverlayMergeMode::Replace,
-                items: [(
-                    "local".to_string(),
-                    SessionModelItem::new("qwen3@local", 1.0),
-                )]
-                .into_iter()
-                .collect(),
+                items: vec![SessionModelItem::new("local", "qwen3@local", 1.0)],
                 item_overrides: BTreeMap::new(),
                 exact_model_weights: BTreeMap::new(),
                 disable_line: Some(SessionModelDisable {
@@ -697,10 +694,7 @@ mod tests {
         let value = serde_json::to_value(&profile).unwrap();
 
         assert_eq!(value["overlays"][0]["merge_mode"], "replace");
-        assert_eq!(
-            value["overlays"][0]["items"]["local"]["target"],
-            "qwen3@local"
-        );
+        assert_eq!(value["overlays"][0]["items"][0]["target"], "qwen3@local");
         assert_eq!(value["overlays"][0]["disable_line"]["web_search"], true);
 
         let restored: SessionLogicalProfile = serde_json::from_value(value).unwrap();

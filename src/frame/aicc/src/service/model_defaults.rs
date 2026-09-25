@@ -50,16 +50,13 @@
 // LLM 的选择原则：
 // - 使用者优先按功能选择，其次按确定版本的家族名选择，最后直接选择规格。
 //   规格之间没有跨厂商的统一强弱刻度，由功能表按厂商逐个给权重。
-// - 功能到规格的权重表达跨厂商偏好；规格到家族预设的顺序表达同一规格内的版本先后。
-//   先按请求及任务约束筛选可执行的家族预设，跳过没有合格候选的规格；再按功能权重
-//   选规格，在规格内选合格的最新稳定版本，旧版用于兜底；该规格耗尽再尝试下一规格。
-//   两层权重不相乘，也不跨层比较；同权重规格以规格 ID 稳定排序，不拿版本序号决胜。
-//   不填写 version_order；按厂商命名约定提取官方模型 ID 中的版本号，缺失分量补零。
-//   单位数 minor/patch 时按 major * 100 + minor * 10 + patch 转整数，如 5.6 -> 560、
-//   5.5 -> 550、6 -> 600；多位数分量按数值元组比较，避免整数槽位冲突。
-//   同版本允许并存，以规范化家族 ID 升序决胜；参数量、日期和产品后缀不作为版本。
-//   无可识别版本的模型在同稳定性类别的已识别版本之后兜底，彼此按家族 ID 稳定排序。
-//   不把大参数模型与小参数模型、普通版与专用版按发布日期串成升级链。
+// - 功能到规格的权重表达跨厂商偏好；规格到家族的权重由 model-driver metadata 的 llm.weight
+//   声明（如 gpt-5.6 = 56、gpt-5.5 = 55），只在同一规格内比较，不要求跨厂商统一。
+//   路由逐层展开：每个目录只展开本层可用 item 中权重最大的一组，并列全部展开；最高组没有
+//   可用候选时才尝试下一组；子目录独立重复该规则。两层权重不相乘、不跨分支比较，
+//   也不从模型名解析版本。全部 item 权重都可由 factory/system/user/session 覆盖。
+//   展开得到的 instance 合并成候选池，按调度策略选择；策略项全部相同时按默认顺序
+//   （配置书写顺序；生成的家族按路径、instance 按 exact model 名）。
 // - 家族名尽量沿用厂商命名，路径段中的版本小数点改用连字符，例如
 //   gpt-5.6 Terra 对应 llm.gpt-5-6-terra，避免将版本号误当作逻辑子目录。
 //   家族直选使用 metadata 的 default_effort；规格引用使用 effort，两者都须属于
@@ -453,7 +450,7 @@
 use async_trait::async_trait;
 use buckyos_api::{
     AiccFallbackMode, AiccFallbackRule, AiccLogicalNodeOverlay, AiccRouteOverlay,
-    AiccSchedulerProfile, ApiType, ModelDisable, ModelItem, ModelRequirement,
+    AiccSchedulerProfile, ApiType, LogicalItem, ModelDisable, ModelRequirement,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -1204,8 +1201,8 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
             .entry(task.into())
             .or_default();
         node.items
-            .get_or_insert_with(BTreeMap::new)
-            .insert((*name).into(), ModelItem::new(*path, *weight));
+            .get_or_insert_with(Vec::new)
+            .push(LogicalItem::new(*name, *path, *weight));
     }
     overlay
 }
@@ -1215,9 +1212,7 @@ fn logical_node(items: &[(&str, &str, f64)]) -> AiccLogicalNodeOverlay {
         items: Some(
             items
                 .iter()
-                .map(|(name, target, weight)| {
-                    ((*name).to_string(), ModelItem::new(*target, *weight))
-                })
+                .map(|(name, target, weight)| LogicalItem::new(*name, *target, *weight))
                 .collect(),
         ),
         ..AiccLogicalNodeOverlay::default()

@@ -394,7 +394,6 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
                         p95_latency_ms: None,
                         error_rate_5m: None,
                         recent_failures: 0,
-                        quality_score: None,
                         cache_hit_probability: None,
                     },
                 )
@@ -559,7 +558,11 @@ fn claude_account_models_are_matched_with_every_declared_preset() {
         &codecs,
     )
     .unwrap();
-    assert!(inv.unmatched_models.is_empty(), "{:?}", inv.unmatched_models);
+    assert!(
+        inv.unmatched_models.is_empty(),
+        "{:?}",
+        inv.unmatched_models
+    );
     assert!(
         inv.unavailable_presets.is_empty(),
         "{:?}",

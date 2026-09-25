@@ -403,7 +403,7 @@ fn catalog_with_revision(revision_seq: u64, context_tokens: u64) -> Arc<CatalogS
         "models": [{
             "id": "gpt-test",
             "api_types": ["llm", "embedding.text"],
-            "llm": {"spec":"openai-spec","effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable"},
+            "llm": {"spec":"openai-spec","effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable","weight":1.0},
             "capabilities": {
                 "tool_call": true,
                 "json_schema": true,
@@ -447,7 +447,7 @@ fn catalog_with_revision(revision_seq: u64, context_tokens: u64) -> Arc<CatalogS
 fn catalog_with_model_ids(revision_seq: u64, model_ids: &[&str]) -> Arc<CatalogSnapshot> {
     let models = model_ids
         .iter()
-        .map(|id| serde_json::json!({"id": id, "api_types": ["llm"], "llm": {"spec":"vendor-spec","effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable"}}))
+        .map(|id| serde_json::json!({"id": id, "api_types": ["llm"], "llm": {"spec":"vendor-spec","effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable","weight":1.0}}))
         .collect::<Vec<_>>();
     let provider_models = model_ids
         .iter()
@@ -553,7 +553,7 @@ fn routed_catalog() -> Arc<CatalogSnapshot> {
                 "id": "shared-model",
                 "api_types": ["llm"],
                 "capabilities": {"tool_call": true},
-                "llm": {"spec":format!("{model_driver_id}-spec"),"family_id":format!("{model_driver_id}-shared-model"),"effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable"}
+                "llm": {"spec":format!("{model_driver_id}-spec"),"family_id":format!("{model_driver_id}-shared-model"),"effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable","weight":1.0}
             }],
             "patterns": [],
             "defaults": {},
@@ -1068,7 +1068,7 @@ fn openai_inventory_satisfies_canonical_tool_and_schema_requirements() {
             user_visible_tier: None,
         }],
         RegistryLayers { factory: Some(&serde_json::from_value(serde_json::json!({
-            "logical_tree":{"llm.contract":{"items":{"model":{"target":"llm.openai-spec","weight":1.0}}}}
+            "logical_tree":{"llm.contract":{"items":[{"name":"model","target":"llm.openai-spec","weight":1.0}]}}
         })).unwrap()), ..RegistryLayers::default() },
     )
     .unwrap();

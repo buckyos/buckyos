@@ -31,7 +31,8 @@ registers Providers nor promises that a channel can execute every supported effo
       "effort": "high",
       "default_effort": "medium",
       "supported_efforts": ["none", "low", "medium", "high", "xhigh"],
-      "stability": "stable"
+      "stability": "stable",
+      "weight": 56
     }
   }],
   "patterns": [],
@@ -54,7 +55,8 @@ filename does not change the stable `model_driver_id` (Anthropic uses `claude`).
 | `llm.effort` | Fixed effort of the specification's family reference. |
 | `llm.default_effort` | Effort used when selecting the family without a suffix. |
 | `llm.supported_efforts` | Nonempty, unique list containing both selected efforts. |
-| `llm.stability` | Required `stable` or `experimental`. |
+| `llm.stability` | Required `stable` or `experimental`. Admission only: experimental families need explicit permission; stability adds no ranking. |
+| `llm.weight` | Required finite, non-negative default weight of the specification-to-family item (for example `gpt-5.6 = 56`, `gpt-5.5 = 55`). Compared only against other families of the same specification. |
 
 Efforts are `native`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`,
 and `thinking`. Each non-native effort derives the semantic variant identity
@@ -100,28 +102,36 @@ upgrade path, old-directory redirect or default-price slot remains. Pricing
 structures shared with Provider Rules remain exclusively for that contract.
 Missing channel price remains unknown, never zero or an origin price estimate.
 
-### Version derivation and selection
+### Family weights and selection
 
-Version extraction follows each known driver's official ID convention. It uses
-up to three numeric release components, padded with zeros; dates, parameter
-counts and product suffixes do not extend the release number. Both Claude
-`claude-3-5-sonnet` and `claude-sonnet-4-6` naming orders are recognized.
+Model Driver metadata declares version preference directly as `llm.weight`. The
+Registry writes the declared value, unchanged, into the default
+specification-to-family item. Routing does not parse versions from model names
+or compare version tuples, so a model whose name has no recognizable version
+still routes by its declared weight. The builtin drivers use `major * 10 + minor`
+of the official release (`gpt-5.6 = 56`, `claude-opus-4-8 = 48`), but any
+non-negative number is valid. A weight only needs to order families within its
+specification; different specifications or vendors may reuse the same value
+(`gpt-5.5` and `claude-opus-5-5` are both `55`) without conflict.
 
-Comparison uses numeric tuples: `5.6 < 5.10 < 6.0`. The optional decimal view
-`major * 100 + minor * 10 + patch` applies only to single-digit minor/patch
-components (`5.6 -> 560`, `5.6.1 -> 561`). Unknown versions sort after recognized
-versions within their stability class. Equal versions use normalized family ID
-ascending; declaration order does not affect the result.
+System, user and session overlays may override the weight through
+`item_overrides` on the specification node (`llm.gpt-pro` item `llm.gpt-5-5`),
+and the instance weight on the family node. An override only changes the
+weight: membership and targets stay inventory facts. Raising `gpt-5.5` to `60`
+selects it, setting it equal to `gpt-5.6` expands both, and `0` disables it.
+Removing the override restores the metadata value. An override for a family or
+instance that is currently absent is ignored until it returns.
 
-After filtering task/request constraints, inventory and channel executability,
-selection compares specification weight descending, specification ID ascending,
-then stability, version descending and family ID ascending within that specification.
-It does not multiply weights by versions or compare versions across specifications.
-The existing scheduler compares physical instances within the chosen family.
-Additional instances do not duplicate the specification reference or its weight.
-Experimental families require the internal `RoutingRequest.allow_experimental`
-policy (false by default); a qualified stable family in the same specification
-always precedes them. No public RPC field was added in this change.
+Selection is uniform across API types. At each node, only the highest-weight
+group of available items expands; ties expand together. A lower group is tried
+only when no item in a higher group yields a candidate that passes admission and
+hard filters. The expanded instances form one pool, and the scheduler profile
+selects within it; exact ties keep the default order (families by path,
+instances by exact model name). Additional instances do not duplicate the
+specification reference or its weight. Experimental families require the
+internal `RoutingRequest.allow_experimental` policy (false by default); once
+allowed, they are not ranked behind stable families. No public RPC field was
+added in this change.
 
 ### Static and dynamic trees
 
@@ -272,9 +282,10 @@ A Known Provider catalog may carry `exchange_rates` with `source_url`,
 `observed_at_ms`, `expires_at_ms`, and `usd_per_unit`. Rates are usable only in the
 half-open observation/expiry interval. Routing uses a 1,000 input / 1,000 output
 reference (request estimates override it), the same tier/time-window resolver as
-settlement, and valid USD conversions. Same-family, fixed-effort instances use
-price first, then latency/reliability; unknown quotes are last and fail a hard
-cost budget. Specification and version preferences still take precedence.
+settlement, and valid USD conversions. Within the expanded pool, the default
+`cost_first` profile ranks by comparable USD price only; latency and error
+observations never rank candidates. Unknown quotes are last and fail a hard cost
+budget. Specification and family weights only decide which branches expand.
 
 See [Provider upgrade implementation](provider_upgrade_implementation.md) for
 verified sources, regional scope, remaining channel gaps and validation.

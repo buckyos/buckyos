@@ -728,7 +728,7 @@ mod tests {
                     "schema_revision": 0,
                     "model_driver_id": "vendor",
                     "revision_seq": 2,
-                    "models": [{"id": "vendor-model", "api_types": ["llm"], "llm":{"spec":"vendor-spec","effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable"}}],
+                    "models": [{"id": "vendor-model", "api_types": ["llm"], "llm":{"spec":"vendor-spec","effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable","weight":1.0}}],
                     "patterns": [],
                     "defaults": {},
                     "specs": [{"id":"vendor-spec","direct_only":true}]

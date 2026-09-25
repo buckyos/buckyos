@@ -21,7 +21,8 @@
         "effort": "none",
         "default_effort": "none",
         "supported_efforts": ["none"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 20
       }
     }
   ],

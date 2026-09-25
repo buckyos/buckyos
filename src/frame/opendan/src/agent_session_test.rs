@@ -1571,12 +1571,7 @@ fn model_policy_carries_session_profile_to_aicc_options() {
         overlays: vec![LogicalTreeOverlay {
             path: "llm".to_string(),
             merge_mode: OverlayMergeMode::Inherit,
-            items: [(
-                "local".to_string(),
-                SessionModelItem::new("qwen3@local", 10.0),
-            )]
-            .into_iter()
-            .collect(),
+            items: vec![SessionModelItem::new("local", "qwen3@local", 10.0)],
             item_overrides: Default::default(),
             exact_model_weights: Default::default(),
             disable_line: None,
@@ -1603,7 +1598,7 @@ fn model_policy_carries_session_profile_to_aicc_options() {
     assert_eq!(options["temperature"], 0.2);
     assert_eq!(options["session_profile"]["name"], "prefer-local");
     assert_eq!(
-        options["session_profile"]["overlays"][0]["items"]["local"]["target"],
+        options["session_profile"]["overlays"][0]["items"][0]["target"],
         "qwen3@local"
     );
 }

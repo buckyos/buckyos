@@ -81,24 +81,22 @@ function installRoutingFixtures(settings: JsonObject, suffix: string): void {
   const llmChildren = object(llm.children);
   const acceptance = object(llmChildren.dv_acceptance);
   const acceptanceChildren = object(acceptance.children);
-  acceptanceChildren.manual = { items: {}, source: "dv_system_routing_fixture" };
+  acceptanceChildren.manual = { items: [], source: "dv_system_routing_fixture" };
   acceptanceChildren.disable_line = {
-    items: {
-      primary: {
-        target: `gpt-5.6@dv-openai-a-${suffix}`,
-        weight: 1,
-      },
-    },
+    items: [{
+      name: "primary",
+      target: `gpt-5.6@dv-openai-a-${suffix}`,
+      weight: 1,
+    }],
     disable_line: { web_search: true },
     source: "dv_system_routing_fixture",
   };
   acceptanceChildren.system_overlay = {
-    items: {
-      system: {
-        target: `gpt-5.6@dv-openai-a-${suffix}`,
-        weight: 1,
-      },
-    },
+    items: [{
+      name: "system",
+      target: `gpt-5.6@dv-openai-a-${suffix}`,
+      weight: 1,
+    }],
     source: "dv_system_routing_fixture",
   };
   acceptance.children = acceptanceChildren;

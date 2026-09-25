@@ -23,7 +23,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking", "none"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 50
       }
     },
     {
@@ -51,7 +52,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 41
       }
     },
     {
@@ -70,7 +72,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 41
       }
     },
     {
@@ -88,7 +91,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 40
       }
     },
     {
@@ -104,7 +108,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 40
       }
     },
     {
@@ -121,7 +126,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 40
       }
     },
     {
@@ -138,7 +144,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 40
       }
     },
     {
@@ -152,7 +159,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 40
       }
     },
     {
@@ -166,7 +174,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 1
       }
     },
     {
@@ -180,7 +189,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 40
       }
     },
     {
@@ -306,7 +316,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking", "none"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 51
       }
     },
     {
@@ -325,7 +336,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["thinking", "max", "high", "low"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 53
       }
     },
     {
@@ -346,7 +358,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["thinking", "max", "high", "low"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 53
       }
     },
     {
@@ -365,7 +378,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["thinking", "none", "max", "high"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 52
       }
     },
     {
@@ -382,7 +396,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking", "none"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 50
       }
     },
     {
@@ -399,7 +414,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking", "none"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 50
       }
     },
     {
@@ -416,7 +432,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 47
       }
     },
     {
@@ -433,7 +450,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 47
       }
     },
     {
@@ -450,7 +468,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 47
       }
     },
     {
@@ -467,7 +486,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking", "none"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 46
       }
     },
     {
@@ -486,7 +506,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking", "none"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 46
       }
     },
     {
@@ -506,7 +527,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking", "none"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 46
       }
     },
     {
@@ -526,7 +548,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking", "none"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 46
       }
     },
     {
@@ -544,7 +567,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking", "none"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 45
       }
     },
     {
@@ -563,7 +587,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking", "none"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 45
       }
     },
     {
@@ -583,7 +608,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 45
       }
     },
     {
@@ -602,7 +628,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 45
       }
     },
     {
@@ -621,7 +648,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 45
       }
     },
     {
@@ -637,7 +665,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 40
       }
     }
   ],

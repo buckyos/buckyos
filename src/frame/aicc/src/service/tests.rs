@@ -1021,7 +1021,7 @@ fn model_catalog_preserves_known_models_and_empty_specs_without_providers() {
             .iter()
             .flat_map(|spec| spec["members"].as_array().unwrap())
         {
-            assert_eq!(member["weight"], 1.0);
+            assert_eq!(member["weight"], member["default_weight"]);
             assert_eq!(member["active"], false);
         }
     }
@@ -1141,7 +1141,7 @@ fn builtin_logical_definitions_make_llm_chat_routable_with_glm_only() {
     );
     let directory = model_directory_json(&registry);
     assert_eq!(
-        directory["llm.chat"]["glm_standard"]["target"],
+        dir_item(&directory, "llm.chat", "glm_standard")["target"],
         "llm.glm-standard"
     );
     assert!(directory.get("llm.deepseek-flash").is_some());
@@ -1215,14 +1215,14 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
             "{path}"
         );
     }
-    assert_eq!(directory["llm.gpt-standard"], json!({}));
+    assert_eq!(directory["llm.gpt-standard"], json!([]));
     assert!(directory.get("llm.missing").is_none());
     assert!(directory.get("llm.gpt-5-6-sol").is_none());
     assert_eq!(
-        directory["llm.chat"]["qwen_plus"]["target"],
+        dir_item(&directory, "llm.chat", "qwen_plus")["target"],
         "llm.qwen-plus"
     );
-    assert_eq!(directory["llm.plan"]["gpt_pro"]["weight"], 2.3);
+    assert_eq!(dir_item(&directory, "llm.plan", "gpt_pro")["weight"], 2.3);
     for path in ["llm", "llm.plan", "llm.gpt-standard"] {
         let set = registry
             .resolve_candidates(path, buckyos_api::ApiType::Llm)
@@ -1276,9 +1276,13 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
             .trim_matches(['(', ')'])
             .parse()
             .unwrap();
-        assert_eq!(directory[task][name]["target"], target, "{task}/{name}");
         assert_eq!(
-            directory[task][name]["weight"],
+            dir_item(&directory, task, name)["target"],
+            target,
+            "{task}/{name}"
+        );
+        assert_eq!(
+            dir_item(&directory, task, name)["weight"],
             json!(weight),
             "{task}/{name}"
         );
@@ -2031,9 +2035,9 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
         "video.txt2video",
         "video.img2video",
     ] {
-        let entries = directory[task].as_object().unwrap();
+        let entries = directory[task].as_array().unwrap();
         media_count += entries.len();
-        assert!(entries.values().all(|item| item["target"]
+        assert!(entries.iter().all(|item| item["target"]
             .as_str()
             .unwrap()
             .starts_with(&format!("{task}."))));
@@ -2057,9 +2061,13 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
             .trim_matches(['(', ')'])
             .parse()
             .unwrap();
-        assert_eq!(directory[task][name]["target"], target, "{task}/{name}");
         assert_eq!(
-            directory[task][name]["weight"],
+            dir_item(&directory, task, name)["target"],
+            target,
+            "{task}/{name}"
+        );
+        assert_eq!(
+            dir_item(&directory, task, name)["weight"],
             json!(weight),
             "{task}/{name}"
         );
@@ -2068,7 +2076,7 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
     assert_eq!(contract_count, 55);
 
     assert_eq!(
-        directory["image.txt2img"]["gpt_image"]["weight"],
+        dir_item(&directory, "image.txt2img", "gpt_image")["weight"],
         json!(3.0)
     );
     let mut model =
@@ -2085,4 +2093,11 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
         loaded_directory["image.txt2img"],
         directory["image.txt2img"]
     );
+}
+
+fn dir_item<'a>(directory: &'a Value, path: &str, name: &str) -> &'a Value {
+    directory[path]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["name"] == name))
+        .unwrap_or(&Value::Null)
 }

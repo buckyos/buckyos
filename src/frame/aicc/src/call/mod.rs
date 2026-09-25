@@ -1277,7 +1277,7 @@ mod tests {
             "specs": [{"id":"gpt-test","direct_only":true}],
             "models": [{
                 "id": "gpt-5.2", "api_types": ["llm", "embedding.text"],
-                "llm": {"spec":"gpt-test","effort":"high","default_effort":"high","supported_efforts":["high"],"stability":"stable"},
+                "llm": {"spec":"gpt-test","effort":"high","default_effort":"high","supported_efforts":["high"],"stability":"stable","weight":1.0},
                 "canonical_fields": {"/temperature": {"converter": "openai_tts_voice_v1", "fallback": {"action": "reject"}}}
             }]
         })).unwrap();
@@ -1474,8 +1474,6 @@ mod tests {
                 scheduler_profile: "balanced".into(),
                 score_breakdown: ScoreBreakdown {
                     cost: 0.0,
-                    latency: 0.0,
-                    reliability: 0.0,
                     quality: 0.0,
                     preference: 0.0,
                     cache: 0.0,
@@ -1486,6 +1484,7 @@ mod tests {
                 runtime_failover_count: 0,
                 logical_item_sources: Vec::new(),
                 logical_admission: Vec::new(),
+                logical_expansion: Vec::new(),
                 disabled_capabilities: Vec::new(),
                 user_summary: UserFacingRouteSummary {
                     display_name: "gpt-5.2".into(),

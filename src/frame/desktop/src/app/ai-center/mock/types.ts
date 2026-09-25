@@ -194,6 +194,9 @@ export interface Money {
 export interface LogicalRouteItem {
   target: string
   weight: number
+  default_weight?: number
+  source?: string
+  weight_source?: string
 }
 
 export interface RoutePolicy {
@@ -266,8 +269,6 @@ export interface RouteTrace {
     }
     score_inputs?: {
       cost: number
-      latency: number
-      reliability: number
       quality: number
       preference: number
       cache: number

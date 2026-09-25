@@ -1317,13 +1317,14 @@ fn model_catalog_json(
                     .filter(|(owner, _, model)| *owner == driver.model_driver_id && model.semantics.spec == spec.id)
                     .map(|(_, id, model)| {
                         let target = format!("{}:{}", model.family, model.semantics.effort.as_str());
-                        let item = directory[&path].as_object().and_then(|items| {
-                            items.values().find(|item| item["target"].as_str() == Some(target.as_str()))
+                        let item = directory[&path].as_array().and_then(|items| {
+                            items.iter().find(|item| item["target"].as_str() == Some(target.as_str()))
                         });
                         json!({
                             "model_id": id,
                             "target": target,
-                            "weight": item.map(|item| item["weight"].clone()).unwrap_or(json!(1.0)),
+                            "weight": item.map(|item| item["weight"].clone()).unwrap_or(json!(model.semantics.weight)),
+                            "default_weight": model.semantics.weight,
                             "active": item.is_some(),
                         })
                     }).collect::<Vec<_>>();
@@ -1354,16 +1355,17 @@ fn model_directory_json(models: &crate::model::ModelRegistry) -> Value {
                         || exact_models.contains(&item.target)
                 })
                 .map(|item| {
-                    (
-                        item.name,
-                        json!({
-                            "target": item.target,
-                            "weight": item.weight,
-                        }),
-                    )
+                    json!({
+                        "name": item.name,
+                        "target": item.target,
+                        "weight": item.weight,
+                        "default_weight": item.default_weight,
+                        "source": crate::model::logical_item_source_name(item.source),
+                        "weight_source": crate::model::logical_item_source_name(item.weight_source),
+                    })
                 })
-                .collect::<serde_json::Map<_, _>>();
-            (logical.path, Value::Object(items))
+                .collect::<Vec<_>>();
+            (logical.path, Value::Array(items))
         })
         .collect::<serde_json::Map<_, _>>();
     Value::Object(directory)

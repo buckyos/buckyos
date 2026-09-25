@@ -24,7 +24,8 @@
         "effort": "high",
         "default_effort": "medium",
         "supported_efforts": ["low", "medium", "high"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 38
       }
     },
     {
@@ -42,7 +43,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 37
       }
     },
     {
@@ -63,7 +65,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["minimal", "low", "medium", "high"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 36
       }
     },
     {
@@ -84,7 +87,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["minimal", "low", "medium", "high"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 35
       }
     },
     {
@@ -102,7 +106,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["minimal", "low", "medium", "high"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 35
       }
     },
     {
@@ -123,7 +128,8 @@
         "effort": "high",
         "default_effort": "minimal",
         "supported_efforts": ["minimal", "low", "medium", "high"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 31
       }
     },
     {
@@ -143,7 +149,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high"],
-        "stability": "experimental"
+        "stability": "experimental",
+        "weight": 31
       }
     },
     {
@@ -168,7 +175,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["minimal", "low", "medium", "high"],
-        "stability": "experimental"
+        "stability": "experimental",
+        "weight": 30
       }
     },
     {
@@ -189,7 +197,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["none", "thinking"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 25
       }
     },
     {

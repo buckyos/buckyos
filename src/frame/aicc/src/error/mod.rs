@@ -222,7 +222,7 @@ pub(crate) enum ModelRegistryError {
         weight: f64,
     },
     ItemsAndOverridesConflict(String),
-    UnknownItemOverride {
+    DuplicateItemName {
         path: String,
         item: String,
     },

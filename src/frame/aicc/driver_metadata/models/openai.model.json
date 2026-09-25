@@ -25,6 +25,7 @@
         "spec": "gpt-nano",
         "effort": "none",
         "stability": "stable",
+        "weight": 56,
         "default_effort": "none",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
       }
@@ -40,6 +41,7 @@
         "spec": "gpt-nano",
         "effort": "none",
         "stability": "stable",
+        "weight": 54,
         "default_effort": "none",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh"]
       }
@@ -56,6 +58,7 @@
         "spec": "gpt-mini",
         "effort": "low",
         "stability": "stable",
+        "weight": 56,
         "default_effort": "low",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
       }
@@ -71,6 +74,7 @@
         "spec": "gpt-mini",
         "effort": "low",
         "stability": "stable",
+        "weight": 54,
         "default_effort": "low",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh"]
       }
@@ -86,6 +90,7 @@
         "spec": "gpt-standard",
         "effort": "medium",
         "stability": "stable",
+        "weight": 55,
         "default_effort": "medium",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh"]
       }
@@ -101,6 +106,7 @@
         "spec": "gpt-standard",
         "effort": "medium",
         "stability": "stable",
+        "weight": 54,
         "default_effort": "medium",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh"]
       }
@@ -117,6 +123,7 @@
         "spec": "gpt-pro",
         "effort": "high",
         "stability": "stable",
+        "weight": 56,
         "default_effort": "high",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
       }
@@ -133,6 +140,7 @@
         "spec": "gpt-pro",
         "effort": "high",
         "stability": "stable",
+        "weight": 56,
         "default_effort": "high",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
       }
@@ -148,6 +156,7 @@
         "spec": "gpt-pro",
         "effort": "high",
         "stability": "stable",
+        "weight": 55,
         "default_effort": "high",
         "supported_efforts": ["medium", "high", "xhigh"]
       }
@@ -163,6 +172,7 @@
         "spec": "gpt-pro",
         "effort": "high",
         "stability": "stable",
+        "weight": 54,
         "default_effort": "high",
         "supported_efforts": ["medium", "high", "xhigh"]
       }
@@ -179,6 +189,7 @@
         "spec": "gpt-max",
         "effort": "high",
         "stability": "stable",
+        "weight": 60,
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high", "xhigh", "max"]
       }
@@ -194,6 +205,7 @@
         "spec": "gpt-codex",
         "effort": "high",
         "stability": "stable",
+        "weight": 53,
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high", "xhigh"]
       }

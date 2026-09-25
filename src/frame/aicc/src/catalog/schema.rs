@@ -249,6 +249,7 @@ pub(crate) struct LlmSemantics {
     pub default_effort: Effort,
     pub supported_efforts: Vec<Effort>,
     pub stability: ModelStability,
+    pub weight: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -257,68 +258,6 @@ pub(crate) struct LlmModel {
     pub origin_model_id: String,
     pub family: String,
     pub semantics: LlmSemantics,
-    pub version: Option<ModelVersion>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct ModelVersion(pub [u64; 3]);
-
-impl ModelVersion {
-    #[cfg(test)]
-    pub(crate) fn decimal_rank(self) -> Option<u64> {
-        let [major, minor, patch] = self.0;
-        if minor > 9 || patch > 9 {
-            return None;
-        }
-        major.checked_mul(100)?.checked_add(minor * 10 + patch)
-    }
-
-    pub(super) fn from_model_id(driver: &str, model: &str) -> Option<Self> {
-        let model = model.to_ascii_lowercase();
-        let (rest, separator) = match driver {
-            "openai" => (model.strip_prefix("gpt-")?, '.'),
-            "claude" => {
-                let rest = model.strip_prefix("claude-")?;
-                (
-                    if rest.starts_with(|ch: char| ch.is_ascii_digit()) {
-                        rest
-                    } else {
-                        rest.split_once('-')?.1
-                    },
-                    '-',
-                )
-            }
-            "gemini" => (model.strip_prefix("gemini-")?, '.'),
-            "qwen" => (model.strip_prefix("qwen")?, '.'),
-            "glm" => (
-                model
-                    .strip_prefix("glm-")
-                    .or_else(|| model.strip_prefix("charglm-"))
-                    .or_else(|| model.strip_prefix("codegeex-"))?,
-                '.',
-            ),
-            "kimi" => (model.strip_prefix("kimi-k")?, '.'),
-            "deepseek" => (model.strip_prefix("deepseek-v")?, '.'),
-            "doubao" => (model.strip_prefix("doubao-seed-")?, '-'),
-            "minimax" => (model.strip_prefix("minimax-m")?, '.'),
-            _ => return None,
-        };
-        let mut version = [0; 3];
-        for (index, component) in rest.split(separator).take(3).enumerate() {
-            let digits: String = component.chars().take_while(char::is_ascii_digit).collect();
-            if digits.is_empty() || digits.len() > 2 {
-                if index == 0 {
-                    return None;
-                }
-                break;
-            }
-            version[index] = digits.parse().ok()?;
-            if digits.len() != component.len() {
-                break;
-            }
-        }
-        Some(Self(version))
-    }
 }
 
 pub(crate) fn family_segment(id: &str) -> String {

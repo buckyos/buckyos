@@ -204,7 +204,7 @@ mod wp08d_tests {
             "schema_revision": 0,
             "model_driver_id": id,
             "revision_seq": 1,
-            "models": [{"id": model, "api_types": ["llm"], "llm":{"spec":format!("{id}-spec"),"family_id":format!("{id}-{}",crate::catalog::family_segment(model)),"effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable"}}],
+            "models": [{"id": model, "api_types": ["llm"], "llm":{"spec":format!("{id}-spec"),"family_id":format!("{id}-{}",crate::catalog::family_segment(model)),"effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable","weight":1.0}}],
             "patterns": [],
             "defaults": {},
             "specs": [{"id":format!("{id}-spec"),"direct_only":true}]

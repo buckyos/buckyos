@@ -5,12 +5,12 @@ mod validation;
 pub(crate) use schema::{
     family_segment, CatalogBuildOptions, CatalogDocuments, CatalogKind, CurrentCatalogFile,
     KnownProvider, KnownProviderCatalog, LlmModel, ModelDriverCatalog, ModelIdentity,
-    ModelMatchFailure, ModelPricingRule, ModelSemantics, ModelStability, ModelVersion, Pricing,
-    PricingTierStep, PricingTiers, PricingTimeWindow, PricingUnit, PricingWeekday,
-    ProviderCredentialDescriptor, ProviderCredentialKind, ProviderExactRule, ProviderFieldMode,
-    ProviderFieldSchema, ProviderModelMatch, ProviderPatternRule, ProviderRuleAction,
-    ProviderRulesCatalog, ProviderVariantRule, RequestRule, ResolvedModelSemantics,
-    ResolvedProviderConfiguration, ResolvedProviderRule, TierDimension, TierMode,
+    ModelMatchFailure, ModelPricingRule, ModelSemantics, ModelStability, Pricing, PricingTierStep,
+    PricingTiers, PricingTimeWindow, PricingUnit, PricingWeekday, ProviderCredentialDescriptor,
+    ProviderCredentialKind, ProviderExactRule, ProviderFieldMode, ProviderFieldSchema,
+    ProviderModelMatch, ProviderPatternRule, ProviderRuleAction, ProviderRulesCatalog,
+    ProviderVariantRule, RequestRule, ResolvedModelSemantics, ResolvedProviderConfiguration,
+    ResolvedProviderRule, TierDimension, TierMode,
 };
 #[cfg(test)]
 pub(crate) use schema::{Effort, ProviderRuleMatchKind};
@@ -739,7 +739,6 @@ fn compile_model_driver(
                     origin_model_id: id.clone(),
                     family: format!("llm.{family}"),
                     semantics: llm,
-                    version: ModelVersion::from_model_id(&document.model_driver_id, &id),
                 },
             );
         }

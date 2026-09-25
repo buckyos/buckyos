@@ -12,6 +12,7 @@ import type {
   KnownProviderProfile,
   LocalModel,
   LogicalNode,
+  LogicalRouteItem,
   ModelHealthStatus,
   ModelMetadata,
   PricingMode,
@@ -167,7 +168,7 @@ interface AccountInfo {
 
 interface RawModelDirectory {
   models?: RawModelMetadata[]
-  directory?: Record<string, Record<string, RawLogicalRouteItem>>
+  directory?: Record<string, RawLogicalRouteItem[]>
   logical_definitions?: RawLogicalDefinition[]
   routing_settings?: RawRoutingSettings
   aliases?: unknown[]
@@ -196,8 +197,12 @@ interface RawModelMetadata {
 }
 
 interface RawLogicalRouteItem {
+  name?: unknown
   target?: unknown
   weight?: unknown
+  default_weight?: unknown
+  source?: unknown
+  weight_source?: unknown
 }
 
 interface RawLogicalDefinition {
@@ -1372,16 +1377,12 @@ function toRankedCandidates(value: unknown): RouteTrace['ranked_candidates'] {
 function toScoreInputs(value: unknown): RouteTrace['ranked_candidates'][number]['score_inputs'] {
   const inputs = asRecord(value)
   const cost = asOptionalNumber(inputs.cost)
-  const latency = asOptionalNumber(inputs.latency)
-  const reliability = asOptionalNumber(inputs.reliability)
   const quality = asOptionalNumber(inputs.quality)
   const preference = asOptionalNumber(inputs.preference)
   const cache = asOptionalNumber(inputs.cache)
   const local = asOptionalNumber(inputs.local)
   if (
     cost == null ||
-    latency == null ||
-    reliability == null ||
     quality == null ||
     preference == null ||
     cache == null ||
@@ -1391,8 +1392,6 @@ function toScoreInputs(value: unknown): RouteTrace['ranked_candidates'][number][
   }
   return {
     cost,
-    latency,
-    reliability,
     quality,
     preference,
     cache,
@@ -1868,13 +1867,13 @@ function logicalTreeFromDirectory(
     return node
   }
 
-  const entriesByPath = new Map<string, Record<string, RawLogicalRouteItem>>()
+  const entriesByPath = new Map<string, RawLogicalRouteItem[]>()
   Object.entries(directory ?? {}).forEach(([path, items]) => {
     entriesByPath.set(path, items)
   })
   for (const path of definitionsByPath.keys()) {
     if (!entriesByPath.has(path)) {
-      entriesByPath.set(path, {})
+      entriesByPath.set(path, [])
     }
   }
 
@@ -2134,15 +2133,20 @@ function computeAIStatus(
   }
 }
 
-function toLogicalItems(raw: unknown): Record<string, { target: string; weight: number }> {
-  const items = asRecord(raw)
-  return Object.fromEntries(Object.entries(items).map(([key, value]) => {
+function toLogicalItems(raw: unknown): Record<string, LogicalRouteItem> {
+  const items = Array.isArray(raw) ? raw : []
+  return Object.fromEntries(items.map((value, index) => {
     const item = asRecord(value)
+    const name = asNonEmptyString(item.name, `item-${index}`)
+    const weight = asNumber(item.weight, 1)
     return [
-      key,
+      name,
       {
-        target: asNonEmptyString(item.target, key),
-        weight: asNumber(item.weight, 1),
+        target: asNonEmptyString(item.target, name),
+        weight,
+        default_weight: asNumber(item.default_weight, weight),
+        source: asOptionalString(item.source),
+        weight_source: asOptionalString(item.weight_source),
       },
     ]
   }))

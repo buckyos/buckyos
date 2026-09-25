@@ -1659,15 +1659,17 @@ fn is_default_model_disable(disable: &ModelDisable) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ModelItem {
+pub struct LogicalItem {
+    pub name: String,
     pub target: String,
     #[serde(default = "default_model_item_weight")]
     pub weight: f64,
 }
 
-impl ModelItem {
-    pub fn new(target: impl Into<String>, weight: f64) -> Self {
+impl LogicalItem {
+    pub fn new(name: impl Into<String>, target: impl Into<String>, weight: f64) -> Self {
         Self {
+            name: name.into(),
             target: target.into(),
             weight,
         }
@@ -1678,7 +1680,7 @@ fn default_model_item_weight() -> f64 {
     1.0
 }
 
-pub type LogicalItems = BTreeMap<String, ModelItem>;
+pub type LogicalItems = Vec<LogicalItem>;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ModelItemPatch {
@@ -1839,10 +1841,6 @@ pub struct AiccSchedulerProfileWeights {
     #[serde(default)]
     pub cost: f64,
     #[serde(default)]
-    pub latency: f64,
-    #[serde(default)]
-    pub reliability: f64,
-    #[serde(default)]
     pub quality: f64,
     #[serde(default)]
     pub preference: f64,
@@ -1889,7 +1887,7 @@ pub struct AiccLogicalTreeOverlay {
     pub path: String,
     #[serde(default, skip_serializing_if = "is_default_overlay_merge_mode")]
     pub merge_mode: OverlayMergeMode,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: LogicalItems,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub item_overrides: BTreeMap<String, ModelItemPatch>,

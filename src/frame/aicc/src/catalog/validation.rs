@@ -155,6 +155,13 @@ fn validate_llm_semantics(
         if let Some(family) = &llm.family_id {
             validate_segment(owner, "llm.family_id", family)?;
         }
+        if !llm.weight.is_finite() || llm.weight < 0.0 {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.into(),
+                field: "llm.weight",
+                reason: "must be a finite non-negative number".into(),
+            });
+        }
         let efforts: BTreeSet<_> = llm.supported_efforts.iter().collect();
         if efforts.len() != llm.supported_efforts.len()
             || !efforts.contains(&llm.effort)

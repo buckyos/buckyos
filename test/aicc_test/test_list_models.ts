@@ -33,8 +33,8 @@ type ProviderEntry = {
   models: ModelEntry[];
 };
 
-type DirectoryItem = { target: string; weight: number };
-type DirectoryItems = Record<string, DirectoryItem>;
+type DirectoryItem = { name: string; target: string; weight: number };
+type DirectoryItems = DirectoryItem[];
 type Directory = Record<string, DirectoryItems>;
 
 type AliasEntry = {
@@ -46,7 +46,7 @@ type AliasEntry = {
 };
 
 type SessionItem = { target: string; weight?: number };
-type SessionItems = Record<string, SessionItem>;
+type SessionItems = Array<SessionItem & { name: string }>;
 
 type SessionLogicalNode = {
   children?: Record<string, SessionLogicalNode>;
@@ -104,9 +104,9 @@ function flattenSessionTree(
 ): void {
   const leaves: SessionLeaf[] = [];
   if (node.items) {
-    for (const [name, item] of Object.entries(node.items)) {
+    for (const item of node.items) {
       leaves.push({
-        name,
+        name: item.name,
         target: item.target,
         weight: item.weight ?? 1.0,
         source: "items",
@@ -189,8 +189,7 @@ function renderTree(node: TreeNode, prefix: string, lines: string[]): void {
     type Leaf = { label: string };
     const leaves: Leaf[] = [];
     if (child.items) {
-      for (const itemKey of Object.keys(child.items).sort()) {
-        const item = child.items[itemKey];
+      for (const item of child.items) {
         const weight = item.weight === 1 ? "" : `  (w=${item.weight})`;
         leaves.push({ label: `${item.target}${weight}` });
       }

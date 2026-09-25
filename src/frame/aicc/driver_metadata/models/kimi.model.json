@@ -22,7 +22,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking", "none"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 25
       }
     },
     {
@@ -41,7 +42,8 @@
         "effort": "thinking",
         "default_effort": "thinking",
         "supported_efforts": ["thinking", "none"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 26
       }
     }
   ],

@@ -56,12 +56,7 @@ pub(crate) fn gpt_overlay() -> AiccRouteOverlay {
     let items = ["nano", "mini", "standard", "pro", "max", "codex"]
         .into_iter()
         .enumerate()
-        .map(|(index, spec)| {
-            (
-                spec.to_owned(),
-                ModelItem::new(format!("llm.gpt-{spec}"), index as f64 + 1.0),
-            )
-        })
+        .map(|(index, spec)| LogicalItem::new(spec, format!("llm.gpt-{spec}"), index as f64 + 1.0))
         .collect();
     AiccRouteOverlay {
         logical_tree: BTreeMap::from([(
@@ -136,7 +131,7 @@ fn z01_z02_real_openai_catalog_and_empty_specifications_need_no_provider() {
     assert_eq!(catalog.model_driver("openai").unwrap().specs.len(), 6);
     let model = catalog.llm_model("openai", "gpt-5.6-sol").unwrap();
     assert_eq!(model.family, "llm.gpt-5-6-sol");
-    assert_eq!(model.version.unwrap().decimal_rank(), Some(560));
+    assert_eq!(model.semantics.weight, 56.0);
     assert_eq!(
         model.semantics.effort.variant().as_deref(),
         Some("reasoning-high")
@@ -184,6 +179,8 @@ fn z06_z08_invalid_catalogs_fail_without_inventory() {
         ("version_order", 9),
         ("v1", 10),
         ("version_rules", 11),
+        ("missing weight", 12),
+        ("negative weight", 13),
     ] {
         let mut value = openai_document();
         match edit {
@@ -203,7 +200,14 @@ fn z06_z08_invalid_catalogs_fail_without_inventory() {
             8 => value["variants"] = json!([]),
             9 => value["models"][0]["llm"]["version_order"] = json!(900),
             10 => value["schema_version"] = json!(1),
-            _ => value["version_rules"] = json!([]),
+            11 => value["version_rules"] = json!([]),
+            12 => {
+                value["models"][0]["llm"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("weight");
+            }
+            _ => value["models"][0]["llm"]["weight"] = json!(-1),
         }
         let result = serde_json::from_value(value)
             .map_err(|error| error.to_string())
@@ -336,7 +340,7 @@ fn d07_d08_efforts_never_fabricate_channel_support_or_bypass_task_membership() {
         .unwrap()
         .candidates
         .is_empty());
-    let bypass: AiccRouteOverlay = serde_json::from_value(json!({"logical_tree":{"llm.plan":{"items":{"bypass":{"target":"sol:reasoning-low@a","weight":100}}}}})).unwrap();
+    let bypass: AiccRouteOverlay = serde_json::from_value(json!({"logical_tree":{"llm.plan":{"items":[{"name":"bypass","target":"sol:reasoning-low@a","weight":100}]}}})).unwrap();
     assert!(registry.with_session_overlay(&bypass).is_err());
     for mode in [MountMode::Auto, MountMode::Hybrid] {
         let mut task = definition("llm.chat");
@@ -400,85 +404,141 @@ fn d07_d08_efforts_never_fabricate_channel_support_or_bypass_task_membership() {
 }
 
 #[test]
-fn d04_versions_are_numeric_ignore_dates_sizes_and_tie_break_by_family() {
+fn d04_metadata_weights_select_families_without_parsing_model_names() {
     let mut value = openai_document();
     let template = value["models"][6].clone();
-    let ids = [
-        "gpt-5.5",
-        "gpt-5.6",
-        "gpt-6",
-        "gpt-5.6.1",
-        "gpt-5.10",
-        "gpt-5.6-z",
-        "gpt-5.6-20260925",
-        "gpt-5.6-27b",
-        "gpt-unknown",
-        "gpt-20260925",
+    let models = [
+        ("gpt-5.5", 55.0),
+        ("gpt-5.6", 56.0),
+        ("gpt-unknown", 56.0),
+        ("gpt-6", 1.0),
     ];
     value["models"] = Value::Array(
-        ids.iter()
-            .map(|id| {
+        models
+            .iter()
+            .map(|(id, weight)| {
                 let mut model = template.clone();
                 model["id"] = json!(id);
+                model["llm"]["weight"] = json!(weight);
                 model
             })
             .collect(),
     );
     value["specs"] = json!([{"id":"gpt-pro","direct_only":true}]);
-    let catalog = compile(vec![serde_json::from_value(value.clone()).unwrap()]).unwrap();
-    let versions: Vec<_> = ids
-        .iter()
-        .map(|id| catalog.llm_model("openai", id).unwrap().version)
-        .collect();
-    assert_eq!(versions[0].unwrap().decimal_rank(), Some(550));
-    assert_eq!(versions[1].unwrap().decimal_rank(), Some(560));
-    assert_eq!(versions[2].unwrap().decimal_rank(), Some(600));
-    assert_eq!(versions[3].unwrap().decimal_rank(), Some(561));
-    assert!(versions[1] < versions[4] && versions[4] < versions[2]);
-    assert!(versions[4].unwrap().decimal_rank().is_none());
-    assert_eq!(&versions[5..8], &[versions[1]; 3]);
-    assert_eq!(&versions[8..], &[None, None]);
     let base = inventory("openai", "gpt-5.6-sol", "x", "a", &["high"]);
-    let stocks: Vec<_> = ids
+    let stocks: Vec<_> = models
         .iter()
-        .map(|id| {
+        .map(|(id, _)| {
             let mut stock = base.clone();
-            stock.provider_instance_name = (*id).into();
+            stock.provider_instance_name = (*id).replace('.', "-");
             stock.models[0].origin_model_id = (*id).into();
             stock
         })
         .collect();
+    let catalog = compile(vec![serde_json::from_value(value.clone()).unwrap()]).unwrap();
     let first = ModelRegistry::build(&catalog, &stocks, vec![], RegistryLayers::default()).unwrap();
+    let spec = first
+        .logical_model_views()
+        .into_iter()
+        .find(|view| view.path == "llm.gpt-pro")
+        .unwrap();
+    assert_eq!(
+        spec.items
+            .iter()
+            .map(|item| (item.name.as_str(), item.default_weight))
+            .collect::<Vec<_>>(),
+        [
+            ("llm.gpt-5-5", 55.0),
+            ("llm.gpt-5-6", 56.0),
+            ("llm.gpt-6", 1.0),
+            ("llm.gpt-unknown", 56.0),
+        ]
+    );
+    let origins = |registry: &ModelRegistry| {
+        registry
+            .resolve_candidates("llm.gpt-pro", ApiType::Llm)
+            .unwrap()
+            .candidates
+            .iter()
+            .map(|candidate| candidate.model.identity.origin_model_id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(origins(&first), ["gpt-5.6", "gpt-unknown"]);
+
     value["models"].as_array_mut().unwrap().reverse();
     let catalog = compile(vec![serde_json::from_value(value).unwrap()]).unwrap();
-    let mut reversed = stocks;
+    let mut reversed = stocks.clone();
     reversed.reverse();
     let second =
         ModelRegistry::build(&catalog, &reversed, vec![], RegistryLayers::default()).unwrap();
     assert_eq!(first.logical_model_views(), second.logical_model_views());
-    let candidates = first
+
+    let overlay: AiccRouteOverlay = serde_json::from_value(json!({"logical_tree":{"llm.gpt-pro":{"item_overrides":{"llm.gpt-5-5":{"weight":60},"llm.gpt-6":{"weight":0}}}}})).unwrap();
+    let overridden = first.with_session_overlay(&overlay).unwrap();
+    assert_eq!(origins(&overridden), ["gpt-5.5"]);
+    let item = overridden
+        .logical_model_views()
+        .into_iter()
+        .find(|view| view.path == "llm.gpt-pro")
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|item| item.name == "llm.gpt-5-5")
+        .unwrap();
+    assert_eq!(
+        (item.weight, item.default_weight, item.weight_source),
+        (60.0, 55.0, LogicalItemSource::SessionOverlay)
+    );
+    let overlay: AiccRouteOverlay = serde_json::from_value(
+        json!({"logical_tree":{"llm.gpt-pro":{"item_overrides":{"llm.gpt-5-5":{"weight":56}}}}}),
+    )
+    .unwrap();
+    assert_eq!(
+        origins(&first.with_session_overlay(&overlay).unwrap()),
+        ["gpt-5.5", "gpt-5.6", "gpt-unknown"]
+    );
+}
+
+#[test]
+fn family_instance_weights_accept_overrides_but_not_new_members() {
+    let a = inventory("openai", "gpt-5.6-sol", "sol", "a", &["high"]);
+    let b = inventory("openai", "gpt-5.6-sol", "sol", "b", &["high"]);
+    let registry = gpt_registry(&[a, b]);
+    let overlay: AiccRouteOverlay = serde_json::from_value(json!({"logical_tree":{"llm.gpt-5-6-sol":{"item_overrides":{"sol:reasoning-high@b":{"weight":2}}}}})).unwrap();
+    let candidates = registry
+        .with_session_overlay(&overlay)
+        .unwrap()
         .resolve_candidates("llm.gpt-pro", ApiType::Llm)
         .unwrap()
         .candidates;
-    let order: Vec<_> = candidates
-        .iter()
-        .map(|candidate| candidate.model.identity.origin_model_id.as_str())
-        .collect();
+    assert_eq!(candidates.len(), 1);
     assert_eq!(
-        order,
-        [
-            "gpt-6",
-            "gpt-5.10",
-            "gpt-5.6.1",
-            "gpt-5.6",
-            "gpt-5.6-20260925",
-            "gpt-5.6-27b",
-            "gpt-5.6-z",
-            "gpt-5.5",
-            "gpt-20260925",
-            "gpt-unknown"
-        ]
+        candidates[0].model.exact_model.as_str(),
+        "sol:reasoning-high@b"
     );
+    let retarget: AiccRouteOverlay = serde_json::from_value(json!({"logical_tree":{"llm.gpt-5-6-sol":{"item_overrides":{"sol:reasoning-high@b":{"target":"sol:reasoning-high@a"}}}}})).unwrap();
+    assert!(registry.with_session_overlay(&retarget).is_err());
+
+    let persisted: AiccRouteOverlay = serde_json::from_value(json!({"logical_tree":{
+        "llm.gpt-5-6-sol":{"item_overrides":{"sol:reasoning-high@b":{"weight":2}}},
+        "llm.gpt-pro":{"item_overrides":{"llm.gpt-5-6-sol":{"weight":70}}}
+    }}))
+    .unwrap();
+    let empty = ModelRegistry::build(
+        &compile(vec![serde_json::from_value(openai_document()).unwrap()]).unwrap(),
+        &[],
+        vec![definition("llm.chat")],
+        RegistryLayers {
+            factory: Some(&gpt_overlay()),
+            user: Some(&persisted),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!empty
+        .logical_model_views()
+        .iter()
+        .any(|view| view.path == "llm.gpt-5-6-sol"));
 }
 
 #[test]

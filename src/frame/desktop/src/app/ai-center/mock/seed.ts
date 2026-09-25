@@ -631,11 +631,9 @@ function generateUsageEvents(): UsageEvent[] {
   return events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
 }
 
-function scoreInputs(cost: number, latency: number, reliability: number, quality: number, preference: number, local: number) {
+function scoreInputs(cost: number, quality: number, preference: number, local: number) {
   return {
     cost,
-    latency,
-    reliability,
     quality,
     preference,
     cache: 0,
@@ -680,7 +678,7 @@ const routeTraces: RouteTrace[] = [
           exact_model_weight_effect: 'neutral',
           provider_weight_effect: 'neutral',
         },
-        score_inputs: scoreInputs(0.6, 0.4, 0.08, 0.02, 0.5, 1),
+        score_inputs: scoreInputs(0.6, 0.02, 0.5, 1),
       },
       {
         exact_model: 'gpt-5.1@openai-main',
@@ -702,7 +700,7 @@ const routeTraces: RouteTrace[] = [
           exact_model_weight_effect: 'neutral',
           provider_weight_effect: 'downweighted',
         },
-        score_inputs: scoreInputs(0.2, 0.35, 0.03, 0.04, 1, 1),
+        score_inputs: scoreInputs(0.2, 0.04, 1, 1),
       },
       {
         exact_model: 'qwen2.5-coder-32b@local',
@@ -721,7 +719,7 @@ const routeTraces: RouteTrace[] = [
           exact_model_weight_effect: 'upweighted',
           provider_weight_effect: 'neutral',
         },
-        score_inputs: scoreInputs(0, 0.1, 0.01, 0.18, 0.3, 0),
+        score_inputs: scoreInputs(0, 0.18, 0.3, 0),
       },
     ],
     filtered_candidates: [
@@ -752,9 +750,9 @@ const routeTraces: RouteTrace[] = [
     selected_exact_model: 'qwen2.5-coder-32b@local',
     selected_provider_instance_name: 'local',
     ranked_candidates: [
-      { exact_model: 'qwen2.5-coder-32b@local', final_score: 0.88, selected: true, score_inputs: scoreInputs(0, 0.1, 0.01, 0.12, 0.4, 0) },
-      { exact_model: 'claude-sonnet-4.5@anthropic-work', final_score: 0.86, selected: false, score_inputs: scoreInputs(0.7, 0.45, 0.05, 0.04, 0.6, 1) },
-      { exact_model: 'gpt-5.1@openai-main', final_score: 0.81, selected: false, score_inputs: scoreInputs(0.35, 0.3, 0.03, 0.08, 0.6, 1) },
+      { exact_model: 'qwen2.5-coder-32b@local', final_score: 0.88, selected: true, score_inputs: scoreInputs(0, 0.12, 0.4, 0) },
+      { exact_model: 'claude-sonnet-4.5@anthropic-work', final_score: 0.86, selected: false, score_inputs: scoreInputs(0.7, 0.04, 0.6, 1) },
+      { exact_model: 'gpt-5.1@openai-main', final_score: 0.81, selected: false, score_inputs: scoreInputs(0.35, 0.08, 0.6, 1) },
     ],
     filtered_candidates: [],
     fallback_applied: false,

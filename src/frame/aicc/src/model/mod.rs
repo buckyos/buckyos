@@ -1,9 +1,9 @@
 use crate::canonical::CanonicalFieldMapping;
-use crate::catalog::{CatalogSnapshot, LlmModel, ModelStability, ModelVersion};
+use crate::catalog::{CatalogSnapshot, LlmModel, ModelStability};
 use crate::error::ModelRegistryError;
 use buckyos_api::{
     AiccFallbackMode, AiccFallbackRule, AiccLogicalNodeOverlay, AiccLogicalTreeOverlay,
-    AiccPolicyConfig, AiccRouteOverlay, AiccSchedulerProfile, ApiType, ModelDisable, ModelItem,
+    AiccPolicyConfig, AiccRouteOverlay, AiccSchedulerProfile, ApiType, LogicalItem, ModelDisable,
     ModelItemPatch, ModelRequirement, OverlayMergeMode,
 };
 use serde::{Deserialize, Serialize};
@@ -206,17 +206,51 @@ pub(crate) enum LogicalItemSource {
     SessionOverlay,
 }
 
+pub(crate) fn logical_item_source_name(source: LogicalItemSource) -> &'static str {
+    match source {
+        LogicalItemSource::BuiltinDefinition => "builtin_definition",
+        LogicalItemSource::DriverMetadataMount => "driver_metadata_mount",
+        LogicalItemSource::AutoAdmission => "auto_admission",
+        LogicalItemSource::ManualOverride => "manual_override",
+        LogicalItemSource::UserOverlay => "user_overlay",
+        LogicalItemSource::SessionOverlay => "session_overlay",
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct EffectiveItem {
-    item: ModelItem,
+    name: String,
+    target: String,
+    weight: f64,
+    default_weight: f64,
     source: LogicalItemSource,
+    weight_source: LogicalItemSource,
+}
+
+impl EffectiveItem {
+    fn new(
+        name: impl Into<String>,
+        target: impl Into<String>,
+        weight: f64,
+        source: LogicalItemSource,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            target: target.into(),
+            weight,
+            default_weight: weight,
+            source,
+            weight_source: source,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct EffectiveLogicalNode {
     definition: Option<LogicalModelDefinition>,
     family: Option<LlmModel>,
-    items: BTreeMap<String, EffectiveItem>,
+    family_members: BTreeSet<String>,
+    items: Vec<EffectiveItem>,
     exact_model_weights: BTreeMap<String, f64>,
     disable_line: ModelDisable,
     fallback: Option<AiccFallbackRule>,
@@ -262,7 +296,9 @@ pub(crate) struct LogicalItemView {
     pub name: String,
     pub target: String,
     pub weight: f64,
+    pub default_weight: f64,
     pub source: LogicalItemSource,
+    pub weight_source: LogicalItemSource,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -283,38 +319,48 @@ pub(crate) struct LogicalModelView {
 pub(crate) struct CandidatePath {
     pub logical_paths: Vec<String>,
     pub item_names: Vec<String>,
-    pub priority: Vec<f64>,
+    pub weights: Vec<f64>,
     pub sources: Vec<LogicalItemSource>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RegistryCandidate {
-    pub llm_order: Option<LlmOrder>,
     pub model: RegisteredModel,
     pub paths: Vec<CandidatePath>,
+    pub experimental: bool,
     pub exact_model_weight: f64,
     pub provider_weight: f64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct LlmOrder {
-    pub spec_weight: f64,
-    pub spec: String,
-    pub family: String,
-    pub stability: ModelStability,
-    pub version: Option<ModelVersion>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExpansionState {
+    Expanded,
+    Unavailable,
+    NotExpanded,
 }
 
-impl LlmOrder {
-    pub(crate) fn compare(&self, other: &Self) -> std::cmp::Ordering {
-        other
-            .spec_weight
-            .total_cmp(&self.spec_weight)
-            .then_with(|| self.spec.cmp(&other.spec))
-            .then_with(|| self.stability.cmp(&other.stability))
-            .then_with(|| other.version.cmp(&self.version))
-            .then_with(|| self.family.cmp(&other.family))
-    }
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ExpansionItem {
+    pub name: String,
+    pub target: String,
+    pub weight: f64,
+    pub weight_source: LogicalItemSource,
+    pub state: ExpansionState,
+}
+
+struct ExpandContext<'a> {
+    resolved_path: &'a str,
+    accept: &'a mut dyn FnMut(&str, &RegistryCandidate) -> bool,
+    explore_all: bool,
+    admissions: Vec<AdmissionRecord>,
+    expansions: Vec<ExpansionStep>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ExpansionStep {
+    pub logical_path: String,
+    pub max_weight: Option<f64>,
+    pub items: Vec<ExpansionItem>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -337,6 +383,7 @@ pub(crate) struct CandidateSet {
     pub resolved_logical_path: String,
     pub candidates: Vec<RegistryCandidate>,
     pub admissions: Vec<AdmissionRecord>,
+    pub expansions: Vec<ExpansionStep>,
     pub fallback_chain: Vec<FallbackStep>,
     pub disable_line: ModelDisable,
     pub default_options: BTreeMap<String, Value>,
@@ -433,6 +480,7 @@ impl ModelRegistry {
     pub(crate) fn logical_model_views(&self) -> Vec<LogicalModelView> {
         self.logical_nodes
             .iter()
+            .filter(|(path, node)| !self.family_names.contains(*path) || node.family.is_some())
             .map(|(path, node)| LogicalModelView {
                 path: path.clone(),
                 api_type: node
@@ -451,11 +499,13 @@ impl ModelRegistry {
                 items: node
                     .items
                     .iter()
-                    .map(|(name, item)| LogicalItemView {
-                        name: name.clone(),
-                        target: item.item.target.clone(),
-                        weight: item.item.weight,
+                    .map(|item| LogicalItemView {
+                        name: item.name.clone(),
+                        target: item.target.clone(),
+                        weight: item.weight,
+                        default_weight: item.default_weight,
                         source: item.source,
+                        weight_source: item.weight_source,
                     })
                     .collect(),
                 min_line: node
@@ -478,10 +528,74 @@ impl ModelRegistry {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn resolve_candidates(
         &self,
         logical_path: &str,
         api_type: ApiType,
+    ) -> Result<CandidateSet, ModelRegistryError> {
+        self.resolve_available_candidates(logical_path, api_type, &mut |_, _| true)
+    }
+
+    pub(crate) fn reachable_models(
+        &self,
+        logical_path: &str,
+        api_type: ApiType,
+    ) -> Result<Vec<RegisteredModel>, ModelRegistryError> {
+        validate_logical_path(logical_path)?;
+        ensure_path_api_namespace(logical_path, api_type)?;
+        let mut models = Vec::<RegisteredModel>::new();
+        let mut current = logical_path.to_owned();
+        let mut visited = BTreeSet::new();
+        while visited.insert(current.clone()) && visited.len() <= self.fallback_depth_limit + 1 {
+            let mut accept = |_: &str, _: &RegistryCandidate| true;
+            let mut context = ExpandContext {
+                resolved_path: &current,
+                accept: &mut accept,
+                explore_all: true,
+                admissions: Vec::new(),
+                expansions: Vec::new(),
+            };
+            let reached = self.expand_path(
+                &current,
+                api_type,
+                &mut BTreeSet::new(),
+                &mut Vec::new(),
+                empty_candidate_path(),
+                &mut context,
+            )?;
+            for candidate in reached {
+                if !models
+                    .iter()
+                    .any(|model| model.exact_model == candidate.model.exact_model)
+                {
+                    models.push(candidate.model);
+                }
+            }
+            match self.fallback_target(&current, api_type)? {
+                FallbackTarget::None => break,
+                FallbackTarget::Logical(next) => current = next,
+                FallbackTarget::Exact(exact) => {
+                    for candidate in self.exact_fallback_candidate(&exact, api_type) {
+                        if !models
+                            .iter()
+                            .any(|model| model.exact_model == candidate.model.exact_model)
+                        {
+                            models.push(candidate.model);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(models)
+    }
+
+    pub(crate) fn resolve_available_candidates(
+        &self,
+        logical_path: &str,
+        api_type: ApiType,
+        accept: &mut dyn FnMut(&str, &RegistryCandidate) -> bool,
     ) -> Result<CandidateSet, ModelRegistryError> {
         validate_logical_path(logical_path)?;
         ensure_path_api_namespace(logical_path, api_type)?;
@@ -489,6 +603,7 @@ impl ModelRegistry {
         let mut current = requested.clone();
         let mut fallback_chain = Vec::new();
         let mut all_admissions = Vec::new();
+        let mut all_expansions = Vec::new();
         let mut visited = BTreeSet::new();
         let mut requirements = Vec::new();
         loop {
@@ -500,15 +615,31 @@ impl ModelRegistry {
                     self.fallback_depth_limit,
                 ));
             }
-            requirements.push(self.logical_requirement(&current));
-            let (mut candidates, admissions) = self.expand(&current, api_type)?;
-            candidates.retain(|candidate| {
-                requirements.iter().all(|requirement| {
-                    missing_requirements(requirement, &candidate.model).is_empty()
-                })
-            });
+            let mut context = ExpandContext {
+                resolved_path: &current,
+                accept: &mut *accept,
+                explore_all: false,
+                admissions: Vec::new(),
+                expansions: Vec::new(),
+            };
+            let candidates = self.expand_path(
+                &current,
+                api_type,
+                &mut BTreeSet::new(),
+                &mut requirements.clone(),
+                empty_candidate_path(),
+                &mut context,
+            )?;
+            let ExpandContext {
+                mut admissions,
+                expansions,
+                ..
+            } = context;
+            normalize_admissions(&mut admissions);
             all_admissions.extend(admissions);
             normalize_admissions(&mut all_admissions);
+            all_expansions.extend(expansions);
+            requirements.push(self.logical_requirement(&current));
             if !candidates.is_empty() {
                 let disable_line = self.disable_line(&requested);
                 let default_options = self.default_options(&requested);
@@ -518,6 +649,7 @@ impl ModelRegistry {
                     resolved_logical_path: current,
                     candidates,
                     admissions: all_admissions,
+                    expansions: all_expansions,
                     fallback_chain,
                     disable_line,
                     default_options,
@@ -534,6 +666,7 @@ impl ModelRegistry {
                         resolved_logical_path: current,
                         candidates,
                         admissions: all_admissions,
+                        expansions: all_expansions,
                         fallback_chain,
                         disable_line,
                         default_options,
@@ -553,7 +686,7 @@ impl ModelRegistry {
                     candidates.retain(|candidate| {
                         requirements.iter().all(|requirement| {
                             missing_requirements(requirement, &candidate.model).is_empty()
-                        })
+                        }) && accept(&exact, candidate)
                     });
                     let disable_line = self.disable_line(&requested);
                     fallback_chain.push(FallbackStep {
@@ -565,6 +698,7 @@ impl ModelRegistry {
                         resolved_logical_path: exact,
                         candidates,
                         admissions: all_admissions,
+                        expansions: all_expansions,
                         fallback_chain,
                         disable_line,
                         default_options: BTreeMap::new(),
@@ -624,6 +758,7 @@ impl ModelRegistry {
     }
 
     fn materialize_families(&mut self, catalog: &CatalogSnapshot) {
+        let mut families: BTreeMap<String, (LlmModel, Vec<String>)> = BTreeMap::new();
         for model in self
             .models
             .values()
@@ -635,39 +770,43 @@ impl ModelRegistry {
             ) else {
                 continue;
             };
-            let node = self.logical_nodes.entry(family.family.clone()).or_default();
-            node.family = Some(family.clone());
-            node.fallback = disabled_fallback();
-            let exact = model.exact_model.to_string();
+            let (_, members) = families
+                .entry(family.family.clone())
+                .or_insert_with(|| (family.clone(), Vec::new()));
             if family
                 .semantics
                 .supported_efforts
                 .iter()
                 .any(|effort| effort.variant().as_deref() == model.exact_model.variant())
             {
-                node.items.insert(
+                members.push(model.exact_model.to_string());
+            }
+        }
+        for (path, (family, members)) in families {
+            let node = self.logical_nodes.entry(path).or_default();
+            node.fallback = disabled_fallback();
+            for exact in members {
+                node.family_members.insert(exact.clone());
+                node.items.push(EffectiveItem::new(
                     exact.clone(),
-                    EffectiveItem {
-                        item: ModelItem::new(exact, 1.0),
-                        source: LogicalItemSource::DriverMetadataMount,
-                    },
-                );
+                    exact,
+                    1.0,
+                    LogicalItemSource::DriverMetadataMount,
+                ));
             }
             let spec = format!("llm.{}", family.semantics.spec);
+            let item = EffectiveItem::new(
+                family.family.clone(),
+                format!("{}:{}", family.family, family.semantics.effort.as_str()),
+                family.semantics.weight,
+                LogicalItemSource::DriverMetadataMount,
+            );
+            node.family = Some(family);
             self.logical_nodes
                 .get_mut(&spec)
                 .expect("catalog validated spec")
                 .items
-                .insert(
-                    family.family.clone(),
-                    EffectiveItem {
-                        item: ModelItem::new(
-                            format!("{}:{}", family.family, family.semantics.effort.as_str()),
-                            1.0,
-                        ),
-                        source: LogicalItemSource::DriverMetadataMount,
-                    },
-                );
+                .push(item);
         }
     }
 
@@ -700,11 +839,11 @@ impl ModelRegistry {
             {
                 return Err(invalid("llm is a namespace".into()));
             }
-            if self.family_names.contains(path) && node.family.is_none() {
+            if self.family_names.contains(path) && node.family.is_none() && !node.items.is_empty() {
                 return Err(invalid(format!("{path}: family requires inventory")));
             }
-            for item in node.items.values() {
-                let target = &item.item.target;
+            for item in &node.items {
+                let target = &item.target;
                 let target_path = target.split(':').next().unwrap_or(target);
                 if (llm && node.family.is_none() && !self.specs.contains_key(path))
                     || (!llm && path_namespace(target_path) == "llm")
@@ -715,18 +854,12 @@ impl ModelRegistry {
                         )));
                     }
                 }
-                if let Some(family) = &node.family {
-                    let valid = self.models.get(target).is_some_and(|model| {
-                        model.api_types.contains(&ApiType::Llm)
-                            && family.semantics.supported_efforts.iter().any(|effort| {
-                                effort.variant().as_deref() == model.exact_model.variant()
-                            })
-                    });
-                    if !valid || item.source != LogicalItemSource::DriverMetadataMount {
-                        return Err(invalid(format!(
-                            "{path}: family members are inventory facts"
-                        )));
-                    }
+                if node.family.is_some()
+                    && (item.name != *target || !node.family_members.contains(target))
+                {
+                    return Err(invalid(format!(
+                        "{path}: family members are inventory facts"
+                    )));
                 }
                 if self.specs.contains_key(path) {
                     let Some(family) = self
@@ -739,7 +872,6 @@ impl ModelRegistry {
                     if path != &format!("llm.{}", family.semantics.spec)
                         || target
                             != &format!("{}:{}", family.family, family.semantics.effort.as_str())
-                        || item.item.weight != 1.0
                     {
                         return Err(invalid(format!("{path}: specification membership and effort come from metadata: {target}")));
                     }
@@ -823,27 +955,12 @@ impl ModelRegistry {
             .unwrap_or_default()
     }
 
-    fn llm_order(&self, path: &CandidatePath) -> Option<LlmOrder> {
-        let family = path.logical_paths.iter().find_map(|path| {
+    fn experimental(&self, path: &CandidatePath) -> bool {
+        path.logical_paths.iter().any(|path| {
             self.logical_nodes
-                .get(path.split(':').next().unwrap_or(path))?
-                .family
-                .as_ref()
-        })?;
-        let spec = format!("llm.{}", family.semantics.spec);
-        let spec_weight = path
-            .logical_paths
-            .iter()
-            .position(|path| path == &spec)
-            .and_then(|index| index.checked_sub(1))
-            .map(|index| path.priority[index])
-            .unwrap_or(1.0);
-        Some(LlmOrder {
-            spec_weight,
-            spec,
-            family: family.family.clone(),
-            version: family.version,
-            stability: family.semantics.stability,
+                .get(path.split(':').next().unwrap_or(path))
+                .and_then(|node| node.family.as_ref())
+                .is_some_and(|family| family.semantics.stability == ModelStability::Experimental)
         })
     }
 
@@ -1039,15 +1156,10 @@ impl ModelRegistry {
     }
 
     fn insert_default_item(&mut self, path: &str, exact_model: &str, source: LogicalItemSource) {
-        self.logical_nodes
-            .entry(path.to_owned())
-            .or_default()
-            .items
-            .entry(exact_model.to_owned())
-            .or_insert_with(|| EffectiveItem {
-                item: ModelItem::new(exact_model, 1.0),
-                source,
-            });
+        let items = &mut self.logical_nodes.entry(path.to_owned()).or_default().items;
+        if !items.iter().any(|item| item.name == exact_model) {
+            items.push(EffectiveItem::new(exact_model, exact_model, 1.0, source));
+        }
     }
 
     fn missing_for_path(&self, path: &str, model: &RegisteredModel) -> Vec<String> {
@@ -1134,7 +1246,7 @@ impl ModelRegistry {
                 {
                     node.items = effective_items(items, source);
                 } else {
-                    node.items.extend(effective_items(items, source));
+                    merge_items(&mut node.items, effective_items(items, source));
                 }
             } else {
                 node.items = effective_items(items, source);
@@ -1178,7 +1290,7 @@ impl ModelRegistry {
                 node.fallback = overlay.fallback.clone().or_else(disabled_fallback);
             }
             OverlayMergeMode::Inherit => {
-                node.items.extend(effective_items(&overlay.items, source));
+                merge_items(&mut node.items, effective_items(&overlay.items, source));
                 if let Some(fallback) = &overlay.fallback {
                     node.fallback = Some(fallback.clone());
                 }
@@ -1198,42 +1310,6 @@ impl ModelRegistry {
         validate_fallback_rule(node.fallback.as_ref())
     }
 
-    fn expand(
-        &self,
-        logical_path: &str,
-        api_type: ApiType,
-    ) -> Result<(Vec<RegistryCandidate>, Vec<AdmissionRecord>), ModelRegistryError> {
-        let mut candidates = BTreeMap::new();
-        let mut admissions = Vec::new();
-        self.expand_path(
-            logical_path,
-            api_type,
-            &mut BTreeSet::new(),
-            &mut Vec::new(),
-            CandidatePath {
-                logical_paths: Vec::new(),
-                item_names: Vec::new(),
-                priority: Vec::new(),
-                sources: Vec::new(),
-            },
-            &mut candidates,
-            &mut admissions,
-        )?;
-        admissions.sort_by(|left, right| {
-            (&left.logical_path, &left.exact_model).cmp(&(&right.logical_path, &right.exact_model))
-        });
-        admissions.dedup_by(|left, right| {
-            left.logical_path == right.logical_path && left.exact_model == right.exact_model
-        });
-        let mut candidates: Vec<_> = candidates.into_values().collect();
-        candidates.sort_by(|left, right| match (&left.llm_order, &right.llm_order) {
-            (Some(left), Some(right)) => left.compare(right),
-            _ => std::cmp::Ordering::Equal,
-        });
-        Ok((candidates, admissions))
-    }
-
-    #[allow(clippy::too_many_arguments)]
     fn expand_path(
         &self,
         logical_path: &str,
@@ -1241,9 +1317,8 @@ impl ModelRegistry {
         stack: &mut BTreeSet<String>,
         requirements: &mut Vec<ModelRequirement>,
         path: CandidatePath,
-        candidates: &mut BTreeMap<String, RegistryCandidate>,
-        admissions: &mut Vec<AdmissionRecord>,
-    ) -> Result<(), ModelRegistryError> {
+        context: &mut ExpandContext<'_>,
+    ) -> Result<Vec<RegistryCandidate>, ModelRegistryError> {
         if !stack.insert(logical_path.to_owned()) {
             return Err(ModelRegistryError::LogicalTreeLoop(logical_path.to_owned()));
         }
@@ -1252,7 +1327,7 @@ impl ModelRegistry {
             .map_or((logical_path, None), |(base, effort)| (base, Some(effort)));
         let Some(node) = self.logical_nodes.get(base_path) else {
             stack.remove(logical_path);
-            return Ok(());
+            return Ok(Vec::new());
         };
         let effort = if let Some(family) = &node.family {
             let selected = selector.unwrap_or(family.semantics.default_effort.as_str());
@@ -1263,7 +1338,7 @@ impl ModelRegistry {
                 .find(|effort| effort.as_str() == selected)
             else {
                 stack.remove(logical_path);
-                return Ok(());
+                return Ok(Vec::new());
             };
             Some(*effort)
         } else if selector.is_some() {
@@ -1271,78 +1346,111 @@ impl ModelRegistry {
         } else {
             None
         };
-        admissions.extend(node.admissions.values().cloned());
+        context.admissions.extend(node.admissions.values().cloned());
         if let Some(definition) = &node.definition {
             if definition.api_type != api_type {
                 stack.remove(logical_path);
-                return Ok(());
+                return Ok(Vec::new());
             }
             requirements.push(definition.min_line.clone());
         }
-        for (item_name, effective) in &node.items {
-            if let Some(effort) = effort {
-                if self
-                    .models
-                    .get(&effective.item.target)
-                    .is_none_or(|model| model.exact_model.variant() != effort.variant().as_deref())
-                {
-                    continue;
-                }
+        let items = node
+            .items
+            .iter()
+            .filter(|item| {
+                effort.is_none_or(|effort| {
+                    self.models.get(&item.target).is_some_and(|model| {
+                        model.exact_model.variant() == effort.variant().as_deref()
+                    })
+                })
+            })
+            .filter(|item| item.weight > 0.0)
+            .collect::<Vec<_>>();
+        let mut weights = items.iter().map(|item| item.weight).collect::<Vec<_>>();
+        weights.sort_by(|left, right| right.total_cmp(left));
+        weights.dedup();
+        let mut pool = Vec::new();
+        let mut selected = None;
+        for weight in weights {
+            for item in items.iter().filter(|item| item.weight == weight) {
+                let mut next_path = path.clone();
+                next_path.logical_paths.push(logical_path.to_owned());
+                next_path.item_names.push(item.name.clone());
+                next_path.weights.push(item.weight);
+                next_path.sources.push(item.source);
+                let reached = if item.target.contains('@') {
+                    self.leaf_candidate(
+                        logical_path,
+                        &item.target,
+                        api_type,
+                        requirements,
+                        next_path,
+                        context,
+                    )
+                } else {
+                    ensure_same_namespace(logical_path, &item.target)?;
+                    self.expand_path(
+                        &item.target,
+                        api_type,
+                        stack,
+                        requirements,
+                        next_path,
+                        context,
+                    )?
+                };
+                merge_candidates(&mut pool, reached);
             }
-            if effective.item.weight == 0.0 {
-                continue;
+            if !pool.is_empty() && !context.explore_all {
+                selected = Some(weight);
+                break;
             }
-            let mut next_path = path.clone();
-            next_path.logical_paths.push(logical_path.to_owned());
-            next_path.item_names.push(item_name.clone());
-            next_path.priority.push(effective.item.weight);
-            next_path.sources.push(effective.source);
-            if effective.item.target.contains('@') {
-                self.add_leaf_candidate(
-                    logical_path,
-                    &effective.item.target,
-                    api_type,
-                    requirements,
-                    next_path,
-                    candidates,
-                    admissions,
-                );
-            } else {
-                ensure_same_namespace(logical_path, &effective.item.target)?;
-                self.expand_path(
-                    &effective.item.target,
-                    api_type,
-                    stack,
-                    requirements,
-                    next_path,
-                    candidates,
-                    admissions,
-                )?;
-            }
+        }
+        if !context.explore_all
+            && !context
+                .expansions
+                .iter()
+                .any(|step| step.logical_path == logical_path)
+        {
+            context.expansions.push(ExpansionStep {
+                logical_path: logical_path.to_owned(),
+                max_weight: selected,
+                items: items
+                    .iter()
+                    .map(|item| ExpansionItem {
+                        name: item.name.clone(),
+                        target: item.target.clone(),
+                        weight: item.weight,
+                        weight_source: item.weight_source,
+                        state: match selected {
+                            Some(weight) if item.weight == weight => ExpansionState::Expanded,
+                            Some(weight) if item.weight < weight => ExpansionState::NotExpanded,
+                            _ => ExpansionState::Unavailable,
+                        },
+                    })
+                    .collect(),
+            });
         }
         if node.definition.is_some() {
             requirements.pop();
         }
         stack.remove(logical_path);
-        Ok(())
+        Ok(pool)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn add_leaf_candidate(
+    fn leaf_candidate(
         &self,
         logical_path: &str,
         exact_model: &str,
         api_type: ApiType,
         requirements: &[ModelRequirement],
         path: CandidatePath,
-        candidates: &mut BTreeMap<String, RegistryCandidate>,
-        admissions: &mut Vec<AdmissionRecord>,
-    ) {
+        context: &mut ExpandContext<'_>,
+    ) -> Vec<RegistryCandidate> {
         let Some(model) = self.models.get(exact_model) else {
-            return;
+            return Vec::new();
         };
         if !model.api_types.contains(&api_type) {
-            return;
+            return Vec::new();
         }
         let missing = requirements
             .iter()
@@ -1350,14 +1458,14 @@ impl ModelRegistry {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        admissions.push(AdmissionRecord {
+        context.admissions.push(AdmissionRecord {
             logical_path: logical_path.to_owned(),
             exact_model: exact_model.to_owned(),
             admitted: missing.is_empty(),
             missing_requirements: missing.clone(),
         });
         if !missing.is_empty() {
-            return;
+            return Vec::new();
         }
         let exact_model_weight = path
             .logical_paths
@@ -1371,29 +1479,24 @@ impl ModelRegistry {
             .copied()
             .unwrap_or(1.0);
         if exact_model_weight == 0.0 {
-            return;
+            return Vec::new();
         }
-        candidates
-            .entry(exact_model.to_owned())
-            .and_modify(|candidate| {
-                if let (Some(current), Some(next)) = (&candidate.llm_order, self.llm_order(&path)) {
-                    if next.compare(current).is_lt() {
-                        candidate.llm_order = Some(next);
-                    }
-                }
-                candidate.paths.push(path.clone());
-            })
-            .or_insert_with(|| RegistryCandidate {
-                llm_order: self.llm_order(&path),
-                model: model.clone(),
-                paths: vec![path],
-                exact_model_weight,
-                provider_weight: self
-                    .provider_weights
-                    .get(&model.identity.provider_instance_name)
-                    .copied()
-                    .unwrap_or(1.0),
-            });
+        let candidate = RegistryCandidate {
+            model: model.clone(),
+            experimental: self.experimental(&path),
+            paths: vec![path],
+            exact_model_weight,
+            provider_weight: self
+                .provider_weights
+                .get(&model.identity.provider_instance_name)
+                .copied()
+                .unwrap_or(1.0),
+        };
+        if (context.accept)(context.resolved_path, &candidate) {
+            vec![candidate]
+        } else {
+            Vec::new()
+        }
     }
 
     fn exact_fallback_candidate(&self, exact: &str, api_type: ApiType) -> Vec<RegistryCandidate> {
@@ -1401,9 +1504,9 @@ impl ModelRegistry {
             .get(exact)
             .filter(|model| model.api_types.contains(&api_type))
             .map(|model| RegistryCandidate {
-                llm_order: None,
                 model: model.clone(),
                 paths: Vec::new(),
+                experimental: false,
                 exact_model_weight: self
                     .global_exact_model_weights
                     .get(exact)
@@ -1507,14 +1610,9 @@ impl ModelRegistry {
             return Err(ModelRegistryError::LogicalTreeLoop(path.to_owned()));
         }
         if let Some(node) = self.logical_nodes.get(path) {
-            for item in node.items.values() {
-                let target = item
-                    .item
-                    .target
-                    .split(':')
-                    .next()
-                    .unwrap_or(&item.item.target);
-                if !item.item.target.contains('@') && self.logical_nodes.contains_key(target) {
+            for item in &node.items {
+                let target = item.target.split(':').next().unwrap_or(&item.target);
+                if !item.target.contains('@') && self.logical_nodes.contains_key(target) {
                     ensure_same_namespace(path, target)?;
                     self.visit_item_graph(target, visiting, complete)?;
                 }
@@ -1750,22 +1848,44 @@ fn disabled_fallback() -> Option<AiccFallbackRule> {
     })
 }
 
-fn effective_items(
-    items: &BTreeMap<String, ModelItem>,
-    source: LogicalItemSource,
-) -> BTreeMap<String, EffectiveItem> {
+fn effective_items(items: &[LogicalItem], source: LogicalItemSource) -> Vec<EffectiveItem> {
     items
         .iter()
-        .map(|(name, item)| {
-            (
-                name.clone(),
-                EffectiveItem {
-                    item: item.clone(),
-                    source,
-                },
-            )
-        })
+        .map(|item| EffectiveItem::new(&item.name, &item.target, item.weight, source))
         .collect()
+}
+
+fn empty_candidate_path() -> CandidatePath {
+    CandidatePath {
+        logical_paths: Vec::new(),
+        item_names: Vec::new(),
+        weights: Vec::new(),
+        sources: Vec::new(),
+    }
+}
+
+fn merge_candidates(pool: &mut Vec<RegistryCandidate>, additions: Vec<RegistryCandidate>) {
+    for addition in additions {
+        if let Some(candidate) = pool
+            .iter_mut()
+            .find(|candidate| candidate.model.exact_model == addition.model.exact_model)
+        {
+            candidate.experimental |= addition.experimental;
+            candidate.paths.extend(addition.paths);
+        } else {
+            pool.push(addition);
+        }
+    }
+}
+
+fn merge_items(items: &mut Vec<EffectiveItem>, additions: Vec<EffectiveItem>) {
+    for addition in additions {
+        if let Some(item) = items.iter_mut().find(|item| item.name == addition.name) {
+            *item = addition;
+        } else {
+            items.push(addition);
+        }
+    }
 }
 
 fn validate_weight(weight: f64, field: String) -> Result<(), ModelRegistryError> {
@@ -1786,15 +1906,19 @@ fn validate_weight_map(
     Ok(())
 }
 
-fn validate_items(
-    path: &str,
-    items: &BTreeMap<String, ModelItem>,
-) -> Result<(), ModelRegistryError> {
-    for (name, item) in items {
-        if name.is_empty() {
+fn validate_items(path: &str, items: &[LogicalItem]) -> Result<(), ModelRegistryError> {
+    let mut names = BTreeSet::new();
+    for item in items {
+        if item.name.is_empty() {
             return Err(ModelRegistryError::InvalidItemName(path.to_owned()));
         }
-        validate_weight(item.weight, format!("{path}.items.{name}.weight"))?;
+        if !names.insert(item.name.as_str()) {
+            return Err(ModelRegistryError::DuplicateItemName {
+                path: path.to_owned(),
+                item: item.name.clone(),
+            });
+        }
+        validate_weight(item.weight, format!("{path}.items.{}.weight", item.name))?;
         if item.target.contains('@') {
             ExactModelName::parse(&item.target)?;
         } else {
@@ -1806,7 +1930,7 @@ fn validate_items(
 
 fn apply_item_patches(
     path: &str,
-    items: &mut BTreeMap<String, EffectiveItem>,
+    items: &mut Vec<EffectiveItem>,
     patches: &BTreeMap<String, ModelItemPatch>,
     source: LogicalItemSource,
 ) -> Result<(), ModelRegistryError> {
@@ -1821,30 +1945,22 @@ fn apply_item_patches(
                 ensure_same_namespace(path, target)?;
             }
         }
-        if let Some(item) = items.get_mut(name) {
+        if let Some(item) = items.iter_mut().find(|item| &item.name == name) {
             if let Some(target) = &patch.target {
-                item.item.target = target.clone();
+                item.target = target.clone();
+                item.source = source;
             }
             if let Some(weight) = patch.weight {
-                item.item.weight = weight;
+                item.weight = weight;
+                item.weight_source = source;
             }
-            item.source = source;
-        } else {
-            let target =
-                patch
-                    .target
-                    .clone()
-                    .ok_or_else(|| ModelRegistryError::UnknownItemOverride {
-                        path: path.to_owned(),
-                        item: name.clone(),
-                    })?;
-            items.insert(
-                name.clone(),
-                EffectiveItem {
-                    item: ModelItem::new(target, patch.weight.unwrap_or(1.0)),
-                    source,
-                },
-            );
+        } else if let Some(target) = &patch.target {
+            items.push(EffectiveItem::new(
+                name,
+                target,
+                patch.weight.unwrap_or(1.0),
+                source,
+            ));
         }
     }
     Ok(())
@@ -2009,8 +2125,8 @@ impl fmt::Display for ModelRegistryError {
             Self::ItemsAndOverridesConflict(path) => {
                 write!(formatter, "`{path}` has both items and item_overrides")
             }
-            Self::UnknownItemOverride { path, item } => {
-                write!(formatter, "`{path}` overrides unknown item `{item}`")
+            Self::DuplicateItemName { path, item } => {
+                write!(formatter, "`{path}` has duplicate item `{item}`")
             }
             Self::UnknownLogicalProfile(profile) => {
                 write!(formatter, "unknown profile `{profile}`")
@@ -2031,7 +2147,7 @@ impl Error for ModelRegistryError {}
 mod tests {
     use super::*;
     use crate::catalog::{CatalogBuildOptions, CatalogDocuments, ModelDriverCatalog};
-    use buckyos_api::{AiccSessionLogicalProfile, LogicalItems};
+    use buckyos_api::AiccSessionLogicalProfile;
     use serde_json::json;
 
     fn catalog() -> CatalogSnapshot {
@@ -2120,9 +2236,7 @@ mod tests {
             items: Some(
                 entries
                     .iter()
-                    .map(|(name, target, weight)| {
-                        ((*name).to_owned(), ModelItem::new(*target, *weight))
-                    })
+                    .map(|(name, target, weight)| LogicalItem::new(*name, *target, *weight))
                     .collect(),
             ),
             ..AiccLogicalNodeOverlay::default()
@@ -2277,7 +2391,7 @@ mod tests {
             logical_tree: BTreeMap::from([
                 (
                     "image.plan".to_owned(),
-                    item_node(&[("a", "image.family_a", 2.0), ("b", "image.family_b", 1.0)]),
+                    item_node(&[("a", "image.family_a", 2.0), ("b", "image.family_b", 2.0)]),
                 ),
                 (
                     "image.family_a".to_owned(),
@@ -2285,14 +2399,17 @@ mod tests {
                 ),
                 (
                     "image.family_b".to_owned(),
-                    item_node(&[("model", "gpt@primary", 1.0)]),
+                    item_node(&[("model", "gpt@primary", 1.0), ("mini", "mini@primary", 1.0)]),
                 ),
             ]),
             ..AiccRouteOverlay::default()
         };
         let registry = ModelRegistry::build(
             &catalog(),
-            &[inventory("primary", vec![inventory_model("gpt", true)])],
+            &[inventory(
+                "primary",
+                vec![inventory_model("gpt", true), inventory_model("mini", true)],
+            )],
             vec![definition("image.plan", false, MountMode::Manual)],
             RegistryLayers {
                 system: Some(&overlay),
@@ -2303,10 +2420,242 @@ mod tests {
         let result = registry
             .resolve_candidates("image.plan", ApiType::ImageTextToImage)
             .unwrap();
-        assert_eq!(result.candidates.len(), 1);
+        let order: Vec<_> = result
+            .candidates
+            .iter()
+            .map(|candidate| candidate.model.exact_model.as_str())
+            .collect();
+        assert_eq!(order, ["gpt@primary", "mini@primary"]);
         assert_eq!(result.candidates[0].paths.len(), 2);
-        assert_eq!(result.candidates[0].paths[0].priority, vec![2.0, 1.0]);
-        assert_eq!(result.candidates[0].paths[1].priority, vec![1.0, 1.0]);
+        assert_eq!(result.candidates[0].paths[0].weights, vec![2.0, 1.0]);
+        assert_eq!(result.candidates[0].paths[1].item_names, vec!["b", "model"]);
+    }
+
+    #[test]
+    fn each_directory_expands_only_its_highest_available_weight_group() {
+        let overlay = AiccRouteOverlay {
+            logical_tree: BTreeMap::from([
+                (
+                    "image.plan".to_owned(),
+                    item_node(&[
+                        ("low", "image.low", 1.8),
+                        ("left", "image.left", 2.0),
+                        ("right", "image.right", 2.0),
+                    ]),
+                ),
+                (
+                    "image.left".to_owned(),
+                    item_node(&[("old", "a@primary", 55.0), ("new", "b@primary", 56.0)]),
+                ),
+                (
+                    "image.right".to_owned(),
+                    item_node(&[
+                        ("old", "capable@primary", 48.0),
+                        ("new", "gpt@primary", 55.0),
+                    ]),
+                ),
+                (
+                    "image.low".to_owned(),
+                    item_node(&[("model", "mini@primary", 1.0)]),
+                ),
+            ]),
+            ..AiccRouteOverlay::default()
+        };
+        let registry = ModelRegistry::build(
+            &catalog(),
+            &[inventory(
+                "primary",
+                ["a", "b", "capable", "gpt", "mini"]
+                    .into_iter()
+                    .map(|id| inventory_model(id, true))
+                    .collect(),
+            )],
+            vec![definition("image.plan", false, MountMode::Manual)],
+            RegistryLayers {
+                system: Some(&overlay),
+                ..RegistryLayers::default()
+            },
+        )
+        .unwrap();
+        let names = |set: &CandidateSet| {
+            set.candidates
+                .iter()
+                .map(|candidate| candidate.model.exact_model.to_string())
+                .collect::<Vec<_>>()
+        };
+        let result = registry
+            .resolve_candidates("image.plan", ApiType::ImageTextToImage)
+            .unwrap();
+        assert_eq!(names(&result), ["b@primary", "gpt@primary"]);
+        let plan = result
+            .expansions
+            .iter()
+            .find(|step| step.logical_path == "image.plan")
+            .unwrap();
+        assert_eq!(plan.max_weight, Some(2.0));
+        assert_eq!(
+            plan.items
+                .iter()
+                .map(|item| (item.name.as_str(), item.state))
+                .collect::<Vec<_>>(),
+            [
+                ("low", ExpansionState::NotExpanded),
+                ("left", ExpansionState::Expanded),
+                ("right", ExpansionState::Expanded),
+            ]
+        );
+        assert!(!result
+            .expansions
+            .iter()
+            .any(|step| step.logical_path == "image.low"));
+
+        let result = registry
+            .resolve_available_candidates(
+                "image.plan",
+                ApiType::ImageTextToImage,
+                &mut |_, candidate| candidate.model.exact_model.as_str() != "b@primary",
+            )
+            .unwrap();
+        assert_eq!(names(&result), ["a@primary", "gpt@primary"]);
+
+        let result = registry
+            .resolve_available_candidates(
+                "image.plan",
+                ApiType::ImageTextToImage,
+                &mut |_, candidate| candidate.model.exact_model.as_str() == "mini@primary",
+            )
+            .unwrap();
+        assert_eq!(names(&result), ["mini@primary"]);
+        let plan = result
+            .expansions
+            .iter()
+            .find(|step| step.logical_path == "image.plan")
+            .unwrap();
+        assert_eq!(plan.max_weight, Some(1.8));
+        assert_eq!(plan.items[1].state, ExpansionState::Unavailable);
+
+        assert!(registry
+            .resolve_available_candidates("image.plan", ApiType::ImageTextToImage, &mut |_, _| {
+                false
+            },)
+            .unwrap()
+            .candidates
+            .is_empty());
+        let reachable = registry
+            .reachable_models("image.plan", ApiType::ImageTextToImage)
+            .unwrap();
+        assert_eq!(reachable.len(), 5);
+    }
+
+    #[test]
+    fn weight_only_overrides_keep_position_and_record_sources() {
+        let factory = layer(
+            "image.chat",
+            &[
+                ("second", "gpt@primary", 1.0),
+                ("first", "mini@primary", 1.0),
+            ],
+        );
+        let user = AiccRouteOverlay {
+            logical_tree: BTreeMap::from([(
+                "image.chat".to_owned(),
+                AiccLogicalNodeOverlay {
+                    item_overrides: Some(BTreeMap::from([
+                        (
+                            "first".to_owned(),
+                            ModelItemPatch {
+                                weight: Some(3.0),
+                                ..ModelItemPatch::default()
+                            },
+                        ),
+                        (
+                            "missing".to_owned(),
+                            ModelItemPatch {
+                                weight: Some(9.0),
+                                ..ModelItemPatch::default()
+                            },
+                        ),
+                    ])),
+                    ..AiccLogicalNodeOverlay::default()
+                },
+            )]),
+            ..AiccRouteOverlay::default()
+        };
+        let registry = ModelRegistry::build(
+            &catalog(),
+            &[inventory(
+                "primary",
+                vec![inventory_model("gpt", true), inventory_model("mini", true)],
+            )],
+            vec![definition("image.chat", false, MountMode::Manual)],
+            RegistryLayers {
+                factory: Some(&factory),
+                user: Some(&user),
+                ..RegistryLayers::default()
+            },
+        )
+        .unwrap();
+        let view = registry
+            .logical_model_views()
+            .into_iter()
+            .find(|view| view.path == "image.chat")
+            .unwrap();
+        assert_eq!(
+            view.items
+                .iter()
+                .map(|item| (
+                    item.name.as_str(),
+                    item.weight,
+                    item.default_weight,
+                    item.source,
+                    item.weight_source
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "second",
+                    1.0,
+                    1.0,
+                    LogicalItemSource::BuiltinDefinition,
+                    LogicalItemSource::BuiltinDefinition
+                ),
+                (
+                    "first",
+                    3.0,
+                    1.0,
+                    LogicalItemSource::BuiltinDefinition,
+                    LogicalItemSource::UserOverlay
+                ),
+            ]
+        );
+        let result = registry
+            .resolve_candidates("image.chat", ApiType::ImageTextToImage)
+            .unwrap();
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(
+            result.candidates[0].model.exact_model.as_str(),
+            "mini@primary"
+        );
+    }
+
+    #[test]
+    fn duplicate_item_names_are_rejected() {
+        let duplicate = layer(
+            "image.chat",
+            &[("same", "gpt@primary", 1.0), ("same", "mini@primary", 1.0)],
+        );
+        assert!(matches!(
+            ModelRegistry::build(
+                &catalog(),
+                &[],
+                Vec::new(),
+                RegistryLayers {
+                    system: Some(&duplicate),
+                    ..RegistryLayers::default()
+                }
+            ),
+            Err(ModelRegistryError::DuplicateItemName { .. })
+        ));
     }
 
     #[test]
@@ -2316,10 +2665,7 @@ mod tests {
                 (
                     "image.plan".to_owned(),
                     AiccLogicalNodeOverlay {
-                        items: Some(LogicalItems::from([(
-                            "family".to_owned(),
-                            ModelItem::new("image.family", 1.0),
-                        )])),
+                        items: Some(vec![LogicalItem::new("family", "image.family", 1.0)]),
                         exact_model_weights: BTreeMap::from([("gpt@primary".to_owned(), 0.0)]),
                         ..AiccLogicalNodeOverlay::default()
                     },
@@ -2356,7 +2702,7 @@ mod tests {
             logical_tree: BTreeMap::from([(
                 "image.manual".to_owned(),
                 AiccLogicalNodeOverlay {
-                    items: Some(LogicalItems::new()),
+                    items: Some(Vec::new()),
                     ..AiccLogicalNodeOverlay::default()
                 },
             )]),
@@ -2407,10 +2753,7 @@ mod tests {
                 overlays: vec![AiccLogicalTreeOverlay {
                     path: "image.chat".to_owned(),
                     merge_mode: OverlayMergeMode::Replace,
-                    items: LogicalItems::from([(
-                        "only".to_owned(),
-                        ModelItem::new("mini@backup", 4.0),
-                    )]),
+                    items: vec![LogicalItem::new("only", "mini@backup", 4.0)],
                     ..AiccLogicalTreeOverlay::default()
                 }],
                 ..AiccSessionLogicalProfile::default()
@@ -2459,7 +2802,7 @@ mod tests {
             logical_tree: BTreeMap::from([(
                 "image.chat".to_owned(),
                 AiccLogicalNodeOverlay {
-                    items: Some(LogicalItems::new()),
+                    items: Some(Vec::new()),
                     item_overrides: Some(BTreeMap::new()),
                     ..AiccLogicalNodeOverlay::default()
                 },

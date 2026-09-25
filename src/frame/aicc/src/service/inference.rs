@@ -61,13 +61,12 @@ impl RuntimeInferencePort {
                 .to_owned()]
         } else {
             models
-                .resolve_candidates(&input.model, input.api_type)
+                .reachable_models(&input.model, input.api_type)
                 .map_err(|error| {
                     inference_error(AiccErrorCode::NoCandidateModel, error.to_string())
                 })?
-                .candidates
                 .into_iter()
-                .map(|candidate| candidate.model.identity.provider_instance_name)
+                .map(|model| model.identity.provider_instance_name)
                 .collect::<Vec<_>>()
         };
         let quota = self
@@ -654,7 +653,6 @@ async fn candidate_runtime_states(
                 p95_latency_ms: observed.p95_latency_ms,
                 error_rate_5m: observed.error_rate_5m,
                 recent_failures: observed.recent_failures,
-                quality_score: None,
                 cache_hit_probability: None,
             };
             (model.exact_model, state)

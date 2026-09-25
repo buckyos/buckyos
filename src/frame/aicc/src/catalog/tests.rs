@@ -585,22 +585,6 @@ fn malformed_files_and_duplicate_identities_fail_atomically() {
 }
 
 #[test]
-fn claude_versions_follow_both_official_naming_orders() {
-    assert_eq!(
-        ModelVersion::from_model_id("claude", "claude-3-5-sonnet-20241022")
-            .unwrap()
-            .decimal_rank(),
-        Some(350)
-    );
-    assert_eq!(
-        ModelVersion::from_model_id("claude", "claude-sonnet-4-6")
-            .unwrap()
-            .decimal_rank(),
-        Some(460)
-    );
-}
-
-#[test]
 fn provider_identity_matching_examples_and_boundaries() {
     let catalog = crate::model::llm_tests::builtin_catalog();
     for (id, driver, model) in [

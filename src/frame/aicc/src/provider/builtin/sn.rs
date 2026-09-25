@@ -1099,7 +1099,7 @@ mod tests {
             "schema_revision": 0,
             "model_driver_id": "openai",
             "revision_seq": 1,
-            "models": [{"id": "gpt-5", "api_types": ["llm", "image.txt2img"], "llm":{"spec":"gpt-spec","effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable"}}],
+            "models": [{"id": "gpt-5", "api_types": ["llm", "image.txt2img"], "llm":{"spec":"gpt-spec","effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable","weight":1.0}}],
             "patterns": [],
             "defaults": {},
             "specs": [{"id":"gpt-spec","direct_only":true}]

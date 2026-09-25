@@ -22,7 +22,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 27
       }
     },
     {
@@ -41,7 +42,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 27
       }
     },
     {
@@ -60,7 +62,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 25
       }
     },
     {
@@ -79,7 +82,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 25
       }
     },
     {
@@ -98,7 +102,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 21
       }
     },
     {
@@ -117,7 +122,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 21
       }
     },
     {
@@ -136,7 +142,8 @@
         "effort": "native",
         "default_effort": "native",
         "supported_efforts": ["native"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 20
       }
     },
     {

@@ -24,7 +24,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["none", "high", "max"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 40
       }
     },
     {
@@ -45,7 +46,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["none", "low", "high", "max"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 40
       }
     },
     {
@@ -67,7 +69,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["none", "high", "max"],
-        "stability": "experimental"
+        "stability": "experimental",
+        "weight": 40
       }
     }
   ],

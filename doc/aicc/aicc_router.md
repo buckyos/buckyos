@@ -7,7 +7,7 @@
 
 > 已落地：控制面 / 数据面 API 拆分（`route.resolve` + typed inference，见 §4.2）、精确模型 variant 后缀（§5.1.1）、逻辑模型定义 `min_line` / `disable_line` / `mount_mode` / auto-mount（§6.7）、driver metadata resolver（§7.2）、session 逻辑树 overlay `inherit|replace`（§12.4）、扩展 route trace 来源字段（§13.2）。
 
-> 2026-09-25 LLM 实现更新：厂商规格、动态家族、固定 effort、分层版本排序和禁止隐式父级回退已实现；参见 [Metadata Schema](driver_metadata_schema.md) 与 [实现报告](model_driver_v2_implementation.md)。下面通用 Auto/Hybrid、父级回退及历史目录示例仅适用于非 LLM；LLM 功能只能引用声明规格。实验版由内部 `RoutingRequest.allow_experimental` 控制，默认关闭，公共 RPC 未新增字段。
+> 2026-09-25 LLM 实现更新：厂商规格、动态家族、固定 effort 和禁止隐式父级回退已实现；路由已改为“逐层最高可用权重展开 → 候选池按策略选择”（§6.2.1、§10.4），规格内版本偏好由 metadata `llm.weight` 声明，不再从模型名推导版本排序；参见 [Metadata Schema](driver_metadata_schema.md) 与 [实现报告](model_driver_v2_implementation.md)。下面通用 Auto/Hybrid、父级回退及历史目录示例仅适用于非 LLM；LLM 功能只能引用声明规格。实验版由内部 `RoutingRequest.allow_experimental` 控制，默认关闭，公共 RPC 未新增字段。
 
 ---
 
@@ -239,7 +239,8 @@ llm                                      # 只作命名空间
 ├── chat / code / swift / summarize / …   # 其他功能
 ├── fallback                             # 默认空
 ├── gpt-pro                              # metadata 声明的规格，零库存也存在
-│   └── gpt_5_6_sol -> llm.gpt-5-6-sol:high (560，推导版本值)
+│   ├── llm.gpt-5-6-sol -> llm.gpt-5-6-sol:high (56，metadata llm.weight)
+│   └── llm.gpt-5-5-pro -> llm.gpt-5-5-pro:high (55)
 └── gpt-5-6-sol                           # 与 inventory 相交后产生的模型家族
     └── :high                            # 固定预设，不是点分子目录
         ├── gpt-5.6-sol:reasoning-high@provider-a
@@ -248,16 +249,16 @@ llm                                      # 只作命名空间
 
 Model Driver 按原厂组织，声明自己的规格；AICC 不预设统一 lv1～lv5。GPT 有 nano/mini/standard/pro/max 五个通用规格，另有 codex 专用规格。模型条目声明官方 ID、能力、唯一规格及进入该规格时的固定思考预设；完整字段见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)。
 
-家族路径通常是 `llm.{归一化官方模型ID}`，多个 Provider 的同模型实例在此汇集，不增加规格到家族的权重。家族直选使用声明的默认预设且默认 strict，不升级到其他版本。
+家族路径通常是 `llm.{归一化官方模型ID}`，多个 Provider 的同模型实例在此汇集。规格到家族的默认 item 权重直接取自 metadata 的 `llm.weight`（见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)），家族到 instance 的默认权重为 `1.0`；两层都可被 system/session 的 `item_overrides` 只改权重，但不能改变成员归属。家族直选使用声明的默认预设且默认 strict，不升级到其他版本。
 
-### 6.2.1 LLM 两层选择顺序
+### 6.2.1 LLM 选择顺序
 
-1. 按原请求和原任务的能力、库存、Provider 状态及调用策略筛选家族预设和实例，跳过空规格。
-2. 按功能到规格的偏好权重选择规格，同权重按规格 ID 稳定排序。
-3. 在该规格中按官方模型 ID 推导的版本值选择最新合格稳定家族（例如 `5.6 -> 560`），旧版兜底；同版本按归一化家族 ID 升序稳定排序。没有合格稳定版且策略允许时才尝试实验版。
-4. 在选中的家族预设内调度物理 instance。规格耗尽后才尝试下一规格；无候选则只执行显式 fallback，否则返回无候选。
+LLM 与其它 API 类型使用同一套两阶段算法（详见 §10.4），不再有 LLM 专用比较器：
 
-功能偏好 `2.3` 与推导版本值 `560` 分层比较，不相乘，也不跨规格比较版本值。后文通用候选打分不能将这两层压平成全局模型评分。固定 `effort` 不能被请求覆盖；不支持所需强度的 Provider 实例不是该强度的候选。
+1. **展开**：功能目录 → 规格 → 家族预设 → instance，每一层只展开本层**可用** item 中最终权重最大的一组，并列全部展开；最高组没有任何可用候选（无库存、未通过 admission、被运行状态或策略硬过滤）时才尝试同层下一权重组；子目录独立重复该规则。
+2. **选择**：展开得到的合格 instance 合并成一个候选池，按调度 profile 选择；所有策略项相同时按默认顺序。
+
+功能偏好 `2.3` 与规格内的 `56/55` 分属不同父节点，只在各自父节点内比较，不相乘，也不按路径字典序跨分支比较；`gpt-5.6 = 56` 不会让它在阶段二天然胜过另一规格的 `opus-5.5 = 55`。路由层不从模型名解析版本，不按 stability 隐式排序：`stability = experimental` 只作为准入条件（请求未允许实验版时硬过滤），“稳定版优先”如需保留应体现为 metadata/配置权重。固定 `effort` 不能被请求覆盖；不支持所需强度的 Provider 实例不是该强度的候选。
 
 ### 6.3 属性与目录的区分
 
@@ -301,8 +302,8 @@ Model Driver 按原厂组织，声明自己的规格；AICC 不预设统一 lv1�
 逻辑模型目录树必须保持“目录树”形态：
 
 1. 每一级都是一个目录，目录下可以通过 `children` 嵌套子目录；
-2. 目录下可以通过 `items` 放置候选入口；
-3. 每个 item 的核心字段只有两个：`target` 和 `weight`；
+2. 目录下通过 `items` **有序列表**放置候选入口，列表顺序就是默认顺序（最终平局裁决依据）；
+3. 每个 item 由 `name`、`target`、`weight` 组成，`name` 在同一目录内唯一，供 `item_overrides` 引用；
 4. `target` 是软链接目标，可以是另一个逻辑目录，也可以是精确模型名；
 5. `weight` 是该 item 在当前目录下、同级 item 之间的优先级，默认值为 `1.0`；
 6. 解析 `target` 时必须维护 visited set，防止目录软链接形成环。
@@ -315,35 +316,28 @@ logical_tree:
     children:
       plan:
         items:
-          gpt5:
-            target: llm.gpt-pro
-            weight: 3.0
-          claude:
-            target: llm.claude
-            weight: 2.0
-      gpt5:
-        items:
-          openai_primary:
-            target: gpt-5.2@openai_primary
-            weight: 1.0
+          - { name: gpt_pro,     target: llm.gpt-pro,     weight: 3.0 }
+          - { name: claude_opus, target: llm.claude-opus, weight: 2.0 }
 ```
 
-当 request model 为 `llm.plan` 时，Resolver 先读取 `llm.plan` 的 items，得到 `llm.gpt-pro` 和 `llm.claude-opus` 两个软链接目标；再继续展开目标目录，直到得到精确模型候选。`weight` 不沿路径相乘，只在当前目录的同级 item 之间表达“先选哪个分支”。
+当 request model 为 `llm.plan` 时，Resolver 先读取 `llm.plan` 的 items，只展开最高权重且可用的 `llm.gpt-pro`；`llm.gpt-pro` 没有任何可用候选时才展开 `llm.claude-opus`。进入目标目录后按同样规则继续展开，直到得到精确模型候选。`weight` 不沿路径相乘，只在当前目录的同级 item 之间表达“先选哪个分支”。
 
 item 解析规则：
 
 1. `target` 指向逻辑目录时，只展开该目录的 `items`，不会把目录名本身当作候选。
 2. `target` 指向精确模型时，该 target 是叶子候选，不会再反向查找该精确模型是否通过 Provider `logical_mounts` 出现在其它目录。
-3. 同一精确模型通过多个路径到达时，最终按 `(exact_model, api_type)` 去重；保留优先级最高的路径，优先级相同时保留 trace 中的多路径来源。
-4. item `weight = 0` 表示在该目录禁用该 item，等同硬过滤；负数非法，配置校验应拒绝。
+3. 同一精确模型通过多个被展开的路径到达时只出现一次，位置取最早到达的合格路径，trace 保留全部来源路径；被裁剪、未通过 admission 或被过滤的路径不影响位置。
+4. item `weight = 0` 表示在该目录禁用该 item；负数、非有限值非法，配置校验应拒绝；同一目录内重复 `name` 非法。
 5. 一个目录如果显式配置了 `items`，则这些 `items` 完全覆盖 Provider inventory 生成的 default items；如果只想修改默认 item 的权重或禁用某个 default item，应使用 `item_overrides`。
 
 default items 与覆盖规则：
 
-1. Provider inventory 中的 `logical_mounts` 会被 Registry 物化为 default items，生成过程必须是纯函数：给定同一 inventory revision，得到同一组 default items。
-2. session config 中的目录 `items` 是完整覆盖，不与 default items merge。
-3. session config 中的 `item_overrides` 只 patch default items 或父级继承 items 中同名 item，适合用户只调整 weight、禁用某个 Provider 或替换 target。
-4. `items` 和 `item_overrides` 不能在同一个目录节点同时出现；同时出现应返回 `AICC_ROUTE_SESSION_CONFIG_INVALID`。
+1. Provider inventory 中的 `logical_mounts` 会被 Registry 物化为 default items，生成过程必须是纯函数：给定同一 inventory revision，得到同一组 default items。生成项的默认顺序与 discovery 返回顺序无关：规格下的家族按家族路径排序，家族与自动挂载目录下的 instance 按 exact model 名排序。
+2. LLM 规格到家族的默认权重来自 metadata `llm.weight`，家族到 instance 的默认权重为 `1.0`；成员归属是 inventory 事实，覆盖只能修改权重，不能改 target 或新增成员。
+3. session config 中的目录 `items` 是完整覆盖，不与 default items merge；`merge_mode: inherit` 的 overlay 按 `name` 合并，已有 item 原位替换，新 item 追加到末尾。
+4. `item_overrides` 按 `name` patch 已有 item，适合只调整 weight、禁用某个 Provider 或替换 target；只含 `weight` 的 patch 指向当前不存在的 item（例如 instance 暂时下线）时忽略而不报错，配置保留，实例恢复后自动生效，但不能凭覆盖创造可执行实例。
+5. `items` 和 `item_overrides` 不能在同一个目录节点同时出现；同时出现应返回 `AICC_ROUTE_SESSION_CONFIG_INVALID`。
+6. 目录视图对每个 item 同时给出默认权重 `default_weight`、最终权重 `weight`、成员来源 `source` 与权重来源 `weight_source`（`driver_metadata_mount`、`builtin_definition`、`manual_override`、`user_overlay`、`session_overlay` 等），trace 记录实际使用值。
 
 ### 6.6 Provider 与 Model Driver 的挂载职责
 
@@ -727,7 +721,7 @@ logical_tree:
 
 1. 先满足硬性要求；
 2. 在能力足够的候选中优先低成本；
-3. 避免不可用、延迟过高或近期错误率高的 Provider；
+3. 避免不可用或超过显式延迟上限的 Provider（运行观测只作硬门槛，不参与排序）；
 4. 尽量复用 session 中已有 Provider；
 5. 保持选择结果可解释。
 
@@ -741,7 +735,7 @@ logical_tree:
 - 用户策略；
 - Provider 动态状态；
 - session 绑定状态；
-- 历史指标，例如 p95 latency、error rate、recent failures；
+- 健康状态与熔断（只用于硬过滤；p95 latency 只用于显式 `max_latency_ms` 门槛）；
 - budget 和 quota 状态。
 
 ### 10.3 硬过滤 + 软评分
@@ -755,49 +749,61 @@ logical_tree:
 
 Quota 按候选求值。Provider inventory、动态 cost estimate 或 Provider quota 接口是额度状态的主要事实来源；管理员可以额外配置本地预算，并结合 usage 统计计算剩余额度。未配置本地预算、Provider 不支持额度查询、查询失败或返回 `unknown` 时保留候选；只有明确的 `exhausted`、请求额度不足或预计成本超过已配置预算时过滤该候选。一个候选的 quota 不可得不得阻断其它候选进入路由。
 
-示例评分公式：
+评分公式（全部分量都由公开的 profile 权重 `scheduler_profiles.<profile>` 配置）：
 
 ```text
 score =
-  W_cost       * normalized_cost
-+ W_latency    * normalized_latency
-+ W_reliability* normalized_failure_risk
-+ W_quality    * (1 - normalized_quality)
-+ W_preference * preference_penalty
+  W_cost       * normalized_cost          # 已知 USD 估算成本 min-max 归一化；未知成本记 1（排在已知之后），免费为已知 0
++ W_quality    * canonical_quality_penalty # 规范字段匹配质量：exact 0 / fuzzy 0.25 / default 0.5 / prompt 0.75 / unsupported 1
++ W_preference * preference_penalty       # exact_model_weight × provider_weight 归一化取反，与 session 历史各占一半
 + W_cache      * cache_miss_penalty
++ W_local      * locality_penalty
 ```
 
 说明：
 
-- 分数越低越优；
-- 不同 profile 可调整权重；
-- 成本优先是默认 profile；
+- 分数越低越优；所有策略项相同时按候选池默认顺序（§6.5）选择，不再按 exact model 名、规格 ID 或家族 ID 裁决；
+- 不同 profile 可调整权重；成本优先是默认 profile，默认权重只含 cost，因此严格按可比较成本升序；
+- p50/p95 延迟、近期错误率、近期失败次数、degraded 状态等易变运行指标**不参与**软评分，也不作为 tie-break，避免同配置、同成本的候选随观测抖动；
+- `exact_model_weights`、`provider_weights` 的正值只通过 `preference` 分量生效，其与成本的相对优先级由 profile 权重决定，不存在“实例权重一律压过成本”的隐藏规则；`0` 仍表示禁用；
 - 质量分不应替代硬性能力过滤；
 - `cache_miss_penalty` 仅作为未来 Provider executor 暴露真实 cache 指标后的评分扩展点；当前 AICC 不维护 session 级 cache/sticky 状态。
 
-### 10.4 候选权重与公平调度
+### 10.4 候选权重与两阶段选择
 
-权重用于表达用户或系统的优先级偏好，但目录 item 权重不做路径乘法。每一级目录的 `items.*.weight` 只在该目录的同级 item 之间比较，语义是“这个目录下先选哪个分支”；被选中分支内部的权重只在该分支内部继续比较，不能反向放大父目录权重。
+权重用于表达用户或系统的优先级偏好，但目录 item 权重不做路径乘法。每一级目录的 item `weight` 只在该目录的同级 item 之间比较，语义是“这个目录下先展开哪个分支”；被选中分支内部的权重只在该分支内部继续比较，不能反向放大父目录权重，也不能跨分支比较。所有 API 类型（含 LLM）使用同一套算法。
 
-LLM 先按规格权重降序、规格 ID 升序，再按同规格内稳定性、版本降序、家族 ID 升序排序，最后才比较同家族的实例权重/调度分。通用评分不能改变规格或家族顺序。以下逐层权重算法保留用于非 LLM。
+**阶段一：逐层展开**
 
-调度顺序：
+```text
+expand(node):
+    items = 合并默认权重与覆盖后、符合所选预设、weight > 0 的 items（保持默认顺序）
+    for w in items 的不同权重（降序）:
+        pool = 合并 权重 == w 的每个 item 的结果：
+                 目录 → expand(目录)
+                 精确模型 → 通过 admission、未被 exact_model_weights 禁用、且通过硬过滤时入池
+        if pool 非空: return pool      # 只展开到此组，低权重组不展开
+    return []                          # 所有权重组都不可用
+```
 
-1. 展开逻辑目录，收集所有不成环的候选路径，并按 `(exact_model, api_type)` 去重；
-2. 对候选执行硬过滤，去掉不可用、能力不匹配、策略禁止、预算明显超限、被 weight 0 禁用的候选；
-3. 从请求目录开始，按目录层级逐级选择同级 item 中最高 `weight` 且仍有可用叶子候选的分支；同级最高权重相同则全部保留；
-4. 进入被保留的目标目录后重复第 3 步，直到剩下精确模型叶子候选；
-5. 对叶子候选应用精确模型权重，保留最高精确模型权重候选；
-6. 如果仍有多个候选，再按当前调度 profile 评分。
+1. 最大权重在当前父节点内求值，并列项全部展开，子目录分别递归；结果合并时保持首次到达顺序并按 exact model 去重。
+2. 硬过滤（能力、operation、实验版许可、Provider enabled/凭证/可用性、unavailable/circuit open、显式延迟上限、隐私、信任、本地、预算、quota 等）在展开时逐个叶子求值；一个 item 只有在其子树中至少有一个通过硬过滤的候选时才算“可用”。
+3. 最高权重组不可用时才尝试同层下一权重组；所有 item 都不可用则该目录为空，最终无候选时只执行显式配置的目录 fallback，否则返回路由失败。
+4. trace 的 `logical_expansion` 记录每个被访问目录的选中权重，以及每个 item 的权重、权重来源和状态（`expanded`、`unavailable`、`not_expanded`）。
+
+**阶段二：候选池内按策略选择**
+
+阶段二只看阶段一得到的候选池，不再比较目录权重、路径深度、规格/家族/版本或稳定性。按 §10.3 的 profile 评分升序排序，平局按默认顺序；第一名为 selected，池内其余候选按同一顺序作为运行时 failover 列表。低权重分支不会因为运行时 failover 被加入执行列表。
 
 权重来源：
 
 | 权重来源 | 默认值 | 生效范围 | 说明 |
 |---|---:|---|---|
-| 目录 item 权重 | `1.0` | 当前逻辑目录的同级 item | 表达当前目录下哪个分支优先，不向下相乘。 |
-| Session 全局精确模型权重 | `1` | 当前 session config 中已经成为候选的精确模型 | 调整同一候选集合内的物理模型偏好，不会把模型加入不包含它的目录。 |
+| 目录 item 权重 | `1.0` | 当前逻辑目录的同级 item | 决定展开资格；不向下相乘。 |
+| LLM 规格到家族 item 权重 | metadata `llm.weight` | 所在规格目录 | 表达同规格内的版本偏好，如 `56/55`；可被覆盖。 |
+| Session 全局精确模型权重 | `1` | 已经成为候选的精确模型 | `0` 禁用；正值通过阶段二 `preference` 分量生效，不会把模型加入不包含它的目录。 |
 | 目录精确模型权重 | 继承全局精确模型权重 | 当前目录解析结果中的精确模型 | 用于在某个角色目录中偏好或禁用特定 Provider instance。 |
-| 继承覆盖结果 | 继承父级 | 当前 session config | 用户显式权重会先合并进当前 session config，再参与同一套权重计算。 |
+| Provider 权重 | `1` | Provider instance | 与精确模型权重相乘后进入 `preference` 分量。 |
 
 目录节点可以使用 `exact_model_weights` 覆盖全局精确模型权重：
 
@@ -813,50 +819,45 @@ logical_tree:
 
 权重规则：
 
-1. `items.*.weight = 0` 表示禁用该 item；`exact_model_weights.<exact_model> = 0` 表示在该作用域硬过滤该精确模型。
+1. item `weight = 0` 表示禁用该 item；`exact_model_weights.<exact_model> = 0` 表示在该作用域硬过滤该精确模型。
 2. 负数权重非法，session config 校验必须拒绝。
 3. `global_exact_model_weights` 和目录级 `exact_model_weights` 只对已经通过当前逻辑目录展开得到的候选生效，不会把精确模型加入候选集合。
 4. 目录级 `exact_model_weights` 优先级高于 `global_exact_model_weights`；未配置时继承全局值；全局也未配置时默认 `1`。
 5. 权重不绕过硬过滤。高权重模型如果不可用、能力不匹配、被隐私策略禁止或预算硬限制拒绝，仍必须被过滤。
 
-Worked example：
+Worked example（家族下的 Provider instance 省略）：
 
-```yaml
-logical_tree:
-  llm:
-    children:
-      plan:
-        items:
-          gpt5:   { target: llm.gpt-pro,   weight: 3.0 }
-          claude: { target: llm.claude, weight: 2.0 }
-      code:
-        items:
-          gpt5:   { target: llm.gpt-pro,   weight: 1.0 }
-          claude: { target: llm.claude, weight: 2.0 }
-      gpt5:
-        items:
-          openai_primary: { target: gpt-5.2@openai_primary, weight: 1.0 }
-          openai_backup:  { target: gpt-5.2@openai_backup,  weight: 1.0 }
-      claude:
-        items:
-          anthropic: { target: claude-sonnet@anthropic, weight: 5.0 }
+```text
+llm.chat
+├── gpt-mini (2.0)
+│   ├── gpt-5.6 (56)
+│   └── gpt-5.5 (55)
+├── claude-opus (2.0)
+│   ├── opus-5.5 (55)
+│   └── opus-4.8 (48)
+└── gemini-flash (1.8)
+    ├── gemini-3.1 (31)
+    └── gemini-2.5 (25)
 ```
 
-- 请求 `llm.plan` 时，第一层先比较 `gpt5 = 3.0` 和 `claude = 2.0`，选择 `llm.gpt-pro`；`llm.claude-opus` 内部的 `weight = 5.0` 不会乘到 plan 路径上，因此不会超过 plan 对 GPT 家族的偏好。
-- 进入 `llm.gpt-pro` 后，`openai_primary` 和 `openai_backup` 同为 `1.0`，二者进入精确模型权重与 profile 评分阶段。
-- 请求 `llm.code` 时，第一层选择 `llm.claude-opus`，然后 `claude-sonnet@anthropic` 成为叶子候选。
-- 如果 `llm.plan` 的 GPT 候选全部被硬过滤，Resolver 会回到同级中仍有可用叶子的最高权重分支，此时可选择 `llm.claude-opus`。
+- 请求 `llm.chat` 时，第一层最高权重 `2.0` 并列，展开 `gpt-mini` 和 `claude-opus`，不进入 `gemini-flash`。
+- `gpt-mini` 内只展开 `gpt-5.6`；`claude-opus` 内只展开 `opus-5.5`。`56 > 55` 属于不同父节点，不会使 `gpt-5.6` 在阶段二天然胜出。
+- 两者的合格 instance 合并入池，cost_first 下选成本最低者；成本及其它策略项都相同时按默认顺序选 `gpt-5.6`。
+- `gpt-5.6` 的 instance 全部不可用时，`gpt-mini` 内改为展开 `gpt-5.5`；`gpt-mini` 与 `claude-opus` 都没有可用候选时才展开 `gemini-flash`。
+- 用户将 `llm.gpt-mini` 下 `gpt-5.5` 的权重覆盖为 `60` 后，`gpt-mini` 分支展开 `gpt-5.5`；该 `60` 不与 `claude-opus` 分支的 `55` 比较。
 
 ### 10.5 调度 Profile
 
 | Profile | 目标 | 典型场景 |
 |---|---|---|
-| `cost_first` | 成本优先，能力相近时选最低成本。 | 默认配置、大多数用户场景。 |
-| `latency_first` | 延迟优先，快速返回。 | UI 交互、实时助手、低延迟任务。 |
-| `quality_first` | 能力和质量优先。 | 复杂推理、规划、代码生成。 |
-| `balanced` | 成本、延迟、质量均衡。 | 通用 Agent。 |
-| `local_first` | 本地优先，云端作为可选 fallback。 | 隐私、离线、边缘计算。 |
-| `strict_local` | 只允许本地 Provider。 | 高隐私任务。 |
+| `cost_first` | 严格按可比较成本升序（默认权重 cost 1.0）。 | 默认配置、大多数用户场景。 |
+| `latency_first` | 不使用运行期延迟观测；延迟要求通过 `max_latency_ms` 硬门槛表达，排序偏向本地 Provider 与成本（默认 cost 0.5、local 0.5）。 | UI 交互、实时助手。 |
+| `quality_first` | 规范字段匹配质量优先（默认 quality 0.7、cost 0.3）。 | 复杂推理、规划、代码生成。 |
+| `balanced` | 成本、质量、偏好均衡（默认 cost 0.5、quality 0.3、preference 0.2）。 | 通用 Agent。 |
+| `local_first` | 本地优先，云端作为可选 fallback（默认 local 0.7、cost 0.3）。 | 隐私、离线、边缘计算。 |
+| `strict_local` | 只允许本地 Provider（策略硬过滤），池内按 balanced 权重。 | 高隐私任务。 |
+
+profile 权重字段为 `cost`、`quality`、`preference`、`cache`、`local`，可通过路由策略 `scheduler_profiles` 覆盖；不再有 `latency`、`reliability` 分量。
 
 ### 10.6 成本模型需求
 
@@ -900,14 +901,14 @@ interface CostEstimateOutput {
 | 指标 | 用途 |
 |---|---|
 | `status` | unavailable 时硬过滤。 |
-| `p50_latency_ms` | 延迟评分。 |
-| `p95_latency_ms` | 延迟评分和异常保护。 |
-| `error_rate_5m` | 可靠性评分。 |
-| `recent_failures` | 临时降权或熔断。 |
-| `queue_depth` | 本地推理或共享服务排队评分。 |
+| `p50_latency_ms` | 观测与展示，不参与排序。 |
+| `p95_latency_ms` | 显式 `max_latency_ms` 硬门槛；不参与排序。 |
+| `error_rate_5m` | 观测与熔断输入，不参与排序。 |
+| `recent_failures` | 熔断输入，不参与排序。 |
+| `queue_depth` | 预留；不参与排序。 |
 | `quota_state` | `exhausted` 时硬过滤或降权；`unknown` 保留候选。 |
 
-运行时调用结果必须回写到 exact model 和 Provider instance 两级健康窗口。`p50_latency_ms`、`p95_latency_ms`、`error_rate_5m` 使用最近 5 分钟样本计算；延迟评分使用 p50 与 p95 的均值，只有一项可用时使用该项；`recent_failures` 记录连续的可重试失败，成功后清零。调用方参数、认证、权限、策略、幂等冲突等永久错误不得污染 Provider 健康度。模型不存在只将对应 exact model 标记为临时不可用，不应把同一 Provider 的其它模型一并下线。Router 在每次生成候选时读取最新快照：模型不可用、Provider unavailable 和 circuit open 硬过滤；degraded、错误率、连续失败和延迟参与评分降权；动态健康数据缺失时保留候选，除非 request 设置了必须满足的延迟上限。
+运行时调用结果必须回写到 exact model 和 Provider instance 两级健康窗口。`p50_latency_ms`、`p95_latency_ms`、`error_rate_5m` 使用最近 5 分钟样本计算；延迟评分使用 p50 与 p95 的均值，只有一项可用时使用该项；`recent_failures` 记录连续的可重试失败，成功后清零。调用方参数、认证、权限、策略、幂等冲突等永久错误不得污染 Provider 健康度。模型不存在只将对应 exact model 标记为临时不可用，不应把同一 Provider 的其它模型一并下线。Router 在每次生成候选时读取最新快照：模型不可用、Provider unavailable 和 circuit open 硬过滤；degraded、错误率、连续失败和延迟不参与软评分与平局裁决，只通过熔断、健康状态或显式延迟上限改变候选资格；动态健康数据缺失时保留候选，除非 request 设置了必须满足的延迟上限。
 
 ### 10.8 熔断与恢复
 
@@ -1051,31 +1052,19 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
       "llm": {
         "children": {
           "plan": {
-            "items": {
-              "gpt5": {
-                "target": "llm.gpt-pro",
-                "weight": 4.0
-              },
-              "claude": {
-                "target": "llm.claude-opus",
-                "weight": 2.0
-              }
-            },
+            "items": [
+              { "name": "gpt5", "target": "llm.gpt-pro", "weight": 4.0 },
+              { "name": "claude", "target": "llm.claude-opus", "weight": 2.0 }
+            ],
             "fallback": {
               "mode": "parent"
             }
           },
           "code": {
-            "items": {
-              "gpt5": {
-                "target": "llm.gpt-pro",
-                "weight": 3.0
-              },
-              "local": {
-                "target": "llm.local",
-                "weight": 1.0
-              }
-            }
+            "items": [
+              { "name": "gpt5", "target": "llm.gpt-pro", "weight": 3.0 },
+              { "name": "local", "target": "llm.local", "weight": 1.0 }
+            ]
           }
         }
       }
@@ -1103,9 +1092,9 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
 
 - `session_overlay`：调用方已经合成好的本次请求 route overlay；AICC 不保存，不生成 revision。
 - `logical_tree`：和 system_config routing_config overlay 使用同一结构；每一级目录通过 `children` 嵌套子目录，通过 `items` 放置候选入口。
-- `items`：目录下的软链接入口，每个 item 只需要 `target` 和 `weight`；`target` 可以是另一个逻辑目录或精确模型。
+- `items`：目录下的软链接入口有序列表，每个 item 为 `{name, target, weight}`；`name` 在目录内唯一，列表顺序是默认顺序；`target` 可以是另一个逻辑目录或精确模型。
 - `weight`：item 在当前目录下的权重，默认 `1.0`；用户调整优先级时通常只需要改这个字段。
-- `global_exact_model_weights`：调整精确模型在本次 request overlay 中的全局权重；只影响已经由当前逻辑目录展开得到的候选，且不会覆盖目录 item 的分支优先级。
+- `global_exact_model_weights`：调整精确模型在本次 request overlay 中的全局权重；只影响已经由当前逻辑目录展开得到的候选，正值通过阶段二 `preference` 分量生效，不会覆盖目录 item 的展开资格。
 - Provider 级别的允许/禁止列表仍可作为安全或组织策略存在，但不应作为用户选择模型的主要表达方式。列表项使用 [match_rule.md](match_rule.md) 的统一 `MatchRule`；通常直接写 Provider instance 的精确名称或 wildcard 字符串，只有同时约束 `api_type`、`logical_path` 等维度时才展开为对象。
 
 配置合并优先级建议：
@@ -1209,7 +1198,8 @@ interface RouteTrace {
   ranked_candidates?: Array<{
     exact_model: string;
     provider_instance_name: string;
-    priority_path: number[];
+    default_order: number;             // 候选池默认顺序，最终平局裁决依据
+    item_weights: number[];            // 首条来源路径上每层 item 的最终权重，仅供解释，不参与排序
     exact_model_weight: number;
     provider_weight: number;
     preference_score_inputs?: {
@@ -1222,8 +1212,6 @@ interface RouteTrace {
     };
     score_inputs?: {
       cost: number;
-      latency: number;
-      reliability: number;
       quality: number;
       preference: number;
       cache: number;
@@ -1241,8 +1229,6 @@ interface RouteTrace {
   scheduler_profile: string;
   score_breakdown?: {
     cost: number;
-    latency: number;
-    reliability: number;
     quality: number;
     preference: number;
     cache: number;
@@ -1255,6 +1241,17 @@ interface RouteTrace {
   logical_item_sources?: Array<{
     exact_model: string;
     source: "builtin_definition" | "driver_metadata_mount" | "auto_admission" | "manual_override" | "session_overlay";
+  }>;
+  logical_expansion?: Array<{          // 阶段一逐层展开决策
+    logical_path: string;
+    max_weight?: number;               // 选中的权重组；缺省表示该目录没有可用 item
+    items: Array<{
+      name: string;
+      target: string;
+      weight: number;
+      weight_source: string;
+      state: "expanded" | "unavailable" | "not_expanded";
+    }>;
   }>;
   logical_admission?: Array<{
     provider_model_id: string;
@@ -1320,7 +1317,7 @@ interface UserFacingRouteSummary {
 | `AICC_ROUTE_NO_CANDIDATE` | 解析和 fallback 后仍无候选。 | 调整 fallback、放宽策略或安装 Provider。 |
 | `AICC_ROUTE_POLICY_REJECTED` | 候选被策略全部过滤。 | 检查 local_only、逻辑覆盖、权重、预算、能力要求。 |
 | `AICC_ROUTE_FALLBACK_LOOP` | fallback 链存在环。 | 修正 fallback 配置。 |
-| `AICC_ROUTE_LOGICAL_TREE_LOOP` | 目录 item 的软链接目标形成环。 | 修正 `items.*.target` 指向。 |
+| `AICC_ROUTE_LOGICAL_TREE_LOOP` | 目录 item 的软链接目标形成环。 | 修正 item `target` 指向。 |
 | `AICC_ROUTE_SESSION_CONFIG_INVALID` | request overlay schema 非法。 | 修正字段、权重、items 覆盖方式或 fallback 模式。 |
 | `AICC_ROUTE_POLICY_LOCKED` | patch 尝试覆盖被上级锁定的策略字段。 | 去掉下级覆盖或调整组织策略。 |
 | `AICC_ROUTE_EXACT_MODEL_UNAVAILABLE` | 精确模型不可用且不允许 fallback。 | 启用 fallback 或更换精确模型。 |
@@ -1351,22 +1348,14 @@ routing_config:
       children:
         plan:
           items:
-            gpt5:
-              target: llm.gpt-pro
-              weight: 3.0
-            claude:
-              target: llm.claude
-              weight: 2.0
+            - { name: gpt5, target: llm.gpt-pro, weight: 3.0 }
+            - { name: claude, target: llm.claude, weight: 2.0 }
           fallback:
             mode: parent
         code:
           items:
-            gpt5:
-              target: llm.gpt-pro
-              weight: 2.0
-            local:
-              target: llm.local
-              weight: 1.0
+            - { name: gpt5, target: llm.gpt-pro, weight: 2.0 }
+            - { name: local, target: llm.local, weight: 1.0 }
         fallback:
           mode: parent
         chat:
@@ -1383,27 +1372,17 @@ routing_config:
           fallback:
             mode: disabled
           items:
-            local:
-              target: llm.local
-              weight: 1.0
+            - { name: local, target: llm.local, weight: 1.0 }
         gpt5:
           items:
-            openai_primary:
-              target: gpt-5.2@openai_primary
-              weight: 1.0
-            openai_backup:
-              target: gpt-5.2@openai_backup
-              weight: 1.0
+            - { name: openai_primary, target: gpt-5.2@openai_primary, weight: 1.0 }
+            - { name: openai_backup, target: gpt-5.2@openai_backup, weight: 1.0 }
         claude:
           items:
-            anthropic:
-              target: claude-sonnet@anthropic
-              weight: 1.0
+            - { name: anthropic, target: claude-sonnet@anthropic, weight: 1.0 }
         local:
           items:
-            qwen:
-              target: qwen3@local
-              weight: 1.0
+            - { name: qwen, target: qwen3@local, weight: 1.0 }
 ```
 
 说明：
@@ -1412,8 +1391,8 @@ routing_config:
 - 默认逻辑目录配置由服务内置装配；`services/aicc/settings.routing_config` 只表达运营或用户覆盖，不应成为 `llm.chat` 等标准目录可用性的前提。
 - Provider inventory 声明中的 `logical_mounts` 可作为生成 default items 的输入；显式写在 system/session config 中的 `items` 会完整覆盖 default items，局部修改使用 `item_overrides`。
 - `global_exact_model_weights` 只对已经出现在当前候选集合中的精确模型生效，不会把模型加入候选集合。
-- `items.*.weight` 只在当前逻辑目录的同级 item 中比较；上例中 `llm.plan` 目录下 `llm.gpt-pro` 优先于 `llm.claude-opus`，但 `llm.gpt-pro` 内部 Provider 权重不会乘到 `llm.plan` 权重上。
-- 权重只决定优先级；同优先级候选仍由调度 profile 决定。
+- item `weight` 只在当前逻辑目录的同级 item 中比较；上例中 `llm.plan` 只展开 `llm.gpt-pro`，其没有可用候选时才展开 `llm.claude-opus`；`llm.gpt-pro` 内部 Provider 权重不会乘到 `llm.plan` 权重上。
+- 权重只决定展开资格；同一展开池内的候选由调度 profile 决定，全部策略项相同时按 items 书写顺序。
 
 ### 15.2 Provider Inventory 声明示例
 
@@ -1509,31 +1488,16 @@ providers:
 ```yaml
 scheduler_profiles:
   cost_first:
-    weights:
-      cost: 0.55
-      latency: 0.15
-      reliability: 0.15
-      quality: 0.10
-      preference: 0.05
-      cache: 0.10
+    cost: 1.0
 
   quality_first:
-    weights:
-      cost: 0.15
-      latency: 0.10
-      reliability: 0.20
-      quality: 0.50
-      preference: 0.05
-      cache: 0.10
+    cost: 0.3
+    quality: 0.7
 
-  latency_first:
-    weights:
-      cost: 0.20
-      latency: 0.45
-      reliability: 0.20
-      quality: 0.10
-      preference: 0.05
-      cache: 0.10
+  balanced:
+    cost: 0.4
+    quality: 0.2
+    preference: 0.4    # 提高显式实例偏好相对成本的比重
 ```
 
 ### 15.4 Worked Examples
@@ -1606,11 +1570,11 @@ scheduler_profiles:
 | R-012 | 支持 route trace。 | response metadata 或日志中可解释最终 Provider 选择原因。 |
 | R-013 | 支持配置化策略合并。 | 默认逻辑目录配置、`system_config` 系统配置和 request `session_overlay` 按优先级合并。 |
 | R-014 | 支持精确模型默认不 fallback。 | 精确模型不可用时默认报错，显式允许后才 fallback。 |
-| R-015 | 支持目录 item 权重。 | `items.<item_name>.weight` 只在对应逻辑目录的同级 item 间比较，不沿路径相乘。 |
+| R-015 | 支持目录 item 权重。 | item `weight` 只在对应逻辑目录的同级 item 间比较，每层只展开最高可用权重组，不沿路径相乘。 |
 | R-016 | 支持全局与目录级精确模型权重。 | `global_exact_model_weights` 和目录 `exact_model_weights` 只影响已经成为候选的精确模型；weight 0 作为硬过滤。 |
 | R-017 | 支持应用侧 overlay 分层。 | 应用可自行合成 app/agent/conversation/user overlay，并把最终 `session_overlay` 传给 AICC。 |
 | R-018 | 支持 request overlay 继承与覆盖语义。 | request 可通过同一套 route overlay schema 覆盖逻辑目录、items、权重和 policy。 |
-| R-019 | 支持目录软链接环检测。 | `items.*.target` 形成环时返回 `AICC_ROUTE_LOGICAL_TREE_LOOP`。 |
+| R-019 | 支持目录软链接环检测。 | item `target` 形成环时返回 `AICC_ROUTE_LOGICAL_TREE_LOOP`。 |
 | R-020 | 删除 AICC 内部 session config 状态。 | AICC 不维护 `session_id -> config`、revision、TTL 或并发冲突检查。 |
 | R-021 | 支持用户友好 trace summary。 | 后端返回 `UserFacingRouteSummary`，UI 不需要解析 score breakdown。 |
 

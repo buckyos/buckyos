@@ -24,7 +24,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 51
       }
     },
     {
@@ -45,7 +46,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 50
       }
     },
     {
@@ -66,7 +68,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 55
       }
     },
     {
@@ -87,7 +90,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 50
       }
     },
     {
@@ -108,7 +112,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 50
       }
     },
     {
@@ -129,7 +134,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 48
       }
     },
     {
@@ -150,7 +156,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 47
       }
     },
     {
@@ -171,7 +178,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high", "max"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 46
       }
     },
     {
@@ -192,7 +200,8 @@
         "effort": "none",
         "default_effort": "none",
         "supported_efforts": ["none", "thinking"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 45
       }
     },
     {
@@ -213,7 +222,8 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high", "max"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 46
       }
     },
     {
@@ -234,7 +244,8 @@
         "effort": "none",
         "default_effort": "none",
         "supported_efforts": ["none", "thinking"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 45
       }
     },
     {
@@ -254,7 +265,8 @@
         "effort": "none",
         "default_effort": "none",
         "supported_efforts": ["none", "thinking"],
-        "stability": "stable"
+        "stability": "stable",
+        "weight": 45
       }
     }
   ],

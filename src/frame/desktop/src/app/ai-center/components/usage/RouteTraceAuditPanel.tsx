@@ -411,7 +411,7 @@ function TraceAuditCard({
   const traceTitle = metaItems.join(' / ')
   const scoreHint = t(
     'aiCenter.routing.scoreHint',
-    'Score is the weighted sum of normalized cost, latency, reliability risk, quality penalty, preference, cache, and local factors for the active scheduler profile. Lower scores rank first.',
+    'Score is the weighted sum of normalized cost, quality penalty, preference, cache, and local factors for the active scheduler profile. Volatile latency and error observations do not affect ranking. Lower scores rank first; ties keep the configured order.',
   )
 
   return (
@@ -682,16 +682,6 @@ function ScoreDetails({
       t('aiCenter.routing.scoreCost', 'cost'),
       estimatedCost,
       t('aiCenter.routing.scoreCostHint', 'Estimated pre-call cost for this candidate, shown with currency.'),
-    ],
-    [
-      t('aiCenter.routing.scoreLatency', 'latency'),
-      scoreInputs?.latency,
-      t('aiCenter.routing.scoreLatencyHint', 'Normalized latency factor. Lower values mean faster expected response.'),
-    ],
-    [
-      t('aiCenter.routing.scoreReliability', 'reliability'),
-      scoreInputs?.reliability,
-      t('aiCenter.routing.scoreReliabilityHint', 'Normalized reliability risk from recent health data. Lower values mean lower error risk.'),
     ],
     [
       t('aiCenter.routing.scoreQuality', 'quality'),

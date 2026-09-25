@@ -951,11 +951,11 @@ async function runRouteCases(
     disable: { web_search: true },
   })));
   await pushRouteProbe("t1.route.unmounted_model", () => expectRouteRejected(routeRequest("t1.route.unmounted_model", {
-    session_overlay: replacingOverlay(logicalModel, { items: {} }),
+    session_overlay: replacingOverlay(logicalModel, { items: [] }),
   })));
   await pushRouteProbe("t1.route.corrupt_metadata", () => expectRouteRejected(routeRequest("t1.route.corrupt_metadata", {
     session_overlay: replacingOverlay(logicalModel, {
-        items: { corrupt: { target: "not-an-exact-or-logical-model", weight: -1 } },
+        items: [{ name: "corrupt", target: "not-an-exact-or-logical-model", weight: -1 }],
       }),
   })));
   await pushRouteProbe("t1.route.privacy_boundary", () => expectRouteRejected(routeRequest("t1.route.privacy_boundary", {
@@ -1007,7 +1007,7 @@ async function runRouteCases(
     return expectRouteRejected(routeRequest("t1.route.min_line_admission", {
       logical_model: "llm.plan",
       session_overlay: replacingOverlay("llm.plan", {
-        items: { basic: { target: basicModel.exact_model, weight: 1 } },
+        items: [{ name: "basic", target: basicModel.exact_model, weight: 1 }],
       }),
       policy: { allowed_provider_instances: [openaiA.provider_instance_name] },
     }));
@@ -1067,7 +1067,7 @@ async function runRouteCases(
     const requestResponse = await session.aicc.call("route.resolve", routeRequest("t1.route.system_config_then_request_overlay.request", {
       logical_model: "llm.dv_acceptance.system_overlay",
       session_overlay: replacingOverlay("llm.dv_acceptance.system_overlay", {
-        items: { request: { target: modelB.exact_model, weight: 1 } },
+        items: [{ name: "request", target: modelB.exact_model, weight: 1 }],
       }),
     })) as Record<string, unknown>;
     if (requestResponse.provider_instance_name !== openaiB.provider_instance_name) {
@@ -1133,7 +1133,7 @@ async function runRouteCases(
 
   const fallbackPath = `${logicalModel}.dv`;
   const fallbackLeaf = (fallback: Record<string, unknown>): Record<string, unknown> => ({
-    items: { missing: { target: `missing@${openaiA.provider_instance_name}`, weight: 1 } },
+    items: [{ name: "missing", target: `missing@${openaiA.provider_instance_name}`, weight: 1 }],
     fallback,
   });
   await pushRouteProbe("t1.route.strict_no_fallback", () => expectRouteRejected(routeRequest("t1.route.strict_no_fallback", {
@@ -1650,10 +1650,10 @@ async function runCases(
           overlays: [{
             path: logicalModel,
             merge_mode: "replace",
-            items: {
-              primary: { target: modelA.exact_model, weight: 1 },
-              secondary: { target: modelB.exact_model, weight: 1 },
-            },
+            items: [
+              { name: "primary", target: modelA.exact_model, weight: 1 },
+              { name: "secondary", target: modelB.exact_model, weight: 1 },
+            ],
           }],
         },
         ...requestedOverlay,
@@ -2254,10 +2254,10 @@ async function runCases(
           overlays: [{
             path: logical,
             merge_mode: "replace",
-            items: {
-              primary: { target: modelA.exact_model, weight: 2 },
-              backup: { target: modelB.exact_model, weight: 1 },
-            },
+            items: [
+              { name: "primary", target: modelA.exact_model, weight: 2 },
+              { name: "backup", target: modelB.exact_model, weight: 2 },
+            ],
           }],
         },
       };

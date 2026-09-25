@@ -185,8 +185,8 @@ llm
 ├── gpt-mini                  [规格；可为空]
 ├── gpt-standard              [规格；可为空]
 ├── gpt-pro                   [规格]
-│   ├── gpt_5_6_sol -> llm.gpt-5-6-sol:high (560，推导版本值)
-│   └── gpt_5_5_pro -> llm.gpt-5-5-pro:high (550，推导版本值)
+│   ├── llm.gpt-5-6-sol -> llm.gpt-5-6-sol:high (56，metadata llm.weight)
+│   └── llm.gpt-5-5-pro -> llm.gpt-5-5-pro:high (55，metadata llm.weight)
 ├── gpt-max                   [规格；可为空]
 ├── gpt-codex                 [专用规格；可为空]
 ├── gpt-5-6-sol               [动态家族]
@@ -198,11 +198,11 @@ llm
         └── provider_a -> gpt-5.5-pro:reasoning-high@provider-a
 ```
 
-上图假设两个 Provider 的调用 ID 相同；渠道 ID 不同时，exact target 使用各自真实 ID，家族仍按官方身份合并。`560/550` 分别从官方版本 `5.6/5.5` 推导，不在模型配置中手写顺序，也不与功能偏好 `2.3` 相乘。相同版本允许同值，以归一化家族 ID 升序稳定排序。多个 Provider 不增加规格到家族的引用次数或权重。
+上图假设两个 Provider 的调用 ID 相同；渠道 ID 不同时，exact target 使用各自真实 ID，家族仍按官方身份合并。`56/55` 是 model-driver metadata 为各模型声明的 `llm.weight`，Registry 原样写入规格到家族的默认 item 权重，路由不从模型名解析版本；该权重只在同一规格内比较，不与功能偏好 `2.3` 相乘，也不与其它规格或厂商的权重比较，因此不同系列重复使用 `55` 没有冲突。多个 Provider 不增加规格到家族的引用次数或权重；家族到 instance 的默认权重为 `1.0`。两层权重都可通过 `item_overrides` 覆盖（只改权重，不改成员归属），覆盖值、默认值及来源在目录视图和 trace 中可见。
 
 零 Provider 时只保留功能目录、声明的规格及功能到规格的引用。metadata 与有效 inventory 相交后才创建家族及预设；最后一个对应实例消失时删除动态家族和引用，规格恢复为空。官方 Provider 下线不删除其他渠道仍可提供的家族，也不删除其模型定义。
 
-选择时先过滤可执行候选并跳过空规格，再按功能权重选择规格（同权重按规格 ID 排序），规格内优先最新合格稳定版本，旧版兜底；实验版须无合格稳定版且策略允许。规格耗尽后尝试下一规格，物理实例由规格内选中的家族预设继续调度。
+选择分两阶段。阶段一逐层展开：功能目录、规格、家族预设各自只展开本层可用 item 中权重最大的一组，并列全部展开；某组没有任何可用候选（无库存、admission 不满足、运行状态或策略被硬过滤）时才尝试同层下一权重组，全部不可用则该目录为空。同权重规格不按规格 ID 提前淘汰，而是各自展开后共同进入阶段二。阶段二把展开得到的合格 instance 合并成候选池，按调度 profile（默认成本优先）选择，策略项全部相同时按默认顺序（配置书写顺序；家族按路径、instance 按 exact model 名）。`stability = experimental` 只是准入条件：请求未允许实验版时硬过滤，允许后不再被隐式排在稳定版之后。运行时 failover 只在本轮候选池内进行。
 
 任务、规格、家族没有隐式 Parent fallback；`llm` 不收集模型，`llm.fallback` 默认空。家族直选默认 strict，使用声明的默认预设，不自动升级其他家族。显式 fallback 保留原请求及原任务约束。每个规格须被功能引用或标记 `direct_only`，后者不能通过功能或 fallback 暗中接入。
 
@@ -373,88 +373,84 @@ routing_config:
     # ===== LLM：局部示意，其余功能权重见 model_defaults.rs 头部契约 =====
     llm.chat:
       items:
-        gpt_standard: { target: llm.gpt-standard, weight: 2.2 }
-        gpt_mini: { target: llm.gpt-mini, weight: 1.4 }
+        - { name: gpt_standard, target: llm.gpt-standard, weight: 2.2 }
+        - { name: gpt_mini, target: llm.gpt-mini, weight: 1.4 }
       fallback: { mode: disabled }
 
     llm.plan:
       items:
-        gpt_pro: { target: llm.gpt-pro, weight: 2.3 }
-        gpt_max: { target: llm.gpt-max, weight: 2.6 }
+        - { name: gpt_pro, target: llm.gpt-pro, weight: 2.3 }
+        - { name: gpt_max, target: llm.gpt-max, weight: 2.6 }
       fallback: { mode: disabled }
       profile: quality_first
 
     llm.code:
       items:
-        gpt_codex: { target: llm.gpt-codex, weight: 2.2 }
-        gpt_standard: { target: llm.gpt-standard, weight: 2.1 }
+        - { name: gpt_codex, target: llm.gpt-codex, weight: 2.2 }
+        - { name: gpt_standard, target: llm.gpt-standard, weight: 2.1 }
       fallback: { mode: disabled }
 
     llm.swift:
       items:
-        gpt_nano: { target: llm.gpt-nano, weight: 1.1 }
+        - { name: gpt_nano, target: llm.gpt-nano, weight: 1.1 }
       fallback: { mode: disabled }
       profile: latency_first
 
     llm.fallback:
-      items: {}
+      items: []
       fallback: { mode: disabled }
 
     # ===== Embedding =====
     embedding.text:
       items:
-        bge:       { target: bge-m3@local, weight: 2.0 }
-        voyage:    { target: voyage-3@voyageai, weight: 2.0 }
-        openai:    { target: text-embedding-3-large@openai, weight: 1.0 }
+        - { name: bge, target: bge-m3@local, weight: 2.0 }
+        - { name: voyage, target: voyage-3@voyageai, weight: 2.0 }
+        - { name: openai, target: text-embedding-3-large@openai, weight: 1.0 }
       fallback: { mode: strict }   # 向量空间不通用
 
     # ===== Image =====
     image.txt2img:
       items:
-        flux:     { target: image.flux,     weight: 2.5 }
-        seedream: { target: image.seedream, weight: 2.0 }
-        imagen:   { target: image.imagen,   weight: 2.5 }
-        sd_local: { target: image.sd,       weight: 1.0 }
+        - { name: seedream, target: image.seedream, weight: 2.0 }
       fallback: { mode: parent }
       profile: quality_first
 
     image.img2img:
       items:
-        kontext:  { target: image.flux_kontext, weight: 2.0 }
-        seedream: { target: image.seedream,     weight: 2.0 }
-        gpt_img:  { target: gpt-image-1@openai, weight: 2.0 }
+        - { name: kontext, target: image.flux_kontext, weight: 2.0 }
+        - { name: gpt_img, target: gpt-image-1@openai, weight: 2.0 }
       fallback: { mode: parent }
 
     image.upscale:
       items:
-        topaz: { target: image.topaz, weight: 2.0 }
-        esrgan: { target: image.real_esrgan, weight: 1.0 }
+        - { name: topaz, target: image.topaz, weight: 2.0 }
+        - { name: esrgan, target: image.real_esrgan, weight: 1.0 }
       fallback: { mode: parent }
 
     # ===== Audio =====
     audio.tts:
       items:
-        eleven: { target: eleven-v3@elevenlabs, weight: 2.5 }
-        openai: { target: tts-1-hd@openai, weight: 2.0 }
-        kokoro: { target: kokoro-82m@local, weight: 1.0 }
+        - { name: eleven, target: eleven-v3@elevenlabs, weight: 2.5 }
+        - { name: openai, target: tts-1-hd@openai, weight: 2.0 }
+        - { name: kokoro, target: kokoro-82m@local, weight: 1.0 }
       fallback: { mode: strict }   # 音色不能换
       profile: latency_first
 
     audio.asr:
       items:
-        whisper_local: { target: whisper-large-v3@local, weight: 2.5 }
-        sensevoice:    { target: sensevoice-small@local, weight: 2.0 }
-        whisper_api:   { target: whisper-1@openai, weight: 1.0 }
+        - { name: whisper_local, target: whisper-large-v3@local, weight: 2.5 }
+        - { name: sensevoice, target: sensevoice-small@local, weight: 2.0 }
+        - { name: whisper_api, target: whisper-1@openai, weight: 1.0 }
       fallback: { mode: parent }
       profile: latency_first
 
     # ===== Video =====
     video.txt2video:
       items:
-        kling:    { target: kling-3.0@kling, weight: 2.5 }
-        seedance: { target: seedance-2.0@bytedance, weight: 2.5 }
-        veo:      { target: veo-3@google, weight: 2.0 }
-        sora:     { target: sora-2@openai, weight: 2.0 }
+        - { name: kling, target: kling-3.0@kling, weight: 2.5 }
+        - { name: seedance, target: seedance-2.0@bytedance, weight: 2.5 }
+        - { name: veo, target: veo-3@google, weight: 2.0 }
+        - { name: sora, target: sora-2@openai, weight: 2.0 }
       fallback: { mode: parent }
       profile: quality_first
 
