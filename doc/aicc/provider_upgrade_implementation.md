@@ -81,3 +81,11 @@ FAL 的单位报价可能按尺寸/长度成比例调整，当前 queue codec �
 
 发现器/身份解析达到净减少，但全任务生产代码净减少的设计目标未达到：新增计费维度、汇率/价格校验、预设隔离、诊断与默认树契约的实现增加了代码。旧 origin DSL、猜测 fallback、driver 白名单和重复发现流程已实际删除，没有保留兼容双轨。metadata 增长包含精确预设表、来源与地区价格条件及 JSON 展开，不计入生产代码。
 
+
+## DV 回归：OpenRouter 全量发现被价格占位阻断（2026-09-25）
+
+DV 中没有成功持久化 OpenRouter 库存。用 [OpenRouter models API](https://openrouter.ai/api/v1/models?output_modalities=all) 的真实响应回放，确认 auto、auto-beta、fusion、pareto-code、bodybuilder 的 prompt/completion 单价为 `-1`。原解析器将其作为非法负数抛出 DiscoveryResponse，整次发现提前退出，尚未进入身份匹配；旧 fixture 对 auto 使用 null 价格，没有覆盖这个响应。
+
+OpenRouter 专用解析器现在把 `-1` 占位转换为未知价格；显式 0 保持免费，其他负数、非数值及非有限值仍拒绝。未确认身份的路由模型继续进入 unmatched，不会阻断其它模型。回归 fixture 使用真实模型 ID 与 `-1`，贯通 discovery、builtin metadata、InventoryBuilder、ModelRegistry 和 gpt-mini 候选解析，并检查未知与免费价格的区别。
+
+真实 625 条记录离线回放：84 个身份匹配、66 个具有有效 API（其中 59 个支持 LLM），539 条 unmatched；gpt-mini 有路由候选。另有 130 条缺少预设映射的诊断，这次没有据此扩充未经核验的渠道能力。该回放只读取公开模型列表，没有付费推理，也没有替换正在运行的 DV 二进制。 完整 `cargo test -p aicc --offline` 486 项通过，`cargo check -p aicc --all-targets --offline`、源码格式与差分检查通过。

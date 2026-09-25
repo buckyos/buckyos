@@ -270,6 +270,9 @@ fn parse_nonnegative_price(name: &str, value: Option<&str>) -> ProviderResult<Op
     let value = value.parse::<f64>().map_err(|_| {
         ProviderError::DiscoveryResponse(format!("OpenRouter {name} price is invalid"))
     })?;
+    if value == -1.0 {
+        return Ok(None);
+    }
     if !value.is_finite() || value < 0.0 {
         return Err(ProviderError::DiscoveryResponse(format!(
             "OpenRouter {name} price must be finite and non-negative"
@@ -412,7 +415,7 @@ mod tests {
             response: Mutex::new(Some(Ok(HttpResponse {
                 status: StatusCode::OK,
                 headers: HeaderMap::new(),
-                body: Bytes::from_static(br#"{"data":[{"id":"openai/model-a","canonical_slug":"openai/model-a","supported_parameters":["tools","response_format"],"architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"pricing":{"prompt":"0.000001","completion":"0.000002"},"expiration_date":null},{"id":"openai/text-embedding-3-small","canonical_slug":"openai/text-embedding-3-small","supported_parameters":[],"architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]},"pricing":null,"expiration_date":null},{"id":"cohere/rerank-v3.5","canonical_slug":"cohere/rerank-v3.5","supported_parameters":[],"architecture":{"input_modalities":["text"],"output_modalities":["rerank"]},"pricing":null,"expiration_date":null},{"id":"openai/model-a:free","canonical_slug":"openai/model-a","supported_parameters":[],"architecture":null,"pricing":null,"expiration_date":null},{"id":"openrouter/auto","canonical_slug":"openrouter/auto","supported_parameters":[],"architecture":null,"pricing":null,"expiration_date":null}]}"#),
+                body: Bytes::from_static(br#"{"data":[{"id":"openai/gpt-5.4-mini","canonical_slug":"openai/gpt-5.4-mini","supported_parameters":["tools","response_format"],"architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"pricing":{"prompt":"0.000001","completion":"0.000002"},"expiration_date":null},{"id":"openai/text-embedding-3-small","canonical_slug":"openai/text-embedding-3-small","supported_parameters":[],"architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]},"pricing":null,"expiration_date":null},{"id":"cohere/rerank-v3.5","canonical_slug":"cohere/rerank-v3.5","supported_parameters":[],"architecture":{"input_modalities":["text"],"output_modalities":["rerank"]},"pricing":null,"expiration_date":null},{"id":"openai/gpt-5.4-mini:free","canonical_slug":"openai/gpt-5.4-mini","supported_parameters":[],"architecture":null,"pricing":null,"expiration_date":null},{"id":"openrouter/auto","canonical_slug":"openrouter/auto","supported_parameters":[],"architecture":null,"pricing":{"prompt":"-1","completion":"-1"},"expiration_date":null}]}"#),
                 request_id: "request-1".to_owned(),
                 retry_after: None,
             }))),
@@ -449,7 +452,7 @@ mod tests {
         let language_model = snapshot
             .models
             .iter()
-            .find(|model| model.provider_model_id == "openai/model-a")
+            .find(|model| model.provider_model_id == "openai/gpt-5.4-mini")
             .unwrap();
         assert_eq!(
             language_model.pricing.as_ref().unwrap().input_token,
@@ -480,6 +483,40 @@ mod tests {
             embedding.remote_methods,
             Some(BTreeSet::from([OPENAI_EMBEDDINGS_OPERATION_ID.to_owned()]))
         );
+        assert!(snapshot
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "openrouter/auto")
+            .unwrap()
+            .pricing
+            .is_none());
+        let catalog = crate::settings::MetadataSources {
+            builtin: crate::settings::load_builtin_metadata().unwrap(),
+            ..Default::default()
+        }
+        .build_snapshot(2, &Default::default())
+        .unwrap();
+        let providers = super::super::builtin_provider_registry(&catalog).unwrap();
+        let inventory = crate::provider::InventoryBuilder::build_with_matcher(
+            &profile,
+            &instance,
+            snapshot,
+            &catalog,
+            &providers.codecs(),
+            Some(&discovery),
+        )
+        .unwrap();
+        assert_eq!(inventory.models.len(), 3);
+        assert!(inventory
+            .unmatched_models
+            .iter()
+            .any(|model| model.provider_model_id == "openrouter/auto"));
+        let registry =
+            crate::service::builtin_registry_for_test(&catalog, &[inventory.as_model_inventory()]);
+        let candidates = registry
+            .resolve_candidates("llm.gpt-mini", ApiType::Llm)
+            .unwrap();
+        assert!(!candidates.candidates.is_empty());
         let request = transport.request.lock().unwrap().take().unwrap();
         assert_eq!(
             request.url,
@@ -506,7 +543,26 @@ mod tests {
             "https://openrouter.ai/api/v1/models?output_modalities=all"
         );
         assert!(models_endpoint("file:///tmp/openrouter").is_err());
+        assert_eq!(parse_nonnegative_price("prompt", Some("-1")).unwrap(), None);
+        assert_eq!(
+            parse_nonnegative_price("completion", Some("-1.0")).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_nonnegative_price("prompt", Some("0")).unwrap(),
+            Some(0.0)
+        );
+        let partial = parse_pricing(Some(ModelPricing {
+            prompt: Some("-1".into()),
+            completion: Some("0.000002".into()),
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(partial.input_token, None);
+        assert_eq!(partial.output_token, Some(0.000002));
         assert!(parse_nonnegative_price("prompt", Some("-0.1")).is_err());
+        assert!(parse_nonnegative_price("prompt", Some("-2")).is_err());
+        assert!(parse_nonnegative_price("prompt", Some("invalid")).is_err());
         assert!(parse_nonnegative_price("prompt", Some("NaN")).is_err());
     }
 }
