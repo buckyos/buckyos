@@ -17,14 +17,6 @@ pub(crate) enum CallLoweringError {
     InvalidExactModel(ModelRegistryError),
     RouteMismatch(String),
     Catalog(CatalogResolveError),
-    MissingModelVariant {
-        model_driver_id: String,
-        variant: String,
-    },
-    AmbiguousModelVariant {
-        model_driver_id: String,
-        variant: String,
-    },
     MissingProviderVariant {
         provider_rules_id: String,
         variant: String,
@@ -218,6 +210,7 @@ pub(crate) enum ModelRegistryError {
     InvalidExactModelName(String),
     InvalidVariant(String),
     InvalidLogicalPath(String),
+    InvalidLogicalTree(String),
     ApiNamespaceMismatch {
         path: String,
         api_type: String,

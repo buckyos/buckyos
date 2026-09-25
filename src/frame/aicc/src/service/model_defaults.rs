@@ -1,28 +1,8 @@
-// 内置逻辑模型树的正确性契约（未叠加用户/session 配置时的目标结构，尚待实现）。
+// 内置逻辑模型树的正确性契约（未叠加用户/session 配置时的结构）。
 //
 // 路径按 `.` 分隔；`item 名 -> 完整逻辑路径 (weight)` 表示带权重的引用。
 // 例如 chat 下的 gpt_standard 指向 llm.gpt-standard，不会创建 llm.chat.gpt_standard 子目录。
 // 本设计只调整 LLM；图片、视频继续保留下面按家族评分的设计。
-//
-// 背景：本注释描述的是 LLM 路由的新设计，用来替换下方代码中 builtin-aicc-router-v4
-// 的旧结构。旧结构中功能到规格的权重表已经可用，问题集中在“规格”没有被正式声明：
-// - 规格目录只是 version_rules.current_mount 的副产品，零 inventory 时 llm.gpt-standard
-//   等目录不存在，功能目录里的引用悬空（service/tests.rs 目前就在断言这种状态）。
-// - 厂商新增规格后没有人会发现它未接入：claude-fable 挂到 llm.fable，但没有任何功能引用它。
-// - openai 的 version_rules.auto_mounts 把 nano/mini/standard/pro 全部直挂到 llm.plan、
-//   llm.reason、llm.code 等功能目录；功能目录本身是 Hybrid，也会按能力门槛自动吸入模型。
-//   两者都绕过了功能到规格的权重，例如 gpt-nano 会出现在 llm.plan 里。
-// - 规格内各版本统一按 1.0 挂载，版本先后只靠 version_rank 前缀推断 current。
-// - 命名混用：llm.sonnet、llm.kimi 与 llm.gpt-standard 并存，llm.glm 同时是厂商目录
-//   （llm.glm.{model}）和规格目录。
-// - 仓库列出的模型没有全部归档：gpt-6-astra、gpt-5.3-codex、Qwen 开放权重系列、charglm-4、
-//   emohaa、codegeex-4 不属于任何规格；glm-4.5v/4.6v、glm-4-long、glm-ocr 被 glm-standard
-//   的兜底匹配吸入，与对话主力模型争抢 current。
-// 曾考虑过统一的 lv1～lv5 档位，没有采用：功能表本来就按厂商逐个规格配置权重，统一档位
-// 带不来额外信息，反而让 `plan -> claude_lv4` 需要查表才能看懂，也放不下 code 这类特化规格。
-// 新设计不改核心架构：仍然是 LogicalModelDefinition + 带权重 item 的 overlay + metadata
-// metadata 驱动动态目录 + RegistryLayers 分层叠加。改动集中在 metadata 中的规格、
-// 家族与 effort 声明、从官方模型 ID 推导版本顺序，以及 builtin overlay 引用的规格名。
 //
 // LLM 预定义结构与动态结构的边界：
 // 1. Model driver 维护者根据厂商产品线、用途和部署规模，在 metadata 中声明规格；
@@ -90,9 +70,6 @@
 //   开关时的开启状态，native 表示无法调节的原生模式；不得生成厂商不支持的预设。
 //   例如 Qwen3.8-2.4T-A95B 只支持思考，强度为 low/medium/xhigh，不能伪造 none/high；
 //   不能将某个家族的参数模板直接套到整个厂商，托管版与开放权重版也须分别核验。
-// - 当前 logical_mounts 已能触发动态建目录；规格声明、带版本顺序的规格到家族引用、
-//   固定预设绑定、空规格可见性及第 7 条校验仍需落实到实现和测试，
-//   不能把现有 current_mount 加统一 1.0 的挂载当作完成。
 //
 // 规格划分与持续运营规范：
 // - 主流厂商的规格按厂商自己的产品线划分，名称沿用厂商叫法（nano/mini/pro、haiku/
@@ -520,7 +497,7 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
         llm_logical_definition(
             "llm",
             ModelRequirement::default(),
-            MountMode::Auto,
+            MountMode::Manual,
             AiccSchedulerProfile::Balanced,
             Some(AiccFallbackRule {
                 mode: AiccFallbackMode::Strict,
@@ -560,87 +537,63 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
         llm_logical_definition(
             "llm.chat",
             ModelRequirement::default(),
-            MountMode::Hybrid,
+            MountMode::Manual,
             AiccSchedulerProfile::Balanced,
-            parent_fallback(),
+            strict_fallback(),
             Some("general"),
         ),
         llm_logical_definition(
             "llm.plan",
             tool_json_requirement(32_768),
-            MountMode::Hybrid,
+            MountMode::Manual,
             AiccSchedulerProfile::QualityFirst,
-            parent_fallback(),
+            strict_fallback(),
             Some("pro"),
         ),
         llm_logical_definition(
             "llm.code",
             tool_json_requirement(32_768),
-            MountMode::Hybrid,
+            MountMode::Manual,
             AiccSchedulerProfile::Balanced,
-            parent_fallback(),
+            strict_fallback(),
             Some("pro"),
         ),
         llm_logical_definition(
             "llm.swift",
             ModelRequirement::default(),
-            MountMode::Hybrid,
+            MountMode::Manual,
             AiccSchedulerProfile::LatencyFirst,
-            parent_fallback(),
+            strict_fallback(),
             Some("fast"),
         ),
         llm_logical_definition(
             "llm.summarize",
             context_requirement(16_384),
-            MountMode::Hybrid,
+            MountMode::Manual,
             AiccSchedulerProfile::CostFirst,
-            parent_fallback(),
-            Some("utility"),
-        ),
-        llm_logical_definition(
-            "llm.summary",
-            context_requirement(16_384),
-            MountMode::Hybrid,
-            AiccSchedulerProfile::CostFirst,
-            parent_fallback(),
+            strict_fallback(),
             Some("utility"),
         ),
         llm_logical_definition(
             "llm.translate",
             ModelRequirement::default(),
-            MountMode::Hybrid,
+            MountMode::Manual,
             AiccSchedulerProfile::CostFirst,
-            parent_fallback(),
+            strict_fallback(),
             Some("utility"),
-        ),
-        llm_logical_definition(
-            "llm.reason",
-            context_requirement(32_768),
-            MountMode::Hybrid,
-            AiccSchedulerProfile::QualityFirst,
-            disabled_fallback(),
-            Some("reasoning"),
         ),
         llm_logical_definition(
             "llm.vision",
             vision_requirement(32_768),
-            MountMode::Hybrid,
+            MountMode::Manual,
             AiccSchedulerProfile::Balanced,
-            parent_fallback(),
+            strict_fallback(),
             Some("multimodal"),
-        ),
-        llm_logical_definition(
-            "llm.long",
-            context_requirement(128_000),
-            MountMode::Hybrid,
-            AiccSchedulerProfile::Balanced,
-            parent_fallback(),
-            Some("long_context"),
         ),
         llm_logical_definition(
             "llm.fallback",
             ModelRequirement::default(),
-            MountMode::Hybrid,
+            MountMode::Manual,
             AiccSchedulerProfile::Balanced,
             disabled_fallback(),
             Some("fallback"),
@@ -911,145 +864,275 @@ fn vision_requirement(min_context_tokens: u64) -> ModelRequirement {
 
 pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
     AiccRouteOverlay {
-        revision: Some("builtin-aicc-router-v4".to_string()),
-        logical_tree: BTreeMap::from([(
-            "llm".to_string(),
-            AiccLogicalNodeOverlay {
-                children: BTreeMap::from([
-                    (
-                        "chat".to_string(),
+        logical_tree: BTreeMap::from([
+            (
+                "llm".into(),
+                AiccLogicalNodeOverlay {
+                    children: BTreeMap::from([
+                        (
+                            "chat".into(),
+                            logical_node(&[
+                                ("gpt_standard", "llm.gpt-standard", 2.2),
+                                ("claude_sonnet", "llm.claude-sonnet", 2.1),
+                                ("gemini_flash", "llm.gemini-flash", 1.9),
+                                ("gpt_mini", "llm.gpt-mini", 1.4),
+                                ("qwen_plus", "llm.qwen-plus", 1.3),
+                                ("glm_standard", "llm.glm-standard", 1.2),
+                                ("kimi_general", "llm.kimi-general", 1.2),
+                                ("qwen_moe_400b", "llm.qwen-moe-400b", 1.15),
+                                ("deepseek_flash", "llm.deepseek-flash", 1.1),
+                                ("glm_flash", "llm.glm-flash", 1.1),
+                                ("qwen_dense_27b", "llm.qwen-dense-27b", 1.1),
+                                ("qwen_moe_120b", "llm.qwen-moe-120b", 1.05),
+                                ("doubao_lite", "llm.doubao-lite", 1.0),
+                                ("qwen_moe_35b", "llm.qwen-moe-35b", 1.0),
+                                ("minimax_standard", "llm.minimax-standard", 0.9),
+                            ]),
+                        ),
+                        (
+                            "plan".into(),
+                            logical_node(&[
+                                ("claude_fable", "llm.claude-fable", 2.6),
+                                ("gpt_max", "llm.gpt-max", 2.6),
+                                ("claude_opus", "llm.claude-opus", 2.5),
+                                ("gemini_pro", "llm.gemini-pro", 2.4),
+                                ("gpt_pro", "llm.gpt-pro", 2.3),
+                                ("gpt_standard", "llm.gpt-standard", 2.0),
+                                ("qwen_max", "llm.qwen-max", 1.8),
+                                ("qwen_moe_2t", "llm.qwen-moe-2t", 1.7),
+                                ("deepseek_pro", "llm.deepseek-pro", 1.5),
+                                ("doubao_pro", "llm.doubao-pro", 1.4),
+                                ("glm_standard", "llm.glm-standard", 1.3),
+                                ("glm_flash", "llm.glm-flash", 1.2),
+                                ("kimi_general", "llm.kimi-general", 1.2),
+                                ("qwen_moe_400b", "llm.qwen-moe-400b", 1.15),
+                                ("minimax_standard", "llm.minimax-standard", 1.1),
+                                ("qwen_moe_120b", "llm.qwen-moe-120b", 1.05),
+                            ]),
+                        ),
+                        (
+                            "code".into(),
+                            logical_node(&[
+                                ("claude_sonnet", "llm.claude-sonnet", 2.4),
+                                ("gpt_codex", "llm.gpt-codex", 2.2),
+                                ("gpt_standard", "llm.gpt-standard", 2.1),
+                                ("qwen_max", "llm.qwen-max", 1.9),
+                                ("deepseek_pro", "llm.deepseek-pro", 1.8),
+                                ("glm_standard", "llm.glm-standard", 1.8),
+                                ("qwen_moe_2t", "llm.qwen-moe-2t", 1.8),
+                                ("deepseek_flash", "llm.deepseek-flash", 1.7),
+                                ("glm_flash", "llm.glm-flash", 1.7),
+                                ("kimi_code", "llm.kimi-code", 1.7),
+                                ("kimi_general", "llm.kimi-general", 1.7),
+                                ("doubao_code", "llm.doubao-code", 1.6),
+                                ("minimax_standard", "llm.minimax-standard", 1.6),
+                                ("glm_vision_code", "llm.glm-vision-code", 1.5),
+                                ("claude_opus", "llm.claude-opus", 1.4),
+                                ("qwen_dense_27b", "llm.qwen-dense-27b", 1.3),
+                                ("qwen_moe_400b", "llm.qwen-moe-400b", 1.3),
+                                ("qwen_moe_120b", "llm.qwen-moe-120b", 1.2),
+                                ("qwen_moe_35b", "llm.qwen-moe-35b", 1.1),
+                            ]),
+                        ),
+                        (
+                            "swift".into(),
+                            logical_node(&[
+                                ("gpt_mini", "llm.gpt-mini", 2.0),
+                                ("claude_haiku", "llm.claude-haiku", 1.9),
+                                ("gemini_flash", "llm.gemini-flash", 1.8),
+                                ("gemini_flash_lite", "llm.gemini-flash-lite", 1.6),
+                                ("qwen_flash", "llm.qwen-flash", 1.5),
+                                ("glm_flash", "llm.glm-flash", 1.4),
+                                ("doubao_mini", "llm.doubao-mini", 1.3),
+                                ("minimax_highspeed", "llm.minimax-highspeed", 1.2),
+                                ("qwen_moe_35b", "llm.qwen-moe-35b", 1.2),
+                                ("gpt_nano", "llm.gpt-nano", 1.1),
+                            ]),
+                        ),
+                        (
+                            "summarize".into(),
+                            logical_node(&[
+                                ("gpt_mini", "llm.gpt-mini", 2.0),
+                                ("gemini_flash", "llm.gemini-flash", 1.8),
+                                ("claude_haiku", "llm.claude-haiku", 1.6),
+                                ("qwen_flash", "llm.qwen-flash", 1.5),
+                                ("glm_flash", "llm.glm-flash", 1.4),
+                                ("doubao_lite", "llm.doubao-lite", 1.3),
+                                ("minimax_highspeed", "llm.minimax-highspeed", 1.2),
+                                ("qwen_moe_35b", "llm.qwen-moe-35b", 1.2),
+                                ("qwen_dense_27b", "llm.qwen-dense-27b", 1.1),
+                            ]),
+                        ),
+                        (
+                            "translate".into(),
+                            logical_node(&[
+                                ("gemini_flash", "llm.gemini-flash", 1.9),
+                                ("gpt_mini", "llm.gpt-mini", 1.8),
+                                ("claude_haiku", "llm.claude-haiku", 1.6),
+                                ("qwen_flash", "llm.qwen-flash", 1.5),
+                                ("glm_flash", "llm.glm-flash", 1.4),
+                                ("doubao_lite", "llm.doubao-lite", 1.3),
+                                ("minimax_highspeed", "llm.minimax-highspeed", 1.2),
+                                ("qwen_dense_27b", "llm.qwen-dense-27b", 1.1),
+                                ("qwen_moe_35b", "llm.qwen-moe-35b", 1.1),
+                            ]),
+                        ),
+                        (
+                            "vision".into(),
+                            logical_node(&[
+                                ("gpt_standard", "llm.gpt-standard", 2.2),
+                                ("gemini_pro", "llm.gemini-pro", 2.1),
+                                ("claude_opus", "llm.claude-opus", 1.9),
+                                ("claude_sonnet", "llm.claude-sonnet", 1.8),
+                                ("qwen_max", "llm.qwen-max", 1.6),
+                                ("doubao_pro", "llm.doubao-pro", 1.5),
+                                ("deepseek_flash", "llm.deepseek-flash", 1.4),
+                                ("glm_flash", "llm.glm-flash", 1.4),
+                                ("kimi_general", "llm.kimi-general", 1.4),
+                                ("glm_vision_code", "llm.glm-vision-code", 1.35),
+                                ("glm_vision", "llm.glm-vision", 1.3),
+                                ("deepseek_vision", "llm.deepseek-vision", 1.2),
+                                ("qwen_moe_400b", "llm.qwen-moe-400b", 1.2),
+                                ("qwen_dense_27b", "llm.qwen-dense-27b", 1.15),
+                                ("glm_vision_flash", "llm.glm-vision-flash", 1.1),
+                                ("qwen_moe_120b", "llm.qwen-moe-120b", 1.1),
+                                ("qwen_moe_35b", "llm.qwen-moe-35b", 1.0),
+                            ]),
+                        ),
+                    ]),
+                    ..AiccLogicalNodeOverlay::default()
+                },
+            ),
+            (
+                "agent_runtime".into(),
+                AiccLogicalNodeOverlay {
+                    children: BTreeMap::from([(
+                        "computer_use".into(),
                         logical_node(&[
-                            ("gpt", "llm.gpt-standard", 2.2),
-                            ("sonnet", "llm.sonnet", 2.1),
-                            ("gemini", "llm.gemini-flash", 1.9),
-                            ("mini", "llm.gpt-mini", 1.4),
-                            ("qwen_plus", "llm.qwen-plus", 1.3),
-                            ("glm", "llm.glm", 1.2),
-                            ("kimi", "llm.kimi", 1.2),
-                            ("deepseek_flash", "llm.deepseek-flash", 1.1),
-                            ("doubao_lite", "llm.doubao-lite", 1.0),
-                            ("minimax", "llm.minimax", 0.9),
+                            ("gpt_max", "llm.gpt-max", 1.0),
+                            ("gpt_mini", "llm.gpt-mini", 1.0),
+                            ("gpt_nano", "llm.gpt-nano", 1.0),
+                            ("gpt_pro", "llm.gpt-pro", 1.0),
                         ]),
-                    ),
-                    (
-                        "plan".to_string(),
+                    )]),
+                    ..AiccLogicalNodeOverlay::default()
+                },
+            ),
+            (
+                "audio".into(),
+                AiccLogicalNodeOverlay {
+                    children: BTreeMap::from([(
+                        "asr".into(),
                         logical_node(&[
-                            ("opus", "llm.opus", 2.5),
-                            ("gemini", "llm.gemini-pro", 2.4),
-                            ("gpt_pro", "llm.gpt-pro", 2.3),
-                            ("gpt", "llm.gpt-standard", 2.0),
-                            ("qwen_max", "llm.qwen-max", 1.8),
-                            ("deepseek", "llm.deepseek-pro", 1.5),
-                            ("doubao_pro", "llm.doubao-pro", 1.4),
-                            ("glm", "llm.glm", 1.3),
-                            ("kimi", "llm.kimi", 1.2),
-                            ("minimax", "llm.minimax", 1.1),
+                            ("gemini_flash", "llm.gemini-flash", 1.0),
+                            ("gemini_flash_lite", "llm.gemini-flash-lite", 1.0),
+                            ("gemini_pro", "llm.gemini-pro", 1.0),
                         ]),
-                    ),
-                    (
-                        "code".to_string(),
-                        logical_node(&[
-                            ("sonnet", "llm.sonnet", 2.4),
-                            ("gpt", "llm.gpt-standard", 2.1),
-                            ("qwen", "llm.qwen-max", 1.9),
-                            ("deepseek", "llm.deepseek-pro", 1.8),
-                            ("kimi_code", "llm.kimi-code", 1.7),
-                            ("doubao_code", "llm.doubao-code", 1.6),
-                            ("opus", "llm.opus", 1.4),
-                        ]),
-                    ),
-                    (
-                        "swift".to_string(),
-                        logical_node(&[
-                            ("mini", "llm.gpt-mini", 2.0),
-                            ("haiku", "llm.haiku", 1.9),
-                            ("gemini_flash", "llm.gemini-flash", 1.8),
-                            ("gemini_flash_lite", "llm.gemini-flash-lite", 1.6),
-                            ("qwen_flash", "llm.qwen-flash", 1.5),
-                            ("glm_flash", "llm.glm-flash", 1.4),
-                            ("doubao_mini", "llm.doubao-mini", 1.3),
-                            ("minimax_highspeed", "llm.minimax-highspeed", 1.2),
-                        ]),
-                    ),
-                    (
-                        "summarize".to_string(),
-                        logical_node(&[
-                            ("mini", "llm.gpt-mini", 2.0),
-                            ("gemini_flash", "llm.gemini-flash", 1.8),
-                            ("haiku", "llm.haiku", 1.6),
-                            ("qwen_flash", "llm.qwen-flash", 1.5),
-                            ("glm_flash", "llm.glm-flash", 1.4),
-                            ("doubao_lite", "llm.doubao-lite", 1.3),
-                            ("minimax_highspeed", "llm.minimax-highspeed", 1.2),
-                        ]),
-                    ),
-                    (
-                        "summary".to_string(),
-                        logical_node(&[
-                            ("mini", "llm.gpt-mini", 2.0),
-                            ("gemini_flash", "llm.gemini-flash", 1.8),
-                            ("haiku", "llm.haiku", 1.6),
-                            ("qwen_flash", "llm.qwen-flash", 1.5),
-                            ("glm_flash", "llm.glm-flash", 1.4),
-                            ("doubao_lite", "llm.doubao-lite", 1.3),
-                            ("minimax_highspeed", "llm.minimax-highspeed", 1.2),
-                        ]),
-                    ),
-                    (
-                        "translate".to_string(),
-                        logical_node(&[
-                            ("gemini_flash", "llm.gemini-flash", 1.9),
-                            ("mini", "llm.gpt-mini", 1.8),
-                            ("haiku", "llm.haiku", 1.6),
-                            ("qwen_flash", "llm.qwen-flash", 1.5),
-                            ("glm_flash", "llm.glm-flash", 1.4),
-                            ("doubao_lite", "llm.doubao-lite", 1.3),
-                            ("minimax_highspeed", "llm.minimax-highspeed", 1.2),
-                        ]),
-                    ),
-                    (
-                        "reason".to_string(),
-                        logical_node(&[
-                            ("gpt_pro", "llm.gpt-pro", 2.5),
-                            ("opus", "llm.opus", 2.4),
-                            ("gemini", "llm.gemini-pro", 2.2),
-                            ("qwen_max", "llm.qwen-max", 1.9),
-                            ("deepseek", "llm.deepseek-pro", 1.8),
-                            ("doubao_pro", "llm.doubao-pro", 1.6),
-                            ("glm", "llm.glm", 1.5),
-                            ("kimi", "llm.kimi", 1.4),
-                            ("minimax", "llm.minimax", 1.3),
-                        ]),
-                    ),
-                    (
-                        "vision".to_string(),
-                        logical_node(&[
-                            ("gpt", "llm.gpt-standard", 2.2),
-                            ("gemini", "llm.gemini-pro", 2.1),
-                            ("opus", "llm.opus", 1.9),
-                            ("sonnet", "llm.sonnet", 1.8),
-                            ("qwen_max", "llm.qwen-max", 1.6),
-                            ("doubao_pro", "llm.doubao-pro", 1.5),
-                            ("kimi", "llm.kimi", 1.4),
-                        ]),
-                    ),
-                    (
-                        "long".to_string(),
-                        logical_node(&[
-                            ("gemini", "llm.gemini-pro", 2.3),
-                            ("opus", "llm.opus", 2.1),
-                            ("gpt_pro", "llm.gpt-pro", 2.0),
-                            ("gpt", "llm.gpt-standard", 1.8),
-                            ("qwen_max", "llm.qwen-max", 1.6),
-                            ("deepseek", "llm.deepseek-pro", 1.5),
-                            ("kimi", "llm.kimi", 1.4),
-                            ("minimax", "llm.minimax", 1.3),
-                        ]),
-                    ),
-                ]),
-                ..AiccLogicalNodeOverlay::default()
-            },
-        )]),
+                    )]),
+                    ..AiccLogicalNodeOverlay::default()
+                },
+            ),
+            (
+                "image".into(),
+                AiccLogicalNodeOverlay {
+                    children: BTreeMap::from([
+                        (
+                            "img2img".into(),
+                            logical_node(&[
+                                ("gpt_mini", "llm.gpt-mini", 1.0),
+                                ("gpt_nano", "llm.gpt-nano", 1.0),
+                                ("gpt_pro", "llm.gpt-pro", 1.0),
+                                ("gpt_standard", "llm.gpt-standard", 1.0),
+                            ]),
+                        ),
+                        (
+                            "txt2img".into(),
+                            logical_node(&[
+                                ("gpt_mini", "llm.gpt-mini", 1.0),
+                                ("gpt_nano", "llm.gpt-nano", 1.0),
+                                ("gpt_pro", "llm.gpt-pro", 1.0),
+                                ("gpt_standard", "llm.gpt-standard", 1.0),
+                            ]),
+                        ),
+                    ]),
+                    ..AiccLogicalNodeOverlay::default()
+                },
+            ),
+            (
+                "vision".into(),
+                AiccLogicalNodeOverlay {
+                    children: BTreeMap::from([
+                        (
+                            "caption".into(),
+                            logical_node(&[
+                                ("claude_fable", "llm.claude-fable", 1.0),
+                                ("claude_haiku", "llm.claude-haiku", 1.0),
+                                ("claude_opus", "llm.claude-opus", 1.0),
+                                ("claude_sonnet", "llm.claude-sonnet", 1.0),
+                                ("deepseek_vision", "llm.deepseek-vision", 1.0),
+                                ("doubao_lite", "llm.doubao-lite", 1.0),
+                                ("gemini_flash", "llm.gemini-flash", 1.0),
+                                ("gemini_flash_lite", "llm.gemini-flash-lite", 1.0),
+                                ("gemini_pro", "llm.gemini-pro", 1.0),
+                                ("glm_flash", "llm.glm-flash", 1.0),
+                                ("glm_vision", "llm.glm-vision", 1.0),
+                                ("glm_vision_code", "llm.glm-vision-code", 1.0),
+                                ("glm_vision_flash", "llm.glm-vision-flash", 1.0),
+                                ("gpt_codex", "llm.gpt-codex", 1.0),
+                                ("gpt_max", "llm.gpt-max", 1.0),
+                                ("gpt_mini", "llm.gpt-mini", 1.0),
+                                ("gpt_nano", "llm.gpt-nano", 1.0),
+                                ("gpt_pro", "llm.gpt-pro", 1.0),
+                                ("gpt_standard", "llm.gpt-standard", 1.0),
+                                ("kimi_general", "llm.kimi-general", 1.0),
+                            ]),
+                        ),
+                        (
+                            "detect".into(),
+                            logical_node(&[
+                                ("gemini_flash", "llm.gemini-flash", 1.0),
+                                ("gemini_flash_lite", "llm.gemini-flash-lite", 1.0),
+                                ("gemini_pro", "llm.gemini-pro", 1.0),
+                            ]),
+                        ),
+                        (
+                            "ocr".into(),
+                            logical_node(&[
+                                ("claude_fable", "llm.claude-fable", 1.0),
+                                ("claude_haiku", "llm.claude-haiku", 1.0),
+                                ("claude_opus", "llm.claude-opus", 1.0),
+                                ("claude_sonnet", "llm.claude-sonnet", 1.0),
+                                ("deepseek_vision", "llm.deepseek-vision", 1.0),
+                                ("doubao_lite", "llm.doubao-lite", 1.0),
+                                ("gemini_flash", "llm.gemini-flash", 1.0),
+                                ("gemini_flash_lite", "llm.gemini-flash-lite", 1.0),
+                                ("gemini_pro", "llm.gemini-pro", 1.0),
+                                ("glm_flash", "llm.glm-flash", 1.0),
+                                ("glm_vision", "llm.glm-vision", 1.0),
+                                ("glm_vision_code", "llm.glm-vision-code", 1.0),
+                                ("glm_vision_flash", "llm.glm-vision-flash", 1.0),
+                                ("gpt_codex", "llm.gpt-codex", 1.0),
+                                ("gpt_max", "llm.gpt-max", 1.0),
+                                ("gpt_mini", "llm.gpt-mini", 1.0),
+                                ("gpt_nano", "llm.gpt-nano", 1.0),
+                                ("gpt_pro", "llm.gpt-pro", 1.0),
+                                ("gpt_standard", "llm.gpt-standard", 1.0),
+                                ("kimi_general", "llm.kimi-general", 1.0),
+                            ]),
+                        ),
+                        (
+                            "segment".into(),
+                            logical_node(&[
+                                ("gemini_flash", "llm.gemini-flash", 1.0),
+                                ("gemini_flash_lite", "llm.gemini-flash-lite", 1.0),
+                                ("gemini_pro", "llm.gemini-pro", 1.0),
+                            ]),
+                        ),
+                    ]),
+                    ..AiccLogicalNodeOverlay::default()
+                },
+            ),
+        ]),
         ..AiccRouteOverlay::default()
     }
 }

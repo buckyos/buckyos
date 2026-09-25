@@ -1257,7 +1257,8 @@ fn model_directory_json(models: &crate::model::ModelRegistry) -> Value {
                 .items
                 .into_iter()
                 .filter(|item| {
-                    visible_paths.contains(&item.target) || exact_models.contains(&item.target)
+                    visible_paths.contains(item.target.split(':').next().unwrap_or(&item.target))
+                        || exact_models.contains(&item.target)
                 })
                 .map(|item| {
                     (
@@ -1299,43 +1300,9 @@ fn logical_definitions_json(models: &crate::model::ModelRegistry) -> Value {
 
 fn visible_logical_paths(models: &crate::model::ModelRegistry) -> BTreeSet<String> {
     let mut paths = BTreeSet::new();
-    let logical_views = models.logical_model_views();
-    for logical in &logical_views {
-        if logical.api_type.is_some() {
-            insert_logical_path_with_parents(&mut paths, &logical.path);
-        }
+    for logical in models.logical_model_views() {
+        insert_logical_path_with_parents(&mut paths, &logical.path);
     }
-
-    for model in models.model_views() {
-        for mount in model.logical_mounts {
-            insert_logical_path_with_parents(&mut paths, &mount);
-        }
-    }
-
-    let exact_models = models
-        .model_views()
-        .into_iter()
-        .map(|model| model.exact_model)
-        .collect::<BTreeSet<_>>();
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for logical in &logical_views {
-            if paths.contains(&logical.path) {
-                continue;
-            }
-            if logical
-                .items
-                .iter()
-                .any(|item| paths.contains(&item.target) || exact_models.contains(&item.target))
-            {
-                let before = paths.len();
-                insert_logical_path_with_parents(&mut paths, &logical.path);
-                changed = paths.len() != before;
-            }
-        }
-    }
-
     paths
 }
 

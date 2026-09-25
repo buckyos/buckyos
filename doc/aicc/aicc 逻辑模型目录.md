@@ -6,7 +6,7 @@
 2. **一级逻辑目录**:用户/Agent 调用 AICC 时使用的 namespace。
 3. **厂商规格、模型家族与物理 instance**:LLM 通过 `items` 引用规格和固定家族预设，非 LLM 保留原有挂点设计。
 
-LLM 目标更新：2026-09-25，依据 `service/model_defaults.rs` 头部契约；非 LLM 内容保留 2026-04-24 基线。以下 LLM 新结构尚待实现，字段与 OpenAI 示例见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)。
+LLM 实现更新：2026-09-25，依据 `service/model_defaults.rs` 头部契约；非 LLM 内容保留 2026-04-24 基线。以下 LLM 结构已实现，离线验收见 [实现报告](model_driver_v2_implementation.md)，字段与 OpenAI 示例见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)。
 
 ---
 
@@ -89,13 +89,10 @@ llm
 ├── chat       # 通用对话(默认入口)
 ├── plan       # 高质量规划(Agent 用)
 ├── code       # 代码任务
-├── reason     # 显式 reasoning(o1/r1/k2-thinking 类,延迟高)
 ├── vision     # 需要传图的对话(VLM)
 ├── swift      # 极速响应(短回复、低延迟)
 ├── summarize  # 总结/抽取，通过规格选择
-├── summary    # 总结/抽取(可用便宜模型)
 ├── translate  # 翻译
-├── long       # 超长上下文(>200k)
 └── fallback   # 默认空，只接收显式配置
 ```
 

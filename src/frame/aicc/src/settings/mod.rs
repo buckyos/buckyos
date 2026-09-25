@@ -820,7 +820,7 @@ mod tests {
     fn model_driver_document(id: &str, revision: u64) -> Value {
         json!({
             "format": "buckyos.aicc.model-driver-catalog",
-            "schema_version": 1,
+            "schema_version": 2,
             "schema_revision": 0,
             "model_driver_id": id,
             "revision_seq": revision,
@@ -828,8 +828,7 @@ mod tests {
             "models": [],
             "patterns": [],
             "defaults": {},
-            "variants": [],
-            "version_rules": []
+            "specs": []
         })
     }
 
@@ -1010,7 +1009,7 @@ mod tests {
             CatalogKind::ModelDriver,
             serde_json::to_vec(&json!({
                 "format": "buckyos.aicc.model-driver-catalog",
-                "schema_version": 1,
+                "schema_version": 2,
                 "schema_revision": 0,
                 "model_driver_id": id,
                 "revision_seq": revision,
@@ -1018,8 +1017,7 @@ mod tests {
                 "models": [],
                 "patterns": [],
                 "defaults": {"parameter_scale": marker},
-                "variants": [],
-                "version_rules": []
+                "specs": []
             }))
             .unwrap(),
         )

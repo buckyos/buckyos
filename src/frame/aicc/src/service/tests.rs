@@ -968,357 +968,199 @@ async fn routing_update_validates_cas_weights_and_provider_references() {
         .is_empty());
 }
 
-#[test]
-fn builtin_logical_definitions_make_llm_chat_routable_without_routing_config() {
-    let catalog = CatalogSnapshot::from_current_files(
-        2,
-        [crate::catalog::CurrentCatalogFile {
-            kind: crate::catalog::CatalogKind::ModelDriver,
-            contents: include_bytes!("../../driver_metadata/models/openai.model.json").to_vec(),
-        }],
-        &crate::catalog::CatalogBuildOptions::default(),
-    )
-    .unwrap();
-    let inventory = ModelProviderInventory {
-        provider_instance_name: "primary".to_string(),
-        provider_profile_id: "openai".to_string(),
-        protocol_adapter_id: "openai-responses".to_string(),
-        inventory_revision: "inventory-1".to_string(),
-        models: vec![crate::model::InventoryModel {
-            provider_model_id: "gpt-5-mini".to_string(),
-            model_driver_id: "openai".to_string(),
-            origin_model_id: "gpt-5-mini".to_string(),
-            api_types: vec![buckyos_api::ApiType::Llm],
-            logical_mounts: vec!["llm.gpt-standard".to_string()],
-            variants: Vec::new(),
-            capabilities: BTreeMap::new(),
-            canonical_fields: BTreeMap::new(),
-            attributes: BTreeMap::new(),
-            operations: BTreeMap::new(),
-        }],
-    };
-    let registry = ModelRegistry::build(
-        &catalog,
-        &[inventory],
+fn builtin_tree(inventories: &[ModelProviderInventory]) -> ModelRegistry {
+    ModelRegistry::build(
+        &crate::model::llm_tests::builtin_catalog(),
+        inventories,
         builtin_logical_model_definitions(),
         RegistryLayers {
             factory: Some(&builtin_logical_tree_overlay()),
             ..RegistryLayers::default()
         },
     )
-    .unwrap();
+    .unwrap()
+}
 
+#[test]
+fn builtin_logical_definitions_make_llm_chat_routable_without_routing_config() {
+    let inventory = crate::model::llm_tests::inventory(
+        "openai",
+        "gpt-5.5",
+        "channel-gpt",
+        "primary",
+        &["medium"],
+    );
+    let registry = builtin_tree(&[inventory]);
     let candidates = registry
         .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
         .unwrap();
     assert_eq!(candidates.candidates.len(), 1);
     assert_eq!(
         candidates.candidates[0].model.exact_model.as_str(),
-        "gpt-5-mini@primary"
+        "channel-gpt:reasoning-medium@primary"
     );
     assert_eq!(
         candidates.candidates[0].paths[0].logical_paths,
-        vec!["llm.chat", "llm.gpt-standard"]
+        vec!["llm.chat", "llm.gpt-standard", "llm.gpt-5-5:medium"]
     );
 }
 
 #[test]
 fn builtin_logical_definitions_make_llm_chat_routable_with_glm_only() {
-    let catalog = CatalogSnapshot::from_current_files(
-        2,
-        [crate::catalog::CurrentCatalogFile {
-            kind: crate::catalog::CatalogKind::ModelDriver,
-            contents: include_bytes!("../../driver_metadata/models/glm.model.json").to_vec(),
-        }],
-        &crate::catalog::CatalogBuildOptions::default(),
-    )
-    .unwrap();
-    let inventory = ModelProviderInventory {
-        provider_instance_name: "glm-main".to_string(),
-        provider_profile_id: "glm".to_string(),
-        protocol_adapter_id: "glm-chat".to_string(),
-        inventory_revision: "inventory-1".to_string(),
-        models: vec![crate::model::InventoryModel {
-            provider_model_id: "glm-5.3".to_string(),
-            model_driver_id: "glm".to_string(),
-            origin_model_id: "glm-5.3".to_string(),
-            api_types: vec![buckyos_api::ApiType::Llm],
-            logical_mounts: vec!["llm.glm".to_string()],
-            variants: Vec::new(),
-            capabilities: BTreeMap::new(),
-            canonical_fields: BTreeMap::new(),
-            attributes: BTreeMap::new(),
-            operations: BTreeMap::new(),
-        }],
-    };
-    let registry = ModelRegistry::build(
-        &catalog,
-        &[inventory],
-        builtin_logical_model_definitions(),
-        RegistryLayers {
-            factory: Some(&builtin_logical_tree_overlay()),
-            ..RegistryLayers::default()
-        },
-    )
-    .unwrap();
-
+    let inventory =
+        crate::model::llm_tests::inventory("glm", "glm-5.3", "glm-channel", "glm-main", &["high"]);
+    let registry = builtin_tree(&[inventory]);
     let candidates = registry
         .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
         .unwrap();
-    assert_eq!(candidates.resolved_logical_path, "llm.chat");
     assert_eq!(candidates.candidates.len(), 1);
     assert_eq!(
         candidates.candidates[0].model.exact_model.as_str(),
-        "glm-5.3@glm-main"
+        "glm-channel:reasoning-high@glm-main"
     );
-    assert_eq!(
-        candidates.candidates[0].paths[0].logical_paths,
-        vec!["llm.chat", "llm.glm"]
-    );
-
     let directory = model_directory_json(&registry);
-    let chat = directory
-        .get("llm.chat")
-        .and_then(|value| value.as_object())
-        .unwrap();
-    assert_eq!(chat["glm"]["target"], "llm.glm");
-    assert!(!chat
-        .values()
-        .any(|item| item["target"] == "llm.deepseek-flash"));
-    assert!(!chat
-        .values()
-        .any(|item| item["target"] == "llm.doubao-lite"));
-    assert!(directory.get("llm.deepseek-flash").is_none());
-    assert!(directory.get("llm.doubao-lite").is_none());
+    assert_eq!(
+        directory["llm.chat"]["glm_standard"]["target"],
+        "llm.glm-standard"
+    );
+    assert!(directory.get("llm.deepseek-flash").is_some());
+    assert!(directory.get("llm.doubao-lite").is_some());
 }
 
 #[test]
-fn builtin_logical_tree_keeps_custom_provider_auto_admission() {
-    let catalog = CatalogSnapshot::from_current_files(
-        1,
-        [crate::catalog::CurrentCatalogFile {
-            kind: crate::catalog::CatalogKind::ModelDriver,
-            contents: include_bytes!("../../driver_metadata/models/openai.model.json").to_vec(),
-        }],
-        &crate::catalog::CatalogBuildOptions::default(),
-    )
-    .unwrap();
-    let inventory = ModelProviderInventory {
-        provider_instance_name: "custom".to_string(),
-        provider_profile_id: "custom-openai-compatible".to_string(),
-        protocol_adapter_id: "openai-responses".to_string(),
-        inventory_revision: "inventory-1".to_string(),
-        models: vec![crate::model::InventoryModel {
-            provider_model_id: "custom-llm".to_string(),
-            model_driver_id: "openai".to_string(),
-            origin_model_id: "custom-llm".to_string(),
-            api_types: vec![buckyos_api::ApiType::Llm],
-            logical_mounts: Vec::new(),
-            variants: Vec::new(),
-            capabilities: BTreeMap::new(),
-            canonical_fields: BTreeMap::new(),
-            attributes: BTreeMap::new(),
-            operations: BTreeMap::new(),
-        }],
-    };
-    let registry = ModelRegistry::build(
-        &catalog,
-        &[inventory],
-        builtin_logical_model_definitions(),
-        RegistryLayers {
-            factory: Some(&builtin_logical_tree_overlay()),
-            ..RegistryLayers::default()
-        },
-    )
-    .unwrap();
-
+fn builtin_logical_tree_rejects_custom_provider_auto_admission() {
+    let mut inventory =
+        crate::model::llm_tests::inventory("openai", "gpt-5.6-sol", "custom", "primary", &["high"]);
+    inventory.models[0].origin_model_id = "unknown-llm".into();
+    let registry = builtin_tree(&[inventory]);
     let candidates = registry
         .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
         .unwrap();
-    assert_eq!(candidates.resolved_logical_path, "llm.chat");
-    assert_eq!(candidates.candidates.len(), 1);
-    assert_eq!(
-        candidates.candidates[0].model.exact_model.as_str(),
-        "custom-llm@custom"
-    );
-    assert_eq!(
-        candidates.candidates[0].paths[0].sources,
-        vec![crate::model::LogicalItemSource::AutoAdmission]
-    );
+    assert!(candidates.candidates.is_empty());
+    assert!(candidates.fallback_chain.is_empty());
 }
 
 #[test]
-fn builtin_logical_definitions_gate_auto_mounts_with_min_line() {
-    let catalog = CatalogSnapshot::from_current_files(
-        1,
-        [crate::catalog::CurrentCatalogFile {
-            kind: crate::catalog::CatalogKind::ModelDriver,
-            contents: include_bytes!("../../driver_metadata/models/openai.model.json").to_vec(),
-        }],
-        &crate::catalog::CatalogBuildOptions::default(),
-    )
-    .unwrap();
-    let inventory = ModelProviderInventory {
-        provider_instance_name: "primary".to_string(),
-        provider_profile_id: "openai".to_string(),
-        protocol_adapter_id: "openai-responses".to_string(),
-        inventory_revision: "inventory-1".to_string(),
-        models: vec![
-            crate::model::InventoryModel {
-                provider_model_id: "basic".to_string(),
-                model_driver_id: "openai".to_string(),
-                origin_model_id: "basic".to_string(),
-                api_types: vec![buckyos_api::ApiType::Llm],
-                logical_mounts: vec!["llm.plan".to_string()],
-                variants: Vec::new(),
-                capabilities: BTreeMap::new(),
-                canonical_fields: BTreeMap::new(),
-                attributes: BTreeMap::new(),
-                operations: BTreeMap::new(),
-            },
-            crate::model::InventoryModel {
-                provider_model_id: "planner".to_string(),
-                model_driver_id: "openai".to_string(),
-                origin_model_id: "planner".to_string(),
-                api_types: vec![buckyos_api::ApiType::Llm],
-                logical_mounts: vec!["llm.plan".to_string()],
-                variants: Vec::new(),
-                capabilities: BTreeMap::from([
-                    ("tool_call".to_string(), true.into()),
-                    ("json_schema".to_string(), true.into()),
-                    ("max_context_tokens".to_string(), 65_536.into()),
-                ]),
-                canonical_fields: BTreeMap::new(),
-                attributes: BTreeMap::new(),
-                operations: BTreeMap::new(),
-            },
-        ],
-    };
-    let registry = ModelRegistry::build(
-        &catalog,
-        &[inventory],
-        builtin_logical_model_definitions(),
-        RegistryLayers {
-            factory: Some(&builtin_logical_tree_overlay()),
-            ..RegistryLayers::default()
-        },
-    )
-    .unwrap();
-
+fn builtin_logical_definitions_gate_specs_with_min_line_and_reject_old_mounts() {
+    let nano =
+        crate::model::llm_tests::inventory("openai", "gpt-5.6-luna", "nano", "primary", &["none"]);
+    let mut planner = crate::model::llm_tests::inventory(
+        "openai",
+        "gpt-5.6-sol",
+        "planner",
+        "secondary",
+        &["high"],
+    );
+    planner.models[0].capabilities.remove("tool_call");
+    let registry = builtin_tree(&[nano, planner]);
     let candidates = registry
         .resolve_candidates("llm.plan", buckyos_api::ApiType::Llm)
         .unwrap();
-    assert_eq!(candidates.candidates.len(), 1);
-    assert_eq!(
-        candidates.candidates[0].model.exact_model.as_str(),
-        "planner@primary"
-    );
-    let rejected = candidates
+    assert!(candidates.candidates.is_empty());
+    assert!(candidates.fallback_chain.is_empty());
+    assert!(candidates.admissions.iter().any(|record| record.exact_model
+        == "planner:reasoning-high@secondary"
+        && !record.admitted
+        && record.missing_requirements.contains(&"tool_call".into())));
+    assert!(!candidates
         .admissions
         .iter()
-        .find(|record| record.exact_model == "basic@primary" && record.logical_path == "llm.plan")
-        .unwrap();
-    assert!(!rejected.admitted);
-    assert!(rejected
-        .missing_requirements
-        .contains(&"tool_call".to_string()));
+        .any(|record| record.exact_model.starts_with("nano")));
 }
 
 #[test]
 fn builtin_logical_tree_is_not_an_inventory_snapshot() {
-    let catalog = CatalogSnapshot::from_current_files(
-        1,
-        [crate::catalog::CurrentCatalogFile {
-            kind: crate::catalog::CatalogKind::ModelDriver,
-            contents: include_bytes!("../../driver_metadata/models/openai.model.json").to_vec(),
-        }],
-        &crate::catalog::CatalogBuildOptions::default(),
-    )
-    .unwrap();
-    let registry = ModelRegistry::build(
+    let registry = builtin_tree(&[]);
+    assert!(registry.model_views().is_empty());
+    let directory = model_directory_json(&registry);
+    let definitions = logical_definitions_json(&registry);
+    for path in [
+        "llm",
+        "llm.chat",
+        "llm.gpt-standard",
+        "llm.kimi-code",
+        "image.txt2img",
+        "audio.tts",
+        "video.txt2video",
+    ] {
+        assert!(directory.get(path).is_some(), "{path}");
+        assert!(
+            definitions
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|definition| definition["path"] == path),
+            "{path}"
+        );
+    }
+    assert_eq!(directory["llm.gpt-standard"], json!({}));
+    assert!(directory.get("llm.missing").is_none());
+    assert!(directory.get("llm.gpt-5-6-sol").is_none());
+    assert_eq!(
+        directory["llm.chat"]["qwen_plus"]["target"],
+        "llm.qwen-plus"
+    );
+    assert_eq!(directory["llm.plan"]["gpt_pro"]["weight"], 2.3);
+    for path in ["llm", "llm.plan", "llm.gpt-standard"] {
+        let set = registry
+            .resolve_candidates(path, buckyos_api::ApiType::Llm)
+            .unwrap();
+        assert!(set.candidates.is_empty());
+        assert!(set.fallback_chain.is_empty());
+    }
+    let catalog = crate::model::llm_tests::builtin_catalog();
+    for driver in catalog.model_drivers() {
+        for spec in &driver.specs {
+            let path = format!("llm.{}", spec.id);
+            assert!(directory.get(&path).is_some());
+            assert!(
+                spec.direct_only
+                    || registry
+                        .logical_model_views()
+                        .iter()
+                        .any(|node| node.items.iter().any(|item| item.target == path))
+            );
+        }
+    }
+    let mut reversed = crate::model::llm_tests::documents();
+    reversed.reverse();
+    for document in &mut reversed {
+        document.models.reverse();
+        document.specs.reverse();
+    }
+    let catalog = crate::model::llm_tests::compile(reversed).unwrap();
+    let second = ModelRegistry::build(
         &catalog,
         &[],
         builtin_logical_model_definitions(),
         RegistryLayers {
             factory: Some(&builtin_logical_tree_overlay()),
-            ..RegistryLayers::default()
+            ..Default::default()
         },
     )
     .unwrap();
-    let logical_paths = registry
-        .logical_model_views()
-        .into_iter()
-        .map(|view| view.path)
-        .collect::<BTreeSet<_>>();
-    assert!(logical_paths.contains("llm.chat"));
-    assert!(!logical_paths.contains("llm.gpt-standard"));
-    let chat = registry
-        .logical_model_views()
-        .into_iter()
-        .find(|view| view.path == "llm.chat")
-        .unwrap();
-    assert!(chat.items.iter().any(|item| item.target == "llm.qwen-plus"));
-    assert!(chat.items.iter().any(|item| item.target == "llm.minimax"));
-    let directory = model_directory_json(&registry);
-    assert!(directory.get("llm").is_some());
-    assert!(directory.get("llm.chat").is_some());
-    assert!(directory.get("image.txt2img").is_some());
-    assert!(directory.get("audio.tts").is_some());
-    assert!(directory.get("video.txt2video").is_some());
-    let definition_paths = logical_definitions_json(&registry)
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|definition| definition["path"].as_str().map(str::to_owned))
-        .collect::<BTreeSet<_>>();
-    assert!(definition_paths.contains("image.txt2img"));
-    assert!(definition_paths.contains("audio.tts"));
-    assert!(definition_paths.contains("video.txt2video"));
-    let directory_chat = directory
-        .get("llm.chat")
-        .and_then(|value| value.as_object())
-        .unwrap();
-    assert!(!directory_chat
-        .values()
-        .any(|item| item["target"] == "llm.qwen-plus"));
-    assert!(!directory_chat
-        .values()
-        .any(|item| item["target"] == "llm.minimax"));
+    assert_eq!(
+        model_directory_json(&registry),
+        model_directory_json(&second)
+    );
+    assert_eq!(
+        logical_definitions_json(&registry),
+        logical_definitions_json(&second)
+    );
+}
 
-    let inventory = ModelProviderInventory {
-        provider_instance_name: "primary".to_string(),
-        provider_profile_id: "openai".to_string(),
-        protocol_adapter_id: "openai-responses".to_string(),
-        inventory_revision: "inventory-1".to_string(),
-        models: vec![crate::model::InventoryModel {
-            provider_model_id: "gpt-5-mini".to_string(),
-            model_driver_id: "openai".to_string(),
-            origin_model_id: "gpt-5-mini".to_string(),
-            api_types: vec![buckyos_api::ApiType::Llm],
-            logical_mounts: vec!["llm.gpt-standard".to_string()],
-            variants: Vec::new(),
-            capabilities: BTreeMap::new(),
-            canonical_fields: BTreeMap::new(),
-            attributes: BTreeMap::new(),
-            operations: BTreeMap::new(),
-        }],
-    };
-    let registry = ModelRegistry::build(
-        &catalog,
-        &[inventory],
-        builtin_logical_model_definitions(),
-        RegistryLayers {
-            factory: Some(&builtin_logical_tree_overlay()),
-            ..RegistryLayers::default()
-        },
-    )
-    .unwrap();
-    let logical_paths = registry
-        .logical_model_views()
-        .into_iter()
-        .map(|view| view.path)
-        .collect::<BTreeSet<_>>();
-    assert!(logical_paths.contains("llm.gpt-standard"));
+#[tokio::test]
+async fn service_assembler_builds_with_only_builtin_model_metadata() {
+    use crate::runtime::ModelRegistryAssembler;
+    let assembler = ServiceModelAssembler { session: None };
+    let registry = assembler
+        .build(Arc::new(crate::model::llm_tests::builtin_catalog()), vec![])
+        .await
+        .unwrap();
+    assert_eq!(
+        model_directory_json(&registry),
+        model_directory_json(&builtin_tree(&[]))
+    );
 }
 
 #[tokio::test]
@@ -1777,4 +1619,227 @@ fn exhausted_provider_overrides_normal_budget() {
     .unwrap();
     assert_eq!(quota.state, Some(QuotaState::Exhausted));
     assert_eq!(quota.remaining_request_units, Some(0));
+}
+
+#[tokio::test]
+async fn model_metadata_sources_replace_whole_documents_and_publish_trees_atomically() {
+    use crate::catalog::{CatalogBuildOptions, CatalogKind};
+    use crate::error::{RuntimeError, SettingsError};
+    use crate::runtime::{
+        ConvergenceTrigger, ModelRegistryAssembler, PreparedRuntime, RuntimeBackend,
+        RuntimeFactory, RuntimePreparedState, RuntimeProviderRegistry, RuntimeState,
+    };
+    use crate::settings::{
+        AiccSettings, MetadataFile, MetadataSource, MetadataSources, RuntimeInputs,
+        SettingsDocument,
+    };
+
+    struct Inputs {
+        target: AtomicUsize,
+        sources: Mutex<MetadataSources>,
+    }
+    #[async_trait]
+    impl RuntimeInputs for Inputs {
+        async fn metadata_target_seq(&self) -> Result<u64, SettingsError> {
+            Ok(self.target.load(Ordering::SeqCst) as u64)
+        }
+        async fn load_catalog(&self, seq: u64) -> Result<Arc<CatalogSnapshot>, SettingsError> {
+            self.sources
+                .lock()
+                .await
+                .clone()
+                .build_snapshot(seq, &CatalogBuildOptions::default())
+        }
+    }
+    struct MetadataOnlyBackend;
+    #[async_trait]
+    impl RuntimeBackend for MetadataOnlyBackend {
+        async fn refresh_provider(&self, _: &str) -> Result<bool, RuntimeError> {
+            unreachable!()
+        }
+        async fn converge(
+            &self,
+            catalog: Arc<CatalogSnapshot>,
+            _: u64,
+            _: ConvergenceTrigger,
+        ) -> Result<RuntimePreparedState, RuntimeError> {
+            let models = ServiceModelAssembler { session: None }
+                .build(catalog.clone(), vec![])
+                .await?;
+            Ok(RuntimePreparedState {
+                catalog,
+                models,
+                providers: Arc::new(RuntimeProviderRegistry::default()),
+                provider_metadata: BTreeMap::new(),
+                changed: true,
+            })
+        }
+        async fn shutdown(&self) {}
+    }
+    #[async_trait]
+    impl RuntimeFactory for MetadataOnlyBackend {
+        async fn prepare(
+            &self,
+            _: Arc<AiccSettings>,
+            catalog: Arc<CatalogSnapshot>,
+            seq: u64,
+        ) -> Result<PreparedRuntime, RuntimeError> {
+            let state = self
+                .converge(catalog, seq, ConvergenceTrigger::Inference)
+                .await?;
+            Ok(PreparedRuntime {
+                backend: Arc::new(Self),
+                state,
+            })
+        }
+    }
+    let file = |source, value: &Value| {
+        MetadataFile::parse(
+            source,
+            CatalogKind::ModelDriver,
+            serde_json::to_vec(value).unwrap(),
+        )
+        .unwrap()
+    };
+    let mut document = crate::model::llm_tests::openai_document();
+    let inputs = Arc::new(Inputs {
+        target: AtomicUsize::new(2),
+        sources: Mutex::new(MetadataSources {
+            builtin: crate::model::llm_tests::documents()
+                .iter()
+                .map(|document| {
+                    file(
+                        MetadataSource::Builtin,
+                        &serde_json::to_value(document).unwrap(),
+                    )
+                })
+                .collect(),
+            ..Default::default()
+        }),
+    });
+    let runtime = RuntimeState::bootstrap(
+        SettingsDocument::new(1, AiccSettings::default()).unwrap(),
+        inputs.clone(),
+        Arc::new(MetadataOnlyBackend),
+    )
+    .await
+    .unwrap();
+    let initial = runtime.capture().await;
+    assert!(initial.models.model_views().is_empty());
+    for (seq, source, marker) in [
+        (3, MetadataSource::Cloud, "cloud"),
+        (4, MetadataSource::Local, "local"),
+        (5, MetadataSource::SystemConfig, "system"),
+    ] {
+        document["revision_seq"] = json!(seq);
+        document["defaults"] = json!({"parameter_scale": marker});
+        document["models"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|model| model["id"] != "gpt-5.6-sol");
+        let mut sources = inputs.sources.lock().await;
+        let target = match source {
+            MetadataSource::Cloud => &mut sources.cloud,
+            MetadataSource::Local => &mut sources.local,
+            _ => &mut sources.system_config,
+        };
+        *target = vec![file(source, &document)];
+        drop(sources);
+        inputs.target.store(seq, Ordering::SeqCst);
+        let snapshot = runtime.before_inference().await.unwrap();
+        assert_eq!(
+            snapshot
+                .catalog
+                .model_driver("openai")
+                .unwrap()
+                .defaults
+                .parameter_scale
+                .as_deref(),
+            Some(marker)
+        );
+        assert!(snapshot
+            .catalog
+            .llm_model("openai", "gpt-5.6-sol")
+            .is_none());
+        assert!(snapshot.catalog.llm_model("glm", "glm-5.3").is_some());
+        assert!(model_directory_json(&snapshot.models)
+            .get("llm.gpt-pro")
+            .is_some());
+        assert_eq!(snapshot.metadata_target_seq, seq as u64);
+    }
+    let last_good = runtime.capture().await;
+    document["revision_seq"] = json!(6);
+    for spec in document["specs"].as_array_mut().unwrap() {
+        if spec["id"] == "gpt-pro" {
+            spec["id"] = json!("gpt-renamed");
+            spec["direct_only"] = json!(true);
+        }
+    }
+    for model in document["models"].as_array_mut().unwrap() {
+        if model["llm"]["spec"] == "gpt-pro" {
+            model["llm"]["spec"] = json!("gpt-renamed");
+        }
+    }
+    inputs.sources.lock().await.system_config = vec![file(MetadataSource::SystemConfig, &document)];
+    inputs.target.store(6, Ordering::SeqCst);
+    assert!(runtime.before_inference().await.is_err());
+    assert!(Arc::ptr_eq(&last_good, &runtime.capture().await));
+    assert!(model_directory_json(&last_good.models)
+        .get("llm.gpt-renamed")
+        .is_none());
+    assert!(model_directory_json(&initial.models)
+        .get("llm.gpt-pro")
+        .is_some());
+    document["models"][0]["llm"]["spec"] = json!("missing");
+    inputs.sources.lock().await.system_config = vec![file(MetadataSource::SystemConfig, &document)];
+    assert!(runtime.before_inference().await.is_err());
+    assert!(Arc::ptr_eq(&last_good, &runtime.capture().await));
+}
+
+#[test]
+fn non_llm_tasks_use_explicit_spec_links_and_require_the_requested_api() {
+    let mut inventory =
+        crate::model::llm_tests::inventory("openai", "gpt-5.6-sol", "sol", "a", &["high"]);
+    inventory.models[0]
+        .api_types
+        .push(buckyos_api::ApiType::ImageTextToImage);
+    let registry = builtin_tree(&[inventory]);
+    assert_eq!(
+        registry
+            .resolve_candidates("image.txt2img", buckyos_api::ApiType::ImageTextToImage)
+            .unwrap()
+            .candidates
+            .len(),
+        1
+    );
+    assert!(registry
+        .resolve_candidates("image.img2img", buckyos_api::ApiType::ImageImageToImage)
+        .unwrap()
+        .candidates
+        .is_empty());
+    assert!(registry
+        .resolve_candidates("vision.detect", buckyos_api::ApiType::VisionDetect)
+        .unwrap()
+        .candidates
+        .is_empty());
+    let mut image = crate::model::llm_tests::inventory("openai", "gpt-image-2", "image", "b", &[]);
+    image.models[0].api_types = vec![buckyos_api::ApiType::ImageTextToImage];
+    image.models[0].logical_mounts = vec!["image.txt2img.gpt-image-2".into()];
+    let registry = builtin_tree(&[image]);
+    assert_eq!(
+        registry
+            .resolve_candidates(
+                "image.txt2img.gpt-image-2",
+                buckyos_api::ApiType::ImageTextToImage
+            )
+            .unwrap()
+            .candidates
+            .len(),
+        1
+    );
+    assert!(registry
+        .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
+        .unwrap()
+        .candidates
+        .is_empty());
 }

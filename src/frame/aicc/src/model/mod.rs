@@ -1,5 +1,5 @@
 use crate::canonical::CanonicalFieldMapping;
-use crate::catalog::CatalogSnapshot;
+use crate::catalog::{CatalogSnapshot, LlmModel, ModelStability, ModelVersion};
 use crate::error::ModelRegistryError;
 use buckyos_api::{
     AiccFallbackMode, AiccFallbackRule, AiccLogicalNodeOverlay, AiccLogicalTreeOverlay,
@@ -176,7 +176,6 @@ pub(crate) struct ProviderInventory {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum MountMode {
-    #[cfg(test)]
     Manual,
     Auto,
     #[default]
@@ -216,6 +215,7 @@ struct EffectiveItem {
 #[derive(Clone, Debug, Default, PartialEq)]
 struct EffectiveLogicalNode {
     definition: Option<LogicalModelDefinition>,
+    family: Option<LlmModel>,
     items: BTreeMap<String, EffectiveItem>,
     exact_model_weights: BTreeMap<String, f64>,
     disable_line: ModelDisable,
@@ -289,10 +289,32 @@ pub(crate) struct CandidatePath {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RegistryCandidate {
+    pub llm_order: Option<LlmOrder>,
     pub model: RegisteredModel,
     pub paths: Vec<CandidatePath>,
     pub exact_model_weight: f64,
     pub provider_weight: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LlmOrder {
+    pub spec_weight: f64,
+    pub spec: String,
+    pub family: String,
+    pub stability: ModelStability,
+    pub version: Option<ModelVersion>,
+}
+
+impl LlmOrder {
+    pub(crate) fn compare(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .spec_weight
+            .total_cmp(&self.spec_weight)
+            .then_with(|| self.spec.cmp(&other.spec))
+            .then_with(|| self.stability.cmp(&other.stability))
+            .then_with(|| other.version.cmp(&self.version))
+            .then_with(|| self.family.cmp(&other.family))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -332,6 +354,8 @@ pub(crate) struct RegistryLayers<'a> {
 #[derive(Clone, Debug)]
 pub(crate) struct ModelRegistry {
     models: BTreeMap<String, RegisteredModel>,
+    specs: BTreeMap<String, (String, bool)>,
+    family_names: BTreeSet<String>,
     logical_nodes: BTreeMap<String, EffectiveLogicalNode>,
     global_exact_model_weights: BTreeMap<String, f64>,
     provider_weights: BTreeMap<String, f64>,
@@ -347,13 +371,20 @@ impl ModelRegistry {
     ) -> Result<Self, ModelRegistryError> {
         let mut registry = Self {
             models: BTreeMap::new(),
+            specs: BTreeMap::new(),
+            family_names: catalog
+                .llm_models()
+                .map(|(_, _, model)| model.family.clone())
+                .collect(),
             logical_nodes: BTreeMap::new(),
             global_exact_model_weights: BTreeMap::new(),
             provider_weights: BTreeMap::new(),
             fallback_depth_limit: DEFAULT_FALLBACK_DEPTH_LIMIT,
         };
         registry.register_definitions(definitions)?;
+        registry.register_specs(catalog)?;
         registry.register_inventories(catalog, inventories)?;
+        registry.materialize_families(catalog);
         registry.materialize_driver_mounts();
         registry.materialize_auto_mounts();
         for (layer, source) in [
@@ -366,8 +397,9 @@ impl ModelRegistry {
                 registry.apply_route_overlay(layer, source)?;
             }
         }
-        registry.validate_item_graph()?;
+        registry.validate_llm_tree()?;
         registry.validate_fallback_graph()?;
+        registry.validate_item_graph()?;
         Ok(registry)
     }
 
@@ -377,8 +409,9 @@ impl ModelRegistry {
     ) -> Result<Self, ModelRegistryError> {
         let mut registry = self.clone();
         registry.apply_route_overlay(overlay, LogicalItemSource::SessionOverlay)?;
-        registry.validate_item_graph()?;
+        registry.validate_llm_tree()?;
         registry.validate_fallback_graph()?;
+        registry.validate_item_graph()?;
         Ok(registry)
     }
 
@@ -405,7 +438,11 @@ impl ModelRegistry {
                 api_type: node
                     .definition
                     .as_ref()
-                    .map(|definition| api_type_name(definition.api_type).to_owned()),
+                    .map(|definition| api_type_name(definition.api_type).to_owned())
+                    .or_else(|| {
+                        (self.specs.contains_key(path) || node.family.is_some())
+                            .then(|| "llm".to_owned())
+                    }),
                 mount_mode: node
                     .definition
                     .as_ref()
@@ -453,6 +490,7 @@ impl ModelRegistry {
         let mut fallback_chain = Vec::new();
         let mut all_admissions = Vec::new();
         let mut visited = BTreeSet::new();
+        let mut requirements = Vec::new();
         loop {
             if !visited.insert(current.clone()) {
                 return Err(ModelRegistryError::FallbackLoop(current));
@@ -462,13 +500,19 @@ impl ModelRegistry {
                     self.fallback_depth_limit,
                 ));
             }
-            let (candidates, admissions) = self.expand(&current, api_type)?;
+            requirements.push(self.logical_requirement(&current));
+            let (mut candidates, admissions) = self.expand(&current, api_type)?;
+            candidates.retain(|candidate| {
+                requirements.iter().all(|requirement| {
+                    missing_requirements(requirement, &candidate.model).is_empty()
+                })
+            });
             all_admissions.extend(admissions);
             normalize_admissions(&mut all_admissions);
             if !candidates.is_empty() {
-                let disable_line = self.disable_line(&current);
-                let default_options = self.default_options(&current);
-                let scheduler_profile = self.scheduler_profile(&current);
+                let disable_line = self.disable_line(&requested);
+                let default_options = self.default_options(&requested);
+                let scheduler_profile = self.scheduler_profile(&requested);
                 return Ok(CandidateSet {
                     requested_logical_path: requested,
                     resolved_logical_path: current,
@@ -482,9 +526,9 @@ impl ModelRegistry {
             }
             match self.fallback_target(&current, api_type)? {
                 FallbackTarget::None => {
-                    let disable_line = self.disable_line(&current);
-                    let default_options = self.default_options(&current);
-                    let scheduler_profile = self.scheduler_profile(&current);
+                    let disable_line = self.disable_line(&requested);
+                    let default_options = self.default_options(&requested);
+                    let scheduler_profile = self.scheduler_profile(&requested);
                     return Ok(CandidateSet {
                         requested_logical_path: requested,
                         resolved_logical_path: current,
@@ -505,8 +549,13 @@ impl ModelRegistry {
                     current = next;
                 }
                 FallbackTarget::Exact(exact) => {
-                    let candidates = self.exact_fallback_candidate(&exact, api_type);
-                    let disable_line = self.disable_line(&current);
+                    let mut candidates = self.exact_fallback_candidate(&exact, api_type);
+                    candidates.retain(|candidate| {
+                        requirements.iter().all(|requirement| {
+                            missing_requirements(requirement, &candidate.model).is_empty()
+                        })
+                    });
+                    let disable_line = self.disable_line(&requested);
                     fallback_chain.push(FallbackStep {
                         from: current,
                         to: exact.clone(),
@@ -544,6 +593,258 @@ impl ModelRegistry {
             node.definition = Some(definition);
         }
         Ok(())
+    }
+
+    fn register_specs(&mut self, catalog: &CatalogSnapshot) -> Result<(), ModelRegistryError> {
+        for (driver, id, model) in catalog.llm_models() {
+            if self.logical_nodes.contains_key(&model.family) {
+                return Err(ModelRegistryError::InvalidLogicalTree(format!(
+                    "{driver} model {id}: family {} conflicts with a task",
+                    model.family
+                )));
+            }
+        }
+        for driver in catalog.model_drivers() {
+            for spec in &driver.specs {
+                let path = format!("llm.{}", spec.id);
+                if self.logical_nodes.contains_key(&path) {
+                    return Err(ModelRegistryError::InvalidLogicalTree(format!(
+                        "{} spec {} conflicts with a task",
+                        driver.model_driver_id, spec.id
+                    )));
+                }
+                self.specs.insert(
+                    path.clone(),
+                    (driver.model_driver_id.clone(), spec.direct_only),
+                );
+                self.logical_nodes.entry(path).or_default().fallback = disabled_fallback();
+            }
+        }
+        Ok(())
+    }
+
+    fn materialize_families(&mut self, catalog: &CatalogSnapshot) {
+        for model in self
+            .models
+            .values()
+            .filter(|model| model.api_types.contains(&ApiType::Llm))
+        {
+            let Some(family) = catalog.llm_model(
+                &model.identity.model_driver_id,
+                &model.identity.origin_model_id,
+            ) else {
+                continue;
+            };
+            let node = self.logical_nodes.entry(family.family.clone()).or_default();
+            node.family = Some(family.clone());
+            node.fallback = disabled_fallback();
+            let exact = model.exact_model.to_string();
+            if family
+                .semantics
+                .supported_efforts
+                .iter()
+                .any(|effort| effort.variant().as_deref() == model.exact_model.variant())
+            {
+                node.items.insert(
+                    exact.clone(),
+                    EffectiveItem {
+                        item: ModelItem::new(exact, 1.0),
+                        source: LogicalItemSource::DriverMetadataMount,
+                    },
+                );
+            }
+            let spec = format!("llm.{}", family.semantics.spec);
+            self.logical_nodes
+                .get_mut(&spec)
+                .expect("catalog validated spec")
+                .items
+                .insert(
+                    family.family.clone(),
+                    EffectiveItem {
+                        item: ModelItem::new(
+                            format!("{}:{}", family.family, family.semantics.effort.as_str()),
+                            1.0,
+                        ),
+                        source: LogicalItemSource::DriverMetadataMount,
+                    },
+                );
+        }
+    }
+
+    fn validate_llm_tree(&self) -> Result<(), ModelRegistryError> {
+        let invalid = |reason: String| ModelRegistryError::InvalidLogicalTree(reason);
+        let mut referenced = BTreeSet::new();
+        for (path, node) in &self.logical_nodes {
+            let llm = path_namespace(path) == "llm";
+            if llm
+                && node
+                    .definition
+                    .as_ref()
+                    .is_some_and(|d| d.mount_mode != MountMode::Manual)
+            {
+                return Err(invalid(format!(
+                    "{path}: LLM directories require manual specification admission"
+                )));
+            }
+            if llm
+                && node
+                    .fallback
+                    .as_ref()
+                    .is_some_and(|r| r.mode == AiccFallbackMode::Parent)
+            {
+                return Err(invalid(format!("{path}: LLM parent fallback is forbidden")));
+            }
+            if path == "llm"
+                && (!node.items.is_empty()
+                    || node.fallback.as_ref().is_some_and(|r| r.target.is_some()))
+            {
+                return Err(invalid("llm is a namespace".into()));
+            }
+            if self.family_names.contains(path) && node.family.is_none() {
+                return Err(invalid(format!("{path}: family requires inventory")));
+            }
+            for item in node.items.values() {
+                let target = &item.item.target;
+                let target_path = target.split(':').next().unwrap_or(target);
+                if (llm && node.family.is_none() && !self.specs.contains_key(path))
+                    || (!llm && path_namespace(target_path) == "llm")
+                {
+                    if !self.specs.contains_key(target) {
+                        return Err(invalid(format!(
+                            "{path} must reference a declared specification, got {target}"
+                        )));
+                    }
+                }
+                if let Some(family) = &node.family {
+                    let valid = self.models.get(target).is_some_and(|model| {
+                        model.api_types.contains(&ApiType::Llm)
+                            && family.semantics.supported_efforts.iter().any(|effort| {
+                                effort.variant().as_deref() == model.exact_model.variant()
+                            })
+                    });
+                    if !valid || item.source != LogicalItemSource::DriverMetadataMount {
+                        return Err(invalid(format!(
+                            "{path}: family members are inventory facts"
+                        )));
+                    }
+                }
+                if self.specs.contains_key(path) {
+                    let Some(family) = self
+                        .logical_nodes
+                        .get(target_path)
+                        .and_then(|node| node.family.as_ref())
+                    else {
+                        return Err(invalid(format!("{path}: unknown family {target}")));
+                    };
+                    if path != &format!("llm.{}", family.semantics.spec)
+                        || target
+                            != &format!("{}:{}", family.family, family.semantics.effort.as_str())
+                        || item.item.weight != 1.0
+                    {
+                        return Err(invalid(format!("{path}: specification membership and effort come from metadata: {target}")));
+                    }
+                }
+                if let Some((driver, direct_only)) = self.specs.get(target_path) {
+                    if *direct_only {
+                        return Err(invalid(format!(
+                            "{path} references direct_only {driver} spec {target_path}"
+                        )));
+                    }
+                    referenced.insert(target_path.to_owned());
+                }
+                if !target.contains('@')
+                    && (llm || path_namespace(target_path) == "llm")
+                    && !self.logical_nodes.contains_key(target_path)
+                {
+                    return Err(invalid(format!("{path}: dangling reference {target}")));
+                }
+            }
+            if let Some(target) = node.fallback.as_ref().and_then(|rule| rule.target.as_ref()) {
+                if let Some((driver, direct)) = self.specs.get(target) {
+                    if *direct {
+                        return Err(invalid(format!(
+                            "{path}: fallback references direct_only {driver} spec {target}"
+                        )));
+                    }
+                    referenced.insert(target.clone());
+                }
+                if let Some(family) = self
+                    .logical_nodes
+                    .get(target.split(':').next().unwrap_or(target))
+                    .and_then(|node| node.family.as_ref())
+                {
+                    if self.specs[&format!("llm.{}", family.semantics.spec)].1 {
+                        return Err(invalid(format!(
+                            "{path}: fallback bypasses direct_only via {target}"
+                        )));
+                    }
+                }
+                if let Some(model) = self.models.get(target) {
+                    for family in self
+                        .logical_nodes
+                        .values()
+                        .filter_map(|node| node.family.as_ref())
+                    {
+                        if self.specs[&format!("llm.{}", family.semantics.spec)].1
+                            && family.model_driver_id == model.identity.model_driver_id
+                            && family.origin_model_id == model.identity.origin_model_id
+                        {
+                            return Err(invalid(format!(
+                                "{path}: fallback bypasses direct_only via {target}"
+                            )));
+                        }
+                    }
+                }
+                if llm
+                    && !target.contains('@')
+                    && !self
+                        .logical_nodes
+                        .contains_key(target.split(':').next().unwrap_or(target))
+                {
+                    return Err(invalid(format!("{path}: dangling fallback {target}")));
+                }
+            }
+        }
+        for (path, (driver, direct_only)) in &self.specs {
+            if !direct_only && !referenced.contains(path) {
+                return Err(invalid(format!(
+                    "{driver} spec {path} is neither referenced nor direct_only"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn logical_requirement(&self, path: &str) -> ModelRequirement {
+        self.logical_nodes
+            .get(path)
+            .and_then(|node| node.definition.as_ref())
+            .map(|definition| definition.min_line.clone())
+            .unwrap_or_default()
+    }
+
+    fn llm_order(&self, path: &CandidatePath) -> Option<LlmOrder> {
+        let family = path.logical_paths.iter().find_map(|path| {
+            self.logical_nodes
+                .get(path.split(':').next().unwrap_or(path))?
+                .family
+                .as_ref()
+        })?;
+        let spec = format!("llm.{}", family.semantics.spec);
+        let spec_weight = path
+            .logical_paths
+            .iter()
+            .position(|path| path == &spec)
+            .and_then(|index| index.checked_sub(1))
+            .map(|index| path.priority[index])
+            .unwrap_or(1.0);
+        Some(LlmOrder {
+            spec_weight,
+            spec,
+            family: family.family.clone(),
+            version: family.version,
+            stability: family.semantics.stability,
+        })
     }
 
     fn register_inventories(
@@ -617,6 +918,9 @@ impl ModelRegistry {
         let mut logical_mounts = model.logical_mounts.clone();
         if let Some(variant) = variant {
             logical_mounts.extend(variant.logical_mounts.iter().cloned());
+        }
+        if model.api_types.contains(&ApiType::Llm) {
+            logical_mounts.clear();
         }
         logical_mounts.sort();
         logical_mounts.dedup();
@@ -693,13 +997,16 @@ impl ModelRegistry {
             .values()
             .filter_map(|node| node.definition.clone())
             .filter(|definition| {
-                matches!(definition.mount_mode, MountMode::Auto | MountMode::Hybrid)
+                definition.api_type != ApiType::Llm
+                    && matches!(definition.mount_mode, MountMode::Auto | MountMode::Hybrid)
             })
             .collect::<Vec<_>>();
         let models = self.models.values().cloned().collect::<Vec<_>>();
         for definition in definitions {
             for model in &models {
-                if !model.api_types.contains(&definition.api_type) {
+                if model.api_types.contains(&ApiType::Llm)
+                    || !model.api_types.contains(&definition.api_type)
+                {
                     continue;
                 }
                 let missing = missing_requirements(&definition.min_line, model);
@@ -894,7 +1201,12 @@ impl ModelRegistry {
         admissions.dedup_by(|left, right| {
             left.logical_path == right.logical_path && left.exact_model == right.exact_model
         });
-        Ok((candidates.into_values().collect(), admissions))
+        let mut candidates: Vec<_> = candidates.into_values().collect();
+        candidates.sort_by(|left, right| match (&left.llm_order, &right.llm_order) {
+            (Some(left), Some(right)) => left.compare(right),
+            _ => std::cmp::Ordering::Equal,
+        });
+        Ok((candidates, admissions))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -911,9 +1223,29 @@ impl ModelRegistry {
         if !stack.insert(logical_path.to_owned()) {
             return Err(ModelRegistryError::LogicalTreeLoop(logical_path.to_owned()));
         }
-        let Some(node) = self.logical_nodes.get(logical_path) else {
+        let (base_path, selector) = logical_path
+            .split_once(':')
+            .map_or((logical_path, None), |(base, effort)| (base, Some(effort)));
+        let Some(node) = self.logical_nodes.get(base_path) else {
             stack.remove(logical_path);
             return Ok(());
+        };
+        let effort = if let Some(family) = &node.family {
+            let selected = selector.unwrap_or(family.semantics.default_effort.as_str());
+            let Some(effort) = family
+                .semantics
+                .supported_efforts
+                .iter()
+                .find(|effort| effort.as_str() == selected)
+            else {
+                stack.remove(logical_path);
+                return Ok(());
+            };
+            Some(*effort)
+        } else if selector.is_some() {
+            return Err(ModelRegistryError::InvalidLogicalPath(logical_path.into()));
+        } else {
+            None
         };
         admissions.extend(node.admissions.values().cloned());
         if let Some(definition) = &node.definition {
@@ -924,6 +1256,15 @@ impl ModelRegistry {
             requirements.push(definition.min_line.clone());
         }
         for (item_name, effective) in &node.items {
+            if let Some(effort) = effort {
+                if self
+                    .models
+                    .get(&effective.item.target)
+                    .is_none_or(|model| model.exact_model.variant() != effort.variant().as_deref())
+                {
+                    continue;
+                }
+            }
             if effective.item.weight == 0.0 {
                 continue;
             }
@@ -1010,8 +1351,16 @@ impl ModelRegistry {
         }
         candidates
             .entry(exact_model.to_owned())
-            .and_modify(|candidate| candidate.paths.push(path.clone()))
+            .and_modify(|candidate| {
+                if let (Some(current), Some(next)) = (&candidate.llm_order, self.llm_order(&path)) {
+                    if next.compare(current).is_lt() {
+                        candidate.llm_order = Some(next);
+                    }
+                }
+                candidate.paths.push(path.clone());
+            })
             .or_insert_with(|| RegistryCandidate {
+                llm_order: self.llm_order(&path),
                 model: model.clone(),
                 paths: vec![path],
                 exact_model_weight,
@@ -1028,6 +1377,7 @@ impl ModelRegistry {
             .get(exact)
             .filter(|model| model.api_types.contains(&api_type))
             .map(|model| RegistryCandidate {
+                llm_order: None,
                 model: model.clone(),
                 paths: Vec::new(),
                 exact_model_weight: self
@@ -1053,11 +1403,16 @@ impl ModelRegistry {
     ) -> Result<FallbackTarget, ModelRegistryError> {
         let fallback = self
             .logical_nodes
-            .get(path)
+            .get(path.split(':').next().unwrap_or(path))
             .and_then(|node| node.fallback.as_ref());
-        let mode = fallback
-            .map(|fallback| &fallback.mode)
-            .unwrap_or(&AiccFallbackMode::Parent);
+        let mode =
+            fallback
+                .map(|fallback| &fallback.mode)
+                .unwrap_or(if path_namespace(path) == "llm" {
+                    &AiccFallbackMode::Strict
+                } else {
+                    &AiccFallbackMode::Parent
+                });
         Ok(match mode {
             AiccFallbackMode::Strict | AiccFallbackMode::Disabled => FallbackTarget::None,
             AiccFallbackMode::Parent => parent_logical_path(path)
@@ -1092,16 +1447,16 @@ impl ModelRegistry {
         Ok(())
     }
 
-    fn disable_line(&self, path: &str) -> ModelDisable {
+    pub(crate) fn disable_line(&self, path: &str) -> ModelDisable {
         self.logical_nodes
-            .get(path)
+            .get(path.split(':').next().unwrap_or(path))
             .map(|node| node.disable_line.clone())
             .unwrap_or_default()
     }
 
     fn default_options(&self, path: &str) -> BTreeMap<String, Value> {
         self.logical_nodes
-            .get(path)
+            .get(path.split(':').next().unwrap_or(path))
             .and_then(|node| node.definition.as_ref())
             .map(|definition| definition.default_options.clone())
             .unwrap_or_default()
@@ -1109,7 +1464,7 @@ impl ModelRegistry {
 
     fn scheduler_profile(&self, path: &str) -> AiccSchedulerProfile {
         self.logical_nodes
-            .get(path)
+            .get(path.split(':').next().unwrap_or(path))
             .and_then(|node| node.definition.as_ref())
             .map(|definition| definition.scheduler_profile.clone())
             .unwrap_or(AiccSchedulerProfile::Balanced)
@@ -1129,13 +1484,28 @@ impl ModelRegistry {
         }
         if let Some(node) = self.logical_nodes.get(path) {
             for item in node.items.values() {
-                let target = &item.item.target;
-                if !target.contains('@') && self.logical_nodes.contains_key(target) {
+                let target = item
+                    .item
+                    .target
+                    .split(':')
+                    .next()
+                    .unwrap_or(&item.item.target);
+                if !item.item.target.contains('@') && self.logical_nodes.contains_key(target) {
                     ensure_same_namespace(path, target)?;
                     self.visit_item_graph(target, visiting, complete)?;
                 }
             }
+            if let Some(target) = node
+                .fallback
+                .as_ref()
+                .and_then(|rule| rule.target.as_ref())
+                .filter(|target| !target.contains('@'))
+            {
+                let target = target.split(':').next().unwrap_or(target);
+                self.visit_item_graph(target, visiting, complete)?;
+            }
         }
+
         visiting.remove(path);
         complete.insert(path.to_owned());
         Ok(())
@@ -1318,7 +1688,9 @@ fn ensure_path_api_namespace(path: &str, api_type: ApiType) -> Result<(), ModelR
 
 fn ensure_same_namespace(from: &str, to: &str) -> Result<(), ModelRegistryError> {
     validate_logical_path(to)?;
-    if path_namespace(from) == path_namespace(to) {
+    if path_namespace(from) == path_namespace(to)
+        || (path_namespace(from) != "llm" && path_namespace(to) == "llm")
+    {
         Ok(())
     } else {
         Err(ModelRegistryError::CrossNamespaceLink {
@@ -1533,6 +1905,13 @@ fn missing_requirements(requirement: &ModelRequirement, model: &RegisteredModel)
             missing.push(format!("min_context_tokens:{required}"));
         }
     }
+    for (field, required) in &requirement.canonical_fields {
+        if !crate::canonical::resolve_canonical_field(model.canonical_fields.get(field), required)
+            .satisfies(required)
+        {
+            missing.push(format!("canonical_field:{field}"));
+        }
+    }
     missing
 }
 
@@ -1555,6 +1934,7 @@ impl fmt::Display for ModelRegistryError {
                 write!(formatter, "invalid exact model `{value}`")
             }
             Self::InvalidVariant(value) => write!(formatter, "invalid variant `{value}`"),
+            Self::InvalidLogicalTree(reason) => write!(formatter, "invalid logical tree: {reason}"),
             Self::InvalidLogicalPath(path) => write!(formatter, "invalid logical path `{path}`"),
             Self::ApiNamespaceMismatch { path, api_type } => {
                 write!(
@@ -1633,19 +2013,18 @@ mod tests {
     fn catalog() -> CatalogSnapshot {
         let driver: ModelDriverCatalog = serde_json::from_value(json!({
             "format": "buckyos.aicc.model-driver-catalog",
-            "schema_version": 1,
+            "schema_version": 2,
             "schema_revision": 0,
             "model_driver_id": "openai",
             "revision_seq": 1,
             "models": [],
             "patterns": [{
                 "match": "*",
-                "api_types": ["llm"],
+                "api_types": ["image.txt2img"],
                 "capabilities": {"streaming": true}
             }],
             "defaults": {},
-            "variants": [],
-            "version_rules": []
+            "specs": []
         }))
         .unwrap();
         CatalogSnapshot::build(
@@ -1664,8 +2043,8 @@ mod tests {
             provider_model_id: id.to_owned(),
             model_driver_id: "openai".to_owned(),
             origin_model_id: id.to_owned(),
-            api_types: vec![ApiType::Llm],
-            logical_mounts: vec!["llm.gpt".to_owned()],
+            api_types: vec![ApiType::ImageTextToImage],
+            logical_mounts: vec!["image.gpt".to_owned()],
             variants: Vec::new(),
             capabilities: BTreeMap::from([
                 ("streaming".to_owned(), json!(true)),
@@ -1675,7 +2054,7 @@ mod tests {
             canonical_fields: BTreeMap::new(),
             attributes: BTreeMap::new(),
             operations: BTreeMap::from([(
-                "chat.completions.create".to_owned(),
+                "image.txt2img".to_owned(),
                 "responses.create".to_owned(),
             )]),
         }
@@ -1694,7 +2073,7 @@ mod tests {
     fn definition(path: &str, tool_call: bool, mode: MountMode) -> LogicalModelDefinition {
         LogicalModelDefinition {
             path: path.to_owned(),
-            api_type: ApiType::Llm,
+            api_type: ApiType::ImageTextToImage,
             min_line: ModelRequirement {
                 tool_call,
                 ..ModelRequirement::default()
@@ -1767,14 +2146,14 @@ mod tests {
         let mut model = inventory_model("gpt-5.2", true);
         model.variants.push(InventoryModelVariant {
             name: "reasoning-high".to_owned(),
-            logical_mounts: vec!["llm.reason".to_owned()],
+            logical_mounts: vec!["image.reason".to_owned()],
         });
         let registry = ModelRegistry::build(
             &catalog(),
             &[inventory("primary", vec![model])],
             vec![
-                definition("llm.gpt", false, MountMode::Manual),
-                definition("llm.reason", true, MountMode::Manual),
+                definition("image.gpt", false, MountMode::Manual),
+                definition("image.reason", true, MountMode::Manual),
             ],
             RegistryLayers::default(),
         )
@@ -1795,7 +2174,7 @@ mod tests {
         );
         assert_eq!(
             registry
-                .resolve_candidates("llm.reason", ApiType::Llm)
+                .resolve_candidates("image.reason", ApiType::ImageTextToImage)
                 .unwrap()
                 .candidates
                 .len(),
@@ -1843,12 +2222,12 @@ mod tests {
                     inventory_model("basic", false),
                 ],
             )],
-            vec![definition("llm.plan", true, MountMode::Auto)],
+            vec![definition("image.plan", true, MountMode::Auto)],
             RegistryLayers::default(),
         )
         .unwrap();
         let result = registry
-            .resolve_candidates("llm.plan", ApiType::Llm)
+            .resolve_candidates("image.plan", ApiType::ImageTextToImage)
             .unwrap();
         assert_eq!(result.candidates.len(), 1);
         assert_eq!(
@@ -1873,15 +2252,15 @@ mod tests {
         let overlay = AiccRouteOverlay {
             logical_tree: BTreeMap::from([
                 (
-                    "llm.plan".to_owned(),
-                    item_node(&[("a", "llm.family_a", 2.0), ("b", "llm.family_b", 1.0)]),
+                    "image.plan".to_owned(),
+                    item_node(&[("a", "image.family_a", 2.0), ("b", "image.family_b", 1.0)]),
                 ),
                 (
-                    "llm.family_a".to_owned(),
+                    "image.family_a".to_owned(),
                     item_node(&[("model", "gpt@primary", 1.0)]),
                 ),
                 (
-                    "llm.family_b".to_owned(),
+                    "image.family_b".to_owned(),
                     item_node(&[("model", "gpt@primary", 1.0)]),
                 ),
             ]),
@@ -1890,7 +2269,7 @@ mod tests {
         let registry = ModelRegistry::build(
             &catalog(),
             &[inventory("primary", vec![inventory_model("gpt", true)])],
-            vec![definition("llm.plan", false, MountMode::Manual)],
+            vec![definition("image.plan", false, MountMode::Manual)],
             RegistryLayers {
                 system: Some(&overlay),
                 ..RegistryLayers::default()
@@ -1898,7 +2277,7 @@ mod tests {
         )
         .unwrap();
         let result = registry
-            .resolve_candidates("llm.plan", ApiType::Llm)
+            .resolve_candidates("image.plan", ApiType::ImageTextToImage)
             .unwrap();
         assert_eq!(result.candidates.len(), 1);
         assert_eq!(result.candidates[0].paths.len(), 2);
@@ -1911,18 +2290,18 @@ mod tests {
         let overlay = AiccRouteOverlay {
             logical_tree: BTreeMap::from([
                 (
-                    "llm.plan".to_owned(),
+                    "image.plan".to_owned(),
                     AiccLogicalNodeOverlay {
                         items: Some(LogicalItems::from([(
                             "family".to_owned(),
-                            ModelItem::new("llm.family", 1.0),
+                            ModelItem::new("image.family", 1.0),
                         )])),
                         exact_model_weights: BTreeMap::from([("gpt@primary".to_owned(), 0.0)]),
                         ..AiccLogicalNodeOverlay::default()
                     },
                 ),
                 (
-                    "llm.family".to_owned(),
+                    "image.family".to_owned(),
                     item_node(&[("model", "gpt@primary", 1.0)]),
                 ),
             ]),
@@ -1931,7 +2310,7 @@ mod tests {
         let registry = ModelRegistry::build(
             &catalog(),
             &[inventory("primary", vec![inventory_model("gpt", true)])],
-            vec![definition("llm.plan", false, MountMode::Manual)],
+            vec![definition("image.plan", false, MountMode::Manual)],
             RegistryLayers {
                 session: Some(&overlay),
                 ..RegistryLayers::default()
@@ -1940,7 +2319,7 @@ mod tests {
         .unwrap();
 
         assert!(registry
-            .resolve_candidates("llm.plan", ApiType::Llm)
+            .resolve_candidates("image.plan", ApiType::ImageTextToImage)
             .unwrap()
             .candidates
             .is_empty());
@@ -1948,10 +2327,10 @@ mod tests {
 
     #[test]
     fn direct_items_replacement_disables_fallback_by_default() {
-        let factory = layer("llm", &[("default", "gpt@primary", 1.0)]);
+        let factory = layer("image", &[("default", "gpt@primary", 1.0)]);
         let replacement = AiccRouteOverlay {
             logical_tree: BTreeMap::from([(
-                "llm.manual".to_owned(),
+                "image.manual".to_owned(),
                 AiccLogicalNodeOverlay {
                     items: Some(LogicalItems::new()),
                     ..AiccLogicalNodeOverlay::default()
@@ -1972,7 +2351,7 @@ mod tests {
         .unwrap();
 
         let result = registry
-            .resolve_candidates("llm.manual", ApiType::Llm)
+            .resolve_candidates("image.manual", ApiType::ImageTextToImage)
             .unwrap();
         assert!(result.candidates.is_empty());
         assert!(result.fallback_chain.is_empty());
@@ -1980,11 +2359,11 @@ mod tests {
 
     #[test]
     fn factory_user_and_session_overlays_compose_in_order() {
-        let factory = layer("llm.chat", &[("primary", "gpt@primary", 1.0)]);
+        let factory = layer("image.chat", &[("primary", "gpt@primary", 1.0)]);
         let user = AiccRouteOverlay {
             logical_profile: Some(AiccSessionLogicalProfile {
                 overlays: vec![AiccLogicalTreeOverlay {
-                    path: "llm.chat".to_owned(),
+                    path: "image.chat".to_owned(),
                     item_overrides: BTreeMap::from([(
                         "primary".to_owned(),
                         ModelItemPatch {
@@ -2002,7 +2381,7 @@ mod tests {
             provider_weights: BTreeMap::from([("backup".to_owned(), 0.25)]),
             logical_profile: Some(AiccSessionLogicalProfile {
                 overlays: vec![AiccLogicalTreeOverlay {
-                    path: "llm.chat".to_owned(),
+                    path: "image.chat".to_owned(),
                     merge_mode: OverlayMergeMode::Replace,
                     items: LogicalItems::from([(
                         "only".to_owned(),
@@ -2020,7 +2399,7 @@ mod tests {
                 inventory("primary", vec![inventory_model("gpt", true)]),
                 inventory("backup", vec![inventory_model("mini", true)]),
             ],
-            vec![definition("llm.chat", false, MountMode::Manual)],
+            vec![definition("image.chat", false, MountMode::Manual)],
             RegistryLayers {
                 factory: Some(&factory),
                 user: Some(&user),
@@ -2030,7 +2409,7 @@ mod tests {
         )
         .unwrap();
         let result = registry
-            .resolve_candidates("llm.chat", ApiType::Llm)
+            .resolve_candidates("image.chat", ApiType::ImageTextToImage)
             .unwrap();
         assert_eq!(result.candidates.len(), 1);
         assert_eq!(
@@ -2045,7 +2424,7 @@ mod tests {
         let view = registry
             .logical_model_views()
             .into_iter()
-            .find(|view| view.path == "llm.chat")
+            .find(|view| view.path == "image.chat")
             .unwrap();
         assert_eq!(view.fallback.unwrap().mode, AiccFallbackMode::Disabled);
     }
@@ -2054,7 +2433,7 @@ mod tests {
     fn invalid_overlay_forms_and_weights_are_rejected() {
         let conflict = AiccRouteOverlay {
             logical_tree: BTreeMap::from([(
-                "llm.chat".to_owned(),
+                "image.chat".to_owned(),
                 AiccLogicalNodeOverlay {
                     items: Some(LogicalItems::new()),
                     item_overrides: Some(BTreeMap::new()),
@@ -2076,7 +2455,7 @@ mod tests {
             Err(ModelRegistryError::ItemsAndOverridesConflict(_))
         ));
 
-        let invalid = layer("llm.chat", &[("bad", "gpt@primary", -1.0)]);
+        let invalid = layer("image.chat", &[("bad", "gpt@primary", -1.0)]);
         assert!(matches!(
             ModelRegistry::build(
                 &catalog(),
@@ -2095,8 +2474,8 @@ mod tests {
     fn logical_cycles_and_cross_namespace_links_are_rejected() {
         let cycle = AiccRouteOverlay {
             logical_tree: BTreeMap::from([
-                ("llm.a".to_owned(), item_node(&[("b", "llm.b", 1.0)])),
-                ("llm.b".to_owned(), item_node(&[("a", "llm.a", 1.0)])),
+                ("image.a".to_owned(), item_node(&[("b", "image.b", 1.0)])),
+                ("image.b".to_owned(), item_node(&[("a", "image.a", 1.0)])),
             ]),
             ..AiccRouteOverlay::default()
         };
@@ -2113,7 +2492,7 @@ mod tests {
             Err(ModelRegistryError::LogicalTreeLoop(_))
         ));
 
-        let cross = layer("llm.chat", &[("bad", "image.txt2img", 1.0)]);
+        let cross = layer("image.chat", &[("bad", "audio.tts", 1.0)]);
         assert!(matches!(
             ModelRegistry::build(
                 &catalog(),
@@ -2130,7 +2509,7 @@ mod tests {
 
     #[test]
     fn parent_and_exact_fallbacks_resolve_deterministically() {
-        let factory = layer("llm", &[("model", "gpt@primary", 1.0)]);
+        let factory = layer("image", &[("model", "gpt@primary", 1.0)]);
         let registry = ModelRegistry::build(
             &catalog(),
             &[inventory("primary", vec![inventory_model("gpt", false)])],
@@ -2139,7 +2518,7 @@ mod tests {
                     mode: AiccFallbackMode::Parent,
                     target: None,
                 }),
-                ..definition("llm.code", true, MountMode::Auto)
+                ..definition("image.code", true, MountMode::Auto)
             }],
             RegistryLayers {
                 factory: Some(&factory),
@@ -2148,16 +2527,13 @@ mod tests {
         )
         .unwrap();
         let result = registry
-            .resolve_candidates("llm.code", ApiType::Llm)
+            .resolve_candidates("image.code", ApiType::ImageTextToImage)
             .unwrap();
-        assert_eq!(result.resolved_logical_path, "llm");
+        assert_eq!(result.resolved_logical_path, "image");
         assert_eq!(result.fallback_chain.len(), 1);
-        assert_eq!(
-            result.candidates[0].model.exact_model.as_str(),
-            "gpt@primary"
-        );
+        assert!(result.candidates.is_empty());
         assert!(result.admissions.iter().any(|record| {
-            record.logical_path == "llm.code"
+            record.logical_path == "image.code"
                 && record.exact_model == "gpt@primary"
                 && !record.admitted
         }));
@@ -2167,7 +2543,7 @@ mod tests {
                 mode: AiccFallbackMode::TargetExact,
                 target: Some("gpt@primary".to_owned()),
             }),
-            ..definition("llm.strict", false, MountMode::Manual)
+            ..definition("image.strict", false, MountMode::Manual)
         };
         let exact_registry = ModelRegistry::build(
             &catalog(),
@@ -2177,7 +2553,7 @@ mod tests {
         )
         .unwrap();
         let exact = exact_registry
-            .resolve_candidates("llm.strict", ApiType::Llm)
+            .resolve_candidates("image.strict", ApiType::ImageTextToImage)
             .unwrap();
         assert_eq!(exact.resolved_logical_path, "gpt@primary");
         assert_eq!(exact.candidates.len(), 1);
@@ -2186,7 +2562,7 @@ mod tests {
     #[test]
     fn fallback_loops_and_excess_depth_are_rejected() {
         let mut loop_overlay = AiccRouteOverlay::default();
-        for (path, target) in [("llm.a", "llm.b"), ("llm.b", "llm.a")] {
+        for (path, target) in [("image.a", "image.b"), ("image.b", "image.a")] {
             loop_overlay.logical_tree.insert(
                 path.to_owned(),
                 AiccLogicalNodeOverlay {
@@ -2214,11 +2590,11 @@ mod tests {
         let mut deep = AiccRouteOverlay::default();
         for index in 0..=DEFAULT_FALLBACK_DEPTH_LIMIT {
             deep.logical_tree.insert(
-                format!("llm.d{index}"),
+                format!("image.d{index}"),
                 AiccLogicalNodeOverlay {
                     fallback: Some(AiccFallbackRule {
                         mode: AiccFallbackMode::TargetLogical,
-                        target: Some(format!("llm.d{}", index + 1)),
+                        target: Some(format!("image.d{}", index + 1)),
                     }),
                     ..AiccLogicalNodeOverlay::default()
                 },
@@ -2246,7 +2622,7 @@ mod tests {
                 "arbitrary_instance",
                 vec![inventory_model("unrecognizable-model", true)],
             )],
-            vec![definition("llm.chat", true, MountMode::Auto)],
+            vec![definition("image.chat", true, MountMode::Auto)],
             RegistryLayers::default(),
         )
         .unwrap();
@@ -2255,7 +2631,7 @@ mod tests {
             .unwrap();
         assert_eq!(model.identity.provider_profile_id, "openai");
         assert_eq!(model.identity.model_driver_id, "openai");
-        assert_eq!(model.api_types, vec![ApiType::Llm]);
+        assert_eq!(model.api_types, vec![ApiType::ImageTextToImage]);
     }
 
     #[test]
@@ -2291,7 +2667,7 @@ mod tests {
         );
 
         let mut invalid = inventory_model("bad", false);
-        invalid.logical_mounts = vec!["image.txt2img".to_owned()];
+        invalid.logical_mounts = vec!["audio.tts".to_owned()];
         assert!(matches!(
             ModelRegistry::build(
                 &catalog(),
@@ -2303,3 +2679,6 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+pub(crate) mod llm_tests;

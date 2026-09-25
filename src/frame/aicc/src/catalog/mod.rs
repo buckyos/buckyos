@@ -2,21 +2,21 @@
 mod schema;
 mod validation;
 
-#[cfg(test)]
-pub(crate) use schema::ProviderRuleMatchKind;
 pub(crate) use schema::{
-    CatalogBuildOptions, CatalogDocuments, CatalogKind, CurrentCatalogFile, KnownProvider,
-    KnownProviderCatalog, ModelDriverCatalog, ModelMatchKind, ModelPricingRule, ModelSemantics,
-    ModelVariant, OriginMapping, Pricing, PricingTierStep, PricingTiers, PricingTimeWindow,
-    PricingUnit, PricingWeekday, ProviderCredentialDescriptor, ProviderCredentialKind,
-    ProviderExactRule, ProviderFieldMode, ProviderFieldSchema, ProviderPatternRule,
-    ProviderRuleAction, ProviderRulesCatalog, ProviderVariantRule, RequestRule,
-    ResolvedModelSemantics, ResolvedProviderConfiguration, ResolvedProviderOrigin,
-    ResolvedProviderRule, TierDimension, TierMode, VersionRule,
+    family_segment, CatalogBuildOptions, CatalogDocuments, CatalogKind, CurrentCatalogFile,
+    KnownProvider, KnownProviderCatalog, LlmModel, ModelDriverCatalog, ModelMatchKind,
+    ModelPricingRule, ModelSemantics, ModelStability, ModelVersion, OriginMapping, Pricing,
+    PricingTierStep, PricingTiers, PricingTimeWindow, PricingUnit, PricingWeekday,
+    ProviderCredentialDescriptor, ProviderCredentialKind, ProviderExactRule, ProviderFieldMode,
+    ProviderFieldSchema, ProviderPatternRule, ProviderRuleAction, ProviderRulesCatalog,
+    ProviderVariantRule, RequestRule, ResolvedModelSemantics, ResolvedProviderConfiguration,
+    ResolvedProviderOrigin, ResolvedProviderRule, TierDimension, TierMode,
 };
+#[cfg(test)]
+pub(crate) use schema::{Effort, ProviderRuleMatchKind};
 use validation::{
-    validate_known_provider_catalog, validate_model_driver, validate_provider_rules,
-    validate_references, validate_revisions,
+    llm_pattern_ids, validate_known_provider_catalog, validate_model_driver,
+    validate_provider_rules, validate_references, validate_revisions, validate_segment,
 };
 
 use crate::error::{CatalogBuildError, CatalogResolveError, MatchCompileError};
@@ -34,10 +34,10 @@ use std::fmt;
 const MODEL_DRIVER_FORMAT: &str = "buckyos.aicc.model-driver-catalog";
 const PROVIDER_RULES_FORMAT: &str = "buckyos.aicc.provider-rules-catalog";
 const KNOWN_PROVIDER_FORMAT: &str = "buckyos.aicc.known-provider-catalog";
-const MODEL_DRIVER_SCHEMA_VERSION: u32 = 1;
+const MODEL_DRIVER_SCHEMA_VERSION: u32 = 2;
 const PROVIDER_RULES_SCHEMA_VERSION: u32 = 1;
 const KNOWN_PROVIDER_SCHEMA_VERSION: u32 = 1;
-const MODEL_DRIVER_SUPPORTED_SCHEMA_REVISION: u32 = 1;
+const MODEL_DRIVER_SUPPORTED_SCHEMA_REVISION: u32 = 0;
 const PROVIDER_RULES_SUPPORTED_SCHEMA_REVISION: u32 = 1;
 const KNOWN_PROVIDER_SUPPORTED_SCHEMA_REVISION: u32 = 1;
 
@@ -46,9 +46,7 @@ struct CompiledModelDriverCatalog {
     document: ModelDriverCatalog,
     exact_index: BTreeMap<String, usize>,
     patterns: CompiledRuleSet,
-    pricing: CompiledPricingTable,
-    compiled_variants: Vec<CompiledMatchRule>,
-    compiled_version_rules: Vec<CompiledMatchRule>,
+    llm_models: BTreeMap<String, LlmModel>,
 }
 
 /// Prices, resolved independently of the technical rules.
@@ -160,27 +158,6 @@ pub(crate) struct CatalogSnapshot {
     known_provider_index: BTreeMap<String, (String, usize)>,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct EffectiveModelVariant<'a> {
-    pub model: Option<&'a ModelVariant>,
-    pub provider: Option<&'a ProviderVariantRule>,
-}
-
-impl EffectiveModelVariant<'_> {
-    pub(crate) fn name(&self) -> &str {
-        self.provider
-            .map(|variant| variant.variant.as_str())
-            .or_else(|| self.model.map(|variant| variant.name.as_str()))
-            .expect("effective variant has a model or provider definition")
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct EffectiveModelVariants<'a> {
-    pub provider_override: bool,
-    pub variants: Vec<EffectiveModelVariant<'a>>,
-}
-
 impl CatalogSnapshot {
     pub(crate) fn from_current_files(
         target_revision_seq: u64,
@@ -243,6 +220,35 @@ impl CatalogSnapshot {
                     kind: CatalogKind::ModelDriver,
                     id,
                 });
+            }
+        }
+
+        let mut names = BTreeMap::new();
+        for (driver, catalog) in &model_drivers {
+            for (path, owner) in catalog
+                .document
+                .specs
+                .iter()
+                .map(|spec| {
+                    (
+                        format!("llm.{}", spec.id),
+                        format!("{driver} spec {}", spec.id),
+                    )
+                })
+                .chain(
+                    catalog
+                        .llm_models
+                        .iter()
+                        .map(|(id, model)| (model.family.clone(), format!("{driver} model {id}"))),
+                )
+            {
+                if let Some(previous) = names.insert(path.clone(), owner.clone()) {
+                    return Err(CatalogBuildError::InvalidValue {
+                        owner,
+                        field: "llm.family_id/specs.id",
+                        reason: format!("{path} conflicts with {previous}"),
+                    });
+                }
             }
         }
 
@@ -327,6 +333,23 @@ impl CatalogSnapshot {
         self.model_drivers.get(id).map(|catalog| &catalog.document)
     }
 
+    pub(crate) fn model_drivers(&self) -> impl Iterator<Item = &ModelDriverCatalog> {
+        self.model_drivers.values().map(|catalog| &catalog.document)
+    }
+
+    pub(crate) fn llm_model(&self, driver: &str, model: &str) -> Option<&LlmModel> {
+        self.model_drivers.get(driver)?.llm_models.get(model)
+    }
+
+    pub(crate) fn llm_models(&self) -> impl Iterator<Item = (&str, &str, &LlmModel)> {
+        self.model_drivers.iter().flat_map(|(driver, catalog)| {
+            catalog
+                .llm_models
+                .iter()
+                .map(move |(id, model)| (driver.as_str(), id.as_str(), model))
+        })
+    }
+
     pub(crate) fn provider_rules(&self, id: &str) -> Option<&ProviderRulesCatalog> {
         self.provider_rules.get(id).map(|catalog| &catalog.document)
     }
@@ -389,44 +412,6 @@ impl CatalogSnapshot {
         })
     }
 
-    pub(crate) fn matching_model_variants(
-        &self,
-        model_driver_id: &str,
-        context: &MatchContext,
-    ) -> Result<Vec<&ModelVariant>, CatalogResolveError> {
-        let catalog = self.model_drivers.get(model_driver_id).ok_or_else(|| {
-            CatalogResolveError::UnknownModelDriver {
-                model_driver_id: model_driver_id.to_owned(),
-            }
-        })?;
-        Ok(catalog
-            .document
-            .variants
-            .iter()
-            .zip(&catalog.compiled_variants)
-            .filter_map(|(variant, condition)| condition.matches(context).then_some(variant))
-            .collect())
-    }
-
-    pub(crate) fn matching_version_rules(
-        &self,
-        model_driver_id: &str,
-        context: &MatchContext,
-    ) -> Result<Vec<&VersionRule>, CatalogResolveError> {
-        let catalog = self.model_drivers.get(model_driver_id).ok_or_else(|| {
-            CatalogResolveError::UnknownModelDriver {
-                model_driver_id: model_driver_id.to_owned(),
-            }
-        })?;
-        Ok(catalog
-            .document
-            .version_rules
-            .iter()
-            .zip(&catalog.compiled_version_rules)
-            .filter_map(|(rule, condition)| condition.matches(context).then_some(rule))
-            .collect())
-    }
-
     #[cfg(test)]
     pub(crate) fn matching_provider_variants(
         &self,
@@ -472,48 +457,6 @@ impl CatalogSnapshot {
             .collect())
     }
 
-    pub(crate) fn effective_model_variants(
-        &self,
-        provider_rules_id: Option<&str>,
-        model_driver_id: &str,
-        context: &MatchContext,
-    ) -> Result<EffectiveModelVariants<'_>, CatalogResolveError> {
-        let model_variants = self.matching_model_variants(model_driver_id, context)?;
-        if let Some(provider_rules_id) = provider_rules_id {
-            let provider_variants = self
-                .matching_provider_variants_for_model(provider_rules_id, context)?
-                .into_iter()
-                .filter(|variant| variant.model_driver == model_driver_id)
-                .collect::<Vec<_>>();
-            if !provider_variants.is_empty() {
-                let variants = provider_variants
-                    .into_iter()
-                    .map(|provider| EffectiveModelVariant {
-                        model: model_variants
-                            .iter()
-                            .copied()
-                            .find(|model| model.name == provider.variant),
-                        provider: Some(provider),
-                    })
-                    .collect();
-                return Ok(EffectiveModelVariants {
-                    provider_override: true,
-                    variants,
-                });
-            }
-        }
-        Ok(EffectiveModelVariants {
-            provider_override: false,
-            variants: model_variants
-                .into_iter()
-                .map(|model| EffectiveModelVariant {
-                    model: Some(model),
-                    provider: None,
-                })
-                .collect(),
-        })
-    }
-
     pub(crate) fn resolve_model(
         &self,
         origin_model_id: &str,
@@ -540,17 +483,10 @@ impl CatalogSnapshot {
             let catalog = &self.model_drivers[driver_id];
             let position = catalog.exact_index[origin_model_id];
             let rule = &catalog.document.models[position];
-            let mut semantics = catalog
+            let semantics = catalog
                 .document
                 .defaults
                 .overlay(&model_rule_semantics!(rule));
-            semantics.pricing = catalog
-                .pricing
-                .lookup(
-                    origin_model_id,
-                    &pricing_context(origin_model_id, "origin_model_id", dimensions),
-                )
-                .map(|entry| entry.pricing.clone());
             return Ok(resolved_model(
                 origin_model_id,
                 driver_id,
@@ -586,14 +522,10 @@ impl CatalogSnapshot {
         if let Some((driver_id, trace)) = pattern_matches.pop() {
             let catalog = &self.model_drivers[&driver_id];
             let rule = &catalog.document.patterns[trace.position];
-            let mut semantics = catalog
+            let semantics = catalog
                 .document
                 .defaults
                 .overlay(&model_rule_semantics!(rule));
-            semantics.pricing = catalog
-                .pricing
-                .lookup(origin_model_id, &context)
-                .map(|entry| entry.pricing.clone());
             return Ok(resolved_model(
                 origin_model_id,
                 &driver_id,
@@ -607,14 +539,7 @@ impl CatalogSnapshot {
         if candidates.len() == 1 {
             let driver_id = &candidates[0];
             let catalog = &self.model_drivers[driver_id];
-            let mut semantics = catalog.document.defaults.clone();
-            semantics.pricing = catalog
-                .pricing
-                .lookup(
-                    origin_model_id,
-                    &pricing_context(origin_model_id, "origin_model_id", dimensions),
-                )
-                .map(|entry| entry.pricing.clone());
+            let semantics = catalog.document.defaults.clone();
             return Ok(resolved_model(
                 origin_model_id,
                 driver_id,
@@ -832,27 +757,60 @@ fn compile_model_driver(
         }),
         &MODEL_DRIVER_MATCH_SCHEMA,
     )?;
-    let pricing =
-        CompiledPricingTable::compile(&document.model_pricing, &MODEL_DRIVER_MATCH_SCHEMA)?;
-    let compiled_variants = document
-        .variants
-        .iter()
-        .map(|variant| {
-            CompiledMatchRule::compile(variant.match_rule.clone(), &MODEL_DRIVER_MATCH_SCHEMA)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let compiled_version_rules = document
-        .version_rules
-        .iter()
-        .map(|rule| CompiledMatchRule::compile(rule.match_rule.clone(), &MODEL_DRIVER_MATCH_SCHEMA))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut ids: BTreeSet<String> = exact_index.keys().cloned().collect();
+    for rule in &document.patterns {
+        if document
+            .defaults
+            .overlay(&model_rule_semantics!(rule))
+            .llm
+            .is_some()
+            && rule.exclude != Some(true)
+        {
+            ids.extend(llm_pattern_ids(
+                &document.model_driver_id,
+                &rule.match_rule,
+            )?);
+        }
+    }
+    let mut llm_models = BTreeMap::new();
+    for id in ids {
+        let rule = if let Some(position) = exact_index.get(&id) {
+            model_rule_semantics!(&document.models[*position])
+        } else {
+            let context = BTreeMap::from([("origin_model_id".into(), Value::String(id.clone()))]);
+            let Some(trace) = patterns.first_match(&context) else {
+                continue;
+            };
+            model_rule_semantics!(&document.patterns[trace.position])
+        };
+        let semantics = document.defaults.overlay(&rule);
+        if semantics.exclude == Some(true) {
+            continue;
+        }
+        if let Some(llm) = semantics.llm {
+            let family = llm.family_id.clone().unwrap_or_else(|| family_segment(&id));
+            validate_segment(
+                &format!("{} model {id}", document.model_driver_id),
+                "llm.family_id",
+                &family,
+            )?;
+            llm_models.insert(
+                id.clone(),
+                LlmModel {
+                    model_driver_id: document.model_driver_id.clone(),
+                    origin_model_id: id.clone(),
+                    family: format!("llm.{family}"),
+                    semantics: llm,
+                    version: ModelVersion::from_model_id(&document.model_driver_id, &id),
+                },
+            );
+        }
+    }
     Ok(CompiledModelDriverCatalog {
         document,
         exact_index,
         patterns,
-        pricing,
-        compiled_variants,
-        compiled_version_rules,
+        llm_models,
     })
 }
 

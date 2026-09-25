@@ -680,7 +680,10 @@ mod tests {
             );
             for model in &inventory.models {
                 assert!(
-                    !model.logical_mounts.is_empty(),
+                    !model.logical_mounts.is_empty()
+                        || catalog
+                            .llm_model(&model.model_driver_id, &model.origin_model_id)
+                            .is_some(),
                     "{}:{} produced no logical mounts",
                     profile.provider_profile_id,
                     model.provider_model_id
@@ -707,50 +710,51 @@ mod tests {
             BTreeMap::from([
                 (
                     "claude".to_owned(),
-                    "5:704897f72265b326a4e652367638ad3d5c9db1d1dac237f0fe26324c2da8f381".to_owned()
+                    "5:04db7f202393b97b812964a2ee7dd4173369bd68c6305520738a57d516af202b".to_owned()
                 ),
                 (
                     "deepseek".to_owned(),
-                    "3:1adead8cb4da22a0a844bfead8416f14a0c7e627fba9a4134b985178580e5557".to_owned()
+                    "3:c4b6ae0a3462665b7c6a87f6a150d77ef49afae3246db4f07cc3c7278525a939".to_owned()
                 ),
                 (
                     "doubao".to_owned(),
-                    "1:c054587853f80372caf82eaac075f91fab1d7f5b8d0f2bfe9167b9fdb56d019c".to_owned()
+                    "1:9eef8df56b3d035d4bfad5e693f1dce8d4b6deb9ca0a085eca2b1a41ed1604da".to_owned()
                 ),
                 (
                     "fal".to_owned(),
-                    "4:05760592a1391867052b6b68348099c6008dc8998d2fc8b5f957c96bb280a2d0".to_owned()
+                    "4:7c1a7bdfcd8c9b4605c7570257a2ab0a8362dbe431bccc6c9611bdf043ec465b".to_owned()
                 ),
                 (
                     "gemini".to_owned(),
-                    "26:e3b77210882747c4c478ab6bd48bc4bdb990498a9a04c70e198afe4cbdb020d2"
+                    "26:b9bc76ec5fbd7d66a5c7828c22e8806fce83f750e8263f232bc89764917afd5c"
                         .to_owned()
                 ),
                 (
                     "glm".to_owned(),
-                    "46:21834a76909a74ad83bc30e84c408d6bba0dc5ba2e8cbb7019eee0e4f595078e"
+                    "46:3b07dc20e30bdb4d9862a7df48bb1fc647ba970f8e1b547ad33a330ec7a06737"
                         .to_owned()
                 ),
                 (
                     "kimi".to_owned(),
-                    "2:bbd95d92bef225aa080c8914667f255d278529032c0ef45110ef643cbc4b804a".to_owned()
+                    "2:5c88be6581e0fc88e5ef3839fb8275124066bd5e62fa0cfb96d68dda1b64a181".to_owned()
                 ),
                 (
                     "minimax".to_owned(),
-                    "19:889ef13b059216f0855dbc1fcb5571e10433c5dd21007096c6c3daad74a27340"
+                    "19:a124813c5ead4eb5bf6607b3ee6849386bd9834169cce55f01b4b2a5c5857a0a"
                         .to_owned()
                 ),
                 (
                     "openai".to_owned(),
-                    "15:a2024fafdf9d7b6e171f2eda9f2576ff0771904047529da78d5816b2ebddd22e"
+                    "25:796d08eb7f611da33dbc96c669e0b49ced8cadbb4826d17ebc40d4508462dad9"
                         .to_owned()
                 ),
                 ("openrouter".to_owned(), "dynamic".to_owned()),
                 (
                     "qwen".to_owned(),
-                    "4:6a457f72a703c9f859f015977ecfc74e587d06d46e45d55b753f795f64f088c3".to_owned()
+                    "18:cf85d3066a47b2bdc8c16926bbf5bb7e4677925aba6910a0e400ad4283eb3da8"
+                        .to_owned()
                 ),
-                ("sn".to_owned(), "dynamic".to_owned())
+                ("sn".to_owned(), "dynamic".to_owned()),
             ])
         );
     }
@@ -762,15 +766,14 @@ mod tests {
                 CatalogKind::ModelDriver,
                 json!({
                     "format": "buckyos.aicc.model-driver-catalog",
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "schema_revision": 0,
                     "model_driver_id": "vendor",
                     "revision_seq": 2,
-                    "models": [{"id": "vendor-model", "api_types": ["llm"]}],
+                    "models": [{"id": "vendor-model", "api_types": ["llm"], "llm":{"spec":"vendor-spec","effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable"}}],
                     "patterns": [],
                     "defaults": {},
-                    "variants": [],
-                    "version_rules": []
+                    "specs": [{"id":"vendor-spec","direct_only":true}]
                 }),
             ),
             (

@@ -1,9 +1,9 @@
 {
   "format": "buckyos.aicc.model-driver-catalog",
-  "schema_version": 1,
-  "schema_revision": 1,
+  "schema_version": 2,
+  "schema_revision": 0,
   "model_driver_id": "qwen",
-  "revision_seq": 1,
+  "revision_seq": 2,
   "required_features": [],
   "models": [
     {
@@ -16,6 +16,13 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 262144
+      },
+      "llm": {
+        "spec": "qwen-max",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "experimental"
       }
     },
     {
@@ -27,6 +34,13 @@
         "tool_call": true,
         "json_schema": true,
         "reasoning": true
+      },
+      "llm": {
+        "spec": "qwen-moe-2t",
+        "effort": "xhigh",
+        "default_effort": "xhigh",
+        "supported_efforts": ["low", "medium", "xhigh"],
+        "stability": "stable"
       }
     },
     {
@@ -38,6 +52,13 @@
         "tool_call": true,
         "json_schema": true,
         "reasoning": true
+      },
+      "llm": {
+        "spec": "qwen-dense-27b",
+        "effort": "xhigh",
+        "default_effort": "xhigh",
+        "supported_efforts": ["none", "low", "medium", "xhigh"],
+        "stability": "stable"
       }
     },
     {
@@ -49,12 +70,16 @@
         "tool_call": true,
         "json_schema": true,
         "reasoning": true
+      },
+      "llm": {
+        "spec": "qwen-moe-35b",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
       }
-    }
-  ],
-  "patterns": [
+    },
     {
-      "match": "qwen3.8-max*",
       "parameter_scale": "max",
       "api_types": ["llm"],
       "capabilities": {
@@ -63,10 +88,17 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 1000000
+      },
+      "id": "qwen3.8-max",
+      "llm": {
+        "spec": "qwen-max",
+        "effort": "xhigh",
+        "default_effort": "xhigh",
+        "supported_efforts": ["none", "low", "medium", "xhigh"],
+        "stability": "stable"
       }
     },
     {
-      "match": "qwen3.8-flash*",
       "parameter_scale": "flash",
       "api_types": ["llm"],
       "capabilities": {
@@ -75,10 +107,17 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 1000000
+      },
+      "id": "qwen3.8-flash",
+      "llm": {
+        "spec": "qwen-flash",
+        "effort": "xhigh",
+        "default_effort": "xhigh",
+        "supported_efforts": ["none", "low", "medium", "xhigh"],
+        "stability": "stable"
       }
     },
     {
-      "match": "qwen3.7-max*",
       "parameter_scale": "max",
       "api_types": ["llm"],
       "capabilities": {
@@ -87,10 +126,17 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 1000000
+      },
+      "id": "qwen3.7-max",
+      "llm": {
+        "spec": "qwen-max",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
       }
     },
     {
-      "match": "qwen3.7-plus*",
       "parameter_scale": "plus",
       "api_types": ["llm"],
       "capabilities": {
@@ -99,10 +145,17 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 1000000
+      },
+      "id": "qwen3.7-plus",
+      "llm": {
+        "spec": "qwen-plus",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
       }
     },
     {
-      "match": "qwen3.7-flash*",
       "parameter_scale": "flash",
       "api_types": ["llm"],
       "capabilities": {
@@ -111,10 +164,17 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 1000000
+      },
+      "id": "qwen3.7-flash",
+      "llm": {
+        "spec": "qwen-flash",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
       }
     },
     {
-      "match": "qwen3.6-plus*",
       "parameter_scale": "plus",
       "api_types": ["llm"],
       "capabilities": {
@@ -123,10 +183,17 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 1000000
+      },
+      "id": "qwen3.6-plus",
+      "llm": {
+        "spec": "qwen-plus",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
       }
     },
     {
-      "match": "qwen3.6-flash*",
       "parameter_scale": "flash",
       "api_types": ["llm"],
       "capabilities": {
@@ -135,10 +202,17 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 1000000
+      },
+      "id": "qwen3.6-flash",
+      "llm": {
+        "spec": "qwen-flash",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
       }
     },
     {
-      "match": "qwen3.5-plus*",
       "parameter_scale": "plus",
       "api_types": ["llm"],
       "capabilities": {
@@ -147,10 +221,17 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 1000000
+      },
+      "id": "qwen3.5-plus",
+      "llm": {
+        "spec": "qwen-plus",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
       }
     },
     {
-      "match": "qwen3.5-flash*",
       "parameter_scale": "flash",
       "api_types": ["llm"],
       "capabilities": {
@@ -159,10 +240,17 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 1000000
+      },
+      "id": "qwen3.5-flash",
+      "llm": {
+        "spec": "qwen-flash",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
       }
     },
     {
-      "match": "qwen3.5-397b-a17b*",
       "parameter_scale": "397b-a17b",
       "api_types": ["llm"],
       "capabilities": {
@@ -171,10 +259,17 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 262144
+      },
+      "id": "qwen3.5-397b-a17b",
+      "llm": {
+        "spec": "qwen-moe-400b",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
       }
     },
     {
-      "match": "qwen3.5-122b-a10b*",
       "parameter_scale": "122b-a10b",
       "api_types": ["llm"],
       "capabilities": {
@@ -183,10 +278,17 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 262144
+      },
+      "id": "qwen3.5-122b-a10b",
+      "llm": {
+        "spec": "qwen-moe-120b",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
       }
     },
     {
-      "match": "qwen3.5-35b-a3b*",
       "parameter_scale": "35b-a3b",
       "api_types": ["llm"],
       "capabilities": {
@@ -195,10 +297,17 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 262144
+      },
+      "id": "qwen3.5-35b-a3b",
+      "llm": {
+        "spec": "qwen-moe-35b",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
       }
     },
     {
-      "match": "qwen3.5-27b*",
       "parameter_scale": "27b",
       "api_types": ["llm"],
       "capabilities": {
@@ -207,10 +316,17 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 262144
+      },
+      "id": "qwen3.5-27b",
+      "llm": {
+        "spec": "qwen-dense-27b",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
       }
     },
     {
-      "match": "qwen3-max*",
       "parameter_scale": "max",
       "api_types": ["llm"],
       "capabilities": {
@@ -219,27 +335,46 @@
         "json_schema": true,
         "reasoning": true,
         "max_context_tokens": 262144
+      },
+      "id": "qwen3-max",
+      "llm": {
+        "spec": "qwen-max",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
       }
     }
   ],
+  "patterns": [],
   "defaults": {
     "api_types": [],
-    "logical_mounts": ["llm.qwen", "llm.{driver}.{model}"],
-    "capabilities": {},
-    "version_rules": ["qwen-max", "qwen-plus", "qwen-flash"]
+    "capabilities": {}
   },
-  "variants": [
-    { "name": "reasoning-none", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "none" } } },
-    { "name": "reasoning-mini", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "minimal" } } },
-    { "name": "reasoning-low", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "low" } } },
-    { "name": "reasoning-medium", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "medium" } } },
-    { "name": "reasoning-high", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "high" } } },
-    { "name": "reasoning-xhigh", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "xhigh" } } },
-    { "name": "reasoning-max", "match": "qwen3*", "provider_options": { "reasoning": { "effort": "max" } } }
-  ],
-  "version_rules": [
-    { "id": "qwen-max", "family": "qwen", "tier": "max", "match": "qwen3*-max*", "tier_tokens": ["max"], "version_rank": { "prefix": "qwen" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.qwen-max", "version_mount": "llm.qwen.{model}" },
-    { "id": "qwen-plus", "family": "qwen", "tier": "plus", "match": "qwen3*-plus*", "tier_tokens": ["plus"], "version_rank": { "prefix": "qwen" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.qwen-plus", "version_mount": "llm.qwen.{model}" },
-    { "id": "qwen-flash", "family": "qwen", "tier": "flash", "match": "qwen3*-flash*", "tier_tokens": ["flash"], "version_rank": { "prefix": "qwen" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.qwen-flash", "version_mount": "llm.qwen.{model}" }
+  "specs": [
+    {
+      "id": "qwen-dense-27b"
+    },
+    {
+      "id": "qwen-flash"
+    },
+    {
+      "id": "qwen-max"
+    },
+    {
+      "id": "qwen-moe-120b"
+    },
+    {
+      "id": "qwen-moe-2t"
+    },
+    {
+      "id": "qwen-moe-35b"
+    },
+    {
+      "id": "qwen-moe-400b"
+    },
+    {
+      "id": "qwen-plus"
+    }
   ]
 }

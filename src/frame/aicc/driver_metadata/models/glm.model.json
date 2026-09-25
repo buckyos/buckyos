@@ -1,7 +1,7 @@
 {
   "format": "buckyos.aicc.model-driver-catalog",
-  "schema_version": 1,
-  "schema_revision": 1,
+  "schema_version": 2,
+  "schema_revision": 0,
   "model_driver_id": "glm",
   "revision_seq": 2,
   "required_features": [],
@@ -10,98 +10,211 @@
       "id": "glm-5v-turbo",
       "parameter_scale": "turbo",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
-      "capabilities": { "max_context_tokens": 204800, "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true, "vision": true }
+      "capabilities": {
+        "max_context_tokens": 204800,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true
+      },
+      "llm": {
+        "spec": "glm-vision-code",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking", "none"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-ocr",
-      "api_types": ["llm", "vision.ocr"],
-      "logical_mounts": ["llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}"],
-      "capabilities": { "streaming": true, "vision": true }
+      "api_types": ["vision.ocr"],
+      "logical_mounts": ["vision.ocr.glm", "vision.ocr.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "vision": true
+      }
     },
     {
       "id": "glm-4.1v-thinking-flashx",
       "parameter_scale": "flashx",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
-      "capabilities": { "max_context_tokens": 65536, "max_output_tokens": 16384, "streaming": true, "reasoning": true, "vision": true }
+      "capabilities": {
+        "max_context_tokens": 65536,
+        "max_output_tokens": 16384,
+        "streaming": true,
+        "reasoning": true,
+        "vision": true
+      },
+      "llm": {
+        "spec": "glm-vision-flashx",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4.1v-thinking-flash",
       "parameter_scale": "flash",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
-      "capabilities": { "max_context_tokens": 65536, "max_output_tokens": 16384, "streaming": true, "reasoning": true, "vision": true }
+      "capabilities": {
+        "max_context_tokens": 65536,
+        "max_output_tokens": 16384,
+        "streaming": true,
+        "reasoning": true,
+        "vision": true
+      },
+      "llm": {
+        "spec": "glm-vision-flash",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4v-flash",
       "parameter_scale": "flash",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
-      "capabilities": { "max_context_tokens": 16384, "max_output_tokens": 1024, "streaming": true, "vision": true }
+      "capabilities": {
+        "max_context_tokens": 16384,
+        "max_output_tokens": 1024,
+        "streaming": true,
+        "vision": true
+      },
+      "llm": {
+        "spec": "glm-vision-flash",
+        "effort": "native",
+        "default_effort": "native",
+        "supported_efforts": ["native"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4-long",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_context_tokens": 1048576, "streaming": true, "tool_call": true }
+      "capabilities": {
+        "max_context_tokens": 1048576,
+        "streaming": true,
+        "tool_call": true
+      },
+      "llm": {
+        "spec": "glm-long",
+        "effort": "native",
+        "default_effort": "native",
+        "supported_efforts": ["native"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4-flashx-250414",
       "parameter_scale": "flashx",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_context_tokens": 131072, "streaming": true, "tool_call": true }
+      "capabilities": {
+        "max_context_tokens": 131072,
+        "streaming": true,
+        "tool_call": true
+      },
+      "llm": {
+        "spec": "glm-flashx",
+        "effort": "native",
+        "default_effort": "native",
+        "supported_efforts": ["native"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4-flash-250414",
       "parameter_scale": "flash",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_context_tokens": 131072, "streaming": true, "tool_call": true }
+      "capabilities": {
+        "max_context_tokens": 131072,
+        "streaming": true,
+        "tool_call": true
+      },
+      "llm": {
+        "spec": "glm-flash",
+        "effort": "native",
+        "default_effort": "native",
+        "supported_efforts": ["native"],
+        "stability": "stable"
+      }
     },
     {
       "id": "charglm-4",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "streaming": true }
+      "capabilities": {
+        "streaming": true
+      },
+      "llm": {
+        "spec": "glm-character",
+        "effort": "native",
+        "default_effort": "native",
+        "supported_efforts": ["native"],
+        "stability": "stable"
+      }
     },
     {
       "id": "emohaa",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "streaming": true }
+      "capabilities": {
+        "streaming": true
+      },
+      "llm": {
+        "spec": "glm-emohaa",
+        "effort": "native",
+        "default_effort": "native",
+        "supported_efforts": ["native"],
+        "stability": "stable"
+      }
     },
     {
       "id": "codegeex-4",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "streaming": true }
+      "capabilities": {
+        "streaming": true
+      },
+      "llm": {
+        "spec": "glm-code",
+        "effort": "native",
+        "default_effort": "native",
+        "supported_efforts": ["native"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-image",
       "api_types": ["image.txt2img"],
       "logical_mounts": ["image.txt2img", "image.txt2img.glm", "image.txt2img.{model}"],
-      "capabilities": { "image_generation": true }
+      "capabilities": {
+        "image_generation": true
+      }
     },
     {
       "id": "cogview-4-250304",
       "api_types": ["image.txt2img"],
       "logical_mounts": ["image.txt2img", "image.txt2img.glm", "image.txt2img.{model}"],
-      "capabilities": { "image_generation": true }
+      "capabilities": {
+        "image_generation": true
+      }
     },
     {
       "id": "cogview-4",
       "api_types": ["image.txt2img"],
       "logical_mounts": ["image.txt2img", "image.txt2img.glm", "image.txt2img.{model}"],
-      "capabilities": { "image_generation": true }
+      "capabilities": {
+        "image_generation": true
+      }
     },
     {
       "id": "cogview-3-flash",
       "parameter_scale": "flash",
       "api_types": ["image.txt2img"],
       "logical_mounts": ["image.txt2img", "image.txt2img.glm", "image.txt2img.{model}"],
-      "capabilities": { "image_generation": true }
+      "capabilities": {
+        "image_generation": true
+      }
     },
     {
       "id": "glm-asr-2512",
@@ -115,7 +228,10 @@
       "canonical_fields": {
         "/voice": {
           "converter": "glm_tts_voice_v1",
-          "fallback": { "action": "default", "value": {} }
+          "fallback": {
+            "action": "default",
+            "value": {}
+          }
         }
       }
     },
@@ -123,13 +239,17 @@
       "id": "embedding-3",
       "api_types": ["embedding.text"],
       "logical_mounts": ["embedding.text", "embedding.text.glm", "embedding.text.{model}"],
-      "capabilities": { "max_context_tokens": 8192 }
+      "capabilities": {
+        "max_context_tokens": 8192
+      }
     },
     {
       "id": "embedding-2",
       "api_types": ["embedding.text"],
       "logical_mounts": ["embedding.text", "embedding.text.glm", "embedding.text.{model}"],
-      "capabilities": { "max_context_tokens": 8192 }
+      "capabilities": {
+        "max_context_tokens": 8192
+      }
     },
     {
       "id": "cogvideox-3",
@@ -175,142 +295,413 @@
     {
       "id": "glm-5.1",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true }
+      "capabilities": {
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "glm-standard",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking", "none"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-5.3",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 131072, "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true }
+      "capabilities": {
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "glm-standard",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["thinking", "max", "high", "low"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-5.3-flash",
       "parameter_scale": "flash",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
-      "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 131072, "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true, "vision": true }
+      "capabilities": {
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "vision": true
+      },
+      "llm": {
+        "spec": "glm-flash",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["thinking", "max", "high", "low"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-5.2",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_context_tokens": 1048576, "max_output_tokens": 131072, "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true }
+      "capabilities": {
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "glm-standard",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["thinking", "none", "max", "high"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-5-turbo",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true }
+      "capabilities": {
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "glm-turbo",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking", "none"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-5",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true }
+      "capabilities": {
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "glm-standard",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking", "none"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4.7",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true }
+      "capabilities": {
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "glm-standard",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4.7-flash",
       "parameter_scale": "flash",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "streaming": true, "tool_call": true, "reasoning": true }
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "glm-flash",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4.7-flashx",
       "parameter_scale": "flashx",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "streaming": true, "tool_call": true, "reasoning": true }
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "glm-flashx",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4.6",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_output_tokens": 131072, "streaming": true, "tool_call": true, "reasoning": true }
+      "capabilities": {
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "glm-standard",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking", "none"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4.6v",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
-      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 32768, "streaming": true, "tool_call": true, "reasoning": true, "vision": true }
+      "capabilities": {
+        "max_context_tokens": 131072,
+        "max_output_tokens": 32768,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true
+      },
+      "llm": {
+        "spec": "glm-vision",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking", "none"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4.6v-flash",
       "parameter_scale": "flash",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
-      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 32768, "streaming": true, "tool_call": true, "reasoning": true, "vision": true }
+      "capabilities": {
+        "max_context_tokens": 131072,
+        "max_output_tokens": 32768,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true
+      },
+      "llm": {
+        "spec": "glm-vision-flash",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking", "none"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4.6v-flashx",
       "parameter_scale": "flashx",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
-      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 32768, "streaming": true, "tool_call": true, "reasoning": true, "vision": true }
+      "capabilities": {
+        "max_context_tokens": 131072,
+        "max_output_tokens": 32768,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true
+      },
+      "llm": {
+        "spec": "glm-vision-flashx",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking", "none"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4.5",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "reasoning": true }
+      "capabilities": {
+        "max_context_tokens": 131072,
+        "max_output_tokens": 98304,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "glm-standard",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking", "none"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4.5-x",
       "parameter_scale": "x",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "reasoning": true }
+      "capabilities": {
+        "max_context_tokens": 131072,
+        "max_output_tokens": 98304,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "glm-x",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking", "none"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4.5-air",
       "parameter_scale": "air",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true }
+      "capabilities": {
+        "max_context_tokens": 131072,
+        "max_output_tokens": 98304,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "glm-air",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4.5-airx",
       "parameter_scale": "airx",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "max_context_tokens": 131072, "max_output_tokens": 98304, "streaming": true, "tool_call": true, "reasoning": true }
+      "capabilities": {
+        "max_context_tokens": 131072,
+        "max_output_tokens": 98304,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "glm-airx",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4.5v",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}", "vision.ocr.glm", "vision.ocr.{model}", "vision.caption.glm", "vision.caption.{model}"],
-      "capabilities": { "max_context_tokens": 65536, "max_output_tokens": 16384, "streaming": true, "tool_call": true, "reasoning": true, "vision": true }
+      "capabilities": {
+        "max_context_tokens": 65536,
+        "max_output_tokens": 16384,
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true
+      },
+      "llm": {
+        "spec": "glm-vision",
+        "effort": "thinking",
+        "default_effort": "thinking",
+        "supported_efforts": ["thinking"],
+        "stability": "stable"
+      }
     },
     {
       "id": "glm-4-32b-0414-128k",
       "parameter_scale": "32b",
       "api_types": ["llm"],
-      "logical_mounts": ["llm.glm", "llm.{driver}.{model}"],
-      "capabilities": { "streaming": true, "tool_call": true }
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true
+      },
+      "llm": {
+        "spec": "glm-dense-32b",
+        "effort": "native",
+        "default_effort": "native",
+        "supported_efforts": ["native"],
+        "stability": "stable"
+      }
     }
   ],
   "patterns": [],
-  "defaults": { "version_rules": ["glm-standard", "glm-turbo", "glm-air", "glm-airx", "glm-flash", "glm-flashx"] },
-  "variants": [
-    { "name": "reasoning-medium", "match": { "origin_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"] }, "provider_options": { "thinking": { "type": "enabled" } } },
-    { "name": "reasoning-none", "match": { "origin_model_id": ["glm-5", "glm-5-*", "glm-5.1*", "glm-5.2*", "glm-5-turbo*", "glm-5v-turbo*", "glm-4.6*", "glm-4.5", "glm-4.5-x*", "glm-4.5-flash*"] }, "provider_options": { "thinking": { "type": "disabled" } } },
-    { "name": "reasoning-max", "match": { "origin_model_id": ["glm-5.2*", "glm-5.3*"] }, "provider_options": { "reasoning_effort": "max" } },
-    { "name": "reasoning-high", "match": { "origin_model_id": ["glm-5.2*", "glm-5.3*"] }, "provider_options": { "reasoning_effort": "high" } },
-    { "name": "reasoning-low", "match": { "origin_model_id": ["glm-5.3*"] }, "provider_options": { "reasoning_effort": "low" } }
-  ],
-  "version_rules": [
-    { "id": "glm-standard", "family": "glm", "tier": "standard", "match": "glm-*", "exclude_tier_tokens": ["turbo", "air", "airx", "flash", "flashx"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm", "version_mount": "llm.glm.{model}" },
-    { "id": "glm-turbo", "family": "glm", "tier": "turbo", "match": "glm-*-turbo*", "tier_tokens": ["turbo"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm-turbo", "version_mount": "llm.glm.{model}" },
-    { "id": "glm-air", "family": "glm", "tier": "air", "match": "glm-*-air*", "tier_tokens": ["air"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm-air", "version_mount": "llm.glm.{model}" },
-    { "id": "glm-airx", "family": "glm", "tier": "airx", "match": "glm-*-airx*", "tier_tokens": ["airx"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm-airx", "version_mount": "llm.glm.{model}" },
-    { "id": "glm-flash", "family": "glm", "tier": "flash", "match": "glm-*-flash*", "tier_tokens": ["flash"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm-flash", "version_mount": "llm.glm.{model}" },
-    { "id": "glm-flashx", "family": "glm", "tier": "flashx", "match": "glm-*-flashx*", "tier_tokens": ["flashx"], "version_rank": { "prefix": "glm" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.glm-flashx", "version_mount": "llm.glm.{model}" }
+  "defaults": {},
+  "specs": [
+    {
+      "id": "glm-air",
+      "direct_only": true
+    },
+    {
+      "id": "glm-airx",
+      "direct_only": true
+    },
+    {
+      "id": "glm-character",
+      "direct_only": true
+    },
+    {
+      "id": "glm-code",
+      "direct_only": true
+    },
+    {
+      "id": "glm-dense-32b",
+      "direct_only": true
+    },
+    {
+      "id": "glm-emohaa",
+      "direct_only": true
+    },
+    {
+      "id": "glm-flash"
+    },
+    {
+      "id": "glm-flashx",
+      "direct_only": true
+    },
+    {
+      "id": "glm-long",
+      "direct_only": true
+    },
+    {
+      "id": "glm-standard"
+    },
+    {
+      "id": "glm-turbo",
+      "direct_only": true
+    },
+    {
+      "id": "glm-vision"
+    },
+    {
+      "id": "glm-vision-code"
+    },
+    {
+      "id": "glm-vision-flash"
+    },
+    {
+      "id": "glm-vision-flashx",
+      "direct_only": true
+    },
+    {
+      "id": "glm-x",
+      "direct_only": true
+    }
   ]
 }

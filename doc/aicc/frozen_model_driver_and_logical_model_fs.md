@@ -4,11 +4,11 @@
 
 冻结日期：2026-09-14
 
-LLM 设计修订：2026-09-25，采用 `service/model_defaults.rs` 头部契约；规格声明、家族与固定预设尚待实现。本文标明的 v1 部分描述当前实现，LLM 目标以 §3.3 和 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families) 为准。
+LLM 实现更新：2026-09-25，Model Driver v2 与规格/家族树已实现。当前契约见 §3.3、[Metadata Schema](driver_metadata_schema.md) 和 [实现报告](model_driver_v2_implementation.md)。
 
 当前 Schema：Model Driver `schema_version = 1`，system-config metadata envelope `schema_version = 1`；新的 Model Driver 结构计划使用 v2，不改变 envelope 版本。
 
-价格边界修订：2026-09-25，所有 Model Driver（含非 LLM 模型）不再声明 `model_pricing` 或兜底价格。builtin 配置已删除这些价格表，运行时 schema 与价格 fallback 的删除仍待 Review 后实现。
+价格边界修订：2026-09-25，所有 Model Driver（含非 LLM 模型）不再声明 `model_pricing` 或兜底价格。builtin 配置、运行时 schema 和 Model Driver 价格 fallback 均已删除；Provider 价格与实际结算保持原边界。
 
 ## 1. Overview
 
@@ -28,7 +28,7 @@ Model Driver 把原厂模型身份转换为稳定的 AICC 语义；逻辑模型 
 | cloud Model Driver 集合 | Durable | NDN 更新链路拥有；AICC 只消费当前完整发布 |
 | system-config Model Driver 集合 | Durable | `services/aicc/driver_metadata.model_drivers`，最高优先级 |
 | builtin 功能目录与功能到规格的偏好权重 | 版本化静态数据 | `service/model_defaults.rs`，随二进制发布 |
-| LLM 规格、模型能力、规格归属与 effort（目标） | Model Driver 版本化数据 | 每个原厂一份 `models/*.model.json`；版本顺序从官方模型 ID 推导，与 inventory 分离 |
+| LLM 规格、模型能力、规格归属与 effort | Model Driver 版本化数据 | 每个原厂一份 `models/*.model.json`；版本顺序从官方模型 ID 推导，与 inventory 分离 |
 | system/user 逻辑树与 Provider 权重 | Durable | system-config AICC settings/路由配置，通过 CAS 更新 |
 | request/session overlay | Disposable | 请求或 session 生命周期；含可选 TTL，不作为长期事实源 |
 | 有效 `CatalogSnapshot` / `ModelRegistry` | Disposable | 进程内不可变 snapshot，可由上述来源和 inventory 重建 |
@@ -55,27 +55,11 @@ system-config 使用一个原子 value，避免读取到多文件的混合版本
 
 逻辑 FS 只存在于 `ModelRegistry`。路径用点分隔，例如 `llm.plan`、`image.txt2img`；`@` 仅属于 exact model，逻辑路径禁止包含 `@`。节点由 `LogicalModelDefinition` 定义 API type、minimum line、disable line、mount mode、scheduler profile、fallback、policy 和用户可见 tier。
 
-当前 v1 实现的构建顺序为（LLM 目标调整见 §3.3）：
-
-```text
-builtin definitions
-  -> inventory 注册 exact models
-  -> Model Driver logical_mounts
-  -> auto admission
-  -> factory overlay
-  -> system overlay
-  -> user overlay
-  -> session overlay
-  -> item graph / fallback graph validation
-```
-
 当前生产装配至少启用 factory overlay 与 settings 中的 session overlay；`RegistryLayers` 已冻结 `factory/system/user/session` 四个插槽，后续接入 system/user 时不得改变层级顺序。
 
-### 3.3 LLM 厂商规格与模型家族（目标）
+### 3.3 LLM 厂商规格与模型家族
 
-Review 结论：按厂商组织 Model Driver，并以官方模型定义作为配置主体，可以复用现有 catalog、`LogicalModelDefinition`、带权重 item 与 overlay 分层，不需要引入统一档位或新的 Provider 架构。需要补齐独立规格声明、固定 effort 绑定、规格内版本推导及结构校验；仅调整当前 `current_mount` 不足以达到目标。
-
-迁移前的 OpenAI v1 JSON 只有 standard/pro/mini/nano 四条 `version_rules`，没有声明目标中的 max/codex；家族挂点使用 `llm.{driver}.{model}`，`auto_mounts` 直接进入功能目录。v1 variant 的 `mount_suffix` 生成点分子目录，也不等于新契约的 `:high` 固定预设。OpenAI JSON 现已改为 v2 审阅稿，实现仍待 Review 确认后迁移。
+复用 catalog、`LogicalModelDefinition`、带权重 item 和分层 overlay，规格从 metadata 静态创建，家族随有效库存生成。旧 current winner、版本挂点和 Model Driver variant 参数模板已删除。
 
 职责固定为：
 
@@ -83,12 +67,12 @@ Review 结论：按厂商组织 Model Driver，并以官方模型定义作为配
 - 配置主体 `models[]` 定义官方 `origin_model_id`、API 类型和能力，并在 `llm` 中明确唯一规格、固定 `effort`、`default_effort`、`supported_efforts` 与稳定性。规格内版本顺序从官方模型 ID 推导，不逐模型填写 `version_order`。不按 `parameter_scale` 或名字前缀猜规格归属，不因思考强度变化将同一模型自动分入多个规格。
 - 家族默认是 `llm.{归一化官方模型ID}`，例如 `gpt-5.6-sol` 对应 `llm.gpt-5-6-sol`。原始 ID 保留用于匹配和调用；逻辑段归一化后须检查重名。同一家族是多个物理 instance 的汇集处，Provider 渠道 ID 先归一到官方身份，再挂入同一家族。
 - `llm.gpt-5-6-sol:high` 是家族的固定思考预设；其下引用 `gpt-5.6-sol:reasoning-high@provider-a` 等 exact model。`:high` 不是 `.high` 子目录，不能由请求改成其他强度。Provider 无法执行该预设时，该实例不成为此预设的候选。
-- `supported_efforts` 是模型支持强度的唯一声明，AICC 据此派生思考 variant 身份；Model Driver 不再维护重复的 `variants` 模型列表或参数模板。标准参数转换属于 Protocol Adapter，渠道差异与限制属于 Provider Rules；没有适用转换的实例不能执行该预设。OpenAI v2 审阅稿已移除 `variants`，库存派生和转换实现仍待修改。
+- `supported_efforts` 是模型支持强度的唯一声明，AICC 据此派生思考 variant 身份；Model Driver 不再维护重复的 `variants` 模型列表或参数模板。标准参数转换属于 Protocol Adapter，渠道差异与限制属于 Provider Rules；没有适用转换的实例不能执行该预设。树只消费库存已明确提供的 variant；没有现成 Provider Rules 映射时无候选，新增标准转换仍属后续 Adapter 接入。
 - 功能到规格的偏好权重继续由 `model_defaults.rs` 和显式 overlay 管理；规格到家族的关系从模型条目生成，不在两个地方重复维护。家族直选使用 metadata 声明的默认预设，默认 strict。
 
-已归入规格的模型不再声明 `logical_mounts`，包括原先逐模型列出的 `vision.*`、`image.*`、`agent_runtime.*` 路径。模型定义负责官方身份、能力、规格与预设，功能路径及引用由通用逻辑树编排。`api_types` 是可执行能力约束，不能仅凭它或 LLM 规格归属自动接入所有非 LLM 任务；这些入口须单独配置树引用并检查 API 能力。当前 OpenAI JSON 的 v2 审阅稿已删除这类重复挂点；没有规格归属的独立图片、音频、视频和 embedding 模型暂保留旧挂点。后续实现需检查原先非 LLM 入口的编排，不能把保留能力声明当作已经保留原路由。
+已归入规格的模型不再声明 `logical_mounts`，包括原先逐模型列出的 `vision.*`、`image.*`、`agent_runtime.*` 路径。模型定义负责官方身份、能力、规格与预设，功能路径及引用由通用逻辑树编排。`api_types` 是可执行能力约束，不能仅凭它或 LLM 规格归属自动接入所有非 LLM 任务；这些入口须单独配置树引用并检查 API 能力。builtin overlay 已显式引用所需规格，并在展开时检查非 LLM API。独立图片、音频、视频和 embedding 模型保留现有挂点。
 
-LLM 目标装配顺序为：
+LLM 装配顺序为：
 
 ```text
 有效厂商 metadata + builtin 功能定义
@@ -112,25 +96,24 @@ inventory 消失只清理动态家族/预设及其引用，保留空规格、功
 
 Naming Convention：一个原厂 vendor 一个稳定 `model_driver_id` 和一份完整文档。builtin 文件名为 `<vendor>.model.json`；文件名不参与运行时 identity。
 
-以下是当前 v1 文档骨架；LLM v2 增加顶层 `specs` 与模型规则中的 `llm`，用显式关系替代 LLM `version_rules`，完整定义见上文链接。
+当前 Model Driver 文档骨架如下；模型字段详见 [Metadata Schema](driver_metadata_schema.md)。
 
 ```json
 {
   "format": "buckyos.aicc.model-driver-catalog",
-  "schema_version": 1,
-  "schema_revision": 1,
+  "schema_version": 2,
+  "schema_revision": 0,
   "model_driver_id": "openai",
   "revision_seq": 1,
   "required_features": [],
   "models": [],
   "patterns": [],
   "defaults": {},
-  "variants": [],
-  "version_rules": []
+  "specs": []
 }
 ```
 
-语义优先级为 exact `models[].id`、有序 `patterns[].match`、`defaults`、保守 fallback。v1 技术规则可声明：`model_driver`、`exclude`、`parameter_scale`、`api_types`、`logical_mounts`、`capabilities`、`canonical_fields`、调度提示与 `version_rules`。Model Driver 不声明价格；技术语义的保守 fallback 不包含价格或费用估值兜底。
+语义优先级为 exact `models[].id`、有序 `patterns[].match`、`defaults`、保守 fallback。技术规则可声明：`model_driver`、`exclude`、`parameter_scale`、`api_types`、`logical_mounts`、`capabilities`、`canonical_fields`、调度提示与 `llm`。Model Driver 不声明价格；技术语义的保守 fallback 不包含价格或费用估值兜底。
 
 Provider endpoint、认证、operation、渠道别名、渠道限制和渠道价格不属于 Model Driver，必须进入 Provider Profile/Rules。
 
@@ -163,11 +146,11 @@ exact model        = <provider_model_id>[:<variant>]@<provider_instance_name>
 logical model      = 点分隔用途路径，不含 @
 ```
 
-当前 v1 的 variant 解析是 Provider-first：具体 provider model 匹配到 Provider Rules variant 时，以其完整集合为准；只有没有任何 Provider variant 命中时才使用 Model Driver variants，两边不静态 merge。LLM v2 目标从 `supported_efforts` 派生身份；命中的 Provider 集合与模型支持强度取交集，未命中时使用 Adapter 标准转换，不再使用 Model Driver 参数模板，见 §3.3。
+LLM effort 身份由 `supported_efforts` 派生，与现有库存中的可用变体取交集。调用仅使用现有 Provider Rules 的参数映射；Model Driver 不再提供 variant 参数 fallback。没有映射的 effort 不声明可执行，标准 Adapter 转换另行接入。
 
 ## 5. Schema Version
 
-- Model Driver 初始 `schema_version` 为 `1`；`schema_revision` 表示同一 schema version 内已启用的字段能力，`revision_seq` 表示发布顺序。
+- Model Driver 当前 `schema_version` 为 `2`，`schema_revision` 为 `0`；`schema_revision` 表示同一 schema version 内已启用的字段能力，`revision_seq` 表示发布顺序。
 - system-config metadata envelope 初始 `schema_version` 为 `1`，版本保存在 value 顶层。
 - 逻辑 overlay 的结构由 `buckyos-api` 公共 Rust DTO 版本和 system-config revision 共同管理，当前没有独立 `schema_version` 字段；这是冻结现状，新增持久结构版本时必须先补 version 字段。
 - schema 结构变化递增 `schema_version`；兼容字段能力变化递增 `schema_revision`；内容发布只递增 `revision_seq`。
@@ -212,7 +195,7 @@ Beta 2.2 采用 **No-compat**：旧 `provider_driver`、根级 `provider_options
 
 ```text
 llm, llm.chat, llm.plan, llm.code, llm.swift, llm.summarize,
-llm.summary, llm.translate, llm.reason, llm.vision, llm.long, llm.fallback,
+llm.translate, llm.vision, llm.fallback,
 embedding.text, embedding.multimodal, rerank,
 image.txt2img, image.img2img, image.inpaint, image.upscale, image.bg_remove,
 vision.ocr, vision.caption, vision.detect, vision.segment,
@@ -221,7 +204,7 @@ video.txt2video, video.img2video, video.video2video, video.extend, video.upscale
 agent_runtime.computer_use
 ```
 
-具体模型家族挂点和权重属于可发布数据，不冻结为永久产品承诺；其当前实现值以 builtin metadata 和 `model_defaults.rs` 的代码为准。该文件头部注释描述新 LLM 目标，不能当作下方代码或现有 metadata 已完成迁移。
+具体模型家族挂点和权重属于可发布数据，不冻结为永久产品承诺；其当前实现值以 builtin metadata 和 `model_defaults.rs` 的代码为准。该文件头部契约已落实到 builtin definitions、overlay 和零 Provider 回归测试。
 
 ## 10. Validation Checklist
 

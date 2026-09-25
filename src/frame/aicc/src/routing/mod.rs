@@ -83,6 +83,7 @@ pub(crate) struct RoutingRequest {
     pub requirements: ModelRequirement,
     pub disable: ModelDisable,
     pub exact_fallback: Option<AiccFallbackRule>,
+    pub allow_experimental: bool,
     pub previous_exact_model: Option<String>,
     pub request_units: u64,
     pub estimated_input_tokens: Option<u64>,
@@ -108,6 +109,7 @@ impl RoutingRequest {
             requirements: ModelRequirement::default(),
             disable: ModelDisable::default(),
             exact_fallback: None,
+            allow_experimental: false,
             previous_exact_model: None,
             request_units: 1,
             estimated_input_tokens: None,
@@ -380,6 +382,7 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
             None,
             ModelDisable::default(),
             vec![RegistryCandidate {
+                llm_order: None,
                 model: model.clone(),
                 paths: Vec::new(),
                 exact_model_weight: 1.0,
@@ -450,6 +453,33 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
         requested_kind: RouteModelKind,
         mut trace_chain: Vec<FallbackTraceStep>,
     ) -> Result<RouteDecision, RoutingError> {
+        let mut effective_request = request.clone();
+        let task = self.registry.logical_requirement(initial_path);
+        let task_disable = self.registry.disable_line(initial_path);
+        for feature in task_disable.feature_names() {
+            effective_request.disable.set_feature_disabled(&feature);
+        }
+        effective_request.disable.min_context_tokens = effective_request
+            .disable
+            .min_context_tokens
+            .max(task_disable.min_context_tokens);
+        for feature in task.feature_names() {
+            effective_request
+                .requirements
+                .set_feature_required(&feature);
+        }
+        effective_request.requirements.min_context_tokens = effective_request
+            .requirements
+            .min_context_tokens
+            .max(task.min_context_tokens);
+        for (field, requirement) in task.canonical_fields {
+            effective_request
+                .requirements
+                .canonical_fields
+                .entry(field)
+                .or_insert(requirement);
+        }
+        let request = &effective_request;
         let mut current = initial_path.to_owned();
         let mut visited = BTreeSet::new();
         let mut all_filtered = Vec::new();
@@ -533,12 +563,15 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
             .registry
             .logical_model_views()
             .into_iter()
-            .find(|view| view.path == path)
+            .find(|view| view.path == path.split(':').next().unwrap_or(path))
             .and_then(|view| view.fallback);
-        let mode = rule
-            .as_ref()
-            .map(|rule| &rule.mode)
-            .unwrap_or(&AiccFallbackMode::Parent);
+        let mode = rule.as_ref().map(|rule| &rule.mode).unwrap_or(
+            if path.split('.').next() == Some("llm") {
+                &AiccFallbackMode::Strict
+            } else {
+                &AiccFallbackMode::Parent
+            },
+        );
         match mode {
             AiccFallbackMode::Strict | AiccFallbackMode::Disabled => Ok(None),
             AiccFallbackMode::Parent => {
@@ -565,6 +598,16 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
             let exact_model = candidate.model.exact_model.as_str().to_owned();
             let provider = candidate.model.identity.provider_instance_name.clone();
             let mut reasons = hard_filter_model(request, &candidate.model, &directory_disable);
+            if !request.allow_experimental
+                && candidate.llm_order.as_ref().is_some_and(|order| {
+                    order.stability == crate::catalog::ModelStability::Experimental
+                })
+            {
+                reasons.push(filter_reason(
+                    "experimental_model_disabled",
+                    "experimental model requires explicit policy permission",
+                ));
+            }
             let state = self.runtime.get(&exact_model);
             if let Some(state) = state {
                 hard_filter_runtime(
@@ -1129,11 +1172,28 @@ fn weighted_score(inputs: &ScoreInputs, weights: &AiccSchedulerProfileWeights) -
 }
 
 fn compare_ranked(left: &RankedCandidate, right: &RankedCandidate) -> Ordering {
+    if let (Some(left_order), Some(right_order)) = (
+        &left.pending.candidate.llm_order,
+        &right.pending.candidate.llm_order,
+    ) {
+        let ordering = left_order.compare(right_order);
+        if !ordering.is_eq() {
+            return ordering;
+        }
+    }
     right
         .pending
         .canonical_quality
         .cmp(&left.pending.canonical_quality)
-        .then_with(|| compare_priority(&right.priority_path, &left.priority_path))
+        .then_with(|| {
+            if left.pending.candidate.llm_order.is_some()
+                && right.pending.candidate.llm_order.is_some()
+            {
+                Ordering::Equal
+            } else {
+                compare_priority(&right.priority_path, &left.priority_path)
+            }
+        })
         .then_with(|| {
             right
                 .pending
@@ -1439,19 +1499,18 @@ mod tests {
     fn catalog() -> CatalogSnapshot {
         let driver: ModelDriverCatalog = serde_json::from_value(json!({
             "format": "buckyos.aicc.model-driver-catalog",
-            "schema_version": 1,
+            "schema_version": 2,
             "schema_revision": 0,
             "model_driver_id": "driver",
             "revision_seq": 1,
             "models": [],
             "patterns": [{
                 "match": "*",
-                "api_types": ["llm"],
+                "api_types": ["image.txt2img"],
                 "capabilities": {"streaming": true}
             }],
             "defaults": {},
-            "variants": [],
-            "version_rules": []
+            "specs": []
         }))
         .unwrap();
         CatalogSnapshot::build(
@@ -1489,7 +1548,7 @@ mod tests {
                 provider_model_id: id.into(),
                 model_driver_id: "driver".into(),
                 origin_model_id: id.into(),
-                api_types: vec![ApiType::Llm],
+                api_types: vec![ApiType::ImageTextToImage],
                 logical_mounts: Vec::new(),
                 variants: Vec::new(),
                 capabilities: BTreeMap::from([
@@ -1498,10 +1557,7 @@ mod tests {
                 ]),
                 canonical_fields,
                 attributes: BTreeMap::new(),
-                operations: BTreeMap::from([(
-                    "chat.completions.create".into(),
-                    "responses.create".into(),
-                )]),
+                operations: BTreeMap::from([("image.txt2img".into(), "responses.create".into())]),
             }],
         }
     }
@@ -1513,7 +1569,7 @@ mod tests {
     ) -> LogicalModelDefinition {
         LogicalModelDefinition {
             path: path.into(),
-            api_type: ApiType::Llm,
+            api_type: ApiType::ImageTextToImage,
             min_line: ModelRequirement::default(),
             disable_line: ModelDisable::default(),
             default_options: BTreeMap::new(),
@@ -1561,49 +1617,52 @@ mod tests {
             .insert("fast@cloud-b".into(), 2.0);
         let factory = AiccRouteOverlay {
             logical_tree: BTreeMap::from([
-                ("llm".into(), node(&[("fallback", "cheap@cloud-a", 1.0)])),
+                ("image".into(), node(&[("fallback", "cheap@cloud-a", 1.0)])),
                 (
-                    "llm.plan".into(),
+                    "image.plan".into(),
                     node(&[
-                        ("preferred", "llm.family", 3.0),
+                        ("preferred", "image.family", 3.0),
                         ("backup", "local@local", 2.0),
                     ]),
                 ),
                 (
-                    "llm.family".into(),
+                    "image.family".into(),
                     node(&[("a", "cheap@cloud-a", 1.0), ("b", "fast@cloud-b", 1.0)]),
                 ),
-                ("llm.special".into(), node(&[("only", "fast@cloud-b", 1.0)])),
                 (
-                    "llm.all".into(),
+                    "image.special".into(),
+                    node(&[("only", "fast@cloud-b", 1.0)]),
+                ),
+                (
+                    "image.all".into(),
                     node(&[
                         ("cloud", "cheap@cloud-a", 1.0),
                         ("local", "local@local", 1.0),
                     ]),
                 ),
-                ("llm.weighted".into(), weighted),
+                ("image.weighted".into(), weighted),
             ]),
             ..AiccRouteOverlay::default()
         };
         let mut definitions = vec![
-            definition("llm", AiccFallbackMode::Strict, profile.clone()),
-            definition("llm.plan", AiccFallbackMode::Parent, profile.clone()),
-            definition("llm.family", AiccFallbackMode::Strict, profile.clone()),
-            definition("llm.special", AiccFallbackMode::Parent, profile.clone()),
+            definition("image", AiccFallbackMode::Strict, profile.clone()),
+            definition("image.plan", AiccFallbackMode::Parent, profile.clone()),
+            definition("image.family", AiccFallbackMode::Strict, profile.clone()),
+            definition("image.special", AiccFallbackMode::Parent, profile.clone()),
             definition(
-                "llm.all",
+                "image.all",
                 AiccFallbackMode::Strict,
                 AiccSchedulerProfile::Balanced,
             ),
             definition(
-                "llm.weighted",
+                "image.weighted",
                 AiccFallbackMode::Strict,
                 AiccSchedulerProfile::CostFirst,
             ),
         ];
         definitions
             .iter_mut()
-            .find(|definition| definition.path == "llm.family")
+            .find(|definition| definition.path == "image.family")
             .unwrap()
             .route_policy = route_policy;
         ModelRegistry::build(
@@ -1670,7 +1729,7 @@ mod tests {
             "trace-1",
             "request-1",
             model,
-            ApiType::Llm,
+            ApiType::ImageTextToImage,
             CallerIdentity {
                 tenant_id: "tenant".into(),
                 user_id: "user".into(),
@@ -1707,7 +1766,7 @@ mod tests {
         let decision = route(
             AiccSchedulerProfile::CostFirst,
             &RoutingPolicyPatch::default(),
-            &request("llm.plan"),
+            &request("image.plan"),
             &runtime(),
         )
         .unwrap();
@@ -1718,7 +1777,7 @@ mod tests {
 
     #[test]
     fn exact_voice_mappings_are_ranked_by_the_selected_profile() {
-        let mut request = request("llm.family");
+        let mut request = request("image.family");
         request.requirements.canonical_fields.insert(
             "/voice".into(),
             buckyos_api::CanonicalFieldRequirement::new(json!({"style": "warm"})),
@@ -1781,7 +1840,7 @@ mod tests {
         let mut request = request("fast@cloud-b");
         request.exact_fallback = Some(AiccFallbackRule {
             mode: AiccFallbackMode::TargetLogical,
-            target: Some("llm".into()),
+            target: Some("image".into()),
         });
         let decision = route(AiccSchedulerProfile::Balanced, &patch, &request, &runtime).unwrap();
         assert_eq!(decision.selected.exact_model, "cheap@cloud-a");
@@ -1793,7 +1852,7 @@ mod tests {
         let decision = route(
             AiccSchedulerProfile::CostFirst,
             &RoutingPolicyPatch::default(),
-            &request("llm.weighted"),
+            &request("image.weighted"),
             &runtime(),
         )
         .unwrap();
@@ -1802,7 +1861,7 @@ mod tests {
 
     #[test]
     fn hard_filters_feature_health_and_allow_list() {
-        let mut request = request("llm.family");
+        let mut request = request("image.family");
         request.requirements.tool_call = true;
         let patch = RoutingPolicyPatch {
             route: AiccPolicyConfig {
@@ -1828,7 +1887,7 @@ mod tests {
         let decision = route(
             AiccSchedulerProfile::CostFirst,
             &patch,
-            &request("llm.plan"),
+            &request("image.plan"),
             &runtime(),
         )
         .unwrap();
@@ -1850,13 +1909,13 @@ mod tests {
         let decision = route(
             AiccSchedulerProfile::Balanced,
             &RoutingPolicyPatch::default(),
-            &request("llm.special"),
+            &request("image.special"),
             &runtime,
         )
         .unwrap();
         assert_eq!(decision.selected.exact_model, "cheap@cloud-a");
         assert!(decision.trace.fallback_applied);
-        assert_eq!(decision.trace.fallback_chain[0].from, "llm.special");
+        assert_eq!(decision.trace.fallback_chain[0].from, "image.special");
     }
 
     #[test]
@@ -1869,7 +1928,7 @@ mod tests {
             let decision = route(
                 profile,
                 &RoutingPolicyPatch::default(),
-                &request("llm.family"),
+                &request("image.family"),
                 &runtime(),
             )
             .unwrap();
@@ -1898,7 +1957,7 @@ mod tests {
         let decision = route(
             AiccSchedulerProfile::Balanced,
             &patch,
-            &request("llm.family"),
+            &request("image.family"),
             &runtime,
         )
         .unwrap();
@@ -1919,9 +1978,9 @@ mod tests {
                 ..RoutingPolicyPatch::default()
             };
             let model = if profile == AiccSchedulerProfile::LocalFirst {
-                "llm.all"
+                "image.all"
             } else {
-                "llm.plan"
+                "image.plan"
             };
             let decision = route(
                 AiccSchedulerProfile::Balanced,
@@ -1936,7 +1995,7 @@ mod tests {
 
     #[test]
     fn session_history_is_soft_and_cannot_bypass_health() {
-        let mut request = request("llm.family");
+        let mut request = request("image.family");
         request.previous_exact_model = Some("fast@cloud-b".into());
         let patch = RoutingPolicyPatch {
             route: AiccPolicyConfig {
@@ -1980,7 +2039,7 @@ mod tests {
         let decision = route(
             AiccSchedulerProfile::Balanced,
             &patch,
-            &request("llm.family"),
+            &request("image.family"),
             &runtime(),
         )
         .unwrap();
@@ -1997,8 +2056,8 @@ mod tests {
 
     #[test]
     fn method_and_capability_must_match_api_type() {
-        let mut bad_method = request("llm.family");
-        bad_method.method = "images.generate".into();
+        let mut bad_method = request("image.family");
+        bad_method.method = "chat.completions.create".into();
         assert!(matches!(
             route(
                 AiccSchedulerProfile::Balanced,
@@ -2009,8 +2068,8 @@ mod tests {
             Err(RoutingError::InvalidRequest(_))
         ));
 
-        let mut bad_capability = request("llm.family");
-        bad_capability.capability = Capability::Image;
+        let mut bad_capability = request("image.family");
+        bad_capability.capability = Capability::Llm;
         assert!(matches!(
             route(
                 AiccSchedulerProfile::Balanced,
@@ -2021,7 +2080,7 @@ mod tests {
             Err(RoutingError::InvalidRequest(_))
         ));
 
-        let mut missing_trace_id = request("llm.family");
+        let mut missing_trace_id = request("image.family");
         missing_trace_id.trace_id.clear();
         assert!(matches!(
             route(
@@ -2044,7 +2103,7 @@ mod tests {
         let registry = registry_with_directory_policy(AiccSchedulerProfile::Balanced, directory);
 
         let directory_only =
-            resolve_effective_routing_policy(&registry, "llm.family", None, None).unwrap();
+            resolve_effective_routing_policy(&registry, "image.family", None, None).unwrap();
         assert_eq!(
             directory_only.profile.value,
             AiccSchedulerProfile::CostFirst
@@ -2058,7 +2117,7 @@ mod tests {
             },
             logical_profile: Some(AiccSessionLogicalProfile {
                 overlays: vec![AiccLogicalTreeOverlay {
-                    path: "llm.family".into(),
+                    path: "image.family".into(),
                     route_policy_override: Some(AiccPolicyConfig {
                         allow_fallback: Some(LockedValue::new(true)),
                         ..AiccPolicyConfig::default()
@@ -2070,7 +2129,7 @@ mod tests {
             ..AiccRouteOverlay::default()
         };
         let session_effective =
-            resolve_effective_routing_policy(&registry, "llm.family", Some(&session), None)
+            resolve_effective_routing_policy(&registry, "image.family", Some(&session), None)
                 .unwrap();
         assert_eq!(
             session_effective.profile.value,
@@ -2085,7 +2144,7 @@ mod tests {
         };
         let effective = resolve_effective_routing_policy(
             &registry,
-            "llm.family",
+            "image.family",
             Some(&session),
             Some(&request),
         )
@@ -2106,7 +2165,7 @@ mod tests {
         );
         let error = resolve_effective_routing_policy(
             &registry,
-            "llm.family",
+            "image.family",
             None,
             Some(&RoutePolicy::default()),
         )
@@ -2146,7 +2205,7 @@ mod tests {
         };
         let engine = policy_engine_for_route(
             &registry,
-            "llm.family",
+            "image.family",
             None,
             Some(&request_policy),
             OpenQuota,
@@ -2155,7 +2214,7 @@ mod tests {
         let mut runtime = runtime();
         runtime.get_mut("cheap@cloud-a").unwrap().p95_latency_ms = None;
         let decision = Router::new(&registry, &engine, &runtime)
-            .route(&request("llm.family"))
+            .route(&request("image.family"))
             .unwrap();
         assert_eq!(decision.selected.exact_model, "fast@cloud-b");
         assert_eq!(
@@ -2165,10 +2224,10 @@ mod tests {
 
         runtime.get_mut("fast@cloud-b").unwrap().p95_latency_ms = Some(300.0);
         let error = Router::new(&registry, &engine, &runtime)
-            .route(&request("llm.family"))
+            .route(&request("image.family"))
             .unwrap_err();
         let message = error.to_string();
-        assert!(message.contains("no candidate for llm.family"));
+        assert!(message.contains("no candidate for image.family"));
         assert!(message.contains("cheap@cloud-a@cloud-a[latency_unavailable]"));
         assert!(message.contains("fast@cloud-b@cloud-b[latency_ceiling_exceeded]"));
         let RoutingError::NoCandidate { filtered, .. } = error else {
@@ -2180,5 +2239,160 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(codes.contains(&"latency_unavailable"));
         assert!(codes.contains(&"latency_ceiling_exceeded"));
+    }
+    fn llm_registry(stocks: &[ProviderInventory], experimental: bool) -> ModelRegistry {
+        let mut document = crate::model::llm_tests::openai_document();
+        if experimental {
+            document["models"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|model| model["id"] == "gpt-5.6-sol")
+                .unwrap()["llm"]["stability"] = json!("experimental");
+        }
+        let catalog =
+            crate::model::llm_tests::compile(vec![serde_json::from_value(document).unwrap()])
+                .unwrap();
+        let mut overlay = crate::model::llm_tests::gpt_overlay();
+        let items = overlay
+            .logical_tree
+            .get_mut("llm.chat")
+            .unwrap()
+            .items
+            .as_mut()
+            .unwrap();
+        for item in items.values_mut() {
+            item.weight = 0.1;
+        }
+        items.get_mut("pro").unwrap().weight = 10.0;
+        items.get_mut("max").unwrap().weight = 1.0;
+        items.get_mut("nano").unwrap().weight = 100.0;
+        let mut task = crate::model::llm_tests::definition("llm.chat");
+        task.min_line.tool_call = true;
+        ModelRegistry::build(
+            &catalog,
+            stocks,
+            vec![task],
+            RegistryLayers {
+                factory: Some(&overlay),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn llm_route(
+        registry: &ModelRegistry,
+        experimental: bool,
+        unavailable: &[&str],
+    ) -> Result<RouteDecision, RoutingError> {
+        let mut runtime: BTreeMap<_, _> = registry
+            .model_views()
+            .into_iter()
+            .map(|model| (model.exact_model, state(false, 0.1, 100.0, 0.9)))
+            .collect();
+        for exact in unavailable {
+            runtime.get_mut(*exact).unwrap().model_available = false;
+        }
+        let mut request = request("llm.chat");
+        request.api_type = ApiType::Llm;
+        request.method = ApiType::Llm.typed_method().into();
+        request.capability = ApiType::Llm.capability();
+        request.allow_experimental = experimental;
+        Router::new(registry, &engine(&RoutingPolicyPatch::default()), &runtime).route(&request)
+    }
+
+    #[test]
+    fn llm_spec_preference_precedes_versions_and_preserves_instance_scheduling() {
+        let old =
+            crate::model::llm_tests::inventory("openai", "gpt-5.5-pro", "old", "old", &["high"]);
+        let new =
+            crate::model::llm_tests::inventory("openai", "gpt-5.6-sol", "new", "new", &["high"]);
+        let duplicate = crate::model::llm_tests::inventory(
+            "openai",
+            "gpt-5.6-sol",
+            "other",
+            "other",
+            &["high"],
+        );
+        let lower =
+            crate::model::llm_tests::inventory("openai", "gpt-6-astra", "six", "six", &["high"]);
+        let registry = llm_registry(&[old.clone(), new.clone(), duplicate, lower.clone()], false);
+        let decision = llm_route(&registry, false, &[]).unwrap();
+        assert_eq!(decision.selected.origin_model_id, "gpt-5.6-sol");
+        assert_eq!(
+            decision
+                .fallback_candidates
+                .iter()
+                .map(|candidate| candidate.origin_model_id.as_str())
+                .collect::<Vec<_>>(),
+            ["gpt-5.6-sol", "gpt-5.5-pro", "gpt-6-astra"]
+        );
+        let decision = llm_route(
+            &registry,
+            false,
+            &["new:reasoning-high@new", "other:reasoning-high@other"],
+        )
+        .unwrap();
+        assert_eq!(decision.selected.origin_model_id, "gpt-5.5-pro");
+        let decision = llm_route(
+            &registry,
+            false,
+            &[
+                "new:reasoning-high@new",
+                "other:reasoning-high@other",
+                "old:reasoning-high@old",
+            ],
+        )
+        .unwrap();
+        assert_eq!(decision.selected.origin_model_id, "gpt-6-astra");
+        let mut incapable = new;
+        incapable.models[0].capabilities.remove("tool_call");
+        let registry = llm_registry(&[old, incapable, lower], false);
+        assert_eq!(
+            llm_route(&registry, false, &[])
+                .unwrap()
+                .selected
+                .origin_model_id,
+            "gpt-5.5-pro"
+        );
+    }
+
+    #[test]
+    fn llm_stability_is_filtered_before_ranking_and_fallback_keeps_requirements() {
+        let old =
+            crate::model::llm_tests::inventory("openai", "gpt-5.5-pro", "old", "old", &["high"]);
+        let new =
+            crate::model::llm_tests::inventory("openai", "gpt-5.6-sol", "new", "new", &["high"]);
+        let registry = llm_registry(&[old, new.clone()], true);
+        assert_eq!(
+            llm_route(&registry, true, &[])
+                .unwrap()
+                .selected
+                .origin_model_id,
+            "gpt-5.5-pro"
+        );
+        let registry = llm_registry(&[new], true);
+        assert!(matches!(
+            llm_route(&registry, false, &[]),
+            Err(RoutingError::NoCandidate { .. })
+        ));
+        assert_eq!(
+            llm_route(&registry, true, &[])
+                .unwrap()
+                .selected
+                .exact_model,
+            "new:reasoning-high@new"
+        );
+        let mut incapable =
+            crate::model::llm_tests::inventory("openai", "gpt-5.6-sol", "weak", "weak", &["low"]);
+        incapable.models[0].capabilities.remove("tool_call");
+        let registry = llm_registry(&[incapable], false);
+        let overlay: AiccRouteOverlay=serde_json::from_value(json!({"logical_tree":{"llm.chat":{"fallback":{"mode":"target_exact","target":"weak:reasoning-low@weak"}}}})).unwrap();
+        let registry = registry.with_session_overlay(&overlay).unwrap();
+        assert!(matches!(
+            llm_route(&registry, false, &[]),
+            Err(RoutingError::NoCandidate { .. })
+        ));
     }
 }

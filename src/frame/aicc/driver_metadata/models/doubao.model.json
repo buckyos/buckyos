@@ -1,81 +1,47 @@
 {
   "format": "buckyos.aicc.model-driver-catalog",
-  "schema_version": 1,
-  "schema_revision": 1,
+  "schema_version": 2,
+  "schema_revision": 0,
   "model_driver_id": "doubao",
-  "revision_seq": 1,
+  "revision_seq": 2,
   "required_features": [],
   "models": [
     {
       "id": "doubao-seed-2-0-lite-260215",
       "parameter_scale": "lite",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "logical_mounts": ["llm.doubao", "llm.{driver}.{model}", "vision.ocr.doubao", "vision.ocr.{model}", "vision.caption.doubao", "vision.caption.{model}"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
         "reasoning": true,
         "vision": true
+      },
+      "llm": {
+        "spec": "doubao-lite",
+        "effort": "none",
+        "default_effort": "none",
+        "supported_efforts": ["none"],
+        "stability": "stable"
       }
     }
   ],
-  "patterns": [
-    {
-      "match": "doubao-seed-2-0-pro-*",
-      "parameter_scale": "pro",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "capabilities": {
-        "streaming": true,
-        "tool_call": true,
-        "reasoning": true,
-        "vision": true
-      }
-    },
-    {
-      "match": "doubao-seed-2-0-lite-*",
-      "parameter_scale": "lite",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "capabilities": {
-        "streaming": true,
-        "tool_call": true,
-        "reasoning": true,
-        "vision": true
-      }
-    },
-    {
-      "match": "doubao-seed-2-0-mini-*",
-      "parameter_scale": "mini",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "capabilities": {
-        "streaming": true,
-        "reasoning": true,
-        "vision": true
-      }
-    },
-    {
-      "match": "doubao-seed-2-0-code-*",
-      "parameter_scale": "code",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
-      "capabilities": {
-        "streaming": true,
-        "tool_call": true,
-        "reasoning": true,
-        "vision": true
-      }
-    }
-  ],
+  "patterns": [],
   "defaults": {
     "api_types": [],
-    "capabilities": {},
-    "version_rules": ["doubao-pro", "doubao-lite", "doubao-mini", "doubao-code"]
+    "capabilities": {}
   },
-  "variants": [
-    { "name": "reasoning-none", "match": "doubao-seed-2-0-*", "provider_options": { "thinking": { "type": "disabled" } } }
-  ],
-  "version_rules": [
-    { "id": "doubao-pro", "family": "doubao-seed", "tier": "pro", "match": "doubao-seed-*-pro-*", "tier_tokens": ["pro"], "version_rank": { "prefix": "doubao-seed" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.doubao-pro", "version_mount": "llm.doubao.{model}" },
-    { "id": "doubao-lite", "family": "doubao-seed", "tier": "lite", "match": "doubao-seed-*-lite-*", "tier_tokens": ["lite"], "version_rank": { "prefix": "doubao-seed" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.doubao-lite", "version_mount": "llm.doubao.{model}" },
-    { "id": "doubao-mini", "family": "doubao-seed", "tier": "mini", "match": "doubao-seed-*-mini-*", "tier_tokens": ["mini"], "version_rank": { "prefix": "doubao-seed" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.doubao-mini", "version_mount": "llm.doubao.{model}" },
-    { "id": "doubao-code", "family": "doubao-seed", "tier": "code", "match": "doubao-seed-*-code-*", "tier_tokens": ["code"], "version_rank": { "prefix": "doubao-seed" }, "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true }, "current_mount": "llm.doubao-code", "version_mount": "llm.doubao.{model}" }
+  "specs": [
+    {
+      "id": "doubao-code"
+    },
+    {
+      "id": "doubao-lite"
+    },
+    {
+      "id": "doubao-mini"
+    },
+    {
+      "id": "doubao-pro"
+    }
   ]
 }

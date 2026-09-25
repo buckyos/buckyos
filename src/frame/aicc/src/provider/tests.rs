@@ -387,25 +387,23 @@ fn catalog() -> Arc<CatalogSnapshot> {
 fn catalog_with_revision(revision_seq: u64, context_tokens: u64) -> Arc<CatalogSnapshot> {
     let model_driver: ModelDriverCatalog = serde_json::from_value(serde_json::json!({
         "format": "buckyos.aicc.model-driver-catalog",
-        "schema_version": 1,
+        "schema_version": 2,
         "schema_revision": 0,
         "model_driver_id": "openai",
         "revision_seq": revision_seq,
         "models": [{
             "id": "gpt-test",
             "api_types": ["llm", "embedding.text"],
-            "logical_mounts": ["llm.test"],
+            "llm": {"spec":"openai-spec","effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable"},
             "capabilities": {
                 "tool_call": true,
                 "json_schema": true,
                 "context_tokens": context_tokens
             }
         }],
-        "model_pricing": [{"id": "gpt-test", "pricing": {"currency": "USD", "input_token": 9.0}}],
         "patterns": [],
         "defaults": {},
-        "variants": [],
-        "version_rules": []
+        "specs": [{"id":"openai-spec","direct_only":true}]
     }))
     .unwrap();
     let provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
@@ -441,7 +439,7 @@ fn catalog_with_revision(revision_seq: u64, context_tokens: u64) -> Arc<CatalogS
 fn catalog_with_model_ids(revision_seq: u64, model_ids: &[&str]) -> Arc<CatalogSnapshot> {
     let models = model_ids
         .iter()
-        .map(|id| serde_json::json!({"id": id, "api_types": ["llm"]}))
+        .map(|id| serde_json::json!({"id": id, "api_types": ["llm"], "llm": {"spec":"vendor-spec","effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable"}}))
         .collect::<Vec<_>>();
     let provider_models = model_ids
         .iter()
@@ -454,15 +452,14 @@ fn catalog_with_model_ids(revision_seq: u64, model_ids: &[&str]) -> Arc<CatalogS
         .collect::<Vec<_>>();
     let model_driver: ModelDriverCatalog = serde_json::from_value(serde_json::json!({
         "format": "buckyos.aicc.model-driver-catalog",
-        "schema_version": 1,
+        "schema_version": 2,
         "schema_revision": 0,
         "model_driver_id": "vendor",
         "revision_seq": revision_seq,
         "models": models,
         "patterns": [],
         "defaults": {},
-        "variants": [],
-        "version_rules": []
+        "specs": [{"id":"vendor-spec","direct_only":true}]
     }))
     .unwrap();
     let provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
@@ -540,19 +537,19 @@ fn routed_catalog() -> Arc<CatalogSnapshot> {
     let driver = |model_driver_id: &str| -> ModelDriverCatalog {
         serde_json::from_value(serde_json::json!({
             "format": "buckyos.aicc.model-driver-catalog",
-            "schema_version": 1,
+            "schema_version": 2,
             "schema_revision": 0,
             "model_driver_id": model_driver_id,
             "revision_seq": 7,
             "models": [{
                 "id": "shared-model",
                 "api_types": ["llm"],
-                "capabilities": {"tool_call": true}
+                "capabilities": {"tool_call": true},
+                "llm": {"spec":format!("{model_driver_id}-spec"),"family_id":format!("{model_driver_id}-shared-model"),"effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable"}
             }],
             "patterns": [],
             "defaults": {},
-            "variants": [],
-            "version_rules": []
+            "specs": [{"id":format!("{model_driver_id}-spec"),"direct_only":true}]
         }))
         .unwrap()
     };
@@ -733,144 +730,6 @@ fn inventory_intersects_capabilities_and_uses_dynamic_pricing() {
     );
     assert_eq!(model.provider_rules_revision, Some(7));
     assert!(!inventory.provider_model_list_fingerprint.is_empty());
-}
-
-#[test]
-fn version_rules_rank_numeric_versions_and_classify_tiers() {
-    let rule: VersionRule = serde_json::from_value(serde_json::json!({
-        "id": "gemini-flash-lite",
-        "family": "gemini",
-        "tier": "flash-lite",
-        "match": "gemini-*-flash-lite",
-        "tier_tokens": ["flash", "lite"],
-        "exclude_tier_tokens": ["image"],
-        "version_rank": { "prefix": "gemini" },
-        "stability": {
-            "unstable_tokens": ["preview", "beta"],
-            "current_requires_stable": true
-        },
-        "current_mount": "llm.gemini-flash-lite",
-        "version_mount": "llm.gemini.{model}",
-        "auto_mounts": ["llm", "llm.gemini"]
-    }))
-    .unwrap();
-
-    assert!(matches_version_tier("gemini-3.5-flash-lite", &rule));
-    assert!(!matches_version_tier("gemini-3.5-flash", &rule));
-    assert!(!matches_version_tier("gemini-3.1-flash-lite-image", &rule));
-    assert!(
-        version_rank("gemini-3.10-flash-lite", &rule)
-            > version_rank("gemini-3.9-flash-lite", &rule)
-    );
-
-    let pro_rule: VersionRule = serde_json::from_value(serde_json::json!({
-        "id": "gemini-pro",
-        "family": "gemini",
-        "tier": "pro",
-        "match": "gemini-*",
-        "tier_tokens": ["pro"],
-        "exclude_tier_tokens": ["image", "tts", "transcribe", "omni"],
-        "version_rank": { "prefix": "gemini" },
-        "current_mount": "llm.gemini-pro",
-        "version_mount": "llm.gemini.{model}"
-    }))
-    .unwrap();
-    assert!(matches_version_tier("gemini-2.5-pro", &pro_rule));
-    assert!(!matches_version_tier(
-        "gemini-2.5-pro-preview-tts",
-        &pro_rule
-    ));
-    assert!(!version_rank("gemini-3.11-flash-lite-preview", &rule).stable);
-    assert_eq!(
-        expand_version_mount(&rule.version_mount, "Gemini_3.5/Flash.Lite"),
-        "llm.gemini.gemini-3-5-flash-lite"
-    );
-    assert_eq!(rule.auto_mounts, vec!["llm", "llm.gemini"]);
-}
-
-#[test]
-fn version_rule_auto_mounts_are_applied_to_inventory_models() {
-    let model_driver: ModelDriverCatalog = serde_json::from_value(serde_json::json!({
-        "format": "buckyos.aicc.model-driver-catalog",
-        "schema_version": 1,
-        "schema_revision": 0,
-        "model_driver_id": "openai",
-        "revision_seq": 9,
-        "models": [{
-            "id": "gpt-test",
-            "api_types": ["llm"],
-            "logical_mounts": ["llm.{driver}.{model}"],
-            "capabilities": {
-                "tool_call": true,
-                "json_schema": true
-            },
-            "version_rules": ["gpt-test-tier"]
-        }],
-        "patterns": [],
-        "defaults": {},
-        "variants": [],
-        "version_rules": [{
-            "id": "gpt-test-tier",
-            "family": "gpt",
-            "tier": "standard",
-            "match": "gpt-*",
-            "tier_tokens": ["test"],
-            "current_mount": "llm.gpt-standard",
-            "version_mount": "llm.openai.{model}",
-            "auto_mounts": ["llm", "llm.gpt", "llm.plan", "image.txt2img"]
-        }]
-    }))
-    .unwrap();
-    let provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
-        "format": "buckyos.aicc.provider-rules-catalog",
-        "schema_version": 1,
-        "schema_revision": 0,
-        "revision_seq": 9,
-        "provider_profile_id": "openai",
-        "metadata_drivers": ["openai"],
-        "models": [{
-            "id": "gpt-test",
-            "operations": {"llm": "responses.create"}
-        }],
-        "patterns": [],
-        "variants": []
-    }))
-    .unwrap();
-    let catalog = CatalogSnapshot::build(
-        9,
-        CatalogDocuments {
-            model_drivers: vec![model_driver],
-            provider_rules: vec![provider_rules],
-            known_providers: vec![],
-        },
-        &CatalogBuildOptions::default(),
-    )
-    .unwrap();
-
-    let inventory = InventoryBuilder::build(
-        &profile(),
-        &instance("primary"),
-        discovery("gpt-test"),
-        &catalog,
-        &codecs(),
-    )
-    .unwrap();
-    let model = &inventory.models[0];
-
-    assert!(model.logical_mounts.contains(&"llm".to_string()));
-    assert!(model.logical_mounts.contains(&"llm.gpt".to_string()));
-    assert!(model.logical_mounts.contains(&"llm.plan".to_string()));
-    assert!(model
-        .logical_mounts
-        .contains(&"llm.gpt-standard".to_string()));
-    assert!(model
-        .logical_mounts
-        .contains(&"llm.openai.gpt-test".to_string()));
-    assert!(model
-        .logical_mounts
-        .iter()
-        .all(|mount| !mount.contains('{') && !mount.contains('}')));
-    assert!(!model.logical_mounts.contains(&"image.txt2img".to_string()));
 }
 
 #[tokio::test]
@@ -1179,7 +1038,21 @@ async fn draft_validation_classifies_connection_auth_discovery_and_adapter_failu
 
 #[test]
 fn openai_inventory_satisfies_canonical_tool_and_schema_requirements() {
-    let catalog = catalog();
+    let original = catalog();
+    let mut document = original.model_driver("openai").unwrap().clone();
+    document.specs[0].direct_only = false;
+    let catalog = Arc::new(
+        CatalogSnapshot::build(
+            original.target_revision_seq(),
+            CatalogDocuments {
+                model_drivers: vec![document],
+                provider_rules: vec![original.provider_rules("openai").unwrap().clone()],
+                known_providers: vec![],
+            },
+            &CatalogBuildOptions::default(),
+        )
+        .unwrap(),
+    );
     let inventory = InventoryBuilder::build(
         &profile(),
         &instance("primary"),
@@ -1202,13 +1075,15 @@ fn openai_inventory_satisfies_canonical_tool_and_schema_requirements() {
             },
             disable_line: buckyos_api::ModelDisable::default(),
             default_options: BTreeMap::new(),
-            mount_mode: MountMode::Auto,
+            mount_mode: MountMode::Manual,
             scheduler_profile: buckyos_api::AiccSchedulerProfile::Balanced,
             fallback: None,
             route_policy: buckyos_api::AiccPolicyConfig::default(),
             user_visible_tier: None,
         }],
-        RegistryLayers::default(),
+        RegistryLayers { factory: Some(&serde_json::from_value(serde_json::json!({
+            "logical_tree":{"llm.contract":{"items":{"model":{"target":"llm.openai-spec","weight":1.0}}}}
+        })).unwrap()), ..RegistryLayers::default() },
     )
     .unwrap();
 

@@ -1095,15 +1095,14 @@ mod tests {
     fn rules_and_discovery_build_llm_inventory() {
         let model_driver: ModelDriverCatalog = serde_json::from_value(json!({
             "format": "buckyos.aicc.model-driver-catalog",
-            "schema_version": 1,
+            "schema_version": 2,
             "schema_revision": 0,
             "model_driver_id": "openai",
             "revision_seq": 1,
-            "models": [{"id": "gpt-5", "api_types": ["llm", "image.txt2img"]}],
+            "models": [{"id": "gpt-5", "api_types": ["llm", "image.txt2img"], "llm":{"spec":"gpt-spec","effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable"}}],
             "patterns": [],
             "defaults": {},
-            "variants": [],
-            "version_rules": []
+            "specs": [{"id":"gpt-spec","direct_only":true}]
         }))
         .unwrap();
         let catalog = CatalogSnapshot::build(

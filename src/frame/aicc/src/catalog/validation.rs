@@ -26,98 +26,163 @@ pub(super) fn validate_model_driver(
         catalog.models.iter().map(|rule| rule.id.as_str()),
     )?;
     validate_model_semantics(&catalog.model_driver_id, &catalog.defaults)?;
-    validate_model_pricing(&catalog.model_driver_id, &catalog.model_pricing, false)?;
-    for rule in &catalog.models {
-        validate_model_semantics(&catalog.model_driver_id, &model_rule_semantics!(rule))?;
-    }
-    for rule in &catalog.patterns {
-        validate_model_semantics(&catalog.model_driver_id, &model_rule_semantics!(rule))?;
-    }
-    validate_nonempty_strings(
-        CatalogKind::ModelDriver,
-        &catalog.model_driver_id,
-        "variants.name",
-        catalog.variants.iter().map(|variant| variant.name.as_str()),
-    )?;
-    if catalog.schema_revision == 0
-        && catalog
-            .variants
-            .iter()
-            .any(|variant| !variant.provider_options.is_empty())
-    {
-        return Err(CatalogBuildError::InvalidValue {
-            owner: catalog.model_driver_id.clone(),
-            field: "schema_revision",
-            reason: "variant provider_options require schema_revision 1".to_owned(),
-        });
-    }
     validate_unique_nonempty(
         CatalogKind::ModelDriver,
         &catalog.model_driver_id,
-        "version_rules.id",
-        catalog.version_rules.iter().map(|rule| rule.id.as_str()),
+        "specs.id",
+        catalog.specs.iter().map(|spec| spec.id.as_str()),
     )?;
-    let version_rule_ids = catalog
-        .version_rules
-        .iter()
-        .map(|rule| rule.id.as_str())
-        .collect::<BTreeSet<_>>();
-    for semantics in catalog
-        .models
-        .iter()
-        .map(|rule| model_rule_semantics!(rule))
-        .chain(
-            catalog
-                .patterns
-                .iter()
-                .map(|rule| model_rule_semantics!(rule)),
-        )
-        .chain(std::iter::once(catalog.defaults.clone()))
-    {
-        if let Some(references) = semantics.version_rules {
-            for reference in references {
-                if !version_rule_ids.contains(reference.as_str()) {
-                    return Err(CatalogBuildError::UnknownReference {
-                        owner: catalog.model_driver_id.clone(),
-                        field: "version_rules",
-                        target: reference,
-                    });
-                }
-            }
+    for spec in &catalog.specs {
+        validate_segment(&catalog.model_driver_id, "specs.id", &spec.id)?;
+    }
+    for rule in &catalog.models {
+        let owner = format!("{} model {}", catalog.model_driver_id, rule.id);
+        validate_llm_semantics(
+            catalog,
+            &owner,
+            &catalog.defaults.overlay(&model_rule_semantics!(rule)),
+        )?;
+    }
+    for (index, rule) in catalog.patterns.iter().enumerate() {
+        let owner = format!("{} pattern {index}", catalog.model_driver_id);
+        let semantics = catalog.defaults.overlay(&model_rule_semantics!(rule));
+        validate_llm_semantics(catalog, &owner, &semantics)?;
+        if semantics
+            .api_types
+            .as_ref()
+            .is_some_and(|apis| apis.contains("llm"))
+            && semantics.exclude != Some(true)
+        {
+            llm_pattern_ids(&owner, &rule.match_rule)?;
         }
     }
-    for rule in &catalog.version_rules {
-        validate_nonempty_field(
-            CatalogKind::ModelDriver,
-            &catalog.model_driver_id,
-            "version_rules.family",
-            &rule.family,
-        )?;
-        validate_nonempty_field(
-            CatalogKind::ModelDriver,
-            &catalog.model_driver_id,
-            "version_rules.tier",
-            &rule.tier,
-        )?;
-        validate_nonempty_field(
-            CatalogKind::ModelDriver,
-            &catalog.model_driver_id,
-            "version_rules.current_mount",
-            &rule.current_mount,
-        )?;
-        validate_nonempty_field(
-            CatalogKind::ModelDriver,
-            &catalog.model_driver_id,
-            "version_rules.version_mount",
-            &rule.version_mount,
-        )?;
-        for mount in &rule.auto_mounts {
-            validate_nonempty_field(
-                CatalogKind::ModelDriver,
-                &catalog.model_driver_id,
-                "version_rules.auto_mounts",
-                mount,
-            )?;
+    if catalog.defaults.llm.is_some()
+        || catalog
+            .defaults
+            .api_types
+            .as_ref()
+            .is_some_and(|apis| apis.contains("llm"))
+    {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: catalog.model_driver_id.clone(),
+            field: "defaults",
+            reason: "LLM facts require an exact official model id".into(),
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn llm_pattern_ids(
+    owner: &str,
+    rule: &MatchRule,
+) -> Result<Vec<String>, CatalogBuildError> {
+    let values = match rule {
+        MatchRule::Shorthand(id) => vec![Value::String(id.clone())],
+        MatchRule::Object(fields) => match fields.get("origin_model_id") {
+            Some(Value::Array(ids)) => ids.clone(),
+            Some(id) => vec![id.clone()],
+            None => vec![],
+        },
+    };
+    let ids: Option<Vec<String>> = values
+        .iter()
+        .map(|id| {
+            id.as_str()
+                .filter(|id| !id.is_empty() && !id.contains(['*', '?', '\\', '[', ']']))
+                .map(str::to_owned)
+        })
+        .collect();
+    ids.filter(|ids| !ids.is_empty())
+        .ok_or_else(|| CatalogBuildError::InvalidValue {
+            owner: owner.into(),
+            field: "patterns",
+            reason: "LLM patterns must enumerate finite official model ids".into(),
+        })
+}
+
+pub(super) fn validate_segment(
+    owner: &str,
+    field: &'static str,
+    value: &str,
+) -> Result<(), CatalogBuildError> {
+    if value.is_empty()
+        || family_segment(value) != value
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+    {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: owner.into(),
+            field,
+            reason: format!("invalid path segment `{value}`"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_llm_semantics(
+    catalog: &ModelDriverCatalog,
+    owner: &str,
+    semantics: &ModelSemantics,
+) -> Result<(), CatalogBuildError> {
+    validate_model_semantics(owner, semantics)?;
+    if semantics.exclude == Some(true) {
+        return Ok(());
+    }
+    let is_llm = semantics
+        .api_types
+        .as_ref()
+        .is_some_and(|apis| apis.contains("llm"));
+    if is_llm != semantics.llm.is_some() {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: owner.into(),
+            field: "llm",
+            reason: "each LLM model must belong to exactly one declared specification".into(),
+        });
+    }
+    if let Some(llm) = &semantics.llm {
+        if semantics
+            .model_driver
+            .as_ref()
+            .is_some_and(|driver| driver != &catalog.model_driver_id)
+        {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.into(),
+                field: "model_driver",
+                reason: "LLM ownership must remain in the declaring driver".into(),
+            });
+        }
+        if !catalog.specs.iter().any(|spec| spec.id == llm.spec) {
+            return Err(CatalogBuildError::UnknownReference {
+                owner: owner.into(),
+                field: "llm.spec",
+                target: llm.spec.clone(),
+            });
+        }
+        if let Some(family) = &llm.family_id {
+            validate_segment(owner, "llm.family_id", family)?;
+        }
+        let efforts: BTreeSet<_> = llm.supported_efforts.iter().collect();
+        if efforts.len() != llm.supported_efforts.len()
+            || !efforts.contains(&llm.effort)
+            || !efforts.contains(&llm.default_effort)
+        {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.into(),
+                field: "llm.supported_efforts",
+                reason: "requires unique efforts including effort and default_effort".into(),
+            });
+        }
+        if semantics
+            .logical_mounts
+            .as_ref()
+            .is_some_and(|mounts| !mounts.is_empty())
+        {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.into(),
+                field: "logical_mounts",
+                reason: "LLM task admission belongs to the logical tree".into(),
+            });
         }
     }
     Ok(())
@@ -227,7 +292,7 @@ pub(super) fn validate_provider_rules(
     for rule in &catalog.patterns {
         validate_provider_rule_data(&catalog.provider_profile_id, rule)?;
     }
-    validate_model_pricing(&catalog.provider_profile_id, &catalog.model_pricing, true)?;
+    validate_model_pricing(&catalog.provider_profile_id, &catalog.model_pricing)?;
     for variant in &catalog.variants {
         validate_nonempty_field(
             CatalogKind::ProviderRules,
@@ -344,7 +409,6 @@ fn validate_canonical_fields(
 fn validate_model_pricing(
     owner: &str,
     entries: &[ModelPricingRule],
-    allow_conditional_rules: bool,
 ) -> Result<(), CatalogBuildError> {
     let mut exact = BTreeSet::new();
     for entry in entries {
@@ -375,13 +439,6 @@ fn validate_model_pricing(
             }
         }
         validate_pricing(owner, &entry.pricing)?;
-        if !allow_conditional_rules && !entry.pricing.rules.is_empty() {
-            return Err(CatalogBuildError::InvalidValue {
-                owner: owner.to_owned(),
-                field: "model_pricing.pricing.rules",
-                reason: "conditional channel pricing belongs to Provider Rules".to_owned(),
-            });
-        }
     }
     Ok(())
 }

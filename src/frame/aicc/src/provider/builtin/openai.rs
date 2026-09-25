@@ -372,26 +372,15 @@ mod tests {
         );
         assert_eq!(models.model_driver_id, "openai");
         let sol = models
-            .patterns
+            .models
             .iter()
-            .find(|rule| {
-                rule.match_rule == crate::matching::MatchRule::Shorthand("gpt-5.6-sol*".into())
-            })
+            .find(|model| model.id == "gpt-5.6-sol")
             .unwrap();
         assert_eq!(
             sol.capabilities.as_ref().unwrap()["max_context_tokens"],
             1_050_000
         );
-        let sol_price = models
-            .model_pricing
-            .iter()
-            .find(|rule| {
-                rule.match_rule
-                    == Some(crate::matching::MatchRule::Shorthand("gpt-5.6-sol*".into()))
-            })
-            .expect("gpt-5.6-sol* has a price entry");
-        assert_eq!(sol_price.pricing.input_token, Some(0.000004));
-        assert_eq!(models.variants.len(), 6);
+        assert_eq!(sol.llm.as_ref().unwrap().spec, "gpt-pro");
     }
 
     #[test]
@@ -403,7 +392,7 @@ mod tests {
             "OpenAI"
         );
         assert_eq!(catalog.provider_rules("openai").unwrap().revision_seq, 1);
-        assert_eq!(catalog.model_driver("openai").unwrap().revision_seq, 1);
+        assert_eq!(catalog.model_driver("openai").unwrap().revision_seq, 2);
     }
 
     #[tokio::test]
@@ -512,34 +501,10 @@ mod tests {
         assert_eq!(model.capabilities["tool_call"], true);
         assert_eq!(model.capabilities["json_schema"], true);
         assert_eq!(model.capabilities["max_context_tokens"], 1_050_000);
-        let version_tiers = catalog
-            .model_driver("openai")
-            .unwrap()
-            .version_rules
+        assert_eq!(catalog.model_driver("openai").unwrap().specs.len(), 6);
+        assert!(inventory.models.iter().all(|model| model
+            .logical_mounts
             .iter()
-            .map(|rule| rule.tier.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(version_tiers, ["standard", "pro", "mini", "nano"]);
-        for (model_id, mount) in [
-            ("gpt-5.6", "llm.openai.gpt-5-6"),
-            ("gpt-5.6-sol", "llm.gpt-pro"),
-            ("gpt-5.6-terra", "llm.gpt-mini"),
-            ("gpt-5.6-luna", "llm.gpt-nano"),
-        ] {
-            let mapped = inventory
-                .models
-                .iter()
-                .find(|model| model.provider_model_id == model_id)
-                .unwrap();
-            assert!(
-                mapped.logical_mounts.contains(&mount.to_owned()),
-                "{model_id} mounts: {:?}",
-                mapped.logical_mounts
-            );
-            assert!(!mapped.logical_mounts.iter().any(|mount| matches!(
-                mount.as_str(),
-                "llm.gpt-sol" | "llm.gpt-terra" | "llm.gpt-luna"
-            )));
-        }
+            .all(|mount| !mount.starts_with("llm"))));
     }
 }

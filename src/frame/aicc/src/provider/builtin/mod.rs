@@ -200,15 +200,14 @@ mod wp08d_tests {
     fn driver(id: &str, model: &str) -> ModelDriverCatalog {
         serde_json::from_value(json!({
             "format": "buckyos.aicc.model-driver-catalog",
-            "schema_version": 1,
+            "schema_version": 2,
             "schema_revision": 0,
             "model_driver_id": id,
             "revision_seq": 1,
-            "models": [{"id": model, "api_types": ["llm"]}],
+            "models": [{"id": model, "api_types": ["llm"], "llm":{"spec":format!("{id}-spec"),"family_id":format!("{id}-{}",crate::catalog::family_segment(model)),"effort":"native","default_effort":"native","supported_efforts":["native"],"stability":"stable"}}],
             "patterns": [],
             "defaults": {},
-            "variants": [],
-            "version_rules": []
+            "specs": [{"id":format!("{id}-spec"),"direct_only":true}]
         }))
         .unwrap()
     }

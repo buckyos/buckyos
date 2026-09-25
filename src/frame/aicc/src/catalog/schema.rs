@@ -50,15 +50,10 @@ pub(crate) struct ModelDriverCatalog {
     pub models: Vec<ModelExactRule>,
     #[serde(default)]
     pub patterns: Vec<ModelPatternRule>,
-    /// Prices, listed separately from the technical rules above.
-    #[serde(default)]
-    pub model_pricing: Vec<ModelPricingRule>,
     #[serde(default)]
     pub defaults: ModelSemantics,
     #[serde(default)]
-    pub variants: Vec<ModelVariant>,
-    #[serde(default)]
-    pub version_rules: Vec<VersionRule>,
+    pub specs: Vec<ModelSpec>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -78,9 +73,6 @@ pub(crate) struct ModelSemantics {
     pub capabilities: Option<BTreeMap<String, Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_fields: Option<BTreeMap<String, CanonicalFieldMapping>>,
-    /// Resolved from `model_pricing`; never declared inline.
-    #[serde(skip)]
-    pub pricing: Option<Pricing>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_latency_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -90,7 +82,7 @@ pub(crate) struct ModelSemantics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_class: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version_rules: Option<Vec<String>>,
+    pub llm: Option<LlmSemantics>,
 }
 
 impl ModelSemantics {
@@ -118,7 +110,6 @@ impl ModelSemantics {
                 .canonical_fields
                 .clone()
                 .or_else(|| self.canonical_fields.clone()),
-            pricing: None,
             estimated_latency_ms: rule.estimated_latency_ms.or(self.estimated_latency_ms),
             quality_score: rule.quality_score.or(self.quality_score),
             latency_class: rule
@@ -126,10 +117,7 @@ impl ModelSemantics {
                 .clone()
                 .or_else(|| self.latency_class.clone()),
             cost_class: rule.cost_class.clone().or_else(|| self.cost_class.clone()),
-            version_rules: rule
-                .version_rules
-                .clone()
-                .or_else(|| self.version_rules.clone()),
+            llm: rule.llm.clone().or_else(|| self.llm.clone()),
         }
     }
 
@@ -174,7 +162,7 @@ macro_rules! define_model_rule {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub cost_class: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub version_rules: Option<Vec<String>>,
+        pub llm: Option<LlmSemantics>,
         }
     };
 }
@@ -198,63 +186,152 @@ macro_rules! model_rule_semantics {
             logical_mounts: $rule.logical_mounts.clone(),
             capabilities: $rule.capabilities.clone(),
             canonical_fields: $rule.canonical_fields.clone(),
-            pricing: None,
             estimated_latency_ms: $rule.estimated_latency_ms,
             quality_score: $rule.quality_score,
             latency_class: $rule.latency_class.clone(),
             cost_class: $rule.cost_class.clone(),
-            version_rules: $rule.version_rules.clone(),
+            llm: $rule.llm.clone(),
         }
     };
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ModelVariant {
-    pub name: String,
-    #[serde(rename = "match")]
-    pub match_rule: MatchRule,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mount_suffix: Option<String>,
-    #[serde(default)]
-    pub provider_options: BTreeMap<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VersionRule {
+pub(crate) struct ModelSpec {
     pub id: String,
+    #[serde(default)]
+    pub direct_only: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Effort {
+    Native,
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+    Thinking,
+}
+
+impl Effort {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+            Self::Thinking => "thinking",
+        }
+    }
+
+    pub(crate) fn variant(self) -> Option<String> {
+        (self != Self::Native).then(|| format!("reasoning-{}", self.as_str()))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ModelStability {
+    Stable,
+    Experimental,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LlmSemantics {
+    pub spec: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family_id: Option<String>,
+    pub effort: Effort,
+    pub default_effort: Effort,
+    pub supported_efforts: Vec<Effort>,
+    pub stability: ModelStability,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LlmModel {
+    pub model_driver_id: String,
+    pub origin_model_id: String,
     pub family: String,
-    pub tier: String,
-    #[serde(rename = "match")]
-    pub match_rule: MatchRule,
-    #[serde(default)]
-    pub tier_tokens: Vec<String>,
-    #[serde(default)]
-    pub exclude_tier_tokens: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version_rank: Option<VersionRank>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stability: Option<VersionStability>,
-    pub current_mount: String,
-    pub version_mount: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub auto_mounts: Vec<String>,
+    pub semantics: LlmSemantics,
+    pub version: Option<ModelVersion>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VersionRank {
-    pub prefix: String,
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct ModelVersion(pub [u64; 3]);
+
+impl ModelVersion {
+    #[cfg(test)]
+    pub(crate) fn decimal_rank(self) -> Option<u64> {
+        let [major, minor, patch] = self.0;
+        if minor > 9 || patch > 9 {
+            return None;
+        }
+        major.checked_mul(100)?.checked_add(minor * 10 + patch)
+    }
+
+    pub(super) fn from_model_id(driver: &str, model: &str) -> Option<Self> {
+        let model = model.to_ascii_lowercase();
+        let (rest, separator) = match driver {
+            "openai" => (model.strip_prefix("gpt-")?, '.'),
+            "claude" => {
+                let rest = model.strip_prefix("claude-")?;
+                (
+                    if rest.starts_with(|ch: char| ch.is_ascii_digit()) {
+                        rest
+                    } else {
+                        rest.split_once('-')?.1
+                    },
+                    '-',
+                )
+            }
+            "gemini" => (model.strip_prefix("gemini-")?, '.'),
+            "qwen" => (model.strip_prefix("qwen")?, '.'),
+            "glm" => (
+                model
+                    .strip_prefix("glm-")
+                    .or_else(|| model.strip_prefix("charglm-"))
+                    .or_else(|| model.strip_prefix("codegeex-"))?,
+                '.',
+            ),
+            "kimi" => (model.strip_prefix("kimi-k")?, '.'),
+            "deepseek" => (model.strip_prefix("deepseek-v")?, '.'),
+            "doubao" => (model.strip_prefix("doubao-seed-")?, '-'),
+            "minimax" => (model.strip_prefix("minimax-m")?, '.'),
+            _ => return None,
+        };
+        let mut version = [0; 3];
+        for (index, component) in rest.split(separator).take(3).enumerate() {
+            let digits: String = component.chars().take_while(char::is_ascii_digit).collect();
+            if digits.is_empty() || digits.len() > 2 {
+                if index == 0 {
+                    return None;
+                }
+                break;
+            }
+            version[index] = digits.parse().ok()?;
+            if digits.len() != component.len() {
+                break;
+            }
+        }
+        Some(Self(version))
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VersionStability {
-    #[serde(default)]
-    pub unstable_tokens: Vec<String>,
-    #[serde(default)]
-    pub current_requires_stable: bool,
+pub(crate) fn family_segment(id: &str) -> String {
+    id.split(['.', '/', '_', '-'])
+        .filter(|part| !part.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// A standalone price entry.

@@ -1,6 +1,6 @@
 # AICC Model Driver 与 Logical Tree 改造 TODO
 
-日期：2026-09-25。面向后续 CodeAgent；本文是实现任务单，本轮仅整理设计与验收要求，未执行实现。
+日期：2026-09-25。本任务已实现；实际行为、离线验收、代码量和接入缺口见 [实现报告](../doc/aicc/model_driver_v2_implementation.md)。
 
 目标：以厂商 Model Driver metadata 定义规格和官方模型事实，构建 `功能 -> 厂商规格 -> 模型家族:effort -> 物理 instance`。仅加载厂商 metadata、没有任何 Provider 时，也能完成 catalog 校验、逻辑树构建和目录查询。
 
@@ -15,9 +15,9 @@
 - [model_defaults.rs 头部设计契约](../src/frame/aicc/src/service/model_defaults.rs)：功能树、厂商规格、权重及选择原则。
 - [openai.model.json](../src/frame/aicc/driver_metadata/models/openai.model.json)：已完成 Review 调整的 v2 配置样例，不能改回旧格式来适配旧代码。
 - [Model Driver Metadata Schema](../doc/aicc/driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)：v2 字段、派生规则与校验。
-- [Model Driver 与逻辑模型 FS](../doc/aicc/frozen_model_driver_and_logical_model_fs.md#33-llm-厂商规格与模型家族目标)、[逻辑目录](<../doc/aicc/aicc 逻辑模型目录.md>)、[路由设计](../doc/aicc/aicc_router.md)。
+- [Model Driver 与逻辑模型 FS](../doc/aicc/frozen_model_driver_and_logical_model_fs.md#33-llm-厂商规格与模型家族)、[逻辑目录](<../doc/aicc/aicc 逻辑模型目录.md>)、[路由设计](../doc/aicc/aicc_router.md)。
 
-已完成的是配置与文档：
+先前完成的配置与文档：
 
 - [x] OpenAI 声明 `specs`；模型条目声明 `llm.spec / effort / default_effort / supported_efforts / stability`。
 - [x] 已归规格的 OpenAI 模型删除重复的 `logical_mounts`，独立非 LLM 模型保留原挂点。
@@ -25,9 +25,11 @@
 - [x] OpenAI 删除重复的 Model Driver `variants` 模型清单与参数模板。
 - [x] 全部 11 份 builtin Model Driver 删除 `model_pricing`，未将旧价格搬到 Provider Rules。
 
-尚未实现：当前 parser 仍按 v1 工作；其他厂商仍需迁移规格与 effort；旧逻辑树依赖 inventory/mounts 生成部分目录，旧代码还保留 Model Driver variant/价格相关路径。不要把当前配置可通过 JSON 语法检查当作新设计已经能运行。
+现已完成 v2 parser/catalog、全部 builtin metadata 迁移、静态规格与动态家族树、分层选择及旧实现删除。Provider 真实参数接入仍按 §6 独立处理；调用方的最小调整已获用户授权，详见 §2。
 
 ## 2. 工作范围与 Provider 边界
+
+实施补充授权：删除旧接口暴露了 `provider/inventory.rs` 和 `call/mod.rs` 的生产依赖。用户确认“可以修改调用方，但只需要编译通过即可”。本次仅删除这些旧依赖并消费现有 Provider Rules，同时清理 `provider/mod.rs` 导入；没有扩大为 Provider/Adapter 重构。以下原始边界的 Provider 生产代码禁改项，以此最小例外为准。
 
 以下路径均相对于 `src/frame/aicc/`：
 
@@ -109,44 +111,44 @@ Model Driver 与 logical tree 内部类型、函数签名及任务范围内的�
 
 ### P0：Model Driver v2 与独立 catalog
 
-- [ ] 在 catalog 层加入 typed `specs` / `llm` 与派生的家族、effort、版本视图，沿用现有精确匹配优先和规则解析框架。
-- [ ] 单独提升 Model Driver schema；Provider Rules、Known Provider 和 system-config envelope 的版本与契约不变。按仓库规则不保留旧 LLM schema/行为的双轨兼容。
-- [ ] 允许 `CatalogDocuments` 只有 `model_drivers`，`provider_rules`、`known_providers` 均为空；不要求通过 Provider 注册才能枚举或校验 Model Driver。
-- [ ] 区分 catalog 内模型事实校验与树层功能引用校验；`direct_only`/功能引用关系在组装后的树中验证，不能要求 catalog 加载器连接 Provider。
-- [ ] 删除 Model Driver 的价格字段、编译表、查询与兜底逻辑；resolver 结果中删除只为旧 Model Driver 价格服务的槽位，不保留“始终为空”的兼容字段。Provider Rules 仍需使用的价格类型/编译器不删；范围外调用依赖按 §2 记录。
-- [ ] effort 身份从支持列表派生；无 `variants` 表能解析、校验和建树，禁止用硬编码模型列表替代已删除的配置。
+- [x] 在 catalog 层加入 typed `specs` / `llm` 与派生的家族、effort、版本视图，沿用现有精确匹配优先和规则解析框架。
+- [x] 单独提升 Model Driver schema；Provider Rules、Known Provider 和 system-config envelope 的版本与契约不变。按仓库规则不保留旧 LLM schema/行为的双轨兼容。
+- [x] 允许 `CatalogDocuments` 只有 `model_drivers`，`provider_rules`、`known_providers` 均为空；不要求通过 Provider 注册才能枚举或校验 Model Driver。
+- [x] 区分 catalog 内模型事实校验与树层功能引用校验；`direct_only`/功能引用关系在组装后的树中验证，不能要求 catalog 加载器连接 Provider。
+- [x] 删除 Model Driver 的价格字段、编译表、查询与兜底逻辑；resolver 结果中删除只为旧 Model Driver 价格服务的槽位，不保留“始终为空”的兼容字段。Provider Rules 仍需使用的价格类型/编译器不删；范围外调用依赖按 §2 记录。
+- [x] effort 身份从支持列表派生；无 `variants` 表能解析、校验和建树，禁止用硬编码模型列表替代已删除的配置。
 
 ### P1：迁移厂商 metadata
 
-- [ ] 以 OpenAI 审阅稿为样例，迁移所有 builtin Model Driver 的新格式；完整内置树引用的规格必须同时有声明，不能只完成 OpenAI 后屏蔽其他厂商的失败。
-- [ ] 依据头部契约归档已有官方模型，明确通用规格与专用规格；不能用宽泛 pattern 自动收录未知未来型号，也不能用参数量猜规格。
-- [ ] 删除 LLM 的旧 `version_rules.current_mount / auto_mounts`、重复挂点和手写 variant 参数表，保留必要的非 LLM 行为。没有可靠能力/effort 依据时列出具体缺口，不能编造。
-- [ ] Model Driver 身份保持与现有渠道引用一致；不通过改 Provider metadata 来完成本次迁移。
+- [x] 以 OpenAI 审阅稿为样例，迁移所有 builtin Model Driver 的新格式；完整内置树引用的规格必须同时有声明，不能只完成 OpenAI 后屏蔽其他厂商的失败。
+- [x] 依据头部契约归档已有官方模型，明确通用规格与专用规格；不能用宽泛 pattern 自动收录未知未来型号，也不能用参数量猜规格。
+- [x] 删除 LLM 的旧 `version_rules.current_mount / auto_mounts`、重复挂点和手写 variant 参数表，保留必要的非 LLM 行为。没有可靠能力/effort 依据时列出具体缺口，不能编造。
+- [x] Model Driver 身份保持与现有渠道引用一致；不通过改 Provider metadata 来完成本次迁移。
 
 ### P2：树构建、视图与重建
 
-- [ ] 在 `ModelRegistry::build` 中先从 catalog 建规格，再处理库存；不要把规格声明藏在 `register_inventories` 或动态 mount 流程里。
-- [ ] 将 `model_defaults.rs` 的头部功能树/权重落实到 builtin definitions 与 overlay；对 LLM 禁止通用 Auto/Hybrid 绕过规格归属。
-- [ ] 使用 catalog 官方身份与现有库存身份的交集创建家族；渠道别名仍由现有上游解析，本层不猜 alias 或最新模型。
-- [ ] 从模型支持 effort 与库存明确提供的可用变体形成家族候选；不能仅因 metadata 有某个 effort 就宣称某个真实渠道可以执行它。无可执行强度的实例不成为对应预设候选。
-- [ ] 复用 `factory -> system -> user -> session` overlay 顺序与既有图校验；允许显示空规格，更新目录/定义输出，保持公共 RPC 形状不变。
-- [ ] 重建具有确定性且幂等；失败保留旧 snapshot，不发布半棵树；同一份 metadata 与库存的顺序变化不影响最终结构。
+- [x] 在 `ModelRegistry::build` 中先从 catalog 建规格，再处理库存；不要把规格声明藏在 `register_inventories` 或动态 mount 流程里。
+- [x] 将 `model_defaults.rs` 的头部功能树/权重落实到 builtin definitions 与 overlay；对 LLM 禁止通用 Auto/Hybrid 绕过规格归属。
+- [x] 使用 catalog 官方身份与现有库存身份的交集创建家族；渠道别名仍由现有上游解析，本层不猜 alias 或最新模型。
+- [x] 从模型支持 effort 与库存明确提供的可用变体形成家族候选；不能仅因 metadata 有某个 effort 就宣称某个真实渠道可以执行它。无可执行强度的实例不成为对应预设候选。
+- [x] 复用 `factory -> system -> user -> session` overlay 顺序与既有图校验；允许显示空规格，更新目录/定义输出，保持公共 RPC 形状不变。
+- [x] 重建具有确定性且幂等；失败保留旧 snapshot，不发布半棵树；同一份 metadata 与库存的顺序变化不影响最终结构。
 
 ### P3：树层选择与回归
 
-- [ ] 实现分层选择、稳定性及版本顺序，保留请求约束、显式 fallback 和家族直选语义。
-- [ ] 逻辑树消费端保留选中的固定 effort，不允许树层请求合并把它换成另一档；真实请求最终参数的锁定/转换另列 Provider/Adapter 接入任务。
-- [ ] 更新原有“零库存没有 `llm.gpt-standard`”的测试；这是需要修正的旧行为，不能通过删掉测试来规避。
-- [ ] 检查非 LLM 目录和现有 Provider 库存输入在新树中的消费，记录没有现成渠道变体/参数映射可用的模型；不改 Provider 来补足。
+- [x] 实现分层选择、稳定性及版本顺序，保留请求约束、显式 fallback 和家族直选语义。
+- [x] 逻辑树消费端保留选中的固定 effort，不允许树层请求合并把它换成另一档；真实请求最终参数的锁定/转换另列 Provider/Adapter 接入任务。
+- [x] 更新原有“零库存没有 `llm.gpt-standard`”的测试；这是需要修正的旧行为，不能通过删掉测试来规避。
+- [x] 检查非 LLM 目录和现有 Provider 库存输入在新树中的消费，记录没有现成渠道变体/参数映射可用的模型；不改 Provider 来补足。
 
 ### P4：删除旧实现并检查代码量
 
-- [ ] 删除 LLM `version_rules` 的旧 current winner、版本挂点和 `auto_mounts` 展开流程；只保留新版本派生与规格内排序所需代码。
-- [ ] 删除 LLM 的重复 `logical_mounts` 展开、通用 Auto/Hybrid 自动吸入、旧目录别名及隐式 Parent fallback 分支，不让它们成为新流程之外的备用路径。
-- [ ] 删除 Model Driver 手写 `variants` 的解析、匹配、参数模板与默认 lowering；语义身份由 effort 派生，不用生成一份旧 variant 配置再调用旧引擎来实现。
-- [ ] 删除 Model Driver 价格入口与专用代码，清理失效类型、索引、缓存、helper、错误分支和默认值；不影响仍被 Provider 或非 LLM 使用的共用逻辑。
-- [ ] 更新所有任务范围内的调用方、fixture 与断言，删除只验证被废弃行为的测试，并用新契约测试覆盖对应职责；不保留 v1 fixture 作为兼容测试。
-- [ ] 给出旧职责到新实现的对应关系及实际删除位置，统计受影响生产代码的新增/删除行数。若没有净减少，解释必要新增与尚可删除的复杂度，不能只以测试通过作为简化已经完成的证据。
+- [x] 删除 LLM `version_rules` 的旧 current winner、版本挂点和 `auto_mounts` 展开流程；只保留新版本派生与规格内排序所需代码。
+- [x] 删除 LLM 的重复 `logical_mounts` 展开、通用 Auto/Hybrid 自动吸入、旧目录别名及隐式 Parent fallback 分支，不让它们成为新流程之外的备用路径。
+- [x] 删除 Model Driver 手写 `variants` 的解析、匹配、参数模板与默认 lowering；语义身份由 effort 派生，不用生成一份旧 variant 配置再调用旧引擎来实现。
+- [x] 删除 Model Driver 价格入口与专用代码，清理失效类型、索引、缓存、helper、错误分支和默认值；不影响仍被 Provider 或非 LLM 使用的共用逻辑。
+- [x] 更新所有任务范围内的调用方、fixture 与断言，删除只验证被废弃行为的测试，并用新契约测试覆盖对应职责；不保留 v1 fixture 作为兼容测试。
+- [x] 给出旧职责到新实现的对应关系及实际删除位置，统计受影响生产代码的新增/删除行数。若没有净减少，解释必要新增与尚可删除的复杂度，不能只以测试通过作为简化已经完成的证据。
 
 ## 5. 必须实现的离线测试
 
@@ -198,19 +200,19 @@ Model Driver 与 logical tree 内部类型、函数签名及任务范围内的�
 ## 6. 后续接入事项：只记录，不在本任务实现
 
 - Adapter 将选中的 effort 转成真实请求参数；Provider 渠道差异、能力限制和最终参数锁定；没有对应转换时不得宣称真实调用已支持。
-- Provider inventory 内部原有的 Model Driver 价格分支/来源枚举及旧缓存清理。当前任务先保证 Model Driver 已无价格输入和输出，不能把清空配置表等同于整条运行时计费路径已迁移。
+- Provider inventory 旧价格来源枚举及旧缓存清理。Model Driver 价格分支已按调用方授权删除，但这不等同于整条运行时计费路径已迁移。
 - Provider 侧对派生 effort 身份的完整接入、真实厂商 API 回归和新模型渠道支持。
 
 这些是范围外的后续工作，不应通过修改 `.provider.json`、Provider Rust 实现或 codec 来“顺手完成”。交付说明要分别列出本任务已完成的纯 metadata/tree 行为与仍依赖后续接入的真实调用行为。
 
 ## 7. 验证与交付
 
-- [ ] 先跑新增的 catalog/model/service 定向测试，再在 `src/` 下执行 `cargo test -p aicc` 和 `cargo check -p aicc --all-targets`。
-- [ ] 执行受影响 Rust 文件的格式检查与 `git diff --check`；新增测试应可在无 API Key、无网络和无外部服务的环境运行。
-- [ ] 记录环境导致的构建阻塞及已执行的命令，不能把未执行或被忽略的测试写为通过。不要为跑测试启动真实 Provider 或调用付费 API。
-- [ ] Review 改动范围：Provider 生产代码、Provider/known-provider JSON、Adapter/codec 无修改；纯 metadata 测试迁移单独列出。
-- [ ] 扫描旧 schema、LLM `version_rules`/挂载分支、Model Driver `variants`/价格实现和兼容壳的残留；注明保留代码的现有非 LLM/Provider 使用者，不能笼统标为“以后再删”。
-- [ ] 单独报告核心生产代码的新增/删除量和复杂度减少点；测试、文档、模型清单的变化不用于抵消生产代码增长。
-- [ ] 交付至少包含：新 schema 与所有 builtin Model Driver 迁移、真实 builtin 零 Provider 树测试、动态数据测试、旧路径删除说明、文档更新、范围外接入清单。
+- [x] 先跑新增的 catalog/model/service 定向测试，再在 `src/` 下执行 `cargo test -p aicc` 和 `cargo check -p aicc --all-targets`。
+- [x] 执行受影响 Rust 文件的格式检查与 `git diff --check`；新增测试应可在无 API Key、无网络和无外部服务的环境运行。
+- [x] 记录环境导致的构建阻塞及已执行的命令，不能把未执行或被忽略的测试写为通过。不要为跑测试启动真实 Provider 或调用付费 API。
+- [x] Review 改动范围：Provider 生产代码只有 §2 获授权的调用依赖删除；Provider/known-provider JSON、Adapter/codec 无修改；纯 metadata 测试迁移已在实现报告单独列出。
+- [x] 扫描旧 schema、LLM `version_rules`/挂载分支、Model Driver `variants`/价格实现和兼容壳的残留；注明保留代码的现有非 LLM/Provider 使用者，不能笼统标为“以后再删”。
+- [x] 单独报告核心生产代码的新增/删除量和复杂度减少点；测试、文档、模型清单的变化不用于抵消生产代码增长。
+- [x] 交付至少包含：新 schema 与所有 builtin Model Driver 迁移、真实 builtin 零 Provider 树测试、动态数据测试、旧路径删除说明、文档更新、范围外接入清单。
 
 完成标准：使用仓库真实厂商 metadata，在没有 Provider 的情况下能够校验、构建和查询结构完整的逻辑树；注入手工构造的库存数据后，规格/家族/effort/实例的展开、选择和清理满足上述契约。新设计已经替换并简化旧实现，没有旧 LLM 双轨流程或兼容层。不能仅以 JSON 能解析、节点数量正确或 OpenAI 单厂商测试通过作为完成依据。

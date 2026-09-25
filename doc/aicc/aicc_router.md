@@ -7,7 +7,7 @@
 
 > 已落地：控制面 / 数据面 API 拆分（`route.resolve` + typed inference，见 §4.2）、精确模型 variant 后缀（§5.1.1）、逻辑模型定义 `min_line` / `disable_line` / `mount_mode` / auto-mount（§6.7）、driver metadata resolver（§7.2）、session 逻辑树 overlay `inherit|replace`（§12.4）、扩展 route trace 来源字段（§13.2）。
 
-> 2026-09-25 LLM 目标修订：采用 `service/model_defaults.rs` 头部契约。§6 的厂商规格/动态家族规则与 §9 的 LLM 回退限制尚待实现；字段和 OpenAI 示例见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)。本文其他通用算法及历史 LLM 示例不表示已完成该迁移；涉及 Auto/Hybrid、跨层权重、父目录回退时，以此目标修订为准。
+> 2026-09-25 LLM 实现更新：厂商规格、动态家族、固定 effort、分层版本排序和禁止隐式父级回退已实现；参见 [Metadata Schema](driver_metadata_schema.md) 与 [实现报告](model_driver_v2_implementation.md)。下面通用 Auto/Hybrid、父级回退及历史目录示例仅适用于非 LLM；LLM 功能只能引用声明规格。实验版由内部 `RoutingRequest.allow_experimental` 控制，默认关闭，公共 RPC 未新增字段。
 
 ---
 
@@ -66,7 +66,7 @@ AICC 的核心职责是为不同类型的 AI 能力定义统一的标准输入�
 | Provider | 本文中默认指 Provider instance，即一个可独立调度和计费的 AI 能力提供实例，而不是厂商本身。`provider_instance_name` 是 Provider instance 的唯一 ID/name。相同厂商可以配置多个 Provider instance，例如两个 OpenAI API token 可以建立 `openai_primary` 和 `openai_backup` 两个 instance。 |
 | 精确模型名 | 能唯一指向某个 Provider 下某个模型的名字，如 `gpt5@openai`。通常不需要经过复杂路由。 |
 | 实体模型 / 物理模型 | Provider instance 内部真实提供的模型，例如 `gpt-5.2`。它通过 `<provider_model_id>@<provider_instance_name>` 形成全局唯一的精确模型名。 |
-| 逻辑模型名 | 面向能力、用途或模型家族的模型名，如 `llm.gpt5`、`llm.plan`、`llm.code`。需要解析为候选精确模型集合。 |
+| 逻辑模型名 | 面向能力、用途或模型家族的模型名，如 `llm.gpt-pro`、`llm.plan`、`llm.code`。需要解析为候选精确模型集合。 |
 | 模型目录树 | 逻辑模型名构成的树状结构。目录越精细，候选范围越窄；目录越宽，候选范围越大。 |
 | 候选列表 | 逻辑模型名解析后得到的一组可执行候选项，每个候选项包含 Provider、精确模型名、能力元数据和动态状态。 |
 | Fallback | 当候选为空或执行失败时，按配置选择备用逻辑目录、备用精确模型或备用 fallback 目录。 |
@@ -168,7 +168,7 @@ qwen3@local
 
 例如 `gpt-5.1:reasoning-high@openai_primary`。
 
-- LLM v2 目标从 Model Driver 的 `supported_efforts` 派生 `reasoning-{effort}` 身份，无需重复 `variants` 表。Protocol Adapter 负责标准 effort 参数转换，Provider Rules 负责渠道映射和限制；两者都不能扩大模型支持的强度。当前 v1 仍使用 Model Driver 显式 variant 及默认 `provider_options`，这部分尚待迁移。
+- LLM v2 从 Model Driver 的 `supported_efforts` 派生 `reasoning-{effort}` 身份，无需重复 `variants` 表。Protocol Adapter 负责标准 effort 参数转换，Provider Rules 负责渠道映射和限制；两者都不能扩大模型支持的强度。Model Driver 参数模板已删除；调用方只消费已有 Provider Rules 映射，新的 Adapter 转换及最终参数锁定尚未实施。
 - Provider Rules 把带 variant 的 exact model lower 成原始 `provider_model_id`、operation 和 resolved options。
 - `route.resolve` 输出含 variant 的 `selected_exact_model` 和不带 variant 的原始 `provider_model_id`，不向调用方暴露 `provider_options`。
 - 数据面根据 exact model、canonical request 和当前规则生成内部 `ResolvedProviderCall`。
@@ -179,12 +179,12 @@ qwen3@local
 逻辑模型名面向能力、用途或模型家族，不直接绑定某个 Provider。示例：
 
 ```text
-llm.gpt5
+llm.gpt-pro
 llm.plan
 llm.code
 llm.chat
 llm.swift
-llm.summary
+llm.summarize
 llm
 image.txt2image.gpt5
 ```
@@ -201,7 +201,7 @@ image.txt2image.gpt5
 
 | 维度 | 精确模型名 | 逻辑模型名 |
 |---|---|---|
-| 示例 | `gpt5@openai` | `llm.gpt5`、`llm.plan` |
+| 示例 | `gpt5@openai` | `llm.gpt-pro`、`llm.plan` |
 | 是否包含 Provider | 是 | 否 |
 | 是否需要路由 | 默认不需要复杂路由 | 需要解析候选并调度 |
 | 是否可多 Provider | 否 | 是 |
@@ -230,7 +230,7 @@ image.txt2image.gpt5
 5. **用户可理解**：目录保留按官方模型 ID 归一化的家族名，例如 `llm.gpt-5-6-sol`，并与功能、规格区分。
 6. **支持 Agent 多角色**：Agent 内部可能同时使用 `plan`、`code`、`summary` 等多个逻辑模型名，UI 和配置应支持对这些角色分别设置策略。
 
-### 6.2 LLM 目标目录结构
+### 6.2 LLM 目录结构
 
 ```text
 llm                                      # 只作命名空间
@@ -273,11 +273,11 @@ Model Driver 按原厂组织，声明自己的规格；AICC 不预设统一 lv1�
 | 上下文长度 | `128k`、`1m` | 硬性过滤和评分 |
 | 质量评分 | `0.0-1.0` | 调度评分 |
 
-示例：用户需要本地摘要时，不建议写成 `llm.summary.local`，而建议：
+示例：用户需要本地摘要时，不建议写成 `llm.summarize.local`，而建议：
 
 ```json
 {
-  "model": "llm.summary",
+  "model": "llm.summarize",
   "policy": {
     "local_only": true
   }
@@ -291,7 +291,7 @@ Model Driver 按原厂组织，声明自己的规格；AICC 不预设统一 lv1�
 逻辑目录配置分三层覆盖：系统默认逻辑目录配置、`system_config` 中的 AICC 系统配置、request/session 级 overlay。AICC 是系统服务，不维护 per-user routing config；调用方如果需要临时偏好，只能在 request/session 级 overlay 中表达。
 
 1. **声明式 Provider 能力清单**：每个 Provider instance 通过接口声明自己当前可提供的实体模型，而不是依赖 AICC 静态配置列出模型。实体模型的全局精确模型名由 Provider 内部模型 ID 和 `provider_instance_name` 共同确定，例如 `gpt-5.2@openai_primary`，这样不同 Provider instance 的模型名不会重叠。
-2. **目录挂载声明**：Provider instance 在模型声明中列出该真实模型建议挂载到哪些逻辑目录，例如 `gpt-5.2@openai_primary` 挂载到 `llm.gpt5`。Registry 可以把这些声明物化为系统全局目录中对应目录下的 item。
+2. **目录挂载声明**：Provider instance 在模型声明中列出该真实模型建议挂载到哪些逻辑目录，例如 `gpt-5.2@openai_primary` 挂载到 `llm.gpt-pro`。Registry 可以把这些声明物化为系统全局目录中对应目录下的 item。
 3. **系统配置与 session overlay 分层**：默认 logical definitions、provider inventory 和 `system_config.services/aicc/settings.routing_config` 合并成系统 routing view；request/session 只能在这个视图上做临时 overlay。
 4. **继承与覆盖**：一个 session overlay 可以通过相同的 `logical_tree`、`children`、`items`、`item_overrides`、`policy` 字段覆盖全局视图的部分节点。
 5. **解析入口统一**：底层实现只需要根据有效 routing config 和 request model，解析出最高有效权重相同、可交给调度器继续选择的候选列表；不需要为全局配置和 session overlay 发明两套路由算法。
@@ -316,7 +316,7 @@ logical_tree:
       plan:
         items:
           gpt5:
-            target: llm.gpt5
+            target: llm.gpt-pro
             weight: 3.0
           claude:
             target: llm.claude
@@ -328,7 +328,7 @@ logical_tree:
             weight: 1.0
 ```
 
-当 request model 为 `llm.plan` 时，Resolver 先读取 `llm.plan` 的 items，得到 `llm.gpt5` 和 `llm.claude` 两个软链接目标；再继续展开目标目录，直到得到精确模型候选。`weight` 不沿路径相乘，只在当前目录的同级 item 之间表达“先选哪个分支”。
+当 request model 为 `llm.plan` 时，Resolver 先读取 `llm.plan` 的 items，得到 `llm.gpt-pro` 和 `llm.claude-opus` 两个软链接目标；再继续展开目标目录，直到得到精确模型候选。`weight` 不沿路径相乘，只在当前目录的同级 item 之间表达“先选哪个分支”。
 
 item 解析规则：
 
@@ -353,7 +353,7 @@ LLM 的规格归属由原厂 Model Driver 决定。Provider Rules/discovery 将�
 
 ### 6.7 逻辑模型定义与自动挂载（LogicalModelDefinition）
 
-本节类型仍供各 API 使用；LLM 目标中的根、功能、规格和家族禁用通用 Auto/Hybrid，只由声明的关系生成候选。
+本节类型仍供各 API 使用；LLM 的根、功能、规格和家族禁用通用 Auto/Hybrid，只由声明的关系生成候选。
 
 除了 item 软链接，逻辑模型名本身可以有一个 `LogicalModelDefinition`，声明挂载到该逻辑模型名的模型必须满足的能力门限、本次禁用能力、挂载模式等。结构：
 
@@ -384,7 +384,7 @@ LogicalModelDefinition
 4. admission check 与 auto-mount 都在 Registry 层完成，Router 只看最终候选。
 5. route trace 会记录每个候选 item 的来源（builtin definition / driver metadata mount / auto admission / manual override / session overlay），并解释模型为何不满足 `min_line`、哪些能力被 `disable_line` 禁用。
 
-LLM 目标装配在构建 `ModelRegistry` 时先创建 builtin 功能节点与 metadata 声明的全部规格，再从 metadata 与有效 inventory 的交集创建家族、固定预设和物理实例，最后按 factory/system/user/session 顺序叠加偏好并校验。零 inventory 时规格为空，但功能引用仍可见；最后一个家族实例被移除时，只清理动态节点及引用，保留规格和功能偏好。
+LLM 装配在构建 `ModelRegistry` 时先创建 builtin 功能节点与 metadata 声明的全部规格，再从 metadata 与有效 inventory 的交集创建家族、固定预设和物理实例，最后按 factory/system/user/session 顺序叠加偏好并校验。零 inventory 时规格为空，但功能引用仍可见；最后一个家族实例被移除时，只清理动态节点及引用，保留规格和功能偏好。
 
 每个有效 LLM 规则恰好归入一个规格，规格必须被功能引用或显式标记 `direct_only`。`direct_only` 不得通过任务或 fallback 暗中接入；显式接入任务时须同时解除标记。规格引用、预设、版本顺序和名称冲突等校验不依赖库存数量；失败不得发布部分树。
 
@@ -409,7 +409,7 @@ Provider 需要通过声明式接口返回自身当前可提供的模型及其�
 
 这份模型列表是 Provider 的运行时能力声明，不是 AICC 的静态配置。AICC Registry 应周期性或按需调用 Provider 的 inventory/metadata 接口刷新能力清单，避免出现“厂商新增或下线模型后必须修改 AICC 配置才能生效”的情况。Provider 可以自行决定自己的能力清单何时更新，例如启动时加载、本地模型安装完成后更新、云端 inventory 变化后更新，或凭据/套餐变化后更新。
 
-> **Provider 自发现只负责发现 provider model id；能力 metadata 由 driver metadata resolver 产出。** Provider（如 OpenAI）可以只通过 `/models` 报告模型 id。AICC 对每个 `(catalog_kind, catalog_id)` 按 `system-config > local > cloud > builtin` 选择最高优先级来源中的完整 JSON，不跨来源 merge；高优先级来源未包含的身份继续使用低优先级文件。例如 cloud OpenAI 与 builtin MiniMax 可以同时生效。Resolver 再在获选 Driver 文件内按 exact → pattern → default → conservative fallback，把模型 id 转成最终 `ModelMetadata.capabilities` / `logical_mounts` / `variants`；unknown model 走保守 fallback。云端按客户端版本投放兼容且 manifest `revision_seq` 更高的 cloud 来源版本，NDN 保证防回退并在文件替换后令 `metadata_target_seq = manifest.revision_seq`；每个 Provider inventory 保存 `metadata_applied_seq`，推理前或 Provider 定时库存刷新触发所有落后 Provider 的全局收敛。model 列表未变化且 seq 相同时只探测、不重写库存。详见 `driver_metadata_update_protocol.md`。
+> **Provider 自发现只负责发现 provider model id；能力 metadata 由 driver metadata resolver 产出。** Provider（如 OpenAI）可以只通过 `/models` 报告模型 id。AICC 对每个 `(catalog_kind, catalog_id)` 按 `system-config > local > cloud > builtin` 选择最高优先级来源中的完整 JSON，不跨来源 merge；高优先级来源未包含的身份继续使用低优先级文件。例如 cloud OpenAI 与 builtin MiniMax 可以同时生效。Resolver 再在获选 Driver 文件内按 exact → pattern → default → conservative fallback，把模型 id 转成最终 `ModelMetadata.capabilities` 与非 LLM `logical_mounts`；LLM 家族/effort 关系由 catalog 与库存交集派生；unknown model 走保守 fallback。云端按客户端版本投放兼容且 manifest `revision_seq` 更高的 cloud 来源版本，NDN 保证防回退并在文件替换后令 `metadata_target_seq = manifest.revision_seq`；每个 Provider inventory 保存 `metadata_applied_seq`，推理前或 Provider 定时库存刷新触发所有落后 Provider 的全局收敛。model 列表未变化且 seq 相同时只探测、不重写库存。详见 `driver_metadata_update_protocol.md`。
 
 建议接口返回 schema：
 
@@ -423,7 +423,7 @@ models:
     api_types:
       - llm
     logical_mounts:
-      - llm.gpt5
+      - llm.gpt-pro
     capabilities:
       streaming: true
       tool_call: true
@@ -622,7 +622,7 @@ Fallback 分为解析期 fallback 和运行时 failover。
 | 模式 | 含义 | 示例 |
 |---|---|---|
 | `strict` | 不 fallback，候选为空即失败。 | 高隐私、强一致性任务。 |
-| `parent` | 向上扩大到父目录继续查找；LLM 目标禁止隐式父级回退。 | 非 LLM 按各 API 的规则使用。 |
+| `parent` | 向上扩大到父目录继续查找；LLM 禁止隐式父级回退。 | 非 LLM 按各 API 的规则使用。 |
 | `target_exact` | fallback 到指定精确模型。 | `gpt5@openai`。 |
 | `target_logical` | fallback 到指定逻辑目录。 | `llm.fallback`。 |
 | `disabled` | 显式禁止该节点 fallback。 | 宁可失败，也不串到其他模型。 |
@@ -698,7 +698,7 @@ logical_tree:
     "allow_exact_model_fallback": true,
     "fallback": {
       "mode": "target_logical",
-      "target": "llm.gpt5"
+      "target": "llm.gpt-pro"
     }
   }
 }
@@ -779,6 +779,8 @@ score =
 
 权重用于表达用户或系统的优先级偏好，但目录 item 权重不做路径乘法。每一级目录的 `items.*.weight` 只在该目录的同级 item 之间比较，语义是“这个目录下先选哪个分支”；被选中分支内部的权重只在该分支内部继续比较，不能反向放大父目录权重。
 
+LLM 先按规格权重降序、规格 ID 升序，再按同规格内稳定性、版本降序、家族 ID 升序排序，最后才比较同家族的实例权重/调度分。通用评分不能改变规格或家族顺序。以下逐层权重算法保留用于非 LLM。
+
 调度顺序：
 
 1. 展开逻辑目录，收集所有不成环的候选路径，并按 `(exact_model, api_type)` 去重；
@@ -825,11 +827,11 @@ logical_tree:
     children:
       plan:
         items:
-          gpt5:   { target: llm.gpt5,   weight: 3.0 }
+          gpt5:   { target: llm.gpt-pro,   weight: 3.0 }
           claude: { target: llm.claude, weight: 2.0 }
       code:
         items:
-          gpt5:   { target: llm.gpt5,   weight: 1.0 }
+          gpt5:   { target: llm.gpt-pro,   weight: 1.0 }
           claude: { target: llm.claude, weight: 2.0 }
       gpt5:
         items:
@@ -840,10 +842,10 @@ logical_tree:
           anthropic: { target: claude-sonnet@anthropic, weight: 5.0 }
 ```
 
-- 请求 `llm.plan` 时，第一层先比较 `gpt5 = 3.0` 和 `claude = 2.0`，选择 `llm.gpt5`；`llm.claude` 内部的 `weight = 5.0` 不会乘到 plan 路径上，因此不会超过 plan 对 GPT 家族的偏好。
-- 进入 `llm.gpt5` 后，`openai_primary` 和 `openai_backup` 同为 `1.0`，二者进入精确模型权重与 profile 评分阶段。
-- 请求 `llm.code` 时，第一层选择 `llm.claude`，然后 `claude-sonnet@anthropic` 成为叶子候选。
-- 如果 `llm.plan` 的 GPT 候选全部被硬过滤，Resolver 会回到同级中仍有可用叶子的最高权重分支，此时可选择 `llm.claude`。
+- 请求 `llm.plan` 时，第一层先比较 `gpt5 = 3.0` 和 `claude = 2.0`，选择 `llm.gpt-pro`；`llm.claude-opus` 内部的 `weight = 5.0` 不会乘到 plan 路径上，因此不会超过 plan 对 GPT 家族的偏好。
+- 进入 `llm.gpt-pro` 后，`openai_primary` 和 `openai_backup` 同为 `1.0`，二者进入精确模型权重与 profile 评分阶段。
+- 请求 `llm.code` 时，第一层选择 `llm.claude-opus`，然后 `claude-sonnet@anthropic` 成为叶子候选。
+- 如果 `llm.plan` 的 GPT 候选全部被硬过滤，Resolver 会回到同级中仍有可用叶子的最高权重分支，此时可选择 `llm.claude-opus`。
 
 ### 10.5 调度 Profile
 
@@ -1021,7 +1023,7 @@ session_overlay:
 |---|---|---|
 | 规划 | `llm.plan` | 高质量模型、GPT 家族、Claude 家族、本地高能力模型 |
 | 编码 | `llm.code` | 代码模型、GPT 家族、本地代码模型 |
-| 总结 | `llm.summary` | 低成本模型、本地模型 |
+| 总结 | `llm.summarize` | 低成本模型、本地模型 |
 | 快速问答 | `llm.swift` | mini/flash/本地小模型 |
 
 ### 12.3 Request 级策略覆盖
@@ -1051,11 +1053,11 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
           "plan": {
             "items": {
               "gpt5": {
-                "target": "llm.gpt5",
+                "target": "llm.gpt-pro",
                 "weight": 4.0
               },
               "claude": {
-                "target": "llm.claude",
+                "target": "llm.claude-opus",
                 "weight": 2.0
               }
             },
@@ -1066,7 +1068,7 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
           "code": {
             "items": {
               "gpt5": {
-                "target": "llm.gpt5",
+                "target": "llm.gpt-pro",
                 "weight": 3.0
               },
               "local": {
@@ -1350,7 +1352,7 @@ routing_config:
         plan:
           items:
             gpt5:
-              target: llm.gpt5
+              target: llm.gpt-pro
               weight: 3.0
             claude:
               target: llm.claude
@@ -1360,7 +1362,7 @@ routing_config:
         code:
           items:
             gpt5:
-              target: llm.gpt5
+              target: llm.gpt-pro
               weight: 2.0
             local:
               target: llm.local
@@ -1410,7 +1412,7 @@ routing_config:
 - 默认逻辑目录配置由服务内置装配；`services/aicc/settings.routing_config` 只表达运营或用户覆盖，不应成为 `llm.chat` 等标准目录可用性的前提。
 - Provider inventory 声明中的 `logical_mounts` 可作为生成 default items 的输入；显式写在 system/session config 中的 `items` 会完整覆盖 default items，局部修改使用 `item_overrides`。
 - `global_exact_model_weights` 只对已经出现在当前候选集合中的精确模型生效，不会把模型加入候选集合。
-- `items.*.weight` 只在当前逻辑目录的同级 item 中比较；上例中 `llm.plan` 目录下 `llm.gpt5` 优先于 `llm.claude`，但 `llm.gpt5` 内部 Provider 权重不会乘到 `llm.plan` 权重上。
+- `items.*.weight` 只在当前逻辑目录的同级 item 中比较；上例中 `llm.plan` 目录下 `llm.gpt-pro` 优先于 `llm.claude-opus`，但 `llm.gpt-pro` 内部 Provider 权重不会乘到 `llm.plan` 权重上。
 - 权重只决定优先级；同优先级候选仍由调度 profile 决定。
 
 ### 15.2 Provider Inventory 声明示例
@@ -1425,7 +1427,7 @@ providers:
         exact_model: gpt-5.2@openai_primary
         parameter_scale: unknown
         api_types: [llm]
-        logical_mounts: [llm.gpt5]
+        logical_mounts: [llm.gpt-pro]
         capabilities:
           tool_call: true
           json_schema: true
@@ -1446,7 +1448,7 @@ providers:
         exact_model: gpt-5.2@openai_backup
         parameter_scale: unknown
         api_types: [llm]
-        logical_mounts: [llm.gpt5]
+        logical_mounts: [llm.gpt-pro]
         capabilities:
           tool_call: true
           json_schema: true
@@ -1538,26 +1540,26 @@ scheduler_profiles:
 
 #### 用户简单调用
 
-请求 `model = llm.gpt5`：
+请求 `model = llm.gpt-pro`：
 
-1. Resolver 展开 `llm.gpt5`，得到 `gpt-5.2@openai_primary` 和 `gpt-5.2@openai_backup`；
+1. Resolver 展开 `llm.gpt-pro`，得到 `gpt-5.2@openai_primary` 和 `gpt-5.2@openai_backup`；
 2. 两个 Provider 都通过硬过滤；
-3. `llm.gpt5` 内两个 item 权重相同，进入 profile 评分；
+3. `llm.gpt-pro` 内两个 item 权重相同，进入 profile 评分；
 4. `cost_first` 选择动态成本更低且健康状态正常的候选；
 5. trace 返回 selected exact model、Provider instance、成本估算和 `user_summary`。
 
 #### Agent 多角色
 
-同一 agent run 可在应用层合成不同 role overlay，并分别调用 `llm.plan`、`llm.code`、`llm.summary`：
+同一 agent run 可在应用层合成不同 role overlay，并分别调用 `llm.plan`、`llm.code`、`llm.summarize`：
 
 1. `llm.plan` 的目录权重先在 GPT/Claude 等家族之间选择；
 2. `llm.code` 可独立选择更适合代码的家族；
-3. `llm.summary` 可用 `local_first` 或目录级 `exact_model_weights` 降低成本；
+3. `llm.summarize` 可用 `local_first` 或目录级 `exact_model_weights` 降低成本；
 4. 三个角色的偏好由应用层传入的 `session_overlay` 表达，AICC 不保存 role/session 绑定。
 
 #### 本地优先
 
-请求 `llm.summary` 并设置 `policy.local_only.value = true`：
+请求 `llm.summarize` 并设置 `policy.local_only.value = true`：
 
 1. 硬过滤阶段只保留 `provider_type = local_inference` 的候选；
 2. Provider inventory 自己声明的 `attributes.local = true` 不足以通过过滤；
@@ -1592,7 +1594,7 @@ scheduler_profiles:
 |---|---|---|
 | R-001 | 支持精确模型名解析。 | `gpt5@openai` 可直接解析到 Provider instance `openai` 的模型 `gpt5`。 |
 | R-002 | 支持逻辑模型名目录树。 | `llm.code`、`llm.plan`、`llm` 可作为不同粒度目录解析；目录 item 可通过 `target` 软链接到其它目录或精确模型。 |
-| R-003 | 支持同一逻辑模型名多 Provider instance 挂载。 | 多个 Provider instance 通过 `logical_mounts` 挂载到 `llm.gpt5` 后，Registry 返回多个候选。 |
+| R-003 | 支持同一逻辑模型名多 Provider instance 挂载。 | 多个 Provider instance 通过 `logical_mounts` 挂载到 `llm.gpt-pro` 后，Registry 返回多个候选。 |
 | R-004 | 支持 Provider 声明式模型元数据。 | Provider 可通过 inventory/metadata 接口声明实体模型、参数规模、目录挂载、能力、属性、价格、健康状态；AICC 不通过静态配置维护 Provider 模型列表。 |
 | R-005 | 支持候选列表生成。 | 输入逻辑模型名可生成符合 API 类型的候选集合。 |
 | R-006 | 支持硬性过滤。 | 不满足本地、隐私、能力、上下文、预算等条件的候选被剔除。 |
@@ -1688,11 +1690,11 @@ scheduler_profiles:
 
 前置条件：
 
-- `openai` 和 `openrouter` 都注册 `llm.gpt5`；
+- `openai` 和 `openrouter` 都注册 `llm.gpt-pro`；
 - 两者均可用；
 - 默认 profile 为 `cost_first`。
 
-操作：调用 `model = llm.gpt5`。
+操作：调用 `model = llm.gpt-pro`。
 
 期望：
 
@@ -1733,10 +1735,10 @@ scheduler_profiles:
 
 前置条件：
 
-- `llm.summary` 下有本地候选和云端候选；
+- `llm.summarize` 下有本地候选和云端候选；
 - request 设置 `local_only = true`。
 
-操作：调用 `model = llm.summary`。
+操作：调用 `model = llm.summarize`。
 
 期望：
 
@@ -1765,11 +1767,11 @@ scheduler_profiles:
 
 前置条件：
 
-- `llm.gpt5` 有两个候选；
+- `llm.gpt-pro` 有两个候选；
 - 第一个候选执行时超时；
 - policy 允许 `runtime_failover = true`。
 
-操作：调用 `model = llm.gpt5`。
+操作：调用 `model = llm.gpt-pro`。
 
 期望：
 

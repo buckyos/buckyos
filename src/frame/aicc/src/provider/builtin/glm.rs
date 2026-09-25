@@ -388,7 +388,11 @@ mod tests {
             glm_53.operations["llm"],
             OPENAI_CHAT_COMPLETIONS_OPERATION_ID
         );
-        assert!(glm_53.logical_mounts.contains(&"llm.glm".to_owned()));
+        assert!(glm_53.logical_mounts.is_empty());
+        assert_eq!(
+            catalog.llm_model("glm", "glm-5.3").unwrap().semantics.spec,
+            "glm-standard"
+        );
 
         let glm_image = inventory
             .models

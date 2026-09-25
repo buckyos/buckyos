@@ -18,12 +18,10 @@ pub(crate) use inventory::{
     ProviderQuotaObservation, ProviderQuotaObservationState, ProviderQuotaObserver,
     ProviderQuotaReading, ResolvedProviderConnection, StaticCredentialResolver,
 };
-#[cfg(test)]
-use inventory::{expand_version_mount, matches_version_tier, version_rank};
 use runtime::ProviderRuntime;
 pub(crate) use runtime::ProviderRuntimeManager;
 
-use crate::catalog::{CatalogSnapshot, Pricing, VersionRule};
+use crate::catalog::{CatalogSnapshot, Pricing};
 use crate::error::{ProviderDraftValidationError, ProviderError, ProviderResult};
 use crate::matching::MatchContext;
 use crate::model::{

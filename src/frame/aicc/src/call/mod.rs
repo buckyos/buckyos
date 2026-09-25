@@ -210,20 +210,6 @@ impl fmt::Display for CallLoweringError {
             Self::InvalidExactModel(v) => v.fmt(f),
             Self::RouteMismatch(v) => write!(f, "route decision mismatch: {v}"),
             Self::Catalog(v) => v.fmt(f),
-            Self::MissingModelVariant {
-                model_driver_id,
-                variant,
-            } => write!(
-                f,
-                "model driver `{model_driver_id}` does not define variant `{variant}` for this model"
-            ),
-            Self::AmbiguousModelVariant {
-                model_driver_id,
-                variant,
-            } => write!(
-                f,
-                "model driver `{model_driver_id}` defines variant `{variant}` more than once"
-            ),
             Self::MissingProviderVariant {
                 provider_rules_id,
                 variant,
@@ -560,35 +546,27 @@ impl<'a> CallResolver<'a> {
         let Some(variant) = variant else {
             return Ok(BTreeMap::new());
         };
-        let effective =
+        let rules_id = rules_id.unwrap_or_default();
+        let matches = if self.catalog.provider_rules(rules_id).is_some() {
             self.catalog
-                .effective_model_variants(rules_id, &selected.model_driver_id, context)?;
-        let provider_override = effective.provider_override;
-        let matches = effective
-            .variants
-            .into_iter()
-            .filter(|candidate| candidate.name() == variant)
-            .collect::<Vec<_>>();
+                .matching_provider_variants_for_model(rules_id, context)?
+                .into_iter()
+                .filter(|candidate| {
+                    candidate.model_driver == selected.model_driver_id
+                        && candidate.variant == variant
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         match matches.as_slice() {
-            [] if provider_override => Err(CallLoweringError::MissingProviderVariant {
-                provider_rules_id: rules_id.unwrap_or_default().into(),
+            [] => Err(CallLoweringError::MissingProviderVariant {
+                provider_rules_id: rules_id.into(),
                 variant: variant.into(),
             }),
-            [] => Err(CallLoweringError::MissingModelVariant {
-                model_driver_id: selected.model_driver_id.clone(),
-                variant: variant.into(),
-            }),
-            [matched] => Ok(matched
-                .provider
-                .map(|provider| provider.provider_options.clone())
-                .or_else(|| matched.model.map(|model| model.provider_options.clone()))
-                .unwrap_or_default()),
-            _ if provider_override => Err(CallLoweringError::AmbiguousProviderVariant {
-                provider_rules_id: rules_id.unwrap_or_default().into(),
-                variant: variant.into(),
-            }),
-            _ => Err(CallLoweringError::AmbiguousModelVariant {
-                model_driver_id: selected.model_driver_id.clone(),
+            [matched] => Ok(matched.provider_options.clone()),
+            _ => Err(CallLoweringError::AmbiguousProviderVariant {
+                provider_rules_id: rules_id.into(),
                 variant: variant.into(),
             }),
         }
@@ -1238,41 +1216,19 @@ mod tests {
     }
 
     fn catalog_with_provider_variant(include_provider_variant: bool) -> CatalogSnapshot {
-        catalog_with_variants(true, include_provider_variant)
-    }
-
-    fn catalog_with_variants(
-        include_model_variant: bool,
-        include_provider_variant: bool,
-    ) -> CatalogSnapshot {
-        let mut model_json = json!({
+        let model: ModelDriverCatalog = serde_json::from_value(json!({
             "format": "buckyos.aicc.model-driver-catalog",
-            "schema_version": 1,
-            "schema_revision": 1,
+            "schema_version": 2,
+            "schema_revision": 0,
             "model_driver_id": "openai",
             "revision_seq": 7,
+            "specs": [{"id":"gpt-test","direct_only":true}],
             "models": [{
-                "id": "gpt-5.2",
-                "api_types": ["llm", "embedding.text"],
-                "canonical_fields": {
-                    "/temperature": {
-                        "converter": "openai_tts_voice_v1",
-                        "fallback": {"action": "reject"}
-                    }
-                }
-            }],
-            "defaults": {},
-            "variants": [{
-                "name": "reasoning-high",
-                "match": "gpt-*",
-                "provider_options": {"reasoning": {"effort": "high"}}
-            }],
-            "version_rules": []
-        });
-        if !include_model_variant {
-            model_json["variants"] = json!([]);
-        }
-        let model: ModelDriverCatalog = serde_json::from_value(model_json).unwrap();
+                "id": "gpt-5.2", "api_types": ["llm", "embedding.text"],
+                "llm": {"spec":"gpt-test","effort":"high","default_effort":"high","supported_efforts":["high"],"stability":"stable"},
+                "canonical_fields": {"/temperature": {"converter": "openai_tts_voice_v1", "fallback": {"action": "reject"}}}
+            }]
+        })).unwrap();
         let mut rules_json = json!({
             "format": "buckyos.aicc.provider-rules-catalog",
             "schema_version": 1,
@@ -1816,28 +1772,27 @@ mod tests {
     }
 
     #[test]
-    fn model_variant_is_used_when_provider_has_no_matching_variants() {
+    fn missing_provider_variant_cannot_fall_back_to_model_parameters() {
         let catalog = catalog_with_provider_variant(false);
         let codecs = codecs();
         let resolver = CallResolver::new(&catalog, &codecs);
         let call = call();
-        let lowered = resolver
+        let error = resolver
             .lower(
                 &decision(call_exact_model(&call).unwrap()),
                 &call,
                 target("secret"),
             )
-            .unwrap();
-        assert_eq!(lowered.variant.as_deref(), Some("reasoning-high"));
-        assert_eq!(
-            lowered.input.resolved_parameters.get("reasoning"),
-            Some(&json!({"effort": "high"}))
-        );
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            CallLoweringError::MissingProviderVariant { .. }
+        ));
     }
 
     #[test]
     fn provider_variant_is_used_without_a_model_metadata_variant() {
-        let catalog = catalog_with_variants(false, true);
+        let catalog = catalog_with_provider_variant(true);
         let codecs = codecs();
         let resolver = CallResolver::new(&catalog, &codecs);
         let call = call();

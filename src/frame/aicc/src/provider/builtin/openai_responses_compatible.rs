@@ -532,13 +532,10 @@ mod tests {
             .models
             .iter()
             .any(|model| model.id == "doubao-seed-2-0-lite-260215"));
-        assert!(doubao
-            .patterns
-            .iter()
-            .any(|model| model.parameter_scale.as_deref() == Some("pro")));
+        assert!(doubao.specs.iter().any(|spec| spec.id == "doubao-pro"));
 
         let qwen = catalog.model_driver(QWEN_PROFILE_ID).unwrap();
-        assert!(qwen.patterns.iter().any(|model| {
+        assert!(qwen.models.iter().any(|model| {
             model.parameter_scale.as_deref() == Some("max")
                 && model.capabilities.as_ref().unwrap()["max_context_tokens"] == 1_000_000
         }));
@@ -707,7 +704,7 @@ mod tests {
     #[test]
     fn rules_and_dialects_build_complete_inventory_identity_for_all_three_providers() {
         let catalog = CatalogSnapshot::from_current_files(
-            1,
+            2,
             openai_responses_compatible_catalog_files(),
             &CatalogBuildOptions::default(),
         )

@@ -11,7 +11,7 @@ fn file(kind: CatalogKind, value: Value) -> CurrentCatalogFile {
 fn model_driver(id: &str, models: Value, patterns: Value) -> Value {
     json!({
         "format": MODEL_DRIVER_FORMAT,
-        "schema_version": 1,
+        "schema_version": 2,
         "schema_revision": 0,
         "model_driver_id": id,
         "revision_seq": 7,
@@ -19,11 +19,10 @@ fn model_driver(id: &str, models: Value, patterns: Value) -> Value {
         "models": models,
         "patterns": patterns,
         "defaults": {
-            "api_types": ["llm"],
+            "api_types": ["image.txt2img"],
             "capabilities": {"streaming": true}
         },
-        "variants": [],
-        "version_rules": []
+        "specs": []
     })
 }
 
@@ -143,7 +142,7 @@ fn complete_files() -> Vec<CurrentCatalogFile> {
                 "openai",
                 json!([{
                     "id": "gpt-special",
-                    "api_types": ["llm", "image.txt2img"],
+                    "api_types": ["image.txt2img"],
                     "capabilities": {"streaming": true, "tool_call": true}
                 }]),
                 json!([{
@@ -160,146 +159,6 @@ fn complete_files() -> Vec<CurrentCatalogFile> {
 
 fn build(files: Vec<CurrentCatalogFile>) -> Result<CatalogSnapshot, CatalogBuildError> {
     CatalogSnapshot::from_current_files(42, files, &CatalogBuildOptions::default())
-}
-
-#[test]
-fn anthropic_effort_variants_exclude_unsupported_haiku() {
-    let snapshot = build(vec![
-        CurrentCatalogFile {
-            kind: CatalogKind::ModelDriver,
-            contents: include_bytes!("../../driver_metadata/models/anthropic.model.json").to_vec(),
-        },
-        CurrentCatalogFile {
-            kind: CatalogKind::ProviderRules,
-            contents: include_bytes!("../../driver_metadata/providers/claude.provider.json")
-                .to_vec(),
-        },
-    ])
-    .unwrap();
-    assert_eq!(snapshot.model_driver("claude").unwrap().revision_seq, 1);
-    let variants = |model: &str| {
-        let context = BTreeMap::from([("origin_model_id".to_owned(), json!(model))]);
-        snapshot
-            .matching_model_variants("claude", &context)
-            .unwrap()
-            .into_iter()
-            .map(|variant| variant.name.as_str())
-            .collect::<Vec<_>>()
-    };
-
-    assert!(variants("claude-haiku-4-5-20251001").is_empty());
-    assert_eq!(
-        variants("claude-sonnet-5"),
-        [
-            "reasoning-low",
-            "reasoning-medium",
-            "reasoning-high",
-            "reasoning-xhigh",
-            "reasoning-max",
-        ]
-    );
-    for model in ["claude-haiku-4-5-20251001", "claude-sonnet-5"] {
-        let context = BTreeMap::from([
-            ("provider_model_id".to_owned(), json!(model)),
-            ("variant".to_owned(), json!("reasoning-high")),
-        ]);
-        let matched = snapshot
-            .matching_provider_variants("claude", &context)
-            .unwrap();
-        assert_eq!(matched.len(), usize::from(model == "claude-sonnet-5"));
-    }
-}
-
-#[test]
-fn builtin_model_variant_defaults_match_origin_provider_variants() {
-    let catalogs: [(&str, &[u8], &[u8]); 8] = [
-        (
-            "anthropic",
-            include_bytes!("../../driver_metadata/models/anthropic.model.json"),
-            include_bytes!("../../driver_metadata/providers/claude.provider.json"),
-        ),
-        (
-            "deepseek",
-            include_bytes!("../../driver_metadata/models/deepseek.model.json"),
-            include_bytes!("../../driver_metadata/providers/deepseek.provider.json"),
-        ),
-        (
-            "doubao",
-            include_bytes!("../../driver_metadata/models/doubao.model.json"),
-            include_bytes!("../../driver_metadata/providers/doubao.provider.json"),
-        ),
-        (
-            "gemini",
-            include_bytes!("../../driver_metadata/models/gemini.model.json"),
-            include_bytes!("../../driver_metadata/providers/gemini.provider.json"),
-        ),
-        (
-            "glm",
-            include_bytes!("../../driver_metadata/models/glm.model.json"),
-            include_bytes!("../../driver_metadata/providers/glm.provider.json"),
-        ),
-        (
-            "kimi",
-            include_bytes!("../../driver_metadata/models/kimi.model.json"),
-            include_bytes!("../../driver_metadata/providers/kimi.provider.json"),
-        ),
-        (
-            "openai",
-            include_bytes!("../../driver_metadata/models/openai.model.json"),
-            include_bytes!("../../driver_metadata/providers/openai.provider.json"),
-        ),
-        (
-            "qwen",
-            include_bytes!("../../driver_metadata/models/qwen.model.json"),
-            include_bytes!("../../driver_metadata/providers/qwen.provider.json"),
-        ),
-    ];
-
-    for (catalog_id, model_contents, provider_contents) in catalogs {
-        build(vec![
-            CurrentCatalogFile {
-                kind: CatalogKind::ModelDriver,
-                contents: model_contents.to_vec(),
-            },
-            CurrentCatalogFile {
-                kind: CatalogKind::ProviderRules,
-                contents: provider_contents.to_vec(),
-            },
-        ])
-        .unwrap();
-        let model: Value = serde_json::from_slice(model_contents).unwrap();
-        let provider: Value = serde_json::from_slice(provider_contents).unwrap();
-        let model_variants = model["variants"].as_array().unwrap();
-        let provider_variants = provider["variants"].as_array().unwrap();
-
-        assert_eq!(
-            model_variants.len(),
-            provider_variants.len(),
-            "{catalog_id}.model.json must cover every origin Provider variant"
-        );
-        for provider_variant in provider_variants {
-            let variant_name = provider_variant["variant"].as_str().unwrap();
-            let provider_models = &provider_variant["match"]["provider_model_id"];
-            let matching_defaults = model_variants
-                .iter()
-                .filter(|model_variant| {
-                    let model_match = &model_variant["match"];
-                    let origin_models = model_match.get("origin_model_id").unwrap_or(model_match);
-                    model_variant["name"] == variant_name && origin_models == provider_models
-                })
-                .collect::<Vec<_>>();
-
-            assert_eq!(
-                matching_defaults.len(),
-                1,
-                "{catalog_id}.model.json is missing variant {variant_name:?} for {provider_models}"
-            );
-            assert_eq!(
-                matching_defaults[0]["provider_options"], provider_variant["provider_options"],
-                "{catalog_id}.model.json has different provider_options for variant {variant_name:?} and {provider_models}"
-            );
-        }
-    }
 }
 
 #[test]
@@ -326,7 +185,7 @@ fn current_file_set_builds_immutable_indexes_and_deterministic_snapshot() {
     assert_eq!(exact.model_driver_id.as_deref(), Some("openai"));
     assert_eq!(
         exact.semantics.api_types.unwrap(),
-        BTreeSet::from(["image.txt2img".to_owned(), "llm".to_owned()])
+        BTreeSet::from(["image.txt2img".to_owned()])
     );
 
     let candidates = vec!["openai".to_owned()];
@@ -576,75 +435,6 @@ fn provider_exact_and_ordered_pattern_indexes_preserve_actions() {
 }
 
 #[test]
-fn provider_variants_override_model_variants_per_matching_model() {
-    let mut model = model_driver("openai", json!([]), json!([]));
-    model["variants"] = json!([
-        {"name": "model-only", "match": "gpt-*"},
-        {"name": "shared", "match": "gpt-*", "mount_suffix": "shared"}
-    ]);
-    let mut rules = provider_rules();
-    rules["variants"] = json!([
-        {
-            "model_driver": "openai",
-            "variant": "provider-only",
-            "match": "gpt-provider-*",
-            "provider_options": {"reasoning": {"effort": "high"}}
-        },
-        {
-            "model_driver": "openai",
-            "variant": "shared",
-            "match": "gpt-provider-*",
-            "provider_options": {"reasoning": {"effort": "medium"}}
-        }
-    ]);
-    let snapshot = build(vec![
-        file(CatalogKind::ModelDriver, model),
-        file(CatalogKind::ProviderRules, rules),
-    ])
-    .unwrap();
-
-    let provider_context = MatchContext::from([
-        ("provider_model_id".to_owned(), json!("gpt-provider-1")),
-        ("origin_model_id".to_owned(), json!("gpt-provider-1")),
-    ]);
-    let effective = snapshot
-        .effective_model_variants(Some("openai"), "openai", &provider_context)
-        .unwrap();
-    assert!(effective.provider_override);
-    assert_eq!(
-        effective
-            .variants
-            .iter()
-            .map(EffectiveModelVariant::name)
-            .collect::<Vec<_>>(),
-        ["provider-only", "shared"]
-    );
-    assert_eq!(
-        effective.variants[1]
-            .model
-            .and_then(|model| model.mount_suffix.as_deref()),
-        Some("shared")
-    );
-
-    let fallback_context = MatchContext::from([
-        ("provider_model_id".to_owned(), json!("other-model")),
-        ("origin_model_id".to_owned(), json!("gpt-fallback")),
-    ]);
-    let effective = snapshot
-        .effective_model_variants(Some("openai"), "openai", &fallback_context)
-        .unwrap();
-    assert!(!effective.provider_override);
-    assert_eq!(
-        effective
-            .variants
-            .iter()
-            .map(EffectiveModelVariant::name)
-            .collect::<Vec<_>>(),
-        ["model-only", "shared"]
-    );
-}
-
-#[test]
 fn exact_model_wins_globally_and_cross_driver_conflicts_are_rejected() {
     let files = vec![
         file(
@@ -889,7 +679,7 @@ fn schema_revision_required_features_and_references_are_validated() {
             CatalogKind::ModelDriver,
             revision_zero_variant_options
         )]),
-        Err(CatalogBuildError::InvalidValue { .. })
+        Err(CatalogBuildError::InvalidJson { .. })
     ));
 
     let mut required_feature = model_driver("openai", json!([]), json!([]));
@@ -1039,10 +829,7 @@ fn all_nested_match_rules_compile_during_snapshot_build() {
             CatalogKind::ModelDriver,
             conditional_model_price
         )]),
-        Err(CatalogBuildError::InvalidValue {
-            field: "model_pricing.pricing.rules",
-            ..
-        })
+        Err(CatalogBuildError::InvalidJson { .. })
     ));
 }
 
@@ -1087,5 +874,21 @@ fn malformed_files_and_duplicate_identities_fail_atomically() {
             .unwrap()
             .match_kind,
         ModelMatchKind::Pattern
+    );
+}
+
+#[test]
+fn claude_versions_follow_both_official_naming_orders() {
+    assert_eq!(
+        ModelVersion::from_model_id("claude", "claude-3-5-sonnet-20241022")
+            .unwrap()
+            .decimal_rank(),
+        Some(350)
+    );
+    assert_eq!(
+        ModelVersion::from_model_id("claude", "claude-sonnet-4-6")
+            .unwrap()
+            .decimal_rank(),
+        Some(460)
     );
 }
