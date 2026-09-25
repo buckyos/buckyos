@@ -31,7 +31,7 @@ Pricing、tier、time-window 支持上述独立费率。非零维度缺费率、
 | Provider | 本次写入/修订 | 官方来源 |
 | --- | --- | --- |
 | OpenAI | gpt-6-astra 标准价、272K 输入阈值长上下文价；low/medium/high/xhigh/max | [模型页](https://developers.openai.com/api/docs/models/gpt-6-astra) |
-| Claude | Fable 5.1/5、Opus 5、Sonnet 5、Haiku 4.5；缓存读取、5m/1h 写入 | [价格](https://platform.claude.com/docs/en/about-claude/pricing)、[thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking) |
+| Claude | Fable 5.1/5、Opus 5.5/5/4.8/4.7/4.6/4.5、Sonnet 5/4.6/4.5、Haiku 4.5；缓存读取、5m/1h 写入；4.6+ 为 adaptive + output_config.effort（4.6 无 xhigh），4.5 系列为 disabled/budget_tokens 开关 | [价格](https://platform.claude.com/docs/en/about-claude/pricing)、[thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking) |
 | MiniMax | M2.7/2.5/2.1/M2、highspeed、已确认 TTS 和 image-01；只用于 global 区域 | [按量价格](https://platform.minimax.io/docs/guides/pricing-paygo) |
 | Gemini | 3.1/3.5 Flash-Lite 文本、音频、图像输入价；3.1 Flash-Lite 四档，medium 正确映射 medium | [价格](https://ai.google.dev/gemini-api/docs/pricing)、[thinking](https://ai.google.dev/gemini-api/docs/thinking)、[usage](https://ai.google.dev/api/interactions-api) |
 | DeepSeek | 固定 V4 Pro 的工作日峰谷价；官方 Flash 旧调用名优先解析重定向 | [价格](https://api-docs.deepseek.com/quick_start/pricing/)、[更新](https://api-docs.deepseek.com/updates/) |

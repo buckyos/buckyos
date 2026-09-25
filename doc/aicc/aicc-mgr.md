@@ -116,40 +116,49 @@ Provider Wizard 每次打开只读取一次完整 catalog；catalog 不可用时
 
 ### 4.1 `models.list`
 
-状态：保留并作为 AI Center 首页 snapshot 的主读接口。
-
-Request 可为空；Routing 页面按面包屑目录加载时可传：
+Request 为 `{}`。服务从同一个 runtime snapshot 返回当前库存、Model Driver 完整目录和逻辑树：
 
 ```json
 {
-  "logical_path": "llm.plan"
-}
-```
-
-传入 `logical_path` 时，Response 只返回该逻辑路径子树相关的 `directory` / `logical_definitions`，并裁剪 `providers[].models` 到挂载在该路径子树下的模型，避免 Routing 页面为了展示某一层级一次性拉取并组织完整目录。
-
-Request：
-
-```json
-{}
-```
-
-Response：
-
-```json
-{
-  "providers": [],
+  "models": [],
+  "catalog": {
+    "revision": 2,
+    "vendors": [{
+      "id": "qwen",
+      "revision": 2,
+      "models": [{
+        "id": "qwen3.5-27b",
+        "metadata": {"local_deployable": true, "api_types": ["llm"]},
+        "providers": []
+      }],
+      "specs": [{
+        "id": "qwen-dense-27b",
+        "path": "llm.qwen-dense-27b",
+        "direct_only": false,
+        "members": [{
+          "model_id": "qwen3.5-27b",
+          "target": "llm.qwen3-5-27b:thinking",
+          "weight": 1.0,
+          "active": false
+        }]
+      }]
+    }]
+  },
   "directory": {},
-  "aliases": [],
-  "session_config": {}
+  "logical_definitions": [],
+  "generation": 1
 }
 ```
 
-需要增强的字段：
+示例仅展示部分元数据字段。`models[]` 仍是已物化的 exact model 库存；`catalog.vendors[].models[]` 来自已生效的 Model Driver 文档，包含 defaults 合并后的完整语义，排除 `exclude: true` 的条目，零 Provider 时仍可浏览。有限 pattern 已在 catalog 编译阶段展开。
 
-- `providers[].provider_origin`：当前 `dump_model_directory()` 没有输出，前端会 fallback 成 `provider_claimed`。建议补上 `inventory.provider_origin`。
-- `providers[].provider_type_revision`：可选，前端 raw 类型已经预留。
-- `providers[].models[].pricing` / `attributes`：当前未输出，前端会 fallback 成 unknown。不是添加 Provider 的阻塞项。
+`providers[]` 按 `(model_driver_id, origin_model_id)` 关联当前库存，以 provider instance 去重；每项为 `{id, local, exact_models}`。仅启用且实际有库存的 Provider 被计入，`local` 严格来自 `provider_type=local_inference`，不根据模型名称、URL 或 profile 推测。这里的可用表示至少有一个 Provider，不表示健康检查、额度或路由约束均通过。没有凭据字段。
+
+规格来自 Driver 的 `specs`，其成员由 LLM metadata 生成；空规格保留。`target` 包含规格选定的 effort。已物化的成员显示逻辑树当前权重（`active: true`），未物化的成员显示建树默认权重 `1.0`（`active: false`）。此权重是规格到模型家族的权重，不是功能目录到规格的权重，也不承诺路由一定可执行。
+
+Model Driver v2 的 exact rule、有限 pattern 和 defaults 新增可选布尔值 `local_deployable`，exact/pattern 值覆盖 defaults，缺省表示尚未声明本地部署能力。本次依据仓库既有权重模型记录为 Qwen 的七个明确权重型号补充 `true`；不按厂商或名称在前端推断。此字段不代表已经安装，也不创建 Provider。
+
+WebUI 的 `fetchModelCatalog()` 只读取此方法的 `catalog`，独立于 usage 查询。页面提供只读部署入口并注明功能尚未开放；本版本没有部署 RPC、下载任务或虚拟成功状态。
 
 ### 4.2 `provider.validate`
 

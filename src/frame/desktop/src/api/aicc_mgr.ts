@@ -1,5 +1,7 @@
 import { buckyos, getActiveSessionToken } from 'buckyos'
 import { isMockRuntime } from '../runtime'
+import type { ModelCatalog } from '../app/ai-center/datamodel/model-catalog'
+import { mockModelCatalog } from '../app/ai-center/mock/model-catalog'
 import { MockDataStore } from '../app/ai-center/mock/store'
 import { normalizeFinanceTotals } from '../app/ai-center/datamodel/transforms'
 import { toAiccRpcCallOptions } from './aicc_rpc_options'
@@ -298,6 +300,7 @@ interface RawTraceQueryResponse {
 interface AiccDataProvider {
   fetchSnapshot(): Promise<StoreSnapshot>
   fetchProviderSetupCatalog(): Promise<ProviderSetupCatalog>
+  fetchModelCatalog(): Promise<ModelCatalog>
   addProvider(draft: WizardDraft): Promise<void>
   deleteProvider(id: string): Promise<void>
   refreshProviderModels(id: string): Promise<void>
@@ -320,6 +323,7 @@ export interface AICCMgr {
   getSnapshotVersion(): number
   refresh(): Promise<void>
   fetchProviderSetupCatalog(): Promise<ProviderSetupCatalog>
+  fetchModelCatalog(): Promise<ModelCatalog>
   getUsageSummary(): UsageSummary
   getUsageTrend(granularity?: string): UsageTrendPoint[]
   addProvider(draft: WizardDraft): Promise<ProviderView>
@@ -455,6 +459,10 @@ export class AICCModelStore implements AICCMgr {
     this.emit()
   }
 
+  fetchModelCatalog(): Promise<ModelCatalog> {
+    return this.provider.fetchModelCatalog()
+  }
+
   fetchProviderSetupCatalog(): Promise<ProviderSetupCatalog> {
     return this.provider.fetchProviderSetupCatalog()
   }
@@ -578,6 +586,10 @@ class MockAiccProvider implements AiccDataProvider {
 
   async fetchSnapshot(): Promise<StoreSnapshot> {
     return this.store.getSnapshot()
+  }
+
+  async fetchModelCatalog(): Promise<ModelCatalog> {
+    return mockModelCatalog(this.store.getSnapshot())
   }
 
   async fetchProviderSetupCatalog(): Promise<ProviderSetupCatalog> {
@@ -748,6 +760,12 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     this.settingsRevision = asNumber(providerList.settings_revision, 0)
     directory.routing_settings = asRecord(routing.routing) as RawRoutingSettings
     return toStoreSnapshot(directory, providerList, [], traceQuery.traces)
+  }
+
+  async fetchModelCatalog(): Promise<ModelCatalog> {
+    const response = await this.call<{ catalog: ModelCatalog }>('models.list', {})
+    if (!Array.isArray(response.catalog?.vendors)) throw new Error('aicc.model_catalog_missing')
+    return response.catalog
   }
 
   async fetchProviderSetupCatalog(): Promise<ProviderSetupCatalog> {

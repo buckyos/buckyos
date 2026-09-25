@@ -985,6 +985,124 @@ fn builtin_tree(inventories: &[ModelProviderInventory]) -> ModelRegistry {
 }
 
 #[test]
+fn model_catalog_preserves_known_models_and_empty_specs_without_providers() {
+    let catalog = crate::model::llm_tests::builtin_catalog();
+    let view = model_catalog_json(&catalog, &builtin_tree(&[]), &[]);
+    let vendors = view["vendors"].as_array().unwrap();
+    assert_eq!(vendors.len(), catalog.model_drivers().count());
+    for vendor in vendors {
+        let driver = catalog
+            .model_driver(vendor["id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            vendor["specs"].as_array().unwrap().len(),
+            driver.specs.len()
+        );
+        assert_eq!(
+            vendor["models"].as_array().unwrap().len(),
+            driver
+                .models
+                .iter()
+                .filter(|model| catalog
+                    .resolve_model(&driver.model_driver_id, &model.id)
+                    .unwrap()
+                    .semantics
+                    .exclude
+                    != Some(true))
+                .count()
+        );
+        for model in vendor["models"].as_array().unwrap() {
+            assert_eq!(model["providers"], json!([]));
+            assert!(model["metadata"]["api_types"].is_array());
+        }
+        for member in vendor["specs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|spec| spec["members"].as_array().unwrap())
+        {
+            assert_eq!(member["weight"], 1.0);
+            assert_eq!(member["active"], false);
+        }
+    }
+    let qwen = vendors
+        .iter()
+        .find(|vendor| vendor["id"] == "qwen")
+        .unwrap();
+    let model = qwen["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["id"] == "qwen3.5-27b")
+        .unwrap();
+    assert_eq!(model["metadata"]["local_deployable"], true);
+    assert!(vendors
+        .iter()
+        .flat_map(|vendor| vendor["specs"].as_array().unwrap())
+        .any(|spec| spec["members"] == json!([])));
+}
+
+#[test]
+fn model_catalog_joins_canonical_identity_deduplicates_variants_and_tracks_local_providers() {
+    let catalog = crate::model::llm_tests::builtin_catalog();
+    let registry = builtin_tree(&[
+        crate::model::llm_tests::inventory(
+            "openai",
+            "gpt-5.5",
+            "aliased-cloud-model",
+            "cloud",
+            &["medium", "high"],
+        ),
+        crate::model::llm_tests::inventory(
+            "openai",
+            "gpt-5.5",
+            "aliased-local-model",
+            "local",
+            &["medium"],
+        ),
+    ]);
+    let mut cloud = provider_public_view(&sn_provider(
+        "cloud",
+        json!({"mode": "api_key", "credential_ref": "locked://cloud/api_token", "credential_kind": "bearer"}),
+    ));
+    let mut local = provider_public_view(&sn_provider(
+        "local",
+        json!({"mode": "api_key", "credential_ref": "locked://local/api_token", "credential_kind": "bearer"}),
+    ));
+    local.provider_type = ProviderInstanceType::LocalInference;
+    let model_in = |view: &Value| {
+        view["vendors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|vendor| vendor["id"] == "openai")
+            .unwrap()["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["id"] == "gpt-5.5")
+            .unwrap()
+            .clone()
+    };
+    let view = model_catalog_json(&catalog, &registry, &[cloud.clone(), local.clone()]);
+    let model = model_in(&view);
+    let providers = model["providers"].as_array().unwrap();
+    assert_eq!(providers.len(), 2);
+    assert_eq!(providers[0]["id"], "cloud");
+    assert_eq!(providers[0]["local"], false);
+    assert!(providers[0]["exact_models"].as_array().unwrap().len() > 1);
+    assert_eq!(providers[1]["local"], true);
+    cloud.enabled = false;
+    let view = model_catalog_json(&catalog, &registry, &[cloud, local]);
+    assert_eq!(model_in(&view)["providers"].as_array().unwrap().len(), 1);
+    assert_eq!(model_in(&view)["providers"][0]["id"], "local");
+    assert_eq!(
+        model_in(&model_catalog_json(&catalog, &builtin_tree(&[]), &[]))["providers"],
+        json!([])
+    );
+}
+
+#[test]
 fn builtin_logical_definitions_make_llm_chat_routable_without_routing_config() {
     let inventory = crate::model::llm_tests::inventory(
         "openai",

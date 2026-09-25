@@ -1238,6 +1238,7 @@ fn runtime_admin_snapshot(
         },
         protocol_adapters: protocol_adapter_response(codecs),
         models: json!({
+            "catalog": model_catalog_json(&snapshot.catalog, &snapshot.models, &providers),
             "models": snapshot.models.model_views().into_iter().map(|model| json!({
                 "exact_model": model.exact_model,
                 "model_uid": model.model_uid,
@@ -1264,6 +1265,73 @@ fn runtime_admin_snapshot(
         inventory_revision,
         provider_health,
     }
+}
+
+fn model_catalog_json(
+    catalog: &CatalogSnapshot,
+    registry: &crate::model::ModelRegistry,
+    providers: &[ProviderInstanceView],
+) -> Value {
+    let instances = registry.model_views();
+    let directory = model_directory_json(registry);
+    let mut inventory = BTreeMap::<(&str, &str), BTreeMap<&str, (bool, Vec<&str>)>>::new();
+    let enabled = providers
+        .iter()
+        .filter(|provider| provider.enabled)
+        .map(|provider| (provider.provider_instance_name.as_str(), provider))
+        .collect::<BTreeMap<_, _>>();
+    for model in &instances {
+        let Some(provider) = enabled.get(model.provider_instance_name.as_str()) else {
+            continue;
+        };
+        let entry = inventory
+            .entry((&model.model_driver_id, &model.origin_model_id))
+            .or_default()
+            .entry(&model.provider_instance_name)
+            .or_insert_with(|| {
+                (
+                    provider.provider_type == buckyos_api::ProviderInstanceType::LocalInference,
+                    Vec::new(),
+                )
+            });
+        entry.1.push(&model.exact_model);
+    }
+    json!({
+        "revision": catalog.target_revision_seq(),
+        "vendors": catalog.model_drivers().map(|driver| {
+            let models = driver.models.iter().filter_map(|model| {
+                let metadata = catalog.resolve_model(&driver.model_driver_id, &model.id).ok()?.semantics;
+                if metadata.exclude == Some(true) {
+                    return None;
+                }
+                let providers = inventory.get(&(driver.model_driver_id.as_str(), model.id.as_str()))
+                    .into_iter().flat_map(|providers| providers.iter())
+                    .map(|(id, (local, exact_models))| json!({
+                        "id": id, "local": local, "exact_models": exact_models,
+                    })).collect::<Vec<_>>();
+                Some(json!({"id": model.id, "metadata": metadata, "providers": providers}))
+            }).collect::<Vec<_>>();
+            let specs = driver.specs.iter().map(|spec| {
+                let path = format!("llm.{}", spec.id);
+                let members = catalog.llm_models()
+                    .filter(|(owner, _, model)| *owner == driver.model_driver_id && model.semantics.spec == spec.id)
+                    .map(|(_, id, model)| {
+                        let target = format!("{}:{}", model.family, model.semantics.effort.as_str());
+                        let item = directory[&path].as_object().and_then(|items| {
+                            items.values().find(|item| item["target"].as_str() == Some(target.as_str()))
+                        });
+                        json!({
+                            "model_id": id,
+                            "target": target,
+                            "weight": item.map(|item| item["weight"].clone()).unwrap_or(json!(1.0)),
+                            "active": item.is_some(),
+                        })
+                    }).collect::<Vec<_>>();
+                json!({"id": spec.id, "path": path, "direct_only": spec.direct_only, "members": members})
+            }).collect::<Vec<_>>();
+            json!({"id": driver.model_driver_id, "revision": driver.revision_seq, "models": models, "specs": specs})
+        }).collect::<Vec<_>>(),
+    })
 }
 
 fn model_directory_json(models: &crate::model::ModelRegistry) -> Value {

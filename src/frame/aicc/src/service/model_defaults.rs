@@ -123,8 +123,8 @@
 // - gpt：nano = gpt-5.6-luna、gpt-5.4-nano；mini = gpt-5.6-terra、gpt-5.4-mini；
 //   standard = gpt-5.5、gpt-5.4；pro = gpt-5.6/gpt-5.6-sol、gpt-5.5-pro、gpt-5.4-pro；
 //   max = gpt-6-astra（新的旗舰规格）；codex = gpt-5.3-codex。
-// - claude：haiku = claude-haiku-4-5；sonnet = claude-sonnet-5；opus = claude-opus-5；
-//   fable = claude-fable-5-1、claude-fable-5。
+// - claude：haiku = claude-haiku-4-5；sonnet = claude-sonnet-5/4.6/4.5；
+//   opus = claude-opus-5.5/5/4.8/4.7/4.6/4.5；fable = claude-fable-5-1、claude-fable-5。
 // - gemini：flash-lite = 3.5/3.1/2.5-flash-lite；flash = 3.8/3.7/3.6/3.5-flash、
 //   3-flash-preview、2.5-flash；pro = 3.1-pro-preview、2.5-pro。
 // - qwen：flash = qwen3.8/3.7/3.6/3.5-flash；plus = qwen3.7/3.6/3.5-plus；

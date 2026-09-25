@@ -1,3 +1,4 @@
+import { modelCatalogEn, modelCatalogZh } from './model-catalog'
 import { fileBrowserReviewEn, fileBrowserReviewZh } from './filebrowser-review'
 import { messageHubEn, messageHubZh } from './messagehub'
 import { appServiceEn, appServiceZh } from './app-service'
@@ -6,6 +7,7 @@ import type { SupportedLocale } from '../models/ui'
 type Dictionary = Record<string, string>
 
 const en: Dictionary = {
+  ...modelCatalogEn,
   ...messageHubEn,
   'shell.title': 'BuckyOS Web Desktop',
   'shell.subtitle': 'Thin desktop layer for layout, launch, and in-place windows.',
@@ -317,13 +319,6 @@ const en: Dictionary = {
   'aiCenter.providers.authExpired': 'Expired',
   'aiCenter.providers.authInvalid': 'Invalid',
   'aiCenter.providers.authUnknown': 'Unknown',
-  'aiCenter.models.kicker': 'Models',
-  'aiCenter.models.comingSoon.title': 'Coming Soon',
-  'aiCenter.models.comingSoon.desc': 'Local Provider and local LLM Engine support is planned for a future release. Installed local model inventory is not available in this version.',
-  'aiCenter.models.empty.title': 'Coming Soon',
-  'aiCenter.models.empty.desc': 'Local Provider and local LLM Engine support is planned for a future release.',
-  'aiCenter.models.empty.cta': 'Go to Model Store',
-  'aiCenter.models.install': 'Install Model',
   'aiCenter.routing.title': 'Routing by Scenario',
   'aiCenter.routing.logicalModel': 'Logical Model',
   'aiCenter.routing.currentModel': 'Current Model',
@@ -942,6 +937,7 @@ const en: Dictionary = {
 }
 
 const zhCN: Dictionary = {
+  ...modelCatalogZh,
   ...messageHubZh,
   'shell.title': 'BuckyOS Web Desktop',
   'shell.subtitle': '用于布局、启动与同容器窗口承载的轻量桌面层。',
@@ -1245,13 +1241,6 @@ const zhCN: Dictionary = {
   'aiCenter.providers.authExpired': '已过期',
   'aiCenter.providers.authInvalid': '无效',
   'aiCenter.providers.authUnknown': '未知',
-  'aiCenter.models.kicker': '模型',
-  'aiCenter.models.comingSoon.title': 'Coming Soon',
-  'aiCenter.models.comingSoon.desc': '本地 Provider 和本地 LLM Engine 支持将在后续版本提供。当前版本不展示本地模型清单。',
-  'aiCenter.models.empty.title': 'Coming Soon',
-  'aiCenter.models.empty.desc': '本地 Provider 和本地 LLM Engine 支持将在后续版本提供。',
-  'aiCenter.models.empty.cta': '前往 Store',
-  'aiCenter.models.install': '安装模型',
   'aiCenter.routing.title': 'AI 路由配置',
   'aiCenter.routing.logicalModel': '逻辑模型名',
   'aiCenter.routing.currentModel': '当前模型',

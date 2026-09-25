@@ -49,6 +49,27 @@
       }
     },
     {
+      "id": "claude-opus-5-5",
+      "parameter_scale": "opus",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "claude-opus",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "stability": "stable"
+      }
+    },
+    {
       "id": "claude-opus-5",
       "parameter_scale": "opus",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
@@ -87,6 +108,132 @@
         "effort": "high",
         "default_effort": "high",
         "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "stability": "stable"
+      }
+    },
+    {
+      "id": "claude-opus-4-8",
+      "parameter_scale": "opus",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "claude-opus",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "stability": "stable"
+      }
+    },
+    {
+      "id": "claude-opus-4-7",
+      "parameter_scale": "opus",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "claude-opus",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "stability": "stable"
+      }
+    },
+    {
+      "id": "claude-opus-4-6",
+      "parameter_scale": "opus",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "claude-opus",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["low", "medium", "high", "max"],
+        "stability": "stable"
+      }
+    },
+    {
+      "id": "claude-opus-4-5-20251101",
+      "parameter_scale": "opus",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "max_context_tokens": 200000,
+        "max_output_tokens": 65536,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "claude-opus",
+        "effort": "none",
+        "default_effort": "none",
+        "supported_efforts": ["none", "thinking"],
+        "stability": "stable"
+      }
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "parameter_scale": "sonnet",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "claude-sonnet",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["low", "medium", "high", "max"],
+        "stability": "stable"
+      }
+    },
+    {
+      "id": "claude-sonnet-4-5-20250929",
+      "parameter_scale": "sonnet",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "max_context_tokens": 200000,
+        "max_output_tokens": 65536,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "claude-sonnet",
+        "effort": "none",
+        "default_effort": "none",
+        "supported_efforts": ["none", "thinking"],
         "stability": "stable"
       }
     },

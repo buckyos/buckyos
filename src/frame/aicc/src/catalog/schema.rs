@@ -60,6 +60,8 @@ pub(crate) struct ModelDriverCatalog {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ModelSemantics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_deployable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_driver: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude: Option<bool>,
@@ -88,6 +90,7 @@ pub(crate) struct ModelSemantics {
 impl ModelSemantics {
     pub(super) fn overlay(&self, rule: &Self) -> Self {
         Self {
+            local_deployable: rule.local_deployable.or(self.local_deployable),
             model_driver: rule
                 .model_driver
                 .clone()
@@ -129,6 +132,8 @@ macro_rules! define_model_rule {
         pub(crate) struct $name {
             $($identity)*
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub local_deployable: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub model_driver: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub exclude: Option<bool>,
@@ -168,6 +173,7 @@ define_model_rule!(
 macro_rules! model_rule_semantics {
     ($rule:expr) => {
         ModelSemantics {
+            local_deployable: $rule.local_deployable,
             model_driver: $rule.model_driver.clone(),
             exclude: $rule.exclude,
             parameter_scale: $rule.parameter_scale.clone(),

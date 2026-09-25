@@ -273,6 +273,27 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             json!("disabled"),
         ),
         (
+            "claude",
+            "claude-opus-5-5",
+            "xhigh",
+            "/output_config/effort",
+            json!("xhigh"),
+        ),
+        (
+            "claude",
+            "claude-sonnet-4-6",
+            "max",
+            "/thinking/type",
+            json!("adaptive"),
+        ),
+        (
+            "claude",
+            "claude-opus-4-5-20251101",
+            "thinking",
+            "/thinking/budget_tokens",
+            json!(1024),
+        ),
+        (
             "gemini",
             "gemini-3.1-flash-lite",
             "medium",
@@ -505,6 +526,50 @@ async fn shared_discovery_preserves_unknowns_and_explicit_channel_restrictions()
             Err(ProviderError::DiscoveryResponse(_))
         ));
     }
+}
+
+#[test]
+fn claude_account_models_are_matched_with_every_declared_preset() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let codecs = providers.codecs();
+    let profile = providers
+        .profiles()
+        .find(|p| p.provider_profile_id == "claude")
+        .unwrap();
+    let ids = [
+        "claude-fable-5-1",
+        "claude-fable-5",
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-opus-4-5-20251101",
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5-20250929",
+        "claude-haiku-4-5-20251001",
+    ];
+    let inv = InventoryBuilder::build(
+        profile,
+        &instance(profile, "c"),
+        discovery(&ids),
+        &catalog,
+        &codecs,
+    )
+    .unwrap();
+    assert!(inv.unmatched_models.is_empty(), "{:?}", inv.unmatched_models);
+    assert!(
+        inv.unavailable_presets.is_empty(),
+        "{:?}",
+        inv.unavailable_presets
+    );
+    assert_eq!(inv.models.len(), ids.len());
+    assert!(inv
+        .models
+        .iter()
+        .all(|m| m.pricing.is_some() && !m.variants.is_empty()));
 }
 
 #[test]
