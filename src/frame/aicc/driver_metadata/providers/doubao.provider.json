@@ -4,9 +4,6 @@
   "schema_revision": 0,
   "revision_seq": 1,
   "provider_profile_id": "doubao",
-  "metadata_drivers": ["doubao"],
-  "origin_provider_aliases": {},
-  "origin_mappings": [],
   "models": [],
   "patterns": [
     {
@@ -15,6 +12,6 @@
     }
   ],
   "variants": [
-    { "model_driver": "doubao", "variant": "reasoning-none", "match": { "provider_model_id": "doubao-seed-2-0-*", "variant": "reasoning-none" }, "provider_options": { "thinking": { "type": "disabled" } } }
+    {"model_driver": "doubao", "variant": "reasoning-none", "match": {"origin_model_id": ["doubao-seed-2-0-lite-260215"], "variant": "reasoning-none"}, "provider_options": {"thinking": {"type": "disabled"}}}
   ]
 }

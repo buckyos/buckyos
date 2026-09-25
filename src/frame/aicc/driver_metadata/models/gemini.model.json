@@ -309,19 +309,19 @@
     {
       "id": "veo-3.1-generate-preview",
       "api_types": ["video.txt2video", "video.img2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.extend.gemini", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.extend.gemini", "video.extend.{model}", "video.txt2video.veo", "video.img2video.veo"],
       "capabilities": {}
     },
     {
       "id": "veo-3.1-lite-generate-preview",
       "api_types": ["video.txt2video", "video.img2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.extend.gemini", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.extend.gemini", "video.extend.{model}", "video.txt2video.veo", "video.img2video.veo"],
       "capabilities": {}
     },
     {
       "id": "gemini-omni-1.1-flash",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.video2video.gemini", "video.video2video.{model}", "video.extend.gemini", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.gemini", "video.txt2video.{model}", "video.img2video.gemini", "video.img2video.{model}", "video.video2video.gemini", "video.video2video.{model}", "video.extend.gemini", "video.extend.{model}", "video.txt2video.gemini_omni", "video.img2video.gemini_omni"],
       "capabilities": {}
     },
     {

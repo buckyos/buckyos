@@ -33,9 +33,6 @@ fn provider_rules() -> Value {
         "schema_revision": 0,
         "revision_seq": 9,
         "provider_profile_id": "openai",
-        "metadata_drivers": ["openai"],
-        "origin_provider_aliases": {"openai": "openai"},
-        "origin_mappings": [],
         "models": [{
             "id": "gpt-special",
             "exclude": true
@@ -71,39 +68,6 @@ fn provider_rules() -> Value {
             "match": "gpt-*",
             "provider_options": {"reasoning": {"effort": "high"}}
         }]
-    })
-}
-
-fn routed_provider_rules(
-    metadata_drivers: Option<Vec<&str>>,
-    aliases: Value,
-    mappings: Value,
-) -> Value {
-    json!({
-        "format": PROVIDER_RULES_FORMAT,
-        "schema_version": 1,
-        "schema_revision": 0,
-        "revision_seq": 9,
-        "provider_profile_id": "router",
-        "metadata_drivers": metadata_drivers,
-        "origin_provider_aliases": aliases,
-        "origin_mappings": mappings,
-        "models": [],
-        "patterns": [],
-        "variants": []
-    })
-}
-
-fn vendor_model_mapping(driver_transforms: Value, model_transforms: Value) -> Value {
-    json!({
-        "extract": {
-            "source": "provider_model_id",
-            "regex": "^(?<driver>[^/]+)/(?<model>.+)$"
-        },
-        "transforms": {
-            "driver": driver_transforms,
-            "model": model_transforms
-        }
     })
 }
 
@@ -146,10 +110,10 @@ fn complete_files() -> Vec<CurrentCatalogFile> {
                     "capabilities": {"streaming": true, "tool_call": true}
                 }]),
                 json!([{
-                    "match": "gpt-*",
+                    "match": "gpt-new",
                     "quality_score": 0.8
                 }, {
-                    "match": "gpt-5-*",
+                    "match": "gpt-5-new",
                     "quality_score": 0.9
                 }]),
             ),
@@ -178,47 +142,20 @@ fn current_file_set_builds_immutable_indexes_and_deterministic_snapshot() {
         second.known_provider("openai")
     );
 
-    let exact = first
-        .resolve_model("gpt-special", None, &MatchContext::new())
-        .unwrap();
-    assert_eq!(exact.match_kind, ModelMatchKind::Exact);
-    assert_eq!(exact.model_driver_id.as_deref(), Some("openai"));
+    let exact = first.resolve_model("openai", "gpt-special").unwrap();
     assert_eq!(
         exact.semantics.api_types.unwrap(),
         BTreeSet::from(["image.txt2img".to_owned()])
     );
-
-    let candidates = vec!["openai".to_owned()];
-    let pattern = first
-        .resolve_model("gpt-5-new", Some(&candidates), &MatchContext::new())
-        .unwrap();
-    assert_eq!(pattern.match_kind, ModelMatchKind::Pattern);
-    assert_eq!(pattern.trace.as_ref().unwrap().position, 0);
-    assert_eq!(pattern.semantics.quality_score, Some(0.8));
     assert_eq!(
-        pattern,
-        second
-            .resolve_model("gpt-5-new", Some(&candidates), &MatchContext::new(),)
-            .unwrap()
+        first.match_model("gpt-special"),
+        second.match_model("gpt-special")
     );
-
-    let defaults = first
-        .resolve_model("unknown", Some(&candidates), &MatchContext::new())
-        .unwrap();
-    assert_eq!(defaults.match_kind, ModelMatchKind::Defaults);
+    assert!(first.resolve_model("openai", "unknown").is_err());
     assert_eq!(
-        defaults.semantics.capabilities.unwrap()["streaming"],
-        json!(true)
+        first.match_model("unknown"),
+        Err(ModelMatchFailure::NoMatch)
     );
-
-    let no_candidates = Vec::new();
-    let fallback = first
-        .resolve_model("unknown", Some(&no_candidates), &MatchContext::new())
-        .unwrap();
-    assert_eq!(fallback.match_kind, ModelMatchKind::ConservativeFallback);
-    assert!(fallback.model_driver_id.is_none());
-    assert!(fallback.semantics.api_types.unwrap().is_empty());
-    assert!(fallback.semantics.capabilities.unwrap().is_empty());
 }
 
 #[test]
@@ -435,231 +372,6 @@ fn provider_exact_and_ordered_pattern_indexes_preserve_actions() {
 }
 
 #[test]
-fn exact_model_wins_globally_and_cross_driver_conflicts_are_rejected() {
-    let files = vec![
-        file(
-            CatalogKind::ModelDriver,
-            model_driver("openai", json!([{"id": "shared-model"}]), json!([])),
-        ),
-        file(
-            CatalogKind::ModelDriver,
-            model_driver("claude", json!([]), json!([{"match": "shared-*"}])),
-        ),
-    ];
-    let snapshot = build(files).unwrap();
-    let resolved = snapshot
-        .resolve_model("shared-model", None, &MatchContext::new())
-        .unwrap();
-    assert_eq!(resolved.match_kind, ModelMatchKind::Exact);
-    assert_eq!(resolved.model_driver_id.as_deref(), Some("openai"));
-
-    let conflict = build(vec![
-        file(
-            CatalogKind::ModelDriver,
-            model_driver("openai", json!([{"id": "shared-model"}]), json!([])),
-        ),
-        file(
-            CatalogKind::ModelDriver,
-            model_driver("claude", json!([{"id": "shared-model"}]), json!([])),
-        ),
-    ])
-    .unwrap();
-    assert_eq!(
-        conflict
-            .resolve_model("shared-model", None, &MatchContext::new())
-            .unwrap_err(),
-        CatalogResolveError::AmbiguousModelDrivers {
-            origin_model_id: "shared-model".to_owned(),
-            model_driver_ids: vec!["claude".to_owned(), "openai".to_owned()],
-        }
-    );
-
-    let pattern_conflict = build(vec![
-        file(
-            CatalogKind::ModelDriver,
-            model_driver("openai", json!([]), json!([{"match": "shared-*"}])),
-        ),
-        file(
-            CatalogKind::ModelDriver,
-            model_driver("claude", json!([]), json!([{"match": "shared-*"}])),
-        ),
-    ])
-    .unwrap();
-    assert!(matches!(
-        pattern_conflict.resolve_model("shared-model", None, &MatchContext::new()),
-        Err(CatalogResolveError::AmbiguousModelDrivers { .. })
-    ));
-}
-
-#[test]
-fn provider_origin_mapping_uniquely_selects_driver_for_shared_model_id() {
-    let rules = routed_provider_rules(
-        None,
-        json!({"anthropic": "claude", "openai": "openai"}),
-        json!([vendor_model_mapping(
-            json!([
-                {"op": "lowercase"},
-                {"op": "alias", "table": "origin_provider_aliases"}
-            ]),
-            json!([{"op": "trim"}])
-        )]),
-    );
-    let snapshot = build(vec![
-        file(
-            CatalogKind::ModelDriver,
-            model_driver("claude", json!([{"id": "shared-model"}]), json!([])),
-        ),
-        file(
-            CatalogKind::ModelDriver,
-            model_driver("openai", json!([{"id": "shared-model"}]), json!([])),
-        ),
-        file(CatalogKind::ProviderRules, rules),
-    ])
-    .unwrap();
-
-    let origin = snapshot
-        .resolve_provider_origin("router", "ANTHROPIC/shared-model")
-        .unwrap();
-    assert_eq!(
-        origin,
-        ResolvedProviderOrigin {
-            origin_model_id: "shared-model".to_owned(),
-            model_driver_id: "claude".to_owned(),
-        }
-    );
-    let candidates = vec![origin.model_driver_id];
-    let model = snapshot
-        .resolve_model(
-            &origin.origin_model_id,
-            Some(&candidates),
-            &MatchContext::new(),
-        )
-        .unwrap();
-    assert_eq!(model.model_driver_id.as_deref(), Some("claude"));
-}
-
-#[test]
-fn provider_origin_mapping_rejects_unknown_vendor_and_conflicts() {
-    let alias_mapping = vendor_model_mapping(
-        json!([
-            {"op": "lowercase"},
-            {"op": "alias", "table": "origin_provider_aliases"}
-        ]),
-        json!([]),
-    );
-    let unknown_snapshot = build(vec![
-        file(
-            CatalogKind::ModelDriver,
-            model_driver("claude", json!([{"id": "shared-model"}]), json!([])),
-        ),
-        file(
-            CatalogKind::ProviderRules,
-            routed_provider_rules(
-                None,
-                json!({"anthropic": "claude"}),
-                json!([alias_mapping.clone()]),
-            ),
-        ),
-    ])
-    .unwrap();
-    assert_eq!(
-        unknown_snapshot
-            .resolve_provider_origin("router", "unknown/shared-model")
-            .unwrap_err(),
-        CatalogResolveError::UnknownOriginProvider {
-            provider_profile_id: "router".to_owned(),
-            origin_provider: "unknown".to_owned(),
-        }
-    );
-
-    let conflict_snapshot = build(vec![
-        file(
-            CatalogKind::ModelDriver,
-            model_driver("claude", json!([{"id": "shared-model"}]), json!([])),
-        ),
-        file(
-            CatalogKind::ModelDriver,
-            model_driver("anthropic", json!([{"id": "shared-model"}]), json!([])),
-        ),
-        file(
-            CatalogKind::ProviderRules,
-            routed_provider_rules(
-                None,
-                json!({"anthropic": "claude"}),
-                json!([
-                    alias_mapping,
-                    vendor_model_mapping(json!([{"op": "lowercase"}]), json!([]))
-                ]),
-            ),
-        ),
-    ])
-    .unwrap();
-    assert!(matches!(
-        conflict_snapshot.resolve_provider_origin("router", "ANTHROPIC/shared-model"),
-        Err(CatalogResolveError::ConflictingOriginMappings { resolved, .. })
-            if resolved.len() == 2
-    ));
-}
-
-#[test]
-fn provider_origin_aliases_cannot_escape_metadata_drivers() {
-    let rules = routed_provider_rules(
-        Some(vec!["openai"]),
-        json!({"anthropic": "claude"}),
-        json!([vendor_model_mapping(
-            json!([{"op": "alias", "table": "origin_provider_aliases"}]),
-            json!([])
-        )]),
-    );
-    assert!(matches!(
-        build(vec![
-            file(
-                CatalogKind::ModelDriver,
-                model_driver("openai", json!([]), json!([])),
-            ),
-            file(
-                CatalogKind::ModelDriver,
-                model_driver("claude", json!([]), json!([])),
-            ),
-            file(CatalogKind::ProviderRules, rules),
-        ]),
-        Err(CatalogBuildError::InvalidValue {
-            field: "origin_provider_aliases",
-            ..
-        })
-    ));
-
-    let snapshot = build(vec![
-        file(
-            CatalogKind::ModelDriver,
-            model_driver("openai", json!([]), json!([])),
-        ),
-        file(
-            CatalogKind::ModelDriver,
-            model_driver("claude", json!([]), json!([])),
-        ),
-        file(
-            CatalogKind::ProviderRules,
-            routed_provider_rules(
-                Some(vec!["openai"]),
-                json!({}),
-                json!([vendor_model_mapping(json!([]), json!([]))]),
-            ),
-        ),
-    ])
-    .unwrap();
-    assert_eq!(
-        snapshot
-            .resolve_provider_origin("router", "claude/shared-model")
-            .unwrap_err(),
-        CatalogResolveError::OriginDriverOutsideMetadataDrivers {
-            provider_profile_id: "router".to_owned(),
-            model_driver_id: "claude".to_owned(),
-        }
-    );
-}
-
-#[test]
 fn schema_revision_required_features_and_references_are_validated() {
     let mut unsupported_schema = model_driver("openai", json!([]), json!([]));
     unsupported_schema["schema_revision"] = json!(2);
@@ -742,7 +454,7 @@ fn schema_revision_required_features_and_references_are_validated() {
     assert!(matches!(
         build(missing_driver),
         Err(CatalogBuildError::UnknownReference {
-            field: "metadata_drivers",
+            field: "variants.model_driver",
             ..
         })
     ));
@@ -813,7 +525,10 @@ fn all_nested_match_rules_compile_during_snapshot_build() {
     }]);
     assert!(matches!(
         build(vec![file(CatalogKind::ModelDriver, invalid_model_pattern)]),
-        Err(CatalogBuildError::Match(_))
+        Err(CatalogBuildError::InvalidValue {
+            field: "patterns",
+            ..
+        })
     ));
 
     let mut conditional_model_price = model_driver("openai", json!([{"id": "gpt"}]), json!([]));
@@ -862,19 +577,11 @@ fn malformed_files_and_duplicate_identities_fail_atomically() {
         Err(CatalogBuildError::DuplicateExactRule { .. })
     ));
 
-    let snapshot = build(vec![file(
+    assert!(build(vec![file(
         CatalogKind::ModelDriver,
-        model_driver("openai", json!([]), json!([{"match": "gpt-*"}])),
+        model_driver("openai", json!([]), json!([{"match": "gpt-*"}]))
     )])
-    .unwrap();
-    let duplicate_candidates = vec!["openai".to_owned(), "openai".to_owned()];
-    assert_eq!(
-        snapshot
-            .resolve_model("gpt-new", Some(&duplicate_candidates), &MatchContext::new(),)
-            .unwrap()
-            .match_kind,
-        ModelMatchKind::Pattern
-    );
+    .is_err());
 }
 
 #[test]
@@ -891,4 +598,128 @@ fn claude_versions_follow_both_official_naming_orders() {
             .decimal_rank(),
         Some(460)
     );
+}
+
+#[test]
+fn provider_identity_matching_examples_and_boundaries() {
+    let catalog = crate::model::llm_tests::builtin_catalog();
+    for (id, driver, model) in [
+        ("gpt-5.6", "openai", "gpt-5.6"),
+        ("gpt-5.6-2026-05-01", "openai", "gpt-5.6"),
+        ("gpt-5.6-sol-2026-05-01", "openai", "gpt-5.6-sol"),
+        ("accounts/fw/models/kimi-k2.6", "kimi", "kimi-k2.6"),
+        ("minimax-m2.7", "minimax", "MiniMax-M2.7"),
+        ("prefix/GPT-5.6-20260501", "openai", "gpt-5.6"),
+        ("gpt-5.6-260501", "openai", "gpt-5.6"),
+        ("gpt-5.6-0501", "openai", "gpt-5.6"),
+    ] {
+        assert_eq!(
+            catalog.match_model(id),
+            Ok(ModelIdentity {
+                model_driver_id: driver.into(),
+                model_id: model.into()
+            }),
+            "{id}"
+        );
+    }
+    for id in [
+        "stable/gpt-5-6",
+        "gpt-5.6-mini",
+        "claude-haiku-4-5",
+        "my-private-finetune",
+        "agpt-5.6",
+        "gpt-5.6.1",
+        "gpt-5.6-6",
+        "gpt-5.6-preview",
+    ] {
+        assert_eq!(
+            catalog.match_model(id),
+            Err(ModelMatchFailure::NoMatch),
+            "{id}"
+        );
+    }
+    let ambiguous = build(vec![
+        file(
+            CatalogKind::ModelDriver,
+            model_driver("a", json!([{"id":"same"},{"id":"x-5-1"}]), json!([])),
+        ),
+        file(
+            CatalogKind::ModelDriver,
+            model_driver("b", json!([{"id":"same"},{"id":"x-5.1"}]), json!([])),
+        ),
+    ])
+    .unwrap();
+    for id in ["same", "channel/same-20260501"] {
+        assert!(
+            matches!(ambiguous.match_model(id), Err(ModelMatchFailure::Ambiguous { candidates }) if candidates.len() == 2)
+        );
+    }
+    assert!(
+        matches!(ambiguous.find_by_normalized_id("x-5-1", |id| id.replace('.', "-").to_lowercase()), Err(ModelMatchFailure::Ambiguous { candidates }) if candidates.len() == 2)
+    );
+    let absent = build(vec![file(
+        CatalogKind::ModelDriver,
+        model_driver("a", json!([{"id":"gpt-5"}]), json!([])),
+    )])
+    .unwrap();
+    assert_eq!(
+        absent.match_model("gpt-5.6"),
+        Err(ModelMatchFailure::NoMatch)
+    );
+    assert_eq!(
+        absent.match_model("stable/gpt-5-6"),
+        Err(ModelMatchFailure::NoMatch)
+    );
+}
+
+#[test]
+fn exchange_rates_are_effective_only_inside_their_validity_window() {
+    let mut files = complete_files();
+    let mut known = known_providers();
+    known["exchange_rates"] = json!({"source_url":"https://rates.example/2026-09-25", "observed_at_ms":100, "expires_at_ms":200, "usd_per_unit":{"CNY":0.14}});
+    files[0] = file(CatalogKind::KnownProvider, known);
+    let catalog = build(files).unwrap();
+    assert_eq!(
+        catalog
+            .cost_in_usd(buckyos_api::Money::new(1.0, "CNY"), 150)
+            .unwrap()
+            .amount,
+        0.14
+    );
+    for time in [99, 200, 201] {
+        assert!(catalog
+            .cost_in_usd(buckyos_api::Money::new(1.0, "CNY"), time)
+            .is_none());
+    }
+    assert!(catalog
+        .cost_in_usd(buckyos_api::Money::new(1.0, "EUR"), 150)
+        .is_none());
+    assert_eq!(
+        catalog
+            .cost_in_usd(buckyos_api::Money::new(1.0, "USD"), 201)
+            .unwrap()
+            .amount,
+        1.0
+    );
+}
+
+#[test]
+fn removed_provider_fields_and_nested_invalid_prices_are_rejected() {
+    for field in [
+        "metadata_drivers",
+        "origin_mappings",
+        "origin_provider_aliases",
+    ] {
+        let mut value = provider_rules();
+        value[field] = json!([]);
+        assert!(serde_json::from_value::<ProviderRulesCatalog>(value).is_err());
+    }
+    for price in [
+        json!({"currency":"USD","input_token":1.0,"tiers":{"dimension":"input_tokens","steps":[{"input_token":-1.0}]}}),
+        json!({"currency":"USD","input_token":1.0,"time_windows":[{"from":"00:00","to":"12:00","cache_input_token":2.0}]}),
+    ] {
+        assert!(validate_pricing("test", &serde_json::from_value(price).unwrap()).is_err());
+    }
+    let justified:Pricing=serde_json::from_value(json!({"currency":"USD","input_token":1.0,"cache_input_token":2.0,"ratio_exception":"specialized cache storage tariff"})).unwrap();
+    assert!(validate_pricing("test", &justified).is_ok());
 }

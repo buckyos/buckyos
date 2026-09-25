@@ -69,4 +69,4 @@ max_rounds = 24
 max_consecutive_errors = 5
 
 [model]
-preferred = "llm"
+preferred = "llm.chat"

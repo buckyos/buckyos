@@ -444,6 +444,9 @@ fn provider_public_view(provider: &ProviderSettings) -> ProviderInstanceView {
             configured: true,
         },
         inventory: ProviderInstanceInventoryView {
+            unmatched_models: Vec::new(),
+            unavailable_presets: Vec::new(),
+            unpriced_models: Vec::new(),
             state: if provider.enabled {
                 ProviderInstanceInventoryState::Loaded
             } else {
@@ -1032,12 +1035,13 @@ fn builtin_logical_tree_rejects_custom_provider_auto_admission() {
     let mut inventory =
         crate::model::llm_tests::inventory("openai", "gpt-5.6-sol", "custom", "primary", &["high"]);
     inventory.models[0].origin_model_id = "unknown-llm".into();
-    let registry = builtin_tree(&[inventory]);
-    let candidates = registry
-        .resolve_candidates("llm.chat", buckyos_api::ApiType::Llm)
-        .unwrap();
-    assert!(candidates.candidates.is_empty());
-    assert!(candidates.fallback_chain.is_empty());
+    assert!(ModelRegistry::build(
+        &crate::model::llm_tests::builtin_catalog(),
+        &[inventory],
+        builtin_logical_model_definitions(),
+        RegistryLayers::default()
+    )
+    .is_err());
 }
 
 #[test]
@@ -1109,6 +1113,60 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
         assert!(set.fallback_chain.is_empty());
     }
     let catalog = crate::model::llm_tests::builtin_catalog();
+    assert_eq!(
+        catalog
+            .model_drivers()
+            .map(|driver| driver.specs.len())
+            .sum::<usize>(),
+        49
+    );
+    let mut task = None;
+    let mut count = 0;
+    for line in include_str!("model_defaults.rs").lines() {
+        if let Some(label) = line
+            .strip_prefix("// │   ├── ")
+            .or_else(|| line.strip_prefix("// │   └── "))
+        {
+            task = [
+                "plan",
+                "code",
+                "chat",
+                "summarize",
+                "swift",
+                "translate",
+                "vision",
+            ]
+            .iter()
+            .find(|name| label == **name)
+            .map(|name| format!("llm.{name}"));
+        }
+        let Some(task) = task.as_deref() else {
+            continue;
+        };
+        let Some((left, right)) = line.split_once(" -> ") else {
+            continue;
+        };
+        let mut fields = right.split_whitespace();
+        let target = fields.next().unwrap();
+        if !target.starts_with("llm.") {
+            continue;
+        }
+        let name = left.split_whitespace().last().unwrap();
+        let weight: f64 = fields
+            .next()
+            .unwrap()
+            .trim_matches(['(', ')'])
+            .parse()
+            .unwrap();
+        assert_eq!(directory[task][name]["target"], target, "{task}/{name}");
+        assert_eq!(
+            directory[task][name]["weight"],
+            json!(weight),
+            "{task}/{name}"
+        );
+        count += 1;
+    }
+    assert_eq!(count, 95);
     for driver in catalog.model_drivers() {
         for spec in &driver.specs {
             let path = format!("llm.{}", spec.id);
@@ -1810,7 +1868,7 @@ fn non_llm_tasks_use_explicit_spec_links_and_require_the_requested_api() {
             .unwrap()
             .candidates
             .len(),
-        1
+        0
     );
     assert!(registry
         .resolve_candidates("image.img2img", buckyos_api::ApiType::ImageImageToImage)
@@ -1842,4 +1900,71 @@ fn non_llm_tasks_use_explicit_spec_links_and_require_the_requested_api() {
         .unwrap()
         .candidates
         .is_empty());
+}
+
+#[test]
+fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts() {
+    let empty = builtin_tree(&[]);
+    let directory = model_directory_json(&empty);
+    let mut media_count = 0;
+    for task in [
+        "image.txt2img",
+        "image.img2img",
+        "video.txt2video",
+        "video.img2video",
+    ] {
+        let entries = directory[task].as_object().unwrap();
+        media_count += entries.len();
+        assert!(entries.values().all(|item| item["target"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("{task}."))));
+    }
+    assert_eq!(media_count, 55);
+    let mut contract_count = 0;
+    for line in include_str!("model_defaults.rs").lines() {
+        let Some((left, right)) = line.split_once(" -> ") else {
+            continue;
+        };
+        let mut fields = right.split_whitespace();
+        let target = fields.next().unwrap();
+        if !target.starts_with("image.") && !target.starts_with("video.") {
+            continue;
+        }
+        let name = left.split_whitespace().last().unwrap();
+        let task = target.rsplit_once('.').unwrap().0;
+        let weight: f64 = fields
+            .next()
+            .unwrap()
+            .trim_matches(['(', ')'])
+            .parse()
+            .unwrap();
+        assert_eq!(directory[task][name]["target"], target, "{task}/{name}");
+        assert_eq!(
+            directory[task][name]["weight"],
+            json!(weight),
+            "{task}/{name}"
+        );
+        contract_count += 1;
+    }
+    assert_eq!(contract_count, 55);
+
+    assert_eq!(
+        directory["image.txt2img"]["gpt_image"]["weight"],
+        json!(3.0)
+    );
+    let mut model =
+        crate::model::llm_tests::inventory("openai", "gpt-image-2", "image", "provider", &[]);
+    model.models[0].api_types = vec![buckyos_api::ApiType::ImageTextToImage];
+    model.models[0].logical_mounts = vec!["image.txt2img.gpt_image".into(), "image.txt2img".into()];
+    let loaded = builtin_tree(&[model]);
+    let candidates = loaded
+        .resolve_candidates("image.txt2img", buckyos_api::ApiType::ImageTextToImage)
+        .unwrap();
+    assert_eq!(candidates.candidates.len(), 1);
+    let loaded_directory = model_directory_json(&loaded);
+    assert_eq!(
+        loaded_directory["image.txt2img"],
+        directory["image.txt2img"]
+    );
 }

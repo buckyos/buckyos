@@ -119,7 +119,7 @@
 // - Doubao：Pro 为复杂 Agent 主力，Lite 为均衡服务，Mini 偏低成本/吞吐，Code 为编程
 //   专用；这些是产品定位，不承诺跨代始终 Pro 胜过 Lite，也不表示全部开放权重。[B1]
 //
-// 当前仓库模型的目标归档（下方树覆盖本批模型；尚待写入 metadata 并落实第 7 条校验）：
+// 当前仓库模型的目标归档（下方树覆盖本批模型；已写入 metadata 并落实第 7 条校验）：
 // - gpt：nano = gpt-5.6-luna、gpt-5.4-nano；mini = gpt-5.6-terra、gpt-5.4-mini；
 //   standard = gpt-5.5、gpt-5.4；pro = gpt-5.6/gpt-5.6-sol、gpt-5.5-pro、gpt-5.4-pro；
 //   max = gpt-6-astra（新的旗舰规格）；codex = gpt-5.3-codex。
@@ -144,7 +144,7 @@
 //   vision-flashx = glm-4.6v-flashx、glm-4.1v-thinking-flashx；
 //   long = glm-4-long；code = codegeex-4（代码补全，不等同完整代码 Agent，direct_only）。[G6]
 //   character = charglm-4；emohaa = emohaa（分别 direct_only，无依据将二者排成版本链）；
-//   glm-ocr 待按上面的规范去掉 llm api_type。
+//   glm-ocr 已只保留 vision.ocr。
 // - kimi：general = kimi-k2.6、kimi-k2.5；code = kimi-k*-code；
 //   code-highspeed = kimi-k*-code-highspeed。
 // - deepseek：flash = deepseek-v4-flash；pro = deepseek-v4-pro；
@@ -435,8 +435,8 @@
 // Provider inventory 接入后的动态展开示例（以下家族及引用不属于预定义结构）：
 // llm
 // ├── gpt-pro [规格；openai metadata 声明]
-// │   ├── gpt_5_6_sol -> llm.gpt-5-6-sol:high (560，推导版本值)
-// │   └── gpt_5_5_pro -> llm.gpt-5-5-pro:high (550，推导版本值)
+// │   ├── gpt_5_6_sol -> llm.gpt-5-6-sol:high (1.0) [version=(5,6,0)，展示值 560]
+// │   └── gpt_5_5_pro -> llm.gpt-5-5-pro:high (1.0) [version=(5,5,0)，展示值 550]
 // ├── gpt-5-6-sol [动态家族；厂商家族名 gpt-5.6 Sol；默认预设由 metadata 定义]
 // │   └── :high [固定思考预设]
 // │       ├── provider_a -> gpt-5.6-sol:reasoning-high@provider-a
@@ -491,6 +491,64 @@ impl ModelRegistryAssembler for ServiceModelAssembler {
         .map_err(|error| RuntimeError::Backend(error.to_string()))
     }
 }
+
+const MEDIA_FAMILIES: &[(&str, &str, f64)] = &[
+    ("gpt_image", "image.txt2img.gpt_image", 3.0),
+    ("mai_image", "image.txt2img.mai_image", 2.8),
+    ("grok_image", "image.txt2img.grok_image", 2.6),
+    ("reve", "image.txt2img.reve", 2.6),
+    ("muse_image", "image.txt2img.muse_image", 2.5),
+    ("seedream", "image.txt2img.seedream", 2.4),
+    ("qwen_image", "image.txt2img.qwen_image", 2.4),
+    ("gemini", "image.txt2img.gemini", 2.3),
+    ("ideogram", "image.txt2img.ideogram", 2.1),
+    ("recraft", "image.txt2img.recraft", 1.9),
+    ("flux", "image.txt2img.flux", 1.9),
+    ("imagen", "image.txt2img.imagen", 1.8),
+    ("glm", "image.txt2img.glm", 1.1),
+    ("sd", "image.txt2img.sd", 1.0),
+    ("gpt_image", "image.img2img.gpt_image", 3.0),
+    ("grok_image", "image.img2img.grok_image", 2.8),
+    ("mai_image", "image.img2img.mai_image", 2.8),
+    ("muse_image", "image.img2img.muse_image", 2.7),
+    ("seedream", "image.img2img.seedream", 2.7),
+    ("gemini", "image.img2img.gemini", 2.6),
+    ("reve", "image.img2img.reve", 2.6),
+    ("qwen_image", "image.img2img.qwen_image", 2.2),
+    ("hunyuan_image", "image.img2img.hunyuan_image", 2.2),
+    ("wan_image", "image.img2img.wan_image", 2.2),
+    ("flux", "image.img2img.flux", 2.0),
+    ("gemini_omni", "video.txt2video.gemini_omni", 3.0),
+    ("seedance", "video.txt2video.seedance", 2.8),
+    ("wan", "video.txt2video.wan", 2.8),
+    ("minimax_h3", "video.txt2video.minimax_h3", 2.7),
+    ("muse_video", "video.txt2video.muse_video", 2.7),
+    ("happyhorse", "video.txt2video.happyhorse", 2.6),
+    ("sora", "video.txt2video.sora", 2.3),
+    ("veo", "video.txt2video.veo", 2.2),
+    ("grok_imagine", "video.txt2video.grok_imagine", 2.1),
+    ("pixverse", "video.txt2video.pixverse", 1.6),
+    ("runway", "video.txt2video.runway", 1.5),
+    ("kling", "video.txt2video.kling", 1.5),
+    ("hailuo", "video.txt2video.hailuo", 1.5),
+    ("hunyuan_video", "video.txt2video.hunyuan_video", 1.3),
+    ("ltx", "video.txt2video.ltx", 1.2),
+    ("minimax_h3", "video.img2video.minimax_h3", 3.0),
+    ("gemini_omni", "video.img2video.gemini_omni", 3.0),
+    ("wan", "video.img2video.wan", 2.9),
+    ("seedance", "video.img2video.seedance", 2.9),
+    ("grok_imagine", "video.img2video.grok_imagine", 2.8),
+    ("flux_video", "video.img2video.flux_video", 2.8),
+    ("happyhorse", "video.img2video.happyhorse", 2.7),
+    ("veo", "video.img2video.veo", 2.5),
+    ("vidu", "video.img2video.vidu", 2.3),
+    ("kling", "video.img2video.kling", 2.3),
+    ("pixverse", "video.img2video.pixverse", 2.0),
+    ("hailuo", "video.img2video.hailuo", 1.8),
+    ("hunyuan_video", "video.img2video.hunyuan_video", 1.5),
+    ("ltx", "video.img2video.ltx", 1.3),
+    ("runway", "video.img2video.runway", 1.0),
+];
 
 pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition> {
     let mut definitions = vec![
@@ -772,6 +830,32 @@ pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition>
             Some("agent"),
         ),
     ]);
+    for (_, path, _) in MEDIA_FAMILIES {
+        let parent = path.rsplit_once('.').unwrap().0;
+        let api_type = definitions
+            .iter()
+            .find(|definition| definition.path == parent)
+            .unwrap()
+            .api_type;
+        definitions.push(logical_definition(
+            path,
+            api_type,
+            ModelRequirement::default(),
+            MountMode::Manual,
+            AiccSchedulerProfile::QualityFirst,
+            strict_fallback(),
+            None,
+        ));
+    }
+    for definition in &mut definitions {
+        if MEDIA_FAMILIES
+            .iter()
+            .any(|(_, path, _)| path.rsplit_once('.').unwrap().0 == definition.path)
+        {
+            definition.mount_mode = MountMode::Manual;
+            definition.fallback = strict_fallback();
+        }
+    }
     definitions
 }
 
@@ -863,7 +947,7 @@ fn vision_requirement(min_context_tokens: u64) -> ModelRequirement {
 }
 
 pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
-    AiccRouteOverlay {
+    let mut overlay = AiccRouteOverlay {
         logical_tree: BTreeMap::from([
             (
                 "llm".into(),
@@ -1033,32 +1117,6 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                 },
             ),
             (
-                "image".into(),
-                AiccLogicalNodeOverlay {
-                    children: BTreeMap::from([
-                        (
-                            "img2img".into(),
-                            logical_node(&[
-                                ("gpt_mini", "llm.gpt-mini", 1.0),
-                                ("gpt_nano", "llm.gpt-nano", 1.0),
-                                ("gpt_pro", "llm.gpt-pro", 1.0),
-                                ("gpt_standard", "llm.gpt-standard", 1.0),
-                            ]),
-                        ),
-                        (
-                            "txt2img".into(),
-                            logical_node(&[
-                                ("gpt_mini", "llm.gpt-mini", 1.0),
-                                ("gpt_nano", "llm.gpt-nano", 1.0),
-                                ("gpt_pro", "llm.gpt-pro", 1.0),
-                                ("gpt_standard", "llm.gpt-standard", 1.0),
-                            ]),
-                        ),
-                    ]),
-                    ..AiccLogicalNodeOverlay::default()
-                },
-            ),
-            (
                 "vision".into(),
                 AiccLogicalNodeOverlay {
                     children: BTreeMap::from([
@@ -1134,7 +1192,22 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
             ),
         ]),
         ..AiccRouteOverlay::default()
+    };
+    for (name, path, weight) in MEDIA_FAMILIES {
+        let (parent, _) = path.rsplit_once('.').unwrap();
+        let (namespace, task) = parent.split_once('.').unwrap();
+        let node = overlay
+            .logical_tree
+            .entry(namespace.into())
+            .or_default()
+            .children
+            .entry(task.into())
+            .or_default();
+        node.items
+            .get_or_insert_with(BTreeMap::new)
+            .insert((*name).into(), ModelItem::new(*path, *weight));
     }
+    overlay
 }
 
 fn logical_node(items: &[(&str, &str, f64)]) -> AiccLogicalNodeOverlay {

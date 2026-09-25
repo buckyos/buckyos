@@ -354,8 +354,8 @@ fn discovery(model_id: &str) -> ProviderDiscoverySnapshot {
         health: ProviderHealthState::Healthy,
         models: vec![DiscoveredModel {
             provider_model_id: model_id.into(),
-            origin_model_id: None,
             api_types: Some(vec![ApiType::Llm, ApiType::EmbeddingText]),
+            unsupported_features: BTreeSet::new(),
             supported_features: Some(BTreeSet::from([
                 buckyos_api::features::TOOL_CALL.into(),
                 buckyos_api::features::JSON_SCHEMA.into(),
@@ -364,6 +364,15 @@ fn discovery(model_id: &str) -> ProviderDiscoverySnapshot {
             availability: ModelAvailability::Available,
             deprecated: false,
             pricing: Some(Pricing {
+                source_url: None,
+                verified_at: None,
+                ratio_exception: None,
+                cache_write_input_token: None,
+                cache_write_1h_input_token: None,
+                audio_input_token: None,
+                image_input_token: None,
+                audio_output_token: None,
+                image_output_token: None,
                 currency: "USD".into(),
                 input_token: Some(0.5),
                 output_token: None,
@@ -412,7 +421,6 @@ fn catalog_with_revision(revision_seq: u64, context_tokens: u64) -> Arc<CatalogS
         "schema_revision": 0,
         "revision_seq": revision_seq,
         "provider_profile_id": "openai",
-        "metadata_drivers": ["openai"],
         "models": [{
             "id": "gpt-test",
             "operations": {"llm": "responses.create"}
@@ -465,10 +473,10 @@ fn catalog_with_model_ids(revision_seq: u64, model_ids: &[&str]) -> Arc<CatalogS
     let provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
         "format": "buckyos.aicc.provider-rules-catalog",
         "schema_version": 1,
-        "schema_revision": 0,
+        "schema_revision": 1,
         "revision_seq": revision_seq,
         "provider_profile_id": "vendor",
-        "metadata_drivers": ["vendor"],
+        "static_inventory_models": model_ids,
         "models": provider_models,
         "patterns": [],
         "variants": []
@@ -559,28 +567,6 @@ fn routed_catalog() -> Arc<CatalogSnapshot> {
         "schema_revision": 0,
         "revision_seq": 7,
         "provider_profile_id": "openrouter",
-        "metadata_drivers": ["openai", "claude"],
-        "origin_provider_aliases": {
-            "openai": "openai",
-            "anthropic": "claude"
-        },
-        "origin_mappings": [{
-            "extract": {
-                "source": "provider_model_id",
-                "regex": "^(?<driver>[^/]+)/(?<model>.+)$"
-            },
-            "transforms": {
-                "driver": [
-                    {"op": "lowercase"},
-                    {
-                        "op": "alias",
-                        "table": "origin_provider_aliases",
-                        "on_missing": "keep"
-                    }
-                ],
-                "model": [{"op": "trim"}]
-            }
-        }],
         "models": [],
         "patterns": [{
             "match": "*",
@@ -1121,121 +1107,6 @@ fn inventory_without_remote_revision_uses_model_fingerprint() {
     .unwrap();
 }
 
-#[test]
-fn inventory_uses_provider_origin_mapping_to_select_unique_driver() {
-    let mut profile = profile();
-    profile.provider_profile_id = "openrouter".into();
-    let mut instance = instance("router");
-    instance.provider_profile_id = "openrouter".into();
-    instance.provider_rules_id = Some("openrouter".into());
-    let mut discovered = discovery("anthropic/shared-model");
-    discovered.models[0].origin_model_id = Some("shared-model".into());
-
-    let inventory = InventoryBuilder::build(
-        &profile,
-        &instance,
-        discovered,
-        &routed_catalog(),
-        &codecs(),
-    )
-    .unwrap();
-    assert_eq!(inventory.models.len(), 1);
-    assert_eq!(
-        inventory.models[0].provider_model_id,
-        "anthropic/shared-model"
-    );
-    assert_eq!(inventory.models[0].origin_model_id, "shared-model");
-    assert_eq!(inventory.models[0].model_driver_id, "claude");
-}
-
-#[test]
-fn inventory_unknown_origin_uses_isolated_conservative_fallback() {
-    let mut profile = profile();
-    profile.provider_profile_id = "openrouter".into();
-    let mut instance = instance("router");
-    instance.provider_profile_id = "openrouter".into();
-    instance.provider_rules_id = Some("openrouter".into());
-    let mut discovered = discovery("anthropic/shared-model");
-    discovered.models[0].origin_model_id = Some("shared-model".into());
-    for vendor in ["aion-labs", "unknown-vendor"] {
-        let mut model = discovered.models[0].clone();
-        model.provider_model_id = format!("{vendor}/shared-model");
-        discovered.models.push(model);
-    }
-
-    let catalog = routed_catalog();
-    let inventory =
-        InventoryBuilder::build(&profile, &instance, discovered, &catalog, &codecs()).unwrap();
-    assert_eq!(inventory.models.len(), 3);
-    let known = inventory
-        .models
-        .iter()
-        .find(|model| model.provider_model_id == "anthropic/shared-model")
-        .unwrap();
-    assert_eq!(known.model_driver_id, "claude");
-    assert_eq!(known.capabilities["tool_call"], serde_json::json!(true));
-    for model in inventory
-        .models
-        .iter()
-        .filter(|model| model.provider_model_id != known.provider_model_id)
-    {
-        assert_eq!(model.model_driver_id, "unclassified");
-        assert_eq!(model.origin_model_id, model.provider_model_id);
-        assert_eq!(model.api_types, vec![ApiType::Llm]);
-        assert_eq!(model.operations["llm"], "responses.create");
-        assert_ne!(
-            model.capabilities.get("tool_call"),
-            Some(&serde_json::json!(true))
-        );
-        assert_ne!(
-            model.capabilities.get("json_schema"),
-            Some(&serde_json::json!(true))
-        );
-        assert!(model.variants.is_empty());
-        assert_eq!(model.model_catalog_revision, None);
-        assert_eq!(
-            model.pricing.as_ref().unwrap().source,
-            PricingSource::Discovery
-        );
-    }
-    assert_eq!(
-        inventory
-            .models
-            .iter()
-            .map(|model| &model.model_uid)
-            .collect::<BTreeSet<_>>()
-            .len(),
-        3
-    );
-    ModelRegistry::build(
-        &catalog,
-        &[inventory.as_model_inventory()],
-        Vec::new(),
-        RegistryLayers::default(),
-    )
-    .unwrap();
-}
-
-#[test]
-fn inventory_still_rejects_conflicting_discovery_origin() {
-    let mut profile = profile();
-    profile.provider_profile_id = "openrouter".into();
-    let mut instance = instance("router");
-    instance.provider_profile_id = "openrouter".into();
-    instance.provider_rules_id = Some("openrouter".into());
-    let mut discovered = discovery("anthropic/shared-model");
-    discovered.models[0].origin_model_id = Some("different-model".into());
-    let error = InventoryBuilder::build(
-        &profile,
-        &instance,
-        discovered,
-        &routed_catalog(),
-        &codecs(),
-    )
-    .unwrap_err();
-    assert!(matches!(error, ProviderError::Inventory(message) if message.contains("conflicts")));
-}
-
 #[tokio::test]
 async fn resolved_credential_never_enters_inventory_or_debug_output() {
     let secret = "super-secret-value";
@@ -1513,7 +1384,7 @@ fn instance_rules_exclude_models_before_inventory_publication() {
     let mut config = instance("filtered");
     config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
         exclude_models: BTreeSet::from(["gpt-test".to_string()]),
-        origin_model_overrides: BTreeMap::new(),
+        model_driver_overrides: BTreeMap::new(),
     });
     let inventory = InventoryBuilder::build(
         &profile(),
@@ -1527,11 +1398,14 @@ fn instance_rules_exclude_models_before_inventory_publication() {
 }
 
 #[test]
-fn instance_origin_override_maps_endpoint_ids_without_global_provider_rules() {
+fn instance_driver_override_maps_endpoint_ids_without_global_provider_rules() {
     let mut config = instance("doubao-endpoint");
     config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
         exclude_models: BTreeSet::new(),
-        origin_model_overrides: BTreeMap::from([("ep-user-specific".into(), "gpt-test".into())]),
+        model_driver_overrides: BTreeMap::from([(
+            "ep-user-specific".into(),
+            "openai/gpt-test".into(),
+        )]),
     });
     let inventory = InventoryBuilder::build(
         &profile(),
@@ -1594,7 +1468,7 @@ fn invalid_discovery_facts_are_rejected() {
             &catalog(),
             &codecs(),
         ),
-        Err(ProviderError::Discovery(_))
+        Err(ProviderError::DiscoveryResponse(_))
     ));
 
     let mut invalid_price = discovery("gpt-test");
@@ -1611,7 +1485,7 @@ fn invalid_discovery_facts_are_rejected() {
             &catalog(),
             &codecs(),
         ),
-        Err(ProviderError::Discovery(_))
+        Err(ProviderError::DiscoveryResponse(_))
     ));
 }
 
@@ -1706,9 +1580,9 @@ fn backoff_is_bounded_and_fingerprint_is_order_independent() {
         discovered.models.remove(0),
         DiscoveredModel {
             provider_model_id: "gpt-other".into(),
-            origin_model_id: None,
             api_types: None,
             supported_features: None,
+            unsupported_features: BTreeSet::new(),
             remote_methods: None,
             availability: ModelAvailability::Unknown,
             deprecated: false,

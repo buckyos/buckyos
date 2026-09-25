@@ -182,19 +182,19 @@
     {
       "id": "MiniMax-Hailuo-2.3",
       "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax", "video.img2video.{model}", "video.txt2video.minimax.{model}"],
+      "logical_mounts": ["video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax", "video.img2video.{model}", "video.txt2video.minimax.{model}", "video.txt2video.hailuo", "video.img2video.hailuo"],
       "capabilities": {}
     },
     {
       "id": "MiniMax-Hailuo-2.3-Fast",
       "api_types": ["video.img2video"],
-      "logical_mounts": ["video.img2video.minimax-fast", "video.img2video.{model}", "video.img2video.minimax.{model}"],
+      "logical_mounts": ["video.img2video.minimax-fast", "video.img2video.{model}", "video.img2video.minimax.{model}", "video.img2video.hailuo"],
       "capabilities": {}
     },
     {
       "id": "MiniMax-Hailuo-02",
       "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax", "video.img2video.{model}", "video.txt2video.minimax.{model}"],
+      "logical_mounts": ["video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax", "video.img2video.{model}", "video.txt2video.minimax.{model}", "video.txt2video.hailuo", "video.img2video.hailuo"],
       "capabilities": {}
     },
     {

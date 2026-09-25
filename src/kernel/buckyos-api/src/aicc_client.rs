@@ -755,6 +755,9 @@ mod canonical_contract_tests {
                 configured: true,
             },
             inventory: ProviderInstanceInventoryView {
+                unmatched_models: Vec::new(),
+                unavailable_presets: Vec::new(),
+                unpriced_models: Vec::new(),
                 state: if enabled {
                     ProviderInstanceInventoryState::Loaded
                 } else {
@@ -931,6 +934,7 @@ mod canonical_contract_tests {
             _ctx: RPCContext,
         ) -> std::result::Result<ProviderRefreshModelsResponse, RPCErrors> {
             Ok(ProviderRefreshModelsResponse {
+                unmatched_count: 0,
                 ok: true,
                 provider_instance_name: request.provider_instance_name,
                 inventory_revision: "inventory-1".to_string(),
@@ -2482,6 +2486,16 @@ impl AiMessage {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AiUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_cost: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2492,6 +2506,8 @@ pub struct AiUsage {
     pub cache_read_input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2515,7 +2531,13 @@ impl AiUsage {
             output_tokens: None,
             total_tokens: None,
             cache_read_input_tokens: None,
+            audio_input_tokens: None,
+            image_input_tokens: None,
+            audio_output_tokens: None,
+            image_output_tokens: None,
+            reported_cost: None,
             cache_write_input_tokens: None,
+            cache_write_1h_input_tokens: None,
             reasoning_tokens: None,
             image_units: None,
             audio_seconds: None,
@@ -4387,6 +4409,7 @@ impl ProviderRefreshModelsRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderRefreshModelsResponse {
+    pub unmatched_count: u64,
     pub ok: bool,
     pub provider_instance_name: String,
     pub inventory_revision: String,
@@ -4531,12 +4554,15 @@ pub struct ProviderInstanceRules {
     #[serde(default)]
     pub exclude_models: BTreeSet<String>,
     #[serde(default)]
-    pub origin_model_overrides: BTreeMap<String, String>,
+    pub model_driver_overrides: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderInstanceInventoryView {
+    pub unmatched_models: Vec<Value>,
+    pub unavailable_presets: Vec<Value>,
+    pub unpriced_models: Vec<String>,
     pub state: ProviderInstanceInventoryState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,

@@ -1,47 +1,76 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "revision_seq": 1,
   "provider_profile_id": "gemini",
-  "metadata_drivers": ["gemini"],
   "models": [
     {
       "id": "gemini-3.1-flash-tts-preview",
-      "operations": { "audio.tts": "interactions.create" },
+      "operations": {
+        "audio.tts": "interactions.create"
+      },
       "request_rules": [
-        { "remove": ["/temperature", "/top_p"] }
+        {
+          "remove": [
+            "/temperature",
+            "/top_p"
+          ]
+        }
       ],
       "canonical_fields": {
         "/voice": {
           "converter": "gemini_tts_voice_v1",
-          "fallback": { "action": "default", "value": {} }
+          "fallback": {
+            "action": "default",
+            "value": {}
+          }
         }
       }
     },
     {
       "id": "gemini-2.5-flash-preview-tts",
-      "operations": { "audio.tts": "interactions.create" },
+      "operations": {
+        "audio.tts": "interactions.create"
+      },
       "request_rules": [
-        { "remove": ["/temperature", "/top_p"] }
+        {
+          "remove": [
+            "/temperature",
+            "/top_p"
+          ]
+        }
       ],
       "canonical_fields": {
         "/voice": {
           "converter": "gemini_tts_voice_v1",
-          "fallback": { "action": "default", "value": {} }
+          "fallback": {
+            "action": "default",
+            "value": {}
+          }
         }
       }
     },
     {
       "id": "gemini-2.5-pro-preview-tts",
-      "operations": { "audio.tts": "interactions.create" },
+      "operations": {
+        "audio.tts": "interactions.create"
+      },
       "request_rules": [
-        { "remove": ["/temperature", "/top_p"] }
+        {
+          "remove": [
+            "/temperature",
+            "/top_p"
+          ]
+        }
       ],
       "canonical_fields": {
         "/voice": {
           "converter": "gemini_tts_voice_v1",
-          "fallback": { "action": "default", "value": {} }
+          "fallback": {
+            "action": "default",
+            "value": {}
+          }
         }
       }
     },
@@ -54,7 +83,12 @@
         "video.extend": "interactions.create"
       },
       "request_rules": [
-        { "remove": ["/temperature", "/top_p"] }
+        {
+          "remove": [
+            "/temperature",
+            "/top_p"
+          ]
+        }
       ]
     }
   ],
@@ -80,16 +114,190 @@
         "video.extend": "models.predictLongRunning"
       },
       "request_rules": [
-        { "remove": ["/temperature", "/top_p"] }
+        {
+          "remove": [
+            "/temperature",
+            "/top_p"
+          ]
+        }
       ]
     }
   ],
   "variants": [
-    { "model_driver": "gemini", "variant": "reasoning-none", "match": { "provider_model_id": ["gemini-2.5-flash-lite"], "variant": "reasoning-none" }, "provider_options": {} },
-    { "model_driver": "gemini", "variant": "reasoning-mini", "match": { "provider_model_id": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite-image"], "variant": "reasoning-mini" }, "provider_options": { "generation_config": { "thinking_level": "minimal" } } },
-    { "model_driver": "gemini", "variant": "reasoning-low", "match": { "provider_model_id": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], "variant": "reasoning-low" }, "provider_options": { "generation_config": { "thinking_level": "low" } } },
-    { "model_driver": "gemini", "variant": "reasoning-medium", "match": { "provider_model_id": ["gemini-3.8-flash", "gemini-2.5-flash"], "variant": "reasoning-medium" }, "provider_options": { "generation_config": { "thinking_level": "high" } } },
-    { "model_driver": "gemini", "variant": "reasoning-medium", "match": { "provider_model_id": ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash-lite", "gemini-2.5-pro"], "variant": "reasoning-medium" }, "provider_options": { "generation_config": { "thinking_level": "medium" } } },
-    { "model_driver": "gemini", "variant": "reasoning-high", "match": { "provider_model_id": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-image", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], "variant": "reasoning-high" }, "provider_options": { "generation_config": { "thinking_level": "high" } } }
+    {
+      "model_driver": "gemini",
+      "variant": "reasoning-minimal",
+      "match": {
+        "origin_model_id": [
+          "gemini-3.6-flash",
+          "gemini-3.5-flash",
+          "gemini-3.5-flash-lite",
+          "gemini-3-flash-preview"
+        ],
+        "variant": "reasoning-minimal"
+      },
+      "provider_options": {
+        "generation_config": {
+          "thinking_level": "minimal"
+        }
+      }
+    },
+    {
+      "model_driver": "gemini",
+      "variant": "reasoning-low",
+      "match": {
+        "origin_model_id": [
+          "gemini-3.8-flash",
+          "gemini-3.7-flash",
+          "gemini-3.6-flash",
+          "gemini-3.5-flash",
+          "gemini-3.5-flash-lite",
+          "gemini-3.1-pro-preview",
+          "gemini-3-flash-preview"
+        ],
+        "variant": "reasoning-low"
+      },
+      "provider_options": {
+        "generation_config": {
+          "thinking_level": "low"
+        }
+      }
+    },
+    {
+      "model_driver": "gemini",
+      "variant": "reasoning-medium",
+      "match": {
+        "origin_model_id": [
+          "gemini-3.8-flash"
+        ],
+        "variant": "reasoning-medium"
+      },
+      "provider_options": {
+        "generation_config": {
+          "thinking_level": "medium"
+        }
+      }
+    },
+    {
+      "model_driver": "gemini",
+      "variant": "reasoning-medium",
+      "match": {
+        "origin_model_id": [
+          "gemini-3.7-flash",
+          "gemini-3.6-flash",
+          "gemini-3.5-flash",
+          "gemini-3.5-flash-lite",
+          "gemini-3.1-pro-preview",
+          "gemini-3-flash-preview"
+        ],
+        "variant": "reasoning-medium"
+      },
+      "provider_options": {
+        "generation_config": {
+          "thinking_level": "medium"
+        }
+      }
+    },
+    {
+      "model_driver": "gemini",
+      "variant": "reasoning-high",
+      "match": {
+        "origin_model_id": [
+          "gemini-3.8-flash",
+          "gemini-3.7-flash",
+          "gemini-3.6-flash",
+          "gemini-3.5-flash",
+          "gemini-3.5-flash-lite",
+          "gemini-3.1-pro-preview",
+          "gemini-3-flash-preview"
+        ],
+        "variant": "reasoning-high"
+      },
+      "provider_options": {
+        "generation_config": {
+          "thinking_level": "high"
+        }
+      }
+    },
+    {
+      "model_driver": "gemini",
+      "variant": "reasoning-minimal",
+      "match": {
+        "origin_model_id": "gemini-3.1-flash-lite",
+        "variant": "reasoning-minimal"
+      },
+      "provider_options": {
+        "generation_config": {
+          "thinking_level": "minimal"
+        }
+      }
+    },
+    {
+      "model_driver": "gemini",
+      "variant": "reasoning-low",
+      "match": {
+        "origin_model_id": "gemini-3.1-flash-lite",
+        "variant": "reasoning-low"
+      },
+      "provider_options": {
+        "generation_config": {
+          "thinking_level": "low"
+        }
+      }
+    },
+    {
+      "model_driver": "gemini",
+      "variant": "reasoning-medium",
+      "match": {
+        "origin_model_id": "gemini-3.1-flash-lite",
+        "variant": "reasoning-medium"
+      },
+      "provider_options": {
+        "generation_config": {
+          "thinking_level": "medium"
+        }
+      }
+    },
+    {
+      "model_driver": "gemini",
+      "variant": "reasoning-high",
+      "match": {
+        "origin_model_id": "gemini-3.1-flash-lite",
+        "variant": "reasoning-high"
+      },
+      "provider_options": {
+        "generation_config": {
+          "thinking_level": "high"
+        }
+      }
+    }
+  ],
+  "model_pricing": [
+    {
+      "id": "gemini-3.1-flash-lite",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 2.5e-07,
+        "output_token": 1.5e-06,
+        "audio_input_token": 5e-07,
+        "image_input_token": 2.5e-07,
+        "cache_input_token": 2.5000000000000002e-08,
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-25"
+      }
+    },
+    {
+      "id": "gemini-3.5-flash-lite",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 3e-07,
+        "output_token": 2.5e-06,
+        "audio_input_token": 3e-07,
+        "image_input_token": 3e-07,
+        "cache_input_token": 3e-08,
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-25"
+      }
+    }
   ]
 }

@@ -2448,6 +2448,7 @@ mod tests {
         let reference = "system-config://secrets/aicc/openai-primary/api-key".to_string();
         let fingerprint = sha256_hex(reference.as_bytes())[..16].to_string();
         PinnedProviderTask {
+            reported_cost_currency: None,
             runtime_generation: 7,
             origin_provider: "openai".into(),
             exact_model: "gpt-5:reasoning@openai-primary".into(),
@@ -2486,6 +2487,12 @@ mod tests {
             pricing: Some(PinnedPricingSnapshot {
                 currency: "USD".into(),
                 basis: PinnedPricingBasis::Tokens {
+                    cache_write_input_token: None,
+                    cache_write_1h_input_token: None,
+                    audio_input_token: None,
+                    image_input_token: None,
+                    audio_output_token: None,
+                    image_output_token: None,
                     input_token: Some(0.000_001_25),
                     cache_input_token: Some(0.000_000_125),
                     output_token: Some(0.000_01),

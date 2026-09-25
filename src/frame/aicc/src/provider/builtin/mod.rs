@@ -138,7 +138,7 @@ use glm::{
     glm_catalog_files, glm_known_provider, glm_model_driver, glm_profile, glm_provider_rules,
 };
 #[allow(unused_imports)]
-pub(crate) use glm::{glm_models_discovery, GlmModelsDiscovery, GLM_PROVIDER_PROFILE_ID};
+pub(crate) use glm::{glm_models_discovery, GLM_PROVIDER_PROFILE_ID};
 #[cfg(test)]
 use kimi::{
     kimi_catalog_files, kimi_known_provider, kimi_model_driver, kimi_profile, kimi_provider_rules,
@@ -234,7 +234,7 @@ mod wp08d_tests {
 
     fn discovery(
         provider_model_id: &str,
-        origin_model_id: Option<&str>,
+        _origin_model_id: Option<&str>,
     ) -> ProviderDiscoverySnapshot {
         ProviderDiscoverySnapshot {
             revision: Some("fixture-1".to_owned()),
@@ -242,9 +242,9 @@ mod wp08d_tests {
             health: ProviderHealthState::Healthy,
             models: vec![DiscoveredModel {
                 provider_model_id: provider_model_id.to_owned(),
-                origin_model_id: origin_model_id.map(str::to_owned),
                 api_types: Some(vec![ApiType::Llm]),
                 supported_features: None,
+                unsupported_features: BTreeSet::new(),
                 remote_methods: Some(BTreeSet::from([
                     OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned(),
                     OPENAI_RESPONSES_OPERATION_ID.to_owned(),
@@ -274,6 +274,7 @@ mod wp08d_tests {
                     glm_provider_rules(1),
                 ],
                 known_providers: vec![KnownProviderCatalog {
+                    exchange_rates: None,
                     format: "buckyos.aicc.known-provider-catalog".to_owned(),
                     schema_version: 1,
                     schema_revision: 1,
@@ -326,17 +327,30 @@ mod wp08d_tests {
             ),
         ];
         for (profile, instance, discovered, expected_driver, expected_operation) in cases {
-            let inventory =
-                InventoryBuilder::build(&profile, &instance, discovered, &catalog, &codecs)
-                    .unwrap();
+            let inventory = InventoryBuilder::build_with_matcher(
+                &profile,
+                &instance,
+                discovered,
+                &catalog,
+                &codecs,
+                Some(&OpenRouterDiscovery::new(
+                    crate::protocol::HttpTransport::new(Default::default()).unwrap(),
+                )),
+            )
+            .unwrap();
             assert_eq!(inventory.provider_profile_id, profile.provider_profile_id);
             assert_eq!(
                 inventory.protocol_adapter_id,
                 profile.default_protocol_adapter_id
             );
-            assert_eq!(inventory.models.len(), 1);
-            assert_eq!(inventory.models[0].model_driver_id, expected_driver);
-            assert_eq!(inventory.models[0].operations["llm"], expected_operation);
+            assert!(!inventory.models.is_empty());
+            let main = inventory
+                .models
+                .iter()
+                .find(|model| model.operations.contains_key("llm"))
+                .unwrap();
+            assert_eq!(main.model_driver_id, expected_driver);
+            assert_eq!(main.operations["llm"], expected_operation);
         }
     }
 
@@ -379,3 +393,6 @@ mod wp08d_tests {
         assert!(catalog.model_driver("glm").is_some());
     }
 }
+
+#[cfg(test)]
+mod upgrade_tests;

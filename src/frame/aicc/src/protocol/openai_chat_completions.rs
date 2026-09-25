@@ -1031,6 +1031,7 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
             .and_then(Value::as_object)
             .and_then(|details| details.get("cached_tokens"))
             .and_then(Value::as_u64),
+        cache_write_1h_input_tokens: None,
         cache_write_input_tokens: usage
             .get("prompt_tokens_details")
             .and_then(Value::as_object)
@@ -1046,14 +1047,23 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         video_seconds: None,
         request_units: None,
         characters: None,
-        cost: value
+        audio_input_tokens: value
+            .pointer("/prompt_tokens_details/audio_tokens")
+            .and_then(Value::as_u64),
+        image_input_tokens: value
+            .pointer("/prompt_tokens_details/image_tokens")
+            .and_then(Value::as_u64),
+        audio_output_tokens: value
+            .pointer("/completion_tokens_details/audio_tokens")
+            .and_then(Value::as_u64),
+        image_output_tokens: value
+            .pointer("/completion_tokens_details/image_tokens")
+            .and_then(Value::as_u64),
+        reported_cost: value
             .get("cost")
             .and_then(Value::as_f64)
-            .filter(|amount| amount.is_finite() && *amount >= 0.0)
-            .map(|amount| buckyos_api::AiCost {
-                amount,
-                currency: "USD".to_owned(),
-            }),
+            .filter(|amount| amount.is_finite() && *amount >= 0.0),
+        cost: None,
     }))
 }
 
@@ -2417,5 +2427,28 @@ mod tests {
         let error = decode_error_response(response);
         assert_eq!(error.provider_code.as_deref(), Some("1210"));
         assert!(error.is_model_unavailable());
+    }
+}
+
+#[cfg(test)]
+mod billing_usage_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn normalized_usage_settles_with_cache_and_thinking_dimensions() {
+        let wire = json!({"prompt_tokens":150,"completion_tokens":40,"total_tokens":190,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":30},"completion_tokens_details":{"reasoning_tokens":10}});
+        let usage = decode_usage(Some(&wire)).unwrap().unwrap();
+        assert_eq!(usage.input_tokens, Some(150));
+        assert_eq!(usage.output_tokens, Some(40));
+        assert_eq!(usage.total_tokens, Some(190));
+        let price = serde_json::from_value(json!({"currency":"USD","input_token":1e-6,"cache_input_token":0.1e-6,"cache_write_input_token":1.25e-6,"cache_write_1h_input_token":2e-6,"output_token":5e-6})).unwrap();
+        let pinned = crate::execution::PinnedPricingSnapshot::from_pricing(
+            &price,
+            None,
+            std::time::SystemTime::now(),
+        )
+        .unwrap()
+        .unwrap();
+        assert!((pinned.completion_cost(&usage).unwrap().amount - 0.0003395).abs() < 1e-12);
     }
 }

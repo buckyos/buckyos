@@ -1,10 +1,10 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "revision_seq": 1,
   "provider_profile_id": "fal",
-  "metadata_drivers": ["fal"],
+  "static_inventory_models": ["fal-ai/esrgan", "fal-ai/imageutils/rembg", "fal-ai/deepfilternet3", "fal-ai/video-upscaler"],
   "models": [
     {
       "id": "fal-ai/esrgan",
@@ -44,5 +44,6 @@
       },
       "latency_class": "async"
     }
-  ]
+  ],
+  "variants": []
 }

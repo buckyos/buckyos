@@ -154,7 +154,7 @@ impl TryFrom<ProtocolOutput> for ExecutionOutput {
         });
         let usage = if usage_empty {
             log::warn!(
-                "provider completed successfully without usage; billing for this completion will be zero"
+                "provider completed successfully without usage; billing for this completion is unknown"
             );
             AiUsage::default()
         } else {
@@ -184,9 +184,23 @@ pub(crate) struct PinnedProviderTask {
     pub cancel_supported: bool,
     pub resume: Option<NativeTaskResumeDescriptor>,
     pub pricing: Option<PinnedPricingSnapshot>,
+    pub reported_cost_currency: Option<String>,
 }
 
 impl PinnedProviderTask {
+    fn completion_cost(&self, usage: &AiUsage) -> Option<AiCost> {
+        if let (Some(currency), Some(amount)) = (&self.reported_cost_currency, usage.reported_cost)
+        {
+            if !invalid_price(amount) {
+                return Some(AiCost {
+                    currency: currency.clone(),
+                    amount,
+                });
+            }
+        }
+        self.pricing.as_ref()?.completion_cost(usage)
+    }
+
     fn from_call(runtime_generation: u64, call: &ResolvedProviderCall) -> Result<Self, AiccError> {
         Ok(Self {
             runtime_generation,
@@ -202,6 +216,7 @@ impl PinnedProviderTask {
             cancel_supported: false,
             resume: None,
             pricing: PinnedPricingSnapshot::from_call(call)?,
+            reported_cost_currency: call.reported_cost_currency.clone(),
         })
     }
 }
@@ -218,6 +233,12 @@ pub(crate) enum PinnedPricingBasis {
     Tokens {
         input_token: Option<f64>,
         cache_input_token: Option<f64>,
+        cache_write_input_token: Option<f64>,
+        cache_write_1h_input_token: Option<f64>,
+        audio_input_token: Option<f64>,
+        image_input_token: Option<f64>,
+        audio_output_token: Option<f64>,
+        image_output_token: Option<f64>,
         output_token: Option<f64>,
         #[serde(default)]
         tiers: Option<PricingTiers>,
@@ -300,9 +321,22 @@ fn apply_time_window(base: &Pricing, window: Option<&PricingTimeWindow>) -> Pric
     };
     Pricing {
         currency: base.currency.clone(),
+        source_url: base.source_url.clone(),
+        verified_at: base.verified_at.clone(),
+        ratio_exception: base.ratio_exception.clone(),
         input_token: window.input_token.or(base.input_token),
         output_token: window.output_token.or(base.output_token),
         cache_input_token: window.cache_input_token.or(base.cache_input_token),
+        cache_write_input_token: window
+            .cache_write_input_token
+            .or(base.cache_write_input_token),
+        cache_write_1h_input_token: window
+            .cache_write_1h_input_token
+            .or(base.cache_write_1h_input_token),
+        audio_input_token: window.audio_input_token.or(base.audio_input_token),
+        image_input_token: window.image_input_token.or(base.image_input_token),
+        audio_output_token: window.audio_output_token.or(base.audio_output_token),
+        image_output_token: window.image_output_token.or(base.image_output_token),
         estimated_cost: base.estimated_cost,
         unit: window.unit.or(base.unit),
         amount: window.amount.or(base.amount),
@@ -318,19 +352,43 @@ impl PinnedPricingSnapshot {
         let Some(base_pricing) = call.pricing.pricing.as_ref() else {
             return Ok(None);
         };
+        Self::from_pricing(
+            base_pricing,
+            call.pricing.matched_amount,
+            std::time::SystemTime::now(),
+        )
+    }
+
+    pub(crate) fn from_pricing(
+        base_pricing: &Pricing,
+        matched_amount: Option<f64>,
+        now: std::time::SystemTime,
+    ) -> Result<Option<Self>, AiccError> {
         // Peak/off-peak billing is decided by wall-clock time, so it is pinned
         // here at request time. Tier selection still has to wait for the usage
         // numbers, which only exist once the response lands.
         let effective = apply_time_window(
             base_pricing,
-            active_time_window(&base_pricing.time_windows, std::time::SystemTime::now()),
+            active_time_window(&base_pricing.time_windows, now),
         );
         let pricing = &effective;
         let currency = pricing.currency.trim().to_ascii_uppercase();
         if currency.is_empty() {
             return Err(invalid_pinned_pricing());
         }
-        let has_token_price = pricing.input_token.is_some() || pricing.output_token.is_some();
+        let has_token_price = [
+            pricing.input_token,
+            pricing.output_token,
+            pricing.cache_input_token,
+            pricing.cache_write_input_token,
+            pricing.cache_write_1h_input_token,
+            pricing.audio_input_token,
+            pricing.image_input_token,
+            pricing.audio_output_token,
+            pricing.image_output_token,
+        ]
+        .iter()
+        .any(Option::is_some);
         let basis = if has_token_price {
             if pricing.unit.is_some()
                 || pricing.input_token.is_some_and(invalid_price)
@@ -342,11 +400,17 @@ impl PinnedPricingSnapshot {
             PinnedPricingBasis::Tokens {
                 input_token: pricing.input_token,
                 cache_input_token: pricing.cache_input_token,
+                cache_write_input_token: pricing.cache_write_input_token,
+                cache_write_1h_input_token: pricing.cache_write_1h_input_token,
+                audio_input_token: pricing.audio_input_token,
+                image_input_token: pricing.image_input_token,
+                audio_output_token: pricing.audio_output_token,
+                image_output_token: pricing.image_output_token,
                 output_token: pricing.output_token,
                 tiers: pricing.tiers.clone(),
             }
         } else if let Some(unit) = pricing.unit {
-            let Some(amount) = call.pricing.matched_amount.or(pricing.amount) else {
+            let Some(amount) = matched_amount.or(pricing.amount) else {
                 return Ok(None);
             };
             if invalid_price(amount) {
@@ -359,23 +423,35 @@ impl PinnedPricingSnapshot {
         Ok(Some(Self { currency, basis }))
     }
 
-    fn completion_cost(&self, usage: &AiUsage) -> Option<AiCost> {
+    pub(crate) fn completion_cost(&self, usage: &AiUsage) -> Option<AiCost> {
         let amount = match &self.basis {
             PinnedPricingBasis::Tokens {
                 input_token,
                 cache_input_token,
+                cache_write_input_token,
+                cache_write_1h_input_token,
+                audio_input_token,
+                image_input_token,
+                audio_output_token,
+                image_output_token,
                 output_token,
                 tiers,
             } => {
                 let base = TokenRates {
                     input_token: *input_token,
                     cache_input_token: *cache_input_token,
+                    cache_write_input_token: *cache_write_input_token,
+                    cache_write_1h_input_token: *cache_write_1h_input_token,
+                    audio_input_token: *audio_input_token,
+                    image_input_token: *image_input_token,
+                    audio_output_token: *audio_output_token,
+                    image_output_token: *image_output_token,
                     output_token: *output_token,
                 };
-                let resolved = tiers
-                    .as_ref()
-                    .and_then(|tiers| tier_rates(tiers, &base, usage))
-                    .unwrap_or(base);
+                let resolved = match tiers {
+                    Some(tiers) => tier_rates(tiers, &base, usage)?,
+                    None => base,
+                };
                 resolved.apply(usage)?
             }
             PinnedPricingBasis::Units { unit, amount } => {
@@ -407,28 +483,62 @@ impl PinnedPricingSnapshot {
 struct TokenRates {
     input_token: Option<f64>,
     cache_input_token: Option<f64>,
+    cache_write_input_token: Option<f64>,
+    cache_write_1h_input_token: Option<f64>,
+    audio_input_token: Option<f64>,
+    image_input_token: Option<f64>,
+    audio_output_token: Option<f64>,
+    image_output_token: Option<f64>,
     output_token: Option<f64>,
 }
 
 impl TokenRates {
     fn apply(&self, usage: &AiUsage) -> Option<f64> {
-        let input_tokens = usage.input_tokens?;
-        let cached_tokens = usage.cache_read_input_tokens.unwrap_or(0).min(input_tokens);
-        let uncached_tokens = input_tokens - cached_tokens;
-        let input = self
-            .input_token
-            .map(|rate| uncached_tokens as f64 * rate)
-            .unwrap_or(0.0);
-        let cached_input = self
-            .cache_input_token
-            .or(self.input_token)
-            .map(|rate| cached_tokens as f64 * rate)
-            .unwrap_or(0.0);
-        let output = match self.output_token {
-            Some(rate) => usage.output_tokens? as f64 * rate,
-            None => 0.0,
-        };
-        Some(input + cached_input + output)
+        let input = usage.input_tokens?;
+        let output = usage.output_tokens?;
+        if usage.reasoning_tokens.is_some_and(|tokens| tokens > output)
+            || usage
+                .total_tokens
+                .is_some_and(|total| input.checked_add(output).is_none_or(|sum| total < sum))
+        {
+            return None;
+        }
+        let read = usage.cache_read_input_tokens.unwrap_or(0);
+        let write = usage.cache_write_input_tokens.unwrap_or(0);
+        let write_1h = usage.cache_write_1h_input_tokens.unwrap_or(0);
+        let write_short = write.checked_sub(write_1h)?;
+        let audio_in = usage.audio_input_tokens.unwrap_or(0);
+        let image_in = usage.image_input_tokens.unwrap_or(0);
+        let audio_out = usage.audio_output_tokens.unwrap_or(0);
+        let image_out = usage.image_output_tokens.unwrap_or(0);
+        if read > 0 && (audio_in > 0 || image_in > 0) {
+            return None;
+        }
+        let text_in = input
+            .checked_sub(read)?
+            .checked_sub(write)?
+            .checked_sub(audio_in)?
+            .checked_sub(image_in)?;
+        let text_out = output.checked_sub(audio_out)?.checked_sub(image_out)?;
+        [
+            (text_in, self.input_token),
+            (read, self.cache_input_token),
+            (write_short, self.cache_write_input_token),
+            (write_1h, self.cache_write_1h_input_token),
+            (text_out, self.output_token),
+            (audio_in, self.audio_input_token),
+            (image_in, self.image_input_token),
+            (audio_out, self.audio_output_token),
+            (image_out, self.image_output_token),
+        ]
+        .into_iter()
+        .try_fold(0.0, |total, (tokens, rate)| {
+            if tokens == 0 {
+                Some(total)
+            } else {
+                Some(total + tokens as f64 * rate?)
+            }
+        })
     }
 
     fn rate_for(&self, dimension: TierDimension) -> Option<f64> {
@@ -457,6 +567,16 @@ impl PricingTierStep {
         TokenRates {
             input_token: self.input_token.or(base.input_token),
             cache_input_token: self.cache_input_token.or(base.cache_input_token),
+            cache_write_input_token: self
+                .cache_write_input_token
+                .or(base.cache_write_input_token),
+            cache_write_1h_input_token: self
+                .cache_write_1h_input_token
+                .or(base.cache_write_1h_input_token),
+            audio_input_token: self.audio_input_token.or(base.audio_input_token),
+            image_input_token: self.image_input_token.or(base.image_input_token),
+            audio_output_token: self.audio_output_token.or(base.audio_output_token),
+            image_output_token: self.image_output_token.or(base.image_output_token),
             output_token: self.output_token.or(base.output_token),
         }
     }
@@ -801,13 +921,7 @@ pub(crate) trait ProviderExecutionPort: Send + Sync {
         binding: &PinnedProviderTask,
         output: &ProtocolOutput,
     ) -> Option<AiCost> {
-        if let Some(cost) = output.usage.as_ref()?.cost.clone() {
-            return Some(cost);
-        }
-        binding
-            .pricing
-            .as_ref()?
-            .completion_cost(output.usage.as_ref()?)
+        binding.completion_cost(output.usage.as_ref()?)
     }
 }
 
@@ -2044,6 +2158,7 @@ mod tests {
     fn call(instance: &str) -> ResolvedProviderCall {
         let request = LlmChatInvokeRequest::new(format!("model@{instance}"), Vec::new());
         ResolvedProviderCall {
+            reported_cost_currency: None,
             exact_model: format!("model@{instance}"),
             provider_model_id: "model".into(),
             provider_instance_name: instance.into(),
@@ -2112,6 +2227,12 @@ mod tests {
         output_token: Option<f64>,
     ) -> PricingTimeWindow {
         PricingTimeWindow {
+            cache_write_input_token: None,
+            cache_write_1h_input_token: None,
+            audio_input_token: None,
+            image_input_token: None,
+            audio_output_token: None,
+            image_output_token: None,
             from: from.into(),
             to: to.into(),
             utc_offset_minutes: 480,
@@ -2171,6 +2292,15 @@ mod tests {
     #[test]
     fn time_window_override_only_replaces_declared_fields() {
         let base = Pricing {
+            source_url: None,
+            verified_at: None,
+            ratio_exception: None,
+            cache_write_input_token: None,
+            cache_write_1h_input_token: None,
+            audio_input_token: None,
+            image_input_token: None,
+            audio_output_token: None,
+            image_output_token: None,
             currency: "USD".into(),
             input_token: Some(1e-6),
             output_token: Some(4e-6),
@@ -2195,6 +2325,15 @@ mod tests {
     #[test]
     fn apply_time_window_without_match_returns_base() {
         let base = Pricing {
+            source_url: None,
+            verified_at: None,
+            ratio_exception: None,
+            cache_write_input_token: None,
+            cache_write_1h_input_token: None,
+            audio_input_token: None,
+            image_input_token: None,
+            audio_output_token: None,
+            image_output_token: None,
             currency: "USD".into(),
             input_token: Some(1e-6),
             output_token: Some(4e-6),
@@ -2220,6 +2359,15 @@ mod tests {
         call.pricing = ResolvedPricing {
             source: PricingSource::ProviderRules,
             pricing: Some(Pricing {
+                source_url: None,
+                verified_at: None,
+                ratio_exception: None,
+                cache_write_input_token: None,
+                cache_write_1h_input_token: None,
+                audio_input_token: None,
+                image_input_token: None,
+                audio_output_token: None,
+                image_output_token: None,
                 currency: "USD".into(),
                 input_token: Some(input_token),
                 output_token: Some(output_token),
@@ -2243,6 +2391,15 @@ mod tests {
         call.pricing = ResolvedPricing {
             source: PricingSource::ProviderRules,
             pricing: Some(Pricing {
+                source_url: None,
+                verified_at: None,
+                ratio_exception: None,
+                cache_write_input_token: None,
+                cache_write_1h_input_token: None,
+                audio_input_token: None,
+                image_input_token: None,
+                audio_output_token: None,
+                image_output_token: None,
                 currency: "CNY".into(),
                 input_token: None,
                 output_token: None,
@@ -2268,12 +2425,18 @@ mod tests {
             total_tokens: None,
             cache_read_input_tokens: None,
             cache_write_input_tokens: None,
+            cache_write_1h_input_tokens: None,
             reasoning_tokens: None,
             image_units: None,
             audio_seconds: None,
             video_seconds: None,
             request_units: None,
             characters: None,
+            audio_input_tokens: None,
+            image_input_tokens: None,
+            audio_output_tokens: None,
+            image_output_tokens: None,
+            reported_cost: None,
             cost: None,
         }
     }
@@ -2284,6 +2447,12 @@ mod tests {
             mode,
             steps: vec![
                 PricingTierStep {
+                    cache_write_input_token: None,
+                    cache_write_1h_input_token: None,
+                    audio_input_token: None,
+                    image_input_token: None,
+                    audio_output_token: None,
+                    image_output_token: None,
                     up_to: Some(32 * 1024),
                     input_token: Some(6e-6),
                     output_token: Some(24e-6),
@@ -2292,6 +2461,12 @@ mod tests {
                     unit: None,
                 },
                 PricingTierStep {
+                    cache_write_input_token: None,
+                    cache_write_1h_input_token: None,
+                    audio_input_token: None,
+                    image_input_token: None,
+                    audio_output_token: None,
+                    image_output_token: None,
                     up_to: None,
                     input_token: Some(8e-6),
                     output_token: Some(28e-6),
@@ -2328,6 +2503,12 @@ mod tests {
         let pricing = PinnedPricingSnapshot {
             currency: "CNY".into(),
             basis: PinnedPricingBasis::Tokens {
+                cache_write_input_token: None,
+                cache_write_1h_input_token: None,
+                audio_input_token: None,
+                image_input_token: None,
+                audio_output_token: None,
+                image_output_token: None,
                 input_token: Some(6e-6),
                 cache_input_token: None,
                 output_token: Some(24e-6),
@@ -2348,6 +2529,12 @@ mod tests {
         let pricing = PinnedPricingSnapshot {
             currency: "CNY".into(),
             basis: PinnedPricingBasis::Tokens {
+                cache_write_input_token: None,
+                cache_write_1h_input_token: None,
+                audio_input_token: None,
+                image_input_token: None,
+                audio_output_token: None,
+                image_output_token: None,
                 input_token: Some(6e-6),
                 cache_input_token: None,
                 output_token: Some(24e-6),
@@ -2364,6 +2551,12 @@ mod tests {
         let pricing = PinnedPricingSnapshot {
             currency: "CNY".into(),
             basis: PinnedPricingBasis::Tokens {
+                cache_write_input_token: None,
+                cache_write_1h_input_token: None,
+                audio_input_token: None,
+                image_input_token: None,
+                audio_output_token: None,
+                image_output_token: None,
                 input_token: Some(6e-6),
                 cache_input_token: None,
                 output_token: Some(24e-6),
@@ -2384,6 +2577,12 @@ mod tests {
         let pricing = PinnedPricingSnapshot {
             currency: "USD".into(),
             basis: PinnedPricingBasis::Tokens {
+                cache_write_input_token: None,
+                cache_write_1h_input_token: None,
+                audio_input_token: None,
+                image_input_token: None,
+                audio_output_token: None,
+                image_output_token: None,
                 input_token: Some(0.01),
                 cache_input_token: Some(0.001),
                 output_token: Some(0.02),
@@ -3431,6 +3630,84 @@ mod tests {
         assert_eq!(
             tasks.failed.lock().unwrap().as_slice(),
             [("task-1".into(), Some("trace-1".into()))]
+        );
+    }
+}
+
+#[cfg(test)]
+mod billing_boundary_tests {
+    use super::*;
+    use serde_json::json;
+    fn pin(price: serde_json::Value) -> PinnedPricingSnapshot {
+        PinnedPricingSnapshot::from_pricing(
+            &serde_json::from_value(price).unwrap(),
+            None,
+            std::time::SystemTime::now(),
+        )
+        .unwrap()
+        .unwrap()
+    }
+    #[test]
+    fn missing_prices_missing_usage_and_uncovered_tiers_never_become_free() {
+        let mut usage = AiUsage {
+            input_tokens: Some(100),
+            output_tokens: Some(10),
+            ..Default::default()
+        };
+        let input_only = pin(json!({"currency":"USD","input_token":1.0}));
+        assert!(input_only.completion_cost(&usage).is_none());
+        usage.output_tokens = None;
+        assert!(input_only.completion_cost(&usage).is_none());
+        usage.output_tokens = Some(0);
+        assert_eq!(input_only.completion_cost(&usage).unwrap().amount, 100.0);
+        usage.cache_read_input_tokens = Some(10);
+        assert!(input_only.completion_cost(&usage).is_none());
+        usage.cache_read_input_tokens = None;
+        usage.cache_write_input_tokens = Some(10);
+        assert!(input_only.completion_cost(&usage).is_none());
+        usage.cache_write_input_tokens = None;
+        let tiered = pin(
+            json!({"currency":"USD","input_token":1.0,"output_token":1.0,"tiers":{"dimension":"input_tokens","steps":[{"up_to":100,"input_token":0.5}]}}),
+        );
+        assert!(tiered.completion_cost(&usage).is_none());
+        usage.input_tokens = Some(99);
+        assert_eq!(tiered.completion_cost(&usage).unwrap().amount, 49.5);
+    }
+    #[test]
+    fn multimodal_dimensions_are_charged_separately_and_not_twice() {
+        let usage = AiUsage {
+            input_tokens: Some(100),
+            output_tokens: Some(50),
+            audio_input_tokens: Some(20),
+            image_input_tokens: Some(30),
+            audio_output_tokens: Some(10),
+            image_output_tokens: Some(20),
+            ..Default::default()
+        };
+        let price = json!({"currency":"USD","input_token":1.0,"output_token":2.0,"audio_input_token":3.0,"image_input_token":4.0,"audio_output_token":5.0,"image_output_token":6.0});
+        assert_eq!(
+            pin(price.clone()).completion_cost(&usage).unwrap().amount,
+            440.0
+        );
+        let mut missing = price;
+        missing.as_object_mut().unwrap().remove("audio_input_token");
+        assert!(pin(missing).completion_cost(&usage).is_none());
+    }
+    #[test]
+    fn self_reported_cost_requires_declared_currency() {
+        let mut binding: PinnedProviderTask=serde_json::from_value(json!({"runtime_generation":1,"origin_provider":"test","exact_model":"m@p","provider_model_id":"m","provider_instance_name":"p","protocol_adapter_id":"openai-responses","operation":"responses.create","api_type":"llm","remote_task_id":null,"result_artifacts":{},"cancel_supported":false,"resume":null,"pricing":null,"reported_cost_currency":null})).unwrap();
+        let usage = AiUsage {
+            reported_cost: Some(0.25),
+            ..Default::default()
+        };
+        assert!(binding.completion_cost(&usage).is_none());
+        binding.reported_cost_currency = Some("CNY".into());
+        assert_eq!(
+            binding.completion_cost(&usage),
+            Some(AiCost {
+                amount: 0.25,
+                currency: "CNY".into()
+            })
         );
     }
 }

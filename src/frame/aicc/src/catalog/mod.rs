@@ -4,16 +4,17 @@ mod validation;
 
 pub(crate) use schema::{
     family_segment, CatalogBuildOptions, CatalogDocuments, CatalogKind, CurrentCatalogFile,
-    KnownProvider, KnownProviderCatalog, LlmModel, ModelDriverCatalog, ModelMatchKind,
-    ModelPricingRule, ModelSemantics, ModelStability, ModelVersion, OriginMapping, Pricing,
+    KnownProvider, KnownProviderCatalog, LlmModel, ModelDriverCatalog, ModelIdentity,
+    ModelMatchFailure, ModelPricingRule, ModelSemantics, ModelStability, ModelVersion, Pricing,
     PricingTierStep, PricingTiers, PricingTimeWindow, PricingUnit, PricingWeekday,
     ProviderCredentialDescriptor, ProviderCredentialKind, ProviderExactRule, ProviderFieldMode,
-    ProviderFieldSchema, ProviderPatternRule, ProviderRuleAction, ProviderRulesCatalog,
-    ProviderVariantRule, RequestRule, ResolvedModelSemantics, ResolvedProviderConfiguration,
-    ResolvedProviderOrigin, ResolvedProviderRule, TierDimension, TierMode,
+    ProviderFieldSchema, ProviderModelMatch, ProviderPatternRule, ProviderRuleAction,
+    ProviderRulesCatalog, ProviderVariantRule, RequestRule, ResolvedModelSemantics,
+    ResolvedProviderConfiguration, ResolvedProviderRule, TierDimension, TierMode,
 };
 #[cfg(test)]
 pub(crate) use schema::{Effort, ProviderRuleMatchKind};
+pub(crate) use validation::validate_pricing;
 use validation::{
     llm_pattern_ids, validate_known_provider_catalog, validate_model_driver,
     validate_provider_rules, validate_references, validate_revisions, validate_segment,
@@ -21,9 +22,8 @@ use validation::{
 
 use crate::error::{CatalogBuildError, CatalogResolveError, MatchCompileError};
 use crate::matching::{
-    CompiledMatchRule, CompiledRuleSet, MatchContext, MatchRule, MatchSchema, MatchTrace,
-    RuleEntry, MODEL_DRIVER_MATCH_SCHEMA, PRICING_RULE_MATCH_SCHEMA, PROVIDER_RULE_MATCH_SCHEMA,
-    REQUEST_RULE_MATCH_SCHEMA,
+    CompiledMatchRule, CompiledRuleSet, MatchContext, MatchRule, MatchSchema, RuleEntry,
+    PRICING_RULE_MATCH_SCHEMA, PROVIDER_RULE_MATCH_SCHEMA, REQUEST_RULE_MATCH_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,7 +45,6 @@ const KNOWN_PROVIDER_SUPPORTED_SCHEMA_REVISION: u32 = 1;
 struct CompiledModelDriverCatalog {
     document: ModelDriverCatalog,
     exact_index: BTreeMap<String, usize>,
-    patterns: CompiledRuleSet,
     llm_models: BTreeMap<String, LlmModel>,
 }
 
@@ -134,18 +133,12 @@ struct CompiledProviderRule {
 #[derive(Clone, Debug)]
 struct CompiledProviderRulesCatalog {
     document: ProviderRulesCatalog,
-    origin_mappings: Vec<CompiledOriginMapping>,
     exact_index: BTreeMap<String, usize>,
     patterns: CompiledRuleSet,
     pricing: CompiledPricingTable,
     exact_compiled: Vec<CompiledProviderRule>,
     pattern_compiled: Vec<CompiledProviderRule>,
     compiled_variants: Vec<CompiledMatchRule>,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum CompiledOriginMapping {
-    VendorModel,
 }
 
 #[derive(Clone, Debug)]
@@ -354,6 +347,26 @@ impl CatalogSnapshot {
         self.provider_rules.get(id).map(|catalog| &catalog.document)
     }
 
+    pub(crate) fn cost_in_usd(
+        &self,
+        cost: buckyos_api::Money,
+        now_ms: i64,
+    ) -> Option<buckyos_api::Money> {
+        if cost.currency == "USD" {
+            return Some(cost);
+        }
+        let rate = self
+            .known_provider_catalogs
+            .values()
+            .filter_map(|catalog| catalog.exchange_rates.as_ref())
+            .filter(|table| table.observed_at_ms <= now_ms && now_ms < table.expires_at_ms)
+            .max_by_key(|table| table.observed_at_ms)?
+            .usd_per_unit
+            .get(&cost.currency)?;
+        let amount = cost.amount * rate;
+        (amount.is_finite() && amount >= 0.0).then(|| buckyos_api::Money::new(amount, "USD"))
+    }
+
     pub(crate) fn known_provider(&self, provider_profile_id: &str) -> Option<&KnownProvider> {
         let (catalog_id, position) = self.known_provider_index.get(provider_profile_id)?;
         self.known_provider_catalogs
@@ -457,108 +470,131 @@ impl CatalogSnapshot {
             .collect())
     }
 
+    pub(crate) fn executable_variants(
+        &self,
+        rules: &str,
+        driver: &str,
+        model: &str,
+        context: &MatchContext,
+    ) -> Result<Vec<&ProviderVariantRule>, CatalogResolveError> {
+        if self.provider_rules(rules).is_none() {
+            return Ok(Vec::new());
+        }
+        let llm = self.llm_model(driver, model);
+        let matches = self
+            .matching_provider_variants_for_model(rules, context)?
+            .into_iter()
+            .filter(|variant| variant.model_driver == driver)
+            .filter(|variant| {
+                llm.is_none_or(|llm| {
+                    llm.semantics
+                        .supported_efforts
+                        .iter()
+                        .any(|effort| effort.variant().as_deref() == Some(&variant.variant))
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(matches
+            .iter()
+            .copied()
+            .filter(|variant| {
+                matches
+                    .iter()
+                    .filter(|other| other.variant == variant.variant)
+                    .count()
+                    == 1
+            })
+            .collect())
+    }
+
     pub(crate) fn resolve_model(
         &self,
-        origin_model_id: &str,
-        candidate_driver_ids: Option<&[String]>,
-        dimensions: &MatchContext,
+        driver: &str,
+        model: &str,
     ) -> Result<ResolvedModelSemantics, CatalogResolveError> {
-        let candidates = self.resolve_candidates(candidate_driver_ids)?;
-        let exact_matches = self
-            .model_exact_index
-            .get(origin_model_id)
-            .into_iter()
-            .flatten()
-            .filter(|driver_id| candidates.contains(*driver_id))
-            .cloned()
-            .collect::<Vec<_>>();
-
-        if exact_matches.len() > 1 {
-            return Err(CatalogResolveError::AmbiguousModelDrivers {
-                origin_model_id: origin_model_id.to_owned(),
-                model_driver_ids: exact_matches,
-            });
-        }
-        if let Some(driver_id) = exact_matches.first() {
-            let catalog = &self.model_drivers[driver_id];
-            let position = catalog.exact_index[origin_model_id];
-            let rule = &catalog.document.models[position];
-            let semantics = catalog
-                .document
-                .defaults
-                .overlay(&model_rule_semantics!(rule));
-            return Ok(resolved_model(
-                origin_model_id,
-                driver_id,
-                catalog.document.revision_seq,
-                ModelMatchKind::Exact,
-                None,
-                semantics,
-            ));
-        }
-
-        let mut context = dimensions.clone();
-        context.insert(
-            "origin_model_id".to_owned(),
-            Value::String(origin_model_id.to_owned()),
-        );
-        let mut pattern_matches = Vec::new();
-        for driver_id in &candidates {
-            let catalog = &self.model_drivers[driver_id];
-            if let Some(trace) = catalog.patterns.first_match(&context) {
-                pattern_matches.push((driver_id.clone(), trace));
+        let catalog = self.model_drivers.get(driver).ok_or_else(|| {
+            CatalogResolveError::UnknownModelDriver {
+                model_driver_id: driver.into(),
             }
-        }
-
-        if pattern_matches.len() > 1 {
-            return Err(CatalogResolveError::AmbiguousModelDrivers {
-                origin_model_id: origin_model_id.to_owned(),
-                model_driver_ids: pattern_matches
-                    .into_iter()
-                    .map(|(driver_id, _)| driver_id)
-                    .collect(),
-            });
-        }
-        if let Some((driver_id, trace)) = pattern_matches.pop() {
-            let catalog = &self.model_drivers[&driver_id];
-            let rule = &catalog.document.patterns[trace.position];
-            let semantics = catalog
+        })?;
+        let position =
+            catalog
+                .exact_index
+                .get(model)
+                .ok_or_else(|| CatalogResolveError::UnknownModel {
+                    model_driver_id: driver.into(),
+                    model_id: model.into(),
+                })?;
+        Ok(ResolvedModelSemantics {
+            catalog_revision_seq: catalog.document.revision_seq,
+            semantics: catalog
                 .document
                 .defaults
-                .overlay(&model_rule_semantics!(rule));
-            return Ok(resolved_model(
-                origin_model_id,
-                &driver_id,
-                catalog.document.revision_seq,
-                ModelMatchKind::Pattern,
-                Some(trace),
-                semantics,
-            ));
-        }
-
-        if candidates.len() == 1 {
-            let driver_id = &candidates[0];
-            let catalog = &self.model_drivers[driver_id];
-            let semantics = catalog.document.defaults.clone();
-            return Ok(resolved_model(
-                origin_model_id,
-                driver_id,
-                catalog.document.revision_seq,
-                ModelMatchKind::Defaults,
-                None,
-                semantics,
-            ));
-        }
-
-        Ok(ResolvedModelSemantics {
-            origin_model_id: origin_model_id.to_owned(),
-            source_model_driver_id: None,
-            model_driver_id: None,
-            catalog_revision_seq: None,
-            match_kind: ModelMatchKind::ConservativeFallback,
-            trace: None,
-            semantics: ModelSemantics::conservative(),
+                .overlay(&model_rule_semantics!(&catalog.document.models[*position])),
         })
+    }
+
+    pub(crate) fn match_model(
+        &self,
+        provider_model_id: &str,
+    ) -> Result<ModelIdentity, ModelMatchFailure> {
+        if let Some(drivers) = self.model_exact_index.get(provider_model_id) {
+            return unique_identity(
+                drivers
+                    .iter()
+                    .map(|driver| ModelIdentity {
+                        model_driver_id: driver.clone(),
+                        model_id: provider_model_id.into(),
+                    })
+                    .collect(),
+            );
+        }
+        let input = provider_model_id.to_lowercase();
+        let mut longest = 0;
+        let mut matches = Vec::new();
+        for (id, drivers) in &self.model_exact_index {
+            let needle = id.to_lowercase();
+            if needle.len() < longest
+                || !input.match_indices(&needle).any(|(start, _)| {
+                    (start == 0
+                        || !input[..start]
+                            .chars()
+                            .next_back()
+                            .is_some_and(char::is_alphanumeric))
+                        && snapshot_suffix(&input[start + needle.len()..])
+                })
+            {
+                continue;
+            }
+            if needle.len() > longest {
+                matches.clear();
+                longest = needle.len();
+            }
+            matches.extend(drivers.iter().map(|driver| ModelIdentity {
+                model_driver_id: driver.clone(),
+                model_id: id.clone(),
+            }));
+        }
+        unique_identity(matches)
+    }
+
+    pub(crate) fn find_by_normalized_id(
+        &self,
+        normalized: &str,
+        normalize: impl Fn(&str) -> String,
+    ) -> Result<ModelIdentity, ModelMatchFailure> {
+        unique_identity(
+            self.model_exact_index
+                .iter()
+                .filter(|(id, _)| normalize(id) == normalized)
+                .flat_map(|(id, drivers)| {
+                    drivers.iter().map(move |driver| ModelIdentity {
+                        model_driver_id: driver.clone(),
+                        model_id: id.clone(),
+                    })
+                })
+                .collect(),
+        )
     }
 
     pub(crate) fn resolve_provider_rule(
@@ -624,122 +660,54 @@ impl CatalogSnapshot {
             compiled,
         }))
     }
+}
 
-    pub(crate) fn resolve_provider_origin(
-        &self,
-        provider_profile_id: &str,
-        provider_model_id: &str,
-    ) -> Result<ResolvedProviderOrigin, CatalogResolveError> {
-        let catalog = self
-            .provider_rules
-            .get(provider_profile_id)
-            .ok_or_else(|| CatalogResolveError::UnknownProviderRules {
-                provider_profile_id: provider_profile_id.to_owned(),
-            })?;
-        let mut resolved = Vec::new();
-        for (mapping, compiled) in catalog
-            .document
-            .origin_mappings
-            .iter()
-            .zip(&catalog.origin_mappings)
-        {
-            let Some(origin) = apply_origin_mapping(
-                provider_profile_id,
-                provider_model_id,
-                mapping,
-                *compiled,
-                &catalog.document.origin_provider_aliases,
-            )?
-            else {
-                continue;
-            };
-            if !self.model_drivers.contains_key(&origin.model_driver_id) {
-                return Err(CatalogResolveError::UnknownOriginProvider {
-                    provider_profile_id: provider_profile_id.to_owned(),
-                    origin_provider: origin.model_driver_id,
-                });
-            }
-            if catalog
-                .document
-                .metadata_drivers
-                .as_ref()
-                .is_some_and(|drivers| !drivers.contains(&origin.model_driver_id))
-            {
-                return Err(CatalogResolveError::OriginDriverOutsideMetadataDrivers {
-                    provider_profile_id: provider_profile_id.to_owned(),
-                    model_driver_id: origin.model_driver_id,
-                });
-            }
-            if !resolved.contains(&origin) {
-                resolved.push(origin);
-            }
-        }
-        match resolved.len() {
-            0 => Err(CatalogResolveError::OriginMappingNotFound {
-                provider_profile_id: provider_profile_id.to_owned(),
-                provider_model_id: provider_model_id.to_owned(),
-            }),
-            1 => Ok(resolved.pop().expect("one resolved origin")),
-            _ => Err(CatalogResolveError::ConflictingOriginMappings {
-                provider_profile_id: provider_profile_id.to_owned(),
-                provider_model_id: provider_model_id.to_owned(),
-                resolved,
-            }),
-        }
-    }
-
-    fn resolve_candidates(
-        &self,
-        requested: Option<&[String]>,
-    ) -> Result<Vec<String>, CatalogResolveError> {
-        match requested {
-            Some(requested) => {
-                let mut candidates = requested
-                    .iter()
-                    .map(|id| {
-                        self.model_drivers
-                            .contains_key(id)
-                            .then(|| id.clone())
-                            .ok_or_else(|| CatalogResolveError::UnknownModelDriver {
-                                model_driver_id: id.clone(),
-                            })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                candidates.sort();
-                candidates.dedup();
-                Ok(candidates)
-            }
-            None => Ok(self.model_drivers.keys().cloned().collect()),
-        }
+fn unique_identity(mut candidates: Vec<ModelIdentity>) -> Result<ModelIdentity, ModelMatchFailure> {
+    candidates.sort();
+    candidates.dedup();
+    match candidates.len() {
+        0 => Err(ModelMatchFailure::NoMatch),
+        1 => Ok(candidates.remove(0)),
+        _ => Err(ModelMatchFailure::Ambiguous { candidates }),
     }
 }
 
-fn resolved_model(
-    origin_model_id: &str,
-    source_driver_id: &str,
-    revision_seq: u64,
-    match_kind: ModelMatchKind,
-    trace: Option<MatchTrace>,
-    semantics: ModelSemantics,
-) -> ResolvedModelSemantics {
-    let model_driver_id = semantics
-        .model_driver
-        .clone()
-        .unwrap_or_else(|| source_driver_id.to_owned());
-    ResolvedModelSemantics {
-        origin_model_id: origin_model_id.to_owned(),
-        source_model_driver_id: Some(source_driver_id.to_owned()),
-        model_driver_id: Some(model_driver_id),
-        catalog_revision_seq: Some(revision_seq),
-        match_kind,
-        trace,
-        semantics,
+fn snapshot_suffix(suffix: &str) -> bool {
+    if suffix.is_empty() {
+        return true;
+    }
+    let Some(date) = suffix.strip_prefix('-') else {
+        return false;
+    };
+    match date.len() {
+        4 | 6 | 8 => date.bytes().all(|c| c.is_ascii_digit()),
+        10 => date.bytes().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 {
+                c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        }),
+        _ => false,
     }
 }
 
 fn compile_model_driver(
-    document: ModelDriverCatalog,
+    mut document: ModelDriverCatalog,
 ) -> Result<CompiledModelDriverCatalog, CatalogBuildError> {
+    for rule in std::mem::take(&mut document.patterns) {
+        for id in llm_pattern_ids(&document.model_driver_id, &rule.match_rule)? {
+            if document.models.iter().any(|model| model.id == id) {
+                continue;
+            }
+            let mut value = serde_json::to_value(&rule).expect("model rule serializes");
+            value.as_object_mut().unwrap().remove("match");
+            value["id"] = Value::String(id);
+            document
+                .models
+                .push(serde_json::from_value(value).expect("exact model rule"));
+        }
+    }
     let mut exact_index = BTreeMap::new();
     for (position, rule) in document.models.iter().enumerate() {
         if exact_index.insert(rule.id.clone(), position).is_some() {
@@ -750,39 +718,9 @@ fn compile_model_driver(
             });
         }
     }
-    let patterns = CompiledRuleSet::compile(
-        document.patterns.iter().map(|rule| RuleEntry {
-            rule_id: None,
-            rule: rule.match_rule.clone(),
-        }),
-        &MODEL_DRIVER_MATCH_SCHEMA,
-    )?;
-    let mut ids: BTreeSet<String> = exact_index.keys().cloned().collect();
-    for rule in &document.patterns {
-        if document
-            .defaults
-            .overlay(&model_rule_semantics!(rule))
-            .llm
-            .is_some()
-            && rule.exclude != Some(true)
-        {
-            ids.extend(llm_pattern_ids(
-                &document.model_driver_id,
-                &rule.match_rule,
-            )?);
-        }
-    }
     let mut llm_models = BTreeMap::new();
-    for id in ids {
-        let rule = if let Some(position) = exact_index.get(&id) {
-            model_rule_semantics!(&document.models[*position])
-        } else {
-            let context = BTreeMap::from([("origin_model_id".into(), Value::String(id.clone()))]);
-            let Some(trace) = patterns.first_match(&context) else {
-                continue;
-            };
-            model_rule_semantics!(&document.patterns[trace.position])
-        };
+    for (id, position) in &exact_index {
+        let rule = model_rule_semantics!(&document.models[*position]);
         let semantics = document.defaults.overlay(&rule);
         if semantics.exclude == Some(true) {
             continue;
@@ -809,7 +747,6 @@ fn compile_model_driver(
     Ok(CompiledModelDriverCatalog {
         document,
         exact_index,
-        patterns,
         llm_models,
     })
 }
@@ -817,11 +754,6 @@ fn compile_model_driver(
 fn compile_provider_rules(
     document: ProviderRulesCatalog,
 ) -> Result<CompiledProviderRulesCatalog, CatalogBuildError> {
-    let origin_mappings = document
-        .origin_mappings
-        .iter()
-        .map(|mapping| compile_origin_mapping(&document.provider_profile_id, mapping))
-        .collect::<Result<Vec<_>, _>>()?;
     let mut exact_index = BTreeMap::new();
     for (position, rule) in document.models.iter().enumerate() {
         if exact_index.insert(rule.id.clone(), position).is_some() {
@@ -860,7 +792,6 @@ fn compile_provider_rules(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(CompiledProviderRulesCatalog {
         document,
-        origin_mappings,
         exact_index,
         patterns,
         pricing,
@@ -868,107 +799,6 @@ fn compile_provider_rules(
         pattern_compiled,
         compiled_variants,
     })
-}
-
-fn compile_origin_mapping(
-    owner: &str,
-    mapping: &OriginMapping,
-) -> Result<CompiledOriginMapping, CatalogBuildError> {
-    if mapping.extract.regex != "^(?<driver>[^/]+)/(?<model>.+)$" {
-        return Err(CatalogBuildError::InvalidValue {
-            owner: owner.to_owned(),
-            field: "origin_mappings.extract.regex",
-            reason: "only the built-in vendor/model capture is supported".to_owned(),
-        });
-    }
-    for (capture, transforms) in &mapping.transforms {
-        if capture != "driver" && capture != "model" {
-            return Err(CatalogBuildError::InvalidValue {
-                owner: owner.to_owned(),
-                field: "origin_mappings.transforms",
-                reason: format!("unknown capture {capture:?}"),
-            });
-        }
-        for transform in transforms {
-            match transform.op.as_str() {
-                "trim" | "lowercase" => {
-                    if transform.table.is_some() || transform.on_missing.is_some() {
-                        return Err(CatalogBuildError::InvalidValue {
-                            owner: owner.to_owned(),
-                            field: "origin_mappings.transforms",
-                            reason: format!("transform {:?} does not accept options", transform.op),
-                        });
-                    }
-                }
-                "alias" => {
-                    if capture != "driver"
-                        || transform.table.as_deref() != Some("origin_provider_aliases")
-                        || !matches!(transform.on_missing.as_deref(), None | Some("keep"))
-                    {
-                        return Err(CatalogBuildError::InvalidValue {
-                            owner: owner.to_owned(),
-                            field: "origin_mappings.transforms",
-                            reason: "alias must target driver/origin_provider_aliases and on_missing may only be keep".to_owned(),
-                        });
-                    }
-                }
-                _ => {
-                    return Err(CatalogBuildError::InvalidValue {
-                        owner: owner.to_owned(),
-                        field: "origin_mappings.transforms",
-                        reason: format!("unsupported transform {:?}", transform.op),
-                    });
-                }
-            }
-        }
-    }
-    Ok(CompiledOriginMapping::VendorModel)
-}
-
-fn apply_origin_mapping(
-    provider_profile_id: &str,
-    provider_model_id: &str,
-    mapping: &OriginMapping,
-    compiled: CompiledOriginMapping,
-    aliases: &BTreeMap<String, String>,
-) -> Result<Option<ResolvedProviderOrigin>, CatalogResolveError> {
-    let (mut driver, mut model) = match compiled {
-        CompiledOriginMapping::VendorModel => {
-            let Some((driver, model)) = provider_model_id.split_once('/') else {
-                return Ok(None);
-            };
-            if driver.is_empty() || model.is_empty() {
-                return Ok(None);
-            }
-            (driver.to_owned(), model.to_owned())
-        }
-    };
-    for (capture, value) in [("driver", &mut driver), ("model", &mut model)] {
-        for transform in mapping.transforms.get(capture).into_iter().flatten() {
-            match transform.op.as_str() {
-                "trim" => *value = value.trim().to_owned(),
-                "lowercase" => *value = value.to_lowercase(),
-                "alias" => {
-                    if let Some(mapped) = aliases.get(value.as_str()) {
-                        *value = mapped.clone();
-                    } else if transform.on_missing.as_deref() != Some("keep") {
-                        return Err(CatalogResolveError::UnknownOriginProvider {
-                            provider_profile_id: provider_profile_id.to_owned(),
-                            origin_provider: value.clone(),
-                        });
-                    }
-                }
-                _ => unreachable!("origin transforms are validated during snapshot build"),
-            }
-        }
-    }
-    if driver.is_empty() || model.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(ResolvedProviderOrigin {
-        origin_model_id: model,
-        model_driver_id: driver,
-    }))
 }
 
 trait ProviderRuleData {
@@ -1159,48 +989,7 @@ impl fmt::Display for CatalogResolveError {
                 formatter,
                 "unknown Provider Rules catalog {provider_profile_id:?}"
             ),
-            Self::AmbiguousModelDrivers {
-                origin_model_id,
-                model_driver_ids,
-            } => write!(
-                formatter,
-                "origin model {origin_model_id:?} matches multiple Model Drivers: {}",
-                model_driver_ids.join(", ")
-            ),
-            Self::OriginMappingNotFound {
-                provider_profile_id,
-                provider_model_id,
-            } => write!(
-                formatter,
-                "Provider Rules {provider_profile_id:?} cannot map provider model {provider_model_id:?} to an origin"
-            ),
-            Self::UnknownOriginProvider {
-                provider_profile_id,
-                origin_provider,
-            } => write!(
-                formatter,
-                "Provider Rules {provider_profile_id:?} resolved unknown origin provider {origin_provider:?}"
-            ),
-            Self::OriginDriverOutsideMetadataDrivers {
-                provider_profile_id,
-                model_driver_id,
-            } => write!(
-                formatter,
-                "Provider Rules {provider_profile_id:?} resolved Model Driver {model_driver_id:?} outside metadata_drivers"
-            ),
-            Self::ConflictingOriginMappings {
-                provider_profile_id,
-                provider_model_id,
-                resolved,
-            } => write!(
-                formatter,
-                "Provider Rules {provider_profile_id:?} has conflicting origin mappings for {provider_model_id:?}: {}",
-                resolved
-                    .iter()
-                    .map(|origin| format!("{}/{}", origin.model_driver_id, origin.origin_model_id))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            Self::UnknownModel { model_driver_id, model_id } => write!(formatter, "unknown model {model_driver_id}/{model_id}"),
         }
     }
 }

@@ -1033,11 +1033,6 @@ fn score_candidates(
     previous_exact_model: Option<&str>,
     locality: LocalityPreference,
 ) -> Vec<RankedCandidate> {
-    let common_currency = candidates
-        .iter()
-        .filter_map(|candidate| candidate.state.estimated_cost.as_ref())
-        .map(|cost| cost.currency.as_str())
-        .reduce(|left, right| if left == right { left } else { "" });
     let costs = candidates
         .iter()
         .map(|candidate| {
@@ -1045,7 +1040,7 @@ fn score_candidates(
                 .state
                 .estimated_cost
                 .as_ref()
-                .filter(|cost| common_currency == Some(cost.currency.as_str()))
+                .filter(|cost| cost.currency == "USD")
                 .map(|cost| cost.amount)
         })
         .collect::<Vec<_>>();
@@ -1179,6 +1174,47 @@ fn compare_ranked(left: &RankedCandidate, right: &RankedCandidate) -> Ordering {
         let ordering = left_order.compare(right_order);
         if !ordering.is_eq() {
             return ordering;
+        }
+        let left_cost = left
+            .pending
+            .state
+            .estimated_cost
+            .as_ref()
+            .filter(|cost| cost.currency == "USD");
+        let right_cost = right
+            .pending
+            .state
+            .estimated_cost
+            .as_ref()
+            .filter(|cost| cost.currency == "USD");
+        let price = match (left_cost, right_cost) {
+            (Some(left), Some(right)) => left.amount.total_cmp(&right.amount),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            _ => Ordering::Equal,
+        };
+        if !price.is_eq() {
+            return price;
+        }
+        for (left, right) in [
+            (
+                left.pending.state.p95_latency_ms,
+                right.pending.state.p95_latency_ms,
+            ),
+            (
+                left.pending.state.error_rate_5m,
+                right.pending.state.error_rate_5m,
+            ),
+        ] {
+            let order = match (left, right) {
+                (Some(left), Some(right)) => left.total_cmp(&right),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                _ => Ordering::Equal,
+            };
+            if !order.is_eq() {
+                return order;
+            }
         }
     }
     right
@@ -1505,7 +1541,7 @@ mod tests {
             "revision_seq": 1,
             "models": [],
             "patterns": [{
-                "match": "*",
+                "match": {"origin_model_id": ["cheap", "fast", "local"]},
                 "api_types": ["image.txt2img"],
                 "capabilities": {"streaming": true}
             }],
@@ -2394,5 +2430,52 @@ mod tests {
             llm_route(&registry, false, &[]),
             Err(RoutingError::NoCandidate { .. })
         ));
+    }
+    #[test]
+    fn same_family_fixed_effort_uses_converted_price_before_latency_and_unknowns() {
+        let inventories = [
+            crate::model::llm_tests::inventory("openai", "gpt-5.6-sol", "cn", "cn", &["high"]),
+            crate::model::llm_tests::inventory("openai", "gpt-5.6-sol", "us", "us", &["high"]),
+        ];
+        let registry = llm_registry(&inventories, false);
+        let fx=CatalogSnapshot::build(1,CatalogDocuments {known_providers:vec![serde_json::from_value(json!({"format":"buckyos.aicc.known-provider-catalog","schema_version":1,"schema_revision":1,"revision_seq":1,"catalog_id":"fx","providers":[],"exchange_rates":{"source_url":"https://rates.example/test","observed_at_ms":100,"expires_at_ms":200,"usd_per_unit":{"CNY":0.14}}})).unwrap()],..Default::default()},&Default::default()).unwrap();
+        let mut runtime: BTreeMap<_, _> = registry
+            .model_views()
+            .into_iter()
+            .map(|m| {
+                let cn = m.provider_instance_name == "cn";
+                let mut state = state(false, 0.1, if cn { 1000.0 } else { 1.0 }, 0.9);
+                state.estimated_cost = fx.cost_in_usd(
+                    if cn {
+                        Money::new(0.5, "CNY")
+                    } else {
+                        Money::new(0.1, "USD")
+                    },
+                    150,
+                );
+                (m.exact_model, state)
+            })
+            .collect();
+        let mut request = request("llm.chat");
+        request.api_type = ApiType::Llm;
+        request.method = ApiType::Llm.typed_method().into();
+        request.capability = ApiType::Llm.capability();
+        let policy = engine(&RoutingPolicyPatch::default());
+        let route = Router::new(&registry, &policy, &runtime)
+            .route(&request)
+            .unwrap();
+        assert_eq!(route.selected.provider_instance_name, "cn");
+        runtime
+            .get_mut("cn:reasoning-high@cn")
+            .unwrap()
+            .estimated_cost = fx.cost_in_usd(Money::new(0.5, "CNY"), 200);
+        assert_eq!(
+            Router::new(&registry, &policy, &runtime)
+                .route(&request)
+                .unwrap()
+                .selected
+                .provider_instance_name,
+            "us"
+        );
     }
 }

@@ -198,7 +198,6 @@ impl RuntimeInferencePort {
                     crate::provider::PricingSource::ProviderRules => {
                         CallPricingSource::ProviderRules
                     }
-                    crate::provider::PricingSource::ModelDriver => CallPricingSource::ModelDriver,
                 },
                 pricing: Some(pricing.value.clone()),
                 matched_amount: None,
@@ -645,6 +644,11 @@ async fn candidate_runtime_states(
                             estimated_input_tokens,
                             estimated_output_tokens,
                         )
+                    })
+                    .and_then(|cost| {
+                        snapshot
+                            .catalog
+                            .cost_in_usd(cost, now_ms().min(i64::MAX as u64) as i64)
                     }),
                 p50_latency_ms: observed.p50_latency_ms,
                 p95_latency_ms: observed.p95_latency_ms,
@@ -663,19 +667,24 @@ fn estimate_model_cost(
     estimated_input_tokens: Option<u64>,
     estimated_output_tokens: Option<u64>,
 ) -> Option<buckyos_api::Money> {
-    let amount = if let Some(amount) = pricing.estimated_cost {
-        amount
-    } else if pricing.input_token.is_some() || pricing.output_token.is_some() {
-        let input = pricing.input_token.unwrap_or(0.0) * estimated_input_tokens? as f64;
-        let output = pricing.output_token.unwrap_or(0.0) * estimated_output_tokens? as f64;
-        input + output
-    } else if pricing.unit == Some(crate::catalog::PricingUnit::Request) {
-        pricing.amount?
-    } else {
-        return None;
+    if let Some(amount) = pricing.estimated_cost {
+        return (amount.is_finite() && amount >= 0.0)
+            .then(|| buckyos_api::Money::new(amount, pricing.currency.to_ascii_uppercase()));
+    }
+    let usage = buckyos_api::AiUsage {
+        input_tokens: Some(estimated_input_tokens.unwrap_or(1_000)),
+        output_tokens: Some(estimated_output_tokens.unwrap_or(1_000)),
+        request_units: Some(1),
+        ..Default::default()
     };
-    (amount.is_finite() && amount >= 0.0 && !pricing.currency.trim().is_empty())
-        .then(|| buckyos_api::Money::new(amount, pricing.currency.trim().to_ascii_uppercase()))
+    let quote = crate::execution::PinnedPricingSnapshot::from_pricing(
+        pricing,
+        None,
+        std::time::SystemTime::now(),
+    )
+    .ok()??
+    .completion_cost(&usage)?;
+    Some(buckyos_api::Money::new(quote.amount, quote.currency))
 }
 
 fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCErrors> {

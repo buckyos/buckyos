@@ -356,9 +356,10 @@ fn parse_sn_models(
                 })?;
             Ok(DiscoveredModel {
                 provider_model_id: provider_model_id.clone(),
-                origin_model_id: Some(provider_model_id),
+
                 api_types: None,
                 supported_features: None,
+                unsupported_features: BTreeSet::new(),
                 remote_methods: Some(BTreeSet::from([OPENAI_RESPONSES_OPERATION_ID.to_owned()])),
                 availability: ModelAvailability::Available,
                 deprecated: false,
@@ -813,7 +814,6 @@ mod tests {
         assert_eq!(profile.default_protocol_adapter_id, "sn-openai");
         assert_eq!(known.display_name, "BuckyOS SN");
         assert_eq!(known.base_url, "https://sn.buckyos.ai/api/v1/ai");
-        assert_eq!(rules.metadata_drivers, None);
         assert_eq!(
             rules.patterns[0].operations["llm"],
             OPENAI_RESPONSES_OPERATION_ID
@@ -1111,6 +1111,7 @@ mod tests {
                 model_drivers: vec![model_driver],
                 provider_rules: vec![sn_provider_rules(1)],
                 known_providers: vec![KnownProviderCatalog {
+                    exchange_rates: None,
                     format: "buckyos.aicc.known-provider-catalog".to_owned(),
                     schema_version: 1,
                     schema_revision: 0,
@@ -1136,9 +1137,10 @@ mod tests {
                 health: ProviderHealthState::Healthy,
                 models: vec![DiscoveredModel {
                     provider_model_id: "gpt-5".to_owned(),
-                    origin_model_id: Some("gpt-5".to_owned()),
+
                     api_types: Some(vec![buckyos_api::ApiType::Llm]),
                     supported_features: None,
+                    unsupported_features: BTreeSet::new(),
                     remote_methods: Some(BTreeSet::from(
                         [OPENAI_RESPONSES_OPERATION_ID.to_owned()],
                     )),

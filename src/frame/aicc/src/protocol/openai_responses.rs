@@ -1229,6 +1229,7 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
             _ => None,
         });
     Ok(Some(AiUsage {
+        cache_write_1h_input_tokens: None,
         input_tokens,
         output_tokens,
         total_tokens,
@@ -1246,22 +1247,23 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         video_seconds: None,
         request_units: None,
         characters: None,
-        cost: decode_reported_usd_cost(value)?,
-    }))
-}
-
-fn decode_reported_usd_cost(value: &Value) -> ProtocolResultValue<Option<buckyos_api::AiCost>> {
-    let Some(amount) = value.get("cost").and_then(Value::as_f64) else {
-        return Ok(None);
-    };
-    if !amount.is_finite() || amount < 0.0 {
-        return Err(ProtocolError::invalid_response(
-            "reported usage cost must be finite and non-negative",
-        ));
-    }
-    Ok(Some(buckyos_api::AiCost {
-        amount,
-        currency: "USD".to_owned(),
+        audio_input_tokens: value
+            .pointer("/input_tokens_details/audio_tokens")
+            .and_then(Value::as_u64),
+        image_input_tokens: value
+            .pointer("/input_tokens_details/image_tokens")
+            .and_then(Value::as_u64),
+        audio_output_tokens: value
+            .pointer("/output_tokens_details/audio_tokens")
+            .and_then(Value::as_u64),
+        image_output_tokens: value
+            .pointer("/output_tokens_details/image_tokens")
+            .and_then(Value::as_u64),
+        reported_cost: value
+            .get("cost")
+            .and_then(Value::as_f64)
+            .filter(|amount| amount.is_finite() && *amount >= 0.0),
+        cost: None,
     }))
 }
 
@@ -1846,6 +1848,7 @@ fn decode_embedding_usage(value: Option<&Value>) -> ProtocolResultValue<Option<A
         .and_then(Value::as_u64);
     let total_tokens = value.get("total_tokens").and_then(Value::as_u64);
     Ok(Some(AiUsage {
+        cache_write_1h_input_tokens: None,
         input_tokens,
         output_tokens: None,
         total_tokens,
@@ -3143,7 +3146,8 @@ mod tests {
         assert_eq!(usage.total_tokens, Some(12));
         assert_eq!(usage.cache_read_input_tokens, Some(2));
         assert_eq!(usage.reasoning_tokens, Some(3));
-        assert_eq!(usage.cost.unwrap().currency, "USD");
+        assert!(usage.cost.is_none());
+        assert!(usage.reported_cost.is_some());
         assert_eq!(output.value["message"]["content"][0]["type"], "thinking");
         assert_eq!(
             output.value["message"]["content"][1]["type"],
@@ -4092,5 +4096,28 @@ mod tests {
                 .kind,
             ProtocolErrorKind::UnsupportedOperation
         );
+    }
+}
+
+#[cfg(test)]
+mod billing_usage_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn normalized_usage_settles_with_cache_and_thinking_dimensions() {
+        let wire = json!({"input_tokens":150,"output_tokens":40,"total_tokens":190,"input_tokens_details":{"cached_tokens":20,"cache_write_tokens":30},"output_tokens_details":{"reasoning_tokens":10}});
+        let usage = decode_usage(Some(&wire)).unwrap().unwrap();
+        assert_eq!(usage.input_tokens, Some(150));
+        assert_eq!(usage.output_tokens, Some(40));
+        assert_eq!(usage.total_tokens, Some(190));
+        let price = serde_json::from_value(json!({"currency":"USD","input_token":1e-6,"cache_input_token":0.1e-6,"cache_write_input_token":1.25e-6,"cache_write_1h_input_token":2e-6,"output_token":5e-6})).unwrap();
+        let pinned = crate::execution::PinnedPricingSnapshot::from_pricing(
+            &price,
+            None,
+            std::time::SystemTime::now(),
+        )
+        .unwrap()
+        .unwrap();
+        assert!((pinned.completion_cost(&usage).unwrap().amount - 0.0003395).abs() < 1e-12);
     }
 }

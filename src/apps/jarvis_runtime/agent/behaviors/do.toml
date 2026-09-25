@@ -116,7 +116,7 @@ max_rounds = 1024
 max_consecutive_errors = 4
 
 [model]
-preferred = "llm"
+preferred = "llm.code"
 
 [on_context_limit_reached]
 mode = "compress_then_continue"

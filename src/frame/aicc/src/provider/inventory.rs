@@ -1,6 +1,6 @@
 use super::*;
 use crate::canonical::CanonicalFieldMapping;
-use crate::error::CatalogResolveError;
+use crate::catalog::{ModelIdentity, ModelMatchFailure, ProviderModelMatch};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -347,11 +347,11 @@ pub(crate) enum ProviderHealthState {
 pub(crate) struct DiscoveredModel {
     pub provider_model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin_model_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_types: Option<Vec<ApiType>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supported_features: Option<BTreeSet<String>>,
+    #[serde(default)]
+    pub unsupported_features: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_methods: Option<BTreeSet<String>>,
     pub availability: ModelAvailability,
@@ -374,6 +374,14 @@ pub(crate) struct ProviderDiscoverySnapshot {
 
 #[async_trait]
 pub(crate) trait ProviderDiscovery: Send + Sync {
+    fn match_model_driver(
+        &self,
+        _provider_model_id: &str,
+        _catalog: &CatalogSnapshot,
+    ) -> ProviderModelMatch {
+        ProviderModelMatch::NotHandled
+    }
+
     async fn refresh_catalog(
         &self,
         _catalog: &CatalogSnapshot,
@@ -409,6 +417,10 @@ impl FallbackDiscovery {
 
 #[async_trait]
 impl ProviderDiscovery for FallbackDiscovery {
+    fn match_model_driver(&self, id: &str, catalog: &CatalogSnapshot) -> ProviderModelMatch {
+        self.primary.match_model_driver(id, catalog)
+    }
+
     async fn refresh_catalog(
         &self,
         catalog: &CatalogSnapshot,
@@ -485,45 +497,25 @@ pub(crate) fn catalog_only_inventory(
     provider_profile_id: &str,
 ) -> Option<ProviderDiscoverySnapshot> {
     let rules = catalog.provider_rules(provider_profile_id)?;
-    let excluded = rules
-        .models
+    let model_ids = rules
+        .static_inventory_models
         .iter()
-        .filter(|model| model.exclude)
-        .map(|model| model.id.as_str())
+        .cloned()
         .collect::<BTreeSet<_>>();
-    let mut model_ids = rules
-        .models
-        .iter()
-        .filter(|model| !model.exclude)
-        .map(|model| model.id.clone())
-        .collect::<BTreeSet<_>>();
-    if let Some(model_drivers) = &rules.metadata_drivers {
-        for model_driver_id in model_drivers {
-            if let Some(driver) = catalog.model_driver(model_driver_id) {
-                model_ids.extend(
-                    driver
-                        .models
-                        .iter()
-                        .map(|model| model.id.clone())
-                        .filter(|model_id| !excluded.contains(model_id.as_str())),
-                );
-            }
-        }
-    }
     let models = model_ids
         .into_iter()
         .map(|provider_model_id| DiscoveredModel {
             provider_model_id,
-            origin_model_id: None,
             api_types: None,
             supported_features: None,
+            unsupported_features: BTreeSet::new(),
             remote_methods: None,
             availability: ModelAvailability::Available,
             deprecated: false,
             pricing: None,
         })
         .collect::<Vec<_>>();
-    (!models.is_empty()).then(|| ProviderDiscoverySnapshot {
+    Some(ProviderDiscoverySnapshot {
         revision: Some(format!(
             "catalog-{provider_profile_id}-{}",
             rules.revision_seq
@@ -539,7 +531,6 @@ pub(crate) fn catalog_only_inventory(
 pub(crate) enum PricingSource {
     Discovery,
     ProviderRules,
-    ModelDriver,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -552,8 +543,10 @@ pub(crate) struct InventoryPricing {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProviderInventoryModel {
+    pub inventory_source: String,
     pub provider_model_id: String,
     pub model_uid: String,
+    pub identity_source: ModelIdentitySource,
     pub model_driver_id: String,
     pub origin_model_id: String,
     pub api_types: Vec<ApiType>,
@@ -594,6 +587,8 @@ pub(crate) struct ProviderInventorySnapshot {
     pub discovered_at_ms: i64,
     pub health: ProviderHealthState,
     pub models: Vec<ProviderInventoryModel>,
+    pub unmatched_models: Vec<UnmatchedInventoryModel>,
+    pub unavailable_presets: Vec<UnavailablePreset>,
 }
 
 impl ProviderInventorySnapshot {
@@ -641,6 +636,30 @@ impl ProviderInventorySnapshot {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ModelIdentitySource {
+    InstanceOverride,
+    Provider,
+    Catalog,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UnmatchedInventoryModel {
+    pub provider_model_id: String,
+    pub reason: ModelMatchFailure,
+    pub discovered_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UnavailablePreset {
+    pub provider_model_id: String,
+    pub effort: String,
+    pub reason: String,
+}
+
 pub(crate) struct InventoryBuilder;
 
 impl InventoryBuilder {
@@ -650,6 +669,17 @@ impl InventoryBuilder {
         discovery: ProviderDiscoverySnapshot,
         catalog: &CatalogSnapshot,
         codecs: &CodecRegistry,
+    ) -> ProviderResult<ProviderInventorySnapshot> {
+        Self::build_with_matcher(profile, instance, discovery, catalog, codecs, None)
+    }
+
+    pub(crate) fn build_with_matcher(
+        profile: &ProviderProfile,
+        instance: &ProviderInstanceConfig,
+        mut discovery: ProviderDiscoverySnapshot,
+        catalog: &CatalogSnapshot,
+        codecs: &CodecRegistry,
+        matcher: Option<&dyn ProviderDiscovery>,
     ) -> ProviderResult<ProviderInventorySnapshot> {
         validate_discovery(&discovery)?;
         let adapter = codecs
@@ -661,8 +691,101 @@ impl InventoryBuilder {
             .unwrap_or(&profile.provider_profile_id);
         let rules = catalog.provider_rules(rules_id);
         let instance_rules = instance.instance_rules.clone().unwrap_or_default();
+        let resolve_identity = |id: &str| {
+            if let Some(target) = instance_rules.model_driver_overrides.get(id) {
+                target
+                    .split_once('/')
+                    .filter(|(driver, model)| catalog.resolve_model(driver, model).is_ok())
+                    .map(|(driver, model)| {
+                        (
+                            ModelIdentity {
+                                model_driver_id: driver.into(),
+                                model_id: model.into(),
+                            },
+                            ModelIdentitySource::InstanceOverride,
+                        )
+                    })
+                    .ok_or_else(|| ModelMatchFailure::InvalidOverride {
+                        target: target.clone(),
+                    })
+            } else {
+                match matcher
+                    .map(|matcher| matcher.match_model_driver(id, catalog))
+                    .unwrap_or(ProviderModelMatch::NotHandled)
+                {
+                    ProviderModelMatch::NotHandled => catalog
+                        .match_model(id)
+                        .map(|id| (id, ModelIdentitySource::Catalog)),
+                    ProviderModelMatch::Failed(reason) => Err(reason),
+                    ProviderModelMatch::Matched(id) => {
+                        if catalog
+                            .resolve_model(&id.model_driver_id, &id.model_id)
+                            .is_ok()
+                        {
+                            Ok((id, ModelIdentitySource::Provider))
+                        } else {
+                            Err(ModelMatchFailure::InvalidProviderMatch {
+                                model_driver_id: id.model_driver_id,
+                                model_id: id.model_id,
+                            })
+                        }
+                    }
+                }
+            }
+        };
+        let mut static_models = BTreeSet::new();
+        if let Some(rules) = rules {
+            for id in &rules.static_inventory_models {
+                if discovery
+                    .models
+                    .iter()
+                    .any(|model| &model.provider_model_id == id)
+                {
+                    continue;
+                }
+                let Ok((identity, _)) = resolve_identity(id) else {
+                    if !rules.supplemental_inventory_api_types.is_empty() {
+                        static_models.insert(id.clone());
+                        discovery.models.push(DiscoveredModel {
+                            provider_model_id: id.clone(),
+                            api_types: None,
+                            supported_features: None,
+                            unsupported_features: BTreeSet::new(),
+                            remote_methods: None,
+                            availability: ModelAvailability::Available,
+                            deprecated: false,
+                            pricing: None,
+                        });
+                    }
+                    continue;
+                };
+                let facts = catalog
+                    .resolve_model(&identity.model_driver_id, &identity.model_id)
+                    .map_err(|e| ProviderError::Inventory(e.to_string()))?;
+                if facts.semantics.api_types.as_ref().is_some_and(|apis| {
+                    !apis.is_empty()
+                        && apis
+                            .iter()
+                            .all(|api| rules.supplemental_inventory_api_types.contains(api))
+                }) {
+                    static_models.insert(id.clone());
+                    discovery.models.push(DiscoveredModel {
+                        provider_model_id: id.clone(),
+                        api_types: None,
+                        supported_features: None,
+                        unsupported_features: BTreeSet::new(),
+                        remote_methods: None,
+                        availability: ModelAvailability::Available,
+                        deprecated: false,
+                        pricing: None,
+                    });
+                }
+            }
+        }
         let fingerprint = model_list_fingerprint(&discovery.models);
         let mut models = Vec::new();
+        let mut unmatched_models = Vec::new();
+        let mut unavailable_presets = Vec::new();
 
         for discovered in discovery.models {
             if instance_rules
@@ -671,48 +794,39 @@ impl InventoryBuilder {
             {
                 continue;
             }
-            let mapped_origin = rules
-                .filter(|rules| !rules.origin_mappings.is_empty())
-                .map(|_| catalog.resolve_provider_origin(rules_id, &discovered.provider_model_id))
-                .transpose();
-            let (mapped_origin, unknown_origin) = match mapped_origin {
-                Ok(origin) => (origin, false),
-                Err(CatalogResolveError::UnknownOriginProvider { .. }) => (None, true),
-                Err(error) => return Err(ProviderError::Inventory(error.to_string())),
-            };
-            if let (Some(discovered_origin), Some(mapped_origin)) = (
-                discovered.origin_model_id.as_deref(),
-                mapped_origin.as_ref(),
-            ) {
-                if discovered_origin != mapped_origin.origin_model_id {
-                    return Err(ProviderError::Inventory(format!(
-                        "discovery origin_model_id {discovered_origin:?} conflicts with Provider Rules mapping {:?}",
-                        mapped_origin.origin_model_id
-                    )));
-                }
-            }
-            let origin_model_id = if unknown_origin {
-                discovered.provider_model_id.clone()
+            let excluded = if catalog.provider_rules(rules_id).is_some() {
+                catalog
+                    .resolve_provider_rule(
+                        rules_id,
+                        &discovered.provider_model_id,
+                        &MatchContext::from([(
+                            "provider_model_id".into(),
+                            Value::String(discovered.provider_model_id.clone()),
+                        )]),
+                    )
+                    .map_err(|e| ProviderError::Inventory(e.to_string()))?
+                    .is_some_and(|rule| rule.action.exclude)
             } else {
-                mapped_origin
-                    .as_ref()
-                    .map(|origin| origin.origin_model_id.clone())
-                    .or_else(|| discovered.origin_model_id.clone())
-                    .unwrap_or_else(|| discovered.provider_model_id.clone())
+                false
             };
-            let origin_model_id = instance_rules
-                .origin_model_overrides
-                .get(&discovered.provider_model_id)
-                .cloned()
-                .unwrap_or(origin_model_id);
-            let mapped_candidate_drivers = mapped_origin
-                .as_ref()
-                .map(|origin| vec![origin.model_driver_id.clone()])
-                .or_else(|| unknown_origin.then(Vec::new));
-            let candidate_drivers = mapped_candidate_drivers
-                .as_deref()
-                .or_else(|| rules.and_then(|rules| rules.metadata_drivers.as_deref()));
-            let dimensions = MatchContext::from([
+            if excluded {
+                continue;
+            }
+            let identity = resolve_identity(&discovered.provider_model_id);
+            let (identity, identity_source) = match identity {
+                Ok(identity) => identity,
+                Err(reason) => {
+                    unmatched_models.push(UnmatchedInventoryModel {
+                        provider_model_id: discovered.provider_model_id,
+                        reason,
+                        discovered_at_ms: discovery.discovered_at_ms,
+                    });
+                    continue;
+                }
+            };
+            let model_driver_id = identity.model_driver_id;
+            let origin_model_id = identity.model_id;
+            let mut dimensions = MatchContext::from([
                 (
                     "provider_model_id".into(),
                     Value::String(discovered.provider_model_id.clone()),
@@ -722,6 +836,15 @@ impl InventoryBuilder {
                     Value::String(origin_model_id.clone()),
                 ),
             ]);
+            for (name, value) in [
+                ("region", &instance.region),
+                ("workspace", &instance.workspace),
+                ("account", &instance.account),
+            ] {
+                if let Some(value) = value {
+                    dimensions.insert(name.into(), Value::String(value.clone()));
+                }
+            }
             let provider_rule = if catalog.provider_rules(rules_id).is_some() {
                 catalog
                     .resolve_provider_rule(rules_id, &discovered.provider_model_id, &dimensions)
@@ -736,29 +859,12 @@ impl InventoryBuilder {
                 continue;
             }
             let resolved = catalog
-                .resolve_model(&origin_model_id, candidate_drivers, &dimensions)
+                .resolve_model(&model_driver_id, &origin_model_id)
                 .map_err(|error| ProviderError::Inventory(error.to_string()))?;
             if resolved.semantics.exclude.unwrap_or(false) {
                 continue;
             }
-            let conservative_fallback = resolved.model_driver_id.is_none();
-            let model_driver_id = resolved
-                .model_driver_id
-                .clone()
-                .unwrap_or_else(|| "unclassified".to_owned());
             let mut static_api_types = resolved.semantics.api_types.unwrap_or_default();
-            if conservative_fallback && static_api_types.is_empty() {
-                static_api_types = discovered
-                    .api_types
-                    .as_ref()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|api_type| api_type_name(*api_type).ok())
-                            .collect()
-                    })
-                    .unwrap_or_else(|| BTreeSet::from(["llm".to_owned()]));
-            }
             let mut capabilities = resolved.semantics.capabilities.unwrap_or_default();
             let mut canonical_fields = resolved.semantics.canonical_fields.unwrap_or_default();
             let mut pricing = None;
@@ -835,6 +941,9 @@ impl InventoryBuilder {
                 &adapter_features,
                 discovered.supported_features.as_ref(),
             );
+            for feature in &discovered.unsupported_features {
+                capabilities.remove(feature);
+            }
             api_types.sort_by_key(|api_type| api_type.typed_method());
             if discovered.availability != ModelAvailability::Available || discovered.deprecated {
                 api_types.clear();
@@ -856,26 +965,59 @@ impl InventoryBuilder {
             )
             .map_err(|error| ProviderError::Inventory(error.to_string()))?
             .as_stable_string();
-            let mut variants =
-                if conservative_fallback || catalog.provider_rules(rules_id).is_none() {
-                    Vec::new()
-                } else {
-                    catalog
-                        .matching_provider_variants_for_model(rules_id, &dimensions)
-                        .map_err(|error| ProviderError::Inventory(error.to_string()))?
-                        .into_iter()
-                        .filter(|variant| variant.model_driver == model_driver_id)
-                        .map(|variant| InventoryModelVariant {
-                            name: variant.variant.clone(),
-                            logical_mounts: Vec::new(),
-                        })
-                        .collect::<Vec<_>>()
-                };
+            let mut variants = if catalog.provider_rules(rules_id).is_none() {
+                Vec::new()
+            } else {
+                catalog
+                    .executable_variants(rules_id, &model_driver_id, &origin_model_id, &dimensions)
+                    .map_err(|error| ProviderError::Inventory(error.to_string()))?
+                    .into_iter()
+                    .filter(|variant| variant.model_driver == model_driver_id)
+                    .map(|variant| InventoryModelVariant {
+                        name: variant.variant.clone(),
+                        logical_mounts: Vec::new(),
+                    })
+                    .collect::<Vec<_>>()
+            };
+            if let Some(llm) = catalog.llm_model(&model_driver_id, &origin_model_id) {
+                variants.retain(|variant| {
+                    (!discovered.unsupported_features.contains("reasoning")
+                        || variant.name == "reasoning-none")
+                        && llm
+                            .semantics
+                            .supported_efforts
+                            .iter()
+                            .any(|effort| effort.variant().as_deref() == Some(&variant.name))
+                });
+                for effort in &llm.semantics.supported_efforts {
+                    if let Some(name) = effort.variant() {
+                        if !variants.iter().any(|variant| variant.name == name) {
+                            unavailable_presets.push(UnavailablePreset {
+                                provider_model_id: discovered.provider_model_id.clone(),
+                                effort: effort.as_str().into(),
+                                reason: "missing_channel_mapping".into(),
+                            });
+                        }
+                    }
+                }
+            }
             variants.sort_by(|left, right| left.name.cmp(&right.name));
             variants.dedup_by(|left, right| left.name == right.name);
+            let inventory_source = if static_models.contains(&discovered.provider_model_id) {
+                "static_supplement"
+            } else if profile.discovery_mode == DiscoveryMode::CatalogOnly {
+                "explicit_catalog"
+            } else if discovery.health == ProviderHealthState::Degraded {
+                "fallback"
+            } else {
+                "discovery"
+            }
+            .to_owned();
             models.push(ProviderInventoryModel {
+                inventory_source,
                 provider_model_id: discovered.provider_model_id,
                 model_uid,
+                identity_source,
                 model_driver_id,
                 origin_model_id,
                 api_types,
@@ -888,7 +1030,7 @@ impl InventoryBuilder {
                 deprecated: discovered.deprecated,
                 remote_methods: discovered.remote_methods,
                 pricing,
-                model_catalog_revision: resolved.catalog_revision_seq,
+                model_catalog_revision: Some(resolved.catalog_revision_seq),
                 provider_rules_revision,
             });
         }
@@ -904,6 +1046,8 @@ impl InventoryBuilder {
             discovered_at_ms: discovery.discovered_at_ms,
             health: discovery.health,
             models,
+            unmatched_models,
+            unavailable_presets,
         })
     }
 }

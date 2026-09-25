@@ -109,10 +109,6 @@ mod tests {
             Some(MINIMAX_PROVIDER_PROFILE_ID)
         );
         assert_eq!(
-            rules.metadata_drivers,
-            Some(vec![MINIMAX_PROVIDER_PROFILE_ID.to_owned()])
-        );
-        assert_eq!(
             rules.patterns[0].operations["llm"],
             CLAUDE_MESSAGES_OPERATION_ID
         );

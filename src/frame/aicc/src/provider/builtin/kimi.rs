@@ -1,21 +1,18 @@
 use super::super::{
-    validate_discovery, DiscoveredModel, DiscoveryContext, ModelAvailability, ProviderDiscovery,
-    ProviderDiscoverySnapshot, ProviderError, ProviderHealthState, ProviderResult,
+    validate_discovery, DiscoveryContext, ProviderDiscovery, ProviderDiscoverySnapshot,
+    ProviderError, ProviderHealthState, ProviderResult,
 };
 #[cfg(test)]
 use super::super::{DiscoveryMode, ProviderProfile};
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
-use crate::protocol::{
-    CredentialKind, HttpRequest, HttpResponse, HttpTransport, KIMI_CHAT_ADAPTER_ID,
-    OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
-};
+use crate::protocol::{CredentialKind, HttpRequest, HttpTransport, KIMI_CHAT_ADAPTER_ID};
 use async_trait::async_trait;
-use buckyos_api::{features, ApiType};
+#[cfg(test)]
+use buckyos_api::features;
+#[cfg(test)]
 use reqwest::header::ETAG;
 use reqwest::{Method, Url};
-use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -48,23 +45,7 @@ pub(crate) fn kimi_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[KIMI_PROVIDER_PROFILE_ID])
 }
 
-#[async_trait]
-trait KimiModelsTransport: Send + Sync {
-    async fn send(
-        &self,
-        request: HttpRequest,
-    ) -> crate::protocol::ProtocolResultValue<HttpResponse>;
-}
-
-#[async_trait]
-impl KimiModelsTransport for HttpTransport {
-    async fn send(
-        &self,
-        request: HttpRequest,
-    ) -> crate::protocol::ProtocolResultValue<HttpResponse> {
-        HttpTransport::send(self, request).await
-    }
-}
+use super::openai_responses_compatible::OpenAiCompatibleModelsTransport as KimiModelsTransport;
 
 #[derive(Clone)]
 pub(crate) struct KimiDiscovery {
@@ -99,69 +80,18 @@ impl ProviderDiscovery for KimiDiscovery {
             .map_err(|error| ProviderError::Credential(error.to_string()))?;
         request.timeout = Some(Duration::from_secs(30));
         request.max_response_bytes = Some(MODELS_RESPONSE_LIMIT);
-        let response = self
-            .transport
-            .send(request)
-            .await
-            .map_err(|error| ProviderError::Discovery(error.to_string()))?;
-        ensure_success(&response)?;
-        let revision = response
-            .headers
-            .get(ETAG)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let wire: ModelsResponse = serde_json::from_slice(&response.body).map_err(|error| {
-            ProviderError::Discovery(format!("Kimi models response is invalid: {error}"))
-        })?;
-        if wire.object != "list" {
-            return Err(ProviderError::Discovery(
-                "Kimi models response must be a list".to_owned(),
-            ));
-        }
-        let mut models = BTreeMap::new();
-        for model in wire.data {
-            if model.object != "model" || model.id.trim().is_empty() || model.id.contains('@') {
-                return Err(ProviderError::Discovery(
-                    "Kimi Models API returned an invalid model object".to_owned(),
-                ));
-            }
-            let mut supported_features = BTreeSet::from([
-                features::TOOL_CALL.to_owned(),
-                features::JSON_SCHEMA.to_owned(),
-            ]);
-            let supports_vision = model.supports_image_in.unwrap_or(false)
-                || model.supports_video_in.unwrap_or(false);
-            if supports_vision {
-                supported_features.insert(features::VISION.to_owned());
-            }
-            if model.supports_reasoning.unwrap_or(false) {
-                supported_features.insert("reasoning".to_owned());
-            }
-            models.insert(
-                model.id.clone(),
-                DiscoveredModel {
-                    provider_model_id: model.id,
-                    origin_model_id: None,
-                    api_types: Some(if supports_vision {
-                        vec![ApiType::Llm, ApiType::VisionOcr, ApiType::VisionCaption]
-                    } else {
-                        vec![ApiType::Llm]
-                    }),
-                    supported_features: Some(supported_features),
-                    remote_methods: Some(BTreeSet::from([
-                        OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned()
-                    ])),
-                    availability: ModelAvailability::Available,
-                    deprecated: false,
-                    pricing: None,
-                },
-            );
-        }
+        let (models, revision) = super::openai_responses_compatible::discover_model_ids(
+            self.transport.as_ref(),
+            request,
+            KIMI_PROVIDER_PROFILE_ID,
+            true,
+        )
+        .await?;
         let snapshot = ProviderDiscoverySnapshot {
             revision,
             discovered_at_ms: super::super::now_ms()?,
             health: ProviderHealthState::Healthy,
-            models: models.into_values().collect(),
+            models,
         };
         validate_discovery(&snapshot)?;
         Ok(snapshot)
@@ -211,31 +141,6 @@ fn models_endpoint(base_url: &str) -> ProviderResult<String> {
     url.set_query(None);
     url.set_fragment(None);
     Ok(url.to_string())
-}
-
-fn ensure_success(response: &HttpResponse) -> ProviderResult<()> {
-    if response.status.is_success() {
-        return Ok(());
-    }
-    Err(ProviderError::Discovery(format!(
-        "Kimi models request failed with status {} (request {})",
-        response.status, response.request_id
-    )))
-}
-
-#[derive(Deserialize)]
-struct ModelsResponse {
-    object: String,
-    data: Vec<ModelObject>,
-}
-
-#[derive(Deserialize)]
-struct ModelObject {
-    id: String,
-    object: String,
-    supports_image_in: Option<bool>,
-    supports_video_in: Option<bool>,
-    supports_reasoning: Option<bool>,
 }
 
 #[cfg(test)]
@@ -315,11 +220,10 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.revision.as_deref(), Some("models-1"));
         assert_eq!(snapshot.models.len(), 1);
-        assert!(snapshot.models[0]
-            .supported_features
-            .as_ref()
-            .unwrap()
+        assert!(!snapshot.models[0]
+            .unsupported_features
             .contains(features::VISION));
+        assert!(snapshot.models[0].supported_features.is_none());
         let request = transport.request.lock().unwrap().take().unwrap();
         assert_eq!(request.url, "https://api.moonshot.ai/v1/models");
         assert_eq!(request.headers[AUTHORIZATION], "Bearer secret");
@@ -330,20 +234,35 @@ mod tests {
         assert_eq!(kimi_known_provider().base_url, "https://api.moonshot.ai/v1");
     }
 
-    #[test]
-    fn endpoint_and_http_errors_are_explicit() {
+    #[tokio::test]
+    async fn endpoint_and_http_errors_are_explicit() {
         assert_eq!(
             models_endpoint("https://api.moonshot.ai").unwrap(),
             "https://api.moonshot.ai/v1/models"
         );
         assert!(models_endpoint("relative/path").is_err());
-        assert!(ensure_success(&HttpResponse {
-            status: StatusCode::UNAUTHORIZED,
-            headers: HeaderMap::new(),
-            body: Bytes::new(),
-            request_id: "request-denied".to_owned(),
-            retry_after: None,
-        })
-        .is_err());
+        let transport = FakeTransport {
+            request: Mutex::new(None),
+            response: Mutex::new(Some(Ok(HttpResponse {
+                status: StatusCode::UNAUTHORIZED,
+                headers: HeaderMap::new(),
+                body: Bytes::new(),
+                request_id: "request-denied".to_owned(),
+                retry_after: None,
+            }))),
+        };
+        assert!(
+            super::super::openai_responses_compatible::discover_model_ids(
+                &transport,
+                HttpRequest::new(Method::GET, "https://example.com/models"),
+                KIMI_PROVIDER_PROFILE_ID,
+                true
+            )
+            .await
+            .is_err()
+        );
     }
 }
+
+#[cfg(test)]
+use crate::protocol::{HttpResponse, OPENAI_CHAT_COMPLETIONS_OPERATION_ID};

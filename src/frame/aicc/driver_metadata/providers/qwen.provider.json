@@ -1,17 +1,16 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "revision_seq": 1,
   "provider_profile_id": "qwen",
-  "metadata_drivers": ["qwen"],
-  "origin_provider_aliases": {},
-  "origin_mappings": [],
   "models": [],
   "patterns": [
     {
       "match": "*",
-      "operations": { "llm": "responses.create" },
+      "operations": {
+        "llm": "responses.create"
+      },
       "request_rules": [
         {
           "remove": [
@@ -32,44 +31,118 @@
     {
       "model_driver": "qwen",
       "variant": "reasoning-none",
-      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-none" },
-      "provider_options": { "reasoning": { "effort": "none" } }
-    },
-    {
-      "model_driver": "qwen",
-      "variant": "reasoning-mini",
-      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-mini" },
-      "provider_options": { "reasoning": { "effort": "minimal" } }
+      "match": {
+        "origin_model_id": [
+          "qwen3.6-max-preview",
+          "qwen3.8-27b",
+          "qwen3.6-35b-a3b",
+          "qwen3.8-max",
+          "qwen3.8-flash",
+          "qwen3.7-max",
+          "qwen3.7-plus",
+          "qwen3.7-flash",
+          "qwen3.6-plus",
+          "qwen3.6-flash",
+          "qwen3.5-plus",
+          "qwen3.5-flash",
+          "qwen3.5-397b-a17b",
+          "qwen3.5-122b-a10b",
+          "qwen3.5-35b-a3b",
+          "qwen3.5-27b"
+        ],
+        "variant": "reasoning-none"
+      },
+      "provider_options": {
+        "reasoning": {
+          "effort": "none"
+        }
+      }
     },
     {
       "model_driver": "qwen",
       "variant": "reasoning-low",
-      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-low" },
-      "provider_options": { "reasoning": { "effort": "low" } }
+      "match": {
+        "origin_model_id": [
+          "qwen3.8-2.4t-a95b",
+          "qwen3.8-27b",
+          "qwen3.8-max",
+          "qwen3.8-flash"
+        ],
+        "variant": "reasoning-low"
+      },
+      "provider_options": {
+        "reasoning": {
+          "effort": "low"
+        }
+      }
     },
     {
       "model_driver": "qwen",
       "variant": "reasoning-medium",
-      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-medium" },
-      "provider_options": { "reasoning": { "effort": "medium" } }
-    },
-    {
-      "model_driver": "qwen",
-      "variant": "reasoning-high",
-      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-high" },
-      "provider_options": { "reasoning": { "effort": "high" } }
+      "match": {
+        "origin_model_id": [
+          "qwen3.8-2.4t-a95b",
+          "qwen3.8-27b",
+          "qwen3.8-max",
+          "qwen3.8-flash"
+        ],
+        "variant": "reasoning-medium"
+      },
+      "provider_options": {
+        "reasoning": {
+          "effort": "medium"
+        }
+      }
     },
     {
       "model_driver": "qwen",
       "variant": "reasoning-xhigh",
-      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-xhigh" },
-      "provider_options": { "reasoning": { "effort": "xhigh" } }
+      "match": {
+        "origin_model_id": [
+          "qwen3.8-2.4t-a95b",
+          "qwen3.8-27b",
+          "qwen3.8-max",
+          "qwen3.8-flash"
+        ],
+        "variant": "reasoning-xhigh"
+      },
+      "provider_options": {
+        "reasoning": {
+          "effort": "xhigh"
+        }
+      }
     },
     {
       "model_driver": "qwen",
-      "variant": "reasoning-max",
-      "match": { "provider_model_id": "qwen3*", "variant": "reasoning-max" },
-      "provider_options": { "reasoning": { "effort": "max" } }
+      "variant": "reasoning-thinking",
+      "match": {
+        "origin_model_id": [
+          "qwen3.6-max-preview",
+          "qwen3.6-35b-a3b",
+          "qwen3.7-max",
+          "qwen3.7-plus",
+          "qwen3.7-flash",
+          "qwen3.6-plus",
+          "qwen3.6-flash",
+          "qwen3.5-plus",
+          "qwen3.5-flash",
+          "qwen3.5-397b-a17b",
+          "qwen3.5-122b-a10b",
+          "qwen3.5-35b-a3b",
+          "qwen3.5-27b"
+        ],
+        "variant": "reasoning-thinking"
+      },
+      "provider_options": {
+        "enable_thinking": true
+      }
     }
+  ],
+  "static_inventory_models": [
+    "qwen3.8-max",
+    "qwen3.8-flash",
+    "qwen3.8-2.4t-a95b",
+    "qwen3.7-plus",
+    "qwen3.5-27b"
   ]
 }

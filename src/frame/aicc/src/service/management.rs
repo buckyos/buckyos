@@ -536,7 +536,14 @@ impl AiccHandler for AiccService {
             .runtime
             .refresh_provider(&request.provider_instance_name)
             .await?;
+        let unmatched_count = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.provider_instance_name == request.provider_instance_name)
+            .map(|provider| provider.inventory.unmatched_models.len() as u64)
+            .unwrap_or(0);
         Ok(ProviderRefreshModelsResponse {
+            unmatched_count,
             ok: true,
             provider_instance_name: request.provider_instance_name,
             inventory_revision: snapshot.inventory_revision,

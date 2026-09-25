@@ -68,14 +68,19 @@ Families, specifications and task names must not collide, even with no inventory
 
 ### Matching and validation
 
-The existing priority remains exact `models[].id`, then the first matching
-`patterns[]` rule, then `defaults`, then conservative fallback. A selected rule
-replaces its supplied fields over defaults; matching patterns are not merged.
-LLM patterns may use a literal ID or a finite `origin_model_id` string array.
-They cannot use wildcards, negation or existence predicates to admit future
-unknown LLMs. The existing matcher compiles and evaluates these rules, including
-exact overrides. Defaults cannot declare open-ended LLM membership. Non-LLM
-patterns and defaults keep the existing matcher semantics.
+Model Driver membership is a finite exact ID set. Literal patterns and finite
+`origin_model_id` arrays expand into exact entries during compilation; explicit
+`models[]` entries win. All wildcard model membership is rejected, including
+non-LLM membership. Defaults only supply missing semantics to an existing exact
+entry. `resolve_model(driver, model)` rejects unknown IDs.
+
+Inventory identity is resolved across all loaded drivers: instance
+`model_driver_overrides` → optional Provider matcher → exact ID → longest bounded
+case-insensitive containment. A containment match must begin at a non-alphanumeric
+boundary and end at the string end or a date-shaped suffix (`-YYYY-MM-DD`,
+`-YYYYMMDD`, `-YYMMDD`, `-MMDD`). Equal longest candidates are ambiguous.
+Provider failure and invalid overrides are terminal for that model. Unknown and
+ambiguous IDs produce diagnostics and never enter the routable inventory.
 
 Every effective, non-excluded LLM rule requires `llm`; non-LLM rules cannot carry
 it. LLM ownership cannot redirect to a different driver. Duplicate specifications,
@@ -233,16 +238,43 @@ parameters, including both origin vendors and aggregators, use one
 code must not compensate for missing metadata by branching on model names,
 model-name prefixes, or Provider-vendor names.
 
-For one origin model, match priority inside the selected Model Driver document
-is exact `models[].id`, ordered `patterns[].match`, `defaults`, then conservative
-fallback. Exact rules win before patterns; rules from shadowed source documents
-do not participate.
+For one origin model, the compiled exact entry overlays Model Driver defaults.
+Rules from shadowed source documents do not participate.
 
 ## Provider integration boundary
 
-The caller adjustment authorized for this migration removes obsolete Model Driver
-price, version-mount and variant-template dependencies. Inventory and invocation
-use existing Provider Rules mappings. No Adapter lowering, discovery, credentials,
-Provider configuration, provider JSON or public protocol changes were made.
-A metadata effort without an existing channel mapping remains non-executable.
-See the [implementation report](model_driver_v2_implementation.md) for concrete gaps.
+The Provider upgrade is implemented separately from the v2 model kernel.
+`static_inventory_models` is explicit channel inventory; neither Model Driver
+membership nor Provider technical/pricing rules imply availability. Dynamic
+success may only be supplemented for explicitly declared uncovered APIs via
+`supplemental_inventory_api_types`. All inputs use the same identity resolver.
+
+Executable presets are the intersection of `supported_efforts`, compiled Provider
+mappings and observed channel restrictions. Inventory and lowering use the same
+mapping lookup. `native` uses base; all other efforts use `reasoning-{effort}`,
+including `reasoning-minimal` and `reasoning-thinking`. Invalid exact/cached
+variants are rejected. A selected preset owns its thinking parameters after
+canonical and request-rule rewrites.
+
+Inventory schema 2 exposes `identity_source`, `inventory_source`,
+`unmatched_models` and `unavailable_presets`. `list_providers` includes identity,
+preset and unpriced diagnostics; refresh replies include `unmatched_count`.
+Old inventory caches and removed Provider fields are rejected.
+
+Pricing belongs to Provider Rules/discovery and supports `source_url`,
+`verified_at`, `ratio_exception`, cache reads/writes (including one-hour writes),
+audio/image token rates, tiers and time windows. Discovery and catalog share
+validation. Missing active rates or uncovered tiers return unknown. `AiUsage`
+input/output totals include cache/reasoning tokens; modality/cache counts are
+subsets. Undeclared provider `reported_cost` is never assumed USD.
+
+A Known Provider catalog may carry `exchange_rates` with `source_url`,
+`observed_at_ms`, `expires_at_ms`, and `usd_per_unit`. Rates are usable only in the
+half-open observation/expiry interval. Routing uses a 1,000 input / 1,000 output
+reference (request estimates override it), the same tier/time-window resolver as
+settlement, and valid USD conversions. Same-family, fixed-effort instances use
+price first, then latency/reliability; unknown quotes are last and fail a hard
+cost budget. Specification and version preferences still take precedence.
+
+See [Provider upgrade implementation](provider_upgrade_implementation.md) for
+verified sources, regional scope, remaining channel gaps and validation.

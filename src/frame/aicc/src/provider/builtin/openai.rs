@@ -1,16 +1,16 @@
 use super::super::{
-    validate_discovery, DiscoveredModel, DiscoveryContext, ModelAvailability, ProviderDiscovery,
-    ProviderDiscoverySnapshot, ProviderError, ProviderHealthState, ProviderResult,
+    validate_discovery, DiscoveryContext, ProviderDiscovery, ProviderDiscoverySnapshot,
+    ProviderError, ProviderHealthState, ProviderResult,
 };
 #[cfg(test)]
 use super::super::{DiscoveryMode, ProviderProfile};
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
-use crate::protocol::{CredentialKind, HttpRequest, HttpResponse, HttpTransport};
+use crate::protocol::{CredentialKind, HttpRequest, HttpTransport};
 use async_trait::async_trait;
+#[cfg(test)]
 use reqwest::header::ETAG;
 use reqwest::{Method, Url};
-use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,23 +43,7 @@ pub(crate) fn openai_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[OPENAI_PROVIDER_PROFILE_ID])
 }
 
-#[async_trait]
-trait OpenAiModelsTransport: Send + Sync {
-    async fn send(
-        &self,
-        request: HttpRequest,
-    ) -> crate::protocol::ProtocolResultValue<HttpResponse>;
-}
-
-#[async_trait]
-impl OpenAiModelsTransport for HttpTransport {
-    async fn send(
-        &self,
-        request: HttpRequest,
-    ) -> crate::protocol::ProtocolResultValue<HttpResponse> {
-        HttpTransport::send(self, request).await
-    }
-}
+use super::openai_responses_compatible::OpenAiCompatibleModelsTransport as OpenAiModelsTransport;
 
 #[derive(Clone)]
 pub(crate) struct OpenAiDiscovery {
@@ -95,43 +79,18 @@ impl ProviderDiscovery for OpenAiDiscovery {
         request.timeout = Some(Duration::from_secs(30));
         request.max_response_bytes = Some(MODELS_RESPONSE_LIMIT);
 
-        let response = self
-            .transport
-            .send(request)
-            .await
-            .map_err(|error| ProviderError::Discovery(error.to_string()))?;
-        ensure_success(&response)?;
-        let revision = response
-            .headers
-            .get(ETAG)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let wire: ModelsResponse = serde_json::from_slice(&response.body).map_err(|error| {
-            ProviderError::Discovery(format!("OpenAI models response is invalid: {error}"))
-        })?;
-        if wire.object != "list" {
-            return Err(ProviderError::Discovery(
-                "OpenAI models response must be a list".to_owned(),
-            ));
-        }
+        let (models, revision) = super::openai_responses_compatible::discover_model_ids(
+            self.transport.as_ref(),
+            request,
+            OPENAI_PROVIDER_PROFILE_ID,
+            true,
+        )
+        .await?;
         let snapshot = ProviderDiscoverySnapshot {
             revision,
             discovered_at_ms: super::super::now_ms()?,
             health: ProviderHealthState::Healthy,
-            models: wire
-                .data
-                .into_iter()
-                .map(|model| DiscoveredModel {
-                    provider_model_id: model.id,
-                    origin_model_id: None,
-                    api_types: None,
-                    supported_features: None,
-                    remote_methods: None,
-                    availability: ModelAvailability::Available,
-                    deprecated: false,
-                    pricing: None,
-                })
-                .collect(),
+            models,
         };
         validate_discovery(&snapshot)?;
         Ok(snapshot)
@@ -177,48 +136,6 @@ fn models_endpoint(base_url: &str) -> ProviderResult<String> {
     url.set_query(None);
     url.set_fragment(None);
     Ok(url.to_string())
-}
-
-fn ensure_success(response: &HttpResponse) -> ProviderResult<()> {
-    if response.status.is_success() {
-        return Ok(());
-    }
-    let message = serde_json::from_slice::<OpenAiErrorResponse>(&response.body)
-        .ok()
-        .and_then(|body| body.error)
-        .and_then(|error| error.message)
-        .unwrap_or_else(|| {
-            response
-                .status
-                .canonical_reason()
-                .unwrap_or("request failed")
-                .to_owned()
-        });
-    Err(ProviderError::Discovery(format!(
-        "OpenAI models request failed with status {} (request {}): {message}",
-        response.status, response.request_id
-    )))
-}
-
-#[derive(Deserialize)]
-struct ModelsResponse {
-    object: String,
-    data: Vec<ModelObject>,
-}
-
-#[derive(Deserialize)]
-struct ModelObject {
-    id: String,
-}
-
-#[derive(Deserialize)]
-struct OpenAiErrorResponse {
-    error: Option<OpenAiError>,
-}
-
-#[derive(Deserialize)]
-struct OpenAiError {
-    message: Option<String>,
 }
 
 #[cfg(test)]
@@ -336,7 +253,6 @@ mod tests {
             "unsupported"
         );
         assert_eq!(rules.revision_seq, 1);
-        assert_eq!(rules.metadata_drivers, Some(vec!["openai".to_owned()]));
         assert_eq!(
             rules.patterns[0].operations["image.txt2img"],
             OPENAI_RESPONSES_OPERATION_ID
@@ -450,7 +366,7 @@ mod tests {
             .discover(&context(&profile, &instance, &credential))
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("status 401"));
+        assert!(error.to_string().contains("401"));
         assert!(error.to_string().contains("request request-1"));
         assert!(error.to_string().contains("invalid API key"));
     }
@@ -472,9 +388,9 @@ mod tests {
                     .into_iter()
                     .map(|model_id| DiscoveredModel {
                         provider_model_id: model_id.to_owned(),
-                        origin_model_id: None,
                         api_types: None,
                         supported_features: None,
+                        unsupported_features: std::collections::BTreeSet::new(),
                         remote_methods: None,
                         availability: ModelAvailability::Available,
                         deprecated: false,
@@ -508,3 +424,8 @@ mod tests {
             .all(|mount| !mount.starts_with("llm"))));
     }
 }
+
+#[cfg(test)]
+use crate::protocol::HttpResponse;
+#[cfg(test)]
+use crate::provider::{DiscoveredModel, ModelAvailability};

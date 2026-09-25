@@ -941,6 +941,22 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<AiUsage> {
                 "Claude usage.output_tokens must be an unsigned integer",
             )
         })?;
+    let input_tokens = input_tokens
+        .checked_add(
+            usage
+                .get("cache_read_input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        )
+        .and_then(|tokens| {
+            tokens.checked_add(
+                usage
+                    .get("cache_creation_input_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            )
+        })
+        .ok_or_else(|| ProtocolError::invalid_response("Claude input usage overflow"))?;
     let total_tokens = input_tokens
         .checked_add(output_tokens)
         .ok_or_else(|| ProtocolError::invalid_response("Claude usage token total overflow"))?;
@@ -952,12 +968,21 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<AiUsage> {
         cache_write_input_tokens: usage
             .get("cache_creation_input_tokens")
             .and_then(Value::as_u64),
+        cache_write_1h_input_tokens: usage
+            .get("cache_creation")
+            .and_then(|v| v.get("ephemeral_1h_input_tokens"))
+            .and_then(Value::as_u64),
         reasoning_tokens: None,
         image_units: None,
         audio_seconds: None,
         video_seconds: None,
         request_units: None,
         characters: None,
+        audio_input_tokens: None,
+        image_input_tokens: None,
+        audio_output_tokens: None,
+        image_output_tokens: None,
+        reported_cost: None,
         cost: None,
     })
 }
@@ -1936,5 +1961,28 @@ mod tests {
         assert_eq!(body["output_config"]["effort"], "high");
         assert_eq!(body["output_config"]["format"]["type"], "json_schema");
         assert_eq!(body["output_config"]["format"]["schema"]["type"], "object");
+    }
+}
+
+#[cfg(test)]
+mod billing_usage_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn normalized_usage_settles_with_cache_and_thinking_dimensions() {
+        let wire = json!({"input_tokens":100,"cache_read_input_tokens":20,"cache_creation_input_tokens":30,"cache_creation":{"ephemeral_5m_input_tokens":20,"ephemeral_1h_input_tokens":10},"output_tokens":40});
+        let usage = decode_usage(Some(&wire)).unwrap();
+        assert_eq!(usage.input_tokens, Some(150));
+        assert_eq!(usage.output_tokens, Some(40));
+        assert_eq!(usage.total_tokens, Some(190));
+        let price = serde_json::from_value(json!({"currency":"USD","input_token":1e-6,"cache_input_token":0.1e-6,"cache_write_input_token":1.25e-6,"cache_write_1h_input_token":2e-6,"output_token":5e-6})).unwrap();
+        let pinned = crate::execution::PinnedPricingSnapshot::from_pricing(
+            &price,
+            None,
+            std::time::SystemTime::now(),
+        )
+        .unwrap()
+        .unwrap();
+        assert!((pinned.completion_cost(&usage).unwrap().amount - 0.000347).abs() < 1e-12);
     }
 }

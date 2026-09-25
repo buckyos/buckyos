@@ -1418,12 +1418,18 @@ fn decode_embedding_usage(value: &Value) -> ProtocolResultValue<Option<AiUsage>>
         total_tokens: total,
         cache_read_input_tokens: usage.get("cachedContentTokenCount").and_then(Value::as_u64),
         cache_write_input_tokens: None,
+        cache_write_1h_input_tokens: None,
         reasoning_tokens: usage.get("thoughtsTokenCount").and_then(Value::as_u64),
         image_units: None,
         audio_seconds: None,
         video_seconds: None,
         request_units: None,
         characters: None,
+        audio_input_tokens: None,
+        image_input_tokens: None,
+        audio_output_tokens: None,
+        image_output_tokens: None,
+        reported_cost: None,
         cost: None,
     }))
 }
@@ -1782,6 +1788,21 @@ fn required_output_string(value: &Value, field: &str) -> ProtocolResultValue<Str
         })
 }
 
+fn modality_tokens(
+    usage: &serde_json::Map<String, Value>,
+    dimension: &str,
+    modality: &str,
+) -> Option<u64> {
+    usage
+        .get(dimension)?
+        .as_array()?
+        .iter()
+        .filter(|entry| entry.get("modality").and_then(Value::as_str) == Some(modality))
+        .try_fold(0u64, |total, entry| {
+            total.checked_add(entry.get("tokens")?.as_u64()?)
+        })
+}
+
 fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
     let Some(value) = value else {
         return Ok(None);
@@ -1790,7 +1811,19 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         .as_object()
         .ok_or_else(|| ProtocolError::invalid_response("Gemini usage must be an object"))?;
     let input = object.get("total_input_tokens").and_then(Value::as_u64);
-    let output = object.get("total_output_tokens").and_then(Value::as_u64);
+    let reasoning = object
+        .get("total_thought_tokens")
+        .or_else(|| object.get("thoughts_token_count"))
+        .and_then(Value::as_u64);
+    let output = object
+        .get("total_output_tokens")
+        .and_then(Value::as_u64)
+        .map(|output| {
+            output
+                .checked_add(reasoning.unwrap_or(0))
+                .ok_or_else(|| ProtocolError::invalid_response("Gemini output usage overflow"))
+        })
+        .transpose()?;
     let total = object
         .get("total_tokens")
         .and_then(Value::as_u64)
@@ -1803,10 +1836,12 @@ fn decode_usage(value: Option<&Value>) -> ProtocolResultValue<Option<AiUsage>> {
         input_tokens: input,
         output_tokens: output,
         total_tokens: total,
-        cache_read_input_tokens: object
-            .get("cached_content_token_count")
-            .and_then(Value::as_u64),
-        reasoning_tokens: object.get("thoughts_token_count").and_then(Value::as_u64),
+        cache_read_input_tokens: object.get("total_cached_tokens").and_then(Value::as_u64),
+        audio_input_tokens: modality_tokens(object, "input_tokens_by_modality", "audio"),
+        image_input_tokens: modality_tokens(object, "input_tokens_by_modality", "image"),
+        audio_output_tokens: modality_tokens(object, "output_tokens_by_modality", "audio"),
+        image_output_tokens: modality_tokens(object, "output_tokens_by_modality", "image"),
+        reasoning_tokens: reasoning,
         request_units: None,
         ..AiUsage::default()
     }))
@@ -3485,5 +3520,28 @@ mod tests {
             files.delete(&ctx, "files/abc-123").unwrap().method,
             Method::DELETE
         );
+    }
+}
+
+#[cfg(test)]
+mod billing_usage_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn normalized_usage_settles_with_cache_and_thinking_dimensions() {
+        let wire = json!({"total_input_tokens":150,"total_output_tokens":30,"total_thought_tokens":10,"total_cached_tokens":20,"total_tokens":190});
+        let usage = decode_usage(Some(&wire)).unwrap().unwrap();
+        assert_eq!(usage.input_tokens, Some(150));
+        assert_eq!(usage.output_tokens, Some(40));
+        assert_eq!(usage.total_tokens, Some(190));
+        let price = serde_json::from_value(json!({"currency":"USD","input_token":1e-6,"cache_input_token":0.1e-6,"cache_write_input_token":1.25e-6,"cache_write_1h_input_token":2e-6,"output_token":5e-6})).unwrap();
+        let pinned = crate::execution::PinnedPricingSnapshot::from_pricing(
+            &price,
+            None,
+            std::time::SystemTime::now(),
+        )
+        .unwrap()
+        .unwrap();
+        assert!((pinned.completion_cost(&usage).unwrap().amount - 0.000332).abs() < 1e-12);
     }
 }

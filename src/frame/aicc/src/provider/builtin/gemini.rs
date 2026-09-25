@@ -140,7 +140,9 @@ impl ProviderDiscovery for GeminiDiscovery {
                 .map_err(|error| ProviderError::Discovery(error.to_string()))?;
             ensure_success(&response)?;
             let page: ModelsResponse = serde_json::from_slice(&response.body).map_err(|error| {
-                ProviderError::Discovery(format!("Gemini models response is invalid: {error}"))
+                ProviderError::DiscoveryResponse(format!(
+                    "Gemini models response is invalid: {error}"
+                ))
             })?;
             for model in page.models {
                 let model = model.into_discovered()?;
@@ -148,7 +150,7 @@ impl ProviderDiscovery for GeminiDiscovery {
                     .insert(model.provider_model_id.clone(), model)
                     .is_some()
                 {
-                    return Err(ProviderError::Discovery(
+                    return Err(ProviderError::DiscoveryResponse(
                         "Gemini Models API returned a duplicate model".to_owned(),
                     ));
                 }
@@ -166,13 +168,13 @@ impl ProviderDiscovery for GeminiDiscovery {
                 return Ok(snapshot);
             };
             if !seen_page_tokens.insert(next_page_token.clone()) {
-                return Err(ProviderError::Discovery(
+                return Err(ProviderError::DiscoveryResponse(
                     "Gemini Models API repeated a page token".to_owned(),
                 ));
             }
             page_token = Some(next_page_token);
         }
-        Err(ProviderError::Discovery(
+        Err(ProviderError::DiscoveryResponse(
             "Gemini Models API exceeded the pagination limit".to_owned(),
         ))
     }
@@ -241,10 +243,15 @@ fn ensure_success(response: &HttpResponse) -> ProviderResult<()> {
                 .unwrap_or("request failed")
                 .to_owned()
         });
-    Err(ProviderError::Discovery(format!(
+    let message = format!(
         "Gemini models request failed with status {} (request {}): {message}",
         response.status, response.request_id
-    )))
+    );
+    Err(if matches!(response.status.as_u16(), 401 | 403) {
+        ProviderError::Credential(message)
+    } else {
+        ProviderError::Discovery(message)
+    })
 }
 
 #[derive(Deserialize)]
@@ -265,15 +272,14 @@ struct ModelObject {
 impl ModelObject {
     fn into_discovered(self) -> ProviderResult<DiscoveredModel> {
         let provider_model_id = model_id(&self.name)?;
-        let origin_model_id = match self.base_model_id {
-            Some(value) if !value.trim().is_empty() => Some(model_id(&value)?),
-            _ => None,
-        };
+        if let Some(value) = self.base_model_id.filter(|id| !id.trim().is_empty()) {
+            model_id(&value)?;
+        }
         Ok(DiscoveredModel {
             provider_model_id,
-            origin_model_id,
             api_types: None,
             supported_features: None,
+            unsupported_features: BTreeSet::new(),
             remote_methods: None,
             availability: ModelAvailability::Available,
             deprecated: false,
@@ -287,7 +293,7 @@ fn model_id(resource_name: &str) -> ProviderResult<String> {
         .strip_prefix("models/")
         .unwrap_or(resource_name);
     if id.is_empty() || id.contains('/') || id.contains('@') {
-        return Err(ProviderError::Discovery(
+        return Err(ProviderError::DiscoveryResponse(
             "Gemini model name is not a valid models/* resource".to_owned(),
         ));
     }
@@ -453,7 +459,6 @@ mod tests {
                 "account": {"mode": "unsupported"}
             })
         );
-        assert_eq!(rules.metadata_drivers, Some(vec!["gemini".to_owned()]));
         assert_eq!(
             rules.patterns[0].operations["embedding.multimodal"],
             GEMINI_EMBED_CONTENT_OPERATION_ID
@@ -581,7 +586,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             model.into_discovered(),
-            Err(ProviderError::Discovery(_))
+            Err(ProviderError::DiscoveryResponse(_))
         ));
     }
 
@@ -605,9 +610,9 @@ mod tests {
                 health: ProviderHealthState::Healthy,
                 models: vec![DiscoveredModel {
                     provider_model_id: "gemini-3.8-flash".to_owned(),
-                    origin_model_id: None,
                     api_types: None,
                     supported_features: None,
+                    unsupported_features: BTreeSet::new(),
                     remote_methods: None,
                     availability: ModelAvailability::Available,
                     deprecated: false,

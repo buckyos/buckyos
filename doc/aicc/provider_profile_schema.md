@@ -25,7 +25,7 @@ AICC 不应把所有 Provider 都实现成同一种声明式配置，但 Provide
 
 这些逻辑不作为外部 Provider 参数配置暴露。Provider API 升级且确实改变上述执行逻辑时，由专用实现和测试一起升级。
 
-专用 Provider 仍然必须使用本厂商独立的 `.provider.json`，并复用 Model Driver metadata。模型身份映射、moving alias、Provider variant、operation 选择、请求参数差异、能力收窄和静态价格等常规内容必须优先写入 `.provider.json`，不能因为 Provider 是内置专用实现就硬编码。只有统一配置 schema 无法安全表达的个性逻辑才允许留在代码中。
+专用 Provider 仍然必须使用本厂商独立的 `.provider.json`，并复用 Model Driver metadata。Provider variant 转换、operation、请求参数差异、能力收窄和静态价格写入 `.provider.json`。身份特例和已确认的 moving alias 由可选 `match_model_driver` 实现，不再配置 origin 变换 DSL。只有统一配置 schema 无法安全表达的个性逻辑才允许留在代码中。
 
 ### 1.2 配置型 Provider
 
@@ -39,11 +39,9 @@ AICC 不应把所有 Provider 都实现成同一种声明式配置，但 Provide
 - 少量模型需要指定不同 operation；
 - Provider 无法查询实时价格，但有已核实且适用的渠道静态价格时，可在 Provider Rules 中声明；否则保持 unknown。
 
-正式发布的配置型 Provider 由独立 Known Provider 和 Provider Rules 定义。运行时动态枚举有效 catalog 中的全部 Known Provider，为未注册专用行为的 Profile 按 `protocol_adapter_id` 的协议族装配标准模型发现；发现失败时才合并 Provider Rules `models[]` 与 `metadata_drivers` 明确引用的 Model Driver exact `models[]` 形成静态兜底 inventory。Provider Rules 的显式 `exclude` 优先，pattern 因不能枚举具体模型而只参与匹配。metadata 更新后该兜底 inventory 必须随新 snapshot 重建。Known Provider 引用的 `protocol_adapter_id` 必须已经存在于当前客户端的 runtime registry。
+正式发布的配置型 Provider 由有效 Known Provider 和 Provider Rules 装配。静态库存仅来自 `static_inventory_models` 或实例明确配置的 discovery snapshot；`models[]` 技术规则和 Model Driver 全量定义均不是上线清单。默认库存随当前有效 catalog 刷新。发现失败的显式 fallback 标为 Degraded，认证和整份响应格式错误必须报告。
 
-`custom` Provider 的默认 Provider Rules 是 `{}`。它不获得任何厂商专用命名映射或参数特判：discovery 返回的 `provider_model_id` 同时作为待解析的 `origin_model_id`，按原名依次匹配系统当前安装的全部 Model Driver catalog。必须唯一命中才能取得对应原厂、默认参数和默认行为；多重命中按歧义拒绝，完全未命中进入统一 conservative fallback。标准名 `gpt-5.6-sol` 可以直接匹配，`openai/gpt-5.6-sol` 之类渠道前缀不会被自动去除。
-
-如果一个 Provider 需要复杂状态机、特殊认证算法、新的流式格式或特殊错误恢复，应在先完成声明化评审后升级为专用 Provider。成为专用 Provider 只增加必要的行为实现，不取消其 `.provider.json`；大量模型专用分支通常说明规则尚未正确配置化，不能作为直接写代码的理由。
+`custom` 无厂商特例，统一在全部 Model Driver 精确 ID 集合中匹配。`gpt-5.6-sol` 完全匹配；带命名空间或日期的 ID 可受限包含匹配。未命中或歧义只隔离该模型并列入 unmatched，不生成猜测能力。
 
 ## 2. 配置文件原则
 
@@ -72,7 +70,7 @@ Provider 参数配置是官方支持 Provider 的渠道声明层，不是可执�
 
 - protocol adapter 的具体实现；
 - refresh interval；
-- 无匹配时使用 conservative fallback；
+- 无匹配时记录 unmatched，不进入库存；
 - 多个 Model Driver 同时匹配时拒绝解析；
 - discovery 失败策略；
 - 配置加载、schema 解析，以及由 NDN `metadata_target_seq` 和 Provider `metadata_applied_seq` 驱动的全局库存收敛机制。
@@ -187,54 +185,26 @@ GLM JWT 使用同一个 `api_key` 模式并显式选择 typed credential variant
 
 Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯一 metadata 来源。每项必须直接包含 typed `credential`、`connection` 与 `discovery_behavior_id`，可按需声明 `dynamic_login_behavior_id`、`connection_behavior_id`，不得从 `ui_hints` 推断。`CatalogSnapshot::resolve_provider_configuration()` 同时解析 Known Provider 和其 `provider_rules_id`，校验 Rules 存在且 identity 一致后，返回默认配置与稳定 behavior IDs。
 
-行为 registry 以稳定 behavior ID 注册 discovery、动态登录或其它不可声明执行行为，不是 Provider Profile 白名单。Known Provider 必须在 metadata 中选择已注册 discovery behavior；通用 OpenAI-compatible/Claude/Gemini discovery 也有稳定 ID，可由任意新 Profile 复用。refresh 时从当前 Provider Rules 和明确引用的 Model Driver exact models 重建仅在机器发现失败时启用的 default inventory。任何未知或冲突 behavior 均拒绝装配，不允许读取 `ui_hints`、按 Provider ID 猜测或静默 first-match。
+行为 registry 以稳定 behavior ID 注册 discovery、动态登录或其它不可声明执行行为，不是 Provider Profile 白名单。Known Provider 必须在 metadata 中选择已注册 discovery behavior；通用 OpenAI-compatible/Claude/Gemini discovery 也有稳定 ID，可由任意新 Profile 复用。refresh 时从当前 Provider Rules 的 `static_inventory_models` 重建显式 default inventory。任何未知或冲突 behavior 均拒绝装配，不允许读取 `ui_hints`、按 Provider ID 猜测或静默 first-match。
 
 可选 credential 由 typed `credential_variants[]` 声明，实例在 `auth.mode=api_key` 时用 `credential_kind` 显式选择；省略则使用 `credential` 默认值。区域入口由 typed `connection.region_base_urls` 声明，只有实例未显式提供 `base_url` 时才按解析后的 region 选择。GLM 的 `glm_jwt` 和 GLM/MiniMax 的区域入口均通过这两个 typed 字段进入 production registry。SN 的 `device_jwt` 是 SN 登录实现支持的稳定行为 ID，由显式 `auth.login_profile` 选择和校验，不从可选的 `ui_hints` 推断。
 
 ### 3.1 Model Driver metadata 管理
 
-2026-09-25 LLM 目标修订见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)：一个原厂一份 Model Driver，顶层 `specs` 声明规格，主体 `models[]` 定义官方模型 ID、能力以及 `llm` 规格归属、`effort`、`default_effort`、`supported_efforts`；版本排序值从官方模型 ID 推导（如 `5.6 -> 560`），不逐模型配置。AICC 据此生成规格和动态家族，Provider 不维护另一套规格；同一官方模型在不同 Provider 的实例挂入同一个 `llm.{归一化官方模型ID}` 家族。下表与现有 variant 词汇表仍描述 v1 实现，新的字段尚待实现。
+Model Driver v2 声明精确模型 ID、API/能力、LLM 规格和 supported_efforts。版本由官方 ID 的数值元组独立排序；无价格、参数模板或可用性。有限 pattern 在编译时展开为精确 ID，通配模型成员关系被拒绝。
 
-| 字段 | 说明 |
+### 3.2 Provider Rules 管理
+
+| 字段 | 职责 |
 | --- | --- |
-| `models` / `patterns` | 对原厂模型名的 exact/pattern 匹配规则 |
-| `parameter_scale` | 模型参数规模或分类 |
-| `api_types` | 模型固有的 AICC 能力类型 |
-| `logical_mounts` | 模型家族和逻辑目录挂载 |
-| `capabilities` | 模型固有能力和上下文限制 |
-| `quality_score` | 与交付渠道无关的模型质量估计 |
-| `version_rules` | 家族、tier、版本排序和稳定性规则 |
-| `variants` | v1 显式声明语义 variant；LLM v2 从 `supported_efforts` 派生，不再重复配置 |
-| 价格 | 不属于 Model Driver；不声明 `model_pricing`，也不提供默认价格或成本兜底 |
+| `static_inventory_models` | 明确的渠道库存，不从技术/价格规则推导 |
+| `supplemental_inventory_api_types` | 动态查询未覆盖、允许静态补充的 API 集合 |
+| `models` / `patterns` | operation、参数、排除、能力收窄 |
+| `variants` | 渠道可准确执行的参数映射，与 Model Driver supported_efforts 求交 |
+| `model_pricing` | 渠道价格；可按模型和 region/workspace/account 匹配 |
+| `reported_cost` | 自报实际费用的 currency 和 `total_request_cost` 语义 |
 
-当前 v1 实现中，Model Driver 的 variant 定义语义身份，例如 `reasoning-high`，并可携带原厂默认 `provider_options`。配置型 Provider 命中该具体模型的任一 variant 时，由 Provider 配置中的 `variants` 完整定义该模型的 variant 集合和请求参数；完全未命中时才使用 Model Driver 默认值。LLM v2 目标取消这份 Model Driver `variants` 表及参数兜底。
-
-variant 名称是 Model Driver 与 Provider Rules 共用的封闭词汇表，Model Driver 的 `variants[].name` 和 Provider 的 `variants[].variant` 都必须使用 `driver_metadata_schema.md` 中 Variant naming 定义的统一档位名（`reasoning-none` / `reasoning-mini` / `reasoning-low` / `reasoning-medium` / `reasoning-high` / `reasoning-xhigh` / `reasoning-max`）。厂商自己的档位名（`effort-*`、`thinking-*`、`minimal`、`normal` 等）只能在 `provider_options` 中表达，不得作为 variant 名。
-
-LLM v2 中，Model Driver 只用 `supported_efforts` 声明可用强度，AICC 据此派生 `reasoning-{effort}` 身份；标准参数转换由 Protocol Adapter 负责，Provider Rules 只处理渠道映射和限制。Provider variant 规则命中模型时，其完整集合与模型支持的 effort 取交集；未命中时使用 Adapter 支持的标准转换，不再向 Model Driver 查参数模板，也不要求 Provider 逐模型复制同一套映射。
-
-进入家族固定预设的实例必须能执行其 effort，无法转换或被渠道限制时跳过，不能改用默认强度。Provider variant 不扩大模型支持的强度，也不改变规格归属。`thinking` 派生为 `reasoning-thinking`（须同步扩展校验），`native` 对应不可调节的 base exact model，不附加 effort 参数。规格或固定预设选中后，请求参数和渠道重写均不得静默覆盖其思考强度。以上转换和库存展开尚待实现；当前仅简化 OpenAI v2 配置并更新文档。
-
-### 3.2 配置型 Provider 管理
-
-| 用途 | 配置字段 |
-| --- | --- |
-| 限定参与匹配的 Model Driver metadata | `metadata_drivers` |
-| Provider 厂商 slug 映射 | `origin_provider_aliases` |
-| `provider_model_id` 到原厂身份的确定性映射 | `origin_mappings` |
-| 渠道专属排除规则 | `models[].exclude` / `patterns[].exclude` |
-| 选择按渠道模型名、原厂模型名或其它维度匹配 | `match: MatchRule`；字符串默认匹配渠道模型名 |
-| Provider 请求参数 | `provider_options` / `variants` |
-| 模型级请求默认值、改写和参数删除 | `request_rules` |
-| Provider 渠道价格 | `model_pricing`（与技术规则并列的独立价格表） |
-| 按质量、尺寸、时长等请求维度计价 | `model_pricing[].pricing.rules` |
-| 按输入长度等用量档位计价 | `model_pricing[].pricing.tiers` |
-| 按峰谷时段分时计价 | `model_pricing[].pricing.time_windows` |
-| 模型使用的具体接口 | `operations` |
-| Provider 无法提供的模型能力 | `remove_api_types` / `remove_features` |
-| 渠道延迟和成本提示 | `estimated_latency_ms` / `latency_class` / `cost_class` |
-
-Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固有能力。
+native 使用 base；其他预设为 `reasoning-{effort}`，包括 minimal 和 thinking。模型侧不再重复定义 variants。非法 exact/cached 预设被拒绝；无映射的合法 effort 进入 unavailable_presets。调用参数不能覆盖已选定预设。
 
 ### 3.3 fal 的临时模型归属
 
@@ -242,38 +212,13 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 
 ## 4. Custom Provider 的最小规则
 
-```json
-{}
-```
-
-`{}` 只承诺标准协议和标准模型名，不做 prefix/suffix stripping、vendor alias、moving alias 或其它重命名。系统按原始 `provider_model_id` 在全部 Model Driver 中执行 exact → pattern 匹配；唯一命中某个 Driver 后再合并该 Driver 的 defaults，零命中走 conservative fallback，多重命中拒绝。各 Driver 的 defaults 不能单独用于跨 Driver 猜测原厂。
-
-当一个 Provider 需要以下可选字段时，它已经拥有厂商规则，不再属于纯 `{}` 语义；应创建或更新官方 `.provider.json`：
+省略厂商规则时仍可使用通用身份匹配。人工修正使用实例：
 
 ```json
-{
-  "metadata_drivers": [],
-  "static_inventory_models": [],
-  "origin_provider_aliases": {},
-  "origin_mappings": [],
-  "models": [],
-  "patterns": [],
-  "model_pricing": [],
-  "variants": []
-}
+{"instance_rules":{"model_driver_overrides":{"stable/gpt-5-6":"openai/gpt-5.6"},"exclude_models":[]}}
 ```
 
-- `metadata_drivers`：参与匹配的 Model Driver 列表；省略时搜索系统当前安装的全部 Model Driver。
-- `static_inventory_models`：Provider `/models` 暂时不能枚举、但厂商文档确认可通过专用接口调用的 `provider_model_id` 列表；专用 discovery 可将其与机器发现结果取并集。通常应为空，仅作为临时补丁，方便后续拆卸。
-- `origin_provider_aliases`：Provider 命名中的厂商 slug 到 Model Driver 名称的映射。
-- `origin_mappings`：可以从命名确定性解析原厂身份时使用的特殊映射。
-- `models`：按完整 `provider_model_id` 精确匹配的 Provider 规则。
-- `patterns`：有序 Provider 规则；每项的 `match` 通常直接写匹配完整 `provider_model_id` 的 wildcard 字符串，多维条件才写对象。
-- `variants`：将语义 variant 转换为 Provider 请求参数；variant 名必须使用统一档位名，厂商档位差异写在 `provider_options`。LLM v2 中语义身份从模型的 `supported_efforts` 派生，Adapter 已支持的标准转换不要求在此重复声明。
-
-不增加 `refresh_interval_sec`、`on_no_match`、`on_ambiguous`、`failure_policy`、`protocol_adapter` 等程序固定字段。
-
-`metadata_drivers` 显式为空数组表示不使用 Model Driver metadata，所有模型进入 conservative fallback；字段省略则搜索系统当前安装的全部 Model Driver。未配置 `origin_mappings` 时只能按原始完整模型名匹配，不得自动删除厂商前缀、后缀或别名。
+目标必须是存在的精确 `driver/model_id`。无效 override 是终止失败，不继续通用匹配。实例和 Provider 主动排除不算 unmatched。
 
 ## 5. 模型规则
 
@@ -370,7 +315,7 @@ method exact key > api_type key > adapter default operation
 }
 ```
 
-`model_driver` 不属于 Provider 模型规则。它是 Model Driver 唯一匹配后的解析结果；Provider 只通过 `metadata_drivers` 限定候选范围，少数确定性命名通过 `origin_mappings` 提供快捷映射。当前 metadata 规则中已有的 `model_driver` override 需要在拆分时重新审查，不复制到 Provider 配置。
+`model_driver` 不属于 Provider 模型规则。它是 Model Driver 唯一匹配后的解析结果；Provider 不限定 driver 白名单；可选 matcher 返回 Matched / NotHandled / Failed，成功目标仍须精确校验。
 
 operation 是现有 adapter 已实现的符号名称，不是任意 URL。adapter 自己知道 operation 使用的 endpoint、请求结构和异步流程。
 
@@ -550,25 +495,9 @@ Model Driver 静态能力
 
 ## 6. 匹配流程
 
-```text
-Provider discovery 获得 provider_model_id
-    ↓
-应用 Provider models / patterns 排除规则
-    ↓
-在 metadata_drivers 限定范围内搜索 Model Driver metadata
-    ↓
-唯一匹配一个 Model Driver
-    ↓
-确定 origin driver / origin model
-    ↓
-应用 Model Driver 的模型语义
-    ↓
-合并 operation、价格、请求参数和能力限制
-    ↓
-生成 Provider Instance 级 inventory
-```
+实例 model_driver_overrides → Provider matcher → 完全匹配 → 忽略大小写的最长受限包含 → unmatched。匹配段前须为字符串开头或非字母数字，末尾只允许空或日期形状后缀；同长候选为歧义。Provider Failed 和无效 Matched 均不得继续通用匹配。已知浮动别名未确认版本或缺 metadata 时使用 unresolved_alias。
 
-无匹配、冲突和 fallback 行为由程序统一处理，不由每份配置选择。
+匹配成功后求交模型事实、Adapter 支持和真实渠道限制，再应用参数/价格映射并生成合法预设。warning 对未变化的 `(instance, model, reason)` 去重。`list_providers.inventory` 暴露 `unmatched_models`、`unavailable_presets`、`unpriced_models`，刷新响应增加 `unmatched_count`。
 
 ## 7. 价格优先级
 
@@ -588,9 +517,7 @@ Provider Rules 的静态价格不能覆盖更新鲜且适用于本次调用的�
 结算时 Provider 响应中的实际费用优先；没有实际费用且缺少完整适用的价格与用量时，费用仍为
 unknown，不得标记为财务完整。估值与实际费用必须区分。
 
-2026-09-25 配置与文档修订：builtin Model Driver 的价格表已全部移除。当前运行时代码仍有
-Model Driver 价格字段和 fallback，尚待 Review 确认后删除，并同步价格来源展示、库存重建和
-相关测试；此处描述目标行为，不代表实现已经切换。
+2026-09-25 已实现：统一 cache/模态 usage，缺失费率与超档返回 unknown，自报费用必须声明币种。价格含 source_url/verified_at，异常比例需要 ratio_exception；动态价格和 catalog 使用相同校验。详见 [Provider 升级记录](provider_upgrade_implementation.md)。
 
 ## 8. OpenAI 官方 Provider 示例
 
@@ -598,7 +525,6 @@ OpenAI 是官方内置专用 Provider。程序固定实现 discovery 和调用�
 
 ```json
 {
-  "metadata_drivers": ["openai"],
   "patterns": [
     {
       "match": "*",
@@ -610,7 +536,7 @@ OpenAI 是官方内置专用 Provider。程序固定实现 discovery 和调用�
 }
 ```
 
-示例只展示边界，不取代完整 operation 表。OpenAI 官方 Provider 不使用 `{}` 的 custom 语义，也不依赖 Rust 中隐藏的 `metadata_drivers` 或 operation 映射。
+示例只展示边界，不取代完整 operation 表。OpenAI 官方 Provider 不使用 `{}` 的 custom 语义，operation 使用有效配置中的明确映射。
 
 ## 9. OpenRouter 示例
 
@@ -628,72 +554,11 @@ OpenRouter 是内置专用 Provider，而不是配置型 Provider。
 
 OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模型固有能力，候选范围、命名解析、排除规则、operation 和静态价格规则均以 `openrouter.provider.json` 为真相源。只有 Models API 交互、无法声明化的响应/事件解析等执行逻辑留在专用实现中。
 
-## 10. Custom Provider 与正式渠道映射示例
+## 10. 特殊命名和浮动别名
 
-假设用户自建 `example-proxy`，明确知道它兼容 OpenAI 协议，并且它原样提供 `gpt-5.6-sol`、`claude-sonnet-4-6` 等标准模型名。用户创建 `custom` Provider、选择 `openai` 协议族、填写连接和凭据；接入测试解析具体 Adapter 后，其 Provider Rules 为：
+OpenRouter matcher 解析 vendor/model，anthropic → claude、google → gemini、moonshotai → kimi、z-ai → glm，然后校验模型 ID。无法绑定的浮动/变体调用名保留在 discovery 并产生 unresolved_alias，不静默过滤。
 
-```json
-{}
-```
-
-系统不会因为选择了 OpenAI 协议族就只搜索 OpenAI Model Driver，而是按原始模型名搜索全部 Model Driver。协议族决定怎么调用，模型名匹配决定模型来自哪个原厂以及采用什么默认 metadata。
-
-如果该代理返回 `openai/gpt-5.6-sol`，空规则不会自动删除 `openai/`，因此不能把它当作 `gpt-5.6-sol`。若要让这种非标准命名成为系统正式支持的渠道行为，项目方必须为它发布独立 `.provider.json`，像 OpenRouter 一样显式声明 origin mapping，例如：
-
-```json
-{
-  "metadata_drivers": [
-    "openai",
-    "claude"
-  ],
-  "origin_provider_aliases": {
-    "anthropic": "claude"
-  },
-  "origin_mappings": [
-    {
-      "extract": {
-        "source": "provider_model_id",
-        "regex": "^(?<driver>[^/]+)/(?<model>.+)$"
-      },
-      "transforms": {
-        "driver": [
-          {
-            "op": "lowercase"
-          },
-          {
-            "op": "alias",
-            "table": "origin_provider_aliases",
-            "on_missing": "keep"
-          }
-        ],
-        "model": [
-          {
-            "op": "trim"
-          }
-        ]
-      }
-    }
-  ],
-  "patterns": [
-    {
-      "match": "*:*",
-      "exclude": true
-    },
-    {
-      "match": "*/*latest*",
-      "exclude": true
-    },
-    {
-      "match": "openai/gpt-5*",
-      "operations": {
-        "llm": "chat.completions.create"
-      }
-    }
-  ]
-}
-```
-
-这类映射一旦存在，便是该 Provider 的官方渠道规则，不再属于 `{}` custom Provider 的默认行为。
+DeepSeek 官方旧 V4 Flash 调用名已重定向，V4.1 metadata 尚未接入时隔离为 unresolved_alias；其它 Provider 的固定 V4 Flash 身份不受影响。自定义网关需要点号/连字符归一化时，实现局部 matcher 或配置精确 instance override；不更改全局匹配语义。
 
 ## 11. 文件选择与规则解析语义
 
@@ -702,7 +567,7 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 - map 按 key 覆盖；
 - `models` 按 `id` 覆盖同名 exact rule；
 - `patterns` 出现时整体替换默认有序列表；每项的 `match` 使用统一 `MatchRule`，通常是字符串 wildcard；
-- `origin_mappings` 出现时整体替换，避免合并后产生不可解释的顺序；
+- matcher 返回的失败不允许后续通用匹配；
 - v1 的 `variants` 不按静态身份键与 Model Driver 去重：具体模型命中 Provider Rules 时完全采用 Provider 集合，否则使用 Model Driver `variants`。LLM v2 目标改为由 `supported_efforts` 派生语义身份，匹配的 Provider 集合只能收窄它；没有 Provider variant 匹配时使用 Adapter 标准转换，不再回退到 Model Driver 参数模板（见 §3.1）；
 - 字段缺失继续使用默认值；
 - `{}` 仅用于 `custom` Provider：使用 Adapter 标准协议行为、保留原始模型名并搜索全部 Model Driver，不启用任何厂商映射。
@@ -722,7 +587,7 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 7. SN 使用独立 `sn-openai` Adapter，并以 `openai-responses` 为 `base_adapter_id`；支持 `api_key` 与 `dynamic_login` 两种认证模式。
 8. 基础 Adapter 不依赖派生 Adapter。派生 Provider 的删除测试必须证明不需要修改基础 Adapter。
 9. 官方 Profile 默认新接口；自定义 Provider 接入测试先测新接口，再测已注册的历史接口，用户不选择接口版本。解析完成后新旧 Adapter 不互相 fallback，只复用协议中立的底层组件。
-10. Model Driver、Provider Rules、request/pricing rules 和发布 track 统一使用 `MatchRule`；简单规则保持 wildcard 字符串，多维条件才展开为对象，各业务模块不得再实现独立匹配 DSL。
+10. Provider Rules、request/pricing rules 和发布 track 复用 `MatchRule`；Model Driver 成员关系只允许有限精确 ID，不用通配符引入未知模型。
 11. 每个官方支持的 Provider（包括内置专用 Provider）必须提供独立 `.provider.json`；每个模型原厂必须提供独立 `.model.json`。Rust builtin 模块不得构造生产用 `ProviderRulesCatalog`、`KnownProviderCatalog` 或模型 metadata 作为第二真相源。
-12. 未被官方支持的小型或自建代理可注册为 `custom` Provider，并用 `{}` 表示无渠道规则。其协议族只决定调用协议；模型归属必须按未改写的 `provider_model_id` 搜索全部 Model Driver，零命中 conservative fallback，多重命中拒绝。
+12. 未被官方支持的小型或自建代理可注册为 `custom` Provider，并用 `{}` 表示无渠道规则。其协议族只决定调用协议；模型归属必须通过统一匹配链搜索全部 Model Driver，零命中和多重命中均记录 unmatched，只隔离该模型。
 13. 特殊 dialect 必须先尝试由 `.provider.json` 的有界声明表达；schema 不足时先评审统一 schema 扩展。只有无法安全声明化的 wire、认证、流式/任务状态机或错误语义才进入代码，并保持最小差异面。

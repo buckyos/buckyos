@@ -4,7 +4,16 @@
   "schema_revision": 1,
   "revision_seq": 2,
   "provider_profile_id": "glm",
-  "metadata_drivers": ["glm"],
+  "supplemental_inventory_api_types": [
+    "image.txt2img",
+    "audio.asr",
+    "audio.tts",
+    "embedding.text",
+    "video.txt2video",
+    "video.img2video",
+    "video.ref2video",
+    "video.edit"
+  ],
   "static_inventory_models": [
     "glm-image",
     "cogview-4-250304",
@@ -24,91 +33,869 @@
     "vidu2-reference"
   ],
   "models": [
-    { "id": "glm-image", "operations": { "image.txt2img": "images.generate" } },
-    { "id": "cogview-4-250304", "operations": { "image.txt2img": "images.generate" } },
-    { "id": "cogview-4", "operations": { "image.txt2img": "images.generate" } },
-    { "id": "cogview-3-flash", "operations": { "image.txt2img": "images.generate" } },
-    { "id": "glm-asr-2512", "operations": { "audio.asr": "audio.transcriptions" } },
+    {
+      "id": "glm-image",
+      "operations": {
+        "image.txt2img": "images.generate"
+      }
+    },
+    {
+      "id": "cogview-4-250304",
+      "operations": {
+        "image.txt2img": "images.generate"
+      }
+    },
+    {
+      "id": "cogview-4",
+      "operations": {
+        "image.txt2img": "images.generate"
+      }
+    },
+    {
+      "id": "cogview-3-flash",
+      "operations": {
+        "image.txt2img": "images.generate"
+      }
+    },
+    {
+      "id": "glm-asr-2512",
+      "operations": {
+        "audio.asr": "audio.transcriptions"
+      }
+    },
     {
       "id": "glm-tts",
-      "operations": { "audio.tts": "audio.speech" },
+      "operations": {
+        "audio.tts": "audio.speech"
+      },
       "canonical_fields": {
         "/voice": {
           "converter": "glm_tts_voice_v1",
-          "fallback": { "action": "default", "value": {} }
+          "fallback": {
+            "action": "default",
+            "value": {}
+          }
         }
       }
     },
-    { "id": "embedding-3", "operations": { "embedding.text": "embeddings.create" } },
-    { "id": "embedding-2", "operations": { "embedding.text": "embeddings.create" } },
-    { "id": "cogvideox-3", "operations": { "video.txt2video": "videos.generate", "video.img2video": "videos.generate" } },
-    { "id": "cogvideox-flash", "operations": { "video.txt2video": "videos.generate", "video.img2video": "videos.generate" } },
-    { "id": "viduq1-text", "operations": { "video.txt2video": "videos.generate" } },
-    { "id": "viduq1-image", "operations": { "video.img2video": "videos.generate" } },
-    { "id": "viduq1-start-end", "operations": { "video.img2video": "videos.generate" } },
-    { "id": "vidu2-image", "operations": { "video.img2video": "videos.generate" } },
-    { "id": "vidu2-start-end", "operations": { "video.img2video": "videos.generate" } },
-    { "id": "vidu2-reference", "operations": { "video.img2video": "videos.generate" } }
+    {
+      "id": "embedding-3",
+      "operations": {
+        "embedding.text": "embeddings.create"
+      }
+    },
+    {
+      "id": "embedding-2",
+      "operations": {
+        "embedding.text": "embeddings.create"
+      }
+    },
+    {
+      "id": "cogvideox-3",
+      "operations": {
+        "video.txt2video": "videos.generate",
+        "video.img2video": "videos.generate"
+      }
+    },
+    {
+      "id": "cogvideox-flash",
+      "operations": {
+        "video.txt2video": "videos.generate",
+        "video.img2video": "videos.generate"
+      }
+    },
+    {
+      "id": "viduq1-text",
+      "operations": {
+        "video.txt2video": "videos.generate"
+      }
+    },
+    {
+      "id": "viduq1-image",
+      "operations": {
+        "video.img2video": "videos.generate"
+      }
+    },
+    {
+      "id": "viduq1-start-end",
+      "operations": {
+        "video.img2video": "videos.generate"
+      }
+    },
+    {
+      "id": "vidu2-image",
+      "operations": {
+        "video.img2video": "videos.generate"
+      }
+    },
+    {
+      "id": "vidu2-start-end",
+      "operations": {
+        "video.img2video": "videos.generate"
+      }
+    },
+    {
+      "id": "vidu2-reference",
+      "operations": {
+        "video.img2video": "videos.generate"
+      }
+    }
   ],
   "patterns": [
     {
       "match": "*",
-      "operations": { "llm": "chat.completions.create", "vision.ocr": "chat.completions.create", "vision.caption": "chat.completions.create" }
+      "operations": {
+        "llm": "chat.completions.create",
+        "vision.ocr": "chat.completions.create",
+        "vision.caption": "chat.completions.create"
+      }
     }
   ],
   "model_pricing": [
-    { "id": "glm-image", "pricing": { "currency": "CNY", "amount": 0.1, "unit": "request" } },
-    { "id": "cogview-4-250304", "pricing": { "currency": "CNY", "amount": 0.06, "unit": "request" } },
-    { "id": "cogview-4", "pricing": { "currency": "CNY", "amount": 0.06, "unit": "request" } },
-    { "id": "cogview-3-flash", "pricing": { "currency": "CNY", "amount": 0, "unit": "request" } },
-    { "id": "glm-asr-2512", "pricing": { "currency": "CNY", "input_token": 1.6e-05 } },
-    { "id": "glm-tts", "pricing": { "currency": "CNY", "amount": 0.0002 } },
-    { "id": "embedding-3", "pricing": { "currency": "CNY", "input_token": 5e-07 } },
-    { "id": "embedding-2", "pricing": { "currency": "CNY", "input_token": 5e-07 } },
-    { "id": "cogvideox-3", "pricing": { "currency": "CNY", "amount": 1, "unit": "request" } },
-    { "id": "cogvideox-flash", "pricing": { "currency": "CNY", "amount": 0, "unit": "request" } },
-    { "id": "viduq1-text", "pricing": { "currency": "CNY", "amount": 2.5, "unit": "request" } },
-    { "id": "viduq1-image", "pricing": { "currency": "CNY", "amount": 2.5, "unit": "request" } },
-    { "id": "viduq1-start-end", "pricing": { "currency": "CNY", "amount": 2.5, "unit": "request" } },
-    { "id": "vidu2-image", "pricing": { "currency": "CNY", "amount": 1.25, "unit": "request" } },
-    { "id": "vidu2-start-end", "pricing": { "currency": "CNY", "amount": 1.25, "unit": "request" } },
-    { "id": "vidu2-reference", "pricing": { "currency": "CNY", "amount": 2.5, "unit": "request" } },
-    { "id": "glm-5v-turbo", "pricing": { "currency": "CNY", "input_token": 5e-06, "output_token": 2.2e-05, "cache_input_token": 1.2e-06, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 5e-06, "output_token": 2.2e-05, "cache_input_token": 1.2e-06 }, { "input_token": 7e-06, "output_token": 2.6e-05, "cache_input_token": 1.8e-06 }] } } },
-    { "id": "glm-ocr", "pricing": { "currency": "CNY", "input_token": 2e-07, "output_token": 2e-07 } },
-    { "id": "glm-4.1v-thinking-flashx", "pricing": { "currency": "CNY", "input_token": 2e-06, "output_token": 2e-06 } },
-    { "id": "glm-4.1v-thinking-flash", "pricing": { "currency": "CNY", "input_token": 0, "output_token": 0 } },
-    { "id": "glm-4v-flash", "pricing": { "currency": "CNY", "input_token": 0, "output_token": 0 } },
-    { "id": "glm-4-long", "pricing": { "currency": "CNY", "input_token": 1e-06, "output_token": 1e-06, "cache_input_token": 5e-07 } },
-    { "id": "glm-4-flashx-250414", "pricing": { "currency": "CNY", "input_token": 1e-07, "output_token": 1e-07, "cache_input_token": 5e-08 } },
-    { "id": "glm-4-flash-250414", "pricing": { "currency": "CNY", "input_token": 0, "output_token": 0 } },
-    { "id": "charglm-4", "pricing": { "currency": "CNY", "input_token": 1e-06, "output_token": 1e-06 } },
-    { "id": "emohaa", "pricing": { "currency": "CNY", "input_token": 1.5e-05, "output_token": 1.5e-05 } },
-    { "id": "codegeex-4", "pricing": { "currency": "CNY", "input_token": 1e-07, "output_token": 1e-07 } },
-    { "id": "glm-5.1", "pricing": { "currency": "CNY", "input_token": 6e-06, "output_token": 2.4e-05, "cache_input_token": 1.3e-06, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 6e-06, "output_token": 2.4e-05, "cache_input_token": 1.3e-06 }, { "input_token": 8e-06, "output_token": 2.8e-05, "cache_input_token": 2e-06 }] } } },
-    { "id": "glm-5.3", "pricing": { "currency": "CNY", "input_token": 8e-06, "output_token": 2.8e-05, "cache_input_token": 2e-06 } },
-    { "id": "glm-5.3-flash", "pricing": { "currency": "CNY", "input_token": 8e-07, "output_token": 2.8e-06, "cache_input_token": 2.3e-07 } },
-    { "id": "glm-5.2", "pricing": { "currency": "CNY", "input_token": 8e-06, "output_token": 2.8e-05, "cache_input_token": 2e-06 } },
-    { "id": "glm-5-turbo", "pricing": { "currency": "CNY", "input_token": 5e-06, "output_token": 2.2e-05, "cache_input_token": 1.2e-06, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 5e-06, "output_token": 2.2e-05, "cache_input_token": 1.2e-06 }, { "input_token": 7e-06, "output_token": 2.6e-05, "cache_input_token": 1.8e-06 }] } } },
-    { "id": "glm-5", "pricing": { "currency": "CNY", "input_token": 4e-06, "output_token": 1.8e-05, "cache_input_token": 1e-06, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 4e-06, "output_token": 1.8e-05, "cache_input_token": 1e-06 }, { "input_token": 6e-06, "output_token": 2.2e-05, "cache_input_token": 1.5e-06 }] } } },
-    { "id": "glm-4.7", "pricing": { "currency": "CNY", "input_token": 3e-06, "output_token": 1.4e-05, "cache_input_token": 6e-07, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 3e-06, "output_token": 1.4e-05, "cache_input_token": 6e-07 }, { "input_token": 4e-06, "output_token": 1.6e-05, "cache_input_token": 8e-07 }] } } },
-    { "id": "glm-4.7-flash", "pricing": { "currency": "CNY", "input_token": 0, "output_token": 0, "cache_input_token": 0 } },
-    { "id": "glm-4.7-flashx", "pricing": { "currency": "CNY", "input_token": 5e-07, "output_token": 3e-06, "cache_input_token": 1e-07 } },
-    { "id": "glm-4.6", "pricing": { "currency": "CNY", "input_token": 2e-06, "output_token": 8e-06, "cache_input_token": 4e-07 } },
-    { "id": "glm-4.6v", "pricing": { "currency": "CNY", "input_token": 1e-06, "output_token": 3e-06, "cache_input_token": 2e-07, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 1e-06, "output_token": 3e-06, "cache_input_token": 2e-07 }, { "input_token": 2e-06, "output_token": 6e-06, "cache_input_token": 4e-07 }] } } },
-    { "id": "glm-4.6v-flash", "pricing": { "currency": "CNY", "input_token": 0, "output_token": 0, "cache_input_token": 0 } },
-    { "id": "glm-4.6v-flashx", "pricing": { "currency": "CNY", "input_token": 1.5e-07, "output_token": 1.5e-06, "cache_input_token": 3e-08, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 1.5e-07, "output_token": 1.5e-06, "cache_input_token": 3e-08 }, { "input_token": 3e-07, "output_token": 3e-06, "cache_input_token": 3e-08 }] } } },
-    { "id": "glm-4.5", "pricing": { "currency": "CNY", "input_token": 2e-06, "output_token": 8e-06, "cache_input_token": 4e-07 } },
-    { "id": "glm-4.5-x", "pricing": { "currency": "CNY", "input_token": 8e-06, "output_token": 1.6e-05, "cache_input_token": 1.6e-06 } },
-    { "id": "glm-4.5-air", "pricing": { "currency": "CNY", "input_token": 8e-07, "output_token": 6e-06, "cache_input_token": 1.6e-07, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 8e-07, "output_token": 6e-06, "cache_input_token": 1.6e-07 }, { "input_token": 1.2e-06, "output_token": 8e-06, "cache_input_token": 2.4e-07 }] } } },
-    { "id": "glm-4.5-airx", "pricing": { "currency": "CNY", "input_token": 4e-06, "output_token": 1.2e-05, "cache_input_token": 8e-07 } },
-    { "id": "glm-4.5v", "pricing": { "currency": "CNY", "input_token": 2e-06, "output_token": 6e-06, "cache_input_token": 4e-07, "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 2e-06, "output_token": 6e-06, "cache_input_token": 4e-07 }, { "input_token": 4e-06, "output_token": 1.2e-05, "cache_input_token": 8e-07 }] } } },
-    { "id": "glm-4-32b-0414-128k", "pricing": { "currency": "USD", "input_token": 1e-07, "output_token": 1e-07 } }
+    {
+      "pricing": {
+        "currency": "CNY",
+        "amount": 0.1,
+        "unit": "request",
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-image",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "amount": 0.06,
+        "unit": "request",
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "cogview-4-250304",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "amount": 0.06,
+        "unit": "request",
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "cogview-4",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "amount": 0,
+        "unit": "request",
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "cogview-3-flash",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 1.6e-05,
+        "audio_input_token": 1.6e-05,
+        "output_token": 0,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-asr-2512",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "amount": 0.0002,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-tts",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 5e-07,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "embedding-3",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 5e-07,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "embedding-2",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "amount": 1,
+        "unit": "request",
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "cogvideox-3",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "amount": 0,
+        "unit": "request",
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "cogvideox-flash",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "amount": 2.5,
+        "unit": "request",
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "viduq1-text",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "amount": 2.5,
+        "unit": "request",
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "viduq1-image",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "amount": 2.5,
+        "unit": "request",
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "viduq1-start-end",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "amount": 1.25,
+        "unit": "request",
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "vidu2-image",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "amount": 1.25,
+        "unit": "request",
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "vidu2-start-end",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "amount": 2.5,
+        "unit": "request",
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "vidu2-reference",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 5e-06,
+        "output_token": 2.2e-05,
+        "cache_input_token": 1.2e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 5e-06,
+              "output_token": 2.2e-05,
+              "cache_input_token": 1.2e-06
+            },
+            {
+              "input_token": 7e-06,
+              "output_token": 2.6e-05,
+              "cache_input_token": 1.8e-06
+            }
+          ]
+        },
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-5v-turbo",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 2e-07,
+        "output_token": 2e-07,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-ocr",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 2e-06,
+        "output_token": 2e-06,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4.1v-thinking-flashx",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0,
+        "output_token": 0,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4.1v-thinking-flash",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0,
+        "output_token": 0,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4v-flash",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 1e-06,
+        "output_token": 1e-06,
+        "cache_input_token": 5e-07,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4-long",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 1e-07,
+        "output_token": 1e-07,
+        "cache_input_token": 5e-08,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4-flashx-250414",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0,
+        "output_token": 0,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4-flash-250414",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 1e-07,
+        "output_token": 1e-07,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "codegeex-4",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 6e-06,
+        "output_token": 2.4e-05,
+        "cache_input_token": 1.3e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 6e-06,
+              "output_token": 2.4e-05,
+              "cache_input_token": 1.3e-06
+            },
+            {
+              "input_token": 8e-06,
+              "output_token": 2.8e-05,
+              "cache_input_token": 2e-06
+            }
+          ]
+        },
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-5.1",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 8e-06,
+        "output_token": 2.8e-05,
+        "cache_input_token": 2e-06,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-5.3",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 8e-07,
+        "output_token": 2.8e-06,
+        "cache_input_token": 2.3e-07,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-5.3-flash",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 8e-06,
+        "output_token": 2.8e-05,
+        "cache_input_token": 2e-06,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-5.2",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 5e-06,
+        "output_token": 2.2e-05,
+        "cache_input_token": 1.2e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 5e-06,
+              "output_token": 2.2e-05,
+              "cache_input_token": 1.2e-06
+            },
+            {
+              "input_token": 7e-06,
+              "output_token": 2.6e-05,
+              "cache_input_token": 1.8e-06
+            }
+          ]
+        },
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-5-turbo",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 4e-06,
+        "output_token": 1.8e-05,
+        "cache_input_token": 1e-06,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 4e-06,
+              "output_token": 1.8e-05,
+              "cache_input_token": 1e-06
+            },
+            {
+              "input_token": 6e-06,
+              "output_token": 2.2e-05,
+              "cache_input_token": 1.5e-06
+            }
+          ]
+        },
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-5",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0,
+        "output_token": 0,
+        "cache_input_token": 0,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4.7-flash",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 5e-07,
+        "output_token": 3e-06,
+        "cache_input_token": 1e-07,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4.7-flashx",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 2e-06,
+        "output_token": 8e-06,
+        "cache_input_token": 4e-07,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4.6",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 1e-06,
+        "output_token": 3e-06,
+        "cache_input_token": 2e-07,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 1e-06,
+              "output_token": 3e-06,
+              "cache_input_token": 2e-07
+            },
+            {
+              "input_token": 2e-06,
+              "output_token": 6e-06,
+              "cache_input_token": 4e-07
+            }
+          ]
+        },
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4.6v",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0,
+        "output_token": 0,
+        "cache_input_token": 0,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4.6v-flash",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 1.5e-07,
+        "output_token": 1.5e-06,
+        "cache_input_token": 3e-08,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 1.5e-07,
+              "output_token": 1.5e-06,
+              "cache_input_token": 3e-08
+            },
+            {
+              "input_token": 3e-07,
+              "output_token": 3e-06,
+              "cache_input_token": 3e-08
+            }
+          ]
+        },
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4.6v-flashx",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 2e-06,
+        "output_token": 8e-06,
+        "cache_input_token": 4e-07,
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4.5",
+        "region": "china"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 2e-06,
+        "output_token": 6e-06,
+        "cache_input_token": 4e-07,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 2e-06,
+              "output_token": 6e-06,
+              "cache_input_token": 4e-07
+            },
+            {
+              "input_token": 4e-06,
+              "output_token": 1.2e-05,
+              "cache_input_token": 8e-07
+            }
+          ]
+        },
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "glm-4.5v",
+        "region": "china"
+      }
+    }
   ],
   "variants": [
-    { "model_driver": "glm", "variant": "reasoning-medium", "match": { "provider_model_id": ["glm-5*", "glm-4.7*", "glm-4.6*", "glm-4.5*"], "variant": "reasoning-medium" }, "provider_options": { "thinking": { "type": "enabled" } } },
-    { "model_driver": "glm", "variant": "reasoning-none", "match": { "provider_model_id": ["glm-5", "glm-5-*", "glm-5.1*", "glm-5.2*", "glm-5-turbo*", "glm-5v-turbo*", "glm-4.6*", "glm-4.5", "glm-4.5-x*", "glm-4.5-flash*"], "variant": "reasoning-none" }, "provider_options": { "thinking": { "type": "disabled" } } },
-    { "model_driver": "glm", "variant": "reasoning-max", "match": { "provider_model_id": ["glm-5.2*", "glm-5.3*"], "variant": "reasoning-max" }, "provider_options": { "reasoning_effort": "max" } },
-    { "model_driver": "glm", "variant": "reasoning-high", "match": { "provider_model_id": ["glm-5.2*", "glm-5.3*"], "variant": "reasoning-high" }, "provider_options": { "reasoning_effort": "high" } },
-    { "model_driver": "glm", "variant": "reasoning-low", "match": { "provider_model_id": ["glm-5.3*"], "variant": "reasoning-low" }, "provider_options": { "reasoning_effort": "low" } }
+    {
+      "model_driver": "glm",
+      "variant": "reasoning-thinking",
+      "match": {
+        "origin_model_id": [
+          "glm-5v-turbo",
+          "glm-5.1",
+          "glm-5.3",
+          "glm-5.3-flash",
+          "glm-5.2",
+          "glm-5-turbo",
+          "glm-5",
+          "glm-4.7",
+          "glm-4.7-flash",
+          "glm-4.7-flashx",
+          "glm-4.6",
+          "glm-4.6v",
+          "glm-4.6v-flash",
+          "glm-4.6v-flashx",
+          "glm-4.5",
+          "glm-4.5-x",
+          "glm-4.5-air",
+          "glm-4.5-airx",
+          "glm-4.5v"
+        ],
+        "variant": "reasoning-thinking"
+      },
+      "provider_options": {
+        "thinking": {
+          "type": "enabled"
+        }
+      }
+    },
+    {
+      "model_driver": "glm",
+      "variant": "reasoning-none",
+      "match": {
+        "origin_model_id": [
+          "glm-5v-turbo",
+          "glm-5.1",
+          "glm-5.2",
+          "glm-5-turbo",
+          "glm-5",
+          "glm-4.6",
+          "glm-4.6v",
+          "glm-4.6v-flash",
+          "glm-4.6v-flashx",
+          "glm-4.5",
+          "glm-4.5-x"
+        ],
+        "variant": "reasoning-none"
+      },
+      "provider_options": {
+        "thinking": {
+          "type": "disabled"
+        }
+      }
+    },
+    {
+      "model_driver": "glm",
+      "variant": "reasoning-max",
+      "match": {
+        "origin_model_id": [
+          "glm-5.3",
+          "glm-5.3-flash",
+          "glm-5.2"
+        ],
+        "variant": "reasoning-max"
+      },
+      "provider_options": {
+        "reasoning_effort": "max"
+      }
+    },
+    {
+      "model_driver": "glm",
+      "variant": "reasoning-high",
+      "match": {
+        "origin_model_id": [
+          "glm-5.3",
+          "glm-5.3-flash",
+          "glm-5.2"
+        ],
+        "variant": "reasoning-high"
+      },
+      "provider_options": {
+        "reasoning_effort": "high"
+      }
+    },
+    {
+      "model_driver": "glm",
+      "variant": "reasoning-low",
+      "match": {
+        "origin_model_id": [
+          "glm-5.3",
+          "glm-5.3-flash"
+        ],
+        "variant": "reasoning-low"
+      },
+      "provider_options": {
+        "reasoning_effort": "low"
+      }
+    }
   ]
 }

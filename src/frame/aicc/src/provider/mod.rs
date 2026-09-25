@@ -45,7 +45,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
-const INVENTORY_SCHEMA_VERSION: u32 = 1;
+const INVENTORY_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DiscoveryMode {
@@ -384,7 +384,7 @@ impl ProviderRefreshFailure {
                 Self::UnknownDependency
             }
             ProviderError::Credential(_) => Self::Credential,
-            ProviderError::Discovery(_) => Self::Discovery,
+            ProviderError::Discovery(_) | ProviderError::DiscoveryResponse(_) => Self::Discovery,
             ProviderError::Inventory(_) => Self::Inventory,
             ProviderError::Storage(_) => Self::Storage,
             ProviderError::Stopped => Self::Stopped,
@@ -580,19 +580,19 @@ impl ProviderRegistry {
 
 fn validate_discovery(discovery: &ProviderDiscoverySnapshot) -> ProviderResult<()> {
     if discovery.discovered_at_ms < 0 {
-        return Err(ProviderError::Discovery(
+        return Err(ProviderError::DiscoveryResponse(
             "discovery timestamp must not be negative".into(),
         ));
     }
     let mut ids = BTreeSet::new();
     for model in &discovery.models {
         if model.provider_model_id.trim().is_empty() || model.provider_model_id.contains('@') {
-            return Err(ProviderError::Discovery(
+            return Err(ProviderError::DiscoveryResponse(
                 "provider model IDs must be non-empty and must not contain `@`".into(),
             ));
         }
         if !ids.insert(&model.provider_model_id) {
-            return Err(ProviderError::Discovery(format!(
+            return Err(ProviderError::DiscoveryResponse(format!(
                 "duplicate provider model `{}`",
                 model.provider_model_id
             )));
@@ -605,27 +605,8 @@ fn validate_discovery(discovery: &ProviderDiscoverySnapshot) -> ProviderResult<(
 }
 
 fn validate_pricing(pricing: &Pricing) -> ProviderResult<()> {
-    if pricing.currency.trim().is_empty()
-        || [
-            pricing.input_token,
-            pricing.output_token,
-            pricing.cache_input_token,
-            pricing.estimated_cost,
-            pricing.amount,
-        ]
-        .into_iter()
-        .flatten()
-        .any(|value| !value.is_finite() || value < 0.0)
-        || pricing
-            .rules
-            .iter()
-            .any(|rule| !rule.amount.is_finite() || rule.amount < 0.0)
-    {
-        return Err(ProviderError::Discovery(
-            "discovery pricing must be finite, non-negative, and have a currency".into(),
-        ));
-    }
-    Ok(())
+    crate::catalog::validate_pricing("discovery", pricing)
+        .map_err(|error| ProviderError::DiscoveryResponse(error.to_string()))
 }
 
 fn validate_quota_reading(reading: ProviderQuotaReading) -> ProviderResult<ProviderQuotaReading> {

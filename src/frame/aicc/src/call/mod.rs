@@ -27,7 +27,6 @@ use std::fmt;
 pub(crate) enum PricingSource {
     Discovery,
     ProviderRules,
-    ModelDriver,
     RouteEstimate,
 }
 
@@ -104,6 +103,7 @@ pub(crate) struct ResolvedProviderCall {
     pub resource_requirements: Vec<ResourceRequirement>,
     pub resource_access_context: Option<ResourceAccessContext>,
     pub pricing: ResolvedPricing,
+    pub reported_cost_currency: Option<String>,
     pub revisions: LoweringRevisions,
 }
 
@@ -347,13 +347,11 @@ impl<'a> CallResolver<'a> {
         )?;
         merge_overwrite(
             &mut normalized,
-            &Value::Object(variant_options.into_iter().collect()),
+            &Value::Object(variant_options.clone().into_iter().collect()),
         );
-        let model_driver_ids = vec![decision.selected.model_driver_id.clone()];
         let model = self.catalog.resolve_model(
+            &decision.selected.model_driver_id,
             &decision.selected.origin_model_id,
-            Some(&model_driver_ids),
-            &identity_context,
         )?;
         let mut canonical_fields = model.semantics.canonical_fields.unwrap_or_default();
         if let Some(rule) = &provider_rule {
@@ -383,6 +381,49 @@ impl<'a> CallResolver<'a> {
                 for pointer in &request_rule.remove {
                     remove_pointer(&mut normalized, pointer)?;
                 }
+            }
+        }
+        if parsed_exact
+            .variant()
+            .is_some_and(|variant| variant.starts_with("reasoning-"))
+        {
+            for key in [
+                "reasoning",
+                "reasoning_effort",
+                "thinking",
+                "thinking_budget",
+                "enable_thinking",
+            ] {
+                if let Some(value) = variant_options.get(key) {
+                    normalized
+                        .as_object_mut()
+                        .expect("normalized object")
+                        .insert(key.into(), value.clone());
+                } else {
+                    normalized
+                        .as_object_mut()
+                        .expect("normalized object")
+                        .remove(key);
+                }
+            }
+        }
+        if parsed_exact
+            .variant()
+            .is_some_and(|variant| variant.starts_with("reasoning-"))
+        {
+            if let Some(config) = normalized
+                .get_mut("generation_config")
+                .and_then(Value::as_object_mut)
+            {
+                for key in ["thinking_level", "thinking_budget", "thinking_config"] {
+                    config.remove(key);
+                }
+            }
+            if let Some(config) = variant_options.get("generation_config") {
+                merge_overwrite(
+                    &mut normalized,
+                    &serde_json::json!({"generation_config": config}),
+                );
             }
         }
         apply_execution_mode(&mut normalized, requested_execution_mode)?;
@@ -495,6 +536,12 @@ impl<'a> CallResolver<'a> {
             resource_requirements: resources,
             resource_access_context: None,
             pricing,
+            reported_cost_currency: target
+                .provider_rules_id
+                .as_deref()
+                .and_then(|id| self.catalog.provider_rules(id))
+                .and_then(|rules| rules.reported_cost.as_ref())
+                .map(|policy| policy.currency.clone()),
             revisions: LoweringRevisions {
                 catalog_target_seq: self.catalog.target_revision_seq(),
                 model_driver_revision_seq: model_revision,
@@ -549,7 +596,12 @@ impl<'a> CallResolver<'a> {
         let rules_id = rules_id.unwrap_or_default();
         let matches = if self.catalog.provider_rules(rules_id).is_some() {
             self.catalog
-                .matching_provider_variants_for_model(rules_id, context)?
+                .executable_variants(
+                    rules_id,
+                    &selected.model_driver_id,
+                    &selected.origin_model_id,
+                    context,
+                )?
                 .into_iter()
                 .filter(|candidate| {
                     candidate.model_driver == selected.model_driver_id
@@ -1972,5 +2024,43 @@ mod tests {
             .contains(&"minimax|minimax-messages|video.txt2video|video_generation.create".into()));
         assert!(golden.contains(&"qwen|qwen-responses|llm|responses.create".into()));
         assert!(golden.contains(&"sn|sn-openai|llm|responses.create".into()));
+    }
+    #[test]
+    fn request_rewrites_cannot_override_a_selected_effort() {
+        let original = catalog();
+        let mut rules = original.provider_rules("openai").unwrap().clone();
+        rules.models[0].request_rules[1]
+            .set
+            .insert("reasoning".into(), json!({"effort":"medium"}));
+        rules.models[0].request_rules[1]
+            .set
+            .insert("enable_thinking".into(), json!(false));
+        let catalog = CatalogSnapshot::build(
+            12,
+            CatalogDocuments {
+                model_drivers: original.model_drivers().cloned().collect(),
+                provider_rules: vec![rules],
+                known_providers: vec![],
+            },
+            &Default::default(),
+        )
+        .unwrap();
+        let codecs = codecs();
+        let call = call();
+        let lowered = CallResolver::new(&catalog, &codecs)
+            .lower(
+                &decision(call_exact_model(&call).unwrap()),
+                &call,
+                target("secret"),
+            )
+            .unwrap();
+        assert_eq!(
+            lowered.input.resolved_parameters["reasoning"],
+            json!({"effort":"high"})
+        );
+        assert!(!lowered
+            .input
+            .resolved_parameters
+            .contains_key("enable_thinking"));
     }
 }

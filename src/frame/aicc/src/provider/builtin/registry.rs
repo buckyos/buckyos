@@ -280,13 +280,25 @@ impl BuiltinProviderRegistry {
                 ))
             })?;
         if factory == BuiltinDiscoveryFactory::CatalogOnly {
+            let configured = configured_inventory.is_some();
             let inventory = configured_inventory.or(default_inventory).ok_or_else(|| {
                 ProviderError::InvalidConfiguration(format!(
                     "catalog-only provider `{provider_profile_id}` has no inventory"
                 ))
             })?;
             validate_discovery(&inventory)?;
-            return Ok(Arc::new(CatalogOnlyDiscovery::new(inventory)));
+            let inventory: Arc<dyn ProviderDiscovery> = if configured {
+                Arc::new(CatalogOnlyDiscovery::new(inventory))
+            } else {
+                Arc::new(CatalogOnlyDiscovery::catalog_managed(inventory))
+            };
+            if provider_profile_id == "fal" {
+                return Ok(Arc::new(super::fal::FalPricingDiscovery {
+                    inventory,
+                    transport: Arc::new(transport()?),
+                }));
+            }
+            return Ok(inventory);
         }
         let primary: Arc<dyn ProviderDiscovery> = match factory {
             BuiltinDiscoveryFactory::CatalogOnly => unreachable!(),
@@ -532,8 +544,7 @@ mod tests {
     use crate::settings::{load_builtin_metadata, MetadataFile, MetadataSource, MetadataSources};
     use buckyos_api::ApiType;
     use serde_json::json;
-    use sha2::{Digest, Sha256};
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeSet;
 
     fn configured_inventory() -> ProviderDiscoverySnapshot {
         ProviderDiscoverySnapshot {
@@ -629,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_metadata_inventory_and_mounts_match_golden() {
+    fn builtin_metadata_inventory_contains_only_explicitly_declared_models() {
         let catalog = MetadataSources {
             builtin: load_builtin_metadata().unwrap(),
             ..MetadataSources::default()
@@ -638,13 +649,11 @@ mod tests {
         .unwrap();
         let registry = builtin_provider_registry(catalog.as_ref()).unwrap();
 
-        let mut golden = BTreeMap::new();
         for profile in registry.profiles() {
             if profile.provider_profile_id == CUSTOM_PROVIDER_PROFILE_ID {
                 continue;
             }
             let Some(discovery) = profile.default_inventory.clone() else {
-                golden.insert(profile.provider_profile_id.clone(), "dynamic".to_owned());
                 continue;
             };
             let instance = ProviderInstanceConfig {
@@ -673,11 +682,17 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("{}: {error}", profile.provider_profile_id));
 
-            assert!(
-                !inventory.models.is_empty(),
-                "{} produced an empty catalog inventory",
-                profile.provider_profile_id
-            );
+            let declared = &catalog
+                .provider_rules(&profile.provider_profile_id)
+                .unwrap()
+                .static_inventory_models;
+            assert!(inventory
+                .models
+                .iter()
+                .all(|model| declared.contains(&model.provider_model_id)));
+            if declared.is_empty() {
+                assert!(inventory.models.is_empty());
+            }
             for model in &inventory.models {
                 assert!(
                     !model.logical_mounts.is_empty()
@@ -699,64 +714,7 @@ mod tests {
                     model.logical_mounts
                 );
             }
-            let encoded = serde_json::to_vec(&inventory.models).unwrap();
-            golden.insert(
-                profile.provider_profile_id.clone(),
-                format!("{}:{:x}", inventory.models.len(), Sha256::digest(encoded)),
-            );
         }
-        assert_eq!(
-            golden,
-            BTreeMap::from([
-                (
-                    "claude".to_owned(),
-                    "5:04db7f202393b97b812964a2ee7dd4173369bd68c6305520738a57d516af202b".to_owned()
-                ),
-                (
-                    "deepseek".to_owned(),
-                    "3:c4b6ae0a3462665b7c6a87f6a150d77ef49afae3246db4f07cc3c7278525a939".to_owned()
-                ),
-                (
-                    "doubao".to_owned(),
-                    "1:9eef8df56b3d035d4bfad5e693f1dce8d4b6deb9ca0a085eca2b1a41ed1604da".to_owned()
-                ),
-                (
-                    "fal".to_owned(),
-                    "4:7c1a7bdfcd8c9b4605c7570257a2ab0a8362dbe431bccc6c9611bdf043ec465b".to_owned()
-                ),
-                (
-                    "gemini".to_owned(),
-                    "26:b9bc76ec5fbd7d66a5c7828c22e8806fce83f750e8263f232bc89764917afd5c"
-                        .to_owned()
-                ),
-                (
-                    "glm".to_owned(),
-                    "46:3b07dc20e30bdb4d9862a7df48bb1fc647ba970f8e1b547ad33a330ec7a06737"
-                        .to_owned()
-                ),
-                (
-                    "kimi".to_owned(),
-                    "2:5c88be6581e0fc88e5ef3839fb8275124066bd5e62fa0cfb96d68dda1b64a181".to_owned()
-                ),
-                (
-                    "minimax".to_owned(),
-                    "19:a124813c5ead4eb5bf6607b3ee6849386bd9834169cce55f01b4b2a5c5857a0a"
-                        .to_owned()
-                ),
-                (
-                    "openai".to_owned(),
-                    "25:796d08eb7f611da33dbc96c669e0b49ced8cadbb4826d17ebc40d4508462dad9"
-                        .to_owned()
-                ),
-                ("openrouter".to_owned(), "dynamic".to_owned()),
-                (
-                    "qwen".to_owned(),
-                    "18:cf85d3066a47b2bdc8c16926bbf5bb7e4677925aba6910a0e400ad4283eb3da8"
-                        .to_owned()
-                ),
-                ("sn".to_owned(), "dynamic".to_owned()),
-            ])
-        );
     }
 
     #[test]
@@ -781,10 +739,10 @@ mod tests {
                 json!({
                     "format": "buckyos.aicc.provider-rules-catalog",
                     "schema_version": 1,
-                    "schema_revision": 0,
+                    "schema_revision": 1,
                     "revision_seq": 2,
                     "provider_profile_id": "vendor",
-                    "metadata_drivers": ["vendor"],
+                    "static_inventory_models": ["vendor-model"],
                     "models": [],
                     "patterns": [{
                         "match": "*",

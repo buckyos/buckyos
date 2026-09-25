@@ -4,7 +4,6 @@
   "schema_revision": 0,
   "revision_seq": 1,
   "provider_profile_id": "kimi",
-  "metadata_drivers": ["kimi"],
   "models": [],
   "patterns": [
     {
@@ -13,7 +12,7 @@
     }
   ],
   "variants": [
-    { "model_driver": "kimi", "variant": "reasoning-medium", "match": { "provider_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "reasoning-medium" }, "provider_options": { "thinking": { "type": "enabled" } } },
-    { "model_driver": "kimi", "variant": "reasoning-none", "match": { "provider_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "reasoning-none" }, "provider_options": { "thinking": { "type": "disabled" } } }
+    {"model_driver": "kimi", "variant": "reasoning-thinking", "match": {"origin_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "reasoning-thinking"}, "provider_options": {"thinking": {"type": "enabled"}}},
+    {"model_driver": "kimi", "variant": "reasoning-none", "match": {"origin_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "reasoning-none"}, "provider_options": {"thinking": {"type": "disabled"}}}
   ]
 }

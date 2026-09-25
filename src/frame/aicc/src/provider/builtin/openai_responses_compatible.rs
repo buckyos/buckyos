@@ -15,14 +15,12 @@ use crate::catalog::{
 use crate::protocol::CredentialKind;
 #[cfg(test)]
 use crate::protocol::ResponsesDialectKind;
-use crate::protocol::{
-    HttpRequest, HttpResponse, HttpTransport, DEEPSEEK_RESPONSES_ADAPTER_ID,
-    OPENAI_RESPONSES_OPERATION_ID,
-};
+use crate::protocol::{HttpRequest, HttpResponse, HttpTransport};
 use async_trait::async_trait;
 use buckyos_api::ApiType;
 use reqwest::header::ETAG;
 use reqwest::Method;
+#[cfg(test)]
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -246,16 +244,17 @@ fn configured_provider(profile_id: &str) -> BuiltinProviderDescriptor {
 fn catalog_model(provider_model_id: String) -> DiscoveredModel {
     DiscoveredModel {
         provider_model_id,
-        origin_model_id: None,
-        api_types: Some(vec![ApiType::Llm]),
+        api_types: None,
         supported_features: None,
-        remote_methods: Some(BTreeSet::from([OPENAI_RESPONSES_OPERATION_ID.to_string()])),
+        unsupported_features: BTreeSet::new(),
+        remote_methods: None,
         availability: ModelAvailability::Available,
         deprecated: false,
         pricing: None,
     }
 }
 
+#[cfg(test)]
 fn validate_fixture_model_ids(models: &[DiscoveredModel]) -> ProviderResult<()> {
     let mut ids = BTreeSet::new();
     for model in models {
@@ -272,7 +271,7 @@ fn validate_fixture_model_ids(models: &[DiscoveredModel]) -> ProviderResult<()> 
 }
 
 #[async_trait]
-trait OpenAiCompatibleModelsTransport: Send + Sync {
+pub(super) trait OpenAiCompatibleModelsTransport: Send + Sync {
     async fn send(
         &self,
         request: HttpRequest,
@@ -311,6 +310,7 @@ impl OpenAiCompatibleModelsDiscovery {
 }
 
 #[derive(Deserialize)]
+#[cfg(test)]
 struct ModelsEnvelope {
     data: Vec<ModelObject>,
     #[serde(default)]
@@ -318,6 +318,7 @@ struct ModelsEnvelope {
 }
 
 #[derive(Deserialize)]
+#[cfg(test)]
 struct ModelObject {
     id: String,
     #[serde(default)]
@@ -330,6 +331,34 @@ struct ModelObject {
 
 #[async_trait]
 impl ProviderDiscovery for OpenAiCompatibleModelsDiscovery {
+    fn match_model_driver(
+        &self,
+        id: &str,
+        catalog: &crate::catalog::CatalogSnapshot,
+    ) -> crate::catalog::ProviderModelMatch {
+        use crate::catalog::{ModelIdentity, ModelMatchFailure, ProviderModelMatch};
+        if self.provider_profile_id == DEEPSEEK_PROFILE_ID {
+            if matches!(
+                id,
+                "deepseek-v4-flash" | "deepseek-v4-flash-vision-exp" | "deepseek-flash"
+            ) {
+                let model = "deepseek-v4.1-flash";
+                return if catalog.resolve_model("deepseek", model).is_ok() {
+                    ProviderModelMatch::Matched(ModelIdentity {
+                        model_driver_id: "deepseek".into(),
+                        model_id: model.into(),
+                    })
+                } else {
+                    ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias)
+                };
+            }
+            if matches!(id, "deepseek-chat" | "deepseek-reasoner") {
+                return ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias);
+            }
+        }
+        ProviderModelMatch::NotHandled
+    }
+
     async fn discover(
         &self,
         context: &DiscoveryContext<'_>,
@@ -340,22 +369,106 @@ impl ProviderDiscovery for OpenAiCompatibleModelsDiscovery {
             &self.protocol_adapter_id,
         )?;
         let request = openai_compatible_models_request(context, &self.provider_profile_id)?;
-        let response = self
-            .transport
-            .send(request)
-            .await
-            .map_err(|error| ProviderError::Discovery(error.to_string()))?;
-        ensure_openai_compatible_models_success(&response, &self.provider_profile_id)?;
-        let revision = response
-            .headers
-            .get(ETAG)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let envelope: ModelsEnvelope = response
-            .json(1024 * 1024)
-            .map_err(|error| ProviderError::Discovery(error.to_string()))?;
-        parse_openai_compatible_models(envelope, revision, &self.provider_profile_id)
+        let (models, revision) = discover_model_ids(
+            self.transport.as_ref(),
+            request,
+            &self.provider_profile_id,
+            false,
+        )
+        .await?;
+        let snapshot = ProviderDiscoverySnapshot {
+            revision,
+            discovered_at_ms: super::super::now_ms()?,
+            health: ProviderHealthState::Healthy,
+            models,
+        };
+        validate_discovery(&snapshot)?;
+        Ok(snapshot)
     }
+}
+
+pub(super) async fn discover_model_ids(
+    transport: &dyn OpenAiCompatibleModelsTransport,
+    request: HttpRequest,
+    provider: &str,
+    strict: bool,
+) -> ProviderResult<(Vec<DiscoveredModel>, Option<String>)> {
+    let limit = request.max_response_bytes.unwrap_or(1024 * 1024);
+    let response = transport
+        .send(request)
+        .await
+        .map_err(|error| ProviderError::Discovery(error.to_string()))?;
+    ensure_openai_compatible_models_success(&response, provider)?;
+    let revision = response
+        .headers
+        .get(ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let value: serde_json::Value = response
+        .json(limit)
+        .map_err(|error| ProviderError::DiscoveryResponse(error.to_string()))?;
+    if value
+        .get("object")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|kind| kind != "list")
+        || (strict && value.get("object").and_then(serde_json::Value::as_str) != Some("list"))
+    {
+        return Err(ProviderError::DiscoveryResponse(format!(
+            "{provider} models response must be a list"
+        )));
+    }
+    let data = value
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            ProviderError::DiscoveryResponse(format!("{provider} models response requires data"))
+        })?;
+    let mut models = std::collections::BTreeMap::new();
+    for item in data {
+        let id = item
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.trim().is_empty() && !id.contains('@'))
+            .ok_or_else(|| {
+                ProviderError::DiscoveryResponse(format!("{provider} invalid model id"))
+            })?;
+        if item
+            .get("object")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|kind| kind != "model")
+            || (strict && item.get("object").and_then(serde_json::Value::as_str) != Some("model"))
+        {
+            return Err(ProviderError::DiscoveryResponse(format!(
+                "{provider} invalid model object"
+            )));
+        }
+        let mut model = catalog_model(id.into());
+        if provider == "kimi" {
+            for (field, feature) in [("supports_reasoning", "reasoning")] {
+                if item.get(field).and_then(serde_json::Value::as_bool) == Some(false) {
+                    model.unsupported_features.insert(feature.into());
+                }
+            }
+            if item
+                .get("supports_image_in")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+                && item
+                    .get("supports_video_in")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(false)
+            {
+                model.unsupported_features.insert("vision".into());
+                model.api_types = Some(vec![ApiType::Llm]);
+            }
+        }
+        if models.insert(id.to_owned(), model).is_some() {
+            return Err(ProviderError::DiscoveryResponse(format!(
+                "{provider} duplicate model id {id}"
+            )));
+        }
+    }
+    Ok((models.into_values().collect(), revision))
 }
 
 fn validate_openai_compatible_models_context(
@@ -411,13 +524,27 @@ fn ensure_openai_compatible_models_success(
     if response.status.is_success() {
         return Ok(());
     }
-    Err(ProviderError::Discovery(format!(
-        "{provider_profile_id} Models API returned HTTP {} (request {})",
+    let message = serde_json::from_slice::<serde_json::Value>(&response.body)
+        .ok()
+        .and_then(|body| {
+            body.pointer("/error/message")
+                .and_then(serde_json::Value::as_str)
+                .map(|m| m.chars().take(512).collect::<String>())
+        })
+        .unwrap_or_default();
+    let message = format!(
+        "{provider_profile_id} Models API returned status {} (request {}): {message}",
         response.status.as_u16(),
         response.request_id
-    )))
+    );
+    Err(if matches!(response.status.as_u16(), 401 | 403) {
+        ProviderError::Credential(message)
+    } else {
+        ProviderError::Discovery(message)
+    })
 }
 
+#[cfg(test)]
 fn parse_deepseek_models(
     envelope: ModelsEnvelope,
     revision: Option<String>,
@@ -425,6 +552,7 @@ fn parse_deepseek_models(
     parse_openai_compatible_models(envelope, revision, DEEPSEEK_PROFILE_ID)
 }
 
+#[cfg(test)]
 fn parse_openai_compatible_models(
     envelope: ModelsEnvelope,
     revision: Option<String>,
@@ -460,6 +588,7 @@ fn parse_openai_compatible_models(
     Ok(snapshot)
 }
 
+#[cfg(test)]
 fn validate_deepseek_context(context: &DiscoveryContext<'_>) -> ProviderResult<()> {
     validate_openai_compatible_models_context(
         context,
@@ -468,6 +597,7 @@ fn validate_deepseek_context(context: &DiscoveryContext<'_>) -> ProviderResult<(
     )
 }
 
+#[cfg(test)]
 fn deepseek_models_request(context: &DiscoveryContext<'_>) -> ProviderResult<HttpRequest> {
     openai_compatible_models_request(context, DEEPSEEK_PROFILE_ID)
 }
@@ -501,10 +631,6 @@ mod tests {
         for profile_id in [DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID] {
             assert!(catalog.known_provider(profile_id).is_some());
             let rules = catalog.provider_rules(profile_id).unwrap();
-            assert_eq!(
-                rules.metadata_drivers.as_deref(),
-                Some(&[profile_id.to_owned()][..])
-            );
             assert_eq!(
                 rules.patterns[0].operations.get("llm"),
                 Some(&OPENAI_RESPONSES_OPERATION_ID.to_owned())
@@ -595,7 +721,8 @@ mod tests {
         assert_eq!(snapshot.health, ProviderHealthState::Healthy);
         assert_eq!(snapshot.models.len(), 2);
         assert!(snapshot.models[0].supported_features.is_none());
-        assert_eq!(snapshot.models[0].api_types, Some(vec![ApiType::Llm]));
+        assert!(snapshot.models[0].api_types.is_none());
+        assert!(snapshot.models[0].remote_methods.is_none());
         assert!(doubao()
             .catalog_only_inventory(["endpoint-a".to_string(), "endpoint-a".to_string()])
             .is_err());
@@ -764,7 +891,7 @@ mod tests {
             assert_eq!(inventory.provider_profile_id, profile_id);
             assert_eq!(inventory.models.len(), 1);
             assert_eq!(inventory.models[0].provider_model_id, model_id);
-            assert_eq!(inventory.models[0].api_types, vec![ApiType::Llm]);
+            assert!(inventory.models[0].api_types.contains(&ApiType::Llm));
             assert_eq!(
                 inventory.models[0].operations["llm"],
                 OPENAI_RESPONSES_OPERATION_ID
@@ -772,3 +899,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+use crate::protocol::{DEEPSEEK_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID};

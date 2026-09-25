@@ -164,7 +164,7 @@ max_rounds = 1024
 max_consecutive_errors = 8
 
 [model]
-preferred = "llm"
+preferred = "llm.plan"
 
 [on_context_limit_reached]
 mode = "compress_then_continue"

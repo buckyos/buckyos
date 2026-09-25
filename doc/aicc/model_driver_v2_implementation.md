@@ -108,3 +108,7 @@ Model metadata 新增 1124、删除 340 行；文档变化单独保留在 `doc/a
 生产代码未达到净减少目标。增长主要来自以前没有的零库存图校验、direct_only 隔离、动态家族/selector、分层排序和非 LLM 的显式规格引用表；旧 Provider 版本展开、Model Driver variant/价格路径已实际删除，没有双轨流程。继续减少 Provider 价格来源/缓存及统一 lowering 的复杂度需要后续接入任务，不能为了行数改动本次边界外消费者。当前变化的取舍是用显式校验替代原先缺失的约束，而非声称代码量已经简化到净减。
 
 文档与任务单新增 357、删除 574 行（含本报告）；独立于生产代码和 metadata 统计。
+
+## 后续 Provider upgrade 已实现（2026-09-25）
+
+以上 473 项测试和“范围审查与后续接入”记录的是 v2 内核提交时的边界，不再代表当前 Provider 进度。后续身份匹配、显式库存、渠道预设、固定 effort、usage/价格/汇率以及图片视频树修复见 [Provider upgrade 实现记录](provider_upgrade_implementation.md)。ModelDriver 价格来源枚举和旧库存兼容已删除；公共 usage、管理诊断字段与 Provider/协议文件已随本任务同步修改。真实厂商端到端调用及尚无准确协议映射的模型保留明确接入缺口，不伪造能力或报价。

@@ -868,8 +868,9 @@ impl ModelRegistry {
                 ));
             }
             for model in &inventory.models {
-                if model.model_driver_id != "unclassified"
-                    && catalog.model_driver(&model.model_driver_id).is_none()
+                if catalog
+                    .resolve_model(&model.model_driver_id, &model.origin_model_id)
+                    .is_err()
                 {
                     return Err(ModelRegistryError::UnknownModelDriver(
                         model.model_driver_id.clone(),
@@ -884,6 +885,21 @@ impl ModelRegistry {
                             provider_model_id: model.provider_model_id.clone(),
                             variant: variant.name.clone(),
                         });
+                    }
+                    if let Some(llm) =
+                        catalog.llm_model(&model.model_driver_id, &model.origin_model_id)
+                    {
+                        if !llm
+                            .semantics
+                            .supported_efforts
+                            .iter()
+                            .any(|effort| effort.variant().as_deref() == Some(&variant.name))
+                        {
+                            return Err(ModelRegistryError::InvalidLogicalTree(format!(
+                                "illegal preset {} for {}/{}",
+                                variant.name, model.model_driver_id, model.origin_model_id
+                            )));
+                        }
                     }
                     self.register_model(inventory, model, Some(variant))?;
                 }
@@ -1111,7 +1127,15 @@ impl ModelRegistry {
         let node = self.logical_nodes.entry(path.to_owned()).or_default();
         if let Some(items) = &overlay.items {
             if source == LogicalItemSource::BuiltinDefinition {
-                node.items.extend(effective_items(items, source));
+                if node
+                    .definition
+                    .as_ref()
+                    .is_some_and(|definition| definition.mount_mode == MountMode::Manual)
+                {
+                    node.items = effective_items(items, source);
+                } else {
+                    node.items.extend(effective_items(items, source));
+                }
             } else {
                 node.items = effective_items(items, source);
                 if overlay.fallback.is_none() {
@@ -2019,7 +2043,7 @@ mod tests {
             "revision_seq": 1,
             "models": [],
             "patterns": [{
-                "match": "*",
+                "match": {"origin_model_id": ["gpt-5.2", "a", "b", "capable", "basic", "gpt", "mini", "unrecognizable-model", "computer", "bad"]},
                 "api_types": ["image.txt2img"],
                 "capabilities": {"streaming": true}
             }],

@@ -120,17 +120,6 @@ impl ModelSemantics {
             llm: rule.llm.clone().or_else(|| self.llm.clone()),
         }
     }
-
-    pub(super) fn conservative() -> Self {
-        Self {
-            exclude: Some(false),
-            api_types: Some(BTreeSet::new()),
-            logical_mounts: Some(Vec::new()),
-            capabilities: Some(BTreeMap::new()),
-            canonical_fields: Some(BTreeMap::new()),
-            ..Self::default()
-        }
-    }
 }
 
 macro_rules! define_model_rule {
@@ -355,6 +344,12 @@ pub(crate) struct ModelPricingRule {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Pricing {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratio_exception: Option<String>,
     pub currency: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_token: Option<f64>,
@@ -362,6 +357,18 @@ pub(crate) struct Pricing {
     pub output_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_output_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_output_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_cost: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -401,6 +408,18 @@ pub(crate) struct PricingRule {
     pub output_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_output_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_output_token: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -438,6 +457,18 @@ pub(crate) struct PricingTierStep {
     pub output_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_output_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_output_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -500,6 +531,18 @@ pub(crate) struct PricingTimeWindow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_input_token: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_input_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_output_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_output_token: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<PricingUnit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<f64>,
@@ -513,14 +556,12 @@ pub(crate) struct ProviderRulesCatalog {
     pub schema_revision: u32,
     pub revision_seq: u64,
     pub provider_profile_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata_drivers: Option<Vec<String>>,
+    #[serde(default)]
+    pub reported_cost: Option<ReportedCostPolicy>,
     #[serde(default)]
     pub static_inventory_models: Vec<String>,
     #[serde(default)]
-    pub origin_provider_aliases: BTreeMap<String, String>,
-    #[serde(default)]
-    pub origin_mappings: Vec<OriginMapping>,
+    pub supplemental_inventory_api_types: BTreeSet<String>,
     #[serde(default)]
     pub models: Vec<ProviderExactRule>,
     #[serde(default)]
@@ -648,37 +689,6 @@ pub(crate) struct RequestRule {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct OriginMapping {
-    pub extract: OriginExtract,
-    #[serde(default)]
-    pub transforms: BTreeMap<String, Vec<OriginTransform>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct OriginExtract {
-    pub source: String,
-    pub regex: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct OriginTransform {
-    pub op: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub table: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_missing: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedProviderOrigin {
-    pub origin_model_id: String,
-    pub model_driver_id: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct ProviderVariantRule {
     pub model_driver: String,
     pub variant: String,
@@ -691,6 +701,8 @@ pub(crate) struct ProviderVariantRule {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct KnownProviderCatalog {
+    #[serde(default)]
+    pub exchange_rates: Option<ExchangeRates>,
     pub format: String,
     pub schema_version: u32,
     pub schema_revision: u32,
@@ -782,25 +794,6 @@ pub(crate) struct ResolvedProviderConfiguration {
     pub provider_rules_id: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ModelMatchKind {
-    Exact,
-    Pattern,
-    Defaults,
-    ConservativeFallback,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ResolvedModelSemantics {
-    pub origin_model_id: String,
-    pub source_model_driver_id: Option<String>,
-    pub model_driver_id: Option<String>,
-    pub catalog_revision_seq: Option<u64>,
-    pub match_kind: ModelMatchKind,
-    pub trace: Option<MatchTrace>,
-    pub semantics: ModelSemantics,
-}
-
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProviderRuleMatchKind {
@@ -813,7 +806,7 @@ pub(crate) struct ResolvedProviderRule {
     #[cfg(test)]
     pub match_kind: ProviderRuleMatchKind,
     #[cfg(test)]
-    pub trace: Option<MatchTrace>,
+    pub trace: Option<crate::matching::MatchTrace>,
     pub action: ProviderRuleAction,
     pub(super) compiled: CompiledProviderRule,
 }
@@ -843,4 +836,63 @@ impl ResolvedProviderRule {
             .or(pricing.amount)
             .or(pricing.estimated_cost)
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ResolvedModelSemantics {
+    pub catalog_revision_seq: u64,
+    pub semantics: ModelSemantics,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ModelIdentity {
+    pub model_driver_id: String,
+    pub model_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ModelMatchFailure {
+    NoMatch,
+    Ambiguous {
+        candidates: Vec<ModelIdentity>,
+    },
+    InvalidProviderMatch {
+        model_driver_id: String,
+        model_id: String,
+    },
+    InvalidOverride {
+        target: String,
+    },
+    UnresolvedAlias,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ProviderModelMatch {
+    Matched(ModelIdentity),
+    NotHandled,
+    Failed(ModelMatchFailure),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReportedCostPolicy {
+    pub currency: String,
+    pub semantics: ReportedCostSemantics,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReportedCostSemantics {
+    TotalRequestCost,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExchangeRates {
+    pub source_url: String,
+    pub observed_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub usd_per_unit: BTreeMap<String, f64>,
 }

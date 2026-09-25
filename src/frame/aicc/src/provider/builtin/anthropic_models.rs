@@ -127,23 +127,23 @@ impl ProviderDiscovery for AnthropicModelsDiscovery {
                 .map_err(|error| ProviderError::Discovery(error.to_string()))?;
             ensure_success(self.spec.label, &response)?;
             let page: ModelsResponse = serde_json::from_slice(&response.body).map_err(|error| {
-                ProviderError::Discovery(format!(
+                ProviderError::DiscoveryResponse(format!(
                     "{} models response is invalid: {error}",
                     self.spec.label
                 ))
             })?;
             for model in page.data {
                 if model.object != "model" || model.id.trim().is_empty() || model.id.contains('@') {
-                    return Err(ProviderError::Discovery(format!(
+                    return Err(ProviderError::DiscoveryResponse(format!(
                         "{} Models API returned an invalid model object",
                         self.spec.label
                     )));
                 }
                 models.entry(model.id.clone()).or_insert(DiscoveredModel {
                     provider_model_id: model.id,
-                    origin_model_id: None,
                     api_types: None,
                     supported_features: None,
+                    unsupported_features: BTreeSet::new(),
                     remote_methods: None,
                     availability: ModelAvailability::Available,
                     deprecated: false,
@@ -166,20 +166,20 @@ impl ProviderDiscovery for AnthropicModelsDiscovery {
                 .last_id
                 .filter(|cursor| !cursor.trim().is_empty())
                 .ok_or_else(|| {
-                    ProviderError::Discovery(format!(
+                    ProviderError::DiscoveryResponse(format!(
                         "{} Models API omitted last_id while has_more is true",
                         self.spec.label
                     ))
                 })?;
             if !seen_cursors.insert(cursor.clone()) {
-                return Err(ProviderError::Discovery(format!(
+                return Err(ProviderError::DiscoveryResponse(format!(
                     "{} Models API repeated a pagination cursor",
                     self.spec.label
                 )));
             }
             after_id = Some(cursor);
         }
-        Err(ProviderError::Discovery(format!(
+        Err(ProviderError::DiscoveryResponse(format!(
             "{} Models API exceeded the pagination limit",
             self.spec.label
         )))
@@ -260,10 +260,15 @@ fn ensure_success(label: &str, response: &HttpResponse) -> ProviderResult<()> {
                 .unwrap_or("request failed")
                 .to_owned()
         });
-    Err(ProviderError::Discovery(format!(
+    let message = format!(
         "{label} models request failed with status {} (request {}): {message}",
         response.status, response.request_id
-    )))
+    );
+    Err(if matches!(response.status.as_u16(), 401 | 403) {
+        ProviderError::Credential(message)
+    } else {
+        ProviderError::Discovery(message)
+    })
 }
 
 fn models_revision(models: &[DiscoveredModel]) -> String {

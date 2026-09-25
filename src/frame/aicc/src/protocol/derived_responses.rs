@@ -176,6 +176,19 @@ impl OperationCodec for ResponsesDialectCodec {
         } else {
             None
         };
+        let enable_thinking = if self.dialect == ResponsesDialectKind::Qwen {
+            parameters.remove("enable_thinking")
+        } else {
+            None
+        };
+        if enable_thinking
+            .as_ref()
+            .is_some_and(|value| !value.is_boolean())
+        {
+            return Err(ProtocolError::invalid_request(
+                "enable_thinking must be a boolean",
+            ));
+        }
         let input = CodecInput {
             canonical_request: call.input.canonical_request.clone(),
             resolved_parameters: parameters,
@@ -186,6 +199,14 @@ impl OperationCodec for ResponsesDialectCodec {
             context: call.context,
         };
         let mut request = self.base.encode(&delegated)?;
+        if let Some(value) = enable_thinking {
+            let super::HttpBody::Json(body) = &mut request.body else {
+                return Err(ProtocolError::invalid_configuration(
+                    "Qwen request body must be JSON",
+                ));
+            };
+            body["enable_thinking"] = value;
+        }
         if !openrouter_parameters.is_empty() {
             let super::HttpBody::Json(body) = &mut request.body else {
                 return Err(ProtocolError::invalid_configuration(

@@ -47,14 +47,7 @@ pub(super) fn validate_model_driver(
         let owner = format!("{} pattern {index}", catalog.model_driver_id);
         let semantics = catalog.defaults.overlay(&model_rule_semantics!(rule));
         validate_llm_semantics(catalog, &owner, &semantics)?;
-        if semantics
-            .api_types
-            .as_ref()
-            .is_some_and(|apis| apis.contains("llm"))
-            && semantics.exclude != Some(true)
-        {
-            llm_pattern_ids(&owner, &rule.match_rule)?;
-        }
+        llm_pattern_ids(&owner, &rule.match_rule)?;
     }
     if catalog.defaults.llm.is_some()
         || catalog
@@ -220,6 +213,15 @@ fn validate_model_semantics(
 pub(super) fn validate_provider_rules(
     catalog: &ProviderRulesCatalog,
 ) -> Result<(), CatalogBuildError> {
+    if catalog.reported_cost.as_ref().is_some_and(|policy| {
+        policy.currency.len() != 3 || !policy.currency.bytes().all(|b| b.is_ascii_uppercase())
+    }) {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: catalog.provider_profile_id.clone(),
+            field: "reported_cost.currency",
+            reason: "requires a three-letter uppercase currency".into(),
+        });
+    }
     validate_header(
         CatalogKind::ProviderRules,
         &catalog.provider_profile_id,
@@ -230,43 +232,6 @@ pub(super) fn validate_provider_rules(
         catalog.schema_version,
         catalog.schema_revision,
     )?;
-    if let Some(drivers) = &catalog.metadata_drivers {
-        validate_unique_nonempty(
-            CatalogKind::ProviderRules,
-            &catalog.provider_profile_id,
-            "metadata_drivers",
-            drivers.iter().map(String::as_str),
-        )?;
-    }
-    for (alias, driver) in &catalog.origin_provider_aliases {
-        validate_nonempty_field(
-            CatalogKind::ProviderRules,
-            &catalog.provider_profile_id,
-            "origin_provider_aliases.key",
-            alias,
-        )?;
-        validate_nonempty_field(
-            CatalogKind::ProviderRules,
-            &catalog.provider_profile_id,
-            "origin_provider_aliases.value",
-            driver,
-        )?;
-    }
-    for mapping in &catalog.origin_mappings {
-        if mapping.extract.source != "provider_model_id" {
-            return Err(CatalogBuildError::InvalidValue {
-                owner: catalog.provider_profile_id.clone(),
-                field: "origin_mappings.extract.source",
-                reason: "must be provider_model_id".to_owned(),
-            });
-        }
-        validate_nonempty_field(
-            CatalogKind::ProviderRules,
-            &catalog.provider_profile_id,
-            "origin_mappings.extract.regex",
-            &mapping.extract.regex,
-        )?;
-    }
     validate_unique_nonempty(
         CatalogKind::ProviderRules,
         &catalog.provider_profile_id,
@@ -443,7 +408,7 @@ fn validate_model_pricing(
     Ok(())
 }
 
-fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), CatalogBuildError> {
+pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), CatalogBuildError> {
     if pricing.currency.trim().is_empty() {
         return Err(CatalogBuildError::InvalidValue {
             owner: owner.to_owned(),
@@ -451,10 +416,99 @@ fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), CatalogBuildEr
             reason: "must be non-empty".to_owned(),
         });
     }
+    let ratio_ok = |input: Option<f64>,
+                    cache: Option<f64>,
+                    write: Option<f64>,
+                    write_1h: Option<f64>,
+                    output: Option<f64>|
+     -> Result<(), CatalogBuildError> {
+        let Some(input) = input.filter(|v| *v > 0.0) else {
+            return Ok(());
+        };
+        let anomalous = cache.is_some_and(|v| v > input)
+            || write.is_some_and(|v| v / input > 10.0)
+            || write_1h.is_some_and(|v| v / input > 10.0)
+            || output.is_some_and(|v| v / input > 100.0);
+        if anomalous
+            && pricing
+                .ratio_exception
+                .as_deref()
+                .is_none_or(|reason| reason.trim().is_empty())
+        {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.into(),
+                field: "pricing.ratio_exception",
+                reason: "unusual token price ratios require an explicit explanation".into(),
+            });
+        }
+        Ok(())
+    };
+    ratio_ok(
+        pricing.input_token,
+        pricing.cache_input_token,
+        pricing.cache_write_input_token,
+        pricing.cache_write_1h_input_token,
+        pricing.output_token,
+    )?;
+    for (input, cache, write, write_1h, output) in pricing
+        .tiers
+        .iter()
+        .flat_map(|t| &t.steps)
+        .map(|s| {
+            (
+                s.input_token,
+                s.cache_input_token,
+                s.cache_write_input_token,
+                s.cache_write_1h_input_token,
+                s.output_token,
+            )
+        })
+        .chain(pricing.time_windows.iter().map(|s| {
+            (
+                s.input_token,
+                s.cache_input_token,
+                s.cache_write_input_token,
+                s.cache_write_1h_input_token,
+                s.output_token,
+            )
+        }))
+    {
+        ratio_ok(
+            input.or(pricing.input_token),
+            cache.or(pricing.cache_input_token),
+            write.or(pricing.cache_write_input_token),
+            write_1h.or(pricing.cache_write_1h_input_token),
+            output.or(pricing.output_token),
+        )?;
+    }
+    if pricing
+        .source_url
+        .as_deref()
+        .is_some_and(|url| !url.starts_with("https://"))
+        || pricing
+            .verified_at
+            .as_deref()
+            .is_some_and(|date| date.trim().is_empty())
+    {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: owner.into(),
+            field: "pricing.source_url/verified_at",
+            reason: "invalid pricing provenance".into(),
+        });
+    }
     for (field, amount) in [
         ("input_token", pricing.input_token),
         ("output_token", pricing.output_token),
         ("cache_input_token", pricing.cache_input_token),
+        ("cache_write_input_token", pricing.cache_write_input_token),
+        (
+            "cache_write_1h_input_token",
+            pricing.cache_write_1h_input_token,
+        ),
+        ("audio_input_token", pricing.audio_input_token),
+        ("image_input_token", pricing.image_input_token),
+        ("audio_output_token", pricing.audio_output_token),
+        ("image_output_token", pricing.image_output_token),
         ("estimated_cost", pricing.estimated_cost),
         ("amount", pricing.amount),
     ] {
@@ -467,6 +521,15 @@ fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), CatalogBuildEr
         }
     }
     for rule in &pricing.rules {
+        ratio_ok(
+            rule.input_token.or(pricing.input_token),
+            rule.cache_input_token.or(pricing.cache_input_token),
+            rule.cache_write_input_token
+                .or(pricing.cache_write_input_token),
+            rule.cache_write_1h_input_token
+                .or(pricing.cache_write_1h_input_token),
+            rule.output_token.or(pricing.output_token),
+        )?;
         if !rule.amount.is_finite() || rule.amount < 0.0 {
             return Err(CatalogBuildError::InvalidValue {
                 owner: owner.to_owned(),
@@ -478,6 +541,15 @@ fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), CatalogBuildEr
             ("input_token", rule.input_token),
             ("output_token", rule.output_token),
             ("cache_input_token", rule.cache_input_token),
+            ("cache_write_input_token", rule.cache_write_input_token),
+            (
+                "cache_write_1h_input_token",
+                rule.cache_write_1h_input_token,
+            ),
+            ("audio_input_token", rule.audio_input_token),
+            ("image_input_token", rule.image_input_token),
+            ("audio_output_token", rule.audio_output_token),
+            ("image_output_token", rule.image_output_token),
         ] {
             if amount.is_some_and(|amount| !amount.is_finite() || amount < 0.0) {
                 return Err(CatalogBuildError::InvalidValue {
@@ -487,7 +559,19 @@ fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), CatalogBuildEr
                 });
             }
         }
-        let billed_by_token = rule.input_token.is_some() || rule.output_token.is_some();
+        let billed_by_token = [
+            rule.input_token,
+            rule.output_token,
+            rule.cache_input_token,
+            rule.cache_write_input_token,
+            rule.cache_write_1h_input_token,
+            rule.audio_input_token,
+            rule.image_input_token,
+            rule.audio_output_token,
+            rule.image_output_token,
+        ]
+        .iter()
+        .any(Option::is_some);
         if billed_by_token && rule.unit.is_some() {
             return Err(CatalogBuildError::InvalidValue {
                 owner: owner.to_owned(),
@@ -591,6 +675,16 @@ fn validate_pricing_time_windows(
         let declares_override = window.input_token.is_some()
             || window.output_token.is_some()
             || window.cache_input_token.is_some()
+            || [
+                window.cache_write_input_token,
+                window.cache_write_1h_input_token,
+                window.audio_input_token,
+                window.image_input_token,
+                window.audio_output_token,
+                window.image_output_token,
+            ]
+            .iter()
+            .any(Option::is_some)
             || window.unit.is_some()
             || window.amount.is_some();
         if !declares_override {
@@ -602,6 +696,15 @@ fn validate_pricing_time_windows(
             ("input_token", window.input_token),
             ("output_token", window.output_token),
             ("cache_input_token", window.cache_input_token),
+            ("cache_write_input_token", window.cache_write_input_token),
+            (
+                "cache_write_1h_input_token",
+                window.cache_write_1h_input_token,
+            ),
+            ("audio_input_token", window.audio_input_token),
+            ("image_input_token", window.image_input_token),
+            ("audio_output_token", window.audio_output_token),
+            ("image_output_token", window.image_output_token),
             ("amount", window.amount),
         ] {
             if amount.is_some_and(|amount| !amount.is_finite() || amount < 0.0) {
@@ -610,7 +713,19 @@ fn validate_pricing_time_windows(
                 )));
             }
         }
-        let billed_by_token = window.input_token.is_some() || window.output_token.is_some();
+        let billed_by_token = [
+            window.input_token,
+            window.output_token,
+            window.cache_input_token,
+            window.cache_write_input_token,
+            window.cache_write_1h_input_token,
+            window.audio_input_token,
+            window.image_input_token,
+            window.audio_output_token,
+            window.image_output_token,
+        ]
+        .iter()
+        .any(Option::is_some);
         if billed_by_token && window.unit.is_some() {
             return Err(invalid(format!(
                 "windows[{index}]: token rates and unit billing are mutually exclusive"
@@ -648,6 +763,15 @@ fn validate_pricing_tiers(owner: &str, tiers: &PricingTiers) -> Result<(), Catal
             ("input_token", step.input_token),
             ("output_token", step.output_token),
             ("cache_input_token", step.cache_input_token),
+            ("cache_write_input_token", step.cache_write_input_token),
+            (
+                "cache_write_1h_input_token",
+                step.cache_write_1h_input_token,
+            ),
+            ("audio_input_token", step.audio_input_token),
+            ("image_input_token", step.image_input_token),
+            ("audio_output_token", step.audio_output_token),
+            ("image_output_token", step.image_output_token),
             ("amount", step.amount),
         ] {
             if amount.is_some_and(|amount| !amount.is_finite() || amount < 0.0) {
@@ -656,7 +780,19 @@ fn validate_pricing_tiers(owner: &str, tiers: &PricingTiers) -> Result<(), Catal
                 )));
             }
         }
-        let billed_by_token = step.input_token.is_some() || step.output_token.is_some();
+        let billed_by_token = [
+            step.input_token,
+            step.output_token,
+            step.cache_input_token,
+            step.cache_write_input_token,
+            step.cache_write_1h_input_token,
+            step.audio_input_token,
+            step.image_input_token,
+            step.audio_output_token,
+            step.image_output_token,
+        ]
+        .iter()
+        .any(Option::is_some);
         if billed_by_token && step.unit.is_some() {
             return Err(invalid(format!(
                 "steps[{index}]: token rates and unit billing are mutually exclusive"
@@ -687,6 +823,25 @@ fn validate_pricing_tiers(owner: &str, tiers: &PricingTiers) -> Result<(), Catal
 pub(super) fn validate_known_provider_catalog(
     catalog: &KnownProviderCatalog,
 ) -> Result<(), CatalogBuildError> {
+    if let Some(rates) = &catalog.exchange_rates {
+        if !rates.source_url.starts_with("https://")
+            || rates.observed_at_ms < 0
+            || rates.expires_at_ms <= rates.observed_at_ms
+            || rates.usd_per_unit.iter().any(|(currency, rate)| {
+                currency.len() != 3
+                    || !currency.bytes().all(|c| c.is_ascii_uppercase())
+                    || !rate.is_finite()
+                    || *rate <= 0.0
+                    || (currency == "USD" && *rate != 1.0)
+            })
+        {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: catalog.catalog_id.clone(),
+                field: "exchange_rates",
+                reason: "exchange rates require a source, positive rates and a valid expiry".into(),
+            });
+        }
+    }
     validate_header(
         CatalogKind::KnownProvider,
         &catalog.catalog_id,
@@ -939,28 +1094,6 @@ pub(super) fn validate_references(
         }
     }
     for (owner, catalog) in provider_rules {
-        if let Some(drivers) = &catalog.document.metadata_drivers {
-            for target in drivers {
-                require_model_driver(model_drivers, owner, "metadata_drivers", target)?;
-            }
-        }
-        for target in catalog.document.origin_provider_aliases.values() {
-            require_model_driver(model_drivers, owner, "origin_provider_aliases", target)?;
-            if catalog
-                .document
-                .metadata_drivers
-                .as_ref()
-                .is_some_and(|drivers| !drivers.contains(target))
-            {
-                return Err(CatalogBuildError::InvalidValue {
-                    owner: owner.clone(),
-                    field: "origin_provider_aliases",
-                    reason: format!(
-                        "Model Driver {target:?} is outside the provider's metadata_drivers"
-                    ),
-                });
-            }
-        }
         for variant in &catalog.document.variants {
             require_model_driver(
                 model_drivers,

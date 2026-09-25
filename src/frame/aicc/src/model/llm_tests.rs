@@ -101,10 +101,7 @@ pub(crate) fn inventory(
     efforts: &[&str],
 ) -> ProviderInventory {
     let catalog = builtin_catalog();
-    let semantics = catalog
-        .resolve_model(origin, Some(&[driver.to_owned()]), &BTreeMap::new())
-        .unwrap()
-        .semantics;
+    let semantics = catalog.resolve_model(driver, origin).unwrap().semantics;
     ProviderInventory {
         provider_instance_name: instance.into(),
         provider_profile_id: "synthetic".into(),
@@ -503,13 +500,7 @@ fn finite_llm_patterns_preserve_exact_and_first_match_precedence() {
     );
     let pattern_model = catalog.llm_model("openai", "gpt-5.5-pattern").unwrap();
     assert_eq!(pattern_model.semantics.spec, "gpt-standard");
-    let resolved = catalog
-        .resolve_model(
-            "gpt-5.5-pattern",
-            Some(&["openai".into()]),
-            &BTreeMap::new(),
-        )
-        .unwrap();
+    let resolved = catalog.resolve_model("openai", "gpt-5.5-pattern").unwrap();
     assert_eq!(
         resolved.semantics.llm.as_ref().unwrap(),
         &pattern_model.semantics
@@ -547,7 +538,7 @@ fn d08_native_uses_base_and_thinking_is_not_medium() {
         "qwen3.6-35b-a3b",
         "thinking-channel",
         "b",
-        &["thinking", "medium"],
+        &["thinking"],
     );
     let registry = ModelRegistry::build(
         &catalog,

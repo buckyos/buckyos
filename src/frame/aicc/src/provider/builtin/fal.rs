@@ -1,9 +1,10 @@
 use super::super::{
-    validate_discovery, CatalogOnlyDiscovery, ProviderDiscovery, ProviderDiscoverySnapshot,
-    ProviderResult,
+    validate_discovery, ProviderDiscovery, ProviderDiscoverySnapshot, ProviderResult,
 };
 #[cfg(test)]
-use super::super::{DiscoveryMode, ProviderConnectionContract, ProviderProfile};
+use super::super::{
+    CatalogOnlyDiscovery, DiscoveryMode, ProviderConnectionContract, ProviderProfile,
+};
 #[cfg(test)]
 use crate::catalog::{CatalogKind, CurrentCatalogFile, ProviderRulesCatalog};
 #[cfg(test)]
@@ -37,11 +38,130 @@ pub(crate) fn fal_catalog_files() -> Vec<CurrentCatalogFile> {
     super::builtin_catalog_files(&[FAL_PROVIDER_PROFILE_ID])
 }
 
+#[cfg(test)]
 pub(crate) fn fal_discovery(
     configured_inventory: ProviderDiscoverySnapshot,
 ) -> ProviderResult<Arc<dyn ProviderDiscovery>> {
     validate_discovery(&configured_inventory)?;
     Ok(Arc::new(CatalogOnlyDiscovery::new(configured_inventory)))
+}
+
+pub(crate) struct FalPricingDiscovery {
+    pub inventory: Arc<dyn ProviderDiscovery>,
+    pub transport: Arc<dyn super::openai_responses_compatible::OpenAiCompatibleModelsTransport>,
+}
+
+#[async_trait::async_trait]
+impl ProviderDiscovery for FalPricingDiscovery {
+    async fn refresh_catalog(
+        &self,
+        catalog: &crate::catalog::CatalogSnapshot,
+        profile: &str,
+    ) -> ProviderResult<()> {
+        self.inventory.refresh_catalog(catalog, profile).await
+    }
+
+    async fn discover(
+        &self,
+        context: &super::super::DiscoveryContext<'_>,
+    ) -> ProviderResult<ProviderDiscoverySnapshot> {
+        use super::super::{ProviderError, ProviderHealthState};
+        use crate::protocol::HttpRequest;
+        let mut snapshot = self.inventory.discover(context).await?;
+        snapshot.discovered_at_ms = super::super::now_ms()?;
+        for chunk in snapshot.models.chunks_mut(50) {
+            let mut url =
+                reqwest::Url::parse("https://api.fal.ai/v1/models/pricing").expect("constant URL");
+            for model in chunk.iter() {
+                url.query_pairs_mut()
+                    .append_pair("endpoint_id", &model.provider_model_id);
+            }
+            let mut request = HttpRequest::new(reqwest::Method::GET, url.to_string());
+            context
+                .credential
+                .apply(&mut request.headers)
+                .map_err(|e| ProviderError::Credential(e.to_string()))?;
+            request.max_response_bytes = Some(1024 * 1024);
+            request.timeout = Some(std::time::Duration::from_secs(30));
+            let response = match self.transport.send(request).await {
+                Ok(response) => response,
+                Err(_) => {
+                    snapshot.health = ProviderHealthState::Degraded;
+                    continue;
+                }
+            };
+            if matches!(response.status.as_u16(), 401 | 403) {
+                return Err(ProviderError::Credential(
+                    "fal pricing authentication failed".into(),
+                ));
+            }
+            if !response.status.is_success() {
+                snapshot.health = ProviderHealthState::Degraded;
+                continue;
+            }
+            let body = response
+                .json(1024 * 1024)
+                .map_err(|e| ProviderError::DiscoveryResponse(e.to_string()))?;
+            apply_prices(chunk, &body, snapshot.discovered_at_ms)?;
+        }
+        validate_discovery(&snapshot)?;
+        Ok(snapshot)
+    }
+}
+
+fn apply_prices(
+    models: &mut [super::super::DiscoveredModel],
+    body: &serde_json::Value,
+    timestamp: i64,
+) -> ProviderResult<()> {
+    use super::super::ProviderError;
+    let prices = body
+        .get("prices")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            ProviderError::DiscoveryResponse("fal pricing requires prices array".into())
+        })?;
+    let mut seen = std::collections::BTreeSet::new();
+    for price in prices {
+        let id = price
+            .get("endpoint_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                ProviderError::DiscoveryResponse("fal price missing endpoint_id".into())
+            })?;
+        if !seen.insert(id) {
+            return Err(ProviderError::DiscoveryResponse(
+                "fal duplicate price".into(),
+            ));
+        }
+        let Some(model) = models
+            .iter_mut()
+            .find(|model| model.provider_model_id == id)
+        else {
+            continue;
+        };
+        let amount = price
+            .get("unit_price")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .ok_or_else(|| ProviderError::DiscoveryResponse("fal invalid unit_price".into()))?;
+        let currency = price
+            .get("currency")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| s.len() == 3 && s.bytes().all(|b| b.is_ascii_uppercase()))
+            .ok_or_else(|| ProviderError::DiscoveryResponse("fal invalid currency".into()))?;
+        let _unit = match price.get("unit").and_then(serde_json::Value::as_str) {
+            Some("image") => "image",
+            Some("second") => "second",
+            Some("megapixel") => "megapixel",
+            _ => continue,
+        };
+        model.pricing = Some(serde_json::from_value(serde_json::json!({
+            "currency":currency,"estimated_cost":amount,
+            "source_url":"https://fal.ai/docs/platform-apis/v1/models/pricing", "verified_at":timestamp.to_string()
+        })).map_err(|e| ProviderError::DiscoveryResponse(e.to_string()))?);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -62,9 +182,9 @@ mod tests {
     fn model<const N: usize>(provider_model_id: &str, api_types: [ApiType; N]) -> DiscoveredModel {
         DiscoveredModel {
             provider_model_id: provider_model_id.to_owned(),
-            origin_model_id: None,
             api_types: Some(api_types.into_iter().collect()),
             supported_features: Some(BTreeSet::new()),
+            unsupported_features: BTreeSet::new(),
             remote_methods: Some(BTreeSet::from([FAL_QUEUE_OPERATION_ID.to_owned()])),
             availability: ModelAvailability::Available,
             deprecated: false,
@@ -121,7 +241,6 @@ mod tests {
             rules.patterns[0].operations["video.img2video"],
             FAL_QUEUE_OPERATION_ID
         );
-        assert_eq!(rules.metadata_drivers, Some(vec!["fal".to_owned()]));
         assert_eq!(rules.models.len(), 4);
 
         let files = fal_catalog_files();

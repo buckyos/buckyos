@@ -96,12 +96,13 @@ impl ProviderRuntime {
                 credential: &credential,
             })
             .await?;
-        let inventory = InventoryBuilder::build(
+        let inventory = InventoryBuilder::build_with_matcher(
             &self.profile,
             &self.config,
             snapshot,
             &catalog,
             &self.codecs,
+            Some(self.discovery.as_ref()),
         )?;
         Ok(ProviderInventoryCandidate {
             provider_instance_name: self.config.provider_instance_name.clone(),
@@ -134,7 +135,22 @@ impl ProviderRuntime {
             }
         };
         let current = self.inventory.read().await.clone();
+        let unmatched_changed = current
+            .unmatched_models
+            .iter()
+            .map(|m| (&m.provider_model_id, &m.reason))
+            .collect::<Vec<_>>()
+            != candidate
+                .inventory
+                .unmatched_models
+                .iter()
+                .map(|m| (&m.provider_model_id, &m.reason))
+                .collect::<Vec<_>>();
         let changed = force
+            || unmatched_changed
+            || current.models != candidate.inventory.models
+            || current.health != candidate.inventory.health
+            || current.unavailable_presets != candidate.inventory.unavailable_presets
             || current.provider_model_list_fingerprint
                 != candidate.inventory.provider_model_list_fingerprint
             || current.metadata_applied_seq != candidate.inventory.metadata_applied_seq;
@@ -150,6 +166,20 @@ impl ProviderRuntime {
                     },
                 );
                 return Err(error);
+            }
+        }
+        if changed {
+            for model in &candidate.inventory.unmatched_models {
+                if !current.unmatched_models.iter().any(|old| {
+                    old.provider_model_id == model.provider_model_id && old.reason == model.reason
+                }) {
+                    log::warn!(
+                        "provider {} model {} unmatched: {:?}",
+                        self.config.provider_instance_name,
+                        model.provider_model_id,
+                        model.reason
+                    );
+                }
             }
         }
         self.record_success(attempt_at_ms, candidate.inventory.health)
@@ -553,16 +583,25 @@ impl ProviderRuntimeManager {
                 )
             })?;
         let catalog = self.catalog.read().await.clone();
-        let inventory =
-            InventoryBuilder::build(&profile, &instance, discovered, &catalog, &self.codecs)
-                .map_err(|error| {
-                    let stage = if matches!(error, ProviderError::Discovery(_)) {
-                        ProviderDraftValidationStage::Discovery
-                    } else {
-                        ProviderDraftValidationStage::Inventory
-                    };
-                    ProviderDraftValidationError::from_provider_error(stage, &error)
-                })?;
+        let inventory = InventoryBuilder::build_with_matcher(
+            &profile,
+            &instance,
+            discovered,
+            &catalog,
+            &self.codecs,
+            Some(discovery),
+        )
+        .map_err(|error| {
+            let stage = if matches!(
+                error,
+                ProviderError::Discovery(_) | ProviderError::DiscoveryResponse(_)
+            ) {
+                ProviderDraftValidationStage::Discovery
+            } else {
+                ProviderDraftValidationStage::Inventory
+            };
+            ProviderDraftValidationError::from_provider_error(stage, &error)
+        })?;
         Ok(ProviderDraftNegotiation {
             provider_profile_id: profile.provider_profile_id.clone(),
             protocol_adapter_id: instance.protocol_adapter_id,
@@ -674,12 +713,13 @@ impl ProviderRuntimeManager {
             Err(discovery_error) => match load_lkgs(&runtime).await {
                 Ok(Some(inventory)) => inventory,
                 Ok(None) => match profile.default_inventory.clone() {
-                    Some(default) => Arc::new(InventoryBuilder::build(
+                    Some(default) => Arc::new(InventoryBuilder::build_with_matcher(
                         &profile,
                         &config,
                         default,
                         &catalog,
                         &self.codecs,
+                        Some(runtime.discovery.as_ref()),
                     )?),
                     None => return Err(discovery_error),
                 },
@@ -954,5 +994,7 @@ fn empty_inventory(
         discovered_at_ms: 0,
         health: ProviderHealthState::Unknown,
         models: Vec::new(),
+        unmatched_models: Vec::new(),
+        unavailable_presets: Vec::new(),
     }
 }

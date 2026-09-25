@@ -4,7 +4,9 @@ use super::super::{
 };
 #[cfg(test)]
 use super::super::{DiscoveryMode, ProviderProfile};
-use crate::catalog::Pricing;
+use crate::catalog::{
+    CatalogSnapshot, ModelIdentity, ModelMatchFailure, Pricing, ProviderModelMatch,
+};
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ProviderRulesCatalog};
 use crate::protocol::{
@@ -83,6 +85,43 @@ impl OpenRouterDiscovery {
 
 #[async_trait]
 impl ProviderDiscovery for OpenRouterDiscovery {
+    fn match_model_driver(&self, id: &str, catalog: &CatalogSnapshot) -> ProviderModelMatch {
+        let Some((vendor, model)) = id.split_once('/') else {
+            return ProviderModelMatch::NotHandled;
+        };
+        let vendor = vendor.to_ascii_lowercase();
+        let driver = match vendor.as_str() {
+            "anthropic" => "claude",
+            "google" => "gemini",
+            "moonshotai" => "kimi",
+            "z-ai" => "glm",
+            other => other,
+        };
+        if catalog.resolve_model(driver, model).is_ok() {
+            return ProviderModelMatch::Matched(ModelIdentity {
+                model_driver_id: driver.into(),
+                model_id: model.into(),
+            });
+        }
+        let matches = catalog
+            .model_driver(driver)
+            .into_iter()
+            .flat_map(|driver| &driver.models)
+            .filter(|entry| entry.id.eq_ignore_ascii_case(model))
+            .map(|entry| ModelIdentity {
+                model_driver_id: driver.into(),
+                model_id: entry.id.clone(),
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [identity] => ProviderModelMatch::Matched(identity.clone()),
+            [] => ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias),
+            _ => ProviderModelMatch::Failed(ModelMatchFailure::Ambiguous {
+                candidates: matches,
+            }),
+        }
+    }
+
     async fn discover(
         &self,
         context: &DiscoveryContext<'_>,
@@ -103,19 +142,12 @@ impl ProviderDiscovery for OpenRouterDiscovery {
             .map_err(|error| ProviderError::Discovery(error.to_string()))?;
         ensure_success(&response)?;
         let wire: ModelsResponse = serde_json::from_slice(&response.body).map_err(|error| {
-            ProviderError::Discovery(format!("OpenRouter models response is invalid: {error}"))
+            ProviderError::DiscoveryResponse(format!(
+                "OpenRouter models response is invalid: {error}"
+            ))
         })?;
         let mut models = BTreeMap::new();
         for model in wire.data {
-            if !is_canonical_model(&model) {
-                continue;
-            }
-            let (_, origin_model_id) = model.id.split_once('/').ok_or_else(|| {
-                ProviderError::Discovery(
-                    "OpenRouter model ID must use vendor/model form".to_owned(),
-                )
-            })?;
-            let origin_model_id = origin_model_id.to_owned();
             let mut supported_features = BTreeSet::new();
             if model
                 .supported_parameters
@@ -169,9 +201,10 @@ impl ProviderDiscovery for OpenRouterDiscovery {
                 model.id.clone(),
                 DiscoveredModel {
                     provider_model_id: model.id,
-                    origin_model_id: Some(origin_model_id),
+
                     api_types: Some(vec![api_type]),
                     supported_features: Some(supported_features),
+                    unsupported_features: BTreeSet::new(),
                     remote_methods: Some(BTreeSet::from([operation.to_owned()])),
                     availability: ModelAvailability::Available,
                     deprecated: model.expiration_date.is_some(),
@@ -197,21 +230,6 @@ impl ProviderDiscovery for OpenRouterDiscovery {
     }
 }
 
-fn is_canonical_model(model: &ModelObject) -> bool {
-    if model.id.trim().is_empty()
-        || model.id.contains('@')
-        || model.id.contains(':')
-        || model.id.starts_with('~')
-        || model.id.starts_with("openrouter/")
-    {
-        return false;
-    }
-    model
-        .canonical_slug
-        .as_deref()
-        .is_none_or(|canonical| canonical == model.id)
-}
-
 fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing>> {
     let Some(pricing) = pricing else {
         return Ok(None);
@@ -223,6 +241,15 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
     }
     Ok(Some(Pricing {
         currency: "USD".to_owned(),
+        source_url: Some("https://openrouter.ai/api/v1/models".into()),
+        verified_at: Some(super::super::now_ms()?.to_string()),
+        ratio_exception: None,
+        cache_write_input_token: None,
+        audio_input_token: None,
+        image_input_token: None,
+        cache_write_1h_input_token: None,
+        audio_output_token: None,
+        image_output_token: None,
         input_token,
         output_token,
         cache_input_token: None,
@@ -240,11 +267,11 @@ fn parse_nonnegative_price(name: &str, value: Option<&str>) -> ProviderResult<Op
     let Some(value) = value else {
         return Ok(None);
     };
-    let value = value
-        .parse::<f64>()
-        .map_err(|_| ProviderError::Discovery(format!("OpenRouter {name} price is invalid")))?;
+    let value = value.parse::<f64>().map_err(|_| {
+        ProviderError::DiscoveryResponse(format!("OpenRouter {name} price is invalid"))
+    })?;
     if !value.is_finite() || value < 0.0 {
-        return Err(ProviderError::Discovery(format!(
+        return Err(ProviderError::DiscoveryResponse(format!(
             "OpenRouter {name} price must be finite and non-negative"
         )));
     }
@@ -301,10 +328,15 @@ fn ensure_success(response: &HttpResponse) -> ProviderResult<()> {
     if response.status.is_success() {
         return Ok(());
     }
-    Err(ProviderError::Discovery(format!(
+    let message = format!(
         "OpenRouter models request failed with status {} (request {})",
         response.status, response.request_id
-    )))
+    );
+    Err(if matches!(response.status.as_u16(), 401 | 403) {
+        ProviderError::Credential(message)
+    } else {
+        ProviderError::Discovery(message)
+    })
 }
 
 fn models_revision(models: &[DiscoveredModel]) -> String {
@@ -324,7 +356,8 @@ struct ModelsResponse {
 #[derive(Deserialize)]
 struct ModelObject {
     id: String,
-    canonical_slug: Option<String>,
+    #[serde(rename = "canonical_slug")]
+    _canonical_slug: Option<String>,
     #[serde(default)]
     supported_parameters: Vec<String>,
     architecture: Option<ModelArchitecture>,
@@ -373,7 +406,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discovery_keeps_only_canonical_models_and_dynamic_prices() {
+    async fn discovery_preserves_aliases_for_identity_diagnostics_and_dynamic_prices() {
         let transport = Arc::new(FakeTransport {
             request: Mutex::new(None),
             response: Mutex::new(Some(Ok(HttpResponse {
@@ -412,13 +445,12 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(snapshot.models.len(), 3);
+        assert_eq!(snapshot.models.len(), 5);
         let language_model = snapshot
             .models
             .iter()
             .find(|model| model.provider_model_id == "openai/model-a")
             .unwrap();
-        assert_eq!(language_model.origin_model_id.as_deref(), Some("model-a"));
         assert_eq!(
             language_model.pricing.as_ref().unwrap().input_token,
             Some(0.000001)
@@ -465,7 +497,6 @@ mod tests {
             .find(|pattern| pattern.operations.contains_key("llm"))
             .unwrap();
         assert_eq!(llm_pattern.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
-        assert_eq!(openrouter_provider_rules(3).origin_mappings.len(), 1);
     }
 
     #[test]

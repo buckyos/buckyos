@@ -1555,12 +1555,21 @@ fn merge_usage(left: &AiUsage, right: &AiUsage) -> AiUsage {
             left.cache_write_input_tokens,
             right.cache_write_input_tokens,
         ),
+        cache_write_1h_input_tokens: add_u64(
+            left.cache_write_1h_input_tokens,
+            right.cache_write_1h_input_tokens,
+        ),
         reasoning_tokens: add_u64(left.reasoning_tokens, right.reasoning_tokens),
         image_units: add_u64(left.image_units, right.image_units),
         audio_seconds: add_f64(left.audio_seconds, right.audio_seconds),
         video_seconds: add_f64(left.video_seconds, right.video_seconds),
         request_units: add_u64(left.request_units, right.request_units),
         characters: add_u64(left.characters, right.characters),
+        audio_input_tokens: add_u64(left.audio_input_tokens, right.audio_input_tokens),
+        image_input_tokens: add_u64(left.image_input_tokens, right.image_input_tokens),
+        audio_output_tokens: add_u64(left.audio_output_tokens, right.audio_output_tokens),
+        image_output_tokens: add_u64(left.image_output_tokens, right.image_output_tokens),
+        reported_cost: None,
         cost: add_cost(&left.cost, &right.cost),
     }
 }

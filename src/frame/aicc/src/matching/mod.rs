@@ -42,6 +42,9 @@ pub(crate) struct MatchSchema {
 const MODEL_DRIVER_DIMENSIONS: &[DimensionSpec] = &[string_dimension("origin_model_id")];
 
 const PROVIDER_RULE_DIMENSIONS: &[DimensionSpec] = &[
+    string_dimension("region"),
+    string_dimension("workspace"),
+    string_dimension("account"),
     string_dimension("provider_model_id"),
     string_dimension("origin_model_id"),
     string_dimension("model_driver_id"),

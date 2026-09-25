@@ -1,71 +1,282 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "revision_seq": 1,
   "provider_profile_id": "minimax",
-  "metadata_drivers": ["minimax"],
   "models": [
     {
       "id": "speech-2.8-hd",
-      "operations": { "audio.tts": "t2a.create" },
+      "operations": {
+        "audio.tts": "t2a.create"
+      },
       "canonical_fields": {
         "/voice": {
           "converter": "minimax_tts_voice_v1",
-          "fallback": { "action": "reject" }
+          "fallback": {
+            "action": "reject"
+          }
         }
       }
     },
     {
       "id": "image-01",
-      "operations": { "image.txt2img": "image_generation.create", "image.img2img": "image_generation.create" }
+      "operations": {
+        "image.txt2img": "image_generation.create",
+        "image.img2img": "image_generation.create"
+      }
     },
     {
       "id": "MiniMax-Hailuo-02",
-      "operations": { "video.txt2video": "video_generation.create", "video.img2video": "video_generation.create" }
+      "operations": {
+        "video.txt2video": "video_generation.create",
+        "video.img2video": "video_generation.create"
+      }
     },
     {
       "id": "music-2.0",
-      "operations": { "audio.music": "music_generation.create" }
+      "operations": {
+        "audio.music": "music_generation.create"
+      }
     }
   ],
   "patterns": [
     {
       "match": "MiniMax-M2*",
-      "operations": { "llm": "messages.create" },
+      "operations": {
+        "llm": "messages.create"
+      },
       "request_rules": [
         {
-          "defaults": { "temperature": 1.0, "top_p": 0.9 },
-          "remove": ["/stop"]
+          "defaults": {
+            "temperature": 1.0,
+            "top_p": 0.9
+          },
+          "remove": [
+            "/stop"
+          ]
         }
       ]
     },
     {
       "match": "speech-*",
-      "operations": { "audio.tts": "t2a.create" },
+      "operations": {
+        "audio.tts": "t2a.create"
+      },
       "canonical_fields": {
         "/voice": {
           "converter": "minimax_tts_voice_v1",
-          "fallback": { "action": "reject" }
+          "fallback": {
+            "action": "reject"
+          }
         }
       }
     },
     {
       "match": "image-*",
-      "operations": { "image.txt2img": "image_generation.create", "image.img2img": "image_generation.create" }
+      "operations": {
+        "image.txt2img": "image_generation.create",
+        "image.img2img": "image_generation.create"
+      }
     },
     {
       "match": "MiniMax-Hailuo-*",
-      "operations": { "video.txt2video": "video_generation.create", "video.img2video": "video_generation.create" }
+      "operations": {
+        "video.txt2video": "video_generation.create",
+        "video.img2video": "video_generation.create"
+      }
     },
     {
       "match": "music-*",
-      "operations": { "audio.music": "music_generation.create" }
+      "operations": {
+        "audio.music": "music_generation.create"
+      }
     },
     {
       "match": "*",
-      "operations": { "llm": "messages.create" },
-      "request_rules": [{ "remove": ["/stop"] }]
+      "operations": {
+        "llm": "messages.create"
+      },
+      "request_rules": [
+        {
+          "remove": [
+            "/stop"
+          ]
+        }
+      ]
+    }
+  ],
+  "variants": [],
+  "model_pricing": [
+    {
+      "pricing": {
+        "currency": "USD",
+        "input_token": 3e-07,
+        "output_token": 1.2e-06,
+        "cache_input_token": 6e-08,
+        "cache_write_input_token": 3.75e-07,
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "MiniMax-M2.7",
+        "region": "global"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "USD",
+        "input_token": 6e-07,
+        "output_token": 2.4e-06,
+        "cache_input_token": 6e-08,
+        "cache_write_input_token": 3.75e-07,
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "MiniMax-M2.7-highspeed",
+        "region": "global"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "USD",
+        "input_token": 3e-07,
+        "output_token": 1.2e-06,
+        "cache_input_token": 3e-08,
+        "cache_write_input_token": 3.75e-07,
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "MiniMax-M2.5",
+        "region": "global"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "USD",
+        "input_token": 6e-07,
+        "output_token": 2.4e-06,
+        "cache_input_token": 3e-08,
+        "cache_write_input_token": 3.75e-07,
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "MiniMax-M2.5-highspeed",
+        "region": "global"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "USD",
+        "input_token": 3e-07,
+        "output_token": 1.2e-06,
+        "cache_input_token": 3e-08,
+        "cache_write_input_token": 3.75e-07,
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "MiniMax-M2.1",
+        "region": "global"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "USD",
+        "input_token": 6e-07,
+        "output_token": 2.4e-06,
+        "cache_input_token": 3e-08,
+        "cache_write_input_token": 3.75e-07,
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "MiniMax-M2.1-highspeed",
+        "region": "global"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "USD",
+        "input_token": 3e-07,
+        "output_token": 1.2e-06,
+        "cache_input_token": 3e-08,
+        "cache_write_input_token": 3.75e-07,
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "MiniMax-M2",
+        "region": "global"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "USD",
+        "unit": "character",
+        "amount": 0.0001,
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "speech-2.8-hd",
+        "region": "global"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "USD",
+        "unit": "character",
+        "amount": 6e-05,
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "speech-2.8-turbo",
+        "region": "global"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "USD",
+        "unit": "character",
+        "amount": 0.0001,
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "speech-2.6-hd",
+        "region": "global"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "USD",
+        "unit": "character",
+        "amount": 6e-05,
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "speech-2.6-turbo",
+        "region": "global"
+      }
+    },
+    {
+      "pricing": {
+        "currency": "USD",
+        "unit": "image",
+        "amount": 0.0035,
+        "source_url": "https://platform.minimax.io/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-25"
+      },
+      "match": {
+        "provider_model_id": "image-01",
+        "region": "global"
+      }
     }
   ]
 }

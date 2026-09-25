@@ -6,7 +6,7 @@
 
 LLM 实现更新：2026-09-25，Model Driver v2 与规格/家族树已实现。当前契约见 §3.3、[Metadata Schema](driver_metadata_schema.md) 和 [实现报告](model_driver_v2_implementation.md)。
 
-当前 Schema：Model Driver `schema_version = 1`，system-config metadata envelope `schema_version = 1`；新的 Model Driver 结构计划使用 v2，不改变 envelope 版本。
+当前 Schema：Model Driver `schema_version = 2`，Provider inventory `schema_version = 2`；system-config metadata envelope 仍为 `schema_version = 1`。
 
 价格边界修订：2026-09-25，所有 Model Driver（含非 LLM 模型）不再声明 `model_pricing` 或兜底价格。builtin 配置、运行时 schema 和 Model Driver 价格 fallback 均已删除；Provider 价格与实际结算保持原边界。
 
@@ -14,7 +14,7 @@ LLM 实现更新：2026-09-25，Model Driver v2 与规格/家族树已实现。�
 
 服务：AICC。
 
-Model Driver 把原厂模型身份转换为稳定的 AICC 语义；逻辑模型 FS 是以 `.` 分隔路径表示的内存虚拟目录树，把用途路径映射到模型家族或 exact model。它不是 `$BUCKYOS_ROOT` 下的真实文件系统。Provider discovery 提供渠道实际存在的模型，Provider Rules 先把渠道模型归一到 `origin_model_id`，Model Driver 再赋予 API type、能力、逻辑挂点、版本和 variant 语义。
+Model Driver 把原厂模型身份转换为稳定的 AICC 语义；逻辑模型 FS 是以 `.` 分隔路径表示的内存虚拟目录树，把用途路径映射到模型家族或 exact model。它不是 `$BUCKYOS_ROOT` 下的真实文件系统。Provider discovery 提供渠道实际存在的模型；通用 InventoryBuilder 按实例 override、Provider matcher、完全匹配、受限最长包含的优先级确定 `(driver, model)`。Model Driver 只对精确身份赋予 API type、能力、规格与 effort；身份失败不进入库存。
 
 公共路由协议见 [Trait 与 Protocol 冻结设计](frozen_trait_protocol.md)，字段全集见
 [Model Driver Metadata Schema](driver_metadata_schema.md) 和 [统一匹配规则](match_rule.md)。
@@ -67,7 +67,7 @@ system-config 使用一个原子 value，避免读取到多文件的混合版本
 - 配置主体 `models[]` 定义官方 `origin_model_id`、API 类型和能力，并在 `llm` 中明确唯一规格、固定 `effort`、`default_effort`、`supported_efforts` 与稳定性。规格内版本顺序从官方模型 ID 推导，不逐模型填写 `version_order`。不按 `parameter_scale` 或名字前缀猜规格归属，不因思考强度变化将同一模型自动分入多个规格。
 - 家族默认是 `llm.{归一化官方模型ID}`，例如 `gpt-5.6-sol` 对应 `llm.gpt-5-6-sol`。原始 ID 保留用于匹配和调用；逻辑段归一化后须检查重名。同一家族是多个物理 instance 的汇集处，Provider 渠道 ID 先归一到官方身份，再挂入同一家族。
 - `llm.gpt-5-6-sol:high` 是家族的固定思考预设；其下引用 `gpt-5.6-sol:reasoning-high@provider-a` 等 exact model。`:high` 不是 `.high` 子目录，不能由请求改成其他强度。Provider 无法执行该预设时，该实例不成为此预设的候选。
-- `supported_efforts` 是模型支持强度的唯一声明，AICC 据此派生思考 variant 身份；Model Driver 不再维护重复的 `variants` 模型列表或参数模板。标准参数转换属于 Protocol Adapter，渠道差异与限制属于 Provider Rules；没有适用转换的实例不能执行该预设。树只消费库存已明确提供的 variant；没有现成 Provider Rules 映射时无候选，新增标准转换仍属后续 Adapter 接入。
+- `supported_efforts` 是模型支持强度的唯一声明，AICC 据此派生思考 variant 身份；Model Driver 不再维护重复的 `variants` 模型列表或参数模板。标准参数转换属于 Protocol Adapter，渠道差异与限制属于 Provider Rules；没有适用转换的实例不能执行该预设。库存生成和 lowering 共用有效渠道映射，并与模型 supported_efforts、已知渠道限制求交；无映射的 effort 产生独立诊断，不以其他强度替代。
 - 功能到规格的偏好权重继续由 `model_defaults.rs` 和显式 overlay 管理；规格到家族的关系从模型条目生成，不在两个地方重复维护。家族直选使用 metadata 声明的默认预设，默认 strict。
 
 已归入规格的模型不再声明 `logical_mounts`，包括原先逐模型列出的 `vision.*`、`image.*`、`agent_runtime.*` 路径。模型定义负责官方身份、能力、规格与预设，功能路径及引用由通用逻辑树编排。`api_types` 是可执行能力约束，不能仅凭它或 LLM 规格归属自动接入所有非 LLM 任务；这些入口须单独配置树引用并检查 API 能力。builtin overlay 已显式引用所需规格，并在展开时检查非 LLM API。独立图片、音频、视频和 embedding 模型保留现有挂点。
@@ -214,3 +214,12 @@ agent_runtime.computer_use
 - [x] 来源优先级、原子发布、失败恢复已说明。
 - [x] 身份、overlay 层级和查询模式已说明。
 - [x] 核心结构化库存使用平台 RDB，不绑定数据库实现。
+
+## Provider 链路修订（2026-09-25）
+
+身份、预设、计费的现行契约见 [Provider upgrade 实现记录](provider_upgrade_implementation.md)。
+未知模型不再以猜测的 LLM/Responses 能力进入库存。静态库存只消费明确声明；GLM 静态补充使用有效 snapshot，并仅覆盖动态查询未覆盖的 API。查询成功后的 LLM 下架不能由旧静态表恢复。显式发现 fallback 标为 Degraded。
+
+默认图片/视频树恢复 55 条家族引用，父任务为 Manual，metadata exact 只能沿声明的家族偏好参与选择。零库存时引用保留，家族没有 exact 候选。音频、视觉和 agent_runtime 对 LLM 规格的显式引用保留权重 1.0，并要求模型实际支持请求 API；图片生成不从 vision 能力推导。
+
+同一家族、同一 effort 的实例按有效 USD 估价优先；规格权重和版本顺序保持独立。公开 usage 增加音频/图像 token、原始 reported_cost 和 1 小时缓存写入子集，持久任务保存币种声明与请求时价格。无对应费率时结算保持 unknown。

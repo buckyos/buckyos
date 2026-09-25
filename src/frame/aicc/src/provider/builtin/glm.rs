@@ -1,23 +1,21 @@
 use super::super::{
-    validate_discovery, CatalogOnlyDiscovery, DiscoveredModel, DiscoveryContext, ModelAvailability,
-    ProviderDiscovery, ProviderDiscoverySnapshot, ProviderError, ProviderHealthState,
-    ProviderResult,
+    CatalogOnlyDiscovery, DiscoveredModel, ModelAvailability, ProviderDiscoverySnapshot,
+    ProviderError, ProviderHealthState, ProviderResult,
 };
 #[cfg(test)]
 use super::super::{
     DiscoveryMode, ProviderConnectionContract, ProviderConnectionInput, ProviderProfile,
     ResolvedProviderConnection,
 };
+#[cfg(test)]
 use crate::catalog::ProviderRulesCatalog;
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog};
 #[cfg(test)]
 use crate::protocol::CredentialKind;
 use crate::protocol::OPENAI_CHAT_COMPLETIONS_OPERATION_ID;
-use async_trait::async_trait;
 use buckyos_api::ApiType;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 pub(crate) const GLM_PROVIDER_PROFILE_ID: &str = "glm";
 const GLM_CHAT_ADAPTER_ID: &str = "glm-chat";
@@ -88,9 +86,9 @@ pub(crate) fn glm_catalog_only_inventory(
             model_id.clone(),
             DiscoveredModel {
                 provider_model_id: model_id,
-                origin_model_id: None,
                 api_types: Some(vec![ApiType::Llm]),
                 supported_features: None,
+                unsupported_features: BTreeSet::new(),
                 remote_methods: Some(BTreeSet::from([
                     OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned()
                 ])),
@@ -115,89 +113,12 @@ pub(crate) fn glm_catalog_only_inventory(
 
 pub(crate) fn glm_models_discovery(
     transport: crate::protocol::HttpTransport,
-) -> GlmModelsDiscovery {
-    GlmModelsDiscovery {
-        inner: Arc::new(super::openai_compatible_models_discovery(
-            GLM_PROVIDER_PROFILE_ID,
-            GLM_CHAT_ADAPTER_ID,
-            transport,
-        )),
-    }
-}
-
-pub(crate) struct GlmModelsDiscovery {
-    inner: Arc<dyn ProviderDiscovery>,
-}
-
-#[async_trait]
-impl ProviderDiscovery for GlmModelsDiscovery {
-    async fn discover(
-        &self,
-        context: &DiscoveryContext<'_>,
-    ) -> ProviderResult<ProviderDiscoverySnapshot> {
-        let snapshot = self.inner.discover(context).await?;
-        normalize_glm_chat_discovery(snapshot)
-    }
-}
-
-fn normalize_glm_chat_discovery(
-    mut snapshot: ProviderDiscoverySnapshot,
-) -> ProviderResult<ProviderDiscoverySnapshot> {
-    for model in &mut snapshot.models {
-        model.api_types = None;
-        model.remote_methods = None;
-    }
-    merge_static_glm_inventory_models(&mut snapshot)?;
-    validate_discovery(&snapshot)?;
-    Ok(snapshot)
-}
-
-fn merge_static_glm_inventory_models(
-    snapshot: &mut ProviderDiscoverySnapshot,
-) -> ProviderResult<()> {
-    let rules: ProviderRulesCatalog = serde_json::from_slice(include_bytes!(
-        "../../../driver_metadata/providers/glm.provider.json"
-    ))
-    .map_err(|error| {
-        ProviderError::InvalidConfiguration(format!(
-            "GLM provider rules metadata is invalid: {error}"
-        ))
-    })?;
-    let mut existing = snapshot
-        .models
-        .iter()
-        .map(|model| model.provider_model_id.clone())
-        .collect::<BTreeSet<_>>();
-    let excluded_models = rules
-        .models
-        .iter()
-        .filter(|rule| rule.exclude)
-        .map(|rule| rule.id.as_str())
-        .collect::<BTreeSet<_>>();
-    for model_id in rules
-        .static_inventory_models
-        .iter()
-        .filter(|model_id| !excluded_models.contains(model_id.as_str()))
-    {
-        if existing.insert(model_id.clone()) {
-            snapshot.models.push(DiscoveredModel {
-                provider_model_id: model_id.clone(),
-                origin_model_id: None,
-                api_types: None,
-                supported_features: None,
-                remote_methods: None,
-                availability: ModelAvailability::Available,
-                deprecated: false,
-                pricing: None,
-            });
-        }
-    }
-    let static_revision = format!("static-glm-{}", rules.revision_seq);
-    snapshot.revision = Some(match snapshot.revision.take() {
-        Some(dynamic_revision) => format!("{dynamic_revision}+{static_revision}"),
-        None => static_revision,
-    });
-    Ok(())
+) -> super::openai_responses_compatible::OpenAiCompatibleModelsDiscovery {
+    super::openai_compatible_models_discovery(
+        GLM_PROVIDER_PROFILE_ID,
+        GLM_CHAT_ADAPTER_ID,
+        transport,
+    )
 }
 
 #[cfg(test)]
@@ -289,38 +210,6 @@ mod tests {
     }
 
     #[test]
-    fn models_discovery_defers_capabilities_to_metadata() {
-        let snapshot = normalize_glm_chat_discovery(ProviderDiscoverySnapshot {
-            revision: Some("models-etag".to_owned()),
-            discovered_at_ms: 1,
-            health: ProviderHealthState::Healthy,
-            models: vec![DiscoveredModel {
-                provider_model_id: "glm-5.3".to_owned(),
-                origin_model_id: None,
-                api_types: Some(vec![ApiType::Llm]),
-                supported_features: None,
-                remote_methods: Some(BTreeSet::from(["responses.create".to_owned()])),
-                availability: ModelAvailability::Available,
-                deprecated: false,
-                pricing: None,
-            }],
-        })
-        .unwrap();
-
-        let glm_53 = snapshot
-            .models
-            .iter()
-            .find(|model| model.provider_model_id == "glm-5.3")
-            .unwrap();
-        assert_eq!(glm_53.api_types, None);
-        assert_eq!(glm_53.remote_methods, None);
-        assert!(snapshot
-            .models
-            .iter()
-            .any(|model| model.provider_model_id == "glm-image"));
-    }
-
-    #[test]
     fn inventory_uses_glm_metadata_after_models_discovery() {
         let catalog = CatalogSnapshot::build(
             2,
@@ -337,22 +226,21 @@ mod tests {
         codecs.register_codecs(descriptor, registration).unwrap();
         let (descriptor, registration) = glm_chat_adapter();
         codecs.register_derived(descriptor, registration).unwrap();
-        let discovery = normalize_glm_chat_discovery(ProviderDiscoverySnapshot {
+        let discovery = ProviderDiscoverySnapshot {
             revision: Some("models-etag".to_owned()),
             discovered_at_ms: 1,
             health: ProviderHealthState::Healthy,
             models: vec![DiscoveredModel {
                 provider_model_id: "glm-5.3".to_owned(),
-                origin_model_id: None,
-                api_types: Some(vec![ApiType::Llm]),
+                api_types: None,
                 supported_features: None,
-                remote_methods: Some(BTreeSet::from(["responses.create".to_owned()])),
+                unsupported_features: BTreeSet::new(),
+                remote_methods: None,
                 availability: ModelAvailability::Available,
                 deprecated: false,
                 pricing: None,
             }],
-        })
-        .unwrap();
+        };
         let inventory = InventoryBuilder::build(
             &glm_profile(),
             &ProviderInstanceConfig {

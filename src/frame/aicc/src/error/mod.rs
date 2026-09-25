@@ -1,4 +1,4 @@
-use crate::catalog::{CatalogKind, ResolvedProviderOrigin};
+use crate::catalog::CatalogKind;
 use crate::provider::{ProviderDraftValidationStage, ProviderRefreshFailure};
 use crate::routing::policy::PolicyScope;
 use crate::routing::{FilterReasonTrace, FilteredCandidateTrace};
@@ -131,26 +131,9 @@ pub(crate) enum CatalogResolveError {
     UnknownProviderRules {
         provider_profile_id: String,
     },
-    AmbiguousModelDrivers {
-        origin_model_id: String,
-        model_driver_ids: Vec<String>,
-    },
-    OriginMappingNotFound {
-        provider_profile_id: String,
-        provider_model_id: String,
-    },
-    UnknownOriginProvider {
-        provider_profile_id: String,
-        origin_provider: String,
-    },
-    OriginDriverOutsideMetadataDrivers {
-        provider_profile_id: String,
+    UnknownModel {
         model_driver_id: String,
-    },
-    ConflictingOriginMappings {
-        provider_profile_id: String,
-        provider_model_id: String,
-        resolved: Vec<ResolvedProviderOrigin>,
+        model_id: String,
     },
 }
 
@@ -325,6 +308,8 @@ pub(crate) enum ProviderError {
     Credential(String),
     #[error("provider discovery failed: {0}")]
     Discovery(String),
+    #[error("invalid discovery response: {0}")]
+    DiscoveryResponse(String),
     #[error("inventory build failed: {0}")]
     Inventory(String),
     #[error("inventory storage failed: {0}")]

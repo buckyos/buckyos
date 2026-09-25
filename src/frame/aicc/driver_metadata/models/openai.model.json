@@ -204,8 +204,7 @@
       "logical_mounts": [
         "image.txt2img", "image.txt2img.openai", "image.txt2img.{model}",
         "image.img2img", "image.img2img.openai", "image.img2img.{model}",
-        "image.inpaint", "image.inpaint.openai", "image.inpaint.{model}"
-      ],
+        "image.inpaint", "image.inpaint.openai", "image.inpaint.{model}", "image.txt2img.gpt_image", "image.img2img.gpt_image"],
       "capabilities": {"streaming": false, "vision": true, "image_generation": true}
     },
     {
@@ -280,8 +279,7 @@
       "logical_mounts": [
         "video.txt2video", "video.txt2video.openai", "video.txt2video.{model}",
         "video.img2video", "video.img2video.openai", "video.img2video.{model}",
-        "video.video2video", "video.video2video.openai", "video.video2video.{model}"
-      ]
+        "video.video2video", "video.video2video.openai", "video.video2video.{model}", "video.txt2video.sora"]
     },
     {
       "id": "sora-2-pro",
@@ -290,8 +288,7 @@
       "logical_mounts": [
         "video.txt2video", "video.txt2video.openai", "video.txt2video.{model}",
         "video.img2video", "video.img2video.openai", "video.img2video.{model}",
-        "video.video2video", "video.video2video.openai", "video.video2video.{model}"
-      ]
+        "video.video2video", "video.video2video.openai", "video.video2video.{model}", "video.txt2video.sora"]
     }
   ]
 }

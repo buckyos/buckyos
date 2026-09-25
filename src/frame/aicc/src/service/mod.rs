@@ -1122,6 +1122,9 @@ fn runtime_admin_snapshot(
             let (inventory, health) = if !settings.enabled {
                 (
                     ProviderInstanceInventoryView {
+                        unmatched_models: Vec::new(),
+                        unavailable_presets: Vec::new(),
+                        unpriced_models: Vec::new(),
                         state: ProviderInstanceInventoryState::Disabled,
                         revision: None,
                         model_count: 0,
@@ -1135,6 +1138,25 @@ fn runtime_admin_snapshot(
             } else if let Some(runtime) = runtime {
                 (
                     ProviderInstanceInventoryView {
+                        unmatched_models: runtime
+                            .inventory
+                            .unmatched_models
+                            .iter()
+                            .map(|item| serde_json::to_value(item).expect("diagnostic serializes"))
+                            .collect(),
+                        unavailable_presets: runtime
+                            .inventory
+                            .unavailable_presets
+                            .iter()
+                            .map(|item| serde_json::to_value(item).expect("diagnostic serializes"))
+                            .collect(),
+                        unpriced_models: runtime
+                            .inventory
+                            .models
+                            .iter()
+                            .filter(|model| model.pricing.is_none())
+                            .map(|model| model.provider_model_id.clone())
+                            .collect(),
                         state: ProviderInstanceInventoryState::Loaded,
                         revision: runtime.inventory.inventory_revision.clone(),
                         model_count: runtime.inventory.models.len() as u64,
@@ -1148,6 +1170,9 @@ fn runtime_admin_snapshot(
             } else {
                 (
                     ProviderInstanceInventoryView {
+                        unmatched_models: Vec::new(),
+                        unavailable_presets: Vec::new(),
+                        unpriced_models: Vec::new(),
                         state: ProviderInstanceInventoryState::NotLoaded,
                         revision: None,
                         model_count: 0,
@@ -1446,3 +1471,20 @@ fn disabled_metadata_view(settings_revision: u64) -> DriverMetadataUpdateSetResp
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn builtin_registry_for_test(
+    catalog: &crate::catalog::CatalogSnapshot,
+    inventories: &[crate::model::ProviderInventory],
+) -> crate::model::ModelRegistry {
+    crate::model::ModelRegistry::build(
+        catalog,
+        inventories,
+        builtin_logical_model_definitions(),
+        crate::model::RegistryLayers {
+            factory: Some(&builtin_logical_tree_overlay()),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}

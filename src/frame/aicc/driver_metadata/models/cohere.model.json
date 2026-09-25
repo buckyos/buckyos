@@ -8,17 +8,17 @@
   "models": [
     {
       "id": "rerank-v3.5",
-      "api_types": ["rerank"],
-      "logical_mounts": ["rerank", "rerank.cohere", "rerank.{driver}.{model}"]
+      "api_types": [
+        "rerank"
+      ],
+      "logical_mounts": [
+        "rerank",
+        "rerank.cohere",
+        "rerank.{driver}.{model}"
+      ]
     }
   ],
-  "patterns": [
-    {
-      "match": "rerank-*",
-      "api_types": ["rerank"],
-      "logical_mounts": ["rerank", "rerank.cohere", "rerank.{driver}.{model}"]
-    }
-  ],
+  "patterns": [],
   "defaults": {},
   "specs": []
 }
