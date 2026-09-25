@@ -321,6 +321,8 @@ pub struct QueryRouteTraceRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Execution state (`succeeded`, `failed`, ...), or the derived routing
+    /// classifications `fallback` and `warning`.
     pub outcome: Option<String>,
 }
 

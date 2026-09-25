@@ -170,6 +170,8 @@ Content Schema：
 
 `CatalogSnapshot::resolve_provider_configuration(provider_profile_id)` 把以上数据解析为 `ResolvedProviderConfiguration`。返回结果包含默认 credential、credential variants、typed connection schema、默认及区域 base URL、Adapter ID、Rules ID 和 behavior IDs。Known Provider 不存在、Rules 引用缺失、Rules 不存在、identity 不一致、behavior 未注册或 typed 字段无效时必须 fail closed，调用方不得回退到 `ui_hints` 或 Rust builtin metadata helper。
 
+管理 API 的 Provider catalog 必须同时返回 `base_url` 和 typed `region_base_urls`。UI 将 `base_url` 表达为可编辑组合框：选择或输入与 catalog 接入点完全一致的 URL 时，必须同步写入对应 `region`；输入自定义 URL 时，`region` 回到 `unknown`。`region.default_value` 表示默认且适用范围最广的接入点，UI 初始选择该项；即使只有一个接入点也必须列出，供用户恢复默认值。`instance_rules.policy_region` 是独立的居住地/账号地区，只参与 Provider `access_rules`，不得改变连接 URL。缺少官方政策依据时保持 `unknown`，不得推测性拒绝模型。
+
 该对象只声明可直接生成 `ProviderProfile` 和 `ProviderConnectionContract` 的静态配置。Provider 行为 registry 按 metadata 中的稳定 behavior ID 注册 discovery、refresh、default inventory、SN dynamic login 等不可声明化行为；registry 中允许按 behavior ID 分派实现，但不得再维护 Provider ID 分支或另一份默认配置。
 
 该 catalog 只提供默认值。保存 Provider Instance 前必须让用户看到并允许修正协议和 `base_url`，并执行连接与协议验证。

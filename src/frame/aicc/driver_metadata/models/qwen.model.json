@@ -7,16 +7,67 @@
   "required_features": [],
   "models": [
     {
-      "id": "qwen3.6-max-preview",
+      "id": "qwen3.8-max",
       "parameter_scale": "max",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.qwen", "llm.{driver}.{model}", "vision.ocr.qwen", "vision.ocr.{model}", "vision.caption.qwen", "vision.caption.{model}"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
-        "max_context_tokens": 262144
+        "vision": true,
+        "max_context_tokens": 1048576
       }
+    },
+    {
+      "id": "qwen3.8-flash",
+      "parameter_scale": "flash",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.qwen", "llm.{driver}.{model}", "vision.ocr.qwen", "vision.ocr.{model}", "vision.caption.qwen", "vision.caption.{model}"],
+      "capabilities": { "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true, "vision": true, "max_context_tokens": 1048576 }
+    },
+    {
+      "id": "qwen3.7-plus",
+      "parameter_scale": "plus",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.qwen", "llm.{driver}.{model}", "vision.ocr.qwen", "vision.ocr.{model}", "vision.caption.qwen", "vision.caption.{model}"],
+      "capabilities": { "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true, "vision": true, "max_context_tokens": 1048576 }
+    },
+    {
+      "id": "qwen3.8-omni-flash",
+      "parameter_scale": "omni-flash",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "logical_mounts": ["llm.qwen", "llm.{driver}.{model}", "vision.ocr.qwen", "vision.ocr.{model}", "vision.caption.qwen", "vision.caption.{model}"],
+      "capabilities": { "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true, "vision": true, "max_context_tokens": 1048576 }
+    },
+    {
+      "id": "qwen-image-3.0-pro",
+      "parameter_scale": "image",
+      "api_types": ["image.txt2img", "image.img2img"],
+      "logical_mounts": ["image.txt2img.qwen", "image.txt2img.{model}", "image.img2img.qwen", "image.img2img.{model}"],
+      "capabilities": { "image_generation": true }
+    },
+    {
+      "id": "qwen-audio-3.0-tts-plus",
+      "parameter_scale": "audio",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts.qwen", "audio.tts.{model}"],
+      "capabilities": { "streaming": true }
+    },
+    {
+      "id": "qwen-audio-3.1-asr-flash-streaming",
+      "parameter_scale": "audio",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr.qwen", "audio.asr.{model}"],
+      "capabilities": { "streaming": true }
+    },
+    {
+      "id": "qwen-audio-3.1-asr-flash-filetrans",
+      "parameter_scale": "audio",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr.qwen", "audio.asr.{model}"],
+      "capabilities": { "streaming": false, "speaker_diarization": true }
     },
     {
       "id": "qwen3.8-2.4t-a95b",
@@ -68,6 +119,13 @@
       "capabilities": {}
     },
     {
+      "match": "wan*-image*",
+      "parameter_scale": "image",
+      "api_types": ["image.txt2img", "image.img2img"],
+      "logical_mounts": ["image.txt2img.qwen", "image.txt2img.{model}", "image.img2img.qwen", "image.img2img.{model}"],
+      "capabilities": { "image_generation": true }
+    },
+    {
       "match": "wan*-i2v*",
       "parameter_scale": "video",
       "api_types": ["video.img2video"],
@@ -79,6 +137,13 @@
       "parameter_scale": "video",
       "api_types": ["video.txt2video"],
       "logical_mounts": ["video.txt2video.qwen", "video.txt2video.{model}"],
+      "capabilities": {}
+    },
+    {
+      "match": "wan*-video*",
+      "parameter_scale": "video",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": ["video.txt2video.qwen", "video.txt2video.{model}", "video.img2video.qwen", "video.img2video.{model}"],
       "capabilities": {}
     },
     {
@@ -256,6 +321,12 @@
     { "id": "qwen3.8-27b", "pricing": { "currency": "CNY", "input_token": 3e-06, "output_token": 1.2e-05, "cache_input_token": 3e-07 } },
     { "id": "qwen3.6-35b-a3b", "pricing": { "currency": "CNY", "input_token": 1.8000000000000001e-06, "output_token": 1.08e-05 } },
     { "id": "qwen3.8-max", "pricing": { "currency": "CNY", "input_token": 1.2e-05, "output_token": 3.6e-05, "cache_input_token": 1.5e-06 } },
+    { "id": "qwen3.8-flash", "pricing": { "currency": "CNY", "input_token": 8e-07, "output_token": 2.7e-06, "cache_input_token": 1e-07 } },
+    { "id": "qwen3.8-omni-flash", "pricing": { "currency": "CNY", "input_token": 8e-07, "output_token": 2.7e-06, "cache_input_token": 1e-07 } },
+    { "id": "qwen-image-3.0-pro", "pricing": { "currency": "CNY", "amount": 0.25, "unit": "image" } },
+    { "id": "qwen-audio-3.0-tts-plus", "pricing": { "currency": "CNY", "amount": 0.00014, "unit": "character" } },
+    { "id": "qwen-audio-3.1-asr-flash-streaming", "pricing": { "currency": "CNY", "input_token": 6e-6, "output_token": 4.5e-6 } },
+    { "id": "qwen-audio-3.1-asr-flash-filetrans", "pricing": { "currency": "CNY", "input_token": 8e-7, "output_token": 2.7e-6 } },
     { "id": "qwen3.8-max-0902", "pricing": { "currency": "CNY", "input_token": 1.2e-05, "output_token": 3.6e-05, "cache_input_token": 1.5e-06 } },
     { "id": "qwen3.8-max-prime", "pricing": { "currency": "CNY", "input_token": 2.4e-05, "output_token": 7.2e-05 } },
     { "id": "qwen3.7-max", "pricing": { "currency": "CNY", "input_token": 1.2e-05, "output_token": 3.6e-05, "cache_input_token": 2.4e-06 } },
@@ -284,7 +355,30 @@
     { "id": "qwen-max", "pricing": { "currency": "CNY", "input_token": 2.4e-06, "output_token": 9.6e-06 } },
     { "id": "qwen-long", "pricing": { "currency": "CNY", "input_token": 5e-07, "output_token": 2e-06 } },
     { "id": "qwen3.7-text-embedding", "pricing": { "currency": "CNY", "input_token": 6e-07, "output_token": 0 } },
-    { "id": "qwen3-rerank", "pricing": { "currency": "CNY", "input_token": 6e-07, "output_token": 0 } }
+    { "id": "qwen3-rerank", "pricing": { "currency": "CNY", "input_token": 6e-07, "output_token": 0 } },
+{ "match": { "origin_model_id": "qwen3.8-max*" }, "pricing": { "currency": "CNY", "input_token": 1.2e-5, "output_token": 3.6e-5, "cache_input_token": 1.5e-6 } },
+    { "match": { "origin_model_id": "qwen3.8-flash*" }, "pricing": { "currency": "CNY", "input_token": 8e-7, "output_token": 2.7e-6, "cache_input_token": 1e-7 } },
+    { "match": { "origin_model_id": "qwen3.7-max*" }, "pricing": { "currency": "CNY", "input_token": 1.2e-5, "output_token": 3.6e-5, "cache_input_token": 2.4e-6 } },
+    { "match": { "origin_model_id": "qwen3.7-plus*" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 262144, "input_token": 2e-6, "output_token": 8e-6, "cache_input_token": 4e-7 }, { "input_token": 6e-6, "output_token": 2.4e-5, "cache_input_token": 1.2e-6 }] } } },
+    { "match": { "origin_model_id": "qwen3.7-flash*" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 2e-7, "output_token": 8e-7, "cache_input_token": 4e-8 }, { "up_to": 262144, "input_token": 6e-7, "output_token": 2.4e-6, "cache_input_token": 1.2e-7 }, { "input_token": 1.2e-6, "output_token": 4.8e-6, "cache_input_token": 2.4e-7 }] } } },
+    { "match": { "origin_model_id": "qwen3.6-plus*" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 262144, "input_token": 2e-6, "output_token": 1.2e-5, "cache_input_token": 2e-7 }, { "input_token": 8e-6, "output_token": 4.8e-5, "cache_input_token": 9.6e-7 }] } } },
+    { "match": { "origin_model_id": "qwen3.6-flash*" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 262144, "input_token": 1.2e-6, "output_token": 7.2e-6 }, { "input_token": 4.8e-6, "output_token": 2.88e-5 }] } } },
+    { "match": { "origin_model_id": "qwen3.5-plus*" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 8e-7, "output_token": 4.8e-6 }, { "up_to": 262144, "input_token": 2e-6, "output_token": 1.2e-5 }, { "input_token": 4e-6, "output_token": 2.4e-5 }] } } },
+    { "match": { "origin_model_id": "qwen3.5-flash*" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 2e-7, "output_token": 2e-6 }, { "up_to": 262144, "input_token": 8e-7, "output_token": 8e-6 }, { "input_token": 1.2e-6, "output_token": 1.2e-5 }] } } },
+    { "match": { "origin_model_id": "qwen3.5-397b-a17b*" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 1.2e-6, "output_token": 7.2e-6 }, { "input_token": 3e-6, "output_token": 1.8e-5 }] } } },
+    { "match": { "origin_model_id": "qwen3.5-122b-a10b*" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 8e-7, "output_token": 6.4e-6 }, { "input_token": 2e-6, "output_token": 1.6e-5 }] } } },
+    { "match": { "origin_model_id": "qwen3.5-35b-a3b*" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 4e-7, "output_token": 3.2e-6 }, { "input_token": 1.6e-6, "output_token": 1.28e-5 }] } } },
+    { "match": { "origin_model_id": "qwen3.5-27b*" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 6e-7, "output_token": 4.8e-6 }, { "input_token": 1.8e-6, "output_token": 1.44e-5 }] } } },
+    { "match": { "origin_model_id": "qwen3-max*" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 2.5e-6, "output_token": 1e-5 }, { "up_to": 131072, "input_token": 4e-6, "output_token": 1.6e-5 }, { "input_token": 7e-6, "output_token": 2.8e-5 }] } } },
+    { "match": { "origin_model_id": "qwen-image-3.0-pro*" }, "pricing": { "currency": "CNY", "amount": 0.25, "unit": "image" } },
+    { "match": { "origin_model_id": "qwen-image-3.0*" }, "pricing": { "currency": "CNY", "amount": 0.18, "unit": "image" } },
+    { "match": { "origin_model_id": ["qwen-image-2.0-pro*", "qwen-image-max*", "qwen-image-edit-max*"] }, "pricing": { "currency": "CNY", "amount": 0.5, "unit": "image" } },
+    { "match": { "origin_model_id": ["qwen-image-2.0*", "qwen-image-plus*", "qwen-image-edit-plus*"] }, "pricing": { "currency": "CNY", "amount": 0.2, "unit": "image" } },
+    { "match": { "origin_model_id": "qwen-image*" }, "pricing": { "currency": "CNY", "amount": 0.25, "unit": "image" } },
+    { "match": { "origin_model_id": "wan*-image-pro*" }, "pricing": { "currency": "CNY", "amount": 0.5, "unit": "image" } },
+    { "match": { "origin_model_id": ["wan*-image*", "wan*-t2i*"] }, "pricing": { "currency": "CNY", "amount": 0.2, "unit": "image" } },
+    { "match": { "origin_model_id": "wan*-video-prime*" }, "pricing": { "currency": "CNY", "amount": 0.9, "unit": "video_second" } },
+    { "match": { "origin_model_id": ["wan*-video*", "wan*-i2v*", "wan*-t2v*"] }, "pricing": { "currency": "CNY", "amount": 0.6, "unit": "video_second" } }
   ],
   "defaults": {
     "api_types": [],

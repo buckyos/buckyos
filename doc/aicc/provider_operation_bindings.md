@@ -10,6 +10,8 @@ claude|claude-messages|vision.ocr|messages.create
 deepseek|deepseek-responses|llm|responses.create
 deepseek|deepseek-responses|vision.caption|responses.create
 deepseek|deepseek-responses|vision.ocr|responses.create
+doubao|doubao-responses|audio.tts|tts.unidirectional
+doubao|doubao-responses|embedding.multimodal|ark.embeddings.multimodal
 doubao|doubao-responses|image.img2img|ark.images.generate
 doubao|doubao-responses|image.txt2img|ark.images.generate
 doubao|doubao-responses|llm|responses.create
@@ -65,13 +67,15 @@ glm|glm-chat|vision.ocr|chat.completions.create
 kimi|kimi-chat|llm|chat.completions.create
 kimi|kimi-chat|vision.caption|chat.completions.create
 kimi|kimi-chat|vision.ocr|chat.completions.create
-minimax|minimax-messages|audio.music|music_generation.create
+minimax|minimax-messages|audio.asr|speech_to_text.create
 minimax|minimax-messages|audio.tts|t2a.create
 minimax|minimax-messages|image.img2img|image_generation.create
 minimax|minimax-messages|image.txt2img|image_generation.create
 minimax|minimax-messages|llm|messages.create
 minimax|minimax-messages|video.img2video|video_generation.create
 minimax|minimax-messages|video.txt2video|video_generation.create
+minimax|minimax-messages|vision.caption|messages.create
+minimax|minimax-messages|vision.ocr|messages.create
 openai|openai-responses|agent.computer_use|responses.create
 openai|openai-responses|audio.asr|audio.transcriptions
 openai|openai-responses|audio.tts|audio.speech

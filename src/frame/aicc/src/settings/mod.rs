@@ -43,6 +43,8 @@ pub(crate) struct ProviderSettings {
     pub protocol_family_id: Option<String>,
     pub protocol_adapter_id: String,
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub operation_base_urls: BTreeMap<String, String>,
     pub credentials: ProviderCredentials,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -85,6 +87,7 @@ impl fmt::Debug for ProviderSettings {
             .field("protocol_family_id", &self.protocol_family_id)
             .field("protocol_adapter_id", &self.protocol_adapter_id)
             .field("base_url", &self.base_url)
+            .field("operation_base_urls", &self.operation_base_urls)
             .field("credentials", &"<redacted>")
             .field("enabled", &self.enabled)
             .field("region", &self.region)

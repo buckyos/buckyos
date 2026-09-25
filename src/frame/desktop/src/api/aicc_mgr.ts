@@ -114,7 +114,7 @@ const BUILTIN_PROVIDER_NAMES: Array<[ProviderType, string, string, string]> = [
   ['kimi', 'Moonshot Kimi', 'https://api.moonshot.ai/v1', 'kimi-chat'],
   ['glm', 'Z.ai GLM', 'https://api.z.ai/api/paas/v4', 'glm-chat'],
   ['deepseek', 'DeepSeek', 'https://api.deepseek.com', 'deepseek-responses'],
-  ['doubao', '豆包（火山方舟）', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-responses'],
+  ['doubao', 'Doubao (Volcengine Ark)', 'https://ark.cn-beijing.volces.com/api/plan/v3', 'doubao-responses'],
   ['qwen', 'Qwen（阿里云百炼）', 'https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1', 'qwen-responses'],
 ]
 
@@ -128,17 +128,45 @@ const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
     provider_profile_id,
     display_name,
     base_url,
+    region_base_urls: provider_profile_id === 'openrouter'
+      ? {
+        global: 'https://openrouter.ai/api/v1',
+        us: 'https://us.openrouter.ai/api/v1',
+        eu: 'https://eu.openrouter.ai/api/v1',
+      }
+      : {} as Record<string, string>,
+    operation_base_urls: provider_profile_id === 'doubao'
+      ? {
+        'ark.images.generate': 'https://ark.cn-beijing.volces.com/api/v3',
+        'ark.contents.generate': 'https://ark.cn-beijing.volces.com/api/v3',
+        'tts.unidirectional': 'https://openspeech.bytedance.com/api/v3/plan/tts',
+      }
+      : undefined,
     protocol_adapter_id,
     provider_rules_id: provider_profile_id,
     ui_hints: {},
+    endpoint_hints: provider_profile_id === 'openrouter'
+      ? {
+        global: { label: 'Global' },
+        us: { label: 'United States', description: 'OpenRouter Business or Enterprise plan required.' },
+        eu: { label: 'European Union', description: 'OpenRouter Business or Enterprise plan required.' },
+      }
+      : {} as KnownProviderProfile['endpoint_hints'],
     connection_fields: provider_profile_id === 'qwen'
       ? {
         region: { mode: 'optional', default_value: 'cn-beijing', allowed_values: ['cn-beijing', 'ap-southeast-1', 'us-east-1', 'eu-central-1', 'ap-northeast-1'] },
         workspace: { mode: 'required', allowed_values: [] },
       }
-      : provider_profile_id === 'glm' || provider_profile_id === 'minimax'
+      : provider_profile_id === 'openrouter'
+        ? {
+          region: { mode: 'optional', default_value: 'global', allowed_values: ['global', 'us', 'eu'] },
+          policy_region: { mode: 'optional', default_value: 'unknown', allowed_values: ['unknown', 'cn', 'us', 'eu', 'other'] },
+        }
+        : provider_profile_id === 'glm' || provider_profile_id === 'minimax'
         ? { region: { mode: 'optional', default_value: 'global', allowed_values: ['global', 'china'] } }
-        : {},
+        : provider_profile_id === 'doubao'
+          ? { policy_region: { mode: 'optional', default_value: 'unknown', allowed_values: ['unknown', 'cn', 'other'] } }
+          : {},
   })),
   protocol_families: [
     { protocol_family_id: 'openai', display_name: 'OpenAI compatible' },
@@ -1090,10 +1118,18 @@ function toProviderWritePayload(draft: WizardDraft): Record<string, unknown> {
     protocol_family_id: providerType === 'custom' ? draft.protocol_family_id : undefined,
     protocol_adapter_id: providerType === 'custom' ? undefined : draft.protocol_adapter_id,
     base_url: draft.base_url.trim(),
+    operation_base_urls: Object.fromEntries(
+      Object.entries(draft.operation_base_urls)
+        .map(([operation, url]) => [operation, url.trim()])
+        .filter(([, url]) => url.length > 0),
+    ),
     credentials: toCredential(draft.api_key),
     region: draft.region?.trim() || undefined,
     workspace: draft.workspace?.trim() || undefined,
     account: draft.account?.trim() || undefined,
+    instance_rules: draft.policy_region?.trim()
+      ? { policy_region: draft.policy_region.trim(), exclude_models: [], origin_model_overrides: {} }
+      : undefined,
     auto_sync_models: draft.auto_sync_models,
   }
 }
@@ -1287,6 +1323,7 @@ function toRouteTrace(value: unknown, index: number): RouteTrace | null {
     ?? rankedCandidates.find((candidate) => candidate.exact_model === selectedExactModel)?.pricing_snapshot
   return {
     request_id: asNonEmptyString(trace.request_id, asNonEmptyString(trace.trace_id, `route-trace-${index}`)),
+    outcome: asOptionalString(trace.outcome),
     session_id: asOptionalString(trace.session_id ?? trace.task_id),
     api_type: normalizeApiType(trace.api_type),
     requested_model: requestedModel,
@@ -2256,9 +2293,12 @@ function toProviderSetupCatalog(
           asNonEmptyString(entry.display_name, provider_profile_id),
         ),
         base_url: asNonEmptyString(entry.base_url, ''),
+        region_base_urls: asStringRecord(entry.region_base_urls),
+        operation_base_urls: asStringRecord(entry.operation_base_urls),
         protocol_adapter_id: asNonEmptyString(entry.protocol_adapter_id, ''),
         provider_rules_id: asOptionalString(entry.provider_rules_id),
         ui_hints: asRecord(entry.ui_hints),
+        endpoint_hints: toProviderEndpointHints(entry.ui_hints),
         connection_fields: toProviderConnectionFields(entry.ui_hints),
       }
     })
@@ -2291,7 +2331,7 @@ function sortProviderProfiles<T extends { provider_profile_id: ProviderType; dis
 function toProviderConnectionFields(value: unknown): KnownProviderProfile['connection_fields'] {
   const instanceFields = asRecord(asRecord(value).instance_fields)
   const result: KnownProviderProfile['connection_fields'] = {}
-  for (const name of ['region', 'workspace', 'account'] as const) {
+  for (const name of ['region', 'workspace', 'account', 'policy_region'] as const) {
     const field = asRecord(instanceFields[name])
     const mode = asOptionalString(field.mode)
     if (mode !== 'optional' && mode !== 'required') continue
@@ -2300,6 +2340,18 @@ function toProviderConnectionFields(value: unknown): KnownProviderProfile['conne
       default_value: asOptionalString(field.default_value),
       allowed_values: toStringArray(field.allowed_values),
     }
+  }
+  return result
+}
+
+function toProviderEndpointHints(value: unknown): KnownProviderProfile['endpoint_hints'] {
+  const entries = asRecord(asRecord(value).access_endpoints)
+  const result: KnownProviderProfile['endpoint_hints'] = {}
+  for (const [id, raw] of Object.entries(entries)) {
+    const hint = asRecord(raw)
+    const label = asOptionalString(hint.label)
+    if (!label) continue
+    result[id] = { label, description: asOptionalString(hint.description) }
   }
   return result
 }
@@ -2457,6 +2509,13 @@ function asNumberRecord(value: unknown): Record<string, number> {
   return Object.fromEntries(Object.entries(record)
     .map(([key, item]) => [key, asOptionalNumber(item)])
     .filter((entry): entry is [string, number] => entry[1] != null))
+}
+
+function asStringRecord(value: unknown): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(asRecord(value))
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  )
 }
 
 function asRecord(value: unknown): RawRecord {

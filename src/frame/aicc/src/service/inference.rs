@@ -209,6 +209,14 @@ impl RuntimeInferencePort {
             ("region", provider.config.region.as_ref()),
             ("workspace", provider.config.workspace.as_ref()),
             ("account", provider.config.account.as_ref()),
+            (
+                "policy_region",
+                provider
+                    .config
+                    .instance_rules
+                    .as_ref()
+                    .and_then(|rules| rules.policy_region.as_ref()),
+            ),
         ] {
             if let Some(value) = value {
                 match_dimensions.insert(name.to_string(), Value::String(value.clone()));
@@ -221,6 +229,7 @@ impl RuntimeInferencePort {
                 ProviderCallTarget {
                     provider_rules_id,
                     base_url: provider.config.base_url.clone(),
+                    operation_base_urls: provider.config.operation_base_urls.clone(),
                     credential,
                     credential_reference: provider.config.credential.reference.clone(),
                     credential_header_name: provider.profile.credential.header_name.clone(),

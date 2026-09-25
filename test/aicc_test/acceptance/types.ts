@@ -167,10 +167,13 @@ export type ModelCoverageRecord = {
 
 export type OfficialCatalogConfig = {
   endpoint: string;
-  format: "openai" | "anthropic" | "gemini" | "fal" | "sn";
+  format: "openai" | "anthropic" | "gemini" | "fal" | "sn" | "frozen";
   authentication: "bearer" | "x-api-key" | "query-key" | "fal-key" | "none";
   page_size?: number;
   endpoint_ids?: string[];
+  model_ids?: string[];
+  checked_at?: string;
+  risk?: string;
 };
 
 export type ProviderBaseline = {

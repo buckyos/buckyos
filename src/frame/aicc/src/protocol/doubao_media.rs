@@ -18,10 +18,15 @@ use std::time::Duration;
 pub(crate) const DOUBAO_MEDIA_ADAPTER_ID: &str = "doubao-media";
 pub(crate) const DOUBAO_IMAGE_OPERATION_ID: &str = "ark.images.generate";
 pub(crate) const DOUBAO_VIDEO_OPERATION_ID: &str = "ark.contents.generate";
+pub(crate) const DOUBAO_MULTIMODAL_EMBEDDING_OPERATION_ID: &str = "ark.embeddings.multimodal";
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 pub(super) fn doubao_media_registration() -> (Vec<OperationDescriptor>, CodecRegistration) {
+    let embedding = immediate_operation(
+        DOUBAO_MULTIMODAL_EMBEDDING_OPERATION_ID,
+        &[ApiType::EmbeddingMultimodal],
+    );
     let image = immediate_operation(
         DOUBAO_IMAGE_OPERATION_ID,
         &[ApiType::ImageTextToImage, ApiType::ImageImageToImage],
@@ -50,6 +55,9 @@ pub(super) fn doubao_media_registration() -> (Vec<OperationDescriptor>, CodecReg
                 api_type,
             }) as Arc<dyn OperationCodec>
         })
+        .chain(std::iter::once(Arc::new(DoubaoMultimodalEmbeddingCodec {
+            descriptor: embedding.clone(),
+        }) as Arc<dyn OperationCodec>))
         .collect();
     let native_task_codecs = [
         ApiType::VideoTextToVideo,
@@ -66,12 +74,129 @@ pub(super) fn doubao_media_registration() -> (Vec<OperationDescriptor>, CodecReg
     })
     .collect();
     (
-        vec![image, video],
+        vec![embedding, image, video],
         CodecRegistration {
             operation_codecs,
             native_task_codecs,
         },
     )
+}
+
+#[derive(Clone)]
+struct DoubaoMultimodalEmbeddingCodec {
+    descriptor: OperationDescriptor,
+}
+
+#[async_trait]
+impl OperationCodec for DoubaoMultimodalEmbeddingCodec {
+    fn descriptor(&self) -> &OperationDescriptor {
+        &self.descriptor
+    }
+
+    fn api_type(&self) -> ApiType {
+        ApiType::EmbeddingMultimodal
+    }
+
+    fn execution_modes(&self) -> BTreeSet<ExecutionMode> {
+        BTreeSet::from([ExecutionMode::Immediate])
+    }
+
+    fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
+        require_only_model(&call.input.resolved_parameters)?;
+        let AiccCall::EmbeddingMultimodal(request) = &call.input.canonical_request else {
+            return Err(ProtocolError::invalid_request(
+                "Doubao multimodal embedding codec received the wrong canonical request",
+            ));
+        };
+        if request.items.len() != 1 {
+            return Err(ProtocolError::new(
+                ProtocolErrorKind::UnsupportedOperation,
+                "Doubao multimodal embedding requires exactly one canonical sequence item",
+            ));
+        }
+        if request.normalize == Some(false) {
+            return Err(ProtocolError::new(
+                ProtocolErrorKind::UnsupportedOperation,
+                "Doubao multimodal embedding does not expose normalization control",
+            ));
+        }
+        let item = &request.items[0];
+        if item.text.is_none() && item.image.is_none() {
+            return Err(ProtocolError::invalid_request(
+                "Doubao multimodal embedding item must contain text or image",
+            ));
+        }
+        let mut input = Vec::new();
+        if let Some(image) = &item.image {
+            input.push(json!({"type":"image_url","image_url":{"url":resource_string(image, call.context)?}}));
+        }
+        if let Some(text) = &item.text {
+            input.push(json!({"type":"text","text":text}));
+        }
+        let mut body = Map::from_iter([
+            (
+                "model".to_owned(),
+                json!(provider_model_id(&call.input.resolved_parameters)?),
+            ),
+            ("encoding_format".to_owned(), json!("float")),
+            ("input".to_owned(), Value::Array(input)),
+        ]);
+        if let Some(dimensions) = request.dimensions {
+            body.insert("dimensions".to_owned(), json!(dimensions));
+        }
+        json_request(
+            call.context,
+            Method::POST,
+            "embeddings/multimodal",
+            Some(Value::Object(body)),
+        )
+    }
+
+    async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
+        ensure_success(&response)?;
+        let value: Value = response.json(self.descriptor.max_response_bytes)?;
+        let data = value.get("data").ok_or_else(|| {
+            ProtocolError::invalid_response("Doubao embedding response is missing data")
+        })?;
+        let embedding = data
+            .get("embedding")
+            .or_else(|| {
+                data.as_array()
+                    .and_then(|items| items.first())
+                    .and_then(|item| item.get("embedding"))
+            })
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                ProtocolError::invalid_response("Doubao embedding response is missing embedding")
+            })?;
+        if embedding.is_empty() || embedding.iter().any(|item| item.as_f64().is_none()) {
+            return Err(ProtocolError::invalid_response(
+                "Doubao embedding vector must contain numeric values",
+            ));
+        }
+        let model = value
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("doubao-embedding-vision");
+        let usage = value.get("usage");
+        Ok(ProtocolExecution::Immediate(ProtocolOutput {
+            value: json!({
+                "data": [{
+                    "index": 0,
+                    "id": Value::Null,
+                    "embedding": embedding,
+                    "embedding_space_id": format!("{model}:{}", embedding.len())
+                }],
+                "data_resource": Value::Null
+            }),
+            usage: usage.map(|usage| AiUsage {
+                input_tokens: usage.get("prompt_tokens").and_then(Value::as_u64),
+                total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+                ..AiUsage::request_units(1)
+            }),
+            artifacts: Vec::new(),
+        }))
+    }
 }
 
 pub(crate) fn doubao_media_adapter() -> (AdapterDescriptor, CodecRegistration) {
@@ -567,6 +692,14 @@ fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
         return Ok(());
     }
     let parsed = serde_json::from_slice::<Value>(&response.body).ok();
+    let provider_code = parsed
+        .as_ref()
+        .and_then(|value| value.pointer("/error/code").or_else(|| value.get("code")))
+        .and_then(|value| match value {
+            Value::String(value) => Some(value.clone()),
+            Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        });
     let message = parsed
         .as_ref()
         .and_then(|value| {
@@ -580,6 +713,8 @@ fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
         super::protocol_error_kind_from_http_status(response.status),
         message,
     )
+    .with_provider_code(provider_code)
+    .with_http_status(response.status.as_u16())
     .with_request_id(Some(response.request_id.clone()))
     .with_retry_after(response.retry_after))
 }
@@ -665,5 +800,20 @@ mod tests {
             request.url,
             "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"
         );
+    }
+
+    #[test]
+    fn error_response_keeps_doubao_business_code() {
+        let response = HttpResponse {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            headers: reqwest::header::HeaderMap::new(),
+            body: bytes::Bytes::from_static(
+                br#"{"error":{"code":"InvalidParameter","message":"invalid input"}}"#,
+            ),
+            request_id: "request-1".to_owned(),
+            retry_after: None,
+        };
+        let error = ensure_success(&response).unwrap_err();
+        assert_eq!(error.provider_code.as_deref(), Some("InvalidParameter"));
     }
 }

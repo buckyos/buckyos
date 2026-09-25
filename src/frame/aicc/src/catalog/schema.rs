@@ -435,11 +435,32 @@ pub(crate) struct ProviderRulesCatalog {
     pub models: Vec<ProviderExactRule>,
     #[serde(default)]
     pub patterns: Vec<ProviderPatternRule>,
+    /// Region/account-policy rules are independent from protocol mappings so a
+    /// regional decision cannot accidentally shadow an operation rule.
+    #[serde(default)]
+    pub access_rules: Vec<ProviderAccessRule>,
     /// Prices, listed separately from the technical rules above.
     #[serde(default)]
     pub model_pricing: Vec<ModelPricingRule>,
     #[serde(default)]
     pub variants: Vec<ProviderVariantRule>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderModelAccess {
+    Allowed,
+    Denied,
+    #[default]
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderAccessRule {
+    #[serde(rename = "match")]
+    pub match_rule: MatchRule,
+    pub access: ProviderModelAccess,
 }
 
 macro_rules! define_provider_rule {
@@ -665,8 +686,12 @@ pub(crate) struct ProviderConnectionSchema {
     pub region: ProviderFieldSchema,
     pub workspace: ProviderFieldSchema,
     pub account: ProviderFieldSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_region: Option<ProviderFieldSchema>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub region_base_urls: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub operation_base_urls: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

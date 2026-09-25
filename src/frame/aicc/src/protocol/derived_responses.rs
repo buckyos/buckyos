@@ -104,7 +104,7 @@ pub(crate) fn responses_dialect_adapter(
     dialect: ResponsesDialectKind,
 ) -> ProtocolResultValue<(AdapterDescriptor, CodecRegistration)> {
     let reported_cost_currency = (dialect == ResponsesDialectKind::OpenRouter).then_some("USD");
-    let (base_descriptor, mut base_registration) =
+    let (base_descriptor, base_registration) =
         super::openai_responses::openai_responses_adapter_with_reported_cost_currency(
             reported_cost_currency,
         );
@@ -113,15 +113,19 @@ pub(crate) fn responses_dialect_adapter(
         .get(OPENAI_RESPONSES_OPERATION_ID)
         .cloned()
         .ok_or_else(|| ProtocolError::invalid_configuration("Responses operation is missing"))?;
-    let codec_index = base_registration
+    let base_codecs = base_registration
         .operation_codecs
+        .into_iter()
+        .filter(|codec| codec.descriptor().operation_id == OPENAI_RESPONSES_OPERATION_ID)
+        .collect::<Vec<_>>();
+    if !base_codecs
         .iter()
-        .position(|codec| {
-            codec.descriptor().operation_id == OPENAI_RESPONSES_OPERATION_ID
-                && codec.api_type() == ApiType::Llm
-        })
-        .ok_or_else(|| ProtocolError::invalid_configuration("Responses LLM codec is missing"))?;
-    let base_codec = base_registration.operation_codecs.swap_remove(codec_index);
+        .any(|codec| codec.api_type() == ApiType::Llm)
+    {
+        return Err(ProtocolError::invalid_configuration(
+            "Responses LLM codec is missing",
+        ));
+    }
     let contract = dialect.contract();
     let mut descriptor = AdapterDescriptor {
         protocol_family_id: base_descriptor.protocol_family_id,
@@ -135,13 +139,19 @@ pub(crate) fn responses_dialect_adapter(
         credential: super::AdapterCredentialContract::bearer(),
         operations: BTreeMap::from([(operation.operation_id.clone(), operation.clone())]),
     };
-    let codec: Arc<dyn OperationCodec> = Arc::new(ResponsesDialectCodec {
-        dialect: dialect_strategy(dialect),
-        descriptor: operation,
-        base: base_codec,
-    });
+    let strategy = dialect_strategy(dialect);
     let mut registration = CodecRegistration {
-        operation_codecs: vec![codec],
+        operation_codecs: base_codecs
+            .into_iter()
+            .map(|base| {
+                Arc::new(ResponsesDialectCodec {
+                    dialect: strategy.clone(),
+                    descriptor: operation.clone(),
+                    api_type: base.api_type(),
+                    base,
+                }) as Arc<dyn OperationCodec>
+            })
+            .collect(),
         native_task_codecs: Vec::new(),
     };
     let media = match dialect {
@@ -175,12 +185,25 @@ pub(crate) fn responses_dialect_adapter(
             .native_task_codecs
             .extend(media_registration.native_task_codecs);
     }
+    if dialect == ResponsesDialectKind::Doubao {
+        let (operation, speech_registration) = super::doubao_speech::doubao_speech_registration();
+        descriptor
+            .component_adapter_ids
+            .push(super::doubao_speech::DOUBAO_SPEECH_ADAPTER_ID.to_owned());
+        descriptor
+            .operations
+            .insert(operation.operation_id.clone(), operation);
+        registration
+            .operation_codecs
+            .extend(speech_registration.operation_codecs);
+    }
     Ok((descriptor, registration))
 }
 
 struct ResponsesDialectCodec {
     dialect: Arc<dyn ResponsesDialectStrategy>,
     descriptor: OperationDescriptor,
+    api_type: ApiType,
     base: Arc<dyn OperationCodec>,
 }
 
@@ -335,11 +358,11 @@ impl OperationCodec for ResponsesDialectCodec {
     }
 
     fn api_type(&self) -> ApiType {
-        ApiType::Llm
+        self.api_type
     }
 
     fn execution_modes(&self) -> BTreeSet<ExecutionMode> {
-        BTreeSet::from([ExecutionMode::Immediate, ExecutionMode::Stream])
+        self.base.execution_modes()
     }
 
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
@@ -543,19 +566,35 @@ mod tests {
                 .contains_key(OPENAI_RESPONSES_OPERATION_ID));
             if descriptor.protocol_adapter_id == DEEPSEEK_RESPONSES_ADAPTER_ID {
                 assert_eq!(descriptor.operations.len(), 1);
-                assert_eq!(registration.operation_codecs.len(), 1);
+                assert!(registration
+                    .operation_codecs
+                    .iter()
+                    .any(|codec| codec.api_type() == ApiType::Llm));
+                assert!(registration
+                    .operation_codecs
+                    .iter()
+                    .any(|codec| codec.api_type() == ApiType::VisionOcr));
+                assert!(registration
+                    .operation_codecs
+                    .iter()
+                    .any(|codec| codec.api_type() == ApiType::VisionCaption));
                 assert!(registration.native_task_codecs.is_empty());
             } else {
-                let expected_operations =
-                    if descriptor.protocol_adapter_id == QWEN_RESPONSES_ADAPTER_ID {
-                        4
-                    } else {
-                        3
-                    };
+                let expected_operations = match descriptor.protocol_adapter_id.as_str() {
+                    DOUBAO_RESPONSES_ADAPTER_ID => 5,
+                    QWEN_RESPONSES_ADAPTER_ID => 4,
+                    _ => 3,
+                };
                 assert_eq!(descriptor.operations.len(), expected_operations);
                 assert!(registration.operation_codecs.len() >= 1);
                 assert!(!registration.native_task_codecs.is_empty());
-                assert_eq!(descriptor.component_adapter_ids.len(), 2);
+                let expected_components =
+                    if descriptor.protocol_adapter_id == DOUBAO_RESPONSES_ADAPTER_ID {
+                        3
+                    } else {
+                        2
+                    };
+                assert_eq!(descriptor.component_adapter_ids.len(), expected_components);
             }
         }
         assert_eq!(
@@ -584,6 +623,7 @@ mod tests {
             .unwrap();
         for (descriptor, registration) in [
             super::super::doubao_media_adapter(),
+            super::super::doubao_speech_adapter(),
             super::super::qwen_media_adapter(),
         ] {
             registry.register_codecs(descriptor, registration).unwrap();

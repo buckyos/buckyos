@@ -363,6 +363,7 @@ mod tests {
             provider_profile_id: "claude".to_owned(),
             protocol_adapter_id: "claude-messages".to_owned(),
             base_url: claude_connection_contract().default_base_url,
+            operation_base_urls: BTreeMap::new(),
             credential: CredentialReference {
                 reference: "secret://claude/main".to_owned(),
             },

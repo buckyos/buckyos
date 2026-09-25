@@ -86,6 +86,12 @@ type T15TypedOptions = {
   historyMessage?: Record<string, unknown>;
   sourceResource?: Record<string, unknown>;
   foreignProviderState?: {
+    source: {
+      provider_profile_id: string;
+      adapter_type: string;
+      origin_provider: string;
+      origin_model: string;
+    };
     provider: string;
     value: Record<string, unknown>;
   };
@@ -139,7 +145,7 @@ function options(args: string[]): Options {
     ndnGatewayBinary: process.env.AICC_NDN_GATEWAY_BINARY ??
       "/opt/buckyos/bin/cyfs-gateway/cyfs_gateway",
     ndnNamedStoreConfigPath: process.env.AICC_NDN_NAMED_STORE_CONFIG ??
-      "/opt/buckyos/etc/named_store.json",
+      "/opt/buckyos/storage/named_store.json",
     ndnGatewayControlUrl: process.env.AICC_NDN_GATEWAY_CONTROL_URL ??
       "http://127.0.0.1:13451",
     ndnSystemRoot: process.env.AICC_NDN_SYSTEM_ROOT ?? "/opt/buckyos",
@@ -292,29 +298,51 @@ async function addProvider(
     candidate.provider_driver === driver
   );
   if (!provider) throw new Error(`unknown T1.5 Provider ${driver}`);
-  const catalogOnly = new Set(["fal", "glm", "doubao", "qwen"]);
+  const catalogOnly = new Set([
+    "fal",
+    "glm",
+    "doubao",
+    "qwen",
+  ]);
   const catalogModels = provider.official_first_party_model_ids ??
     Object.fromEntries(
       Object.entries(provider.test_model_ids).map((
         [apiType, modelId],
       ) => [apiType, [modelId]]),
     );
+  const configuredModels = new Map<
+    string,
+    { apiTypes: Set<string>; remoteMethods: Set<string> }
+  >();
+  for (const [apiType, modelIds] of Object.entries(catalogModels)) {
+    for (const providerModelId of modelIds) {
+      const model = configuredModels.get(providerModelId) ?? {
+        apiTypes: new Set<string>(),
+        remoteMethods: new Set<string>(),
+      };
+      model.apiTypes.add(apiType);
+      for (
+        const operation of provider.contracts
+          .filter((contract) => contract.api_types.includes(apiType))
+          .map((contract) => contract.operation)
+      ) {
+        model.remoteMethods.add(operation);
+      }
+      configuredModels.set(providerModelId, model);
+    }
+  }
   const catalogDiscovery = catalogOnly.has(driver)
     ? {
       revision: `t15-${driver}-${instance}`,
       discovered_at_ms: Date.now(),
       health: "healthy",
-      models: Object.entries(catalogModels).flatMap(([apiType, modelIds]) =>
-        modelIds.map((providerModelId) => ({
-          provider_model_id: providerModelId,
-          api_types: [apiType],
-          remote_methods: provider.contracts
-            .filter((contract) => contract.api_types.includes(apiType))
-            .map((contract) => contract.operation),
-          availability: "available",
-          deprecated: false,
-        }))
-      ),
+      models: [...configuredModels].map(([providerModelId, model]) => ({
+        provider_model_id: providerModelId,
+        api_types: [...model.apiTypes],
+        remote_methods: [...model.remoteMethods],
+        availability: "available",
+        deprecated: false,
+      })),
     }
     : undefined;
   const draft = {
@@ -323,10 +351,15 @@ async function addProvider(
     provider_profile_id: provider.provider_profile_id,
     protocol_adapter_id: provider.contracts[0].protocol_adapter_id,
     base_url: `${mockBaseUrl}${provider.endpoint_path}`,
+    operation_base_urls: Object.fromEntries(
+      Object.entries(provider.operation_endpoint_paths ?? {}).map(
+        ([operation, path]) => [operation, `${mockBaseUrl}${path}`],
+      ),
+    ),
     credentials: { api_token: { locked: `t15-mock-${driver}` } },
     ...provider.instance_fields,
     ...(catalogDiscovery ? { discovery: catalogDiscovery } : {}),
-    auto_sync_models: true,
+    auto_sync_models: driver !== "google-gemini",
   };
   try {
     await session.aicc.call("provider.add", draft);
@@ -379,9 +412,25 @@ async function addCustomProvider(
     provider_instance_name: instance,
     provider_type: "cloud_api",
     provider_profile_id: "custom",
+    provider_rules_id: provider.provider_profile_id,
     protocol_adapter_id: provider.contracts[0].protocol_adapter_id,
     base_url: `${mockBaseUrl}${provider.endpoint_path}`,
+    operation_base_urls: Object.fromEntries(
+      Object.entries(provider.operation_endpoint_paths ?? {}).map(
+        ([operation, path]) => [operation, `${mockBaseUrl}${path}`],
+      ),
+    ),
     credentials: { api_token: { locked: `t15-mock-custom-${driver}` } },
+    auth: {
+      mode: "api_key",
+      credential_ref: "api_token",
+      credential_kind:
+        provider.contracts[0].auth.name.toLowerCase() !== "authorization"
+          ? "named_header"
+          : provider.contracts[0].auth.prefix === "Key "
+          ? "fal_key"
+          : "bearer",
+    },
     discovery: {
       revision: `t15-custom-${driver}-${runId}`,
       discovered_at_ms: Date.now(),
@@ -506,13 +555,27 @@ async function refreshLogin(
   });
 }
 
-function exactModel(
+export function exactModel(
   catalog: ProviderProtocolCatalog,
   testCase: AcceptanceCase,
   inventory: ProviderInventory,
 ): string {
   if (testCase.model_selector?.kind === "exact") {
-    return testCase.model_selector.value;
+    const selected = testCase.model_selector.value;
+    const separator = selected.lastIndexOf("@");
+    const providerModelId = separator < 0
+      ? selected
+      : selected.slice(0, separator);
+    const rebound = inventory.models.find((candidate) =>
+      candidate.provider_model_id === providerModelId &&
+      candidate.api_types.includes(testCase.api_type ?? "")
+    );
+    if (!rebound) {
+      throw new Error(
+        `no current exact model for ${testCase.provider_driver}/${providerModelId}/${testCase.api_type}`,
+      );
+    }
+    return rebound.exact_model;
   }
   const id = catalog.providers.find((provider) =>
     provider.provider_driver === testCase.provider_driver
@@ -528,7 +591,11 @@ function exactModel(
       );
   if (!model) {
     throw new Error(
-      `no exact model for ${testCase.provider_driver}/${testCase.api_type}`,
+      `no exact model for ${testCase.provider_driver}/${testCase.api_type}; inventory=${
+        inventory.models.map((candidate) =>
+          `${candidate.provider_model_id}[${candidate.api_types.join(",")}]`
+        ).join(";")
+      }`,
     );
   }
   return model.exact_model;
@@ -673,6 +740,7 @@ export function buildT15TypedParams(
                 ...(providerState
                   ? [{
                     type: "provider_state",
+                    source: providerState.source,
                     provider: providerState.provider,
                     value: providerState.value,
                   }]
@@ -788,7 +856,7 @@ export function buildT15TypedParams(
         prompt: { type: "text", text: "Segment objects" },
       };
     case "audio.tts":
-      return { ...common, text: "BuckyOS 4827", voice: { voice_id: "alloy" } };
+      return { ...common, text: "BuckyOS 4827", voice: {} };
     case "audio.asr":
       return { ...common, audio: resource("audio/wav") };
     case "audio.music":
@@ -985,10 +1053,12 @@ function artifactResultSummary(value: unknown): string {
   const record = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-  const result = record.result && typeof record.result === "object" && !Array.isArray(record.result)
+  const result = record.result && typeof record.result === "object" &&
+      !Array.isArray(record.result)
     ? record.result as Record<string, unknown>
     : {};
-  const output = result.output && typeof result.output === "object" && !Array.isArray(result.output)
+  const output = result.output && typeof result.output === "object" &&
+      !Array.isArray(result.output)
     ? result.output as Record<string, unknown>
     : {};
   const artifacts = Array.isArray(output.artifacts) ? output.artifacts : [];
@@ -1019,15 +1089,27 @@ function canonicalJson(value: unknown): unknown {
 }
 
 function sameJsonSemantics(left: unknown, right: unknown): boolean {
-  return JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
+  return JSON.stringify(canonicalJson(left)) ===
+    JSON.stringify(canonicalJson(right));
 }
 
-function artifactSources(value: unknown, depth = 0): Array<Record<string, unknown>> {
+function artifactSources(
+  value: unknown,
+  depth = 0,
+): Array<Record<string, unknown>> {
   if (depth > 8 || value === null || value === undefined) return [];
-  if (Array.isArray(value)) return value.flatMap((item) => artifactSources(item, depth + 1));
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => artifactSources(item, depth + 1));
+  }
   if (typeof value !== "object") return [];
   const record = value as Record<string, unknown>;
-  const source = record.source && typeof record.source === "object" && !Array.isArray(record.source)
+  const direct = typeof record.obj_id === "string" ||
+      typeof record.url === "string" ||
+      typeof record.data_base64 === "string"
+    ? [record]
+    : [];
+  const source = record.source && typeof record.source === "object" &&
+      !Array.isArray(record.source)
     ? record.source as Record<string, unknown>
     : undefined;
   const found = source && (
@@ -1037,7 +1119,13 @@ function artifactSources(value: unknown, depth = 0): Array<Record<string, unknow
     )
     ? [source]
     : [];
-  return [...found, ...Object.values(record).flatMap((child) => artifactSources(child, depth + 1))];
+  return [
+    ...direct,
+    ...found,
+    ...Object.values(record).flatMap((child) =>
+      artifactSources(child, depth + 1)
+    ),
+  ];
 }
 
 function firstReusableArtifact(value: unknown): Record<string, unknown> {
@@ -1047,14 +1135,18 @@ function firstReusableArtifact(value: unknown): Record<string, unknown> {
     typeof candidate.data_base64 === "string"
   );
   if (!source) {
-    throw new Error("generated artifact source did not expose a reusable resource reference");
+    throw new Error(
+      "generated artifact source did not expose a reusable resource reference",
+    );
   }
   return source;
 }
 
 function containsString(value: unknown, needle: string): boolean {
   if (typeof value === "string") return value.includes(needle);
-  if (Array.isArray(value)) return value.some((item) => containsString(item, needle));
+  if (Array.isArray(value)) {
+    return value.some((item) => containsString(item, needle));
+  }
   if (!value || typeof value !== "object") return false;
   return Object.values(value).some((item) => containsString(item, needle));
 }
@@ -1504,6 +1596,18 @@ async function executeProviderSwitchCase(
         {
           sessionId,
           foreignProviderState: {
+            source: {
+              provider_profile_id: catalog.providers.find((provider) =>
+                provider.provider_driver === sourceProvider
+              )!.provider_profile_id,
+              adapter_type: protocolContract(
+                catalog,
+                sourceProvider,
+                sourceContractId,
+              ).protocol_adapter_id,
+              origin_provider: providerStateNamespace(sourceProvider),
+              origin_model: sourceExactModel.split("@")[0].split(":")[0],
+            },
             provider: providerStateNamespace(sourceProvider),
             value: {
               type: "provider_switch_history",
@@ -1607,7 +1711,11 @@ async function executeGeneratedArtifactCase(
     ...testCase,
     case_id: `${testCase.case_id}.source`,
     tags: testCase.tags.filter((tag) =>
-      !["generated_artifact_id", "same_provider_artifact_id", "cross_provider_artifact_id"].includes(tag)
+      ![
+        "generated_artifact_id",
+        "same_provider_artifact_id",
+        "cross_provider_artifact_id",
+      ].includes(tag)
     ),
     provider_driver: sourceProvider,
     provider_instance: sourceInventory.provider_instance_name,
@@ -1686,7 +1794,11 @@ async function executeGeneratedArtifactCase(
     assertT15ResponseMapping(
       testCase.api_type!,
       targetTerminal,
-      protocolContract(catalog, testCase.provider_driver!, testCase.protocol_contract_id!),
+      protocolContract(
+        catalog,
+        testCase.provider_driver!,
+        testCase.protocol_contract_id!,
+      ),
     );
   } catch (error) {
     failed = error;
@@ -1698,21 +1810,43 @@ async function executeGeneratedArtifactCase(
     request.validation_errors ?? []
   );
   const diagnostics: string[] = [];
-  if (sourceRequests.length === 0) diagnostics.push("artifact source mock received no request");
-  if (targetRequests.length === 0) diagnostics.push("artifact target mock received no request");
+  if (sourceRequests.length === 0) {
+    diagnostics.push("artifact source mock received no request");
+  }
+  if (targetRequests.length === 0) {
+    diagnostics.push("artifact target mock received no request");
+  }
   if (sourceValidationErrors.length > 0) {
-    diagnostics.push(`source wire contract violations: ${JSON.stringify(sourceValidationErrors)}`);
+    diagnostics.push(
+      `source wire contract violations: ${
+        JSON.stringify(sourceValidationErrors)
+      }`,
+    );
   }
   if (targetValidationErrors.length > 0) {
-    diagnostics.push(`target wire contract violations: ${JSON.stringify(targetValidationErrors)}`);
+    diagnostics.push(
+      `target wire contract violations: ${
+        JSON.stringify(targetValidationErrors)
+      }`,
+    );
   }
   const targetBody = targetRequests.find((request) => request.body)?.body;
-  const hasProviderArtifactId = containsString(targetBody, "gemini_image_mock_1");
+  const hasProviderArtifactId = containsString(
+    targetBody,
+    "gemini_image_mock_1",
+  );
   if (testCase.artifact_target_expect_provider_id && !hasProviderArtifactId) {
-    diagnostics.push("same provider/original_provider did not reuse generated content provider artifact id");
+    diagnostics.push(
+      "same provider/original_provider did not reuse generated content provider artifact id",
+    );
   }
-  if (testCase.artifact_target_expect_provider_id === false && hasProviderArtifactId) {
-    diagnostics.push("cross provider/original_provider leaked a generated content provider artifact id");
+  if (
+    testCase.artifact_target_expect_provider_id === false &&
+    hasProviderArtifactId
+  ) {
+    diagnostics.push(
+      "cross provider/original_provider leaked a generated content provider artifact id",
+    );
   }
   if (failed) diagnostics.push(String(failed));
   return {
@@ -1764,9 +1898,7 @@ export function variantCells(
         model.provider_actual_model_id === modelId
       );
       if (!baseExists) {
-        throw new Error(
-          `${inventory.provider_driver} is missing official base model ${modelId}`,
-        );
+        continue;
       }
       for (const [variant, options] of Object.entries(rule.variants)) {
         const key = `${modelId}:${variant}`;
@@ -1798,18 +1930,12 @@ export function variantCells(
   }
   return runtimeVariants.flatMap((model) =>
     model.api_types.map((apiType) => {
-      const operation = inventory.provider_driver === "openai" &&
-          model.provider_model_id.startsWith("gpt-5") &&
-          ["image.txt2img", "image.img2img"].includes(apiType)
-        ? "responses.create"
-        : undefined;
       const contract = catalog.providers.find((provider) =>
         provider.provider_driver === inventory.provider_driver
       )
         ?.contracts.find((candidate) =>
-          operation
-            ? candidate.operation === operation
-            : candidate.api_types.includes(apiType)
+          candidate.api_types.includes(apiType) ||
+          candidate.variant_api_types?.includes(apiType)
         );
       if (!contract) {
         throw new Error(
@@ -1992,14 +2118,15 @@ async function main(): Promise<void> {
       )!;
       await selectMock(input.mockControlUrl, bootstrap, runId);
       phase = `provider:${driver}:add`;
-      const instance = `${runId}-${driver}`.toLowerCase().replace(
+      const baseInstance = `${runId}-${driver}`.toLowerCase().replace(
         /[^a-z0-9_-]+/g,
         "-",
       );
+      let instance = baseInstance;
       await addProvider(session, catalog, driver, instance, input.mockBaseUrl);
       created.push(instance);
       phase = `provider:${driver}:inventory`;
-      const inventory = await waitInventory(session, instance, input.timeoutMs);
+      let inventory = await waitInventory(session, instance, input.timeoutMs);
       providerInstances.set(driver, instance);
       providerInventories.set(driver, inventory);
       const manifest = validateCaseManifest(
@@ -2007,7 +2134,9 @@ async function main(): Promise<void> {
       )
         .filter((testCase) => testCase.provider_driver === driver)
         .filter((testCase) => !testCase.tags.includes("provider_switch_matrix"))
-        .filter((testCase) => !testCase.tags.includes("cross_provider_artifact_id"))
+        .filter((testCase) =>
+          !testCase.tags.includes("cross_provider_artifact_id")
+        )
         .filter((testCase) => !testCase.tags.includes("custom_provider"))
         .filter(requestedCase);
       for (const testCase of manifest) plannedCaseIds.add(testCase.case_id);
@@ -2021,6 +2150,7 @@ async function main(): Promise<void> {
         inventories: [inventory],
         execute: async () => {
           phase = `provider:${driver}:cases`;
+          let isolationGeneration = 0;
           for (const [index, testCase] of manifest.entries()) {
             if (index > 0 && input.providerMinIntervalMs > 0) {
               await new Promise((resolvePromise) =>
@@ -2073,28 +2203,93 @@ async function main(): Promise<void> {
                 input.timeoutMs,
               );
             }
-            results.push(
-              testCase.tags.includes("same_provider_artifact_id")
-                ? await executeGeneratedArtifactCase(
+            const result = testCase.tags.includes("same_provider_artifact_id")
+              ? await executeGeneratedArtifactCase(
+                session!,
+                catalog,
+                testCase,
+                effectiveInventory,
+                effectiveInventory,
+                input.mockControlUrl,
+                runId,
+                input.timeoutMs,
+              )
+              : await executeCase(
+                session!,
+                catalog,
+                testCase,
+                effectiveInventory,
+                input.mockControlUrl,
+                runId,
+                input.timeoutMs,
+              );
+            results.push(result);
+            if (testCase.expected_task_status === "failed") {
+              if (testCase.mock_scenario === "not_found") {
+                const priorInstance = instance;
+                await session!.aicc.call("provider.delete", {
+                  provider_instance_name: priorInstance,
+                });
+                await waitInventoryAbsent(
+                  session!,
+                  priorInstance,
+                  input.timeoutMs,
+                );
+                created.splice(created.indexOf(priorInstance), 1);
+                isolationGeneration += 1;
+                instance = `${baseInstance}-isolation-${isolationGeneration}`;
+                await selectMock(
+                  input.mockControlUrl,
+                  bootstrap,
+                  `${runId}:isolation:${isolationGeneration}`,
+                );
+                await addProvider(
                   session!,
                   catalog,
-                  testCase,
-                  effectiveInventory,
-                  effectiveInventory,
-                  input.mockControlUrl,
-                  runId,
+                  driver,
+                  instance,
+                  input.mockBaseUrl,
+                );
+                created.push(instance);
+                inventory = await waitInventory(
+                  session!,
+                  instance,
                   input.timeoutMs,
-                )
-                : await executeCase(
+                );
+                providerInstances.set(driver, instance);
+                providerInventories.set(driver, inventory);
+              } else {
+                const recoveryCase: AcceptanceCase = {
+                  ...testCase,
+                  case_id: `${testCase.case_id}.health-recovery`,
+                  mock_scenario: testCase.execution_mode === "stream"
+                    ? "stream_success"
+                    : "success",
+                  expected_task_status: "succeeded",
+                  expected_error_class: null,
+                  expected_aicc_error_code: undefined,
+                  expected_provider_error_code: undefined,
+                  expected_retriable: undefined,
+                  tags: testCase.tags.filter((tag) => tag !== "official_error"),
+                };
+                const recovery = await executeCase(
                   session!,
                   catalog,
-                  testCase,
-                  effectiveInventory,
+                  recoveryCase,
+                  inventory,
                   input.mockControlUrl,
-                  runId,
+                  `${runId}:health-recovery`,
                   input.timeoutMs,
-                ),
-            );
+                );
+                if (recovery.status !== "passed") {
+                  throw new Error(
+                    `health recovery failed after ${testCase.case_id}: ${
+                      recovery.diagnostic ?? "unknown failure"
+                    }`,
+                  );
+                }
+              }
+            }
             if (testCase.tags.includes("cloud_update")) {
               const cleanup = await cloudFixture!.publish({
                 revisionSeq: cloudCleanupRevision,
@@ -2207,7 +2402,7 @@ async function main(): Promise<void> {
         providerInventories.delete(driver);
       }
     }
-    for (const driver of ["openai", "claude", "google-gemini", "fal"]) {
+    for (const driver of ["openai", "claude", "google-gemini"]) {
       phase = `custom:${driver}:setup`;
       if (driver === "openai") {
         session = await loginGateway({

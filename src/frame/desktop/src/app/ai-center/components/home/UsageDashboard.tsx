@@ -157,7 +157,7 @@ function timeRangeToQuery(
   if (duration != null) {
     return { startTimeMs: nowMs - duration, endTimeMs: nowMs }
   }
-  return localTrailingDaysRange(30, nowMs)
+  return { startTimeMs: 0, endTimeMs: nowMs }
 }
 
 function uniqueSorted(values: Array<string | undefined>): string[] {

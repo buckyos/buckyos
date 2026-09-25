@@ -6,6 +6,7 @@ mod claude_messages;
 mod contract;
 mod derived_responses;
 mod doubao_media;
+mod doubao_speech;
 mod fal_queue;
 mod gemini;
 mod glm_media;
@@ -60,6 +61,7 @@ pub(crate) use derived_responses::{
     OPENROUTER_RESPONSES_ADAPTER_ID,
 };
 pub(crate) use doubao_media::{doubao_media_adapter, DOUBAO_MEDIA_ADAPTER_ID};
+pub(crate) use doubao_speech::doubao_speech_adapter;
 pub(crate) use fal_queue::fal_queue_adapter;
 #[cfg(test)]
 pub(crate) use fal_queue::{FAL_QUEUE_ADAPTER_ID, FAL_QUEUE_OPERATION_ID};

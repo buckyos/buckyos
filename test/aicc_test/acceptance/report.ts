@@ -41,7 +41,9 @@ export function assertNoSecrets(value: unknown): void {
 }
 
 export function isProviderRestricted(error: unknown): boolean {
-  return String(error).toLowerCase().includes("request not allowed");
+  const message = String(error).toLowerCase();
+  return message.includes("request not allowed") ||
+    (message.includes("unsupportedmodel") && message.includes("agent plan feature"));
 }
 
 export function caseTotals(cases: CaseReport[]): Record<ResultStatus, number> {

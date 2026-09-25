@@ -1,71 +1,38 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
-  "revision_seq": 1,
+  "schema_revision": 1,
+  "revision_seq": 2,
   "provider_profile_id": "minimax",
   "metadata_drivers": ["minimax"],
   "models": [
-    {
-      "id": "speech-2.8-hd",
-      "operations": { "audio.tts": "t2a.create" },
-      "canonical_fields": {
-        "/voice": {
-          "converter": "minimax_tts_voice_v1",
-          "fallback": { "action": "reject" }
-        }
-      }
-    },
-    {
-      "id": "image-01",
-      "operations": { "image.txt2img": "image_generation.create", "image.img2img": "image_generation.create" }
-    },
-    {
-      "id": "MiniMax-Hailuo-02",
-      "operations": { "video.txt2video": "video_generation.create", "video.img2video": "video_generation.create" }
-    },
-    {
-      "id": "music-2.0",
-      "operations": { "audio.music": "music_generation.create" }
-    }
+    { "id": "asr-1.0", "operations": { "audio.asr": "speech_to_text.create" } }
   ],
   "patterns": [
-    {
-      "match": "MiniMax-M2*",
-      "operations": { "llm": "messages.create" },
-      "request_rules": [
-        {
-          "defaults": { "temperature": 1.0, "top_p": 0.9 },
-          "remove": ["/stop"]
-        }
-      ]
-    },
-    {
-      "match": "speech-*",
-      "operations": { "audio.tts": "t2a.create" },
-      "canonical_fields": {
-        "/voice": {
-          "converter": "minimax_tts_voice_v1",
-          "fallback": { "action": "reject" }
-        }
-      }
-    },
-    {
-      "match": "image-*",
-      "operations": { "image.txt2img": "image_generation.create", "image.img2img": "image_generation.create" }
-    },
-    {
-      "match": "MiniMax-Hailuo-*",
-      "operations": { "video.txt2video": "video_generation.create", "video.img2video": "video_generation.create" }
-    },
-    {
-      "match": "music-*",
-      "operations": { "audio.music": "music_generation.create" }
-    },
-    {
-      "match": "*",
-      "operations": { "llm": "messages.create" },
-      "request_rules": [{ "remove": ["/stop"] }]
-    }
+    { "match": "MiniMax-M*", "operations": { "llm": "messages.create", "vision.ocr": "messages.create", "vision.caption": "messages.create" }, "request_rules": [{ "when": { "api_type": "llm", "operation": "messages.create" }, "defaults": { "temperature": 1.0, "top_p": 0.9 }, "remove": ["/stop"] }] },
+    { "match": "minimax-m*", "operations": { "llm": "messages.create" }, "request_rules": [{ "when": { "api_type": "llm", "operation": "messages.create" }, "defaults": { "temperature": 1.0, "top_p": 0.9 }, "remove": ["/stop"] }] },
+    { "match": "speech-*", "operations": { "audio.tts": "t2a.create" }, "canonical_fields": { "/voice": { "converter": "minimax_tts_voice_v1", "fallback": { "action": "reject" } } } },
+    { "match": "image-*", "operations": { "image.txt2img": "image_generation.create", "image.img2img": "image_generation.create" } },
+    { "match": "MiniMax-H3*", "operations": { "video.txt2video": "video_generation.create", "video.img2video": "video_generation.create" } },
+    { "match": "*", "operations": { "llm": "messages.create" }, "request_rules": [{ "remove": ["/stop"] }] }
+  ],
+  "model_pricing": [
+    { "match": { "provider_model_id": ["MiniMax-M3", "minimax-m3"], "region": "china" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 524288, "input_token": 2.1e-6, "output_token": 8.4e-6, "cache_input_token": 4.2e-7 }, { "input_token": 4.2e-6, "output_token": 1.68e-5, "cache_input_token": 8.4e-7 }] } } },
+    { "match": { "provider_model_id": "MiniMax-M2.7", "region": "china" }, "pricing": { "currency": "CNY", "input_token": 2.1e-6, "output_token": 8.4e-6, "cache_input_token": 4.2e-7 } },
+    { "match": { "provider_model_id": "MiniMax-M2.7-highspeed", "region": "china" }, "pricing": { "currency": "CNY", "input_token": 4.2e-6, "output_token": 1.68e-5, "cache_input_token": 4.2e-7 } },
+    { "match": { "provider_model_id": "speech-2.8-hd", "region": "china" }, "pricing": { "currency": "CNY", "amount": 3.5e-4, "unit": "character" } },
+    { "match": { "provider_model_id": "speech-2.8-turbo", "region": "china" }, "pricing": { "currency": "CNY", "amount": 2e-4, "unit": "character" } },
+    { "match": { "provider_model_id": "asr-1.0", "region": "china" }, "pricing": { "currency": "CNY", "amount": 6.944444444444445e-4, "unit": "audio_second" } },
+    { "match": { "provider_model_id": "image-01*", "region": "china" }, "pricing": { "currency": "CNY", "amount": 0.025, "unit": "image" } },
+    { "match": { "provider_model_id": "MiniMax-H3*", "region": "china" }, "pricing": { "currency": "CNY", "amount": 0.5, "unit": "video_second" } },
+    { "match": { "provider_model_id": ["MiniMax-M3", "minimax-m3"], "region": "global" }, "pricing": { "currency": "USD", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 524288, "input_token": 3e-7, "output_token": 1.2e-6, "cache_input_token": 6e-8 }, { "input_token": 6e-7, "output_token": 2.4e-6, "cache_input_token": 1.2e-7 }] } } },
+    { "match": { "provider_model_id": "MiniMax-M2.7", "region": "global" }, "pricing": { "currency": "USD", "input_token": 3e-7, "output_token": 1.2e-6, "cache_input_token": 6e-8 } },
+    { "match": { "provider_model_id": "MiniMax-M2.7-highspeed", "region": "global" }, "pricing": { "currency": "USD", "input_token": 6e-7, "output_token": 2.4e-6, "cache_input_token": 6e-8 } },
+    { "match": { "provider_model_id": "speech-2.8-hd", "region": "global" }, "pricing": { "currency": "USD", "amount": 1e-4, "unit": "character" } },
+    { "match": { "provider_model_id": "speech-2.8-turbo", "region": "global" }, "pricing": { "currency": "USD", "amount": 6e-5, "unit": "character" } },
+    { "match": { "provider_model_id": "asr-1.0", "region": "global" }, "pricing": { "currency": "USD", "amount": 1.0555555555555556e-4, "unit": "audio_second" } },
+    { "match": { "provider_model_id": "image-01", "region": "global" }, "pricing": { "currency": "USD", "amount": 0.0035, "unit": "image" } },
+    { "match": { "provider_model_id": "MiniMax-H3", "region": "global" }, "pricing": { "currency": "USD", "amount": 0.08, "unit": "video_second" } },
+    { "match": { "provider_model_id": "MiniMax-H3-Max", "region": "global" }, "pricing": { "currency": "USD", "amount": 0.08, "unit": "video_second" } }
   ]
 }

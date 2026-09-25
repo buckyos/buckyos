@@ -75,6 +75,44 @@ fn provider_rules() -> Value {
     })
 }
 
+#[test]
+fn provider_access_is_independent_from_protocol_rules_and_unknown_is_default() {
+    let mut files = complete_files();
+    let mut rules = provider_rules();
+    rules["schema_revision"] = json!(1);
+    rules["access_rules"] = json!([{
+        "match": {"provider_model_id": "gpt-*", "policy_region": "eu"},
+        "access": "denied"
+    }]);
+    files[1] = file(CatalogKind::ProviderRules, rules);
+    let snapshot = build(files).unwrap();
+    let mut eu = MatchContext::new();
+    eu.insert("policy_region".into(), json!("eu"));
+    assert_eq!(
+        snapshot
+            .resolve_provider_access("openai", "gpt-new", &eu)
+            .unwrap(),
+        ProviderModelAccess::Denied
+    );
+    let mut unknown = MatchContext::new();
+    unknown.insert("policy_region".into(), json!("unknown"));
+    assert_eq!(
+        snapshot
+            .resolve_provider_access("openai", "gpt-new", &unknown)
+            .unwrap(),
+        ProviderModelAccess::Unknown
+    );
+    assert_eq!(
+        snapshot
+            .resolve_provider_rule("openai", "gpt-new", &eu)
+            .unwrap()
+            .unwrap()
+            .action
+            .operations["llm"],
+        "responses.create"
+    );
+}
+
 fn routed_provider_rules(
     metadata_drivers: Option<Vec<&str>>,
     aliases: Value,
@@ -256,7 +294,8 @@ fn builtin_model_variant_defaults_match_origin_provider_variants() {
     ];
 
     for (catalog_id, model_contents, provider_contents) in catalogs {
-        build(vec![
+        let mut model_documents = vec![serde_json::from_slice::<Value>(model_contents).unwrap()];
+        let mut files = vec![
             CurrentCatalogFile {
                 kind: CatalogKind::ModelDriver,
                 contents: model_contents.to_vec(),
@@ -265,27 +304,72 @@ fn builtin_model_variant_defaults_match_origin_provider_variants() {
                 kind: CatalogKind::ProviderRules,
                 contents: provider_contents.to_vec(),
             },
-        ])
-        .unwrap();
-        let model: Value = serde_json::from_slice(model_contents).unwrap();
+        ];
+        if catalog_id == "doubao" {
+            for contents in [
+                include_bytes!("../../driver_metadata/models/deepseek.model.json").as_slice(),
+                include_bytes!("../../driver_metadata/models/kimi.model.json").as_slice(),
+                include_bytes!("../../driver_metadata/models/minimax.model.json").as_slice(),
+                include_bytes!("../../driver_metadata/models/glm.model.json").as_slice(),
+            ] {
+                files.push(CurrentCatalogFile {
+                    kind: CatalogKind::ModelDriver,
+                    contents: contents.to_vec(),
+                });
+                model_documents.push(serde_json::from_slice(contents).unwrap());
+            }
+        }
+        build(files).unwrap();
         let provider: Value = serde_json::from_slice(provider_contents).unwrap();
-        let model_variants = model["variants"].as_array().unwrap();
         let provider_variants = provider["variants"].as_array().unwrap();
 
-        assert_eq!(
-            model_variants.len(),
-            provider_variants.len(),
-            "{catalog_id}.model.json must cover every origin Provider variant"
-        );
         for provider_variant in provider_variants {
+            let model_driver = provider_variant["model_driver"]
+                .as_str()
+                .unwrap_or(catalog_id);
+            let model = model_documents
+                .iter()
+                .find(|model| model["model_driver_id"] == model_driver)
+                .unwrap_or_else(|| panic!("missing {model_driver}.model.json for {catalog_id}"));
+            let model_variants = model["variants"].as_array().unwrap();
             let variant_name = provider_variant["variant"].as_str().unwrap();
             let provider_models = &provider_variant["match"]["provider_model_id"];
             let matching_defaults = model_variants
                 .iter()
                 .filter(|model_variant| {
                     let model_match = &model_variant["match"];
-                    let origin_models = model_match.get("origin_model_id").unwrap_or(model_match);
-                    model_variant["name"] == variant_name && origin_models == provider_models
+                    let raw_origin_models =
+                        model_match.get("origin_model_id").unwrap_or(model_match);
+                    let origin_patterns = match raw_origin_models {
+                        Value::String(value) => vec![value.as_str()],
+                        Value::Array(values) => {
+                            values.iter().map(|value| value.as_str().unwrap()).collect()
+                        }
+                        _ => panic!("model variant origin_model_id must be a string or array"),
+                    };
+                    let provider_patterns = match provider_models {
+                        Value::String(value) => vec![value.as_str()],
+                        Value::Array(values) => {
+                            values.iter().map(|value| value.as_str().unwrap()).collect()
+                        }
+                        _ => panic!("provider variant provider_model_id must be a string or array"),
+                    };
+                    let compiled = crate::matching::CompiledMatchRule::compile(
+                        serde_json::from_value(model_match.clone()).unwrap(),
+                        &crate::matching::MODEL_DRIVER_MATCH_SCHEMA,
+                    )
+                    .unwrap();
+                    model_variant["name"] == variant_name
+                        && provider_patterns.iter().all(|provider_pattern| {
+                            if provider_pattern.contains('*') || provider_pattern.contains('?') {
+                                origin_patterns.contains(provider_pattern)
+                            } else {
+                                compiled.matches(&std::collections::BTreeMap::from([(
+                                    "origin_model_id".to_owned(),
+                                    Value::String((*provider_pattern).to_owned()),
+                                )]))
+                            }
+                        })
                 })
                 .collect::<Vec<_>>();
 
@@ -294,11 +378,79 @@ fn builtin_model_variant_defaults_match_origin_provider_variants() {
                 1,
                 "{catalog_id}.model.json is missing variant {variant_name:?} for {provider_models}"
             );
-            assert_eq!(
-                matching_defaults[0]["provider_options"], provider_variant["provider_options"],
-                "{catalog_id}.model.json has different provider_options for variant {variant_name:?} and {provider_models}"
-            );
+            if model_driver == catalog_id {
+                assert_eq!(
+                    matching_defaults[0]["provider_options"], provider_variant["provider_options"],
+                    "{catalog_id}.model.json has different provider_options for variant {variant_name:?} and {provider_models}"
+                );
+            }
         }
+    }
+}
+
+#[test]
+fn builtin_provider_aliases_are_explicitly_excluded_from_physical_inventory() {
+    let mut files = Vec::new();
+    for contents in [
+        include_bytes!("../../driver_metadata/models/deepseek.model.json").as_slice(),
+        include_bytes!("../../driver_metadata/models/doubao.model.json").as_slice(),
+        include_bytes!("../../driver_metadata/models/glm.model.json").as_slice(),
+        include_bytes!("../../driver_metadata/models/kimi.model.json").as_slice(),
+        include_bytes!("../../driver_metadata/models/minimax.model.json").as_slice(),
+        include_bytes!("../../driver_metadata/models/qwen.model.json").as_slice(),
+    ] {
+        files.push(CurrentCatalogFile {
+            kind: CatalogKind::ModelDriver,
+            contents: contents.to_vec(),
+        });
+    }
+    for contents in [
+        include_bytes!("../../driver_metadata/providers/deepseek.provider.json").as_slice(),
+        include_bytes!("../../driver_metadata/providers/doubao.provider.json").as_slice(),
+        include_bytes!("../../driver_metadata/providers/glm.provider.json").as_slice(),
+        include_bytes!("../../driver_metadata/providers/kimi.provider.json").as_slice(),
+        include_bytes!("../../driver_metadata/providers/minimax.provider.json").as_slice(),
+        include_bytes!("../../driver_metadata/providers/qwen.provider.json").as_slice(),
+    ] {
+        files.push(CurrentCatalogFile {
+            kind: CatalogKind::ProviderRules,
+            contents: contents.to_vec(),
+        });
+    }
+    let snapshot = build(files).unwrap();
+
+    for (profile, alias) in [
+        ("deepseek", "deepseek-chat"),
+        ("deepseek", "deepseek-reasoner"),
+        ("doubao", "glm-latest"),
+        ("glm", "glm-latest"),
+        ("kimi", "kimi-latest"),
+        ("kimi", "moonshot-v1-auto"),
+        ("qwen", "qwen-plus-latest"),
+    ] {
+        let rule = snapshot
+            .resolve_provider_rule(profile, alias, &MatchContext::new())
+            .unwrap()
+            .unwrap_or_else(|| panic!("{profile} is missing an exclusion for {alias}"));
+        assert!(rule.action.exclude, "{profile} must exclude {alias}");
+    }
+
+    for (profile, model) in [
+        ("deepseek", "deepseek-v4-flash"),
+        ("doubao", "glm-5.3"),
+        ("glm", "glm-5.3"),
+        ("kimi", "kimi-k3"),
+        ("minimax", "MiniMax-M3"),
+        ("qwen", "qwen3.8-max"),
+    ] {
+        let rule = snapshot
+            .resolve_provider_rule(profile, model, &MatchContext::new())
+            .unwrap()
+            .unwrap_or_else(|| panic!("{profile} is missing a rule for {model}"));
+        assert!(
+            !rule.action.exclude,
+            "{profile} must retain physical model {model}"
+        );
     }
 }
 
@@ -929,6 +1081,18 @@ fn schema_revision_required_features_and_references_are_validated() {
     revision_zero_static_inventory["static_inventory_models"] = json!(["gpt-special"]);
     let mut files = complete_files();
     files[1] = file(CatalogKind::ProviderRules, revision_zero_static_inventory);
+    assert!(matches!(
+        build(files),
+        Err(CatalogBuildError::InvalidValue { field, .. }) if field == "schema_revision"
+    ));
+
+    let mut revision_zero_access_rules = provider_rules();
+    revision_zero_access_rules["access_rules"] = json!([{
+        "match": {"provider_model_id": "gpt-*", "policy_region": "eu"},
+        "access": "denied"
+    }]);
+    let mut files = complete_files();
+    files[1] = file(CatalogKind::ProviderRules, revision_zero_access_rules);
     assert!(matches!(
         build(files),
         Err(CatalogBuildError::InvalidValue { field, .. }) if field == "schema_revision"

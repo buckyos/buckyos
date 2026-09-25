@@ -1,19 +1,32 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
-  "revision_seq": 1,
+  "schema_revision": 1,
+  "revision_seq": 2,
   "provider_profile_id": "kimi",
   "metadata_drivers": ["kimi"],
   "models": [],
   "patterns": [
-    {
-      "match": "*",
-      "operations": { "llm": "chat.completions.create", "vision.ocr": "chat.completions.create", "vision.caption": "chat.completions.create" }
-    }
+    { "match": "kimi-latest", "exclude": true },
+    { "match": "moonshot-v1-auto", "exclude": true },
+    { "match": "*", "operations": { "llm": "chat.completions.create", "vision.ocr": "chat.completions.create", "vision.caption": "chat.completions.create" } }
+  ],
+  "model_pricing": [
+    { "match": { "provider_model_id": "kimi-k3", "region": "china" }, "pricing": { "currency": "CNY", "input_token": 2e-5, "output_token": 1e-4, "cache_input_token": 2e-6 } },
+    { "match": { "provider_model_id": "kimi-k2.7-code", "region": "china" }, "pricing": { "currency": "CNY", "input_token": 6.5e-6, "output_token": 2.7e-5, "cache_input_token": 1.3e-6 } },
+    { "match": { "provider_model_id": "kimi-k2.7-code-highspeed", "region": "china" }, "pricing": { "currency": "CNY", "input_token": 1.3e-5, "output_token": 5.4e-5, "cache_input_token": 2.6e-6 } },
+    { "match": { "provider_model_id": "kimi-k2.6", "region": "china" }, "pricing": { "currency": "CNY", "input_token": 6.5e-6, "output_token": 2.7e-5, "cache_input_token": 1.1e-6 } },
+    { "match": { "provider_model_id": "kimi-k3", "region": "global" }, "pricing": { "currency": "USD", "input_token": 3e-6, "output_token": 1.5e-5, "cache_input_token": 3e-7 } },
+    { "match": { "provider_model_id": "kimi-k2.7-code", "region": "global" }, "pricing": { "currency": "USD", "input_token": 9.5e-7, "output_token": 4e-6, "cache_input_token": 1.9e-7 } },
+    { "match": { "provider_model_id": "kimi-k2.7-code-highspeed", "region": "global" }, "pricing": { "currency": "USD", "input_token": 1.9e-6, "output_token": 8e-6, "cache_input_token": 3.8e-7 } },
+    { "match": { "provider_model_id": "kimi-k2.6", "region": "global" }, "pricing": { "currency": "USD", "input_token": 9.5e-7, "output_token": 4e-6, "cache_input_token": 1.6e-7 } }
   ],
   "variants": [
-    { "model_driver": "kimi", "variant": "reasoning-medium", "match": { "provider_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "reasoning-medium" }, "provider_options": { "thinking": { "type": "enabled" } } },
-    { "model_driver": "kimi", "variant": "reasoning-none", "match": { "provider_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "reasoning-none" }, "provider_options": { "thinking": { "type": "disabled" } } }
+    { "model_driver": "kimi", "variant": "reasoning-low", "match": { "provider_model_id": "kimi-k3", "variant": "reasoning-low" }, "provider_options": { "reasoning_effort": "low" } },
+    { "model_driver": "kimi", "variant": "reasoning-high", "match": { "provider_model_id": "kimi-k3", "variant": "reasoning-high" }, "provider_options": { "reasoning_effort": "high" } },
+    { "model_driver": "kimi", "variant": "reasoning-max", "match": { "provider_model_id": "kimi-k3", "variant": "reasoning-max" }, "provider_options": { "reasoning_effort": "max" } },
+    { "model_driver": "kimi", "variant": "reasoning-medium", "match": { "provider_model_id": "kimi-k2.7-code*", "variant": "reasoning-medium" }, "provider_options": { "thinking": { "type": "enabled", "keep": "all" } } },
+    { "model_driver": "kimi", "variant": "reasoning-medium", "match": { "provider_model_id": "kimi-k2.6", "variant": "reasoning-medium" }, "provider_options": { "thinking": { "type": "enabled" } } },
+    { "model_driver": "kimi", "variant": "reasoning-none", "match": { "provider_model_id": "kimi-k2.6", "variant": "reasoning-none" }, "provider_options": { "thinking": { "type": "disabled" } } }
   ]
 }

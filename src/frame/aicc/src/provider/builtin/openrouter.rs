@@ -266,9 +266,9 @@ fn validate_context(context: &DiscoveryContext<'_>) -> ProviderResult<()> {
             "OpenRouter discovery requires a Bearer credential".to_owned(),
         ));
     }
-    if context.instance.region.is_some() || context.instance.account.is_some() {
+    if context.instance.account.is_some() {
         return Err(ProviderError::InvalidConfiguration(
-            "OpenRouter profile does not accept region or account".to_owned(),
+            "OpenRouter profile does not accept account".to_owned(),
         ));
     }
     Ok(())
@@ -350,7 +350,7 @@ struct ModelPricing {
 mod tests {
     use super::*;
     use crate::protocol::{ProtocolError, ResolvedCredential};
-    use crate::provider::{CredentialReference, ProviderInstanceConfig};
+    use crate::provider::{CredentialReference, ProviderConnectionInput, ProviderInstanceConfig};
     use bytes::Bytes;
     use reqwest::header::{HeaderMap, AUTHORIZATION};
     use reqwest::StatusCode;
@@ -372,6 +372,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn connection_resolves_sovereign_region_base_urls() {
+        let contract = super::super::builtin_connection_contract(OPENROUTER_PROVIDER_PROFILE_ID);
+        assert_eq!(
+            contract.resolve(Default::default()).unwrap().base_url,
+            "https://openrouter.ai/api/v1"
+        );
+        assert_eq!(
+            contract
+                .resolve(ProviderConnectionInput {
+                    region: Some("us"),
+                    ..Default::default()
+                })
+                .unwrap()
+                .base_url,
+            "https://us.openrouter.ai/api/v1"
+        );
+        assert_eq!(
+            contract
+                .resolve(ProviderConnectionInput {
+                    region: Some("eu"),
+                    ..Default::default()
+                })
+                .unwrap()
+                .base_url,
+            "https://eu.openrouter.ai/api/v1"
+        );
+    }
+
     #[tokio::test]
     async fn discovery_keeps_only_canonical_models_and_dynamic_prices() {
         let transport = Arc::new(FakeTransport {
@@ -391,6 +420,7 @@ mod tests {
             provider_profile_id: OPENROUTER_PROVIDER_PROFILE_ID.to_owned(),
             protocol_adapter_id: OPENROUTER_RESPONSES_ADAPTER_ID.to_owned(),
             base_url: openrouter_known_provider().base_url,
+            operation_base_urls: BTreeMap::new(),
             credential: CredentialReference {
                 reference: "secret://openrouter".to_owned(),
             },

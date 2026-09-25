@@ -51,6 +51,7 @@
     { "id": "vidu2-reference", "operations": { "video.img2video": "videos.generate" } }
   ],
   "patterns": [
+    { "match": "glm-latest", "exclude": true },
     {
       "match": "*",
       "operations": { "llm": "chat.completions.create", "vision.ocr": "chat.completions.create", "vision.caption": "chat.completions.create" }

@@ -45,6 +45,7 @@
           "protocol_adapter_id": "openai-responses",
           "api_version": "v1",
           "api_types": ["llm", "vision.ocr", "vision.caption"],
+          "variant_api_types": ["image.txt2img", "image.img2img"],
           "operation": "responses.create",
           "http_method": "POST",
           "path": "/v1/responses",
@@ -55,8 +56,8 @@
           "body_field_types": { "model": ["string"], "input": ["string", "array"] },
           "stream_protocol": "openai_responses",
           "success_fixture": { "id": "resp_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "reasoning", "id": "rs_t15_4827", "summary": [{ "type": "summary_text", "text": "opaque reasoning" }], "encrypted_content": "opaque-t15-reasoning" }, { "type": "message", "id": "msg_t15_4827", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
-          "official_sources": ["https://platform.openai.com/docs/api-reference/responses/create", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
-          "evidence_summary": "Responses create uses POST /v1/responses with Bearer authentication and JSON model/input; response objects contain output and usage."
+          "official_sources": ["https://platform.openai.com/docs/api-reference/responses/create", "https://platform.openai.com/docs/guides/tools-image-generation", "https://platform.openai.com/docs/guides/error-codes/api-errors"],
+          "evidence_summary": "Responses create uses POST /v1/responses with Bearer authentication and JSON model/input; response objects contain output and usage. Compatible GPT variants can generate or edit images through the built-in image_generation tool."
         },
         {
           "id": "openai.responses.computer.v1",
@@ -247,10 +248,12 @@
       },
       "official_variant_sources": ["https://ai.google.dev/gemini-api/docs/thinking"],
       "official_variant_rules": [
-        { "model_ids": ["gemini-2.5-flash", "gemini-2.5-flash-lite"], "variants": { "reasoning-none": { "generation_config": { "thinking_budget": 0 } }, "reasoning-low": { "generation_config": { "thinking_budget": 1024 } }, "reasoning-medium": { "generation_config": { "thinking_budget": 8192 } }, "reasoning-high": { "generation_config": { "thinking_budget": 24576 } } } },
-        { "model_ids": ["gemini-2.5-pro"], "variants": { "reasoning-low": { "generation_config": { "thinking_budget": 1024 } }, "reasoning-medium": { "generation_config": { "thinking_budget": 8192 } }, "reasoning-high": { "generation_config": { "thinking_budget": 24576 } } } },
+        { "model_ids": ["gemini-2.5-flash"], "variants": { "reasoning-none": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "high" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-2.5-flash-lite"], "variants": { "reasoning-none": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-2.5-pro"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"], "variants": { "reasoning-mini": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
-        { "model_ids": ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.1-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-3.8-flash"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "high" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-3.7-flash", "gemini-3.1-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-3-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-3.1-flash-lite-image"], "variants": { "reasoning-mini": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
       ],
@@ -377,10 +380,31 @@
           "evidence_summary": "EmbedContent puts the model in the v1beta path, accepts Content, and returns an embedding values array."
         },
         {
+          "id": "gemini.interactions.video.v1beta",
+          "protocol_adapter_id": "gemini-interactions",
+          "api_version": "v1beta",
+          "api_types": ["video.video2video", "video.extend"],
+          "operation": "interactions.create",
+          "http_method": "POST",
+          "path": "/v1beta/interactions",
+          "auth": { "kind": "header", "name": "x-goog-api-key", "prefix": "" },
+          "content_type": "application/json",
+          "required_body_fields": ["model", "input", "response_format"],
+          "allowed_body_fields": ["model", "input", "generation_config", "previous_interaction_id", "response_format", "store"],
+          "body_field_types": { "model": ["string"], "input": ["string", "array"], "response_format": ["object", "array"] },
+          "generation_config": {
+            "allowed_fields": ["image_config", "max_output_tokens", "seed", "speech_config", "stop_sequences", "thinking_level", "thinking_summaries", "tool_choice", "transcription_config", "video_config"],
+            "thinking_level_values": ["minimal", "low", "medium", "high"]
+          },
+          "success_fixture": { "id": "interaction_mock_1", "object": "interaction", "status": "completed", "model": "gemini-omni-1.1-flash", "steps": [{ "type": "model_output", "content": [{ "type": "video", "id": "gemini_video_mock_1", "mime_type": "video/mp4", "data": "AAAA" }] }], "usage": { "total_input_tokens": 4, "total_output_tokens": 3, "total_tokens": 7 } },
+          "official_sources": ["https://ai.google.dev/gemini-api/docs/omni", "https://ai.google.dev/api/interactions-api", "https://ai.google.dev/gemini-api/docs/api-errors"],
+          "evidence_summary": "Gemini Omni video editing and extension use POST /v1beta/interactions with media input and generation_config.video_config."
+        },
+        {
           "id": "gemini.predict-long-running.v1beta",
           "protocol_adapter_id": "gemini-interactions",
           "api_version": "v1beta",
-          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "api_types": ["video.txt2video", "video.img2video"],
           "operation": "models.predictLongRunning",
           "http_method": "POST",
           "path": "/v1beta/models/{model}:predictLongRunning",
@@ -519,13 +543,24 @@
       "provider_profile_id": "minimax",
       "endpoint_path": "/anthropic",
       "credential_type": "bearer",
-      "test_model_ids": { "llm": "MiniMax-M2.5", "audio.tts": "speech-2.8-hd", "image.txt2img": "image-01", "image.img2img": "image-01", "video.txt2video": "MiniMax-Hailuo-02", "video.img2video": "MiniMax-Hailuo-02", "audio.music": "music-2.6" },
+      "official_first_party_model_ids": {
+        "llm": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
+        "vision.ocr": ["MiniMax-M3"],
+        "vision.caption": ["MiniMax-M3"],
+        "audio.tts": ["speech-2.8-hd", "speech-2.8-turbo"],
+        "audio.asr": ["asr-1.0"],
+        "image.txt2img": ["image-01", "image-01-live"],
+        "image.img2img": ["image-01", "image-01-live"],
+        "video.txt2video": ["MiniMax-H3", "MiniMax-H3-Max"],
+        "video.img2video": ["MiniMax-H3", "MiniMax-H3-Max"]
+      },
+      "test_model_ids": { "llm": "MiniMax-M3", "vision.ocr": "MiniMax-M3", "vision.caption": "MiniMax-M3", "audio.tts": "speech-2.8-hd", "audio.asr": "asr-1.0", "image.txt2img": "image-01", "image.img2img": "image-01", "video.txt2video": "MiniMax-H3", "video.img2video": "MiniMax-H3" },
       "contracts": [
         {
           "id": "minimax.anthropic.messages.v1",
           "protocol_adapter_id": "minimax-messages",
           "api_version": "anthropic-v1",
-          "api_types": ["llm"],
+          "api_types": ["llm", "vision.ocr", "vision.caption"],
           "operation": "messages.create",
           "http_method": "POST",
           "path": "/anthropic/v1/messages",
@@ -555,6 +590,23 @@
           "success_fixture": { "data": { "audio": "494433", "status": 2 }, "extra_info": { "usage_characters": 12, "audio_format": "mp3" }, "trace_id": "minimax_mock_1", "base_resp": { "status_code": 0, "status_msg": "success" } },
           "official_sources": ["https://platform.minimax.io/docs/api-reference/speech-t2a-http"],
           "evidence_summary": "Synchronous T2A uses POST /v1/t2a_v2 with Bearer auth, model/text, and returns hex audio with base_resp."
+        },
+        {
+          "id": "minimax.speech-to-text.v1",
+          "protocol_adapter_id": "minimax-messages",
+          "api_version": "v1",
+          "api_types": ["audio.asr"],
+          "operation": "speech_to_text.create",
+          "http_method": "POST",
+          "path": "/v1/speech_to_text",
+          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+          "content_type": "multipart/form-data",
+          "required_body_fields": ["model", "file"],
+          "allowed_body_fields": ["model", "file", "response_format", "timestamp_level", "stream"],
+          "body_field_types": { "model": ["string"], "file": ["string", "object"], "response_format": ["string"], "timestamp_level": ["string"], "stream": ["string"] },
+          "success_fixture": { "text": "BUCKYOS-AICC-4827", "segments": [{ "id": 0, "start": 0.0, "end": 1.0, "text": "BUCKYOS-AICC-4827" }], "duration": 1.0, "trace_id": "minimax_asr_mock_1" },
+          "official_sources": ["https://platform.minimax.io/docs/api-reference/speech-to-text"],
+          "evidence_summary": "MiniMax speech recognition uses multipart POST /v1/speech_to_text with Bearer authentication plus model, file, response_format, timestamp_level and stream form fields."
         },
         {
           "id": "minimax.image-generation.v1",
@@ -596,28 +648,6 @@
           "success_fixture": { "task_id": "minimax_video_mock_1", "base_resp": { "status_code": 0, "status_msg": "success" } },
           "official_sources": ["https://platform.minimax.io/docs/api-reference/video-generation-t2v", "https://platform.minimax.io/docs/api-reference/video-generation-fl2v"],
           "evidence_summary": "MiniMax text/image-to-video submits POST /v1/video_generation and returns task_id."
-        },
-        {
-          "id": "minimax.music-generation.v1",
-          "protocol_adapter_id": "minimax-messages",
-          "api_version": "v1",
-          "api_types": ["audio.music"],
-          "operation": "music_generation.create",
-          "http_method": "POST",
-          "path": "/v1/music_generation",
-          "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
-          "content_type": "application/json",
-          "required_body_fields": ["model", "prompt"],
-          "allowed_body_fields": ["model", "prompt", "lyrics", "stream", "output_format", "audio_setting", "lyrics_optimizer", "is_instrumental", "audio_url", "audio_base64", "cover_feature_id"],
-          "body_field_types": { "model": ["string"], "prompt": ["string"], "lyrics": ["string"], "stream": ["boolean"], "output_format": ["string"], "audio_setting": ["object"], "lyrics_optimizer": ["boolean"], "is_instrumental": ["boolean"], "audio_url": ["string"], "audio_base64": ["string"], "cover_feature_id": ["string"] },
-          "minimax_music": {
-            "cover_model_ids": ["music-cover", "music-cover-free"],
-            "cover_reference_fields": ["audio_url", "audio_base64", "cover_feature_id"],
-            "non_instrumental_requires_lyrics_or_optimizer": true
-          },
-          "success_fixture": { "data": { "audio": "494433", "status": 2 }, "trace_id": "minimax_music_mock_1", "base_resp": { "status_code": 0, "status_msg": "success" } },
-          "official_sources": ["https://platform.minimax.io/docs/api-reference/music-generation"],
-          "evidence_summary": "MiniMax music generation uses POST /v1/music_generation and returns audio/status with base_resp."
         }
       ]
     },
@@ -694,19 +724,29 @@
       "endpoint_path": "/v1",
       "credential_type": "bearer",
       "official_first_party_model_ids": {
-        "llm": ["kimi-k2.6", "kimi-k2.5"],
-        "vision.ocr": ["kimi-k2.6", "kimi-k2.5"],
-        "vision.caption": ["kimi-k2.6", "kimi-k2.5"]
+        "llm": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"],
+        "vision.ocr": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"],
+        "vision.caption": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"]
       },
       "official_variant_sources": ["https://platform.kimi.com/docs/api/models-overview", "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"],
       "official_variant_rules": [{
-        "model_ids": ["kimi-k2.6", "kimi-k2.5"],
+        "model_ids": ["kimi-k3"],
+        "variants": {
+          "reasoning-low": { "reasoning_effort": "low" },
+          "reasoning-high": { "reasoning_effort": "high" },
+          "reasoning-max": { "reasoning_effort": "max" }
+        }
+      }, {
+        "model_ids": ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
+        "variants": { "reasoning-medium": { "thinking": { "type": "enabled", "keep": "all" } } }
+      }, {
+        "model_ids": ["kimi-k2.6"],
         "variants": {
           "reasoning-medium": { "thinking": { "type": "enabled" } },
           "reasoning-none": { "thinking": { "type": "disabled" } }
         }
       }],
-      "test_model_ids": { "llm": "kimi-k2.6", "vision.ocr": "kimi-k2.6", "vision.caption": "kimi-k2.6" },
+      "test_model_ids": { "llm": "kimi-k3", "vision.ocr": "kimi-k3", "vision.caption": "kimi-k3" },
       "contracts": [{
         "id": "kimi.chat-completions.v1",
         "protocol_adapter_id": "kimi-chat",
@@ -721,7 +761,7 @@
         "allowed_body_fields": ["model", "messages", "max_tokens", "max_completion_tokens", "response_format", "stop", "stream", "stream_options", "tools", "tool_choice", "thinking", "reasoning_effort", "prompt_cache_key", "temperature", "top_p", "n", "presence_penalty", "frequency_penalty"],
         "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"], "temperature": ["number"], "top_p": ["number"], "n": ["number"], "presence_penalty": ["number"], "frequency_penalty": ["number"] },
         "stream_protocol": "openai_chat",
-        "success_fixture": { "id": "cmpl_mock_1", "object": "chat.completion", "created": 1770000000, "model": "kimi-k2.6", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cached_tokens": 0 } },
+        "success_fixture": { "id": "cmpl_mock_1", "object": "chat.completion", "created": 1770000000, "model": "kimi-k3", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cached_tokens": 0 } },
         "official_sources": ["https://platform.kimi.com/docs/api/chat", "https://platform.kimi.com/docs/api/errors"],
         "evidence_summary": "Kimi Chat Completions uses POST /v1/chat/completions with Bearer authentication, JSON model/messages, OpenAI-style choices and data-only SSE terminated by [DONE]."
       }]
@@ -743,12 +783,27 @@
         "video.txt2video": ["cogvideox-3", "cogvideox-flash", "viduq1-text"],
         "video.img2video": ["cogvideox-3", "cogvideox-flash", "viduq1-image", "viduq1-start-end", "vidu2-image", "vidu2-start-end", "vidu2-reference"]
       },
-      "official_variant_sources": ["https://docs.z.ai/api-reference/llm/chat-completion", "https://docs.z.ai/guides/vlm/glm-5.3-flash", "https://docs.z.ai/guides/vlm/glm-4.6v"],
+      "official_variant_sources": ["https://docs.bigmodel.cn/cn/guide/capabilities/thinking", "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3", "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2"],
       "official_variant_rules": [{
         "model_ids": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash", "glm-4.5v"],
         "variants": {
-          "reasoning-medium": { "thinking": { "type": "enabled" } },
+          "reasoning-medium": { "thinking": { "type": "enabled" } }
+        }
+      }, {
+        "model_ids": ["glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.6", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5", "glm-4.5-x", "glm-4.5-flash"],
+        "variants": {
           "reasoning-none": { "thinking": { "type": "disabled" } }
+        }
+      }, {
+        "model_ids": ["glm-5.3", "glm-5.3-flash", "glm-5.2"],
+        "variants": {
+          "reasoning-high": { "reasoning_effort": "high" },
+          "reasoning-max": { "reasoning_effort": "max" }
+        }
+      }, {
+        "model_ids": ["glm-5.3", "glm-5.3-flash"],
+        "variants": {
+          "reasoning-low": { "reasoning_effort": "low" }
         }
       }],
       "test_model_ids": { "llm": "glm-5.1", "vision.ocr": "glm-5.3-flash", "vision.caption": "glm-5.3-flash", "embedding.text": "embedding-3", "image.txt2img": "glm-image", "audio.tts": "glm-tts", "audio.asr": "glm-asr-2512", "video.txt2video": "cogvideox-3", "video.img2video": "cogvideox-3" },
@@ -862,24 +917,21 @@
       "endpoint_path": "",
       "credential_type": "bearer",
       "official_first_party_model_ids": {
-        "llm": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"],
-        "vision.ocr": ["deepseek-v4-flash-vision-exp"],
-        "vision.caption": ["deepseek-v4-flash-vision-exp"]
+        "llm": ["deepseek-flash", "deepseek-v4-pro"],
+        "vision.ocr": ["deepseek-flash"],
+        "vision.caption": ["deepseek-flash"]
       },
       "official_variant_sources": ["https://api-docs.deepseek.com/api/create-response/"],
       "official_variant_rules": [{
-        "model_ids": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"],
+        "model_ids": ["deepseek-flash", "deepseek-v4-pro"],
         "variants": {
           "reasoning-none": { "reasoning": { "effort": "none" } },
-          "reasoning-mini": { "reasoning": { "effort": "minimal" } },
           "reasoning-low": { "reasoning": { "effort": "low" } },
-          "reasoning-medium": { "reasoning": { "effort": "medium" } },
           "reasoning-high": { "reasoning": { "effort": "high" } },
-          "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } },
           "reasoning-max": { "reasoning": { "effort": "max" } }
         }
       }],
-      "test_model_ids": { "llm": "deepseek-v4-flash", "vision.ocr": "deepseek-v4-flash-vision-exp", "vision.caption": "deepseek-v4-flash-vision-exp" },
+      "test_model_ids": { "llm": "deepseek-flash", "vision.ocr": "deepseek-flash", "vision.caption": "deepseek-flash" },
       "contracts": [{
         "id": "deepseek.responses.v1",
         "protocol_adapter_id": "deepseek-responses",
@@ -894,7 +946,7 @@
         "allowed_body_fields": ["model", "input", "instructions", "max_output_tokens", "reasoning", "stream", "temperature", "text", "tool_choice", "tools", "top_logprobs", "top_p", "user"],
         "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "reasoning": ["object"] },
         "stream_protocol": "openai_responses",
-        "success_fixture": { "id": "resp_deepseek_mock_1", "object": "response", "created_at": 1770000000, "status": "completed", "error": null, "incomplete_details": null, "model": "deepseek-v4-flash", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "success_fixture": { "id": "resp_deepseek_mock_1", "object": "response", "created_at": 1770000000, "status": "completed", "error": null, "incomplete_details": null, "model": "deepseek-flash", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
         "official_sources": ["https://api-docs.deepseek.com/api/create-response/", "https://api-docs.deepseek.com/quick_start/error_codes/"],
         "evidence_summary": "DeepSeek Responses uses POST /responses with Bearer authentication and stateless JSON model/input; semantic SSE ends with a response terminal event and no [DONE] marker."
       }]
@@ -902,37 +954,156 @@
     {
       "provider_driver": "doubao",
       "provider_profile_id": "doubao",
-      "endpoint_path": "/api/v3",
+      "endpoint_path": "/api/plan/v3",
+      "operation_endpoint_paths": { "ark.images.generate": "/api/v3", "ark.contents.generate": "/api/v3", "tts.unidirectional": "/api/v3/plan/tts" },
       "credential_type": "bearer",
       "instance_fields": { "region": "cn-beijing" },
       "official_first_party_model_ids": {
-        "llm": ["doubao-seed-2-0-lite-260215"],
-        "vision.ocr": ["doubao-seed-2-0-lite-260215"],
-        "vision.caption": ["doubao-seed-2-0-lite-260215"]
+        "llm": ["doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving", "deepseek-v4-flash", "glm-5.3-flash", "minimax-m3", "glm-5.3", "kimi-k2.7-code", "kimi-k2.8-preview", "deepseek-v4-pro", "kimi-k3", "deepseek-v4.1-flash"],
+        "vision.ocr": ["doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving"],
+        "vision.caption": ["doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving"],
+        "embedding.multimodal": ["doubao-embedding-vision"],
+        "audio.tts": ["doubao-seed-tts-2.0"],
+        "image.txt2img": ["doubao-seedream-5.0-lite", "doubao-seedream-5-0-pro"],
+        "image.img2img": ["doubao-seedream-5.0-lite", "doubao-seedream-5-0-pro"],
+        "video.txt2video": ["doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5"],
+        "video.img2video": ["doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5"],
+        "video.video2video": ["doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5"],
+        "video.extend": ["doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5"]
       },
-      "official_variant_sources": ["https://www.volcengine.com/docs/82379/1795150"],
-      "official_variant_rules": [{
-        "model_ids": ["doubao-seed-2-0-lite-260215"],
-        "variants": { "reasoning-none": { "thinking": { "type": "disabled" } } }
-      }],
-      "test_model_ids": { "llm": "doubao-seed-2-0-lite-260215", "vision.ocr": "doubao-seed-2-0-lite-260215", "vision.caption": "doubao-seed-2-0-lite-260215" },
+      "official_variant_sources": ["https://docs.volcengine.com/docs/ark/deep-thinking?lang=zh", "https://docs.volcengine.com/docs/ark/model-list?lang=zh"],
+      "official_variant_rules": [
+        {
+          "model_ids": ["doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving"],
+          "variants": { "reasoning-none": { "reasoning": { "effort": "minimal" } } }
+        },
+        {
+          "model_ids": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash"],
+          "variants": {
+            "reasoning-none": { "reasoning": { "effort": "none" } },
+            "reasoning-low": { "reasoning": { "effort": "low" } },
+            "reasoning-high": { "reasoning": { "effort": "high" } },
+            "reasoning-max": { "reasoning": { "effort": "max" } }
+          }
+        },
+        {
+          "model_ids": ["glm-5.3", "glm-5.3-flash"],
+          "variants": {
+            "reasoning-low": { "reasoning": { "effort": "low" } },
+            "reasoning-medium": { "reasoning": { "effort": "high" } },
+            "reasoning-high": { "reasoning": { "effort": "high" } },
+            "reasoning-max": { "reasoning": { "effort": "max" } }
+          }
+        },
+        {
+          "model_ids": ["kimi-k2.7-code"],
+          "variants": { "reasoning-medium": { "thinking": { "type": "enabled" } } }
+        },
+        {
+          "model_ids": ["kimi-k3"],
+          "variants": {
+            "reasoning-low": { "reasoning": { "effort": "low" } },
+            "reasoning-high": { "reasoning": { "effort": "high" } },
+            "reasoning-max": { "reasoning": { "effort": "max" } }
+          }
+        }
+      ],
+      "test_model_ids": { "llm": "doubao-seed-2.0-mini", "vision.ocr": "doubao-seed-2.0-mini", "vision.caption": "doubao-seed-2.0-mini", "embedding.multimodal": "doubao-embedding-vision", "audio.tts": "doubao-seed-tts-2.0", "image.txt2img": "doubao-seedream-5.0-lite", "image.img2img": "doubao-seedream-5.0-lite", "video.txt2video": "doubao-seedance-2.0", "video.img2video": "doubao-seedance-2.0", "video.video2video": "doubao-seedance-2.0", "video.extend": "doubao-seedance-2.0" },
       "contracts": [{
-        "id": "doubao.responses.v3",
+        "id": "doubao.responses.plan-v3",
         "protocol_adapter_id": "doubao-responses",
-        "api_version": "v3",
+        "api_version": "plan-v3",
         "api_types": ["llm", "vision.ocr", "vision.caption"],
         "operation": "responses.create",
         "http_method": "POST",
-        "path": "/api/v3/responses",
+        "path": "/api/plan/v3/responses",
         "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
         "content_type": "application/json",
         "required_body_fields": ["model", "input"],
         "allowed_body_fields": ["model", "input", "instructions", "max_output_tokens", "previous_response_id", "reasoning", "store", "stream", "temperature", "text", "thinking", "tool_choice", "tools", "top_p"],
         "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "reasoning": ["object"], "thinking": ["object"] },
         "stream_protocol": "openai_responses",
-        "success_fixture": { "created_at": 1770000000, "id": "resp_doubao_mock_1", "model": "doubao-seed-2-0-lite-260215", "object": "response", "output": [{ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }], "status": "completed", "id": "msg_mock_1" }], "status": "completed", "store": false, "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
-        "official_sources": ["https://www.volcengine.com/docs/82379/1958524?lang=zh", "https://www.volcengine.com/docs/82379/1783703?lang=zh", "https://www.volcengine.com/docs/82379/1795150"],
-        "evidence_summary": "Volcano Ark Responses uses POST /api/v3/responses with Bearer authentication and JSON model/input, accepts the object-valued thinking control, and returns an OpenAI-style response object."
+        "success_fixture": { "created_at": 1770000000, "id": "resp_doubao_mock_1", "model": "doubao-seed-2.0-mini", "object": "response", "output": [{ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }], "status": "completed", "id": "msg_mock_1" }], "status": "completed", "store": false, "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh", "https://www.volcengine.com/docs/82379/1958524?lang=zh"],
+        "evidence_summary": "Agent Plan OpenAI-compatible inference uses the dedicated /api/plan/v3 base URL and Responses JSON/SSE wire."
+      }, {
+        "id": "doubao.embedding-multimodal.plan-v3",
+        "protocol_adapter_id": "doubao-responses",
+        "api_version": "plan-v3",
+        "api_types": ["embedding.multimodal"],
+        "operation": "ark.embeddings.multimodal",
+        "http_method": "POST",
+        "path": "/api/plan/v3/embeddings/multimodal",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "encoding_format", "dimensions"],
+        "body_field_types": { "model": ["string"], "input": ["array"], "encoding_format": ["string"], "dimensions": ["number"] },
+        "success_fixture": { "object": "list", "data": [{ "object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3] }], "model": "doubao-embedding-vision", "usage": { "prompt_tokens": 2, "total_tokens": 2 } },
+        "official_sources": ["https://www.volcengine.com/docs/82379/1526459"],
+        "evidence_summary": "Ark multimodal embedding uses POST /embeddings/multimodal with typed text/image input items."
+      }, {
+        "id": "doubao.images.ark-v3",
+        "protocol_adapter_id": "doubao-responses",
+        "api_version": "ark-v3",
+        "api_types": ["image.txt2img", "image.img2img"],
+        "operation": "ark.images.generate",
+        "http_method": "POST",
+        "path": "/api/v3/images/generations",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "prompt", "response_format"],
+        "allowed_body_fields": ["model", "prompt", "image", "response_format", "size", "seed", "sequential_image_generation", "sequential_image_generation_options"],
+        "body_field_types": { "model": ["string"], "prompt": ["string"], "image": ["array"], "response_format": ["string"], "size": ["string"], "seed": ["number"] },
+        "success_fixture": { "created": 1770000000, "data": [{ "url": "http://mock/artifacts/doubao.png" }], "usage": { "generated_images": 1 } },
+        "official_sources": ["https://docs.volcengine.com/docs/ark/image-generation-api?lang=zh&redirect=1"],
+        "evidence_summary": "Ark Seedream image generation uses POST /api/v3/images/generations for text-to-image and image-to-image."
+      }, {
+        "id": "doubao.video-tasks.ark-v3",
+        "protocol_adapter_id": "doubao-responses",
+        "api_version": "ark-v3",
+        "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+        "operation": "ark.contents.generate",
+        "http_method": "POST",
+        "path": "/api/v3/contents/generations/tasks",
+        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
+        "content_type": "application/json",
+        "required_body_fields": ["model", "content"],
+        "allowed_body_fields": ["model", "content", "duration", "ratio", "resolution", "seed", "generate_audio", "operation", "continuation_handle"],
+        "body_field_types": { "model": ["string"], "content": ["array"], "duration": ["number"], "ratio": ["string"], "resolution": ["string"], "seed": ["number"], "generate_audio": ["boolean"] },
+        "async_protocol": "doubao_video",
+        "async_steps": [
+          { "name": "poll", "http_method": "GET", "path": "/api/v3/contents/generations/tasks/doubao_video_mock_1" },
+          { "name": "result", "http_method": "GET", "path": "/api/v3/contents/generations/tasks/doubao_video_mock_1" },
+          { "name": "cancel", "http_method": "DELETE", "path": "/api/v3/contents/generations/tasks/doubao_video_mock_1" }
+        ],
+        "success_fixture": { "id": "doubao_video_mock_1", "status": "queued" },
+        "async_result_fixture": { "id": "doubao_video_mock_1", "status": "succeeded", "content": { "video_url": { "url": "http://mock/artifacts/doubao.mp4" } } },
+        "official_sources": ["https://docs.volcengine.com/docs/ark/create-video-generation-task-api?lang=zh&redirect=1", "https://docs.volcengine.com/docs/ark/list-video-generation-tasks-api?lang=zh"],
+        "evidence_summary": "Ark Seedance video generation uses asynchronous content generation tasks with GET status/result and DELETE cancellation."
+      }, {
+        "id": "doubao.tts.plan-v3",
+        "protocol_adapter_id": "doubao-responses",
+        "error_fixture_key": "doubao-tts",
+        "api_version": "plan-v3",
+        "api_types": ["audio.tts"],
+        "operation": "tts.unidirectional",
+        "http_method": "POST",
+        "path": "/api/v3/plan/tts/unidirectional",
+        "auth": { "kind": "header", "name": "x-api-key", "prefix": "" },
+        "required_headers": { "x-api-resource-id": "seed-tts-2.0", "x-control-request-usage-tokens": "true" },
+        "content_type": "application/json",
+        "required_body_fields": ["req_params"],
+        "allowed_body_fields": ["req_params"],
+        "body_field_types": { "req_params": ["object"] },
+        "success_content_type": "text/plain",
+        "success_chunk_fixtures": [
+          { "code": 0, "message": "", "data": "SUQz" },
+          { "code": 0, "message": "", "data": "BA==" },
+          { "code": 20000000, "message": "OK", "data": null }
+        ],
+        "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh"],
+        "evidence_summary": "Agent Plan synchronous TTS uses X-Api-Key and seed-tts-2.0 against /api/v3/plan/tts/unidirectional."
       }]
     },
     {
@@ -941,10 +1112,10 @@
       "endpoint_path": "/compatible-mode/v1",
       "credential_type": "bearer",
       "instance_fields": { "region": "cn-beijing", "workspace": "t15-workspace" },
-      "official_first_party_model_ids": { "llm": ["qwen3.6-max-preview", "qwen3.8-2.4t-a95b", "qwen3.8-27b", "qwen3.6-35b-a3b"] },
+      "official_first_party_model_ids": { "llm": ["qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus", "qwen3.8-omni-flash"], "vision.ocr": ["qwen3.8-max", "qwen3.8-flash", "qwen3.8-omni-flash"], "vision.caption": ["qwen3.8-max", "qwen3.8-flash", "qwen3.8-omni-flash"] },
       "official_variant_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses"],
       "official_variant_rules": [{
-        "model_ids": ["qwen3.6-max-preview", "qwen3.8-2.4t-a95b", "qwen3.8-27b", "qwen3.6-35b-a3b"],
+        "model_ids": ["qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus", "qwen3.8-omni-flash"],
         "variants": {
           "reasoning-none": { "reasoning": { "effort": "none" } },
           "reasoning-mini": { "reasoning": { "effort": "minimal" } },
@@ -955,12 +1126,12 @@
           "reasoning-max": { "reasoning": { "effort": "max" } }
         }
       }],
-      "test_model_ids": { "llm": "qwen3.6-max-preview" },
+      "test_model_ids": { "llm": "qwen3.8-max", "vision.ocr": "qwen3.8-max", "vision.caption": "qwen3.8-max" },
       "contracts": [{
         "id": "qwen.responses.compatible-v1",
         "protocol_adapter_id": "qwen-responses",
         "api_version": "compatible-v1",
-        "api_types": ["llm"],
+        "api_types": ["llm", "vision.ocr", "vision.caption"],
         "operation": "responses.create",
         "http_method": "POST",
         "path": "/compatible-mode/v1/responses",
@@ -970,7 +1141,7 @@
         "allowed_body_fields": ["model", "input", "instructions", "max_output_tokens", "previous_response_id", "reasoning", "stream", "temperature", "text", "tool_choice", "tools", "top_p", "ocr_options"],
         "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "reasoning": ["object"] },
         "stream_protocol": "openai_responses",
-        "success_fixture": { "id": "resp_qwen_mock_1", "object": "response", "created_at": 1770000000, "status": "completed", "model": "qwen3.6-max-preview", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
+        "success_fixture": { "id": "resp_qwen_mock_1", "object": "response", "created_at": 1770000000, "status": "completed", "model": "qwen3.8-max", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
         "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses", "https://www.alibabacloud.com/help/en/model-studio/error-code"],
         "evidence_summary": "Qwen workspace-compatible Responses uses POST /compatible-mode/v1/responses with Bearer authentication and JSON model/input, returning OpenAI-style response output."
       }]
@@ -1032,7 +1203,8 @@
     "kimi": { "applicable_api_versions": ["v1"], "official_sources": ["https://platform.kimi.com/docs/api/errors"], "evidence_summary": "Kimi documents error.type/message envelopes for invalid requests, authentication, permissions, missing resources, rate limits, quota and server failures." },
     "glm": { "applicable_api_versions": ["v4"], "official_sources": ["https://docs.bigmodel.cn/cn/api/api-code", "https://docs.bigmodel.cn/cn/api/rate-limit"], "evidence_summary": "GLM documents an error code/message envelope with HTTP status plus business codes including 1000 authentication, 1210 invalid parameter, 1302 rate limit and 1305 overload." },
     "deepseek": { "applicable_api_versions": ["v1"], "official_sources": ["https://api-docs.deepseek.com/quick_start/error_codes/"], "evidence_summary": "DeepSeek documents 400 invalid format, 401 authentication, 402 balance, 422 invalid parameters, 429 rate limit and 5xx service failures." },
-    "doubao": { "applicable_api_versions": ["v3"], "official_sources": ["https://www.volcengine.com/docs/82379/1330312?lang=zh"], "evidence_summary": "Volcano Ark documents OpenAI-compatible error envelopes and HTTP-aligned request, authentication, throttling and server failure codes." },
+    "doubao": { "applicable_api_versions": ["plan-v3"], "official_sources": ["https://www.volcengine.com/docs/82379/1330312?lang=zh"], "evidence_summary": "Volcano Ark documents OpenAI-compatible error envelopes and HTTP-aligned request, authentication, throttling and server failure codes." },
+    "doubao-tts": { "applicable_api_versions": ["plan-v3"], "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh"], "evidence_summary": "Agent Plan TTS reports authentication, request, throttling and service errors through HTTP status and code/message fields." },
     "qwen": { "applicable_api_versions": ["compatible-v1"], "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/error-code"], "evidence_summary": "Alibaba Model Studio documents OpenAI-compatible error codes including invalid_request_error, invalid_api_key, access_denied, Throttling and InternalError." },
     "sn-ai-provider": { "applicable_api_versions": ["v1"], "official_sources": ["https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/http/error.rs"], "evidence_summary": "SN source at f765081 defines HTTP errors as code/message and the 429 insufficient-balance special case as an OpenAI-shaped nested error." }
   },
@@ -1112,6 +1284,12 @@
       { "scenario": "rate_limit", "status": 429, "body": { "error": { "code": "RequestBurstTooFast", "message": "System protection triggered by request burst", "param": "", "type": "TooManyRequests" } } },
       { "scenario": "overloaded", "status": 429, "body": { "error": { "code": "ServerOverloaded", "message": "The service is currently unable to handle additional requests", "param": "", "type": "TooManyRequests" } } },
       { "scenario": "server_error", "status": 500, "body": { "error": { "code": "InternalServiceError", "message": "Internal service error", "param": "", "type": "InternalServerError" } } }
+    ],
+    "doubao-tts": [
+      { "scenario": "invalid_request", "status": 400, "body": { "code": 40000000, "message": "invalid request" } },
+      { "scenario": "authentication", "status": 401, "body": { "code": 40100000, "message": "invalid api key" } },
+      { "scenario": "rate_limit", "status": 429, "body": { "code": 42900000, "message": "rate limit reached" } },
+      { "scenario": "server_error", "status": 500, "body": { "code": 50000000, "message": "internal service error" } }
     ],
     "qwen": [
       { "scenario": "invalid_request", "status": 400, "body": { "error": { "code": "invalid_request_error", "message": "You must provide a model parameter", "type": "invalid_request_error" } } },

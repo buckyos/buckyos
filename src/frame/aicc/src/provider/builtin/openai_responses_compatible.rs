@@ -85,7 +85,7 @@ impl BuiltinProviderDescriptor {
         }
         let models = model_ids
             .into_iter()
-            .map(|provider_model_id| catalog_model(provider_model_id))
+            .map(|provider_model_id| catalog_llm_model(provider_model_id))
             .collect::<Vec<_>>();
         validate_fixture_model_ids(&models)?;
         Ok(ProviderDiscoverySnapshot {
@@ -146,7 +146,14 @@ pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProv
 
 #[cfg(test)]
 pub(crate) fn openai_responses_compatible_catalog_files() -> Vec<CurrentCatalogFile> {
-    super::builtin_catalog_files(&[DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID])
+    super::builtin_catalog_files(&[
+        DEEPSEEK_PROFILE_ID,
+        DOUBAO_PROFILE_ID,
+        QWEN_PROFILE_ID,
+        "kimi",
+        "minimax",
+        "glm",
+    ])
 }
 
 pub(crate) fn openai_compatible_models_discovery(
@@ -243,13 +250,26 @@ fn configured_provider(profile_id: &str) -> BuiltinProviderDescriptor {
         .unwrap_or_else(|| panic!("Provider configuration is missing `{profile_id}`"))
 }
 
-fn catalog_model(provider_model_id: String) -> DiscoveredModel {
+fn catalog_llm_model(provider_model_id: String) -> DiscoveredModel {
     DiscoveredModel {
         provider_model_id,
         origin_model_id: None,
         api_types: Some(vec![ApiType::Llm]),
         supported_features: None,
         remote_methods: Some(BTreeSet::from([OPENAI_RESPONSES_OPERATION_ID.to_string()])),
+        availability: ModelAvailability::Available,
+        deprecated: false,
+        pricing: None,
+    }
+}
+
+fn discovered_model(provider_model_id: String) -> DiscoveredModel {
+    DiscoveredModel {
+        provider_model_id,
+        origin_model_id: None,
+        api_types: None,
+        supported_features: None,
+        remote_methods: None,
         availability: ModelAvailability::Available,
         deprecated: false,
         pricing: None,
@@ -444,7 +464,7 @@ fn parse_openai_compatible_models(
         .into_iter()
         .map(|model| {
             let _metadata = (model.object, model.owned_by, model.created);
-            catalog_model(model.id)
+            discovered_model(model.id)
         })
         .collect::<Vec<_>>();
     validate_fixture_model_ids(&models)
@@ -502,7 +522,18 @@ mod tests {
             assert!(catalog.known_provider(profile_id).is_some());
             let rules = catalog.provider_rules(profile_id).unwrap();
             if profile_id == DOUBAO_PROFILE_ID {
-                assert!(rules.metadata_drivers.is_none());
+                assert_eq!(
+                    rules.metadata_drivers.as_deref(),
+                    Some(
+                        &[
+                            "doubao".to_owned(),
+                            "deepseek".to_owned(),
+                            "kimi".to_owned(),
+                            "minimax".to_owned(),
+                            "glm".to_owned(),
+                        ][..]
+                    )
+                );
             } else {
                 assert_eq!(
                     rules.metadata_drivers.as_deref(),
@@ -523,11 +554,11 @@ mod tests {
         let flash = deepseek
             .models
             .iter()
-            .find(|model| model.id == "deepseek-v4-flash")
+            .find(|model| model.id == "deepseek-flash")
             .unwrap();
         assert_eq!(
             flash.capabilities.as_ref().unwrap()["max_context_tokens"],
-            1_000_000
+            1_048_576
         );
         assert_eq!(
             flash.capabilities.as_ref().unwrap()["max_output_tokens"],
@@ -538,7 +569,7 @@ mod tests {
         assert!(doubao
             .models
             .iter()
-            .any(|model| model.id == "doubao-seed-2-0-lite-260215"));
+            .any(|model| model.id == "doubao-seed-2.1-lite"));
         assert!(doubao
             .patterns
             .iter()
@@ -578,7 +609,7 @@ mod tests {
         );
         assert_eq!(
             providers[1].known_provider().base_url,
-            "https://ark.cn-beijing.volces.com/api/v3"
+            "https://ark.cn-beijing.volces.com/api/plan/v3"
         );
     }
 
@@ -618,21 +649,19 @@ mod tests {
     fn provider_rules_are_loaded_without_rust_generated_revisions() {
         for provider in openai_responses_compatible_builtin_providers() {
             let rules = provider.provider_rules(7);
+            assert_eq!(rules.revision_seq, 2);
             assert_eq!(
-                rules.revision_seq,
-                if matches!(
-                    provider.profile.provider_profile_id.as_str(),
-                    DOUBAO_PROFILE_ID | QWEN_PROFILE_ID
-                ) {
-                    2
+                rules.models.len(),
+                if provider.profile.provider_profile_id == DOUBAO_PROFILE_ID {
+                    9
                 } else {
-                    1
+                    0
                 }
             );
-            assert!(rules.models.is_empty());
             let expected_patterns = match provider.profile.provider_profile_id.as_str() {
-                DOUBAO_PROFILE_ID => 3,
-                QWEN_PROFILE_ID => 5,
+                DOUBAO_PROFILE_ID => 7,
+                DEEPSEEK_PROFILE_ID => 3,
+                QWEN_PROFILE_ID => 8,
                 _ => 1,
             };
             assert_eq!(rules.patterns.len(), expected_patterns);
@@ -644,12 +673,21 @@ mod tests {
                 Some(&OPENAI_RESPONSES_OPERATION_ID.to_string())
             );
         }
-        assert!(deepseek().provider_rules(99).patterns[0].request_rules[0]
+        assert!(deepseek()
+            .provider_rules(99)
+            .patterns
+            .iter()
+            .find(|rule| rule.operations.contains_key("llm"))
+            .unwrap()
+            .request_rules[0]
             .remove
             .contains(&"/store".to_owned()));
-        assert!(qwen().provider_rules(99).patterns[4].request_rules[0]
-            .remove
-            .contains(&"/background".to_owned()));
+        assert!(qwen()
+            .provider_rules(99)
+            .patterns
+            .iter()
+            .flat_map(|pattern| &pattern.request_rules)
+            .any(|rule| rule.remove.contains(&"/background".to_owned())));
     }
 
     #[test]
@@ -684,6 +722,8 @@ mod tests {
         assert_eq!(snapshot.health, ProviderHealthState::Healthy);
         assert_eq!(snapshot.revision.as_deref(), Some("models-v1"));
         assert_eq!(snapshot.models[0].provider_model_id, "model-a");
+        assert!(snapshot.models[0].api_types.is_none());
+        assert!(snapshot.models[0].remote_methods.is_none());
         assert!(snapshot.models[0].supported_features.is_none());
 
         let invalid: ModelsEnvelope = serde_json::from_value(json!({
@@ -702,6 +742,7 @@ mod tests {
             provider_profile_id: DEEPSEEK_PROFILE_ID.to_owned(),
             protocol_adapter_id: DEEPSEEK_RESPONSES_ADAPTER_ID.to_owned(),
             base_url: deepseek().known_provider().base_url,
+            operation_base_urls: Default::default(),
             credential: CredentialReference {
                 reference: "secret://deepseek/main".to_owned(),
             },
@@ -753,6 +794,7 @@ mod tests {
                 .unwrap();
             for (descriptor, registration) in [
                 crate::protocol::doubao_media_adapter(),
+                crate::protocol::doubao_speech_adapter(),
                 crate::protocol::qwen_media_adapter(),
             ] {
                 codecs.register_codecs(descriptor, registration).unwrap();
@@ -770,6 +812,7 @@ mod tests {
                 provider_profile_id: profile_id.clone(),
                 protocol_adapter_id: provider.profile.default_protocol_adapter_id.clone(),
                 base_url,
+                operation_base_urls: provider.connection.operation_base_urls.clone(),
                 credential: CredentialReference {
                     reference: format!("secret://{profile_id}/main"),
                 },
@@ -782,9 +825,9 @@ mod tests {
                 auto_sync_models: true,
                 instance_rules: None,
             };
-            let mut models = vec![catalog_model(model_id.to_owned())];
+            let mut models = vec![catalog_llm_model(model_id.to_owned())];
             if profile_id == DOUBAO_PROFILE_ID {
-                models.push(catalog_model("deepseek-v4-flash".to_owned()));
+                models.push(catalog_llm_model("deepseek-v4-flash".to_owned()));
             }
             let inventory = InventoryBuilder::build(
                 &provider.profile,

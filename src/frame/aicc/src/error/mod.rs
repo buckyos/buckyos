@@ -295,6 +295,7 @@ pub(crate) fn protocol_error_kind_from_http_status(
         | StatusCode::NOT_FOUND
         | StatusCode::METHOD_NOT_ALLOWED
         | StatusCode::UNPROCESSABLE_ENTITY => ProtocolErrorKind::InvalidRequest,
+        StatusCode::PAYMENT_REQUIRED => ProtocolErrorKind::ProviderRejected,
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProtocolErrorKind::Authentication,
         StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT => ProtocolErrorKind::Timeout,
         _ => ProtocolErrorKind::Transport,
@@ -525,18 +526,20 @@ impl ProtocolError {
     }
 
     pub(crate) fn is_model_unavailable(&self) -> bool {
-        matches!(self.provider_code.as_deref(), Some("1211" | "1212"))
-            || contains_any(
-                &self.message,
-                &[
-                    "model does not exist",
-                    "model not found",
-                    "unknown model",
-                    "当前模型不支持",
-                    "始终思考",
-                    "不支持关闭思考",
-                ],
-            )
+        matches!(
+            self.provider_code.as_deref(),
+            Some("1211" | "1212" | "model_not_found")
+        ) || contains_any(
+            &self.message,
+            &[
+                "model does not exist",
+                "model not found",
+                "unknown model",
+                "当前模型不支持",
+                "始终思考",
+                "不支持关闭思考",
+            ],
+        )
     }
 
     pub(crate) fn is_account_exhausted(&self) -> bool {
@@ -654,6 +657,15 @@ mod tests {
     }
 
     #[test]
+    fn payment_required_is_a_non_retriable_provider_rejection() {
+        let kind = protocol_error_kind_from_http_status(reqwest::StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(kind, ProtocolErrorKind::ProviderRejected);
+        let error: AiccError = ProtocolError::new(kind, "insufficient balance").into();
+        assert_eq!(error.code, AiccErrorCode::ProviderError);
+        assert!(!error.retriable);
+    }
+
+    #[test]
     fn retry_classification_separates_jitter_from_candidate_change() {
         let timeout = ProtocolError::new(ProtocolErrorKind::Timeout, "timed out");
         assert!(timeout.retry_same_model());
@@ -699,6 +711,13 @@ mod tests {
         )
         .with_provider_code(Some("1211".to_owned()));
         assert!(model_missing.is_model_unavailable());
+
+        let openai_model_missing = ProtocolError::new(
+            ProtocolErrorKind::ProviderRejected,
+            "The requested model is unavailable.",
+        )
+        .with_provider_code(Some("model_not_found".to_owned()));
+        assert!(openai_model_missing.is_model_unavailable());
     }
 
     #[test]

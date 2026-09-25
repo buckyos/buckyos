@@ -51,7 +51,7 @@ function localTrailingDaysRange(days: number, nowMs: number): { startTimeMs: num
 }
 
 function timeRangeToQuery(value: TimeRangeFilter, customStartDate: string, customEndDate: string, nowMs: number): { startTimeMs: number; endTimeMs: number } | undefined {
-  if (value === 'all') return undefined
+  if (value === 'all') return { startTimeMs: 0, endTimeMs: nowMs }
   if (value === 'custom') {
     const fallback = localTrailingDaysRange(30, nowMs)
     return {
@@ -110,6 +110,7 @@ export function RouteTraceAuditPanel({
   const [tracePageCursors, setTracePageCursors] = useState<Array<string | undefined>>([undefined])
   const [traceLoading, setTraceLoading] = useState(false)
   const [traceError, setTraceError] = useState<'initial' | 'more' | null>(null)
+  const [traceRetryKey, setTraceRetryKey] = useState(0)
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
   const debouncedQuery = useDebouncedValue(query, TRACE_QUERY_DEBOUNCE_MS)
   // Upper bound of the query window: refreshed when a new query series starts (filter change, retry),
@@ -166,7 +167,7 @@ export function RouteTraceAuditPanel({
       }
     }
     void loadInitialTraces()
-  }, [customEndDate, customStartDate, snapshotTraces, store, timeRange, traceQueryFilters])
+  }, [customEndDate, customStartDate, snapshotTraces, store, timeRange, traceQueryFilters, traceRetryKey])
 
   const visibleTraces = useMemo(
     () => traces.filter((trace) => !logicalPathFilter || traceLogicalPath(trace) === logicalPathFilter),
@@ -238,9 +239,7 @@ export function RouteTraceAuditPanel({
 
   const retryTraceLoad = () => {
     if (traceError === 'initial') {
-      // Retrying starts a new query series, so pick up events that arrived since the last attempt.
-      queryEndMsRef.current = Date.now()
-      void loadTracePage(tracePageIndex)
+      setTraceRetryKey((value) => value + 1)
     } else {
       void loadMoreTraces()
     }
@@ -892,6 +891,7 @@ function selectedTraceCandidate(trace: RouteTrace): RouteTrace['ranked_candidate
 }
 
 function traceStatus(trace: RouteTrace): 'selected' | 'fallback' | 'failed' {
+  if (trace.outcome === 'failed' || trace.outcome === 'cancelled') return 'failed'
   if (!trace.selected_exact_model) return 'failed'
   return trace.fallback_applied ? 'fallback' : 'selected'
 }

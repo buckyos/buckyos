@@ -372,6 +372,15 @@ fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
         return Ok(());
     }
     let parsed = serde_json::from_slice::<Value>(&response.body).ok();
+    let provider_code = parsed
+        .as_ref()
+        .and_then(|value| value.pointer("/error/code"))
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string())
+        });
     let message = parsed
         .as_ref()
         .and_then(|value| value.pointer("/error/message").or_else(|| value.get("msg")))
@@ -381,6 +390,34 @@ fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
         super::protocol_error_kind_from_http_status(response.status),
         message,
     )
+    .with_provider_code(provider_code)
+    .with_http_status(response.status.as_u16())
     .with_request_id(Some(response.request_id.clone()))
     .with_retry_after(response.retry_after))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use reqwest::header::HeaderMap;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn error_response_keeps_glm_business_code() {
+        let response = HttpResponse {
+            status: StatusCode::BAD_REQUEST,
+            headers: HeaderMap::new(),
+            body: Bytes::from_static(
+                br#"{"error":{"code":"1210","message":"API call parameters are incorrect"}}"#,
+            ),
+            request_id: "glm-request-1".to_owned(),
+            retry_after: None,
+        };
+
+        let error = ensure_success(&response).unwrap_err();
+        assert_eq!(error.provider_code.as_deref(), Some("1210"));
+        assert_eq!(error.http_status, Some(400));
+        assert_eq!(error.request_id.as_deref(), Some("glm-request-1"));
+    }
 }

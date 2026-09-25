@@ -16,6 +16,7 @@ const INITIAL_DRAFT: WizardDraft = {
   provider_profile_id: null,
   display_name: '',
   base_url: '',
+  operation_base_urls: {},
   protocol_family_id: null,
   auth_mode: 'api_key',
   api_key: '',
@@ -114,16 +115,24 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   const handleTypeSelect = (type: ProviderType) => {
     const profile = catalog?.providers.find((item) => item.provider_profile_id === type)
     const displayName = type === 'sn' ? t('aiCenter.wizard.snRouter', 'SN Router') : profile?.display_name ?? ''
+    const regionField = profile?.connection_fields.region
+    const defaultRegion = regionField?.default_value ?? regionField?.allowed_values[0]
     updateDraft({
       provider_profile_id: type,
       provider_instance_name: nextProviderInstanceName(type, displayName, providers.map((provider) => provider.config.provider_instance_name)),
       display_name: displayName,
-      base_url: profile?.base_url ?? '',
+      base_url: defaultRegion
+        ? profile?.region_base_urls[defaultRegion] ?? profile?.base_url ?? ''
+        : profile?.base_url ?? '',
+      operation_base_urls: { ...(profile?.operation_base_urls ?? {}) },
       protocol_family_id: null,
       protocol_adapter_id: profile?.protocol_adapter_id,
-      region: profile?.connection_fields.region?.default_value,
+      region: defaultRegion,
       workspace: profile?.connection_fields.workspace?.default_value,
       account: profile?.connection_fields.account?.default_value,
+      policy_region: profile?.connection_fields.policy_region
+        ? profile.connection_fields.policy_region.default_value ?? 'unknown'
+        : undefined,
       auth_mode: 'api_key',
       api_key: '',
     })
@@ -238,7 +247,12 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
           />
         )}
         {step === 1 && (
-          <StepConnection draft={draft} catalog={catalog} onUpdate={updateDraft} />
+          <StepConnection
+            key={draft.provider_profile_id}
+            draft={draft}
+            catalog={catalog}
+            onUpdate={updateDraft}
+          />
         )}
         {step === 2 && (
           <StepValidation draft={draft} onResult={setValidation} />
@@ -317,8 +331,9 @@ function providerConnectionFieldsValid(
   profile: ProviderSetupCatalog['providers'][number] | undefined,
 ): boolean {
   if (!profile) return draft.provider_profile_id === 'custom'
-  return (['region', 'workspace', 'account'] as const).every((name) =>
-    profile.connection_fields[name]?.mode !== 'required' || Boolean(draft[name]?.trim()),
+  return (['region', 'workspace', 'account', 'policy_region'] as const).every((name) =>
+    profile.connection_fields[name]?.mode !== 'required'
+      || (Boolean(draft[name]?.trim()) && draft[name] !== 'unknown'),
   )
 }
 

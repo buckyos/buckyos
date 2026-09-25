@@ -389,6 +389,7 @@ mod tests {
             provider_profile_id: GEMINI_PROVIDER_PROFILE_ID.to_owned(),
             protocol_adapter_id: GEMINI_ADAPTER_ID.to_owned(),
             base_url: known.base_url,
+            operation_base_urls: BTreeMap::new(),
             credential: CredentialReference {
                 reference: "secret://gemini/main".to_owned(),
             },
@@ -623,5 +624,51 @@ mod tests {
         assert_eq!(operations["llm"], GEMINI_INTERACTIONS_OPERATION_ID);
         assert!(!operations.contains_key("embedding.text"));
         assert!(!operations.contains_key("video.txt2video"));
+    }
+
+    #[test]
+    fn mock_catalog_models_resolve_one_operation_per_api_type() {
+        let catalog = CatalogSnapshot::from_current_files(
+            2,
+            gemini_catalog_files(),
+            &CatalogBuildOptions::default(),
+        )
+        .unwrap();
+        let (adapter, codecs) = gemini_interactions_adapter();
+        let mut registry = CodecRegistry::default();
+        registry.register_codecs(adapter, codecs).unwrap();
+
+        for model_id in [
+            "gemini-2.5-flash",
+            "gemini-embedding-2-preview",
+            "gemini-2.5-flash-preview-tts",
+            "lyria-3-clip-preview",
+            "veo-3.1-generate-preview",
+            "gemini-omni-1.1-flash",
+            "gemini-2.5-computer-use-preview-10-2025",
+        ] {
+            let result = InventoryBuilder::build(
+                &gemini_profile(),
+                &instance(),
+                ProviderDiscoverySnapshot {
+                    revision: Some("models-v1".to_owned()),
+                    discovered_at_ms: 1,
+                    health: ProviderHealthState::Healthy,
+                    models: vec![DiscoveredModel {
+                        provider_model_id: model_id.to_owned(),
+                        origin_model_id: None,
+                        api_types: None,
+                        supported_features: None,
+                        remote_methods: None,
+                        availability: ModelAvailability::Available,
+                        deprecated: false,
+                        pricing: None,
+                    }],
+                },
+                &catalog,
+                &registry,
+            );
+            assert!(result.is_ok(), "{model_id}: {result:?}");
+        }
     }
 }

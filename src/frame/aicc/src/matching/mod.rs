@@ -47,6 +47,10 @@ const PROVIDER_RULE_DIMENSIONS: &[DimensionSpec] = &[
     string_dimension("model_driver_id"),
     string_dimension("variant"),
     string_dimension("api_type"),
+    string_dimension("region"),
+    string_dimension("workspace"),
+    string_dimension("account"),
+    string_dimension("policy_region"),
 ];
 
 const REQUEST_DIMENSIONS: &[DimensionSpec] =
@@ -892,6 +896,29 @@ mod tests {
         )
         .unwrap();
         assert!(!never.matches(&context(&[("provider_model_id", json!("anything"))])));
+    }
+
+    #[test]
+    fn provider_rules_can_match_instance_connection_dimensions() {
+        let compiled = compile(
+            json!({
+                "provider_model_id": "qwen-*",
+                "region": ["cn-beijing", "cn-hongkong"],
+                "workspace": {"exists": true}
+            }),
+            &PROVIDER_RULE_MATCH_SCHEMA,
+        )
+        .unwrap();
+        assert!(compiled.matches(&context(&[
+            ("provider_model_id", json!("qwen-max")),
+            ("region", json!("cn-beijing")),
+            ("workspace", json!("workspace-1")),
+        ])));
+        assert!(!compiled.matches(&context(&[
+            ("provider_model_id", json!("qwen-max")),
+            ("region", json!("us-east-1")),
+            ("workspace", json!("workspace-1")),
+        ])));
     }
 
     #[test]

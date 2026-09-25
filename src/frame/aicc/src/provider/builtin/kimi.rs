@@ -183,9 +183,9 @@ fn validate_context(context: &DiscoveryContext<'_>) -> ProviderResult<()> {
             "Kimi discovery requires a Bearer credential".to_owned(),
         ));
     }
-    if context.instance.region.is_some() || context.instance.account.is_some() {
+    if context.instance.account.is_some() {
         return Err(ProviderError::InvalidConfiguration(
-            "Kimi profile does not accept region or account".to_owned(),
+            "Kimi profile does not accept account".to_owned(),
         ));
     }
     Ok(())
@@ -270,12 +270,13 @@ mod tests {
             provider_profile_id: KIMI_PROVIDER_PROFILE_ID.to_owned(),
             protocol_adapter_id: KIMI_CHAT_ADAPTER_ID.to_owned(),
             base_url: kimi_known_provider().base_url,
+            operation_base_urls: BTreeMap::new(),
             credential: CredentialReference {
                 reference: "secret://kimi".to_owned(),
             },
             credential_kind: None,
             provider_rules_id: Some(KIMI_PROVIDER_PROFILE_ID.to_owned()),
-            region: None,
+            region: Some("global".to_owned()),
             workspace: None,
             account: None,
             request_timeout: Duration::from_secs(120),
@@ -324,8 +325,11 @@ mod tests {
         assert_eq!(request.url, "https://api.moonshot.ai/v1/models");
         assert_eq!(request.headers[AUTHORIZATION], "Bearer secret");
         assert_eq!(
-            kimi_provider_rules(7).patterns[0].operations["llm"],
-            OPENAI_CHAT_COMPLETIONS_OPERATION_ID
+            kimi_provider_rules(7)
+                .patterns
+                .iter()
+                .find_map(|rule| rule.operations.get("llm")),
+            Some(&OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned())
         );
         assert_eq!(kimi_known_provider().base_url, "https://api.moonshot.ai/v1");
     }

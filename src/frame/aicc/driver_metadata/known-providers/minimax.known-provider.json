@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 1,
+  "revision_seq": 2,
   "catalog_id": "minimax",
   "providers": [
     {
@@ -22,7 +22,7 @@
         "workspace": { "mode": "unsupported" },
         "account": { "mode": "unsupported" },
         "region_base_urls": {
-          "china": "https://api.minimaxi.com/anthropic",
+          "china": "https://api.minimax.cn/anthropic",
           "global": "https://api.minimax.io/anthropic"
         }
       },

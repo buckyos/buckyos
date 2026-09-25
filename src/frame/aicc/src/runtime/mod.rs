@@ -199,6 +199,16 @@ impl ProviderRuntimeBackend {
     }
 }
 
+fn provider_inventory_changed(
+    before: &ProviderInventorySnapshot,
+    refreshed: &ProviderInventorySnapshot,
+) -> bool {
+    before.provider_model_list_fingerprint != refreshed.provider_model_list_fingerprint
+        || before.metadata_applied_seq != refreshed.metadata_applied_seq
+        || before.inventory_revision != refreshed.inventory_revision
+        || before.health != refreshed.health
+}
+
 #[async_trait]
 impl RuntimeBackend for ProviderRuntimeBackend {
     async fn refresh_provider(&self, provider_instance_name: &str) -> Result<bool, RuntimeError> {
@@ -211,10 +221,7 @@ impl RuntimeBackend for ProviderRuntimeBackend {
             .refresh(provider_instance_name)
             .await
             .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-        Ok(before.is_none_or(|before| {
-            before.provider_model_list_fingerprint != refreshed.provider_model_list_fingerprint
-                || before.metadata_applied_seq != refreshed.metadata_applied_seq
-        }))
+        Ok(before.is_none_or(|before| provider_inventory_changed(&before, &refreshed)))
     }
 
     async fn converge(
@@ -710,7 +717,7 @@ mod tests {
     use super::*;
     use crate::catalog::{CatalogBuildOptions, CatalogDocuments};
     use crate::model::RegistryLayers;
-    use crate::provider::{ProviderRefreshFailure, ProviderRefreshOutcome};
+    use crate::provider::{ProviderHealthState, ProviderRefreshFailure, ProviderRefreshOutcome};
     use crate::settings::ProviderSettings;
     use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -723,6 +730,26 @@ mod tests {
             registry.quota_observation("missing").await,
             Err(ProviderError::UnknownInstance(name)) if name == "missing"
         ));
+    }
+
+    #[test]
+    fn provider_health_change_requires_a_new_runtime_snapshot() {
+        let inventory = |health| ProviderInventorySnapshot {
+            schema_version: 1,
+            provider_instance_name: "primary".into(),
+            provider_profile_id: "openai".into(),
+            protocol_adapter_id: "openai-responses".into(),
+            provider_model_list_fingerprint: "same-models".into(),
+            metadata_applied_seq: 1,
+            inventory_revision: Some("same-revision".into()),
+            discovered_at_ms: 1,
+            health,
+            models: Vec::new(),
+        };
+        let healthy = inventory(ProviderHealthState::Healthy);
+        let degraded = inventory(ProviderHealthState::Degraded);
+        assert!(provider_inventory_changed(&healthy, &degraded));
+        assert!(!provider_inventory_changed(&healthy, &healthy));
     }
 
     fn settings(revision: u64, names: &[&str]) -> SettingsDocument {
@@ -738,6 +765,7 @@ mod tests {
                         protocol_family_id: Some("openai".into()),
                         protocol_adapter_id: "openai-responses".into(),
                         base_url: "https://api.example/v1".into(),
+                        operation_base_urls: BTreeMap::new(),
                         credentials: serde_json::from_value(
                             json!({"credential_ref": {"locked": format!("secret://{name}")}}),
                         )

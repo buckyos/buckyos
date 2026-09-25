@@ -43,6 +43,7 @@ pub(crate) struct ResolvedPricing {
 pub(crate) struct ProviderCallTarget {
     pub provider_rules_id: Option<String>,
     pub base_url: String,
+    pub operation_base_urls: BTreeMap<String, String>,
     pub credential: ResolvedCredential,
     pub credential_reference: String,
     pub credential_header_name: Option<String>,
@@ -57,6 +58,7 @@ impl fmt::Debug for ProviderCallTarget {
             .debug_struct("ProviderCallTarget")
             .field("provider_rules_id", &self.provider_rules_id)
             .field("base_url", &self.base_url)
+            .field("operation_base_urls", &self.operation_base_urls)
             .field("credential", &self.credential.audit())
             .field("limits", &self.limits)
             .field("pricing", &self.pricing)
@@ -473,8 +475,13 @@ impl<'a> CallResolver<'a> {
         let credential = target.credential.audit().clone();
         let credential_reference = target.credential_reference;
         let credential_header_name = target.credential_header_name;
+        let base_url = target
+            .operation_base_urls
+            .get(&operation)
+            .cloned()
+            .unwrap_or(target.base_url);
         let context = CodecContext {
-            base_url: target.base_url,
+            base_url,
             state_coordinate: buckyos_api::ProviderStateCoordinate {
                 provider_profile_id: decision.selected.provider_profile_id.clone(),
                 adapter_type: decision.selected.protocol_adapter_id.clone(),
@@ -1343,10 +1350,10 @@ mod tests {
 
     fn all_codecs() -> CodecRegistry {
         use crate::protocol::{
-            doubao_media_adapter, fal_queue_adapter, gemini_interactions_adapter, glm_chat_adapter,
-            glm_media_adapter, kimi_chat_adapter, minimax_media_adapter, minimax_messages_adapter,
-            openai_chat_completions_adapter, openai_responses_compatible_adapters,
-            openrouter_responses_adapter, qwen_media_adapter,
+            doubao_media_adapter, doubao_speech_adapter, fal_queue_adapter,
+            gemini_interactions_adapter, glm_chat_adapter, glm_media_adapter, kimi_chat_adapter,
+            minimax_media_adapter, minimax_messages_adapter, openai_chat_completions_adapter,
+            openai_responses_compatible_adapters, openrouter_responses_adapter, qwen_media_adapter,
         };
         use crate::provider::register_sn_openai_adapter;
 
@@ -1356,6 +1363,8 @@ mod tests {
         for (descriptor, registration) in [doubao_media_adapter(), qwen_media_adapter()] {
             registry.register_codecs(descriptor, registration).unwrap();
         }
+        let (speech, registration) = doubao_speech_adapter();
+        registry.register_codecs(speech, registration).unwrap();
         for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
             registry.register_derived(descriptor, registration).unwrap();
         }
@@ -1520,6 +1529,7 @@ mod tests {
         ProviderCallTarget {
             provider_rules_id: Some("openai".into()),
             base_url: "https://api.openai.test/v1".into(),
+            operation_base_urls: BTreeMap::new(),
             credential: ResolvedCredential::bearer("secret://openai/main", secret).unwrap(),
             credential_reference: "secret://openai/main".into(),
             credential_header_name: None,
@@ -2005,7 +2015,7 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         assert_eq!(golden, documented);
-        assert_eq!(golden.len(), 92);
+        assert_eq!(golden.len(), 96);
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(
             golden.contains(&"openai|openai-responses|agent.computer_use|responses.create".into())

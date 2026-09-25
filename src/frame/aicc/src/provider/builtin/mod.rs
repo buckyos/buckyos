@@ -102,7 +102,13 @@ fn builtin_connection_contract(profile_id: &str) -> crate::provider::ProviderCon
         region: field_from_catalog(&known.connection.region),
         workspace: field_from_catalog(&known.connection.workspace),
         account: field_from_catalog(&known.connection.account),
+        policy_region: known
+            .connection
+            .policy_region
+            .as_ref()
+            .map(field_from_catalog),
         region_base_urls: known.connection.region_base_urls,
+        operation_base_urls: known.connection.operation_base_urls,
     }
 }
 
@@ -221,6 +227,7 @@ mod wp08d_tests {
             provider_profile_id: profile.to_owned(),
             protocol_adapter_id: adapter.to_owned(),
             base_url: "https://example.test/v1".to_owned(),
+            operation_base_urls: Default::default(),
             credential: CredentialReference {
                 reference: format!("secret://{profile}"),
             },

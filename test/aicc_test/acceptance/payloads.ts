@@ -263,6 +263,7 @@ export function buildExactRequest(args: {
     if (args.cell.input_kinds.includes("image")) requirements = { must_features: ["vision"] };
   }
   if (args.cell.api_type === "embedding.multimodal") {
+    resources.length = 0;
     if (args.cell.input_kinds.length > 0) {
       inputJson.items = args.cell.input_kinds.includes("text")
         ? [{ id: "item-1", text: "pink flower" }]

@@ -36,6 +36,7 @@ import { ProviderScheduler, type ProviderLimits } from "./scheduler.ts";
 import {
   buildFinancialReport,
   CostBudget,
+  exceedsUsdBudget,
   extractFinance,
   type CostReservation,
 } from "./finance.ts";
@@ -120,6 +121,13 @@ type AiMethodResponse = {
   event_ref?: string;
 };
 
+class TaskFailureError extends Error {
+  constructor(message: string, readonly errorCode?: string) {
+    super(message);
+    this.name = "TaskFailureError";
+  }
+}
+
 function compactFailure(value: unknown, depth = 0): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || depth > 4) return undefined;
   const object = value as Record<string, unknown>;
@@ -144,6 +152,27 @@ function failedResponseDiagnostic(response: AiMethodResponse): string {
     event_ref: response.event_ref,
     error: compactFailure(response.result),
   });
+}
+
+function providerErrorCode(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const object = value as Record<string, unknown>;
+  if (typeof object.provider_code === "string" && object.provider_code.trim()) {
+    return object.provider_code.trim();
+  }
+  for (const key of ["detail", "error", "result", "extra", "cause"] as const) {
+    const nested = providerErrorCode(object[key]);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
+function taskFailure(taskId: string, task: Record<string, unknown>): TaskFailureError {
+  const error = task.error;
+  return new TaskFailureError(
+    `provider task ${taskId} ended ${String(task.outcome ?? "Failed")}: ${JSON.stringify(compactFailure(error) ?? {})}`,
+    providerErrorCode(error),
+  );
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -669,6 +698,16 @@ async function waitForTask(
   timeoutMs: number,
 ): Promise<unknown> {
   if (response.status === "failed") {
+    try {
+      const task = taskValue(
+        await taskManager.call("get_task", { task_id: response.task_id }),
+      );
+      if (task.outcome !== "Succeeded" && task.error) {
+        throw taskFailure(response.task_id, task);
+      }
+    } catch (error) {
+      if (error instanceof TaskFailureError) throw error;
+    }
     throw new Error(`AICC returned failed: ${failedResponseDiagnostic(response)}`);
   }
   if (response.status !== "running") return response;
@@ -683,9 +722,7 @@ async function waitForTask(
     };
     if (task.phase === "Terminal") {
       if (task.outcome !== "Succeeded") {
-        throw new Error(
-          `task ${response.task_id} ended ${task.outcome}: ${JSON.stringify(compactFailure(task.error) ?? {})}`,
-        );
+        throw taskFailure(response.task_id, task);
       }
       const output = task.result?.result?.output;
       if (!output || typeof output !== "object" || Array.isArray(output)) {
@@ -714,10 +751,10 @@ function failureClass(error: unknown): FailureClass {
   if (error instanceof JudgeError || message.includes("judge")) return "judge_failed";
   if (message.includes("baseline")) return "baseline_mismatch";
   if (message.includes("artifact") || message.includes("mime")) return "resource_failed";
+  if (error instanceof TaskFailureError || message.includes("provider")) return "provider_protocol_failed";
   if (message.includes("task") || message.includes("timeout") || message.includes("aicc returned failed")) {
     return "task_lifecycle_failed";
   }
-  if (message.includes("provider")) return "provider_protocol_failed";
   return "assertion_failed";
 }
 
@@ -784,10 +821,6 @@ function artifactSources(value: unknown, depth = 0): Array<Record<string, unknow
     ? [{ ...source, _content_type: record.type }]
     : [];
   return [...found, ...Object.values(record).flatMap((child) => artifactSources(child, depth + 1))];
-}
-
-function requiresUploadedFixtures(apiType: string): boolean {
-  return apiType !== "llm" && apiType !== "embedding";
 }
 
 function decodeBase64(value: string): Uint8Array {
@@ -1267,7 +1300,7 @@ async function executeAcceptance(input: {
   if (options.allowRealModelCalls && plannedCalls > options.maxRealCalls) {
     throw new Error(`planned calls ${plannedCalls} exceed max_real_calls ${options.maxRealCalls}`);
   }
-  if (options.allowRealModelCalls && estimatedCost > options.maxCostUsd) {
+  if (options.allowRealModelCalls && exceedsUsdBudget(estimatedCost, options.maxCostUsd)) {
     throw new Error(`estimated cost ${estimatedCost} exceeds max_cost_usd ${options.maxCostUsd}`);
   }
 
@@ -1278,7 +1311,9 @@ async function executeAcceptance(input: {
   let executeRealModelCalls = options.allowRealModelCalls;
   if (executeRealModelCalls && plannedCalls > 0) {
     executeRealModelCalls = await confirmRealModelCalls(options.assumeYes);
-    const uploadFixtures = selectedCells.some((cell) => requiresUploadedFixtures(cell.api_type));
+    const uploadFixtures = selectedCells.some((cell) =>
+      cell.resource_representation === "named_object"
+    );
     if (executeRealModelCalls && uploadFixtures) {
       ndnFixtureService = await startNdnFixtureService({
         gatewayUrl: options.gatewayUrl,
@@ -1623,6 +1658,7 @@ async function executeAcceptance(input: {
             elapsed_ms: Date.now() - started,
             status: errorStatus,
             failure_class: providerRestricted ? "platform_limitation" : failureClass(error),
+            error_code: error instanceof TaskFailureError ? error.errorCode : undefined,
             diagnostic: providerRestricted
               ? `Provider restriction: ${String(error)}`
               : String(error),

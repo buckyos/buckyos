@@ -1,8 +1,8 @@
 {
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
-  "revision_seq": 1,
+  "schema_revision": 1,
+  "revision_seq": 2,
   "catalog_id": "qwen",
   "providers": [
     {
@@ -22,11 +22,20 @@
             "ap-southeast-1",
             "us-east-1",
             "eu-central-1",
-            "ap-northeast-1"
+            "ap-northeast-1",
+            "cn-hongkong"
           ]
         },
         "workspace": { "mode": "required" },
-        "account": { "mode": "unsupported" }
+        "account": { "mode": "unsupported" },
+        "region_base_urls": {
+          "cn-beijing": "https://{workspace}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+          "ap-southeast-1": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+          "us-east-1": "https://{workspace}.us-east-1.maas.aliyuncs.com/compatible-mode/v1",
+          "eu-central-1": "https://{workspace}.eu-central-1.maas.aliyuncs.com/compatible-mode/v1",
+          "ap-northeast-1": "https://{workspace}.ap-northeast-1.maas.aliyuncs.com/compatible-mode/v1",
+          "cn-hongkong": "https://cn-hongkong.dashscope.aliyuncs.com/compatible-mode/v1"
+        }
       },
       "ui_hints": {
         "credential_label": "DashScope API key",
@@ -41,7 +50,8 @@
               "ap-southeast-1",
               "us-east-1",
               "eu-central-1",
-              "ap-northeast-1"
+              "ap-northeast-1",
+              "cn-hongkong"
             ]
           },
           "workspace": { "mode": "required" },

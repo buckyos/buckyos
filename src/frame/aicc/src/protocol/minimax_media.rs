@@ -1,10 +1,10 @@
 use super::minimax_messages::validate_minimax_response;
 use super::{
     AdapterDescriptor, AdapterStatus, CodecCall, CodecContext, CodecRegistration, CredentialKind,
-    ExecutionMode, HttpBody, HttpRequest, HttpResponse, MaterializedResource, NativeTaskCodec,
-    NativeTaskHandle, NativeTaskInput, NativeTaskOperation, NativeTaskOutput, NativeTaskState,
-    OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolErrorKind,
-    ProtocolExecution, ProtocolOutput, ProtocolResultValue,
+    ExecutionMode, HttpBody, HttpRequest, HttpResponse, MaterializedResource, MultipartBody,
+    MultipartPart, NativeTaskCodec, NativeTaskHandle, NativeTaskInput, NativeTaskOperation,
+    NativeTaskOutput, NativeTaskState, OperationBinding, OperationCodec, OperationDescriptor,
+    ProtocolError, ProtocolErrorKind, ProtocolExecution, ProtocolOutput, ProtocolResultValue,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const T2A_OPERATION_ID: &str = "t2a.create";
+const SPEECH_TO_TEXT_OPERATION_ID: &str = "speech_to_text.create";
 pub(crate) const MINIMAX_MEDIA_ADAPTER_ID: &str = "minimax-media";
 const IMAGE_OPERATION_ID: &str = "image_generation.create";
 const VIDEO_OPERATION_ID: &str = "video_generation.create";
@@ -26,6 +27,10 @@ const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 pub(super) fn minimax_media_registration() -> (Vec<OperationDescriptor>, CodecRegistration) {
     let t2a = immediate_operation(T2A_OPERATION_ID, &[ApiType::AudioTextToSpeech]);
+    let speech_to_text = immediate_operation(
+        SPEECH_TO_TEXT_OPERATION_ID,
+        &[ApiType::AudioSpeechRecognition],
+    );
     let image = immediate_operation(
         IMAGE_OPERATION_ID,
         &[ApiType::ImageTextToImage, ApiType::ImageImageToImage],
@@ -44,6 +49,7 @@ pub(super) fn minimax_media_registration() -> (Vec<OperationDescriptor>, CodecRe
     };
     let operation_codecs = [
         (t2a.clone(), ApiType::AudioTextToSpeech),
+        (speech_to_text.clone(), ApiType::AudioSpeechRecognition),
         (image.clone(), ApiType::ImageTextToImage),
         (image.clone(), ApiType::ImageImageToImage),
         (music.clone(), ApiType::AudioMusic),
@@ -66,7 +72,7 @@ pub(super) fn minimax_media_registration() -> (Vec<OperationDescriptor>, CodecRe
         })
         .collect();
     (
-        vec![t2a, image, music, video],
+        vec![t2a, speech_to_text, image, music, video],
         CodecRegistration {
             operation_codecs,
             native_task_codecs,
@@ -132,6 +138,69 @@ impl OperationCodec for MiniMaxImmediateCodec {
     }
 
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
+        if let (AiccCall::AudioSpeechRecognition(request), ApiType::AudioSpeechRecognition) =
+            (&call.input.canonical_request, self.api_type)
+        {
+            require_only_model(&call.input.resolved_parameters)?;
+            let model = provider_model_id(&call.input.resolved_parameters)?;
+            let mut resource = call.context.materialized_resource(&request.audio)?.clone();
+            let file_name = resource
+                .file_name
+                .take()
+                .unwrap_or_else(|| default_audio_file_name(&resource.mime).to_owned());
+            if request.output_formats.as_ref().is_some_and(|formats| {
+                formats
+                    .iter()
+                    .any(|format| !matches!(format.as_str(), "json" | "verbose_json"))
+            }) {
+                return Err(ProtocolError::new(
+                    ProtocolErrorKind::UnsupportedOperation,
+                    "MiniMax speech-to-text canonical output supports JSON only",
+                ));
+            }
+            let response_format =
+                if request.diarization == Some(true) || request.timestamps.is_some() {
+                    "verbose_json"
+                } else {
+                    "json"
+                };
+            let mut body = MultipartBody::new(8, call.context.limits.max_request_bytes)?;
+            body.push(MultipartPart::bytes("model", model))?;
+            body.push(MultipartPart::file(
+                "file",
+                resource.bytes,
+                file_name,
+                resource.mime,
+            ))?;
+            body.push(MultipartPart::bytes("response_format", response_format))?;
+            body.push(MultipartPart::bytes("stream", "false"))?;
+            if let Some(level) = &request.timestamps {
+                let level = match level.as_str() {
+                    "segment" => "sentence",
+                    "word" | "both" => "word",
+                    _ => {
+                        return Err(ProtocolError::invalid_request(
+                            "MiniMax transcription timestamps must be segment, word, or both",
+                        ));
+                    }
+                };
+                body.push(MultipartPart::bytes("timestamp_level", level))?;
+            }
+            let mut encoded = media_multipart_request(call.context, "/v1/speech_to_text", body)?;
+            if let Some(language) = request
+                .language
+                .as_deref()
+                .filter(|value| !value.is_empty())
+            {
+                encoded.headers.insert(
+                    reqwest::header::HeaderName::from_static("language"),
+                    HeaderValue::from_str(language).map_err(|_| {
+                        ProtocolError::invalid_request("MiniMax transcription language is invalid")
+                    })?,
+                );
+            }
+            return Ok(encoded);
+        }
         if self.api_type == ApiType::AudioTextToSpeech {
             require_parameters(&call.input.resolved_parameters, &["voice_setting"])?;
         } else {
@@ -239,6 +308,7 @@ impl OperationCodec for MiniMaxImmediateCodec {
         let value: Value = response.json(self.descriptor.max_response_bytes)?;
         let output = match self.api_type {
             ApiType::AudioTextToSpeech => decode_hex_audio(&value, "speech")?,
+            ApiType::AudioSpeechRecognition => decode_speech_to_text(&value)?,
             ApiType::AudioMusic => decode_hex_audio(&value, "music")?,
             ApiType::ImageTextToImage | ApiType::ImageImageToImage => decode_images(&value)?,
             _ => {
@@ -582,6 +652,91 @@ fn media_json_request(
     Ok(request)
 }
 
+fn media_multipart_request(
+    context: &CodecContext,
+    path: &str,
+    body: MultipartBody,
+) -> ProtocolResultValue<HttpRequest> {
+    context.validate()?;
+    let mut url = Url::parse(&context.base_url)
+        .map_err(|_| ProtocolError::invalid_configuration("MiniMax base URL is invalid"))?;
+    url.set_path(path);
+    url.set_query(None);
+    let mut request = HttpRequest::new(Method::POST, url.to_string());
+    request.body = HttpBody::Multipart(body);
+    apply_media_credential(&mut request.headers, context)?;
+    request.timeout = Some(context.limits.request_timeout);
+    request.max_request_bytes = Some(context.limits.max_request_bytes);
+    request.max_response_bytes = Some(context.limits.max_response_bytes);
+    Ok(request)
+}
+
+fn default_audio_file_name(mime: &str) -> &'static str {
+    match mime.split(';').next().unwrap_or(mime).trim() {
+        "audio/mpeg" | "audio/mp3" => "audio-input.mp3",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "audio-input.wav",
+        "audio/mp4" | "audio/x-m4a" => "audio-input.m4a",
+        "audio/ogg" => "audio-input.ogg",
+        "audio/flac" | "audio/x-flac" => "audio-input.flac",
+        "audio/aiff" => "audio-input.aiff",
+        "audio/aac" => "audio-input.aac",
+        "audio/opus" => "audio-input.opus",
+        _ => "audio-input.bin",
+    }
+}
+
+fn decode_speech_to_text(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
+    let text = value
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ProtocolError::invalid_response("MiniMax ASR response is missing text"))?;
+    let segments = value
+        .get("segments")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, segment)| {
+                    json!({
+                        "id": segment.get("id").map(value_string).unwrap_or_else(|| index.to_string()),
+                        "start_seconds": segment.get("start").or_else(|| segment.get("start_time")).and_then(Value::as_f64).unwrap_or(0.0),
+                        "end_seconds": segment.get("end").or_else(|| segment.get("end_time")).and_then(Value::as_f64).unwrap_or(0.0),
+                        "text": segment.get("text").and_then(Value::as_str).unwrap_or(""),
+                        "speaker": segment.get("speaker").cloned().unwrap_or(Value::Null),
+                        "confidence": segment.get("confidence").cloned().unwrap_or(Value::Null)
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let duration = value.get("duration").and_then(Value::as_f64);
+    Ok(ProtocolOutput {
+        value: json!({
+            "text": text,
+            "segments": segments,
+            "artifacts": {},
+            "diagnostic": {
+                "duration": duration,
+                "n_speakers": value.get("n_speakers"),
+                "trace_id": value.get("trace_id")
+            }
+        }),
+        usage: duration.map(|audio_seconds| AiUsage {
+            audio_seconds: Some(audio_seconds),
+            ..AiUsage::request_units(1)
+        }),
+        artifacts: Vec::new(),
+    })
+}
+
+fn value_string(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        other => other.to_string(),
+    }
+}
+
 fn apply_media_credential(
     headers: &mut HeaderMap,
     context: &CodecContext,
@@ -716,5 +871,22 @@ fn audio_mime(format: &str) -> &'static str {
         "flac" => "audio/flac",
         "pcm" => "audio/pcm",
         _ => "audio/mpeg",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_speech_to_text;
+    use serde_json::json;
+
+    #[test]
+    fn speech_to_text_normalizes_numeric_segment_ids() {
+        let output = decode_speech_to_text(&json!({
+            "text": "hello",
+            "duration": 1.0,
+            "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "hello"}]
+        }))
+        .unwrap();
+        assert_eq!(output.value["segments"][0]["id"], "0");
     }
 }

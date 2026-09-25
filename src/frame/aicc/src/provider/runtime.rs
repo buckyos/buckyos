@@ -372,6 +372,7 @@ impl ProviderRuntimeManager {
                 region: draft.region.as_deref(),
                 workspace: draft.workspace.as_deref(),
                 account: draft.account.as_deref(),
+                operation_base_urls: Some(&draft.operation_base_urls),
             })
             .map_err(|error| {
                 ProviderDraftValidationError::from_provider_error(
@@ -386,14 +387,27 @@ impl ProviderRuntimeManager {
             )
         })?;
         let profile = Arc::new(
-            profile
-                .with_credential(draft.auth.credential_kind())
-                .map_err(|error| {
-                    ProviderDraftValidationError::from_provider_error(
-                        ProviderDraftValidationStage::Authentication,
-                        &error,
-                    )
-                })?,
+            if profile.accepts_any_adapter {
+                let adapter = self.codecs.adapter(&draft.protocol_adapter_id).ok_or(
+                    ProviderDraftValidationError {
+                        stage: ProviderDraftValidationStage::Protocol,
+                        kind: ProviderRefreshFailure::UnknownDependency,
+                    },
+                )?;
+                crate::provider::builtin::custom_profile_for_adapter(
+                    profile.as_ref(),
+                    adapter,
+                    draft.auth.credential_kind(),
+                )
+            } else {
+                profile.with_credential(draft.auth.credential_kind())
+            }
+            .map_err(|error| {
+                ProviderDraftValidationError::from_provider_error(
+                    ProviderDraftValidationStage::Authentication,
+                    &error,
+                )
+            })?,
         );
         let (credential_reference, credential) = match &draft.auth {
             ProviderAuthConfig::ApiKey {
@@ -460,6 +474,7 @@ impl ProviderRuntimeManager {
             provider_profile_id: draft.provider_profile_id.clone(),
             protocol_adapter_id: draft.protocol_adapter_id.clone(),
             base_url: connection.base_url.clone(),
+            operation_base_urls: connection.operation_base_urls.clone(),
             credential: credential_reference,
             credential_kind: draft.auth.credential_kind(),
             provider_rules_id: draft.provider_rules_id.clone(),

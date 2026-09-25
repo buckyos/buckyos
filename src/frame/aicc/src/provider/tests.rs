@@ -2,7 +2,9 @@ use super::*;
 use crate::catalog::{
     CatalogBuildOptions, CatalogDocuments, ModelDriverCatalog, ProviderRulesCatalog,
 };
-use crate::model::{LogicalModelDefinition, ModelRegistry, MountMode, RegistryLayers};
+use crate::model::{
+    LogicalModelDefinition, ModelRegistry, MountMode, RegistryLayers, UNCLASSIFIED_MODEL_DRIVER_ID,
+};
 use crate::protocol::{
     AdapterDescriptor, AdapterStatus, CodecCall, ExecutionMode, HttpRequest, HttpResponse,
     OperationBinding, OperationCodec, OperationDescriptor, ProtocolError, ProtocolExecution,
@@ -78,7 +80,9 @@ fn provider_connection_resolves_workspace_and_default_base_url() {
             .with_allowed_values(["cn-beijing", "cn-shanghai"]),
         workspace: ProviderFieldSchema::required(),
         account: ProviderFieldSchema::optional(),
+        policy_region: None,
         region_base_urls: BTreeMap::new(),
+        operation_base_urls: BTreeMap::new(),
     };
     let resolved = contract
         .resolve(ProviderConnectionInput {
@@ -105,6 +109,19 @@ fn provider_connection_resolves_workspace_and_default_base_url() {
         .unwrap();
     assert_eq!(overridden.base_url, "https://gateway.example/v1");
     assert_eq!(overridden.region.as_deref(), Some("cn-shanghai"));
+
+    let unknown = contract
+        .resolve(ProviderConnectionInput {
+            region: Some("unknown"),
+            workspace: Some("workspace-1"),
+            ..ProviderConnectionInput::default()
+        })
+        .unwrap();
+    assert_eq!(
+        unknown.base_url,
+        "https://workspace-1.cn-beijing.maas.example/compatible-mode/v1"
+    );
+    assert_eq!(unknown.region.as_deref(), Some("unknown"));
 }
 
 #[test]
@@ -114,7 +131,9 @@ fn provider_connection_rejects_missing_or_unsupported_fields() {
         region: ProviderFieldSchema::unsupported(),
         workspace: ProviderFieldSchema::required(),
         account: ProviderFieldSchema::unsupported(),
+        policy_region: None,
         region_base_urls: BTreeMap::new(),
+        operation_base_urls: BTreeMap::new(),
     };
     assert!(matches!(
         contract.resolve(ProviderConnectionInput::default()),
@@ -297,6 +316,7 @@ fn instance(name: &str) -> ProviderInstanceConfig {
         provider_profile_id: "openai".into(),
         protocol_adapter_id: "openai-responses".into(),
         base_url: "https://api.example.test/v1/".into(),
+        operation_base_urls: BTreeMap::new(),
         credential: CredentialReference {
             reference: "system-config://secrets/aicc/openai".into(),
         },
@@ -383,7 +403,10 @@ fn catalog_with_revision(revision_seq: u64, context_tokens: u64) -> Arc<CatalogS
             "id": "gpt-test",
             "operations": {"llm": "responses.create"}
         }],
-        "model_pricing": [{"id": "gpt-test", "pricing": {"currency": "USD", "input_token": 2.0}}],
+        "model_pricing": [{
+            "match": {"provider_model_id": "gpt-test", "region": "global"},
+            "pricing": {"currency": "USD", "input_token": 2.0}
+        }],
         "patterns": [],
         "variants": []
     }))
@@ -502,6 +525,10 @@ async fn machine_discovery_failure_uses_static_fallback_as_degraded() {
 }
 
 fn routed_catalog() -> Arc<CatalogSnapshot> {
+    routed_catalog_with_origin_mappings(true)
+}
+
+fn routed_catalog_with_origin_mappings(include_origin_mappings: bool) -> Arc<CatalogSnapshot> {
     let driver = |model_driver_id: &str| -> ModelDriverCatalog {
         serde_json::from_value(serde_json::json!({
             "format": "buckyos.aicc.model-driver-catalog",
@@ -521,7 +548,7 @@ fn routed_catalog() -> Arc<CatalogSnapshot> {
         }))
         .unwrap()
     };
-    let provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
+    let mut provider_rules: ProviderRulesCatalog = serde_json::from_value(serde_json::json!({
         "format": "buckyos.aicc.provider-rules-catalog",
         "schema_version": 1,
         "schema_revision": 0,
@@ -556,6 +583,10 @@ fn routed_catalog() -> Arc<CatalogSnapshot> {
         "variants": []
     }))
     .unwrap();
+    if !include_origin_mappings {
+        provider_rules.origin_provider_aliases.clear();
+        provider_rules.origin_mappings.clear();
+    }
     Arc::new(
         CatalogSnapshot::build(
             7,
@@ -636,7 +667,9 @@ fn connection_contract() -> ProviderConnectionContract {
         region: ProviderFieldSchema::unsupported(),
         workspace: ProviderFieldSchema::required(),
         account: ProviderFieldSchema::optional(),
+        policy_region: None,
         region_base_urls: BTreeMap::new(),
+        operation_base_urls: BTreeMap::new(),
     }
 }
 
@@ -647,6 +680,7 @@ fn draft(auth: ProviderAuthConfig) -> ProviderDraftConfig {
         protocol_adapter_id: "openai-responses".into(),
         provider_rules_id: None,
         base_url: None,
+        operation_base_urls: BTreeMap::new(),
         region: None,
         workspace: Some("workspace-1".into()),
         account: None,
@@ -698,6 +732,20 @@ fn inventory_intersects_capabilities_and_uses_dynamic_pricing() {
     );
     assert_eq!(model.provider_rules_revision, Some(7));
     assert!(!inventory.provider_model_list_fingerprint.is_empty());
+}
+
+#[test]
+fn inventory_pricing_matches_the_selected_endpoint_region() {
+    let mut provider = instance("primary");
+    provider.region = Some("global".into());
+    let mut discovered = discovery("gpt-test");
+    discovered.models[0].pricing = None;
+
+    let inventory =
+        InventoryBuilder::build(&profile(), &provider, discovered, &catalog(), &codecs()).unwrap();
+    let pricing = inventory.models[0].pricing.as_ref().unwrap();
+    assert_eq!(pricing.source, PricingSource::ProviderRules);
+    assert_eq!(pricing.value.input_token, Some(2.0));
 }
 
 #[test]
@@ -1156,6 +1204,37 @@ fn unmatched_discovered_model_keeps_discovery_api_type_when_defaults_are_empty()
 }
 
 #[test]
+fn conservative_fallback_has_no_model_driver_variants_or_mounts() {
+    let mut instance = instance("custom");
+    instance.provider_rules_id = Some("openrouter".into());
+    let fallback_catalog = routed_catalog_with_origin_mappings(false);
+    let inventory = InventoryBuilder::build(
+        &profile(),
+        &instance,
+        discovery("unknown-model"),
+        &fallback_catalog,
+        &codecs(),
+    )
+    .unwrap();
+
+    assert_eq!(inventory.models.len(), 1);
+    assert_eq!(
+        inventory.models[0].model_driver_id,
+        UNCLASSIFIED_MODEL_DRIVER_ID
+    );
+    assert!(inventory.models[0].logical_mounts.is_empty());
+    assert!(inventory.models[0].variants.is_empty());
+    assert_eq!(inventory.models[0].api_types, vec![ApiType::Llm]);
+    ModelRegistry::build(
+        &fallback_catalog,
+        &[inventory.as_model_inventory()],
+        Vec::new(),
+        RegistryLayers::default(),
+    )
+    .unwrap();
+}
+
+#[test]
 fn inventory_without_remote_revision_uses_model_fingerprint() {
     let catalog = catalog();
     let mut discovered = discovery("gpt-test");
@@ -1485,6 +1564,7 @@ async fn disabled_auto_sync_keeps_initial_discovery_without_periodic_task() {
 fn instance_rules_exclude_models_before_inventory_publication() {
     let mut config = instance("filtered");
     config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        policy_region: None,
         exclude_models: BTreeSet::from(["gpt-test".to_string()]),
         origin_model_overrides: BTreeMap::new(),
     });
@@ -1503,6 +1583,7 @@ fn instance_rules_exclude_models_before_inventory_publication() {
 fn instance_origin_override_maps_endpoint_ids_without_global_provider_rules() {
     let mut config = instance("doubao-endpoint");
     config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        policy_region: None,
         exclude_models: BTreeSet::new(),
         origin_model_overrides: BTreeMap::from([("ep-user-specific".into(), "gpt-test".into())]),
     });

@@ -100,11 +100,13 @@ mod tests {
             .base_url,
             known.connection.region_base_urls["china"]
         );
-        assert!(resolve_minimax_connection(ProviderConnectionInput {
+        let unknown = resolve_minimax_connection(ProviderConnectionInput {
             region: Some("unknown"),
             ..Default::default()
         })
-        .is_err());
+        .unwrap();
+        assert_eq!(unknown.base_url, known.base_url);
+        assert_eq!(unknown.region.as_deref(), Some("unknown"));
         assert_eq!(
             known.provider_rules_id.as_deref(),
             Some(MINIMAX_PROVIDER_PROFILE_ID)
@@ -128,7 +130,7 @@ mod tests {
             adapter.base_adapter_id.as_deref(),
             Some(CLAUDE_MESSAGES_ADAPTER_ID)
         );
-        assert_eq!(registration.operation_codecs.len(), 5);
+        assert_eq!(registration.operation_codecs.len(), 8);
         assert_eq!(registration.native_task_codecs.len(), 2);
         let builtin = minimax_catalog_files()
             .into_iter()

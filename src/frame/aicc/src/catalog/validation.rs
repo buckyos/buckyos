@@ -273,6 +273,13 @@ pub(super) fn validate_provider_rules(
             reason: "static_inventory_models requires schema_revision 1".to_owned(),
         });
     }
+    if catalog.schema_revision == 0 && !catalog.access_rules.is_empty() {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: catalog.provider_profile_id.clone(),
+            field: "schema_revision",
+            reason: "access_rules requires schema_revision 1".to_owned(),
+        });
+    }
     validate_nonempty_strings(
         CatalogKind::ProviderRules,
         &catalog.provider_profile_id,
@@ -702,12 +709,14 @@ pub(super) fn validate_known_provider_catalog(
     for provider in &catalog.providers {
         if catalog.schema_revision == 0
             && (!provider.credential_variants.is_empty()
-                || !provider.connection.region_base_urls.is_empty())
+                || !provider.connection.region_base_urls.is_empty()
+                || !provider.connection.operation_base_urls.is_empty()
+                || provider.connection.policy_region.is_some())
         {
             return Err(CatalogBuildError::InvalidValue {
                 owner: catalog.catalog_id.clone(),
                 field: "schema_revision",
-                reason: "credential_variants and region_base_urls require schema_revision 1"
+                reason: "credential_variants, region_base_urls, operation_base_urls, and policy_region require schema_revision 1"
                     .to_owned(),
             });
         }
@@ -826,6 +835,22 @@ fn validate_provider_configuration(
                 owner: owner.to_owned(),
                 field: "providers.connection.region_base_urls",
                 reason: "region base URLs must use http or https".to_owned(),
+            });
+        }
+    }
+    for (operation, base_url) in &provider.connection.operation_base_urls {
+        if operation.trim().is_empty() {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "providers.connection.operation_base_urls",
+                reason: "operation IDs must be non-empty".to_owned(),
+            });
+        }
+        if !base_url.starts_with("https://") && !base_url.starts_with("http://") {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "providers.connection.operation_base_urls",
+                reason: "operation base URLs must use http or https".to_owned(),
             });
         }
     }

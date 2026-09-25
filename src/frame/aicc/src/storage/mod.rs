@@ -21,14 +21,26 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Once;
 
 const SERVICE_NAME: &str = "aicc";
-const STORAGE_SCHEMA_VERSION: i64 = 1;
+const STORAGE_SCHEMA_VERSION: i64 = 2;
 const INVENTORY_SCHEMA_VERSION: i64 = 1;
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 1_000;
 static INSTALL_DRIVERS: Once = Once::new();
 
 const SCHEMA_META: &str = "CREATE TABLE IF NOT EXISTS aicc_schema_meta (schema_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)";
-const MIGRATIONS: &[(i64, &str)] = &[(1, SCHEMA)];
+const MIGRATIONS: &[(i64, &str)] = &[(1, SCHEMA), (2, ROUTE_TRACE_FILTER_COLUMNS)];
+
+const ROUTE_TRACE_FILTER_COLUMNS: &str = r#"
+ALTER TABLE aicc_route_trace_event ADD COLUMN fallback_applied INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE aicc_route_trace_event ADD COLUMN warning_count BIGINT NOT NULL DEFAULT 0;
+UPDATE aicc_route_trace_event SET fallback_applied=1
+ WHERE route_trace_json LIKE '%"fallback_applied":true%';
+UPDATE aicc_route_trace_event SET warning_count=1
+ WHERE route_trace_json LIKE '%"warnings":[%'
+   AND route_trace_json NOT LIKE '%"warnings":[]%';
+CREATE INDEX idx_aicc_route_trace_event_fallback_time ON aicc_route_trace_event(tenant_id, fallback_applied, created_at_ms);
+CREATE INDEX idx_aicc_route_trace_event_warning_time ON aicc_route_trace_event(tenant_id, warning_count, created_at_ms);
+"#;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS aicc_schema_meta (
@@ -1163,10 +1175,25 @@ impl AiccStorage {
                 "trace identity is incomplete".into(),
             ));
         }
-        let sql = self.sql("INSERT INTO aicc_route_trace_event
+        let fallback_applied = r
+            .trace
+            .route_trace_json
+            .get("fallback_applied")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let warning_count = r
+            .trace
+            .route_trace_json
+            .get("warnings")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let sql = self.sql(
+            "INSERT INTO aicc_route_trace_event
           (trace_id,tenant_id,caller_app_id,task_id,request_id,route_id,provider_trace_id,
            request_model,selected_exact_model,provider_instance_name,api_type,scheduler_profile,
-           outcome,route_trace_json,created_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trace_id) DO NOTHING");
+           outcome,route_trace_json,created_at_ms,fallback_applied,warning_count)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trace_id) DO NOTHING",
+        );
         sqlx::query(&sql)
             .bind(&r.trace.trace_id)
             .bind(&r.trace.tenant_id)
@@ -1183,6 +1210,8 @@ impl AiccStorage {
             .bind(&r.outcome)
             .bind(serde_json::to_string(&r.trace.route_trace_json)?)
             .bind(r.trace.created_at_ms)
+            .bind(i64::from(fallback_applied))
+            .bind(i64::try_from(warning_count).unwrap_or(i64::MAX))
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -1721,12 +1750,12 @@ fn usage_query(
         .push_bind(end);
     push_in_clause(&mut query, "tenant_id", &filters.tenant_ids);
     push_in_clause(&mut query, "user_id", &filters.user_ids);
-    push_in_clause(&mut query, "caller_app_id", &filters.caller_app_ids);
-    push_like_clause(
-        &mut query,
-        "caller_app_id",
-        filters.caller_app_query.as_deref(),
-    );
+    push_caller_app_filter(&mut query, &filters.caller_app_ids);
+    if let Some(value) = filters.caller_app_query.as_deref() {
+        query
+            .push(" AND LOWER(COALESCE(NULLIF(caller_app_id,''),'system')) LIKE ")
+            .push_bind(format!("%{}%", value.to_lowercase()));
+    }
     push_in_clause(&mut query, "request_model", &filters.request_models);
     push_in_clause(&mut query, "provider_model", &filters.provider_models);
     push_like_clause(
@@ -1789,8 +1818,21 @@ fn route_trace_query(
         &req.selected_exact_models,
     );
     push_in_clause(&mut query, "scheduler_profile", &req.scheduler_profiles);
-    if let Some(outcome) = &req.outcome {
-        query.push(" AND outcome=").push_bind(outcome.clone());
+    if let Some(outcome) = req.outcome.as_deref() {
+        match outcome {
+            "fallback" => {
+                query.push(" AND fallback_applied=1");
+            }
+            "warning" => {
+                query.push(" AND warning_count>0");
+            }
+            "failed" => {
+                query.push(" AND outcome IN ('failed','cancelled')");
+            }
+            value => {
+                query.push(" AND outcome=").push_bind(value.to_owned());
+            }
+        }
     }
     if let Some(search) = req.query.as_deref() {
         let search = format!("%{}%", search.to_lowercase());
@@ -1802,8 +1844,12 @@ fn route_trace_query(
             "request_id",
             "route_id",
             "provider_trace_id",
+            "request_model",
             "selected_exact_model",
             "provider_instance_name",
+            "api_type",
+            "scheduler_profile",
+            "outcome",
         ] {
             query
                 .push(" OR LOWER(COALESCE(")
@@ -1824,6 +1870,34 @@ fn route_trace_query(
             .push("))");
     }
     query
+}
+
+fn push_caller_app_filter(query: &mut QueryBuilder<'_, Any>, values: &[String]) {
+    if values.is_empty() {
+        return;
+    }
+    let includes_system = values.iter().any(|value| value == "system");
+    let explicit = values
+        .iter()
+        .filter(|value| value.as_str() != "system")
+        .cloned()
+        .collect::<Vec<_>>();
+    query.push(" AND (");
+    if includes_system {
+        query.push("caller_app_id IS NULL OR caller_app_id='' ");
+        if !explicit.is_empty() {
+            query.push("OR ");
+        }
+    }
+    if !explicit.is_empty() {
+        query.push("caller_app_id IN (");
+        let mut separated = query.separated(",");
+        for value in explicit {
+            separated.push_bind(value);
+        }
+        separated.push_unseparated(")");
+    }
+    query.push(")");
 }
 
 #[derive(Default)]
@@ -2885,6 +2959,116 @@ mod tests {
             db.write_provider_completion(invalid).await,
             Err(StorageError::InvalidRecord(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn usage_system_app_filters_match_missing_caller_app_id() {
+        let db = db().await;
+        let mut system = completion("system", "task-system", "idem-system", 10_000);
+        system.caller_app_id = None;
+        db.write_provider_completion(system).await.unwrap();
+        db.write_provider_completion(completion("app", "task-app", "idem-app", 10_001))
+            .await
+            .unwrap();
+
+        for filters in [
+            UsageQueryFilters {
+                caller_app_ids: vec!["system".into()],
+                ..UsageQueryFilters::default()
+            },
+            UsageQueryFilters {
+                caller_app_query: Some("SYSTEM".into()),
+                ..UsageQueryFilters::default()
+            },
+        ] {
+            let response = db
+                .query_usage(
+                    &QueryUsageRequest {
+                        time_range: UsageQueryTimeRange::Explicit {
+                            start_time_ms: 1,
+                            end_time_ms: 20_000,
+                        },
+                        filters,
+                        group_by: vec![],
+                        time_bucket: None,
+                        output_mode: UsageQueryOutputMode::Events,
+                        limit: None,
+                        cursor: None,
+                    },
+                    20_000,
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.total.total_requests, 1);
+            assert_eq!(response.events[0].event_id, "system");
+        }
+    }
+
+    #[tokio::test]
+    async fn route_trace_filters_are_applied_before_cursor_pagination() {
+        let db = db().await;
+        for (id, at, fallback, warnings, outcome) in [
+            ("fallback-new", 400, true, vec!["degraded"], "succeeded"),
+            ("fallback-old", 300, true, vec![], "succeeded"),
+            ("warning", 200, false, vec!["slow"], "succeeded"),
+            ("failed", 100, false, vec![], "failed"),
+        ] {
+            db.write_route_trace(&RouteTraceRecord {
+                trace: AiccRouteTraceEvent {
+                    trace_id: id.into(),
+                    tenant_id: "tenant-a".into(),
+                    caller_app_id: Some("app-a".into()),
+                    task_id: format!("task-{id}"),
+                    request_model: "llm.chat".into(),
+                    selected_exact_model: Some("gpt-5@openai-primary".into()),
+                    provider_instance_name: Some("openai-primary".into()),
+                    api_type: "llm".into(),
+                    route_trace_json: json!({
+                        "requested_model": "llm.chat",
+                        "fallback_applied": fallback,
+                        "warnings": warnings,
+                        "ranked_candidates": []
+                    }),
+                    created_at_ms: at,
+                },
+                request_id: Some(format!("request-{id}")),
+                route_id: None,
+                provider_trace_id: None,
+                scheduler_profile: Some("balanced".into()),
+                outcome: Some(outcome.into()),
+            })
+            .await
+            .unwrap();
+        }
+
+        let mut fallback = QueryRouteTraceRequest {
+            limit: Some(1),
+            outcome: Some("fallback".into()),
+            ..QueryRouteTraceRequest::default()
+        };
+        let first = db.query_route_traces("tenant-a", &fallback).await.unwrap();
+        assert_eq!(first.total_count, Some(2));
+        assert_eq!(first.traces[0]["trace_id"], "fallback-new");
+        assert!(first.next_cursor.is_some());
+        fallback.cursor = first.next_cursor;
+        let second = db.query_route_traces("tenant-a", &fallback).await.unwrap();
+        assert_eq!(second.traces[0]["trace_id"], "fallback-old");
+        assert!(second.next_cursor.is_none());
+
+        for (outcome, expected) in [("warning", 2), ("failed", 1)] {
+            let response = db
+                .query_route_traces(
+                    "tenant-a",
+                    &QueryRouteTraceRequest {
+                        outcome: Some(outcome.into()),
+                        ..QueryRouteTraceRequest::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.total_count, Some(expected));
+            assert_eq!(response.traces.len(), expected as usize);
+        }
     }
 
     #[tokio::test]

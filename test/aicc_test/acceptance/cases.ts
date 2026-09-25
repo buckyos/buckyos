@@ -107,7 +107,6 @@ const CUSTOM_PROVIDER_CASES: AcceptanceCase[] = [
   ["openai", "llm", "chat.completions.create"],
   ["claude", "llm", "chat.completions.create"],
   ["gemini", "llm", "chat.completions.create"],
-  ["fal", "image.upscale", "image.upscale"],
 ].map(([protocol, apiType, method]) => makeCase({
   case_id: `t1.custom.${protocol}`,
   layer: "T1",

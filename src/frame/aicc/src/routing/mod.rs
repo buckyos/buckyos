@@ -565,6 +565,12 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
             let exact_model = candidate.model.exact_model.as_str().to_owned();
             let provider = candidate.model.identity.provider_instance_name.clone();
             let mut reasons = hard_filter_model(request, &candidate.model, &directory_disable);
+            if candidate.provider_weight == 0.0 {
+                reasons.push(filter_reason(
+                    "provider_weight_zero",
+                    "provider is disabled by its routing weight",
+                ));
+            }
             let state = self.runtime.get(&exact_model);
             if let Some(state) = state {
                 hard_filter_runtime(
@@ -1714,6 +1720,35 @@ mod tests {
         assert_eq!(decision.selected.exact_model, "cheap@cloud-a");
         assert_eq!(decision.fallback_candidates.len(), 2);
         assert_eq!(decision.fallback_candidates[1].exact_model, "local@local");
+    }
+
+    #[test]
+    fn zero_provider_weight_is_a_hard_filter() {
+        let registry = registry(AiccSchedulerProfile::Balanced)
+            .with_session_overlay(&AiccRouteOverlay {
+                provider_weights: BTreeMap::from([
+                    ("cloud-a".to_owned(), 0.0),
+                    ("cloud-b".to_owned(), 1.0),
+                ]),
+                ..AiccRouteOverlay::default()
+            })
+            .unwrap();
+        let decision = Router::new(
+            &registry,
+            &engine(&RoutingPolicyPatch::default()),
+            &runtime(),
+        )
+        .route(&request("llm.family"))
+        .unwrap();
+
+        assert_eq!(decision.selected.provider_instance_name, "cloud-b");
+        assert!(decision.trace.filtered_candidates.iter().any(|candidate| {
+            candidate.provider_instance_name == "cloud-a"
+                && candidate
+                    .reasons
+                    .iter()
+                    .any(|reason| reason.code == "provider_weight_zero")
+        }));
     }
 
     #[test]

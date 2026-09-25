@@ -6,17 +6,22 @@ export const wizardDraftSchema = z.object({
   provider_profile_id: z.string().trim().min(1).max(64).nullable(),
   display_name: z.string().trim().max(80),
   base_url: z.string().trim(),
+  operation_base_urls: z.record(z.string(), z.string()),
   protocol_family_id: z.string().nullable(),
   protocol_adapter_id: z.string().optional(),
   region: z.string().optional(),
   workspace: z.string().optional(),
   account: z.string().optional(),
+  policy_region: z.string().optional(),
   auth_mode: z.enum(['api_key', 'dynamic_login']),
   api_key: z.string(),
   auto_sync_models: z.boolean(),
 }).superRefine((draft, context) => {
   if (!draft.provider_profile_id) return
   if (!draft.base_url) context.addIssue({ code: 'custom', path: ['base_url'], message: 'Base URL is required' })
+  for (const [operation, url] of Object.entries(draft.operation_base_urls)) {
+    if (!url.trim()) context.addIssue({ code: 'custom', path: ['operation_base_urls', operation], message: 'Operation Base URL is required' })
+  }
   if (draft.provider_profile_id === 'custom' && !draft.protocol_family_id) {
     context.addIssue({ code: 'custom', path: ['protocol_family_id'], message: 'Protocol family is required' })
   }

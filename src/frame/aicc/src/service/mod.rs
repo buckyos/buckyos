@@ -832,6 +832,7 @@ fn validate_request(request: &ProviderAddRequest) -> ProviderValidateRequest {
         protocol_family_id: request.protocol_family_id.clone(),
         protocol_adapter_id: request.protocol_adapter_id.clone(),
         base_url: request.base_url.clone(),
+        operation_base_urls: request.operation_base_urls.clone(),
         credentials: request.credentials.clone(),
         region: request.region.clone(),
         workspace: request.workspace.clone(),
@@ -853,6 +854,7 @@ fn validate_settings_provider(provider: &ProviderSettings) -> ProviderValidateRe
         protocol_family_id: provider.protocol_family_id.clone(),
         protocol_adapter_id: Some(provider.protocol_adapter_id.clone()),
         base_url: provider.base_url.clone(),
+        operation_base_urls: provider.operation_base_urls.clone(),
         credentials: provider.credentials.clone(),
         region: provider.region.clone(),
         workspace: provider.workspace.clone(),
@@ -885,6 +887,7 @@ fn provider_from_add(
         protocol_family_id: request.protocol_family_id,
         protocol_adapter_id,
         base_url: request.base_url,
+        operation_base_urls: request.operation_base_urls,
         credentials: request.credentials,
         enabled: true,
         region: request.region,
@@ -908,6 +911,9 @@ fn apply_provider_update(provider: &mut ProviderSettings, request: ProviderUpdat
     }
     if let Some(base_url) = request.base_url {
         provider.base_url = base_url;
+    }
+    if let Some(operation_base_urls) = request.operation_base_urls {
+        provider.operation_base_urls = operation_base_urls;
     }
     if let Some(credential) = request.credential {
         provider.credentials = credential;
@@ -1165,6 +1171,7 @@ fn runtime_admin_snapshot(
                 provider_profile_id: settings.provider_profile_id.clone(),
                 protocol_adapter_id: settings.protocol_adapter_id.clone(),
                 base_url: settings.base_url.clone(),
+                operation_base_urls: settings.operation_base_urls.clone(),
                 enabled: settings.enabled,
                 auth,
                 inventory,
@@ -1202,6 +1209,8 @@ fn runtime_admin_snapshot(
                     provider_profile_id: provider.provider_profile_id.clone(),
                     display_name: provider.display_name.clone(),
                     base_url: provider.base_url.clone(),
+                    region_base_urls: provider.connection.region_base_urls.clone(),
+                    operation_base_urls: provider.connection.operation_base_urls.clone(),
                     protocol_adapter_id: provider.protocol_adapter_id.clone(),
                     discovery_behavior_id: provider.discovery_behavior_id.clone(),
                     dynamic_login_behavior_id: provider.dynamic_login_behavior_id.clone(),

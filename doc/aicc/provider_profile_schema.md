@@ -204,7 +204,7 @@ Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯�
 
 行为 registry 以稳定 behavior ID 注册 discovery、动态登录或其它不可声明执行行为，不是 Provider Profile 白名单。Known Provider 必须在 metadata 中选择已注册 discovery behavior；通用 OpenAI-compatible/Claude/Gemini discovery 也有稳定 ID，可由任意新 Profile 复用。refresh 时从当前 Provider Rules 和明确引用的 Model Driver exact models 重建仅在机器发现失败时启用的 default inventory。任何未知或冲突 behavior 均拒绝装配，不允许读取 `ui_hints`、按 Provider ID 猜测或静默 first-match。
 
-可选 credential 由 typed `credential_variants[]` 声明，实例在 `auth.mode=api_key` 时用 `credential_kind` 显式选择；省略则使用 `credential` 默认值。区域入口由 typed `connection.region_base_urls` 声明，只有实例未显式提供 `base_url` 时才按解析后的 region 选择。GLM 的 `glm_jwt` 和 GLM/MiniMax 的区域入口均通过这两个 typed 字段进入 production registry。SN 的 `device_jwt` 是 SN 登录实现支持的稳定行为 ID，由显式 `auth.login_profile` 选择和校验，不从可选的 `ui_hints` 推断。
+可选 credential 由 typed `credential_variants[]` 声明，实例在 `auth.mode=api_key` 时用 `credential_kind` 显式选择；省略则使用 `credential` 默认值。区域入口由 typed `connection.region_base_urls` 声明，只有实例未显式提供 `base_url` 时才按解析后的 region 选择；管理 UI 选择某个接入点时应直接把该映射 URL 写入实例 `base_url`，从而使 Review、验证和实际调用看到同一个地址。`region` 表示 API 接入点及其渠道计价维度，`instance_rules.policy_region` 表示居住地/账号地区及模型访问政策，两者不得混用。GLM 的 `glm_jwt` 和 GLM/MiniMax 的区域入口均通过这两个 typed 字段进入 production registry。SN 的 `device_jwt` 是 SN 登录实现支持的稳定行为 ID，由显式 `auth.login_profile` 选择和校验，不从可选的 `ui_hints` 推断。
 
 ### 3.1 Model Driver metadata 管理
 

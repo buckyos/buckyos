@@ -1,7 +1,7 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "revision_seq": 2,
   "provider_profile_id": "qwen",
   "metadata_drivers": ["qwen"],
@@ -9,6 +9,7 @@
   "origin_mappings": [],
   "models": [],
   "patterns": [
+    { "match": "qwen*-latest", "exclude": true },
     {
       "match": "qwen-image*",
       "operations": { "image.txt2img": "dashscope.image_synthesis", "image.img2img": "dashscope.image_edit" }
@@ -18,12 +19,20 @@
       "operations": { "image.txt2img": "dashscope.image_synthesis" }
     },
     {
+      "match": "wan*-image*",
+      "operations": { "image.txt2img": "dashscope.image_synthesis", "image.img2img": "dashscope.image_edit" }
+    },
+    {
       "match": "wan*-i2v*",
       "operations": { "video.img2video": "dashscope.video_synthesis" }
     },
     {
       "match": "wan*-t2v*",
       "operations": { "video.txt2video": "dashscope.video_synthesis" }
+    },
+    {
+      "match": "wan*-video*",
+      "operations": { "video.txt2video": "dashscope.video_synthesis", "video.img2video": "dashscope.video_synthesis" }
     },
     {
       "match": "*",
@@ -43,6 +52,30 @@
         }
       ]
     }
+  ],
+  "model_pricing": [
+    { "match": { "provider_model_id": "qwen3.8-2.4t-a95b", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "input_token": 1.4988e-5, "output_token": 4.4965e-5 } },
+    { "match": { "provider_model_id": "qwen3.8-27b", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "input_token": 3.646e-6, "output_token": 2.1875e-5 } },
+    { "match": { "provider_model_id": "qwen3.6-35b-a3b", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "input_token": 2.810325e-6, "output_token": 1.686195e-5 } },
+    { "match": { "provider_model_id": "qwen3.8-max*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "input_token": 1.4988e-5, "output_token": 4.4965e-5, "cache_input_token": 1.874e-6 } },
+    { "match": { "provider_model_id": "qwen3.8-flash*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "input_token": 1.094e-6, "output_token": 3.427e-6 } },
+    { "match": { "provider_model_id": "qwen3.8-omni-flash*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "input_token": 1.094e-6, "output_token": 3.427e-6, "cache_input_token": 1.17e-7 } },
+    { "match": { "provider_model_id": "qwen3.7-plus*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 262144, "input_token": 2.998e-6, "output_token": 1.1991e-5 }, { "input_token": 8.993e-6, "output_token": 3.5972e-5 }] } } },
+    { "match": { "provider_model_id": "qwen3.7-flash*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 2.25e-7, "output_token": 9.74e-7 }, { "up_to": 262144, "input_token": 7.49e-7, "output_token": 2.998e-6 }, { "input_token": 1.499e-6, "output_token": 5.995e-6 }] } } },
+    { "match": { "provider_model_id": "qwen3.6-plus*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 262144, "input_token": 3.7471e-6, "output_token": 2.24826e-5 }, { "input_token": 1.49884e-5, "output_token": 4.4965e-5 }] } } },
+    { "match": { "provider_model_id": "qwen3.6-flash*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 262144, "input_token": 1.87355e-6, "output_token": 1.12413e-5 }, { "input_token": 7.4942e-6, "output_token": 2.99758e-5 }] } } },
+    { "match": { "provider_model_id": "qwen3.5-plus*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 262144, "input_token": 2.936e-6, "output_token": 1.7614e-5 }, { "input_token": 3.67e-6, "output_token": 2.2018e-5 }] } } },
+    { "match": { "provider_model_id": "qwen3.5-flash*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "input_token": 7.34e-7, "output_token": 2.936e-6 } },
+    { "match": { "provider_model_id": "qwen3.5-397b-a17b*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "input_token": 4.404e-6, "output_token": 2.6421e-5 } },
+    { "match": { "provider_model_id": "qwen3.5-122b-a10b*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "input_token": 2.936e-6, "output_token": 2.3486e-5 } },
+    { "match": { "provider_model_id": "qwen3.5-35b-a3b*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "input_token": 1.835e-6, "output_token": 1.4678e-5 } },
+    { "match": { "provider_model_id": "qwen3.5-27b*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "input_token": 2.202e-6, "output_token": 1.7614e-5 } },
+    { "match": { "provider_model_id": "qwen-image-3.0-pro*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "amount": 0.299768, "unit": "image" } },
+    { "match": { "provider_model_id": "qwen-image-3.0*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "amount": 0.224826, "unit": "image" } },
+    { "match": { "provider_model_id": ["qwen-image-2.0-pro*", "qwen-image-max*", "qwen-image-edit-max*"], "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "amount": 0.550443, "unit": "image" } },
+    { "match": { "provider_model_id": "qwen-image-2.0*", "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "amount": 0.256873, "unit": "image" } },
+    { "match": { "provider_model_id": ["qwen-image-plus*", "qwen-image-edit-plus*"], "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "amount": 0.220177, "unit": "image" } },
+    { "match": { "provider_model_id": ["wan2.7-t2v*", "wan2.6-t2v*", "wan2.7-i2v*"], "region": "ap-southeast-1" }, "pricing": { "currency": "CNY", "amount": 0.733924, "unit": "video_second" } }
   ],
   "variants": [
     {

@@ -17,10 +17,19 @@ export function StepReview({ draft, validation, onToggleAutoSync }: StepReviewPr
     { label: t('aiCenter.providers.profile', 'Profile'), value: draft.provider_profile_id ?? '-' },
     { label: t('aiCenter.wizard.providerName', 'Provider Name'), value: providerName },
     { label: t('aiCenter.providers.baseUrl', 'Base URL'), value: draft.base_url || t('aiCenter.providers.default', 'Default') },
+    ...Object.entries(draft.operation_base_urls).map(([operation, url]) => ({
+      label: `${t('aiCenter.wizard.operationBaseUrl', 'Operation Base URL')} · ${operation}`,
+      value: url,
+    })),
     { label: t('aiCenter.providers.adapter', 'Protocol Adapter'), value: validation?.resolved_protocol_adapter_id ?? draft.protocol_adapter_id ?? t('aiCenter.wizard.detectedOnValidation', 'Detected during validation') },
-    ...(['region', 'workspace', 'account'] as const)
-      .filter((name) => Boolean(draft[name]))
-      .map((name) => ({ label: t(`aiCenter.wizard.${name}`, name), value: draft[name] ?? '-' })),
+    ...(['region', 'workspace', 'account', 'policy_region'] as const)
+      .filter((name) => Boolean(draft[name]) && draft[name] !== 'unknown')
+      .map((name) => ({
+        label: name === 'region'
+          ? t('aiCenter.wizard.accessEndpoint', 'Access endpoint')
+          : t(`aiCenter.wizard.${name}`, name),
+        value: draft[name] ?? '-',
+      })),
     { label: t('aiCenter.providers.auth', 'Authentication'), value: draft.auth_mode === 'api_key' ? t('aiCenter.wizard.apiKey', 'API Key') : t('aiCenter.providers.dynamicLogin', 'Dynamic login') },
     {
       label: t('aiCenter.providers.connection', 'Connection'),
@@ -45,10 +54,12 @@ export function StepReview({ draft, validation, onToggleAutoSync }: StepReviewPr
       >
         <div className="flex flex-col gap-3">
           {rows.map((row) => (
-            <div key={row.label} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)] gap-4 text-sm">
-              <span className="min-w-0 truncate" style={{ color: 'var(--cp-muted)' }}>{row.label}</span>
-              <span className="min-w-0 justify-self-end text-right font-medium" style={{ color: 'var(--cp-text)' }}>
-                {typeof row.value === 'string' ? <LongField value={row.value} expandable /> : row.value}
+            <div key={row.label} className="grid grid-cols-[minmax(8rem,0.9fr)_minmax(0,1.6fr)] gap-4 text-sm">
+              <span className="min-w-0 truncate" title={row.label} style={{ color: 'var(--cp-muted)' }}>{row.label}</span>
+              <span className="w-full min-w-0 overflow-hidden text-right font-medium" style={{ color: 'var(--cp-text)' }}>
+                {typeof row.value === 'string'
+                  ? <LongField value={row.value} expandable className="w-full justify-end" />
+                  : row.value}
               </span>
             </div>
           ))}

@@ -2,7 +2,6 @@ import type { RpcClient } from "./gateway.ts";
 import { buildMockSettings, configValue } from "./mock_settings.ts";
 import {
   loadProviderProtocolCatalog,
-  selectOfficialModels,
 } from "./provider_protocol_contracts.ts";
 
 const SETTINGS_KEY = "services/aicc/settings";
@@ -59,12 +58,21 @@ export async function withMockSettings<T>(input: {
   refreshClients?: () => Promise<{ systemConfig: RpcClient; aicc: RpcClient }>;
 }): Promise<{ result: T; cleanup: "restored" }> {
   const catalog = await loadProviderProtocolCatalog();
+  const customProtocolApiTypes: Record<string, string> = {
+    openai: "llm",
+    claude: "llm",
+    "google-gemini": "llm",
+  };
   const customModels = Object.fromEntries(
-    ["openai", "claude", "google-gemini", "fal"].map((driver) => [
-      driver,
-      selectOfficialModels(catalog, driver, input.runId),
-    ]),
-  ) as Record<"openai" | "claude" | "google-gemini" | "fal", Record<string, string>>;
+    Object.entries(customProtocolApiTypes).map(([driver, apiType]) => {
+      const model = catalog.providers.find((provider) => provider.provider_driver === driver)
+        ?.test_model_ids[apiType];
+      if (!model) {
+        throw new Error(`${driver} has no official ${apiType} model for the T1 custom protocol cell`);
+      }
+      return [driver, { [apiType]: model }];
+    }),
+  ) as Record<"openai" | "claude" | "google-gemini", Record<string, string>>;
   return await withAiccSettingsOverride({
     systemConfig: input.systemConfig,
     aicc: input.aicc,

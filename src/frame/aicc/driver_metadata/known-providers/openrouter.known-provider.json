@@ -1,8 +1,8 @@
 {
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
-  "revision_seq": 1,
+  "schema_revision": 1,
+  "revision_seq": 2,
   "catalog_id": "openrouter",
   "providers": [
     {
@@ -14,20 +14,48 @@
       "provider_rules_id": "openrouter",
       "credential": { "kind": "bearer" },
       "connection": {
-        "region": { "mode": "unsupported" },
+        "region": {
+          "mode": "optional",
+          "default_value": "global",
+          "allowed_values": ["global", "us", "eu"]
+        },
         "workspace": { "mode": "unsupported" },
-        "account": { "mode": "unsupported" }
+        "account": { "mode": "unsupported" },
+        "policy_region": {
+          "mode": "optional",
+          "default_value": "unknown",
+          "allowed_values": ["unknown", "cn", "us", "eu", "other"]
+        },
+        "region_base_urls": {
+          "global": "https://openrouter.ai/api/v1",
+          "us": "https://us.openrouter.ai/api/v1",
+          "eu": "https://eu.openrouter.ai/api/v1"
+        }
       },
       "ui_hints": {
+        "access_endpoints": {
+          "global": { "label": "Global" },
+          "us": { "label": "United States", "description": "OpenRouter Business or Enterprise plan required." },
+          "eu": { "label": "European Union", "description": "OpenRouter Business or Enterprise plan required." }
+        },
         "credential": {
           "kind": "bearer",
           "required": true,
           "secret": true
         },
         "instance_fields": {
-          "region": { "mode": "unsupported" },
+          "region": {
+            "mode": "optional",
+            "default_value": "global",
+            "allowed_values": ["global", "us", "eu"]
+          },
           "workspace": { "mode": "unsupported" },
-          "account": { "mode": "unsupported" }
+          "account": { "mode": "unsupported" },
+          "policy_region": {
+            "mode": "optional",
+            "default_value": "unknown",
+            "allowed_values": ["unknown", "cn", "us", "eu", "other"]
+          }
         }
       }
     }

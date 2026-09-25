@@ -748,6 +748,7 @@ mod canonical_contract_tests {
             provider_profile_id: "openai".to_string(),
             protocol_adapter_id: "openai-responses".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
+            operation_base_urls: BTreeMap::new(),
             enabled,
             auth: ProviderInstanceAuthView {
                 mode: Some(ProviderInstanceAuthMode::ApiKey),
@@ -3992,6 +3993,10 @@ pub struct ProviderCatalogEntry {
     pub provider_profile_id: String,
     pub display_name: String,
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub region_base_urls: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub operation_base_urls: BTreeMap<String, String>,
     pub protocol_adapter_id: String,
     pub discovery_behavior_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4173,6 +4178,8 @@ pub struct ProviderValidateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_adapter_id: Option<String>,
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub operation_base_urls: BTreeMap<String, String>,
     pub credentials: ProviderCredentials,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
@@ -4210,6 +4217,7 @@ impl ProviderValidateRequest {
             protocol_family_id: None,
             protocol_adapter_id: None,
             base_url: base_url.into(),
+            operation_base_urls: BTreeMap::new(),
             credentials,
             region: None,
             workspace: None,
@@ -4269,6 +4277,8 @@ pub struct ProviderAddRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_adapter_id: Option<String>,
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub operation_base_urls: BTreeMap<String, String>,
     pub credentials: ProviderCredentials,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
@@ -4307,6 +4317,7 @@ impl ProviderAddRequest {
             protocol_family_id: None,
             protocol_adapter_id: None,
             base_url: base_url.into(),
+            operation_base_urls: BTreeMap::new(),
             credentials,
             region: None,
             workspace: None,
@@ -4527,6 +4538,10 @@ pub enum ProviderInstanceType {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderInstanceRules {
+    /// Legal/account residency used by Provider metadata policy matching.
+    /// `unknown` deliberately remains routable unless a rule explicitly denies it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_region: Option<String>,
     #[serde(default)]
     pub exclude_models: BTreeSet<String>,
     #[serde(default)]
@@ -4571,6 +4586,8 @@ pub struct ProviderInstanceView {
     pub provider_profile_id: String,
     pub protocol_adapter_id: String,
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub operation_base_urls: BTreeMap<String, String>,
     pub enabled: bool,
     pub auth: ProviderInstanceAuthView,
     pub inventory: ProviderInstanceInventoryView,
@@ -4617,6 +4634,8 @@ pub struct ProviderUpdateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_base_urls: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<ProviderCredentials>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_profile_id: Option<String>,
@@ -4639,6 +4658,7 @@ impl ProviderUpdateRequest {
             settings_revision,
             enabled: None,
             base_url: None,
+            operation_base_urls: None,
             credential: None,
             provider_profile_id: None,
             protocol_family_id: None,

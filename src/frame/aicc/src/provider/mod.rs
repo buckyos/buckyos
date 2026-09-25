@@ -436,6 +436,7 @@ pub(crate) struct ProviderDraftConfig {
     pub protocol_adapter_id: String,
     pub provider_rules_id: Option<String>,
     pub base_url: Option<String>,
+    pub operation_base_urls: BTreeMap<String, String>,
     pub region: Option<String>,
     pub workspace: Option<String>,
     pub account: Option<String>,
@@ -452,6 +453,7 @@ impl fmt::Debug for ProviderDraftConfig {
             .field("protocol_adapter_id", &self.protocol_adapter_id)
             .field("provider_rules_id", &self.provider_rules_id)
             .field("base_url", &self.base_url)
+            .field("operation_base_urls", &self.operation_base_urls)
             .field("region", &self.region)
             .field("workspace", &self.workspace)
             .field("account", &self.account)
@@ -675,7 +677,8 @@ fn resolve_operation(
         [] => Ok(None),
         [operation] => Ok(Some(operation.clone())),
         _ => Err(ProviderError::Inventory(format!(
-            "adapter has multiple default operations for api_type `{api_type_name}`"
+            "adapter {:?} has multiple default operations {:?} for api_type `{api_type_name}`",
+            adapter.protocol_adapter_id, matching
         ))),
     }
 }

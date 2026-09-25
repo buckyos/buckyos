@@ -277,6 +277,7 @@ mod tests {
             provider_profile_id: OPENAI_PROVIDER_PROFILE_ID.to_owned(),
             protocol_adapter_id: known.protocol_adapter_id,
             base_url: known.base_url,
+            operation_base_urls: Default::default(),
             credential: CredentialReference {
                 reference: "secret://openai/main".to_owned(),
             },
@@ -479,19 +480,25 @@ mod tests {
                 revision: Some("models-v1".to_owned()),
                 discovered_at_ms: 1,
                 health: ProviderHealthState::Healthy,
-                models: ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
-                    .into_iter()
-                    .map(|model_id| DiscoveredModel {
-                        provider_model_id: model_id.to_owned(),
-                        origin_model_id: None,
-                        api_types: None,
-                        supported_features: None,
-                        remote_methods: None,
-                        availability: ModelAvailability::Available,
-                        deprecated: false,
-                        pricing: None,
-                    })
-                    .collect(),
+                models: [
+                    "gpt-6-astra",
+                    "gpt-5.6",
+                    "gpt-5.6-sol",
+                    "gpt-5.6-terra",
+                    "gpt-5.6-luna",
+                ]
+                .into_iter()
+                .map(|model_id| DiscoveredModel {
+                    provider_model_id: model_id.to_owned(),
+                    origin_model_id: None,
+                    api_types: None,
+                    supported_features: None,
+                    remote_methods: None,
+                    availability: ModelAvailability::Available,
+                    deprecated: false,
+                    pricing: None,
+                })
+                .collect(),
             },
             &catalog,
             &registry,
@@ -499,7 +506,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(inventory.protocol_adapter_id, OPENAI_RESPONSES_ADAPTER_ID);
-        assert_eq!(inventory.models.len(), 4);
+        assert_eq!(inventory.models.len(), 5);
         let model = inventory
             .models
             .iter()
@@ -521,8 +528,9 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(version_tiers, ["standard", "pro", "mini", "nano"]);
         for (model_id, mount) in [
+            ("gpt-6-astra", "llm.gpt-pro"),
             ("gpt-5.6", "llm.openai.gpt-5-6"),
-            ("gpt-5.6-sol", "llm.gpt-pro"),
+            ("gpt-5.6-sol", "llm.gpt-standard"),
             ("gpt-5.6-terra", "llm.gpt-mini"),
             ("gpt-5.6-luna", "llm.gpt-nano"),
         ] {
@@ -538,7 +546,7 @@ mod tests {
             );
             assert!(!mapped.logical_mounts.iter().any(|mount| matches!(
                 mount.as_str(),
-                "llm.gpt-sol" | "llm.gpt-terra" | "llm.gpt-luna"
+                "llm.gpt-astra" | "llm.gpt-sol" | "llm.gpt-terra" | "llm.gpt-luna"
             )));
         }
     }

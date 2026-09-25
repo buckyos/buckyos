@@ -357,7 +357,7 @@ impl OpenAiChatCompletionsDialect for KimiDialect {
         value: &Value,
     ) -> ProtocolResultValue<Option<(String, Value)>> {
         let valid = match name {
-            "thinking" => valid_thinking(value),
+            "thinking" => valid_kimi_thinking(value),
             "prompt_cache_key" => nonempty_string(value),
             _ => return Ok(None),
         };
@@ -634,6 +634,22 @@ fn valid_thinking(value: &Value) -> bool {
             object.get("type").and_then(Value::as_str),
             Some("enabled" | "disabled")
         )
+}
+
+fn valid_kimi_thinking(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    if !matches!(
+        object.get("type").and_then(Value::as_str),
+        Some("enabled" | "disabled")
+    ) || object.len() > 2
+    {
+        return false;
+    }
+    object
+        .get("keep")
+        .is_none_or(|keep| keep.as_str() == Some("all"))
 }
 
 fn nonempty_string(value: &Value) -> bool {
@@ -914,6 +930,41 @@ mod tests {
                     OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
                     ApiType::Llm,
                     &input(BTreeMap::from([(parameter.0.to_owned(), parameter.1)])),
+                    &context(),
+                )
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn kimi_accepts_keep_all_and_rejects_other_thinking_extensions() {
+        let request = registry_with(kimi_chat_adapter())
+            .encode(
+                KIMI_CHAT_ADAPTER_ID,
+                OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                ApiType::Llm,
+                &input(BTreeMap::from([(
+                    "thinking".to_owned(),
+                    json!({"type": "enabled", "keep": "all"}),
+                )])),
+                &context(),
+            )
+            .unwrap();
+        let HttpBody::Json(body) = request.body else {
+            panic!()
+        };
+        assert_eq!(body["thinking"], json!({"type": "enabled", "keep": "all"}));
+
+        for thinking in [
+            json!({"type": "enabled", "keep": "none"}),
+            json!({"type": "enabled", "keep": "all", "extra": true}),
+        ] {
+            assert!(registry_with(kimi_chat_adapter())
+                .encode(
+                    KIMI_CHAT_ADAPTER_ID,
+                    OPENAI_CHAT_COMPLETIONS_OPERATION_ID,
+                    ApiType::Llm,
+                    &input(BTreeMap::from([("thinking".to_owned(), thinking)])),
                     &context(),
                 )
                 .is_err());

@@ -20,7 +20,8 @@
         "vision": true,
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
-      }
+      },
+      "version_rules": ["gpt-pro"]
     },
     {
       "id": "gpt-5.6",
@@ -38,7 +39,7 @@
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
       },
-      "version_rules": ["gpt-pro"]
+      "version_rules": ["gpt-standard"]
     },
     {
       "id": "gpt-image-2",
@@ -243,7 +244,7 @@
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
       },
-      "version_rules": ["gpt-pro"]
+      "version_rules": ["gpt-standard"]
     },
     {
       "match": "gpt-5.6-terra*",
@@ -357,7 +358,7 @@
       "family": "gpt",
       "tier": "standard",
       "match": "gpt-*",
-      "exclude_tier_tokens": ["pro", "mini", "nano", "sol", "terra", "luna", "codex"],
+      "exclude_tier_tokens": ["pro", "mini", "nano", "astra", "terra", "luna", "codex"],
       "version_rank": { "prefix": "gpt" },
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-standard",
@@ -368,7 +369,7 @@
       "id": "gpt-pro",
       "family": "gpt",
       "tier": "pro",
-      "match": { "origin_model_id": ["gpt-5.6", "gpt-*-pro*", "gpt-*-sol*"] },
+      "match": { "origin_model_id": ["gpt-*-pro*", "gpt-*-astra*"] },
       "version_rank": { "prefix": "gpt" },
       "stability": { "unstable_tokens": ["preview", "beta", "experimental"], "current_requires_stable": true },
       "current_mount": "llm.gpt-pro",

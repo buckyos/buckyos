@@ -161,6 +161,10 @@ export async function fetchOfficialModelIds(input: {
   timeoutMs: number;
   fetcher?: Fetcher;
 }): Promise<string[]> {
+  if (input.profile.official_catalog.format === "frozen") {
+    return [...(input.profile.official_catalog.model_ids ?? [])]
+      .sort((left, right) => left.localeCompare(right));
+  }
   const token = requireToken(input.profile, input.token);
   const fetcher = input.fetcher ?? fetch;
   const ids = new Map<string, string>();
@@ -255,7 +259,9 @@ export async function fetchOfficialCatalogs(input: {
     catalogs.push({
       provider_driver: driver,
       provider_instance_name: instance,
-      inventory_revision: `official-snapshot-${fetchedAt}`,
+      inventory_revision: profile.official_catalog.format === "frozen"
+        ? `official-frozen-${profile.official_catalog.checked_at}`
+        : `official-snapshot-${fetchedAt}`,
       models: ids.map((id) => ({
         exact_model: `${id}@${instance}`,
         provider_model_id: id,

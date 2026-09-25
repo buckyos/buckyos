@@ -6,6 +6,7 @@ const SUPPORTED_TOKEN_DRIVERS = [
   "minimax",
   "openrouter",
   "glm",
+  "doubao",
 ] as const;
 
 export type ProviderTokenDriver = (typeof SUPPORTED_TOKEN_DRIVERS)[number];
@@ -32,6 +33,7 @@ function defaultInstance(driver: ProviderTokenDriver, name: string, token: strin
     minimax: "https://api.minimax.io/anthropic",
     openrouter: "https://openrouter.ai/api/v1",
     glm: "https://api.z.ai/api/paas/v4",
+    doubao: "https://ark.cn-beijing.volces.com/api/plan/v3",
   };
   const adapters: Record<ProviderTokenDriver, string> = {
     openai: "openai-responses",
@@ -41,6 +43,7 @@ function defaultInstance(driver: ProviderTokenDriver, name: string, token: strin
     minimax: "minimax-messages",
     openrouter: "openrouter-responses",
     glm: "glm-chat",
+    doubao: "doubao-responses",
   };
   const profile = profileId(driver);
   return {
@@ -120,6 +123,7 @@ export function applyProviderTokens(
         minimax: "minimax-main",
         openrouter: "openrouter-main",
         glm: "glm-main",
+        doubao: "doubao-main",
       };
       const created = defaultInstance(
         driver,

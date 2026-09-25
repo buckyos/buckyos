@@ -147,7 +147,7 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
       throw new Error(`${driver}.official_catalog must be an object`);
     }
     requireString(rawProvider.official_catalog.endpoint, `${driver}.official_catalog.endpoint`);
-    if (!["openai", "anthropic", "gemini", "fal", "sn"].includes(String(rawProvider.official_catalog.format))) {
+    if (!["openai", "anthropic", "gemini", "fal", "sn", "frozen"].includes(String(rawProvider.official_catalog.format))) {
       throw new Error(`${driver}.official_catalog.format is invalid`);
     }
     if (!["bearer", "x-api-key", "query-key", "fal-key", "none"].includes(String(rawProvider.official_catalog.authentication))) {
@@ -169,6 +169,24 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
         new Set(endpointIds).size !== endpointIds.length) {
         throw new Error(`${driver}.official_catalog.endpoint_ids must contain 1-50 unique ids`);
       }
+    }
+    if (rawProvider.official_catalog.format === "frozen") {
+      const modelIds = requireStringArray(
+        rawProvider.official_catalog.model_ids,
+        `${driver}.official_catalog.model_ids`,
+      );
+      if (modelIds.length === 0 || new Set(modelIds).size !== modelIds.length) {
+        throw new Error(`${driver}.official_catalog.model_ids must be non-empty and unique`);
+      }
+      requireString(rawProvider.official_catalog.checked_at, `${driver}.official_catalog.checked_at`);
+      requireString(rawProvider.official_catalog.risk, `${driver}.official_catalog.risk`);
+      if (rawProvider.official_catalog.authentication !== "none") {
+        throw new Error(`${driver}.official_catalog frozen inventory must not require authentication`);
+      }
+    } else if (rawProvider.official_catalog.model_ids !== undefined ||
+      rawProvider.official_catalog.checked_at !== undefined ||
+      rawProvider.official_catalog.risk !== undefined) {
+      throw new Error(`${driver}.official_catalog frozen fields require format=frozen`);
     }
     requireStringArray(rawProvider.source_urls, `${driver}.source_urls`);
     if (!isObject(rawProvider.protocol_evidence)) {
