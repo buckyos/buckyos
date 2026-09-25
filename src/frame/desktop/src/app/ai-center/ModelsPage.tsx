@@ -1,4 +1,4 @@
-import { useMemo, useState, useSyncExternalStore } from 'react'
+import { useId, useMemo, useState, useSyncExternalStore } from 'react'
 import { Dialog } from '@mui/material'
 import { ChevronDown, Cpu, Download, Layers, Loader2, Monitor, RefreshCw, Search, X } from 'lucide-react'
 import { useForm, useWatch } from 'react-hook-form'
@@ -99,45 +99,7 @@ export function ModelsPage() {
           <p className="font-medium">{t(allModels.length ? 'aiCenter.models.noMatches' : 'aiCenter.models.empty')}</p>
           <p className="mt-2 text-sm" style={muted}>{t(allModels.length ? 'aiCenter.models.noMatchesHint' : 'aiCenter.models.emptyHint')}</p>
         </div>}
-        {vendors.map((vendor) => (
-          <section key={vendor.id} aria-label={vendorNames[vendor.id] ?? vendor.id} className="flex min-w-0 flex-col gap-3">
-            <h3 className="flex items-center gap-2 text-base font-semibold">
-              {vendorNames[vendor.id] ?? vendor.id}
-              <span className="rounded-md px-2 py-0.5 text-xs font-normal" style={{ background: 'var(--cp-surface)', ...muted }}>{vendor.models.length}</span>
-            </h3>
-            {vendor.specs.length > 0 && <div className="overflow-hidden rounded-xl" style={surface}>
-              <div className="flex items-center gap-2 px-4 py-2 text-xs" style={muted}><Layers size={14} />{t('aiCenter.models.specs')}</div>
-              {vendor.specs.map((spec) => (
-                <details key={spec.id} className="group border-t" style={{ borderColor: 'var(--cp-border)' }}>
-                  <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 px-4 py-2 text-sm">
-                    <span className="min-w-0 break-all font-mono">{spec.id}</span>
-                    <span className="flex shrink-0 items-center gap-2 text-xs" style={muted}>
-                      {t('aiCenter.models.memberCount', undefined, { count: spec.members.length })}<ChevronDown size={16} className="transition-transform group-open:rotate-180" />
-                    </span>
-                  </summary>
-                  <div className="px-4 pb-3">
-                    <p className="mb-2 break-all text-xs" style={muted}>{spec.path}{spec.direct_only ? ` · ${t('aiCenter.models.directOnly')}` : ''}</p>
-                    {spec.members.length ? <>
-                      <div className="mb-1 flex justify-between gap-3 text-xs" style={muted}><span>{t('aiCenter.models.modelName')}</span><span>{t('aiCenter.models.weight')}</span></div>
-                      {spec.members.map((member) => (
-                        <div key={member.model_id} className="flex items-center justify-between gap-3 border-t py-1" style={{ borderColor: 'var(--cp-border)' }}>
-                          <button type="button" onClick={() => showModel(vendor.id, member.model_id)} className="min-h-11 min-w-0 py-1 text-left text-xs" style={{ color: 'var(--cp-accent)' }}>
-                            <span className="block break-all font-medium">{member.model_id}</span>
-                            <span className="mt-1 block break-all font-mono text-[11px]" style={muted}>{member.target}</span>
-                          </button>
-                          <span className="shrink-0 text-right text-xs tabular-nums">{member.weight}<span className="mt-1 block text-[11px]" style={muted}>{t(member.active ? 'aiCenter.models.effectiveWeight' : 'aiCenter.models.defaultWeight')}</span></span>
-                        </div>
-                      ))}
-                    </> : <p className="py-2 text-xs" style={muted}>{t('aiCenter.models.emptySpec')}</p>}
-                  </div>
-                </details>
-              ))}
-            </div>}
-            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-3">
-              {vendor.models.map((model) => <ModelCard key={model.id} model={model} onClick={() => showModel(vendor.id, model.id)} />)}
-            </div>
-          </section>
-        ))}
+        {vendors.map((vendor) => <VendorSection key={vendor.id} vendor={vendor} showModel={showModel} />)}
       </>}
       <Dialog open={!!selectedModel} onClose={() => setSelected(null)} maxWidth="md" fullWidth aria-labelledby="model-detail-title"
         slotProps={{ paper: { sx: { bgcolor: 'var(--cp-surface)', color: 'var(--cp-text)', borderRadius: 3, margin: 2, width: 'calc(100% - 32px)' } } }}>
@@ -145,6 +107,68 @@ export function ModelsPage() {
       </Dialog>
     </div>
   )
+}
+
+function VendorSection({ vendor, showModel }: {
+  vendor: ReturnType<typeof filterModelCatalog>[number]
+  showModel: (vendor: string, model: string) => void
+}) {
+  const { t } = useI18n()
+  const sectionId = useId()
+  const [collapsed, setCollapsed] = useState(false)
+  const [expandedSpecId, setExpandedSpecId] = useState<string | null>(null)
+  const expandedSpec = vendor.specs.find((spec) => spec.id === expandedSpecId)
+  const vendorName = vendorNames[vendor.id] ?? vendor.id
+
+  return <section aria-label={vendorName} className="flex min-w-0 flex-col gap-2">
+    <header className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <h3 className="flex shrink-0 items-center gap-2 text-base font-semibold">
+        {vendorName}
+        <span className="rounded-md px-2 py-0.5 text-xs font-normal" style={{ background: 'var(--cp-surface)', ...muted }}>{vendor.models.length}</span>
+        <button type="button" onClick={() => setCollapsed(!collapsed)} aria-expanded={!collapsed}
+          aria-controls={`${sectionId}-specs ${sectionId}-models`}
+          aria-label={t(collapsed ? 'aiCenter.models.expandVendor' : 'aiCenter.models.collapseVendor', undefined, { vendor: vendorName })}
+          className="flex h-11 w-11 items-center justify-center rounded-lg sm:h-8 sm:w-8" style={muted}>
+          <ChevronDown size={17} className={`transition-transform ${collapsed ? '-rotate-90' : ''}`} />
+        </button>
+      </h3>
+      <div id={`${sectionId}-specs`} hidden={collapsed} role="group" aria-label={t('aiCenter.models.specs')}
+        className={collapsed ? 'hidden' : 'flex min-w-0 flex-wrap items-center gap-1.5'}>
+        {vendor.specs.map((spec) => (
+          <button key={spec.id} id={`${sectionId}-${spec.id}`} type="button" aria-expanded={expandedSpecId === spec.id}
+            aria-controls={`${sectionId}-spec-members`} onClick={() => setExpandedSpecId(expandedSpecId === spec.id ? null : spec.id)}
+            aria-label={`${spec.id}, ${t('aiCenter.models.memberCount', undefined, { count: spec.members.length })}`}
+            className="flex min-h-11 max-w-full items-center gap-1.5 rounded-lg px-2.5 text-xs sm:min-h-8"
+            style={{ ...surface, color: expandedSpecId === spec.id ? 'var(--cp-accent)' : 'var(--cp-muted)', borderColor: expandedSpecId === spec.id ? 'var(--cp-accent)' : 'var(--cp-border)' }}>
+            <Layers size={12} className="shrink-0" />
+            <span className="min-w-0 break-all font-mono">{spec.id}</span>
+            <span className="shrink-0 text-[10px] tabular-nums">{spec.members.length}</span>
+            <ChevronDown size={12} className={`shrink-0 transition-transform ${expandedSpecId === spec.id ? 'rotate-180' : ''}`} />
+          </button>
+        ))}
+      </div>
+    </header>
+    <div id={`${sectionId}-models`} hidden={collapsed} className={collapsed ? 'hidden' : 'flex min-w-0 flex-col gap-3'}>
+      {expandedSpec && <div id={`${sectionId}-spec-members`} role="region" aria-labelledby={`${sectionId}-${expandedSpec.id}`} className="rounded-lg px-3 py-2" style={surface}>
+        <p className="mb-2 break-all text-xs" style={muted}>{expandedSpec.path}{expandedSpec.direct_only ? ` · ${t('aiCenter.models.directOnly')}` : ''}</p>
+        {expandedSpec.members.length ? <>
+          <div className="mb-1 flex justify-between gap-3 text-xs" style={muted}><span>{t('aiCenter.models.modelName')}</span><span>{t('aiCenter.models.weight')}</span></div>
+          {expandedSpec.members.map((member) => (
+            <div key={member.model_id} className="flex items-center justify-between gap-3 border-t py-1" style={{ borderColor: 'var(--cp-border)' }}>
+              <button type="button" onClick={() => showModel(vendor.id, member.model_id)} className="min-h-11 min-w-0 py-1 text-left text-xs" style={{ color: 'var(--cp-accent)' }}>
+                <span className="block break-all font-medium">{member.model_id}</span>
+                <span className="mt-1 block break-all font-mono text-[11px]" style={muted}>{member.target}</span>
+              </button>
+              <span className="shrink-0 text-right text-xs tabular-nums">{member.weight}<span className="mt-1 block text-[11px]" style={muted}>{t(member.active ? 'aiCenter.models.effectiveWeight' : 'aiCenter.models.defaultWeight')}</span></span>
+            </div>
+          ))}
+        </> : <p className="py-2 text-xs" style={muted}>{t('aiCenter.models.emptySpec')}</p>}
+      </div>}
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-3">
+        {vendor.models.map((model) => <ModelCard key={model.id} model={model} onClick={() => showModel(vendor.id, model.id)} />)}
+      </div>
+    </div>
+  </section>
 }
 
 function ModelCard({ model, onClick }: { model: ModelCardView; onClick: () => void }) {
@@ -155,8 +179,10 @@ function ModelCard({ model, onClick }: { model: ModelCardView; onClick: () => vo
     style={{ ...surface, borderColor: model.available ? 'color-mix(in srgb, var(--cp-success) 45%, var(--cp-border))' : 'var(--cp-border)' }}>
     <div className="flex w-full items-start justify-between gap-3">
       <span className="min-w-0 break-all font-mono text-sm font-semibold">{model.id}</span>
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" title={t(model.local ? 'aiCenter.models.local' : 'aiCenter.models.notLocal')} aria-label={t(model.local ? 'aiCenter.models.local' : 'aiCenter.models.notLocal')}
-        style={{ color: model.local ? success : 'var(--cp-muted)', background: model.local ? 'color-mix(in srgb, var(--cp-success) 12%, transparent)' : 'var(--cp-bg)' }}><Monitor size={17} /></span>
+      {model.deployable && <span role="img" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" title={t(model.local ? 'aiCenter.models.local' : 'aiCenter.models.deployable')} aria-label={t(model.local ? 'aiCenter.models.local' : 'aiCenter.models.deployable')}
+        style={{ color: model.local ? success : 'var(--cp-muted)', background: model.local ? 'color-mix(in srgb, var(--cp-success) 12%, transparent)' : 'var(--cp-bg)' }}>
+        {model.local ? <Monitor size={17} /> : <Download size={17} />}
+      </span>}
     </div>
     <div className="flex flex-wrap items-center gap-2 text-[11px]" style={muted}>
       {(model.metadata.api_types ?? []).map((api) => <span key={api} className="rounded px-2 py-1" style={{ background: 'var(--cp-bg)' }}>{api}</span>)}
@@ -168,7 +194,6 @@ function ModelCard({ model, onClick }: { model: ModelCardView; onClick: () => vo
         <span className="h-2 w-2 rounded-full" style={{ background: 'currentColor' }} />
         {model.available ? t('aiCenter.models.providerCount', undefined, { count: model.providers.length }) : t('aiCenter.models.unavailable')}
       </span>
-      {model.deployable && <span className="flex items-center gap-1" style={muted}><Download size={13} />{t('aiCenter.models.deployable')}</span>}
     </div>
   </button>
 }

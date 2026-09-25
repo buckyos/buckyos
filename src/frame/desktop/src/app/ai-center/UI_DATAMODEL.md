@@ -80,7 +80,7 @@ The transform is O(n + c log c), where `n` is the returned row count and `c` is 
 
 - `CatalogModel.metadata`：defaults 合并后的全部 Model Driver 语义，详情完整保留；`local_deployable === true` 才进入可本地部署筛选。
 - `CatalogModel.providers`：当前启用 Provider 的库存关联，按 instance 去重，保留本地标记及所有 exact model/variant。`available` 为非空，`local` 为至少一项 `local: true`，不等同于健康或额度判断。
-- `CatalogSpec.members`：已知模型名、规格 effort selector、家族成员权重和 `active`。未物化成员展示默认权重，空规格默认保留。规格行展开与模型卡片使用不同展示方式，成员名称可打开同一详情。
+- `CatalogSpec.members`：已知模型名、规格 effort selector、家族成员权重和 `active`。未物化成员展示默认权重，空规格默认保留。规格以厂商 header 中的紧凑卡片展示，尽量同行排列，窄屏自动换行；点击后在下方展开成员，同一厂商一次展开一个规格，再次点击收起。成员名称可打开同一详情。
 - `ModelFilters`：由 `modelFiltersSchema`（Zod）定义；`query` 默认空字符串，无长度限制，仅做本地匹配；`available/deployable/local` 默认 false，通过 react-hook-form 管理。关键词忽略大小写和首尾空格，匹配厂商、模型 ID、规格 ID、API 类型；三个状态条件取交集。
 
 目录为有界元数据集合，一次 `models.list` 获取，详情/筛选/规格展开无额外 RPC，无分页。模型 ID 以 numeric locale 排序，统计数字基于完整目录，结果数字基于筛选。SWR 缓存查询结果，30 秒轮询、窗口聚焦、Provider 更新后的 snapshot version 变化和手动刷新均可更新状态；单次目录读取不依赖首页的 usage 或 trace 成功。
@@ -98,3 +98,5 @@ pnpm run build
 pnpm exec playwright test --config playwright.aicc.config.ts
 deno test --node-modules-dir=manual --unstable-sloppy-imports tests/datamodel/model-catalog.test.ts
 ```
+
+厂商名旁的按钮控制整个厂商内容的展开/收起，默认展开，收起时仅保留厂商名、模型数量与按钮。模型卡片仅在 `deployable` 为 true 时显示一个本地部署图标：未部署为下载图标，`local` 为 true 时为点亮的本地图标，不再重复显示底部部署标记。
