@@ -234,6 +234,7 @@ export interface GlobalRoutingView {
 
 export interface RouteTrace {
   request_id: string
+  outcome?: string
   session_id?: string
   api_type: ApiType
   requested_model: string
@@ -321,11 +322,13 @@ export interface WizardDraft {
   provider_profile_id: ProviderType | null
   display_name: string
   base_url: string
+  operation_base_urls: Record<string, string>
   protocol_family_id: string | null
   protocol_adapter_id?: string
   region?: string
   workspace?: string
   account?: string
+  policy_region?: string
   auth_mode: AuthMode
   api_key: string
   auto_sync_models: boolean
@@ -335,10 +338,18 @@ export interface KnownProviderProfile {
   provider_profile_id: ProviderType
   display_name: string
   base_url: string
+  region_base_urls: Record<string, string>
+  operation_base_urls?: Record<string, string>
   protocol_adapter_id: string
   provider_rules_id?: string
   ui_hints: Record<string, unknown>
-  connection_fields: Partial<Record<'region' | 'workspace' | 'account', ProviderConnectionField>>
+  endpoint_hints: Record<string, ProviderEndpointHint>
+  connection_fields: Partial<Record<'region' | 'workspace' | 'account' | 'policy_region', ProviderConnectionField>>
+}
+
+export interface ProviderEndpointHint {
+  label: string
+  description?: string
 }
 
 export interface ProviderConnectionField {

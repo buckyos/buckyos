@@ -64,7 +64,9 @@ pub(crate) fn sn_connection_contract(auth_mode: ProviderAuthMode) -> ProviderCon
             ProviderAuthMode::ApiKey => fields.account.api_key,
             ProviderAuthMode::DynamicLogin => fields.account.dynamic_login,
         },
+        policy_region: None,
         region_base_urls: known.connection.region_base_urls,
+        operation_base_urls: known.connection.operation_base_urls,
     }
 }
 
@@ -110,6 +112,7 @@ pub(crate) fn resolve_sn_provider_instance_with_config(
             provider_profile_id: profile.provider_profile_id.clone(),
             protocol_adapter_id: profile.default_protocol_adapter_id.clone(),
             base_url: connection.base_url,
+            operation_base_urls: connection.operation_base_urls,
             credential,
             credential_kind: input.auth.credential_kind(),
             provider_rules_id,

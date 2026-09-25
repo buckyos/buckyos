@@ -88,6 +88,7 @@ async function cloudKnownProvider(
   );
   provider.provider_profile_id = CLOUD_TEST_PROFILE_ID;
   provider.provider_rules_id = CLOUD_TEST_RULES_ID;
+  provider.discovery_behavior_id = "standard-models";
   provider.display_name = `AICC Cloud Update ${marker.toUpperCase()}`;
   return {
     format: "buckyos.aicc.known-provider-catalog",

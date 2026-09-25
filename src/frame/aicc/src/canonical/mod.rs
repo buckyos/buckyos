@@ -16,6 +16,7 @@ pub(crate) enum CanonicalFieldConverter {
     GeminiTtsVoiceV1,
     GlmTtsVoiceV1,
     MinimaxTtsVoiceV1,
+    DoubaoTtsVoiceV1,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -150,6 +151,7 @@ fn convert_canonical_field(
         CanonicalFieldConverter::GeminiTtsVoiceV1 => resolve_gemini_voice(requirement),
         CanonicalFieldConverter::GlmTtsVoiceV1 => resolve_glm_voice(requirement),
         CanonicalFieldConverter::MinimaxTtsVoiceV1 => resolve_minimax_voice(requirement),
+        CanonicalFieldConverter::DoubaoTtsVoiceV1 => resolve_doubao_voice(requirement),
     }
 }
 
@@ -486,6 +488,20 @@ fn resolve_minimax_voice(requirement: &CanonicalFieldRequirement) -> ResolvedCan
                 "voice_setting".to_owned(),
                 json!({"voice_id": "male-qn-qingse"}),
             )]),
+        );
+    }
+    unsupported()
+}
+
+fn resolve_doubao_voice(requirement: &CanonicalFieldRequirement) -> ResolvedCanonicalField {
+    let Some(requested) = parse_voice_spec(requirement) else {
+        return unsupported();
+    };
+    if requested == VoiceSpec::default() {
+        return resolved_with_options(
+            CanonicalMatchQuality::Exact,
+            requirement.value.clone(),
+            BTreeMap::from([("speaker".to_owned(), json!("zh_female_vv_uranus_bigtts"))]),
         );
     }
     unsupported()

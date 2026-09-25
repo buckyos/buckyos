@@ -564,7 +564,13 @@ fn connection_from_catalog(
         region: field_from_catalog(&configuration.connection.region),
         workspace: field_from_catalog(&configuration.connection.workspace),
         account: field_from_catalog(&configuration.connection.account),
+        policy_region: configuration
+            .connection
+            .policy_region
+            .as_ref()
+            .map(field_from_catalog),
         region_base_urls: configuration.connection.region_base_urls.clone(),
+        operation_base_urls: configuration.connection.operation_base_urls.clone(),
     }
 }
 
@@ -603,7 +609,9 @@ fn custom_registration() -> BuiltinProviderRegistration {
             region: ProviderFieldSchema::optional(),
             workspace: ProviderFieldSchema::optional(),
             account: ProviderFieldSchema::optional(),
+            policy_region: None,
             region_base_urls: BTreeMap::new(),
+            operation_base_urls: BTreeMap::new(),
         }),
         discovery_behavior_id: "standard-models".to_owned(),
         dynamic_login_behavior_id: None,
@@ -775,7 +783,7 @@ mod tests {
             .map(|adapter| adapter.protocol_adapter_id.as_str())
             .collect::<BTreeSet<_>>();
         assert_eq!(codecs.adapters().len(), adapter_ids.len());
-        assert_eq!(adapter_ids.len(), 17);
+        assert_eq!(adapter_ids.len(), 18);
         for profile in registry.profiles() {
             assert!(adapter_ids.contains(profile.default_protocol_adapter_id.as_str()));
         }
@@ -844,6 +852,7 @@ mod tests {
                 provider_profile_id: profile.provider_profile_id.clone(),
                 protocol_adapter_id: profile.default_protocol_adapter_id.clone(),
                 base_url: "https://provider.example/v1".to_owned(),
+                operation_base_urls: BTreeMap::new(),
                 credential: CredentialReference {
                     reference: "secret://provider".to_owned(),
                 },
@@ -1258,7 +1267,7 @@ mod tests {
                 })
                 .unwrap()
                 .base_url,
-            "https://api.minimaxi.com/anthropic"
+            "https://api.minimax.cn/anthropic"
         );
 
         assert!(matches!(
@@ -1277,17 +1286,24 @@ mod tests {
     #[test]
     fn every_profile_resolves_through_the_same_instance_entrypoint() {
         let registry = registry();
-        for profile_id in [DOUBAO_PROFILE_ID, QWEN_PROFILE_ID] {
-            assert_eq!(
-                registry
-                    .providers
-                    .get(profile_id)
-                    .unwrap()
-                    .profile
-                    .discovery_mode,
-                crate::provider::DiscoveryMode::MachineApi
-            );
-        }
+        assert_eq!(
+            registry
+                .providers
+                .get(DOUBAO_PROFILE_ID)
+                .unwrap()
+                .profile
+                .discovery_mode,
+            crate::provider::DiscoveryMode::CatalogOnly
+        );
+        assert_eq!(
+            registry
+                .providers
+                .get(QWEN_PROFILE_ID)
+                .unwrap()
+                .profile
+                .discovery_mode,
+            crate::provider::DiscoveryMode::MachineApi
+        );
         for profile in registry.profiles() {
             let configured_inventory = (profile.discovery_mode
                 == crate::provider::DiscoveryMode::CatalogOnly)
@@ -1297,6 +1313,7 @@ mod tests {
                 provider_profile_id: profile.provider_profile_id.clone(),
                 protocol_adapter_id: profile.default_protocol_adapter_id.clone(),
                 base_url: "https://provider.example/v1".to_owned(),
+                operation_base_urls: BTreeMap::new(),
                 credential: CredentialReference {
                     reference: "secret://provider".to_owned(),
                 },

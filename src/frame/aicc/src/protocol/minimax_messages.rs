@@ -40,9 +40,12 @@ pub(crate) fn minimax_messages_dialect_contract() -> MiniMaxMessagesDialectContr
 pub(crate) fn minimax_messages_adapter() -> (AdapterDescriptor, CodecRegistration) {
     let base = ClaudeMessagesCodec::new();
     let mut operation = base.descriptor().clone();
-    operation
-        .bindings
-        .retain(|binding| binding.api_type == ApiType::Llm);
+    operation.bindings.retain(|binding| {
+        matches!(
+            binding.api_type,
+            ApiType::Llm | ApiType::VisionOcr | ApiType::VisionCaption
+        )
+    });
     let (media_operations, media_registration) = super::minimax_media_registration();
     let mut operations = BTreeMap::from([(operation.operation_id.clone(), operation.clone())]);
     operations.extend(
@@ -68,10 +71,18 @@ pub(crate) fn minimax_messages_adapter() -> (AdapterDescriptor, CodecRegistratio
     (
         descriptor,
         CodecRegistration {
-            operation_codecs: std::iter::once(Arc::new(MiniMaxMessagesCodec {
-                descriptor: operation,
-                base: Arc::new(base),
-            }) as Arc<dyn OperationCodec>)
+            operation_codecs: [
+                ClaudeMessagesCodec::new(),
+                ClaudeMessagesCodec::new_for(ApiType::VisionOcr),
+                ClaudeMessagesCodec::new_for(ApiType::VisionCaption),
+            ]
+            .into_iter()
+            .map(|base| {
+                Arc::new(MiniMaxMessagesCodec {
+                    descriptor: operation.clone(),
+                    base: Arc::new(base),
+                }) as Arc<dyn OperationCodec>
+            })
             .chain(media_registration.operation_codecs)
             .collect(),
             native_task_codecs: media_registration.native_task_codecs,
@@ -91,15 +102,21 @@ impl OperationCodec for MiniMaxMessagesCodec {
     }
 
     fn api_type(&self) -> ApiType {
-        ApiType::Llm
+        self.base.api_type()
     }
 
     fn execution_modes(&self) -> BTreeSet<ExecutionMode> {
-        BTreeSet::from([ExecutionMode::Immediate, ExecutionMode::Stream])
+        self.base.execution_modes()
     }
 
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
         validate_minimax_request(call)?;
+        if !matches!(
+            call.input.canonical_request,
+            AiccCall::ChatCompletionsCreate(_)
+        ) {
+            return self.base.encode(call);
+        }
         let AiccCall::ChatCompletionsCreate(request) = &call.input.canonical_request else {
             unreachable!("MiniMax request validation checked the canonical method")
         };
@@ -158,9 +175,13 @@ impl OperationCodec for MiniMaxMessagesCodec {
 
 fn validate_minimax_request(call: &CodecCall<'_>) -> ProtocolResultValue<()> {
     let AiccCall::ChatCompletionsCreate(request) = &call.input.canonical_request else {
-        return Err(ProtocolError::invalid_request(
-            "MiniMax Messages only accepts chat.completions.create",
-        ));
+        return match (&call.input.canonical_request, call.api_type) {
+            (AiccCall::VisionOcr(_), ApiType::VisionOcr)
+            | (AiccCall::VisionCaption(_), ApiType::VisionCaption) => Ok(()),
+            _ => Err(ProtocolError::invalid_request(
+                "MiniMax Messages received a canonical request that does not match its API type",
+            )),
+        };
     };
     if request
         .temperature
@@ -362,7 +383,7 @@ mod tests {
             descriptor.base_adapter_id.as_deref(),
             Some(CLAUDE_MESSAGES_ADAPTER_ID)
         );
-        assert_eq!(descriptor.operations.len(), 5);
+        assert_eq!(descriptor.operations.len(), 6);
         let request = registration.operation_codecs[0]
             .encode(&CodecCall {
                 api_type: ApiType::Llm,

@@ -83,6 +83,9 @@ api_token = ""
 [provider_credentials.openrouter]
 api_token = ""
 
+[provider_credentials.doubao]
+api_token = ""
+
 # Optional per-catalog override. Required for SN because its /models endpoint
 # uses an SN SSO session token rather than an AICC Provider API token.
 [official_catalog_credentials.sn-ai-provider]

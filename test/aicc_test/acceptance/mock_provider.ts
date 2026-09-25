@@ -205,7 +205,7 @@ function errorResponse(response: ServerResponse, scenario: Scenario): boolean {
   json(response, mapped[0], {
     error: {
       type: mapped[1],
-      code: `mock/${mapped[1]}`,
+      code: mapped[1],
       message: `deterministic ${mapped[1]} from AICC mock provider`,
     },
   });
@@ -504,6 +504,7 @@ async function providerResponse(
         { id: "gpt-transcribe", object: "model", owned_by: "mock" },
         { id: "gpt-4o-mini-tts", object: "model", owned_by: "mock" },
         { id: "gpt-5.6-luna-mock", object: "model", owned_by: "mock" },
+        { id: "vendor-unknown-mock", object: "model", owned_by: "mock" },
       ],
       has_more: false,
     });
@@ -590,7 +591,12 @@ async function providerResponse(
         mask: { format: "polygon", points: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9]] },
       }],
     });
-    const output: Json = serialized.includes("audio") || serialized.includes("speech")
+    const responseType = object(object(body)?.response_format ?? null)?.type;
+    const output: Json = responseType === "video"
+      ? { type: "video", id: `gemini-video-${state.calls}`, data: "bW9jay12aWRlbw==", mime_type: "video/mp4" }
+      : responseType === "image"
+      ? { type: "image", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", mime_type: "image/png" }
+      : responseType === "audio" || serialized.includes("audio") || serialized.includes("speech")
       ? { type: "audio", data: "UklGRm1vY2stYXVkaW8tV0FWRQ==", mime_type: "audio/wav" }
       : { type: "text", text: structured };
     json(response, 200, {
@@ -717,6 +723,10 @@ async function providerResponse(
     json(response, 200, { status: operation.polls < 2 ? "IN_PROGRESS" : "COMPLETED" });
     return;
   }
+  if (/^\/fal-ai\/.+\/requests\/[^/]+\/cancel$/.test(path) && request.method === "PUT") {
+    json(response, 202, { status: "CANCELLATION_REQUESTED" });
+    return;
+  }
   if (/^\/fal-ai\/.+\/requests\/[^/]+$/.test(path)) {
     const mime = path.includes("video") ? "video/mp4" : path.includes("deepfilter") ? "audio/wav" : "image/png";
     const output = { url: `https://mock.invalid/output.${mime.split("/")[1]}`, content_type: mime };
@@ -795,6 +805,18 @@ const server = createServer(async (request, response) => {
       body,
       scenario,
     });
+    if (
+      request.method === "GET" &&
+      /^\/instance-custom-(?:openai|claude|gemini)\/.*\/models$/.test(url.pathname)
+    ) {
+      json(response, 503, {
+        error: {
+          type: "mock_discovery_unavailable",
+          message: "custom Provider discovery intentionally uses its configured inventory fallback",
+        },
+      });
+      return;
+    }
     await providerResponse(request, response, providerPath, body, scenario);
   } catch (error) {
     state.errors += 1;

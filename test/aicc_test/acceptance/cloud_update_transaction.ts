@@ -89,7 +89,11 @@ export async function backupCloudUpdateConfig(
     if (restored) return;
     const client = refreshedSystemConfig ?? systemConfig;
     if (backup === null) {
-      await client.call("sys_config_delete", { key: CLOUD_CONFIG_KEY });
+      try {
+        await client.call("sys_config_delete", { key: CLOUD_CONFIG_KEY });
+      } catch (error) {
+        if (!/not.?found|key.?not.?found/i.test(String(error))) throw error;
+      }
     } else {
       await client.call("sys_config_set", {
         key: CLOUD_CONFIG_KEY,

@@ -142,6 +142,7 @@
     }
   ],
   "patterns": [
+    { "match": "glm-latest", "exclude": true },
     {
       "match": "*",
       "operations": {

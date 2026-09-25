@@ -18,18 +18,20 @@ interface WizardDraft {
   provider_profile_id: string | null
   display_name: string
   base_url: string
+  operation_base_urls: Record<string, string>
   protocol_family_id: string | null
   protocol_adapter_id?: string
   region?: string
   workspace?: string
   account?: string
+  policy_region?: string
   auth_mode: 'api_key' | 'dynamic_login'
   api_key: string
   auto_sync_models: boolean
 }
 ```
 
-`provider_profile_id`, `protocol_adapter_id`, and `base_url` are frozen contract fields. `ui_hints` is extensible. `display_name` is UI-only. For built-in profiles the adapter and optional/required region, workspace, and account fields are selected by the catalog; custom providers expose only `protocol_family_id`, and the resolved adapter is read back from validation.
+`provider_profile_id`, `protocol_adapter_id`, `base_url`, and `operation_base_urls` are contract fields. `operation_base_urls` maps an operation such as `tts.unidirectional` to the endpoint used instead of the provider's default `base_url`. `ui_hints` is extensible. `display_name` is UI-only. For built-in profiles the adapter, default URLs, and optional/required region, workspace, and account fields are selected by the catalog. The UI presents `base_url` as an editable combobox backed by catalog `region_base_urls`: its independent dropdown always shows every configured endpoint regardless of the current text; selecting one updates both `base_url` and `region`, while a custom URL sets `region` to `unknown`. Each `operation_base_urls` value uses the same editable-combobox behavior and at minimum lists its configured default so it can be restored after manual editing. The catalog region `default_value` is the broadest applicable endpoint and is selected initially; even a single configured endpoint remains available as a reset choice. `policy_region` is the separate residence/account-policy dimension and never changes a URL. Custom providers expose an editable, required `base_url` and only `protocol_family_id`; the resolved adapter is read back from validation.
 
 `provider_profile_id` is an open catalog identity. The UI preserves IDs introduced after the desktop build and does not maintain a Provider allowlist. Only Protocol Adapter implementations remain client-version capabilities.
 

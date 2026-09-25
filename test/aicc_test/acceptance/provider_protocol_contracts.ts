@@ -32,6 +32,7 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
   glm: new Set(["docs.z.ai", "docs.bigmodel.cn"]),
   deepseek: new Set(["api-docs.deepseek.com"]),
   doubao: new Set(["www.volcengine.com", "docs.volcengine.com"]),
+  "doubao-tts": new Set(["www.volcengine.com", "docs.volcengine.com"]),
   qwen: new Set(["www.alibabacloud.com"]),
   "sn-ai-provider": new Set(["github.com", "developers.openai.com"]),
 };
@@ -46,9 +47,11 @@ export type ProtocolErrorFixture = {
 export type ProviderProtocolContract = {
   id: string;
   protocol_adapter_id: string;
+  error_fixture_key?: string;
   base_contract_id?: string;
   api_version: string;
   api_types: string[];
+  variant_api_types?: string[];
   operation: string;
   http_method: string;
   path: string;
@@ -84,7 +87,8 @@ export type ProviderProtocolContract = {
     | "minimax_video"
     | "google_lro"
     | "openai_video"
-    | "glm_video";
+    | "glm_video"
+    | "doubao_video";
   async_steps?: Array<{
     name: "poll" | "result" | "cancel";
     http_method: string;
@@ -93,6 +97,7 @@ export type ProviderProtocolContract = {
   }>;
   success_content_type?: string;
   success_fixture?: Record<string, unknown>;
+  success_chunk_fixtures?: Array<Record<string, unknown>>;
   async_result_fixture?: Record<string, unknown>;
   success_fixture_base64?: string;
   provider_artifact_identity?: {
@@ -114,6 +119,7 @@ export type ProviderProtocolCatalog = {
     provider_driver: string;
     provider_profile_id: string;
     endpoint_path: string;
+    operation_endpoint_paths?: Record<string, string>;
     credential_type: "api_key" | "bearer";
     instance_fields?: { region?: string; workspace?: string; account?: string };
     official_first_party_model_ids?: Record<string, string[]>;
@@ -197,6 +203,20 @@ export function validateProviderProtocolCatalog(
       (provider.endpoint_path !== "" && !provider.endpoint_path.startsWith("/"))
     ) {
       throw new Error(`${driver}.endpoint_path must be empty or start with /`);
+    }
+    if (provider.operation_endpoint_paths !== undefined) {
+      const paths = object(
+        provider.operation_endpoint_paths,
+        `${driver}.operation_endpoint_paths`,
+      );
+      for (const [operation, path] of Object.entries(paths)) {
+        nonEmptyString(operation, `${driver}.operation_endpoint_paths operation`);
+        if (typeof path !== "string" || !path.startsWith("/")) {
+          throw new Error(
+            `${driver}.operation_endpoint_paths.${operation} must start with /`,
+          );
+        }
+      }
     }
     if (!["api_key", "bearer"].includes(String(provider.credential_type))) {
       throw new Error(`${driver}.credential_type is invalid`);
@@ -320,6 +340,9 @@ export function validateProviderProtocolCatalog(
         if (!testModelIds[apiType]) {
           throw new Error(`${id} has no ${driver}.test_model_ids.${apiType}`);
         }
+      }
+      if (contract.variant_api_types !== undefined) {
+        stringArray(contract.variant_api_types, `${id}.variant_api_types`);
       }
       stringArray(contract.allowed_body_fields, `${id}.allowed_body_fields`);
       if (
@@ -461,8 +484,12 @@ export function validateProviderProtocolCatalog(
           `${id}.provider_artifact_identity.id_fields`,
         );
         if (
-          returnsApiTypes.some((apiType) => !(contract.api_types as string[]).includes(apiType)) ||
-          acceptsApiTypes.some((apiType) => !(contract.api_types as string[]).includes(apiType))
+          returnsApiTypes.some((apiType) =>
+            !(contract.api_types as string[]).includes(apiType)
+          ) ||
+          acceptsApiTypes.some((apiType) =>
+            !(contract.api_types as string[]).includes(apiType)
+          )
         ) {
           throw new Error(
             `${id}.provider_artifact_identity api types must be declared by the contract`,
@@ -1423,6 +1450,7 @@ export function validateProviderSuccessFixture(
   contract: ProviderProtocolContract,
 ): string[] {
   if (contract.success_fixture_base64) return [];
+  if (contract.success_chunk_fixtures?.length) return [];
   const fixture = recordValue(contract.success_fixture);
   if (!fixture) return ["fixture must be an object"];
   const errors: string[] = [];
@@ -1675,9 +1703,9 @@ export function buildT15Manifest(
               candidateContract.api_types.includes(apiType)
             )
           );
-          const crossContract = crossProvider?.contracts.find((candidateContract) =>
-            candidateContract.api_types.includes(apiType)
-          );
+          const crossContract = crossProvider?.contracts.find((
+            candidateContract,
+          ) => candidateContract.api_types.includes(apiType));
           if (crossProvider && crossContract) {
             cases.push({
               ...common,
@@ -1694,7 +1722,8 @@ export function buildT15Manifest(
               ],
               provider_driver: crossProvider.provider_driver,
               provider_instance: `t15-${crossProvider.provider_driver}`,
-              expected_provider_instance: `t15-${crossProvider.provider_driver}`,
+              expected_provider_instance:
+                `t15-${crossProvider.provider_driver}`,
               protocol_contract_id: crossContract.id,
               protocol_adapter_id: crossContract.protocol_adapter_id,
               provider_api_version: crossContract.api_version,
@@ -1760,7 +1789,9 @@ export function buildT15Manifest(
           } as AcceptanceCase);
           const terminalFailureScenarios =
             contract.async_protocol === "google_lro" ||
-              contract.async_protocol === "minimax_video"
+              contract.async_protocol === "minimax_video" ||
+              contract.async_protocol === "glm_video" ||
+              contract.async_protocol === "doubao_video"
               ? ["async_poll_timeout"] as const
               : ["async_poll_timeout", "async_artifact_unavailable"] as const;
           for (const scenario of terminalFailureScenarios) {
@@ -1776,7 +1807,12 @@ export function buildT15Manifest(
               expected_wire_fixture: `${contract.id}.request.async`,
               response_fixture: `${contract.id}.${scenario}`,
               timeout_ms: scenario === "async_poll_timeout"
-                ? 1_500
+              ? contract.async_protocol === "google_lro" ||
+                    contract.async_protocol === "minimax_video" ||
+                    contract.async_protocol === "glm_video" ||
+                    contract.async_protocol === "doubao_video"
+                  ? 3_500
+                  : 1_500
                 : common.timeout_ms,
             } as AcceptanceCase);
           }
@@ -1796,7 +1832,9 @@ export function buildT15Manifest(
         }
         for (
           const error of apiType === primaryApiType
-            ? catalog.error_fixtures[provider.provider_driver]
+            ? catalog.error_fixtures[
+              contract.error_fixture_key ?? provider.provider_driver
+            ]
             : []
         ) {
           cases.push({
@@ -1810,7 +1848,7 @@ export function buildT15Manifest(
             expected_task_status: "failed",
             expected_error_class: "provider_protocol_failed",
             response_fixture:
-              `${provider.provider_driver}.error.${error.scenario}`,
+              `${contract.error_fixture_key ?? provider.provider_driver}.error.${error.scenario}`,
             expected_aicc_error_code: "provider_error",
             expected_provider_error_code: providerErrorCode(error),
             expected_retriable: providerErrorRetriable(error),
@@ -1936,7 +1974,7 @@ export function buildT15Manifest(
       } as AcceptanceCase);
     }
   }
-  const customDrivers = new Set(["openai", "claude", "google-gemini", "fal"]);
+  const customDrivers = new Set(["openai", "claude", "google-gemini"]);
   cases.push(
     ...cases.filter((testCase) =>
       customDrivers.has(testCase.provider_driver ?? "") &&
@@ -1964,12 +2002,9 @@ export function buildT15Manifest(
       variant.provider_driver,
       variant.contract_id,
     );
-    const openAiResponsesImage = variant.provider_driver === "openai" &&
-      variant.model.provider_model_id.startsWith("gpt-5") &&
-      ["image.txt2img", "image.img2img"].includes(variant.api_type) &&
-      contract.operation === "responses.create";
     if (
-      !contract.api_types.includes(variant.api_type) && !openAiResponsesImage
+      !contract.api_types.includes(variant.api_type) &&
+      !contract.variant_api_types?.includes(variant.api_type)
     ) {
       throw new Error(
         `${variant.contract_id} does not support ${variant.api_type}`,

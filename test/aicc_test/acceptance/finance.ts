@@ -69,6 +69,11 @@ export function extractFinance(value: unknown): {
 
 export type CostReservation = { id: number; estimatedCostUsd: number };
 
+export function exceedsUsdBudget(amount: number, budget: number): boolean {
+  const tolerance = Number.EPSILON * Math.max(1, Math.abs(amount), Math.abs(budget)) * 8;
+  return amount - budget > tolerance;
+}
+
 export class CostBudget {
   private nextId = 1;
   private readonly reservations = new Map<number, number>();
@@ -85,7 +90,7 @@ export class CostBudget {
     if (!Number.isFinite(estimatedCostUsd) || estimatedCostUsd < 0) {
       throw new Error("estimated cost must be non-negative");
     }
-    if (this.exposureUsd() + estimatedCostUsd > this.budgetUsd + Number.EPSILON) {
+    if (exceedsUsdBudget(this.exposureUsd() + estimatedCostUsd, this.budgetUsd)) {
       throw new Error(
         `financial budget exhausted: exposure $${this.exposureUsd().toFixed(6)} + reservation $${estimatedCostUsd.toFixed(6)} > $${this.budgetUsd.toFixed(6)}`,
       );
@@ -100,7 +105,7 @@ export class CostBudget {
     const exposure = actualCostUsd ?? reservation.estimatedCostUsd;
     if (!Number.isFinite(exposure) || exposure < 0) throw new Error("actual cost must be non-negative");
     this.settledExposureUsd += exposure;
-    if (this.exposureUsd() > this.budgetUsd + Number.EPSILON) this.exceeded = true;
+    if (exceedsUsdBudget(this.exposureUsd(), this.budgetUsd)) this.exceeded = true;
   }
 
   exposureUsd(): number {
