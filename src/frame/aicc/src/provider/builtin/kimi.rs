@@ -151,6 +151,7 @@ mod tests {
     use bytes::Bytes;
     use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
     use reqwest::StatusCode;
+    use std::collections::BTreeMap;
     use std::sync::Mutex;
 
     struct FakeTransport {

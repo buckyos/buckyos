@@ -29,6 +29,7 @@ fn instance(profile: &ProviderProfile, name: &str) -> ProviderInstanceConfig {
         provider_profile_id: profile.provider_profile_id.clone(),
         protocol_adapter_id: profile.default_protocol_adapter_id.clone(),
         base_url: "https://example.test/v1".into(),
+        operation_base_urls: BTreeMap::new(),
         credential: CredentialReference {
             reference: "secret://test".into(),
         },
@@ -431,6 +432,7 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
         let target = ProviderCallTarget {
             provider_rules_id: Some(provider.into()),
             base_url: config.base_url.clone(),
+            operation_base_urls: BTreeMap::new(),
             credential,
             credential_reference: "secret://test".into(),
             credential_header_name: None,

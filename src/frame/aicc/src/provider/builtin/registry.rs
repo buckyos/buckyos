@@ -783,7 +783,7 @@ mod tests {
             .map(|adapter| adapter.protocol_adapter_id.as_str())
             .collect::<BTreeSet<_>>();
         assert_eq!(codecs.adapters().len(), adapter_ids.len());
-        assert_eq!(adapter_ids.len(), 18);
+        assert_eq!(adapter_ids.len(), 19);
         for profile in registry.profiles() {
             assert!(adapter_ids.contains(profile.default_protocol_adapter_id.as_str()));
         }
@@ -795,7 +795,7 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(
             custom_provider_families,
-            BTreeSet::from(["claude", "gemini", "openai"])
+            BTreeSet::from(["claude", "gemini", "openai", "typesafe-systemone"])
         );
         assert_eq!(
             registry.custom_provider_adapter_ids(),
@@ -804,6 +804,7 @@ mod tests {
                 GEMINI_ADAPTER_ID.to_owned(),
                 OPENAI_CHAT_COMPLETIONS_ADAPTER_ID.to_owned(),
                 OPENAI_RESPONSES_ADAPTER_ID.to_owned(),
+                "typesafe-systemone".to_owned(),
             ])
         );
         for adapter_id in [
@@ -1002,7 +1003,18 @@ mod tests {
 
         assert_eq!(binding.profile.provider_profile_id, "vendor");
         assert_eq!(binding.profile.discovery_mode, DiscoveryMode::MachineApi);
-        assert!(binding.profile.default_inventory.is_none());
+        assert_eq!(
+            binding
+                .profile
+                .default_inventory
+                .as_ref()
+                .unwrap()
+                .models
+                .iter()
+                .map(|model| model.provider_model_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["vendor-model"]
+        );
     }
 
     #[test]
@@ -1158,7 +1170,7 @@ mod tests {
             })
             .unwrap();
         let inventory = binding.profile.default_inventory.unwrap();
-        assert_eq!(inventory.revision.as_deref(), Some("catalog-fal-2"));
+        assert_eq!(inventory.revision.as_deref(), Some("catalog-fal-1"));
         assert_eq!(inventory.models.len(), 4);
         assert!(inventory
             .models

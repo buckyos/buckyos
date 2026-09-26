@@ -1286,7 +1286,6 @@ fn runtime_admin_snapshot(
             })).collect::<Vec<_>>(),
             "directory": model_directory_json(&snapshot.models),
             "logical_definitions": logical_definitions_json(&snapshot.models),
-            "catalog_models": snapshot.catalog.catalog_model_mounts(),
             "catalog_patterns": snapshot.catalog.model_drivers().map(|driver| json!({
                 "model_driver_id": driver.model_driver_id,
                 "patterns": driver.patterns,

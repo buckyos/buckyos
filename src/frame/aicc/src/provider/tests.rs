@@ -78,7 +78,9 @@ fn provider_connection_resolves_workspace_and_default_base_url() {
             .with_allowed_values(["cn-beijing", "cn-shanghai"]),
         workspace: ProviderFieldSchema::required(),
         account: ProviderFieldSchema::optional(),
+        policy_region: None,
         region_base_urls: BTreeMap::new(),
+        operation_base_urls: BTreeMap::new(),
     };
     let resolved = contract
         .resolve(ProviderConnectionInput {
@@ -114,7 +116,9 @@ fn provider_connection_rejects_missing_or_unsupported_fields() {
         region: ProviderFieldSchema::unsupported(),
         workspace: ProviderFieldSchema::required(),
         account: ProviderFieldSchema::unsupported(),
+        policy_region: None,
         region_base_urls: BTreeMap::new(),
+        operation_base_urls: BTreeMap::new(),
     };
     assert!(matches!(
         contract.resolve(ProviderConnectionInput::default()),
@@ -297,6 +301,7 @@ fn instance(name: &str) -> ProviderInstanceConfig {
         provider_profile_id: "openai".into(),
         protocol_adapter_id: "openai-responses".into(),
         base_url: "https://api.example.test/v1/".into(),
+        operation_base_urls: BTreeMap::new(),
         credential: CredentialReference {
             reference: "system-config://secrets/aicc/openai".into(),
         },
@@ -619,7 +624,9 @@ fn connection_contract() -> ProviderConnectionContract {
         region: ProviderFieldSchema::unsupported(),
         workspace: ProviderFieldSchema::required(),
         account: ProviderFieldSchema::optional(),
+        policy_region: None,
         region_base_urls: BTreeMap::new(),
+        operation_base_urls: BTreeMap::new(),
     }
 }
 
@@ -630,6 +637,7 @@ fn draft(auth: ProviderAuthConfig) -> ProviderDraftConfig {
         protocol_adapter_id: "openai-responses".into(),
         provider_rules_id: None,
         base_url: None,
+        operation_base_urls: BTreeMap::new(),
         region: None,
         workspace: Some("workspace-1".into()),
         account: None,
@@ -829,7 +837,7 @@ async fn quota_view_ignores_untrusted_discovery_and_reports_provider_quota_unsup
         ProviderQuotaObservationState::Unsupported
     );
     assert_eq!(unsupported.remaining_request_units, None);
-    assert_eq!(unsupported.remaining_cost_usd, None);
+    assert_eq!(unsupported.remaining_cost, None);
     assert_eq!(unsupported.source, "unsupported");
     unsupported_manager.shutdown().await;
 }
@@ -1303,6 +1311,7 @@ async fn disabled_auto_sync_keeps_initial_discovery_without_periodic_task() {
 fn instance_rules_exclude_models_before_inventory_publication() {
     let mut config = instance("filtered");
     config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        policy_region: None,
         exclude_models: BTreeSet::from(["gpt-test".to_string()]),
         model_driver_overrides: BTreeMap::new(),
     });
@@ -1321,6 +1330,7 @@ fn instance_rules_exclude_models_before_inventory_publication() {
 fn instance_driver_override_maps_endpoint_ids_without_global_provider_rules() {
     let mut config = instance("doubao-endpoint");
     config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        policy_region: None,
         exclude_models: BTreeSet::new(),
         model_driver_overrides: BTreeMap::from([(
             "ep-user-specific".into(),
@@ -1341,20 +1351,25 @@ fn instance_driver_override_maps_endpoint_ids_without_global_provider_rules() {
 }
 
 #[test]
-fn doubao_endpoint_ids_require_an_instance_origin_override() {
+fn doubao_endpoint_ids_without_an_instance_origin_override_are_unmatched() {
     let mut doubao = profile();
     doubao.provider_profile_id = "doubao".into();
     let mut config = instance("doubao-endpoint");
     config.provider_profile_id = "doubao".into();
-    let error = InventoryBuilder::build(
+    let inventory = InventoryBuilder::build(
         &doubao,
         &config,
         discovery("ep-user-specific"),
         &catalog(),
         &codecs(),
     )
-    .unwrap_err();
-    assert!(error.to_string().contains("origin_model_overrides"));
+    .unwrap();
+    assert!(inventory.models.is_empty());
+    assert_eq!(inventory.unmatched_models.len(), 1);
+    assert_eq!(
+        inventory.unmatched_models[0].provider_model_id,
+        "ep-user-specific"
+    );
 }
 
 #[tokio::test]

@@ -68,6 +68,7 @@ kimi|kimi-chat|llm|chat.completions.create
 kimi|kimi-chat|vision.caption|chat.completions.create
 kimi|kimi-chat|vision.ocr|chat.completions.create
 minimax|minimax-messages|audio.asr|speech_to_text.create
+minimax|minimax-messages|audio.music|music_generation.create
 minimax|minimax-messages|audio.tts|t2a.create
 minimax|minimax-messages|image.img2img|image_generation.create
 minimax|minimax-messages|image.txt2img|image_generation.create

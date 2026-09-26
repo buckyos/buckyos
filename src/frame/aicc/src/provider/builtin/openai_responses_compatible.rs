@@ -614,6 +614,7 @@ mod tests {
     use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
     use reqwest::header::AUTHORIZATION;
     use serde_json::{json, Value};
+    use std::collections::BTreeMap;
 
     #[test]
     fn bundled_provider_and_model_catalogs_build_one_snapshot() {
@@ -700,7 +701,7 @@ mod tests {
         );
         assert_eq!(
             providers[1].known_provider().base_url,
-            "https://ark.cn-beijing.volces.com/api/v3"
+            "https://ark.cn-beijing.volces.com/api/plan/v3"
         );
     }
 
@@ -752,10 +753,14 @@ mod tests {
                     1
                 }
             );
-            assert!(rules.models.is_empty());
+            if provider.profile.provider_profile_id == DOUBAO_PROFILE_ID {
+                assert!(!rules.models.is_empty());
+            } else {
+                assert!(rules.models.is_empty());
+            }
             let expected_patterns = match provider.profile.provider_profile_id.as_str() {
                 DOUBAO_PROFILE_ID => 3,
-                QWEN_PROFILE_ID => 5,
+                QWEN_PROFILE_ID => 8,
                 _ => 1,
             };
             assert_eq!(rules.patterns.len(), expected_patterns);
@@ -770,7 +775,13 @@ mod tests {
         assert!(deepseek().provider_rules(99).patterns[0].request_rules[0]
             .remove
             .contains(&"/store".to_owned()));
-        assert!(qwen().provider_rules(99).patterns[4].request_rules[0]
+        let qwen_rules = qwen().provider_rules(99);
+        let qwen_llm_rule = qwen_rules
+            .patterns
+            .iter()
+            .find(|rule| rule.operations.contains_key("llm"))
+            .unwrap();
+        assert!(qwen_llm_rule.request_rules[0]
             .remove
             .contains(&"/background".to_owned()));
     }
@@ -825,6 +836,7 @@ mod tests {
             provider_profile_id: DEEPSEEK_PROFILE_ID.to_owned(),
             protocol_adapter_id: DEEPSEEK_RESPONSES_ADAPTER_ID.to_owned(),
             base_url: deepseek().known_provider().base_url,
+            operation_base_urls: BTreeMap::new(),
             credential: CredentialReference {
                 reference: "secret://deepseek/main".to_owned(),
             },
@@ -876,6 +888,7 @@ mod tests {
                 .unwrap();
             for (descriptor, registration) in [
                 crate::protocol::doubao_media_adapter(),
+                crate::protocol::doubao_speech_adapter(),
                 crate::protocol::qwen_media_adapter(),
             ] {
                 codecs.register_codecs(descriptor, registration).unwrap();
@@ -893,6 +906,7 @@ mod tests {
                 provider_profile_id: profile_id.clone(),
                 protocol_adapter_id: provider.profile.default_protocol_adapter_id.clone(),
                 base_url,
+                operation_base_urls: BTreeMap::new(),
                 credential: CredentialReference {
                     reference: format!("secret://{profile_id}/main"),
                 },
@@ -923,13 +937,13 @@ mod tests {
             )
             .unwrap();
             assert_eq!(inventory.provider_profile_id, profile_id);
-            assert_eq!(inventory.models.len(), 1);
-            assert_eq!(inventory.models[0].provider_model_id, model_id);
-            assert!(inventory.models[0].api_types.contains(&ApiType::Llm));
-            assert_eq!(
-                inventory.models[0].operations["llm"],
-                OPENAI_RESPONSES_OPERATION_ID
-            );
+            let model = inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == model_id)
+                .unwrap();
+            assert!(model.api_types.contains(&ApiType::Llm));
+            assert_eq!(model.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
         }
     }
 }

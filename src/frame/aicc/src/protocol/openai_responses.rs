@@ -3227,7 +3227,13 @@ mod tests {
         assert_eq!(usage.total_tokens, Some(12));
         assert_eq!(usage.cache_read_input_tokens, Some(2));
         assert_eq!(usage.reasoning_tokens, Some(3));
-        assert!(usage.cost.is_none());
+        assert_eq!(
+            usage.cost,
+            Some(buckyos_api::AiCost {
+                amount: 0.0125,
+                currency: "USD".to_owned(),
+            })
+        );
         assert!(usage.reported_cost.is_some());
         assert_eq!(output.value["message"]["content"][0]["type"], "thinking");
         assert_eq!(

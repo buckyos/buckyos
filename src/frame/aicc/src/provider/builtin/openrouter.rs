@@ -663,6 +663,7 @@ mod tests {
             provider_profile_id: "openrouter".into(),
             protocol_adapter_id: "openrouter-responses".into(),
             base_url: "https://proxy.test/api/v1".into(),
+            operation_base_urls: BTreeMap::new(),
             credential: CredentialReference {
                 reference: "secret://test".into(),
             },

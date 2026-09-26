@@ -154,6 +154,7 @@ mod tests {
     use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
     use reqwest::StatusCode;
     use serde_json::{json, Value};
+    use std::collections::BTreeMap;
     use std::sync::Mutex;
 
     struct FakeTransport {
@@ -194,6 +195,7 @@ mod tests {
             provider_profile_id: OPENAI_PROVIDER_PROFILE_ID.to_owned(),
             protocol_adapter_id: known.protocol_adapter_id,
             base_url: known.base_url,
+            operation_base_urls: BTreeMap::new(),
             credential: CredentialReference {
                 reference: "secret://openai/main".to_owned(),
             },

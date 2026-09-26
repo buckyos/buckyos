@@ -9,13 +9,14 @@
     {
       "id": "MiniMax-M2.7",
       "parameter_scale": "m2.7",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "vision": true
       },
       "llm": {
         "spec": "minimax-standard",
@@ -29,13 +30,14 @@
     {
       "id": "MiniMax-M2.7-highspeed",
       "parameter_scale": "m2.7-highspeed",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "vision": true
       },
       "llm": {
         "spec": "minimax-highspeed",
@@ -49,13 +51,14 @@
     {
       "id": "MiniMax-M2.5",
       "parameter_scale": "m2.5",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "vision": true
       },
       "llm": {
         "spec": "minimax-standard",
@@ -69,13 +72,14 @@
     {
       "id": "MiniMax-M2.5-highspeed",
       "parameter_scale": "m2.5-highspeed",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "vision": true
       },
       "llm": {
         "spec": "minimax-highspeed",
@@ -89,13 +93,14 @@
     {
       "id": "MiniMax-M2.1",
       "parameter_scale": "m2.1",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "vision": true
       },
       "llm": {
         "spec": "minimax-standard",
@@ -109,13 +114,14 @@
     {
       "id": "MiniMax-M2.1-highspeed",
       "parameter_scale": "m2.1-highspeed",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "vision": true
       },
       "llm": {
         "spec": "minimax-highspeed",
@@ -129,13 +135,14 @@
     {
       "id": "MiniMax-M2",
       "parameter_scale": "m2",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "vision": true
       },
       "llm": {
         "spec": "minimax-standard",
@@ -145,6 +152,12 @@
         "stability": "stable",
         "weight": 20
       }
+    },
+    {
+      "id": "asr-1.0",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr.minimax", "audio.asr.{model}"],
+      "capabilities": {}
     },
     {
       "id": "speech-2.8-hd",

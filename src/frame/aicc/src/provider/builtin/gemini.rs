@@ -637,7 +637,7 @@ mod tests {
     #[test]
     fn mock_catalog_models_resolve_one_operation_per_api_type() {
         let catalog = CatalogSnapshot::from_current_files(
-            2,
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
             gemini_catalog_files(),
             &CatalogBuildOptions::default(),
         )
@@ -664,9 +664,9 @@ mod tests {
                     health: ProviderHealthState::Healthy,
                     models: vec![DiscoveredModel {
                         provider_model_id: model_id.to_owned(),
-                        origin_model_id: None,
                         api_types: None,
                         supported_features: None,
+                        unsupported_features: BTreeSet::new(),
                         remote_methods: None,
                         availability: ModelAvailability::Available,
                         deprecated: false,

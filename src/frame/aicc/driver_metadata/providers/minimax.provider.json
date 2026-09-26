@@ -2,9 +2,15 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 1,
+  "revision_seq": 2,
   "provider_profile_id": "minimax",
   "models": [
+    {
+      "id": "asr-1.0",
+      "operations": {
+        "audio.asr": "speech_to_text.create"
+      }
+    },
     {
       "id": "speech-2.8-hd",
       "operations": {
@@ -44,7 +50,9 @@
     {
       "match": "MiniMax-M2*",
       "operations": {
-        "llm": "messages.create"
+        "llm": "messages.create",
+        "vision.ocr": "messages.create",
+        "vision.caption": "messages.create"
       },
       "request_rules": [
         {

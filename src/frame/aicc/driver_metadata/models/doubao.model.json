@@ -70,6 +70,13 @@
       "capabilities": {}
     },
     {
+      "id": "doubao-embedding-vision",
+      "parameter_scale": "embedding",
+      "api_types": ["embedding.multimodal"],
+      "logical_mounts": ["embedding.multimodal.doubao", "embedding.multimodal.{model}"],
+      "capabilities": {"vision": true}
+    },
+    {
       "id": "doubao-seed-tts-2.0",
       "parameter_scale": "audio",
       "api_types": ["audio.tts"],

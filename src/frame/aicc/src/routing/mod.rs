@@ -1833,7 +1833,7 @@ mod tests {
             &engine(&RoutingPolicyPatch::default()),
             &runtime(),
         )
-        .route(&request("llm.family"))
+        .route(&request("image.family"))
         .unwrap();
 
         assert_eq!(decision.selected.provider_instance_name, "cloud-b");

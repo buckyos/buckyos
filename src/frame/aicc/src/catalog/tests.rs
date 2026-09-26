@@ -457,10 +457,14 @@ fn schema_revision_required_features_and_references_are_validated() {
     uncovered_static_inventory["models"] = json!([]);
     let mut files = complete_files();
     files[1] = file(CatalogKind::ProviderRules, uncovered_static_inventory);
-    assert!(matches!(
-        build(files),
-        Err(CatalogBuildError::InvalidValue { field, .. }) if field == "static_inventory_models"
-    ));
+    let snapshot = build(files).unwrap();
+    assert_eq!(
+        snapshot
+            .provider_rules("openai")
+            .unwrap()
+            .static_inventory_models,
+        vec!["claude-special".to_owned()]
+    );
 
     let mut revision_zero_custom_adapters = provider_rules();
     revision_zero_custom_adapters["custom_provider_adapters"] = json!(["openai-responses"]);

@@ -745,6 +745,8 @@ mod tests {
             discovered_at_ms: 1,
             health,
             models: Vec::new(),
+            unmatched_models: Vec::new(),
+            unavailable_presets: Vec::new(),
         };
         let healthy = inventory(ProviderHealthState::Healthy);
         let degraded = inventory(ProviderHealthState::Degraded);

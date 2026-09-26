@@ -362,7 +362,7 @@ pub(crate) struct ProviderQuotaReading {
 pub(crate) struct ProviderQuotaObservation {
     pub state: ProviderQuotaObservationState,
     pub remaining_request_units: Option<u64>,
-    pub remaining_cost_usd: Option<AiCost>,
+    pub remaining_cost: Option<AiCost>,
     pub reset_at_ms: Option<i64>,
     pub observed_at_ms: i64,
     pub source: String,

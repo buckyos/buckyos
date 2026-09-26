@@ -93,6 +93,7 @@ impl ProtocolOutput {
             ApiType::EmbeddingText => validate!(buckyos_api::EmbeddingTextResponse),
             ApiType::EmbeddingMultimodal => validate!(buckyos_api::EmbeddingMultimodalResponse),
             ApiType::Rerank => validate!(buckyos_api::RerankResponse),
+            ApiType::Decision => validate!(buckyos_api::DecisionEvaluateResponse),
             ApiType::ImageTextToImage => validate!(buckyos_api::TextToImageInvokeResponse),
             ApiType::ImageImageToImage => validate!(buckyos_api::ImageToImageResponse),
             ApiType::ImageInpaint => validate!(buckyos_api::ImageInpaintResponse),
