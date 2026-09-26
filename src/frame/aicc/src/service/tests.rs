@@ -1208,6 +1208,7 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
     let directory = model_directory_json(&registry);
     let definitions = logical_definitions_json(&registry);
     for path in [
+        "decision",
         "llm",
         "llm.chat",
         "llm.gpt-standard",

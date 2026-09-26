@@ -94,6 +94,7 @@ Helper 接受逻辑模型，一次完成路由与推理。目前冻结两个 Hel
 | 文生图 | `images.generate` | `TextToImageInvokeRequest` -> `TextToImageInvokeResponse` |
 | 文本 embedding | `embedding.text` | `EmbeddingTextRequest` -> `EmbeddingTextResponse` |
 | 多模态 embedding | `embedding.multimodal` | `EmbeddingMultimodalRequest` -> `EmbeddingMultimodalResponse` |
+| decision | `decision.evaluate` | `DecisionEvaluateRequest` -> `DecisionEvaluateResponse` |
 | rerank | `rerank` | `RerankRequest` -> `RerankResponse` |
 | 图生图 | `image.img2img` | `ImageToImageRequest` -> `ImageToImageResponse` |
 | 局部重绘 | `image.inpaint` | `ImageInpaintRequest` -> `ImageInpaintResponse` |
@@ -234,3 +235,9 @@ let response = client.helper_llm_chat(request).await?;
 ## 11. 冻结后的变更规则
 
 method 名、request/response 字段、enum wire 值、逻辑/exact model 格式、资源 tag、任务状态和错误 code 均是用户合同。任何修改必须同步 Rust SDK、TypeScript 声明、dispatcher、本文、`aicc_api设计.md` 和 DV/contract tests。Beta 2.2 直接切换，不保留旧字段 alias。
+
+## Decision 批量求值（2026-09-25）
+
+`decision` 是独立 API Type 与 Capability，method 为 `decision.evaluate`，逻辑入口为 `decision`。请求用共享 `state` 与带稳定 ID 的 `choice | score | boolean` 问题列表；答案保留完整概率分布或为真概率，`confidence` 可缺失且不等于答案概率。Score 为零起点等级索引的期望值。完整字段、校验和示例见 [Decision API](decision_api.md)。
+
+`route.resolve` 的 `requirements.decision` 由实际输入推导；Rust `DecisionEvaluateRequest::requirements()` 与 WebSDK `decisionRequirements()` 提供相同推导。`routing.preview` 接受可选 `requirements`，复用相同资格判断。typed exact 调用重新校验输入能力与大小；首版只支持 immediate，不隐式拆题、不生成解释或执行动作。

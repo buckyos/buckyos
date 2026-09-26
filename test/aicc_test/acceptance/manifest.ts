@@ -147,7 +147,7 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
       throw new Error(`${driver}.official_catalog must be an object`);
     }
     requireString(rawProvider.official_catalog.endpoint, `${driver}.official_catalog.endpoint`);
-    if (!["openai", "anthropic", "gemini", "fal", "sn"].includes(String(rawProvider.official_catalog.format))) {
+    if (!["openai", "anthropic", "gemini", "fal", "sn", "typesafe"].includes(String(rawProvider.official_catalog.format))) {
       throw new Error(`${driver}.official_catalog.format is invalid`);
     }
     if (!["bearer", "x-api-key", "query-key", "fal-key", "none"].includes(String(rawProvider.official_catalog.authentication))) {

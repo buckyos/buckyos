@@ -167,7 +167,7 @@ export type ModelCoverageRecord = {
 
 export type OfficialCatalogConfig = {
   endpoint: string;
-  format: "openai" | "anthropic" | "gemini" | "fal" | "sn";
+  format: "openai" | "anthropic" | "gemini" | "fal" | "sn" | "typesafe";
   authentication: "bearer" | "x-api-key" | "query-key" | "fal-key" | "none";
   page_size?: number;
   endpoint_ids?: string[];

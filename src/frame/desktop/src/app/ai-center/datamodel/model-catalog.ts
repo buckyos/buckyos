@@ -51,7 +51,7 @@ export const defaultModelFilters: ModelFilters = { query: '', available: false, 
 export const vendorNames: Record<string, string> = {
   openai: 'OpenAI', claude: 'Anthropic', anthropic: 'Anthropic', gemini: 'Google Gemini',
   qwen: 'Qwen', deepseek: 'DeepSeek', glm: 'Z.ai GLM', kimi: 'Moonshot Kimi',
-  minimax: 'MiniMax', doubao: 'Doubao', cohere: 'Cohere', fal: 'fal',
+  typesafe: 'TypeSafe', minimax: 'MiniMax', doubao: 'Doubao', cohere: 'Cohere', fal: 'fal',
 }
 
 export function modelCard(model: CatalogModel, vendorId: string): ModelCardView {

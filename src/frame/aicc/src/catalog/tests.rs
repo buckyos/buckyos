@@ -707,3 +707,23 @@ fn removed_provider_fields_and_nested_invalid_prices_are_rejected() {
     let justified:Pricing=serde_json::from_value(json!({"currency":"USD","input_token":1.0,"cache_input_token":2.0,"ratio_exception":"specialized cache storage tariff"})).unwrap();
     assert!(validate_pricing("test", &justified).is_ok());
 }
+
+#[test]
+fn channel_capacity_ceilings_only_narrow_existing_model_facts() {
+    let rule: ProviderExactRule = serde_json::from_value(json!({
+        "id":"typesafe/jev-1.13", "capability_limits":{"max_context_tokens":32000,"decision.max_input_bytes":32000,"decision.max_options":300,"decision.max_levels":10}
+    })).unwrap();
+    let action = provider_rule_action!(rule);
+    let facts = BTreeMap::from([
+        ("max_context_tokens".into(), json!(64000)),
+        ("decision.max_input_bytes".into(), json!(64000)),
+        ("decision.max_options".into(), json!(255)),
+        ("decision.choice".into(), json!(true)),
+    ]);
+    let narrowed = action.narrow(&BTreeSet::from(["decision".into()]), &facts);
+    assert_eq!(narrowed.capabilities["max_context_tokens"], 32000);
+    assert_eq!(narrowed.capabilities["decision.max_input_bytes"], 32000);
+    assert_eq!(narrowed.capabilities["decision.max_options"], 255);
+    assert!(!narrowed.capabilities.contains_key("decision.max_levels"));
+    assert_eq!(narrowed.capabilities["decision.choice"], true);
+}

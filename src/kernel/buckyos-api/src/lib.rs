@@ -26,6 +26,7 @@ pub mod workflow_types;
 mod zone_gateway;
 
 mod aicc_client;
+mod aicc_decision;
 mod aicc_usage_log;
 mod app_availability;
 mod app_doc;
@@ -49,6 +50,7 @@ mod runtime;
 pub mod test_config;
 
 pub use aicc_client::*;
+pub use aicc_decision::*;
 pub use aicc_usage_log::*;
 pub use app_availability::*;
 pub use app_doc::*;

@@ -134,6 +134,7 @@ unknown model 不得通过模型名猜测获得高风险能力。兼容接口偶
 |---|---|---|
 | LLM | `llm` | `chat.completions.create` |
 | Embedding | `embedding.text`、`embedding.multimodal` | 同名 typed method |
+| Decision | `decision` | `decision.evaluate` |
 | Rerank | `rerank` | `rerank` |
 | Image | `image.txt2img`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove` | `images.generate`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove` |
 | Vision | `vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment` | 同名 typed method |

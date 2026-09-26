@@ -66,13 +66,14 @@ Beta 2.2 内置 Provider Profile 基线：
 | `doubao` | `doubao-responses` | standard/OpenAI-compatible models |
 | `qwen` | `qwen-responses` | standard/OpenAI-compatible models |
 | `sn` | `sn-openai` | SN models；支持 API key 与动态登录 |
+| `typesafe` | `typesafe-systemone` | 显式静态库存；已核验 alias 身份匹配 |
 | `custom` | 用户选择已注册 adapter | standard 或 configured/static fallback |
 
 “内置”表示行为实现和验收基线，不表示把 Provider Rules 硬编码进 Rust。每个渠道 vendor 必须有独立 `.provider.json`；每个原厂模型 vendor 必须有独立 `.model.json`。
 
 ## 4. Protocol 复用
 
-基础协议族当前包括 OpenAI Responses、OpenAI Chat Completions、Claude Messages、Gemini Interactions 与 fal Queue。派生 adapter 只保留真实差异：
+基础协议族当前包括 OpenAI Responses、OpenAI Chat Completions、Claude Messages、Gemini Interactions 、fal Queue 与 TypeSafe System One。派生 adapter 只保留真实差异：
 
 - descriptor 完全一致时继承基础 codec；
 - 普通 endpoint、模型映射、参数默认值、字段删除/改名优先写 Provider Rules；
@@ -83,6 +84,13 @@ Beta 2.2 内置 Provider Profile 基线：
 
 operation 是否可执行必须同时满足：typed `ApiType` 存在、codec 已注册、Model Driver 声明能力、Provider Rules 绑定 operation、实例 discovery 确认可用、合同测试通过。
 
+OpenRouter 在 `openrouter-responses` 中组合 `decisions.create`，首版仅 Immediate。
+以 `/api/v1` 为 base 的实例通过 operation 专属路径访问同 origin 的
+`/api/alpha/decisions`；代理前缀保留。其它 v1 operation 不改变。
+题型转换和严格答案形态复用已核验的 TypeSafe 部分，顶层响应 envelope 独立解析。
+仅已核验的 dated build 可规范化为 origin model，原始 model/id/provider 保存到
+任务结果 `provider_metadata`；不通过全局放宽 decoder 接纳渠道差异。
+
 ## 5. Discovery 与 Inventory
 
 `ProviderDiscovery::discover` 接收 `DiscoveryContext`，输出 `ProviderDiscoverySnapshot`。动态事实优先级为：
@@ -91,12 +99,12 @@ operation 是否可执行必须同时满足：typed `ApiType` 存在、codec 已
 Provider 实时 discovery
   > Provider Instance override / configured inventory
   > Provider Rules 渠道静态事实
-  > Model Driver 保守估值
+  > Model Driver 已声明技术能力（不提供价格）
 ```
 
-机器 discovery 失败不能让已经存在的 LKGS 消失。refresh 失败保留旧 inventory 和 applied seq，并更新 health；不完整结果不能部分提交。未知模型进入保守 fallback，不自动宣称 tool、JSON、vision 等能力。
+机器 discovery 失败不能让已经存在的 LKGS 消失。refresh 失败保留旧 inventory 和 applied seq，并更新 health；不完整结果不能部分提交。未被有限 Model Driver 规则解析的模型不进入可执行库存；不推断 API/operation，也不猜版本。
 
-聚合 Provider discovery 返回未收录的原厂时，该模型进入 `unclassified` 保守 fallback，保留完整 `provider_model_id` 作为身份，不搜索其他原厂的同名模型或加载其 variants；不能因此阻断整个 Provider 或 AICC 启动。映射冲突等配置错误仍然拒绝构建。
+聚合 Provider discovery 返回未收录的原厂时，该模型保留未匹配的 discovery 身份用于诊断，不能通过 `unclassified` 获得可执行库存，也不搜索其他原厂同名模型或加载其 variants；其他有效库存仍可构建。映射冲突等配置错误仍然拒绝构建。
 
 Provider 停止、禁用、删除、reload 替换或服务退出时，必须先阻止新刷新，再停止并等待后台循环；旧 generation 不得在退出后提交 inventory 或 health。
 
@@ -168,3 +176,7 @@ cargo test -p aicc
 ## 10. 冻结后的变更规则
 
 Profile/adapter/operation/behavior ID、credential contract、来源优先级、inventory 原子提交和 lifecycle 语义均为冻结边界。修改它们必须同步：本文、metadata schema、operation bindings、用户管理 API、UI/backend mapping、合同 fixtures 与验收矩阵。Beta 2.2 不增加旧 ID alias。
+
+## TypeSafe System One（2026-09-25）
+
+Model Driver 只注册 `jev-1.13.0`；`typesafe-catalog` discovery 对已核验 `jev-latest` / `jev-preview` 映射该原厂身份，别名仍须显式配置库存，响应版本漂移失败。默认静态库存只有精确版本。Provider Rules 绑定 `systemone.evaluate` 并声明渠道输入费率及已核验零输出费率；保留真实 output_tokens。Adapter 使用 Bearer、`POST /v1/systemone`，转换 choice/score/noul，错误不回显上游正文。同协议自托管可选择同一 adapter；profile/driver ID 无品牌白名单。限制、来源和价格见 [Decision API](decision_api.md)。

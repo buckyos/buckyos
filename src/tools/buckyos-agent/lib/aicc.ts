@@ -1,4 +1,4 @@
-import { buckyos } from "buckyos";
+import { buckyos, decisionRequirements } from "buckyos";
 
 import type { AiccRuntime } from "./runtime.ts";
 import type { AiccInferenceResponse, JsonValue, Profile } from "./types.ts";
@@ -11,6 +11,7 @@ type RoutedRequest<T> = Omit<
 >;
 
 export type TypedRequestMap = {
+  "decision.evaluate": RoutedRequest<Parameters<AiccClient["decisionEvaluate"]>[0]>;
   "image.img2img": RoutedRequest<Parameters<AiccClient["imageToImage"]>[0]>;
   "image.inpaint": RoutedRequest<Parameters<AiccClient["imageInpaint"]>[0]>;
   "image.upscale": RoutedRequest<Parameters<AiccClient["imageUpscale"]>[0]>;
@@ -43,6 +44,7 @@ export type TypedMethod = keyof TypedRequestMap;
 const API_TYPE_BY_METHOD: {
   [M in TypedMethod]: Parameters<AiccClient["routeResolve"]>[0]["api_type"];
 } = {
+  "decision.evaluate": "decision",
   "image.img2img": "image.img2img",
   "image.inpaint": "image.inpaint",
   "image.upscale": "image.upscale",
@@ -168,11 +170,23 @@ async function resolveExactModel<M extends TypedMethod>(
   opts: TypedCallOptions<M>,
 ): Promise<string> {
   if (opts.model.includes("@")) return opts.model;
+  let requirements = opts.requirements ?? {};
+  if (opts.method === "decision.evaluate") {
+    const actual = decisionRequirements(opts.request as TypedRequestMap["decision.evaluate"]).decision!;
+    const requested = requirements.decision;
+    actual.question_types = [...new Set([...(actual.question_types ?? []), ...(requested?.question_types ?? [])])];
+    actual.structured_state ||= requested?.structured_state ?? false;
+    actual.structured_rules ||= requested?.structured_rules ?? false;
+    for (const key of ["question_count", "max_options", "max_levels", "input_bytes", "max_state_question_bytes"] as const) {
+      actual[key] = Math.max(actual[key] ?? 0, requested?.[key] ?? 0);
+    }
+    requirements = {...requirements, decision: actual};
+  }
   const resolved = await client.routeResolve({
     ...(opts.traceId ? { trace_id: opts.traceId } : {}),
     api_type: API_TYPE_BY_METHOD[opts.method],
     logical_model: opts.model,
-    requirements: opts.requirements ?? {},
+    requirements,
     disable: opts.disable ?? {},
     policy: buildPolicy(opts),
   });
@@ -182,9 +196,11 @@ async function resolveExactModel<M extends TypedMethod>(
 async function invokeTyped(
   client: AiccClient,
   method: TypedMethod,
-  request: Record<string, unknown>,
+  request: TypedRequestMap[TypedMethod] & { exact_model: string },
 ): Promise<AiccInferenceResponse> {
   switch (method) {
+    case "decision.evaluate":
+      return await client.decisionEvaluate(request as Parameters<AiccClient["decisionEvaluate"]>[0]);
     case "image.img2img":
       return await client.imageToImage(
         request as Parameters<AiccClient["imageToImage"]>[0],

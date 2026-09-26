@@ -56,7 +56,7 @@ AiccServerHandler<T: AiccHandler>
 | 分组 | method |
 | --- | --- |
 | 路由/Helper | `route.resolve`, `helper.llm_chat`, `helper.text_to_image` |
-| typed inference | `chat.completions.create`, `images.generate`, `embedding.text`, `embedding.multimodal`, `rerank`, `image.img2img`, `image.inpaint`, `image.upscale`, `image.bg_remove`, `vision.ocr`, `vision.caption`, `vision.detect`, `vision.segment`, `audio.tts`, `audio.asr`, `audio.music`, `audio.enhance`, `video.txt2video`, `video.img2video`, `video.video2video`, `video.extend`, `video.upscale`, `agent.computer_use` |
+| typed inference | `chat.completions.create`, `images.generate`, `embedding.text`, `embedding.multimodal`, `decision.evaluate`, `rerank`, `image.img2img`, `image.inpaint`, `image.upscale`, `image.bg_remove`, `vision.ocr`, `vision.caption`, `vision.detect`, `vision.segment`, `audio.tts`, `audio.asr`, `audio.music`, `audio.enhance`, `video.txt2video`, `video.img2video`, `video.video2video`, `video.extend`, `video.upscale`, `agent.computer_use` |
 | 任务 | `cancel` |
 | 路由/运行管理 | `service.reload_settings`, `routing.get`, `routing.update`, `routing.preview`, `events.list`, `models.list` |
 | Provider 管理 | `provider.catalog`, `protocol_adapter.list`, `provider.validate`, `provider.add`, `provider.list`, `provider.health`, `provider.update`, `provider.delete`, `provider.refresh_models` |
@@ -179,3 +179,9 @@ Protocol 内部错误还保留 request id、retry-after 与是否允许 failover
 - [Provider 实现冻结设计](frozen_provider_implementation.md)
 - [内部模块架构](internal_module_architecture.md)
 - [Provider operation 绑定](provider_operation_bindings.md)
+
+## Decision typed 扩展（2026-09-25）
+
+`ApiType::Decision` / `Capability::Decision` 均序列化为 `decision`。`AiccCall::DecisionEvaluate`、Rust client、handler/dispatcher 与 SDK 使用同一带标签的问题/答案契约；两条请求入口均校验。`ProtocolOutput` 在公开成功响应和入账前按原请求校验题目覆盖、类型、概率分布、等级与评分，非法结果进入现有错误状态机。state/规则中的任意 JSON 不解释为媒体 ResourceRef。
+
+`typesafe-systemone / systemone.evaluate / decision` 只声明 immediate。公共鉴权、租户、snapshot、幂等、取消、重试、trace 和 usage 链路继续承担生命周期；不新建旁路。见 [Decision API](decision_api.md)。

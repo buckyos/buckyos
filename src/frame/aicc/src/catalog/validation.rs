@@ -288,6 +288,7 @@ trait ProviderRuleValidation {
     fn canonical_fields(&self) -> &BTreeMap<String, crate::canonical::CanonicalFieldMapping>;
     fn remove_api_types(&self) -> &BTreeSet<String>;
     fn remove_features(&self) -> &BTreeSet<String>;
+    fn capability_limits(&self) -> &BTreeMap<String, u64>;
 }
 
 macro_rules! impl_provider_rule_validation {
@@ -307,6 +308,9 @@ macro_rules! impl_provider_rule_validation {
             fn remove_api_types(&self) -> &BTreeSet<String> {
                 &self.remove_api_types
             }
+            fn capability_limits(&self) -> &BTreeMap<String, u64> {
+                &self.capability_limits
+            }
             fn remove_features(&self) -> &BTreeSet<String> {
                 &self.remove_features
             }
@@ -321,6 +325,25 @@ fn validate_provider_rule_data(
     owner: &str,
     rule: &impl ProviderRuleValidation,
 ) -> Result<(), CatalogBuildError> {
+    for (key, value) in rule.capability_limits() {
+        if *value == 0
+            || !matches!(
+                key.as_str(),
+                "max_context_tokens"
+                    | "decision.max_questions"
+                    | "decision.max_options"
+                    | "decision.max_levels"
+                    | "decision.max_input_bytes"
+                    | "decision.max_state_question_bytes"
+            )
+        {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.to_owned(),
+                field: "capability_limits",
+                reason: "expected a positive, supported capacity ceiling".into(),
+            });
+        }
+    }
     for (key, value) in rule.operations() {
         if key.trim().is_empty() || value.trim().is_empty() {
             return Err(CatalogBuildError::InvalidValue {

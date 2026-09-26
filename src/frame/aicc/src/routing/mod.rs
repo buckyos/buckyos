@@ -479,6 +479,13 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
             .disable
             .min_context_tokens
             .max(task_disable.min_context_tokens);
+        if let Some(decision) = &task.decision {
+            effective_request
+                .requirements
+                .decision
+                .get_or_insert_with(Default::default)
+                .merge(decision);
+        }
         for feature in task.feature_names() {
             effective_request
                 .requirements
@@ -794,6 +801,32 @@ fn hard_filter_model(
             "operation_not_supported",
             "model has no operation for the canonical method or api_type",
         ));
+    }
+    if request.api_type == ApiType::Decision {
+        let requirements = request.requirements.decision.clone().unwrap_or_default();
+        for feature in requirements.features() {
+            if model.capabilities.get(&feature).and_then(Value::as_bool) != Some(true) {
+                reasons.push(filter_reason(
+                    "required_feature_missing",
+                    format!("model does not support {feature}"),
+                ));
+            }
+        }
+        for (limit, required) in requirements.limits() {
+            if required > 0
+                && model
+                    .capabilities
+                    .get(limit)
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default()
+                    < required
+            {
+                reasons.push(filter_reason(
+                    "decision_limit_exceeded",
+                    format!("model {limit} is below {required}"),
+                ));
+            }
+        }
     }
     for feature in request.requirements.feature_names() {
         if request.disable.disables_feature(&feature)
@@ -2473,4 +2506,5 @@ mod tests {
             "us"
         );
     }
+    include!("decision_tests.rs");
 }

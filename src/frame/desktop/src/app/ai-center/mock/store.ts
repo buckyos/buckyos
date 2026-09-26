@@ -26,6 +26,7 @@ function getScenarioFromURL(): 'empty' | 'populated' {
 }
 
 function namespaceFromApiType(apiType: string): ApiNamespace {
+  if (apiType === 'decision') return 'decision'
   if (apiType === 'rerank') return 'rerank'
   const namespace = apiType.split('.')[0]
   if (
@@ -349,7 +350,8 @@ export class MockDataStore {
     const byApiNamespace: Record<ApiNamespace, number> = {
       llm: 0,
       embedding: 0,
-      rerank: 0,
+      decision: 0,
+    rerank: 0,
       image: 0,
       vision: 0,
       audio: 0,

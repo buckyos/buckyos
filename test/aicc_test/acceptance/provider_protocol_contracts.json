@@ -1,8 +1,107 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-09-13.1",
-  "checked_at": "2026-09-13",
+  "revision": "official-provider-protocols-2026-09-25.1",
+  "checked_at": "2026-09-25",
   "providers": [
+    {
+      "provider_driver": "typesafe",
+      "provider_profile_id": "typesafe",
+      "endpoint_path": "/v1",
+      "credential_type": "bearer",
+      "official_first_party_model_ids": {
+        "decision": [
+          "jev-1.13.0"
+        ]
+      },
+      "test_model_ids": {
+        "decision": "jev-1.13.0"
+      },
+      "contracts": [
+        {
+          "id": "typesafe.systemone.v1",
+          "protocol_adapter_id": "typesafe-systemone",
+          "api_version": "v1",
+          "api_types": [
+            "decision"
+          ],
+          "operation": "systemone.evaluate",
+          "http_method": "POST",
+          "path": "/v1/systemone",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "state",
+            "questions"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "state",
+            "questions"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "state": [
+              "string",
+              "object",
+              "array"
+            ],
+            "questions": [
+              "object"
+            ]
+          },
+          "success_fixture": {
+            "model": "jev-1.13.0",
+            "answers": {
+              "marker": {
+                "type": "choice",
+                "choice": "present",
+                "probabilities": {
+                  "present": 0.95,
+                  "absent": 0.05
+                },
+                "confidence": 0.85
+              },
+              "priority": {
+                "type": "score",
+                "score": 1.05,
+                "legend": {
+                  "0": "Routine",
+                  "1": "Urgent",
+                  "2": "Critical"
+                },
+                "probabilities": {
+                  "0": 0.0,
+                  "1": 0.95,
+                  "2": 0.05
+                },
+                "confidence": 0.92
+              },
+              "contains": {
+                "type": "noul",
+                "noul": 0.98
+              }
+            },
+            "usage": {
+              "input_tokens": 318,
+              "output_tokens": 72
+            }
+          },
+          "official_sources": [
+            "https://docs.typesafe.ai/api",
+            "https://docs.typesafe.ai/primitives/advanced",
+            "https://docs.typesafe.ai/models"
+          ],
+          "evidence_summary": "Verified 2026-09-25: batch System One questions and typed answers, Bearer authentication, input/output token usage."
+        }
+      ]
+    },
     {
       "provider_driver": "openai",
       "provider_profile_id": "openai",
@@ -624,66 +723,501 @@
       "endpoint_path": "/api/v1",
       "credential_type": "bearer",
       "official_first_party_model_ids": {
-        "llm": ["openai/gpt-5.6", "openai/gpt-5.5", "openai/gpt-5.4"],
-        "embedding.text": ["openai/text-embedding-3-small"],
-        "rerank": ["cohere/rerank-v3.5"]
+        "llm": [
+          "openai/gpt-5.6",
+          "openai/gpt-5.5",
+          "openai/gpt-5.4"
+        ],
+        "embedding.text": [
+          "openai/text-embedding-3-small"
+        ],
+        "rerank": [
+          "cohere/rerank-v3.5"
+        ],
+        "decision": [
+          "typesafe/jev-1.13"
+        ]
       },
-      "official_variant_sources": ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"],
-      "official_variant_rules": [
-        { "model_ids": ["openai/gpt-5.6"], "variants": { "reasoning-none": { "reasoning": { "effort": "none" } }, "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } }, "reasoning-max": { "reasoning": { "effort": "max" } } } },
-        { "model_ids": ["openai/gpt-5.5", "openai/gpt-5.4"], "variants": { "reasoning-none": { "reasoning": { "effort": "none" } }, "reasoning-low": { "reasoning": { "effort": "low" } }, "reasoning-medium": { "reasoning": { "effort": "medium" } }, "reasoning-high": { "reasoning": { "effort": "high" } }, "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } } } }
+      "official_variant_sources": [
+        "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"
       ],
-      "test_model_ids": { "llm": "openai/gpt-5.6", "embedding.text": "openai/text-embedding-3-small", "rerank": "cohere/rerank-v3.5" },
-      "contracts": [{
-        "id": "openrouter.responses.v1",
-        "protocol_adapter_id": "openrouter-responses",
-        "api_version": "v1",
-        "api_types": ["llm"],
-        "operation": "responses.create",
-        "http_method": "POST",
-        "path": "/api/v1/responses",
-        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
-        "content_type": "application/json",
-        "required_body_fields": ["model", "input"],
-        "allowed_body_fields": ["model", "input", "background", "cache_control", "debug", "image_config", "include", "max_output_tokens", "max_tool_calls", "metadata", "modalities", "models", "parallel_tool_calls", "plugins", "prompt_cache_key", "provider", "reasoning", "route", "safety_identifier", "service_tier", "session_id", "stop_server_tools_when", "store", "stream", "temperature", "text", "tool_choice", "tools", "top_p", "truncation"],
-        "body_field_types": { "model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "max_output_tokens": ["number"], "temperature": ["number"], "tools": ["array"], "tool_choice": ["string", "object"], "top_p": ["number"], "reasoning": ["object"], "cache_control": ["object"], "debug": ["object"], "image_config": ["object"], "modalities": ["array"], "models": ["array"], "parallel_tool_calls": ["boolean"], "plugins": ["array"], "provider": ["object"], "route": ["string"], "service_tier": ["string"], "session_id": ["string"], "stop_server_tools_when": ["array"] },
-        "stream_protocol": "openai_responses",
-        "success_fixture": { "id": "resp_mock_1", "object": "response", "status": "completed", "model": "mock-model", "output": [{ "type": "reasoning", "id": "rs_t15_4827", "summary": [{ "type": "summary_text", "text": "opaque reasoning" }], "encrypted_content": "opaque-t15-reasoning" }, { "type": "message", "id": "msg_t15_4827", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
-        "official_sources": ["https://openrouter.ai/docs/api/api-reference/responses/create-responses", "https://openrouter.ai/openapi.yaml"],
-        "evidence_summary": "OpenRouter Responses uses POST /api/v1/responses with Bearer authentication and the OpenResponses model/input, output item, usage, tool, and SSE event shapes."
-      }, {
-        "id": "openrouter.embeddings.v1",
-        "protocol_adapter_id": "openrouter-responses",
-        "api_version": "v1",
-        "api_types": ["embedding.text"],
-        "operation": "embeddings.create",
-        "http_method": "POST",
-        "path": "/api/v1/embeddings",
-        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
-        "content_type": "application/json",
-        "required_body_fields": ["model", "input"],
-        "allowed_body_fields": ["model", "input", "dimensions", "encoding_format", "input_type", "provider", "user"],
-        "body_field_types": { "model": ["string"], "input": ["string", "array"] },
-        "success_fixture": { "object": "list", "data": [{ "object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3] }], "model": "openai/text-embedding-3-small", "usage": { "prompt_tokens": 2, "total_tokens": 2 } },
-        "official_sources": ["https://openrouter.ai/docs/api/api-reference/embeddings/submit-an-embedding-request"],
-        "evidence_summary": "OpenRouter embeddings uses POST /api/v1/embeddings with Bearer authentication and OpenAI-compatible model/input and embedding results."
-      }, {
-        "id": "openrouter.rerank.v1",
-        "protocol_adapter_id": "openrouter-responses",
-        "api_version": "v1",
-        "api_types": ["rerank"],
-        "operation": "rerank.create",
-        "http_method": "POST",
-        "path": "/api/v1/rerank",
-        "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
-        "content_type": "application/json",
-        "required_body_fields": ["model", "query", "documents"],
-        "allowed_body_fields": ["model", "query", "documents", "provider", "top_n"],
-        "body_field_types": { "model": ["string"], "query": ["string"], "documents": ["array"], "top_n": ["number"] },
-        "success_fixture": { "id": "gen-rerank-mock", "model": "cohere/rerank-v3.5", "results": [{ "document": { "text": "BUCKYOS-AICC-4827" }, "index": 1, "relevance_score": 0.99 }, { "document": { "text": "wrong" }, "index": 0, "relevance_score": 0.01 }], "usage": { "search_units": 1, "total_tokens": 12 } },
-        "official_sources": ["https://openrouter.ai/docs/api/api-reference/rerank/create-rerank"],
-        "evidence_summary": "OpenRouter rerank uses POST /api/v1/rerank and returns ordered index/relevance_score results."
-      }]
+      "official_variant_rules": [
+        {
+          "model_ids": [
+            "openai/gpt-5.6"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-5.5",
+            "openai/gpt-5.4"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        }
+      ],
+      "test_model_ids": {
+        "llm": "openai/gpt-5.6",
+        "embedding.text": "openai/text-embedding-3-small",
+        "rerank": "cohere/rerank-v3.5",
+        "decision": "typesafe/jev-1.13"
+      },
+      "contracts": [
+        {
+          "id": "openrouter.responses.v1",
+          "protocol_adapter_id": "openrouter-responses",
+          "api_version": "v1",
+          "api_types": [
+            "llm"
+          ],
+          "operation": "responses.create",
+          "http_method": "POST",
+          "path": "/api/v1/responses",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "input"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "input",
+            "background",
+            "cache_control",
+            "debug",
+            "image_config",
+            "include",
+            "max_output_tokens",
+            "max_tool_calls",
+            "metadata",
+            "modalities",
+            "models",
+            "parallel_tool_calls",
+            "plugins",
+            "prompt_cache_key",
+            "provider",
+            "reasoning",
+            "route",
+            "safety_identifier",
+            "service_tier",
+            "session_id",
+            "stop_server_tools_when",
+            "store",
+            "stream",
+            "temperature",
+            "text",
+            "tool_choice",
+            "tools",
+            "top_p",
+            "truncation"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "input": [
+              "string",
+              "array"
+            ],
+            "stream": [
+              "boolean"
+            ],
+            "max_output_tokens": [
+              "number"
+            ],
+            "temperature": [
+              "number"
+            ],
+            "tools": [
+              "array"
+            ],
+            "tool_choice": [
+              "string",
+              "object"
+            ],
+            "top_p": [
+              "number"
+            ],
+            "reasoning": [
+              "object"
+            ],
+            "cache_control": [
+              "object"
+            ],
+            "debug": [
+              "object"
+            ],
+            "image_config": [
+              "object"
+            ],
+            "modalities": [
+              "array"
+            ],
+            "models": [
+              "array"
+            ],
+            "parallel_tool_calls": [
+              "boolean"
+            ],
+            "plugins": [
+              "array"
+            ],
+            "provider": [
+              "object"
+            ],
+            "route": [
+              "string"
+            ],
+            "service_tier": [
+              "string"
+            ],
+            "session_id": [
+              "string"
+            ],
+            "stop_server_tools_when": [
+              "array"
+            ]
+          },
+          "stream_protocol": "openai_responses",
+          "success_fixture": {
+            "id": "resp_mock_1",
+            "object": "response",
+            "status": "completed",
+            "model": "mock-model",
+            "output": [
+              {
+                "type": "reasoning",
+                "id": "rs_t15_4827",
+                "summary": [
+                  {
+                    "type": "summary_text",
+                    "text": "opaque reasoning"
+                  }
+                ],
+                "encrypted_content": "opaque-t15-reasoning"
+              },
+              {
+                "type": "message",
+                "id": "msg_t15_4827",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "BUCKYOS-AICC-4827",
+                    "annotations": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 4,
+              "output_tokens": 3,
+              "total_tokens": 7
+            }
+          },
+          "official_sources": [
+            "https://openrouter.ai/docs/api/api-reference/responses/create-responses",
+            "https://openrouter.ai/openapi.yaml"
+          ],
+          "evidence_summary": "OpenRouter Responses uses POST /api/v1/responses with Bearer authentication and the OpenResponses model/input, output item, usage, tool, and SSE event shapes."
+        },
+        {
+          "id": "openrouter.embeddings.v1",
+          "protocol_adapter_id": "openrouter-responses",
+          "api_version": "v1",
+          "api_types": [
+            "embedding.text"
+          ],
+          "operation": "embeddings.create",
+          "http_method": "POST",
+          "path": "/api/v1/embeddings",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "input"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "input",
+            "dimensions",
+            "encoding_format",
+            "input_type",
+            "provider",
+            "user"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "input": [
+              "string",
+              "array"
+            ]
+          },
+          "success_fixture": {
+            "object": "list",
+            "data": [
+              {
+                "object": "embedding",
+                "index": 0,
+                "embedding": [
+                  0.1,
+                  0.2,
+                  0.3
+                ]
+              }
+            ],
+            "model": "openai/text-embedding-3-small",
+            "usage": {
+              "prompt_tokens": 2,
+              "total_tokens": 2
+            }
+          },
+          "official_sources": [
+            "https://openrouter.ai/docs/api/api-reference/embeddings/submit-an-embedding-request"
+          ],
+          "evidence_summary": "OpenRouter embeddings uses POST /api/v1/embeddings with Bearer authentication and OpenAI-compatible model/input and embedding results."
+        },
+        {
+          "id": "openrouter.rerank.v1",
+          "protocol_adapter_id": "openrouter-responses",
+          "api_version": "v1",
+          "api_types": [
+            "rerank"
+          ],
+          "operation": "rerank.create",
+          "http_method": "POST",
+          "path": "/api/v1/rerank",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "query",
+            "documents"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "query",
+            "documents",
+            "provider",
+            "top_n"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "query": [
+              "string"
+            ],
+            "documents": [
+              "array"
+            ],
+            "top_n": [
+              "number"
+            ]
+          },
+          "success_fixture": {
+            "id": "gen-rerank-mock",
+            "model": "cohere/rerank-v3.5",
+            "results": [
+              {
+                "document": {
+                  "text": "BUCKYOS-AICC-4827"
+                },
+                "index": 1,
+                "relevance_score": 0.99
+              },
+              {
+                "document": {
+                  "text": "wrong"
+                },
+                "index": 0,
+                "relevance_score": 0.01
+              }
+            ],
+            "usage": {
+              "search_units": 1,
+              "total_tokens": 12
+            }
+          },
+          "official_sources": [
+            "https://openrouter.ai/docs/api/api-reference/rerank/create-rerank"
+          ],
+          "evidence_summary": "OpenRouter rerank uses POST /api/v1/rerank and returns ordered index/relevance_score results."
+        },
+        {
+          "id": "openrouter.decisions.alpha",
+          "protocol_adapter_id": "openrouter-responses",
+          "api_version": "alpha",
+          "api_types": [
+            "decision"
+          ],
+          "operation": "decisions.create",
+          "http_method": "POST",
+          "path": "/api/alpha/decisions",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "state",
+            "questions"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "provider",
+            "questions",
+            "session_id",
+            "state",
+            "trace",
+            "user"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "state": [
+              "string",
+              "object",
+              "array"
+            ],
+            "questions": [
+              "object"
+            ],
+            "provider": [
+              "object"
+            ],
+            "session_id": [
+              "string"
+            ],
+            "trace": [
+              "object"
+            ],
+            "user": [
+              "string"
+            ]
+          },
+          "success_fixture": {
+            "model": "typesafe/jev-1.13-20260917",
+            "answers": {
+              "marker": {
+                "type": "choice",
+                "choice": "present",
+                "probabilities": {
+                  "present": 0.95,
+                  "absent": 0.05
+                },
+                "confidence": 0.85
+              },
+              "priority": {
+                "type": "score",
+                "score": 1.05,
+                "legend": {
+                  "0": "Routine",
+                  "1": "Urgent",
+                  "2": "Critical"
+                },
+                "probabilities": {
+                  "0": 0.0,
+                  "1": 0.95,
+                  "2": 0.05
+                },
+                "confidence": 0.92
+              },
+              "contains": {
+                "type": "noul",
+                "noul": 0.98
+              }
+            },
+            "usage": {
+              "input_tokens": 318,
+              "output_tokens": 72,
+              "cost": 1.3356e-05
+            },
+            "id": "gen-dec-fixture",
+            "provider": "TypeSafe"
+          },
+          "official_sources": [
+            "https://openrouter.ai/openapi.json",
+            "https://openrouter.ai/blog/tutorials/how-to-use-jev/"
+          ],
+          "evidence_summary": "OpenAPI DecisionsRequest/Response verified 2026-09-25: immediate batch choice/score/noul; dated build, id/provider, token usage and optional USD cost. Synthetic marker fixture follows official schema."
+        }
+      ]
     },
     {
       "provider_driver": "kimi",
@@ -929,6 +1463,7 @@
     }
   ],
   "error_evidence": {
+    "typesafe": {"applicable_api_versions": ["v1"], "official_sources": ["https://docs.typesafe.ai/api"], "evidence_summary": "HTTP 401 invalid key, 422 validation, 429 rate limit and 529 overload; errors are opaque JSON."},
     "openai": { "applicable_api_versions": ["v1"], "official_sources": ["https://platform.openai.com/docs/guides/error-codes/api-errors"], "evidence_summary": "OpenAI documents HTTP authentication, permission, request, not-found, rate-limit and server error categories with an error envelope." },
     "claude": { "applicable_api_versions": ["2023-06-01"], "official_sources": ["https://platform.claude.com/docs/en/api/errors"], "evidence_summary": "Anthropic documents status-specific error.type values and the top-level error/request_id envelope." },
     "google-gemini": { "applicable_api_versions": ["v1", "v1beta"], "official_sources": ["https://ai.google.dev/gemini-api/docs/api-errors"], "evidence_summary": "Gemini documents Google RPC error code/message/status envelopes for request, auth, quota and service failures." },
@@ -943,6 +1478,7 @@
     "sn-ai-provider": { "applicable_api_versions": ["v1"], "official_sources": ["https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/http/error.rs"], "evidence_summary": "SN source at f765081 defines HTTP errors as code/message and the 429 insufficient-balance special case as an OpenAI-shaped nested error." }
   },
   "error_fixtures": {
+    "typesafe": [{"scenario": "auth", "status": 401, "body": {"detail": "Invalid API key"}}, {"scenario": "rate_limit", "status": 429, "body": {"detail": "Rate limit exceeded"}, "headers": {"retry-after": "1"}}, {"scenario": "server_error", "status": 529, "body": {"detail": "Overloaded"}}],
     "openai": [
       { "scenario": "invalid_request", "status": 400, "body": { "error": { "message": "Invalid request", "type": "invalid_request_error", "param": null, "code": null } } },
       { "scenario": "authentication", "status": 401, "body": { "error": { "message": "Invalid authentication", "type": "invalid_request_error", "param": null, "code": "invalid_api_key" } } },

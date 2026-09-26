@@ -289,3 +289,11 @@ budget. Specification and family weights only decide which branches expand.
 
 See [Provider upgrade implementation](provider_upgrade_implementation.md) for
 verified sources, regional scope, remaining channel gaps and validation.
+
+## Decision capability keys（2026-09-25）
+
+有限模型 `typesafe/jev-1.13.0` 的 `api_types` 为 `["decision"]`，沿用非 LLM logical_mounts。布尔 capabilities：`decision.choice`、`decision.score`、`decision.boolean`、`decision.probabilities`、`decision.structured_state`、`decision.structured_rules`；数值上限：`decision.max_questions`、`decision.max_options`、`decision.max_levels`、`decision.max_input_bytes`、`decision.max_state_question_bytes`。请求实际要求超限或缺失上限时拒绝。Jev 字节限制是本地保守限制，不能据此估算 token。完整契约、示例及核验来源见 [Decision API](decision_api.md)。
+
+OpenRouter Jev 渠道通过 Provider Rules `capability_limits` 将上述模型事实收窄到
+32000 context tokens 和 32000 input/state+question bytes；只对已有整数上限取 min，
+不添加模型能力。字段完整契约见 [Provider schema](provider_profile_schema.md#56-能力收窄)。

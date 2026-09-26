@@ -70,7 +70,7 @@ system-config 使用一个原子 value，避免读取到多文件的混合版本
 - `supported_efforts` 是模型支持强度的唯一声明，AICC 据此派生思考 variant 身份；Model Driver 不再维护重复的 `variants` 模型列表或参数模板。标准参数转换属于 Protocol Adapter，渠道差异与限制属于 Provider Rules；没有适用转换的实例不能执行该预设。库存生成和 lowering 共用有效渠道映射，并与模型 supported_efforts、已知渠道限制求交；无映射的 effort 产生独立诊断，不以其他强度替代。
 - 功能到规格的偏好权重继续由 `model_defaults.rs` 和显式 overlay 管理；规格到家族的关系从模型条目生成，不在两个地方重复维护。家族直选使用 metadata 声明的默认预设，默认 strict。
 
-已归入规格的模型不再声明 `logical_mounts`，包括原先逐模型列出的 `vision.*`、`image.*`、`agent_runtime.*` 路径。模型定义负责官方身份、能力、规格与预设，功能路径及引用由通用逻辑树编排。`api_types` 是可执行能力约束，不能仅凭它或 LLM 规格归属自动接入所有非 LLM 任务；这些入口须单独配置树引用并检查 API 能力。builtin overlay 已显式引用所需规格，并在展开时检查非 LLM API。独立图片、音频、视频和 embedding 模型保留现有挂点。
+已归入规格的模型不再声明 `logical_mounts`，包括原先逐模型列出的 `vision.*`、`image.*`、`agent_runtime.*` 路径。模型定义负责官方身份、能力、规格与预设，功能路径及引用由通用逻辑树编排。`api_types` 是可执行能力约束，不能仅凭它或 LLM 规格归属自动接入所有非 LLM 任务；这些入口须单独配置树引用并检查 API 能力。builtin overlay 已显式引用所需规格，并在展开时检查非 LLM API。独立 decision、图片、音频、视频和 embedding 模型保留现有挂点。
 
 LLM 装配顺序为：
 
@@ -113,7 +113,7 @@ Naming Convention：一个原厂 vendor 一个稳定 `model_driver_id` 和一份
 }
 ```
 
-语义优先级为 exact `models[].id`、有序 `patterns[].match`、`defaults`、保守 fallback。技术规则可声明：`model_driver`、`exclude`、`parameter_scale`、`api_types`、`logical_mounts`、`capabilities`、`canonical_fields`、调度提示与 `llm`。Model Driver 不声明价格；技术语义的保守 fallback 不包含价格或费用估值兜底。
+只对已被有限精确规则匹配的身份，按 exact `models[].id`、有序 `patterns[].match` 与 `defaults` 合成技术语义；未知型号不通过保守 fallback 获得执行能力。技术规则可声明：`model_driver`、`exclude`、`parameter_scale`、`api_types`、`logical_mounts`、`capabilities`、`canonical_fields`、调度提示与 `llm`。Model Driver 不声明价格；技术语义 defaults 不包含价格或费用估值兜底。
 
 Provider endpoint、认证、operation、渠道别名、渠道限制和渠道价格不属于 Model Driver，必须进入 Provider Profile/Rules。
 
@@ -191,12 +191,12 @@ Beta 2.2 采用 **No-compat**：旧 `provider_driver`、根级 `provider_options
 
 ## 9. 冻结逻辑目录
 
-一级 API 目录冻结为：`llm`、`embedding`、`rerank`、`image`、`vision`、`audio`、`video`、`agent_runtime`。当前 builtin 用途节点包括：
+一级 API 目录冻结为：`llm`、`embedding`、`rerank`、`decision`、`image`、`vision`、`audio`、`video`、`agent_runtime`。当前 builtin 用途节点包括：
 
 ```text
 llm, llm.chat, llm.plan, llm.code, llm.swift, llm.summarize,
 llm.translate, llm.vision, llm.fallback,
-embedding.text, embedding.multimodal, rerank,
+embedding.text, embedding.multimodal, rerank, decision,
 image.txt2img, image.img2img, image.inpaint, image.upscale, image.bg_remove,
 vision.ocr, vision.caption, vision.detect, vision.segment,
 audio.tts, audio.asr, audio.music, audio.enhance,
@@ -223,3 +223,7 @@ agent_runtime.computer_use
 默认图片/视频树恢复 55 条家族引用，父任务为 Manual，metadata exact 只能沿声明的家族偏好参与选择。零库存时引用保留，家族没有 exact 候选。音频、视觉和 agent_runtime 对 LLM 规格的显式引用保留权重 1.0，并要求模型实际支持请求 API；图片生成不从 vision 能力推导。
 
 同一家族、同一 effort 的实例按有效 USD 估价优先；规格权重和版本顺序保持独立。公开 usage 增加音频/图像 token、原始 reported_cost 和 1 小时缓存写入子集，持久任务保存币种声明与请求时价格。无对应费率时结算保持 unknown。
+
+## Decision 目录与资格（2026-09-25）
+
+`decision` 是非 LLM Hybrid 入口，默认 strict / cost_first，零库存也可查询；TypeSafe 通过 `logical_mounts` 进入该目录，不声明 `llm` 或 effort。`requirements.decision` 合并请求与目录下限，包括题型集合、结构化输入/规则、题数、选项、等级和字节数。候选还须支持 `decision.probabilities`；exact、preview、fallback 使用相同硬过滤和现有逐层权重展开。见 [Decision API](decision_api.md)。

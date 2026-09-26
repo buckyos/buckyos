@@ -116,6 +116,13 @@ pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
             "Embed multimodal items.",
         ),
         (
+            DECISION_EVALUATE,
+            Some(Capability::Decision),
+            None,
+            true,
+            "Evaluate typed decisions.",
+        ),
+        (
             RERANK,
             Some(Capability::Rerank),
             None,
@@ -312,6 +319,7 @@ fn canonical_input_schema(method: &str) -> Value {
         HELPER_LLM_CHAT => &["logical_model", "messages"],
         HELPER_TEXT_TO_IMAGE => &["logical_model", "prompt"],
         EMBEDDING_TEXT | EMBEDDING_MULTIMODAL => &["exact_model", "items"],
+        DECISION_EVALUATE => &["exact_model", "state", "questions"],
         RERANK => &["exact_model", "query", "documents"],
         IMAGE_IMG2IMG => &["exact_model", "images", "prompt"],
         IMAGE_INPAINT => &["exact_model", "image", "mask", "prompt"],
@@ -618,7 +626,7 @@ mod tests {
     #[test]
     fn exposes_only_canonical_core_and_cancel_methods() {
         let schemas = aicc_method_schemas();
-        assert_eq!(schemas.len(), 27);
+        assert_eq!(schemas.len(), 28);
         assert!(schemas
             .iter()
             .all(|schema| ai_methods::is_aicc_core_method(schema.method)

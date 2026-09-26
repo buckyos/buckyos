@@ -20,6 +20,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BuiltinDiscoveryFactory {
     CatalogOnly,
+    TypeSafeCatalog,
     OpenAi,
     Claude,
     MiniMax,
@@ -35,6 +36,7 @@ enum BuiltinDiscoveryFactory {
 fn discovery_behaviors() -> BTreeMap<&'static str, BuiltinDiscoveryFactory> {
     BTreeMap::from([
         ("catalog-only", BuiltinDiscoveryFactory::CatalogOnly),
+        ("typesafe-catalog", BuiltinDiscoveryFactory::TypeSafeCatalog),
         ("openai-models", BuiltinDiscoveryFactory::OpenAi),
         ("anthropic-models", BuiltinDiscoveryFactory::Claude),
         ("minimax-models", BuiltinDiscoveryFactory::MiniMax),
@@ -279,7 +281,10 @@ impl BuiltinProviderRegistry {
                     "unknown provider discovery behavior `{behavior_id}`"
                 ))
             })?;
-        if factory == BuiltinDiscoveryFactory::CatalogOnly {
+        if matches!(
+            factory,
+            BuiltinDiscoveryFactory::CatalogOnly | BuiltinDiscoveryFactory::TypeSafeCatalog
+        ) {
             let configured = configured_inventory.is_some();
             let inventory = configured_inventory.or(default_inventory).ok_or_else(|| {
                 ProviderError::InvalidConfiguration(format!(
@@ -292,6 +297,11 @@ impl BuiltinProviderRegistry {
             } else {
                 Arc::new(CatalogOnlyDiscovery::catalog_managed(inventory))
             };
+            if factory == BuiltinDiscoveryFactory::TypeSafeCatalog {
+                return Ok(Arc::new(super::typesafe::TypeSafeCatalogDiscovery(
+                    inventory,
+                )));
+            }
             if provider_profile_id == "fal" {
                 return Ok(Arc::new(super::fal::FalPricingDiscovery {
                     inventory,
@@ -301,7 +311,9 @@ impl BuiltinProviderRegistry {
             return Ok(inventory);
         }
         let primary: Arc<dyn ProviderDiscovery> = match factory {
-            BuiltinDiscoveryFactory::CatalogOnly => unreachable!(),
+            BuiltinDiscoveryFactory::CatalogOnly | BuiltinDiscoveryFactory::TypeSafeCatalog => {
+                unreachable!()
+            }
             BuiltinDiscoveryFactory::OpenAi => Arc::new(OpenAiDiscovery::new(transport()?)),
             BuiltinDiscoveryFactory::Claude => Arc::new(claude_discovery(transport()?)),
             BuiltinDiscoveryFactory::MiniMax => Arc::new(minimax_discovery(transport()?)),
@@ -440,7 +452,10 @@ fn profile_from_catalog(configuration: &ResolvedProviderConfiguration) -> Provid
             .iter()
             .map(credential_from_catalog)
             .collect(),
-        discovery_mode: if configuration.discovery_behavior_id == "catalog-only" {
+        discovery_mode: if matches!(
+            configuration.discovery_behavior_id.as_str(),
+            "catalog-only" | "typesafe-catalog"
+        ) {
             DiscoveryMode::CatalogOnly
         } else {
             DiscoveryMode::MachineApi
@@ -566,6 +581,65 @@ mod tests {
     }
 
     #[test]
+    fn typesafe_static_inventory_alias_identity_and_custom_protocol_are_explicit() {
+        let catalog = MetadataSources {
+            builtin: load_builtin_metadata().unwrap(),
+            ..Default::default()
+        }
+        .build_snapshot(2, &crate::catalog::CatalogBuildOptions::default())
+        .unwrap();
+        let registry = builtin_provider_registry(&catalog).unwrap();
+        let binding = registry
+            .resolve(BuiltinProviderRequest {
+                provider_profile_id: "typesafe",
+                protocol_adapter_id: "typesafe-systemone",
+                auth_mode: ProviderAuthMode::ApiKey,
+                credential_kind: None,
+                configured_inventory: None,
+            })
+            .unwrap();
+        assert_eq!(
+            binding
+                .profile
+                .default_inventory
+                .as_ref()
+                .unwrap()
+                .models
+                .iter()
+                .map(|m| m.provider_model_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["jev-1.13.0"]
+        );
+        for alias in ["jev-latest", "jev-preview"] {
+            let crate::catalog::ProviderModelMatch::Matched(identity) =
+                binding.discovery.match_model_driver(alias, &catalog)
+            else {
+                panic!("confirmed alias must match")
+            };
+            assert_eq!(identity.model_driver_id, "typesafe");
+            assert_eq!(identity.model_id, "jev-1.13.0");
+        }
+        assert!(matches!(
+            binding.discovery.match_model_driver("jev-99.0.0", &catalog),
+            crate::catalog::ProviderModelMatch::NotHandled
+        ));
+        assert!(catalog.match_model("jev-99.0.0").is_err());
+        let custom = registry
+            .resolve(BuiltinProviderRequest {
+                provider_profile_id: "custom",
+                protocol_adapter_id: "typesafe-systemone",
+                auth_mode: ProviderAuthMode::ApiKey,
+                credential_kind: None,
+                configured_inventory: Some(configured_inventory()),
+            })
+            .unwrap();
+        assert_eq!(
+            custom.profile.default_protocol_adapter_id,
+            "typesafe-systemone"
+        );
+    }
+
+    #[test]
     fn production_registry_contains_every_builtin_once() {
         let registry = registry();
         let profile_ids = registry
@@ -588,6 +662,7 @@ mod tests {
                 "openrouter",
                 "qwen",
                 "sn",
+                "typesafe",
             ])
         );
         assert_eq!(registry.profiles().len(), profile_ids.len());
@@ -614,7 +689,7 @@ mod tests {
             .map(|adapter| adapter.protocol_adapter_id.as_str())
             .collect::<BTreeSet<_>>();
         assert_eq!(codecs.adapters().len(), adapter_ids.len());
-        assert_eq!(adapter_ids.len(), 13);
+        assert_eq!(adapter_ids.len(), 14);
         for profile in registry.profiles() {
             assert!(adapter_ids.contains(profile.default_protocol_adapter_id.as_str()));
         }
@@ -817,27 +892,27 @@ mod tests {
     fn metadata_source_manager_supplies_all_builtin_catalogs_to_registry() {
         let registry = registry();
         let files = load_builtin_metadata().unwrap();
-        assert_eq!(files.len(), 35);
+        assert_eq!(files.len(), 38);
         assert_eq!(
             files
                 .iter()
                 .filter(|file| file.kind == CatalogKind::KnownProvider)
                 .count(),
-            12
+            13
         );
         assert_eq!(
             files
                 .iter()
                 .filter(|file| file.kind == CatalogKind::ProviderRules)
                 .count(),
-            12
+            13
         );
         assert_eq!(
             files
                 .iter()
                 .filter(|file| file.kind == CatalogKind::ModelDriver)
                 .count(),
-            11
+            12
         );
 
         let snapshot = MetadataSources {

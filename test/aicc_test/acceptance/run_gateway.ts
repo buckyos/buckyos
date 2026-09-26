@@ -1,3 +1,4 @@
+import { decisionRouteRequirements } from "./decision.ts";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1448,6 +1449,13 @@ async function executeAcceptance(input: {
             }
             reservation = costBudget.reserve(attemptEstimate);
             actualCalls += 1;
+            if (cell.api_type === "decision") {
+              const resolved = await session.aicc.call("route.resolve", {
+                api_type: "decision", logical_model: "decision", requirements: decisionRouteRequirements(),
+                policy: { allowed_provider_instances: [cell.provider_instance] },
+              }) as { selected_exact_model: string };
+              if (resolved.selected_exact_model !== cell.exact_model) throw new Error("decision route selected a different physical model than its T2 cell");
+            }
             return await callInference(session.aicc, cell.method, request) as AiMethodResponse;
           });
           const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);

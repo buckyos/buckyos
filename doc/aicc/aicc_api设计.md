@@ -34,7 +34,7 @@ POST /kapi/aicc
 | method | 语义 |
 |---|---|
 | `route.resolve` | 控制面路由解析。输入逻辑模型名，输出一次确定的 exact model、Provider 信息、候选顺序和 trace。 |
-| `chat.completions.create`、`embedding.*`、`rerank`、`images.generate`、`image.*`、`vision.*`、`audio.*`、`video.*` | typed inference 数据面。只接受 `exact_model`，不接受逻辑模型名，不做逻辑 fallback。 |
+| `chat.completions.create`、`embedding.*`、`decision.evaluate`、`rerank`、`images.generate`、`image.*`、`vision.*`、`audio.*`、`video.*` | typed inference 数据面。只接受 `exact_model`，不接受逻辑模型名，不做逻辑 fallback。 |
 | `helper.*` | helper 组合层。接收 `logical_model` 和对应 typed request，语义等价于 `route.resolve` + typed inference。 |
 | `cancel` | 请求取消异步 task；返回值必须真实反映是否已触发上游取消或本地中止。 |
 | `service.reload_settings` | 从 `services/aicc/settings` 重新加载 Provider 配置；这是唯一有效的管理面 reload method。 |
@@ -69,6 +69,7 @@ Provider 不能自定义方法名，只能声明自己支持标准集合中的�
 |---|---|
 | `llm` | `chat.completions.*` |
 | `embedding` | `embedding.*` |
+| `decision` | `decision.evaluate` |
 | `rerank` | `rerank` |
 | `image` | `image.*` |
 | `vision` | `vision.*` |
@@ -733,6 +734,7 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 | `chat.completions.create` | `llm` | `llm.chat` / `llm.*` | sync 或 async |
 | `embedding.text` | `embedding.text` | `embedding.text` | sync 或 async |
 | `embedding.multimodal` | `embedding.multimodal` | `embedding.multimodal` | sync 或 async |
+| `decision` | `decision.evaluate` | `decision` | immediate |
 | `rerank` | `rerank` | `rerank.general` | sync |
 | `images.generate` | `image.txt2img` | `image.txt2img` | sync 或 async |
 | `image.img2img` | `image.img2img` | `image.img2img` | sync 或 async |
@@ -1928,3 +1930,7 @@ AICC 错误 payload schema：
 5. Provider Adapter 映射。
 6. task-manager 状态和事件。
 7. 单元测试或 DV test。
+
+## Decision API（2026-09-25）
+
+新增 API Type/Capability `decision`、typed method `decision.evaluate`。共享 state 与稳定问题 ID 的 choice/score/boolean 批量求值，公共强类型答案保留概率和可选 confidence；Score 为等级索引期望值。通过 `route.resolve` 取得 exact model 后调用，首版 immediate。完整契约、示例及核验来源见 [Decision API](decision_api.md)。

@@ -10,6 +10,7 @@ mod openai_responses_compatible;
 mod openrouter;
 mod registry;
 mod sn;
+mod typesafe;
 
 #[cfg(test)]
 fn builtin_catalog_document<T: serde::de::DeserializeOwned>(

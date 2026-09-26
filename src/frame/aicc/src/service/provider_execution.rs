@@ -600,6 +600,30 @@ impl RuntimeProviderExecutionPort {
         Ok(output)
     }
 
+    fn validate_decision_output(
+        request: &buckyos_api::DecisionEvaluateRequest,
+        origin_model: &str,
+        output: ProtocolOutput,
+    ) -> Result<ProtocolOutput, ProtocolError> {
+        let answers: Vec<buckyos_api::DecisionAnswer> =
+            serde_json::from_value(output.value.get("answers").cloned().unwrap_or(Value::Null))
+                .map_err(|_| ProtocolError::invalid_response("decision answers are malformed"))?;
+        request
+            .validate_answers(&answers)
+            .map_err(|e| ProtocolError::invalid_response(e.message))?;
+        if output
+            .value
+            .get("model")
+            .and_then(Value::as_str)
+            .is_some_and(|model| model != origin_model)
+        {
+            return Err(ProtocolError::invalid_response(
+                "decision response model does not match resolved identity",
+            ));
+        }
+        Ok(output)
+    }
+
     fn validate_computer_output(
         call: &ResolvedProviderCall,
         output: ProtocolOutput,
@@ -832,6 +856,15 @@ impl RuntimeProviderExecutionPort {
                 match decoded {
                     crate::protocol::ProtocolExecution::Immediate(output) => {
                         let mut output = output;
+                        if let AiccCall::DecisionEvaluate(request) = &call.input.canonical_request {
+                            let output = Self::validate_decision_output(
+                                request,
+                                &call.origin_model_id,
+                                output,
+                            )
+                            .map_err(ProviderStartFailure::after_accept)?;
+                            return Ok(ProviderExecution::Immediate(output));
+                        }
                         crate::protocol::bind_provider_state_source(
                             &mut output.value,
                             &call.context.state_coordinate,
@@ -1256,6 +1289,49 @@ fn credential_fingerprint(reference: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decision_result_is_checked_before_success_including_alias_version_drift() {
+        let request = buckyos_api::DecisionEvaluateRequest::new(
+            "jev-latest@test",
+            serde_json::json!({"kind":"url","url":"opaque state"}),
+            vec![buckyos_api::DecisionQuestion::Boolean {
+                id: "q".into(),
+                instructions: serde_json::json!("Test"),
+                criteria: None,
+            }],
+        );
+        let output = |value| ProtocolOutput {
+            value,
+            usage: None,
+            artifacts: Vec::new(),
+        };
+        let valid = serde_json::json!({"model":"jev-1.13.0","answers":[{"id":"q","type":"boolean","probability_true":0.8}]});
+        assert!(RuntimeProviderExecutionPort::validate_decision_output(
+            &request,
+            "jev-1.13.0",
+            output(valid.clone())
+        )
+        .is_ok());
+        assert!(RuntimeProviderExecutionPort::validate_decision_output(
+            &request,
+            "jev-2.0.0",
+            output(valid)
+        )
+        .is_err());
+        for answers in [
+            serde_json::json!([]),
+            serde_json::json!([{"id":"q","type":"boolean","probability_true":1.1}]),
+            serde_json::json!([{"id":"other","type":"boolean","probability_true":0.8}]),
+        ] {
+            assert!(RuntimeProviderExecutionPort::validate_decision_output(
+                &request,
+                "jev-1.13.0",
+                output(serde_json::json!({"answers":answers}))
+            )
+            .is_err());
+        }
+    }
 
     #[test]
     fn health_failure_kind_scopes_account_exhaustion_and_model_capability_errors() {

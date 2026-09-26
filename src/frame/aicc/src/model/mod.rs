@@ -1946,6 +1946,7 @@ fn api_type_name(api_type: ApiType) -> &'static str {
         ApiType::EmbeddingText => "embedding.text",
         ApiType::EmbeddingMultimodal => "embedding.multimodal",
         ApiType::Rerank => "rerank",
+        ApiType::Decision => "decision",
         ApiType::ImageTextToImage => "image.txt2img",
         ApiType::ImageImageToImage => "image.img2img",
         ApiType::ImageInpaint => "image.inpaint",
@@ -2230,6 +2231,24 @@ fn missing_requirements(requirement: &ModelRequirement, model: &RegisteredModel)
             .unwrap_or(false);
         if required && !supported {
             missing.push(name.to_owned());
+        }
+    }
+    if let Some(decision) = &requirement.decision {
+        for feature in decision.features() {
+            if model.capabilities.get(&feature).and_then(Value::as_bool) != Some(true) {
+                missing.push(feature);
+            }
+        }
+        for (limit, required) in decision.limits() {
+            if model
+                .capabilities
+                .get(limit)
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+                < required
+            {
+                missing.push(format!("{limit}:{required}"));
+            }
         }
     }
     if let Some(required) = requirement.min_context_tokens {

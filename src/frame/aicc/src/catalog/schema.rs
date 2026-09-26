@@ -538,6 +538,8 @@ macro_rules! define_provider_rule {
         pub remove_api_types: BTreeSet<String>,
         #[serde(default)]
         pub remove_features: BTreeSet<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        pub capability_limits: BTreeMap<String, u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub estimated_latency_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -568,6 +570,7 @@ pub(crate) struct ProviderRuleAction {
     pub pricing: Option<Pricing>,
     pub remove_api_types: BTreeSet<String>,
     pub remove_features: BTreeSet<String>,
+    pub capability_limits: BTreeMap<String, u64>,
     pub estimated_latency_ms: Option<u64>,
     pub latency_class: Option<String>,
     pub cost_class: Option<String>,
@@ -584,6 +587,7 @@ macro_rules! provider_rule_action {
             pricing: None,
             remove_api_types: $rule.remove_api_types.clone(),
             remove_features: $rule.remove_features.clone(),
+            capability_limits: $rule.capability_limits.clone(),
             estimated_latency_ms: $rule.estimated_latency_ms,
             latency_class: $rule.latency_class.clone(),
             cost_class: $rule.cost_class.clone(),
@@ -605,7 +609,18 @@ impl ProviderRuleAction {
             capabilities: capabilities
                 .iter()
                 .filter(|(name, _)| !self.remove_features.contains(*name))
-                .map(|(name, value)| (name.clone(), value.clone()))
+                .map(|(name, value)| {
+                    let narrowed = self
+                        .capability_limits
+                        .get(name)
+                        .and_then(|limit| {
+                            value
+                                .as_u64()
+                                .map(|current| Value::from(current.min(*limit)))
+                        })
+                        .unwrap_or_else(|| value.clone());
+                    (name.clone(), narrowed)
+                })
                 .collect(),
         }
     }

@@ -99,6 +99,12 @@ impl AiccHandler for AiccService {
         EmbeddingMultimodalResponse,
         EmbeddingMultimodal
     );
+    typed_inference_handler!(
+        handle_decision_evaluate,
+        DecisionEvaluateRequest,
+        DecisionEvaluateResponse,
+        DecisionEvaluate
+    );
     typed_inference_handler!(handle_rerank, RerankRequest, RerankResponse, Rerank);
     typed_inference_handler!(
         handle_image_to_image,

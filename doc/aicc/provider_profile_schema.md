@@ -121,7 +121,7 @@ Provider Profile/Rules 必须在路由前得到一个确定的 Adapter 和 opera
 一个 Provider 需要多套 protocol client 时，不把实例字段扩成无约束的 Adapter 数组。
 Adapter 是该 Provider 的可执行协议边界，可以注册多个按 operation 分派的
 `OperationCodec`/`NativeTaskCodec`，每个 codec 可委托不同的基础协议实现。MiniMax 的
-Messages、T2A、图片、音乐和视频即按此方式组合；OpenRouter 的 Responses 与 rerank 也按
+Messages、T2A、图片、音乐和视频即按此方式组合；OpenRouter 的 Responses、embedding、rerank 与 alpha Decisions 也按
 operation 显式组合。这样仍满足“Provider 可持有多个 protocol client”，同时保证一次路由
 在调用前得到唯一的 `adapter + operation + codec`，避免运行时试探或静默切换。
 
@@ -131,7 +131,7 @@ operation 显式组合。这样仍满足“Provider 可持有多个 protocol cli
 [`provider_operation_bindings.md`](provider_operation_bindings.md)。
 运行时通过 `protocol_adapter.list` 返回当前注册的 Adapter、operation、API type 和执行模式；
 Provider Rules 再给出每个模型的 operation 选择。`call::tests::every_builtin_provider_operation_has_a_golden_lowering_binding`
-从这两份事实源生成、去重并校验全部内置绑定及文档（当前 71 条）。因此新增或删除绑定必须修改
+从这两份事实源生成、去重并校验全部内置绑定及文档（当前 84 条）。因此新增或删除绑定必须修改
 metadata/Adapter，并同步更新由测试强制校验的绑定文档。
 
 ### 2.2 SN Provider 的 OpenAI 子类语义
@@ -240,6 +240,7 @@ native 使用 base；其他预设为 `reasoning-{effort}`，包括 minimal 和 t
 | `pricing` | 无 | 不再是模型规则字段：价格声明在顶层 `model_pricing` 表中 | 已从 `models` / `patterns` 移出 |
 | `remove_api_types` | `[]` | 删除当前 Provider 无法提供的 API type | 新增 |
 | `remove_features` | `[]` | 删除当前 Provider 无法提供的 feature | 新增 |
+| `capability_limits` | `{}` | 对已有数值容量取 min；不新增能力 | 新增 |
 | `estimated_latency_ms` | 无 | 渠道默认延迟估计 | 从 Model Driver metadata 移入 |
 | `latency_class` | 无 | 渠道延迟分类 | 从 Model Driver metadata 移入 |
 | `cost_class` | 无 | 渠道成本分类 | 从 Model Driver metadata 移入 |
@@ -485,7 +486,12 @@ unknown 而不是 0——先让价格口径可表达，等计数器落地即自�
 
 ### 5.6 能力收窄
 
-`remove_api_types` / `remove_features` 只能从 Model Driver 结果中删除能力。最终可执行能力固定取交集：
+`remove_api_types` / `remove_features` 只能从 Model Driver 结果中删除能力。
+`capability_limits` 接受正整数上限：`max_context_tokens` 与 `decision.max_questions`、
+`decision.max_options`、`decision.max_levels`、`decision.max_input_bytes`、
+`decision.max_state_question_bytes`。仅对 Model Driver 已存在的整数容量取 min；
+不添加缺失的模型事实，不提升原厂上限。byte 防护不代表 token 数量。
+最终可执行能力固定取交集：
 
 ```text
 Model Driver 静态能力
@@ -546,9 +552,9 @@ OpenRouter 是内置专用 Provider，而不是配置型 Provider。
 
 - 解析 `vendor/model` 命名并映射到候选 Model Driver；
 - 维护 OpenRouter vendor slug 与 Model Driver 的别名关系；
-- 排除 moving alias、Provider variant alias 和 OpenRouter 虚拟模型；
+- 未经核验的 moving alias、Provider variant alias 和虚拟模型不可执行；有限 Jev alias 按下述身份链验证；
 - 保留原始 `provider_model_id` 完成实际调用；
-- 按模型和 AICC `api_type` 选择 OpenRouter Responses、embedding、rerank 等 operation；
+- 按模型和 AICC `api_type` 选择 OpenRouter Responses、embedding、rerank 和 `decisions.create` operation；
 - 从 OpenRouter discovery 获取价格并覆盖 `model_pricing` 里的静态价；
 - 对可声明差异随 metadata catalog 进行版本发布。
 
@@ -591,3 +597,20 @@ DeepSeek 官方旧 V4 Flash 调用名已重定向，V4.1 metadata 尚未接入�
 11. 每个官方支持的 Provider（包括内置专用 Provider）必须提供独立 `.provider.json`；每个模型原厂必须提供独立 `.model.json`。Rust builtin 模块不得构造生产用 `ProviderRulesCatalog`、`KnownProviderCatalog` 或模型 metadata 作为第二真相源。
 12. 未被官方支持的小型或自建代理可注册为 `custom` Provider，并用 `{}` 表示无渠道规则。其协议族只决定调用协议；模型归属必须通过统一匹配链搜索全部 Model Driver，零命中和多重命中均记录 unmatched，只隔离该模型。
 13. 特殊 dialect 必须先尝试由 `.provider.json` 的有界声明表达；schema 不足时先评审统一 schema 扩展。只有无法安全声明化的 wire、认证、流式/任务状态机或错误语义才进入代码，并保持最小差异面。
+
+## TypeSafe Provider（2026-09-25）
+
+新增 Known Provider `typesafe`，默认 adapter `typesafe-systemone`，Bearer，base URL `https://api.typesafe.ai/v1`，discovery `typesafe-catalog`。Rules 将 decision 绑定到 `systemone.evaluate`，静态库存只列 `jev-1.13.0`；别名身份经显式 matcher 确认，不通配未来版本。输入单价 USD 4.2e-8/token，输出单价明确为 0，真实 output_tokens 保留；其他渠道无可靠费率时仍为 unknown。完整契约、示例及核验来源见 [Decision API](decision_api.md)。
+
+### 9.1 Jev alpha Decisions（2026-09-25 核验）
+
+`typesafe/jev-1.13` / `~typesafe/jev-latest` 明确映射到 `typesafe/jev-1.13.0`；
+发现时检查 canonical slug `typesafe/jev-1.13-20260917`，alias 还要求同一目录中的
+目标版本已核验且 `alias_target.slug=typesafe/jev-1.13`。响应只接受该 dated build。
+未知版本、漂移或冲突 modality 保留 discovery/日志诊断，不成为 decision 候选；
+`typesafe/jev-router` 不属于 decision。完整目录始终请求 `output_modalities=all`。
+
+两个有限 ID 的 Provider Rules 只绑定 decision，并收窄 context 到 32000 tokens、
+本地 JSON input/state+question 到 32000 bytes。目录 context 改变需重新核验。
+渠道价格只取 OpenRouter discovery，缺失为 unknown；零输出价保留为零。
+不配置静态 Jev 库存、不新增 `include_alpha`、实例或 TypeSafe key。

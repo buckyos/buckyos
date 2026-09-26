@@ -1760,6 +1760,7 @@ fn capability_name(api_type: ApiType) -> &'static str {
         Capability::Llm => "llm",
         Capability::Embedding => "embedding",
         Capability::Rerank => "rerank",
+        Capability::Decision => "decision",
         Capability::Image => "image",
         Capability::Vision => "vision",
         Capability::Audio => "audio",
@@ -2690,6 +2691,114 @@ mod tests {
         assert_eq!(
             ExecutionState::from(NativeTaskState::Cancelled),
             ExecutionState::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn decision_failover_preserves_api_and_writes_only_successful_usage() {
+        let providers = Arc::new(FakeProviders::default());
+        providers.plans.lock().unwrap().extend([
+            StartPlan::Failure(ProviderStartFailure::before_accept(
+                ProtocolError::new(ProtocolErrorKind::Transport, "unavailable"),
+                true,
+            )),
+            StartPlan::Failure(ProviderStartFailure::before_accept(
+                ProtocolError::new(ProtocolErrorKind::Transport, "unavailable"),
+                true,
+            )),
+            StartPlan::Success(ProviderExecution::Immediate(ProtocolOutput {
+                value: json!({"answers":[{"id":"q","type":"boolean","probability_true":0.9}]}),
+                usage: Some(token_usage(10, 5)),
+                artifacts: Vec::new(),
+            })),
+        ]);
+        let decision_call = |provider| {
+            let mut resolved = token_priced_call(provider, 4.2e-8, 0.0);
+            resolved.api_type = ApiType::Decision;
+            resolved.method = "decision.evaluate".into();
+            resolved.operation = "systemone.evaluate".into();
+            resolved.input.canonical_request =
+                buckyos_api::AiccCall::DecisionEvaluate(buckyos_api::DecisionEvaluateRequest::new(
+                    resolved.exact_model.clone(),
+                    json!("state"),
+                    vec![buckyos_api::DecisionQuestion::Boolean {
+                        id: "q".into(),
+                        instructions: json!("Test"),
+                        criteria: None,
+                    }],
+                ));
+            resolved
+        };
+        let mut req = request(decision_call("primary"));
+        req.request_model = "decision".into();
+        req.canonical_body = req.primary.input.canonical_request.to_params().unwrap();
+        req.failover.push(decision_call("backup"));
+        req.runtime_failover = true;
+        let (engine, _, _, usage) = make_engine(providers.clone());
+        assert_eq!(
+            engine.execute(req).await.unwrap().state,
+            ExecutionState::Succeeded
+        );
+        assert_eq!(
+            providers.starts.lock().unwrap().as_slice(),
+            ["model@primary", "model@primary", "model@backup"]
+        );
+        let writes = usage.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        let completion = writes.values().next().unwrap();
+        assert_eq!(completion.capability, "decision");
+        assert_eq!(completion.provider_instance_name, "backup");
+        assert_eq!(completion.usage.output_tokens, Some(5));
+    }
+
+    #[tokio::test]
+    async fn decision_replay_preserves_output_tokens_and_charges_input_once() {
+        let providers = Arc::new(FakeProviders::default());
+        let mut primary = token_priced_call("primary", 4.2e-8, 0.0);
+        primary.api_type = ApiType::Decision;
+        primary.method = "decision.evaluate".into();
+        primary.operation = "systemone.evaluate".into();
+        let canonical = buckyos_api::DecisionEvaluateRequest::new(
+            "model@primary",
+            json!("shared state"),
+            vec![buckyos_api::DecisionQuestion::Boolean {
+                id: "q".into(),
+                instructions: json!("Is it shared?"),
+                criteria: None,
+            }],
+        );
+        primary.input.canonical_request =
+            buckyos_api::AiccCall::DecisionEvaluate(canonical.clone());
+        let mut replay = request(primary.clone());
+        replay.request_model = "decision".into();
+        replay.canonical_body = serde_json::to_value(&canonical).unwrap();
+        let mut execution = request(primary);
+        execution.request_model = "decision".into();
+        execution.canonical_body = serde_json::to_value(canonical).unwrap();
+        providers
+            .plans
+            .lock()
+            .unwrap()
+            .push_back(StartPlan::Success(ProviderExecution::Immediate(
+                ProtocolOutput {
+                    value: json!({"answers":[{"id":"q","type":"boolean","probability_true":0.9}]}),
+                    usage: Some(token_usage(318, 72)),
+                    artifacts: Vec::new(),
+                },
+            )));
+        let (engine, _, _, usage) = make_engine(providers.clone());
+        let first = engine.execute(execution).await.unwrap();
+        assert_eq!(first.state, ExecutionState::Succeeded);
+        assert_eq!(engine.execute(replay).await.unwrap(), first);
+        assert_eq!(providers.starts.lock().unwrap().len(), 1);
+        let writes = usage.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        let completion = writes.values().next().unwrap();
+        assert_eq!(completion.capability, "decision");
+        assert_eq!(completion.method, "decision.evaluate");
+        assert_eq!(completion.usage.output_tokens, Some(72));
+        assert!(
+            (completion.finance_snapshot.as_ref().unwrap().amount - 318.0 * 4.2e-8).abs() < 1e-12
         );
     }
 

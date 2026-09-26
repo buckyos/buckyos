@@ -21,6 +21,7 @@ API Type 决定 request/response schema。**Provider 不能自定义 api_type**,
 | `llm` | `messages[]`(可含 image/audio block) | `message` + 可选 `tool_calls` | 主流 chat completion,事实标准 |
 | `embedding.text` | `string \| string[]` | `number[][]` | 文本/代码 embedding |
 | `embedding.multimodal` | `text \| image \| (text+image)` | `number[][]` | CLIP 类跨模态 embedding |
+| `decision` | `state, questions[]` | `answers[]`（保留概率） | 独立混合类型问题求值 |
 | `rerank` | `query, docs[]` | `score[]` | Cross-encoder 重排序 |
 
 ### 1.2 图像类
@@ -75,6 +76,7 @@ API Type 决定 request/response schema。**Provider 不能自定义 api_type**,
 |---|---|---|---|
 | `llm` | `llm` | namespace-only；无 Parent fallback | 功能目录分别配置 |
 | `embedding` | `embedding.text`、`embedding.multimodal` | **strict**(向量空间不通用) | latency_first |
+| `decision` | `decision` | strict | cost_first |
 | `rerank` | `rerank` | strict | latency_first |
 | `image` | `image.*`、`vision.*` | parent within same api_type | quality_first |
 | `audio` | `audio.*` | strict(音色/语种不能跨) | latency_first(tts/asr)、quality_first(music) |
@@ -470,3 +472,7 @@ LLM 目标中，功能 item 只引用已声明规格；Provider inventory 的物
 2. **图像家族中模型变体的层级**:如 `flux-dev` / `flux-schnell` / `flux-1.1-pro` 都属于 `flux` 家族,但延迟和质量差一档。应在 attributes 中加 `tier: flagship/mid/swift`。
 3. **`agent_runtime` 的 fallback 语义**:跨 sandbox 的环境状态不通用(local Docker 启动的容器在云端 E2B 看不到),实际上 strict 更合理。但 strict 会让 fallback 失效,需要在 Provider 层做"会话级 sandbox 粘性"。
 4. **多模态 any-to-any 的 schema 收敛**:暂时让 OpenAI GPT 角色挂点、`llm.gemini-pro`、`llm.qwen-max` 这类逻辑挂点各自挂多个目录。等业界 API 形态收敛后再考虑合并 namespace。
+
+## Decision 逻辑入口（2026-09-25）
+
+一级入口新增 `decision`，采用非 LLM Hybrid 挂点、strict 回退和 cost_first 调度。零 Provider 时保留目录但无候选。TypeSafe 模型挂点为 `decision`、`decision.typesafe` 与模型子路径，不归入 LLM 规格或 effort。题型、结构化输入与容量约束在逻辑、exact 和 preview 路由均生效。完整契约、示例及核验来源见 [Decision API](decision_api.md)。

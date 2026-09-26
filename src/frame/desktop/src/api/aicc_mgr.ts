@@ -78,6 +78,7 @@ const EMPTY_USAGE_SUMMARY: UsageSummary = {
   by_api_namespace: {
     llm: 0,
     embedding: 0,
+    decision: 0,
     rerank: 0,
     image: 0,
     vision: 0,
@@ -1242,6 +1243,7 @@ function emptyApiNamespaceUsage(): Record<ApiNamespace, number> {
   return {
     llm: 0,
     embedding: 0,
+    decision: 0,
     rerank: 0,
     image: 0,
     vision: 0,
@@ -1254,6 +1256,7 @@ function emptyApiNamespaceUsage(): Record<ApiNamespace, number> {
 function capabilityToApiNamespace(value: string): ApiNamespace {
   const lower = value.toLowerCase()
   if (lower.startsWith('embedding')) return 'embedding'
+  if (lower.startsWith('decision')) return 'decision'
   if (lower.startsWith('rerank')) return 'rerank'
   if (lower.startsWith('image')) return 'image'
   if (lower.startsWith('vision')) return 'vision'
@@ -1313,6 +1316,7 @@ function capabilityToApiType(value: string): ApiType {
   if (inferred) return inferred
   switch (capabilityToApiNamespace(value)) {
     case 'embedding': return 'embedding.text'
+    case 'decision': return 'decision'
     case 'rerank': return 'rerank'
     case 'image': return 'image.txt2img'
     case 'vision': return 'vision.ocr'
@@ -2706,6 +2710,7 @@ const API_TYPES: ApiType[] = [
   'llm',
   'embedding.text',
   'embedding.multimodal',
+  'decision',
   'rerank',
   'image.txt2img',
   'image.img2img',
@@ -2728,6 +2733,6 @@ const API_TYPES: ApiType[] = [
   'agent.computer_use',
 ]
 
-const LOGICAL_ROOT_ORDER = ['llm', 'image', 'audio', 'video', 'embedding', 'rerank', 'agent', 'agent_runtime', 'multimodal']
+const LOGICAL_ROOT_ORDER = ['llm', 'image', 'audio', 'video', 'embedding', 'decision', 'rerank', 'agent', 'agent_runtime', 'multimodal']
 // Directory children sort L3 (mount) -> L2 (target) -> L1 (exact model), then by path.
 const LOGICAL_LEVEL_RANK: Record<LogicalNode['level'], number> = { L3: 0, L2: 1, L1: 2 }

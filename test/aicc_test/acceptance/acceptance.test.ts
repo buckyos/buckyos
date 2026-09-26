@@ -1,3 +1,4 @@
+import { openrouterDecisionFixture, decisionFixture, decisionInput, assertDecisionResult } from "./decision.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -172,6 +173,7 @@ function t15ProviderRequest(
       t15FieldValue(field, contract, model),
     ]),
   );
+  if (contract.api_types.includes("decision")) Object.assign(fields, contract.operation === "decisions.create" ? openrouterDecisionFixture.wire_request : decisionFixture.wire_request, {model});
   if (contract.id === "minimax.music-generation.v1") {
     fields.is_instrumental = true;
   }
@@ -841,6 +843,7 @@ test("preflight covers protocol, providers, and static cases", async () => {
     "openrouter",
     "qwen",
     "sn-ai-provider",
+    "typesafe",
   ]);
 });
 
@@ -2094,7 +2097,7 @@ test("T2 Gemini Embedding 2 has one minimal cell per API type and no variant cel
 
 test("T1.5 protocol catalog is independent, traceable, and strict on Provider wire", async () => {
   const catalog = await loadProviderProtocolCatalog();
-  assert.equal(catalog.providers.length, 12);
+  assert.equal(catalog.providers.length, 13);
   assert.deepEqual(
     catalog.providers.map((provider) => provider.provider_driver).sort(),
     [
@@ -2110,6 +2113,7 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
       "openrouter",
       "qwen",
       "sn-ai-provider",
+      "typesafe",
     ],
   );
   const contract = protocolContract(
@@ -2685,9 +2689,9 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
   assert.match(await invalid.text(), /unknown body field invented/);
 });
 
-test("T1.5 Provider mock serves every contract for all 12 Providers", async (context) => {
+test("T1.5 Provider mock serves every contract for all 13 Providers", async (context) => {
   const catalog = await loadProviderProtocolCatalog();
-  assert.equal(catalog.providers.length, 12);
+  assert.equal(catalog.providers.length, 13);
   assert.deepEqual(
     new Set(Object.keys(T15_PROVIDER_DISCOVERY_CONTRACTS)),
     new Set(catalog.providers.map((provider) => provider.provider_driver)),
@@ -3699,4 +3703,98 @@ test("artifact validation records media metadata", async () => {
   });
   assert.equal(typeof wavAudit.metadata?.sample_rate_hz, "number");
   assert.ok(Number(wavAudit.metadata?.duration_seconds) > 0);
+});
+
+
+test("TypeSafe official mixed fixture is strict and decision results preserve probabilities", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const contract = protocolContract(catalog, "typesafe", "typesafe.systemone.v1");
+  const validate = (body: unknown) => validateProviderRequest(contract, {
+    method: "POST", pathname: "/v1/systemone", query: new URLSearchParams(),
+    headers: new Headers({"content-type":"application/json",authorization:"Bearer test-key"}), body,
+  });
+  assert.deepEqual(validate(decisionFixture.wire_request), []);
+  const bad = structuredClone(decisionFixture.wire_request) as any;
+  bad.questions.marker.extra = true;
+  assert.ok(validate(bad).length > 0);
+  bad.questions.marker = {type:"boolean",instructions:"Test"};
+  assert.ok(validate(bad).length > 0);
+  const result = {answers:[
+    {id:"marker",type:"choice",selected:"present",probabilities:{present:0.95,absent:0.05},confidence:0.85},
+    {id:"priority",type:"score",score:1.05,levels:["Routine","Urgent","Critical"],probabilities:{"0":0,"1":0.95,"2":0.05}},
+    {id:"contains",type:"boolean",probability_true:0.98},
+  ]};
+  assert.doesNotThrow(() => assertDecisionResult(result));
+  assert.throws(() => assertDecisionResult({answers:result.answers.slice(1)}));
+  result.answers[0].probabilities!.present = 0.1;
+  assert.throws(() => assertDecisionResult(result));
+});
+
+
+test("TypeSafe official catalog resolves confirmed aliases to one physical decision cell", async () => {
+  const providerBaseline = await baseline();
+  const profile = providerBaseline.providers.find(item => item.provider_driver === "typesafe")!;
+  const ids = await fetchOfficialModelIds({profile,token:"test-token",timeoutMs:1000,fetcher:async (input,init) => {
+    assert.equal(input.toString(),"https://api.typesafe.ai/v1/models");
+    assert.equal(new Headers(init?.headers).get("authorization"),"Bearer test-token");
+    return new Response(JSON.stringify({models:[{name:"jev-latest"},{name:"jev-preview"}]}));
+  }});
+  assert.deepEqual(ids,["jev-latest","jev-preview"]);
+  const filtered=filterPhysicalModels({baseline:providerBaseline,source:"official_catalog",inventories:[{provider_instance_name:"typesafe-main",provider_driver:"typesafe",models:ids.map(id=>({provider_model_id:id,exact_model:`${id}@typesafe-main`,api_types:[],logical_mounts:[]}))}]});
+  assert.equal(filtered.inventories[0].models.length,1);
+  assert.equal(filtered.coverage.find(record=>record.status === "included")?.physical_model_id,"jev-1.13.0");
+  const matrix=analyzeProviderMatrix({baseline:providerBaseline,officialInventories:filtered.inventories,aiccInventories:[{provider_instance_name:"typesafe-main",provider_driver:"typesafe",models:[{provider_model_id:"jev-1.13.0",exact_model:"jev-1.13.0@typesafe-main",api_types:["decision"],logical_mounts:["decision"]}]}]});
+  assert.deepEqual(matrix.mismatches,[]);
+  assert.equal(matrix.cells.length,1);
+  assert.equal(matrix.cells[0].method,"decision.evaluate");
+});
+
+test("OpenRouter Decisions independently validates alpha wire and preserves the dated response", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const contract = protocolContract(catalog, "openrouter", "openrouter.decisions.alpha");
+  const validate = (body: unknown, pathname = "/api/alpha/decisions") => validateProviderRequest(contract, {
+    method: "POST", pathname, query: new URLSearchParams(),
+    headers: new Headers({"content-type":"application/json",authorization:"Bearer test-key"}), body,
+  });
+  assert.deepEqual(validate(openrouterDecisionFixture.wire_request), []);
+  assert.ok(validate(openrouterDecisionFixture.wire_request,"/api/v1/api/alpha/decisions").length);
+  for (const mutate of [
+    (body: any) => body.questions.contains.type = "boolean",
+    (body: any) => delete body.questions.contains.criteria.false,
+    (body: any) => body.questions.priority.criteria = ["only"],
+    (body: any) => body.questions.marker.extra = true,
+    (body: any) => body.messages = [],
+  ]) {
+    const body = structuredClone(openrouterDecisionFixture.wire_request);
+    mutate(body); assert.ok(validate(body).length);
+  }
+  assert.deepEqual(contract.success_fixture, openrouterDecisionFixture.wire_response);
+  assert.equal(contract.success_fixture.model,"typesafe/jev-1.13-20260917");
+  assert.equal((contract.success_fixture.usage as any).cost,0.000013356);
+});
+
+test("OpenRouter complete official catalog checks alias drift and plans one Jev physical call", async () => {
+  const providerBaseline=await baseline();
+  const profile=providerBaseline.providers.find(p=>p.provider_driver==="openrouter")!;
+  const fixture=JSON.parse(await readFile(join(here,"fixtures/openrouter-jev-models.json"),"utf8"));
+  const fetchIds = (body: unknown) => fetchOfficialModelIds({profile,token:"test-token",timeoutMs:1000,fetcher:async(input,init)=>{
+    assert.equal(new URL(input.toString()).searchParams.get("output_modalities"),"all");
+    assert.equal(new Headers(init?.headers).get("authorization"),"Bearer test-token");
+    return new Response(JSON.stringify(body));
+  }});
+  const ids=await fetchIds(fixture);
+  const inventory={provider_instance_name:"openrouter-default",provider_driver:"openrouter",models:ids.map(id=>({provider_model_id:id,exact_model:`${id}@openrouter-default`,api_types:[],logical_mounts:[]}))};
+  const filtered=filterPhysicalModels({baseline:providerBaseline,source:"official_catalog",inventories:[inventory]});
+  assert.equal(filtered.inventories[0].models.length,1);
+  assert.equal(filtered.inventories[0].models[0].provider_model_id,"typesafe/jev-1.13");
+  const matrix=analyzeProviderMatrix({baseline:providerBaseline,officialInventories:filtered.inventories,aiccInventories:[{...inventory,models:[{provider_model_id:"typesafe/jev-1.13",exact_model:"typesafe/jev-1.13@openrouter-default",api_types:["decision"],logical_mounts:["decision"]}]}]});
+  assert.deepEqual(matrix.mismatches,[]);
+  assert.equal(matrix.cells.length,1); assert.equal(matrix.cells[0].method,"decision.evaluate");
+  for (const change of [
+    (body: any) => body.data.find((m:any)=>m.id==="~typesafe/jev-latest").alias_target.slug="typesafe/jev-1.14",
+    (body: any) => body.data.find((m:any)=>m.id==="typesafe/jev-1.13").canonical_slug="typesafe/jev-1.13-20260918",
+    (body: any) => body.data.find((m:any)=>m.id==="typesafe/jev-1.13").architecture.output_modalities=["text"],
+  ]) {
+    const bad=structuredClone(fixture); change(bad); await assert.rejects(fetchIds(bad),/drift/);
+  }
 });

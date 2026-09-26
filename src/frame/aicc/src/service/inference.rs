@@ -504,13 +504,14 @@ impl InferencePort for RuntimeInferencePort {
                     continue;
                 }
             };
-            let routing_request = RoutingRequest::new(
+            let mut routing_request = RoutingRequest::new(
                 next_inference_id(),
                 next_inference_id(),
                 path.clone(),
                 api_type,
                 caller_identity.clone(),
             );
+            routing_request.requirements = request.requirements.clone().unwrap_or_default();
             match Router::new(models, &policy, &runtime_states).route(&routing_request) {
                 Ok(decision) => {
                     entry.available = true;
@@ -854,7 +855,18 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
                     inference_error(AiccErrorCode::InvalidModelName, "exact_model is missing")
                 })?
                 .to_string();
-            let mut requirements = buckyos_api::ModelRequirement::default();
+            let mut requirements = if let AiccCall::DecisionEvaluate(request) = call {
+                request.validate().map_err(|e| e.to_krpc_error())?;
+                if request.execution_mode == buckyos_api::AiccExecutionMode::Stream {
+                    return Err(inference_error(
+                        AiccErrorCode::UnsupportedExecutionMode,
+                        "decision streaming is not supported",
+                    ));
+                }
+                request.requirements()
+            } else {
+                buckyos_api::ModelRequirement::default()
+            };
             if let Some(voice) = params.get("voice") {
                 requirements.canonical_fields.insert(
                     "/voice".into(),

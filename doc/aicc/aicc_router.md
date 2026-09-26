@@ -343,7 +343,7 @@ default items 与覆盖规则：
 
 LLM 的规格归属由原厂 Model Driver 决定。Provider Rules/discovery 将渠道模型归一到官方身份，提供实际库存、渠道能力限制与预设 lowering；AICC 将这些物理 instance 汇入对应家族。Provider 不自行创建规格、不以 `logical_mounts` 直接进入功能目录。
 
-用户调整功能到规格的偏好，以及家族预设内不同 Provider 的实例偏好。规格到家族的版本顺序从模型 metadata 的官方 ID 推导，不配置独立排序字段；修改任务偏好不需要改模型归档。非 LLM 继续采用各自的语义挂点与 admission 规则。
+用户调整功能到规格的偏好，以及家族预设内不同 Provider 的实例偏好。规格到家族的偏好由 metadata `llm.weight` 显式声明，不从官方 ID 推导版本顺序；修改任务偏好不需要改模型归档。非 LLM 继续采用各自的语义挂点与 admission 规则。
 
 ### 6.7 逻辑模型定义与自动挂载（LogicalModelDefinition）
 
@@ -403,7 +403,7 @@ Provider 需要通过声明式接口返回自身当前可提供的模型及其�
 
 这份模型列表是 Provider 的运行时能力声明，不是 AICC 的静态配置。AICC Registry 应周期性或按需调用 Provider 的 inventory/metadata 接口刷新能力清单，避免出现“厂商新增或下线模型后必须修改 AICC 配置才能生效”的情况。Provider 可以自行决定自己的能力清单何时更新，例如启动时加载、本地模型安装完成后更新、云端 inventory 变化后更新，或凭据/套餐变化后更新。
 
-> **Provider 自发现只负责发现 provider model id；能力 metadata 由 driver metadata resolver 产出。** Provider（如 OpenAI）可以只通过 `/models` 报告模型 id。AICC 对每个 `(catalog_kind, catalog_id)` 按 `system-config > local > cloud > builtin` 选择最高优先级来源中的完整 JSON，不跨来源 merge；高优先级来源未包含的身份继续使用低优先级文件。例如 cloud OpenAI 与 builtin MiniMax 可以同时生效。Resolver 再在获选 Driver 文件内按 exact → pattern → default → conservative fallback，把模型 id 转成最终 `ModelMetadata.capabilities` 与非 LLM `logical_mounts`；LLM 家族/effort 关系由 catalog 与库存交集派生；unknown model 走保守 fallback。云端按客户端版本投放兼容且 manifest `revision_seq` 更高的 cloud 来源版本，NDN 保证防回退并在文件替换后令 `metadata_target_seq = manifest.revision_seq`；每个 Provider inventory 保存 `metadata_applied_seq`，推理前或 Provider 定时库存刷新触发所有落后 Provider 的全局收敛。model 列表未变化且 seq 相同时只探测、不重写库存。详见 `driver_metadata_update_protocol.md`。
+> **Provider 自发现只负责发现 provider model id；能力 metadata 由 driver metadata resolver 产出。** Provider（如 OpenAI）可以只通过 `/models` 报告模型 id。AICC 对每个 `(catalog_kind, catalog_id)` 按 `system-config > local > cloud > builtin` 选择最高优先级来源中的完整 JSON，不跨来源 merge；高优先级来源未包含的身份继续使用低优先级文件。例如 cloud OpenAI 与 builtin MiniMax 可以同时生效。Resolver 再在获选 Driver 文件内在有限精确身份匹配成功后按 exact → pattern → default，把模型 id 转成最终 `ModelMetadata.capabilities` 与非 LLM `logical_mounts`；LLM 家族/effort 关系由 catalog 与库存交集派生；unknown model 不进入可执行库存。云端按客户端版本投放兼容且 manifest `revision_seq` 更高的 cloud 来源版本，NDN 保证防回退并在文件替换后令 `metadata_target_seq = manifest.revision_seq`；每个 Provider inventory 保存 `metadata_applied_seq`，推理前或 Provider 定时库存刷新触发所有落后 Provider 的全局收敛。model 列表未变化且 seq 相同时只探测、不重写库存。详见 `driver_metadata_update_protocol.md`。
 
 建议接口返回 schema：
 
@@ -1644,7 +1644,7 @@ scheduler_profiles:
 1. 保留旧模型名映射的兼容适配层；
 2. 对无法判断的新旧模型名，应提供迁移提示；
 3. 精确模型名和逻辑模型名应能共存；
-4. Provider 旧版本可通过默认 metadata 接入，但调度能力受限。
+4. Provider 只有匹配已声明模型身份且具备完整 API/operation 绑定才可接入；默认 metadata 不授予未知模型执行能力。
 
 ---
 
@@ -1832,3 +1832,7 @@ scheduler_profiles:
 7. **最终用户看到的是模型树和偏好控制，开发者看到的是策略、trace 和 Provider 注册细节**。
 
 该设计可以让 AICC 在 Provider 数量增加、模型能力快速变化、成本结构动态变化的情况下，仍然保持可用、可控、可解释和可扩展。
+
+## Decision 请求资格（2026-09-25）
+
+`decision` 入口沿用非 LLM Hybrid / strict / cost_first。`requirements.decision` 表达题型集合、结构化 state/规则、题数/选项/等级/输入字节下限；模型必须同时提供 `decision.probabilities` 和所需题型，缺失能力或容量即过滤。混合请求不拆分、不降级为 llm/rerank；exact 同样检查。目录 minimum line 与请求按集合并集、数值最大值合并，preview 可传相同 requirements。层级权重、候选池调度和 fallback/failover 保持通用规则。

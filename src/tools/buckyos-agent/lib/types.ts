@@ -14,6 +14,7 @@ export type ResourceRef = Parameters<
   SdkAiccClient["imageToImage"]
 >[0]["images"][number];
 export type AiccInferenceResponse =
+  | Awaited<ReturnType<SdkAiccClient["decisionEvaluate"]>>
   | Awaited<ReturnType<SdkAiccClient["helperLlmChat"]>>
   | Awaited<ReturnType<SdkAiccClient["helperTextToImage"]>>
   | Awaited<ReturnType<SdkAiccClient["imageToImage"]>>

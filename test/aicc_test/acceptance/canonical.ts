@@ -4,6 +4,7 @@ export const CANONICAL_API_METHODS = {
   llm: ["chat.completions.create"],
   "embedding.text": ["embedding.text"],
   "embedding.multimodal": ["embedding.multimodal"],
+  decision: ["decision.evaluate"],
   rerank: ["rerank"],
   "image.txt2img": ["images.generate"],
   "image.img2img": ["image.img2img"],

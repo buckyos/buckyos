@@ -146,7 +146,7 @@ Deno.test("describeFailure reads canonical immediate errors", () => {
   const response = {
     task_id: "task-failed",
     status: "failed" as const,
-    error: { code: "provider_error", message: "video failed" },
+    error: { code: "provider_error" as const, message: "video failed" },
   };
   assertEquals(
     describeFailure({
@@ -197,4 +197,19 @@ Deno.test("textToImage uses the canonical helper request", async () => {
   });
   assertEquals(result.status, "succeeded");
   assertEquals(aiResponseArtifacts(result.summary!).length, 1);
+});
+
+
+Deno.test("decision calls route with actual mixed question requirements and preserve stricter caller limits", async () => {
+  const calls: Array<[string, any]> = [];
+  const runtime = runtimeWithClients({
+    routeResolve: (request: unknown) => { calls.push(["route.resolve", request]); return Promise.resolve({selected_exact_model:"jev-1.13.0@typesafe-main"}); },
+    decisionEvaluate: (request: unknown) => { calls.push(["decision.evaluate",request]); return Promise.resolve({task_id:"decision-task",status:"succeeded",answers:[]}); },
+  });
+  await callAicc(runtime,{method:"decision.evaluate",model:"decision",requirements:{decision:{max_options:20}},request:{state:{text:"urgent"},questions:[{id:"a",type:"choice",instructions:"Select",options:[{id:"x",description:"Example"}]},{id:"b",type:"boolean",instructions:"Urgent?"}]}});
+  assertEquals(calls[0][1].api_type,"decision");
+  assertEquals(calls[0][1].requirements.decision.question_types,["choice","boolean"]);
+  assertEquals(calls[0][1].requirements.decision.structured_state,true);
+  assertEquals(calls[0][1].requirements.decision.max_options,20);
+  assertEquals(calls[1][1].exact_model,"jev-1.13.0@typesafe-main");
 });

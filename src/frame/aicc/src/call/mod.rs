@@ -461,7 +461,11 @@ impl<'a> CallResolver<'a> {
         input
             .validate_for(binding)
             .map_err(|error| CallLoweringError::InvalidCanonicalRequest(error.to_string()))?;
-        let resources = collect_resource_requirements(&rewritten_json);
+        let resources = if api_type == ApiType::Decision {
+            Vec::new()
+        } else {
+            collect_resource_requirements(&rewritten_json)
+        };
         let model_revision = self
             .catalog
             .model_driver(&decision.selected.model_driver_id)
@@ -788,6 +792,7 @@ fn canonical_option_keys(call: &AiccCall) -> Result<&'static [&'static str], Cal
             "prefer_artifact",
         ],
         AiccCall::EmbeddingMultimodal(_) => &["dimensions", "normalize"],
+        AiccCall::DecisionEvaluate(_) => &[],
         AiccCall::Rerank(_) => &["n", "return_documents"],
         AiccCall::ImageToImage(_) => &["strength", "output"],
         AiccCall::ImageInpaint(_) => &["mask_semantics", "output"],
@@ -847,6 +852,7 @@ fn api_type_name(api_type: ApiType) -> &'static str {
         ApiType::EmbeddingText => "embedding.text",
         ApiType::EmbeddingMultimodal => "embedding.multimodal",
         ApiType::Rerank => "rerank",
+        ApiType::Decision => "decision",
         ApiType::ImageTextToImage => "image.txt2img",
         ApiType::ImageImageToImage => "image.img2img",
         ApiType::ImageInpaint => "image.inpaint",
@@ -1381,6 +1387,8 @@ mod tests {
         ] {
             registry.register_derived(descriptor, registration).unwrap();
         }
+        let (typesafe, registration) = crate::protocol::typesafe::typesafe_adapter();
+        registry.register_codecs(typesafe, registration).unwrap();
         let (fal, registration) = fal_queue_adapter();
         registry.register_codecs(fal, registration).unwrap();
         registry
@@ -1957,6 +1965,7 @@ mod tests {
                 "openrouter",
                 "qwen",
                 "sn",
+                "typesafe",
             ])
         );
 
@@ -2003,7 +2012,8 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         assert_eq!(golden, documented);
-        assert_eq!(golden.len(), 82);
+        assert_eq!(golden.len(), 84);
+        assert!(golden.contains(&"typesafe|typesafe-systemone|decision|systemone.evaluate".into()));
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(
             golden.contains(&"openai|openai-responses|agent.computer_use|responses.create".into())

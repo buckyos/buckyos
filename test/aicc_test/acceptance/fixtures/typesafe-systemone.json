@@ -1,0 +1,31 @@
+{
+  "sources": ["https://docs.typesafe.ai/api", "https://docs.typesafe.ai/primitives/advanced", "https://docs.typesafe.ai/models"],
+  "verified_at": "2026-09-25",
+  "canonical_request": {
+    "exact_model": "jev-1.13.0@typesafe-test",
+    "state": {"text": "The marker is BUCKYOS-AICC-4827. Priority is urgent."},
+    "questions": [
+      {"id":"marker","type":"choice","instructions":{"task":"Select the marker present in state"},"options":[{"id":"present","description":"BUCKYOS-AICC-4827"},{"id":"absent","description":"No marker"}]},
+      {"id":"priority","type":"score","instructions":"Rate the stated priority","levels":["Routine","Urgent","Critical"]},
+      {"id":"contains","type":"boolean","instructions":"Does state contain BUCKYOS-AICC-4827?","criteria":{"true":"Marker present","false":"Marker absent"}}
+    ]
+  },
+  "wire_request": {
+    "model":"jev-1.13.0",
+    "state":{"text":"The marker is BUCKYOS-AICC-4827. Priority is urgent."},
+    "questions":{
+      "marker":{"type":"choice","instructions":{"task":"Select the marker present in state"},"criteria":{"present":"BUCKYOS-AICC-4827","absent":"No marker"}},
+      "priority":{"type":"score","instructions":"Rate the stated priority","criteria":["Routine","Urgent","Critical"]},
+      "contains":{"type":"noul","instructions":"Does state contain BUCKYOS-AICC-4827?","criteria":{"true":"Marker present","false":"Marker absent"}}
+    }
+  },
+  "wire_response": {
+    "model":"jev-1.13.0",
+    "answers":{
+      "marker":{"type":"choice","choice":"present","probabilities":{"present":0.95,"absent":0.05},"confidence":0.85},
+      "priority":{"type":"score","score":1.05,"legend":{"0":"Routine","1":"Urgent","2":"Critical"},"probabilities":{"0":0.0,"1":0.95,"2":0.05},"confidence":0.92},
+      "contains":{"type":"noul","noul":0.98}
+    },
+    "usage":{"input_tokens":318,"output_tokens":72}
+  }
+}

@@ -35,3 +35,14 @@ Deno.test('filters intersect, search is case insensitive and empty specs survive
   assert(query({ available: true })[0].specs.length === 0, 'status filters hide empty specifications')
   assert(query({ query: 'missing' }).length === 0, 'unmatched search')
 })
+
+Deno.test('decision catalog is discoverable with zero inventory and filters by API independently of LLM', () => {
+  const decisionCatalog: ModelCatalog = { revision: 2, vendors: [{ id: 'typesafe', revision: 1, specs: [], models: [{ id: 'jev-1.13.0', metadata: { api_types: ['decision'], capabilities: { 'decision.probabilities': true } }, providers: [] }] }] }
+  const filters = { ...defaultModelFilters, query: 'decision' }
+  const empty = filterModelCatalog(decisionCatalog, filters)
+  assert(empty.length === 1 && empty[0].models[0].metadata.api_types?.[0] === 'decision', 'decision remains visible and keeps its type')
+  assert(filterModelCatalog(decisionCatalog, { ...filters, available: true }).length === 0, 'catalog metadata does not create inventory')
+  decisionCatalog.vendors[0].models[0].providers.push({ id: 'typesafe-main', local: false, exact_models: ['jev-1.13.0@typesafe-main'] })
+  assert(filterModelCatalog(decisionCatalog, { ...filters, available: true })[0].models[0].available, 'real inventory activates decision')
+  assert(filterModelCatalog(decisionCatalog, { ...filters, query: 'llm' }).length === 0, 'decision does not match the LLM filter')
+})

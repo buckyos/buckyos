@@ -1,3 +1,4 @@
+import { decisionInput, assertDecisionResult } from "./decision.ts";
 import type { MatrixCell } from "./types.ts";
 
 export type ResourceRef =
@@ -104,6 +105,7 @@ function io(
         input_json: { items: [{ id: "item-1", text: "pink flower" }] },
         resources: [requireFixture(fixtures, "image", apiType, representation)],
       };
+    case "decision": return { input_json: decisionInput(), resources: [] };
     case "rerank":
       return {
         input_json: {
@@ -359,6 +361,7 @@ export function assertResponseShape(
     throw new Error(`unexpected task status ${String(response.status)}`);
   }
   if (response.status === "running") return;
+  if (cell.api_type === "decision") { assertDecisionResult(response); return; }
   const typedArtifacts = [
     ...(Array.isArray(response.images)
       ? response.images.map((source) => ({ type: "image", source }))

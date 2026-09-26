@@ -9,6 +9,10 @@ use crate::catalog::{
 };
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ProviderRulesCatalog};
+use crate::protocol::openrouter_decisions::{
+    DECISION_FEATURES, JEV_ALIAS_ID, JEV_BUILD_ID, JEV_CHANNEL_ID, JEV_ORIGIN_ID,
+    OPENROUTER_DECISIONS_OPERATION_ID,
+};
 use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, OPENAI_EMBEDDINGS_OPERATION_ID,
     OPENAI_RESPONSES_OPERATION_ID, OPENROUTER_RERANK_OPERATION_ID, OPENROUTER_RESPONSES_ADAPTER_ID,
@@ -86,6 +90,15 @@ impl OpenRouterDiscovery {
 #[async_trait]
 impl ProviderDiscovery for OpenRouterDiscovery {
     fn match_model_driver(&self, id: &str, catalog: &CatalogSnapshot) -> ProviderModelMatch {
+        if matches!(id, JEV_CHANNEL_ID | JEV_ALIAS_ID) {
+            return ProviderModelMatch::Matched(ModelIdentity {
+                model_driver_id: "typesafe".into(),
+                model_id: JEV_ORIGIN_ID.into(),
+            });
+        }
+        if id.starts_with("typesafe/") || id.starts_with("~typesafe/") {
+            return ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias);
+        }
         let Some((vendor, model)) = id.split_once('/') else {
             return ProviderModelMatch::NotHandled;
         };
@@ -147,6 +160,17 @@ impl ProviderDiscovery for OpenRouterDiscovery {
             ))
         })?;
         let mut models = BTreeMap::new();
+        let verified_target = wire
+            .data
+            .iter()
+            .find(|m| m.id == JEV_CHANNEL_ID)
+            .is_some_and(|m| {
+                m.canonical_slug.as_deref() == Some(JEV_BUILD_ID)
+                    && m.context_length == Some(32000)
+                    && m.architecture.as_ref().is_some_and(|a| {
+                        a.output_modalities == ["decisions"] && a.input_modalities == ["text"]
+                    })
+            });
         for model in wire.data {
             let mut supported_features = BTreeSet::new();
             if model
@@ -171,42 +195,60 @@ impl ProviderDiscovery for OpenRouterDiscovery {
             }) {
                 supported_features.insert(features::VISION.to_owned());
             }
-            let rerank = model.architecture.as_ref().is_some_and(|architecture| {
-                architecture
-                    .output_modalities
-                    .iter()
-                    .any(|item| item == "rerank")
-            });
-            let embedding = model.architecture.as_ref().is_some_and(|architecture| {
-                architecture
-                    .output_modalities
-                    .iter()
-                    .any(|item| item == "embeddings")
-            });
-            let api_type = if rerank {
-                ApiType::Rerank
-            } else if embedding {
-                ApiType::EmbeddingText
-            } else {
-                ApiType::Llm
+            let classification = classify_modalities(model.architecture.as_ref());
+            let (api_types, remote_methods) = match classification {
+                Some((api_type, operation)) => {
+                    (vec![api_type], BTreeSet::from([operation.to_owned()]))
+                }
+                None => {
+                    log::warn!(
+                        "OpenRouter model {} has unknown or conflicting output modalities",
+                        model.id
+                    );
+                    (Vec::new(), BTreeSet::new())
+                }
             };
-            let operation = if rerank {
-                OPENROUTER_RERANK_OPERATION_ID
-            } else if embedding {
-                OPENAI_EMBEDDINGS_OPERATION_ID
-            } else {
-                OPENAI_RESPONSES_OPERATION_ID
-            };
+            let decision = api_types == [ApiType::Decision];
+            let mut availability = ModelAvailability::Available;
+            if decision {
+                supported_features = DECISION_FEATURES.into_iter().map(str::to_owned).collect();
+                let identity_verified = match model.id.as_str() {
+                    JEV_CHANNEL_ID => model.canonical_slug.as_deref() == Some(JEV_BUILD_ID),
+                    JEV_ALIAS_ID => {
+                        verified_target
+                            && model
+                                .alias_target
+                                .as_ref()
+                                .is_some_and(|target| target.slug == JEV_CHANNEL_ID)
+                    }
+                    _ => false,
+                };
+                if !identity_verified
+                    || model.context_length != Some(32000)
+                    || !model
+                        .architecture
+                        .as_ref()
+                        .is_some_and(|a| a.input_modalities == ["text"])
+                {
+                    availability = ModelAvailability::Unavailable;
+                    log::warn!("OpenRouter decision model {} unavailable: unverified build/alias target or channel context/input modalities", model.id);
+                }
+            }
+            if models.contains_key(&model.id) {
+                return Err(ProviderError::DiscoveryResponse(
+                    "duplicate OpenRouter model ID".into(),
+                ));
+            }
             models.insert(
                 model.id.clone(),
                 DiscoveredModel {
                     provider_model_id: model.id,
 
-                    api_types: Some(vec![api_type]),
+                    api_types: Some(api_types),
                     supported_features: Some(supported_features),
                     unsupported_features: BTreeSet::new(),
-                    remote_methods: Some(BTreeSet::from([operation.to_owned()])),
-                    availability: ModelAvailability::Available,
+                    remote_methods: Some(remote_methods),
+                    availability,
                     deprecated: model.expiration_date.is_some(),
                     pricing: parse_pricing(model.pricing)?,
                 },
@@ -241,7 +283,7 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
     }
     Ok(Some(Pricing {
         currency: "USD".to_owned(),
-        source_url: Some("https://openrouter.ai/api/v1/models".into()),
+        source_url: Some("https://openrouter.ai/api/v1/models?output_modalities=all".into()),
         verified_at: Some(super::super::now_ms()?.to_string()),
         ratio_exception: None,
         cache_write_input_token: None,
@@ -344,10 +386,7 @@ fn ensure_success(response: &HttpResponse) -> ProviderResult<()> {
 
 fn models_revision(models: &[DiscoveredModel]) -> String {
     let mut hasher = Sha256::new();
-    for model in models {
-        hasher.update((model.provider_model_id.len() as u64).to_be_bytes());
-        hasher.update(model.provider_model_id.as_bytes());
-    }
+    hasher.update(serde_json::to_vec(models).expect("validated discovery is serializable"));
     format!("sha256:{:x}", hasher.finalize())
 }
 
@@ -359,13 +398,40 @@ struct ModelsResponse {
 #[derive(Deserialize)]
 struct ModelObject {
     id: String,
-    #[serde(rename = "canonical_slug")]
-    _canonical_slug: Option<String>,
+    canonical_slug: Option<String>,
+    alias_target: Option<AliasTarget>,
+    context_length: Option<u64>,
     #[serde(default)]
     supported_parameters: Vec<String>,
     architecture: Option<ModelArchitecture>,
     pricing: Option<ModelPricing>,
     expiration_date: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AliasTarget {
+    slug: String,
+}
+
+fn classify_modalities(
+    architecture: Option<&ModelArchitecture>,
+) -> Option<(ApiType, &'static str)> {
+    let output = &architecture?.output_modalities;
+    match output.as_slice() {
+        [one] if one == "decisions" => Some((ApiType::Decision, OPENROUTER_DECISIONS_OPERATION_ID)),
+        [one] if one == "rerank" => Some((ApiType::Rerank, OPENROUTER_RERANK_OPERATION_ID)),
+        [one] if one == "embeddings" => {
+            Some((ApiType::EmbeddingText, OPENAI_EMBEDDINGS_OPERATION_ID))
+        }
+        _ if output.iter().any(|m| m == "text")
+            && output
+                .iter()
+                .all(|m| matches!(m.as_str(), "text" | "image" | "audio")) =>
+        {
+            Some((ApiType::Llm, OPENAI_RESPONSES_OPERATION_ID))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Deserialize)]
@@ -534,6 +600,217 @@ mod tests {
             .find(|pattern| pattern.operations.contains_key("llm"))
             .unwrap();
         assert_eq!(llm_pattern.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
+    }
+
+    fn jev_fixture() -> serde_json::Value {
+        serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../test/aicc_test/acceptance/fixtures/openrouter-jev-models.json"
+        )))
+        .unwrap()
+    }
+
+    async fn jev_inventory(
+        body: serde_json::Value,
+    ) -> ProviderResult<crate::provider::ProviderInventorySnapshot> {
+        let transport = Arc::new(FakeTransport {
+            request: Mutex::new(None),
+            response: Mutex::new(Some(Ok(HttpResponse {
+                status: StatusCode::OK,
+                headers: HeaderMap::new(),
+                body: Bytes::from(serde_json::to_vec(&body).unwrap()),
+                request_id: "jev-discovery".into(),
+                retry_after: None,
+            }))),
+        });
+        let discovery = OpenRouterDiscovery::with_transport(transport);
+        let profile = openrouter_profile();
+        let instance = ProviderInstanceConfig {
+            provider_instance_name: "openrouter-test".into(),
+            provider_profile_id: "openrouter".into(),
+            protocol_adapter_id: "openrouter-responses".into(),
+            base_url: "https://proxy.test/api/v1".into(),
+            credential: CredentialReference {
+                reference: "secret://test".into(),
+            },
+            credential_kind: None,
+            provider_rules_id: Some("openrouter".into()),
+            region: None,
+            workspace: None,
+            account: None,
+            request_timeout: Duration::from_secs(30),
+            auto_sync_models: true,
+            instance_rules: None,
+        };
+        let credential = ResolvedCredential::bearer("secret://test", "test").unwrap();
+        let snapshot = discovery
+            .discover(&DiscoveryContext {
+                profile: &profile,
+                instance: &instance,
+                credential: &credential,
+            })
+            .await?;
+        let catalog = crate::settings::MetadataSources {
+            builtin: crate::settings::load_builtin_metadata().unwrap(),
+            ..Default::default()
+        }
+        .build_snapshot(2, &Default::default())
+        .unwrap();
+        let providers = super::super::builtin_provider_registry(&catalog).unwrap();
+        crate::provider::InventoryBuilder::build_with_matcher(
+            &profile,
+            &instance,
+            snapshot,
+            &catalog,
+            &providers.codecs(),
+            Some(&discovery),
+        )
+    }
+
+    #[tokio::test]
+    async fn openrouter_decision_discovery_requires_verified_inventory_and_narrows_limits() {
+        let inventory = jev_inventory(jev_fixture()).await.unwrap();
+        assert_eq!(inventory.models.len(), 2);
+        for model in &inventory.models {
+            assert_eq!(model.origin_model_id, JEV_ORIGIN_ID);
+            assert_eq!(model.api_types, vec![ApiType::Decision]);
+            assert_eq!(
+                model.operations,
+                BTreeMap::from([("decision".into(), OPENROUTER_DECISIONS_OPERATION_ID.into())])
+            );
+            assert_eq!(model.capabilities["max_context_tokens"], 32000);
+            assert_eq!(model.capabilities["decision.max_input_bytes"], 32000);
+            assert_eq!(model.capabilities["decision.max_options"], 255);
+            assert_eq!(model.capabilities["decision.max_levels"], 10);
+            assert!(!model.capabilities.contains_key("tool_call"));
+            let price = &model.pricing.as_ref().unwrap().value;
+            assert_eq!(price.input_token, Some(0.000000042));
+            assert_eq!(price.output_token, Some(0.0));
+            assert!(price.source_url.as_ref().unwrap().contains("openrouter.ai"));
+        }
+        assert!(inventory
+            .unmatched_models
+            .iter()
+            .any(|m| m.provider_model_id == "typesafe/jev-router"));
+        assert!(jev_inventory(serde_json::json!({"data":[]}))
+            .await
+            .unwrap()
+            .models
+            .is_empty());
+        for (field, value) in [
+            (
+                "canonical_slug",
+                serde_json::json!("typesafe/jev-1.14-20261001"),
+            ),
+            ("context_length", serde_json::json!(16000)),
+        ] {
+            let mut fixture = jev_fixture();
+            let target = fixture["data"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|m| m["id"] == JEV_CHANNEL_ID)
+                .unwrap();
+            target[field] = value;
+            assert!(jev_inventory(fixture)
+                .await
+                .unwrap()
+                .models
+                .iter()
+                .all(|m| m.api_types.is_empty()));
+        }
+        let mut fixture = jev_fixture();
+        fixture["data"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|m| m["id"] == JEV_ALIAS_ID)
+            .unwrap()["alias_target"]["slug"] = serde_json::json!("typesafe/jev-1.14");
+        let drift = jev_inventory(fixture).await.unwrap();
+        assert!(drift
+            .models
+            .iter()
+            .find(|m| m.provider_model_id == JEV_ALIAS_ID)
+            .unwrap()
+            .api_types
+            .is_empty());
+        assert_eq!(
+            drift
+                .models
+                .iter()
+                .find(|m| m.provider_model_id == JEV_CHANNEL_ID)
+                .unwrap()
+                .api_types,
+            vec![ApiType::Decision]
+        );
+        let mut fixture = jev_fixture();
+        for model in fixture["data"].as_array_mut().unwrap() {
+            model["pricing"] = serde_json::Value::Null;
+        }
+        assert!(jev_inventory(fixture)
+            .await
+            .unwrap()
+            .models
+            .iter()
+            .all(|m| m.pricing.is_none()));
+        let mut fixture = jev_fixture();
+        let duplicate = fixture["data"][0].clone();
+        fixture["data"].as_array_mut().unwrap().push(duplicate);
+        assert!(jev_inventory(fixture).await.is_err());
+    }
+
+    #[test]
+    fn openrouter_unknown_modalities_and_future_identities_fail_closed() {
+        for output in [
+            vec!["decisions", "text"],
+            vec!["rerank", "embeddings"],
+            vec!["future"],
+            vec![],
+        ] {
+            assert!(classify_modalities(Some(&ModelArchitecture {
+                input_modalities: vec!["text".into()],
+                output_modalities: output.into_iter().map(str::to_owned).collect()
+            }))
+            .is_none());
+        }
+        let catalog = crate::settings::MetadataSources {
+            builtin: crate::settings::load_builtin_metadata().unwrap(),
+            ..Default::default()
+        }
+        .build_snapshot(2, &Default::default())
+        .unwrap();
+        let discovery = OpenRouterDiscovery::with_transport(Arc::new(FakeTransport {
+            request: Mutex::new(None),
+            response: Mutex::new(None),
+        }));
+        for id in [
+            "typesafe/jev-1.14",
+            JEV_BUILD_ID,
+            "typesafe/jev-router",
+            "typesafe/jev-1.13.0",
+            "~typesafe/jev-preview",
+        ] {
+            assert!(matches!(
+                discovery.match_model_driver(id, &catalog),
+                ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias)
+            ));
+        }
+        assert!(matches!(
+            discovery.match_model_driver("openai/gpt-5.4-mini", &catalog),
+            ProviderModelMatch::Matched(_)
+        ));
+        for (base, expected) in [
+            (
+                "https://proxy.test/tenant/api/v1/",
+                "https://proxy.test/tenant/api/v1/models?output_modalities=all",
+            ),
+            (
+                "https://proxy.test/tenant",
+                "https://proxy.test/tenant/api/v1/models?output_modalities=all",
+            ),
+        ] {
+            assert_eq!(models_endpoint(base).unwrap(), expected);
+        }
     }
 
     #[test]

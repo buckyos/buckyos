@@ -1,0 +1,37 @@
+{
+  "format": "buckyos.aicc.model-driver-catalog",
+  "schema_version": 2,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "model_driver_id": "typesafe",
+  "models": [
+    {
+      "id": "jev-1.13.0",
+      "api_types": [
+        "decision"
+      ],
+      "logical_mounts": [
+        "decision",
+        "decision.typesafe",
+        "decision.{driver}.{model}"
+      ],
+      "capabilities": {
+        "decision.choice": true,
+        "decision.score": true,
+        "decision.boolean": true,
+        "decision.probabilities": true,
+        "decision.structured_state": true,
+        "decision.structured_rules": true,
+        "decision.max_questions": 1024,
+        "decision.max_options": 255,
+        "decision.max_levels": 10,
+        "decision.max_input_bytes": 64000,
+        "decision.max_state_question_bytes": 32000,
+        "max_context_tokens": 64000
+      }
+    }
+  ],
+  "patterns": [],
+  "defaults": {},
+  "specs": []
+}

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,8 @@ import {
   validateProviderAuxiliaryRequest,
   validateProviderRequest,
 } from "./provider_protocol_contracts.ts";
+
+const openrouterDecisionCatalog = JSON.parse(readFileSync(new URL("./fixtures/openrouter-jev-models.json", import.meta.url), "utf8")) as {data: Array<Record<string, unknown>>};
 
 type Selection = { provider_driver: string; contract_id: string; api_type?: string; scenario: string; selection_seed?: string };
 type DiscoveryContract = {
@@ -35,6 +38,7 @@ export const T15_PROVIDER_DISCOVERY_CONTRACTS: Record<string, DiscoveryContract>
     required_query: { pageSize: "1000" },
     response_shape: "gemini",
   },
+  typesafe: { mode: "catalog_only" },
   fal: { mode: "catalog_only" },
   minimax: {
     mode: "machine_api",
@@ -152,15 +156,15 @@ function discoveryFixture(
       owned_by: provider.provider_driver,
       ...(provider.provider_driver === "openrouter"
         ? {
-          canonical_slug: id,
+          ...(openrouterDecisionCatalog.data.find(model => model.id === id) ?? {canonical_slug: id}),
           supported_parameters: id.startsWith("cohere/rerank-") ? ["top_n"] : [],
           architecture: {
             input_modalities: ["text"],
-            output_modalities: id.startsWith("cohere/rerank-")
+            output_modalities: id === "typesafe/jev-1.13" ? ["decisions"] : id.startsWith("cohere/rerank-")
               ? ["rerank"]
               : id.includes("embedding") ? ["embeddings"] : ["text"],
           },
-          pricing: null,
+          pricing: id === "typesafe/jev-1.13" ? {prompt:"0.000000042",completion:"0"} : null,
           expiration_date: null,
         }
         : {}),

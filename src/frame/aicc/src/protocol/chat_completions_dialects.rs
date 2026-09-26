@@ -84,6 +84,15 @@ pub(crate) fn openrouter_responses_adapter() -> (AdapterDescriptor, CodecRegistr
     registration
         .operation_codecs
         .push(Arc::new(OpenRouterRerankCodec { descriptor: rerank }));
+    let decisions = super::openrouter_decisions::descriptor();
+    descriptor
+        .operations
+        .insert(decisions.operation_id.clone(), decisions.clone());
+    registration.operation_codecs.push(Arc::new(
+        super::openrouter_decisions::OpenRouterDecisionsCodec {
+            descriptor: decisions,
+        },
+    ));
     (descriptor, registration)
 }
 

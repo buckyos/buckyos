@@ -1,0 +1,47 @@
+{
+  "format": "buckyos.aicc.known-provider-catalog",
+  "schema_version": 1,
+  "schema_revision": 0,
+  "revision_seq": 1,
+  "catalog_id": "typesafe",
+  "providers": [
+    {
+      "provider_profile_id": "typesafe",
+      "display_name": "TypeSafe",
+      "base_url": "https://api.typesafe.ai/v1",
+      "protocol_adapter_id": "typesafe-systemone",
+      "discovery_behavior_id": "typesafe-catalog",
+      "provider_rules_id": "typesafe",
+      "credential": {
+        "kind": "bearer"
+      },
+      "connection": {
+        "region": {
+          "mode": "unsupported"
+        },
+        "workspace": {
+          "mode": "unsupported"
+        },
+        "account": {
+          "mode": "unsupported"
+        }
+      },
+      "ui_hints": {
+        "credential_label": "API key",
+        "credential_type": "bearer",
+        "instance_fields": {
+          "default_base_url": "https://api.typesafe.ai/v1",
+          "region": {
+            "mode": "unsupported"
+          },
+          "workspace": {
+            "mode": "unsupported"
+          },
+          "account": {
+            "mode": "unsupported"
+          }
+        }
+      }
+    }
+  ]
+}

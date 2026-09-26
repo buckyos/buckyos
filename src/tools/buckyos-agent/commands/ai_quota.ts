@@ -25,7 +25,7 @@ const METHOD = "quota.query";
 export const HELP = `Usage: ai_quota [options]
 
 Options:
-  --capability <llm|embedding|rerank|image|vision|audio|video|agent>
+  --capability <llm|embedding|decision|rerank|image|vision|audio|video|agent>
   --method <aicc_method>
 ${COMMON_OPTIONS_HELP}`;
 
@@ -36,6 +36,7 @@ export async function run(argv: string[]): Promise<never> {
     capability?:
       | "llm"
       | "embedding"
+      | "decision"
       | "rerank"
       | "image"
       | "vision"
@@ -50,6 +51,7 @@ export async function run(argv: string[]): Promise<never> {
       ![
         "llm",
         "embedding",
+        "decision",
         "rerank",
         "image",
         "vision",

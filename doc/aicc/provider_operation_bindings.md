@@ -81,11 +81,13 @@ openai|openai-responses|video.txt2video|videos.create
 openai|openai-responses|video.video2video|videos.create
 openai|openai-responses|vision.caption|responses.create
 openai|openai-responses|vision.ocr|responses.create
+openrouter|openrouter-responses|decision|decisions.create
 openrouter|openrouter-responses|embedding.text|embeddings.create
 openrouter|openrouter-responses|llm|responses.create
 openrouter|openrouter-responses|rerank|rerank.create
 qwen|qwen-responses|llm|responses.create
 sn|sn-openai|llm|responses.create
+typesafe|typesafe-systemone|decision|systemone.evaluate
 <!-- END GENERATED BINDINGS -->
 
 运行时的最终选择还取决于具体模型匹配到的 Provider Rules。本文档只描述所有可执行绑定，

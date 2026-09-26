@@ -1,3 +1,4 @@
+import { decisionInput, assertDecisionResult } from "./decision.ts";
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -826,6 +827,7 @@ export function buildT15TypedParams(
         video: resource("video/mp4"),
         target_resolution: "1080p",
       };
+    case "decision": return { ...common, ...decisionInput() };
     case "rerank":
       return {
         ...common,
@@ -1068,6 +1070,7 @@ export function assertT15ResponseMapping(
     llm: ["message"],
     "embedding.text": ["data", "data_resource", "embeddings"],
     "embedding.multimodal": ["data", "data_resource", "embeddings"],
+    decision: ["answers"],
     rerank: ["results"],
     "image.txt2img": ["images", "artifacts"],
     "image.img2img": ["images", "image", "artifacts"],
@@ -1089,6 +1092,7 @@ export function assertT15ResponseMapping(
     "video.upscale": ["video", "artifacts"],
     "agent.computer_use": ["action", "actions"],
   };
+  if (apiType === "decision") assertDecisionResult(value);
   const fields = expectedFields[apiType];
   if (!fields || !hasMappedField(value, new Set(fields))) {
     throw new Error(

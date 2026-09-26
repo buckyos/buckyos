@@ -1,0 +1,726 @@
+{
+  "source": "https://openrouter.ai/openapi.json",
+  "verified_at": "2026-09-25",
+  "path": "/api/alpha/decisions",
+  "operation": {
+    "description": "Submits a Decisions request to the Decisions router",
+    "operationId": "createApiAlphaDecisions",
+    "requestBody": {
+      "content": {
+        "application/json": {
+          "example": {
+            "model": "typesafe/jev-1.13",
+            "questions": {
+              "is_bug": {
+                "criteria": {
+                  "false": "The customer is asking a question or requesting a feature.",
+                  "true": "The customer describes broken or unexpected product behavior."
+                },
+                "instructions": "Is the customer reporting a software defect?",
+                "type": "noul"
+              },
+              "team": {
+                "criteria": {
+                  "account": "Login, permissions, or profile issues.",
+                  "frontend": "Rendering, layout, or browser compatibility issues.",
+                  "payments": "Checkout, billing, or payment processing issues."
+                },
+                "instructions": "Which team should own this ticket?",
+                "type": "choice"
+              },
+              "urgency": {
+                "criteria": [
+                  "Can wait for the next release",
+                  "Should be fixed this week",
+                  "Blocking revenue right now"
+                ],
+                "instructions": "How urgent is this ticket?",
+                "type": "score"
+              }
+            },
+            "state": {
+              "customer_tier": "enterprise",
+              "ticket": "My checkout page shows a blank screen after I click Pay. I have tried two browsers."
+            }
+          },
+          "schema": {
+            "$ref": "#/components/schemas/DecisionsRequest"
+          }
+        }
+      },
+      "required": true
+    },
+    "responses": {
+      "200": {
+        "content": {
+          "application/json": {
+            "example": {
+              "answers": {
+                "is_bug": {
+                  "noul": 0.96,
+                  "type": "noul"
+                },
+                "team": {
+                  "choice": "payments",
+                  "confidence": 0.75,
+                  "probabilities": {
+                    "account": 0,
+                    "frontend": 0.16,
+                    "payments": 0.84
+                  },
+                  "type": "choice"
+                },
+                "urgency": {
+                  "confidence": 0.99,
+                  "legend": {
+                    "0": "Can wait for the next release",
+                    "1": "Should be fixed this week",
+                    "2": "Blocking revenue right now"
+                  },
+                  "probabilities": {
+                    "0": 0,
+                    "1": 0.01,
+                    "2": 0.99
+                  },
+                  "score": 1.99,
+                  "type": "score"
+                }
+              },
+              "id": "gen-dec-1789738314-X5e5eKGQdvR9rblyX250",
+              "model": "typesafe/jev-1.13-20260917",
+              "provider": "TypeSafe",
+              "usage": {
+                "cost": 1.9992e-05,
+                "input_tokens": 476,
+                "output_tokens": 70
+              }
+            },
+            "schema": {
+              "$ref": "#/components/schemas/DecisionsResponse"
+            }
+          }
+        },
+        "description": "Decisions response"
+      },
+      "400": {
+        "content": {
+          "application/json": {
+            "example": {
+              "error": {
+                "code": 400,
+                "message": "Invalid request parameters"
+              }
+            },
+            "schema": {
+              "$ref": "#/components/schemas/BadRequestResponse"
+            }
+          }
+        },
+        "description": "Bad Request - Invalid request parameters or malformed input"
+      },
+      "401": {
+        "content": {
+          "application/json": {
+            "example": {
+              "error": {
+                "code": 401,
+                "message": "Missing Authentication header"
+              }
+            },
+            "schema": {
+              "$ref": "#/components/schemas/UnauthorizedResponse"
+            }
+          }
+        },
+        "description": "Unauthorized - Authentication required or invalid credentials"
+      },
+      "402": {
+        "content": {
+          "application/json": {
+            "example": {
+              "error": {
+                "code": 402,
+                "message": "Insufficient credits. Add more using https://openrouter.ai/credits"
+              }
+            },
+            "schema": {
+              "$ref": "#/components/schemas/PaymentRequiredResponse"
+            }
+          }
+        },
+        "description": "Payment Required - Insufficient credits or quota to complete request"
+      },
+      "403": {
+        "content": {
+          "application/json": {
+            "example": {
+              "error": {
+                "code": 403,
+                "message": "Only management keys can perform this operation"
+              }
+            },
+            "schema": {
+              "$ref": "#/components/schemas/ForbiddenResponse"
+            }
+          }
+        },
+        "description": "Forbidden - Authentication successful but insufficient permissions"
+      },
+      "404": {
+        "content": {
+          "application/json": {
+            "example": {
+              "error": {
+                "code": 404,
+                "message": "Resource not found"
+              }
+            },
+            "schema": {
+              "$ref": "#/components/schemas/NotFoundResponse"
+            }
+          }
+        },
+        "description": "Not Found - Resource does not exist"
+      },
+      "413": {
+        "content": {
+          "application/json": {
+            "example": {
+              "error": {
+                "code": 413,
+                "message": "Request payload too large"
+              }
+            },
+            "schema": {
+              "$ref": "#/components/schemas/PayloadTooLargeResponse"
+            }
+          }
+        },
+        "description": "Payload Too Large - Request payload exceeds size limits"
+      },
+      "429": {
+        "content": {
+          "application/json": {
+            "example": {
+              "error": {
+                "code": 429,
+                "message": "Rate limit exceeded"
+              }
+            },
+            "schema": {
+              "$ref": "#/components/schemas/TooManyRequestsResponse"
+            }
+          }
+        },
+        "description": "Too Many Requests - Rate limit exceeded"
+      },
+      "500": {
+        "content": {
+          "application/json": {
+            "example": {
+              "error": {
+                "code": 500,
+                "message": "Internal Server Error"
+              }
+            },
+            "schema": {
+              "$ref": "#/components/schemas/InternalServerResponse"
+            }
+          }
+        },
+        "description": "Internal Server Error - Unexpected server error"
+      },
+      "502": {
+        "content": {
+          "application/json": {
+            "example": {
+              "error": {
+                "code": 502,
+                "message": "Provider returned error"
+              }
+            },
+            "schema": {
+              "$ref": "#/components/schemas/BadGatewayResponse"
+            }
+          }
+        },
+        "description": "Bad Gateway - Provider/upstream API failure"
+      },
+      "503": {
+        "content": {
+          "application/json": {
+            "example": {
+              "error": {
+                "code": 503,
+                "message": "Service temporarily unavailable"
+              }
+            },
+            "schema": {
+              "$ref": "#/components/schemas/ServiceUnavailableResponse"
+            }
+          }
+        },
+        "description": "Service Unavailable - Service temporarily unavailable"
+      },
+      "524": {
+        "content": {
+          "application/json": {
+            "example": {
+              "error": {
+                "code": 524,
+                "message": "Request timed out. Please try again later."
+              }
+            },
+            "schema": {
+              "$ref": "#/components/schemas/EdgeNetworkTimeoutResponse"
+            }
+          }
+        },
+        "description": "Infrastructure Timeout - Provider request timed out at edge network"
+      },
+      "529": {
+        "content": {
+          "application/json": {
+            "example": {
+              "error": {
+                "code": 529,
+                "message": "Provider returned error"
+              }
+            },
+            "schema": {
+              "$ref": "#/components/schemas/ProviderOverloadedResponse"
+            }
+          }
+        },
+        "description": "Provider Overloaded - Provider is temporarily overloaded"
+      }
+    },
+    "servers": [
+      {
+        "url": "https://openrouter.ai"
+      }
+    ],
+    "summary": "Submit a Decisions request",
+    "tags": [
+      "alpha.decisions"
+    ],
+    "x-speakeasy-name-override": "create"
+  },
+  "schemas": {
+    "DecisionsChoiceAnswer": {
+      "properties": {
+        "choice": {
+          "type": "string"
+        },
+        "confidence": {
+          "format": "double",
+          "type": "number"
+        },
+        "probabilities": {
+          "additionalProperties": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "object"
+        },
+        "type": {
+          "enum": [
+            "choice"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "choice"
+      ],
+      "type": "object"
+    },
+    "DecisionsChoiceQuestion": {
+      "properties": {
+        "criteria": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": {},
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A plain string, or a JSON object or array of structured guidance."
+          },
+          "type": "object"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "items": {},
+              "type": "array"
+            }
+          ],
+          "description": "A plain string, or a JSON object or array of structured guidance."
+        },
+        "type": {
+          "enum": [
+            "choice"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "instructions",
+        "criteria"
+      ],
+      "type": "object"
+    },
+    "DecisionsNoulAnswer": {
+      "properties": {
+        "noul": {
+          "format": "double",
+          "type": "number"
+        },
+        "type": {
+          "enum": [
+            "noul"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "noul"
+      ],
+      "type": "object"
+    },
+    "DecisionsNoulQuestion": {
+      "properties": {
+        "criteria": {
+          "properties": {
+            "false": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "additionalProperties": {},
+                  "type": "object"
+                },
+                {
+                  "items": {},
+                  "type": "array"
+                }
+              ],
+              "description": "A plain string, or a JSON object or array of structured guidance."
+            },
+            "true": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "additionalProperties": {},
+                  "type": "object"
+                },
+                {
+                  "items": {},
+                  "type": "array"
+                }
+              ],
+              "description": "A plain string, or a JSON object or array of structured guidance."
+            }
+          },
+          "required": [
+            "true",
+            "false"
+          ],
+          "type": "object"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "items": {},
+              "type": "array"
+            }
+          ],
+          "description": "A plain string, or a JSON object or array of structured guidance."
+        },
+        "type": {
+          "enum": [
+            "noul"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "instructions"
+      ],
+      "type": "object"
+    },
+    "DecisionsRequest": {
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "provider": {
+          "allOf": [
+            {
+              "$ref": "#/components/schemas/ProviderPreferences"
+            },
+            {
+              "description": "Provider routing preferences for the request."
+            }
+          ]
+        },
+        "questions": {
+          "additionalProperties": {
+            "description": "A Decisions question using a boolean, choice, or ordered score evaluation.",
+            "discriminator": {
+              "mapping": {
+                "choice": "#/components/schemas/DecisionsChoiceQuestion",
+                "noul": "#/components/schemas/DecisionsNoulQuestion",
+                "score": "#/components/schemas/DecisionsScoreQuestion"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DecisionsNoulQuestion"
+              },
+              {
+                "$ref": "#/components/schemas/DecisionsChoiceQuestion"
+              },
+              {
+                "$ref": "#/components/schemas/DecisionsScoreQuestion"
+              }
+            ]
+          },
+          "type": "object"
+        },
+        "session_id": {
+          "description": "A unique identifier for grouping related requests (e.g., a conversation or agent workflow). Used for observability grouping in Broadcast and private logging; never sent to the provider. If provided in both the request body and the x-session-id header, the body value takes precedence. Maximum of 256 characters.",
+          "example": "session-1234",
+          "maxLength": 256,
+          "type": "string"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "items": {},
+              "type": "array"
+            }
+          ],
+          "description": "The content to evaluate: a plain string, or a JSON object or array of related context."
+        },
+        "trace": {
+          "$ref": "#/components/schemas/TraceConfig"
+        },
+        "user": {
+          "maxLength": 256,
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "state",
+        "questions"
+      ],
+      "type": "object"
+    },
+    "DecisionsResponse": {
+      "properties": {
+        "answers": {
+          "additionalProperties": {
+            "description": "A Decisions answer using a boolean, choice, or score evaluation.",
+            "discriminator": {
+              "mapping": {
+                "choice": "#/components/schemas/DecisionsChoiceAnswer",
+                "noul": "#/components/schemas/DecisionsNoulAnswer",
+                "score": "#/components/schemas/DecisionsScoreAnswer"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DecisionsNoulAnswer"
+              },
+              {
+                "$ref": "#/components/schemas/DecisionsChoiceAnswer"
+              },
+              {
+                "$ref": "#/components/schemas/DecisionsScoreAnswer"
+              }
+            ]
+          },
+          "type": "object"
+        },
+        "id": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "usage": {
+          "properties": {
+            "cost": {
+              "format": "double",
+              "type": "number"
+            },
+            "input_tokens": {
+              "type": "integer"
+            },
+            "output_tokens": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "input_tokens",
+            "output_tokens"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "model",
+        "answers",
+        "usage"
+      ],
+      "type": "object"
+    },
+    "DecisionsScoreAnswer": {
+      "properties": {
+        "confidence": {
+          "format": "double",
+          "type": "number"
+        },
+        "legend": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": {},
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              }
+            ],
+            "description": "A plain string, or a JSON object or array of structured guidance."
+          },
+          "type": "object"
+        },
+        "probabilities": {
+          "additionalProperties": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "object"
+        },
+        "score": {
+          "format": "double",
+          "type": "number"
+        },
+        "type": {
+          "enum": [
+            "score"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "score"
+      ],
+      "type": "object"
+    },
+    "DecisionsScoreQuestion": {
+      "properties": {
+        "criteria": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": {},
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              }
+            ],
+            "description": "A plain string, or a JSON object or array of structured guidance."
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "items": {},
+              "type": "array"
+            }
+          ],
+          "description": "A plain string, or a JSON object or array of structured guidance."
+        },
+        "type": {
+          "enum": [
+            "score"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "instructions",
+        "criteria"
+      ],
+      "type": "object"
+    }
+  }
+}

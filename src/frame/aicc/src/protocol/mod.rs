@@ -12,11 +12,13 @@ mod minimax_media;
 mod minimax_messages;
 mod openai_chat_completions;
 mod openai_responses;
+pub(crate) mod openrouter_decisions;
 mod provider_state;
 mod result;
 mod sse;
 mod task;
 mod transport;
+pub(crate) mod typesafe;
 
 use minimax_media::minimax_media_registration;
 

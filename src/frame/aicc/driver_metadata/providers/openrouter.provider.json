@@ -2,9 +2,13 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 1,
+  "revision_seq": 2,
   "provider_profile_id": "openrouter",
   "reported_cost": {"currency": "USD", "semantics": "total_request_cost"},
+  "models": [
+    {"id": "typesafe/jev-1.13", "operations": {"decision": "decisions.create"}, "capability_limits": {"max_context_tokens": 32000, "decision.max_input_bytes": 32000, "decision.max_state_question_bytes": 32000}},
+    {"id": "~typesafe/jev-latest", "operations": {"decision": "decisions.create"}, "capability_limits": {"max_context_tokens": 32000, "decision.max_input_bytes": 32000, "decision.max_state_question_bytes": 32000}}
+  ],
   "patterns": [
     {
       "match": "cohere/rerank-*",

@@ -105,6 +105,10 @@ function parsePage(
 ): { ids: string[]; cursor?: string } {
   const root = object(body);
   if (!root) throw new Error("official catalog returned a non-object response");
+  if (config.format === "typesafe") {
+    if (!Array.isArray(root.models)) throw new Error("TypeSafe models list is missing");
+    return { ids: root.models.map(entry => { const id = stringField(entry, "name"); if (!id) throw new Error("TypeSafe model name is missing"); return id; }) };
+  }
   if (config.format === "gemini") {
     const models = Array.isArray(root.models) ? root.models : [];
     return {
@@ -142,6 +146,17 @@ function parsePage(
     };
   }
   const data = Array.isArray(root.data) ? root.data : [];
+  if (new URL(config.endpoint).hostname === "openrouter.ai") {
+    const target = data.find(entry => stringField(entry, "id") === "typesafe/jev-1.13");
+    const verified = (entry: unknown) => stringField(entry, "canonical_slug") === "typesafe/jev-1.13-20260917"
+      && object(entry)?.context_length === 32000
+      && JSON.stringify(object(object(entry)?.architecture)?.output_modalities) === '["decisions"]';
+    if (target && !verified(target)) throw new Error("OpenRouter Jev build or capability drift; reverify baseline");
+    const alias = data.find(entry => stringField(entry, "id") === "~typesafe/jev-latest");
+    if (alias && (!target || !verified(target) || stringField(object(alias)?.alias_target, "slug") !== "typesafe/jev-1.13")) {
+      throw new Error("OpenRouter Jev alias drift; reverify baseline");
+    }
+  }
   const result = {
     ids: data.flatMap((entry) => {
       const id = stringField(entry, "id") ?? stringField(entry, "model");

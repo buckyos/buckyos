@@ -12,9 +12,11 @@
 - `frozen_user_api.md`：面向应用、Agent、UI 和运维工具的调用接口与使用约束。
 
 2026-09-25 已实现 Model Driver v2 与 `功能 -> 规格 -> 家族:effort -> 物理 instance`。
-11 份 builtin Model Driver 使用新 schema；零 Provider 可校验、构建和查询完整静态树。
+12 份 builtin Model Driver 使用新 schema；零 Provider 可校验、构建和查询完整静态树。
 Model Driver 价格、variant 参数表及旧版本挂点已移除，Provider/Adapter 完整 effort 接入仍为后续事项。
 契约见 [Metadata Schema](driver_metadata_schema.md)，改动、测试与边界见 [实现报告](model_driver_v2_implementation.md)。
+
+2026-09-25 新增 `decision.evaluate`、TypeSafe Jev 1.13.0、混合题型能力筛选及 SDK/UI 支持。公共契约、模型限制和官方来源见 [Decision API](decision_api.md)。
 
 ## 根目录文档
 

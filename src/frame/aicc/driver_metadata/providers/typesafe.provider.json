@@ -1,0 +1,64 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 1,
+  "revision_seq": 1,
+  "provider_profile_id": "typesafe",
+  "static_inventory_models": [
+    "jev-1.13.0"
+  ],
+  "models": [
+    {
+      "id": "jev-1.13.0",
+      "operations": {
+        "decision": "systemone.evaluate"
+      }
+    },
+    {
+      "id": "jev-latest",
+      "operations": {
+        "decision": "systemone.evaluate"
+      }
+    },
+    {
+      "id": "jev-preview",
+      "operations": {
+        "decision": "systemone.evaluate"
+      }
+    }
+  ],
+  "patterns": [],
+  "variants": [],
+  "model_pricing": [
+    {
+      "id": "jev-1.13.0",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 4.2e-08,
+        "output_token": 0.0,
+        "source_url": "https://docs.typesafe.ai/models",
+        "verified_at": "2026-09-25"
+      }
+    },
+    {
+      "id": "jev-latest",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 4.2e-08,
+        "output_token": 0.0,
+        "source_url": "https://docs.typesafe.ai/models",
+        "verified_at": "2026-09-25"
+      }
+    },
+    {
+      "id": "jev-preview",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 4.2e-08,
+        "output_token": 0.0,
+        "source_url": "https://docs.typesafe.ai/models",
+        "verified_at": "2026-09-25"
+      }
+    }
+  ]
+}

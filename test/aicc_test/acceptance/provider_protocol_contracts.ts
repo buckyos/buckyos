@@ -17,9 +17,11 @@ export const REQUIRED_T15_PROVIDER_DRIVERS = [
   "doubao",
   "qwen",
   "sn-ai-provider",
+  "typesafe",
 ] as const;
 
 const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
+  typesafe: new Set(["docs.typesafe.ai"]),
   openai: new Set(["platform.openai.com", "developers.openai.com"]),
   claude: new Set(["platform.claude.com", "docs.anthropic.com"]),
   "google-gemini": new Set(["ai.google.dev"]),
@@ -755,6 +757,29 @@ export function validateProviderRequest(
       )
     ) {
       errors.push(`body field ${field} has invalid type`);
+    }
+  }
+  if (contract.api_types.includes("decision")) {
+    const text = (v: unknown) => typeof v === "string" || (v !== null && typeof v === "object");
+    const questions = recordValue(body.questions);
+    if (!questions || !Object.keys(questions).length) errors.push("System One questions must be a nonempty map");
+    for (const [id, value] of Object.entries(questions ?? {})) {
+      const question = recordValue(value);
+      if (!id || !question || !text(question.instructions) || Object.keys(question).some(key => !["type", "instructions", "criteria"].includes(key))) {
+        errors.push("invalid System One question"); continue;
+      }
+      if (question.type === "choice") {
+        const criteria = recordValue(question.criteria);
+        if (!criteria || !Object.keys(criteria).length || Object.keys(criteria).length > 255 || Object.values(criteria).some(v => v !== null && !text(v))) errors.push("invalid System One choice criteria");
+      } else if (question.type === "score") {
+        if (!Array.isArray(question.criteria) || question.criteria.length < 2 || question.criteria.length > 10 || question.criteria.some(v => !text(v))) errors.push("invalid System One score criteria");
+      } else if (question.type === "noul") {
+        if (question.criteria !== undefined) {
+          const criteria = recordValue(question.criteria);
+          if (contract.operation === "decisions.create" && (!criteria || criteria.true === undefined || criteria.false === undefined)) errors.push("OpenRouter noul criteria require true and false");
+          if (!criteria || Object.keys(criteria).some(key => !["true", "false"].includes(key)) || Object.values(criteria).some(v => !text(v))) errors.push("invalid System One noul criteria");
+        }
+      } else errors.push("invalid System One question type");
     }
   }
   validateNestedProviderBody(contract, body, errors);

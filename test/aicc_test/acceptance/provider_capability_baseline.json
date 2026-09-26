@@ -1,8 +1,9 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-09-04.2",
-  "checked_at": "2026-09-04",
+  "baseline_revision": "2026-09-25.1",
+  "checked_at": "2026-09-25",
   "canonical_api_types": [
+    "decision",
     "llm",
     "embedding.text",
     "embedding.multimodal",
@@ -28,6 +29,133 @@
     "agent.computer_use"
   ],
   "providers": [
+    {
+      "provider_driver": "typesafe",
+      "provider_profile_id": "typesafe",
+      "protocol_adapter_ids": [
+        "typesafe-systemone"
+      ],
+      "model_driver_ids": [
+        "typesafe"
+      ],
+      "discovery": "official_catalog",
+      "official_catalog": {
+        "endpoint": "https://api.typesafe.ai/v1/models",
+        "format": "typesafe",
+        "authentication": "bearer"
+      },
+      "source_urls": [
+        "https://docs.typesafe.ai/api",
+        "https://docs.typesafe.ai/primitives/advanced",
+        "https://docs.typesafe.ai/models"
+      ],
+      "protocol_evidence": {
+        "documentation_version": "TypeSafe API and Models, checked 2026-09-25",
+        "streaming_semantics": "Immediate only; no stream protocol.",
+        "async_operation_semantics": "Single synchronous HTTP response; no remote task.",
+        "usage_semantics": "input_tokens and output_tokens preserved; USD 0.042 per million input tokens; output rate zero.",
+        "input_output_formats": "Text/JSON state and structured rules; choice, score and noul probabilities.",
+        "item_request_batch_limits": "Shared state, independent batched questions; max 255 choice options, 2..10 score levels.",
+        "image_audio_video_limits": "No media inputs.",
+        "context_output_limits": "64k total input tokens, 32k state plus longest question.",
+        "region_restrictions": "No published regional guarantee.",
+        "account_tier_restrictions": "Published 1200 RPM and 250k tokens/sec, subject to account limits.",
+        "preview_allowlist": "No additional preview version currently published."
+      },
+      "coverage_rules": [
+        {
+          "model_pattern": "jev-latest",
+          "action": "alias",
+          "physical_model_id": "jev-1.13.0",
+          "reason": "logical_alias",
+          "source_urls": [
+            "https://docs.typesafe.ai/models"
+          ],
+          "evidence_summary": "Alias verified 2026-09-25; fail closed on identity drift."
+        },
+        {
+          "model_pattern": "jev-preview",
+          "action": "alias",
+          "physical_model_id": "jev-1.13.0",
+          "reason": "logical_alias",
+          "source_urls": [
+            "https://docs.typesafe.ai/models"
+          ],
+          "evidence_summary": "Alias verified 2026-09-25; fail closed on identity drift."
+        }
+      ],
+      "rules": [
+        {
+          "model_pattern": "jev-1.13.0",
+          "status": "active",
+          "api_types": [
+            "decision"
+          ],
+          "methods": [
+            "decision.evaluate"
+          ],
+          "input_kinds": [
+            "text",
+            "json"
+          ],
+          "output_kinds": [
+            "json"
+          ],
+          "source_urls": [
+            "https://docs.typesafe.ai/api",
+            "https://docs.typesafe.ai/primitives/advanced",
+            "https://docs.typesafe.ai/models"
+          ],
+          "evidence_summary": "Mixed choice, score and boolean in one shared-state request."
+        },
+        {
+          "model_pattern": "jev-latest",
+          "status": "active",
+          "api_types": [
+            "decision"
+          ],
+          "methods": [
+            "decision.evaluate"
+          ],
+          "input_kinds": [
+            "text",
+            "json"
+          ],
+          "output_kinds": [
+            "json"
+          ],
+          "source_urls": [
+            "https://docs.typesafe.ai/api",
+            "https://docs.typesafe.ai/primitives/advanced",
+            "https://docs.typesafe.ai/models"
+          ],
+          "evidence_summary": "Mixed choice, score and boolean in one shared-state request."
+        },
+        {
+          "model_pattern": "jev-preview",
+          "status": "active",
+          "api_types": [
+            "decision"
+          ],
+          "methods": [
+            "decision.evaluate"
+          ],
+          "input_kinds": [
+            "text",
+            "json"
+          ],
+          "output_kinds": [
+            "json"
+          ],
+          "source_urls": [
+            "https://docs.typesafe.ai/api",
+            "https://docs.typesafe.ai/primitives/advanced",
+            "https://docs.typesafe.ai/models"
+          ],
+          "evidence_summary": "Mixed choice, score and boolean in one shared-state request."
+        }
+      ]
+    },
     {
       "provider_driver": "openai",
       "provider_profile_id": "openai",
@@ -1010,50 +1138,176 @@
     {
       "provider_driver": "openrouter",
       "provider_profile_id": "openrouter",
-      "protocol_adapter_ids": ["openrouter-responses"],
-      "model_driver_ids": ["openai", "claude", "google-gemini", "minimax", "deepseek", "kimi", "glm", "qwen", "cohere"],
+      "protocol_adapter_ids": [
+        "openrouter-responses"
+      ],
+      "model_driver_ids": [
+        "openai",
+        "claude",
+        "google-gemini",
+        "minimax",
+        "deepseek",
+        "kimi",
+        "glm",
+        "qwen",
+        "cohere",
+        "typesafe"
+      ],
       "discovery": "runtime_catalog",
       "official_catalog": {
         "endpoint": "https://openrouter.ai/api/v1/models?output_modalities=all",
         "format": "openai",
         "authentication": "bearer"
       },
-      "source_urls": ["https://openrouter.ai/docs/api/api-reference/models/get-models"],
+      "source_urls": [
+        "https://openrouter.ai/docs/api/api-reference/models/get-models",
+        "https://openrouter.ai/openapi.json",
+        "https://openrouter.ai/blog/tutorials/how-to-use-jev/"
+      ],
       "protocol_evidence": {
         "documentation_version": "official documentation checked 2026-09-13",
         "streaming_semantics": "OpenRouter Responses exposes OpenResponses SSE events subject to the selected upstream model/provider.",
         "async_operation_semantics": "Lifecycle behavior is inherited from the selected model endpoint; unsupported async behavior is not inferred.",
-        "usage_semantics": "Models API exposes pricing and requests expose normalized usage subject to upstream support.",
+        "usage_semantics": "Models API exposes pricing and requests expose normalized usage subject to upstream support. Decisions usage has input_tokens/output_tokens and optional total-request USD cost; free output tokens remain in usage.",
         "input_output_formats": "Runtime Models API output_modalities, architecture, and supported_parameters are the per-model source of truth; LLM wire requests use OpenRouter Responses.",
         "item_request_batch_limits": "Models API per_request_limits and upstream provider metadata are authoritative; null remains explicitly unknown.",
         "image_audio_video_limits": "Media constraints are inherited from the selected upstream model/provider and must be present in runtime metadata or official upstream evidence.",
-        "context_output_limits": "Models API publishes context_length and top-provider limits per canonical physical model.",
+        "context_output_limits": "Models API publishes context_length and top-provider limits per canonical physical model. Jev channel context is 32000; 255 choice options and 2..10 score levels. AICC byte guards do not measure tokens.",
         "region_restrictions": "Provider routing and sovereign/private-provider choices can impose region restrictions.",
         "account_tier_restrictions": "Workspace budget, credit, provider availability, and service tier can restrict execution.",
         "preview_allowlist": "Private/preview models require account access and aliases are resolved before physical-model coverage."
       },
       "rules": [
         {
+          "model_pattern": "typesafe/jev-1.13",
+          "status": "active",
+          "api_types": [
+            "decision"
+          ],
+          "methods": [
+            "decision.evaluate"
+          ],
+          "input_kinds": [
+            "text",
+            "json"
+          ],
+          "output_kinds": [
+            "json"
+          ],
+          "source_urls": [
+            "https://openrouter.ai/openapi.json",
+            "https://openrouter.ai/blog/tutorials/how-to-use-jev/",
+            "https://openrouter.ai/api/v1/models?output_modalities=all"
+          ],
+          "evidence_summary": "Finite Jev 1.13 mapping; shared-state mixed independent questions, immediate only."
+        },
+        {
+          "model_pattern": "~typesafe/jev-latest",
+          "status": "active",
+          "api_types": [
+            "decision"
+          ],
+          "methods": [
+            "decision.evaluate"
+          ],
+          "input_kinds": [
+            "text",
+            "json"
+          ],
+          "output_kinds": [
+            "json"
+          ],
+          "source_urls": [
+            "https://openrouter.ai/openapi.json",
+            "https://openrouter.ai/blog/tutorials/how-to-use-jev/",
+            "https://openrouter.ai/api/v1/models?output_modalities=all"
+          ],
+          "evidence_summary": "Finite Jev 1.13 mapping; shared-state mixed independent questions, immediate only."
+        },
+        {
           "model_pattern": "cohere/rerank-*",
           "status": "active",
           "source_status": "openrouter_models_api_runtime_membership",
-          "api_types": ["rerank"],
-          "methods": ["rerank"],
-          "input_kinds": ["text", "document_chunk"],
-          "output_kinds": ["score"],
-          "source_urls": ["https://openrouter.ai/docs/api/api-reference/rerank/create-rerank"],
+          "api_types": [
+            "rerank"
+          ],
+          "methods": [
+            "rerank"
+          ],
+          "input_kinds": [
+            "text",
+            "document_chunk"
+          ],
+          "output_kinds": [
+            "score"
+          ],
+          "source_urls": [
+            "https://openrouter.ai/docs/api/api-reference/rerank/create-rerank"
+          ],
           "evidence_summary": "OpenRouter exposes a native rerank endpoint whose results preserve document indices and relevance scores."
         },
         {
           "model_pattern": "*",
           "status": "active",
           "source_status": "openrouter_models_api_runtime_membership",
-          "api_types": ["llm"],
-          "methods": ["chat.completions.create"],
-          "input_kinds": ["text"],
-          "output_kinds": ["text", "json", "tool_call"],
-          "source_urls": ["https://openrouter.ai/docs/api/api-reference/models/get-models"],
+          "api_types": [
+            "llm"
+          ],
+          "methods": [
+            "chat.completions.create"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://openrouter.ai/docs/api/api-reference/models/get-models"
+          ],
           "evidence_summary": "OpenRouter model capabilities must be refined from the live official model catalog before execution."
+        }
+      ],
+      "coverage_rules": [
+        {
+          "model_pattern": "typesafe/jev-1.13",
+          "action": "alias",
+          "physical_model_id": "typesafe/jev-1.13",
+          "reason": "logical_alias",
+          "source_urls": [
+            "https://openrouter.ai/api/v1/models?output_modalities=all"
+          ],
+          "evidence_summary": "Catalog canonical_slug=typesafe/jev-1.13-20260917; alias_target.slug=typesafe/jev-1.13. Recheck before planning; one physical invocation."
+        },
+        {
+          "model_pattern": "~typesafe/jev-latest",
+          "action": "alias",
+          "physical_model_id": "typesafe/jev-1.13",
+          "reason": "logical_alias",
+          "source_urls": [
+            "https://openrouter.ai/api/v1/models?output_modalities=all"
+          ],
+          "evidence_summary": "Catalog canonical_slug=typesafe/jev-1.13-20260917; alias_target.slug=typesafe/jev-1.13. Recheck before planning; one physical invocation."
+        },
+        {
+          "model_pattern": "typesafe/*",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": [
+            "https://openrouter.ai/api/v1/models?output_modalities=all"
+          ],
+          "evidence_summary": "Unknown Jev identity or Jev Router; not part of the verified decision scope."
+        },
+        {
+          "model_pattern": "~typesafe/*",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": [
+            "https://openrouter.ai/api/v1/models?output_modalities=all"
+          ],
+          "evidence_summary": "Unknown Jev identity or Jev Router; not part of the verified decision scope."
         }
       ]
     },

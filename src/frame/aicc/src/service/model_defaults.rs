@@ -559,6 +559,15 @@ const MEDIA_FAMILIES: &[(&str, &str, f64)] = &[
 
 pub(super) fn builtin_logical_model_definitions() -> Vec<LogicalModelDefinition> {
     let mut definitions = vec![
+        logical_definition(
+            "decision",
+            ApiType::Decision,
+            ModelRequirement::default(),
+            MountMode::Hybrid,
+            AiccSchedulerProfile::CostFirst,
+            strict_fallback(),
+            Some("general"),
+        ),
         llm_logical_definition(
             "llm",
             ModelRequirement::default(),

@@ -1,7 +1,9 @@
 use crate::aicc_usage_log::{
     QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
 };
-use crate::{AppDoc, AppType, SelectorType};
+use crate::{
+    AppDoc, AppType, DecisionAnswer, DecisionQuestion, DecisionRequirements, SelectorType,
+};
 use ::kRPC::*;
 use async_trait::async_trait;
 use name_lib::DID;
@@ -25,6 +27,7 @@ pub mod ai_methods {
     pub const EMBEDDING_TEXT: &str = "embedding.text";
     pub const EMBEDDING_MULTIMODAL: &str = "embedding.multimodal";
     pub const RERANK: &str = "rerank";
+    pub const DECISION_EVALUATE: &str = "decision.evaluate";
     pub const IMAGE_IMG2IMG: &str = "image.img2img";
     pub const IMAGE_INPAINT: &str = "image.inpaint";
     pub const IMAGE_UPSCALE: &str = "image.upscale";
@@ -73,6 +76,7 @@ pub mod ai_methods {
                 | IMAGES_GENERATE
                 | EMBEDDING_TEXT
                 | EMBEDDING_MULTIMODAL
+                | DECISION_EVALUATE
                 | RERANK
                 | IMAGE_IMG2IMG
                 | IMAGE_INPAINT
@@ -1137,6 +1141,8 @@ pub enum ApiType {
     EmbeddingText,
     #[serde(rename = "embedding.multimodal")]
     EmbeddingMultimodal,
+    #[serde(rename = "decision")]
+    Decision,
     #[serde(rename = "rerank")]
     Rerank,
     #[serde(rename = "image.txt2img")]
@@ -1185,6 +1191,7 @@ impl ApiType {
             Self::Llm => Capability::Llm,
             Self::EmbeddingText | Self::EmbeddingMultimodal => Capability::Embedding,
             Self::Rerank => Capability::Rerank,
+            Self::Decision => Capability::Decision,
             Self::ImageTextToImage
             | Self::ImageImageToImage
             | Self::ImageInpaint
@@ -1212,6 +1219,7 @@ impl ApiType {
             Self::EmbeddingText => ai_methods::EMBEDDING_TEXT,
             Self::EmbeddingMultimodal => ai_methods::EMBEDDING_MULTIMODAL,
             Self::Rerank => ai_methods::RERANK,
+            Self::Decision => ai_methods::DECISION_EVALUATE,
             Self::ImageTextToImage => ai_methods::IMAGES_GENERATE,
             Self::ImageImageToImage => ai_methods::IMAGE_IMG2IMG,
             Self::ImageInpaint => ai_methods::IMAGE_INPAINT,
@@ -1261,6 +1269,7 @@ pub fn validate_logical_model_name(value: &str) -> std::result::Result<(), AiccE
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Capability {
+    Decision,
     Llm,
     Embedding,
     Rerank,
@@ -1523,6 +1532,8 @@ impl std::error::Error for AiccError {}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ModelRequirement {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionRequirements>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub streaming: bool,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -1582,6 +1593,31 @@ impl ModelRequirement {
             features::VISION => self.vision = true,
             features::IMAGE_GENERATION => self.image_generation = true,
             "streaming" => self.streaming = true,
+            "decision.choice" | "decision.score" | "decision.boolean" => {
+                let kind = match feature {
+                    "decision.choice" => crate::DecisionQuestionType::Choice,
+                    "decision.score" => crate::DecisionQuestionType::Score,
+                    _ => crate::DecisionQuestionType::Boolean,
+                };
+                self.decision
+                    .get_or_insert_with(Default::default)
+                    .question_types
+                    .insert(kind);
+            }
+            "decision.structured_state" => {
+                self.decision
+                    .get_or_insert_with(Default::default)
+                    .structured_state = true
+            }
+            "decision.structured_rules" => {
+                self.decision
+                    .get_or_insert_with(Default::default)
+                    .structured_rules = true
+            }
+            "decision.probabilities" => {
+                self.decision.get_or_insert_with(Default::default);
+            }
+
             _ => {}
         }
     }
@@ -1594,12 +1630,18 @@ impl ModelRequirement {
             features::VISION => self.vision,
             features::IMAGE_GENERATION => self.image_generation,
             "streaming" => self.streaming,
-            _ => false,
+            _ => self
+                .decision
+                .as_ref()
+                .is_some_and(|decision| decision.features().iter().any(|name| name == feature)),
         }
     }
 
     pub fn feature_names(&self) -> Vec<Feature> {
         let mut features = Vec::new();
+        if let Some(decision) = &self.decision {
+            features.extend(decision.features());
+        }
         if self.streaming {
             features.push("streaming".to_string());
         }
@@ -3085,6 +3127,7 @@ pub struct HelperModelRequirement {
 impl From<HelperModelRequirement> for ModelRequirement {
     fn from(value: HelperModelRequirement) -> Self {
         Self {
+            decision: None,
             streaming: value.streaming,
             tool_call: value.tool_call,
             json_schema: value.json_schema,
@@ -3376,6 +3419,7 @@ macro_rules! typed_request {
         $name:ident,
         required { $( $required:ident : $required_ty:ty ),* $(,)? },
         optional { $( $optional:ident : $optional_ty:ty ),* $(,)? }
+        $(validate $validate:ident)?
     ) => {
         #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
         #[serde(deny_unknown_fields)]
@@ -3424,6 +3468,7 @@ macro_rules! typed_request {
                 })?;
                 validate_exact_model_name(&request.exact_model)
                     .map_err(|error| error.to_krpc_error())?;
+                $(request.$validate().map_err(|error| error.to_krpc_error())?;)?
                 Ok(request)
             }
         }
@@ -3586,6 +3631,13 @@ typed_request!(RerankRequest,
     optional { n: u32, return_documents: bool }
 );
 typed_response!(RerankResponse { results: Vec<RerankResult> });
+
+typed_request!(DecisionEvaluateRequest,
+    required { state: Value, questions: Vec<DecisionQuestion> },
+    optional {}
+    validate validate
+);
+typed_response!(DecisionEvaluateResponse { answers: Vec<DecisionAnswer>, model: Option<String> });
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -4122,9 +4174,11 @@ impl RoutingUpdateRequest {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RoutingPreviewRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirements: Option<ModelRequirement>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -4949,11 +5003,8 @@ macro_rules! define_aicc_calls {
                 method: &str,
                 params: Value,
             ) -> std::result::Result<Self, RPCErrors> {
-                let parse = |error: serde_json::Error| {
-                    RPCErrors::ParseRequestError(format!("invalid {method} request: {error}"))
-                };
                 match method {
-                    $( $method => serde_json::from_value(params).map(Self::$variant).map_err(parse), )+
+                    $( $method => <$request>::from_json(params).map(Self::$variant), )+
                     _ => Err(RPCErrors::UnknownMethod(method.to_string())),
                 }
             }
@@ -4979,6 +5030,7 @@ define_aicc_calls! {
     HelperTextToImage(TextToImageHelperRequest) => ai_methods::HELPER_TEXT_TO_IMAGE, Some(ApiType::ImageTextToImage), none;
     EmbeddingText(EmbeddingTextRequest) => ai_methods::EMBEDDING_TEXT, Some(ApiType::EmbeddingText), exact;
     EmbeddingMultimodal(EmbeddingMultimodalRequest) => ai_methods::EMBEDDING_MULTIMODAL, Some(ApiType::EmbeddingMultimodal), exact;
+    DecisionEvaluate(DecisionEvaluateRequest) => ai_methods::DECISION_EVALUATE, Some(ApiType::Decision), exact;
     Rerank(RerankRequest) => ai_methods::RERANK, Some(ApiType::Rerank), exact;
     ImageToImage(ImageToImageRequest) => ai_methods::IMAGE_IMG2IMG, Some(ApiType::ImageImageToImage), exact;
     ImageInpaint(ImageInpaintRequest) => ai_methods::IMAGE_INPAINT, Some(ApiType::ImageInpaint), exact;
@@ -5262,6 +5314,9 @@ impl AiccClient {
             AiccCall::EmbeddingMultimodal(request) => {
                 serde_json::to_value(self.embedding_multimodal(request).await?)
             }
+            AiccCall::DecisionEvaluate(request) => {
+                serde_json::to_value(self.decision_evaluate(request).await?)
+            }
             AiccCall::Rerank(request) => serde_json::to_value(self.rerank(request).await?),
             AiccCall::ImageToImage(request) => {
                 serde_json::to_value(self.image_to_image(request).await?)
@@ -5317,6 +5372,33 @@ impl AiccClient {
         result.map_err(|error| {
             RPCErrors::ReasonError(format!("Failed to serialize AICC response: {error}"))
         })
+    }
+
+    pub async fn decision_evaluate(
+        &self,
+        request: DecisionEvaluateRequest,
+    ) -> std::result::Result<DecisionEvaluateResponse, RPCErrors> {
+        request.validate().map_err(|error| error.to_krpc_error())?;
+        let response: DecisionEvaluateResponse = match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_decision_evaluate(request.clone(), RPCContext::default())
+                    .await?
+            }
+            Self::KRPC(client) => {
+                let params = serde_json::to_value(&request)
+                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+                let result = client.call(ai_methods::DECISION_EVALUATE, params).await?;
+                serde_json::from_value(result)
+                    .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?
+            }
+        };
+        if response.status == AiMethodStatus::Succeeded {
+            request
+                .validate_answers(&response.answers)
+                .map_err(|e| e.to_krpc_error())?;
+        }
+        Ok(response)
     }
 
     pub async fn route_resolve(
@@ -5924,6 +6006,16 @@ pub trait AiccHandler: Send + Sync {
         ))
     }
 
+    async fn handle_decision_evaluate(
+        &self,
+        _request: DecisionEvaluateRequest,
+        _ctx: RPCContext,
+    ) -> std::result::Result<DecisionEvaluateResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::DECISION_EVALUATE.to_owned(),
+        ))
+    }
+
     async fn handle_rerank(
         &self,
         _request: RerankRequest,
@@ -6393,6 +6485,13 @@ impl<T: AiccHandler> RPCHandler for AiccServerHandler<T> {
                     )
                     .await?
             )),
+            ai_methods::DECISION_EVALUATE => {
+                let result = self
+                    .0
+                    .handle_decision_evaluate(DecisionEvaluateRequest::from_json(req.params)?, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
             ai_methods::RERANK => RPCResult::Success(json!(
                 self.0
                     .handle_rerank(RerankRequest::from_json(req.params)?, ctx)

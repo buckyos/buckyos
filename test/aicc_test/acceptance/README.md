@@ -99,6 +99,28 @@ T1 会临时写入带 `run_id` 的 Mock Provider instance，并在 `finally` 中
 
 第二租户隔离用例通过 `[auth].other_tenant_session_token` 或 `BUCKYOS_TEST_OTHER_TENANT_SESSION_TOKEN` 参数化，覆盖 task 查询/取消、usage、msg-center 消息、Named Object 和管理方法 RBAC。未配置时这些 case 保留在 manifest 和覆盖报告中并明确记为 `skipped`，不会伪造同租户结果或阻断其他 T1 用例。
 
-T2 会为 OpenAI、Claude、Google Gemini、Fal、MiniMax、OpenRouter、Kimi、GLM、DeepSeek、Doubao、Qwen 和 SN 生成全部 active 基础物理模型的最小 `ProviderInstance × model × API-Type` 矩阵；是否实际执行由 `--provider`、凭据和真实调用开关共同决定。可用报告中的 `targeted_retest_command`，或重复传入 `--case <case_id>`，只重跑失败单元。没有账号或明确禁止执行的 Provider 仍保留基线和用例，但不应开启真实调用。
+T2 会为 OpenAI、Claude、Google Gemini、Fal、MiniMax、OpenRouter、Kimi、GLM、DeepSeek、Doubao、Qwen、TypeSafe 和 SN 生成全部 active 基础物理模型的最小 `ProviderInstance × model × API-Type` 矩阵；是否实际执行由 `--provider`、凭据和真实调用开关共同决定。可用报告中的 `targeted_retest_command`，或重复传入 `--case <case_id>`，只重跑失败单元。没有账号或明确禁止执行的 Provider 仍保留基线和用例，但不应开启真实调用。
 
 普通 `chat.completions.create` 用例显式关闭 AICC 默认附加的 `web_search`，避免把基础聊天错误地限定为必须支持联网搜索；联网搜索作为独立 capability 分支验证。Provider 凭据临时写入后，runner 会等待 system-config 与 AICC runtime settings 收敛，再验证 settings 字节恢复、运行时 inventory、Named Data 和消息资源清理。
+
+TypeSafe 的 T1.5 依据官方 System One 文档，固定混合 choice/score/noul fixture 在 `fixtures/typesafe-systemone.json`。T2 的 decision cell 先携带题型/容量要求调用 `route.resolve`，再向所选 exact model 发一批三题，验证完整概率、已知标记、优先级和 usage。`--provider typesafe` 只执行当前有限 Jev 物理模型集合；线上调用仍需已配置实例、凭据与明确授权。
+
+OpenRouter Decisions 的独立 wire/catalog/schema fixture 在 `fixtures/openrouter-*`，
+证据为 2026-09-25 官方 OpenAPI、教程与完整模型目录。T1.5 使用
+`openrouter.decisions.alpha`（`decisions.create`、`/api/alpha/decisions`），同实例仍覆盖
+Responses、embedding、rerank。T2 官方抓取校验 Jev dated build 与 alias target；
+`typesafe/jev-1.13` 和 `~typesafe/jev-latest` 合并为一个物理调用，未知 Jev 身份及
+`jev-router` 不进入 decision 验收范围。目录核验与 mock 通过不代表真实推理通过。
+
+一次 Jev 混合 smoke 使用专用受限验收入口（无 judge、无重试）：
+
+```bash
+node --experimental-strip-types acceptance/run_openrouter_decision_smoke.ts --config aicc_acceptance.local.toml
+node --experimental-strip-types acceptance/run_openrouter_decision_smoke.ts --config aicc_acceptance.local.toml --execute --allow-config-mutation
+```
+
+第一条只刷新、预览和解析路由；第二条须遵守 E2E skill 的本次 T2 授权，最多一次
+Provider attempt、60 秒、USD 0.01。它临时将已有实例的 timeout 设为 60 秒，并锁定
+实例、预算、禁止 fallback/failover；结束通过既有 settings transaction 恢复。
+凭据读取忽略的 TOML `[auth]`，结果写入忽略的 `reports/openrouter-jev-smoke.json`。
+DV 自签名证书需按本地测试证书配置运行环境，不改变生产 HTTP transport。
