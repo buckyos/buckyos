@@ -601,6 +601,62 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         }
       }
       if (
+        contract.async_protocol === "minimax_video_v2" &&
+        url.pathname === "/v2/query/video_generation/minimax_video_mock_1" &&
+        request.method === "GET"
+      ) {
+        const prior = requests.filter((captured) =>
+          captured.selection.contract_id === selection!.contract_id &&
+          captured.pathname === url.pathname && captured.method === "GET"
+        );
+        const step = prior.length === 0 || selection.scenario === "async_failed" ||
+            selection.scenario === "async_poll_timeout" ? "poll" : "result";
+        const errors = captureAuxiliary(step);
+        if (errors.length > 0) {
+          return json(response, 400, {
+            type: "t15_mock_contract_violation",
+            errors,
+          });
+        }
+        const status = selection.scenario === "async_failed"
+          ? "failed"
+          : selection.scenario === "async_poll_timeout"
+          ? "running"
+          : "succeeded";
+        const result = rewriteMockUrls(
+          contract.async_result_fixture ?? {},
+          request.headers.host ?? "127.0.0.1",
+          url.pathname.replace(/^\//, ""),
+        ) as Record<string, unknown>;
+        const task = (result.task ?? {}) as Record<string, unknown>;
+        task.status = status;
+        if (selection.scenario === "async_artifact_unavailable") {
+          task.content = {
+            url: `http://${request.headers.host}/artifacts/unavailable.mp4`,
+          };
+        }
+        result.task = task;
+        return json(response, 200, result);
+      }
+      if (
+        contract.async_protocol === "minimax_video_v2" &&
+        url.pathname === "/v2/video_generation/minimax_video_mock_1" &&
+        request.method === "DELETE"
+      ) {
+        const errors = captureAuxiliary("cancel");
+        if (errors.length > 0) {
+          return json(response, 400, {
+            type: "t15_mock_contract_violation",
+            errors,
+          });
+        }
+        return json(response, 200, {
+          task_id: "minimax_video_mock_1",
+          action: "cancelled",
+          status: "cancelled",
+        });
+      }
+      if (
         contract.async_protocol === "minimax_video" &&
         url.pathname === "/v1/query/video_generation" &&
         request.method === "GET"
@@ -637,7 +693,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
       }
       if (
         contract.async_protocol === "doubao_video" &&
-        url.pathname === "/api/v3/contents/generations/tasks/doubao_video_mock_1" &&
+        url.pathname === "/api/plan/v3/contents/generations/tasks/doubao_video_mock_1" &&
         (request.method === "GET" || request.method === "DELETE")
       ) {
         if (request.method === "DELETE") {
@@ -827,6 +883,8 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         }
         const mime = url.pathname.endsWith(".png")
           ? "image/png"
+          : url.pathname.endsWith(".jpg") || url.pathname.endsWith(".jpeg")
+          ? "image/jpeg"
           : url.pathname.endsWith(".wav")
           ? "audio/wav"
           : "video/mp4";

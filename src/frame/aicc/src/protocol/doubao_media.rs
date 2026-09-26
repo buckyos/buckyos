@@ -511,21 +511,24 @@ fn decode_images(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
         {
-            images.push(ResourceRef::url(
-                url.to_owned(),
-                Some("image/png".to_owned()),
-            ));
+            let mime = image_mime_from_url(url).map(str::to_owned);
+            images.push((ResourceRef::url(url.to_owned(), mime.clone()), mime));
         } else if let Some(encoded) = item
             .get("b64_json")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
         {
-            STANDARD.decode(encoded).map_err(|_| {
+            let bytes = STANDARD.decode(encoded).map_err(|_| {
                 ProtocolError::invalid_response("Doubao image response contains invalid base64")
             })?;
-            images.push(ResourceRef::base64(
-                "image/png".to_owned(),
-                encoded.to_owned(),
+            let mime = image_mime_from_bytes(&bytes).ok_or_else(|| {
+                ProtocolError::invalid_response(
+                    "Doubao image response contains an unrecognized base64 image",
+                )
+            })?;
+            images.push((
+                ResourceRef::base64(mime.to_owned(), encoded.to_owned()),
+                Some(mime.to_owned()),
             ));
         }
     }
@@ -537,18 +540,51 @@ fn decode_images(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
     let artifacts = images
         .iter()
         .enumerate()
-        .map(|(index, resource)| AiArtifact {
+        .map(|(index, (resource, mime))| AiArtifact {
             name: format!("image-{}", index + 1),
             resource: resource.clone(),
-            mime: Some("image/png".to_owned()),
+            mime: mime.clone(),
             metadata: None,
         })
         .collect();
+    let resources = images
+        .into_iter()
+        .map(|(resource, _)| resource)
+        .collect::<Vec<_>>();
     Ok(ProtocolOutput {
-        value: json!({"images":images,"provider_states":[]}),
+        value: json!({"images":resources,"provider_states":[]}),
         usage: Some(AiUsage::request_units(data.len() as u64)),
         artifacts,
     })
+}
+
+fn image_mime_from_url(value: &str) -> Option<&'static str> {
+    let path = Url::parse(value).ok()?.path().to_ascii_lowercase();
+    if path.ends_with(".png") {
+        Some("image/png")
+    } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+        Some("image/jpeg")
+    } else if path.ends_with(".webp") {
+        Some("image/webp")
+    } else if path.ends_with(".gif") {
+        Some("image/gif")
+    } else {
+        None
+    }
+}
+
+fn image_mime_from_bytes(value: &[u8]) -> Option<&'static str> {
+    if value.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if value.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if value.starts_with(b"GIF87a") || value.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if value.len() >= 12 && &value[..4] == b"RIFF" && &value[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 fn decode_video_result(value: &Value) -> ProtocolResultValue<NativeTaskOutput> {
@@ -729,7 +765,7 @@ mod tests {
 
     fn context() -> CodecContext {
         CodecContext {
-            base_url: "https://ark.cn-beijing.volces.com/api/v3".to_owned(),
+            base_url: "https://ark.cn-beijing.volces.com/api/plan/v3".to_owned(),
             state_coordinate: ProviderStateCoordinate {
                 provider_profile_id: "doubao".to_owned(),
                 adapter_type: DOUBAO_MEDIA_ADAPTER_ID.to_owned(),
@@ -747,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn uses_ark_v3_image_and_content_task_endpoints() {
+    fn uses_agent_plan_image_and_content_task_endpoints() {
         let (descriptor, registration) = doubao_media_adapter();
         let mut registry = CodecRegistry::default();
         registry.register_codecs(descriptor, registration).unwrap();
@@ -771,7 +807,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             request.url,
-            "https://ark.cn-beijing.volces.com/api/v3/images/generations"
+            "https://ark.cn-beijing.volces.com/api/plan/v3/images/generations"
         );
 
         let video = CodecInput {
@@ -798,7 +834,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             request.url,
-            "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"
+            "https://ark.cn-beijing.volces.com/api/plan/v3/contents/generations/tasks"
         );
     }
 
@@ -815,5 +851,15 @@ mod tests {
         };
         let error = ensure_success(&response).unwrap_err();
         assert_eq!(error.provider_code.as_deref(), Some("InvalidParameter"));
+    }
+
+    #[test]
+    fn image_response_preserves_jpeg_mime_from_provider_url() {
+        let output = decode_images(&json!({
+            "data": [{"url": "https://example.test/generated/image.jpeg?signature=opaque"}]
+        }))
+        .unwrap();
+        assert_eq!(output.value["images"][0]["mime_hint"], "image/jpeg");
+        assert_eq!(output.artifacts[0].mime.as_deref(), Some("image/jpeg"));
     }
 }

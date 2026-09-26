@@ -144,7 +144,14 @@ pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProv
 
 #[cfg(test)]
 pub(crate) fn openai_responses_compatible_catalog_files() -> Vec<CurrentCatalogFile> {
-    super::builtin_catalog_files(&[DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID])
+    super::builtin_catalog_files(&[
+        DEEPSEEK_PROFILE_ID,
+        DOUBAO_PROFILE_ID,
+        QWEN_PROFILE_ID,
+        "glm",
+        "kimi",
+        "minimax",
+    ])
 }
 
 pub(crate) fn openai_compatible_models_discovery(
@@ -745,7 +752,8 @@ mod tests {
             assert_eq!(
                 rules.revision_seq,
                 match provider.profile.provider_profile_id.as_str() {
-                    DOUBAO_PROFILE_ID | QWEN_PROFILE_ID => 4,
+                    DOUBAO_PROFILE_ID => 5,
+                    QWEN_PROFILE_ID => 4,
                     _ => 3,
                 }
             );

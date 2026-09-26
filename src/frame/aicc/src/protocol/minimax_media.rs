@@ -21,6 +21,7 @@ const SPEECH_TO_TEXT_OPERATION_ID: &str = "speech_to_text.create";
 pub(crate) const MINIMAX_MEDIA_ADAPTER_ID: &str = "minimax-media";
 const IMAGE_OPERATION_ID: &str = "image_generation.create";
 const VIDEO_OPERATION_ID: &str = "video_generation.create";
+const VIDEO_V2_OPERATION_ID: &str = "video_generation.v2.create";
 const MUSIC_OPERATION_ID: &str = "music_generation.create";
 const DEFAULT_MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
@@ -47,6 +48,17 @@ pub(super) fn minimax_media_registration() -> (Vec<OperationDescriptor>, CodecRe
         max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
         max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
     };
+    let video_v2 = OperationDescriptor {
+        operation_id: VIDEO_V2_OPERATION_ID.to_string(),
+        bindings: [ApiType::VideoTextToVideo, ApiType::VideoImageToVideo]
+            .into_iter()
+            .map(|api_type| OperationBinding::new(api_type, [ExecutionMode::NativeTask]))
+            .collect(),
+        supports_cancel: true,
+        supports_webhook: false,
+        max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
+        max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+    };
     let operation_codecs = [
         (t2a.clone(), ApiType::AudioTextToSpeech),
         (speech_to_text.clone(), ApiType::AudioSpeechRecognition),
@@ -62,17 +74,20 @@ pub(super) fn minimax_media_registration() -> (Vec<OperationDescriptor>, CodecRe
         }) as Arc<dyn OperationCodec>
     })
     .collect();
-    let native_task_codecs = [ApiType::VideoTextToVideo, ApiType::VideoImageToVideo]
+    let native_task_codecs = [(video.clone(), false), (video_v2.clone(), true)]
         .into_iter()
-        .map(|api_type| {
-            Arc::new(MiniMaxVideoCodec {
-                descriptor: video.clone(),
-                api_type,
-            }) as Arc<dyn NativeTaskCodec>
+        .flat_map(|(descriptor, v2)| {
+            [ApiType::VideoTextToVideo, ApiType::VideoImageToVideo].map(|api_type| {
+                Arc::new(MiniMaxVideoCodec {
+                    descriptor: descriptor.clone(),
+                    api_type,
+                    v2,
+                }) as Arc<dyn NativeTaskCodec>
+            })
         })
         .collect();
     (
-        vec![t2a, speech_to_text, image, music, video],
+        vec![t2a, speech_to_text, image, music, video, video_v2],
         CodecRegistration {
             operation_codecs,
             native_task_codecs,
@@ -325,6 +340,7 @@ impl OperationCodec for MiniMaxImmediateCodec {
 struct MiniMaxVideoCodec {
     descriptor: OperationDescriptor,
     api_type: ApiType,
+    v2: bool,
 }
 
 #[async_trait]
@@ -338,37 +354,50 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
     }
 
     fn operations(&self) -> BTreeSet<NativeTaskOperation> {
-        BTreeSet::from([
+        let mut operations = BTreeSet::from([
             NativeTaskOperation::Submit,
             NativeTaskOperation::Status,
             NativeTaskOperation::Result,
-        ])
+        ]);
+        if self.v2 {
+            operations.insert(NativeTaskOperation::Cancel);
+        }
+        operations
     }
 
     fn encode_native(&self, input: &NativeTaskInput<'_>) -> ProtocolResultValue<HttpRequest> {
         match input.operation {
-            NativeTaskOperation::Submit => encode_video_submit(input, self.api_type),
+            NativeTaskOperation::Submit => encode_video_submit(input, self.api_type, self.v2),
             NativeTaskOperation::Status => {
+                let task_id = safe_id(input.remote_task_id, "task ID")?;
+                let path = if self.v2 {
+                    format!("/v2/query/video_generation/{task_id}")
+                } else {
+                    format!("/v1/query/video_generation?task_id={task_id}")
+                };
+                media_json_request(input.context, Method::GET, &path, Value::Null)
+            }
+            NativeTaskOperation::Result => {
+                let result_id = safe_id(input.remote_task_id, "result ID")?;
+                let path = if self.v2 {
+                    format!("/v2/query/video_generation/{result_id}")
+                } else {
+                    format!("/v1/files/retrieve?file_id={result_id}")
+                };
+                media_json_request(input.context, Method::GET, &path, Value::Null)
+            }
+            NativeTaskOperation::Cancel if self.v2 => {
                 let task_id = safe_id(input.remote_task_id, "task ID")?;
                 media_json_request(
                     input.context,
-                    Method::GET,
-                    &format!("/v1/query/video_generation?task_id={task_id}"),
-                    Value::Null,
-                )
-            }
-            NativeTaskOperation::Result => {
-                let file_id = safe_id(input.remote_task_id, "file ID")?;
-                media_json_request(
-                    input.context,
-                    Method::GET,
-                    &format!("/v1/files/retrieve?file_id={file_id}"),
+                    Method::DELETE,
+                    &format!("/v2/video_generation/{task_id}"),
                     Value::Null,
                 )
             }
             NativeTaskOperation::Cancel => Err(ProtocolError::new(
                 ProtocolErrorKind::UnsupportedOperation,
-                "MiniMax video generation does not declare cancellation",
+                "MiniMax legacy video generation does not declare cancellation",
             )),
         }
     }
@@ -385,10 +414,23 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
             NativeTaskOperation::Submit => {
                 let mut handle = NativeTaskHandle::new(required_string(&value, "task_id")?)?;
                 handle.poll_after = retry_after.or(Some(Duration::from_secs(2)));
+                handle.cancel_supported = self.v2;
                 Ok(NativeTaskOutput::Submitted(handle))
             }
             NativeTaskOperation::Status => {
-                let status = required_string(&value, "status")?;
+                let status = if self.v2 {
+                    value
+                        .pointer("/task/status")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            ProtocolError::invalid_response(
+                                "MiniMax V2 video response is missing task.status",
+                            )
+                        })?
+                        .to_owned()
+                } else {
+                    required_string(&value, "status")?
+                };
                 let state = match status.to_ascii_lowercase().as_str() {
                     "preparing" | "queueing" | "queued" => NativeTaskState::Queued,
                     "processing" | "running" => NativeTaskState::Running,
@@ -401,7 +443,20 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
                     }
                 };
                 let result_ref = if state == NativeTaskState::Succeeded {
-                    Some(required_string(&value, "file_id")?)
+                    Some(if self.v2 {
+                        value
+                            .pointer("/task/id")
+                            .and_then(Value::as_str)
+                            .filter(|id| !id.is_empty())
+                            .ok_or_else(|| {
+                                ProtocolError::invalid_response(
+                                    "MiniMax V2 video response is missing task.id",
+                                )
+                            })?
+                            .to_owned()
+                    } else {
+                        required_string(&value, "file_id")?
+                    })
                 } else {
                     None
                 };
@@ -413,13 +468,18 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
                 })
             }
             NativeTaskOperation::Result => {
+                let pointer = if self.v2 {
+                    "/task/content/url"
+                } else {
+                    "/file/download_url"
+                };
                 let url = value
-                    .pointer("/file/download_url")
+                    .pointer(pointer)
                     .and_then(Value::as_str)
                     .filter(|url| !url.trim().is_empty())
                     .ok_or_else(|| {
                         ProtocolError::invalid_response(
-                            "MiniMax file response is missing file.download_url",
+                            "MiniMax video result is missing its download URL",
                         )
                     })?;
                 let resource = ResourceRef::url(url.to_string(), Some("video/mp4".to_string()));
@@ -434,9 +494,16 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
                     }],
                 }))
             }
+            NativeTaskOperation::Cancel if self.v2 => {
+                let accepted = value
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .is_some_and(|status| matches!(status, "cancelled" | "deleted"));
+                Ok(NativeTaskOutput::Cancelled { accepted })
+            }
             NativeTaskOperation::Cancel => Err(ProtocolError::new(
                 ProtocolErrorKind::UnsupportedOperation,
-                "MiniMax video generation does not declare cancellation",
+                "MiniMax legacy video generation does not declare cancellation",
             )),
         }
     }
@@ -445,6 +512,7 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
 fn encode_video_submit(
     input: &NativeTaskInput<'_>,
     api_type: ApiType,
+    v2: bool,
 ) -> ProtocolResultValue<HttpRequest> {
     let codec_input = input.codec_input.ok_or_else(|| {
         ProtocolError::invalid_request("MiniMax video submit requires canonical input")
@@ -454,16 +522,36 @@ fn encode_video_submit(
     let mut body = match (&codec_input.canonical_request, api_type) {
         (AiccCall::VideoTextToVideo(request), ApiType::VideoTextToVideo) => Map::from_iter([
             ("model".to_string(), json!(model)),
-            ("prompt".to_string(), json!(request.prompt)),
-        ]),
-        (AiccCall::VideoImageToVideo(request), ApiType::VideoImageToVideo) => Map::from_iter([
-            ("model".to_string(), json!(model)),
-            ("prompt".to_string(), json!(request.prompt)),
             (
-                "first_frame_image".to_string(),
-                json!(resource_string(&request.image, input.context)?),
+                if v2 { "content" } else { "prompt" }.to_string(),
+                if v2 {
+                    json!([{"type":"text","text":request.prompt}])
+                } else {
+                    json!(request.prompt)
+                },
             ),
         ]),
+        (AiccCall::VideoImageToVideo(request), ApiType::VideoImageToVideo) => {
+            let image = resource_string(&request.image, input.context)?;
+            if v2 {
+                Map::from_iter([
+                    ("model".to_string(), json!(model)),
+                    (
+                        "content".to_string(),
+                        json!([
+                            {"type":"text","text":request.prompt},
+                            {"type":"image_url","image_url":{"url":image},"role":"first_frame"}
+                        ]),
+                    ),
+                ])
+            } else {
+                Map::from_iter([
+                    ("model".to_string(), json!(model)),
+                    ("prompt".to_string(), json!(request.prompt)),
+                    ("first_frame_image".to_string(), json!(image)),
+                ])
+            }
+        }
         _ => {
             return Err(ProtocolError::invalid_request(
                 "MiniMax video codec received the wrong canonical request",
@@ -489,10 +577,45 @@ fn encode_video_submit(
         }
         _ => {}
     }
+    if v2 {
+        let duration = body
+            .get("duration")
+            .and_then(Value::as_f64)
+            .unwrap_or(5.0)
+            .round() as u64;
+        body.insert("duration".to_string(), json!(duration));
+        let resolution = body
+            .get("resolution")
+            .and_then(Value::as_str)
+            .unwrap_or("768P");
+        let resolution = match resolution.to_ascii_lowercase().as_str() {
+            "480p" => "480P",
+            "720p" | "768p" => "768P",
+            "2k" | "1440p" => "2K",
+            _ => {
+                return Err(ProtocolError::invalid_request(
+                    "MiniMax V2 resolution must be 480P, 768P, or 2K",
+                ))
+            }
+        };
+        body.insert("resolution".to_string(), json!(resolution));
+        let ratio = match &codec_input.canonical_request {
+            AiccCall::VideoTextToVideo(request) => {
+                request.aspect_ratio.as_deref().unwrap_or("16:9")
+            }
+            AiccCall::VideoImageToVideo(_) => "adaptive",
+            _ => unreachable!(),
+        };
+        body.insert("ratio".to_string(), json!(ratio));
+    }
     media_json_request(
         input.context,
         Method::POST,
-        "/v1/video_generation",
+        if v2 {
+            "/v2/video_generation"
+        } else {
+            "/v1/video_generation"
+        },
         Value::Object(body),
     )
 }
@@ -876,8 +999,44 @@ fn audio_mime(format: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::decode_speech_to_text;
+    use super::*;
+    use crate::protocol::{CodecInput, CodecLimits, ResolvedCredential};
+    use buckyos_api::{ProviderStateCoordinate, VideoTextToVideoRequest};
+    use bytes::Bytes;
+    use reqwest::StatusCode;
     use serde_json::json;
+
+    fn context() -> CodecContext {
+        CodecContext {
+            base_url: "https://api.minimax.io".to_owned(),
+            state_coordinate: ProviderStateCoordinate {
+                provider_profile_id: "minimax".to_owned(),
+                adapter_type: MINIMAX_MEDIA_ADAPTER_ID.to_owned(),
+                origin_provider: "minimax".to_owned(),
+                origin_model: "MiniMax-H3".to_owned(),
+            },
+            credential: Some(
+                ResolvedCredential::named_header("secret://minimax", "x-api-key", "secret")
+                    .unwrap(),
+            ),
+            resources: BTreeMap::new(),
+            limits: CodecLimits {
+                request_timeout: Duration::from_secs(10),
+                max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
+                max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+            },
+        }
+    }
+
+    fn response(value: Value) -> HttpResponse {
+        HttpResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from(serde_json::to_vec(&value).unwrap()),
+            request_id: "request-1".to_owned(),
+            retry_after: None,
+        }
+    }
 
     #[test]
     fn speech_to_text_normalizes_numeric_segment_ids() {
@@ -888,5 +1047,116 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(output.value["segments"][0]["id"], "0");
+    }
+
+    #[tokio::test]
+    async fn video_v2_maps_submit_status_result_and_cancel() {
+        let descriptor = minimax_media_adapter().0.operations[VIDEO_V2_OPERATION_ID].clone();
+        let codec = MiniMaxVideoCodec {
+            descriptor,
+            api_type: ApiType::VideoTextToVideo,
+            v2: true,
+        };
+        let mut request = VideoTextToVideoRequest::new("ignored", "ocean".to_owned());
+        request.duration_seconds = Some(6.0);
+        request.aspect_ratio = Some("9:16".to_owned());
+        request.resolution = Some("720p".to_owned());
+        let parameters = BTreeMap::from([("provider_model_id".to_owned(), json!("MiniMax-H3"))]);
+        let codec_input = CodecInput {
+            canonical_request: AiccCall::VideoTextToVideo(request),
+            resolved_parameters: parameters.clone(),
+        };
+        let context = context();
+        let submit = NativeTaskInput {
+            operation: NativeTaskOperation::Submit,
+            remote_task_id: None,
+            codec_input: Some(&codec_input),
+            resolved_parameters: &parameters,
+            context: &context,
+        };
+        let wire = codec.encode_native(&submit).unwrap();
+        assert_eq!(wire.method, Method::POST);
+        assert_eq!(wire.url, "https://api.minimax.io/v2/video_generation");
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON")
+        };
+        assert_eq!(body["model"], "MiniMax-H3");
+        assert_eq!(body["content"][0], json!({"type":"text","text":"ocean"}));
+        assert_eq!(body["duration"], 6);
+        assert_eq!(body["resolution"], "768P");
+        assert_eq!(body["ratio"], "9:16");
+
+        let NativeTaskOutput::Submitted(handle) = codec
+            .decode_native(
+                NativeTaskOperation::Submit,
+                response(json!({"task_id":"video-1","base_resp":{"status_code":0}})),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected submitted task")
+        };
+        assert_eq!(handle.remote_task_id, "video-1");
+        assert!(handle.cancel_supported);
+
+        let lifecycle = |operation| NativeTaskInput {
+            operation,
+            remote_task_id: Some("video-1"),
+            codec_input: None,
+            resolved_parameters: &parameters,
+            context: &context,
+        };
+        assert_eq!(
+            codec
+                .encode_native(&lifecycle(NativeTaskOperation::Status))
+                .unwrap()
+                .url,
+            "https://api.minimax.io/v2/query/video_generation/video-1"
+        );
+        let NativeTaskOutput::Status {
+            state, result_ref, ..
+        } = codec
+            .decode_native(
+                NativeTaskOperation::Status,
+                response(json!({"task":{"id":"video-1","status":"succeeded"},"base_resp":{"status_code":0}})),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected task status")
+        };
+        assert_eq!(state, NativeTaskState::Succeeded);
+        assert_eq!(result_ref.as_deref(), Some("video-1"));
+
+        let result = codec
+            .decode_native(
+                NativeTaskOperation::Result,
+                response(json!({"task":{"id":"video-1","status":"succeeded","content":{"url":"https://cdn.example/video.mp4"}},"base_resp":{"status_code":0}})),
+            )
+            .await
+            .unwrap();
+        let NativeTaskOutput::Result(output) = result else {
+            panic!("expected task result")
+        };
+        assert_eq!(output.artifacts[0].name, "video");
+
+        let cancel = codec
+            .encode_native(&lifecycle(NativeTaskOperation::Cancel))
+            .unwrap();
+        assert_eq!(cancel.method, Method::DELETE);
+        assert_eq!(
+            cancel.url,
+            "https://api.minimax.io/v2/video_generation/video-1"
+        );
+        assert!(matches!(
+            codec
+                .decode_native(
+                    NativeTaskOperation::Cancel,
+                    response(json!({"status":"cancelled","base_resp":{"status_code":0}})),
+                )
+                .await
+                .unwrap(),
+            NativeTaskOutput::Cancelled { accepted: true }
+        ));
     }
 }

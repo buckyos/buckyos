@@ -74,7 +74,9 @@ minimax|minimax-messages|image.img2img|image_generation.create
 minimax|minimax-messages|image.txt2img|image_generation.create
 minimax|minimax-messages|llm|messages.create
 minimax|minimax-messages|video.img2video|video_generation.create
+minimax|minimax-messages|video.img2video|video_generation.v2.create
 minimax|minimax-messages|video.txt2video|video_generation.create
+minimax|minimax-messages|video.txt2video|video_generation.v2.create
 minimax|minimax-messages|vision.caption|messages.create
 minimax|minimax-messages|vision.ocr|messages.create
 openai|openai-responses|agent.computer_use|responses.create

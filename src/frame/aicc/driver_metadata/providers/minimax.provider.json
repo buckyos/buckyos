@@ -33,6 +33,20 @@
       }
     },
     {
+      "id": "MiniMax-H3",
+      "operations": {
+        "video.txt2video": "video_generation.v2.create",
+        "video.img2video": "video_generation.v2.create"
+      }
+    },
+    {
+      "id": "MiniMax-H3-Max",
+      "operations": {
+        "video.txt2video": "video_generation.v2.create",
+        "video.img2video": "video_generation.v2.create"
+      }
+    },
+    {
       "id": "MiniMax-Hailuo-02",
       "operations": {
         "video.txt2video": "video_generation.create",

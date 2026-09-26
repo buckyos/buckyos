@@ -127,7 +127,7 @@ mod tests {
             Some(CLAUDE_MESSAGES_ADAPTER_ID)
         );
         assert_eq!(registration.operation_codecs.len(), 8);
-        assert_eq!(registration.native_task_codecs.len(), 2);
+        assert_eq!(registration.native_task_codecs.len(), 4);
         let builtin = minimax_catalog_files()
             .into_iter()
             .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))

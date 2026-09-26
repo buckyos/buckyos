@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "glm",
-  "revision_seq": 3,
+  "revision_seq": 5,
   "required_features": [],
   "models": [
     {
@@ -341,7 +341,7 @@
         "spec": "glm-standard",
         "effort": "high",
         "default_effort": "high",
-        "supported_efforts": ["thinking", "max", "high", "low"],
+        "supported_efforts": ["thinking", "max", "high", "medium", "low"],
         "stability": "stable",
         "weight": 53
       }
@@ -363,7 +363,7 @@
         "spec": "glm-flash",
         "effort": "high",
         "default_effort": "high",
-        "supported_efforts": ["thinking", "max", "high", "low"],
+        "supported_efforts": ["thinking", "max", "high", "medium", "low"],
         "stability": "stable",
         "weight": 53
       }

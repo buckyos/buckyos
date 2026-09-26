@@ -3,9 +3,16 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "minimax",
-  "revision_seq": 2,
+  "revision_seq": 3,
   "required_features": [],
   "models": [
+    {
+      "id": "minimax-m3",
+      "parameter_scale": "m3",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true, "tool_call": true, "reasoning": true},
+      "llm": {"spec": "minimax-standard", "effort": "native", "default_effort": "native", "supported_efforts": ["native"], "stability": "stable", "weight": 30}
+    },
     {
       "id": "MiniMax-M2.7",
       "parameter_scale": "m2.7",
@@ -198,6 +205,18 @@
       "capabilities": {
         "image_generation": true
       }
+    },
+    {
+      "id": "MiniMax-H3",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": ["video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax", "video.img2video.{model}", "video.txt2video.minimax.{model}"],
+      "capabilities": {}
+    },
+    {
+      "id": "MiniMax-H3-Max",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": ["video.txt2video.minimax", "video.txt2video.{model}", "video.img2video.minimax", "video.img2video.{model}", "video.txt2video.minimax.{model}"],
+      "capabilities": {}
     },
     {
       "id": "MiniMax-Hailuo-2.3",

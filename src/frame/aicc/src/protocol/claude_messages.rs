@@ -799,10 +799,13 @@ fn apply_resolved_parameters(
         "metadata",
         "output_config",
         "service_tier",
+        "stop_sequences",
         "stream",
+        "temperature",
         "thinking",
         "tool_choice",
         "top_k",
+        "top_p",
     ];
     for (name, value) in parameters {
         if matches!(name.as_str(), "provider_model_id" | "stream") {
@@ -815,7 +818,9 @@ fn apply_resolved_parameters(
         }
         let valid = match name.as_str() {
             "max_tokens" | "top_k" => value.as_u64().is_some(),
+            "temperature" | "top_p" => value.as_f64().is_some(),
             "metadata" | "output_config" | "thinking" | "tool_choice" => value.is_object(),
+            "stop_sequences" => value.is_array(),
             "service_tier" => value.is_string(),
             "stream" => value.is_boolean(),
             _ => false,

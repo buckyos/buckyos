@@ -162,44 +162,10 @@ fn overrides_provider_failures_and_aliases_are_terminal_and_isolated() {
     );
     assert_eq!(
         deepseek.match_model_driver("deepseek-v4-flash", &catalog),
-        ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias)
-    );
-    let mut updated: Value =
-        builtin_catalog_document(crate::catalog::CatalogKind::ModelDriver, "deepseek");
-    let mut next_model = updated["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|model| model["id"] == "deepseek-v4-flash")
-        .unwrap()
-        .clone();
-    next_model["id"] = json!("deepseek-v4.1-flash");
-    updated["models"].as_array_mut().unwrap().push(next_model);
-    let updated = MetadataSources {
-        builtin: load_builtin_metadata().unwrap(),
-        system_config: vec![crate::settings::MetadataFile::parse(
-            crate::settings::MetadataSource::SystemConfig,
-            crate::catalog::CatalogKind::ModelDriver,
-            serde_json::to_vec(&updated).unwrap(),
-        )
-        .unwrap()],
-        ..Default::default()
-    }
-    .build_snapshot(
-        crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
-        &Default::default(),
-    )
-    .unwrap();
-    assert_eq!(
-        deepseek.match_model_driver("deepseek-v4-flash", &updated),
         ProviderModelMatch::Matched(ModelIdentity {
             model_driver_id: "deepseek".into(),
             model_id: "deepseek-v4.1-flash".into()
         })
-    );
-    assert_eq!(
-        updated.match_model("deepseek-v4-flash").unwrap().model_id,
-        "deepseek-v4-flash"
     );
     assert_eq!(
         catalog
@@ -254,9 +220,23 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
         (
             "kimi",
             "kimi-k2.6",
-            "thinking",
+            "medium",
             "/thinking/type",
             json!("enabled"),
+        ),
+        (
+            "kimi",
+            "kimi-k2.7-code",
+            "medium",
+            "/thinking/keep",
+            json!("all"),
+        ),
+        (
+            "kimi",
+            "kimi-k3",
+            "high",
+            "/reasoning_effort",
+            json!("high"),
         ),
         (
             "glm",
@@ -631,11 +611,15 @@ fn invalid_exact_and_cached_presets_are_rejected_and_unmapped_presets_diagnosed(
         &codecs,
     )
     .unwrap();
-    assert!(inv.models[0].variants.is_empty());
-    assert!(inv
-        .unavailable_presets
-        .iter()
-        .any(|p| p.effort == "thinking"));
+    assert_eq!(
+        inv.models[0]
+            .variants
+            .iter()
+            .map(|variant| variant.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["reasoning-high", "reasoning-low", "reasoning-medium"]
+    );
+    assert!(inv.unavailable_presets.is_empty());
     assert!(inv.unmatched_models.is_empty());
 }
 

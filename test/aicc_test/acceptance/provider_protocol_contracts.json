@@ -296,9 +296,10 @@
         "vision.ocr": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
         "vision.caption": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
       },
-      "official_variant_sources": ["https://platform.claude.com/docs/en/build-with-claude/effort"],
+      "official_variant_sources": ["https://platform.claude.com/docs/en/build-with-claude/effort", "https://platform.claude.com/docs/en/build-with-claude/extended-thinking", "https://platform.claude.com/docs/en/models/haiku-4-5/migration-guide"],
       "official_variant_rules": [
-        { "model_ids": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"], "variants": { "reasoning-low": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "low" } }, "reasoning-medium": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "medium" } }, "reasoning-high": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "high" } }, "reasoning-xhigh": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "xhigh" } }, "reasoning-max": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "max" } } } }
+        { "model_ids": ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5"], "variants": { "reasoning-low": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "low" } }, "reasoning-medium": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "medium" } }, "reasoning-high": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "high" } }, "reasoning-xhigh": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "xhigh" } }, "reasoning-max": { "thinking": { "type": "adaptive" }, "output_config": { "effort": "max" } } } },
+        { "model_ids": ["claude-haiku-4-5-20251001"], "variants": { "reasoning-none": { "thinking": { "type": "disabled" } }, "reasoning-thinking": { "thinking": { "type": "enabled", "budget_tokens": 1024 } } } }
       ],
       "test_model_ids": { "llm": "claude-sonnet-5", "vision.ocr": "claude-sonnet-5", "vision.caption": "claude-sonnet-5" },
       "contracts": [{
@@ -315,7 +316,7 @@
         "required_body_fields": ["model", "messages", "max_tokens"],
         "allowed_body_fields": ["model", "messages", "max_tokens", "metadata", "output_config", "service_tier", "stop_sequences", "stream", "system", "temperature", "thinking", "tool_choice", "tools", "top_k", "top_p"],
         "body_field_types": { "model": ["string"], "messages": ["array"], "max_tokens": ["number"] },
-        "thinking": { "allowed_types": ["adaptive"] },
+        "thinking": { "allowed_types": ["adaptive", "disabled", "enabled"] },
         "stream_protocol": "claude_messages",
         "success_fixture": { "id": "msg_mock_1", "type": "message", "role": "assistant", "model": "mock-model", "content": [{ "type": "text", "text": "BUCKYOS-AICC-4827" }], "stop_reason": "end_turn", "stop_sequence": null, "usage": { "input_tokens": 4, "output_tokens": 3 } },
         "official_sources": ["https://platform.claude.com/docs/en/api/messages/create", "https://platform.claude.com/docs/en/build-with-claude/structured-outputs", "https://platform.claude.com/docs/en/build-with-claude/extended-thinking", "https://platform.claude.com/docs/en/api/errors"],
@@ -347,14 +348,11 @@
       },
       "official_variant_sources": ["https://ai.google.dev/gemini-api/docs/thinking"],
       "official_variant_rules": [
-        { "model_ids": ["gemini-2.5-flash"], "variants": { "reasoning-none": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "high" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
-        { "model_ids": ["gemini-2.5-flash-lite"], "variants": { "reasoning-none": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
-        { "model_ids": ["gemini-2.5-pro"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
-        { "model_ids": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"], "variants": { "reasoning-mini": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-3.8-flash"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "high" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-3.7-flash", "gemini-3.1-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
-        { "model_ids": ["gemini-3-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
-        { "model_ids": ["gemini-3.1-flash-lite-image"], "variants": { "reasoning-mini": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
+        { "model_ids": ["gemini-3-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
       ],
       "test_model_ids": { "llm": "gemini-3.5-flash", "vision.ocr": "gemini-3.5-flash", "vision.caption": "gemini-3.5-flash", "vision.detect": "gemini-3.5-flash", "vision.segment": "gemini-3.5-flash", "audio.asr": "gemini-3.5-transcribe", "embedding.text": "gemini-embedding-2", "embedding.multimodal": "gemini-embedding-2", "image.txt2img": "gemini-3.1-flash-image", "image.img2img": "gemini-3.1-flash-image", "audio.tts": "gemini-3.1-flash-tts-preview", "audio.music": "lyria-3-clip-preview", "video.txt2video": "veo-3.1-generate-preview", "video.img2video": "veo-3.1-generate-preview", "video.video2video": "gemini-omni-1.1-flash", "video.extend": "gemini-omni-1.1-flash" },
       "contracts": [
@@ -726,27 +724,28 @@
           "evidence_summary": "MiniMax image generation uses POST /v1/image_generation with model/prompt and returns data.image_urls."
         },
         {
-          "id": "minimax.video-generation.v1",
+          "id": "minimax.video-generation.v2",
           "protocol_adapter_id": "minimax-messages",
-          "api_version": "v1",
+          "api_version": "v2",
           "api_types": ["video.txt2video", "video.img2video"],
-          "operation": "video_generation.create",
+          "operation": "video_generation.v2.create",
           "http_method": "POST",
-          "path": "/v1/video_generation",
+          "path": "/v2/video_generation",
           "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
           "content_type": "application/json",
-          "required_body_fields": ["model", "prompt"],
-          "required_body_fields_by_api_type": { "video.img2video": ["first_frame_image"] },
-          "allowed_body_fields": ["model", "prompt", "first_frame_image", "last_frame_image", "subject_reference", "duration", "resolution", "prompt_optimizer", "fast_pretreatment", "callback_url"],
-          "body_field_types": { "model": ["string"], "prompt": ["string"], "first_frame_image": ["string"] },
-          "async_protocol": "minimax_video",
+          "required_body_fields": ["model", "content", "duration", "resolution", "ratio"],
+          "allowed_body_fields": ["model", "content", "duration", "resolution", "ratio", "extra", "callback_url"],
+          "body_field_types": { "model": ["string"], "content": ["array"], "duration": ["number"], "resolution": ["string"], "ratio": ["string"] },
+          "async_protocol": "minimax_video_v2",
           "async_steps": [
-            { "name": "poll", "http_method": "GET", "path": "/v1/query/video_generation", "required_query_fields": ["task_id"] },
-            { "name": "result", "http_method": "GET", "path": "/v1/files/retrieve", "required_query_fields": ["file_id"] }
+            { "name": "poll", "http_method": "GET", "path": "/v2/query/video_generation/minimax_video_mock_1" },
+            { "name": "result", "http_method": "GET", "path": "/v2/query/video_generation/minimax_video_mock_1" },
+            { "name": "cancel", "http_method": "DELETE", "path": "/v2/video_generation/minimax_video_mock_1" }
           ],
-          "success_fixture": { "task_id": "minimax_video_mock_1", "base_resp": { "status_code": 0, "status_msg": "success" } },
-          "official_sources": ["https://platform.minimax.io/docs/api-reference/video-generation-t2v", "https://platform.minimax.io/docs/api-reference/video-generation-fl2v"],
-          "evidence_summary": "MiniMax text/image-to-video submits POST /v1/video_generation and returns task_id."
+          "success_fixture": { "task_id": "minimax_video_mock_1" },
+          "async_result_fixture": { "task": { "id": "minimax_video_mock_1", "model": "MiniMax-H3", "status": "succeeded", "content": { "url": "http://mock/artifacts/result.mp4" }, "resolution": "768P", "duration": 5, "ratio": "16:9", "usage": { "total_seconds": 5, "input_seconds": 0, "output_seconds": 5, "input_image_count": 0 }, "task_type": "generation", "modality": "video" } },
+          "official_sources": ["https://platform.minimax.io/docs/api-reference/video-generation-v2-create", "https://platform.minimax.io/docs/api-reference/video-generation-v2-query", "https://platform.minimax.io/docs/api-reference/video-generation-v2-delete"],
+          "evidence_summary": "MiniMax H3 video generation submits V2 multimodal content, queries the task by path ID, and supports queued-task cancellation with DELETE."
         }
       ]
     },
@@ -1489,7 +1488,7 @@
       "provider_driver": "doubao",
       "provider_profile_id": "doubao",
       "endpoint_path": "/api/plan/v3",
-      "operation_endpoint_paths": { "ark.images.generate": "/api/v3", "ark.contents.generate": "/api/v3", "tts.unidirectional": "/api/v3/plan/tts" },
+      "operation_endpoint_paths": { "ark.images.generate": "/api/plan/v3", "ark.contents.generate": "/api/plan/v3", "tts.unidirectional": "/api/v3/plan/tts" },
       "credential_type": "bearer",
       "instance_fields": { "region": "cn-beijing" },
       "official_first_party_model_ids": {
@@ -1577,29 +1576,29 @@
         "official_sources": ["https://www.volcengine.com/docs/82379/1526459"],
         "evidence_summary": "Ark multimodal embedding uses POST /embeddings/multimodal with typed text/image input items."
       }, {
-        "id": "doubao.images.ark-v3",
+        "id": "doubao.images.plan-v3",
         "protocol_adapter_id": "doubao-responses",
-        "api_version": "ark-v3",
+        "api_version": "plan-v3",
         "api_types": ["image.txt2img", "image.img2img"],
         "operation": "ark.images.generate",
         "http_method": "POST",
-        "path": "/api/v3/images/generations",
+        "path": "/api/plan/v3/images/generations",
         "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
         "content_type": "application/json",
         "required_body_fields": ["model", "prompt", "response_format"],
         "allowed_body_fields": ["model", "prompt", "image", "response_format", "size", "seed", "sequential_image_generation", "sequential_image_generation_options"],
         "body_field_types": { "model": ["string"], "prompt": ["string"], "image": ["array"], "response_format": ["string"], "size": ["string"], "seed": ["number"] },
-        "success_fixture": { "created": 1770000000, "data": [{ "url": "http://mock/artifacts/doubao.png" }], "usage": { "generated_images": 1 } },
-        "official_sources": ["https://docs.volcengine.com/docs/ark/image-generation-api?lang=zh&redirect=1"],
-        "evidence_summary": "Ark Seedream image generation uses POST /api/v3/images/generations for text-to-image and image-to-image."
+        "success_fixture": { "created": 1770000000, "data": [{ "url": "http://mock/artifacts/doubao.jpeg" }], "usage": { "generated_images": 1 } },
+        "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"],
+        "evidence_summary": "Agent Plan Seedream image generation uses POST /api/plan/v3/images/generations for text-to-image and image-to-image."
       }, {
-        "id": "doubao.video-tasks.ark-v3",
+        "id": "doubao.video-tasks.plan-v3",
         "protocol_adapter_id": "doubao-responses",
-        "api_version": "ark-v3",
+        "api_version": "plan-v3",
         "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
         "operation": "ark.contents.generate",
         "http_method": "POST",
-        "path": "/api/v3/contents/generations/tasks",
+        "path": "/api/plan/v3/contents/generations/tasks",
         "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
         "content_type": "application/json",
         "required_body_fields": ["model", "content"],
@@ -1607,14 +1606,14 @@
         "body_field_types": { "model": ["string"], "content": ["array"], "duration": ["number"], "ratio": ["string"], "resolution": ["string"], "seed": ["number"], "generate_audio": ["boolean"] },
         "async_protocol": "doubao_video",
         "async_steps": [
-          { "name": "poll", "http_method": "GET", "path": "/api/v3/contents/generations/tasks/doubao_video_mock_1" },
-          { "name": "result", "http_method": "GET", "path": "/api/v3/contents/generations/tasks/doubao_video_mock_1" },
-          { "name": "cancel", "http_method": "DELETE", "path": "/api/v3/contents/generations/tasks/doubao_video_mock_1" }
+          { "name": "poll", "http_method": "GET", "path": "/api/plan/v3/contents/generations/tasks/doubao_video_mock_1" },
+          { "name": "result", "http_method": "GET", "path": "/api/plan/v3/contents/generations/tasks/doubao_video_mock_1" },
+          { "name": "cancel", "http_method": "DELETE", "path": "/api/plan/v3/contents/generations/tasks/doubao_video_mock_1" }
         ],
         "success_fixture": { "id": "doubao_video_mock_1", "status": "queued" },
         "async_result_fixture": { "id": "doubao_video_mock_1", "status": "succeeded", "content": { "video_url": { "url": "http://mock/artifacts/doubao.mp4" } } },
-        "official_sources": ["https://docs.volcengine.com/docs/ark/create-video-generation-task-api?lang=zh&redirect=1", "https://docs.volcengine.com/docs/ark/list-video-generation-tasks-api?lang=zh"],
-        "evidence_summary": "Ark Seedance video generation uses asynchronous content generation tasks with GET status/result and DELETE cancellation."
+        "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"],
+        "evidence_summary": "Agent Plan Seedance video generation uses /api/plan/v3 asynchronous content generation tasks with GET status/result and DELETE cancellation."
       }, {
         "id": "doubao.tts.plan-v3",
         "protocol_adapter_id": "doubao-responses",

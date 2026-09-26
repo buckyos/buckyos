@@ -1208,7 +1208,7 @@ function toProviderWritePayload(draft: WizardDraft): Record<string, unknown> {
     workspace: draft.workspace?.trim() || undefined,
     account: draft.account?.trim() || undefined,
     instance_rules: draft.policy_region?.trim()
-      ? { policy_region: draft.policy_region.trim(), exclude_models: [], origin_model_overrides: {} }
+      ? { policy_region: draft.policy_region.trim(), exclude_models: [], model_driver_overrides: {} }
       : undefined,
     auto_sync_models: draft.auto_sync_models,
   }

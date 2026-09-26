@@ -1251,7 +1251,7 @@ fn builtin_logical_tree_is_not_an_inventory_snapshot() {
             .model_drivers()
             .map(|driver| driver.specs.len())
             .sum::<usize>(),
-        49
+        50
     );
     let mut task = None;
     let mut count = 0;

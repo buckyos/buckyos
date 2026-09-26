@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "deepseek",
-  "revision_seq": 3,
+  "revision_seq": 5,
   "required_features": [],
   "models": [
     {
@@ -23,7 +23,7 @@
         "spec": "deepseek-flash",
         "effort": "high",
         "default_effort": "high",
-        "supported_efforts": ["none", "high", "max"],
+        "supported_efforts": ["none", "low", "high", "max"],
         "stability": "stable",
         "weight": 40
       }
@@ -48,6 +48,28 @@
         "supported_efforts": ["none", "low", "high", "max"],
         "stability": "stable",
         "weight": 40
+      }
+    },
+    {
+      "id": "deepseek-v4.1-flash",
+      "parameter_scale": "flash",
+      "api_types": ["llm"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "reasoning": true,
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 393216
+      },
+      "llm": {
+        "spec": "deepseek-flash",
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["none", "low", "high", "max"],
+        "stability": "stable",
+        "weight": 41
       }
     },
     {

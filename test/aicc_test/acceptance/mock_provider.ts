@@ -4,6 +4,7 @@ import {
   MOCK_PROVIDER_SCENARIOS,
   type MockProviderScenario as Scenario,
 } from "./mock_provider_contract.ts";
+import { decisionFixture } from "./decision.ts";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -474,6 +475,10 @@ async function providerResponse(
     });
     return;
   }
+  if (path === "/v1/systemone" && request.method === "POST") {
+    json(response, 200, structuredClone(decisionFixture.wire_response) as Json);
+    return;
+  }
   if (path === "/v1/models") {
     if (request.headers["anthropic-version"] || request.headers["x-api-key"]) {
       const minimax = !request.headers["anthropic-version"];
@@ -500,6 +505,7 @@ async function providerResponse(
         { id: "gpt-5.6", object: "model", owned_by: "mock" },
         { id: "gpt-5.3-codex", object: "model", owned_by: "mock" },
         { id: "text-embedding-3-small", object: "model", owned_by: "mock" },
+        { id: "text-embedding-3-large", object: "model", owned_by: "mock" },
         { id: "gpt-image-2", object: "model", owned_by: "mock" },
         { id: "gpt-transcribe", object: "model", owned_by: "mock" },
         { id: "gpt-4o-mini-tts", object: "model", owned_by: "mock" },
@@ -789,7 +795,7 @@ const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const providerPath = url.pathname.replace(
-      /^\/instance-(?:a|b|openrouter|custom-(?:openai|claude|gemini))(?=\/)/,
+      /^\/instance-(?:a|b|openrouter|typesafe|custom-(?:openai|claude|gemini))(?=\/)/,
       "",
     );
     const body = request.method === "POST" ? await readJson(request) : null;

@@ -135,6 +135,18 @@ function t15FieldValue(
   if (field === "content" && contract.async_protocol === "doubao_video") {
     return [{ type: "text", text: "BUCKYOS-AICC-4827" }];
   }
+  if (field === "content" && contract.async_protocol === "minimax_video_v2") {
+    return [
+      { type: "text", text: "BUCKYOS-AICC-4827" },
+      ...(apiType === "video.img2video"
+        ? [{
+          type: "image_url",
+          image_url: { url: "https://example.com/input.png" },
+          role: "first_frame",
+        }]
+        : []),
+    ];
+  }
   if (field === "content") return { parts: [{ text: "BUCKYOS-AICC-4827" }] };
   if (field === "tools") return [{ type: "computer_preview" }];
   if (
@@ -282,15 +294,15 @@ test("cloud update fixtures replace complete catalog files and tombstone every c
     true,
   );
   assert.ok(
-    (firstModels.find((model) => model.id === "gpt-5.6")
+    (firstModels.find((model) => model.id === "text-embedding-3-large")
       ?.logical_mounts as string[]).includes(CLOUD_TEST_MOUNT_V1),
   );
   assert.ok(
-    !(firstModels.find((model) => model.id === "gpt-5.6")
+    !(firstModels.find((model) => model.id === "text-embedding-3-large")
       ?.logical_mounts as string[]).includes(CLOUD_TEST_MOUNT_V2),
   );
   assert.ok(
-    (secondModels.find((model) => model.id === "gpt-5.6")
+    (secondModels.find((model) => model.id === "text-embedding-3-large")
       ?.logical_mounts as string[]).includes(CLOUD_TEST_MOUNT_V2),
   );
   assert.deepEqual(
@@ -575,7 +587,7 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
     {
       exact_model: `deepseek-v4.1-flash@${instance}`,
       provider_model_id: "deepseek-v4.1-flash",
-      api_types: ["llm", "vision.ocr", "vision.caption"],
+      api_types: ["llm"],
       logical_mounts: [],
     },
   ];
@@ -596,7 +608,7 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
   assert.deepEqual(
     result.cells.filter((cell) => cell.provider_model_id === "deepseek-v4.1-flash")
       .map((cell) => cell.api_type).sort(),
-    ["llm", "vision.caption", "vision.ocr"],
+    ["llm"],
   );
 });
 
@@ -1140,12 +1152,12 @@ test("T1 mock settings append run-scoped instances without mutating backup", () 
       "dv-openai-b-run-one",
     ],
   );
-  assert.equal(providers.length, 11);
+  assert.equal(providers.length, 12);
   assert.deepEqual(providers[1].credentials, {
     api_token: { locked: "mock-a-run-one" },
   });
   assert.deepEqual(
-    providers.slice(8).map((
+    providers.slice(9).map((
       item,
     ) => [item.provider_profile_id, item.protocol_adapter_id]),
     [
@@ -2670,8 +2682,9 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
       },
     });
   assert.deepEqual(claudeRequest({ type: "adaptive" }), []);
-  assert.deepEqual(claudeRequest({ type: "enabled", budget_tokens: 1024 }), [
-    "body field thinking.type=enabled is invalid for anthropic.messages.2023-06-01; expected adaptive",
+  assert.deepEqual(claudeRequest({ type: "enabled", budget_tokens: 1024 }), []);
+  assert.deepEqual(claudeRequest({ type: "manual" }), [
+    "body field thinking.type=manual is invalid for anthropic.messages.2023-06-01; expected adaptive|disabled|enabled",
   ]);
   const minimaxAsr = protocolContract(
     catalog,
@@ -2909,21 +2922,21 @@ test("T1.5 Provider mock serves every contract for all Provider profiles", async
 test("T1.5 shared endpoints require API-specific media fields", async () => {
   const catalog = await loadProviderProtocolCatalog();
   for (
-    const [providerDriver, contractId, apiType, requiredField] of [
-      ["openai", "openai.videos.v1", "video.img2video", "input_reference"],
+    const [providerDriver, contractId, apiType, expectedError] of [
+      ["openai", "openai.videos.v1", "video.img2video", "missing body field input_reference"],
       [
         "minimax",
         "minimax.image-generation.v1",
         "image.img2img",
-        "subject_reference",
+        "missing body field subject_reference",
       ],
       [
         "minimax",
-        "minimax.video-generation.v1",
+        "minimax.video-generation.v2",
         "video.img2video",
-        "first_frame_image",
+        "MiniMax image-to-video content requires a first_frame image_url block",
       ],
-      ["glm", "glm.videos.generations.v4", "video.img2video", "image_url"],
+      ["glm", "glm.videos.generations.v4", "video.img2video", "missing body field image_url"],
     ] as const
   ) {
     const contract = protocolContract(catalog, providerDriver, contractId);
@@ -2935,6 +2948,9 @@ test("T1.5 shared endpoints require API-specific media fields", async () => {
         t15FieldValue(field, contract, "mock-model", apiType),
       ]),
     );
+    if (contract.id === "minimax.video-generation.v2") {
+      body.content = [{ type: "text", text: "BUCKYOS-AICC-4827" }];
+    }
     const errors = validateProviderRequest(contract, {
       method: contract.http_method,
       pathname: contract.path,
@@ -2943,8 +2959,8 @@ test("T1.5 shared endpoints require API-specific media fields", async () => {
       body,
     }, apiType);
     assert.ok(
-      errors.includes(`missing body field ${requiredField}`),
-      `${contractId}/${apiType} accepted a request without ${requiredField}`,
+      errors.includes(expectedError),
+      `${contractId}/${apiType} accepted a request without its API-specific media input`,
     );
   }
 });
@@ -3286,7 +3302,7 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
       "openai_video",
       "google_lro",
       "fal_queue",
-      "minimax_video",
+      "minimax_video_v2",
       "glm_video",
       "doubao_video",
     ]),
@@ -3763,6 +3779,12 @@ test("report redaction removes secrets and totals statuses", () => {
   assert.equal(
     isProviderRestricted(
       new Error("OpenAI UnsupportedModel: model does not support the agent plan feature"),
+    ),
+    true,
+  );
+  assert.equal(
+    isProviderRestricted(
+      new Error("The requested model does not support the agent plan feature"),
     ),
     true,
   );

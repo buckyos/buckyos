@@ -82,8 +82,18 @@ fn builtin_llm_token_limits_are_positive_and_missing_limits_are_documented() {
         ("glm", "emohaa", "max_context_tokens"),
         ("glm", "emohaa", "max_output_tokens"),
         ("glm", "glm-4-32b-0414-128k", "max_output_tokens"),
-        ("kimi", "kimi-k2.5", "max_output_tokens"),
+        ("doubao", "doubao-seed-2.1-lite", "max_output_tokens"),
+        ("doubao", "doubao-seed-2.1-pro", "max_output_tokens"),
+        ("doubao", "doubao-seed-2.1-turbo", "max_output_tokens"),
+        ("doubao", "doubao-seed-evolving", "max_output_tokens"),
         ("kimi", "kimi-k2.6", "max_output_tokens"),
+        ("kimi", "kimi-k2.7-code", "max_output_tokens"),
+        ("kimi", "kimi-k2.7-code-highspeed", "max_output_tokens"),
+        ("kimi", "kimi-k2.8-preview", "max_context_tokens"),
+        ("kimi", "kimi-k2.8-preview", "max_output_tokens"),
+        ("kimi", "kimi-k3", "max_output_tokens"),
+        ("minimax", "minimax-m3", "max_context_tokens"),
+        ("minimax", "minimax-m3", "max_output_tokens"),
     ]
     .into_iter()
     .map(|(driver, model, field)| (driver.to_owned(), model.to_owned(), field))

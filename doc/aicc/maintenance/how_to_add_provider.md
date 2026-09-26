@@ -101,13 +101,13 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 
 实例字段 `timeout_ms` 直接控制 HTTP 请求超时；`auto_sync_models=false` 只关闭周期同步，
 不跳过启动时的首次发现；`instance_rules` 是强类型对象，目前支持
-`exclude_models` 与 `origin_model_overrides`，未知字段会被拒绝。
+`exclude_models` 与 `model_driver_overrides`，未知字段会被拒绝。
 
 模型名转换的事实源按以下顺序处理：
 
 - OpenRouter 这类稳定的聚合渠道命名规则写入可更新的 Provider Rules `origin_mappings`；
 - 豆包方舟 `ep-*` 是用户实例自己的 endpoint ID，必须在该实例的
-  `instance_rules.origin_model_overrides` 中映射到官方模型 ID，不能写成全局映射；
+  `instance_rules.model_driver_overrides` 中映射到 `<model_driver_id>/<model_id>`，不能写成全局映射；
 - SN 的 `provider_actual_model_id` 来自网关动态 discovery，继续以动态响应为事实源；
 - 恒等命名的 provider 不配置映射。
 

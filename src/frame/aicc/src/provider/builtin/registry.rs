@@ -337,7 +337,7 @@ impl BuiltinProviderRegistry {
                     inventory,
                 )));
             }
-            if provider_profile_id == "fal" {
+            if provider_profile_id == "fal" && !configured {
                 return Ok(Arc::new(super::fal::FalPricingDiscovery {
                     inventory,
                     transport: Arc::new(transport()?),

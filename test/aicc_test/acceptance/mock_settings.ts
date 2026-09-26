@@ -85,7 +85,7 @@ function installRoutingFixtures(settings: JsonObject, suffix: string): void {
   acceptanceChildren.disable_line = {
     items: [{
       name: "primary",
-      target: `gpt-5.6@dv-openai-a-${suffix}`,
+      target: "llm.gpt-pro",
       weight: 1,
     }],
     disable_line: { web_search: true },
@@ -94,7 +94,7 @@ function installRoutingFixtures(settings: JsonObject, suffix: string): void {
   acceptanceChildren.system_overlay = {
     items: [{
       name: "system",
-      target: `gpt-5.6@dv-openai-a-${suffix}`,
+      target: "llm.gpt-pro",
       weight: 1,
     }],
     source: "dv_system_routing_fixture",
@@ -198,6 +198,14 @@ export function buildMockSettings(
       adapter: "openrouter-responses",
       baseUrl: `${baseUrl}/instance-openrouter`,
       token: `mock-openrouter-${suffix}`,
+      timeoutMs,
+    }),
+    provider({
+      name: `dv-typesafe-${suffix}`,
+      profile: "typesafe",
+      adapter: "typesafe-systemone",
+      baseUrl: `${baseUrl}/instance-typesafe/v1`,
+      token: `mock-typesafe-${suffix}`,
       timeoutMs,
     }),
     provider({

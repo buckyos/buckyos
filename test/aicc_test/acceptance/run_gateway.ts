@@ -123,7 +123,7 @@ type AiMethodResponse = {
 };
 
 class TaskFailureError extends Error {
-  constructor(message: string, readonly errorCode?: string) {
+  constructor(message: string, readonly errorCode?: string, readonly retriable = false) {
     super(message);
     this.name = "TaskFailureError";
   }
@@ -168,11 +168,21 @@ function providerErrorCode(value: unknown): string | undefined {
   return undefined;
 }
 
+function providerRetriable(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const object = value as Record<string, unknown>;
+  if (object.retriable === true) return true;
+  return ["detail", "error", "result", "extra", "cause"].some((key) =>
+    providerRetriable(object[key])
+  );
+}
+
 function taskFailure(taskId: string, task: Record<string, unknown>): TaskFailureError {
   const error = task.error;
   return new TaskFailureError(
     `provider task ${taskId} ended ${String(task.outcome ?? "Failed")}: ${JSON.stringify(compactFailure(error) ?? {})}`,
     providerErrorCode(error),
+    providerRetriable(error),
   );
 }
 
@@ -495,7 +505,8 @@ async function parseOptions(args: string[]): Promise<Options> {
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--config") index += 1;
+    if (arg === "--") continue;
+    else if (arg === "--config") index += 1;
     else if (arg === "--gateway-url") options.gatewayUrl = requiredArg(args, index++, arg);
     else if (arg === "--session-token") options.sessionToken = requiredArg(args, index++, arg);
     else if (arg === "--username") options.username = requiredArg(args, index++, arg);
@@ -760,6 +771,7 @@ function failureClass(error: unknown): FailureClass {
 }
 
 function retryable(error: unknown): boolean {
+  if (error instanceof TaskFailureError && error.retriable) return true;
   const message = String(error).toLowerCase();
   return [
     "429",
@@ -815,13 +827,17 @@ function artifactSources(value: unknown, depth = 0): Array<Record<string, unknow
   if (Array.isArray(value)) return value.flatMap((item) => artifactSources(item, depth + 1));
   if (typeof value !== "object") return [];
   const record = value as Record<string, unknown>;
+  const direct = typeof record.obj_id === "string" || typeof record.url === "string" ||
+      typeof record.data_base64 === "string"
+    ? [record]
+    : [];
   const source = record.source && typeof record.source === "object" && !Array.isArray(record.source)
     ? record.source as Record<string, unknown>
     : undefined;
   const found = source && (typeof source.obj_id === "string" || typeof source.url === "string" || typeof source.data_base64 === "string")
     ? [{ ...source, _content_type: record.type }]
     : [];
-  return [...found, ...Object.values(record).flatMap((child) => artifactSources(child, depth + 1))];
+  return [...direct, ...found, ...Object.values(record).flatMap((child) => artifactSources(child, depth + 1))];
 }
 
 function decodeBase64(value: string): Uint8Array {
@@ -1395,7 +1411,11 @@ async function executeAcceptance(input: {
             payload.resources = [];
           }
           prerequisiteRequest.idempotency_key = `${runId}:continuation:${sourceApiType}:${cell.exact_model}`;
-          const initial = await session.aicc.call(sourceMethod, prerequisiteRequest) as AiMethodResponse;
+          const initial = await callInference(
+            session.aicc,
+            sourceMethod,
+            prerequisiteRequest,
+          ) as AiMethodResponse;
           const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
           const artifacts = await validateTerminalArtifacts({
             terminal,
@@ -1408,7 +1428,7 @@ async function executeAcceptance(input: {
             typeof candidate.obj_id === "string" || typeof candidate.url === "string" ||
             typeof candidate.data_base64 === "string"
           );
-          if (!source) throw new Error("video.extend prerequisite produced no reusable video artifact");
+          if (!source) throw new Error(`${sourceApiType} prerequisite produced no reusable artifact`);
           const finance = extractFinance(terminal);
           costBudget.settle(reservation, finance.actualCostUsd);
           financialEntries.push({

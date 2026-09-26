@@ -383,7 +383,7 @@ mod tests {
             descriptor.base_adapter_id.as_deref(),
             Some(CLAUDE_MESSAGES_ADAPTER_ID)
         );
-        assert_eq!(descriptor.operations.len(), 6);
+        assert_eq!(descriptor.operations.len(), 7);
         let request = registration.operation_codecs[0]
             .encode(&CodecCall {
                 api_type: ApiType::Llm,

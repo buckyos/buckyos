@@ -85,6 +85,7 @@ export type ProviderProtocolContract = {
   async_protocol?:
     | "fal_queue"
     | "minimax_video"
+    | "minimax_video_v2"
     | "google_lro"
     | "openai_video"
     | "glm_video"
@@ -845,7 +846,7 @@ export function validateProviderRequest(
       } else errors.push("invalid System One question type");
     }
   }
-  validateNestedProviderBody(contract, body, errors, requiredFields);
+  validateNestedProviderBody(contract, body, errors, requiredFields, apiType);
   return errors;
 }
 
@@ -860,6 +861,7 @@ function validateNestedProviderBody(
   body: Record<string, unknown>,
   errors: string[],
   requiredFields = contract.required_body_fields,
+  apiType?: string,
 ): void {
   for (const field of requiredFields) {
     if (typeof body[field] === "string" && !(body[field] as string).trim()) {
@@ -952,6 +954,32 @@ function validateNestedProviderBody(
       errors.push(
         "body field content.parts must be a non-empty array of objects",
       );
+    }
+  }
+  if (contract.operation === "video_generation.v2.create") {
+    const content = Array.isArray(body.content) ? body.content : [];
+    const blocks = content.map(recordValue).filter(Boolean) as Array<
+      Record<string, unknown>
+    >;
+    if (
+      blocks.length !== content.length ||
+      !blocks.some((block) =>
+        block.type === "text" && typeof block.text === "string" &&
+        block.text.trim()
+      )
+    ) {
+      errors.push("MiniMax V2 video content requires a non-empty text block");
+    }
+    if (apiType === "video.img2video") {
+      const firstFrame = blocks.find((block) =>
+        block.type === "image_url" && block.role === "first_frame"
+      );
+      const imageUrl = recordValue(firstFrame?.image_url);
+      if (typeof imageUrl?.url !== "string" || !imageUrl.url.trim()) {
+        errors.push(
+          "MiniMax image-to-video content requires a first_frame image_url block",
+        );
+      }
     }
   }
   if (
@@ -1788,8 +1816,9 @@ export function buildT15Manifest(
             response_fixture: `${contract.id}.async.failed`,
           } as AcceptanceCase);
           const terminalFailureScenarios =
-            contract.async_protocol === "google_lro" ||
+              contract.async_protocol === "google_lro" ||
               contract.async_protocol === "minimax_video" ||
+              contract.async_protocol === "minimax_video_v2" ||
               contract.async_protocol === "glm_video" ||
               contract.async_protocol === "doubao_video"
               ? ["async_poll_timeout"] as const
@@ -1809,6 +1838,7 @@ export function buildT15Manifest(
               timeout_ms: scenario === "async_poll_timeout"
               ? contract.async_protocol === "google_lro" ||
                     contract.async_protocol === "minimax_video" ||
+                    contract.async_protocol === "minimax_video_v2" ||
                     contract.async_protocol === "glm_video" ||
                     contract.async_protocol === "doubao_video"
                   ? 3_500

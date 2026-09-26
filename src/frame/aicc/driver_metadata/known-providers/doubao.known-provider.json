@@ -27,8 +27,8 @@
           "allowed_values": ["unknown", "cn", "other"]
         },
         "operation_base_urls": {
-          "ark.images.generate": "https://ark.cn-beijing.volces.com/api/v3",
-          "ark.contents.generate": "https://ark.cn-beijing.volces.com/api/v3",
+          "ark.images.generate": "https://ark.cn-beijing.volces.com/api/plan/v3",
+          "ark.contents.generate": "https://ark.cn-beijing.volces.com/api/plan/v3",
           "tts.unidirectional": "https://openspeech.bytedance.com/api/v3/plan/tts"
         }
       },
