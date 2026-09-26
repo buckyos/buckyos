@@ -11,13 +11,14 @@
 //! `BashTarget::Unsupported` and `BashRunner` leave room for tmux /
 //! node / container runners later.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use async_trait::async_trait;
 use serde_json::{json, Map as JsonMap, Value as Json};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::time::{timeout as tokio_timeout, Duration};
 
 use crate::path_utils::{normalize_abs_path, resolve_path_under_root, to_abs_path};
@@ -33,6 +34,8 @@ const DEFAULT_TIMEOUT_MS: u64 = 30 * 60_000;
 const DEFAULT_MAX_TIMEOUT_MS: u64 = 60 * 60_000;
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
 const LOCAL_ENGINE: &str = "local";
+const TIMEOUT_EXIT_CODE: i32 = 124;
+const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 /// User-facing target field. `None` / empty string means [`BashTarget::Local`];
 /// other values are passed through [`BashTargetSpec::parse`] before reaching
@@ -216,6 +219,7 @@ pub struct BashRunOutput {
     pub stderr: String,
     pub output: String,
     pub output_truncated: bool,
+    pub timed_out: bool,
     pub duration_ms: u64,
     pub engine: String,
     pub cwd: PathBuf,
@@ -310,14 +314,159 @@ fn prepend_path_entry(entry: &str, base_path: &str) -> String {
     format!("{entry}:{base_path}")
 }
 
-fn truncate_bytes(input: &[u8], max_bytes: usize) -> (String, bool) {
-    if input.len() <= max_bytes {
-        return (String::from_utf8_lossy(input).to_string(), false);
+/// Bounded output buffer keeping the head and the tail of a stream; the
+/// tail gets the larger share because errors usually land at the end.
+struct OutputCollector {
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    head_cap: usize,
+    tail_cap: usize,
+    total: usize,
+}
+
+impl OutputCollector {
+    fn new(max_bytes: usize) -> Self {
+        let head_cap = max_bytes / 4;
+        Self {
+            head: Vec::new(),
+            tail: VecDeque::new(),
+            head_cap,
+            tail_cap: max_bytes - head_cap,
+            total: 0,
+        }
     }
-    (
-        String::from_utf8_lossy(&input[..max_bytes]).to_string(),
-        true,
-    )
+
+    fn push(&mut self, mut data: &[u8]) {
+        self.total += data.len();
+        if self.head.len() < self.head_cap {
+            let n = (self.head_cap - self.head.len()).min(data.len());
+            self.head.extend_from_slice(&data[..n]);
+            data = &data[n..];
+        }
+        self.tail.extend(data);
+        let overflow = self.tail.len().saturating_sub(self.tail_cap);
+        self.tail.drain(..overflow);
+    }
+
+    fn is_truncated(&self) -> bool {
+        self.total > self.head.len() + self.tail.len()
+    }
+
+    fn render(&self) -> String {
+        let (a, b) = self.tail.as_slices();
+        let mut tail = Vec::with_capacity(self.tail.len());
+        tail.extend_from_slice(a);
+        tail.extend_from_slice(b);
+        let head = String::from_utf8_lossy(&self.head);
+        let tail = String::from_utf8_lossy(&tail);
+        if self.is_truncated() {
+            let omitted = self.total - self.head.len() - self.tail.len();
+            format!("{head}\n…[{omitted} bytes omitted]…\n{tail}")
+        } else {
+            format!("{head}{tail}")
+        }
+    }
+}
+
+struct RunCollectors {
+    stdout: OutputCollector,
+    stderr: OutputCollector,
+    combined: OutputCollector,
+}
+
+async fn drain_pipe<R: AsyncRead + Unpin>(
+    mut reader: R,
+    collectors: Arc<Mutex<RunCollectors>>,
+    is_stderr: bool,
+) {
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let mut c = collectors.lock().expect("bash output lock");
+                if is_stderr {
+                    c.stderr.push(&buf[..n]);
+                } else {
+                    c.stdout.push(&buf[..n]);
+                }
+                c.combined.push(&buf[..n]);
+            }
+        }
+    }
+}
+
+fn live_process_groups() -> &'static Mutex<BTreeSet<u32>> {
+    static GROUPS: OnceLock<Mutex<BTreeSet<u32>>> = OnceLock::new();
+    GROUPS.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
+
+fn kill_process_group(pgid: u32) {
+    let _ = std::process::Command::new("/bin/bash")
+        .arg("-c")
+        .arg(format!("kill -KILL -- -{pgid}"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// SIGKILL every process group still owned by a running local `exec_bash`.
+/// For hosts that are about to exit without unwinding (e.g. a second Ctrl-C).
+pub fn kill_running_bash_process_groups() {
+    let groups: Vec<u32> = live_process_groups()
+        .lock()
+        .expect("process group lock")
+        .iter()
+        .copied()
+        .collect();
+    for pgid in groups {
+        kill_process_group(pgid);
+    }
+}
+
+/// Kills the command's whole process group if the run is abandoned
+/// (timeout, or the caller dropping the future on cancel). Disarmed once
+/// bash exits normally so intentionally backgrounded jobs survive.
+struct ProcessGroupGuard {
+    pgid: Option<u32>,
+}
+
+impl ProcessGroupGuard {
+    fn new(pgid: Option<u32>) -> Self {
+        if let Some(id) = pgid {
+            live_process_groups()
+                .lock()
+                .expect("process group lock")
+                .insert(id);
+        }
+        Self { pgid }
+    }
+
+    fn kill(&mut self) {
+        if let Some(id) = self.pgid.take() {
+            kill_process_group(id);
+            live_process_groups()
+                .lock()
+                .expect("process group lock")
+                .remove(&id);
+        }
+    }
+
+    fn disarm(&mut self) {
+        if let Some(id) = self.pgid.take() {
+            live_process_groups()
+                .lock()
+                .expect("process group lock")
+                .remove(&id);
+        }
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        self.kill();
+    }
 }
 
 /// Validate a shell env key: ASCII letter/underscore followed by
@@ -333,9 +482,10 @@ fn is_valid_shell_env_key(key: &str) -> bool {
     chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
-/// Default `BashRunner`: spawns `/bin/bash -c <command>` via
-/// `tokio::process`, captures stdout/stderr, enforces timeout, and
-/// truncates the merged output to `max_output_bytes`.
+/// Default `BashRunner`: spawns `/bin/bash -c <command>` in its own process
+/// group via `tokio::process`, streams stdout/stderr into head+tail bounded
+/// buffers, and on timeout kills the whole group while keeping the output
+/// produced so far.
 #[derive(Clone, Debug, Default)]
 pub struct LocalProcessBashRunner;
 
@@ -372,55 +522,92 @@ impl BashRunner for LocalProcessBashRunner {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0);
         for (k, v) in &req.env {
             cmd.env(k, v);
         }
 
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|err| AgentToolError::ExecFailed(format!("spawn bash failed: {err}")))?;
+        let pgid = if cfg!(unix) { child.id() } else { None };
+        let mut guard = ProcessGroupGuard::new(pgid);
 
         let started = Instant::now();
+        let collectors = Arc::new(Mutex::new(RunCollectors {
+            stdout: OutputCollector::new(req.max_output_bytes),
+            stderr: OutputCollector::new(req.max_output_bytes),
+            combined: OutputCollector::new(req.max_output_bytes),
+        }));
+        let mut drains = Vec::new();
+        if let Some(out) = child.stdout.take() {
+            drains.push(tokio::spawn(drain_pipe(out, collectors.clone(), false)));
+        }
+        if let Some(err) = child.stderr.take() {
+            drains.push(tokio::spawn(drain_pipe(err, collectors.clone(), true)));
+        }
+
         let duration = Duration::from_millis(req.timeout_ms);
-        let output = match tokio_timeout(duration, child.wait_with_output()).await {
-            Err(_) => return Err(AgentToolError::Timeout),
+        let status = match tokio_timeout(duration, child.wait()).await {
+            Ok(Ok(status)) => {
+                guard.disarm();
+                Some(status)
+            }
             Ok(Err(err)) => {
                 return Err(AgentToolError::ExecFailed(format!(
-                    "wait bash output failed: {err}"
+                    "wait bash failed: {err}"
                 )));
             }
-            Ok(Ok(output)) => output,
+            Err(_) => {
+                guard.kill();
+                let _ = child.kill().await;
+                None
+            }
         };
         let elapsed = started.elapsed();
 
-        let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
-        let mut combined = Vec::with_capacity(output.stdout.len() + output.stderr.len());
-        combined.extend_from_slice(&output.stdout);
-        if !output.stdout.is_empty() && !output.stderr.is_empty() {
-            combined.push(b'\n');
-        }
-        combined.extend_from_slice(&output.stderr);
-        let (combined_str, output_truncated) = truncate_bytes(&combined, req.max_output_bytes);
+        // Background jobs may keep the pipes open after bash exits; give the
+        // readers a short grace period and leave them draining detached.
+        let _ = tokio_timeout(PIPE_DRAIN_GRACE, async {
+            for handle in drains {
+                let _ = handle.await;
+            }
+        })
+        .await;
 
-        let exit_code = output.status.code().unwrap_or_else(|| {
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::ExitStatusExt;
-                output.status.signal().map(|sig| 128 + sig).unwrap_or(-1)
-            }
-            #[cfg(not(unix))]
-            {
-                -1
-            }
-        });
+        let (stdout, stderr, output, output_truncated) = {
+            let c = collectors.lock().expect("bash output lock");
+            (
+                c.stdout.render(),
+                c.stderr.render(),
+                c.combined.render(),
+                c.combined.is_truncated(),
+            )
+        };
+
+        let exit_code = match status {
+            None => TIMEOUT_EXIT_CODE,
+            Some(status) => status.code().unwrap_or_else(|| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::ExitStatusExt;
+                    status.signal().map(|sig| 128 + sig).unwrap_or(-1)
+                }
+                #[cfg(not(unix))]
+                {
+                    -1
+                }
+            }),
+        };
 
         Ok(BashRunOutput {
             exit_code,
-            stdout: stdout_str,
-            stderr: stderr_str,
-            output: combined_str,
+            stdout,
+            stderr,
+            output,
             output_truncated,
+            timed_out: status.is_none(),
             duration_ms: elapsed.as_millis() as u64,
             engine: LOCAL_ENGINE.to_string(),
             cwd: req.cwd,
@@ -553,6 +740,7 @@ impl ExecBashTool {
             "stderr": output.stderr,
             "output": output.output,
             "output_truncated": output.output_truncated,
+            "timed_out": output.timed_out,
             "duration_ms": output.duration_ms,
             "engine": output.engine,
         })
@@ -635,9 +823,15 @@ fn command_has_shell_operator(command: &str) -> bool {
 #[async_trait]
 impl AgentTool for ExecBashTool {
     fn spec(&self) -> ToolSpec {
+        let default_timeout_ms = self.config.default_timeout_ms;
+        let max_timeout_ms = self.config.max_timeout_ms;
         ToolSpec {
             name: self.tool_name().to_string(),
-            description: "Run bash command at target node (bash -c $command)".to_string(),
+            description: format!(
+                "Run bash command at target node (bash -c $command). Default timeout {}s, max {}s; on timeout the command and its child processes are killed and the output so far is returned. For jobs that may run longer, start them in the background with output redirected to a file (e.g. `nohup cmd > job.log 2>&1 &`) and poll the log. Long output keeps its beginning and end.",
+                default_timeout_ms / 1000,
+                max_timeout_ms / 1000
+            ),
             args_schema: json!({
                 "type": "object",
                 "properties": {
@@ -652,8 +846,8 @@ impl AgentTool for ExecBashTool {
                     "timeout_ms": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": DEFAULT_MAX_TIMEOUT_MS,
-                        "description": "Execution timeout in milliseconds. Long-running media commands should set this explicitly."
+                        "maximum": max_timeout_ms,
+                        "description": format!("Execution timeout in milliseconds (default {default_timeout_ms}, max {max_timeout_ms}). Set it explicitly for long builds, tests or media commands.")
                     }
                 },
                 "required": ["command"]
@@ -666,7 +860,7 @@ impl AgentTool for ExecBashTool {
                 }
             }),
             usage: Some(format!(
-                "{name} command='<shell>' [target=local] [timeout_ms={DEFAULT_TIMEOUT_MS}]",
+                "{name} command='<shell>' [target=local] [timeout_ms={default_timeout_ms}]",
                 name = self.tool_name()
             )),
         }
@@ -738,18 +932,25 @@ impl AgentTool for ExecBashTool {
 
         let output = self.runner.run(ctx, request).await?;
 
-        if let Some(result) = self.try_forward_inner_agent_tool_result(&command, &output) {
-            return Ok(result);
+        if !output.timed_out {
+            if let Some(result) = self.try_forward_inner_agent_tool_result(&command, &output) {
+                return Ok(result);
+            }
         }
 
-        let summary = if output.exit_code == 0 {
+        let summary = if output.timed_out {
+            format!(
+                "timed out after {}ms (timeout_ms={timeout_ms}); the command and its child processes were killed. Retry with a larger timeout_ms (max {}), or run it in the background with output redirected to a file and poll the log.",
+                output.duration_ms, self.config.max_timeout_ms
+            )
+        } else if output.exit_code == 0 {
             format!("exit=0 in {}ms", output.duration_ms)
         } else {
             format!("exit={} in {}ms", output.exit_code, output.duration_ms)
         };
 
         let details = self.build_details(&command, &target, &output);
-        let status = if output.exit_code == 0 {
+        let status = if output.exit_code == 0 && !output.timed_out {
             AgentToolStatus::Success
         } else {
             AgentToolStatus::Error
@@ -1111,18 +1312,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timeout_returns_error() {
+    async fn timeout_returns_error_with_partial_output() {
         let (_dir, workspace) = ws();
         let cfg = LlmBashConfig::local_workspace(workspace)
-            .with_default_timeout_ms(120)
-            .with_max_timeout_ms(200);
+            .with_default_timeout_ms(300)
+            .with_max_timeout_ms(500);
         let tool = ExecBashTool::new(cfg);
 
-        let err = tool
-            .call(&ctx(), json!({ "command": "sleep 5" }))
+        let started = Instant::now();
+        let result = tool
+            .call(&ctx(), json!({ "command": "echo started; sleep 5" }))
             .await
-            .expect_err("must time out");
-        assert!(matches!(err, AgentToolError::Timeout), "got {err:?}");
+            .expect("timeout is reported as a tool result");
+        assert!(started.elapsed() < Duration::from_secs(4));
+        assert_eq!(result.status, AgentToolStatus::Error);
+        assert_eq!(result.details["timed_out"], true);
+        assert_eq!(result.return_code, Some(TIMEOUT_EXIT_CODE));
+        assert!(result.summary.contains("timed out"), "{}", result.summary);
+        assert!(result.output.as_deref().unwrap_or("").contains("started"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_kills_child_processes() {
+        let (_dir, workspace) = ws();
+        let marker = workspace.join("survived");
+        let cfg = LlmBashConfig::local_workspace(workspace.clone())
+            .with_default_timeout_ms(300)
+            .with_max_timeout_ms(500);
+        let tool = ExecBashTool::new(cfg);
+
+        let command = format!("(sleep 1; touch {}) & wait", marker.display());
+        let result = tool
+            .call(&ctx(), json!({ "command": command }))
+            .await
+            .expect("call ok");
+        assert_eq!(result.details["timed_out"], true);
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(!marker.exists(), "child of timed-out command kept running");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn background_job_holding_pipes_does_not_block() {
+        let (_dir, workspace) = ws();
+        let cfg = LlmBashConfig::local_workspace(workspace).with_default_timeout_ms(20_000);
+        let tool = ExecBashTool::new(cfg);
+
+        let started = Instant::now();
+        let result = tool
+            .call(&ctx(), json!({ "command": "echo hi; sleep 10 &" }))
+            .await
+            .expect("call ok");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(result.status, AgentToolStatus::Success);
+        assert_eq!(result.details["timed_out"], false);
+        assert!(result.output.as_deref().unwrap_or("").contains("hi"));
     }
 
     #[test]
@@ -1154,6 +1399,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn spec_reflects_configured_timeouts() {
+        let (_dir, workspace) = ws();
+        let cfg = LlmBashConfig::local_workspace(workspace)
+            .with_default_timeout_ms(90_000)
+            .with_max_timeout_ms(120_000);
+        let spec = ExecBashTool::new(cfg).spec();
+        assert_eq!(
+            spec.args_schema["properties"]["timeout_ms"]["maximum"],
+            120_000
+        );
+        assert!(spec.description.contains("Default timeout 90s, max 120s"));
+        assert!(spec.usage.unwrap_or_default().contains("timeout_ms=90000"));
+    }
+
     #[tokio::test]
     async fn output_truncated_flag_is_set() {
         let (_dir, workspace) = ws();
@@ -1169,11 +1429,31 @@ mod tests {
             .expect("call ok");
         assert_eq!(result.details["output_truncated"], true);
         let output = result.details["output"].as_str().unwrap();
+        assert!(output.contains("bytes omitted"), "{output}");
         assert!(
-            output.len() <= 32,
+            output.len() <= 32 + 64,
             "output should be truncated, got {} bytes",
             output.len()
         );
+    }
+
+    #[tokio::test]
+    async fn truncation_keeps_head_and_tail() {
+        let (_dir, workspace) = ws();
+        let cfg = LlmBashConfig::local_workspace(workspace).with_max_output_bytes(64);
+        let tool = ExecBashTool::new(cfg);
+
+        let result = tool
+            .call(
+                &ctx(),
+                json!({ "command": "echo BEGIN; seq 1 2000; echo FINAL_LINE" }),
+            )
+            .await
+            .expect("call ok");
+        let output = result.output.as_deref().unwrap_or("");
+        assert!(output.starts_with("BEGIN"), "{output}");
+        assert!(output.trim_end().ends_with("FINAL_LINE"), "{output}");
+        assert_eq!(result.details["output_truncated"], true);
     }
 
     #[tokio::test]

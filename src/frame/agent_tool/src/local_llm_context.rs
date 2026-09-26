@@ -103,7 +103,7 @@ pub const LLM_CONTEXT_FILE_NAME: &str = ".llm_context";
 /// 工具轮数默认上限（F08）。
 pub const DEFAULT_MAX_ROUNDS: u32 = 8;
 /// 本次命令总执行时长默认上限，秒（F08）。
-pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
+pub const DEFAULT_TIMEOUT_SECS: u64 = 3600;
 /// 单次 LLM 请求默认超时，秒（F08）。
 pub const DEFAULT_LLM_TIMEOUT_SECS: u64 = 600;
 /// 默认 Runs 目录（F10）。
@@ -137,9 +137,9 @@ pub const SECTION_ALIASES: &[(&str, u32)] = &[
     ("output_format", 100),
 ];
 
-const EXEC_DEFAULT_TIMEOUT_MS: u64 = 60_000;
-const EXEC_MAX_TIMEOUT_MS: u64 = 600_000;
-const EXEC_MAX_OUTPUT_BYTES: usize = 256 * 1024;
+const EXEC_DEFAULT_TIMEOUT_MS: u64 = 1_800_000;
+const EXEC_MAX_TIMEOUT_MS: u64 = 3_600_000;
+const EXEC_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MCP_DISCOVERY_TIMEOUT_MS: u64 = 30_000;
 const MCP_CALL_TIMEOUT_MS: u64 = 120_000;
 
@@ -3354,6 +3354,8 @@ pub struct XllmToolManager {
     step_idx: AtomicU32,
     session_template: SessionRuntimeContext,
     artifacts: Mutex<Vec<String>>,
+    cancel: Arc<tokio::sync::watch::Sender<bool>>,
+    deadline: Mutex<Option<(tokio::time::Instant, u64)>>,
 }
 
 impl XllmToolManager {
@@ -3372,7 +3374,15 @@ impl XllmToolManager {
                 read_token_limit: crate::DEFAULT_READ_TOKEN_LIMIT,
             },
             artifacts: Mutex::new(Vec::new()),
+            cancel: Arc::new(tokio::sync::watch::channel(false).0),
+            deadline: Mutex::new(None),
         }
+    }
+
+    /// 本次执行的总时长边界：运行中的工具调用到点即被取消（F08 `timeout`）。
+    fn set_deadline(&self, timeout_secs: u64) {
+        let at = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+        *self.deadline.lock().expect("deadline lock") = Some((at, timeout_secs));
     }
 
     pub fn register(
@@ -3431,7 +3441,34 @@ impl ToolManager for XllmToolManager {
             .and_then(Value::as_str)
             .map(str::to_string);
         let args = Value::Object(call.args.into_iter().collect());
-        let result = tool.call(&ctx, args).await;
+        let deadline = *self.deadline.lock().expect("deadline lock");
+        let mut cancel_rx = self.cancel.subscribe();
+        let result = tokio::select! {
+            result = tool.call(&ctx, args) => result,
+            _ = cancel_rx.wait_for(|cancelled| *cancelled) => {
+                return Ok(Observation::Error {
+                    call_id,
+                    message: format!("tool `{}` was cancelled: run interrupted", call.name),
+                    tool_result: None,
+                });
+            }
+            _ = async {
+                match deadline {
+                    Some((at, _)) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                return Ok(Observation::Error {
+                    call_id,
+                    message: format!(
+                        "tool `{}` was cancelled: total execution time limit ({}s) reached",
+                        call.name,
+                        deadline.map(|(_, secs)| secs).unwrap_or_default()
+                    ),
+                    tool_result: None,
+                });
+            }
+        };
         Ok(match result {
             Ok(res) => {
                 if res.status == AgentToolStatus::Success
@@ -3491,26 +3528,31 @@ fn map_result_to_observation(call_id: String, result: AgentToolResult) -> Observ
                     }
                 });
             let bytes = text.len();
+            let truncated = result
+                .details
+                .get("output_truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             Observation::Success {
                 call_id,
                 content: Value::String(text),
                 bytes,
-                truncated: false,
+                truncated,
                 tool_result,
             }
         }
         AgentToolStatus::Error => {
-            let message = if !result.summary.trim().is_empty() {
-                result.summary
-            } else if let Some(out) = result
+            let summary = result.summary.trim();
+            let output = result
                 .output
                 .as_deref()
                 .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                out.to_string()
-            } else {
-                "tool error".to_string()
+                .filter(|s| !s.is_empty());
+            let message = match (summary.is_empty(), output) {
+                (false, Some(out)) => format!("{summary}\n{out}"),
+                (false, None) => summary.to_string(),
+                (true, Some(out)) => out.to_string(),
+                (true, None) => "tool error".to_string(),
             };
             Observation::Error {
                 call_id,
@@ -6030,6 +6072,7 @@ impl std::fmt::Debug for XllmRun {
 pub struct XllmInterrupter {
     requested: Arc<Mutex<Option<String>>>,
     handle: Arc<Mutex<Option<LLMContextInterruptHandle>>>,
+    tool_cancel: Arc<tokio::sync::watch::Sender<bool>>,
 }
 
 impl XllmInterrupter {
@@ -6039,6 +6082,7 @@ impl XllmInterrupter {
         if let Some(h) = self.handle.lock().expect("lock").as_ref() {
             h.interrupt(reason);
         }
+        self.tool_cancel.send_replace(true);
     }
 
     fn requested(&self) -> Option<String> {
@@ -6244,6 +6288,7 @@ impl XllmRun {
         store.write_record(&record)?;
         let record = Arc::new(Mutex::new(record));
         let manager = Arc::new(manager);
+        let tool_cancel = manager.cancel.clone();
         let waist_deps = Self::build_waist_deps(
             &store,
             &record,
@@ -6266,6 +6311,7 @@ impl XllmRun {
             interrupter: XllmInterrupter {
                 requested: Arc::new(Mutex::new(None)),
                 handle: Arc::new(Mutex::new(None)),
+                tool_cancel,
             },
             file_stage,
             initial_messages,
@@ -6433,6 +6479,7 @@ impl XllmRun {
         let interrupter = XllmInterrupter {
             requested: Arc::new(Mutex::new(None)),
             handle: Arc::new(Mutex::new(None)),
+            tool_cancel: manager.cancel.clone(),
         };
         if let Some(c) = &ctx {
             *interrupter.handle.lock().expect("lock") = Some(c.interrupt_handle());
@@ -6806,6 +6853,8 @@ impl XllmRun {
 
     /// 驱动到本次命令的停止点：完成 / 暂停 / 中断 / 失败 / 达到限制。
     pub async fn execute(&mut self) -> Result<RunOutcome, XllmError> {
+        self.manager
+            .set_deadline(self.record().config.limits.timeout_secs);
         self.emit(RunEvent::Phase {
             phase: RunPhase::PreparingInput,
             detail: String::new(),
@@ -8935,5 +8984,107 @@ there]]></write_file>
             .get("max_rounds")
             .unwrap()
             .ends_with(".llm_context"));
+    }
+
+    fn exec_manager(workdir: &Path) -> XllmToolManager {
+        let mut manager =
+            XllmToolManager::new(workdir.to_path_buf(), "run-test", LoopModel::FunctionCall);
+        for t in builtin_bash_group(workdir) {
+            manager.register(t, "groupname:bash").expect("register");
+        }
+        manager
+    }
+
+    fn exec_call(command: &str) -> AiToolCall {
+        AiToolCall {
+            name: TOOL_EXEC.to_string(),
+            args: HashMap::from([("command".to_string(), Value::String(command.to_string()))]),
+            call_id: "c1".to_string(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_deadline_cancels_running_exec_and_kills_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let manager = exec_manager(dir.path());
+        manager.set_deadline(1);
+        let started = std::time::Instant::now();
+        let obs = manager
+            .call_tool(exec_call(&format!("sleep 2; touch {}", marker.display())))
+            .await
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        match obs {
+            Observation::Error { message, .. } => {
+                assert!(
+                    message.contains("total execution time limit (1s)"),
+                    "{message}"
+                )
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert!(!marker.exists(), "cancelled exec kept running");
+    }
+
+    #[tokio::test]
+    async fn interrupt_cancels_running_exec() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(exec_manager(dir.path()));
+        let interrupter = XllmInterrupter {
+            requested: Arc::new(Mutex::new(None)),
+            handle: Arc::new(Mutex::new(None)),
+            tool_cancel: manager.cancel.clone(),
+        };
+        let m = manager.clone();
+        let call = tokio::spawn(async move { m.call_tool(exec_call("sleep 30")).await });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        interrupter.interrupt("test");
+        let obs = tokio::time::timeout(Duration::from_secs(5), call)
+            .await
+            .expect("cancel must be prompt")
+            .unwrap()
+            .unwrap();
+        match obs {
+            Observation::Error { message, .. } => {
+                assert!(message.contains("run interrupted"), "{message}")
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_exec_observation_carries_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = exec_manager(dir.path());
+        let obs = manager
+            .call_tool(exec_call(
+                "echo compile error: missing semicolon >&2; exit 2",
+            ))
+            .await
+            .unwrap();
+        match obs {
+            Observation::Error { message, .. } => {
+                assert!(message.starts_with("exit=2"), "{message}");
+                assert!(message.contains("missing semicolon"), "{message}");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exec_spec_advertises_xllm_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = exec_manager(dir.path());
+        let spec = manager.tools.get(TOOL_EXEC).unwrap().spec();
+        assert_eq!(
+            spec.args_schema["properties"]["timeout_ms"]["maximum"],
+            EXEC_MAX_TIMEOUT_MS
+        );
+        assert!(spec
+            .description
+            .contains("Default timeout 1800s, max 3600s"));
     }
 }

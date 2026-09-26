@@ -750,6 +750,7 @@ async fn execute_and_deliver(opts: &CliOpts, run: &mut XllmRun) -> i32 {
             interrupter.interrupt("user interrupt (Ctrl-C)");
             if tokio::signal::ctrl_c().await.is_ok() {
                 eprintln!("xllm: second interrupt; exiting without waiting");
+                crate::kill_running_bash_process_groups();
                 std::process::exit(EXIT_INTERRUPTED);
             }
         }

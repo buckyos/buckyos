@@ -467,6 +467,7 @@ impl BashRunner for TmuxBashRunner {
             stderr,
             output,
             output_truncated,
+            timed_out: false,
             duration_ms: started.elapsed().as_millis() as u64,
             engine: "tmux".to_string(),
             cwd: req.cwd,

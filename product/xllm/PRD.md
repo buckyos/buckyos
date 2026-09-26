@@ -736,7 +736,7 @@ user：本次任务要求 → 显式附件（命令顺序）→ stdin（若作�
 | `--resume` | 继续中断或可恢复错误暂停的任务；终态只展示结果 | 当前工作目录最近未完成任务；可配合 `--run` 指定编号 |
 | `--max-tokens <n>` | 限制单次模型输出长度 | 模型配置 |
 | `--max-rounds <n>` | 限制工具轮数 | 8；0 表示不执行工具 |
-| `--timeout <seconds>` | 限制本次命令等待时长 | 600 秒 |
+| `--timeout <seconds>` | 限制本次命令等待时长 | 3600 秒 |
 | `--llm-timeout <seconds>` | 限制单次 LLM 请求等待时长 | `.llm_context` 中的 llm_timeout，否则 600 秒 |
 | `--run-logs debug\|info\|warn\|result` | 控制 stderr 过程日志详略 | `.llm_context` 中的 run_logs，否则 info |
 | `--result-format raw\|result.<path>` | 保留最终原始响应或提取字段 | `.llm_context` 中的 result_format，否则 raw |

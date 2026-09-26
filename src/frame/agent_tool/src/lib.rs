@@ -81,8 +81,9 @@ pub use json_args::{
     u64_to_usize_arg,
 };
 pub use llm_bash::{
-    BashRunOutput, BashRunRequest, BashRunner, BashTarget, BashTargetSpec, BinOverlayConfig,
-    ExecBashTool, LlmBashConfig, LocalProcessBashRunner, TOOL_EXEC_BASH,
+    kill_running_bash_process_groups, BashRunOutput, BashRunRequest, BashRunner, BashTarget,
+    BashTargetSpec, BinOverlayConfig, ExecBashTool, LlmBashConfig, LocalProcessBashRunner,
+    TOOL_EXEC_BASH,
 };
 pub use path_utils::{
     normalize_abs_path, normalize_root_path, resolve_path_from_root, resolve_path_under_root,

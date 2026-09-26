@@ -27,7 +27,7 @@
 
 ## 3. 有效配置优先级
 
-`默认值 → 合并后的文件配置 → 选中组 → prompt.tools → CLI（TaskOverrides）`。工具开关：`tools.enabled` 默认 false；`--tools/--no-tools` 最高。仅启用未配置列表时使用 `bash` 组（`read_file`、`write_file`、`edit_file`、`exec`）。function_call 下配置 `actions` 或 `tools2actions` 报能力错误；behavior + `tools2actions` 把 tools 转为 actions，原生列表置空。
+`默认值 → 合并后的文件配置 → 选中组 → prompt.tools → CLI（TaskOverrides）`。工具开关：`tools.enabled` 默认 false；`--tools/--no-tools` 最高。仅启用未配置列表时使用 `bash` 组（`read_file`、`write_file`、`edit_file`、`exec`）。`exec` 默认超时 1800s、上限 3600s，输出按头 1/4 + 尾 3/4 保留 64KB；命令在独立进程组中运行，超时、中断或到达总时长时整组 SIGKILL，超时返回 Error 结果（`timed_out`、已有输出与重试提示）；非 0 退出的 Error 观察同时带 summary 与输出。运行中的工具调用受 `--timeout`（默认 3600s）和 Ctrl-C 取消。function_call 下配置 `actions` 或 `tools2actions` 报能力错误；behavior + `tools2actions` 把 tools 转为 actions，原生列表置空。
 
 ## 4. 提示词组装
 
