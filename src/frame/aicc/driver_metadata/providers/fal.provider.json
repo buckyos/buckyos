@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 2,
+  "revision_seq": 3,
   "provider_profile_id": "fal",
   "static_inventory_models": ["fal-ai/esrgan", "fal-ai/imageutils/rembg", "fal-ai/deepfilternet3", "fal-ai/video-upscaler"],
   "models": [
@@ -50,6 +50,8 @@
     {
       "id": "fal-ai/esrgan",
       "pricing": {
+        "source_url": "https://fal.ai/models/fal-ai/esrgan",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.00111,
         "unit": "second"
@@ -58,14 +60,18 @@
     {
       "id": "fal-ai/imageutils/rembg",
       "pricing": {
+        "source_url": "https://fal.ai/models/fal-ai/imageutils/rembg",
+        "verified_at": "2026-09-26",
         "currency": "USD",
-        "amount": 0.00111,
+        "amount": 0,
         "unit": "second"
       }
     },
     {
       "id": "fal-ai/deepfilternet3",
       "pricing": {
+        "source_url": "https://fal.ai/models/fal-ai/deepfilternet3",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.001,
         "unit": "audio_second"
@@ -74,6 +80,8 @@
     {
       "id": "fal-ai/video-upscaler",
       "pricing": {
+        "source_url": "https://fal.ai/models/fal-ai/video-upscaler",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.0008,
         "unit": "megapixel"

@@ -4,10 +4,10 @@
 账号套餐、模态或动态 endpoint 影响时保持 unknown；unknown 可以参与保守路由策略和验收
 报告中的估算敞口，但不能生成 `finance_complete=true` 的实际账单。
 
-Model Driver 不保存 `model_pricing`，也不提供原厂默认价或成本估值兜底。2026-09-25 已删除
-全部 builtin Model Driver 价表，未将旧价格自动迁入 Provider Rules。价格只能来自当前渠道的
-discovery、响应，或已确认适用的 Provider Rules；缺失时宁可 unknown，也不使用未经确认的价格。
-运行时仍有旧的 Model Driver 价格字段与 fallback，删除它们尚待 Review 后实现。
+Model Driver 不保存 `model_pricing`，也不提供原厂默认价或成本估值兜底。原厂直连 Provider
+原来位于 builtin Model Driver 的默认价已迁入对应 Provider Rules，并按当前官方渠道重新核验；
+第三方渠道没有因此继承原厂直连价格。价格只能来自当前渠道的 discovery、响应，或已确认适用的
+Provider Rules；缺失时宁可 unknown，也不使用未经确认的价格。
 
 ## 当前 schema 可表达的计价口径
 
@@ -33,23 +33,24 @@ discovery、响应，或已确认适用的 Provider Rules；缺失时宁可 unkn
 
 ## Provider 价格核验入口
 
-以下链接供维护 Provider 渠道价格时核验，不表示相关价格已经配置或仍然有效。本轮保留
-`glm.provider.json` 原有的渠道价格，其余已删除的 Model Driver 价表均未迁移；未重新核验任何
-线上报价。即使官方模型 ID 相同，也不能将官网价格直接用作第三方渠道价格。
+以下链接是 builtin Provider 静态价格的核验入口。每条静态 `model_pricing` 都同时保存
+`source_url` 和 `verified_at`；维护价格时必须同步核对币种、区域、模态、阶梯和请求参数条件。
+即使官方模型 ID 相同，也不能将官网价格直接用作第三方渠道价格。OpenRouter 等动态价格渠道
+仍以 discovery/响应为准，不伪造静态来源。
 
 | Provider | 核验入口 |
 |---|---|
-| OpenAI | [API pricing](https://openai.com/api/pricing/) |
+| OpenAI | [API pricing](https://developers.openai.com/api/docs/pricing) |
 | Claude | [Models and pricing](https://platform.claude.com/docs/en/about-claude/models/overview) |
 | Gemini | [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) |
-| Fal | [Model API pricing](https://fal.ai/docs/documentation/model-apis/pricing) |
+| Fal | 各模型页（例如 [ESRGAN](https://fal.ai/models/fal-ai/esrgan)） |
 | OpenRouter | [Usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting) |
-| MiniMax | [Pay-as-you-go pricing](https://platform.minimax.io/docs/guides/pricing-paygo) |
-| Kimi | [Moonshot platform](https://platform.moonshot.ai/docs/) |
-| GLM | [Official pricing](https://bigmodel.cn/pricing) |
-| DeepSeek | [Models and pricing](https://api-docs.deepseek.com/quick_start/pricing) |
-| Doubao | [Volcano Ark documentation](https://www.volcengine.com/docs/82379) |
-| Qwen | [Model Studio pricing](https://help.aliyun.com/en/model-studio/model-pricing) |
+| MiniMax | [国内按量价格](https://platform.minimaxi.com/docs/guides/pricing-paygo)、[国际按量价格](https://platform.minimax.io/docs/guides/pricing-paygo) |
+| Kimi | [Chat pricing](https://platform.kimi.com/docs/pricing/chat) |
+| GLM | [Official pricing](https://docs.bigmodel.cn/cn/guide/start/pricing) |
+| DeepSeek | [Models and pricing](https://api-docs.deepseek.com/quick_start/pricing/) |
+| Doubao | [Model pricing](https://ark.volcengine.com/docs/82379/1099320) |
+| Qwen | [Model Studio pricing](https://help.aliyun.com/zh/model-studio/model-pricing) |
 | SN | Provider inventory/usage response |
 
 ## 结算规则
@@ -62,4 +63,4 @@ discovery、响应，或已确认适用的 Provider Rules；缺失时宁可 unkn
 4. 缺失或无法准确表达的价格保持 unknown，不按零处理；免费模型显式写 0，两者不可混淆。
 5. 官方价格变更时必须更新事实源检查日期、metadata golden 和相应协议/计费测试。
 
-核验入口沿用 2026-09-18 的记录；本次价格边界修订日期：2026-09-25，不作为报价核验日期。
+本轮补齐与复核日期：2026-09-26。具体条目的核验日期以其 `verified_at` 为准。

@@ -185,7 +185,10 @@ fn overrides_provider_failures_and_aliases_are_terminal_and_isolated() {
         .unwrap()],
         ..Default::default()
     }
-    .build_snapshot(3, &Default::default())
+    .build_snapshot(
+        crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+        &Default::default(),
+    )
     .unwrap();
     assert_eq!(
         deepseek.match_model_driver("deepseek-v4-flash", &updated),
@@ -663,7 +666,10 @@ fn glm_supplements_use_effective_catalog_and_never_resurrect_dynamic_llms() {
         .unwrap()],
         ..Default::default()
     }
-    .build_snapshot(3, &Default::default())
+    .build_snapshot(
+        crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+        &Default::default(),
+    )
     .unwrap();
     let providers = builtin_provider_registry(&catalog).unwrap();
     let profile = providers
@@ -838,4 +844,106 @@ fn provider_pricing_contains_all_rebased_model_defaults() {
         verified.source_url.as_deref(),
         Some("https://developers.openai.com/api/docs/models/gpt-6-astra")
     );
+}
+
+#[test]
+fn every_builtin_provider_price_has_provenance() {
+    let files = load_builtin_metadata().unwrap();
+    let mut pricing_count = 0;
+    for file in files
+        .iter()
+        .filter(|file| file.kind == crate::catalog::CatalogKind::ProviderRules)
+    {
+        let rules: crate::catalog::ProviderRulesCatalog =
+            serde_json::from_slice(&file.contents).unwrap();
+        for (index, rule) in rules.model_pricing.iter().enumerate() {
+            pricing_count += 1;
+            assert!(
+                rule.pricing
+                    .source_url
+                    .as_deref()
+                    .is_some_and(|url| url.starts_with("https://")),
+                "{} model_pricing[{index}] is missing source_url",
+                rules.provider_profile_id
+            );
+            assert!(
+                rule.pricing
+                    .verified_at
+                    .as_deref()
+                    .is_some_and(|date| date.len() == 10),
+                "{} model_pricing[{index}] is missing verified_at",
+                rules.provider_profile_id
+            );
+        }
+    }
+    assert_eq!(pricing_count, 311);
+}
+
+#[test]
+fn corrected_provider_prices_match_official_billing_dimensions() {
+    let catalog = catalog();
+
+    let doubao = catalog.provider_rules("doubao").unwrap();
+    let mini = doubao
+        .model_pricing
+        .iter()
+        .find(|rule| rule.id.as_deref() == Some("doubao-seed-2.0-mini"))
+        .unwrap();
+    assert!(mini
+        .pricing
+        .tiers
+        .as_ref()
+        .unwrap()
+        .steps
+        .iter()
+        .all(|step| step.cache_input_token == Some(4e-8)));
+
+    let fal = catalog.provider_rules("fal").unwrap();
+    let rembg = fal
+        .model_pricing
+        .iter()
+        .find(|rule| rule.id.as_deref() == Some("fal-ai/imageutils/rembg"))
+        .unwrap();
+    assert_eq!(rembg.pricing.amount, Some(0.0));
+
+    let gemini = catalog.provider_rules("gemini").unwrap();
+    let veo = gemini
+        .model_pricing
+        .iter()
+        .find(|rule| rule.id.as_deref() == Some("veo-3.1-generate-preview"))
+        .unwrap();
+    assert_eq!(
+        veo.pricing.unit,
+        Some(crate::catalog::PricingUnit::VideoSecond)
+    );
+    assert_eq!(veo.pricing.amount, Some(0.4));
+
+    let kimi = catalog.provider_rules("kimi").unwrap();
+    let k3 = kimi
+        .model_pricing
+        .iter()
+        .find(|rule| rule.id.as_deref() == Some("kimi-k3"))
+        .unwrap();
+    assert_eq!(k3.pricing.cache_write_input_token, Some(2e-5));
+    assert_eq!(k3.pricing.cache_write_1h_input_token, Some(4e-5));
+
+    let minimax = catalog.provider_rules("minimax").unwrap();
+    let h3 = minimax
+        .model_pricing
+        .iter()
+        .find(|rule| rule.pricing.rules.iter().any(|rule| rule.amount == 0.8))
+        .unwrap();
+    assert_eq!(h3.pricing.amount, Some(0.5));
+    assert!(h3.pricing.rules.iter().any(|rule| rule.amount == 0.8));
+    assert_eq!(
+        h3.pricing.source_url.as_deref(),
+        Some("https://platform.minimaxi.com/docs/guides/pricing-paygo")
+    );
+
+    let h3_max = minimax
+        .model_pricing
+        .iter()
+        .find(|rule| rule.pricing.rules.iter().any(|rule| rule.amount == 0.33))
+        .unwrap();
+    assert!(h3_max.pricing.rules.iter().any(|rule| rule.amount == 0.33));
 }

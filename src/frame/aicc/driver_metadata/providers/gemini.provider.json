@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 2,
+  "revision_seq": 3,
   "provider_profile_id": "gemini",
   "custom_provider_adapters": ["gemini-interactions"],
   "models": [
@@ -303,6 +303,8 @@
     {
       "id": "gemini-3.8-flash",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 7.5e-7,
         "output_token": 0.00000375,
@@ -312,6 +314,8 @@
     {
       "id": "gemini-3.7-flash",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 7.5e-7,
         "output_token": 0.00000375,
@@ -321,6 +325,8 @@
     {
       "id": "gemini-3.6-flash",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 7.5e-7,
         "output_token": 0.00000375,
@@ -330,6 +336,8 @@
     {
       "id": "gemini-3.5-flash",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.0000015,
         "output_token": 0.000009,
@@ -339,6 +347,8 @@
     {
       "id": "gemini-3.1-pro-preview",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.000002,
         "output_token": 0.000012,
@@ -351,13 +361,13 @@
               "up_to": 200000,
               "input_token": 0.000002,
               "output_token": 0.000012,
-              "cache_input_token": null
+              "cache_input_token": 2e-7
             },
             {
               "up_to": null,
               "input_token": 0.000004,
               "output_token": 0.000018,
-              "cache_input_token": null
+              "cache_input_token": 4e-7
             }
           ]
         }
@@ -366,6 +376,8 @@
     {
       "id": "gemini-3-flash-preview",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 5e-7,
         "output_token": 0.000003,
@@ -375,8 +387,11 @@
     {
       "id": "gemini-2.5-flash",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 3e-7,
+        "audio_input_token": 0.000001,
         "output_token": 0.0000025,
         "cache_input_token": 3e-8
       }
@@ -384,6 +399,8 @@
     {
       "id": "gemini-2.5-flash-lite",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 1e-7,
         "output_token": 4e-7
@@ -392,6 +409,8 @@
     {
       "id": "gemini-2.5-pro",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.00000125,
         "output_token": 0.00001,
@@ -404,13 +423,13 @@
               "up_to": 200000,
               "input_token": 0.00000125,
               "output_token": 0.00001,
-              "cache_input_token": null
+              "cache_input_token": 1.25e-7
             },
             {
               "up_to": null,
               "input_token": 0.0000025,
               "output_token": 0.000015,
-              "cache_input_token": null
+              "cache_input_token": 2.5e-7
             }
           ]
         }
@@ -419,14 +438,35 @@
     {
       "id": "gemini-3.1-flash-image",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.067,
-        "unit": "image"
+        "unit": "image",
+        "rules": [
+          {
+            "when": { "/resolution": ["0.5K", "0.5k", "512", "512p"] },
+            "amount": 0.045,
+            "unit": "image"
+          },
+          {
+            "when": { "/resolution": ["2K", "2k"] },
+            "amount": 0.101,
+            "unit": "image"
+          },
+          {
+            "when": { "/resolution": ["4K", "4k"] },
+            "amount": 0.151,
+            "unit": "image"
+          }
+        ]
       }
     },
     {
       "id": "gemini-3.1-flash-lite-image",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.034,
         "unit": "image"
@@ -435,14 +475,25 @@
     {
       "id": "gemini-3-pro-image",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.134,
-        "unit": "image"
+        "unit": "image",
+        "rules": [
+          {
+            "when": { "/resolution": ["4K", "4k"] },
+            "amount": 0.24,
+            "unit": "image"
+          }
+        ]
       }
     },
     {
       "id": "gemini-2.5-flash-image",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.039,
         "unit": "image"
@@ -451,30 +502,52 @@
     {
       "id": "gemini-3.5-transcribe",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
-        "input_token": 0.000002,
+        "audio_input_token": 0.000002,
         "output_token": 0.000012
       }
     },
     {
       "id": "veo-3.1-generate-preview",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
-        "amount": 0.2,
-        "unit": "request"
+        "amount": 0.4,
+        "unit": "video_second",
+        "rules": [
+          {
+            "when": { "/resolution": ["4K", "4k"] },
+            "amount": 0.6,
+            "unit": "video_second"
+          }
+        ]
       }
     },
     {
       "id": "veo-3.1-lite-generate-preview",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
-        "amount": 0.03,
-        "unit": "request"
+        "amount": 0.05,
+        "unit": "video_second",
+        "rules": [
+          {
+            "when": { "/resolution": ["1080P", "1080p"] },
+            "amount": 0.08,
+            "unit": "video_second"
+          }
+        ]
       }
     },
     {
       "id": "gemini-omni-1.1-flash",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.0000015,
         "output_token": 0.000009
@@ -483,6 +556,8 @@
     {
       "id": "lyria-3.5",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.08,
         "unit": "request"
@@ -491,6 +566,8 @@
     {
       "id": "lyria-3-pro-preview",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.08,
         "unit": "request"
@@ -499,6 +576,8 @@
     {
       "id": "lyria-3-clip-preview",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.04,
         "unit": "request"
@@ -507,20 +586,30 @@
     {
       "id": "gemini-embedding-2",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
-        "input_token": 2e-7
+        "input_token": 2e-7,
+        "image_input_token": 4.5e-7,
+        "audio_input_token": 0.0000065
       }
     },
     {
       "id": "gemini-embedding-2-preview",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
-        "input_token": 2e-7
+        "input_token": 2e-7,
+        "image_input_token": 4.5e-7,
+        "audio_input_token": 0.0000065
       }
     },
     {
       "id": "gemini-embedding-001",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 1.5e-7
       }
@@ -528,33 +617,41 @@
     {
       "id": "gemini-2.5-flash-preview-tts",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 5e-7,
-        "output_token": 0.00001
+        "audio_output_token": 0.00001
       }
     },
     {
       "id": "gemini-2.5-pro-preview-tts",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.000001,
-        "output_token": 0.00002
+        "audio_output_token": 0.00002
       }
     },
     {
       "id": "gemini-3.1-flash-tts-preview",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.000001,
-        "output_token": 0.00002
+        "audio_output_token": 0.00002
       }
     },
     {
       "id": "gemini-2.5-flash-lite-preview-tts",
       "pricing": {
+        "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 5e-7,
-        "output_token": 0.00001
+        "audio_output_token": 0.00001
       }
     }
   ]

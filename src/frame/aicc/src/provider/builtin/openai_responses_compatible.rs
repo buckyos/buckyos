@@ -745,8 +745,8 @@ mod tests {
             assert_eq!(
                 rules.revision_seq,
                 match provider.profile.provider_profile_id.as_str() {
-                    DOUBAO_PROFILE_ID | QWEN_PROFILE_ID => 3,
-                    _ => 2,
+                    DOUBAO_PROFILE_ID | QWEN_PROFILE_ID => 4,
+                    _ => 3,
                 }
             );
             if provider.profile.provider_profile_id == DOUBAO_PROFILE_ID {

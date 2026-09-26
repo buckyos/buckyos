@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 2,
+  "revision_seq": 3,
   "provider_profile_id": "kimi",
   "models": [],
   "patterns": [
@@ -16,9 +16,9 @@
     {"model_driver": "kimi", "variant": "reasoning-none", "match": {"origin_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "reasoning-none"}, "provider_options": {"thinking": {"type": "disabled"}}}
   ],
   "model_pricing": [
-    { "id": "kimi-k3", "pricing": { "currency": "CNY", "input_token": 0.00002, "output_token": 0.0001, "cache_input_token": 0.000002 } },
-    { "id": "kimi-k2.7-code", "pricing": { "currency": "CNY", "input_token": 0.0000065, "output_token": 0.000027, "cache_input_token": 0.0000013 } },
-    { "id": "kimi-k2.7-code-highspeed", "pricing": { "currency": "CNY", "input_token": 0.000013, "output_token": 0.000054, "cache_input_token": 0.0000026 } },
-    { "id": "kimi-k2.6", "pricing": { "currency": "CNY", "input_token": 0.0000065, "output_token": 0.000027, "cache_input_token": 0.0000011 } }
+    { "id": "kimi-k3", "pricing": { "source_url": "https://platform.kimi.com/docs/pricing/chat", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 0.00002, "output_token": 0.0001, "cache_input_token": 0.000002, "cache_write_input_token": 0.00002, "cache_write_1h_input_token": 0.00004 } },
+    { "id": "kimi-k2.7-code", "pricing": { "source_url": "https://platform.kimi.com/docs/pricing/chat", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 0.0000065, "output_token": 0.000027, "cache_input_token": 0.0000013 } },
+    { "id": "kimi-k2.7-code-highspeed", "pricing": { "source_url": "https://platform.kimi.com/docs/pricing/chat", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 0.000013, "output_token": 0.000054, "cache_input_token": 0.0000026 } },
+    { "id": "kimi-k2.6", "pricing": { "source_url": "https://platform.kimi.com/docs/pricing/chat", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 0.0000065, "output_token": 0.000027, "cache_input_token": 0.0000011 } }
   ]
 }

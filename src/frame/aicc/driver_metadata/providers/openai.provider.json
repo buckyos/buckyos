@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 2,
+  "revision_seq": 3,
   "provider_profile_id": "openai",
   "custom_provider_adapters": ["openai-responses", "openai-chat-completions"],
   "models": [
@@ -393,24 +393,32 @@
     {
       "id": "gpt-5.6",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.000004,
         "output_token": 0.00002,
-        "cache_input_token": 4e-7
+        "cache_input_token": 4e-7,
+        "cache_write_input_token": 0.000005
       }
     },
     {
       "id": "gpt-image-2",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
-        "input_token": 0.000008,
-        "output_token": 0.00003,
-        "cache_input_token": 0.000002
+        "input_token": 0.000005,
+        "image_input_token": 0.000008,
+        "image_output_token": 0.00003,
+        "cache_input_token": 0.00000125
       }
     },
     {
       "id": "text-embedding-3-large",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 1.3e-7
       }
@@ -418,6 +426,8 @@
     {
       "id": "text-embedding-3-small",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 2e-8
       }
@@ -425,6 +435,8 @@
     {
       "id": "text-embedding-ada-002",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 1e-7
       }
@@ -432,6 +444,8 @@
     {
       "id": "whisper-1",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.0001,
         "unit": "audio_second"
@@ -440,6 +454,8 @@
     {
       "id": "gpt-transcribe",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.000075,
         "unit": "audio_second"
@@ -448,6 +464,8 @@
     {
       "id": "gpt-4o-transcribe",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.0000025,
         "output_token": 0.00001
@@ -456,6 +474,8 @@
     {
       "id": "gpt-4o-mini-transcribe",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.00000125,
         "output_token": 0.000005
@@ -464,14 +484,18 @@
     {
       "id": "gpt-4o-mini-tts",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 6e-7,
-        "output_token": 0.000012
+        "audio_output_token": 0.000012
       }
     },
     {
       "id": "tts-1",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.000015,
         "unit": "character"
@@ -480,6 +504,8 @@
     {
       "id": "tts-1-hd",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.00003,
         "unit": "character"
@@ -488,6 +514,8 @@
     {
       "id": "sora-2",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.1,
         "unit": "video_second"
@@ -496,6 +524,8 @@
     {
       "id": "sora-2-pro",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "amount": 0.3,
         "unit": "video_second"
@@ -506,9 +536,12 @@
         "provider_model_id": "gpt-5.6-sol*"
       },
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.000004,
         "cache_input_token": 4e-7,
+        "cache_write_input_token": 0.000005,
         "output_token": 0.00002
       }
     },
@@ -517,9 +550,12 @@
         "provider_model_id": "gpt-5.6-terra*"
       },
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.000002,
         "cache_input_token": 2e-7,
+        "cache_write_input_token": 0.0000025,
         "output_token": 0.000012
       }
     },
@@ -528,15 +564,20 @@
         "provider_model_id": "gpt-5.6-luna*"
       },
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 2e-7,
         "cache_input_token": 2e-8,
+        "cache_write_input_token": 2.5e-7,
         "output_token": 0.0000012
       }
     },
     {
       "id": "gpt-5.5",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.000005,
         "output_token": 0.00003,
@@ -546,6 +587,8 @@
     {
       "id": "gpt-5.5-pro",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.00003,
         "output_token": 0.00018
@@ -554,6 +597,8 @@
     {
       "id": "gpt-5.4",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.0000025,
         "output_token": 0.000015,
@@ -563,6 +608,8 @@
     {
       "id": "gpt-5.4-mini",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 7.5e-7,
         "output_token": 0.0000045,
@@ -572,6 +619,8 @@
     {
       "id": "gpt-5.4-nano",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 2e-7,
         "output_token": 0.00000125,
@@ -581,6 +630,8 @@
     {
       "id": "gpt-5.4-pro",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.00003,
         "output_token": 0.00018
@@ -589,6 +640,8 @@
     {
       "id": "gpt-5.3-codex",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.00000175,
         "output_token": 0.000014,
@@ -598,28 +651,37 @@
     {
       "id": "gpt-5.6-sol",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.000004,
         "output_token": 0.00002,
-        "cache_input_token": 4e-7
+        "cache_input_token": 4e-7,
+        "cache_write_input_token": 0.000005
       }
     },
     {
       "id": "gpt-5.6-terra",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 0.000002,
         "output_token": 0.000012,
-        "cache_input_token": 2e-7
+        "cache_input_token": 2e-7,
+        "cache_write_input_token": 0.0000025
       }
     },
     {
       "id": "gpt-5.6-luna",
       "pricing": {
+        "source_url": "https://developers.openai.com/api/docs/pricing",
+        "verified_at": "2026-09-26",
         "currency": "USD",
         "input_token": 2e-7,
         "output_token": 0.0000012,
-        "cache_input_token": 2e-8
+        "cache_input_token": 2e-8,
+        "cache_write_input_token": 2.5e-7
       }
     }
   ]

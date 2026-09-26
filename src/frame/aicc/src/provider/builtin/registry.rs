@@ -1091,7 +1091,10 @@ mod tests {
             cloud: vec![cloud],
             ..MetadataSources::default()
         }
-        .build_snapshot(3, &crate::catalog::CatalogBuildOptions::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &crate::catalog::CatalogBuildOptions::default(),
+        )
         .unwrap();
         let registry = builtin_provider_registry(catalog.as_ref()).unwrap();
 
@@ -1170,7 +1173,7 @@ mod tests {
             })
             .unwrap();
         let inventory = binding.profile.default_inventory.unwrap();
-        assert_eq!(inventory.revision.as_deref(), Some("catalog-fal-2"));
+        assert_eq!(inventory.revision.as_deref(), Some("catalog-fal-3"));
         assert_eq!(inventory.models.len(), 4);
         assert!(inventory
             .models

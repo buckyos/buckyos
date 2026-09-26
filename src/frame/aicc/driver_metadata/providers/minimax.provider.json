@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 3,
+  "revision_seq": 4,
   "provider_profile_id": "minimax",
   "models": [
     {
@@ -291,6 +291,8 @@
         "provider_model_id": "MiniMax-M3"
       },
       "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
         "currency": "CNY",
         "tiers": {
           "dimension": "input_tokens",
@@ -317,6 +319,8 @@
         "provider_model_id": "MiniMax-M2.7"
       },
       "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
         "currency": "CNY",
         "input_token": 0.0000021,
         "cache_input_token": 4.2e-7,
@@ -328,6 +332,8 @@
         "provider_model_id": "MiniMax-M2.7-highspeed"
       },
       "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
         "currency": "CNY",
         "input_token": 0.0000042,
         "cache_input_token": 4.2e-7,
@@ -339,6 +345,8 @@
         "provider_model_id": "speech-2.8-hd"
       },
       "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
         "currency": "CNY",
         "amount": 0.00035,
         "unit": "character"
@@ -349,6 +357,8 @@
         "provider_model_id": "speech-2.8-turbo"
       },
       "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
         "currency": "CNY",
         "amount": 0.0002,
         "unit": "character"
@@ -359,6 +369,8 @@
         "provider_model_id": "asr-1.0"
       },
       "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
         "currency": "CNY",
         "amount": 0.0006944444444444445,
         "unit": "audio_second"
@@ -369,6 +381,8 @@
         "provider_model_id": "image-01"
       },
       "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
         "currency": "CNY",
         "amount": 0.025,
         "unit": "image"
@@ -379,6 +393,8 @@
         "provider_model_id": "image-01-live"
       },
       "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
         "currency": "CNY",
         "amount": 0.025,
         "unit": "image"
@@ -389,9 +405,18 @@
         "provider_model_id": "MiniMax-H3"
       },
       "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
         "currency": "CNY",
         "amount": 0.5,
-        "unit": "video_second"
+        "unit": "video_second",
+        "rules": [
+          {
+            "when": { "/resolution": ["2K", "2k"] },
+            "amount": 0.8,
+            "unit": "video_second"
+          }
+        ]
       }
     },
     {
@@ -399,9 +424,18 @@
         "provider_model_id": "MiniMax-H3-Max"
       },
       "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
         "currency": "CNY",
         "amount": 0.5,
-        "unit": "video_second"
+        "unit": "video_second",
+        "rules": [
+          {
+            "when": { "/resolution": ["480P", "480p"] },
+            "amount": 0.33,
+            "unit": "video_second"
+          }
+        ]
       }
     },
     {
@@ -409,6 +443,8 @@
         "provider_model_id": "minimax-m3"
       },
       "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
         "currency": "CNY",
         "tiers": {
           "dimension": "input_tokens",
